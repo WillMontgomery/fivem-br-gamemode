@@ -15,22 +15,29 @@
  * fake clock and NO animation event of any kind, which is the point: nothing
  * here can be waiting on one -- and on the default clock, which must be the
  * monotonic one (round 2). And src/bridge/screenReport.ts is the page's half of
- * the F8 line: which steps of a ready-up arm it, and what it carries. br_ui's
- * half -- the comparison with what Lua sent, the verdict, the NO ANSWER
+ * the F8 line: which steps of a ready-up arm it, what it carries, and (round 3)
+ * when it may be read -- never with a fade in flight, which the owner's own
+ * ready-up timings are replayed against -- what a sub-screen over warmup reads
+ * as, and that 'forced' belongs to the burst it happened in. br_ui's half -- the
+ * comparison with what Lua sent and what br_core holds, the verdict, the
  * watchdog -- is pinned in tools/test_client.lua.
  *
  * WHY node RUNS .ts FILES DIRECTLY. Both have no runtime imports, so node's type
  * stripping loads them as-is -- the same shape as test-chat-clear.mjs.
  *
  * WHAT THIS CANNOT REACH: that the lobby, the curtain and the HUD actually draw
- * from this, and that the report is sent. That half is check-ui rule R26. The
- * two are a pair; do not delete one and keep the other.
+ * from this, and that the report is read and sent the way these decide. That
+ * half is check-ui rules R26-R26c. The two are a pair; do not delete one and
+ * keep the other.
  *
  * Run: npm run test:fade   (and as part of npm run build)
  */
 
-import { createFadeClock, fadeStyle, FADE_SETTLE_MARGIN_MS, monotonicNow } from '../src/ui/fade.ts'
-import { screenChanges, screenPayload, showing } from '../src/bridge/screenReport.ts'
+import { createFadeClock, createFadeRegistry, fadeStyle, FADE_SETTLE_MARGIN_MS, monotonicNow } from '../src/ui/fade.ts'
+import {
+  AFTERMATH_MS, dueAt, MAX_WAIT_MS, moving, QUIET_MS, RETRY_MS, screenChanges, screenPayload, settle,
+  SETTLE_GIVE_UP_MS, showing, wantedScreen,
+} from '../src/bridge/screenReport.ts'
 
 let failed = 0
 let ran = 0
@@ -207,7 +214,7 @@ const reading = (over) => ({
   why: ['curtain down'],
   match: 'warmup', me: 'warmup', focus: 'none', leaving: false, wanted: 'hud',
   lobby: off('transition'), hud: on('transition'), curtain: { opacity: 0, visibility: 'visible', end: 'transition' },
-  ui: { opacity: 1, visibility: 'visible' },
+  ui: { opacity: 1, visibility: 'visible' }, pages: [], settling: [],
   frames: 58, frameMs: 500, pageVisible: 'visible', focused: true, upMs: (87 * 60 + 12) * 1000,
   seq: 812, stale: 0, unheard: 0,
   ...over,
@@ -267,6 +274,236 @@ const reading = (over) => ({
     screenPayload(reading({ why: ['curtain up', 'black', 'me lobby>warmup'] })).why, 'curtain up, black, me lobby>warmup')
   check('a stale drop and an unheard one are counted in the line',
     screenPayload(reading({ stale: 2, unheard: 1 })).detail.includes('seq 812, 2 stale, 1 unheard'), true)
+}
+
+// ── round 3: never judged mid-fade ──────────────────────────────────────────
+console.log('a reading waits for every fade to settle (round 3)')
+{
+  const none = moving([], 0)
+  check('nothing moving: read now', settle({ why: [], first: 0 }, none, 1000), { read: true, settling: [] })
+
+  const fading = moving([{ name: 'curtain', end: 'fading', at: 900, remaining: 420 }], 1000)
+  check('a fade in its window is moving, and is waited out to its end plus the aftermath',
+    fading, { names: ['curtain'], waitMs: 420 + AFTERMATH_MS })
+  check('...so the reading is not taken', settle({ why: [], first: 0 }, fading, 1000),
+    { read: false, waitMs: 420 + AFTERMATH_MS })
+
+  check('a fade that ended 10ms ago is still moving -- its re-render and follow-up effect',
+    moving([{ name: 'page:market', end: 'forced', at: 990, remaining: 0 }], 1000),
+    { names: ['page:market'], waitMs: AFTERMATH_MS - 10 })
+  check('...and one that ended a while ago is not',
+    moving([{ name: 'lobby', end: 'transition', at: 100, remaining: 0 }], 1000), { names: [], waitMs: 0 })
+  check('a fade already due waits the shortest retry, never zero',
+    settle({ why: [], first: 0 }, moving([{ name: 'hud', end: 'fading', at: 0, remaining: 0 }], 1000), 1000),
+    { read: false, waitMs: RETRY_MS })
+
+  const b = { why: ['curtain up'], first: 0 }
+  settle(b, fading, 1000)
+  check('a layer still moving 3s after the reading fell due: read anyway, marked settling, not judged',
+    settle(b, fading, 1000 + SETTLE_GIVE_UP_MS), { read: true, settling: ['curtain'] })
+  check('...and not a moment before', settle({ ...b, due: 1000 }, fading, 999 + SETTLE_GIVE_UP_MS).read, false)
+
+  check('due QUIET_MS after the latest step', dueAt({ why: [], first: 0 }, 400), 400 + QUIET_MS)
+  check('...but never later than MAX_WAIT_MS after the first', dueAt({ why: [], first: 0 }, 4800), MAX_WAIT_MS)
+}
+
+/**
+ * The page's side of a ready-up, on a fake clock: the layers with their real
+ * fade lengths, the registry useFade keeps, and the report's own scheduling
+ * (dueAt / moving / settle) -- driven by the steps in Lua's order. A reading
+ * records what each layer draws AT THAT INSTANT: its final value once its fade
+ * clock has settled, half way while it is still fading.
+ */
+function simulate(events, { endAt = 20000 } = {}) {
+  let t = 0
+  const now = () => t
+  const reg = createFadeRegistry(now)
+  const owner = {}
+  const layers = {
+    curtain: { ms: 600, shown: false }, lobby: { ms: 200, shown: true },
+    hud: { ms: 200, shown: false }, ui: { ms: 120, shown: true },
+  }
+  for (const l of Object.values(layers)) l.clock = createFadeClock(l.shown, l.ms + FADE_SETTLE_MARGIN_MS, now)
+  const state = { match: 'waiting', me: 'lobby', leaving: false, focus: 'lobby' }
+  const readings = []
+  let pending = null
+  let due = Infinity
+
+  const setLayer = (name, shown) => {
+    const l = layers[name]
+    if (l.clock.want(shown)) reg.open(name, l.clock, owner)
+  }
+  const closeDue = () => {
+    for (const [name, l] of Object.entries(layers)) {
+      if (reg.end(name) === 'fading' && l.clock.poll()) reg.close(name, 'transition', l.clock, owner)
+    }
+  }
+  const arm = (why) => {
+    pending ??= { why: [], first: t }
+    pending.why.push(...why)
+    due = dueAt(pending, t)
+  }
+  const take = () => {
+    closeDue()
+    const step = settle(pending, moving(reg.records(), t), t)
+    if (!step.read) { due = t + step.waitMs; return }
+    const show = (name) => {
+      const l = layers[name]
+      const op = l.clock.poll() ? (l.clock.shown ? 1 : 0) : 0.5
+      return { opacity: op, visibility: op > 0 ? 'visible' : 'hidden', end: reg.end(name, pending.first) }
+    }
+    const showLobby = state.match === 'waiting' || state.me === 'lobby'
+    const r = {
+      ...reading({}), why: pending.why, ...state,
+      wanted: wantedScreen({ frontendUp: false, leaving: state.leaving, focus: state.focus, showLobby,
+        hudShown: !showLobby, scoped: false }),
+      lobby: show('lobby'), hud: show('hud'), curtain: show('curtain'), ui: show('ui'),
+      settling: step.settling,
+    }
+    readings.push({ t, fading: Object.keys(layers).filter((n) => !layers[n].clock.poll()), ...screenPayload(r) })
+    pending = null
+    due = Infinity
+  }
+  const queue = [...events].sort((a, b) => a.t - b.t)
+  while (t <= endAt) {
+    const next = Math.min(queue.length ? queue[0].t : Infinity, due)
+    if (next === Infinity) break
+    t = next
+    closeDue()
+    if (queue.length && queue[0].t === t) queue.shift().run({ state, setLayer, arm })
+    else take()
+  }
+  return readings
+}
+
+/** Lua's ready-up, as the page receives it. */
+function readyUp(coverMs, liftAfterHudMs) {
+  const release = coverMs + 5
+  return [
+    { t: 0, run: ({ state, setLayer, arm }) => {
+      state.leaving = true; state.focus = 'none'; setLayer('curtain', true); arm(['curtain up', 'focus lobby>none'])
+    } },
+    { t: coverMs, run: ({ arm }) => arm(['black']) },
+    { t: release, run: ({ state, setLayer, arm }) => {
+      state.match = 'warmup'; state.me = 'warmup'; setLayer('lobby', false); setLayer('hud', true)
+      arm(['match waiting>warmup', 'me lobby>warmup', 'lobby off'])
+    } },
+    { t: release + liftAfterHudMs, run: ({ state, setLayer, arm }) => {
+      state.leaving = false; setLayer('curtain', false); arm(['curtain down'])
+    } },
+  ]
+}
+
+console.log("the owner's ready-up on his own timings: two readings, both ok, neither mid-fade")
+// His logs: the cover acknowledged 393-659ms in; the curtain lifting 1.25-1.36s
+// after the HUD envelope (spawn.lua lowers it 250ms after 'in').
+for (const [cover, lift] of [[393, 1250], [520, 1310], [659, 1360], [659, 1250], [393, 1360]]) {
+  const rs = simulate(readyUp(cover, lift))
+  check(`cover ${cover}ms, lift ${lift}ms after the HUD: two lines`, rs.length, 2)
+  check('...each read with no fade in flight', rs.map((r) => r.fading), [[], []])
+  check('...under the curtain, then on the HUD',
+    rs.map((r) => [r.wanted, r.showing]), [['curtain', 'curtain'], ['hud', 'hud']])
+  check('...neither forced on a healthy clock', rs.map((r) => r.forced), [false, false])
+}
+
+console.log('a reading that falls due mid-fade waits for it')
+{
+  // The curtain flapping every 400ms keeps re-arming until MAX_WAIT_MS forces
+  // the reading due -- with the last toggle's fade still running.
+  const flaps = []
+  for (let i = 1; i <= 12; i++) {
+    const up = i % 2 === 1
+    flaps.push({ t: i * 400, run: ({ state, setLayer, arm }) => {
+      state.leaving = up; setLayer('curtain', up); arm([up ? 'curtain up' : 'curtain down'])
+    } })
+  }
+  const rs = simulate(flaps)
+  const first = rs[0]
+  check('the first reading is not taken at MAX_WAIT_MS, when the curtain is mid-fade',
+    first.t > 400 + MAX_WAIT_MS, true)
+  check('...it is taken once the fade has settled, with nothing in flight', first.fading, [])
+  check('...and so it reads true: the curtain down, the lobby back', [first.wanted, first.showing],
+    ['lobby', 'lobby'])
+  check('...no sooner than the last fade settled and its aftermath passed',
+    first.t >= 12 * 400 + 600 + FADE_SETTLE_MARGIN_MS + AFTERMATH_MS, true)
+}
+{
+  // A layer that never stops moving: read at the give-up, marked settling.
+  const forever = [{ t: 0, run: ({ arm }) => arm(['curtain up']) }]
+  for (let i = 0; i < 60; i++) {
+    forever.push({ t: 500 + i * 150, run: ({ setLayer }) => setLayer('hud', i % 2 === 0) })
+  }
+  const rs = simulate(forever, { endAt: 12000 })
+  check('a layer that never settles is read SETTLE_GIVE_UP_MS after the reading fell due',
+    rs[0]?.t, QUIET_MS + SETTLE_GIVE_UP_MS)
+  check('...marked settling, naming it', rs[0]?.settling, 'hud')
+}
+
+// ── round 3: 'forced' belongs to the burst it happened in ──────────────────
+console.log("a fade counts only in its own burst's line (round 3)")
+{
+  let t = 0
+  const reg = createFadeRegistry(() => t)
+  const owner = {}
+  const gate = createFadeClock(true, 220, () => t)
+  gate.want(false)
+  reg.open('ui', gate, owner)
+  check('a fade in flight is fading whatever the burst', reg.end('ui', 999), 'fading')
+  t = 220
+  reg.close('ui', 'forced', gate, owner)
+  check("GTA's menu gate forced at 220ms counts in a burst that began before it", reg.end('ui', 100), 'forced')
+  t = 60 * 60 * 1000
+  check('...and not in a burst an hour later', reg.end('ui', t - 1000), undefined)
+  check('...so that line is not marked forced',
+    screenPayload(reading({ ui: { opacity: 1, visibility: 'visible', end: reg.end('ui', t - 1000) } })).forced, false)
+  check('the records carry the time and what is left of a window',
+    reg.records(), [{ name: 'ui', end: 'forced', at: 220, remaining: 0 }])
+
+  const twin = {}
+  const page = createFadeClock(false, 360, () => t)
+  page.want(true)
+  reg.open('page:help', page, owner)
+  reg.drop('page:help', twin)
+  check("a twin unmounting does not clear another layer's fade", reg.end('page:help'), 'fading')
+  reg.drop('page:help', owner)
+  check('a layer unmounting mid-fade clears its own, so the report does not wait on it',
+    reg.end('page:help'), undefined)
+}
+
+// ── round 3: the sub-screens ────────────────────────────────────────────────
+console.log('a sub-screen is part of what the page shows (round 3)')
+{
+  const want = (over) => wantedScreen({ frontendUp: false, leaving: false, focus: 'none', showLobby: false,
+    hudShown: true, scoped: false, ...over })
+  check('warmup with nothing open wants the HUD', want({}), 'hud')
+  check('the pause menu over warmup is wanted while focus names it', want({ focus: 'pause' }), 'pause')
+  check('the market over the lobby is wanted', want({ focus: 'market', showLobby: true, hudShown: false }), 'market')
+  check("...but the market over warmup is not, whatever focus says -- it is the lobby's",
+    want({ focus: 'market' }), 'hud')
+  check('...nor the locker', want({ focus: 'locker' }), 'hud')
+  check('the curtain is wanted over any sub-screen', want({ focus: 'pause', leaving: true }), 'curtain')
+  check("GTA's menu wants nothing of ours", want({ frontendUp: true, focus: 'pause' }), 'nothing')
+  check('the lobby wants the lobby', want({ focus: 'lobby', showLobby: true, hudShown: false }), 'lobby')
+
+  const market = (over) => ({ name: 'market', phase: 'in', opacity: 1, visibility: 'visible', ...over })
+  const left = reading({ pages: [market({})] })
+  check('a sub-screen drawn over warmup is what shows, named', showing(left), 'market')
+  const p = screenPayload(left)
+  check('...so the line has it against the HUD it wanted', [p.wanted, p.showing], ['hud', 'market'])
+  has('...and lists it in the evidence', p.detail, 'pages market on in (1)')
+  check('one still on its way out, held at its first frame, is drawn too',
+    showing(reading({ pages: [market({ phase: 'out' })] })), 'market')
+  check('one at opacity 0 is not', showing(reading({ pages: [market({ opacity: 0 })] })), 'hud')
+  check('the last mounted is the one on top',
+    showing(reading({ pages: [market({}), { ...market({}), name: 'pause' }] })), 'pause')
+  check('the curtain is over every sub-screen',
+    showing(reading({ pages: [market({})], curtain: { opacity: 1, visibility: 'visible' } })), 'curtain')
+  has('no sub-screen says so', screenPayload(reading({})).detail, 'pages none')
+  check('a forced sub-screen entrance in this burst marks the line forced',
+    screenPayload(reading({ pages: [market({ end: 'forced' })], wanted: 'market' })).forced, true)
+  check('a reading taken anyway mid-fade carries the names for br_ui',
+    screenPayload(reading({ settling: ['curtain', 'page:market'] })).settling, 'curtain, page:market')
+  check('...and a normal one carries none', screenPayload(reading({})).settling, '')
 }
 
 // ── result ──────────────────────────────────────────────────────────────────

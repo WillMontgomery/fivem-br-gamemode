@@ -79,8 +79,9 @@ export function reportCover(kind: CoverKind, covered: boolean): void {
  *                 is the returned handler. Give it the animation's real
  *                 duration plus a little, not a guess at the frame budget.
  *                 NULL MEANS THE CALLER OWNS THE FALLBACK: the curtain reports
- *                 only once its forced black has committed (LeaveScreen.tsx,
- *                 #252), and a timer here would race that and win.
+ *                 only once frames have followed its forced black
+ *                 (LeaveScreen.tsx, #252), and a timer here would race that
+ *                 and win.
  */
 export function useCoverReport(
   kind: CoverKind,

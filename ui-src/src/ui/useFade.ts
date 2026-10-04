@@ -1,23 +1,24 @@
 import { useEffect, useReducer, useRef, type RefObject } from 'react'
 import { onEnvelope } from '../bridge/nui'
-import { createFadeClock, FADE_SETTLE_MARGIN_MS, type FadeClock } from './fade'
+import type { FadeRecord } from '../bridge/screenReport'
+import { createFadeClock, createFadeRegistry, FADE_SETTLE_MARGIN_MS, type FadeClock, type FadeEnd } from './fade'
+
+export type { FadeEnd } from './fade'
+
+/** Every named layer's latest fade, with when (ui/fade.ts, #252 round 3). */
+const fades = createFadeRegistry()
 
 /**
- * How a layer's last fade came to rest, for the screen report (#252).
- *
- *   transition -- the browser finished it; the timer found nothing to do
- *   forced     -- the timer found the layer still short of its final value and
- *                 applied it. A healthy page never says this; a page whose
- *                 animation clock has stopped says it every time.
- *   fading     -- still inside its window
+ * How the named layer's fade ended, if it ended at or after `since` -- or that
+ * it is still fading, whenever it started.
  */
-export type FadeEnd = 'transition' | 'forced' | 'fading'
+export function fadeEnd(layer: string, since = -Infinity): FadeEnd | undefined {
+  return fades.end(layer, since)
+}
 
-const ends = new Map<string, FadeEnd>()
-
-/** How the named layer's last fade ended, if it has had one. */
-export function fadeEnd(layer: string): FadeEnd | undefined {
-  return ends.get(layer)
+/** Every named fade as it stands now, for the screen report's settle check. */
+export function fadeRecords(): FadeRecord[] {
+  return fades.records()
 }
 
 export interface FadeOptions {
@@ -61,10 +62,11 @@ export function useFade(
   c.want(shown)
 
   const [, rerender] = useReducer((n: number) => n + 1, 0)
+  const owner = useRef({}).current
 
   useEffect(() => {
     if (c.poll()) return
-    if (layer) ends.set(layer, 'fading')
+    if (layer) fades.open(layer, c, owner)
 
     let done = false
     let timer = 0
@@ -80,9 +82,9 @@ export function useFade(
         const el = ref?.current
         if (el) {
           const at = parseFloat(getComputedStyle(el).opacity)
-          ends.set(layer, Math.abs(at - (c.shown ? 1 : 0)) > 0.01 ? 'forced' : 'transition')
+          fades.close(layer, Math.abs(at - (c.shown ? 1 : 0)) > 0.01 ? 'forced' : 'transition', c, owner)
         } else {
-          ends.delete(layer)
+          fades.forget(layer)
         }
       }
       rerender()
@@ -105,6 +107,10 @@ export function useFade(
       done = true
       window.clearTimeout(timer)
       off()
+      // A fade cut off by its layer unmounting (a sub-screen gone at the end of
+      // its exit) is not in flight any more: left 'fading', the screen report
+      // would wait on it until it gave up. A change of value re-registers below.
+      if (layer) fades.drop(layer, owner)
     }
     // `shown` is the edge; the clock and the ref are stable for the life of the layer.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -257,6 +257,33 @@ end)
 -- CURSOR, not what is drawn, and re-asserting it after the hold is idempotent.
 local uiHold = false
 
+--- TELL br_ui WHAT THE PAGE SHOULD HAVE BEEN SENT (#252, round 3).
+---
+--- br_ui's screen line compares the page with what br_ui SENT it. On its own
+--- that cannot see a push this file never made -- held here, deduped in
+--- BR.PushHud, or lost on the way -- because the page and the record of what
+--- was sent then agree on the lobby, and the line read "ok" over a lobby that
+--- should have gone. So this file says its own match and player state, and
+--- whether it is holding them behind the curtain on purpose, and br_ui compares
+--- that with what it sent.
+---
+--- Called at the top of both paint channels, BEFORE the hold returns, so a held
+--- state is reported too; and on the hold's two edges. Only a change is sent.
+local saidOwn = { match = nil, me = nil, held = nil }
+local function sayOwnState()
+    local match, me = S.match.state, S.me.state
+    if match == saidOwn.match and me == saidOwn.me and uiHold == saidOwn.held then return end
+    saidOwn.match, saidOwn.me, saidOwn.held = match, me, uiHold
+    TriggerEvent('br:ui:ownState', {
+        match = match,
+        me = me,
+        held = uiHold,
+        -- How long a hold may last: enterMatchBehindCurtain releases at twice
+        -- the cover wait whatever happens, so a hold older than this is a fault.
+        holdMs = (BR.Config.Match.coverWaitMs or 2500) * 2,
+    })
+end
+
 -- What "I am being taken into a match" looks like from MY OWN state. WARMUP is
 -- the ordinary door; the rest are here because brforce can reach them directly
 -- and a forced state change is a cut like any other.
@@ -286,6 +313,7 @@ local MATCH_ENTRY = {
 --- moment self-healing is wrong is the moment we are deliberately holding the
 --- old picture on screen because the new one is a cut.
 local function pushMatchState()
+    sayOwnState()
     if uiHold then return end
     TriggerEvent('br:ui:sendLocal', BR.Nui.STATE, {
         state     = S.match.state,
@@ -312,6 +340,7 @@ end
 local function enterMatchBehindCurtain()
     if uiHold then return end
     uiHold = true
+    sayOwnState()
 
     local wait = BR.Config.Match.coverWaitMs or 2500
 
@@ -2453,6 +2482,10 @@ function BR.PushHud(force)
     -- HELD WHILE THE CURTAIN IS GOING UP. This is the channel the lobby-to-HUD
     -- cut actually travelled down: `state` here is what App.tsx reads to decide
     -- the lobby is over. See uiHold at the top of this file.
+    --
+    -- What this WOULD send is said first, held or not (#252): br_ui compares it
+    -- with what actually went out. Only a change goes anywhere.
+    sayOwnState()
     if uiHold then return end
 
     local me = S.me

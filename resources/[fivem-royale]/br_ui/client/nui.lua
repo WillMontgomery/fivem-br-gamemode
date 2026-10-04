@@ -36,16 +36,6 @@ local chatChannel = BR.ChatChannel.GLOBAL  -- which channel a chat focus opens i
 --- add it back later is the more expensive mistake.
 local pauseTab = nil
 
--- ---------------------------------------------------------------- sending ---
-
---- Send one envelope to the UI.
----
---- Lua 5.4 distinguishes integer 5 from float 5.0 and they serialise
---- differently through SendNUIMessage. Normalising here, once, is what stops the
---- UI receiving inconsistent types for the same field.
----
---- @param kind string   one of BR.Nui
---- @param data any
 -- ---------------------------------------------------------- what we told ---
 
 --- What this side last TOLD the page, for the screen report (#252).
@@ -61,14 +51,73 @@ local pauseTab = nil
 --- page took before that envelope can be told from one that missed it.
 local told = { match = nil, me = nil, leaving = false, focus = nil, seq = 0 }
 
---- How long the page has to answer my own state crossing the lobby's border.
---- Its report goes a second after the last step of a burst (5s at most) plus a
---- 500ms frame count, so ten seconds is a page that is not answering at all.
+--- What br_core says its OWN state is (#252, round 3).
+---
+--- `told` is only what was sent. A HUD push br_core held, deduped or never made
+--- leaves `told` and the page agreeing on the lobby, and round 2's line read ok
+--- over a lobby that should have gone. br_core reports its match and player
+--- state on every change, held or not (br_core/client/state.lua, sayOwnState),
+--- and the line compares that with what was sent. Nil until br_core first
+--- speaks, and until then nothing is compared.
+local own = { match = nil, me = nil, held = false, heldAt = 0, holdMs = 0 }
+
+--- How long the page has to answer a crossing of the lobby's border. Its report
+--- goes a second after the last step of a burst (5s at most), waits out any fade
+--- still running (3s at most), then counts frames for 500ms -- so ten seconds is
+--- a page that is not answering at all.
 local SCREEN_ANSWER_MS = 10000
 
 --- The answer being waited for, if one is.
 local awaiting = nil
 local awaitingId = 0
+
+--- What br_core holds that it has not sent, as the line words it; nil if none.
+local function lagging()
+    local out = {}
+    if own.me ~= nil and own.me ~= told.me then
+        out[#out + 1] = ('lua state %s, last HUD sent %s'):format(tostring(own.me), tostring(told.me))
+    end
+    if own.match ~= nil and own.match ~= told.match then
+        out[#out + 1] = ('lua match %s, last STATE sent %s'):format(tostring(own.match), tostring(told.match))
+    end
+    return #out > 0 and table.concat(out, '; ') or nil
+end
+
+--- ═══ A CROSSING MUST BE ANSWERED, AND SILENCE IS SAID OUT LOUD ═══
+---
+--- My own state crossing into or out of the lobby is a step the page reports.
+--- Armed twice per ready-up: when br_core's OWN state crosses (round 3 -- a HUD
+--- push that never goes out never arms anything from send()), and again when
+--- the HUD that carries it is sent. The newest watch replaces the last.
+---
+--- Disarmed by a report the page took at or after `atSeq`, once br_core has
+--- nothing left unsent. At ten seconds it says which side went quiet: br_core
+--- never sending its state is WRONG; the page never reporting is NO ANSWER.
+local function armWatch(crossing, atSeq)
+    awaitingId = awaitingId + 1
+    local id = awaitingId
+    awaiting = { id = id, seq = atSeq }
+    Citizen.SetTimeout(SCREEN_ANSWER_MS, function()
+        if not awaiting or awaiting.id ~= id then return end
+        local lag = lagging()
+        if lag then
+            print(('[br_ui] screen after %s -- WRONG (%s) | lua did not send its own state'
+                .. ' within %ds of the crossing%s')
+                :format(crossing, lag, SCREEN_ANSWER_MS // 1000,
+                        own.held and ' (still held behind the curtain)' or ''))
+        else
+            print(('[br_ui] screen after %s -- NO ANSWER | the page sent no'
+                .. ' screen report within %ds of seq %d; lua has sent %s/%s')
+                :format(crossing, SCREEN_ANSWER_MS // 1000,
+                        awaiting.seq, tostring(told.match), tostring(told.me)))
+        end
+        awaiting = nil
+    end)
+end
+
+local function crossesLobby(was, now)
+    return was ~= nil and now ~= nil and was ~= now and (was == 'lobby' or now == 'lobby')
+end
 
 --- Record what an envelope tells the page, and arm the watchdog on the border.
 local function noteTold(kind, data, s)
@@ -90,28 +139,37 @@ local function noteTold(kind, data, s)
     told[field] = value
     told.seq = s
 
-    -- ═══ THE PAGE MUST ANSWER A READY-UP, AND SILENCE IS SAID OUT LOUD ═══
-    --
-    -- My own state crossing into or out of the lobby -- release()'s forced HUD
-    -- on a ready-up, the trip home on a leave -- is a step the page reports. A
-    -- page that is dead, frozen, or no longer receiving sends nothing, and
-    -- round 1 left "no line" as the only sign of that. Any report the page
-    -- took at or after this envelope disarms it.
-    if field == 'me' and was ~= nil and (was == 'lobby' or value == 'lobby') then
-        awaitingId = awaitingId + 1
-        local id = awaitingId
-        awaiting = { id = id, seq = s }
-        Citizen.SetTimeout(SCREEN_ANSWER_MS, function()
-            if not awaiting or awaiting.id ~= id then return end
-            print(('[br_ui] screen after me %s>%s (lua) -- NO ANSWER | the page sent no'
-                .. ' screen report within %ds of seq %d; lua has sent %s/%s')
-                :format(tostring(was), tostring(value), SCREEN_ANSWER_MS // 1000,
-                        awaiting.seq, tostring(told.match), tostring(told.me)))
-            awaiting = nil
-        end)
+    -- release()'s forced HUD on a ready-up, the trip home on a leave.
+    if field == 'me' and crossesLobby(was, value) then
+        armWatch(('me %s>%s (lua)'):format(tostring(was), tostring(value)), s)
     end
 end
 
+-- br_core's own state, held or not. See `own` above.
+AddEventHandler('br:ui:ownState', function(d)
+    if type(d) ~= 'table' then return end
+    local was = own.me
+    local held = d.held == true
+    if held and not own.held then own.heldAt = GetGameTimer() end
+    own.match, own.me, own.held = d.match, d.me, held
+    own.holdMs = tonumber(d.holdMs) or 0
+    if crossesLobby(was, d.me) then
+        -- Everything sent so far is before the crossing; the answer is a reading
+        -- taken after the next envelope.
+        armWatch(('me %s>%s (lua state)'):format(tostring(was), tostring(d.me)), seq + 1)
+    end
+end)
+
+-- ---------------------------------------------------------------- sending ---
+
+--- Send one envelope to the UI.
+---
+--- Lua 5.4 distinguishes integer 5 from float 5.0 and they serialise
+--- differently through SendNUIMessage. Normalising here, once, is what stops the
+--- UI receiving inconsistent types for the same field.
+---
+--- @param kind string   one of BR.Nui
+--- @param data any
 local function send(kind, data)
     seq = seq + 1
     SendNUIMessage({
@@ -640,18 +698,34 @@ end)
 --- His log had every Lua step of the ready-up, in order, and nothing from the
 --- page -- so whether the page never applied warmup or applied it and never
 --- drew it could only be argued. The page reports the state it holds, the
---- screen that state wants, the screen its computed styles show, and whether it
---- is producing frames; this compares the state with what WE sent (`told`,
---- above) and prints ONE line. bridge/screenReport.ts in ui-src has the reading:
+--- screen that state wants, the screen its computed styles show -- read at one
+--- instant with no fade running -- and the frames it produced after that
+--- (ui-src/src/bridge/screenReport.ts). This compares the page with what WE
+--- sent (`told`) and what we sent with br_core's own state (`own`), and prints
+--- ONE line:
 ---
----   ok        page state = what Lua sent, it draws what that wants, frames run
----   forced    as ok, but a fade had to be finished by the JS clock
----   0 frames  nothing is being drawn -- CEF/GPU, not the page
----   WRONG     the page holds something Lua did not send, or draws something its
----             state does not want; the reason is in the brackets
+---   [br_ui] screen after <steps> -- <verdict> | wanted X, showing Y
+---           | page <match>/<me>, lua <what was sent> | <the page's evidence>
 ---
---- A READING THE PAGE TOOK BEFORE LUA'S LATEST CHANGE is not compared -- that
---- is a race, not a fault -- and says so.
+--- THE VERDICTS, several at once when they apply, WRONG first:
+---
+---   ok         page holds what Lua sent, Lua sent its own state, the page draws
+---              what that wants, frames run
+---   forced     a fade in this burst did not finish on its own; the JS clock
+---              finished it (the browser's animation clock had stalled)
+---   0 frames   the page produced no frames after the reading -- CEF/GPU
+---   held       br_core is holding its new state behind the curtain until the
+---              page says black, by design and for at most its own bound
+---   settling   a fade was still running 3s after the reading fell due; the
+---              screen is not judged, the next line is the one to read
+---   WRONG (page holds A, lua sent B)     an envelope Lua sent never took effect
+---   WRONG (lua state X, last HUD sent Y) br_core never sent its own state
+---   WRONG (showing X, wanted Y)          the page draws what its state does not
+---                                        want (a sub-screen is named)
+---   WRONG (curtain/focus ... on the page, ... from lua)
+---
+--- A READING THE PAGE TOOK BEFORE LUA'S LATEST CHANGE is not compared with what
+--- Lua sent -- that is a race, not a fault -- and says so.
 ---
 --- CONTROL CHARACTERS FLATTENED AND CAPPED: one line, always.
 local function flat(v, cap)
@@ -664,10 +738,17 @@ local function screenLine(data)
     local wanted, showing = flat(data.wanted or '?', 16), flat(data.showing or '?', 16)
     local pageState = ('%s/%s'):format(flat(data.match or '?', 24), flat(data.me or '?', 24))
     local luaState = ('%s/%s'):format(tostring(told.match or '?'), tostring(told.me or '?'))
+    local settling = type(data.settling) == 'string' and flat(data.settling, 80) or ''
     local wrong = {}
-    if wanted ~= showing then
+
+    -- THE PAGE AGAINST ITSELF. The page reads its state and its styles at one
+    -- instant, so this needs no race guard -- but a reading taken while a fade
+    -- was still running (`settling`) is not judged at all (#252 round 3).
+    if settling == '' and wanted ~= showing then
         wrong[#wrong + 1] = ('showing %s, wanted %s'):format(showing, wanted)
     end
+
+    -- THE PAGE AGAINST WHAT WAS SENT.
     local seen = tonumber(data.seq)
     if seen and seen < told.seq then
         luaState = luaState .. (' (sent at seq %d, after this reading at %d)'):format(told.seq, seen)
@@ -684,22 +765,39 @@ local function screenLine(data)
                 :format(flat(data.focus or '?', 24), tostring(told.focus))
         end
     end
+
+    -- WHAT WAS SENT AGAINST WHAT br_core HOLDS (#252 round 3). Held behind the
+    -- curtain within the hold's own bound is the design, and says `held`.
+    local held = nil
+    local lag = lagging()
+    if lag then
+        local heldFor = GetGameTimer() - own.heldAt
+        if own.held and heldFor <= own.holdMs then
+            held = ('held %dms (%s)'):format(heldFor, lag)
+        else
+            wrong[#wrong + 1] = lag
+        end
+    end
+
     local verdict = {}
     if #wrong > 0 then verdict[#verdict + 1] = 'WRONG (' .. table.concat(wrong, '; ') .. ')' end
+    if held then verdict[#verdict + 1] = held end
+    if settling ~= '' then verdict[#verdict + 1] = 'settling (' .. settling .. ')' end
     if tonumber(data.frames) == 0 then verdict[#verdict + 1] = '0 frames' end
     if data.forced == true then verdict[#verdict + 1] = 'forced' end
     if #verdict == 0 then verdict[1] = 'ok' end
     return ('screen after %s -- %s | wanted %s, showing %s | page %s, lua %s | %s'):format(
         flat(data.why or '?', 160), table.concat(verdict, ', '), wanted, showing,
-        pageState, luaState, flat(data.detail or '', 420))
+        pageState, luaState, flat(data.detail or '', 520))
 end
 
 callback(BR.NuiCb.SCREEN, function(data)
     if type(data) ~= 'table' then data = {} end
     -- A reading taken at or after the envelope the watchdog is waiting on is
-    -- the answer, whatever it says.
+    -- the answer, whatever it says -- once br_core has nothing left unsent.
+    -- Until then the watch stays armed and says which side went quiet.
     local seen = tonumber(data.seq)
-    if awaiting and (seen == nil or seen >= awaiting.seq) then awaiting = nil end
+    if awaiting and (seen == nil or seen >= awaiting.seq) and not lagging() then awaiting = nil end
     print('[br_ui] ' .. screenLine(data))
     return { ok = true }
 end)

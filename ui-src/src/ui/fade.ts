@@ -142,3 +142,76 @@ export function fadeStyle(shown: boolean, settled: boolean, ms: number): FadeSty
         transition: `opacity ${ms}ms linear, visibility 0s linear ${ms}ms`,
       }
 }
+
+/**
+ * How a layer's last fade came to rest, for the screen report (#252).
+ *
+ *   transition -- the browser finished it; the timer found nothing to do
+ *   forced     -- the timer found the layer still short of its final value and
+ *                 applied it. A healthy page never says this; a page whose
+ *                 animation clock has stopped says it every time.
+ *   fading     -- still inside its window
+ */
+export type FadeEnd = 'transition' | 'forced' | 'fading'
+
+/** One named layer's latest fade, as the screen report reads it. */
+export interface FadeEntry {
+  end: FadeEnd
+  /** When the window opened ('fading') or the fade ended, on the monotonic clock. */
+  at: number
+  /** Milliseconds until a 'fading' window is due; 0 once it ended. */
+  remaining: number
+}
+
+/**
+ * EVERY NAMED LAYER'S LATEST FADE, WITH WHEN (#252 round 3).
+ *
+ * The time is what lets the screen report count only the fades of its own
+ * burst: a bare "last end" per layer let one forced fade -- GTA's menu gate on
+ * some earlier trip -- mark every line after it. The open window is what lets
+ * the report wait out a fade still in flight instead of reading it half way.
+ *
+ * `owner` is the useFade call that wrote an entry, so a layer unmounting
+ * mid-fade (a sub-screen gone at the end of its exit) clears its own entry and
+ * not a twin's.
+ */
+export function createFadeRegistry(now: () => number = monotonicNow) {
+  const entries = new Map<string, { end: FadeEnd; at: number; clock: FadeClock; owner: object }>()
+  return {
+    /** A fade's window opened. */
+    open(name: string, clock: FadeClock, owner: object): void {
+      entries.set(name, { end: 'fading', at: now(), clock, owner })
+    },
+    /** A fade ended, by its own transition or forced. */
+    close(name: string, end: 'transition' | 'forced', clock: FadeClock, owner: object): void {
+      entries.set(name, { end, at: now(), clock, owner })
+    },
+    /** The layer is gone. Only a fade still in flight, and only the owner's. */
+    drop(name: string, owner: object): void {
+      const e = entries.get(name)
+      if (e && e.owner === owner && e.end === 'fading') entries.delete(name)
+    },
+    /** Forget the layer outright (its element was gone at the end of its fade). */
+    forget(name: string): void {
+      entries.delete(name)
+    },
+    /**
+     * How the named fade ended, if it ended at or after `since` -- or that it is
+     * still fading, whenever it started.
+     */
+    end(name: string, since = -Infinity): FadeEnd | undefined {
+      const e = entries.get(name)
+      if (!e) return undefined
+      return e.end === 'fading' || e.at >= since ? e.end : undefined
+    },
+    /** Every named fade as it stands now. */
+    records(): (FadeEntry & { name: string })[] {
+      return [...entries].map(([name, e]) => ({
+        name,
+        end: e.end,
+        at: e.at,
+        remaining: e.end === 'fading' ? e.clock.remaining() : 0,
+      }))
+    },
+  }
+}

@@ -84,20 +84,36 @@ export default function LeaveScreen({
   const rootRef = useRef<HTMLDivElement>(null)
   const settled = useFade('curtain', show, FADE_MS, rootRef)
 
-  // ═══ THE FALLBACK "BLACK" GOES OUT ONLY ONCE THE BLACK HAS COMMITTED ═══
+  // ═══ THE FALLBACK "BLACK" GOES OUT ONLY ONCE A FRAME HAS FOLLOWED THE BLACK ═══
   //
   // Round 1 kept the 700ms timer and settled the fade at the same 700ms, and
   // the timer was registered first: the POST went out with the curtain's
-  // computed opacity still 0 and the forced black a render behind it -- a race
-  // against Lua's next tick (round 1's review measured opacity 0 at the POST in
-  // all three stopped-clock runs). So the fallback IS the settle now: this runs
-  // after the render that set `transition: none; opacity: 1` has committed, and
-  // reports only what the element's own computed opacity says. A healthy fade
-  // has already reported off transitionend at 600ms and this is a no-op.
+  // computed opacity still 0 and the forced black a render behind it (round 1's
+  // review measured opacity 0 at the POST in all three stopped-clock runs). So
+  // the fallback IS the settle: this runs after the render that set
+  // `transition: none; opacity: 1` has committed.
+  //
+  // AND IT WAITS FOR FRAMES AFTER THAT COMMIT (round 3). A computed opacity of 1
+  // is a style, not a picture: a page producing no frames computes it just the
+  // same. The check runs in the second requestAnimationFrame after the commit,
+  // which is only called once the browser has started another frame after the
+  // first. A page producing no frames never gets there and reports nothing, and
+  // Lua's 2500ms deadline prints its own "cover never acknowledged" line. A
+  // healthy fade has already reported off transitionend at 600ms and this is a
+  // no-op.
   useEffect(() => {
     if (!show || !settled) return
-    const el = rootRef.current
-    if (el && parseFloat(getComputedStyle(el).opacity) >= 0.99) onCovered()
+    let second = 0
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => {
+        const el = rootRef.current
+        if (el && parseFloat(getComputedStyle(el).opacity) >= 0.99) onCovered()
+      })
+    })
+    return () => {
+      cancelAnimationFrame(first)
+      cancelAnimationFrame(second)
+    }
     // `onCovered` is this render's; `show` and `settled` are the edge.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, settled])

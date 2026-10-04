@@ -474,10 +474,11 @@ export default function App() {
 
   // ONE F8 LINE AFTER EVERY STEP OF A READY-UP OR A RETURN TO THE LOBBY (#252):
   // what this state wants on screen against what the page's computed styles
-  // are actually drawing, and br_ui adds what Lua last sent so a page that
-  // never got the warmup can be told from one that never drew it. The owner's
-  // report had every Lua step of the ready-up and nothing from here; the next
-  // one will say which it was. See bridge/useScreenReport.ts for when.
+  // are actually drawing, and br_ui adds what Lua last sent and what br_core
+  // holds, so a page that never got the warmup can be told from one that never
+  // drew it, and both from a push Lua never made. The owner's report had every
+  // Lua step of the ready-up and nothing from here. See
+  // bridge/useScreenReport.ts for when.
   useScreenReport(showLobby, hudUp && !hudPaused, leaving)
 
   // ═══ GTA'S MENU GATE SETTLES ON THE JS CLOCK TOO (#252) ═══
@@ -637,26 +638,26 @@ export default function App() {
           owns the cursor must be the same thing, or they drift apart and the
           player ends up with a menu they cannot click or a cursor over no
           menu. Both routes in ask Lua; neither opens it locally. */}
-      <Page show={focus === 'settings'}><Settings /></Page>
+      <Page name="settings" show={focus === 'settings'}><Settings /></Page>
       {/* The locker is the lobby wearing a different panel: the camera and
           the ped are already there, so this screen is a list and a scrim.
           Same focus rule as everything else. */}
-      <Page show={focus === 'locker'}><Locker /></Page>
+      <Page name="locker" show={focus === 'locker'}><Locker /></Page>
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
-      <Page show={focus === 'market'}><Market /></Page>
+      <Page name="market" show={focus === 'market'}><Market /></Page>
       {/* ONE PANEL, ONE FOCUS SCREEN. This gate used to read `'players' ||
           'playersReport'`, because report mode pushed a second screen purely to
           give up game input for its note field and the panel would otherwise
           have unmounted the moment it was used. View mode gave up game input
           too in #135, so both modes hold the same focus and the second name is
           gone from here, from the Lua side and from FocusPayload. */}
-      <Page show={focus === 'players'}>
+      <Page name="players" show={focus === 'players'}>
         <PlayerList />
       </Page>
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
-      <Page show={focus === 'help'}><Help /></Page>
+      <Page name="help" show={focus === 'help'}><Help /></Page>
 
       {/* ═══ THE GUIDED FIRST RUN (#261) ═══
 
@@ -685,7 +686,7 @@ export default function App() {
           worse than the fault itself. */}
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
-      <Page show={focus === 'help'}><Help /></Page>
+      <Page name="help" show={focus === 'help'}><Help /></Page>
 
       {/* ═══ THE GUIDED FIRST RUN (#261) ═══
 
@@ -737,10 +738,10 @@ export default function App() {
           want: the two are never both up (pushing `admin` closes the menu, see
           br_ui/client/pause.lua) and if a focus race ever put them together,
           the menu is the screen with the way out. */}
-      <Page show={focus === 'admin'}><Admin /></Page>
+      <Page name="admin" show={focus === 'admin'}><Admin /></Page>
       {/* The pause menu REPLACES GTA's, so it sits above everything our own
           screens draw and below only the curtain. */}
-      <Page show={focus === 'pause'}><PauseMenu /></Page>
+      <Page name="pause" show={focus === 'pause'}><PauseMenu /></Page>
     </div>
 
       {/* ═══════════════════════════════════════════════════════════════════

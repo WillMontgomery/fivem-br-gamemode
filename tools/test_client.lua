@@ -23040,6 +23040,197 @@ do
     Citizen.SetTimeout = realSetTimeout
 end
 
+-- ═══ #252 ROUND 3: WHAT LUA SHOULD HAVE SENT, A HELD PUSH, A READING MID-FADE ═══
+--
+-- Round 2's review refuted the line on three counts this block pins:
+--
+--   * "ok" WAS NOT DISTINCT. A HUD push br_core held, deduped or never made
+--     left the page and the record of what was sent agreeing on the lobby, and
+--     the line read ok. br_core now reports its OWN state (client/state.lua,
+--     sayOwnState) and the line says `held` while that is by design and WRONG
+--     (lua state X, last HUD sent Y) when it is not; the watchdog arms on
+--     br_core's own crossing too, and says which side went quiet.
+--   * A READING TAKEN MID-FADE IS NOT JUDGED. The page waits a fade out before
+--     it reads; one still moving after 3s comes marked `settling`, and this side
+--     prints that instead of WRONG.
+--   * THE OWNER'S OWN TIMINGS read ok twice -- the healthy ready-up the review
+--     saw print WRONG every time.
+--
+-- A FRESH COPY of the bridge, so nothing above leaks into what was sent.
+
+describe('#252 round 3 -- what Lua should have sent, a held push, a reading mid-fade')
+do
+    local nuiCb = {}
+    function RegisterNUICallback(name, fn) nuiCb[name] = fn end
+    function SendNUIMessage() end
+    function SetNuiFocus() end
+    function SetNuiFocusKeepInput() end
+    Citizen.CreateThread = function() end
+    local timers = {}
+    local realSetTimeout = Citizen.SetTimeout
+    Citizen.SetTimeout = function(ms, fn) timers[#timers + 1] = { ms = ms, fn = fn } end
+    local realTimer = GetGameTimer
+    local clock = 100000
+    GetGameTimer = function() return clock end
+
+    local beforeSend = #(handlers['br:ui:sendLocal'] or {})
+    local beforeOwn = #(handlers['br:ui:ownState'] or {})
+    local coreName = GetCurrentResourceName
+    GetCurrentResourceName = function() return 'br_ui' end
+    loadAll({ 'br_ui/client/nui.lua' })
+    GetCurrentResourceName = coreName
+    timers = {}
+    local mine = (handlers['br:ui:sendLocal'] or {})[beforeSend + 1]
+    local ownState = (handlers['br:ui:ownState'] or {})[beforeOwn + 1]
+    local cb = nuiCb[BR.NuiCb.SCREEN]
+    ok(type(ownState) == 'function', 'br_ui listens for br_core\'s own state (br:ui:ownState)')
+
+    if type(mine) == 'function' and type(ownState) == 'function' and type(cb) == 'function' then
+        local sent = 0
+        local function lua(kind, data) sent = sent + 1; mine(kind, data); return sent end
+        local function core(match, me, held)
+            ownState({ match = match, me = me, held = held == true, holdMs = 5000 })
+        end
+        local function report(over)
+            local data = {
+                why = 'curtain down', wanted = 'hud', showing = 'hud', forced = false, settling = '',
+                frames = 72, match = 'warmup', me = 'warmup', leaving = false,
+                focus = 'none', seq = sent, detail = 'lobby off (0 hidden) | hud on (1) | pages none',
+            }
+            for k, v in pairs(over or {}) do data[k] = v end
+            local n = #logged
+            cb(data, function() end)
+            ok(#logged == n + 1, 'one report is one line', ('%d line(s)'):format(#logged - n))
+            return logged[#logged]
+        end
+        local function has(label, line, part)
+            ok(type(line) == 'string' and line:find(part, 1, true) ~= nil, label,
+               ('%s\n       missing: %s'):format(tostring(line), part))
+        end
+        local function hasnt(label, line, part)
+            ok(type(line) == 'string' and line:find(part, 1, true) == nil, label, tostring(line))
+        end
+        --- Back to an idle lobby, Lua and the page agreeing; the watches that
+        --- trip arms are dropped, so each scenario reads only its own.
+        local function lobby()
+            core('waiting', 'lobby', false)
+            lua(BR.Nui.STATE, { state = 'waiting' })
+            lua(BR.Nui.HUD, { state = 'lobby' })
+            lua(BR.Nui.LEAVING, { show = false })
+            lua(BR.Nui.FOCUS, { screen = 'lobby' })
+            timers = {}
+        end
+
+        -- ── THE OWNER'S READY-UP, ON HIS OWN TIMINGS ─────────────────────────
+        -- br_core holds the warmup behind the curtain until the page says
+        -- black (393-659ms in his logs), then release() sends STATE and the
+        -- forced HUD; the curtain lifts 1.25-1.36s after that. The page's first
+        -- reading is taken under the curtain and lands after the lift was sent.
+        core('waiting', 'lobby', false)
+        lua(BR.Nui.STATE, { state = 'waiting' })
+        lua(BR.Nui.HUD, { state = 'lobby' })
+        lua(BR.Nui.FOCUS, { screen = 'lobby' })
+        ok(#timers == 0, "the boot arms no watchdog -- br_core's first word is not a crossing", #timers)
+        core('waiting', 'warmup', true)
+        ok(#timers == 1, 'br_core\'s own state leaving the lobby arms the watchdog, before anything is sent',
+           #timers)
+        lua(BR.Nui.LEAVING, { show = true, kind = 'dropping' })
+        lua(BR.Nui.FOCUS, { screen = 'none' })
+        clock = clock + 520
+        core('waiting', 'warmup', false)
+        lua(BR.Nui.STATE, { state = 'warmup' })
+        core('warmup', 'warmup', false)
+        local hudSeq = lua(BR.Nui.HUD, { state = 'warmup' })
+        ok(#timers == 2, '...and the HUD that carries it re-arms it', #timers)
+        clock = clock + 1310
+        lua(BR.Nui.LEAVING, { show = false })
+        local first = report({ why = 'curtain up, focus lobby>none, black, match waiting>warmup, me lobby>warmup, lobby off',
+                               wanted = 'curtain', showing = 'curtain', leaving = true, seq = hudSeq })
+        has('the reading under the curtain reads ok', first,
+            '-- ok | wanted curtain, showing curtain | page warmup/warmup, lua warmup/warmup (sent at seq')
+        local second = report({})
+        has('...and the one after it lifts reads ok', second,
+            '-- ok | wanted hud, showing hud | page warmup/warmup, lua warmup/warmup |')
+        local n = #logged
+        timers[1].fn(); timers[2].fn()
+        ok(#logged == n, 'both watches were answered', logged[#logged])
+
+        -- ── A HOLD, AS DESIGNED ──────────────────────────────────────────────
+        -- A slow cover: the page reads the curtain before Lua has said black.
+        lobby()
+        core('waiting', 'warmup', true)
+        lua(BR.Nui.LEAVING, { show = true, kind = 'dropping' })
+        lua(BR.Nui.FOCUS, { screen = 'none' })
+        clock = clock + 1100
+        local line = report({ why = 'curtain up, focus lobby>none', wanted = 'curtain', showing = 'curtain',
+                              match = 'waiting', me = 'lobby', leaving = true })
+        has('a reading taken while br_core holds the warmup says held, for how long, and what', line,
+            '-- held 1100ms (lua state warmup, last HUD sent lobby) |')
+        hasnt('...and is not WRONG', line, 'WRONG')
+        clock = clock + 5000
+        line = report({ why = 'curtain up', wanted = 'curtain', showing = 'curtain',
+                        match = 'waiting', me = 'lobby', leaving = true })
+        has('a hold past its own bound is WRONG', line,
+            '-- WRONG (lua state warmup, last HUD sent lobby) |')
+        n = #logged
+        timers[1].fn()
+        has('...and the watchdog says Lua, not the page, went quiet', logged[#logged],
+            '[br_ui] screen after me lobby>warmup (lua state) -- WRONG (lua state warmup, last HUD sent lobby)'
+            .. ' | lua did not send its own state within 10s of the crossing (still held behind the curtain)')
+        ok(#logged == n + 1, '...once', #logged - n)
+
+        -- ── A PUSH THAT NEVER WENT OUT ───────────────────────────────────────
+        -- Not held: br_core holds warmup, the STATE went, the HUD did not (the
+        -- review's luamiss). The page and what was sent agree on the lobby.
+        lobby()
+        core('warmup', 'warmup', false)
+        lua(BR.Nui.STATE, { state = 'warmup' })
+        line = report({ wanted = 'lobby', showing = 'lobby', me = 'lobby', focus = 'lobby' })
+        has('a HUD push Lua never made is WRONG, naming both sides', line,
+            '-- WRONG (lua state warmup, last HUD sent lobby) | wanted lobby, showing lobby'
+            .. ' | page warmup/lobby, lua warmup/lobby |')
+        hasnt('...not a page fault: the page holds what it was sent', line, 'page holds')
+        n = #logged
+        timers[1].fn()
+        has('a report while Lua still owes the page its state does not answer the watchdog', logged[#logged],
+            '-- WRONG (lua state warmup, last HUD sent lobby) | lua did not send its own state within 10s')
+        ok(#logged == n + 1, '...which speaks once', #logged - n)
+
+        lobby()
+        core('warmup', 'lobby', false)
+        line = report({ match = 'waiting', me = 'lobby', wanted = 'lobby', showing = 'lobby', focus = 'lobby' })
+        has('a STATE push Lua never made is WRONG too', line,
+            '-- WRONG (lua match warmup, last STATE sent waiting) |')
+
+        -- ── THE PAGE THAT NEVER ANSWERS, LUA HAVING SENT EVERYTHING ──────────
+        lobby()
+        core('waiting', 'warmup', false)
+        lua(BR.Nui.HUD, { state = 'warmup' })
+        core('warmup', 'warmup', false)
+        lua(BR.Nui.STATE, { state = 'warmup' })
+        n = #logged
+        for _, t in ipairs(timers) do t.fn() end
+        ok(#logged == n + 1 and logged[#logged]:find('-- NO ANSWER |', 1, true) ~= nil,
+           'with nothing left unsent, silence is still NO ANSWER, once', logged[#logged])
+
+        -- ── NEVER JUDGED MID-FADE ────────────────────────────────────────────
+        lua(BR.Nui.FOCUS, { screen = 'none' })
+        line = report({ settling = 'curtain', showing = 'curtain' })
+        has('a reading taken while a fade still ran says settling, naming it', line, '-- settling (curtain) |')
+        hasnt('...and is not called WRONG for what it caught half way', line, 'WRONG')
+        line = report({ settling = 'curtain', showing = 'curtain', me = 'lobby' })
+        has('...though a page holding the wrong state is still WRONG -- that is not a fade', line,
+            '-- WRONG (page holds warmup/lobby, lua sent warmup/warmup), settling (curtain) |')
+
+        -- ── A SUB-SCREEN OVER WARMUP ─────────────────────────────────────────
+        line = report({ showing = 'market', detail = 'pages market on in (1)' })
+        has('the market left over warmup is WRONG, naming it', line, '-- WRONG (showing market, wanted hud) |')
+    end
+
+    GetGameTimer = realTimer
+    Citizen.SetTimeout = realSetTimeout
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

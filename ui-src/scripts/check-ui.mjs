@@ -1903,11 +1903,18 @@ for (const name of builtCss) {
         + ' a curtain still at opacity 0 (#252, round 1 review).')
     }
     const ack = /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(\s*!show\s*\|\|\s*!settled\s*\)\s*return([\s\S]*?)\}\s*,\s*\[\s*show\s*,\s*settled\s*\]\s*\)/.exec(curtain)
-    if (!ack || !/getComputedStyle\(\s*el\s*\)\.opacity\)\s*>=\s*0\.99\)\s*onCovered\(\)/.test(ack[1])) {
+    // Round 3: and only from inside a second requestAnimationFrame, so a frame
+    // has been produced after the black committed. No frames, no "black".
+    if (!ack || !/getComputedStyle\(\s*el\s*\)\.opacity\)\s*>=\s*0\.99\)\s*onCovered\(\)/.test(ack[1])
+        || !/requestAnimationFrame\(\s*\(\)\s*=>\s*\{[\s\S]*?requestAnimationFrame\(\s*\(\)\s*=>\s*\{[\s\S]*?onCovered\(\)/.test(ack[1])
+        || ack[1].split('onCovered()').length !== 2
+        || ack[1].indexOf('onCovered()') < ack[1].lastIndexOf('requestAnimationFrame(')) {
       fail('R26 settled-fade', 'src/screens/LeaveScreen.tsx',
         'no effect on `[show, settled]` that calls onCovered() only when the'
-        + " curtain's own computed opacity is 1. That is the cover report's fallback:"
-        + ' after the black has committed, never before (#252).')
+        + " curtain's own computed opacity is 1, from inside a second"
+        + " requestAnimationFrame. That is the cover report's fallback: after a frame"
+        + ' has followed the black, never before -- and never in a page making no'
+        + ' frames (#252, round 2 review).')
     }
     const report = stripComments(read(R))
     if (!/screenChanges\(\s*prev\.current\s*,/.test(report) || !/onCoverReported\(/.test(report)) {
@@ -1928,12 +1935,12 @@ for (const name of builtCss) {
         + ' long idle would hold a fade open, or cut a healthy one short (#252).')
     }
     const page = stripComments(read(P))
-    if (!/useFade\(\s*null\s*,\s*show\s*,\s*ENTER_MS\s*,\s*undefined\s*,\s*\{\s*enterOnMount:\s*true\s*\}\s*\)/.test(page)
+    if (!/useFade\(\s*`page:\$\{name\}`\s*,\s*show\s*,\s*ENTER_MS\s*,\s*ref\s*,\s*\{\s*enterOnMount:\s*true\s*\}\s*\)/.test(page)
         || !/stuck\s*\?\s*'page-shown'\s*:\s*'page-in'/.test(page)
         || !/\.page-shown\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translate3d\(0,\s*0,\s*0\)/.test(read(CSS))) {
       fail('R26 settled-fade', 'src/ui/Page.tsx',
-        "a sub-screen's entrance no longer settles: `useFade(null, show, ENTER_MS, ...,"
-        + " { enterOnMount: true })` and `stuck ? 'page-shown' : 'page-in'`, with"
+        "a sub-screen's entrance no longer settles: `useFade(`page:${name}`, show,"
+        + " ENTER_MS, ref, { enterOnMount: true })` and `stuck ? 'page-shown' : 'page-in'`, with"
         + ' `.page-shown` in index.css. `.page-in` fills from opacity 0, and on a stopped'
         + ' clock the page is never drawn (#252).')
     }
@@ -1969,6 +1976,130 @@ for (const name of builtCss) {
       fail('R26 settled-fade', 'br_ui/client/nui.lua',
         'no `callback(BR.NuiCb.SCREEN, ...)` that prints `screenLine(data)`. The page'
         + ' sends its reading and nothing would compare it or say it (#252).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R26c  The screen line is read at one instant, never mid-fade, names a
+//       sub-screen, and knows what Lua should have sent (#252, round 3).
+//
+// Round 2's review refuted the line on four counts. test-fade pins the pure
+// decisions and test_client pins br_ui's verdicts; only this sees the wiring:
+//
+//   ONE INSTANT -- take() reads the state, the layers and the sub-screens
+//     BEFORE it counts frames, and the countFrames callback reads nothing
+//     again. Round 2 read them at the end of a 500ms frame window, and on the
+//     owner's own timings the curtain was half way up by then, every time.
+//   NEVER MID-FADE -- take() asks settle() with moving(fadeRecords(), ...)
+//     before it reads, and waits when told to.
+//   THIS BURST'S ENDS -- every layer and page is read with the burst's first
+//     step (`p.first`), so a fade forced an hour ago does not mark the line.
+//   SUB-SCREENS -- the reading includes readPages(); every <Page> in App.tsx
+//     carries its own focus name, and Page.tsx renders `data-page={name}`.
+//   WHAT LUA SHOULD HAVE SENT -- br_core says its own state (sayOwnState)
+//     before either paint channel's hold returns and when the hold starts;
+//     br_ui compares it in screenLine (lagging()), arms the watchdog on it,
+//     and judges wanted against showing only on a reading with no fade in it.
+//
+// IT CAN FAIL. Move the reading into `countFrames(...).then`, skip the
+// `!step.read` wait, read a layer with `-Infinity`, drop `name=` from a <Page>,
+// move `sayOwnState()` below `if uiHold then return end`, or drop
+// `settling == ''` from screenLine.
+// ---------------------------------------------------------------------------
+{
+  const R = join(SRC, 'bridge', 'useScreenReport.ts')
+  const A = join(SRC, 'App.tsx')
+  const P = join(SRC, 'ui', 'Page.tsx')
+  const B = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_ui', 'client', 'nui.lua')
+  const S = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_core', 'client', 'state.lua')
+  const need = [[R, 'src/bridge/useScreenReport.ts'], [A, 'src/App.tsx'], [P, 'src/ui/Page.tsx'],
+                [B, 'br_ui/client/nui.lua'], [S, 'br_core/client/state.lua']]
+  const gone = need.filter(([f]) => !existsSync(f))
+  for (const [, name] of gone) {
+    fail('R26c screen-line', name, 'file is missing. If it moved, move this rule with it (#252).')
+  }
+  if (gone.length === 0) {
+    const report = stripComments(read(R))
+    const take = /function take\(\)\s*\{([\s\S]*?)\n  \}\n/.exec(report)
+    const body = take ? take[1] : ''
+    const at = (s) => body.indexOf(s)
+    const frames = at('countFrames(')
+    const afterFrames = frames >= 0 ? body.slice(frames) : ''
+    if (!take || frames < 0
+        || !/settle\(\s*p\s*,\s*m\s*,\s*now\s*\)/.test(body) || !/moving\(\s*fadeRecords\(\)\s*,\s*now\s*\)/.test(body)
+        || !/if\s*\(\s*!step\.read\s*\)\s*\{\s*timer\.current\s*=\s*window\.setTimeout\(\s*take\s*,\s*step\.waitMs\s*\)\s*return\s*\}/.test(body)
+        || at('settle(') > at('pending.current = null')
+        || !(at("readLayer('curtain'") >= 0 && at("readLayer('curtain'") < frames)
+        || !(at('readPages(') >= 0 && at('readPages(') < frames)
+        || !(at('useUi.getState()') >= 0 && at('useUi.getState()') < frames)
+        || /readLayer\(|readPages\(|getState\(|bridgeStats\(|getComputedStyle\(/.test(afterFrames)) {
+      fail('R26c screen-line', 'src/bridge/useScreenReport.ts',
+        'take() no longer waits out moving fades (`settle(p, m, now)` with'
+        + ' `moving(fadeRecords(), now)`) and reads the state, layers and pages at one'
+        + ' instant BEFORE `countFrames(`, reading nothing after it. Read at the end of'
+        + ' the frame window, a healthy ready-up was read with the curtain half way up'
+        + ' (#252, round 2 review).')
+    }
+    const layerReads = [...body.matchAll(/readLayer\(\s*'(lobby|hud|curtain|ui)'\s*,\s*([^)]*)\)/g)]
+    if (layerReads.length !== 4 || layerReads.some((m) => m[2].trim() !== 'p.first')
+        || !/readPages\(\s*p\.first\s*\)/.test(body)) {
+      fail('R26c screen-line', 'src/bridge/useScreenReport.ts',
+        "every layer and page is no longer read with the burst's first step"
+        + " (`readLayer('lobby', p.first)`, ... `readPages(p.first)`). Without it one"
+        + " forced fade marks every later line 'forced' (#252, round 2 review).")
+    }
+    const app = stripComments(read(A))
+    const pages = [...app.matchAll(/<Page\b([^>]*)>/g)]
+    const bad = pages.filter((m) => {
+      const n = /\bname="([a-z]+)"/.exec(m[1])
+      const f = /show=\{focus === '([a-z]+)'\}/.exec(m[1])
+      return !n || !f || n[1] !== f[1]
+    })
+    if (pages.length === 0 || bad.length > 0) {
+      fail('R26c screen-line', 'src/App.tsx',
+        'a <Page> no longer carries the focus name that raises it (`name="market"'
+        + " show={focus === 'market'}`). The F8 line names a sub-screen left over"
+        + ' warmup by it (#252, round 2 review).')
+    }
+    if (!/data-page=\{name\}/.test(stripComments(read(P)))) {
+      fail('R26c screen-line', 'src/ui/Page.tsx',
+        'the sub-screen wrapper lost `data-page={name}`, which is how the screen report'
+        + ' finds a sub-screen drawn over warmup (#252).')
+    }
+    const lua = read(B).split('\n').filter((l) => !/^\s*--/.test(l)).join('\n')
+    const line = /local function screenLine\(data\)([\s\S]*?)\nend/.exec(lua)
+    const cbody = /callback\(\s*BR\.NuiCb\.SCREEN\s*,([\s\S]*?)\nend\)/.exec(lua)
+    const ownH = /AddEventHandler\(\s*'br:ui:ownState'\s*,([\s\S]*?)\nend\)/.exec(lua)
+    if (!line || !/local\s+lag\s*=\s*lagging\(\)/.test(line[1])
+        || !/if\s+settling\s*==\s*''\s+and\s+wanted\s*~=\s*showing\s+then/.test(line[1])
+        || !cbody || !/not\s+lagging\(\)/.test(cbody[1])
+        || !ownH || !/armWatch\(/.test(ownH[1])) {
+      fail('R26c screen-line', 'br_ui/client/nui.lua',
+        "br_ui no longer compares br_core's own state with what it sent (`lagging()`"
+        + ' in screenLine and in the SCREEN callback\'s disarm), arms the watchdog on'
+        + " br_core's own crossing (`br:ui:ownState` -> armWatch), or judges wanted"
+        + " against showing only when nothing was settling. Without them a held HUD"
+        + ' reads ok and a curtain caught mid-lift reads WRONG (#252, round 2 review).')
+    }
+    const core = read(S).split('\n').filter((l) => !/^\s*--/.test(l)).join('\n')
+    const said = (re) => {
+      const m = re.exec(core)
+      if (!m) return false
+      const s = m[1].indexOf('sayOwnState()')
+      const h = m[1].indexOf('if uiHold then return end')
+      return s >= 0 && h >= 0 && s < h
+    }
+    const enter = /local function enterMatchBehindCurtain\(\)([\s\S]*?)\nend/.exec(core)
+    if (!/local function sayOwnState\(\)[\s\S]*?TriggerEvent\(\s*'br:ui:ownState'/.test(core)
+        || !said(/local function pushMatchState\(\)([\s\S]*?)\nend/)
+        || !said(/function BR\.PushHud\(force\)([\s\S]*?)\nend/)
+        || !enter || !/uiHold\s*=\s*true\s*\n\s*sayOwnState\(\)/.test(enter[1])) {
+      fail('R26c screen-line', 'br_core/client/state.lua',
+        'br_core no longer says its own state before a paint channel\'s hold returns'
+        + ' (`sayOwnState()` above `if uiHold then return end` in pushMatchState and'
+        + ' BR.PushHud, and after `uiHold = true`). A held or skipped push would read'
+        + ' ok again (#252, round 2 review).')
     }
   }
 }

@@ -26,8 +26,17 @@ const EXIT_MS = 200
 const ENTER_MS = 260
 
 export default function Page({
-  show, children,
-}: { show: boolean; children: React.ReactNode }) {
+  name, show, children,
+}: {
+  /**
+   * The focus name that raises this page. The screen report reads the wrapper
+   * by it (`data-page`) and names it in the F8 line: a sub-screen left drawn
+   * over warmup is one of the shapes #252's line has to tell apart.
+   */
+  name: string
+  show: boolean
+  children: React.ReactNode
+}) {
   const [mounted, setMounted] = useState(show)
   // The last children seen while OPEN. During the exit the caller has usually
   // already stopped supplying them (the screen is conditional on focus), and
@@ -59,7 +68,9 @@ export default function Page({
   // THE EXIT NEEDS NOTHING: it ends on EXIT_MS above, a timer, which unmounts
   // the page whether `.page-out` ever ran or not.
   const ref = useRef<HTMLDivElement>(null)
-  const settled = useFade(null, show, ENTER_MS, undefined, { enterOnMount: true })
+  // Named, so the screen report waits out an entrance or an exit in flight
+  // rather than reading the page half drawn.
+  const settled = useFade(`page:${name}`, show, ENTER_MS, ref, { enterOnMount: true })
   const [stuck, setStuck] = useState(false)
   useEffect(() => {
     if (!show) { setStuck(false); return }
@@ -85,7 +96,7 @@ export default function Page({
   // resolves to exactly the box it would have had anyway. The transform stays
   // and the children never learn about any of this.
   return (
-    <div ref={ref} className={`page ${show ? (stuck ? 'page-shown' : 'page-in') : 'page-out'}`}>
+    <div ref={ref} data-page={name} className={`page ${show ? (stuck ? 'page-shown' : 'page-in') : 'page-out'}`}>
       {held.current}
     </div>
   )
