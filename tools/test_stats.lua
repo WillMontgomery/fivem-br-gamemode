@@ -1179,9 +1179,16 @@ do
     seen, sent = nil, {}
     local again = finish(7)
     ok(again ~= nil, 'a second finish still asks -- the lock is the database')
+    local askedBefore = #asked
     TriggerEvent('br:ddb:awardPayResult', again.args[1], true,
                  { paid = false, alreadyPaid = true })
     ok(seen == nil, 'an already-paid claim moves no cache')
+    local closedAgain = false
+    for i = askedBefore + 1, #asked do
+        if asked[i].name == 'br:market:tutorialDone' then closedAgain = true end
+    end
+    ok(closedAgain, 'and it still closes the offer, so a pay whose done-write '
+        .. 'failed is not offered again every session')
 
     -- ═══ IT SAYS SOMETHING, AND WHAT IT MUST NOT SAY IS THE POINT ═══
     --

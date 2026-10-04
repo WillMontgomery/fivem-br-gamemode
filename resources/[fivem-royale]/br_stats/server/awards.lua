@@ -527,6 +527,13 @@ AddEventHandler(BR.Net.TUTORIAL_DONE, function()
             -- this is its own sentence rather than the other branch's. Nothing
             -- was written; the database refused the second credit, which is the
             -- outcome we wanted.
+            --
+            -- AND THE OFFER IS CLOSED HERE TOO. Paying and writing 'done' are
+            -- two writes, so a pay that landed with a 'done' that did not leaves
+            -- the row offering a walkthrough that can only ever end here; without
+            -- this the player is offered it every session and told "No Volts"
+            -- every time. A row already 'done' (a dev reset) is written the same.
+            TriggerEvent('br:market:tutorialDone', license)
             TriggerClientEvent(BR.Net.NOTIFY, src, {
                 text = ('No %s this time - you have completed the tutorial '
                     .. 'before, and the reward is paid once.')
