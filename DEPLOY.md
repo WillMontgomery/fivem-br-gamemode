@@ -376,6 +376,13 @@ and silently skip pma-voice.
 The NUI build output (`br_ui/ui/`) is committed, so **no build step is required
 on the server**, and no Node is needed on it either.
 
+**`br_audio` (#382) needs one line in the box's `server.cfg`**: `ensure br_audio`,
+above `ensure br_core`, as `server.cfg.example` has it. It holds the airdrop
+Cargobob's audio bank and nothing else. Its built files are committed too
+(`tools/build_audio.mjs` makes them on a dev machine). Deploys deliberately never
+restart it, because unmounting game data while players are connected can crash
+them: a change to it ships with a **server** restart, and testers reconnect.
+
 ### Why the UI project lives in `ui-src/`, outside `resources/`
 
 FXServer automatically builds any resource containing a `package.json`, using its

@@ -390,8 +390,13 @@ exec "tunables.cfg"
 #            moderation channel with it; br_stats refuses `dependency 'br_ddb'`
 #            so a server with no database still plays. Both degrade to "no live
 #            state" rather than to "not running".
+#   br_audio is game audio data only (the airdrop Cargobob's rotor bank), and
+#            goes above br_core so the bank is mounted before anything asks
+#            for it. Deploys never restart it: a change to it ships with a
+#            server restart.
 # ---------------------------------------------------------------------------
 ensure br_lib
+ensure br_audio          # native audio banks; never restarted by a deploy
 ensure br_core
 ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui

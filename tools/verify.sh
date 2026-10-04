@@ -77,6 +77,7 @@ NOTES=(
     "test_ringmaster|Game-to-admin-console link: cheat cases, player reports, match timelines, kicks and bans"
     "test_artifacts|Cheat-case screenshots: taken at the right moments, nine at most, safe when one fails"
     "test_airdrop|Supply drops: two per match, away from the storm wall, carrying loot found nowhere else"
+    "test_audio|The airdrop rotor sound is built as the game reads it, and all its names match"
     "test_client|Player controls: interact key, opening crates, picking up loot, keybinds, voice and sounds"
     "test_spectate|A spectator's own character can't move or shoot while watching, and gets it all back after"
     "test_emotes_client|Dance wheel: hold Left Alt to pick, on foot only; moving, aiming or going down ends it"
@@ -294,6 +295,12 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # match each to observe in the game and are wrong for weeks otherwise.
     # Two of those three changed on 2026-09-22 with the phase cap; the list is
     # here to be read, so it is worth keeping true.
+    #
+    # test_audio.lua reads br_audio's two BUILT binaries back (#382): a .awc and
+    # a .dat54.rel that tools/build_audio.mjs writes and the game parses. A
+    # wrong hash in either plays silence with no error anywhere, so the suite
+    # has its own reader and checks the one name that must match across both.
+    #
     # test_fuel.lua is the fourth suite here to load a real server file, and it
     # is its own rather than a block inside test_roster because the property
     # worth pinning spans three layers: the pure solver, the tank size DERIVED
@@ -671,6 +678,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_ringmaster.lua
         tools/test_artifacts.lua
         tools/test_airdrop.lua
+        tools/test_audio.lua
         tools/test_client.lua
         tools/test_spectate.lua
         tools/test_emotes_client.lua

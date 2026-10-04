@@ -53,6 +53,13 @@
 *.yft   binary
 *.ymap  binary
 *.ybn   binary
+# GTA audio (#382): br_audio's wave container and sound data, and any WAV made
+# on the way. Built by tools/build_audio.mjs and parsed by the game, so the same
+# argument as the .gfx above: a CR substituted inside one is a bank that plays
+# silence on every client, and tools/test_audio.lua is the only gate reading it.
+*.awc   binary
+*.rel   binary
+*.wav   binary
 
 # Generated. Collapses diff noise on the built bundle, which changes wholesale
 # on every build and is never reviewed line by line.

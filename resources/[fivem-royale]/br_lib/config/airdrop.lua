@@ -617,6 +617,43 @@ BR.Config.Airdrop = {
     -- Set to nil to stop asking for it at all.
     planeAudioPriority = 2,
 
+    -- ═══ THE ROTOR RECORDING (#382) ═══
+    --
+    -- Owner, 2026-10-03: "is it possible to make the cargobob louder for the
+    -- airdrops?", then "I want to hear it from 300m away" and "the engine sound
+    -- can still play".
+    --
+    -- His recording, built into a native audio bank (tools/build_audio.mjs, the
+    -- br_audio resource) and played from the aircraft ON TOP of its own engine.
+    -- client/airdrop.lua requests the bank at the announcement and plays the
+    -- sound when the aircraft is built.
+    --
+    -- HOW FAR IT CARRIES IS THE VARIANT, AND NOBODY KNOWS THE UNITS. Each
+    -- variant is the same wave with a different VolumeCurveScale (the distance
+    -- the game's volume curve is stretched over), and what a scale means in
+    -- meters is not documented. So the build carries a ladder bracketing 300m
+    -- and `/brairdrop rotor at 300` picks between them by ear. The numbers live
+    -- in tools/build_audio.mjs and tools/test_audio.lua pins them:
+    --
+    --   default  the middle guess        near  the vanilla siren's scale
+    --   far      2.5x the middle guess   loud  the middle guess, a louder
+    --                                          category and +6 dB
+    --
+    -- `rotorSound` nil turns the recording off; the engine still plays.
+    rotorBank       = 'br_sfx/br_cargobob',
+    rotorSoundSet   = 'br_airdrop_soundset',
+    rotorSound      = 'cargobob_rotor',
+    -- How long the announcement waits for the bank before giving up on the
+    -- answer. RequestScriptAudioBank has been reported answering no for a bank
+    -- that did load (citizenfx/fivem#2989), so the sound is played either way.
+    rotorBankWaitMs = 5000,
+    rotorVariants   = {
+        { name = 'default', sound = 'cargobob_rotor' },
+        { name = 'near',    sound = 'cargobob_rotor_near' },
+        { name = 'far',     sound = 'cargobob_rotor_far' },
+        { name = 'loud',    sound = 'cargobob_rotor_loud' },
+    },
+
     -- ------------------------------------------------------------------
     -- THE DROP WAITS UNTIL SOMEBODY CAN SEE IT
     -- ------------------------------------------------------------------
