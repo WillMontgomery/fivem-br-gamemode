@@ -636,14 +636,15 @@ function BR.StormTarget(rec)
     return BR.StormShape.blob(rec.cx1, rec.cy1, r1, u)
 end
 
---- The wall of a record already worked out: see BR.StormWall.
-local function wallOf(rec, e, t)
+--- The wall of a record already worked out: see BR.StormWall. A moving wall is
+--- built into `pool` when one is passed (storm_shape.lua's "a pool").
+local function wallOf(rec, e, t, pool)
     if t <= 0.0 then return sourceShape(rec, e, rec.cx0, rec.cy0, rec.r0) end
     if t >= 1.0 then return BR.StormTarget(rec) end
     local from, to, u, keep = legOf(e, t)
     return BR.StormShape.morph(from, to, u, keep,
         BR.Lerp(rec.cx0, rec.cx1, t), BR.Lerp(rec.cy0, rec.cy1, t),
-        BR.Lerp(rec.r0, rec.r1, t))
+        BR.Lerp(rec.r0, rec.r1, t), pool)
 end
 
 --- THE MOVING WALL at sweep fraction `t`, and nothing else: the zone it started as
@@ -761,8 +762,12 @@ end
 --- @param r number         the CURRENT radius
 --- @param t number|nil     how far through the sweep; nil reads as 0
 --- @param g number|nil     how far a conjoined zone has grown; nil reads as 1
+--- @param pool table|nil   BR.StormShape.newPool(): a moving wall that IS the zone
+---                         is built into it (storm_shape.lua's "a pool"). Valid
+---                         until the next build from the same pool. Only
+---                         client/storm.lua's moving wall passes one.
 --- @return table shape
-function BR.StormZone(rec, cx, cy, r, t, g)
+function BR.StormZone(rec, cx, cy, r, t, g, pool)
     if not rec then
         return BR.StormShape.circle(cx or 0.0, cy or 0.0, r or 0.0)
     end
@@ -771,8 +776,12 @@ function BR.StormZone(rec, cx, cy, r, t, g)
         return BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
     end
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
-    local wall = wallOf(rec, e, t)
-    if e.nested or t >= 1.0 or (rec.r1 or 0.0) <= 0.0 then return wall end
+    -- THE POOL ONLY WHERE THE WALL IS THE WHOLE ANSWER. A breakout's zone is the
+    -- wall stitched to the destination, and blobUnion re-stamps the pieces of the
+    -- parts it is handed, so a pooled wall is never handed to it.
+    local whole = e.nested or t >= 1.0 or (rec.r1 or 0.0) <= 0.0
+    local wall = wallOf(rec, e, t, whole and pool or nil)
+    if whole then return wall end
     local target = BR.StormTarget(rec)
     g = (g == nil) and 1.0 or BR.Clamp(g, 0.0, 1.0)
     if g < 1.0 and t <= 0.0 and wall.hull and target.hull then

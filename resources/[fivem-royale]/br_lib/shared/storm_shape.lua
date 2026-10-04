@@ -150,6 +150,71 @@ local function radius(r)
     return max(MIN_RADIUS, r or 0.0)
 end
 
+-- ═══ A POOL: THE SAME SHAPE, BUILT INTO LAST TIME'S TABLES (#393) ═══
+--
+-- A storm wall that is moving is a new shape every frame, and building one is a
+-- few hundred small tables -- corners, pieces, the hull walk's bookkeeping, the
+-- piece list, the inset of all of it -- about 22 KB a frame through a sweep, for
+-- the collector to find again. The client's moving wall hands its builds a POOL
+-- instead: every table a build would have made is taken from the pool, and the
+-- next build takes the same tables back and overwrites them.
+--
+-- THE ARITHMETIC IS NOT TOUCHED. A pooled build runs the same statements in the
+-- same order as an unpooled one and only the table each value lands in differs,
+-- so the two are equal to the bit -- tools/test_storm.lua's wall.pool block
+-- compares them field by field. Every caller that passes no pool (the server's
+-- damage tick, the HUD, the map, the suites) gets exactly the code it always got.
+--
+-- WHAT A POOLED SHAPE MAY NOT DO IS OUTLIVE THE NEXT BUILD FROM ITS POOL, which
+-- reuses every table in it. client/storm.lua's moving wall is the only caller:
+-- it builds, insets and walks the shape within one frame and keeps nothing.
+--
+-- A RECORD TABLE is overwritten field by field, every field the unpooled
+-- constructor sets, plus a nil for each field anything sets later (seal's s0 and
+-- comp), so nothing of the last build survives into this one. A LIST is emptied
+-- from the top before it is refilled, so its length is this build's.
+
+--- A table of `kind` from the pool, the next one not yet taken this build.
+local function poolTake(pool, kind)
+    local list = pool[kind]
+    if not list then
+        list = { n = 0 }
+        pool[kind] = list
+    end
+    local n = list.n + 1
+    list.n = n
+    local t = list[n]
+    if not t then
+        t = {}
+        list[n] = t
+    end
+    return t
+end
+
+--- An empty list: from the pool, emptied, or a new table without one.
+local function poolList(pool, kind)
+    if not pool then return {} end
+    local t = poolTake(pool, kind)
+    for i = #t, 1, -1 do t[i] = nil end
+    return t
+end
+
+--- A new, empty pool.
+--- @return table
+function BR.StormShape.newPool()
+    return { builds = 0 }
+end
+
+--- Hand every table in `pool` back for the next build. What the last build made
+--- from it must not be read after this.
+--- @param pool table
+function BR.StormShape.resetPool(pool)
+    for _, l in pairs(pool) do
+        if type(l) == 'table' then l.n = 0 end
+    end
+    pool.builds = pool.builds + 1
+end
+
 --- A counter-clockwise sweep from angle a to angle b, in (0, 2*pi].
 ---
 --- A zero difference means "all the way round" rather than "no arc at all": the
@@ -169,8 +234,18 @@ end
 --- arc is tangent to the two runs either side of it, and floored up to a metre it
 --- would no longer meet them -- the boundary would stop chaining. Every circle this
 --- file builds on its own is still floored; see MIN_RADIUS.
-local function arc(cx, cy, r, a0, sweep, exact)
+local function arc(cx, cy, r, a0, sweep, exact, pool)
     if not exact then r = radius(r) end
+    if pool then
+        local pc = poolTake(pool, 'arc')
+        pc.kind = 'arc'
+        pc.cx, pc.cy, pc.r = cx + 0.0, cy + 0.0, r
+        pc.a0, pc.sweep = a0 + 0.0, sweep + 0.0
+        pc.len = abs(sweep) * r
+        pc.out = (sweep >= 0.0) and 1.0 or -1.0
+        pc.s0, pc.comp, pc.newComponent = nil, nil, nil
+        return pc
+    end
     return {
         kind = 'arc',
         cx = cx + 0.0, cy = cy + 0.0, r = r,
@@ -182,11 +257,21 @@ local function arc(cx, cy, r, a0, sweep, exact)
 end
 
 --- One straight boundary run, from (x0, y0) to (x1, y1).
-local function seg(x0, y0, x1, y1)
+local function seg(x0, y0, x1, y1, pool)
     local dx, dy = x1 - x0, y1 - y0
     local len = sqrt(dx * dx + dy * dy)
     if len <= 0.0 then return nil end     -- no direction, so no normal
     local ux, uy = dx / len, dy / len
+    if pool then
+        local pc = poolTake(pool, 'seg')
+        pc.kind = 'seg'
+        pc.x0, pc.y0, pc.x1, pc.y1 = x0 + 0.0, y0 + 0.0, x1 + 0.0, y1 + 0.0
+        pc.ux, pc.uy = ux, uy
+        pc.nx, pc.ny = uy, -ux
+        pc.len = len
+        pc.s0, pc.comp, pc.newComponent = nil, nil, nil
+        return pc
+    end
     return {
         kind = 'seg',
         x0 = x0 + 0.0, y0 = y0 + 0.0, x1 = x1 + 0.0, y1 = y1 + 0.0,
@@ -261,10 +346,10 @@ end
 --- @param kind string        this shape's name, for the query dispatch
 --- @param meta table|nil     { discs, box, hull, parts, prims }, all optional
 --- @return table shape
-local function seal(pieces, kind, meta)
+local function seal(pieces, kind, meta, pool)
     meta = meta or {}
-    local keep, P = {}, 0.0
-    local comps = {}
+    local keep, P = poolList(pool, 'keep'), 0.0
+    local comps = poolList(pool, 'comps')
     for _, pc in ipairs(pieces or {}) do
         -- A zero-length piece is not a boundary, and left in the list it would
         -- be selected by the scan below only for s exactly at its start -- the
@@ -275,7 +360,9 @@ local function seal(pieces, kind, meta)
             -- marked. A dropped zero-length piece must not be able to take the
             -- shape's only component range with it.
             if #comps == 0 or pc.newComponent then
-                comps[#comps + 1] = { s0 = P, len = 0.0 }
+                local c = pool and poolTake(pool, 'comp') or {}
+                c.s0, c.len = P, 0.0
+                comps[#comps + 1] = c
             end
             local c = comps[#comps]
             c.len = c.len + pc.len
@@ -283,6 +370,14 @@ local function seal(pieces, kind, meta)
             P = P + pc.len
             keep[#keep + 1] = pc
         end
+    end
+    if pool then
+        local shape = poolTake(pool, 'shape')
+        shape.pieces, shape.P, shape.comps, shape.kind = keep, P, comps, kind
+        shape.discs, shape.box, shape.prims = meta.discs, meta.box, meta.prims
+        shape.hull, shape.parts, shape.blob = meta.hull, meta.parts, meta.blob
+        shape.meet = meta.meet
+        return shape
     end
     return {
         pieces = keep, P = P, comps = comps,
@@ -847,9 +942,16 @@ local NO_OPTS = {}
 --- query below reads them, and a placed corner inherits them rather than asking
 --- math.cos again. `h1` is the support value on the run AFTER this corner, which
 --- is the one number the signed distance reads per run.
-local function corner(x, y, rho, a0, a1, c0, s0, c1, s1)
+local function corner(x, y, rho, a0, a1, c0, s0, c1, s1, pool)
     c0, s0 = c0 or cos(a0), s0 or sin(a0)
     c1, s1 = c1 or cos(a1), s1 or sin(a1)
+    if pool then
+        local k = poolTake(pool, 'corner')
+        k.x, k.y, k.rho, k.a0, k.a1 = x, y, rho, a0, a1
+        k.c0, k.s0, k.c1, k.s1 = c0, s0, c1, s1
+        k.h1 = x * c1 + y * s1 + rho
+        return k
+    end
     return { x = x, y = y, rho = rho, a0 = a0, a1 = a1,
              c0 = c0, s0 = s0, c1 = c1, s1 = s1,
              h1 = x * c1 + y * s1 + rho }
@@ -967,22 +1069,26 @@ end
 --- every circle this file builds on its own; see blob() for the small-zone case.
 --- @param ks table     placed corners, counter-clockwise
 --- @param meta table
-local function hullOf(ks, meta)
+local function hullOf(ks, meta, pool)
     local m = #ks
-    local pieces = {}
-    local function push(pc) if pc then pieces[#pieces + 1] = pc end end
+    local pieces = poolList(pool, 'pieces')
     for i = 1, m do
         local k, q = ks[i], ks[(i % m) + 1]
         if k.rho > 0.0 then
-            push(arc(k.x, k.y, k.rho, k.a0, k.a1 - k.a0, true))
+            pieces[#pieces + 1] = arc(k.x, k.y, k.rho, k.a0, k.a1 - k.a0, true, pool)
         end
         local ex, ey = k.x + k.rho * k.c1, k.y + k.rho * k.s1
         local sx, sy = q.x + q.rho * q.c0, q.y + q.rho * q.s0
         local dx, dy = sx - ex, sy - ey
-        if dx * dx + dy * dy > EPS * EPS then push(seg(ex, ey, sx, sy)) end
+        if dx * dx + dy * dy > EPS * EPS then
+            local pc = seg(ex, ey, sx, sy, pool)
+            if pc then pieces[#pieces + 1] = pc end
+        end
     end
-    meta.hull = { ks = ks }
-    return seal(pieces, 'blob', meta)
+    local h = pool and poolTake(pool, 'hull') or {}
+    h.ks = ks
+    meta.hull = h
+    return seal(pieces, 'blob', meta, pool)
 end
 
 --- A unit's corners placed at (cx, cy) and scaled to r. Fresh tables every call,
@@ -1027,13 +1133,13 @@ end
 --- @param ks table      placed corners
 --- @param metres number
 --- @return table|nil ks
-local function erode(ks, metres)
-    local out = {}
+local function erode(ks, metres, pool)
+    local out = poolList(pool, 'eroded')
     for i = 1, #ks do
         local k = ks[i]
         local rho = k.rho - metres
         if rho >= 0.0 then
-            out[i] = corner(k.x, k.y, rho, k.a0, k.a1, k.c0, k.s0, k.c1, k.s1)
+            out[i] = corner(k.x, k.y, rho, k.a0, k.a1, k.c0, k.s0, k.c1, k.s1, pool)
         else
             local half = 0.5 * (k.a1 - k.a0)
             -- A CORNER TURNING HALF A TURN OR MORE has no point where its runs meet:
@@ -1043,7 +1149,7 @@ local function erode(ks, metres)
             local d = rho / cos(half)
             local mid = k.a0 + half
             out[i] = corner(k.x + cos(mid) * d, k.y + sin(mid) * d, 0.0,
-                k.a0, k.a1, k.c0, k.s0, k.c1, k.s1)
+                k.a0, k.a1, k.c0, k.s0, k.c1, k.s1, pool)
         end
     end
 
@@ -1076,7 +1182,7 @@ local function erode(ks, metres)
                 local det = k.c0 * q.s1 - k.s0 * q.c1
                 local x = (h0 * q.s1 - h1 * k.s0) / det
                 local y = (k.c0 * h1 - q.c1 * h0) / det
-                local merged = corner(x, y, 0.0, k.a0, a1, k.c0, k.s0, q.c1, q.s1)
+                local merged = corner(x, y, 0.0, k.a0, a1, k.c0, k.s0, q.c1, q.s1, pool)
                 if i == n then
                     out[n] = merged
                     table.remove(out, 1)
@@ -1162,7 +1268,15 @@ end
 --- chain closes to the bit.
 --- @param discs table   { { x, y, r }, ... }
 --- @return table|nil ks
-local function discHull(discs)
+--- One step of the hull walk: { disc index, from angle, to angle }.
+local function step(pool, i, a0, a1)
+    if not pool then return { i, a0, a1 } end
+    local e = poolTake(pool, 'step')
+    e[1], e[2], e[3] = i, a0, a1
+    return e
+end
+
+local function discHull(discs, pool)
     local m = #discs
     if m == 0 then return nil end
     local s, best = 1, -huge
@@ -1177,13 +1291,13 @@ local function discHull(discs)
     -- FLAT ARRAYS FOR THE WALK, because it is m candidates at every corner of a hull
     -- built every frame of a sweep, and three field lookups a candidate were most of
     -- its cost. The arithmetic is the same arithmetic on the same numbers.
-    local xs, ys, rs = {}, {}, {}
+    local xs, ys, rs = poolList(pool, 'xs'), poolList(pool, 'ys'), poolList(pool, 'rs')
     for k = 1, m do
         local d = discs[k]
         xs[k], ys[k], rs[k] = d.x, d.y, d.r
     end
 
-    local seq = {}
+    local seq = poolList(pool, 'seq')
     local i, th, closed = s, 0.0, false
     for _ = 1, 2 * m + 2 do
         local xi, yi, ri = xs[i], ys[i], rs[i]
@@ -1208,11 +1322,11 @@ local function discHull(discs)
             end
         end
         if not nj or th + nadv >= TAU - 1e-10 then
-            seq[#seq + 1] = { i, th, TAU }
+            seq[#seq + 1] = step(pool, i, th, TAU)
             closed = true
             break
         end
-        seq[#seq + 1] = { i, th, th + nadv }
+        seq[#seq + 1] = step(pool, i, th, th + nadv)
         th = th + nadv
         i = nj
     end
@@ -1228,17 +1342,17 @@ local function discHull(discs)
         seq[#seq] = nil
     end
 
-    local ks = {}
+    local ks = poolList(pool, 'ks')
     for k = 1, #seq do
         local e = seq[k]
         if e[3] - e[2] > ANGLE_EPS or #seq == 1 then
             local d = discs[e[1]]
-            ks[#ks + 1] = corner(d.x, d.y, d.r, e[2], e[3])
+            ks[#ks + 1] = corner(d.x, d.y, d.r, e[2], e[3], nil, nil, nil, nil, pool)
         end
     end
     if #ks == 1 then
         local c = ks[1]
-        ks[1] = corner(c.x, c.y, c.rho, 0.0, TAU)
+        ks[1] = corner(c.x, c.y, c.rho, 0.0, TAU, nil, nil, nil, nil, pool)
     end
     return ks
 end
@@ -1316,8 +1430,9 @@ end
 --- one at a candidate centre. Positive is out; the shape the discs are the hull of
 --- is inside exactly when this is not.
 --- @return number metres (or units)
-local function fitOf(ks, discs, ox, oy, k)
-    local h = { ks = ks }
+local function fitOf(ks, discs, ox, oy, k, pool)
+    local h = pool and poolTake(pool, 'hull') or {}
+    h.ks = ks
     k = k or 1.0
     local worst = -huge
     for i = 1, #discs do
@@ -2240,17 +2355,35 @@ function BR.StormShape.pairsOf(uA, uB)
 end
 
 --- A disc hull's corner list as a shape, named by a solver circle. See discShape.
-local function hullShape(ks, cx, cy, r)
+--- The `meta` a blob is sealed with -- its solver circle, and the map's radius
+--- primitive drawn at it with radius `primR` -- from the pool when there is one.
+local function blobMeta(cx, cy, r, unit, primR, pool)
+    if not pool then
+        return {
+            blob = { cx = cx, cy = cy, r = r, unit = unit },
+            prims = { { kind = 'radius', cx = cx, cy = cy, r = primR } },
+        }
+    end
+    local b = poolTake(pool, 'blobCircle')
+    b.cx, b.cy, b.r, b.unit = cx, cy, r, unit
+    local prim = poolTake(pool, 'prim')
+    prim.kind, prim.cx, prim.cy, prim.r = 'radius', cx, cy, primR
+    local prims = poolList(pool, 'prims')
+    prims[1] = prim
+    local meta = poolTake(pool, 'meta')
+    meta.blob, meta.prims = b, prims
+    meta.discs, meta.box, meta.hull, meta.parts, meta.meet = nil, nil, nil, nil, nil
+    return meta
+end
+
+local function hullShape(ks, cx, cy, r, pool)
     if not ks or (#ks == 1 and ks[1].rho < MIN_RADIUS) then
         local k = ks and ks[1]
         return BR.StormShape.circle(k and k.x or cx or 0.0, k and k.y or cy or 0.0,
             k and k.rho or 0.0)
     end
     cx, cy, r = cx or ks[1].x, cy or ks[1].y, r or 0.0
-    local shape = hullOf(ks, {
-        blob = { cx = cx, cy = cy, r = r },
-        prims = { { kind = 'radius', cx = cx, cy = cy, r = radius(r) } },
-    })
+    local shape = hullOf(ks, blobMeta(cx, cy, r, nil, radius(r), pool), pool)
     if shape.P <= 0.0 then return BR.StormShape.circle(ks[1].x, ks[1].y, 0.0) end
     return shape
 end
@@ -2282,26 +2415,31 @@ end
 --- @param keep table|nil
 --- @param cx number   the solver's circle at t, recorded on the shape
 --- @return table shape
-function BR.StormShape.morph(src, dst, t, keep, cx, cy, r)
-    return hullShape(BR.StormShape.morphHull(src, dst, t, keep), cx, cy, r)
+--- @param pool table|nil  BR.StormShape.newPool(): build into its tables (see
+---                         "a pool" at the top of this file)
+--- @return table shape
+function BR.StormShape.morph(src, dst, t, keep, cx, cy, r, pool)
+    return hullShape(BR.StormShape.morphHull(src, dst, t, keep, pool), cx, cy, r, pool)
 end
 
 --- The moving wall's CORNER LIST at sweep fraction `t`: what morph() builds its shape
 --- from, without the pieces -- for a caller that asks the wall's signed distance at
 --- many instants and never draws it (storm_solve.lua's sweep price, #344).
 --- @return table|nil ks
-function BR.StormShape.morphHull(src, dst, t, keep)
+function BR.StormShape.morphHull(src, dst, t, keep, pool)
     local s = 1.0 - t
-    local md = {}
+    local md = poolList(pool, 'md')
     for i = 1, #src do
         local a, b = src[i], dst[i]
-        md[i] = { x = s * a.x + t * b.x, y = s * a.y + t * b.y, r = s * a.r + t * b.r }
+        local d = pool and poolTake(pool, 'disc') or {}
+        d.x, d.y, d.r = s * a.x + t * b.x, s * a.y + t * b.y, s * a.r + t * b.r
+        md[i] = d
     end
-    local ks = discHull(md)
+    local ks = discHull(md, pool)
     -- ONE HULL ON AN ORDINARY FRAME, TWO ON A FRAME THE DESTINATION POKES OUT OF.
-    if keep and ks and fitOf(ks, keep, 0.0, 0.0, 1.0) > 0.0 then
+    if keep and ks and fitOf(ks, keep, 0.0, 0.0, 1.0, pool) > 0.0 then
         for i = 1, #keep do md[#md + 1] = keep[i] end
-        ks = discHull(md)
+        ks = discHull(md, pool)
     end
     return ks
 end
@@ -3606,8 +3744,8 @@ end
 --- @param shape table
 --- @param ci number    a component index, as components() orders them
 --- @return table  { { t0 = number, len = number, r = number|nil }, ... }
-function BR.StormShape.runs(shape, ci)
-    local out = {}
+function BR.StormShape.runs(shape, ci, pool)
+    local out = poolList(pool, 'runs')
     local pcs = shape and shape.pieces
     local comps = shape and shape.comps
     if not pcs or not comps or not comps[ci] then return out end
@@ -3619,8 +3757,10 @@ function BR.StormShape.runs(shape, ci)
         -- it recorded rather than a second derivation of it off two floating-point
         -- sums that agree to picometres and decide a boundary case between them.
         if pc.comp == ci then
-            out[#out + 1] = { t0 = pc.s0 - base, len = pc.len,
-                              r = (pc.kind == 'arc') and pc.r or nil }
+            local rn = pool and poolTake(pool, 'run') or {}
+            rn.t0, rn.len = pc.s0 - base, pc.len
+            rn.r = (pc.kind == 'arc') and pc.r or nil
+            out[#out + 1] = rn
         end
     end
     return out
@@ -4089,7 +4229,7 @@ end
 --- cannot then ask questions about.
 ---
 --- @return table shape
-function BR.StormShape.inset(shape, metres)
+function BR.StormShape.inset(shape, metres, pool)
     local kind = shape and shape.kind
     metres = metres or 0.0
 
@@ -4152,14 +4292,14 @@ function BR.StormShape.inset(shape, metres)
             local cut = BR.StormShape.intersect(a, b)
             if cut then return cut end
         end
+        -- A POOL IS FOR THE ORDINARY ERODE: a shape a meet had to cut is built
+        -- fresh, and so is the rare hull that has to be chorded before it erodes.
+        local p = (not shape.meet) and pool or nil
         local h, m = shape.hull, shape.blob
-        local ks = erode(h.ks, metres) or erode(chorded(h.ks, CHORD_SAG), metres)
+        local ks = erode(h.ks, metres, p) or erode(chorded(h.ks, CHORD_SAG), metres)
         if ks then
-            return hullOf(ks, {
-                blob = { cx = m.cx, cy = m.cy, r = m.r - metres, unit = m.unit },
-                prims = { { kind = 'radius', cx = m.cx, cy = m.cy,
-                            r = m.r - metres } },
-            })
+            return hullOf(ks, blobMeta(m.cx, m.cy, m.r - metres, m.unit, m.r - metres,
+                p), p)
         end
         local x, y, depth = deepPoint(shape)
         return BR.StormShape.circle(x, y, depth - metres)

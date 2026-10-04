@@ -706,7 +706,8 @@ local QUAD_STRIDE = 8
 --- @param minSeg number
 --- @param maxPolys number
 --- @param quadPolys number polys one quad costs on the settled fade path
-local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys)
+--- @param pool table|nil   the moving wall's pool, for the run lists
+local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
     local SS = BR.StormShape
     local comps = SS.components(shape)
     local nComp = #comps
@@ -792,7 +793,7 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys)
         -- counts, identical budget, a wall inside the boundary. #344 then replaced
         -- that split as well; the block below is why, and what it costs is fewer
         -- quads rather than more.
-        local runs = SS.runs(shape, ci)
+        local runs = SS.runs(shape, ci, pool)
         local nRuns = math.max(1, #runs)
 
         -- ═══ AND EACH RUN IS PRICED OFF ITS OWN CURVATURE, WHICH IS THE OTHER HALF
@@ -920,7 +921,10 @@ end
 --- @param shape table       an inset BR.StormShape
 --- @param alphaScale number 0..1
 --- @param g table|nil      where the built strip is kept; see buildStrip
-local function drawStrip(shape, alphaScale, g)
+--- @param pool table|nil   set when `shape` was built into a pool: its table is
+---                         the same one every frame with new numbers in it, so
+---                         the strip is walked again whatever it is compared to
+local function drawStrip(shape, alphaScale, g, pool)
     local rr = cfg.render
     -- EVERY NUMBER BELOW HAS AN `or` DEFAULT AND THIS IS WHY. A config without a
     -- `strip` table is the one shape of failure that would be silent: the FRAME
@@ -985,9 +989,9 @@ local function drawStrip(shape, alphaScale, g)
 
     local minSeg, maxPolys = sp.minSeg or 24, sp.maxPolys or 1024
     g = g or scratchStrip
-    if g.shape ~= shape or g.chordM ~= chordM or g.minSeg ~= minSeg
+    if pool or g.shape ~= shape or g.chordM ~= chordM or g.minSeg ~= minSeg
         or g.maxPolys ~= maxPolys or g.quadPolys ~= quadPolys then
-        buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys)
+        buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
     end
 
     local p = viewpoint()
@@ -1184,10 +1188,18 @@ end
 --- deriving both again; handed a new one, it derives both into the memo. So the
 --- caller decides what "the same zone" means -- the preview by its circle, the live
 --- wall by its record and clock -- and this function only compares identities.
+---
+--- ═══ AND A MOVING WALL PASSES ITS POOL (#393) ═══
+---
+--- A zone built into a pool (BR.StormZone's last argument) is the same table every
+--- frame holding new numbers, so it cannot be recognised by identity: it is inset
+--- into the same pool and walked again into the memo's strip arrays, and the memo
+--- forgets it rather than keep a table the next build will overwrite.
 --- @param zone table        a BR.StormShape
 --- @param alphaScale number 0..1
 --- @param memo table|nil    newWallMemo(), kept by the caller between frames
-local function drawWall(zone, alphaScale, memo)
+--- @param pool table|nil    the pool `zone` was built into, if it was
+local function drawWall(zone, alphaScale, memo, pool)
     -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN. Both lessons below were learnt
     -- on the marker paths and are kept BECAUSE the marker paths are still the A/B
     -- baseline; the strip inherits both by construction and the second outright,
@@ -1223,7 +1235,10 @@ local function drawWall(zone, alphaScale, memo)
     -- this is that same one line, spelled for a shape.
     local inset = rr.edgeInset or 0.0
     local shape
-    if memo and memo.zone == zone and memo.inset == inset then
+    if pool then
+        shape = SS.inset(zone, inset, pool)
+        if memo then memo.zone, memo.inset, memo.shape = nil, nil, nil end
+    elseif memo and memo.zone == zone and memo.inset == inset then
         shape = memo.shape
     else
         shape = SS.inset(zone, inset)
@@ -1262,7 +1277,7 @@ local function drawWall(zone, alphaScale, memo)
     end
 
     if style == 'strip' then
-        drawStrip(shape, alphaScale, memo and memo.strip)
+        drawStrip(shape, alphaScale, memo and memo.strip, pool)
         return
     end
 
@@ -1604,8 +1619,10 @@ local function zoneFor(rec, cx, cy, r, t, g)
     return zone
 end
 
---- What drawWall keeps for the live wall between frames.
+--- What drawWall keeps for the live wall between frames, and the pool a moving
+--- wall is built into (storm_shape.lua's "a pool").
 local wallMemo = newWallMemo()
+local sweepPool = BR.StormShape.newPool()
 
 BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     if stormBisectMode == 'walloff' then return end
@@ -1652,8 +1669,21 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     --
     -- AND IT IS ASKED FOR THROUGH zoneFor (#393), which hands back last frame's
     -- zone while nothing it depends on has moved -- every hold once growth is done,
-    -- and FINISHED -- so the memo keeps last frame's inset and strip too. A sweep's
-    -- zone is new every frame and is built every frame, exactly as before.
+    -- and FINISHED -- so the memo keeps last frame's inset and strip too.
+    --
+    -- A SWEEP'S ZONE IS NEW EVERY FRAME AND IS BUILT EVERY FRAME, because the wall
+    -- really moves: at phase 1's pace about a fifth of a metre a frame, which is
+    -- pixels at any distance a player stands from it. What it no longer does is
+    -- make a few hundred tables a frame to do it (#393: 22 KB a frame through a
+    -- sweep). It is built into sweepPool, which the next frame's build takes back,
+    -- and inset and walked in the same pool. The numbers are the unpooled build's
+    -- to the bit; storm_shape.lua's "a pool" says why, and the suite checks it.
+    if t and t > 0.0 and t < 1.0 then
+        BR.StormShape.resetPool(sweepPool)
+        drawWall(BR.StormZone(rec, cx, cy, r, t, g, sweepPool), alphaScale, wallMemo,
+            sweepPool)
+        return
+    end
     drawWall(zoneFor(rec, cx, cy, r, t, g), alphaScale, wallMemo)
 end)
 

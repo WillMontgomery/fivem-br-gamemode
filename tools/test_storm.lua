@@ -4045,6 +4045,169 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('wall.pool')
+do
+    -- ═══ A MOVING WALL IS BUILT INTO LAST FRAME'S TABLES, AND IS THE SAME WALL (#393) ═══
+    --
+    -- Through a sweep the zone is a new shape every frame, and building it, insetting
+    -- it and listing its runs made a few hundred tables a frame -- about 22 KB for the
+    -- collector. client/storm.lua now builds it into a pool (storm_shape.lua's "a
+    -- pool"), and the claim this block pins is that nothing about the result moved:
+    -- every number of the pooled zone, its inset and its runs is the unpooled one's,
+    -- compared with ==, at every instant of the sweeps below and in an order that makes
+    -- every list both grow and shrink between builds -- the case a pool gets wrong by
+    -- keeping last time's tail. Then that the client draws the same triangles with and
+    -- without it, and that a warm pool allocates nothing.
+    local C0 = newStormClient()
+    local BR = C0.env.BR
+    local SS = BR.StormShape
+
+    --- Where two values first differ, walking tables to the bottom; nil if nowhere.
+    --- Keys are visited in sorted order so the answer names the same field each run.
+    local function diffOf(a, b, path, seen)
+        if type(a) ~= type(b) then return path .. ': ' .. type(a) .. ' against ' .. type(b) end
+        if type(a) ~= 'table' then
+            if a ~= b then return ('%s: %s against %s'):format(path, tostring(a), tostring(b)) end
+            return nil
+        end
+        seen = seen or {}
+        if seen[a] then return nil end
+        seen[a] = true
+        local keys, has = {}, {}
+        for k in pairs(a) do if not has[k] then has[k] = true keys[#keys + 1] = k end end
+        for k in pairs(b) do if not has[k] then has[k] = true keys[#keys + 1] = k end end
+        table.sort(keys, function(x, y) return tostring(x) < tostring(y) end)
+        for _, k in ipairs(keys) do
+            -- `unit` is the blob's own unit, shared by both builds: identity is enough.
+            if k == 'unit' then
+                if a[k] ~= b[k] then return path .. '.unit is another unit' end
+            else
+                local d = diffOf(a[k], b[k], path .. '.' .. tostring(k), seen)
+                if d then return d end
+            end
+        end
+        return nil
+    end
+
+    local function lerp(a, b, t) return a + (b - a) * t end
+    local function zoneAt(rec, t, pool)
+        return BR.StormZone(rec, lerp(rec.cx0, rec.cx1, t), lerp(rec.cy0, rec.cy1, t),
+            lerp(rec.r0, rec.r1, t), t, 1.0, pool)
+    end
+
+    -- Nested phases of the shipping sizes, an off-centre one whose destination presses
+    -- on the wall (the second hull a frame), and a breakout the pool must stand aside
+    -- for.
+    local recs = {
+        { phase = 1, cx0 = 0.0, cy0 = 0.0, r0 = 5200.0, cx1 = 900.0, cy1 = 1400.0, r1 = 2600.0 },
+        { phase = 3, cx0 = 0.0, cy0 = 0.0, r0 = 1600.0, cx1 = 300.0, cy1 = -200.0, r1 = 950.0 },
+        { phase = 4, cx0 = 0.0, cy0 = 0.0, r0 = 950.0, cx1 = 420.0, cy1 = 0.0, r1 = 520.0 },
+        { phase = 6, cx0 = 0.0, cy0 = 0.0, r0 = 260.0, cx1 = 120.0, cy1 = 60.0, r1 = 110.0 },
+        { phase = 8, cx0 = 0.0, cy0 = 0.0, r0 = 40.0, cx1 = 10.0, cy1 = 0.0, r1 = 0.0 },
+        { phase = 2, cx0 = 0.0, cy0 = 0.0, r0 = 2600.0, cx1 = 4400.0, cy1 = 0.0, r1 = 1600.0 },
+    }
+    for _, r in ipairs(recs) do r.seed, r.tWait, r.tShrink = 393, 60000, 60000 end
+    -- Out of order on purpose, so consecutive builds differ in size both ways.
+    local ts = { 0.5, 0.02, 0.98, 0.31, 0.77, 0.001, 0.64, 0.12, 0.999, 0.45, 0.88, 0.2 }
+
+    local pool = SS.newPool()
+    local compared, bad, nested, kinds = 0, nil, 0, {}
+    for _, t in ipairs(ts) do
+        for ri, rec in ipairs(recs) do
+            local want = zoneAt(rec, t)
+            local wantIn = SS.inset(want, 6.0)
+            SS.resetPool(pool)
+            local got = zoneAt(rec, t, pool)
+            local gotIn = SS.inset(got, 6.0, pool)
+            local d = diffOf(got, want, 'zone') or diffOf(gotIn, wantIn, 'inset')
+            for ci = 1, #SS.components(wantIn) do
+                d = d or diffOf(SS.runs(gotIn, ci, pool), SS.runs(wantIn, ci),
+                    'runs ' .. ci)
+            end
+            if d and not bad then bad = ('record %d at t %s: %s'):format(ri, t, d) end
+            compared = compared + 1
+            kinds[want.kind] = true
+            if BR.StormNested(rec) then nested = nested + 1 end
+        end
+    end
+    ok(bad == nil and compared == #ts * #recs,
+        'a pooled zone, its inset and its runs are the unpooled ones to the bit, at '
+            .. 'every instant of six sweeps, built in an order that makes every list grow '
+            .. 'and shrink', bad or ('%d builds compared'):format(compared))
+    ok(kinds.blob and nested > 0 and nested < compared,
+        'and the sweeps are blob walls, nested and broken out',
+        ('kinds seen: %s; %d of %d nested'):format(
+            (function() local k = {} for n in pairs(kinds) do k[#k + 1] = n end
+                table.sort(k) return table.concat(k, ',') end)(), nested, compared))
+
+    -- A WARM POOL ALLOCATES NOTHING: the same builds again, the collector stopped and
+    -- its count read on either side.
+    collectgarbage('collect')
+    collectgarbage('stop')
+    local function sweepOnce()
+        for _, t in ipairs(ts) do
+            local rec = recs[1]
+            SS.resetPool(pool)
+            local z = zoneAt(rec, t, pool)
+            local zi = SS.inset(z, 6.0, pool)
+            for ci = 1, #SS.components(zi) do SS.runs(zi, ci, pool) end
+        end
+    end
+    sweepOnce()
+    local k0 = collectgarbage('count')
+    for _ = 1, 20 do sweepOnce() end
+    local pooledKB = collectgarbage('count') - k0
+    local k1 = collectgarbage('count')
+    for _ = 1, 20 do
+        for _, t in ipairs(ts) do
+            local z = zoneAt(recs[1], t)
+            local zi = SS.inset(z, 6.0)
+            for ci = 1, #SS.components(zi) do SS.runs(zi, ci) end
+        end
+    end
+    local freshKB = collectgarbage('count') - k1
+    collectgarbage('restart')
+    ok(pooledKB < 1.0 and freshKB > 100.0 * #ts,
+        'a warm pool builds, insets and walks a moving phase-1 wall without allocating',
+        ('%.2f KB over %d pooled builds, against %.0f KB unpooled'):format(pooledKB,
+            20 * #ts, freshKB))
+
+    -- THE CLIENT DRAWS THE SAME TRIANGLES. The same sweep, frame after frame, drawn
+    -- by a client using its pool and by one whose shape functions ignore the pool.
+    local function sweeping(unpooled)
+        local C = newStormClient()
+        if unpooled then
+            local Z, I, R = C.env.BR.StormZone, C.env.BR.StormShape.inset,
+                C.env.BR.StormShape.runs
+            C.env.BR.StormZone = function(rec, cx, cy, r, t, g) return Z(rec, cx, cy, r, t, g) end
+            C.env.BR.StormShape.inset = function(s, m) return I(s, m) end
+            C.env.BR.StormShape.runs = function(s, ci) return R(s, ci) end
+        end
+        local rec = C.record(1, 0.0, 0.0, 5200.0, 900.0, 1400.0, 2600.0, 1000, 240000, 0.5)
+        rec.seed = 393
+        C.recordWallOnly()
+        C.pedAt = pt(400.0, 300.0, 30.0)
+        return C
+    end
+    local P, U = sweeping(false), sweeping(true)
+    local frames, drawn, same = 0, 0, nil
+    for _ = 1, 40 do
+        P.now, U.now = P.now + 2984, U.now + 2984
+        P.frame()
+        U.frame()
+        frames = frames + 1
+        drawn = drawn + #P.polys
+        same = same or diffOf(P.polys, U.polys, 'frame ' .. frames)
+    end
+    ok(P.errored() == nil and U.errored() == nil, 'both clients sweep clean',
+        P.errored() or U.errored())
+    ok(same == nil and drawn > 40 * 100,
+        'and through a sweep the pooled client draws the triangles the unpooled one '
+            .. 'does, frame by frame, argument for argument',
+        same or ('%d triangles over %d frames'):format(drawn, frames))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.ramp')
 do
     -- ═══ THE BAKED ALPHA RAMP, WHICH IS WHY THE WALL IS SMOOTH ═══
