@@ -209,28 +209,44 @@ at the repo root pins which version each box runs. A commit bumps an asset,
 2. Add one line to `server.cfg`: `exec resources/[licensed]/licensed.cfg` (where: below)
 3. Deploy as usual; the packs land, and load at that deploy's restart
 
-**Owner, on the PC: the `Blitz Assets` folder on the Desktop.**
+A deploy whose `deploy.sh` is older than the deployed branch's
+`tools/deploy.sh` prints a red box naming that pull; do it, then deploy again.
 
-- Drag a pack's folder (the one holding `fxmanifest.lua`) into `Season 1`, or into the season it starts in
-- A pack's version for a later season: drag that version into that season's folder
-- Retire a pack: delete its folder
+**Owner, on the PC: the `Blitz Assets` folder on the Desktop.** Its
+`README.txt` says all of this; in short:
+
+- Add a pack: drag its folder (the one holding `fxmanifest.lua`) into the season it starts in, usually `Season 1`
+- Change it for every season: replace the files in the folder it is in
+- Change it from a later season on: put the new version in that season's folder, same name
+- Remove it from a later season on: make an EMPTY folder with its name in that season (`Season 3\legion`)
+- Remove it everywhere: delete its folder from every season folder
 - Double-click `Publish.cmd`: it shows the plan, uploads what is new, and asks `Commit and push to dev? [y/N]`
-- `y` commits only `assets.lock` to dev and pushes it; `n` leaves `assets.lock` changed, not committed
-- Packs may sit in FiveM `[category]` folders; anything else is listed as skipped
+- `y` commits only `assets.lock`, on top of dev, and pushes it; `n` leaves nothing behind but the uploads
 - To make the folder again: `py tools/assets.py init-drop "%USERPROFILE%\Desktop\Blitz Assets"`
 
-`Publish.cmd` publishes into the checkout whose path it was written with, which
-must be on `dev`. The folders are the lock: a pack in two season folders is one
-version per season, a pack dragged back after being retired goes up with no
-upload, and `from`/`until` set by hand on a pack still there are kept. A drop
-folder inside a git work tree is refused. The pre-push hook
-(`./tools/install-hooks.sh`) refuses any push carrying a game-asset file or a
-credential.
+Publish never touches a checkout anyone works in. It keeps its own clone of
+the repo in `%LOCALAPPDATA%\BlitzAssets\repo`: the first Publish on a PC clones
+dev there (git and `py` are all it needs), and every Publish fetches dev, checks
+it out and runs that `tools/assets.py`, so it is always dev's latest. It plans
+against GitHub's dev, builds the one-file commit on top of it, checks the lock
+once more and pushes; if dev moved meanwhile it plans again, pushes without
+asking when the plan is the same, and asks again when it is not. It says
+"pushed" only once GitHub's dev holds the commit.
+
+The folders are the lock: a pack in two season folders is one version per
+season, a pack dragged back after being removed goes up with no upload, and an
+empty folder with no earlier version is skipped as "nothing to remove". A folder
+with files but no `fxmanifest.lua` is skipped (likely a copy still running), and
+never removes anything. Every pack's files are read and hashed on every Publish;
+`.publish-index.json` only spares packing them again. A drop folder inside a
+git work tree is refused. The pre-push hook (`./tools/install-hooks.sh`)
+refuses any push carrying a game-asset file or a credential.
 
 **From a terminal** (profile `blitz-assets`), for the same thing by hand:
 
 - Push packs: `py tools/assets.py push "D:/packs/legion" "D:/packs/[emotes]"` (a folder of packs, or a `[category]`, pushes each)
-- For a later season: add `--season 2`; limit a pack with `--from 2` / `--until 4` (`none` clears)
+- For a later season: add `--season 2`
+- Remove one from a season on: `py tools/assets.py retire legion --season 3`; from every season: `retire legion`
 - Lock vs bucket: `py tools/assets.py status --profile blitz-assets`
 - Then commit `assets.lock` to dev
 
@@ -266,36 +282,52 @@ An empty lock leaves the deploy exactly as it was.
 - The plan: `python3 /opt/fivem-server-classic/.gamemode-src/tools/assets.py pull --dry-run`
 - Lock vs bucket vs installed: `python3 /opt/fivem-server-classic/.gamemode-src/tools/assets.py status`
 
-**Seasons.** A box installs the version pinned at the newest season at or below
-its `br_season` (unset means the latest), like `BR.Season.pick`, inside the
-entry's `from`/`until`; a pack with no version for that season is not installed.
-`brseason` on dev cannot swap streamed assets: it warns, naming what differs,
-and the assets follow when `br_season` in server.cfg changes and the box is
-redeployed and restarted.
+**Seasons.** A box installs, for its season, the pin at the newest season at or
+below it, like `BR.Season.pick`. A pin is a version, or `null`: removed from that
+season on, until a later pin brings a version back. Before its earliest pin a
+pack is not installed. The season is the `br_season` br_core sees when it
+starts, and FXServer reads the cfg twice to get there: an early pass runs every
+line (past `ensure br_core`) and carries what `set`, `setr` or `seta` gave
+`br_season` into the real pass, which then runs in order up to `ensure br_core`.
+So a `set br_season` below `ensure br_core` still counts, and once the convar
+exists a bare `br_season 2` line assigns too; `sets` anywhere keeps the early
+value from being carried. Unset means the latest. `brseason` on dev cannot swap
+streamed assets: it warns, naming what differs, and the assets follow when
+`br_season` in server.cfg changes and the box is redeployed and restarted.
 
 **Escrowed packs** (`.fxap`) are stored byte for byte like anything else. Running
 them needs each box's license key from the Cfx.re account that bought them.
 
 The lock holds names, checksums, sizes, file lists and season pins, and nothing
-else (`assets.py check` refuses any other key). The file lists let a test check
-that an anim dict or model our code names is in a pack without the pack:
+else (`assets.py check` refuses any other key, and any pin that changes nothing).
+The file lists let a test check that an anim dict or model our code names is in
+a pack without the pack. Here `legion` runs `9c1e…` in Seasons 1-2, nothing in
+3-4, and `4b7d…` from Season 5:
 
 ```json
 {
-  "format": 1,
+  "format": 2,
   "resources": [
     {
-      "name": "emotes_pack",
-      "from": 2,
+      "name": "legion",
       "seasons": {
-        "2": "3f2a…"
+        "1": "9c1e…",
+        "3": null,
+        "5": "4b7d…"
       },
       "versions": {
-        "3f2a…": {
+        "9c1e…": {
           "size": 48213377,
           "files": {
             "fxmanifest.lua": 412,
-            "stream/emotes@dance.ycd": 90112
+            "stream/legion.ymap": 90112
+          }
+        },
+        "4b7d…": {
+          "size": 50110021,
+          "files": {
+            "fxmanifest.lua": 412,
+            "stream/legion.ymap": 93184
           }
         }
       }
