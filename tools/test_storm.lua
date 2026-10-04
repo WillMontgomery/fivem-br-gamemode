@@ -10640,7 +10640,7 @@ do
         local CFG = BR.Config.Storm
         local FADE_MS = (CFG.render.fadeInSec or 10.0) * 1000.0
         local SWEEP_MS = (CFG.overlay.sweepFadeSec or 1.0) * 1000.0
-        local path = overlay and 'the overlay' or 'the fallback rings'
+        local path = overlay and 'the overlay shows' or 'the fallback rings show'
         C.mm.handle = overlay and 7 or nil
         local r1 = recs[1]
         local circle1 = BR.StormShape.blob(r1.cx1, r1.cy1, r1.r1, BR.StormUnit(r1.seed, 1))
@@ -10691,7 +10691,7 @@ do
         C.tick(2)
         local bus, busWhy = circle1Alone()
         ok(ready and bus ~= nil and C.errored() == nil,
-            ('on the bus %s show circle 1 alone, unchanged'):format(path),
+            ('on the bus %s circle 1 alone, unchanged'):format(path),
             C.errored() or busWhy)
 
         -- ─── PLAYING: the hold's last fadeInSec and three seconds more, then the sweep ───
@@ -10725,7 +10725,7 @@ do
         end
         ok(bad == 0 and windowTicks >= (FADE_MS + SWEEP_MS) / 100.0 - 2 and sweepTicks >= 20
                 and C.errored() == nil,
-            ('through phase 1\'s hold and into its sweep %s show circle 1 alone -- the same '
+            ('through phase 1\'s hold and into its sweep %s circle 1 alone -- the same '
                 .. 'one, never a whole-map zone, not even across the eleven seconds it used to '
                 .. 'fade in and out'):format(path),
             C.errored() or badWhere or ('%d ticks in the window, %d in the sweep'):format(
