@@ -1337,6 +1337,13 @@ function BR.StormMorphAt(rec, t, g)
     return mo
 end
 
+-- The defaults a share or a line that cannot be used falls back to: the shipped
+-- anchorRegion values in config/storm.lua, spelled again here because the value
+-- being replaced may BE the config's. test_shared.lua's storm.anchor.region holds
+-- the two spellings to each other by what the picker does with a NaN.
+local ANCHOR_CITY_MAX_Y = 1050.0
+local ANCHOR_CITY_SHARE = 0.62
+
 --- Pick the match anchor: the POI the whole storm sequence homes on.
 ---
 --- The scheme (user-designed, 2026-08-02): one random waypoint of THIS match's
@@ -1355,19 +1362,27 @@ end
 --- county two times in three and the anchor followed it -- city 37% of the time
 --- over all 192 tours. So when `region` is given, the region is drawn BEFORE
 --- anything else -- city with probability cityShare -- and the waypoint and the
---- POI are then both drawn inside it. The share is exact by construction: the
---- draw decides the region, and nothing after it can move the anchor across the
---- line. The anchor still comes off THIS tour's own waypoints, so the opening
---- circle stays on the flight path.
+--- POI are then both drawn inside it. The ANCHOR's split is cityShare by
+--- construction: the draw decides the region, and nothing after it can move the
+--- anchor across the line. The anchor still comes off THIS tour's own waypoints,
+--- so the opening circle stays on the flight path.
 ---
 --- One line splits the map: a point is CITY when its y is below cityMaxY (the
 --- owner's y = 1050), and COUNTY otherwise. Waypoints and POIs are sorted by the
 --- same line.
 ---
---- THE ANCHOR'S SPLIT, NOT THE CIRCLES'. Circle 1 is drawn off the anchor across
---- the whole opening zone, and every later zone off the one before it, so neither
---- inherits the share exactly: over 2,000 whole matches circle 1 opened in the
---- city 44% of the time and the final zone ended there 43% (38% and 37% before).
+--- THE ANCHOR'S SPLIT IS NOT THE MATCH'S. The owner's 50/50 is where matches
+--- open and end, and circle 1 roams off the anchor (2.4 km at the median) and
+--- the final zone off circle 1, both pulled toward the county. So cityShare is
+--- not 0.5: it is CALIBRATED so that circle 1 and the final zone each land in the
+--- city about half the time, and the anchor is then city about 62% of the time.
+--- config/storm.lua's anchorRegion has the measurement.
+---
+--- A SHARE OR A LINE THAT CANNOT BE USED TAKES THE DEFAULT, the shipped values
+--- above: a share that is not a number in 0..1, and a line that is not a y on
+--- the map (strictly inside the storm's mapAABB). NaN is a number, so a type
+--- check passes it, and every comparison with it is false: a NaN share would
+--- anchor every match in the county, and a NaN line would put every POI there.
 ---
 --- FAILURE IS NOT AN OPTION HERE: this runs inside the WARMUP transition, and
 --- an error would kill the match before it starts. So the band widens in steps
@@ -1378,8 +1393,9 @@ end
 ---   * a tour with no waypoint in the drawn region uses the waypoint nearest
 ---     the line instead (no authored tour does today -- leg 1 is always city
 ---     and legs 3 and 4 are always county -- but the legs are config);
----   * a region with no POI in it at all falls back to every POI, so a line
----     moved off the map still opens the match, just not in that region.
+---   * a drawn region with no POI in it is drawn from the whole table, so the
+---     match still opens, just not in that region -- and the side returned is
+---     where the anchor really is, never the draw it missed.
 ---
 --- @param rng table         a BR.Rng instance (server only)
 --- @param waypoints table   the tour's authored waypoints, { {x, y}, ... }
@@ -1389,8 +1405,8 @@ end
 ---                          and picks from the whole tour and the whole table
 --- @return table|nil poi    the chosen POI (a reference into `pois`)
 --- @return table|nil wp     the waypoint it was picked around
---- @return string|nil side  'city' or 'county', the region drawn; nil when no
----                          region was given
+--- @return string|nil side  'city' or 'county': the side of the line the chosen
+---                          POI is on; nil when no region was given
 function BR.PickStormAnchor(rng, waypoints, pois, band, region)
     if #pois == 0 or #waypoints == 0 then return nil, nil, nil end
 
@@ -1399,18 +1415,28 @@ function BR.PickStormAnchor(rng, waypoints, pois, band, region)
     local step = band and band.widenStep or 500.0
     local cap  = band and band.widenMax or 4000.0
 
-    local wps, pool, side = waypoints, pois, nil
+    local wps, pool, line = waypoints, pois, nil
+
+    --- Whether `y` is a line on the map: a number, not NaN, strictly inside the
+    --- storm's mapAABB (and finite, wherever no AABB is configured).
+    local function onMap(y)
+        if type(y) ~= 'number' or y ~= y or y == math.huge or y == -math.huge then
+            return false
+        end
+        local A = BR.Config and BR.Config.Storm and BR.Config.Storm.mapAABB
+        if A and A.min and A.max then return y > A.min.y and y < A.max.y end
+        return true
+    end
+
     if region then
-        -- A value of the wrong type would make the comparisons below throw, so
-        -- it takes the default. A share outside 0..1 needs no clamp: above 1
-        -- always draws city and below 0 never does, which is what a clamp does.
-        local line = region.cityMaxY
-        if type(line) ~= 'number' then line = 1050.0 end
         local share = region.cityShare
-        if type(share) ~= 'number' then share = 0.5 end
+        if type(share) ~= 'number' or not (share >= 0.0 and share <= 1.0) then
+            share = ANCHOR_CITY_SHARE
+        end
+        line = region.cityMaxY
+        if not onMap(line) then line = ANCHOR_CITY_MAX_Y end
 
         local wantCity = rng:float() < share
-        side = wantCity and 'city' or 'county'
 
         local inSide = {}
         for _, p in ipairs(pois) do
@@ -1436,6 +1462,14 @@ function BR.PickStormAnchor(rng, waypoints, pois, band, region)
 
     local wp = rng:pick(wps)
 
+    -- THE SIDE IS READ OFF THE ANCHOR, not off the draw: the two agree whenever
+    -- the drawn region has a POI, and when it has none the anchor came from the
+    -- whole table and the log should say where it really is.
+    local function sideOf(p)
+        if not (line and p) then return nil end
+        return (p.y < line) and 'city' or 'county'
+    end
+
     while true do
         local candidates = {}
         for _, p in ipairs(pool) do
@@ -1445,7 +1479,8 @@ function BR.PickStormAnchor(rng, waypoints, pois, band, region)
             end
         end
         if #candidates > 0 then
-            return rng:pick(candidates), wp, side
+            local poi = rng:pick(candidates)
+            return poi, wp, sideOf(poi)
         end
         if maxD >= cap then break end
         maxD = math.min(cap, maxD + step)
@@ -1459,7 +1494,7 @@ function BR.PickStormAnchor(rng, waypoints, pois, band, region)
         local d = BR.Dist(wp.x, wp.y, p.x, p.y)
         if d < bestD then best, bestD = p, d end
     end
-    return best, wp, side
+    return best, wp, sideOf(best)
 end
 
 --- The breakout budget for one phase, with the chance RAMPED by progress.

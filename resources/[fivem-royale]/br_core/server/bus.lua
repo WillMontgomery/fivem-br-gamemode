@@ -57,12 +57,15 @@ function BR.Bus.plan(m)
         end
     end
 
-    -- The storm anchor is picked FROM the tour: city or county first, half and
-    -- half (#381), then a random waypoint of this flight in that region, then
-    -- a random POI of that region 500-1500 units off it (band widens where the
-    -- route is POI-sparse). The circle tends to land where people actually
-    -- dropped, it is always centred on a nameable place, and 192 tours x ~49
-    -- POIs never settles into a pattern.
+    -- The storm anchor is picked FROM the tour: city or county first (#381),
+    -- then a random waypoint of this flight in that region, then a random POI
+    -- of that region 500-1500 units off it (band widens where the route is
+    -- POI-sparse). The circle tends to land where people actually dropped, it
+    -- is always centered on a nameable place, and 192 tours x ~49 POIs never
+    -- settles into a pattern. The anchor is city anchorRegion.cityShare (0.62)
+    -- of the time -- NOT half: circle 1 and the final zone lean county off it,
+    -- and 0.62 is what makes MATCHES open and end about half in the city
+    -- (config/storm.lua). The side logged is the side the anchor is on.
     local poi, _, side = BR.PickStormAnchor(rng, waypoints,
         BR.Config.Map.POIs, BR.Config.Storm.anchorBand,
         BR.Config.Storm.anchorRegion)

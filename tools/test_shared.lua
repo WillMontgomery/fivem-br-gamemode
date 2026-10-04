@@ -6322,17 +6322,22 @@ end
 
 describe('storm.anchor.region')
 do
-    -- ═══ HALF THE MATCHES OPEN IN THE CITY, HALF IN THE COUNTY (#381) ═══
+    -- ═══ THE ANCHOR'S REGION, DRAWN FIRST (#381) ═══
     --
     --   "What I want is 50% in the city and 50% in the county."
     --                                                  -- owner, 2026-10-03
     --
     -- The picker draws the region FIRST, off the match stream, with P(city) =
     -- cityShare, and only then a waypoint of the tour and a POI, both inside that
-    -- region. So the split is exact by construction rather than by luck, and what
-    -- these assertions have to prove is that nothing after the draw can carry the
-    -- anchor back across the line: not the waypoint, not the band, not the
-    -- widening, not the nearest-POI fallback.
+    -- region. So the ANCHOR's split is cityShare by construction rather than by
+    -- luck, and what these assertions have to prove is that nothing after the draw
+    -- can carry the anchor back across the line: not the waypoint, not the band,
+    -- not the widening, not the nearest-POI fallback.
+    --
+    -- The owner's 50/50 is where MATCHES open and end, which is not the anchor's:
+    -- cityShare is calibrated so circle 1 and the final zone each land in the city
+    -- about half the time, and tools/test_storm.lua's storm.anchor.outcome holds
+    -- that through the real server. This block is the picker.
     local band = BR.Config.Storm.anchorBand
     local region = BR.Config.Storm.anchorRegion
     local pois = BR.Config.Map.POIs
@@ -6342,8 +6347,9 @@ do
     ok(type(region) == 'table' and type(line) == 'number'
         and type(region.cityShare) == 'number',
         'the region is configured: a line and a share')
-    ok(region and region.cityShare == 0.5,
-        "and the share is the owner's: half and half",
+    ok(region and region.cityShare == 0.62,
+        'and the share is the calibrated 0.62, which opens and ends matches about '
+            .. 'half in the city',
         region and tostring(region.cityShare))
     ok(line == 1050.0, "and the city is everything south of the owner's y = 1050", tostring(line))
 
@@ -6401,7 +6407,7 @@ do
     -- THE DRAW IS THE FIRST VALUE OFF THE STREAM. Not a statistic: for each seed,
     -- the region the picker reports is exactly what the first float of an
     -- identical stream says it should be. A picker that drew the waypoint first
-    -- and then the region would still split 50/50, and would fail here.
+    -- and then the region would still split by cityShare, and would fail here.
     local firstOff = 0
     for seed = 1, 300 do
         local _, _, side = BR.PickStormAnchor(BR.Rng(seed), drawTour(BR.Rng(seed + 1)),
@@ -6414,9 +6420,9 @@ do
 
     -- THE SHARE, OVER MANY MATCHES WITH THE REAL TOURS AND THE REAL POIS. Each
     -- seed draws its tour and then its anchor off one stream, the way bus.plan()
-    -- does. 20,000 draws put one standard deviation of a fair split at 0.35
-    -- points, so 1.5 points is four of them -- and the seeds are fixed, so this
-    -- either passes every run or fails every run.
+    -- does. 20,000 draws put one standard deviation of the split at 0.35 points,
+    -- so 1.5 points is four of them -- and the seeds are fixed, so this either
+    -- passes every run or fails every run.
     local N = 20000
     local cityN, nilN, offSide, wpOffSide, outOfBand, worstD = 0, 0, 0, 0, 0, 0.0
     for seed = 1, N do
@@ -6437,7 +6443,7 @@ do
     local share = cityN / N
     ok(nilN == 0, 'an anchor is always produced', ('%d of %d nil'):format(nilN, N))
     ok(math.abs(share - region.cityShare) <= 0.015,
-        'the city share over 20,000 matches is cityShare',
+        'the anchor city share over 20,000 matches is cityShare',
         ('%.2f%% city, want %.0f%%'):format(100 * share, 100 * region.cityShare))
     ok(offSide == 0, 'every anchor is in the region that was drawn',
         ('%d of %d across the line'):format(offSide, N))
@@ -6460,10 +6466,10 @@ do
         end
         return c / n
     end
-    ok(cityRate(1.0, 500) == 1.0, 'cityShare 1 opens every match in the city')
-    ok(cityRate(0.0, 500) == 0.0, 'cityShare 0 opens every match in the county')
+    ok(cityRate(1.0, 500) == 1.0, 'cityShare 1 anchors every match in the city')
+    ok(cityRate(0.0, 500) == 0.0, 'cityShare 0 anchors every match in the county')
     local quarter = cityRate(0.25, 20000)
-    ok(math.abs(quarter - 0.25) <= 0.015, 'cityShare 0.25 opens a quarter in the city',
+    ok(math.abs(quarter - 0.25) <= 0.015, 'cityShare 0.25 anchors a quarter in the city',
         ('%.2f%%'):format(100 * quarter))
 
     -- WIDENING STAYS IN THE REGION. City drawn (share 1); the only POI in the
@@ -6561,19 +6567,103 @@ do
         'and a tour with no county waypoint the same way',
         wp and ('waypoint y %.0f, %s'):format(wp.y, poi and poi.id or 'nil'))
 
-    -- A REGION WITH NO POI IN IT still opens the match: any POI beats a dead
-    -- warmup. A line moved south of the whole map has no city at all.
+    -- ═══ A SHARE OR A LINE THAT CANNOT BE USED TAKES THE SHIPPED ONE ═══
+    --
+    -- NaN is a number, so a type check passes it, and every comparison with it is
+    -- false: a NaN share would anchor every match in the county and a NaN line
+    -- would put every POI in it. So a share that is not a number in 0..1 and a
+    -- line that is not a y on the map (inside the storm's mapAABB) are each
+    -- replaced by the shipped value -- and "replaced" is asserted as an OUTCOME:
+    -- for every seed, the picker hands back exactly the POI, the waypoint and the
+    -- side it hands back for the shipped region. That also holds the picker's
+    -- default to the config's: it is spelled twice, and a config retuned without
+    -- the picker fails here.
+    local function sameAsShipped(bad)
+        local differ, cityN, firstDiff = 0, 0, nil
+        for seed = 1, 400 do
+            local rngA, rngB = BR.Rng(seed * 31 + 5), BR.Rng(seed * 31 + 5)
+            local wpsA, wpsB = drawTour(rngA), drawTour(rngB)
+            local pA, wA, sA = BR.PickStormAnchor(rngA, wpsA, pois, band, region)
+            local pB, wB, sB = BR.PickStormAnchor(rngB, wpsB, pois, band, bad)
+            if not (pA == pB and wA and wB and wA.x == wB.x and wA.y == wB.y and sA == sB)
+                or sB ~= sideOf(pB) then
+                differ = differ + 1
+                firstDiff = firstDiff or seed
+            end
+            if sB == 'city' then cityN = cityN + 1 end
+        end
+        return differ, cityN, firstDiff
+    end
+    local badShares = {
+        { 'NaN', 0 / 0 }, { '-0.1', -0.1 }, { '1.5', 1.5 }, { 'inf', math.huge },
+        { '-inf', -math.huge }, { "'0.62'", '0.62' }, { 'true', true }, { 'missing', nil },
+    }
+    for _, b in ipairs(badShares) do
+        local differ, cityN, firstDiff = sameAsShipped({ cityMaxY = line,
+            cityShare = b[2] })
+        ok(differ == 0,
+            ('a share of %s anchors exactly as the shipped share does'):format(b[1]),
+            ('%d of 400 seeds differ (first %s); %d city'):format(differ,
+                tostring(firstDiff), cityN))
+    end
+    local badLines = {
+        { 'NaN', 0 / 0 }, { 'inf', math.huge }, { '-inf', -math.huge },
+        { 'north of the map', 9000.0 }, { 'south of the map', -4000.0 },
+        { 'a million meters north', 1.0e6 }, { "'north'", 'north' }, { 'missing', nil },
+    }
+    for _, b in ipairs(badLines) do
+        local differ, cityN, firstDiff = sameAsShipped({ cityMaxY = b[2],
+            cityShare = region.cityShare })
+        ok(differ == 0,
+            ('a line %s anchors exactly as the shipped line does'):format(b[1]),
+            ('%d of 400 seeds differ (first %s); %d city'):format(differ,
+                tostring(firstDiff), cityN))
+    end
+    -- And the identity is not the trivial kind: the shipped region sends about 62%
+    -- of these anchors to the city, where a NaN share taken at face value sends none.
+    local _, shippedCity = sameAsShipped(region)
+    ok(shippedCity >= 220 and shippedCity <= 280,
+        'the shipped region anchors about 62% of those 400 seeds in the city',
+        ('%d of 400'):format(shippedCity))
+
+    -- AN OFF-MAP LINE ON A SMALL TABLE: south of the map there is no city at all,
+    -- so the default line is used, and by it the POI at y 1000 is the city. Taken
+    -- at face value the draw would have fallen back to the whole table and could
+    -- have handed back the county one.
+    local tiny = {
+        { id = 'city_at_1000', x = 0.0, y = 1000.0 },
+        { id = 'county_at_3000', x = 0.0, y = 3000.0 },
+    }
+    local wrongPick = 0
+    for s = 1, 40 do
+        poi, wp, side = BR.PickStormAnchor(BR.Rng(s), { { x = 0.0, y = 2000.0 } }, tiny,
+            band, { cityMaxY = -1.0e9, cityShare = 1.0 })
+        if not (poi and poi.id == 'city_at_1000' and side == 'city') then
+            wrongPick = wrongPick + 1
+        end
+    end
+    ok(wrongPick == 0, 'a line south of the map is replaced by the default before the draw',
+        ('%d of 40 seeds anchored elsewhere'):format(wrongPick))
+
+    -- A DRAWN REGION WITH NO POI still opens the match -- any POI beats a dead
+    -- warmup -- and the side handed back is where the anchor IS. The city was
+    -- drawn; there is no city POI; the anchor is county, and says so.
     poi, wp, side = BR.PickStormAnchor(BR.Rng(8), { { x = 0.0, y = 0.0 } }, {
-        { id = 'only_county', x = 0.0, y = 1000.0 },
-    }, band, { cityMaxY = -1.0e9, cityShare = 1.0 })
-    ok(poi and poi.id == 'only_county',
+        { id = 'county_a', x = 0.0, y = 2000.0 },
+        { id = 'county_b', x = 900.0, y = 2500.0 },
+    }, band, { cityMaxY = line, cityShare = 1.0 })
+    ok(poi and (poi.id == 'county_a' or poi.id == 'county_b'),
         'a region with no POI falls back to the whole table rather than nil',
         poi and poi.id)
+    ok(side == 'county', 'and reports the side the anchor is on, not the side it drew',
+        tostring(side))
 
     -- NEVER NIL, NEVER AN ERROR, whatever the inputs: random tours and POI sets
     -- anywhere on and off the map, random lines and shares, and region tables
-    -- that are missing a field, hold the wrong type, or hold NaN. The picker runs
-    -- inside the WARMUP transition; an error there is a dead match.
+    -- that are missing a field, hold the wrong type, or hold NaN or infinity. The
+    -- picker runs inside the WARMUP transition; an error there is a dead match.
+    -- AND THE SIDE IS ALWAYS THE ANCHOR'S, by the line the picker could use: the
+    -- region's own when it is a y on the map, the default otherwise.
     local fz = BR.Rng(381)
     local function coord() return (fz:float() - 0.5) * 24000.0 end
     local regions = {
@@ -6584,8 +6674,14 @@ do
         function() return { cityMaxY = 'north', cityShare = '0.5' } end,
         function() return { cityMaxY = 0 / 0, cityShare = 0 / 0 } end,
         function() return { cityMaxY = 0.0, cityShare = 7.0 } end,
+        function() return { cityMaxY = math.huge, cityShare = -0.5 } end,
+        function() return { cityMaxY = -math.huge, cityShare = math.huge } end,
         function() return nil end,
     }
+    local aabb = BR.Config.Storm.mapAABB
+    local function onMap(y)
+        return type(y) == 'number' and y > aabb.min.y and y < aabb.max.y
+    end
     local fuzzBad, fuzzOff, fuzzFirst = 0, 0, nil
     for i = 1, 4000 do
         local wps, ps = {}, {}
@@ -6600,19 +6696,19 @@ do
         if not (okc and member) then
             fuzzBad = fuzzBad + 1
             fuzzFirst = fuzzFirst or (okc and 'no anchor' or tostring(got))
-        elseif rg and type(rg.cityMaxY) == 'number' and rg.cityMaxY == rg.cityMaxY then
-            local onSide = false
-            for _, p in ipairs(ps) do
-                if ((p.y < rg.cityMaxY) and 'city' or 'county') == sd then onSide = true end
+        else
+            local want = nil
+            if rg then
+                local y = rg.cityMaxY
+                if not onMap(y) then y = 1050.0 end
+                want = (got.y < y) and 'city' or 'county'
             end
-            if onSide and ((got.y < rg.cityMaxY) and 'city' or 'county') ~= sd then
-                fuzzOff = fuzzOff + 1
-            end
+            if sd ~= want then fuzzOff = fuzzOff + 1 end
         end
     end
     ok(fuzzBad == 0, 'random inputs always produce one of the given POIs, never nil or an error',
         ('%d of 4000, first: %s'):format(fuzzBad, tostring(fuzzFirst)))
-    ok(fuzzOff == 0, 'and the anchor is in the drawn region whenever that region has a POI',
+    ok(fuzzOff == 0, "and the side reported is always the anchor's own",
         ('%d of 4000'):format(fuzzOff))
 end
 

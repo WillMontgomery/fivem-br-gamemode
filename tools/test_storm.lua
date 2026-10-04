@@ -11163,6 +11163,199 @@ do
     end
 end
 
+-- ---------------------------------------------------------------------------
+describe('storm.anchor.outcome')
+do
+    -- ═══ HALF THE MATCHES OPEN IN THE CITY, AND HALF END THERE (#381) ═══
+    --
+    --   "What I want is 50% in the city and 50% in the county."
+    --   "y = 1050. everything below that is city, everything above is county"
+    --                                                  -- owner, 2026-10-03
+    --
+    -- What the owner asked for is where MATCHES open and end -- circle 1's center
+    -- and the final zone's -- not where the anchor is. The anchor is the only
+    -- thing anchorRegion.cityShare touches, and both circles lean county off it,
+    -- so the share is calibrated (config/storm.lua has the measurement) and this
+    -- block is what holds the calibration to the code.
+    --
+    -- ═══ WHY THE SHARES ARE STRAIGHT LINES, WHICH IS WHAT MAKES THIS CHEAP ═══
+    --
+    -- The share enters a match at exactly one place: the region draw, `rng:float()
+    -- < cityShare`, inside BR.PickStormAnchor. The tour before it, and the waypoint,
+    -- the POI and the whole storm stream after it, are the same whatever the share.
+    -- So a match at ANY share is, bit for bit, the match its draw picked a side for
+    -- -- the one forced to the city (share 1) or the one forced to the county
+    -- (share 0) -- and over many matches circle 1's city share is
+    --
+    --     s * (its share in city-forced matches) + (1 - s) * (in county-forced ones)
+    --
+    -- and the final zone's the same. Four end points, each a property of the tours,
+    -- the POIs and the storm, and none of them the knob's. A whole match costs about
+    -- 25 ms here (nine zone shapes are built for it), so the final zone's two ends
+    -- cannot be measured to a point in a suite that has to stay quick. They are
+    -- pinned below from the calibration -- 16,000 whole matches a side through this
+    -- same server code -- and this block checks that the code still produces them:
+    -- circle 1's ends closely, over 800 seeds (a seed's second and third match
+    -- reuse the first one's shapes, so a seed costs about 2 ms), and the final
+    -- zone's coarsely, over 24 whole matches a side.
+    --
+    -- ═══ BY THE OWNER'S LINE, NOT THE CONFIG'S ═══
+    --
+    -- The outcome is judged by y < 1050 as he said it. A cityMaxY moved anywhere
+    -- from 846 to 1080 draws the very same anchors (no POI and no waypoint lies in
+    -- that band), so it changes nothing here, and it should not.
+    local OWNER_LINE = 1050.0
+    -- % city, 16,000 whole matches a side: the 12,000 0.62 was picked on and the
+    -- 4,000 it was checked on.
+    local CAL = {
+        circle1 = { city = 67.62, county = 24.49 },
+        final   = { city = 62.67, county = 24.97 },
+    }
+
+    local S = newStormServer()
+    local env = S.env
+    loadInto(env, { 'br_core/server/bus.lua' })
+    local BR = env.BR
+    S.roster[1] = nil
+    -- Three log lines a match over 2,500 matches, and only a scheduler error is
+    -- read back (S.errored), so only those are kept.
+    env.print = function(line)
+        local s = tostring(line)
+        if s:find('errored', 1, true) then S.prints[#S.prints + 1] = s end
+    end
+    env.BR.Broadcast.toMatch = function() end
+    BR.Sched.setEnabled('storm.phase', true)
+    local rc = BR.Config.Storm.anchorRegion
+    local shipped = rc.cityShare
+    local horizon = 0
+
+    --- One match through the real bus.lua and storm.lua: planned, circle 1 drawn
+    --- at warmup and, with `walk`, played to its last phase. The clock is set from
+    --- the seed as the plan and the draw read it, so the same `i` is the same tour
+    --- and the same storm whatever the share. The walk starts past wherever the
+    --- scheduler has got to, since a phase job that last ran in a later match's
+    --- hour would not run again until then -- and nothing a phase draws reads the
+    --- clock.
+    local function play(i, share, walk)
+        rc.cityShare = share
+        S.now = 1000000 + i * 3600017
+        local m = { id = i, seq = i, state = BR.MatchState.WARMUP }
+        S.matches = { m }
+        BR.Bus.plan(m)
+        BR.Storm.drawFirstCircle(m)
+        local o = { ax = m.anchor.x, ay = m.anchor.y,
+                    cx = m.stormFirst.cx, cy = m.stormFirst.cy }
+        if walk then
+            S.now = math.max(S.now, horizon) + 1000
+            m.state = BR.MatchState.PLAYING
+            BR.Storm.begin(m)
+            local last = #BR.Config.Storm.phases
+            local guard = 0
+            while m.storm and m.storm.phase < last and guard < 64 do
+                guard = guard + 1
+                local rec = m.storm
+                S.now = math.floor(rec.tStart + rec.tWait + rec.tShrink) + 1
+                BR.Sched.step(S.now)
+            end
+            if m.storm and m.storm.phase == last then
+                o.fx, o.fy = m.storm.cx1, m.storm.cy1
+            end
+            horizon = S.now
+        end
+        BR.Bus.clear(m)
+        rc.cityShare = shipped
+        return o
+    end
+
+    -- ═══ THE MATCH AT THE SHIPPED SHARE IS ITS SIDE'S FORCED MATCH, BIT FOR BIT ═══
+    local N = 800
+    local c1City, c1County, notItsSide, firstOff = 0, 0, 0, nil
+    for i = 381001, 381000 + N do
+        local city = play(i, 1.0)
+        local county = play(i, 0.0)
+        local real = play(i, shipped)
+        local arm = (real.ay < rc.cityMaxY) and city or county
+        if not (real.ax == arm.ax and real.ay == arm.ay
+                and real.cx == arm.cx and real.cy == arm.cy) then
+            notItsSide = notItsSide + 1
+            firstOff = firstOff or i
+        end
+        if city.cy < OWNER_LINE then c1City = c1City + 1 end
+        if county.cy < OWNER_LINE then c1County = c1County + 1 end
+    end
+    ok(notItsSide == 0,
+        ('at the shipped share, every one of %d matches is the city- or county-forced '
+            .. 'match of its own seed, anchor and circle 1 alike'):format(N),
+        ('%d differ, first seed %s'):format(notItsSide, tostring(firstOff)))
+
+    -- ═══ CIRCLE 1'S TWO ENDS, THROUGH THE REAL SERVER ═══
+    --
+    -- 800 seeds put one standard deviation at about 1.6 points on each, so 4.5 is
+    -- nearly three of them -- and the seeds are fixed, so this passes or fails every
+    -- run.
+    local p1, p0 = 100 * c1City / N, 100 * c1County / N
+    ok(math.abs(p1 - CAL.circle1.city) <= 4.5 and math.abs(p0 - CAL.circle1.county) <= 4.5,
+        'circle 1 still opens in the city as often as the calibration says, '
+            .. 'from a city anchor and from a county one',
+        ('city-forced %.1f%% (calibrated %.1f), county-forced %.1f%% (calibrated %.1f)')
+            :format(p1, CAL.circle1.city, p0, CAL.circle1.county))
+
+    -- ═══ THE FINAL ZONE'S TWO ENDS, COARSELY ═══
+    --
+    -- 24 whole matches a side is a standard deviation of about nine points, so this
+    -- guards against the final zone no longer following the anchor at all -- a walk
+    -- that stops short, a zone that always ends in one place -- and is not a
+    -- measurement. The lever (city-forced minus county-forced) is what the knob
+    -- pulls on; it is 38 points calibrated.
+    local M = 24
+    local finCity, finCounty, unfinished = 0, 0, 0
+    for j = 1, M do
+        local i = 391000 + j
+        local city = play(i, 1.0, true)
+        local county = play(i, 0.0, true)
+        if not (city.fy and county.fy) then
+            unfinished = unfinished + 1
+        else
+            if city.fy < OWNER_LINE then finCity = finCity + 1 end
+            if county.fy < OWNER_LINE then finCounty = finCounty + 1 end
+        end
+    end
+    local q1, q0 = 100 * finCity / M, 100 * finCounty / M
+    ok(unfinished == 0, ('all %d whole matches reach the final phase'):format(2 * M),
+        ('%d did not'):format(unfinished))
+    ok(math.abs(q1 - CAL.final.city) <= 20.0 and math.abs(q0 - CAL.final.county) <= 20.0
+        and q1 - q0 >= 15.0,
+        'and the final zone still follows the anchor toward its side',
+        ('city-forced %.0f%% (calibrated %.1f), county-forced %.0f%% (calibrated %.1f)')
+            :format(q1, CAL.final.city, q0, CAL.final.county))
+
+    -- ═══ THE OUTCOME ═══
+    --
+    -- At the shipped share, through those lines, circle 1 and the final zone each
+    -- land in the city within three points of half. The share that minimizes the
+    -- larger miss is about 0.625, where circle 1 runs a point and a half over half
+    -- and the final zone a point and a half under: the final zone follows the
+    -- anchor less closely than circle 1 does, and one number cannot close both. A
+    -- share of 0.5 opens matches in the city 46% of the time and ends them there
+    -- 44%, and fails both.
+    local function at(ends) return shipped * ends.city + (1 - shipped) * ends.county end
+    local c1, fin = at(CAL.circle1), at(CAL.final)
+    ok(math.abs(c1 - 50.0) <= 3.0 and math.abs(fin - 50.0) <= 3.0,
+        'at the shipped share, circle 1 opens in the city and the final zone ends there '
+            .. 'each about half the time',
+        ('cityShare %.2f: circle 1 %.1f%%, final zone %.1f%% city'):format(shipped, c1, fin))
+
+    -- And circle 1's from this run's own matches rather than the calibration's, with
+    -- the draw integrated out so a seed's luck at it is not in the number: a standard
+    -- deviation of about 1.4 points over 800 seeds.
+    local own = at({ city = p1, county = p0 })
+    ok(math.abs(own - 50.0) <= 4.0,
+        "and circle 1's share from these 800 seeds through the real server agrees",
+        ('%.1f%% city'):format(own))
+
+    ok(S.errored() == nil, 'with every match run clean', S.errored())
+end
+
 print(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     print(('\27[31m%d failed\27[0m'):format(fail))

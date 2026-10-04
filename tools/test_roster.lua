@@ -3315,9 +3315,11 @@ do
     ok(wrongSide == 0, 'the plan opens on the side of the line the configured share says',
         ('%d of 40 on the wrong side, first: %s'):format(wrongSide, tostring(firstWrong)))
 
-    -- And at the owner's share, about half and half. 400 plans put one standard
-    -- deviation at 2.5 points; the waypoint-decides draw this replaced opened in
-    -- the city 37% of the time, 13 points out, and fails this.
+    -- And at the configured share, the plans' ANCHORS split by it: 0.62, which is
+    -- calibrated so circle 1 and the final zone land about half in the city
+    -- (tools/test_storm.lua's storm.anchor.outcome). 400 plans put one standard
+    -- deviation at 2.4 points; the waypoint-decides draw this replaced anchored
+    -- in the city 37% of the time, 25 points out, and fails this.
     local cityPlans = 0
     for _ = 1, 400 do
         fakeTime = fakeTime + 7919
@@ -3326,7 +3328,7 @@ do
         if a and a.y < rcfg.cityMaxY then cityPlans = cityPlans + 1 end
     end
     ok(math.abs(cityPlans / 400 - rcfg.cityShare) <= 0.08,
-        'and at the configured share the plans split city and county by it',
+        "and at the configured share the plans' anchors split city and county by it",
         ('%d of 400 in the city, want %.0f%%'):format(cityPlans, 100 * rcfg.cityShare))
     BR.Bus.clear(theMatch())
 end

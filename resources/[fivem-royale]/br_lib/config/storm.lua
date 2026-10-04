@@ -42,22 +42,47 @@ BR.Config.Storm = {
     -- A point is CITY when its y is below cityMaxY and COUNTY otherwise; that
     -- one line sorts both the waypoints and the POIs. Each match draws city
     -- with probability cityShare, then picks its waypoint and its POI inside
-    -- that region, so the anchor's split is exactly cityShare. Before this the
+    -- that region, so the ANCHOR is city cityShare of the time. Before this the
     -- waypoint decided, and legs 3 and 4 are always county: over all 192 tours
     -- the anchor was city 37% of the time.
     --
-    -- THE ANCHOR'S SPLIT, NOT THE CIRCLES'. Circle 1 roams off the anchor
-    -- (2.4 km at the median) and the rest of the match off circle 1, so over
-    -- 2,000 whole matches circle 1 opened in the city 44% of the time and the
-    -- final zone ended there 43% (38% and 37% before this).
+    -- CITYSHARE IS CALIBRATED TO THE MATCH, NOT TO THE ANCHOR. The owner's 50/50
+    -- is where matches OPEN and END: circle 1's center and the final zone's. Both
+    -- lean county off the anchor -- circle 1 roams 2.4 km from it at the median,
+    -- and the final zone roams off circle 1 -- so an anchor split 50/50 opened
+    -- matches in the city 46% of the time and ended them there 44%. 0.62 is the
+    -- share that puts circle 1 and the final zone each as near half as one number
+    -- can, and the anchor is then city 62% of the time.
+    --
+    -- MEASURED through the real bus.lua and storm.lua, whole matches to the last
+    -- phase, city by y < 1050. Picked on 12,000 matches (0.62 is the share where
+    -- the larger of the two misses is smallest); checked on 4,000 others it never
+    -- saw (95% intervals):
+    --
+    --   cityShare   anchor city          circle 1 city        final zone city
+    --     0.50      50.7% (49.2-52.3)    45.9% (44.4-47.4)    43.6% (42.1-45.1)
+    --     0.62      62.6% (61.1-64.1)    51.0% (49.5-52.6)    48.0% (46.5-49.6)
+    --
+    -- Circle 1 runs about three points ahead of the final zone at any share near
+    -- this one, because the final zone follows the anchor less closely than
+    -- circle 1 does; 0.62 splits that gap, a point or so over half and a point or
+    -- so under. Anything that changes how far circle 1 or the later phases roam
+    -- moves both numbers, and tools/test_storm.lua's storm.anchor.outcome is what
+    -- says so.
     --
     -- At y < 1050, 52 of the 120 POIs are city. The nearest the line on the
     -- city side are South Fuente Ridge and Observatory Ridge (y 835 and 845);
     -- on the county side Chumash (1080), La Fuente Blanca, South Palomino
-    -- Ridge, the Vinewood Bowl and the Galileo Observatory (1145 to 1200).
+    -- Ridge, the Vinewood Bowl and the Galileo Observatory (1145 to 1200). No
+    -- tour waypoint lies between y 700 and 1219, so any line from 846 to 1080
+    -- draws exactly the same anchors.
+    --
+    -- A share that is not a number in 0..1, or a line that is not a y on the
+    -- map (inside mapAABB below), is not used: the picker falls back to these
+    -- two values (BR.PickStormAnchor). NaN counts as neither.
     anchorRegion = {
         cityMaxY  = 1050.0,
-        cityShare = 0.5,
+        cityShare = 0.62,
     },
 
     -- How the match anchor is picked from the flight (BR.PickStormAnchor).

@@ -217,7 +217,7 @@ opening the doors over open water seconds after takeoff.
 
 The whole sequence homes on one point, chosen at warmup:
 
-1. Draw the **region**: city with probability `cityShare` (0.5), county
+1. Draw the **region**: city with probability `cityShare` (0.62), county
    otherwise (#381). A point is city when its y is below `cityMaxY` (1050).
 2. Pick a random **waypoint of this match's own flight tour** in that region.
    Every authored tour has one on each side: leg 1 is city, legs 3 and 4 are
@@ -227,17 +227,30 @@ The whole sequence homes on one point, chosen at warmup:
 4. If nothing is in band, widen by `widenStep` up to `widenMax`, then take the
    region's nearest POI outright.
 
-The anchor's split is exactly `cityShare`. Before #381 the waypoint decided, and
+The anchor is city `cityShare` of the time. Before #381 the waypoint decided, and
 over all 192 tours the anchor was city 37% of the time.
 
-The circles do not inherit it exactly: circle 1 is drawn off the anchor across
-the whole opening zone (2.4 km away at the median), and every later zone off the
-one before. Over 2,000 whole matches through the server, by the same line:
+**The anchor's split is not the match's.** The owner's 50/50 is where matches
+open and end: circle 1's center and the final zone's. Circle 1 is drawn off the
+anchor across the whole opening zone (2.4 km away at the median), and every later
+zone off the one before, and both lean county. So `cityShare` is calibrated to
+put circle 1 and the final zone each as near half as one number can, and the
+anchor is then city 62% of the time. Whole matches through the server's own
+`bus.lua` and `storm.lua`, city by y < 1050, with 95% intervals:
 
-| | Anchor | Circle 1 | Final zone |
+| `cityShare` | Anchor city | Circle 1 city | Final zone city |
 |---|---|---|---|
-| Before #381, city | 36% | 38% | 37% |
-| After #381, city | 50% | 44% | 43% |
+| before #381 | 36% | 38% | 37% |
+| 0.50 | 50.7% (49.2–52.3) | 45.9% (44.4–47.4) | 43.6% (42.1–45.1) |
+| **0.62** | 62.6% (61.1–64.1) | 51.0% (49.5–52.6) | 48.0% (46.5–49.6) |
+
+The first row is 2,000 matches; the other two are 4,000 matches that played no
+part in choosing 0.62, which was picked on 12,000 others as the share where the
+larger of the two misses is smallest. Circle 1 runs about three points ahead of
+the final zone at any share near this one, because the final zone follows the
+anchor less closely than circle 1 does, so 0.62 leaves one a point or so over half
+and the other a point or so under. `storm.anchor.outcome` in
+`tools/test_storm.lua` holds the calibration to the code.
 
 Route-coupled, so the opening circle almost always contains a stretch of the
 path players actually dropped along. POI-anchored, so the centre is always a
