@@ -506,6 +506,17 @@ do
        'BUT A DECLINE IS NOT A FINISH (#387) -- the page keeps the toggle for a '
        .. 'player who takes it back, and only `done` may veto that',
        'done = ' .. tostring(published('done')))
+
+    -- A DECLINE AFTER THE OFFER WAS ALREADY TAKEN DOWN (#387, review). Once the
+    -- lobby half has started `offering` is false; the decline must still tell
+    -- the page that `offerable` fell, or the toggle stays for the session.
+    connect(true)
+    BR.Tutorial.offer(false)
+    last = nil
+    TriggerEvent('br:tutorial:decline')
+    ok(last ~= nil and published('offerable') == false,
+       'a decline with the offer already down still tells the page it is spent',
+       'offerable = ' .. tostring(published('offerable')))
 end
 
 describe('tutorial.devCommand')

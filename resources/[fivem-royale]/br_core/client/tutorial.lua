@@ -721,7 +721,9 @@ AddEventHandler(BR.Net.TUTORIAL_OFFER, function(data)
     -- how brtutorialreset reaches a player who finished earlier this session;
     -- a no leaves `finished` alone, since only a yes means anything changed.
     if may then finished = false end
-    BR.Tutorial.offer(may)
+    -- PUBLISHED EVEN WHEN `offering` IS UNCHANGED (#387): `offerable` and
+    -- `finished` may have moved, and BR.Tutorial.offer only publishes a change.
+    if offering == may then publish() else BR.Tutorial.offer(may) end
 end)
 
 --- The player unticked the box. Spend the offer for good.
@@ -731,7 +733,11 @@ end)
 --- far side so it is still gone tomorrow.
 function BR.Tutorial.decline()
     offerable = false
-    BR.Tutorial.offer(false)
+    -- PUBLISHED EVEN WHEN THE OFFER WAS ALREADY DOWN (#387). Once the lobby half
+    -- has started `offering` is false, so BR.Tutorial.offer(false) returns early
+    -- and the page never heard `offerable` fall: a decline from there left the
+    -- continue toggle in the lobby for the rest of the session.
+    if offering then BR.Tutorial.offer(false) else publish() end
     TriggerServerEvent(BR.Net.TUTORIAL_DECLINE)
 end
 
