@@ -86,22 +86,22 @@ if [ "${#bounds[@]}" -gt 0 ]; then
     done <<< "$known"
 fi
 
-fail=0
+failed=()
 for g in check_asset_files.sh check_secrets.sh; do
     bash "$gates/$g" --revs "${revs[@]}"
     rc=$?
     case "$rc" in
         0) ;;
-        1) fail=1 ;;
+        1) failed+=("$g") ;;
         *) refuse "the $g gate could not run (exit $rc)." \
                "Fix what it says above, or install the hooks again: bash tools/install-hooks.sh" ;;
     esac
 done
 
-if [ "$fail" -ne 0 ]; then
-    for g in check_asset_files.sh check_secrets.sh; do
-        # The commits may carry a newer gate (a file newly ours on the
-        # allowlist, say) than the copy installed here.
+if [ "${#failed[@]}" -gt 0 ]; then
+    for g in "${failed[@]}"; do
+        # The commits may carry a newer copy of the gate that refused (a file
+        # newly ours on the allowlist, say) than the one installed here.
         if git cat-file -e "${tips[0]}:tools/$g" 2>/dev/null \
                 && ! git cat-file blob "${tips[0]}:tools/$g" | cmp -s - "$gates/$g"; then
             echo "${YEL}pre-push: the pushed tools/$g differs from the copy installed in $gates;${RST}"

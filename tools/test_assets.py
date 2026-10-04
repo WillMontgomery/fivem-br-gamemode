@@ -2541,10 +2541,21 @@ class PrePush(unittest.TestCase):
         out = self.push_refused('old', cwd=wt)
         self.assertIn('ASSET\x1b[0m resources/[maps]/legion/stream/legion.ytd', out)
         self.assertNotIn('old gate', out)
-        # Its old secrets gate differs from the installed one, and the refusal
-        # says how to tell; it has no asset gate to compare.
-        self.assertIn('the pushed tools/check_secrets.sh differs from the copy installed', out)
-        self.assertNotIn('the pushed tools/check_asset_files.sh differs', out)
+        # Its old secrets gate differs from the installed one, but that gate
+        # passed: only a gate that refused is worth comparing.
+        self.assertNotIn('differs from the copy installed', out)
+
+    def test_a_newly_allowlisted_file_points_at_reinstalling(self):
+        # A file made ours in the same push (a new ALLOW row) is refused by the
+        # installed gate, which has the old list, and the refusal says why.
+        script = read(os.path.join(TOOLS, 'check_asset_files.sh')).decode('utf-8')
+        script = script.replace('ALLOW=(\n', 'ALLOW=(\n    "resources/[fivem-royale]/br_audio/data/new_bank.awc"\n', 1)
+        self.commit({'tools/check_asset_files.sh': script,
+                     'resources/[fivem-royale]/br_audio/data/new_bank.awc': b'\0ours\0'}, 'a new sound bank')
+        out = self.push_refused('dev')
+        self.assertIn('ASSET\x1b[0m resources/[fivem-royale]/br_audio/data/new_bank.awc', out)
+        self.assertIn('the pushed tools/check_asset_files.sh differs from the copy installed', out)
+        self.assertNotIn('check_secrets.sh differs', out)
 
     def test_a_missing_gate_refuses_every_push(self):
         os.remove(os.path.join(self.hooks, 'pre-push-gates', 'check_secrets.sh'))
