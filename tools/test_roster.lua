@@ -17129,6 +17129,161 @@ do
         corpse and ('hp ' .. tostring(corpse.hp)) or 'nil')
 end
 
+describe('dbno.brdown.shot')
+do
+    -- #390: "when bleeding out, from other player's screens it appears the peds
+    -- are standing in place" -- and a two-player playtest of it cannot shoot,
+    -- because squadmates cannot hurt each other. `brdown <id> shot <shooter>`
+    -- is the dev-mode knock that goes through the SAME server path a bullet
+    -- does, and this block pins that it is the same: the same function, the
+    -- same events to the victim in the same order, the same correction to the
+    -- shooter -- against a real enemy round through the weaponDamageEvent
+    -- handler, side by side.
+    local pistol = BR.Config.WeaponById['pistol']
+    local WATCHED = { [BR.Net.HIT_DAMAGE] = true, [BR.Net.DBNO_SET] = true,
+                      [BR.Net.HEALTH_SYNC] = true, [BR.Net.DAMAGE_FEED] = true }
+
+    --- The knock as each machine receives it: event names in order, and the
+    --- payloads that decide what the victim's client does.
+    local function traffic(victim, shooter)
+        local v, s = {}, {}
+        for _, e in ipairs(sent) do
+            if WATCHED[e.event] and e.target == victim then
+                v[#v + 1] = { event = e.event, d = e.args[1] }
+            elseif e.event == BR.Net.DAMAGE_FEED and e.target == shooter then
+                s[#s + 1] = e.args[1]
+            end
+        end
+        return v, s
+    end
+    local function names(list)
+        local out = {}
+        for _, e in ipairs(list) do out[#out + 1] = tostring(e.event) end
+        return table.concat(out, ' > ')
+    end
+
+    -- ----------------------------- 1. a real enemy round knocks P2 down
+    local m = squadMatch(3)
+    BR.Roster.get(3).squadId = 'enemy'      -- P3 is not P2's squadmate
+    m.startSquads = 2
+    BR.Inv.reset(3)
+    BR.Inv.give(3, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip })
+    BR.Inv.of(3).ammo[BR.AmmoType.LIGHT] = 40
+    BR.Inv.of(3).active = 1
+    BR.Roster.get(3).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 4.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).hp, BR.Roster.get(2).armour = 10.0, 0.0
+    sent = {}
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 3, 3, {
+        damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+        weaponDamage = 26, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).state == BR.PlayerState.DBNO,
+        'a real enemy pistol round through weaponDamageEvent knocks P2 down',
+        tostring(BR.Roster.get(2).state))
+    local realV, realS = traffic(2, 3)
+
+    -- --------------------------- 2. brdown 2 shot 1, one squad, dev mode
+    squadMatch(2)
+    local calls = {}
+    local applyHit = BR.Damage.applyHit
+    BR.Damage.applyHit = function(shooter, victim, amount, meta)
+        calls[#calls + 1] = { shooter = shooter, victim = victim,
+                              amount = amount, meta = meta }
+        return applyHit(shooter, victim, amount, meta)
+    end
+    sent = {}
+    runCommand('brdown', '2', 'shot', '1')
+    BR.Damage.applyHit = applyHit
+    ok(BR.Roster.get(2).state == BR.PlayerState.DBNO,
+        '`brdown 2 shot 1` knocks P2 down in a one-squad dev match',
+        tostring(BR.Roster.get(2).state))
+    local c = calls[1]
+    ok(#calls == 1 and c.shooter == 1 and c.victim == 2
+       and c.meta and c.meta.weapon == pistol.hash and not c.meta.explosive
+       and c.amount >= 100.0,
+        'through BR.Damage.applyHit itself -- the function the '
+            .. 'weaponDamageEvent handler calls for every validated hit -- with '
+            .. 'a pistol round big enough to knock',
+        c and ('%d call(s): %s -> %s, %.0f, weapon %s'):format(#calls,
+            tostring(c.shooter), tostring(c.victim), c.amount,
+            tostring(c.meta and c.meta.weapon)) or 'never called')
+    local devV, devS = traffic(2, 1)
+
+    ok(#realV >= 3 and names(devV) == names(realV),
+        'and the VICTIM\'s client receives the same events, in the same order, '
+            .. 'as from a real round: HIT_DAMAGE, then DBNO_SET, then HEALTH_SYNC',
+        ('real: %s | brdown shot: %s'):format(names(realV), names(devV)))
+    local function first(list, ev)
+        for _, e in ipairs(list) do if e.event == ev then return e.d end end
+    end
+    local rd, dd = first(realV, BR.Net.DBNO_SET), first(devV, BR.Net.DBNO_SET)
+    local rh, dh = first(realV, BR.Net.HEALTH_SYNC), first(devV, BR.Net.HEALTH_SYNC)
+    ok(rd and dd and rd.downed == true and dd.downed == true
+       and rh and dh and rh.hp == dh.hp and dh.hp == BR.Config.Match.dbnoHp,
+        'with the same knock and the same downed floor in them',
+        ('downed %s/%s, hp %s/%s'):format(tostring(rd and rd.downed),
+            tostring(dd and dd.downed), tostring(rh and rh.hp),
+            tostring(dh and dh.hp)))
+    local hd = first(devV, BR.Net.HIT_DAMAGE)
+    ok(hd and hd.amount > 0,
+        'and the victim\'s own ped is taken down to the floor BEFORE the knock, '
+            .. 'as a bullet does -- plain brdown never sends that',
+        hd and tostring(hd.amount) or 'no HIT_DAMAGE')
+    local rs, ds = realS[#realS], devS[#devS]
+    ok(rs and ds and rs.netId == 1002 and ds.netId == 1002
+       and rs.src == 2 and ds.src == 2 and rs.hp == ds.hp,
+        'and the SHOOTER gets the same DAMAGE_FEED a real round sends: the '
+            .. 'victim\'s netId and the downed floor, which is what starts the '
+            .. 'shooter\'s correction watch on their copy of the body',
+        ('real netId %s src %s hp %s | dev netId %s src %s hp %s'):format(
+            tostring(rs and rs.netId), tostring(rs and rs.src),
+            tostring(rs and rs.hp), tostring(ds and ds.netId),
+            tostring(ds and ds.src), tostring(ds and ds.hp)))
+
+    -- ------------------------------------------ 3. plain brdown, for contrast
+    squadMatch(2)
+    sent = {}
+    runCommand('brdown', '2')
+    local plainV, plainS = traffic(2, 1)
+    ok(BR.Roster.get(2).state == BR.PlayerState.DBNO
+       and first(plainV, BR.Net.HIT_DAMAGE) == nil and #plainS == 0,
+        'plain `brdown 2` still knocks, with no HIT_DAMAGE and no shooter -- '
+            .. 'which is why the shot form exists',
+        names(plainV))
+
+    -- -------------------------------- 4. refusals, before anything is written
+    squadMatch(2)
+    sent = {}
+    printed = {}
+    runCommand('brdown', '2', 'shot')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE and #sent == 0
+       and printedSaying('brdown <serverId> shot <shooterId>') ~= nil,
+        '`brdown 2 shot` with no shooter changes nothing and says how to use it')
+    runCommand('brdown', '2', 'shot', '2')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE and #sent == 0,
+        'and a player cannot be their own shooter')
+
+    -- THE ONE THAT MATTERS: canBeDowned says no. applyHit with a lethal round
+    -- would then ELIMINATE them, so the refusal has to come first.
+    squadMatch(2)
+    BR.Roster.setState(1, BR.PlayerState.DBNO)  -- no standing mate for P2
+    local hp0 = BR.Roster.get(2).hp
+    sent = {}
+    printed = {}
+    runCommand('brdown', '2', 'shot', '1')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE
+       and BR.Roster.get(2).hp == hp0 and #sent == 0
+       and printedSaying('cannot be downed') ~= nil,
+        'and when the rules say P2 cannot be downed, `brdown shot` refuses '
+            .. 'BEFORE any damage is written -- a lethal round canBeDowned '
+            .. 'refused would be an elimination, not a knock',
+        ('%s, hp %s, %d event(s) sent'):format(tostring(BR.Roster.get(2).state),
+            tostring(BR.Roster.get(2).hp), #sent))
+end
+
 -- ==========================================================================
 -- A CLIENT, IN THE SERVER SUITE. (#115)
 -- ==========================================================================

@@ -160,6 +160,7 @@ RegisterCommand('brhelp', function()
     print('  brlootseed <n|off>   pin the loot layout so it repeats between matches')
     print('  brdbno               every downed player: time left, knocker, reviver')
     print('  brdown <id> [by]     knock a player down; says WHY when it refuses')
+    print('  brdown <id> shot <by>  the same knock through the real shot path')
     print('  brrevive <id> [by]   pick a downed player up, or put an '
         .. 'eliminated one back in')
     print('  brscatter [radius]   spread everyone out to test OneSync scoping')

@@ -13227,17 +13227,25 @@ do
     -- downed state looks different from death at a distance.
     local POSE_BY_MS = 400
 
-    -- ═══ #390: BOTH SETTLE ARMS, AND THEY ARE HELD TO DIFFERENT PROMISES ═══
+    -- ═══ #390: ALL THREE SETTLE ARMS, AND THEY ARE HELD TO DIFFERENT PROMISES ═══
     --
     -- `settle old` is 12bcfdc as it shipped: ClearPedTasksImmediately kills the
-    -- getup, so THIS screen has the pose back within POSE_BY_MS. On every OTHER
-    -- screen that is citizenfx/fivem#2684's repro (a clear on a ped just out of
-    -- a ragdoll, then the clip: others see the stand-up), and it is the default
-    -- no longer. `settle new` clears nothing: the engine's getup is allowed to
-    -- run -- a task the engine replicates like any other -- and the pose must
-    -- be back on the frame after it ends, in BOTH readings of the ambiguous
-    -- native, with no task clear from the settle at all.
-    for _, SETTLE in ipairs({ 'old', 'new' }) do
+    -- getup, so THIS screen has the pose back within POSE_BY_MS. What a clear
+    -- and a re-task on a ped just out of a ragdoll does on every OTHER screen is
+    -- the open question (citizenfx/fivem#2683/#2684 report a transient stand-up,
+    -- with flag 131072 where ours is 1), and it is the default no longer.
+    -- `settle new` clears nothing: the engine's getup is allowed to run and the
+    -- pose must be back on the frame after it ends, in BOTH readings of the
+    -- ambiguous native, with no task clear from the settle at all.
+    --
+    -- `settle august`, the default, is the knock BEFORE 12bcfdc -- so on this
+    -- body, the one 12bcfdc was written for, it fails the way 12bcfdc measured
+    -- ("settle edge removed: never posed / 1.37m") in the reading that answers
+    -- about the task. That is priced, not hidden: since 2026-09-12 a blast kills
+    -- outright (BR.Combat.canBeDowned; test_roster pins it), so no thrown body
+    -- reaches the downed state any more. What is asserted for august is that it
+    -- is what it says -- no settle, no settle clear -- and both outcomes.
+    for _, SETTLE in ipairs({ 'old', 'new', 'august' }) do
     for _, ANSWER in ipairs({ 'the render', 'the task' }) do
         local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
                        [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
@@ -13348,7 +13356,31 @@ do
         posedAt = nil
         run(6000)                -- and the rest of the bleed, untouched
 
+        local k0 = env.BR.Dbno.knock
+
         -- ═══ THE EMOTE ═══
+        if SETTLE == 'august' then
+            -- ONE clear, the resurrection's, and no settle of any kind.
+            ok(k0.settle == 'august' and k0.settles == 0 and k0.clears == 0
+               and clears == 1,
+                ('`settle august` fires nothing on the frame a thrown body lands '
+                 .. 'either -- no settle, no settle clear; the one clear is the '
+                 .. 'resurrection\'s (%s)'):format(where),
+                ('%d settle(s), %d settle clear(s), %d clear(s) in all')
+                    :format(k0.settles, k0.clears, clears))
+            if ANSWER == 'the render' then
+                ok(pose == CRAWL,
+                    'and the watchdog poses the thrown body once the getup is '
+                        .. 'done, when the native answers about the render',
+                    tostring(pose))
+            else
+                ok(pose ~= CRAWL,
+                    'and, answering about the task, it never does: 12bcfdc\'s '
+                        .. 'case, back -- for a body only a blast could throw, '
+                        .. 'and a blast no longer knocks anybody down',
+                    tostring(pose))
+            end
+        else
         ok(pose == CRAWL,
             ('a body an explosion threw ends up in the downed pose, when the '
              .. 'engine answers about %s -- BEFORE: the `fell` path has no '
@@ -13356,9 +13388,11 @@ do
              .. 'the pose was asked for once, mid-flight, where nothing could '
              .. 'take it'):format(where),
             ('rendering %s after %d task(s)'):format(tostring(pose), tasks))
+        end
 
-        local k0 = env.BR.Dbno.knock
-        if SETTLE == 'old' then
+        if SETTLE == 'august' then
+            -- asserted above
+        elseif SETTLE == 'old' then
             ok(posedAt ~= nil and (posedAt - looseEndedAt) <= POSE_BY_MS,
                 ('and it is back in it within %dms of the physics letting go, '
                  .. 'not after a getup has finished standing it up (%s)')
@@ -13395,12 +13429,12 @@ do
             end
         end
 
-        -- ═══ THE POSITION ═══
+        -- ═══ THE POSITION ═══ (the settle's other half; august has none)
         local M    = env.BR.Config.Match
         local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
         local body = peds[5001]
         local gap  = math.sqrt((body.x - clone.x) ^ 2 + (body.y - clone.y) ^ 2)
-        ok(gap <= STEP * 1.5,
+        ok(SETTLE == 'august' or gap <= STEP * 1.5,
             ('and the other machines have been told where it ended up (%s) -- '
              .. 'BEFORE: the pair armed at the knock spends itself in the lull '
              .. 'and nothing re-arms it, so the second leg of the throw is '
@@ -13415,7 +13449,9 @@ do
         -- distinguishable from a fall in one paste, without the owner having to
         -- describe what they saw.
         local k = env.BR.Dbno.knock
-        ok(k.looseFrames > 0 and k.settles >= 2,
+        ok(k.looseFrames > 0
+           and (SETTLE == 'august' and k.settles == 0
+                or SETTLE ~= 'august' and k.settles >= 2),
             ('the knock record names the physics as the condition, and counts '
              .. 'the re-poses that answered them (%s)'):format(where),
             ('%d loose frames (%d ragdoll, %d air), %d settle re-pose(s)')
@@ -13435,6 +13471,8 @@ do
                        [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
         local CLI = newReviver(1, 2, peds)
         local env = CLI.env
+        -- An arm that HAS the edge (#390: the default, august, has none).
+        env.BR.Dbno.ab.settle = 'new'
 
         local tasks = 0
         env.TaskPlayAnim = function() tasks = tasks + 1 end
@@ -13489,11 +13527,15 @@ do
     --   thirty fresh movers a second on every clone, which is the "desync
     --   between screens" half of the owner's 2026-08-19 sentence, whether or
     --   not the local body moves a millimetre.
-    do
+    --
+    -- #390: run under every settle arm. `august` has no edge at all, so its
+    -- whole allowance is the watchdog's, and its record must count zero.
+    for _, SETTLE in ipairs({ 'new', 'old', 'august' }) do
         local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
                        [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
         local CLI = newReviver(1, 2, peds)
         local env = CLI.env
+        env.BR.Dbno.ab.settle = SETTLE
 
         local frames, tasks = 0, 0
         env.IsPedRagdoll  = function() return frames % 2 == 1 end
@@ -13523,10 +13565,11 @@ do
         local M    = env.BR.Config.Match
         local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
         ok(worst <= STEP * 1.5,
-            'a ragdoll native that flickers cannot walk the body: the settle '
+            ('a ragdoll native that flickers cannot walk the body: the settle '
             .. 'takes no anchor, so the resync pair is never handed a `hold` on '
             .. 'the frame the edge fires and nothing can compound -- WITH an '
-            .. 'anchorHere() in settleBody, 0.365m in ten seconds and climbing',
+            .. 'anchorHere() in settleBody, 0.365m in ten seconds and climbing '
+            .. '(settle %s)'):format(SETTLE),
             ('%.3fm from the anchor over %ds of flicker, one step is %.4fm')
                 :format(worst, SECONDS, STEP))
 
@@ -13547,11 +13590,21 @@ do
             ('%d tasks in %ds, ceiling %d'):format(tasks, SECONDS, ceiling))
 
         local k = env.BR.Dbno.knock
-        ok(k.settles <= math.ceil((SECONDS * 1000) / (every or 250)) + 2,
-            'and the record counts them, so a build where this starts storming '
-            .. 'says so in one line of /brdbno',
-            ('%d settle(s) over %d flickering frames')
-                :format(k.settles, k.looseFrames))
+        if SETTLE == 'august' then
+            ok(k.settles == 0 and k.looseFrames > 0
+               and tasks <= math.ceil((SECONDS * 1000) / (every or 250)) + 4,
+                'and under `settle august` the flicker fires no settle at all: '
+                .. 'every task is the watchdog\'s, on its own interval',
+                ('%d settle(s), %d tasks over %d flickering frames')
+                    :format(k.settles, tasks, k.looseFrames))
+        else
+            ok(k.settles <= math.ceil((SECONDS * 1000) / (every or 250)) + 2,
+                ('and the record counts them, so a build where this starts '
+                .. 'storming says so in one line of /brdbno (settle %s)')
+                    :format(SETTLE),
+                ('%d settle(s) over %d flickering frames')
+                    :format(k.settles, k.looseFrames))
+        end
     end
 end
 
@@ -14233,7 +14286,13 @@ end
 --- A two-player rig: this client (src 1, ped 5001) and a squadmate (src 2, ped
 --- 5002) whose CLONE this client holds. Every native the keeper touches is
 --- recorded per ped, and the clone's task is a real object.
-local function newObserver()
+---
+--- THE KEEPER IS SWITCHED ON HERE, because nearly every block below is about
+--- what it does when it is. It ships OFF (#390: on only through `brdbno keeper
+--- on`, in dev mode), and opts.asShipped leaves the file's own default alone
+--- so that can be asserted as well.
+--- @param opts table|nil
+local function newObserver(opts)
     local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
                    [5002] = { x = 3.0, y = 0.0, z = 30.0 } }
     local CLI = newReviver(1, 2, peds)
@@ -14356,6 +14415,8 @@ local function newObserver()
     -- PAST THE BOOT THREAD, which is what resolves the crawl on every client --
     -- an observer included -- five seconds after the resource starts.
     R.run(5200)
+    -- Before any body is down, so the first record of every block reads it.
+    if not (opts and opts.asShipped) then env.BR.Dbno.ab.keeper = 'on' end
     return R
 end
 
@@ -14450,6 +14511,58 @@ do
         if r.rate ~= 0.0 then anyOne = true end
     end
     ok(not anyOne, 'and five meters in one tick is a catch-up, not a crawl')
+
+    -- ═══ AND THE RULE CANNOT FEED ITSELF (#390) ═══
+    --
+    -- The clip's own mover carries a copy forward at about a third of a meter
+    -- a second while it runs at 1.0 (#164; 8ac5ab5 modeled 0.35), and a fresh
+    -- task from the owner lands at 1.0. Modeled: the copy travels forward at
+    -- the mover's speed whenever the last rate written on it is 1.0, and it
+    -- starts at 1.0. At the old 0.15 m/s line that travel read as a crawl, the
+    -- rate stayed 1.0, and the copy walked off -- #164, held open by the net.
+    local MOVER = 0.35
+    local cloneRate = 1.0
+    local recordRate = env.SetEntityAnimSpeed
+    env.SetEntityAnimSpeed = function(ped, d, a, r)
+        if ped == 5002 then cloneRate = r end
+        return recordRate(ped, d, a, r)
+    end
+    local feedFrom, y0 = R.CLI.now, R.peds[5002].y
+    R.run(3000, function()
+        if cloneRate == 1.0 then
+            R.peds[5002].y = R.peds[5002].y + MOVER * 0.016
+        end
+    end)
+    env.SetEntityAnimSpeed = recordRate
+    local late = R.on(R.rates, 5002, feedFrom + 600)
+    local stillHeld = #late > 0
+    for _, r in ipairs(late) do if r.rate ~= 0.0 then stillHeld = false end end
+    ok(stillHeld and (R.peds[5002].y - y0) < 0.1,
+        'the clip\'s own mover cannot keep the clip running: a copy a fresh '
+            .. 'rate-1.0 task carries at the mover\'s speed is held at 0.0 within '
+            .. 'a tick and stays held -- BEFORE (0.15 m/s) the mover\'s own travel '
+            .. 'counted as a crawl and held 1.0 for good',
+        ('%.2fm traveled; %d writes after 600ms, last %s'):format(
+            R.peds[5002].y - y0, #late,
+            late[#late] and tostring(late[#late].rate) or '-'))
+
+    -- ...AND NEITHER CAN THE NETWORK PULLING IT BACK. A drifted copy snapped
+    -- 15cm back to its owner in one tick reads 1.3 m/s; along the heading it
+    -- is backward, and nothing moves a downed ped backward.
+    local snapAt = R.CLI.now
+    f = 0
+    R.run(1000, function()
+        f = f + 1
+        if f == 10 then R.peds[5002].y = R.peds[5002].y - 0.15 end
+    end)
+    anyOne = false
+    for _, r in ipairs(R.on(R.rates, 5002, snapAt)) do
+        if r.rate ~= 0.0 then anyOne = true end
+    end
+    ok(not anyOne,
+        'and a copy the network pulls back 15cm in one tick does not start the '
+            .. 'arms -- counted as a crawl, it would reopen the window for the '
+            .. 'mover after every correction')
 
     -- ----------------------------------------------------- 2. a lost copy
     -- Something takes the clip off the clone and the owner never knows.
@@ -14709,23 +14822,59 @@ do
     local _ = downAt
 end
 
+do
+    -- ------------------------------------------- 6. as shipped: keeper OFF
+    --
+    -- #390 review: the keeper's pose on somebody else's copy may not come off
+    -- on revive (StopAnimTask on a clone, never watched), so it ships off and
+    -- only `brdbno keeper on` -- a dev-mode command -- turns it on. Off, a copy
+    -- with no crawl on it is watched and reported, and nothing is written to
+    -- it: no pose, no rate, no stop, no position, no clear.
+    local R = newObserver({ asShipped = true })
+    local env = R.env
+    ok(env.BR.Dbno.ab.keeper == 'off',
+        'the clone keeper ships OFF', tostring(env.BR.Dbno.ab.keeper))
+    env.BR.State.roster[2].state = env.BR.PlayerState.DBNO
+    R.run(6000)
+    env.BR.State.roster[2].state = env.BR.PlayerState.ALIVE
+    R.run(2000)
+    ok(#R.on(R.tasks, 5002) == 0 and #R.on(R.rates, 5002) == 0
+       and #R.on(R.stops, 5002) == 0 and #R.on(R.coords, 5002) == 0
+       and #R.clears == 0,
+        'and as shipped, a downed mate\'s copy that never gets the crawl is '
+            .. 'left exactly as the network sends it, through the knock and the '
+            .. 'revive -- nothing posed, rated, stopped, moved or cleared',
+        ('%d poses %d rates %d stops %d writes %d clears'):format(
+            #R.on(R.tasks, 5002), #R.on(R.rates, 5002), #R.on(R.stops, 5002),
+            #R.on(R.coords, 5002), #R.clears))
+    local said = nil
+    for _, s in ipairs(R.prints) do
+        if s:find('is down -- on this screen', 1, true) then said = s end
+    end
+    ok(said ~= nil and said:find('keeper off', 1, true) ~= nil,
+        'while this screen still says, once, what the copy plays -- the '
+            .. 'observer\'s half of the playtest', tostring(said))
+end
+
 -- ==========================================================================
--- #390: THE SETTLE THAT CLEARS A RAGDOLLED PED, AND THE SWITCHES THAT TEST IT.
+-- #390: THE SETTLE EDGE 12bcfdc ADDED, AND THE SWITCHES THAT TEST IT.
 -- ==========================================================================
 --
 -- What changed between the owner watching other screens play the crawl
 -- (2026-08-17..21, #164) and "the peds are standing in place" (2026-10-04) is,
--- of everything that tasks a SHOT-knocked ped, one line: 12bcfdc's settleBody
--- runs ClearPedTasksImmediately on the frame the knockdown ragdoll lets go, and
--- then the crawl. That is citizenfx/fivem#2684's repro: other players see the
--- stand-up while the owner is already in the clip. client/dbno.lua's A/B block
--- has the rest of the list.
+-- of everything that tasks a SHOT-knocked ped, one edge: 12bcfdc's settleBody,
+-- on the frame the knockdown ragdoll lets go -- a ClearPedTasksImmediately and
+-- a forced, snapped crawl. Before it, nothing happened on that frame.
+-- citizenfx/fivem#2683 and #2684 report a transient stand-up on other screens
+-- around TaskPlayAnim on a ragdolled player, with flag 131072 where ours is 1:
+-- a suspect, not a proven cause. client/dbno.lua's A/B block has the list.
 --
 -- No sandbox can watch a second machine, so what is pinned is what THIS client
--- puts on the wire for each arm of each switch: whether a settle clears the
--- ped's tasks, which argument form every crawl task carries, that both are read
--- once per knock, and that `settle new` still puts the pose back on the frame
--- an engine getup ends -- which is the job the clear was doing on this screen.
+-- puts on the wire for each arm of each switch: `settle august` (the default)
+-- puts NOTHING on the wire on that frame -- the knock 12bcfdc^ ran -- `new`
+-- puts the forced snap without the clear, `old` both; which argument form
+-- every crawl task carries; that both switches are read once per knock; and
+-- what each arm costs on this screen when the engine's getup runs over a task.
 
 --- A downed player shot down, with the knockdown ragdoll and the engine's
 --- getup modeled. opts.getup: the engine runs a getup (and reports it through
@@ -14754,9 +14903,9 @@ local function newShotRig(opts)
             return 0
         end
     end
-    env.TaskPlayAnim = function(ped, d, a, _, _, _, _, _, pc, ik, ovr)
+    env.TaskPlayAnim = function(ped, d, a, blend, _, _, _, _, pc, ik, ovr)
         R.tasks[#R.tasks + 1] = { ped = ped, dict = d, at = CLI.now,
-                                  pc = pc, ik = ik, ovr = ovr }
+                                  blend = blend, pc = pc, ik = ik, ovr = ovr }
         if ped ~= 5001 then return end
         R.accepted = true
         -- A ragdoll outranks a task and so does a getup: accepted, not posed.
@@ -14782,6 +14931,7 @@ local function newShotRig(opts)
             if pending then R.pose, pending = pending, nil end
             if ragUntil and CLI.now >= ragUntil and not gotUp then
                 gotUp = true
+                R.ragEndedAt = ragUntil
                 if opts.getup then getupUntil = ragUntil + GETUP_MS end
             end
             if ragUntil and CLI.now < ragUntil then R.pose = nil end
@@ -14797,6 +14947,7 @@ local function newShotRig(opts)
         end
     end
     function R.knock()
+        R.knockedAt = CLI.now
         env.TriggerEvent(env.BR.Net.DBNO_SET,
             { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
     end
@@ -14831,67 +14982,156 @@ describe('dbno.settle.ab')
 do
     local CRAWL = 'move_injured_ground/front_loop'
 
-    -- ---------------------------------------------------- 1. the defaults
+    --- Every crawl task of the knock is blended in, none snapped. The snap
+    --- (1000.0) on the shot path was only ever the settle's: the beat and the
+    --- watchdog blend at 8.0, and floorTheBody's snap is the `fell` path.
+    local function noSnap(list)
+        for _, t in ipairs(list) do
+            if t.blend ~= 8.0 then return false end
+        end
+        return #list > 0
+    end
+    local function snaps(list)
+        local n = 0
+        for _, t in ipairs(list) do if t.blend == 1000.0 then n = n + 1 end end
+        return n
+    end
+
+    -- ------------------------------------------- 1. the defaults: AUGUST
     local R = newShotRig({ getup = true, answer = 'the render' })
     local env = R.env
-    ok(env.BR.Dbno.ab.settle == 'new' and env.BR.Dbno.ab.args == 'old'
-       and env.BR.Dbno.ab.keeper == 'on',
-        'the switches default to settle new, args old, keeper on',
+    ok(env.BR.Dbno.ab.settle == 'august' and env.BR.Dbno.ab.args == 'old'
+       and env.BR.Dbno.ab.keeper == 'off',
+        'the switches default to settle august, args old, keeper off (#390)',
         ('%s %s %s'):format(tostring(env.BR.Dbno.ab.settle),
             tostring(env.BR.Dbno.ab.args), tostring(env.BR.Dbno.ab.keeper)))
+    -- THE FIRST FRAME THE COVER GOES UP. On a shot knock under august that is
+    -- the KNOCKDOWN_LANDED beat (coverPose, then the forced crawl, same frame);
+    -- under a settle arm the edge's own cover would come first.
+    local coverAt = nil
+    env.SetEntityLocallyInvisible = function()
+        if not coverAt and R.knockedAt then coverAt = R.CLI.now end
+    end
     R.knock()
     R.run(5000)
     local k = env.BR.Dbno.knock
-    ok(k.settles >= 1 and R.clears == 0 and k.clears == 0,
-        'A SHOT KNOCK NO LONGER CLEARS THE PED\'S TASKS on the frame the '
-            .. 'knockdown ragdoll lets go -- BEFORE (12bcfdc): '
-            .. 'ClearPedTasksImmediately then the crawl, citizenfx/fivem#2684\'s '
-            .. 'repro for "others see the stand-up"',
-        ('%d settle(s), %d clear(s)'):format(k.settles, R.clears))
+    ok(R.ragEndedAt ~= nil and k.looseFrames > 0,
+        'the rig is a SHOT knock: the knockdown ragdolls the body, and the file '
+            .. 'saw it', ('%d loose frames'):format(k.looseFrames))
+    ok(k.settles == 0 and R.clears == 0 and k.clears == 0 and k.regetups == 0,
+        'SETTLE AUGUST IS THE KNOCK BEFORE 12bcfdc: nothing happens on the frame '
+            .. 'the knockdown ragdoll lets go -- no settle, no task clear, no '
+            .. 'getup re-pose',
+        ('%d settle(s), %d clear(s), %d getup re-pose(s)'):format(k.settles,
+            R.clears, k.regetups))
+    local own = R.own()
+    ok(noSnap(own),
+        'and no crawl task of the knock is snapped: the forced, snapped '
+            .. 'TaskPlayAnim on the ragdoll\'s last frame was the settle\'s, and '
+            .. 'august has none',
+        ('%d crawl tasks, %d snapped'):format(#own, snaps(own)))
+    local beat = nil
+    for _, t in ipairs(own) do
+        if coverAt and t.at == coverAt then beat = t end
+    end
+    ok(beat ~= nil and beat.blend == 8.0 and coverAt - R.knockedAt >= 1200,
+        'and the first cover of the knock is the KNOCKDOWN_LANDED beat, 1200ms '
+            .. 'or more in, forcing the crawl blended at 8.0 -- the August '
+            .. 'knock\'s one forced re-pose',
+        beat and ('blend %s, %dms after the knock'):format(tostring(beat.blend),
+                                                          coverAt - R.knockedAt)
+             or ('no task on the first cover frame (%s)'):format(
+                    coverAt and tostring(coverAt - R.knockedAt) or 'no cover'))
     ok(R.pose == CRAWL,
-        'and the body still ends up in the crawl after the engine\'s own getup',
+        'and the watchdog has the body in the crawl after the ragdoll and the '
+            .. 'engine\'s own getup, when the native answers about the render',
         tostring(R.pose))
-    ok(R.form(R.own(), true, true),
+    ok(R.form(own, true, true),
         'every crawl task of the knock carries the default `args old` form -- '
             .. 'true, true, and never the clone override',
-        ('%d crawl tasks'):format(#R.own()))
-    ok(k.settle == 'new' and k.args == 'old',
+        ('%d crawl tasks'):format(#own))
+    ok(k.settle == 'august' and k.args == 'old',
         'and the knock record says which arms it ran',
         ('settle %s args %s'):format(tostring(k.settle), tostring(k.args)))
-    local line = nil
+    local line, verdict = nil, nil
     for _, s in ipairs(R.prints) do
         if s:find('a/b    :', 1, true) then line = s end
+        if s:find('dbno knock #', 1, true) then verdict = s end
     end
-    ok(line ~= nil and line:find('settle new, args old', 1, true) ~= nil
+    ok(line ~= nil and line:find('settle august, args old', 1, true) ~= nil
        and line:find('0 task clear(s)', 1, true) ~= nil,
         'and the downed player\'s own knock report prints the arms, unasked',
         tostring(line))
+    ok(verdict ~= nil
+       and verdict:find('Nothing re-posed on the frame they let go '
+                        .. '(settle august)', 1, true) ~= nil,
+        'and does not credit a settle re-pose that august never made',
+        tostring(verdict))
 
-    -- ---------------------------------------------------- 2. settle old
+    -- ...AND ITS PRICE, PINNED RATHER THAN HIDDEN. When the native answers
+    -- "playing" for a task the getup is running over, nothing in the August
+    -- knock asks again: the beat's task was swallowed by the ragdoll, the
+    -- watchdog believes it, and the getup leaves the body up on THIS screen.
+    -- That is the corner `settle new` covers (section 5), and the reason the
+    -- downed player's own eyes are in the playtest.
+    R = newShotRig({ getup = true, answer = 'the task' })
+    env = R.env
+    R.knock()
+    R.run(5000)
+    ok(env.BR.Dbno.knock.settles == 0 and R.pose == nil,
+        'august\'s price: with the task-reading native, a knockdown that '
+            .. 'outlasts the beat is not re-posed after the getup -- the body '
+            .. 'stands on the downed player\'s own screen',
+        ('%d settle(s), rendering %s'):format(env.BR.Dbno.knock.settles,
+            tostring(R.pose)))
+
+    -- ----------------------------------------- 2. settle new, settle old
+    R = newShotRig({ getup = true, answer = 'the render' })
+    env = R.env
+    env.BR.Dbno.ab.settle = 'new'
+    R.knock()
+    R.run(5000)
+    k = env.BR.Dbno.knock
+    own = R.own()
+    local edge = nil
+    for _, t in ipairs(own) do
+        if t.blend == 1000.0 and t.at >= R.ragEndedAt
+           and t.at <= R.ragEndedAt + 32 then edge = t end
+    end
+    ok(k.settles >= 1 and R.clears == 0 and k.clears == 0 and edge ~= nil,
+        '`settle new` is NOT the August knock: it keeps the forced, snapped '
+            .. 'crawl on the frame the knockdown lets go, and drops only the clear',
+        ('%d settle(s), %d clear(s), snapped task on the edge: %s'):format(
+            k.settles, R.clears, tostring(edge ~= nil)))
+    ok(snaps(own) == 1 and R.pose == CRAWL,
+        'one snap in the knock, and the body still ends up in the crawl',
+        ('%d snapped, rendering %s'):format(snaps(own), tostring(R.pose)))
+
     R = newShotRig({ getup = true, answer = 'the render' })
     env = R.env
     env.BR.Dbno.ab.settle = 'old'
     R.knock()
     R.run(5000)
     k = env.BR.Dbno.knock
-    ok(R.clears == 1 and k.clears == 1 and k.settle == 'old',
-        '`settle old` is 12bcfdc exactly: one ClearPedTasksImmediately on the '
-            .. 'frame the knockdown lets go',
-        ('%d clear(s)'):format(R.clears))
+    ok(R.clears == 1 and k.clears == 1 and k.settle == 'old'
+       and snaps(R.own()) == 1,
+        '`settle old` is 12bcfdc exactly: one ClearPedTasksImmediately and one '
+            .. 'snapped crawl on the frame the knockdown lets go',
+        ('%d clear(s), %d snapped'):format(R.clears, snaps(R.own())))
     ok(R.pose == CRAWL, 'and the crawl lands', tostring(R.pose))
 
     -- ------------------------------------- 3. read once per knock, not live
     R = newShotRig({ getup = true, answer = 'the render' })
     env = R.env
-    R.knock()
+    R.knock()                               -- august, the default
     R.run(3000)
     env.BR.Dbno.ab.settle = 'old'           -- flipped mid-bleed
     R.bump()
     R.run(2000)
     k = env.BR.Dbno.knock
-    ok(k.settles >= 2 and R.clears == 0,
+    ok(k.looseFrames > 0 and k.settles == 0 and R.clears == 0,
         'a switch flipped mid-bleed does not change the knock in progress: a '
-            .. 'second settle still clears nothing',
+            .. 'second ragdoll under the latched august still settles nothing',
         ('%d settle(s), %d clear(s)'):format(k.settles, R.clears))
     R.revive()
     R.knock()
@@ -14900,6 +15140,19 @@ do
         'and the NEXT knock runs the arm that was set',
         ('%d clear(s), settle %s'):format(R.clears,
             tostring(env.BR.Dbno.knock.settle)))
+
+    R = newShotRig({ getup = true, answer = 'the render' })
+    env = R.env
+    env.BR.Dbno.ab.settle = 'new'
+    R.knock()
+    R.run(3000)
+    env.BR.Dbno.ab.settle = 'august'        -- flipped mid-bleed, the other way
+    R.bump()
+    R.run(2000)
+    ok(env.BR.Dbno.knock.settles >= 2 and env.BR.Dbno.knock.settle == 'new',
+        'and the other way round: a knock that started on `new` keeps settling '
+            .. 'after `august` is typed',
+        ('%d settle(s)'):format(env.BR.Dbno.knock.settles))
 
     -- ------------------------------------------------------ 4. args new
     R = newShotRig({ getup = true, answer = 'the render' })
@@ -14925,6 +15178,7 @@ do
     -- ------------------- 5. the getup ending is what re-poses under `new`
     R = newShotRig({ getup = true, answer = 'the task' })
     env = R.env
+    env.BR.Dbno.ab.settle = 'new'
     R.knock()
     R.run(5000)
     k = env.BR.Dbno.knock
@@ -14932,8 +15186,7 @@ do
     ok(k.regetups == 1 and R.pose == CRAWL,
         'when the native answers "playing" for a task the getup is running '
             .. 'over, the frame the getup ENDS re-poses the body -- once -- '
-            .. 'so `settle new` does not need the clear to get the pose back '
-            .. 'on this screen',
+            .. 'so `settle new` covers august\'s price without the clear',
         ('%d re-pose(s) after the getup, rendering %s'):format(k.regetups,
             tostring(R.pose)))
     ok(#after >= 1 and after[1].at - R.getupEndedAt <= 32,
@@ -14945,6 +15198,7 @@ do
 
     R = newShotRig({ getup = false, answer = 'the task' })
     env = R.env
+    env.BR.Dbno.ab.settle = 'new'
     R.knock()
     R.run(5000)
     ok(env.BR.Dbno.knock.regetups == 0 and R.pose == CRAWL,

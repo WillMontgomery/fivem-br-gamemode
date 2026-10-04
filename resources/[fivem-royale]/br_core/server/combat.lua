@@ -2183,10 +2183,38 @@ end, true)
 --- in a squad, no CPR kit in a solo, already down -- and SAYS WHICH, because
 --- "nothing happened" is indistinguishable from a bug and this is the command
 --- that will be used to decide whether DBNO is working at all.
+---
+--- ═══ `brdown <id> shot <shooterId>`: THE SAME KNOCK A BULLET GIVES (#390) ═══
+---
+--- Plain `brdown` calls BR.Combat.knock and nothing else. The victim's own
+--- client still runs the whole live knock -- DBNO_SET reaches a living ped, so
+--- enterDowned ragdolls it, settles it and poses it on the KNOCKDOWN_LANDED
+--- beat exactly as for a shot -- but two things a real shot does are missing:
+--- HIT_DAMAGE, which takes the victim's own ped down to the floor BEFORE the
+--- knock lands, and DAMAGE_FEED to the shooter, carrying the victim's netId,
+--- which starts the shooter's correction watch on THEIR copy of the body
+--- (client/state.lua). Squadmates cannot shoot each other, so a two-player
+--- playtest of #390 could only ever use the plain form.
+---
+--- `shot` calls BR.Damage.applyHit -- the function the weaponDamageEvent
+--- handler calls for every validated hit, after CancelEvent -- with a pistol
+--- round big enough to knock. So the victim gets HIT_DAMAGE, DBNO_SET and
+--- HEALTH_SYNC in the order a bullet sends them, the shooter gets the same
+--- DAMAGE_FEED, and the ledger, the damage credit and the knock go through the
+--- one path a real shot takes. What it cannot do is the ENGINE's half: on a
+--- real shot the shooter's machine applies GTA's own damage to its copy before
+--- the server sees the event, and that is what can make the copy read dead
+--- there. A three-player playtest with a real enemy shot covers that half.
+---
+--- Dev mode only, like every command (br_lib/shared/devgate.lua). It refuses
+--- whatever plain `brdown` refuses, BEFORE any damage is written: a lethal hit
+--- canBeDowned said no to would be an elimination, not a knock.
 RegisterCommand('brdown', function(_, args)
     local src = tonumber(args[1])
     if not src then
         print('  usage: brdown <serverId> [killerId]   -- knock a player down')
+        print('         brdown <serverId> shot <shooterId>   -- the same, '
+              .. 'through the real shot path')
         return
     end
 
@@ -2199,13 +2227,50 @@ RegisterCommand('brdown', function(_, args)
         print(('  %s (%d) is already down'):format(entry.name, src))
         return
     end
-    if not BR.Combat.canBeDowned(entry) then
+
+    -- THE SHOT FORM'S SHOOTER, checked before anything is asked of the rules.
+    local shot = args[2] == 'shot'
+    local shooter = shot and tonumber(args[3]) or nil
+    local pistol = shot and BR.Config.WeaponById
+                   and BR.Config.WeaponById['pistol'] or nil
+    if shot then
+        if not shooter or shooter == src or not BR.Roster.get(shooter) then
+            print('  usage: brdown <serverId> shot <shooterId>   -- the shooter '
+                  .. 'is another player in the roster')
+            return
+        end
+        if not pistol or not BR.Damage or not BR.Damage.applyHit then
+            print('  brdown shot: no pistol row or no BR.Damage.applyHit on '
+                  .. 'this server')
+            return
+        end
+    end
+
+    if not BR.Combat.canBeDowned(entry, pistol and pistol.hash or nil) then
         local m = entry.matchId and BR.Server.matches[entry.matchId]
         print(('  %s (%d) cannot be downed: state %s, mode %s, standing mate %s')
             :format(entry.name, src, entry.state,
                     m and m.mode or 'no match',
                     tostring(entry.squadId ~= nil)))
         print('  (squads only, and only while a squadmate is still standing)')
+        return
+    end
+
+    if shot then
+        -- ENOUGH TO TAKE THE ARMOR AND THE HEALTH, so applyHit's own `downing`
+        -- test is what decides -- and it asks canBeDowned with the same hash
+        -- that was just asked above.
+        local lethal = (entry.hp or 100.0) + (entry.armour or 0.0) + 1.0
+        BR.Damage.applyHit(shooter, src, lethal, {
+            weapon    = pistol.hash,
+            headshot  = false,
+            explosive = false,
+            component = 0,
+        })
+        print(('  brdown shot: %s (%d) shot down by %s (%d) through '
+               .. 'BR.Damage.applyHit -- now %s')
+            :format(entry.name, src, tostring(BR.Roster.get(shooter).name),
+                    shooter, tostring(entry.state)))
         return
     end
 

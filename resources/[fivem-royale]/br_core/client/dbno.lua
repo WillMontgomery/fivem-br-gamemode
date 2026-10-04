@@ -311,7 +311,7 @@ local knock = {
     tasksAt = 0,            -- crawlTasks at the knock, so the delta is readable
     -- #390: the A/B choices this knock was made with (latched at the knock, so
     -- a switch flipped mid-bleed waits for the next one), and what they did.
-    settle = nil,           -- 'old' or 'new', see AB below
+    settle = nil,           -- 'august', 'new' or 'old', see AB below
     args = nil,             -- 'old' or 'new', see CRAWL_ARGS below
     clears = 0,             -- ClearPedTasksImmediately on this ped by a settle
     regetups = 0,           -- re-poses on the frame an engine getup ended
@@ -338,18 +338,26 @@ BR.Dbno.knock = knock
 -- so they are not what changed. What did change, to how a downed ped is
 -- tasked, ragdolled, cleared or placed (git log on this file and its callers):
 --
---   1. 12bcfdc, 2026-08-29: settleBody. On the frame the physics let go of the
---      body -- which is EVERY shot knock, because the knockdown is a ragdoll --
---      it runs ClearPedTasksImmediately and then the crawl TaskPlayAnim. That
---      is citizenfx/fivem#2684's repro step for step (open: "player is within
---      the standing up animation, while the client is in reality already in
---      the desired anim"). Before it, a shot knock was never cleared: the
---      crawl was queued during the ragdoll and re-asserted at the knockdown
---      beat, and that is the build the owner watched work. The same
---      clear-then-task already ran on the `fell` path (floorTheBody, since
---      ef501ef), and the only recorded sighting of THAT path from another
---      screen is the owner's 2026-08-29 explosion report: "their ped did not
---      properly emote".
+--   1. 12bcfdc, 2026-08-29: the SETTLE EDGE. On the frame the physics let go
+--      of the body -- which is EVERY shot knock, because the knockdown is a
+--      ragdoll -- settleBody raises the cover, runs ClearPedTasksImmediately
+--      and then a FORCED, SNAPPED crawl TaskPlayAnim (blend 1000.0). Before
+--      it, nothing at all happened on that frame: the ragdoll branch of
+--      dbno.controls dropped the anchor and returned, the unforced watchdog
+--      asked for the crawl through the ragdoll, and the KNOCKDOWN_LANDED beat
+--      forced it once at 1200ms with a blend of 8.0 and no clear. That is the
+--      knock the owner watched other screens play in August.
+--      Two open platform reports describe other players seeing a ragdolled
+--      player stand up when TaskPlayAnim is called on them:
+--      citizenfx/fivem#2683 (repro "TaskPlayAnim on a downed/ragdolled/dead/
+--      whatever player"; its reporter's follow-up puts the desync on flag
+--      131072, AF_FORCE_START, "for ragdolled players ... but creates this
+--      desync") and #2684 (ClearPedTasksImmediately, then TaskPlayAnim with
+--      flags 1 + 131072 + 262144). OUR crawl passes flag 1 -- 12bcfdc
+--      declined AF_FORCE_START -- and both reports describe a TRANSIENT
+--      stand-up ("slowly gets up and then gets put into the correct
+--      animation"), not a body that stays standing. So they make the settle a
+--      suspect worth a switch, not a known cause.
 --   2. The pinned game build, 3095 -> 3889. The repo's example config changed
 --      on 2026-09-07 (e1f9619) and the owner called it "old news", so the box
 --      may have run 3889 well before that; the date is unknown. No switch can
@@ -359,29 +367,66 @@ BR.Dbno.knock = knock
 --      9mm resync pair when somebody streams the body in; 8ff028d (2026-09-12)
 --      fire-proofs the downed ped; c0016d6/4b032fd (2026-08-28) hand the body
 --      to the ambulance only while riding.
+--   4. Not new, and the reason the playtest needs a real enemy shot as well:
+--      the SHOOTER's correction watch (client/state.lua, correctPed) runs
+--      ResurrectPed and ClearPedTasksImmediately on ITS copy of a body that
+--      reads dead there. That is the one place in the codebase that clears
+--      tasks on somebody else's copy of a downed player, and only the
+--      shooter's screen ever runs it. `brdown <id> shot <shooter>` sends that
+--      shooter the same DAMAGE_FEED a real hit does, but cannot make their
+--      copy take the engine's own damage first.
 --
--- So the switches below are the two suspects that live in this file plus the
--- observer-side net, each printed in /brdbno and each taking effect from the
--- NEXT knock (`brdbno settle old` mid-bleed changes nothing about this one).
--- They are per machine: settle and args matter on the DOWNED player's client,
--- keeper on the WATCHING client's.
+-- ═══ WHAT 12bcfdc WAS FOR, AND WHAT GOING BACK TO AUGUST COSTS ═══
 --
---   settle  new  (default) the frame the physics let go re-poses WITHOUT
---                ClearPedTasksImmediately, and re-poses once more on the frame
---                an engine getup ends;
---           old  12bcfdc's ClearPedTasksImmediately, then the crawl.
---   args    old  (default) the crawl's last three TaskPlayAnim arguments are
---                true, true, false -- the form watched replicating in August;
---           new  false, false, false, as every other clip here and 81503b4.
---   keeper  on   (default) this screen keeps other downed players' copies in
---                the pose (the block at the bottom of this file);
---           off  it only watches and reports.
+-- It was written for a BLAST: a body an explosion threw, on the `fell` path,
+-- posed once in mid-air and then never again (owner, 2026-08-29: "their ped
+-- did not properly emote when in DBNO"). Since 2026-09-12 a blast kills
+-- outright (BR.Combat.canBeDowned asks isExplosion first), so that body never
+-- reaches this file any more; falls, fire and cars come back through
+-- floorTheBody with ragdolling switched off on the same tick. What the edge
+-- still does today is fire on every SHOT knock, a few hundred ms either side
+-- of the beat.
+--
+-- Going back costs this: a knockdown ragdoll that outlasts the 1200ms beat
+-- (SetPedToRagdoll(1200, 1600)) is put back in the pose by the unforced
+-- watchdog once it lets go, at most RETASK_EVERY_MS later -- as in August. On
+-- a build whose IsEntityPlayingAnim says "playing" for a task a getup is
+-- running over (nobody has watched which answer this build gives), that
+-- re-pose never comes and the getup leaves the body STANDING on the downed
+-- player's own screen too. They can see that, where nobody can see the other
+-- screens for them; the knock report cannot (its `pose` line is that same
+-- task reading). `brdbno settle new` is the arm that covers it.
+--
+-- SO THE DEFAULT IS `august`: the only knock anybody has watched replicate,
+-- for a cost that is a diagnosed, switchable corner on this screen. The other
+-- two stay as switches, each printed in /brdbno and in the knock report, each
+-- taking effect from the NEXT knock (`brdbno settle old` mid-bleed changes
+-- nothing about this one). They are per machine: settle and args matter on
+-- the DOWNED player's client, keeper on the WATCHING client's.
+--
+--   settle  august (default) exactly the knock before 12bcfdc: nothing at all
+--                  on the frame the physics let go -- no cover, no clear, no
+--                  re-pose. The beat and the watchdog pose the body;
+--           new    the edge without the clear: a forced, snapped re-pose on
+--                  that frame, and one more on the frame an engine getup ends;
+--           old    12bcfdc exactly: ClearPedTasksImmediately, then the forced,
+--                  snapped crawl. The build the owner reported on.
+--   args    old    (default) the crawl's last three TaskPlayAnim arguments are
+--                  true, true, false -- the form watched replicating in August;
+--           new    false, false, false, as every other clip here and 81503b4.
+--   keeper  off    (default) this screen only watches other downed players'
+--                  copies and reports what they play;
+--           on     this screen also poses a copy that lacks the crawl (the
+--                  block at the bottom of this file). DEV MODE ONLY -- the
+--                  switch is a /brdbno subcommand and every command is behind
+--                  br_lib/shared/devgate.lua -- until a playtest shows it is
+--                  needed and that its pose comes off a copy on revive.
 local AB_CHOICES = {
-    settle = { old = true, new = true },
+    settle = { august = true, new = true, old = true },
     args   = { old = true, new = true },
     keeper = { on = true, off = true },
 }
-local ab = { settle = 'new', args = 'old', keeper = 'on' }
+local ab = { settle = 'august', args = 'old', keeper = 'off' }
 BR.Dbno.ab = ab
 
 --- The crawl's last three TaskPlayAnim arguments, by `args` choice. FiveM
@@ -738,15 +783,16 @@ local function playCrawl(force, snap)
     -- still is the hold (stayPut) and the rate override (crawlPlaying), and
     -- 8ac5ab5's drift measurement already assumed the locks did nothing.
     --
-    -- WHAT THEY ARE NOT IS THE REASON OTHER SCREENS SHOW A STANDING BODY. 81503b4
-    -- claimed so and history says otherwise: true, true, false went out from
-    -- 2026-08-17, and the owner then watched other players' copies play this
-    -- clip, mover and all (#164, "they are synced", closed 2026-08-21). The
-    -- 2018 forum thread it leaned on (forum.cfx.re/t/178690) passed 1 for ALL
-    -- three, the override included, so it was never this argument list. So
-    -- the default stays the August form, and the other one is a switch -- see
-    -- CRAWL_ARGS and the A/B block at the top of this file. The cause the
-    -- history does point at is settleBody's ClearPedTasksImmediately.
+    -- AND THEY ARE NOT SHOWN TO BE WHY OTHER SCREENS SHOW A STANDING BODY.
+    -- 81503b4 claimed so and history says otherwise: true, true, false went out
+    -- from 2026-08-17, and the owner then watched other players' copies play
+    -- this clip, mover and all (#164, "they are synced", closed 2026-08-21).
+    -- The 2018 forum thread it leaned on (forum.cfx.re/t/178690) passed 1 for
+    -- ALL three, the override included, so it was never this argument list. So
+    -- the default stays the August form, and the other one is a switch, for
+    -- the one way they could still matter: the game build changing under them.
+    -- See CRAWL_ARGS and the A/B block at the top of this file, which also
+    -- lists the settle edge 12bcfdc added -- a suspect, not a proven cause.
     --
     -- `snap` is the resurrection case. The pose being blended FROM there is a
     -- standing idle the player must never see, so it is not blended from.
@@ -1995,26 +2041,30 @@ local function settleBody(ped)
     -- Ten seconds is a twelfth of the longest bleed config/match.lua can
     -- produce, so the first row is about two metres of body by the end of it.
     --
-    -- ═══ #390: AND THE CLEAR IS NOW `settle old`, OFF BY DEFAULT ═══
+    -- ═══ #390: THIS WHOLE FUNCTION IS NOW AN A/B ARM, OFF BY DEFAULT ═══
     --
-    -- Everything above about the getup is about THIS screen. On every OTHER
-    -- screen, ClearPedTasksImmediately-then-TaskPlayAnim on a ped that was just
-    -- ragdolled is citizenfx/fivem#2684's repro, open: the other player sees
-    -- the body "within the standing up animation, while the client is in
-    -- reality already in the desired anim". This line runs on EVERY shot knock
-    -- (the knockdown is a ragdoll), it arrived on 2026-08-29, and it is the one
-    -- change to how a shot-knocked ped is tasked between the owner watching
-    -- copies crawl in August and "the peds are standing in place" (2026-10-04).
-    -- See the A/B block at the top of the file for the rest of that list.
+    -- Everything above about the getup is about THIS screen. What it does to
+    -- every OTHER screen is the open question: this edge runs on EVERY shot
+    -- knock (the knockdown is a ragdoll), it arrived on 2026-08-29, and it is
+    -- the one change to how a shot-knocked ped is tasked between the owner
+    -- watching copies crawl in August and "the peds are standing in place"
+    -- (2026-10-04). citizenfx/fivem#2683 and #2684 report other players seeing
+    -- a ragdolled player stand up around a TaskPlayAnim, but with flag 131072
+    -- (AF_FORCE_START) where ours is 1, and as a transient getup rather than a
+    -- body that stays up -- see the A/B block at the top of the file.
     --
-    -- So by default nothing here clears a task. The crawl is re-asked, forced,
-    -- exactly as before -- the KNOCKDOWN_LANDED beat has always done the same
-    -- without a clear, and the watchdog has been queueing it through the whole
-    -- ragdoll -- and if the engine runs its own getup anyway, the frame that
-    -- getup ENDS gets one more forced re-pose (settleWatch, below), which is
-    -- what the clear was buying on this screen. A getup the engine runs is a
-    -- task it replicates like any other; a clear landing on a ragdoll is the
-    -- one sequence reported to leave other screens standing.
+    -- So the default, `settle august`, never calls this at all (dbno.controls
+    -- skips it): the knock goes back to the KNOCKDOWN_LANDED beat -- forced,
+    -- blend 8.0, at 1200ms, no clear -- and the unforced watchdog, which is
+    -- the knock other screens were watched playing. The two arms that do reach
+    -- this line:
+    --
+    --   `settle new` keeps the edge and drops the clear. It is NOT the August
+    --   knock -- it is still a forced, snapped TaskPlayAnim on the frame the
+    --   ragdoll lets go -- and if the engine runs its own getup anyway, the
+    --   frame that getup ENDS gets one more forced re-pose (settleWatch,
+    --   below), which is what the clear was buying on this screen;
+    --   `settle old` is 12bcfdc as shipped, the build the owner reported on.
     coverPose()
     if (knock.settle or ab.settle) == 'old' then
         ClearPedTasksImmediately(ped)
@@ -2107,10 +2157,18 @@ local function knockReport(ped)
                .. 'cause here. Something else is refusing or cancelling the '
                .. 'clip; read "pose" on /brdbno and the tasks below.'
     elseif knock.looseFrames > 0 then
+        -- #390: under `settle august` nothing re-poses on the frame the physics
+        -- let go, so the sentence that credits that re-pose is only said when
+        -- one happened.
         verdict = ('posed %dms after the knock, and the physics held the body '
-                .. 'for %dms of that. The re-pose on the frame they let go is '
-                .. 'what put it back.')
-                :format(knock.posedAt - knock.at, looseFor)
+                .. 'for %dms of that. %s')
+                :format(knock.posedAt - knock.at, looseFor,
+                        knock.settles > 0
+                            and 'The re-pose on the frame they let go is what '
+                                .. 'put it back.'
+                            or 'Nothing re-posed on the frame they let go '
+                                .. '(settle august): the knockdown beat and '
+                                .. 'the watchdog did.')
     else
         verdict = ('posed %dms after the knock; the body was never loose. This '
                 .. 'knock was clean.'):format(knock.posedAt - knock.at)
@@ -2254,13 +2312,21 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- pair, and the pair is what tells the other machines where the body
     -- actually ended up. It cannot fire on a body that never left the ground,
     -- so a fall and a quiet knock pay nothing at all.
+    --
+    -- ...AND UNDER `settle august`, THE DEFAULT (#390), IT DOES NOT FIRE AT
+    -- ALL. That is the knock as it was before 12bcfdc, which had no settle:
+    -- this frame was simply the first one the ragdoll branch above did not
+    -- return on. `loose` is still cleared and the loose frames are still
+    -- counted -- the knock report reads them -- but nothing is covered,
+    -- cleared or tasked here. See the A/B block at the top of the file.
     if loose then
         loose = false
-        settleBody(ped)
+        if (knock.settle or ab.settle) ~= 'august' then settleBody(ped) end
     end
 
     -- ...AND, UNDER `settle new`, THE FRAME AN ENGINE GETUP ENDS (#390). One
-    -- forced re-pose at most per settle; see afterGetup.
+    -- forced re-pose at most per settle; see afterGetup. Inert under `august`
+    -- and `old`, which never arm it.
     afterGetup(ped)
 
     -- Turn on the horizontal axis, inch forward on the vertical one. Both are
@@ -3432,23 +3498,32 @@ end)
 -- idle -- and nothing on the owning machine can tell: its watchdog asks
 -- IsEntityPlayingAnim of ITS OWN ped, which is playing the clip perfectly.
 --
--- Clones losing exactly this task is reported, open, against the platform:
+-- Clones disagreeing with their owner about a clip is reported, open, against
+-- the platform -- none of it in exactly our shape:
 --
 --   * citizenfx/fivem#2683: TaskPlayAnim on a downed/ragdolled player -- "for
---     others it will show how the player slowly gets up";
---   * citizenfx/fivem#2684: ClearPedTasksImmediately then TaskPlayAnim on a
---     ragdolled player, and the other player sees them "within the standing up
---     animation, while the client is in reality already in the desired anim".
---     That is settleBody's sequence under `settle old`, and floorTheBody's;
+--     others it will show how the player slowly gets up and then gets put
+--     into the correct animation". Its reporter's follow-up puts that on flag
+--     131072 (AF_FORCE_START); our crawl passes flag 1;
+--   * citizenfx/fivem#2684: ClearPedTasksImmediately, then TaskPlayAnim with
+--     flags 1 + 131072 + 262144, on a ragdolled player: the other player sees
+--     them "within the standing up animation" for a while. The same clear and
+--     re-task as settleBody under `settle old` and floorTheBody, with
+--     different flags; and, like #2683, a transient getup, not a body that
+--     stays standing;
 --   * citizenfx/fivem#3731: a clip re-asserted on the owner, and "Client 2
 --     nearby does not see them playing any animation".
 --
--- The fix for the likeliest cause lives on the downed player's machine (the
--- settle no longer clears a ragdolled ped's tasks; see settleBody and the A/B
--- block at the top of this file). This is a NET under it, switchable
--- (`brdbno keeper on|off`), and it is held to the rules below because a net
--- that can leave a revived player lying down on somebody's screen is worse
--- than no net.
+-- The safest likely fix lives on the downed player's machine (`settle august`
+-- takes the knock back to the one other screens were watched playing; see
+-- the A/B block at the top of this file). This is a NET under it, and it is
+-- OFF BY DEFAULT: `brdbno keeper on` turns it on for one screen, in dev mode
+-- only, until a playtest shows it is needed AND that its pose comes off a
+-- copy on revive -- nobody has watched StopAnimTask undo a pose set with the
+-- clone override, and a net that leaves a revived player lying down on
+-- somebody's screen is worse than no net. Off, it still watches every downed
+-- copy and prints what it plays, which is the observer's half of the
+-- playtest. On, it is held to the rules below.
 --
 -- ═══ SO EACH OBSERVER ASKS ITS OWN COPY, AND PUTS THE POSE BACK ═══
 --
@@ -3466,10 +3541,12 @@ end)
 --     and #226 is about trusting it -- nothing here moves a ped.
 --   * IT NEVER RUNS THE CLIP ON A BODY THAT IS LYING STILL. #164 was a clone
 --     replaying the crawl at rate 1.0 with its mover intact and walking off.
---     This copy is held at rate 0.0 unless the clone itself is traveling --
---     its owner crawling -- so there is no mover to walk with, and the arms
---     move when the body does. Written every tick, not once: a fresh task on
---     the owner's side arrives at rate 1.0 and nothing announces it.
+--     This copy is held at rate 0.0 unless the clone itself is traveling
+--     forward at crawl speed -- its owner crawling -- so there is no mover to
+--     walk with, and the arms move when the body does. Written every tick,
+--     not once: a fresh task on the owner's side arrives at rate 1.0 and
+--     nothing announces it. (The mover's own speed and the network pulling a
+--     copy back are both below or against that line; see CLONE_CRAWL_MPS.)
 --   * IT NEVER FIGHTS A WORKING COPY. A clone already playing the clip only has
 --     its rate held; the re-pose fires on one that has gone a full second
 --     without it -- the owner's own task gets its round trip first -- and then
@@ -3509,10 +3586,26 @@ local CLONE_GRACE_MS = 1000
 --- asking again sooner is asking about the same answer.
 local CLONE_REPOSE_MS = 1000
 
---- Faster than this, in meters a second, and the clone is crawling, so the
---- clip runs. A crawl is dbnoCrawlSpeed (0.55); the #164 step is 9mm out and
---- back, which reads under 0.1 across one 100ms tick.
-local CLONE_CRAWL_MPS = 0.15
+--- Faster than this FORWARD, in meters a second, and the clone is crawling, so
+--- the clip runs. A crawl is dbnoCrawlSpeed (0.55); the #164 step is 9mm out
+--- and back, which reads under 0.1 across one 100ms tick.
+---
+--- IT WAS 0.15, AND AT 0.15 THE RULE FED ITSELF. A fresh task from the owner
+--- lands on the copy at rate 1.0, and the clip's own mover carries a copy at
+--- about a third of a meter a second (the #164 block above; 8ac5ab5 modeled
+--- 0.35). That read as crawling, which held the rate
+--- at 1.0, which kept the mover going: #164's drift, held open by the thing
+--- meant to stop it. 0.45 sits between the mover and a real crawl.
+---
+--- AND IT IS MEASURED ALONG THE BODY'S HEADING, because the other half of the
+--- same loop runs backward: the network pulling a drifted copy back to its
+--- owner reads as a fast move in one tick, and counted as a crawl it would
+--- reopen the window for the mover. Nothing moves a downed ped backward
+--- (dbno.controls steps along the heading only), so backward is never a
+--- crawl. What is left, said rather than hidden: a forward catch-up under
+--- CLONE_WARP_MPS opens one CLONE_CRAWL_HOLD_MS window -- at most ~13cm of
+--- mover, which reads below this line and does not renew itself.
+local CLONE_CRAWL_MPS = 0.45
 
 --- Faster than THIS is not a crawl but the network catching a body up -- a
 --- stream-in, a knockdown landing -- and no reason to move the arms.
@@ -3769,12 +3862,17 @@ local function keepPose(src, now)
     k.missingSince = nil
 
     -- THE RATE. Measured off the clone's own travel, because that is the only
-    -- evidence this machine has that its owner is crawling.
+    -- evidence this machine has that its owner is crawling -- FORWARD travel,
+    -- along the body's heading, the way dbno.controls steps it; see
+    -- CLONE_CRAWL_MPS for the two ways plain speed fed itself.
     local c = GetEntityCoords(ped)
     if k.at and now > k.at then
         local dx, dy = c.x - k.x, c.y - k.y
-        local v = math.sqrt(dx * dx + dy * dy) / ((now - k.at) / 1000.0)
-        if v >= CLONE_CRAWL_MPS and v < CLONE_WARP_MPS then
+        local dt = (now - k.at) / 1000.0
+        local v = math.sqrt(dx * dx + dy * dy) / dt
+        local h = math.rad(GetEntityHeading(ped))
+        local fwd = (-math.sin(h) * dx + math.cos(h) * dy) / dt
+        if fwd >= CLONE_CRAWL_MPS and v < CLONE_WARP_MPS then
             k.movingUntil = now + CLONE_CRAWL_HOLD_MS
         end
     end
@@ -3991,9 +4089,10 @@ RegisterCommand('brcrawl', function(_, args)
 end, false)
 
 RegisterCommand('brdbno', function(_, args)
-    -- #390: THE A/B SWITCHES -- `brdbno settle old|new`, `brdbno args old|new`,
-    -- `brdbno keeper on|off`. Dev mode only, like the rest of this command
-    -- (br_lib/shared/devgate.lua). Each takes effect from the NEXT knock:
+    -- #390: THE A/B SWITCHES -- `brdbno settle august|new|old`, `brdbno args
+    -- old|new`, `brdbno keeper on|off`. Dev mode only, like the rest of this
+    -- command (br_lib/shared/devgate.lua) -- which is the whole of what keeps
+    -- the keeper off on a public box. Each takes effect from the NEXT knock:
     -- settle and args on this machine's own next knock, keeper on the next
     -- downed body this screen sees. The current values print below.
     local which = args and args[1]
@@ -4003,7 +4102,8 @@ RegisterCommand('brdbno', function(_, args)
             ab[which] = v
             print(('[br_core] brdbno: %s %s, from the next knock'):format(which, v))
         else
-            print('[br_core] brdbno: settle old|new, args old|new, keeper on|off')
+            print('[br_core] brdbno: settle august|new|old, args old|new, '
+                  .. 'keeper on|off')
         end
         return
     end

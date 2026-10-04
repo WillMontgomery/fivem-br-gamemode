@@ -10049,8 +10049,8 @@ do
     said = table.concat(logged, '\n')
     for _, word in ipairs({ 'own pose', 'anim task', 'play-anim',
                             'downed players on this screen', 'keeper:',
-                            'a/b        : next knock settle new, args old; '
-                                .. 'keeper on',
+                            'a/b        : next knock settle august, args old; '
+                                .. 'keeper off',
                             'releases:' }) do
         ok(said:find(word, 1, true) ~= nil,
             ('the readout carries "%s" (#390)'):format(word), said)
@@ -10067,12 +10067,26 @@ do
     ok(pcall(commands['brdbno'], nil, { 'settle', 'maybe' }, ''),
         'an unknown switch value does not throw (#390)')
     ok(BR.Dbno.ab.settle == 'old'
-       and table.concat(logged, '\n'):find('settle old|new', 1, true) ~= nil,
+       and table.concat(logged, '\n'):find('settle august|new|old', 1, true)
+           ~= nil,
         'and it changes nothing and prints the three switches (#390)',
         table.concat(logged, '\n'))
     commands['brdbno'](nil, { 'settle', 'new' }, '')
-    ok(BR.Dbno.ab.settle == 'new', 'and `brdbno settle new` puts it back',
+    ok(BR.Dbno.ab.settle == 'new', 'and `brdbno settle new` sets the other arm',
         tostring(BR.Dbno.ab.settle))
+    commands['brdbno'](nil, { 'settle', 'august' }, '')
+    ok(BR.Dbno.ab.settle == 'august',
+        'and `brdbno settle august` puts the default back (#390)',
+        tostring(BR.Dbno.ab.settle))
+    -- THE KEEPER IS OFF UNTIL SOMEBODY IN DEV MODE SAYS OTHERWISE (#390), and
+    -- this command -- behind br_lib/shared/devgate.lua like every command --
+    -- is the only way to say it.
+    commands['brdbno'](nil, { 'keeper', 'on' }, '')
+    ok(BR.Dbno.ab.keeper == 'on', '`brdbno keeper on` turns the keeper on',
+        tostring(BR.Dbno.ab.keeper))
+    commands['brdbno'](nil, { 'keeper', 'off' }, '')
+    ok(BR.Dbno.ab.keeper == 'off', 'and `brdbno keeper off` turns it back off',
+        tostring(BR.Dbno.ab.keeper))
     BR.State.roster[2].state = wasState
     tickBand()
 
