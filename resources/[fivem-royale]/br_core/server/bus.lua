@@ -57,13 +57,15 @@ function BR.Bus.plan(m)
         end
     end
 
-    -- The storm anchor is picked FROM the tour: a random waypoint of this
-    -- flight, then a random POI 500-1500 units off it (band widens where the
+    -- The storm anchor is picked FROM the tour: city or county first, half and
+    -- half (#381), then a random waypoint of this flight in that region, then
+    -- a random POI of that region 500-1500 units off it (band widens where the
     -- route is POI-sparse). The circle tends to land where people actually
     -- dropped, it is always centred on a nameable place, and 192 tours x ~49
     -- POIs never settles into a pattern.
-    local poi = BR.PickStormAnchor(rng, waypoints,
-        BR.Config.Map.POIs, BR.Config.Storm.anchorBand)
+    local poi, _, side = BR.PickStormAnchor(rng, waypoints,
+        BR.Config.Map.POIs, BR.Config.Storm.anchorBand,
+        BR.Config.Storm.anchorRegion)
     m.anchor = poi and { x = poi.x, y = poi.y, name = poi.name, poi = poi.id }
         or { x = waypoints[1].x, y = waypoints[1].y, name = 'route' }
 
@@ -235,9 +237,9 @@ function BR.Bus.plan(m)
     }
     m.route = route
 
-    print(('[br_core] bus: match %s tour %d-%d-%d-%d, %d waypoints, %d path points -- storm homes on %s')
+    print(('[br_core] bus: match %s tour %d-%d-%d-%d, %d waypoints, %d path points -- storm homes on %s (%s)')
         :format(BR.MatchTag(m.id), legs[1], legs[2], legs[3], legs[4],
-                #waypoints, #points, m.anchor.name))
+                #waypoints, #points, m.anchor.name, tostring(side)))
 
     BR.Broadcast.toMatch(m, BR.Net.BUS_ROUTE, route)
 end

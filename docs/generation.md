@@ -203,9 +203,11 @@ traffic.
 
 ### Storm circles
 
-**The anchor** is picked at warmup: a random waypoint of *this match's tour*,
-then a random POI 500–1500 units off it. Route-coupled, always on land, and
-never the same twice — see `BR.PickStormAnchor` in `storm_solve.lua`.
+**The anchor** is picked at warmup: city or county first, half and half
+(`anchorRegion`, #381), then a random waypoint of *this match's tour* in that
+region, then a random POI of that region 500–1500 units off it. Route-coupled,
+always on land, and never the same twice — see `BR.PickStormAnchor` in
+`storm_solve.lua`.
 
 **The opening circle** is centred on the anchor with a radius that guarantees
 nobody can land outside it:

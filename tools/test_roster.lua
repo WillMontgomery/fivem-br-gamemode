@@ -3289,6 +3289,45 @@ do
         ('%d distinct tours in 40 draws'):format(comboCount))
     ok(sawChiliad, 'the Chiliad exit came up at least once in 40 draws')
     ok(chiliadOk, "the Chiliad exit's authored altitudes survive into the path")
+
+    -- CITY OR COUNTY IS THE CONFIG'S, AND THE PLAN READS IT (#381). Forced to all
+    -- city and then to all county, every plan's anchor lands on that side of the
+    -- line -- which is what proves bus.plan() hands the picker the configured
+    -- region at all. test_shared.lua's storm.anchor.region holds the picker to the
+    -- split itself; this is the one call site that has to pass it.
+    local rcfg = BR.Config.Storm.anchorRegion
+    local keepShare = rcfg.cityShare
+    local wrongSide, firstWrong = 0, nil
+    for _, want in ipairs({ { share = 1.0, city = true }, { share = 0.0, city = false } }) do
+        rcfg.cityShare = want.share
+        for _ = 1, 20 do
+            fakeTime = fakeTime + 104729
+            BR.Bus.plan(theMatch())
+            local a = manchor()
+            if not a or ((a.y < rcfg.cityMaxY) ~= want.city) then
+                wrongSide = wrongSide + 1
+                firstWrong = firstWrong or (a and ('%s at y %.0f with cityShare %.0f')
+                    :format(tostring(a.name), a.y, want.share) or 'no anchor')
+            end
+        end
+    end
+    rcfg.cityShare = keepShare
+    ok(wrongSide == 0, 'the plan opens on the side of the line the configured share says',
+        ('%d of 40 on the wrong side, first: %s'):format(wrongSide, tostring(firstWrong)))
+
+    -- And at the owner's share, about half and half. 400 plans put one standard
+    -- deviation at 2.5 points; the waypoint-decides draw this replaced opened in
+    -- the city 37% of the time, 13 points out, and fails this.
+    local cityPlans = 0
+    for _ = 1, 400 do
+        fakeTime = fakeTime + 7919
+        BR.Bus.plan(theMatch())
+        local a = manchor()
+        if a and a.y < rcfg.cityMaxY then cityPlans = cityPlans + 1 end
+    end
+    ok(math.abs(cityPlans / 400 - rcfg.cityShare) <= 0.08,
+        'and at the configured share the plans split city and county by it',
+        ('%d of 400 in the city, want %.0f%%'):format(cityPlans, 100 * rcfg.cityShare))
     BR.Bus.clear(theMatch())
 end
 

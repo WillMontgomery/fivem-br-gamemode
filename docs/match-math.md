@@ -217,10 +217,27 @@ opening the doors over open water seconds after takeoff.
 
 The whole sequence homes on one point, chosen at warmup:
 
-1. Pick a random **waypoint of this match's own flight tour**.
-2. Pick a random **POI** between `band.min` and `band.max` of it (500–1500 m).
-3. If nothing is in band, widen by `widenStep` up to `widenMax`, then take the
-   nearest POI outright.
+1. Draw the **region**: city with probability `cityShare` (0.5), county
+   otherwise (#381). A point is city when its y is below `cityMaxY` (1050).
+2. Pick a random **waypoint of this match's own flight tour** in that region.
+   Every authored tour has one on each side: leg 1 is city, legs 3 and 4 are
+   county.
+3. Pick a random **POI** of that region between `band.min` and `band.max` of it
+   (500–1500 m).
+4. If nothing is in band, widen by `widenStep` up to `widenMax`, then take the
+   region's nearest POI outright.
+
+The anchor's split is exactly `cityShare`. Before #381 the waypoint decided, and
+over all 192 tours the anchor was city 37% of the time.
+
+The circles do not inherit it exactly: circle 1 is drawn off the anchor across
+the whole opening zone (2.4 km away at the median), and every later zone off the
+one before. Over 2,000 whole matches through the server, by the same line:
+
+| | Anchor | Circle 1 | Final zone |
+|---|---|---|---|
+| Before #381, city | 36% | 38% | 37% |
+| After #381, city | 50% | 44% | 43% |
 
 Route-coupled, so the opening circle almost always contains a stretch of the
 path players actually dropped along. POI-anchored, so the centre is always a

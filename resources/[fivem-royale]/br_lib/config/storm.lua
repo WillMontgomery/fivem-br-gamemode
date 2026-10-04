@@ -5,9 +5,10 @@
 -- 1. ANCHORS, NOT ONE MAP-WIDE CIRCLE. The Los Santos landmass spans roughly
 --    8 km x 11.5 km. A single circle covering all of it needs a radius around
 --    5800, which produces 11 km rotations that no battle royale pacing survives.
---    The anchor is a POI picked relative to THIS match's flight (see anchorBand
---    below): one random waypoint of the drawn tour, then one random POI inside
---    a distance band of it. Route-coupled, so the opening circle almost always
+--    The anchor is a POI picked relative to THIS match's flight (see anchorRegion
+--    and anchorBand below): city or county first, then one random waypoint of the
+--    drawn tour in that region, then one random POI of that region inside a
+--    distance band of it. Route-coupled, so the opening circle almost always
 --    contains part of the path players actually dropped along; POI-anchored, so
 --    it can never sit in the ocean and always centres somewhere nameable. With
 --    192 tours x ~49 POIs the outcome never reads as a pattern.
@@ -28,11 +29,43 @@ BR = BR or {}
 BR.Config = BR.Config or {}
 
 BR.Config.Storm = {
+    -- CITY OR COUNTY, DRAWN BEFORE ANYTHING ELSE (#381).
+    --
+    --   "What I want is 50% in the city and 50% in the county."
+    --                                                  -- owner, 2026-10-03
+    --
+    -- THE LINE IS THE OWNER'S:
+    --
+    --   "y = 1050. everything below that is city, everything above is county"
+    --                                                  -- owner, 2026-10-03
+    --
+    -- A point is CITY when its y is below cityMaxY and COUNTY otherwise; that
+    -- one line sorts both the waypoints and the POIs. Each match draws city
+    -- with probability cityShare, then picks its waypoint and its POI inside
+    -- that region, so the anchor's split is exactly cityShare. Before this the
+    -- waypoint decided, and legs 3 and 4 are always county: over all 192 tours
+    -- the anchor was city 37% of the time.
+    --
+    -- THE ANCHOR'S SPLIT, NOT THE CIRCLES'. Circle 1 roams off the anchor
+    -- (2.4 km at the median) and the rest of the match off circle 1, so over
+    -- 2,000 whole matches circle 1 opened in the city 44% of the time and the
+    -- final zone ended there 43% (38% and 37% before this).
+    --
+    -- At y < 1050, 52 of the 120 POIs are city. The nearest the line on the
+    -- city side are South Fuente Ridge and Observatory Ridge (y 835 and 845);
+    -- on the county side Chumash (1080), La Fuente Blanca, South Palomino
+    -- Ridge, the Vinewood Bowl and the Galileo Observatory (1145 to 1200).
+    anchorRegion = {
+        cityMaxY  = 1050.0,
+        cityShare = 0.5,
+    },
+
     -- How the match anchor is picked from the flight (BR.PickStormAnchor).
-    -- A POI between min and max units of a random tour waypoint; if a waypoint
-    -- has no POI in the band (a coastal or mountain leg), the band widens by
-    -- widenStep until one appears, and the nearest POI is the last resort --
-    -- an anchor must ALWAYS exist, a crash here would kill the warmup.
+    -- A POI of the drawn region between min and max units of a random tour
+    -- waypoint in it; if a waypoint has no such POI in the band (a coastal or
+    -- mountain leg), the band widens by widenStep until one appears, and the
+    -- region's nearest POI is the last resort -- an anchor must ALWAYS exist, a
+    -- crash here would kill the warmup.
     anchorBand = {
         min       = 500.0,
         max       = 1500.0,

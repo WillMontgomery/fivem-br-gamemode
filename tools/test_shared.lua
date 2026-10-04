@@ -6026,7 +6026,8 @@ do
     for seed = 1, N do
         local rng = BR.Rng(seed * 7919 + 13)
         local storm = seed * 104729 + 1
-        local anchor = BR.PickStormAnchor(rng, wps, pois, cfg.anchorBand)
+        local anchor = BR.PickStormAnchor(rng, wps, pois, cfg.anchorBand,
+            cfg.anchorRegion)
         if not BR.Config.Map.InBounds(anchor.x, anchor.y) then
             anchorsOut = anchorsOut + 1
         end
@@ -6217,8 +6218,12 @@ do
     -- configured band of it. These tests drive the picker with the REAL legs
     -- and the REAL POI table, because that is the pairing that has to work --
     -- a picker that passes on synthetic data and starves on the actual coastal
-    -- waypoints would be a vacuous green.
+    -- waypoints would be a vacuous green. AND WITH THE REAL REGION (#381), which
+    -- is what bus.plan() hands it: the region narrows both the waypoints and the
+    -- POIs, so a region that starved a leg would show up here first.
+    -- storm.anchor.region below is the region's own block.
     local band = BR.Config.Storm.anchorBand
+    local region = BR.Config.Storm.anchorRegion
     local pois = BR.Config.Map.POIs
     local legs = BR.Config.Bus.legs
 
@@ -6242,7 +6247,7 @@ do
     for seed = 1, 500 do
         local rng = BR.Rng(seed)
         local wps = drawTour(rng)
-        local poi, wp = BR.PickStormAnchor(rng, wps, pois, band)
+        local poi, wp = BR.PickStormAnchor(rng, wps, pois, band, region)
         if poi then
             produced = produced + 1
             seen[poi.id] = true
@@ -6276,7 +6281,7 @@ do
     for seed = 1, 500 do
         local rng = BR.Rng(seed)
         local wps = drawTour(rng)
-        local poi, wp = BR.PickStormAnchor(rng, wps, pois, band)
+        local poi, wp = BR.PickStormAnchor(rng, wps, pois, band, region)
         local d = BR.Dist(wp.x, wp.y, poi.x, poi.y)
         if d >= band.min and d <= band.max then inBand = inBand + 1 end
     end
@@ -6285,6 +6290,9 @@ do
 
     -- Widening: a waypoint with nothing in band must still anchor. One distant
     -- POI, far outside band.max but inside widenMax, gets found by widening.
+    -- No region here: these two are the band machinery on its own, and the
+    -- nil-region path is a caller's to take. The region's versions of both are
+    -- in storm.anchor.region.
     local rng = BR.Rng(7)
     local far = { { id = 'only', x = 3000.0, y = 0.0 } }
     local poi = BR.PickStormAnchor(rng, { { x = 0.0, y = 0.0 } }, far, band)
@@ -6298,15 +6306,314 @@ do
 
     -- Determinism: the same seed draws the same anchor. The whole route/anchor
     -- pipeline hangs off one seeded rng, so tests (and replays later) can pin it.
-    local a1 = BR.PickStormAnchor(BR.Rng(42), drawTour(BR.Rng(42)), pois, band)
-    local a2 = BR.PickStormAnchor(BR.Rng(42), drawTour(BR.Rng(42)), pois, band)
-    ok(a1 == a2, 'the same seed picks the same anchor')
+    local a1, _, s1 = BR.PickStormAnchor(BR.Rng(42), drawTour(BR.Rng(42)), pois, band, region)
+    local a2, _, s2 = BR.PickStormAnchor(BR.Rng(42), drawTour(BR.Rng(42)), pois, band, region)
+    ok(a1 == a2 and s1 == s2, 'the same seed picks the same anchor, in the same region')
 
     -- Degenerate inputs degrade to nil rather than erroring inside a
     -- transition.
     ok(BR.PickStormAnchor(BR.Rng(1), {}, pois, band) == nil, 'no waypoints -> nil')
     ok(BR.PickStormAnchor(BR.Rng(1), { { x = 0, y = 0 } }, {}, band) == nil,
         'no POIs -> nil')
+    ok(BR.PickStormAnchor(BR.Rng(1), {}, pois, band, region) == nil
+        and BR.PickStormAnchor(BR.Rng(1), { { x = 0, y = 0 } }, {}, band, region) == nil,
+        'and the same with a region')
+end
+
+describe('storm.anchor.region')
+do
+    -- ═══ HALF THE MATCHES OPEN IN THE CITY, HALF IN THE COUNTY (#381) ═══
+    --
+    --   "What I want is 50% in the city and 50% in the county."
+    --                                                  -- owner, 2026-10-03
+    --
+    -- The picker draws the region FIRST, off the match stream, with P(city) =
+    -- cityShare, and only then a waypoint of the tour and a POI, both inside that
+    -- region. So the split is exact by construction rather than by luck, and what
+    -- these assertions have to prove is that nothing after the draw can carry the
+    -- anchor back across the line: not the waypoint, not the band, not the
+    -- widening, not the nearest-POI fallback.
+    local band = BR.Config.Storm.anchorBand
+    local region = BR.Config.Storm.anchorRegion
+    local pois = BR.Config.Map.POIs
+    local legs = BR.Config.Bus.legs
+    local line = region and region.cityMaxY
+
+    ok(type(region) == 'table' and type(line) == 'number'
+        and type(region.cityShare) == 'number',
+        'the region is configured: a line and a share')
+    ok(region and region.cityShare == 0.5,
+        "and the share is the owner's: half and half",
+        region and tostring(region.cityShare))
+    ok(line == 1050.0, "and the city is everything south of the owner's y = 1050", tostring(line))
+
+    local function sideOf(p) return (p.y < line) and 'city' or 'county' end
+
+    --- A copy of the real region with the share replaced.
+    local function withShare(s)
+        return { cityMaxY = line, cityShare = s }
+    end
+
+    --- Flatten one concrete tour, mirroring bus.plan()'s draw.
+    local function drawTour(rng)
+        local wps = {}
+        for _, options in ipairs(legs) do
+            for _, wp in ipairs(options[rng:int(1, #options)]) do
+                wps[#wps + 1] = { x = wp.x, y = wp.y }
+            end
+        end
+        return wps
+    end
+
+    -- BOTH REGIONS HOLD POIS, AND EVERY AUTHORED TOUR CROSSES THE LINE. Leg 1 is
+    -- the south coast and legs 3 and 4 are north of it, so every one of the 192
+    -- tours has a waypoint on each side and the "no waypoint in this region"
+    -- fallback below is never taken by a real match. It is still there, because
+    -- the legs are config; this is the line that says when that stops being true.
+    local nCity, nCounty = 0, 0
+    for _, p in ipairs(pois) do
+        if sideOf(p) == 'city' then nCity = nCity + 1 else nCounty = nCounty + 1 end
+    end
+    ok(nCity >= 20 and nCounty >= 20, 'both regions hold a real share of the POIs',
+        ('%d city, %d county'):format(nCity, nCounty))
+
+    local tours, oneSided = 0, 0
+    local function walk(i, picked)
+        if i > #legs then
+            tours = tours + 1
+            local has = {}
+            for _, opt in ipairs(picked) do
+                for _, w in ipairs(opt) do has[sideOf(w)] = true end
+            end
+            if not (has.city and has.county) then oneSided = oneSided + 1 end
+            return
+        end
+        for _, opt in ipairs(legs[i]) do
+            picked[i] = opt
+            walk(i + 1, picked)
+        end
+    end
+    walk(1, {})
+    ok(tours == 192 and oneSided == 0,
+        'every authored tour has a waypoint in the city and one in the county',
+        ('%d of %d tours are one-sided'):format(oneSided, tours))
+
+    -- THE DRAW IS THE FIRST VALUE OFF THE STREAM. Not a statistic: for each seed,
+    -- the region the picker reports is exactly what the first float of an
+    -- identical stream says it should be. A picker that drew the waypoint first
+    -- and then the region would still split 50/50, and would fail here.
+    local firstOff = 0
+    for seed = 1, 300 do
+        local _, _, side = BR.PickStormAnchor(BR.Rng(seed), drawTour(BR.Rng(seed + 1)),
+            pois, band, region)
+        local want = (BR.Rng(seed):float() < region.cityShare) and 'city' or 'county'
+        if side ~= want then firstOff = firstOff + 1 end
+    end
+    ok(firstOff == 0, 'the region is the first draw off the match stream',
+        ('%d of 300 seeds disagree'):format(firstOff))
+
+    -- THE SHARE, OVER MANY MATCHES WITH THE REAL TOURS AND THE REAL POIS. Each
+    -- seed draws its tour and then its anchor off one stream, the way bus.plan()
+    -- does. 20,000 draws put one standard deviation of a fair split at 0.35
+    -- points, so 1.5 points is four of them -- and the seeds are fixed, so this
+    -- either passes every run or fails every run.
+    local N = 20000
+    local cityN, nilN, offSide, wpOffSide, outOfBand, worstD = 0, 0, 0, 0, 0, 0.0
+    for seed = 1, N do
+        local rng = BR.Rng(seed * 7919 + 381)
+        local wps = drawTour(rng)
+        local poi, wp, side = BR.PickStormAnchor(rng, wps, pois, band, region)
+        if not poi then
+            nilN = nilN + 1
+        else
+            if side == 'city' then cityN = cityN + 1 end
+            if sideOf(poi) ~= side then offSide = offSide + 1 end
+            if sideOf(wp) ~= side then wpOffSide = wpOffSide + 1 end
+            local d = BR.Dist(wp.x, wp.y, poi.x, poi.y)
+            if d > worstD then worstD = d end
+            if d < band.min or d > band.max then outOfBand = outOfBand + 1 end
+        end
+    end
+    local share = cityN / N
+    ok(nilN == 0, 'an anchor is always produced', ('%d of %d nil'):format(nilN, N))
+    ok(math.abs(share - region.cityShare) <= 0.015,
+        'the city share over 20,000 matches is cityShare',
+        ('%.2f%% city, want %.0f%%'):format(100 * share, 100 * region.cityShare))
+    ok(offSide == 0, 'every anchor is in the region that was drawn',
+        ('%d of %d across the line'):format(offSide, N))
+    ok(wpOffSide == 0, 'and so is the waypoint it was picked around',
+        ('%d of %d'):format(wpOffSide, N))
+    -- STILL ON THE FLIGHT PATH: the region narrows the choice, it does not move
+    -- the anchor off the tour. Every real draw resolves in the un-widened band.
+    ok(outOfBand == 0, 'every anchor is in the un-widened band of a waypoint of its tour',
+        ('%d of %d outside [%d, %d], worst %.0f m'):format(outOfBand, N, band.min,
+            band.max, worstD))
+
+    -- THE SHARE IS THE KNOB'S, not a constant that happens to equal it.
+    local function cityRate(s, n)
+        local c = 0
+        for seed = 1, n do
+            local rng = BR.Rng(seed * 104729 + 7)
+            local _, _, side = BR.PickStormAnchor(rng, drawTour(rng), pois, band,
+                withShare(s))
+            if side == 'city' then c = c + 1 end
+        end
+        return c / n
+    end
+    ok(cityRate(1.0, 500) == 1.0, 'cityShare 1 opens every match in the city')
+    ok(cityRate(0.0, 500) == 0.0, 'cityShare 0 opens every match in the county')
+    local quarter = cityRate(0.25, 20000)
+    ok(math.abs(quarter - 0.25) <= 0.015, 'cityShare 0.25 opens a quarter in the city',
+        ('%.2f%%'):format(100 * quarter))
+
+    -- WIDENING STAYS IN THE REGION. City drawn (share 1); the only POI in the
+    -- un-widened band is a county one, and the city POI needs the band widened to
+    -- 3000 m. The widened city POI wins over the in-band county one -- and over a
+    -- city POI inside band.min, which is the nearest of all and so is what the
+    -- last resort would have taken had the band not widened.
+    local cityAll = withShare(1.0)
+    local countyAll = withShare(0.0)
+    local wpCity = { x = 0.0, y = line - 1000.0 }
+    local poi, wp, side = BR.PickStormAnchor(BR.Rng(3), { wpCity }, {
+        { id = 'county_in_band', x = 0.0, y = line + 200.0 },
+        { id = 'city_too_close', x = 200.0, y = line - 1000.0 },
+        { id = 'city_widened', x = -3000.0, y = line - 1000.0 },
+    }, band, cityAll)
+    ok(poi and poi.id == 'city_widened' and side == 'city',
+        'the band widens inside the city rather than taking a county POI in band',
+        poi and poi.id)
+
+    local wpCounty = { x = 0.0, y = line + 500.0 }
+    poi, wp, side = BR.PickStormAnchor(BR.Rng(4), { wpCounty }, {
+        { id = 'city_in_band', x = 0.0, y = line - 500.0 },
+        { id = 'county_too_close', x = -200.0, y = line + 500.0 },
+        { id = 'county_widened', x = 3000.0, y = line + 500.0 },
+    }, band, countyAll)
+    ok(poi and poi.id == 'county_widened' and side == 'county',
+        'and inside the county', poi and poi.id)
+
+    -- A POINT EXACTLY ON THE LINE IS COUNTY: city is strictly below cityMaxY.
+    -- The on-line POI is in band and the city one needs widening, so a picker
+    -- that counted the line as city would take the on-line one.
+    poi, wp, side = BR.PickStormAnchor(BR.Rng(9), { wpCity }, {
+        { id = 'on_the_line', x = 0.0, y = line },
+        { id = 'city_widened', x = -3000.0, y = line - 1000.0 },
+    }, band, cityAll)
+    ok(poi and poi.id == 'city_widened', 'a POI exactly on the line is county',
+        poi and poi.id)
+
+    -- AND SO IS A WAYPOINT: the same strict line sorts the tour. City drawn; the
+    -- tour is one waypoint exactly on the line and one deep in the city, and each
+    -- has a city POI in band that the other is too far from. Every seed must draw
+    -- around the deep one; a picker that counted the line as city would draw
+    -- around the on-line one about half the time.
+    local onLineWp = { x = 0.0, y = line }
+    local deepWp = { x = 0.0, y = line - 6000.0 }
+    local byOnLine, byDeep = 0, 0
+    for s = 1, 40 do
+        poi, wp = BR.PickStormAnchor(BR.Rng(s), { onLineWp, deepWp }, {
+            { id = 'near_on_line', x = 1000.0, y = line - 100.0 },
+            { id = 'near_deep', x = 1000.0, y = line - 6000.0 },
+        }, band, cityAll)
+        if wp == onLineWp then byOnLine = byOnLine + 1 end
+        if poi and poi.id == 'near_deep' then byDeep = byDeep + 1 end
+    end
+    ok(byOnLine == 0 and byDeep == 40, 'and a waypoint exactly on the line is county too',
+        ('%d of 40 seeds drew around the on-line waypoint'):format(byOnLine))
+
+    -- THE LAST RESORT STAYS IN THE REGION. Nothing in the city within widenMax;
+    -- the nearest POI of all is a county one in band, and the nearest CITY POI is
+    -- the answer -- the nearer of two, both past widenMax.
+    poi, wp, side = BR.PickStormAnchor(BR.Rng(5), { wpCity }, {
+        { id = 'county_near', x = 0.0, y = line + 200.0 },
+        { id = 'city_far', x = -6000.0, y = line - 1000.0 },
+        { id = 'city_farther', x = -9000.0, y = line - 1000.0 },
+    }, band, cityAll)
+    ok(poi and poi.id == 'city_far' and side == 'city',
+        'the nearest-POI fallback is the nearest POI in the region', poi and poi.id)
+
+    -- A TOUR WITH NO WAYPOINT IN THE DRAWN REGION uses the waypoint nearest the
+    -- line. Never true of an authored tour (above), and must not be an error.
+    local north = {
+        { x = 0.0, y = line + 5000.0 },
+        { x = 0.0, y = line + 300.0 },
+        { x = 0.0, y = line + 3000.0 },
+    }
+    local twoCity = {
+        { id = 'city_a', x = 0.0, y = line - 500.0 },
+        { id = 'city_b', x = 0.0, y = line - 3000.0 },
+    }
+    poi, wp, side = BR.PickStormAnchor(BR.Rng(6), north, twoCity, band, cityAll)
+    ok(wp == north[2] and poi and poi.id == 'city_a' and side == 'city',
+        'a tour with no city waypoint draws around the waypoint nearest the line',
+        wp and ('waypoint y %.0f, %s'):format(wp.y, poi and poi.id or 'nil'))
+
+    local south = {
+        { x = 0.0, y = line - 3000.0 },
+        { x = 0.0, y = line - 200.0 },
+        { x = 0.0, y = line - 1500.0 },
+    }
+    poi, wp, side = BR.PickStormAnchor(BR.Rng(7), south, {
+        { id = 'county_a', x = 0.0, y = line + 1000.0 },
+        { id = 'city_c', x = 0.0, y = line - 900.0 },
+    }, band, countyAll)
+    ok(wp == south[2] and poi and poi.id == 'county_a' and side == 'county',
+        'and a tour with no county waypoint the same way',
+        wp and ('waypoint y %.0f, %s'):format(wp.y, poi and poi.id or 'nil'))
+
+    -- A REGION WITH NO POI IN IT still opens the match: any POI beats a dead
+    -- warmup. A line moved south of the whole map has no city at all.
+    poi, wp, side = BR.PickStormAnchor(BR.Rng(8), { { x = 0.0, y = 0.0 } }, {
+        { id = 'only_county', x = 0.0, y = 1000.0 },
+    }, band, { cityMaxY = -1.0e9, cityShare = 1.0 })
+    ok(poi and poi.id == 'only_county',
+        'a region with no POI falls back to the whole table rather than nil',
+        poi and poi.id)
+
+    -- NEVER NIL, NEVER AN ERROR, whatever the inputs: random tours and POI sets
+    -- anywhere on and off the map, random lines and shares, and region tables
+    -- that are missing a field, hold the wrong type, or hold NaN. The picker runs
+    -- inside the WARMUP transition; an error there is a dead match.
+    local fz = BR.Rng(381)
+    local function coord() return (fz:float() - 0.5) * 24000.0 end
+    local regions = {
+        function() return { cityMaxY = coord(), cityShare = fz:float() } end,
+        function() return { cityMaxY = coord(), cityShare = 1.0 } end,
+        function() return { cityMaxY = coord(), cityShare = 0.0 } end,
+        function() return {} end,
+        function() return { cityMaxY = 'north', cityShare = '0.5' } end,
+        function() return { cityMaxY = 0 / 0, cityShare = 0 / 0 } end,
+        function() return { cityMaxY = 0.0, cityShare = 7.0 } end,
+        function() return nil end,
+    }
+    local fuzzBad, fuzzOff, fuzzFirst = 0, 0, nil
+    for i = 1, 4000 do
+        local wps, ps = {}, {}
+        for _ = 1, fz:int(1, 6) do wps[#wps + 1] = { x = coord(), y = coord() } end
+        for k = 1, fz:int(1, 8) do ps[#ps + 1] = { id = 'p' .. k, x = coord(), y = coord() } end
+        local rg = regions[fz:int(1, #regions)]()
+        local okc, got, _, sd = pcall(BR.PickStormAnchor, BR.Rng(i), wps, ps, band, rg)
+        local member = false
+        if okc and got then
+            for _, p in ipairs(ps) do if p == got then member = true end end
+        end
+        if not (okc and member) then
+            fuzzBad = fuzzBad + 1
+            fuzzFirst = fuzzFirst or (okc and 'no anchor' or tostring(got))
+        elseif rg and type(rg.cityMaxY) == 'number' and rg.cityMaxY == rg.cityMaxY then
+            local onSide = false
+            for _, p in ipairs(ps) do
+                if ((p.y < rg.cityMaxY) and 'city' or 'county') == sd then onSide = true end
+            end
+            if onSide and ((got.y < rg.cityMaxY) and 'city' or 'county') ~= sd then
+                fuzzOff = fuzzOff + 1
+            end
+        end
+    end
+    ok(fuzzBad == 0, 'random inputs always produce one of the given POIs, never nil or an error',
+        ('%d of 4000, first: %s'):format(fuzzBad, tostring(fuzzFirst)))
+    ok(fuzzOff == 0, 'and the anchor is in the drawn region whenever that region has a POI',
+        ('%d of 4000'):format(fuzzOff))
 end
 
 -- ------------------------------------------------------------------ config ---

@@ -1345,50 +1345,121 @@ end
 --- path players actually dropped along -- and POI-anchored, so the centre is
 --- always a nameable place on land, never a point in the sea.
 ---
+--- ═══ THE REGION IS DRAWN FIRST (#381) ═══
+---
+---   "What I want is 50% in the city and 50% in the county."
+---                                                    -- owner, 2026-10-03
+---
+--- Left to the waypoint, the county won: legs 3 and 4 of every tour are north of
+--- the city and two of the four leg-2 options are too, so a random waypoint was
+--- county two times in three and the anchor followed it -- city 37% of the time
+--- over all 192 tours. So when `region` is given, the region is drawn BEFORE
+--- anything else -- city with probability cityShare -- and the waypoint and the
+--- POI are then both drawn inside it. The share is exact by construction: the
+--- draw decides the region, and nothing after it can move the anchor across the
+--- line. The anchor still comes off THIS tour's own waypoints, so the opening
+--- circle stays on the flight path.
+---
+--- One line splits the map: a point is CITY when its y is below cityMaxY (the
+--- owner's y = 1050), and COUNTY otherwise. Waypoints and POIs are sorted by the
+--- same line.
+---
+--- THE ANCHOR'S SPLIT, NOT THE CIRCLES'. Circle 1 is drawn off the anchor across
+--- the whole opening zone, and every later zone off the one before it, so neither
+--- inherits the share exactly: over 2,000 whole matches circle 1 opened in the
+--- city 44% of the time and the final zone ended there 43% (38% and 37% before).
+---
 --- FAILURE IS NOT AN OPTION HERE: this runs inside the WARMUP transition, and
 --- an error would kill the match before it starts. So the band widens in steps
 --- when a waypoint is POI-sparse (coastal leg-1 points, the Chiliad exits),
---- and the nearest POI of all is the final fallback. Some POI is always
---- returned as long as one exists.
+--- and the nearest POI is the final fallback. Some POI is always
+--- returned as long as one exists. The region adds two more of the same:
+---
+---   * a tour with no waypoint in the drawn region uses the waypoint nearest
+---     the line instead (no authored tour does today -- leg 1 is always city
+---     and legs 3 and 4 are always county -- but the legs are config);
+---   * a region with no POI in it at all falls back to every POI, so a line
+---     moved off the map still opens the match, just not in that region.
 ---
 --- @param rng table         a BR.Rng instance (server only)
 --- @param waypoints table   the tour's authored waypoints, { {x, y}, ... }
 --- @param pois table        candidate POIs, { {x, y, ...}, ... }
 --- @param band table        { min, max, widenStep, widenMax }
+--- @param region table|nil  { cityMaxY, cityShare }; nil skips the region draw
+---                          and picks from the whole tour and the whole table
 --- @return table|nil poi    the chosen POI (a reference into `pois`)
 --- @return table|nil wp     the waypoint it was picked around
-function BR.PickStormAnchor(rng, waypoints, pois, band)
-    if #pois == 0 or #waypoints == 0 then return nil, nil end
+--- @return string|nil side  'city' or 'county', the region drawn; nil when no
+---                          region was given
+function BR.PickStormAnchor(rng, waypoints, pois, band, region)
+    if #pois == 0 or #waypoints == 0 then return nil, nil, nil end
 
-    local wp = rng:pick(waypoints)
     local minD = band and band.min or 500.0
     local maxD = band and band.max or 1500.0
     local step = band and band.widenStep or 500.0
     local cap  = band and band.widenMax or 4000.0
 
+    local wps, pool, side = waypoints, pois, nil
+    if region then
+        -- A value of the wrong type would make the comparisons below throw, so
+        -- it takes the default. A share outside 0..1 needs no clamp: above 1
+        -- always draws city and below 0 never does, which is what a clamp does.
+        local line = region.cityMaxY
+        if type(line) ~= 'number' then line = 1050.0 end
+        local share = region.cityShare
+        if type(share) ~= 'number' then share = 0.5 end
+
+        local wantCity = rng:float() < share
+        side = wantCity and 'city' or 'county'
+
+        local inSide = {}
+        for _, p in ipairs(pois) do
+            if (p.y < line) == wantCity then inSide[#inSide + 1] = p end
+        end
+        if #inSide > 0 then pool = inSide end
+
+        local onSide, nearest, nearestD = {}, nil, math.huge
+        for _, w in ipairs(waypoints) do
+            if (w.y < line) == wantCity then
+                onSide[#onSide + 1] = w
+            else
+                local d = math.abs(w.y - line)
+                if d < nearestD then nearest, nearestD = w, d end
+            end
+        end
+        if #onSide > 0 then
+            wps = onSide
+        else
+            wps = { nearest or waypoints[1] }
+        end
+    end
+
+    local wp = rng:pick(wps)
+
     while true do
         local candidates = {}
-        for _, p in ipairs(pois) do
+        for _, p in ipairs(pool) do
             local d = BR.Dist(wp.x, wp.y, p.x, p.y)
             if d >= minD and d <= maxD then
                 candidates[#candidates + 1] = p
             end
         end
         if #candidates > 0 then
-            return rng:pick(candidates), wp
+            return rng:pick(candidates), wp, side
         end
         if maxD >= cap then break end
         maxD = math.min(cap, maxD + step)
     end
 
     -- Nothing within widenMax of this waypoint. Take the nearest POI outright:
-    -- a slightly off-band anchor is a shrug, no anchor is a dead match.
+    -- a slightly off-band anchor is a shrug, no anchor is a dead match. Nearest
+    -- IN THE REGION, so the fallback cannot undo the draw.
     local best, bestD = nil, math.huge
-    for _, p in ipairs(pois) do
+    for _, p in ipairs(pool) do
         local d = BR.Dist(wp.x, wp.y, p.x, p.y)
         if d < bestD then best, bestD = p, d end
     end
-    return best, wp
+    return best, wp, side
 end
 
 --- The breakout budget for one phase, with the chance RAMPED by progress.
