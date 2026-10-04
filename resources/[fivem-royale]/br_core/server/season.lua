@@ -40,6 +40,16 @@
 -- A live dance cannot outlive the switch: dances play only in a match, and
 -- server/emotes.lua's sweep stops one the moment the gate shuts.
 --
+-- ═══ WHAT AN APPLY CANNOT MOVE: LICENSED ASSETS (#391) ═══
+--
+-- The purchased packs (maps, emote animations) are streamed assets, and a
+-- running server cannot swap those. tools/assets.py pull installs the set for
+-- the season server.cfg names, at deploy, and records it -- with the set every
+-- other season would install instead -- in br_licensed/installed.txt. So a
+-- switch to a season whose set differs WARNS, naming the resources, and still
+-- switches; the assets follow at the next redeploy and restart. No record (no
+-- pull has ever run on this box) is no warning.
+--
 -- CONSOLE AND F8 ONLY. Every line here is dev-mode output; nothing is shown to
 -- a player in game.
 
@@ -79,6 +89,99 @@ local function tell(src, text)
     if s > 0 then TriggerClientEvent(BR.Net.SEASON_RESULT, s, text) end
 end
 
+--- Where tools/assets.py pull writes its install record: a resource nobody
+--- ensures, because FXServer's sandbox lets the Lua read files only inside a
+--- resource, and LoadResourceFile reads any resource the server knows of.
+--- The two names are RECORD_RESOURCE and RECORD_FILE in tools/assets.py.
+local LICENSED_RESOURCE = 'br_licensed'
+local LICENSED_FILE = 'installed.txt'
+
+--- The install record, parsed, or nil when it is absent or not format 1:
+---   { season = n, installed = { [name] = sha }, plans = { [season] = { [name] = sha } } }
+--- `plans` holds every season the pull planned for, an empty set included.
+--- @param text string|nil
+--- @return table|nil
+function BR.SeasonSwitch.parseLicensed(text)
+    if type(text) ~= 'string' then return nil end
+    local m = { installed = {}, plans = {} }
+    local format = nil
+    for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+        local w = {}
+        for t in line:gmatch('%S+') do w[#w + 1] = t end
+        local k = w[1]
+        if k == 'format' then
+            format = w[2]
+        elseif k == 'season' then
+            m.season = math.tointeger(tonumber(w[2]))
+        elseif k == 'seasons' then
+            for i = 2, #w do
+                local s = math.tointeger(tonumber(w[i]))
+                if s then m.plans[s] = m.plans[s] or {} end
+            end
+        elseif k == 'installed' and #w == 3 then
+            m.installed[w[2]] = w[3]
+        elseif k == 'plan' and #w == 4 then
+            local s = math.tointeger(tonumber(w[2]))
+            if s and m.plans[s] then m.plans[s][w[3]] = w[4] end
+        end
+    end
+    if format ~= '1' then return nil end
+    return m
+end
+
+--- How `season`'s licensed set differs from the installed one, by name:
+--- { name, have = installed sha or nil, want = season's sha or nil }, sorted.
+--- nil when the record has no plan for that season.
+--- @param m table  parseLicensed's answer
+--- @param season integer
+--- @return table|nil
+function BR.SeasonSwitch.licensedDiff(m, season)
+    local want = m.plans[season]
+    if want == nil then return nil end
+    local out = {}
+    for name, sha in pairs(want) do
+        if m.installed[name] ~= sha then out[#out + 1] = { name = name, have = m.installed[name], want = sha } end
+    end
+    for name, sha in pairs(m.installed) do
+        if want[name] == nil then out[#out + 1] = { name = name, have = sha } end
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return out
+end
+
+--- Warn, to this console and the F8 of whoever typed it, when `season` runs a
+--- different licensed set from the one installed. Silent when they agree and
+--- when there is no record.
+--- @param src integer
+--- @param season integer
+local function licensedWarning(src, season)
+    if type(LoadResourceFile) ~= 'function' then return end
+    local m = BR.SeasonSwitch.parseLicensed(LoadResourceFile(LICENSED_RESOURCE, LICENSED_FILE))
+    if m == nil then return end
+    local diff = BR.SeasonSwitch.licensedDiff(m, season)
+    if diff == nil then
+        tell(src, ('brseason: WARNING -- the licensed asset record on this box has no plan for Season %d; redeploy to refresh it')
+            :format(season))
+        return
+    end
+    if #diff == 0 then return end
+    local parts = {}
+    for _, d in ipairs(diff) do
+        if d.have == nil then
+            parts[#parts + 1] = ('%s (not installed)'):format(d.name)
+        elseif d.want == nil then
+            parts[#parts + 1] = ('%s (installed, not in Season %d)'):format(d.name, season)
+        else
+            parts[#parts + 1] = ('%s (installed %s, Season %d has %s)')
+                :format(d.name, d.have:sub(1, 8), season, d.want:sub(1, 8))
+        end
+    end
+    tell(src, ('brseason: WARNING -- Season %d runs different licensed assets from the ones installed: %s')
+        :format(season, table.concat(parts, ', ')))
+    tell(src, ('brseason: streamed assets cannot switch while the server runs; to install Season %d\'s, set that season in server.cfg, redeploy and restart')
+        :format(season))
+end
+
 --- Put a switch into force now.
 --- @param target integer|nil  nil is the season br_core started on
 --- @param by string
@@ -112,6 +215,7 @@ local function status(src)
         tell(src, 'brseason: no switch staged')
     end
     tell(src, ('brseason: usage: brseason | brseason <1-%d> | brseason reset'):format(BR.Season.latest()))
+    licensedWarning(src, BR.Season.current())
 end
 
 --- Switch now, or stage it while a match is running.
@@ -139,12 +243,14 @@ local function request(src, target, reset)
         tell(src, ('brseason: %d match%s running -- Season %d%s is staged%s, and applies when the last one is torn down to the lobby')
             :format(n, n == 1 and '' or 'es', target, reset and ' (reset)' or '',
                     replaced and ', replacing the one staged before' or ''))
+        licensedWarning(src, target)
         return
     end
 
     -- A reset hands switch() nil: the startup season, taken back whatever it
     -- was, even one past `latest` that br_season named.
     if reset then apply(nil, by) else apply(target, by) end
+    licensedWarning(src, target)
 end
 
 --- THE TEARDOWN. Raised by BR.Match.destroy after the registry entry is gone,
