@@ -764,11 +764,13 @@ class Pull(Box):
         v1 = self.entry('p')['seasons']['1']
         self.pull()
         before = tree(self.licensed)
-        # v2 is pinned, but the bucket holds some other archive under its key.
+        # v2 is pinned, but the bucket holds some other archive under its key --
+        # one with the SAME file list, paths and sizes, so the sha256 is the
+        # only thing that can tell them apart.
         write(os.path.join(folder, 'a.ytd'), b'good v2')
         self.push(folder)
         v2 = self.entry('p')['seasons']['1']
-        other = make_resource(self.src, 'other', {'a.ytd': b'evil', 'payload.ytd': b'x' * 50})
+        other = make_resource(self.src, 'other', {'a.ytd': b'evil v2'})
         out = os.path.join(self.tmp, 'other.tar.gz')
         assets.pack(other, out)
         write(self.object_path('p', v2), read(out))
