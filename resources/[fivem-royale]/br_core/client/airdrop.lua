@@ -360,6 +360,14 @@ local function dropPlane(d)
 end
 
 local function dropProps(d)
+    -- ONCE, NOT ONCE A FRAME (#393). The render loop calls this on every frame
+    -- after the landing, for as long as the blip window lasts -- minutes for a
+    -- drop nobody has opened -- and every one of those calls but the first found
+    -- nothing to take down and handed back two models it had already handed back:
+    -- two GetHashKey and two SetModelAsNoLongerNeeded a frame per landed drop. So
+    -- a drop whose props are gone, and which holds nothing, returns at once.
+    if d.propsGone and not (d.flares or d.chute or d.obj or d.primed) then return end
+
     -- THE FLARE SITE GOES FIRST, and it goes through client/flares.lua rather
     -- than being unwound here. On the object route that stops each emitter
     -- BEFORE deleting the prop it is anchored to -- a looped ptfx outlives its
@@ -386,6 +394,7 @@ local function dropProps(d)
         SetModelAsNoLongerNeeded(GetHashKey(A.chuteModel or 'p_cargo_chute_s'))
     end
     d.primed = false
+    d.propsGone = true
 end
 
 local function removeDrop(n)

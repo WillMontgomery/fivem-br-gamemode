@@ -6141,6 +6141,37 @@ do
     eq(onePed(), nil, 'with its pilot')
 end
 
+describe('client: a landed drop lets its models go once, not every frame')
+do
+    -- #393. dropProps runs on every render frame after the landing, for the whole
+    -- blip window. It must still take the crate and canopy down and hand both
+    -- models back -- once.
+    clientReset()
+    local released = {}
+    local was = SetModelAsNoLongerNeeded
+    SetModelAsNoLongerNeeded = function(m) released[#released + 1] = m end
+    local t0  = gameMs
+    local rel = t0 + A.planeLeadMs
+    fire(BR.Net.AIRDROP_SYNC, BR.BuildAirdropRecord(1,
+        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 },
+        260.0, t0, rel + A.descentMs, 0.0, rel))
+    render()
+    gameMs = rel + 1
+    render()
+    ok(oneEnt() ~= nil, 'the crate is falling')
+    local before = #released
+    gameMs = rel + A.descentMs + 1
+    render()
+    eq(oneEnt(), nil, 'the falling crate is taken down on the landing frame')
+    eq(#released - before, 2, 'and the crate and canopy models are handed back')
+    for _ = 1, 120 do
+        gameMs = gameMs + 16
+        render()
+    end
+    eq(#released - before, 2, 'and 120 frames later, still only those two')
+    SetModelAsNoLongerNeeded = was
+end
+
 describe('client: a clock running behind does not lose the drop')
 do
     -- THE 2026-08-22 PLAYTEST BUG, END TO END. `tStart` is the SERVER's timer;
