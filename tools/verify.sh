@@ -2178,6 +2178,53 @@ if [ -f "$worldfile_" ]; then
     fi
 fi
 
+# AND THE CLOCK HAS ONE WRITER (#394): br_core/client/natives.lua, and no other
+# file under resources/ -- THE VENDORED ONES INCLUDED, unlike the bool-natives
+# gate, because a third-party resource that sets the time of day fights the
+# writer exactly as one of ours would. The writer sets the clock once and then
+# leaves it to run; anything else that writes it undoes that at random, and in
+# the game it looks exactly like the clock not doing what it was told.
+#
+# THE NAMES AND THE HASHES, because Citizen.InvokeNative(0x...) and N_0x... reach
+# a native without its name, and a C# resource spells it NETWORK_OVERRIDE_CLOCK_TIME.
+# Hashes from runtime.fivem.net/doc/natives.json and natives_cfx.json (the last,
+# 36CA2554, is FiveM's own SET_MILLISECONDS_PER_GAME_MINUTE). Reads -- GetClock*,
+# GetMillisecondsPerGameMinute -- are not writes, and are not here.
+#
+# ONE grep OVER THE TREE FINDS THE CANDIDATES, and only those are read again
+# with comments stripped: a sed per file across the whole tree is hundreds of
+# process spawns, which is minutes on the box this is developed on. tools/
+# test_client.lua counts the call sites inside the writer itself.
+CLOCK_NAMES_='PauseClock|NetworkOverrideClockTime|NetworkClearClockTimeOverride|NetworkOverrideClockMillisecondsPerGameMinute|SetMillisecondsPerGameMinute|SetClockTime|AdvanceClockTimeTo|AddToClockTime|PAUSE_CLOCK|NETWORK_OVERRIDE_CLOCK_TIME|NETWORK_CLEAR_CLOCK_TIME_OVERRIDE|_?NETWORK_OVERRIDE_CLOCK_MILLISECONDS_PER_GAME_MINUTE|SET_MILLISECONDS_PER_GAME_MINUTE|SET_CLOCK_TIME|ADVANCE_CLOCK_TIME_TO|ADD_TO_CLOCK_TIME'
+CLOCK_HASHES_='E679E3E06E363892|D972DF67326F966E|4055E40BD2DBEC1D|47C3B5848C3E45D8|C8CA9670B9D83B3B|D716F30D8C8980E2|42BF1D2E723B6D7E|36CA2554'
+clkname_="(^|[^_[:alnum:]])(${CLOCK_NAMES_})([^_[:alnum:]]|\$)"
+clkhash_="(^|[^[:xdigit:]])(${CLOCK_HASHES_})([^[:xdigit:]]|\$)"
+clkinc_=(--include='*.lua' --include='*.js' --include='*.mjs' --include='*.cjs'
+         --include='*.ts' --include='*.cs')
+clkscanned_=$(grep -rl "${clkinc_[@]}" '' resources 2>/dev/null | wc -l | tr -d ' ')
+clkfiles_=$(
+    { grep -rlE "${clkinc_[@]}" "$clkname_" resources 2>/dev/null
+      grep -rliE "${clkinc_[@]}" "$clkhash_" resources 2>/dev/null; } \
+    | LC_ALL=C sort -u | while IFS= read -r f; do
+        case "$f" in
+            *.lua) code_=$(sed -e 's/--.*$//' "$f") ;;
+            *)     code_=$(sed -e 's|//.*$||' "$f") ;;
+        esac
+        if grep -qE "$clkname_" <<< "$code_" || grep -qiE "$clkhash_" <<< "$code_"; then
+            echo "$f"
+        fi
+    done | sed 's|^resources/[^/]*/||' | tr '\n' ' '
+)
+if [ "$clkfiles_" != "br_core/client/natives.lua " ]; then
+    echo "${RED}FAIL${RST} clock-writing natives live in '${clkfiles_}' (${clkscanned_} files searched)"
+    echo "     expected 'br_core/client/natives.lua '"
+    echo "     The lobby and warmup hold still at noon and the match clock runs"
+    echo "     from its anchor because ONE writer sets the clock and then leaves"
+    echo "     it alone (#394). A second one, ours or vendored, by name or by"
+    echo "     hash, moves it underneath that writer at random."
+    boundary=1
+fi
+
 # THE THIRD DIRECTION: WHAT CAN MAKE THIS CLIENT PLAY A SOUND.
 #
 # Lighter than the two above and gated for the same reason they are -- the
@@ -2302,7 +2349,7 @@ if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
     echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
     echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
-    echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky has one writer"
+    echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky and the clock each have one writer"
     echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"
 else
     rc=1

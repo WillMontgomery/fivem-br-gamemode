@@ -1806,7 +1806,9 @@ end, false)
 -- the rate and the hold is something only the game can answer, so this prints
 -- what the writer in client/natives.lua decided, what the engine says back,
 -- and how many times the writer has had to set the clock again. In a healthy
--- match: one write per state change, corrections 0, drift a second or two.
+-- match: writer ONCE, one write per state change, corrections 0, drift a
+-- second or two. Writer EVERY FRAME means the engine did not keep the rate and
+-- the writer fell back to setting the time on every frame; the line says why.
 --
 -- EVERY NUMBER IS READ, NOTHING IS WRITTEN: this command must not be the thing
 -- that moves the clock it is reporting on.
@@ -1835,6 +1837,15 @@ RegisterCommand('brclock', function()
         return
     end
     print(('  mode             %s (%s)'):format(p.mode:upper(), tostring(p.why)))
+    local ef = st.everyFrame
+    if ef then
+        print(('  writer           EVERY FRAME, paused, for %.0fs: %s (%d frame writes)')
+            :format((GetGameTimer() - ef.at) / 1000.0, ef.why, st.frameWrites))
+    else
+        print(('  writer           ONCE per plan, read once a second (falls back to every '
+            .. 'frame on a rate mismatch, or %d corrections inside %ds)')
+            :format(st.fixLimit, st.fixWindowMs // 1000))
+    end
 
     local a = p.anchor
     if a then

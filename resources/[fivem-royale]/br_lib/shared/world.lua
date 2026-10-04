@@ -392,7 +392,7 @@ local RESET_WORD = { reset = true, default = true, off = true }
 ---   brtime 21         -- 21:00
 ---   brtime 21 30      -- 21:30
 ---   brtime 21:30      -- 21:30
----   brtime reset      -- back to the pin
+---   brtime reset      -- back to the state's own clock
 ---
 --- OUT OF RANGE IS REFUSED, NEVER CLAMPED, which is br_lib/config/overrides.lua's
 --- rule for the same reason: a clamp answers a question the operator did not ask

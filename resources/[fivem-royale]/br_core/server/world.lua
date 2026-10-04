@@ -106,21 +106,26 @@ end
 --- What the override currently is, in one line, for every usage and confirmation.
 --- @return string
 local function stateLine()
-    local h, m = BR.World.clockHM()
-    local wx   = BR.World.weatherName()
-    return ('  now: %02d:%02d (%s), sky %s')
-        :format(h, m,
-                BR.World.holdsTime() and 'overridden' or 'the pin',
-                wx or 'left to the storm and the island')
+    local wx = BR.World.weatherName()
+    local clock
+    if BR.World.holdsTime() then
+        clock = ('%02d:%02d, held still by brtime'):format(BR.World.clockHM())
+    else
+        clock = ('%02d:%02d held in the lobby and warmup, running from bus start')
+            :format(BR.World.restHM())
+    end
+    return ('  now: %s; sky %s'):format(clock, wx or 'left to the storm and the island')
 end
 
 local function usageTime()
     print('  usage: brtime <hour> [minute]    hour 0-23, minute 0-59')
     print('         brtime <hh:mm>')
-    print('         brtime reset              back to the pinned '
-        .. ('%02d:%02d'):format(BR.World.restHM()))
-    print('    Every client pins its own clock every frame; this moves the pin')
-    print('    for all of them, including anyone who joins afterwards.')
+    print('         brtime reset              back to '
+        .. ('%02d:%02d'):format(BR.World.restHM())
+        .. ' in the lobby and warmup, or the match\'s running time')
+    print('    Holds every client\'s clock still at the time given -- lobby,')
+    print('    warmup and match alike -- until reset, including anyone who joins')
+    print('    afterwards.')
     print('    Ambient population is time-gated: evening and night change which')
     print('    vehicles and peds the engine spawns, hospital ambulances among')
     print('    them (see the ambient-ambulance note in server/rescue.lua).')
@@ -162,7 +167,8 @@ RegisterCommand('brtime', function(src, args)
     if kind == 'reset' then
         BR.World.clearTime()
         send(-1)
-        print(('[br_core] brtime: back on the pin, %02d:%02d for everyone')
+        print(('[br_core] brtime: reset for everyone -- %02d:%02d in the lobby '
+            .. 'and warmup, the match\'s running time from bus start')
             :format(BR.World.restHM()))
         return
     end

@@ -1720,6 +1720,28 @@ local latch = {
 -- whole write is made again and counted. That should never happen. `brclock`
 -- (client/debug.lua) prints the count, so if it does, it shows.
 --
+-- ═══ IF THE RATE DOES NOT HOLD: EVERY FRAME, FOR THE REST OF THE SESSION ═══
+--
+-- Everything above rests on the engine keeping the rate. If it does not, the
+-- drift guard alone would make things WORSE than the bug this replaced: in a
+-- match, an engine back at 2000 gains about 18 game seconds a real second on
+-- the anchor, so the guard would yank the sky back every three seconds or so.
+-- So the once-a-second read also asks two questions, and a yes to either
+-- switches this client to the fallback for the rest of the session:
+--
+--   the rate   GetMillisecondsPerGameMinute is not what was set;
+--   the guard  CLOCK_FIX_LIMIT corrections inside CLOCK_FIX_WINDOW_MS -- the
+--              engine moving the clock some other way the read cannot see.
+--
+-- THE FALLBACK writes the exact target time EVERY FRAME, with PauseClock(true):
+-- in a match the anchor's time in whole seconds, never forced to 0, so the sun
+-- steps a game second at a time (twelve steps a real second at 5000) rather than
+-- a game minute every five; in a hold the held time. No rate: it is the thing
+-- that did not hold. Between two frames the engine can only creep one frame's
+-- worth even if the pause does not hold either -- half a game second at 60fps,
+-- which is how the clock was kept before 56c0ba7 and never showed. One console
+-- line says when it switches, and `brclock` shows which way the clock is kept.
+--
 -- THE ARGUMENTS ARE ALWAYS IN RANGE, through BR.World.hms: FiveM drops a clock
 -- write with an hour of 24 or more, or a minute or second of 60 or more,
 -- without a word (NativeFixes.cpp, FixClockTimeOverrideNative).
@@ -1733,9 +1755,15 @@ local latch = {
 -- ═══ ONE WRITER ═══
 --
 -- Every clock native this client calls is called in this section and nowhere
--- else, and tools/test_client.lua counts them across both resources' client
--- files. A second writer would undo this one, at random, and look exactly like
--- the clock not doing what it was told.
+-- else. tools/test_client.lua counts the call sites here; tools/verify.sh
+-- searches every file under resources/, vendored ones included, for the names
+-- and the hashes. A second writer would undo this one, at random, and look
+-- exactly like the clock not doing what it was told.
+--
+-- ═══ WHEN br_core STOPS, THE CLOCK STAYS WHERE IT IS ═══
+--
+-- See freezeClock below: a stop freezes the clock rather than handing it back,
+-- so `restart br_core` is seamless.
 
 --- The hold rate: slow enough to be stopped. MUST BE ABOVE ZERO -- FiveM reads
 --- 0 or less as "back to GTA's 2000".
@@ -1744,36 +1772,56 @@ local CLOCK_HELD_MS = 99999999
 --- How often the engine's clock is READ to see that it is where it should be.
 local CLOCK_CHECK_MS = 1000
 
+--- The guard's half of the fallback test: this many corrections inside this
+--- window means something is moving the clock that the rate read cannot see.
+--- One correction is a hitch; three in a minute is the engine.
+local CLOCK_FIX_LIMIT     = 3
+local CLOCK_FIX_WINDOW_MS = 60000
+
 --- What the clock writer last did and last saw. Filled by clockReset.
 local clk = {}
+
+--- The fallback, once it is on: { at = local ms, why = string }; nil while the
+--- rate holds.
+---
+--- KEPT OUT OF clk ON PURPOSE. clockReset runs whenever the writer forgets its
+--- beliefs and when br_core stops, and "this engine does not keep the rate" is
+--- a finding about the session, not a belief about the last write. Only
+--- forgetRules clears it, and nothing in the game calls that: the tests do, to
+--- start each block on a clean engine.
+local everyFrame = nil
 
 --- Forget everything the writer believes, so the next frame writes afresh.
 local function clockReset()
     clk.key     = nil   -- the plan key last written; nil writes on the next frame
     clk.checkAt = 0     -- local time the engine's clock was last read
     clk.plan    = nil   -- the last plan, which brclock prints
+    clk.rateSet = nil   -- the rate last written, which the read compares
     -- The inputs the last plan was made from, compared every frame WITHOUT
     -- building a table, so a settled frame costs a few comparisons.
     clk.st, clk.anchor, clk.watching, clk.watchAnchor = nil, nil, nil, nil
     clk.oh, clk.om, clk.synced = nil, nil, nil
+    -- When the recent corrections were made, for the guard's half of the test.
+    clk.fixedAt = {}
     -- What brclock reports.
-    clk.writes, clk.corrections = 0, 0
-    clk.engine, clk.drift, clk.lastFix = nil, nil, nil
+    clk.writes, clk.corrections, clk.frameWrites = 0, 0, 0
+    clk.engine, clk.drift, clk.lastFix, clk.engineRate = nil, nil, nil, nil
 end
 clockReset()
 
---- THE ONE PLACE THE CLOCK IS WRITTEN: rate, brake, time, all three every time.
+--- THE ONE PLACE THE CLOCK IS WRITTEN: rate, brake, time, all three every time
+--- -- except in the every-frame fallback, which passes no rate, because the
+--- rate is the thing that did not hold there.
 --- A write that set the time and trusted an older rate to still be there would
 --- be the same guess the old pin made.
---- @param rate integer  real ms per game minute
+--- @param rate integer|nil  real ms per game minute; nil leaves it alone
 --- @param paused boolean
 --- @param sec number  second of the day
 local function writeClock(rate, paused, sec)
     local h, m, s = BR.World.hms(sec)
-    SetMillisecondsPerGameMinute(rate)
+    if rate ~= nil then SetMillisecondsPerGameMinute(rate) end
     PauseClock(paused)
     NetworkOverrideClockTime(h, m, s)
-    clk.writes = clk.writes + 1
 end
 
 --- The second of the day a plan wants, right now.
@@ -1784,14 +1832,41 @@ local function planSec(plan)
     return plan.sec
 end
 
---- Write what a plan asks for.
+--- The second of the day a plan wants at THIS frame. A run plan's `sec` was
+--- worked out when the plan was made, up to a second ago, so the fallback asks
+--- the anchor again every frame.
+--- @param plan table
+--- @return number
+local function frameSec(plan)
+    if plan.mode == 'hold' then return planSec(plan) end
+    return BR.World.timeAt(plan.anchor, BR.Clock.now())
+end
+
+--- Write what a plan asks for: the whole write, counted.
 --- @param plan table
 local function applyPlan(plan)
-    if plan.mode == 'hold' then
-        writeClock(CLOCK_HELD_MS, true, planSec(plan))
-    else
-        writeClock(plan.rate, false, planSec(plan))
-    end
+    local hold = plan.mode == 'hold'
+    local rate = hold and CLOCK_HELD_MS or plan.rate
+    writeClock(rate, hold, planSec(plan))
+    clk.rateSet = rate
+    clk.writes = clk.writes + 1
+end
+
+--- The fallback's write for one frame: the exact time, paused, no rate.
+--- @param sec number
+local function writeFrame(sec)
+    writeClock(nil, true, sec)
+    clk.frameWrites = clk.frameWrites + 1
+end
+
+--- Switch this client to the every-frame fallback for the rest of the session,
+--- and say so, once.
+--- @param now number
+--- @param why string
+local function startEveryFrame(now, why)
+    everyFrame = { at = now, why = why }
+    print(('[br_core] clock: %s -- writing the time every frame, paused, for '
+        .. 'the rest of the session (brclock for more)'):format(why))
 end
 
 --- Where the engine's clock is, in seconds of the day. READ ONLY.
@@ -1807,7 +1882,8 @@ end
 --- WRITES only when the plan's key changes: lobby -> warmup is one hold and no
 --- write, warmup -> bus is the one write that starts the match clock, the whole
 --- match after that is the same anchor and no write, and the trip home is one
---- write back to the hold. READS the engine once a second.
+--- write back to the hold. READS the engine once a second. In the every-frame
+--- fallback it writes the time on every frame instead.
 ---
 --- NIL-GUARDED on BR.World, as the old pin was: a build without
 --- br_lib/shared/world.lua should leave the clock alone rather than throw inside
@@ -1833,18 +1909,42 @@ function BR.Native.applyClock(now)
         or watching ~= clk.watching or watchAnchor ~= clk.watchAnchor
         or oh ~= clk.oh or om ~= clk.om or synced ~= clk.synced
     local due = (now - clk.checkAt) >= CLOCK_CHECK_MS
-    if not changed and not due then return end
+    if not changed and not due and not everyFrame then return end
 
-    clk.st, clk.anchor, clk.watching, clk.watchAnchor = st, anchor, watching, watchAnchor
-    clk.oh, clk.om, clk.synced = oh, om, synced
+    if changed or due then
+        clk.st, clk.anchor, clk.watching, clk.watchAnchor = st, anchor, watching, watchAnchor
+        clk.oh, clk.om, clk.synced = oh, om, synced
+        clk.plan = W.clockPlan({
+            state = st, anchor = anchor,
+            spectating = watching, watchAnchor = watchAnchor,
+            now = synced and C.now() or nil, synced = synced,
+        })
+    end
+    local plan = clk.plan
 
-    local plan = W.clockPlan({
-        state = st, anchor = anchor,
-        spectating = watching, watchAnchor = watchAnchor,
-        now = synced and C.now() or nil, synced = synced,
-    })
-    clk.plan = plan
-    if plan.mode == 'wait' then return end
+    -- WAITING FOR THE SERVER'S TIME: nothing is written, and the plan is asked
+    -- again once a second like every other state. Leaving checkAt behind here
+    -- made every waiting frame `due`, and so a new plan table every frame.
+    if plan.mode == 'wait' then
+        if due then clk.checkAt = now end
+        return
+    end
+
+    -- THE FALLBACK: the exact time, every frame, paused.
+    if everyFrame then
+        local want = frameSec(plan)
+        if due then
+            -- Read BEFORE this frame's write, so brclock's drift is how far the
+            -- engine moved by itself in one frame.
+            clk.checkAt = now
+            local engine = engineClock()
+            clk.engine, clk.drift = engine, W.drift(engine, want)
+            clk.engineRate = GetMillisecondsPerGameMinute()
+        end
+        clk.key = plan.key
+        writeFrame(want)
+        return
+    end
 
     -- A NEW PLAN IS THE ONE WRITE.
     if plan.key ~= clk.key then
@@ -1859,15 +1959,39 @@ function BR.Native.applyClock(now)
     clk.checkAt = now
     local engine = engineClock()
     local drift = W.drift(engine, planSec(plan))
-    clk.engine, clk.drift = engine, drift
-    if math.abs(drift) > BR.Config.World.driftSec then
-        clk.corrections = clk.corrections + 1
-        clk.lastFix = { at = now, drift = drift, mode = plan.mode }
-        applyPlan(plan)
-        print(('[br_core] clock: %s was %+.0f game seconds off, set again '
-            .. '(%d time(s) since the last reset -- brclock for more)')
-            :format(plan.mode, drift, clk.corrections))
+    local rate = GetMillisecondsPerGameMinute()
+    clk.engine, clk.drift, clk.engineRate = engine, drift, rate
+
+    -- THE RATE DID NOT HOLD: the fallback, before the guard has to yank anything.
+    if rate ~= clk.rateSet then
+        startEveryFrame(now, ('the engine reads %s ms a game minute where %s was set')
+            :format(tostring(rate), tostring(clk.rateSet)))
+        writeFrame(frameSec(plan))
+        return
     end
+
+    if math.abs(drift) <= BR.Config.World.driftSec then return end
+
+    clk.corrections = clk.corrections + 1
+    clk.lastFix = { at = now, drift = drift, mode = plan.mode }
+    local recent = clk.fixedAt
+    recent[#recent + 1] = now
+    while recent[1] ~= nil and now - recent[1] > CLOCK_FIX_WINDOW_MS do
+        table.remove(recent, 1)
+    end
+
+    -- THE GUARD KEEPS FIRING: something moves the clock that the read cannot see.
+    if #recent >= CLOCK_FIX_LIMIT then
+        startEveryFrame(now, ('%s was %+.0f game seconds off, %d corrections inside %ds')
+            :format(plan.mode, drift, #recent, CLOCK_FIX_WINDOW_MS // 1000))
+        writeFrame(frameSec(plan))
+        return
+    end
+
+    applyPlan(plan)
+    print(('[br_core] clock: %s was %+.0f game seconds off, set again '
+        .. '(%d time(s) since the last reset -- brclock for more)')
+        :format(plan.mode, drift, clk.corrections))
 end
 
 --- What the clock writer is doing, for `brclock` and for the tests. A copy:
@@ -1876,51 +2000,70 @@ end
 function BR.Native.clockStatus()
     return {
         plan        = clk.plan,
+        everyFrame  = everyFrame and { at = everyFrame.at, why = everyFrame.why } or nil,
         writes      = clk.writes,
+        frameWrites = clk.frameWrites,
         corrections = clk.corrections,
         lastFix     = clk.lastFix,
         engine      = clk.engine,
         drift       = clk.drift,
+        engineRate  = clk.engineRate,
+        rateSet     = clk.rateSet,
         heldMs      = CLOCK_HELD_MS,
+        fixLimit    = CLOCK_FIX_LIMIT,
+        fixWindowMs = CLOCK_FIX_WINDOW_MS,
     }
 end
 
---- Hand the clock back to the game: br_core is stopping.
+--- br_core is stopping: FREEZE the clock where it stands, and hand nothing back.
 ---
---- THE RATE IS ENGINE-WIDE AND OUTLIVES THIS RESOURCE -- FiveM resets it only
---- when the session shuts down -- so a br_core stopped mid-hold would leave the
---- whole client frozen at noon under whatever runs next. Same three calls
---- vMenu's stop path makes. 0 is FiveM's "back to 2000". The override is
---- cleared HERE AND NOWHERE ELSE: in a running session, clearing it hands the
---- clock back to the network clock, which a Cfx.re report saw re-applying
---- itself about once a second.
+--- THE OVERRIDE STAYS AND THE RATE BECOMES THE HOLD. deploy.sh tells an operator
+--- to type `restart br_core` on a live box, and the restarted writer's first
+--- frame writes its own plan whatever the engine holds -- so all a stop has to
+--- do is keep the sky still across the gap. It used to clear the override and
+--- put GTA's rate back, which handed the clock to the network clock (any time
+--- of day, and a Cfx.re report saw that re-applying itself about once a second)
+--- until the restarted writer took it back: two jumps of the sky per restart,
+--- mid-match included. Now a restart in the lobby is noon, still, to noon, and
+--- anywhere else it is at most one change: from where the clock froze to
+--- wherever the restarted client's plan puts it.
+---
+--- IF br_core STOPS FOR GOOD, the client keeps a still sky at the time it
+--- stopped -- noon, in the lobby -- until it leaves the server, which puts the
+--- rate back (FiveM resets it when the session shuts down, see the section
+--- header). That is acceptable because br_core IS the gamemode: a server
+--- without it has no lobby or match to light, and nothing else under
+--- resources/ writes the clock (tools/verify.sh), so no other owner is held
+--- up. Whatever takes the clock over afterwards has to write its own rate and
+--- time anyway.
 ---
 --- A LOCAL, CAPTURED BY THE HANDLER BELOW, rather than looked up on BR.Native
 --- when the event fires: the handler belongs to this file's writer and must
---- release THIS writer's state.
-local function releaseClock()
-    NetworkClearClockTimeOverride()
-    PauseClock(false)
-    SetMillisecondsPerGameMinute(0)
+--- freeze THIS writer's clock.
+local function freezeClock()
+    SetMillisecondsPerGameMinute(CLOCK_HELD_MS)
+    PauseClock(true)
     clockReset()
 end
-BR.Native.releaseClock = releaseClock
 
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
-    releaseClock()
+    freezeClock()
 end)
 
 --- Forget every belief about the engine's rule state, so the next
 --- applyGameRules writes all of it again.
 ---
 --- Used by the test suite, and by anything that knows the engine has been
---- reset underneath us. Same contract as BR.Native.forgetTeam above.
+--- reset underneath us. Same contract as BR.Native.forgetTeam above. It also
+--- forgets the clock's every-frame fallback, so the next frames try the rate
+--- again -- the one place that finding is dropped.
 function BR.Native.forgetRules()
     latch.at, latch.ped, latch.state, latch.match = 0, nil, nil, nil
     latch.shield, latch.invincible = nil, nil
     latch.visible = nil
     clockReset()
+    everyFrame = nil
 end
 
 --- Should my own ped be visible? THE ONE RULE, for both writers below.

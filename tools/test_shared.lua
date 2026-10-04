@@ -21573,7 +21573,14 @@ do
         S.run('brtime', 0, 'reset')
         local h, m = S.env.BR.World.clockHM()
         ok(h == 12 and m == 0 and S.env.BR.World.holdsTime() == false,
-           'brtime reset puts the clock back on the pinned noon')
+           'brtime reset puts the clock back on the state\'s own: noon at rest')
+        -- THE CONSOLE SAYS WHAT A RESET DOES NOW (#394): there is no pin, and
+        -- mid-match a reset hands back the match's running clock, not noon.
+        ok(S.saidSomethingAbout('reset for everyone -- 12:00 in the lobby and warmup, '
+                                .. 'the match\'s running time from bus start')
+           and not S.saidSomethingAbout('pin'),
+           'and the console line says where the clock goes back to, and nothing '
+           .. 'about a pin', table.concat(S.prints, ' | '))
         ok(S.env.BR.World.weatherName() == 'FOGGY',
            'and leaves the sky exactly where it was')
         ok(S.sent[#S.sent].payload.hour == nil
@@ -21598,6 +21605,16 @@ do
         local h = S.env.BR.World.clockHM()
         ok(h == 9, 'and leaves the override alone')
         ok(S.saidSomethingAbout('usage: brtime'), 'it prints usage')
+        -- WHAT THE VERBS DO (#394), in the usage: brtime holds the clock still
+        -- at the time given, and reset goes back to noon at rest or the
+        -- match's running time. Nothing re-pins anything every frame any more.
+        ok(S.saidSomethingAbout('Holds every client\'s clock still at the time given')
+           and S.saidSomethingAbout('back to 12:00 in the lobby and warmup, or the '
+                                    .. 'match\'s running time')
+           and S.saidSomethingAbout('now: 09:00, held still by brtime')
+           and not S.saidSomethingAbout('pin'),
+           'and says what the verbs do now: hold still, and reset to noon or the '
+           .. 'match\'s running time', table.concat(S.prints, ' | '))
         ok(S.saidSomethingAbout('Ambient population is time-gated'),
            'and says what moving the clock costs, which is the part a person '
            .. 'cannot see coming')

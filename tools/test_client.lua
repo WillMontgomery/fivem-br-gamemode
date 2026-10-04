@@ -16899,8 +16899,10 @@ do
     frames(1, 250)
     ok(count('time') == 1, 'behind counts the same as ahead', seq())
 
-    -- AND THE HOLD HAS THE SAME GUARD.
-    BR.State.me.state = PS.LOBBY
+    -- AND THE HOLD HAS THE SAME GUARD. A fresh client, because the two
+    -- corrections above and this one would be three inside a minute -- which
+    -- is the every-frame fallback's trigger, and that has its own block below.
+    fresh()
     frames(0.25, 250)
     clockWrites = {}
     gameClock.sec = gameClock.sec + cfg.driftSec
@@ -16912,24 +16914,216 @@ do
     ok(seq() == 'rate,pause,time' and t.h == 12 and t.m == 0 and t.s == 0,
        'past it, the held clock is put back on noon', seq() .. ' ' .. hms(timeSec(t)))
 
-    -- AN ENGINE THAT DROPS THE RATE ON EVERY TIME WRITE -- what build 2189+
-    -- does without FiveM's hook. The guard cannot fix that engine, and it must
-    -- not hide it: each correction re-sends the rate, and brclock counts them.
+    -- ONE CORRECTION IS A HITCH. Four of them, half a minute apart, never put
+    -- three inside one minute, so they stay four ordinary corrections.
     fresh()
-    gameClock.rateSticks = false
     BR.State.me.state = PS.ALIVE
     BR.State.match = { state = MS.PLAYING, clock = W.anchor(BR.Clock.now()) }
     frames(0.05)
+    for _ = 1, 4 do
+        gameClock.sec = gameClock.sec + cfg.driftSec + 5
+        frames(31, 250)
+    end
+    local cs = BR.Native.clockStatus()
+    ok(cs.corrections == 4 and cs.everyFrame == nil,
+       'four corrections half a minute apart are four hitches: corrected, and the '
+       .. 'clock is still set once per plan',
+       ('%d corrections, every frame: %s'):format(cs.corrections,
+           tostring(cs.everyFrame and cs.everyFrame.why)))
+
+    -- ------------------------------------------------------------------ --
+    describe('the clock -- an engine that drops the rate falls back to every frame (#394)')
+    -- ------------------------------------------------------------------ --
+    -- WHAT BUILD 2189+ DOES WITHOUT FiveM's HOOK: every time write puts the
+    -- rate back to 2000 (the model's rateSticks = false). The drift guard alone
+    -- would make that worse than the bug this issue fixed: 2000 against 5000
+    -- gains 18 game seconds a real second, so the guard would yank the match's
+    -- sky back every three seconds or so. The writer has to notice, and change
+    -- how it keeps the clock.
+
+    --- The console lines the clock writer printed since `logged` was emptied.
+    local function clockLines()
+        local out = {}
+        for _, line in ipairs(logged) do
+            if line:find('[br_core] clock:', 1, true) then out[#out + 1] = line end
+        end
+        return out
+    end
+
+    --- `seconds` of frames, `ms` apart, watching the engine after every frame:
+    --- the furthest it was from `target()`, how many times it stepped
+    --- BACKWARDS (a snap), and how many second-of-the-minute values the time
+    --- writes carried.
+    local function watch(seconds, ms, target)
+        local worst, back, prev, secs, n = 0, 0, engineAt(), {}, 0
+        for _ = 1, math.floor(seconds * 1000 / ms + 0.5) do
+            fakeTime = fakeTime + ms
+            BR.Native.applyGameRules()
+            n = n + 1
+            local e = engineAt()
+            worst = math.max(worst, math.abs(W.drift(e, target())))
+            if W.drift(e, prev) < 0 then back = back + 1 end
+            prev = e
+        end
+        for _, w in ipairs(clockWrites) do
+            if w.fn == 'time' then secs[w.s] = true end
+        end
+        local distinct = 0
+        for _ in pairs(secs) do distinct = distinct + 1 end
+        return worst, back, distinct, n
+    end
+
+    --- Every pause write since the list was emptied asked for the pause.
+    local function allPaused()
+        for _, w in ipairs(clockWrites) do
+            if w.fn == 'pause' and w.on ~= true then return false end
+        end
+        return true
+    end
+
+    -- IN A MATCH.
+    fresh()
+    gameClock.rateSticks = false
+    BR.State.me.state = PS.ALIVE
+    local fa = W.anchor(BR.Clock.now())
+    BR.State.match = { state = MS.PLAYING, clock = fa }
+    frames(0.05)
+    ok(seq() == 'rate,pause,time', 'the match starts with the ordinary one write', seq())
+    logged = {}
+    frames(1, 50)
+    cs = BR.Native.clockStatus()
+    ok(cs.everyFrame ~= nil and cs.corrections == 0,
+       'THE FIRST READ SEES THE RATE IS NOT WHAT WAS SET, AND SWITCHES -- inside a '
+       .. 'second, before the guard has had to yank anything',
+       ('every frame: %s; %d corrections'):format(
+           tostring(cs.everyFrame and cs.everyFrame.why), cs.corrections))
+    local said = clockLines()
+    ok(#said == 1 and said[1]:find('every frame', 1, true) ~= nil
+       and said[1]:find('2000', 1, true) ~= nil,
+       'and says so on the console, once, with the rate it read', table.concat(said, ' | '))
+
     clockWrites = {}
-    frames(60, 100)
-    local fixes = BR.Native.clockStatus().corrections
-    ok(fixes >= 10,
-       'IF THE RATE EVER STOPS STICKING, the drift guard sees it within seconds and '
-       .. 'brclock counts it -- the fallback is a reading, not a guess',
-       ('%d corrections in a minute'):format(fixes))
-    ok(count('rate') == fixes and count('time') == fixes,
-       'and every correction re-sends the rate with the time',
-       ('%d rate, %d time, %d corrections'):format(count('rate'), count('time'), fixes))
+    logged = {}
+    local worst, back, distinct, n = watch(60, 50, function()
+        return W.timeAt(fa, BR.Clock.now())
+    end)
+    ok(BR.Native.clockStatus().corrections == 0 and back == 0 and worst <= 1,
+       'NO SNAPS AFTER THE SWITCH: a real minute of match, never a step backwards, '
+       .. 'never more than a game second off the anchor, no correction',
+       ('%d corrections, %d backward steps, worst %.2f game s'):format(
+           BR.Native.clockStatus().corrections, back, worst))
+    ok(count('time') == n and count('rate') == 0 and allPaused(),
+       'every frame is one write of the time, paused, and no rate -- the rate is '
+       .. 'the thing that did not hold',
+       ('%d frames: %d time, %d rate, paused %s'):format(n, count('time'),
+           count('rate'), tostring(allPaused())))
+    ok(distinct >= 50,
+       'in whole real seconds, never forced to 0: the sun steps a game second at '
+       .. 'a time, not a game minute every five real seconds',
+       ('%d distinct seconds written'):format(distinct))
+    ok(#clockLines() == 0, 'and the console stays quiet after the one line',
+       table.concat(clockLines(), ' | '))
+
+    -- brclock SAYS WHICH WAY THE CLOCK IS KEPT.
+    logged = {}
+    clockWrites = {}
+    commands['brclock']()
+    local out = table.concat(logged, '\n')
+    ok(#clockWrites == 0, 'brclock still writes nothing', seq())
+    for _, needle in ipairs({ 'writer           EVERY FRAME, paused',
+                              'where 5000 was set', 'frame writes' }) do
+        ok(out:find(needle, 1, true) ~= nil, ('brclock prints %q'):format(needle), out)
+    end
+
+    -- FOR THE REST OF THE SESSION: the trip home is a new plan, and the
+    -- fallback holds noon the same way rather than trying the rate again.
+    BR.State.me.state = PS.LOBBY
+    BR.State.match = { state = MS.WAITING }
+    clockWrites = {}
+    logged = {}
+    worst, back, distinct, n = watch(30, 50, function() return 12 * 3600 end)
+    t = last('time')
+    ok(count('rate') == 0 and count('time') == n and allPaused()
+       and t.h == 12 and t.m == 0 and t.s == 0 and worst == 0,
+       'the trip home stays on the fallback: the held time, 12:00:00, every frame, '
+       .. 'paused -- never the rate again',
+       ('%d frames: %d time, %d rate, worst %.2f, %s'):format(n, count('time'),
+           count('rate'), worst, hms(timeSec(t))))
+    ok(#clockLines() == 0, 'and changing plans says nothing new',
+       table.concat(clockLines(), ' | '))
+
+    -- IN THE LOBBY, FROM THE START: the hold rate read back as 2000.
+    fresh()
+    gameClock.rateSticks = false
+    frames(0.05)
+    logged = {}
+    frames(1.5, 50)
+    cs = BR.Native.clockStatus()
+    ok(cs.everyFrame ~= nil and cs.everyFrame.why:find(tostring(HELD), 1, true) ~= nil,
+       'a hold whose rate did not stick switches the same way',
+       tostring(cs.everyFrame and cs.everyFrame.why))
+    clockWrites = {}
+    worst, back, distinct, n = watch(120, 50, function() return 12 * 3600 end)
+    ok(worst == 0 and back == 0 and count('time') == n and count('rate') == 0
+       and allPaused() and last('time').s == 0,
+       'and holds 12:00:00 by writing it every frame, paused: two minutes, never off',
+       ('worst %.2f, %d frames, %d time, %d rate'):format(worst, n, count('time'),
+           count('rate')))
+
+    -- THE GUARD'S HALF: an engine that READS BACK the rate it was given but
+    -- runs at 2000 anyway. The rate check cannot see that; three corrections
+    -- inside a minute can.
+    fresh()
+    gameClock.rateSticks = false
+    local realRate = GetMillisecondsPerGameMinute
+    GetMillisecondsPerGameMinute = function() return cfg.msPerGameMinute end
+    BR.State.me.state = PS.ALIVE
+    local ga = W.anchor(BR.Clock.now())
+    BR.State.match = { state = MS.PLAYING, clock = ga }
+    frames(0.05)
+    logged = {}
+    frames(30, 100)
+    cs = BR.Native.clockStatus()
+    said = clockLines()
+    ok(cs.everyFrame ~= nil and cs.corrections == cs.fixLimit,
+       'AN ENGINE THAT REPORTS THE RATE AND IGNORES IT is caught by the guard: the '
+       .. 'third correction inside a minute switches to every frame',
+       ('every frame: %s; %d corrections'):format(
+           tostring(cs.everyFrame and cs.everyFrame.why), cs.corrections))
+    ok(#said == cs.fixLimit and said[#said]:find('every frame', 1, true) ~= nil,
+       'the console has the corrections, then the one line that says it switched',
+       table.concat(said, ' | '))
+    clockWrites = {}
+    logged = {}
+    worst, back = watch(60, 50, function() return W.timeAt(ga, BR.Clock.now()) end)
+    ok(BR.Native.clockStatus().corrections == cs.corrections and back == 0 and worst <= 1
+       and #clockLines() == 0,
+       'and after the switch the guard never fires again: a minute, no correction, '
+       .. 'no step backwards, never more than a game second off',
+       ('%d corrections, %d backward, worst %.2f'):format(
+           BR.Native.clockStatus().corrections, back, worst))
+    GetMillisecondsPerGameMinute = realRate
+
+    -- NEITHER THE RATE NOR THE PAUSE HOLDS. Between two frames the engine runs
+    -- at 2000 -- a game second and a half in 50 ms -- and the next frame puts
+    -- it back: the creep the old every-frame pin had, and nothing like a snap.
+    fresh()
+    gameClock.rateSticks, gameClock.pauseWorks = false, false
+    BR.State.me.state = PS.ALIVE
+    local na = W.anchor(BR.Clock.now())
+    BR.State.match = { state = MS.PLAYING, clock = na }
+    frames(1.5, 50)
+    ok(BR.Native.clockStatus().everyFrame ~= nil, 'an engine that keeps neither switches too')
+    local creep = 0
+    for _ = 1, 600 do
+        fakeTime = fakeTime + 50
+        creep = math.max(creep,
+            math.abs(W.drift(engineAt(), W.timeAt(na, BR.Clock.now()))))
+        BR.Native.applyGameRules()
+    end
+    ok(creep <= 2 and BR.Native.clockStatus().corrections == 0,
+       'and is never more than two game seconds off the anchor, read just before '
+       .. 'each frame\'s write', ('worst %.2f game s'):format(creep))
 
     -- AN ENGINE THAT IGNORES PauseClock. The rate is the real brake.
     fresh()
@@ -16951,10 +17145,21 @@ do
     local late = W.anchor(BR.Clock.now() - 600000)
     BR.State.me.state = PS.ALIVE
     BR.State.match = { state = MS.PLAYING, clock = late }
+    -- Every plan asked for while it waits is counted: a waiting frame used to
+    -- be `due` forever, and so built a new plan table every frame.
+    local realPlan, plans = W.clockPlan, 0
+    W.clockPlan = function(o)
+        plans = plans + 1
+        return realPlan(o)
+    end
     frames(2, 50)
+    W.clockPlan = realPlan
     ok(#clockWrites == 0,
        'until this client knows the server\'s time it writes nothing -- a time '
        .. 'worked out from an unsynced clock is a guess, and then a snap', seq())
+    ok(plans >= 2 and plans <= 3,
+       'and while it waits it asks for a plan once a second, like every other '
+       .. 'state -- not once a frame', ('%d plans in 40 frames'):format(plans))
     BR.Clock.synced = true
     frames(0.05)
     t = last('time')
@@ -17094,25 +17299,61 @@ do
     for _, needle in ipairs({ 'RUN (match)', 'bus left 60s ago', 'expected         12:12:00',
                               'engine           12:12:00', 'drift ',
                               'engine rate      5000', 'writes           1',
-                              'corrections 0', 'synced' }) do
+                              'corrections 0', 'synced',
+                              'writer           ONCE per plan' }) do
         ok(out:find(needle, 1, true) ~= nil, ('brclock prints %q'):format(needle), out)
     end
 
     -- ------------------------------------------------------------------ --
-    describe('the clock -- handed back when br_core stops (#394)')
+    describe('the clock -- frozen, not handed back, when br_core stops (#394)')
     -- ------------------------------------------------------------------ --
+    -- deploy.sh tells an operator to type `restart br_core` on a live box. A
+    -- stop that cleared the override handed the sky to the network clock --
+    -- any time of day -- until the restarted writer took it back: two jumps per
+    -- restart. The stop now leaves the override where it is and the clock
+    -- frozen, and the restarted writer's first frame writes its own plan.
     ok(type(clockStopHandler) == 'function', 'natives.lua registers its own stop handler')
+
+    -- MID-MATCH.
+    fresh()
+    BR.State.me.state = PS.ALIVE
+    BR.State.match = { state = MS.PLAYING, clock = W.anchor(BR.Clock.now() - 300000) }
+    frames(0.05)
     clockWrites = {}
     clockStopHandler('br_ui')
     ok(#clockWrites == 0, 'another resource stopping touches nothing', seq())
+    local frozeAt = engineAt()
     clockStopHandler('br_core')
-    ok(seq() == 'clear,pause,rate' and last('pause').on == false and last('rate').v == 0,
-       'br_core stopping clears the override, unpauses, and hands the rate back '
-       .. '(0 is FiveM\'s "back to 2000")', seq())
+    ok(seq() == 'rate,pause' and last('rate').v == HELD and last('pause').on == true,
+       'br_core stopping writes the hold rate and the pause, and nothing else -- no '
+       .. 'clear, no time', seq())
+    -- THE GAP: br_core is down, so nothing runs the rules.
+    fakeTime = fakeTime + 20000
+    ok(engineAt() == frozeAt,
+       'across the gap the sky stays exactly where it stopped: not the network '
+       .. 'clock, not running on', hms(engineAt()) .. ' vs ' .. hms(frozeAt))
+    -- THE RESTART: a new client state starts in the lobby, with no match.
+    BR.State.me.state = PS.LOBBY
+    BR.State.match = { state = MS.WAITING }
     clockWrites = {}
     frames(0.05)
-    ok(seq() == 'rate,pause,time',
-       'and a writer that starts again writes afresh rather than trusting a belief', seq())
+    t = last('time')
+    ok(seq() == 'rate,pause,time' and t.h == 12 and t.m == 0 and t.s == 0,
+       'and the restarted writer\'s first frame writes its own plan: ONE change, '
+       .. 'from where the clock froze to noon', seq() .. ' ' .. hms(timeSec(t)))
+
+    -- IN THE LOBBY: noon to noon, and nothing in between.
+    fresh()
+    frames(0.05)
+    clockWrites = {}
+    clockStopHandler('br_core')
+    fakeTime = fakeTime + 20000
+    local still = engineAt() == 12 * 3600
+    frames(5, 50)
+    ok(still and engineAt() == 12 * 3600 and count('clear') == 0
+       and last('time').h == 12 and last('time').m == 0 and last('time').s == 0,
+       'A RESTART IN THE LOBBY IS SEAMLESS: 12:00:00 through the stop, the gap and '
+       .. 'the restarted writer\'s first write', seq() .. ' ' .. hms(engineAt()))
 
     -- ------------------------------------------------------------------ --
     describe('the clock -- one writer, counted in the tree (#394)')
@@ -17122,11 +17363,19 @@ do
     -- add it. COMMENTS ARE STRIPPED FIRST: the section over the writer names
     -- these natives in prose, and a scan that counted prose would fail on the
     -- explanation of why it exists.
+    --
+    -- THIS IS THE COUNT INSIDE THE WRITER. The search of the WHOLE tree --
+    -- every resource under resources/, the vendored ones too, for these names
+    -- and their hashes -- needs a directory walk, which Lua cannot do here
+    -- without io.popen (tools/test_config.lua has the reason), so it is
+    -- tools/verify.sh's 'console capability boundary' gate, beside the sky's.
     local CALLS = {
         NetworkOverrideClockTime = 1,      -- writeClock
-        SetMillisecondsPerGameMinute = 2,  -- writeClock, releaseClock
-        PauseClock = 2,                    -- writeClock, releaseClock
-        NetworkClearClockTimeOverride = 1, -- releaseClock
+        SetMillisecondsPerGameMinute = 2,  -- writeClock, freezeClock
+        PauseClock = 2,                    -- writeClock, freezeClock
+        -- Nothing clears the override any more: a stop freezes the clock
+        -- rather than handing it to the network clock.
+        NetworkClearClockTimeOverride = 0,
         NetworkOverrideClockMillisecondsPerGameMinute = 0,
         SetClockTime = 0, AdvanceClockTimeTo = 0, AddToClockTime = 0,
     }
@@ -17139,7 +17388,15 @@ do
             files[#files + 1] = res .. '/' .. rel
         end
     end
-    local where = {}
+    -- The same natives by hash (runtime.fivem.net/doc/natives.json and
+    -- natives_cfx.json), which is how Citizen.InvokeNative and N_0x... reach
+    -- them. Lowercase, and each line is lowercased before the search.
+    local HASHES = {
+        'e679e3e06e363892', 'd972df67326f966e', '4055e40bd2dbec1d',
+        '47c3b5848c3e45d8', 'c8ca9670b9d83b3b', 'd716f30d8c8980e2',
+        '42bf1d2e723b6d7e', '36ca2554',
+    }
+    local where, byHash = {}, {}
     for _, rel in ipairs(files) do
         local fh = io.open(ROOT .. rel, 'r')
         if fh then
@@ -17152,10 +17409,16 @@ do
                         where[rel] = true
                     end
                 end
+                local low = code:lower()
+                for _, h in ipairs(HASHES) do
+                    if low:find(h, 1, true) then byHash[#byHash + 1] = rel end
+                end
             end
             fh:close()
         end
     end
+    ok(#byHash == 0, 'no client file reaches a clock native by its hash',
+       table.concat(byHash, ', '))
     ok(read > 30 and read == #files, 'the scan read every client file both manifests declare',
        ('%d declared, %d read'):format(#files, read))
     for name, n in pairs(CALLS) do
