@@ -121,6 +121,7 @@ NOTES=(
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
     "test_rarity|The five rarity colors are the owner's, and the same in the game, the page and the built page"
     "test_terminal|Season 2 terminals: a run only inside a session the server opened; the computer always gives the keyboard back"
+    "test_yubikey|Season 2 Yubikey: one per player, dropped on death or leaving, one use per squad, terminals live only inside the storm"
     "frame budget|Per-frame game calls, draws and memory stay within budget, lobby to match, every scene"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -703,6 +704,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # failure that matters crosses them: a run taken outside the session the
     # server opened, or a NUI focus vote left standing when the computer goes.
     #
+    # test_yubikey.lua is the Gameplay half of #396 on the real files: the key's
+    # whole life (the profile, the cap of one, the death and leave drops, the
+    # sources at their odds as EXTRA items), the terminals online only inside the
+    # storm, ONE use per squad, the lobby's two notices, Storm reveal reaching the
+    # squad and nobody else, the client's blips and plate, and Season 1 seeing
+    # none of it. Its mutations are named in #396's report.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -760,6 +768,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_stamina.lua
         tools/test_rarity.lua
         tools/test_terminal.lua
+        tools/test_yubikey.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)
