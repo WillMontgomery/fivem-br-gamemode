@@ -677,6 +677,14 @@ client_scripts {
     -- BR.Keys.setExternalScreen is reached at call time. The dev command
     -- `brterminal` opens it anywhere; it asks the server, as `brterminalsv`.
     'client/terminal.lua',
+    -- The Yubikey and the terminals in the world (#396): the key the server
+    -- says this player holds, each terminal's local prop, blip and plate, the
+    -- hold that asks the server to open one, and Storm reveal on both maps.
+    -- AFTER client/terminal.lua for a reader (BR.Terminal.computerOpen is
+    -- asked at call time), and after client/keybinds.lua, client/dui.lua and
+    -- client/natives.lua because it calls BR.Keys.on and BR.Loop.register at
+    -- load.
+    'client/yubikey.lua',
     'client/debug.lua',
 }
 

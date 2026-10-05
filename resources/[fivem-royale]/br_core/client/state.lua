@@ -2572,12 +2572,19 @@ function BR.PushHud(force)
     -- do, used for the one thing it is allowed to decide: what to draw.
     local landed = BR.State.landed == true
 
+    -- THE SEASON 2 YUBIKEY'S EQUIPPED ICON (#396): the glyph to draw while this
+    -- player holds one, nil while not -- and nil on a Season 1 server, where
+    -- BR.Yubikey.glyph asks the season. The art is BR.Config.Terminals.art's,
+    -- so the page draws whatever it is handed and holds no icon of its own.
+    local yubikey = BR.Yubikey and BR.Yubikey.glyph and BR.Yubikey.glyph() or nil
+
     if not force
        and hp == lastPush.hp and armour == lastPush.armour
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
        and kills == lastPush.kills and me.state == lastPush.state
        and paused == lastPush.paused
        and landed == lastPush.landed
+       and yubikey == lastPush.yubikey
        -- WHO THE BARS ARE ABOUT IS PART OF WHAT CHANGED. Two squadmates on the
        -- same health are the same three numbers, so without this a cycle to the
        -- next target would dedupe away and the HUD would keep describing the
@@ -2592,6 +2599,7 @@ function BR.PushHud(force)
     lastPush.paused = paused
     lastPush.landed = landed
     lastPush.watching = watching
+    lastPush.yubikey = yubikey
 
     local trace = BR.Loop.hitchBegin(
         'ui.hud.send', 'change-driven HUD envelope')
@@ -2604,6 +2612,7 @@ function BR.PushHud(force)
         state       = me.state,
         paused      = paused,
         landed      = landed,
+        yubikey     = yubikey,
     })
     BR.Loop.hitchEnd(trace)
 end
@@ -2775,6 +2784,14 @@ function pushSquadOrParty()
                 -- it draws the bleed clock off `bleedEndsAt` -- same clock, same
                 -- offset, same rounding.
                 reviveKeyEndsAt = keyEndsAt,
+
+                -- WHETHER THIS MATE HOLDS A SEASON 2 YUBIKEY (#396) -- off the
+                -- same squad-only beacon (`yubikey`, server/party.lua), as the
+                -- glyph to draw beside their name or nil. "In squads,
+                -- teammates can see who holds a key: this could be multiple
+                -- per squad!" One bit on the wire; the art is the config's.
+                yubikey = BR.Yubikey and BR.Yubikey.mateGlyph
+                    and BR.Yubikey.mateGlyph(b and b.yubikey) or nil,
             }
         end
     end

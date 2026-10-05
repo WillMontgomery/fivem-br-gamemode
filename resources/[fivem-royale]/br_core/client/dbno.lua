@@ -3224,12 +3224,19 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- counter collects the loot of whoever lost. Without this clause one press
     -- of the interact key at a counter both opens the shop and claims the crate
     -- underfoot, which is the shape #274 asked not to ship.
+    --
+    -- AND A SEASON 2 TERMINAL'S PLATE IS THE FOURTH (#396): a terminal stands
+    -- in a building where loot lies on the floor, and its hold must not also
+    -- claim the crate underfoot. BR.Yubikey.prompting is true while its plate
+    -- is up.
     local busy = target ~= nil or holding ~= nil
     BR.Loot.suppress(busy
         or (BR.ReviveKey ~= nil and BR.ReviveKey.prompting ~= nil
             and BR.ReviveKey.prompting())
         or (BR.Gunshop ~= nil and BR.Gunshop.busy ~= nil
-            and BR.Gunshop.busy()))
+            and BR.Gunshop.busy())
+        or (BR.Yubikey ~= nil and BR.Yubikey.prompting ~= nil
+            and BR.Yubikey.prompting()))
 
     -- ...AND THE REVIVE KEY YIELDS BACK. A mate who is DOWNED can still be
     -- picked up outright -- they keep their inventory and it costs the squad

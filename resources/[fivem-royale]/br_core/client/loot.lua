@@ -761,6 +761,12 @@ local function propScaleOf(e)
         local c = BR.Config.ConsumableById[e.item]
         return c and c.propScale or nil
     end
+    -- A SEASON 2 YUBIKEY (#396): its placeholder prop is a USB stick a few
+    -- centimetres long, so it is drawn at the art block's keyScale.
+    if e.kind == 'yubikey' then
+        local art = BR.Config.Terminals and BR.Config.Terminals.art
+        return art and art.keyScale or nil
+    end
     return airdropScale(e.item)
 end
 

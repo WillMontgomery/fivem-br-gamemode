@@ -51,6 +51,13 @@ local function setKeys(open)
     end
 end
 
+--- Is the computer up on this client? Read by client/yubikey.lua, whose plate
+--- and hold stand down while it is.
+--- @return boolean
+function BR.Terminal.computerOpen()
+    return shown ~= nil
+end
+
 -- ------------------------------------------------------ server -> computer ---
 
 RegisterNetEvent(BR.Net.TERMINAL_OPEN)
@@ -59,6 +66,13 @@ AddEventHandler(BR.Net.TERMINAL_OPEN, function(d)
     if type(state) ~= 'table' or type(state.terminalId) ~= 'string' then return end
     local c = computer()
     local ok, why = false, 'not-started'
+    -- NOT OVER A br_ui SCREEN. The computer holds its own NUI focus vote, so
+    -- opening it over the lobby, the map or the inventory would leave two
+    -- frames each believing they own the keyboard (#396's shell report). The
+    -- session is handed straight back, like any other open that did not happen.
+    if BR.Keys and BR.Keys.uiScreen ~= nil then
+        c, why = nil, 'screen-busy'
+    end
     if c then ok, why = c:Open(state, BR.Config.Terminals.copy) end
     if ok ~= true then
         -- Said out loud, and the session handed back: a server waiting on a
@@ -111,19 +125,84 @@ AddEventHandler(BR.Net.TERMINAL_DEV, function(text)
     print('[br_core] brterminal: ' .. tostring(text))
 end)
 
---- `brterminal [nokey] [used] [offline]` opens the computer here, wherever
---- "here" is, on a dev terminal whose facts are the words given: a key and
---- nothing against it by default. `brterminal close` closes it. The server
---- does both, as `brterminalsv`; this only types it (client/props.lua's
---- `brprop` has the mechanism).
+--- Where `brterminal place` puts a terminal: on the surface the camera is
+--- looking at within PLACE_LOOK_M, or else on the ground a metre in front of
+--- the player. Facing the player either way, so its screen is the side they
+--- walk up to.
+local PLACE_LOOK_M = 6.0
+
+--- @return table { x, y, z, h }
+local function placeSpot()
+    local ped = PlayerPedId()
+    local pos = GetEntityCoords(ped)
+    local heading = GetEntityHeading(ped)
+    local facing = (heading + 180.0) % 360.0
+
+    -- WHERE THE PLAYER LOOKS: one synchronous ray from the camera, a dev
+    -- command's cost and nobody else's.
+    local cam = GetGameplayCamCoord()
+    local rot = GetGameplayCamRot(2)
+    local rx, rz = math.rad(rot.x), math.rad(rot.z)
+    local dx = -math.sin(rz) * math.abs(math.cos(rx))
+    local dy = math.cos(rz) * math.abs(math.cos(rx))
+    local dz = math.sin(rx)
+    local ray = StartExpensiveSynchronousShapeTestLosProbe(cam.x, cam.y, cam.z,
+        cam.x + dx * PLACE_LOOK_M, cam.y + dy * PLACE_LOOK_M, cam.z + dz * PLACE_LOOK_M,
+        1 + 16, ped, 7)
+    local _, hit, at = GetShapeTestResult(ray)
+    if BR.NativeTruthy(hit) and at then
+        return { x = at.x, y = at.y, z = at.z, h = facing }
+    end
+
+    -- WHERE THE PLAYER STANDS, a metre ahead, on the ground.
+    local h = math.rad(heading)
+    local x, y = pos.x - math.sin(h) * 1.0, pos.y + math.cos(h) * 1.0
+    local found, gz = GetGroundZFor_3dCoord(x, y, pos.z + 2.0, false)
+    if not BR.NativeTruthy(found) or type(gz) ~= 'number' then gz = pos.z - 1.0 end
+    return { x = x, y = y, z = gz, h = facing }
+end
+
+--- `brterminal ...`, the dev tools (#396). The server does every one of them,
+--- as `brterminalsv`; this only types it (client/props.lua's `brprop` has the
+--- mechanism), adding what only a client knows -- where `place` puts it.
+---
+---   brterminal [nokey] [used] [offline]   the app alone, anywhere, on a dev
+---                                         terminal with those facts
+---   brterminal close                      close the computer
+---   brterminal place [id]                 a terminal where you look or stand;
+---                                         prints the config line to paste
+---   brterminal remove <id>                take one out of play (this session)
+---   brterminal list                       every terminal, online or not
+---   brterminal online <id> [off]          force one online, or back to the storm
+---   brterminal reset                      your squad's one use, unspent
+---   brterminal run <function>             a function's effect, no key needed
 RegisterCommand('brterminal', function(_, args)
     args = args or {}
     local first = args[1] and args[1]:lower() or 'open'
-    if first == 'close' then
-        ExecuteCommand('brterminalsv close')
+    local rest = {}
+    for i = 2, #args do rest[#rest + 1] = args[i] end
+
+    if first == 'close' or first == 'list' or first == 'remove' or first == 'online'
+       or first == 'reset' or first == 'run' then
+        local tail = table.concat(rest, ' ')
+        ExecuteCommand(tail == '' and ('brterminalsv ' .. first)
+            or ('brterminalsv %s %s'):format(first, tail))
+        return
+    end
+    if first == 'place' then
+        local s = placeSpot()
+        ExecuteCommand(('brterminalsv place %.3f %.3f %.3f %.1f %s')
+            :format(s.x, s.y, s.z, s.h, rest[1] or ''))
         return
     end
     local words = {}
     for i = (first == 'open' and 2 or 1), #args do words[#words + 1] = args[i] end
     ExecuteCommand(('brterminalsv open %s'):format(table.concat(words, ' ')))
+end)
+
+--- `bryubikey [give|take]`: a Yubikey for yourself, or yours taken away -- the real
+--- profile write and the real messages, first pickup included (#396).
+RegisterCommand('bryubikey', function(_, args)
+    local verb = args and args[1] and args[1]:lower() or 'give'
+    ExecuteCommand(('brterminalsv key %s'):format(verb == 'take' and 'take' or 'give'))
 end)
