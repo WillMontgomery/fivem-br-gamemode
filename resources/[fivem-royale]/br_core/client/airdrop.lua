@@ -390,7 +390,10 @@ local function dropProps(d)
     -- has landed and clearing it would put the render loop back on a streaming
     -- request every frame until the blip expired.
     if SetModelAsNoLongerNeeded then
-        SetModelAsNoLongerNeeded(GetHashKey(A.crateProp or 'prop_box_wood05a'))
+        -- The crate model THIS drop was built as: a Season 2 box (#395) or the
+        -- wooden crate, whichever primeAssets settled on.
+        SetModelAsNoLongerNeeded(d.crateModel
+            or GetHashKey(A.crateProp or 'prop_box_wood05a'))
         SetModelAsNoLongerNeeded(GetHashKey(A.chuteModel or 'p_cargo_chute_s'))
     end
     d.primed = false
@@ -663,6 +666,47 @@ local function loadModel(model)
         waited = waited + 50
     end
     return isTrue(HasModelLoaded(model))
+end
+
+--- The model this drop's falling crate should be (#395).
+---
+--- THE BOX UNDER THE CANOPY IS THE BOX THAT LANDS. On a Season 2 server the
+--- record carries the look the landed entry will carry (br_core/server/
+--- airdrop.lua, stampLook): a LEGENDARY shipping box, festive if the match is.
+--- It is drawn at normal size like every other crate -- A.crateScale is 1.0.
+---
+--- THE WOODEN CRATE whenever there is no box to have: no look on the record
+--- (every Season 1 drop), a placeholder row, or a model this build lacks. A box
+--- that then fails to STREAM falls back too, in primeAssets and spawn.
+--- @param d table
+--- @return integer hash
+--- @return boolean boxed
+local function crateModelOf(d)
+    local wood = GetHashKey(A.crateProp or 'prop_box_wood05a')
+    local rec = d.rec
+    if not rec or rec.bt == nil or not BR.Crates then return wood, false end
+    local name = BR.Crates.modelName(BR.Crates.lookOf(rec), false)
+    if not name then return wood, false end
+    local h = GetHashKey(name)
+    if not isTrue(IsModelInCdimage(h)) or not isTrue(IsModelValid(h)) then
+        return wood, false
+    end
+    return h, true
+end
+
+--- Stream this drop's crate model, the box first and the wooden crate if the box
+--- will not come. Remembers the one it got as `d.crateModel`.
+--- @param d table
+--- @return boolean loaded
+local function loadCrate(d)
+    local model, boxed = crateModelOf(d)
+    if boxed and loadModel(model) then
+        d.crateModel = model
+        return true
+    end
+    local wood = GetHashKey(A.crateProp or 'prop_box_wood05a')
+    d.crateModel = wood
+    return loadModel(wood)
 end
 
 --- Ask the engine to keep drawing this entity from further away than its model
@@ -949,7 +993,7 @@ local function buildParts(d)
     local rec = d.rec
     if not rec then return false end
 
-    local model = GetHashKey(A.crateProp or 'prop_box_wood05a')
+    local model = d.crateModel or GetHashKey(A.crateProp or 'prop_box_wood05a')
     -- THE RELEASE HEIGHT IS AUTHORED, NOT PROBED. It has to be the number the
     -- aircraft's own height was solved from, or the box leaves from somewhere
     -- the Cargobob is not -- see BR.AirdropCrateZ.
@@ -987,8 +1031,7 @@ end
 local function spawn(d)
     d.spawning = true
     Citizen.CreateThread(function()
-        local model = GetHashKey(A.crateProp or 'prop_box_wood05a')
-        if not loadModel(model) then
+        if not loadCrate(d) then
             d.spawning = false
             if not d.warned then
                 d.warned = true
@@ -1222,8 +1265,7 @@ local function primeAssets(d)
         -- down, because SetModelAsNoLongerNeeded between here and the release is
         -- exactly how a primed model comes to need streaming again. dropProps
         -- hands them back.
-        local haveCrate = loadModel(GetHashKey(A.crateProp
-                                               or 'prop_box_wood05a'))
+        local haveCrate = loadCrate(d)
         local haveChute = loadModel(GetHashKey(A.chuteModel
                                                or 'p_cargo_chute_s'))
 
@@ -1355,8 +1397,10 @@ local function place(d, now)
     SetEntityHeading(d.obj, hdg)
     -- AND THE SIZE BACK, EVERY FRAME, because SetEntityHeading is a matrix write
     -- and a matrix write resets the axis vectors to unit length -- which is
-    -- where the scale lives (#166). Without this the crate is 2x for exactly
-    -- one frame and authored size for the other 1800 of the descent.
+    -- where the scale lives (#166). Without this a scaled crate would be drawn
+    -- at its scale for one frame and authored size for the other 1800 of the
+    -- descent. crateScale is 1.0 -- the normal size -- since 835254d, so today
+    -- this returns at once; it stays for the row.
     BR.Native.propScale(d.obj, A.crateScale)
 
     if d.chute and isTrue(DoesEntityExist(d.chute)) then

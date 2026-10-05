@@ -171,23 +171,49 @@ end
 --- failure this project keeps paying for.
 --- @param a table an anchor row
 --- @return integer|nil obj
-local function findProp(a)
+--- One model's search at an anchor, both spellings of `isMission`.
+--- @param a table @param hash integer
+--- @return integer|nil obj
+local function findModel(a, hash)
     local tol = W.pinTolerance or 0.35
     local r   = W.pinRadius or 6.0
-    for _, hash in ipairs(MODELS) do
-        for _, mission in ipairs(MISSION_FLAGS) do
-            local obj = GetClosestObjectOfType(a.x, a.y, a.z, r, hash,
-                                               mission, false, false)
-            -- A HANDLE OF 0 IS "NOTHING FOUND", not an object. Checked before
-            -- DoesEntityExist rather than instead of it: the native answers 0
-            -- for a miss, and a stale non-zero handle is a separate question.
-            if obj and obj ~= 0 and isTrue(DoesEntityExist(obj)) then
-                local c = GetEntityCoords(obj)
-                if math.abs(c.x - a.x) <= tol and math.abs(c.y - a.y) <= tol then
-                    return obj
-                end
+    for _, mission in ipairs(MISSION_FLAGS) do
+        local obj = GetClosestObjectOfType(a.x, a.y, a.z, r, hash,
+                                           mission, false, false)
+        -- A HANDLE OF 0 IS "NOTHING FOUND", not an object. Checked before
+        -- DoesEntityExist rather than instead of it: the native answers 0
+        -- for a miss, and a stale non-zero handle is a separate question.
+        if obj and obj ~= 0 and isTrue(DoesEntityExist(obj)) then
+            local c = GetEntityCoords(obj)
+            if math.abs(c.x - a.x) <= tol and math.abs(c.y - a.y) <= tol then
+                return obj
             end
         end
+    end
+    return nil
+end
+
+--- The Season 2 box models client/loot.lua has built, or an empty table.
+---
+--- ON A SEASON 2 SERVER THESE FOUR ARE SHIPPING BOXES (#395), and a search for
+--- the wooden pair alone would never find one -- every marker would read
+--- "nothing pinned" forever. So the search widens to whatever box models this
+--- client has actually built, which is none at all on a Season 1 server: not
+--- one extra native call there.
+--- @return table  { [hash] = 'sealed'|'open' }
+local function boxModels()
+    if BR.Loot and BR.Loot.boxModels then return BR.Loot.boxModels() or {} end
+    return {}
+end
+
+local function findProp(a)
+    for _, hash in ipairs(MODELS) do
+        local obj = findModel(a, hash)
+        if obj then return obj end
+    end
+    for hash in pairs(boxModels()) do
+        local obj = findModel(a, hash)
+        if obj then return obj end
     end
     return nil
 end
@@ -718,7 +744,9 @@ local TAU = math.pi * 2.0
 local function isSealed(i)
     local obj = pinned[i]
     if obj and isTrue(DoesEntityExist(obj)) then
-        return GetEntityModel(obj) == MODELS[1]
+        local model = GetEntityModel(obj)
+        -- A SEASON 2 BOX (#395) is sealed when it is a sealed box model.
+        return model == MODELS[1] or boxModels()[model] == 'sealed'
     end
     return nil
 end
