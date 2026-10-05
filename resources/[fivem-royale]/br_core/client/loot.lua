@@ -514,23 +514,59 @@ end)
 -- 2 assets still shows working crates, and a crate with no stamp -- every crate
 -- on a Season 1 server -- never reaches any of this.
 --
+-- AND ONLY WHILE THIS CLIENT'S SEASON HAS crates2. The stamp is the server's
+-- word, and a stamp that outlived its season is the bug the owner hit
+-- (2026-10-04: a live switch to Season 1, and the warmup pad still drew Season
+-- 2's boxes). The server re-stamps every crate on a switch; this is the second
+-- lock: a stamped crate on a client whose season has no crates2 is wood. One
+-- cached answer (crates2On), asked when a body is chosen and when the season
+-- moves (followSeason, below) -- which rebuilds every body chosen under the
+-- other answer, in either direction.
+--
 -- NOTHING HERE RUNS PER FRAME. The choice is made in the spawn worker, the clip
 -- is started by one message, and the prompt's anchor is a config row read
 -- where the lid's box used to be measured.
 
 --- [hash] = true/false: does this build's CD image have this box model? Asked
---- once per model per session; the answer cannot change under a running game.
+--- once per model per session; the answer cannot change under a running game
+--- -- nor under a season switch, which changes which crates WEAR a box, not
+--- which boxes this build has.
 local boxInCd = {}
 
 --- [hash] = true once a stream of this box model timed out. Never asked for
 --- again this session: every crate wearing it falls back to wood at once
---- rather than each waiting out its own three seconds.
+--- rather than each waiting out its own three seconds. A fact about the build,
+--- like boxInCd, so a switch keeps it.
 local boxFailed = {}
 
 --- [hash] = 'sealed' or 'open', for every box model this client has built.
 --- client/warmupcrates.lua reads it (BR.Loot.boxModels) to recognize its four
---- crates when they are boxes.
+--- crates when they are boxes. EMPTIED, and the models handed back, when this
+--- client's season stops having crates2 (followSeason): a Season 1 client
+--- after a switch searches for exactly what it always did.
 local boxBuilt = {}
+
+--- THE ONE CACHED ANSWER TO crates2 ON THIS CLIENT: the season it was asked
+--- for, and what it said. `season` starts as false, which no season is, so the
+--- first question asks. `gen` counts the times the answer flipped, so a body
+--- still streaming in when it flips can tell (drain).
+local gate = { season = false, on = false, gen = 0 }
+
+--- Are Season 2 crates on, in this client's season? Asks the gate only when
+--- the season is not the one it last answered for -- a table read and a
+--- compare otherwise, and asked only where a box could be chosen.
+--- @return boolean
+local function crates2On()
+    local s = BR.Season and BR.Season.current and BR.Season.current() or nil
+    if s ~= gate.season then
+        gate.season = s
+        local on = (BR.Season ~= nil and BR.Season.has('crates2')) == true
+        if on ~= gate.on then gate.on, gate.gen = on, gate.gen + 1 end
+    end
+    return gate.on
+end
+--- Shared with client/airdrop.lua, whose falling crate is the box it lands as.
+BR.Loot.crates2On = crates2On
 
 --- Sealed bodies kept on screen while their open prop is built: [id] = { obj,
 --- at }. The clip holds its last frame on the sealed box and the open prop is
@@ -569,11 +605,14 @@ end
 --- OPEN for a husk and for a crate that is opening, which is also what a client
 --- that streams one in mid-clip draws: the open prop, never a clip begun
 --- part-way (owner, #395).
+---
+--- STAMPED AND crates2 HERE, both: the stamp first, so the 1300 crates and
+--- loose items that carry none never ask the gate at all.
 --- @param e table
 --- @return integer|nil hash
 --- @return boolean|nil open
 local function boxModelOf(e)
-    if e.bt == nil or not BR.Crates then return nil end
+    if e.bt == nil or not BR.Crates or not crates2On() then return nil end
     local open = e.kind == 'husk' or e.opening == true
     local name = BR.Crates.modelName(BR.Crates.lookOf(e), open)
     if not name then
@@ -1521,6 +1560,9 @@ local function drain()
                     end
 
                     local model, boxed = modelOf(e)
+                    -- Which crates2 answer chose it: the stream below yields,
+                    -- and a switch can land meanwhile (see the adoption).
+                    local gen = gate.gen
                     -- A MODEL THIS BUILD DOES NOT HAVE IS THE OTHER HALF OF
                     -- #224's fallback, and it is checked before the stream
                     -- rather than after: an entry whose prop name is a typo, or
@@ -1592,7 +1634,21 @@ local function drain()
                             -- you just opened jumps back to where it was
                             -- generated and stands up straight (user,
                             -- 2026-08-06).
+                            --
+                            -- ONLY FROM THE SAME KIND OF BODY (#395). A Season 2
+                            -- box and the wooden crate are different models
+                            -- with different origins (the box's is its bottom
+                            -- center), so a wooden crate stood at a box's pose
+                            -- is half in the ground -- and a box that went
+                            -- through the map leaves a pose under it. When a
+                            -- season switch swaps one for the other
+                            -- (followSeason, a restyle, the burst it forces),
+                            -- the new body is placed the way its own kind
+                            -- always is, from the entry.
                             local pose = poses[id]
+                            if pose and (pose.box == true) ~= (boxed == true) then
+                                pose = nil
+                            end
                             -- SHARED WITH THE ANIMATION. Static props are
                             -- built here and never moved again unless they
                             -- animate, so this height IS their resting
@@ -1820,7 +1876,25 @@ local function drain()
                                 -- in the world that nothing owns and nothing will
                                 -- ever delete -- so it is checked, and the
                                 -- orphan is destroyed rather than adopted.
-                                if entries[id] == e and not e.obj then
+                                --
+                                -- AND IT HAS TO STILL BE THE SEASON'S BODY
+                                -- (#395). A switch that flipped crates2 while
+                                -- this streamed found no body here to rebuild
+                                -- (followSeason), so this one is checked: built
+                                -- for the answer before, it is destroyed and
+                                -- the entry goes round again.
+                                if entries[id] == e and not e.obj and gate.gen ~= gen
+                                   and modelOf(e) ~= model then
+                                    if isTrue(DoesEntityExist(obj)) then DeleteEntity(obj) end
+                                    obj = nil
+                                    -- A box nobody wears any more is not kept
+                                    -- resident (followSeason handed the rest back).
+                                    if boxed then SetModelAsNoLongerNeeded(model) end
+                                    if not queued[id] then
+                                        queued[id] = true
+                                        queue[#queue + 1] = id
+                                    end
+                                elseif entries[id] == e and not e.obj then
                                     e.obj = obj
                                     byObject[obj] = id
                                     -- WHAT THIS BODY IS (#395): the model it
@@ -2010,9 +2084,18 @@ local function addEntries(list)
                     -- husk -- nothing changes at all; and if it is swapping
                     -- sealed for open, the sealed body lingers until the open
                     -- one is built, so the clip's last frame never blinks out.
+                    --
+                    -- A LOOK TAKEN AWAY FROM A BODY ALREADY WOOD is kept too: a
+                    -- `brseason` to Season 1 whose season landed here before
+                    -- the server's restyle (BR.Loot.reseason) has already
+                    -- rebuilt the box as wood (followSeason), and the restyle
+                    -- that follows changes the stamp, not the model. Only a
+                    -- restyle, never a reskin: a wooden crate becoming its husk
+                    -- is rebuilt exactly as it always was.
                     local rebuild = reskinned or restyled
                     local still = not moved and not revouched
-                    if rebuild and still and have.obj and have.bt ~= nil
+                    if rebuild and still and have.obj
+                       and (have.bt ~= nil or not reskinned)
                        and wasModel ~= nil and modelOf(have) == wasModel then
                         have.objModel, have.boxKind = wasModel, wasBox
                         BR.Loot.boxes.kept = BR.Loot.boxes.kept + 1
@@ -2238,7 +2321,9 @@ local function crateOpening(d)
     if outlinedId == id then clearOutline(entries) end
     if shineId == id then shineId = nil end
 
-    if not BR.Crates then return end
+    -- A WOODEN CRATE HAS NO CLIP, and neither does a stamped one on a client
+    -- whose season has no crates2: it sits sealed until the burst, today's open.
+    if not BR.Crates or e.bt == nil or not crates2On() then return end
     -- THE OPEN PROP, asked for now, so the swap at the burst does not stream.
     local name = BR.Crates.modelName(BR.Crates.lookOf(e), true)
     if name then
@@ -2252,6 +2337,76 @@ RegisterNetEvent(BR.Net.LOOT_OPENING)
 AddEventHandler(BR.Net.LOOT_OPENING, function(d)
     crateOpening(d)
 end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SEASON 2 CRATES: THIS CLIENT'S SEASON MOVED
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-04: "while on dev I live-switched to season 1 and when I went
+-- to warmup the crates fell through again." The server now re-stamps every
+-- crate on a switch and re-announces it (BR.Loot.reseason), which addEntries
+-- rebuilds like any restyle -- but the message and this client's season travel
+-- separately, and a body is chosen by BOTH (boxModelOf). So whichever lands
+-- second, this is what finishes the job: every body chosen under the other
+-- crates2 answer is rebuilt as the one this answer gives -- a box as the
+-- wooden crate, or the wooden crate as its box -- placed from its entry the
+-- way its own kind always is, not at the other kind's pose (drain): a wooden
+-- crate on Season 1 after a switch is today's wooden crate, even where the box
+-- before it had gone through the map.
+--
+-- Run when this client's season moves, the first arrival included (a Season 2
+-- client that built wood before it knew its season), and only then; nothing
+-- here runs per frame or per crate per tick.
+--
+-- WITHOUT LEAKING. The old body lingers until its successor is adopted, as a
+-- box's sealed body does at the burst (lingerProp), and the sweep in
+-- loot.props deletes any that never was. A body still streaming in when the
+-- answer flips is caught at its adoption (drain). Turning crates2 off hands
+-- every box model back (SetModelAsNoLongerNeeded) and empties boxBuilt, so a
+-- Season 1 client keeps no box resident and client/warmupcrates.lua searches
+-- for the wooden pair alone, as it always did.
+
+--- What a season switch has done to this client's crates, for /brloot.
+BR.Loot.reseasons = { flips = 0, rebuilt = 0, released = 0 }
+
+--- The gate's flip count this has already followed. Keyed on the count rather
+--- than on a before-and-after, so an answer recomputed anywhere else first can
+--- never make a flip look like no flip.
+local followedGen = 0
+
+local function followSeason()
+    local on = crates2On()
+    if gate.gen == followedGen then return end
+    followedGen = gate.gen
+    local S = BR.Loot.reseasons
+    S.flips = S.flips + 1
+
+    if not on then
+        for hash in pairs(boxBuilt) do
+            SetModelAsNoLongerNeeded(hash)
+            S.released = S.released + 1
+        end
+        boxBuilt = {}
+    end
+
+    local any = false
+    for id, e in pairs(entries) do
+        -- Only a stamped entry can have been chosen differently: one with no
+        -- stamp is the same body under either answer.
+        if e.obj and e.bt ~= nil and modelOf(e) ~= e.objModel then
+            lingerProp(e)
+            if not queued[id] then
+                queued[id] = true
+                table.insert(queue, 1, id)
+            end
+            S.rebuilt = S.rebuilt + 1
+            any = true
+        end
+    end
+    if any then drain() end
+end
+
+if BR.Season and BR.Season.onChange then BR.Season.onChange(followSeason) end
 
 --- The box models this client has built, as { [hash] = 'sealed'|'open' }.
 --- READ-ONLY. client/warmupcrates.lua uses it to recognize its four crates when
@@ -2914,16 +3069,19 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
 
             -- Remember where it ACTUALLY is. This is the only record of the
             -- pose that survives the entry being replaced when the crate
-            -- becomes a husk.
+            -- becomes a husk. `box` says which kind of body it was read off
+            -- (#395): only a body of the same kind inherits it (drain).
             local c = GetEntityCoords(e.obj)
             local r = GetEntityRotation(e.obj, 2)
+            local box = e.boxKind ~= nil
             local pose = poses[id]
             if pose then
                 pose.x, pose.y, pose.z = c.x, c.y, c.z
                 pose.rx, pose.ry, pose.rz = r.x, r.y, r.z
+                pose.box = box
             else
                 poses[id] = { x = c.x, y = c.y, z = c.z,
-                              rx = r.x, ry = r.y, rz = r.z }
+                              rx = r.x, ry = r.y, rz = r.z, box = box }
             end
         end
     end
@@ -3828,7 +3986,7 @@ RegisterCommand('brbox', function(_, args)
         print(('         brbox gift <%s>'):format(table.concat(C.giftColors or {}, '|')))
     end
     if kind == '' then usage() return end
-    if not BR.Season.has('crates2') then
+    if not crates2On() then
         print(('[br_core] brbox: Season 2 crates are off on Season %s -- `brseason 2` on the server first')
             :format(tostring(BR.Season.current())))
         return
@@ -4006,7 +4164,7 @@ RegisterCommand('brboxcheck', function()
             state == 'started' and ''
                 or '  (until it runs on the server, every crate opens at once)'))
         print(('  season gate crates2: %s on Season %s'):format(
-            BR.Season.has('crates2') and 'ON' or 'off', tostring(BR.Season.current())))
+            crates2On() and 'ON' or 'off', tostring(BR.Season.current())))
         for _, row in ipairs(BR.Crates.allLooks()) do
             local r = BR.Crates.row(row.look) or {}
             print(('  %-12s sealed %-11s open %-11s %s'):format(row.label,
@@ -4096,6 +4254,12 @@ RegisterCommand('brloot', function()
         .. '%d swaps, %d kept  (/brboxcheck)')
         :format(B.built, B.fallback, tostring(B.lastFallback), B.clips, B.noClip,
                 B.swaps, B.kept))
+    -- AND WHAT A SEASON SWITCH DID TO THEM: the gate this client holds, how it
+    -- hears the season move, and the bodies rebuilt when the answer flipped.
+    local RS = BR.Loot.reseasons
+    print(('  season gate: crates2 %s on Season %s (follows by %s); %d flip(s), %d rebuilt, %d box model(s) released')
+        :format(crates2On() and 'ON' or 'off', tostring(BR.Season.current()),
+                tostring(BR.Season.follows and BR.Season.follows()), RS.flips, RS.rebuilt, RS.released))
 
     -- WHAT IS BEING OFFERED, AND WHAT ELSE IS IN REACH (#128).
     --

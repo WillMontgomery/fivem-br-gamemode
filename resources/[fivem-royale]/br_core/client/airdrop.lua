@@ -676,8 +676,10 @@ end
 --- It is drawn at normal size like every other crate -- A.crateScale is 1.0.
 ---
 --- THE WOODEN CRATE whenever there is no box to have: no look on the record
---- (every Season 1 drop), a placeholder row, or a model this build lacks. A box
---- that then fails to STREAM falls back too, in primeAssets and spawn.
+--- (every Season 1 drop), a client whose season has no crates2 -- the same one
+--- cached answer client/loot.lua draws the landed crate by (BR.Loot.crates2On)
+--- -- a placeholder row, or a model this build lacks. A box that then fails to
+--- STREAM falls back too, in primeAssets and spawn.
 --- @param d table
 --- @return integer hash
 --- @return boolean boxed
@@ -685,6 +687,13 @@ local function crateModelOf(d)
     local wood = GetHashKey(A.crateProp or 'prop_box_wood05a')
     local rec = d.rec
     if not rec or rec.bt == nil or not BR.Crates then return wood, false end
+    local on
+    if BR.Loot and BR.Loot.crates2On then
+        on = BR.Loot.crates2On()
+    else
+        on = BR.Season ~= nil and BR.Season.has('crates2')
+    end
+    if not on then return wood, false end
     local name = BR.Crates.modelName(BR.Crates.lookOf(rec), false)
     if not name then return wood, false end
     local h = GetHashKey(name)

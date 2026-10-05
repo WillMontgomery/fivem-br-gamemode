@@ -108,17 +108,22 @@ native('GetConvarInt', function(n, d) return tonumber(convars[n]) or d end)
 
 --- THIS BUILD'S MODELS. `cd` is the CD image (IsModelInCdimage, IsModelValid);
 --- `noStream` is a model the image has that never finishes streaming; `refuse`
---- is one the engine will not build as an object.
+--- is one the engine will not build as an object; `streamAt[name]` is the
+--- clock time a slow one finishes streaming.
 local cd = { prop_box_wood05a = true, prop_box_wood05b = true }
-local noStream, refuse, loaded = {}, {}, {}
+local noStream, refuse, loaded, streamAt = {}, {}, {}, {}
 local requested, released = {}, {}
 native('IsModelInCdimage', function(h) return cd[nm(h)] and 1 or 0 end)
 native('IsModelValid', function(h) return cd[nm(h)] and true or false end)
 native('RequestModel', function(h)
     requested[#requested + 1] = nm(h)
-    if cd[nm(h)] and not noStream[nm(h)] then loaded[h] = true end
+    if cd[nm(h)] and not noStream[nm(h)] and not streamAt[nm(h)] then loaded[h] = true end
 end)
-native('HasModelLoaded', function(h) return loaded[h] == true end)
+native('HasModelLoaded', function(h)
+    local at = streamAt[nm(h)]
+    if at and now >= at and cd[nm(h)] then loaded[h] = true end
+    return loaded[h] == true
+end)
 native('SetModelAsNoLongerNeeded', function(h) released[nm(h)] = (released[nm(h)] or 0) + 1 end)
 native('GetWeapontypeModel', function() return GetHashKey('w_pi_pistol') end)
 
@@ -1010,6 +1015,331 @@ do
     ok(line('gift red'):find('placeholder', 1, true) ~= nil,
         'and a placeholder row says so', line('gift red'))
     C.gift.red = keep
+end
+
+-- =========================================================================
+-- A SEASON SWITCH UNDER CRATES ALREADY STANDING
+-- =========================================================================
+--
+-- Owner, 2026-10-04: "while on dev I live-switched to season 1 and when I went
+-- to warmup the crates fell through again. That means our new crate code is
+-- not properly locked to season 2." The server now re-stamps every crate on a
+-- switch (tools/test_crates.lua, PART C). Here is the client's half: a body is
+-- chosen by the stamp AND this client's own season, and every body chosen
+-- under the other answer is rebuilt when the season moves -- whichever of the
+-- server's restyle and the replicated season lands first.
+
+--- Any live body wearing one of the boxes.
+local function boxBodies()
+    local n = 0
+    for _, e in pairs(ents) do
+        if e.name:find('^ship_') or e.name:find('^xmas_') or e.name:find('^gift_') then n = n + 1 end
+    end
+    return n
+end
+
+describe('the client gate alone: a stamped crate on a Season 1 client is the wooden crate')
+do
+    reset()
+    propsLanded()
+    convars.br_seasonServed = '1'
+    frames(3)
+    local w = crateWire({ bt = 4 })
+    add(w)
+    frames(10)
+    eq(select(2, bodyAt(w.x, w.y)), L.chestProp, 'stamped by the server, drawn by a Season 1 client as the wooden crate')
+    requested, anims = {}, {}
+    TriggerEvent(BR.Net.LOOT_OPENING, { id = w.id, at = BR.Clock.now(), ms = 1200 })
+    frames(3)
+    eq(#anims, 0, 'its opening plays no clip')
+    local streamed = false
+    for _, n in ipairs(requested) do if n:find('^ship_') then streamed = true end end
+    eq(streamed, false, 'and streams no box for its burst')
+    husk(w)
+    frames(5)
+    eq(select(2, bodyAt(w.x, w.y)), L.chestOpenProp, 'its husk is the open wooden crate')
+    local hw = crateWire({ bt = 2, x = 5.0, kind = 'husk', item = 'husk', prop = L.chestOpenProp })
+    add(hw)
+    frames(10)
+    eq(select(2, bodyAt(hw.x, hw.y)), L.chestOpenProp, 'a stamped husk streaming in is the open wooden crate too')
+    eq(next(BR.Loot.boxModels()), nil, 'and not one box model was built')
+    eq(errored(), nil, 'no loop errored')
+end
+
+describe('2 -> 1: every box this client built is rebuilt as today\'s wooden crate, and none is left behind')
+do
+    reset()
+    propsLanded()
+    local ws = {
+        crateWire({ bt = 1, x = 2.0 }),
+        crateWire({ bt = 3, bf = true, x = 3.5 }),
+        crateWire({ bt = 5, bg = 'blue', x = 5.0 }),
+    }
+    for _, w in ipairs(ws) do add(w) end
+    local hw = crateWire({ bt = 2, x = 6.5 })
+    add(hw)
+    frames(20)
+    husk(hw)
+    frames(10)
+    local all = { ws[1], ws[2], ws[3], hw }
+    local want = { 'ship_1', 'xmas_3', 'gift_blue', 'ship_2_open' }
+    local boxes = true
+    for i, w in ipairs(all) do
+        if select(2, bodyAt(w.x, w.y)) ~= want[i] then boxes = false end
+    end
+    ok(boxes, 'Season 2: three sealed boxes and an open one')
+    -- THE OWNER'S BOX: one gone through the map (a .ydr with no physics, the
+    -- separate props fix), turned as it fell. loot.crates records that pose.
+    local fell = ents[bodyAt(ws[1].x, ws[1].y)]
+    fell.rz, fell.z = 21.0, -40.0
+    frames(8)
+    ok(next(BR.Loot.boxModels()) ~= nil, 'and boxModels lists the boxes built')
+    local n0 = bodies()
+    local oldFirst = bodyAt(ws[1].x, ws[1].y)
+    released, log = {}, {}
+
+    convars.br_seasonServed = '1'
+    frames(15)
+    local wood = true
+    for i, w in ipairs(all) do
+        local exp = (i == 4) and L.chestOpenProp or L.chestProp
+        if select(2, bodyAt(w.x, w.y)) ~= exp then wood = false end
+    end
+    ok(wood, 'Season 1: each is the wooden crate, and the open one the open wooden crate')
+    eq(bodies(), n0, 'one body per crate')
+    eq(boxBodies(), 0, 'and not one box body is left in the world')
+    -- PLACED AS SEASON 1 PLACES ONE, not at the box's pose: a box's origin is
+    -- its bottom center, and this one's pose is under the map.
+    local woodFirst = ents[bodyAt(ws[1].x, ws[1].y)]
+    eq(woodFirst.rz, 0.0, 'the wooden crate stands on its entry\'s heading, not turned as the box fell')
+    ok(math.abs(woodFirst.z - (30.0 + (L.restLift or 0.35))) < 0.01,
+        'and on the ground, placed from its entry, though the box before it went through the map', woodFirst.z)
+    local first, created, deleted = bodyAt(ws[1].x, ws[1].y), nil, nil
+    for i, line in ipairs(log) do
+        if line == ('create %d %s'):format(first, L.chestProp) then created = i end
+        if line == ('delete %d'):format(oldFirst) then deleted = i end
+    end
+    ok(created and deleted and created < deleted,
+        'the wooden body exists before the box goes -- no frame of nothing', table.concat(log, ' | '))
+    eq(next(BR.Loot.boxModels()), nil, 'boxModels is empty: the pad\'s markers look for the wooden pair alone')
+    ok((released.ship_1 or 0) > 0 and (released.gift_blue or 0) > 0 and (released.ship_2_open or 0) > 0,
+        'and every box model is handed back to the streamer')
+    eq(BR.Loot.reseasons.rebuilt >= 4, true, 'the rebuilds are counted for /brloot')
+    eq(errored(), nil, 'no loop errored')
+end
+
+describe('1 -> 2: the wooden crates the server has stamped are rebuilt as their boxes')
+do
+    reset()
+    propsLanded()
+    convars.br_seasonServed = '1'
+    frames(3)
+    local w = crateWire({ bt = 3 })
+    local w2 = crateWire({ bt = 4, bf = true, x = 4.0 })
+    add(w)
+    add(w2)
+    frames(15)
+    ok(select(2, bodyAt(w.x, w.y)) == L.chestProp and select(2, bodyAt(w2.x, w2.y)) == L.chestProp,
+        'Season 1: wood, stamped or not')
+    local n0 = bodies()
+    convars.br_seasonServed = '2'
+    frames(15)
+    eq(select(2, bodyAt(w.x, w.y)), 'ship_3', 'Season 2: the tier 3 box')
+    eq(select(2, bodyAt(w2.x, w2.y)), 'xmas_4', 'and the festive tier 4 box')
+    eq(bodies(), n0, 'one body per crate')
+    eq(BR.Loot.boxModels()[GetHashKey('ship_3')], 'sealed', 'boxModels lists them again')
+    anims = {}
+    TriggerEvent(BR.Net.LOOT_OPENING, { id = w.id, at = BR.Clock.now(), ms = 1200 })
+    eq(#anims, 1, 'and it opens on its clip again')
+    eq(errored(), nil, 'no loop errored')
+end
+
+describe('whichever lands first -- the server\'s restyle or this client\'s season -- one rebuild, the right body')
+do
+    -- 2 -> 1, THE RESTYLE FIRST: BR.Loot.reseason's re-announce, then the convar.
+    reset()
+    propsLanded()
+    local w = crateWire({ bt = 2 })
+    add(w)
+    frames(15)
+    eq(select(2, bodyAt(w.x, w.y)), 'ship_2', 'Season 2: the box')
+    local rebuilt = BR.Loot.reseasons.rebuilt
+    log = {}
+    local cleared = {}
+    for k, v in pairs(w) do cleared[k] = v end
+    cleared.bt = nil
+    TriggerEvent(BR.Net.LOOT_ADD, { cleared })
+    frames(10)
+    eq(select(2, bodyAt(w.x, w.y)), L.chestProp, 'the restyle alone rebuilds it as wood')
+    convars.br_seasonServed = '1'
+    frames(10)
+    eq(BR.Loot.reseasons.rebuilt, rebuilt, 'and the season landing after finds nothing left to rebuild')
+    local creates = 0
+    for _, line in ipairs(log) do if line:find('^create') then creates = creates + 1 end end
+    eq(creates, 1, 'one body built in all')
+
+    -- 1 -> 2, THE SEASON FIRST: the convar, then the restyle that stamps it.
+    local u = crateWire({ x = 4.0 })
+    add(u)
+    frames(10)
+    log = {}
+    convars.br_seasonServed = '2'
+    frames(10)
+    eq(select(2, bodyAt(u.x, u.y)), L.chestProp, 'Season 2 with no stamp yet: still the wooden crate')
+    local stamped = {}
+    for k, v in pairs(u) do stamped[k] = v end
+    stamped.bt = 5
+    TriggerEvent(BR.Net.LOOT_ADD, { stamped })
+    frames(10)
+    eq(select(2, bodyAt(u.x, u.y)), 'ship_5', 'the restyle after it makes it the box')
+    creates = 0
+    for _, line in ipairs(log) do if line:find('^create') then creates = creates + 1 end end
+    eq(creates, 1, 'one body built in all')
+
+    -- 2 -> 1, THE SEASON FIRST: the convar rebuilds the box as wood, and the
+    -- restyle that clears its stamp after it keeps that wooden body.
+    log = {}
+    convars.br_seasonServed = '1'
+    frames(10)
+    eq(select(2, bodyAt(u.x, u.y)), L.chestProp, 'Season 1 before the restyle: the wooden crate already')
+    local woodBody = bodyAt(u.x, u.y)
+    local unstamped = {}
+    for k, v in pairs(stamped) do unstamped[k] = v end
+    unstamped.bt = nil
+    TriggerEvent(BR.Net.LOOT_ADD, { unstamped })
+    frames(10)
+    eq(bodyAt(u.x, u.y), woodBody, 'the restyle after it keeps that same wooden body')
+    creates = 0
+    for _, line in ipairs(log) do if line:find('^create') then creates = creates + 1 end end
+    eq(creates, 1, 'one body built in all')
+
+    -- 1 -> 2, THE RESTYLE FIRST: the stamp arrives while this client still
+    -- runs Season 1 and changes nothing on screen; the season after it does.
+    log = {}
+    TriggerEvent(BR.Net.LOOT_ADD, { stamped })
+    frames(10)
+    eq(bodyAt(u.x, u.y), woodBody, 'a stamp on a Season 1 client keeps the wooden body it has')
+    convars.br_seasonServed = '2'
+    frames(10)
+    eq(select(2, bodyAt(u.x, u.y)), 'ship_5', 'and the season landing after makes it the box')
+    creates = 0
+    for _, line in ipairs(log) do if line:find('^create') then creates = creates + 1 end end
+    eq(creates, 1, 'one body built in all')
+    eq(errored(), nil, 'no loop errored')
+end
+
+describe('a switch that lands while a box is still streaming in: it is never adopted, and wood is built')
+do
+    reset()
+    propsLanded()
+    C.shipping[2].sealed = 'ship_2_late'
+    cd.ship_2_late = true
+    streamAt.ship_2_late = now + 500
+    local w = crateWire({ bt = 2 })
+    add(w)
+    frames(4)
+    eq(select(2, bodyAt(w.x, w.y)), nil, 'the box is still streaming: nothing is built yet')
+    released, log = {}, {}
+    convars.br_seasonServed = '1'
+    frames(60)
+    eq(select(2, bodyAt(w.x, w.y)), L.chestProp, 'the wooden crate stands there')
+    local live = false
+    for _, e in pairs(ents) do if e.name == 'ship_2_late' then live = true end end
+    eq(live, false, 'and the box that finished streaming after the switch is not in the world')
+    ok((released.ship_2_late or 0) > 0, 'its model is handed back')
+    streamAt.ship_2_late = nil
+    eq(errored(), nil, 'no loop errored')
+end
+
+describe('a switch mid-clip: the box is rebuilt as wood, and its burst is the wooden husk')
+do
+    reset()
+    propsLanded()
+    local w = crateWire({ bt = 4 })
+    add(w)
+    frames(15)
+    local sealed = bodyAt(w.x, w.y)
+    anims = {}
+    TriggerEvent(BR.Net.LOOT_OPENING, { id = w.id, at = BR.Clock.now(), ms = 1200 })
+    eq(#anims, 1, 'Season 2: the clip is playing')
+    local n0 = bodies()
+    convars.br_seasonServed = '1'
+    frames(10)
+    eq(ents[sealed], nil, 'the box mid-clip is gone')
+    eq(select(2, bodyAt(w.x, w.y)), L.chestProp, 'the wooden crate stands in its place')
+    -- The server's switch bursts it (BR.Loot.reseason): the husk, its look gone.
+    w.bt = nil
+    husk(w)
+    frames(5)
+    eq(select(2, bodyAt(w.x, w.y)), L.chestOpenProp, 'and the burst is the open wooden crate')
+    eq(bodies(), n0, 'one body, nothing lingering')
+    eq(boxBodies(), 0, 'and no box')
+    eq(errored(), nil, 'no loop errored')
+end
+
+describe('the pad\'s markers follow the switch: its box in Season 2, the wooden crate in Season 1')
+do
+    reset()
+    propsLanded()
+    BR.State.me.state = BR.PlayerState.WARMUP
+    local a = BR.Config.WarmupCrates.anchors[2]
+    ped.x, ped.y, ped.z = a.x + 2.0, a.y, a.z
+    native('GetClosestObjectOfType', function(x, y, z, r, model)
+        for h, e in pairs(ents) do
+            if e.model == model and math.abs(e.x - x) <= r and math.abs(e.y - y) <= r then return h end
+        end
+        return 0
+    end)
+    frames(12)
+    local w = crateWire({ bt = a.rarity, x = a.x, y = a.y, z = a.z })
+    add(w)
+    frames(20)
+    local s = BR.WarmupCrates.get(2)
+    ok(select(2, bodyAt(a.x, a.y)) == 'ship_' .. a.rarity and s and s.sealed == true,
+        'Season 2: the anchor\'s box, read as sealed')
+    convars.br_seasonServed = '1'
+    frames(20)
+    s = BR.WarmupCrates.get(2)
+    ok(select(2, bodyAt(a.x, a.y)) == L.chestProp and s and s.sealed == true,
+        'Season 1: the wooden crate in its place, read as sealed')
+    BR.State.me.state = BR.PlayerState.ALIVE
+end
+
+describe('the gate is asked when a body is chosen or the season moves -- never per frame')
+do
+    -- Owner, 2026-10-04: "let's also be efficient in how we're checking. That
+    -- could turn out to be a lot of repeated checks."
+    reset()
+    propsLanded()
+    for i = 1, 5 do add(crateWire({ bt = i, x = 1.0 + i })) end
+    frames(30)
+    local asks, reads = 0, 0
+    local realHas, realGet = BR.Season.has, GetConvar
+    BR.Season.has = function(id) asks = asks + 1 return realHas(id) end
+    GetConvar = function(n, d)
+        if n == 'br_seasonServed' then reads = reads + 1 end
+        return realGet(n, d)
+    end
+    frames(120)
+    eq(asks, 0, 'two seconds of frames with five boxes on screen ask the season nothing')
+    eq(reads, 0, 'and read no convar for it')
+    local flips, rebuilt = BR.Loot.reseasons.flips, BR.Loot.reseasons.rebuilt
+    convars.br_seasonServed = '1'
+    frames(20)
+    eq(reads, 1, 'a switch reads the replicated season once')
+    eq(asks, 1, 'and asks crates2 once, for all five rebuilds')
+    eq(BR.Loot.reseasons.flips, flips + 1, 'one flip of the answer, followed once')
+    -- A MOVE THAT FLIPS NOTHING -- Season 1 to not known, both without Season 2
+    -- crates -- rebuilds nothing and walks nothing.
+    rebuilt = BR.Loot.reseasons.rebuilt
+    convars.br_seasonServed = 'x'
+    frames(5)
+    convars.br_seasonServed = '1'
+    frames(5)
+    ok(BR.Loot.reseasons.flips == flips + 1 and BR.Loot.reseasons.rebuilt == rebuilt,
+        'a season move that leaves crates2 where it was is not followed at all')
+    BR.Season.has, GetConvar = realHas, realGet
+    eq(boxBodies(), 0, 'and all five are wood')
 end
 
 -- ----------------------------------------------------------------- result ---

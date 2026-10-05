@@ -37,10 +37,12 @@ local function copy() return BR.Config.Terminals.copy end
 local function art() return BR.Config.Terminals.art or {} end
 
 --- THE SEASON, ASKED ONCE A SECOND AND NOT ON EVERY READ. A client's
---- BR.Season.has reads the replicated convar, which is a native call, and the
---- TICK band and the HUD envelope (BR.Yubikey.glyph) would otherwise pay it ten
+--- BR.Season.has is a few table reads now -- the client holds its season and
+--- re-reads br_seasonServed only when it moves (br_lib/shared/season.lua) --
+--- and the TICK band and the HUD envelope (BR.Yubikey.glyph) still ask it ten
 --- times a second for an answer that only moves at a match boundary, and only
---- on a dev box (`brseason`). The SLOW pass refreshes it.
+--- on a dev box (`brseason`). So one boolean answers them; the SLOW pass
+--- refreshes it.
 local seasonOn = false
 local function refreshSeason()
     seasonOn = BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('terminals') == true

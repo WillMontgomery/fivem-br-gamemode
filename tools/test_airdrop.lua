@@ -8471,6 +8471,10 @@ do
     local inCd = { test_ship_legendary = true, test_xmas_legendary = true }
     local prevCd = IsModelInCdimage
     function IsModelInCdimage(m) return inCd[m] and 1 or 0 end
+    -- THIS CLIENT'S crates2 ANSWER, which client/loot.lua keeps (BR.Loot.crates2On)
+    -- and the falling crate shares: on, for a Season 2 client.
+    local clientOn = true
+    BR.Loot.crates2On = function() return clientOn end
 
     --- One drop announced with this look; the model its falling crate is.
     local function drop(bt, bf)
@@ -8494,6 +8498,12 @@ do
         tostring(h and scaled[h]))
     eq(drop(5, true), 'test_xmas_legendary', 'and as the festive one when the match is festive')
 
+    -- THE CLIENT'S OWN GATE: a stamped record on a client whose season has no
+    -- Season 2 crates falls as the wooden crate, as its landed crate is drawn.
+    clientOn = false
+    eq(drop(5, nil), A.crateProp, 'a Season 1 client draws a stamped record as the wooden crate')
+    clientOn = true
+
     inCd.test_ship_legendary = nil
     eq(drop(5, nil), A.crateProp,
         'a build without the box model falls back to the wooden crate, and still drops')
@@ -8503,6 +8513,7 @@ do
 
     C.festive[5].sealed = was.xmas
     IsModelInCdimage = prevCd
+    BR.Loot.crates2On = nil
     clientReset()
 end
 
