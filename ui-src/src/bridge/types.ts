@@ -103,6 +103,18 @@ export interface HudPayload {
    * owns.
    */
   landed?: boolean
+  /**
+   * THE SEASON 2 YUBIKEY'S EQUIPPED ICON (#396): the glyph to draw while this
+   * player holds one, absent while they do not -- and always absent on a
+   * Season 1 server. "must be displayed as an icon somewhere on the screen to
+   * show it's equipped, however it doesn't take up an inventory slot" (owner,
+   * 2026-10-04).
+   *
+   * THE ART IS LUA'S. br_lib/config/terminals.lua's `art.hudGlyph` is a
+   * placeholder until the owner's icon arrives, and the page draws whatever it
+   * is handed: no icon of its own lives here to drift from the config.
+   */
+  yubikey?: string
 }
 
 /**
@@ -367,6 +379,17 @@ export interface SquadMember {
    * the squad that put him there would use.
    */
   reviveKeyEndsAt?: number
+  /**
+   * THIS MATE HOLDS A SEASON 2 YUBIKEY (#396), as the glyph to draw beside
+   * their name; absent when they do not. "In squads, teammates can see who
+   * holds a key: this could be multiple per squad!" (owner, 2026-10-04).
+   *
+   * SQUAD-ONLY, like every field above it: one bit on the squad beacon
+   * (br_core's server/party.lua), turned into the config's glyph by
+   * client/state.lua. Who carries a terminal key is exactly what an enemy
+   * squad would hunt, so roster.lua's PUBLIC_FIELDS never carries it.
+   */
+  yubikey?: string
 }
 
 export interface SquadPayload {

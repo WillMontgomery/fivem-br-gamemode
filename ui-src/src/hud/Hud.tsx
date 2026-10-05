@@ -17,6 +17,7 @@ import SpectateHint from './SpectateHint'
 import HitFeedback from './HitFeedback'
 import TalkingBar from './TalkingBar'
 import VoiceNotice from './VoiceNotice'
+import { YubikeyIcon } from './YubikeyIcon'
 import { useFade } from '../ui/useFade'
 import { fitsBelow, roundStrip, nextFit, vitalsLift } from './vitalsPlacement'
 
@@ -562,6 +563,13 @@ export default function Hud({ visible }: { visible: boolean }) {
 
                 RENDERS null WHEN THERE IS NO VEHICLE, so the column is exactly
                 what it was before for a player on foot -- see VehicleBars. */}
+            {/* THE SEASON 2 YUBIKEY, EQUIPPED (#396): "displayed as an icon
+                somewhere on the screen to show it's equipped, however it
+                doesn't take up an inventory slot" -- so it sits above the
+                slots rather than in one. Absent, nothing at all. */}
+            {typeof hud.yubikey === 'string' && hud.yubikey !== '' && (
+              <YubikeyIcon glyph={hud.yubikey} />
+            )}
             <VehicleBars vehicle={vehicle} />
             {/* data-tut: the in-game walkthrough points at the slots and,
                 separately, at the ammo counter inside them (#261). */}

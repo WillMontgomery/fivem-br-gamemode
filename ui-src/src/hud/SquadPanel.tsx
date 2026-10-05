@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useUi } from '../store'
 import type { SquadMember, SquadPayload } from '../bridge/types'
 import VoiceMark from './VoiceMark'
+import { YubikeyMark } from './YubikeyIcon'
 
 /**
  * Squad status.
@@ -678,6 +679,11 @@ function Row({ m, talking, silent }: {
                 be drawn; levels are 1..100, so that is what is asked. */}
             {typeof m.level === 'number' && m.level >= 1 && (
               <LevelMark level={m.level} />
+            )}
+            {/* A SEASON 2 YUBIKEY (#396): this mate holds one. Several mates
+                can, and each row says so for itself. Absent, nothing. */}
+            {typeof m.yubikey === 'string' && m.yubikey !== '' && (
+              <YubikeyMark glyph={m.yubikey} />
             )}
           </span>
           {(dead || downed) && (
