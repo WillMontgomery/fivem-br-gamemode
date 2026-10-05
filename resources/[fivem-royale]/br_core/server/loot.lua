@@ -2504,10 +2504,14 @@ AddEventHandler(BR.Net.LOOT_DEV, function(d)
     -- reasons in F8.
     if d.box ~= nil then
         local box = type(d.box) == 'table' and d.box or {}
+        -- Spelled out rather than `cond and box.festive or nil`, which turns an
+        -- asked-for `false` (brbox ... plain) into nil -- "whatever the zone says".
+        local festive = nil
+        if box.festive == true or box.festive == false then festive = box.festive end
         local report = devSpawn(src, nil, at, {
             tier    = tonumber(box.tier),
             gift    = type(box.gift) == 'string' and box.gift or nil,
-            festive = (box.festive == true or box.festive == false) and box.festive or nil,
+            festive = festive,
         })
         print(('[br_core] brbox (client, %d): %s'):format(src, report))
         return

@@ -834,6 +834,12 @@ do
     eq(e.bf, nil, 'plain, because the match is')
     local f = ask({ tier = 1, festive = true })
     eq(f.bf, true, 'festive when asked, in October')
+    m.loot.festive = true
+    local plain = ask({ tier = 2, festive = false })
+    eq(plain.bf, nil, 'plain when asked, in a festive match')
+    local zone = ask({ tier = 2 })
+    eq(zone.bf, true, 'and the zone answer when not asked')
+    m.loot.festive = false
     local gft = ask({ gift = 'green' })
     eq(gft.bg, 'green', 'a gift box of the color asked for')
     ok(gft.bt ~= nil, 'stamped, so the client knows it is a Season 2 box')
