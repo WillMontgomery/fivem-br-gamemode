@@ -6,6 +6,7 @@
 -- This file is everything between it and the server:
 --
 --   server -> here -> computer   TERMINAL_OPEN    -> exports.cuchi_computer:Open
+--                                TERMINAL_INFO    -> :Update(state), once a second
 --                                TERMINAL_RESULT  -> :Update(state), :Result
 --                                TERMINAL_CLOSE   -> :Close
 --   computer -> here -> server   cuchi_computer:request -> TERMINAL_RUN
@@ -17,15 +18,18 @@
 --
 -- Which terminal, which functions, whether one may run and what it does are
 -- the server's (server/terminal.lua). A run request goes up carrying the
--- terminal this client was opened on and the function id the page asked for,
--- and nothing else.
+-- terminal this client was opened on, the function id the page asked for and
+-- the player's choices, and nothing else; the server checks the choices
+-- against the registry.
 --
 -- ═══ THE COPY RIDES ALONG FROM HERE ═══
 --
 -- Every word the computer and its app show is a key into
 -- BR.Config.Terminals.copy, which this client already has (br_lib, shared
 -- scripts), so it is handed over with each opening instead of crossing the
--- network. Replacing a placeholder is an edit to that one file.
+-- network. Replacing a placeholder is an edit to that one file. THE CATALOG
+-- TOO: the function registry (`functions`, `categories`) is the same file's,
+-- so the app draws its cards from the rows the server rules runs against.
 
 BR = BR or {}
 BR.Terminal = BR.Terminal or {}
@@ -51,6 +55,14 @@ local function setKeys(open)
     end
 end
 
+--- The registry as the app reads it: the rows and the categories, as they are
+--- in br_lib/config/terminals.lua.
+--- @return table
+local function catalog()
+    local C = BR.Config.Terminals
+    return { functions = C.functions, categories = C.categories }
+end
+
 --- Is the computer up on this client? Read by client/yubikey.lua, whose plate
 --- and hold stand down while it is.
 --- @return boolean
@@ -73,7 +85,7 @@ AddEventHandler(BR.Net.TERMINAL_OPEN, function(d)
     if BR.Keys and BR.Keys.uiScreen ~= nil then
         c, why = nil, 'screen-busy'
     end
-    if c then ok, why = c:Open(state, BR.Config.Terminals.copy) end
+    if c then ok, why = c:Open(state, BR.Config.Terminals.copy, catalog()) end
     if ok ~= true then
         -- Said out loud, and the session handed back: a server waiting on a
         -- computer that never opened would take this player's run requests
@@ -91,6 +103,15 @@ AddEventHandler(BR.Net.TERMINAL_RESULT, function(r)
     if not c then return end
     if type(r.state) == 'table' then c:Update(r.state) end
     c:Result({ functionId = r.functionId, ok = r.ok == true, code = r.code })
+end)
+
+-- THE MATCH PANEL, REALTIME: the server's state again, once a second while
+-- the computer is open on that terminal.
+RegisterNetEvent(BR.Net.TERMINAL_INFO)
+AddEventHandler(BR.Net.TERMINAL_INFO, function(d)
+    if type(d) ~= 'table' or d.terminalId ~= shown or type(d.state) ~= 'table' then return end
+    local c = computer()
+    if c then c:Update(d.state) end
 end)
 
 RegisterNetEvent(BR.Net.TERMINAL_CLOSE)
@@ -115,7 +136,8 @@ end)
 AddEventHandler('cuchi_computer:request', function(terminalId, req)
     if type(req) ~= 'table' or req.action ~= 'run' then return end
     if terminalId == nil or terminalId ~= shown then return end
-    TriggerServerEvent(BR.Net.TERMINAL_RUN, { terminalId = terminalId, functionId = req.functionId })
+    TriggerServerEvent(BR.Net.TERMINAL_RUN, { terminalId = terminalId, functionId = req.functionId,
+                                              options = req.options })
 end)
 
 -- -------------------------------------------------------------------- dev ---

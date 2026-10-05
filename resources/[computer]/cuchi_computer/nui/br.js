@@ -8,21 +8,30 @@
 // share of it:
 //
 //   Lua -> page (SendNUIMessage from client/shell.lua)
-//     { type: "br:open", state, copy }   boot the desktop, open the terminal app
+//     { type: "br:open", state, copy, catalog }
+//                                        boot the desktop, open the terminal app
 //     { type: "br:update", state }       the server's new view of this terminal
+//                                        (once a second while open: the match
+//                                        panel is in it)
 //     { type: "br:result", result }      the server's answer to a run
 //     { type: "br:close" }               br_core closed it (no answer is sent)
 //
 //   page -> Lua (NUI callbacks registered by client/shell.lua)
-//     run   { functionId }               the app asked; the server decides
+//     run   { functionId, options? }     the app asked; the server decides
 //     close { why }                      Escape, or the taskbar's power button
 //
 //   page <-> app (postMessage with the iframe; every message carries
 //   brTerminal: 1, and each side only listens to the other's window)
-//     app -> page  { type: "ready" }               send me the state
-//                  { type: "run", functionId }     the player pressed Run
-//                  { type: "escape" }              Escape inside the app
-//     page -> app  { type: "state", state, copy }  render this
+//     app -> page  { type: "ready" }               send me everything
+//                  { type: "run", functionId, options? }
+//                                                  the player pressed Run
+//                  { type: "escape" }              Escape, or Sign out, in the app
+//                  { type: "mode", mode }          the app went light or dark;
+//                                                  the window's tab follows
+//     page -> app  { type: "state", state, copy, catalog }
+//                                                  render this (copy and catalog
+//                                                  only on open and on ready;
+//                                                  an update is the state alone)
 //                  { type: "result", result }      the answer to the last run
 //
 // NOTHING HERE DECIDES ANYTHING. A run is forwarded only while the desktop is
@@ -47,8 +56,11 @@
     // Upstream booted with two loader screens, 100 ms and 150 ms. One, the same
     // quarter second, under br_core's boot line.
     const BOOT_MS = 250;
-    // The shape of a function id in br_lib/config/terminals.lua.
+    // The shape of a function id in br_lib/config/terminals.lua, and of an
+    // option's id and its choice.
     const FUNCTION_ID = /^[a-z][a-z0-9_]{0,31}$/;
+    const CHOICE = /^[a-z0-9_]{1,32}$/;
+    const OPTIONS_MAX = 8;
 
     let isOpen = false;
     // Bumped by every open and close, so a boot timer that outlives the close
@@ -56,6 +68,7 @@
     let session = 0;
     let state = null;
     let copy = {};
+    let catalog = {};
 
     const post = (name, body) => fetch(`https://${RES}/${name}`, {
         method: "POST",
@@ -101,14 +114,38 @@
         el.style.top = Math.max(0, Math.round((h - el.offsetHeight) / 2)) + "px";
     };
 
+    // The player's choices for a run, shape-checked, or false when malformed;
+    // undefined stays undefined. The server checks them against the registry.
+    const choices = (o) => {
+        if (o === undefined || o === null) return undefined;
+        if (typeof o !== "object" || Array.isArray(o)) return false;
+        const keys = Object.keys(o);
+        if (keys.length > OPTIONS_MAX) return false;
+        const out = {};
+        for (const k of keys) {
+            if (!FUNCTION_ID.test(k) || typeof o[k] !== "string" || !CHOICE.test(o[k])) return false;
+            out[k] = o[k];
+        }
+        return out;
+    };
+
+    // THE TAB FOLLOWS THE PAGE'S MODE. The app's toolbar is the tab's colour
+    // in a browser, so the window's tab strip (br.css) wears the app's light
+    // or dark; nothing else about the desktop changes.
+    const setMode = (mode) => {
+        const win = document.getElementById("app-" + APP);
+        if (win) win.classList.toggle("br-light", mode === "light");
+    };
+
     const open = (msg) => {
         state = msg.state && typeof msg.state === "object" ? msg.state : null;
         copy = msg.copy && typeof msg.copy === "object" ? msg.copy : {};
+        catalog = msg.catalog && typeof msg.catalog === "object" ? msg.catalog : {};
         applyCopy();
 
         // Already up: a second open is a refresh, not a reboot.
         if (isOpen) {
-            toApp({ type: "state", state, copy });
+            toApp({ type: "state", state, copy, catalog });
             return;
         }
 
@@ -158,6 +195,7 @@
         const f = frame();
         if (f) f.setAttribute("src", "about:blank");
         state = null;
+        setMode("dark");
 
         if (!fromLua) post("close", { why });
     };
@@ -165,13 +203,19 @@
     const fromApp = (d) => {
         if (d.brTerminal !== 1) return;
         if (d.type === "ready") {
-            if (isOpen) toApp({ type: "state", state, copy });
+            if (isOpen) toApp({ type: "state", state, copy, catalog });
         } else if (d.type === "run") {
-            if (isOpen && typeof d.functionId === "string" && FUNCTION_ID.test(d.functionId)) {
-                post("run", { functionId: d.functionId });
+            const options = choices(d.options);
+            if (isOpen && typeof d.functionId === "string" && FUNCTION_ID.test(d.functionId)
+                    && options !== false) {
+                post("run", options === undefined
+                    ? { functionId: d.functionId }
+                    : { functionId: d.functionId, options });
             }
         } else if (d.type === "escape") {
             close("escape");
+        } else if (d.type === "mode") {
+            setMode(d.mode);
         }
     };
 
@@ -191,9 +235,11 @@
                 open(d);
                 break;
             case "br:update":
+                // THE STATE ALONE, once a second: the app keeps the copy and
+                // the catalog it was opened with.
                 if (isOpen) {
                     state = d.state && typeof d.state === "object" ? d.state : state;
-                    toApp({ type: "state", state, copy });
+                    toApp({ type: "state", state });
                 }
                 break;
             case "br:result":

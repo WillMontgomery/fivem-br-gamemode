@@ -15,10 +15,12 @@
 -- docs/terminals.md.
 --
 -- EXPORTS (called by br_core's client, client/terminal.lua)
---   Open(state, copy) -> ok, why   show the desktop and the terminal app
---       state = { terminalId, functions = { { id, available, reason } },
---                 keyHeld, squadUsed }
---       copy  = the player-facing lines, from br_lib/config/terminals.lua
+--   Open(state, copy, catalog) -> ok, why   show the desktop and the app
+--       state   = { terminalId, functions = { { id, available, reason } },
+--                   keyHeld, squadUsed, player, match }
+--       copy    = the player-facing lines, from br_lib/config/terminals.lua
+--       catalog = { functions, categories }: the function registry, the same
+--                 file's rows, which the app draws its cards and pages from
 --   Update(state)                  the server's new view, while open
 --   Result(result)                 the answer to a run, while open
 --   Close(why) -> ok               take it down (death, storm, teardown)
@@ -28,7 +30,7 @@
 --   cuchi_computer:opened   (terminalId)            focus taken
 --   cuchi_computer:closed   (terminalId, why)       focus released
 --   cuchi_computer:request  (terminalId, request)   request = { action = 'run',
---                                                   functionId }
+--                                                   functionId, options }
 --
 -- ═══ FOCUS IS THE DANGEROUS PART ═══
 --
@@ -48,15 +50,38 @@
 --
 -- ═══ AND NOTHING HERE TRUSTS THE PAGE ═══
 --
--- A run carries only the function id, shape-checked here and again on the
--- server. The terminal id it is sent with is the one br_core opened, kept on
--- this side; the page is never asked which terminal it is on.
+-- A run carries only the function id and the player's choices, both
+-- shape-checked here and again, against the registry, on the server. The
+-- terminal id it is sent with is the one br_core opened, kept on this side;
+-- the page is never asked which terminal it is on.
 
 local RES = GetCurrentResourceName()
 
 -- The shape of a function id (br_lib/config/terminals.lua).
 local FUNCTION_ID = '^[a-z][a-z0-9_]*$'
 local FUNCTION_ID_MAX = 32
+-- An option is an id like a function's, its choice a short lower-case word;
+-- no registry row offers more than a few.
+local CHOICE = '^[a-z0-9_]+$'
+local OPTIONS_MAX = 8
+
+--- The page's choices for a run, shape-checked, or false when malformed.
+--- Nil stays nil: a function with no options sends none.
+--- @param o any
+--- @return table|nil|false
+local function choices(o)
+    if o == nil then return nil end
+    if type(o) ~= 'table' then return false end
+    local out, n = {}, 0
+    for k, v in pairs(o) do
+        n = n + 1
+        if n > OPTIONS_MAX then return false end
+        if type(k) ~= 'string' or #k > FUNCTION_ID_MAX or not k:match(FUNCTION_ID) then return false end
+        if type(v) ~= 'string' or #v > FUNCTION_ID_MAX or not v:match(CHOICE) then return false end
+        out[k] = v
+    end
+    return out
+end
 
 local pageReady = false
 local isOpen = false
@@ -82,8 +107,9 @@ end
 
 --- @param state table
 --- @param copy table|nil
+--- @param catalog table|nil
 --- @return boolean ok, string|nil why
-local function open(state, copy)
+local function open(state, copy, catalog)
     if type(state) ~= 'table' or type(state.terminalId) ~= 'string' then
         return false, 'bad-state'
     end
@@ -100,7 +126,8 @@ local function open(state, copy)
     isOpen = true
     terminalId = state.terminalId
     opener = GetInvokingResource() or opener
-    SendNUIMessage({ type = 'br:open', state = state, copy = type(copy) == 'table' and copy or {} })
+    SendNUIMessage({ type = 'br:open', state = state, copy = type(copy) == 'table' and copy or {},
+                     catalog = type(catalog) == 'table' and catalog or {} })
     if not was then
         SetNuiFocus(true, true)
         TriggerEvent('cuchi_computer:opened', terminalId)
@@ -149,12 +176,17 @@ end)
 
 RegisterNUICallback('run', function(data, cb)
     local id = type(data) == 'table' and data.functionId or nil
+    -- Two steps, not `and ... or false`: choices answers nil for a run with
+    -- no options, and an `or` would turn that nil into a refusal.
+    local opts = false
+    if type(data) == 'table' then opts = choices(data.options) end
     if not isOpen or type(id) ~= 'string' or #id > FUNCTION_ID_MAX
-            or not id:match(FUNCTION_ID) then
+            or not id:match(FUNCTION_ID) or opts == false then
         cb({ ok = false })
         return
     end
-    TriggerEvent('cuchi_computer:request', terminalId, { action = 'run', functionId = id })
+    TriggerEvent('cuchi_computer:request', terminalId,
+        { action = 'run', functionId = id, options = opts })
     cb({ ok = true })
 end)
 

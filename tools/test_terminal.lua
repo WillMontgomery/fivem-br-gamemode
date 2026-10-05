@@ -655,8 +655,24 @@ do
     local req = eventsNamed('cuchi_computer:request')
     ok(r and r.ok == true and #req == 1, 'a well-formed run is forwarded')
     ok(req[1] and req[1].args[1] == 'dev' and req[1].args[2].action == 'run'
-            and req[1].args[2].functionId == 'storm_reveal',
+            and req[1].args[2].functionId == 'storm_reveal' and req[1].args[2].options == nil,
         'as (terminal br_core opened, { action = run, functionId }), never the page\'s terminal')
+
+    -- THE PLAYER'S CHOICES travel shape-checked; the registry is the server's.
+    r = cb('run', { functionId = 'supply_drop', options = { site = 'circle' } })
+    req = eventsNamed('cuchi_computer:request')
+    ok(r and r.ok == true and #req == 2 and req[2].args[2].options.site == 'circle',
+        'options travel with the run')
+    for _, bad in ipairs({
+        'circle', { 'circle' }, { site = 7 }, { site = 'Circle' }, { Site = 'circle' },
+        { site = 'a b' }, { site = ('x'):rep(33) },
+        { a = 'x', b = 'x', c = 'x', d = 'x', e = 'x', f = 'x', g = 'x', h = 'x', i = 'x' },
+    }) do
+        r = cb('run', { functionId = 'supply_drop', options = bad })
+        ok(r and r.ok == false, ('malformed options refuse the whole run: %s'):format(
+            type(bad) == 'table' and tostring(next(bad)) or tostring(bad)))
+    end
+    eq(#eventsNamed('cuchi_computer:request'), 2, 'and none of them reached br_core')
 
     local n = #C.nui
     C.exports.Update({ terminalId = 'lab', functions = {} })
@@ -769,6 +785,9 @@ do
     local call = B.computer.calls[1]
     ok(call and call.name == 'Open' and call.args[1] == STATE, 'Open is called with the server\'s state')
     ok(call and call.args[2] == BR.Config.Terminals.copy, 'and with BR.Config.Terminals.copy, the one block')
+    ok(call and type(call.args[3]) == 'table' and call.args[3].functions == BR.Config.Terminals.functions
+            and call.args[3].categories == BR.Config.Terminals.categories,
+        'and with the catalog: the registry\'s own rows, which the app draws from')
     eq(#toServer(BR.Net.TERMINAL_CLOSED), 0, 'an open that worked hands nothing back')
 
     fireB(BR.Net.TERMINAL_OPEN, { state = { functions = {} } })
@@ -794,10 +813,21 @@ do
 
     fireB('cuchi_computer:opened', 'dev')
     eq(B.screens[#B.screens], 'terminal', 'opened: the key layer is told the computer holds the keyboard')
-    fireB('cuchi_computer:request', 'dev', { action = 'run', functionId = 'storm_reveal' })
+    fireB('cuchi_computer:request', 'dev', { action = 'run', functionId = 'storm_reveal',
+                                            options = { zone = 'near' } })
     local up = toServer(BR.Net.TERMINAL_RUN)
-    ok(#up == 1 and up[1].terminalId == 'dev' and up[1].functionId == 'storm_reveal',
-        'a run goes up as { terminalId, functionId }')
+    ok(#up == 1 and up[1].terminalId == 'dev' and up[1].functionId == 'storm_reveal'
+            and up[1].options and up[1].options.zone == 'near',
+        'a run goes up as { terminalId, functionId, options }')
+
+    -- THE PANEL: TERMINAL_INFO updates the computer on that terminal only.
+    local before = #B.computer.calls
+    fireB(BR.Net.TERMINAL_INFO, { terminalId = 'dev', state = { terminalId = 'dev', functions = {} } })
+    ok(#B.computer.calls == before + 1 and B.computer.calls[#B.computer.calls].name == 'Update',
+        'the once-a-second push updates the open computer')
+    fireB(BR.Net.TERMINAL_INFO, { terminalId = 'lab', state = { terminalId = 'lab' } })
+    fireB(BR.Net.TERMINAL_INFO, { terminalId = 'dev' })
+    eq(#B.computer.calls, before + 1, 'not for another terminal, nor without a state')
     fireB('cuchi_computer:request', 'lab', { action = 'run', functionId = 'storm_reveal' })
     fireB('cuchi_computer:request', 'dev', { action = 'format', functionId = 'storm_reveal' })
     fireB('cuchi_computer:request', 'dev', 'run')

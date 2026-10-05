@@ -15,13 +15,16 @@
 // if they shared its document. br.js points the frame at the app when the
 // computer opens and back at nothing when it closes, and the title is written
 // there too, from br_core's copy -- nothing below is player-facing text.
-// 960x630 is the size upstream gave its own iframe app (the browser, one
-// commit after v1.1.1).
+// 1440x880 is a browser window (owner, 2026-10-05: "I want the window/app to
+// look like a web browser"), up from the 960x630 upstream gave its own iframe
+// app one commit after v1.1.1 -- the Cloudscape app's side navigation and its
+// cards need the room. ../br.css caps it at 98vw x 92vh, so on 1280x720 it is
+// 1254x662.
 const Applications = {
     "terminal": {
         usable: true,
-        width: 960,
-        height: 630,
+        width: 1440,
+        height: 880,
         appCode: `
 <div id="app-terminal" class="application">
     <h1 id="app-terminal-title"><button id="terminal-quit" class="app-exit"></button><button id="terminal-minimize" class="app-minimize"></button><span id="terminal-window-title"></span></h1>

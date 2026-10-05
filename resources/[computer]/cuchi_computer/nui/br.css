@@ -25,30 +25,164 @@
 
 /*
  * THE TERMINAL APP'S WINDOW. It is the only window, so br.js opens it in the
- * middle of the desktop rather than at upstream's 25%/25% (960x630 from there
- * runs off a 1280x720 screen), in pixels, so upstream's drag keeps working
- * unchanged: MakeElementDraggable moves `top`/`left` and refuses a top above
- * zero, which is what keeps the title bar on screen. The caps keep the window
- * inside a small screen; the taskbar is 5% of the height.
+ * middle of the desktop rather than at upstream's 25%/25%, in pixels, so
+ * upstream's drag keeps working unchanged: MakeElementDraggable moves
+ * `top`/`left` and refuses a top above zero, which is what keeps the title bar
+ * on screen. The caps keep the window inside a small screen; the taskbar is 5%
+ * of the height.
+ *
+ * ═══ A WEB BROWSER, NOT A TERMINAL (owner, 2026-10-05) ═══
+ *
+ * "I want the window/app to look like a web browser". The window is the
+ * browser's FRAME: upstream's title bar is restyled, here and nowhere else,
+ * into a tab strip -- one tab carrying the app's icon and its title (the copy
+ * block's window_title, which br.js writes) and the window controls at the
+ * right. The browser's TOOLBAR -- back, forward, reload and the address bar --
+ * is the app's own (ui-src/terminal/src/Browser.tsx), because the history it
+ * walks and the address it shows are the app's navigation, and a second copy
+ * of that state out here would be a second thing to keep in step over
+ * postMessage. No upstream file is touched for this: the title bar's markup is
+ * upstream's (BR-PATCH 5's window), and only its look changes.
+ *
+ * The active tab is the toolbar's colour, as in a browser, so it follows the
+ * app's light/dark mode: br.js puts `br-light` on the window when the app
+ * says it went light. Dark is the default, the colours of the app's dark mode.
  */
 #app-terminal {
+    --br-frame: #0f141a;
+    --br-tab: #192534;
+    --br-tab-text: #e9ebed;
+    --br-control: #8d99a8;
+    --br-control-hover: rgba(255, 255, 255, 0.10);
     max-width: 98vw;
     max-height: 92vh;
     box-sizing: border-box;
+    padding: 0;
+    border-radius: 10px;
+    overflow: hidden;
+    background-color: var(--br-frame);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
 
+#app-terminal.br-light {
+    --br-frame: #dfe3e8;
+    --br-tab: #ffffff;
+    --br-tab-text: #0f141a;
+    --br-control: #424650;
+    --br-control-hover: rgba(0, 0, 0, 0.08);
+    border-color: rgba(0, 0, 0, 0.18);
+}
+
+/* The tab strip: upstream's title bar, laid out as a browser's. */
 #app-terminal > h1 {
     flex: 0 0 auto;
-    height: auto;
-    min-height: 20px;
+    height: 40px;
+    min-height: 40px;
+    margin: 0;
+    padding: 6px 6px 0 10px;
+    box-sizing: border-box;
+    align-items: flex-end;
+    gap: 4px;
+    background-color: var(--br-frame);
+    font-size: 13px;
+    font-weight: 400;
+    cursor: default;
+    user-select: none;
 }
 
+/* The one tab: the app's icon, then its title. */
+#terminal-window-title {
+    order: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    height: 34px;
+    min-width: 180px;
+    max-width: 260px;
+    padding: 0 16px 0 12px;
+    border-radius: 9px 9px 0 0;
+    background-color: var(--br-tab);
+    color: var(--br-tab-text);
+    font-family: 'Ubuntu', sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#terminal-window-title::before {
+    content: '';
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    background: url(assets/images/terminal.png) center / contain no-repeat;
+}
+
+/* The window controls, at the right, drawn rather than lettered. */
+#terminal-minimize {
+    order: 1;
+    margin-left: auto;
+}
+
+#terminal-quit {
+    order: 2;
+}
+
+#app-terminal > h1 > .app-minimize,
+#app-terminal > h1 > .app-exit {
+    position: relative;
+    align-self: center;
+    width: 36px;
+    height: 28px;
+    margin-bottom: 4px;
+    border-radius: 6px;
+    background-color: transparent;
+}
+
+#app-terminal > h1 > .app-minimize:hover {
+    filter: none;
+    background-color: var(--br-control-hover);
+}
+
+#app-terminal > h1 > .app-exit:hover {
+    filter: none;
+    background-color: #e81123;
+}
+
+#app-terminal > h1 > .app-minimize::before,
+#app-terminal > h1 > .app-exit::before,
+#app-terminal > h1 > .app-exit::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 12px;
+    height: 1.5px;
+    margin: -0.75px 0 0 -6px;
+    background-color: var(--br-control);
+}
+
+#app-terminal > h1 > .app-exit::before {
+    transform: rotate(45deg);
+}
+
+#app-terminal > h1 > .app-exit::after {
+    transform: rotate(-45deg);
+}
+
+#app-terminal > h1 > .app-exit:hover::before,
+#app-terminal > h1 > .app-exit:hover::after {
+    background-color: #ffffff;
+}
+
+/* The page: the app, toolbar and all, edge to edge under the tab strip. */
 #terminal-wrapper {
     flex: 1 1 auto;
     min-height: 0;
-    border-radius: 6px;
+    border-radius: 0;
     overflow: hidden;
-    background-color: var(--darkest-color);
+    background-color: var(--br-tab);
 }
 
 #terminal-frame {

@@ -144,9 +144,9 @@
 
   "added": {
     "VENDOR.json": "this file",
-    "client/shell.lua": "the whole Lua half: open, update, result and close for br_core, NUI focus, and the page's callbacks. Its header is the contract's Lua side.",
-    "nui/br.js": "the page's bridge: br_core's messages in, the terminal app's requests out, Escape, and a drag fix for windows that hold an iframe.",
-    "nui/br.css": "the Ubuntu face from nui/fonts/ and the terminal window's sizing.",
+    "client/shell.lua": "the whole Lua half: open (with the copy block and the function catalog), update, result and close for br_core, NUI focus, and the page's callbacks -- a run's function id and its options shape-checked on the way through. Its header is the contract's Lua side.",
+    "nui/br.js": "the page's bridge: br_core's messages in (the catalog on open, the state alone on each once-a-second update), the terminal app's requests out (a run's options shape-checked), Escape, the app's light/dark mode onto the window's tab, and a drag fix for windows that hold an iframe.",
+    "nui/br.css": "the Ubuntu face from nui/fonts/, and the terminal window as a web browser's frame (owner, 2026-10-05): upstream's title bar restyled -- no markup changed -- into a tab strip with one tab (the app's icon and title) and drawn window controls, following the app's light/dark mode. The browser's toolbar (back, forward, reload, the address bar) is the app's own, since it walks the app's navigation.",
     "nui/fonts/ubuntu-latin-300-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-300-normal.woff2, sha256 998fb9fd2f2845f623afa3fad936a4c832f7213cbb153450ff2908088ca418b4",
     "nui/fonts/ubuntu-latin-400-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-400-normal.woff2, sha256 dabae363ac0ae6c3b2a137a32f7132b42520a8af252f87aa6c2198f2a79cf91c",
     "nui/fonts/LICENSE-UFL-1.0.txt": "that package's LICENSE, the Ubuntu Font Licence 1.0, verbatim (sha256 52fdffecb23a020de527f68c516cac16dbbaf2dbb73fd9e29e2149703b881c82)",
@@ -190,8 +190,8 @@
       "id": "BR-PATCH 5",
       "file": "nui/scripts/configs/applications.js",
       "symbol": "Applications",
-      "what": "One app, `terminal`: a window whose body is an iframe (#terminal-frame). Upstream's seven apps are gone.",
-      "why": "The terminal app is a React + Cloudscape page with its own document, so Cloudscape's global styles cannot restyle the desktop around it.",
+      "what": "One app, `terminal`: a window whose body is an iframe (#terminal-frame), 1440x880 (a browser window; br.css caps it at 98vw x 92vh). Upstream's seven apps are gone.",
+      "why": "The terminal app is a React + Cloudscape page with its own document, so Cloudscape's global styles cannot restyle the desktop around it. The size is a browser's because the owner asked for the window to look like one (2026-10-05) and the app's side navigation and cards need the room; upstream's own iframe app was 960x630.",
       "upstream_fixable": "no"
     },
     {
