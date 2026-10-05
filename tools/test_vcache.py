@@ -87,6 +87,9 @@ for s in a b d; do
         printf '%s\n' "$out_"
         vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
     fi
+    if [ "$s" = a ] && [ -n "${TV_TOUCH_TOOL:-}" ]; then
+        printf '\n' >> tools/vcache_trace.lua
+    fi
     if [ "$s" = b ] && [ -n "${TV_INTERRUPT:-}" ]; then
         kill -KILL $$
     fi
@@ -111,6 +114,10 @@ exit $rc
 TEST_A = r'''local fh = assert(io.open('data/a.txt', 'r'))
 local text = fh:read('a'); fh:close()
 if text:find('FAIL', 1, true) then print('a: FAIL'); os.exit(1) end
+if os.getenv('TV_TOUCH_LUA') then
+    -- An edit while it runs, as an editor saving would: same size, new bytes.
+    local w = assert(io.open('data/a.txt', 'wb')); w:write(text:upper()); w:close()
+end
 print('a ran')
 '''
 
@@ -179,10 +186,10 @@ def write(path, text):
 
 def edit(path, text):
     """Write, dated five seconds ago. The cache refuses to store a unit whose
-    input was modified within two seconds of its start (it cannot tell that
-    from an edit while it ran), so an edit made a moment before a run would
-    run the suite and store nothing -- and a later assertion that it ran
-    again would pass for the wrong reason. The content is what changed."""
+    input was modified too close to its start to tell from an edit while it
+    ran (vcache.py's moved_since), and a suite that ran because it was not
+    stored would make a later assertion that it ran pass for the wrong
+    reason. The content is what changed."""
     write(path, text)
     age(path)
 
@@ -453,13 +460,22 @@ class NeverStored(Checkout):
         self.assertEqual(self.ran(out), {'a', 'b', 'c', 'd', 'decl'}, out)
 
     def test_an_input_edited_while_the_suite_ran_is_not_stored(self):
-        # A fresh write, not edit(): modified inside the slack before the unit
-        # starts, which is indistinguishable from an edit while it ran.
-        write(self.p('data', 'a.txt'), 'alpha\n')
-        rc, out = self.run_verify(expect_rc=0)
+        # a rewrites its own input after reading it, at the same size: only
+        # the modification time can tell. Stored, the entry would hold bytes
+        # the suite never read -- and the second run would skip it.
+        rc, out = self.run_verify(env={'TV_TOUCH_LUA': '1'}, expect_rc=0)
         self.assertIn('not stored: test_a (data/a.txt was modified while it ran)', out)
-        rc, out = self.run_verify(expect_rc=0)
+        rc, out = self.run_verify(env={'TV_TOUCH_LUA': '1'}, expect_rc=0)
         self.assertIn('a', self.ran(out), out)
+
+    def test_an_edit_just_before_the_run_is_stored(self):
+        # Saved, then verify at once -- the usual way. That is before the
+        # unit started, so it is what the suite read, and storable.
+        write(self.p('data', 'a.txt'), 'alpha, saved just now\n')
+        rc, out = self.run_verify(expect_rc=0)
+        self.assertNotIn('not stored', out)
+        rc, out = self.run_verify(expect_rc=0)
+        self.assertEqual(self.ran(out), set(), out)
 
     def test_a_python_input_changed_while_the_suite_ran_is_not_stored(self):
         # Hashed when it was read, compared at the commit: c reads one.txt and
@@ -470,12 +486,10 @@ class NeverStored(Checkout):
         self.assertIn('c', self.ran(out), out)
 
     def test_the_cache_itself_changing_mid_run_stores_nothing(self):
-        self.warm()
-        # Fresh mtime, inside the slack of every unit's start: what the run
-        # used is not what the key would name.
-        with open(self.p('tools', 'vcache_trace.lua'), 'a', encoding='utf-8', newline='\n') as fh:
-            fh.write('\n')
-        rc, out = self.run_verify(expect_rc=0)
+        # The driver appends to the Lua tracer after test_a: the units after
+        # it ran under a tracer the key would not name, and test_a under one
+        # it would no longer.
+        rc, out = self.run_verify(env={'TV_TOUCH_TOOL': '1'}, expect_rc=0)
         self.assertEqual(self.ran(out), {'a', 'b', 'c', 'd', 'decl'}, out)
         self.assertIn('not stored: anything from this run (verify.sh or the cache itself changed', out)
         rc, out = self.run_verify(expect_rc=0)

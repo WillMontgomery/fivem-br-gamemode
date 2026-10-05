@@ -39,7 +39,14 @@ import sys
 import time
 
 SCHEMA = 2
-SLACK = 2.0          # seconds: an input modified this close to a unit's start is too close to call
+# How close to a unit's start an input's mtime may be and still count as
+# written BEFORE it. A timestamp with a fraction of a second comes from a
+# filesystem that keeps one, and the only gap left is between the clock a
+# write is stamped with and the precise one bash read ($EPOCHREALTIME) -- a
+# Windows tick, about 16 ms. A whole-second timestamp (FAT, HFS+, some network
+# shares) may have been rounded down by up to two.
+SLACK_FINE = 0.1
+SLACK_COARSE = 2.0
 RUN_MAX_AGE = 12 * 3600
 
 TOOL_FILES = ('tools/verify.sh', 'tools/vcache.py', 'tools/vcache_trace.lua', 'tools/vcache_trace.py')
@@ -64,6 +71,14 @@ def native(path):
         if m:
             return m.group(1).upper() + ':' + (m.group(2) or '/')
     return path
+
+
+def moved_since(path, start):
+    """True when path was modified after `start`, or too close before it to
+    tell -- so a read of it may not be what the unit saw."""
+    st = os.stat(path)
+    slack = SLACK_COARSE if st.st_mtime_ns % 1000000000 == 0 else SLACK_FINE
+    return st.st_mtime > start - slack
 
 
 def file_state(path):
@@ -372,7 +387,7 @@ def read_lua_trace(m, path, start, inputs, pinned_env):
             if now_exists:
                 if S.S_ISREG(st.st_mode) and st.st_size != size and size >= 0:
                     raise Refused('%s changed size while it ran' % p)
-                if st.st_mtime > start - SLACK:
+                if moved_since(a, start):
                     raise Refused('%s was modified while it ran' % p)
             inputs[('f', m.rel(p))] = m.state('f', m.rel(p))
         elif t == 'C':
@@ -422,7 +437,7 @@ def read_py_trace(m, path, start, inputs):
             raise Refused('%s changed while it ran' % p)
         if r.get('late') and now not in ('absent', 'dir'):
             try:
-                if os.stat(m.abs(p)).st_mtime > start - SLACK:
+                if moved_since(m.abs(p), start):
                     raise Refused('%s was modified while it ran' % p)
             except OSError:
                 raise Refused('cannot stat %s' % p)
@@ -450,7 +465,7 @@ def declared(m, decl, start, inputs):
             if kind == 'exe' and not os.path.isfile(a) and os.path.isfile(a + '.exe'):
                 p, a = p + '.exe', a + '.exe'
             try:
-                if os.stat(a).st_mtime > start - SLACK:
+                if moved_since(a, start):
                     raise Refused('%s was modified while it ran' % p)
             except FileNotFoundError:
                 pass
@@ -459,18 +474,18 @@ def declared(m, decl, start, inputs):
             rel, _, suffix = rest.partition(':')
             files, dirs = tree_files(m.root, rel, suffix)
             for dd in dirs:
-                if os.stat(dd).st_mtime > start - SLACK:
+                if moved_since(dd, start):
                     raise Refused('%s gained or lost a file while it ran' % m.rel(dd))
             inputs[('list', rest)] = m.state('list', rest)
         elif kind == 'tree':
             rel, _, suffix = rest.partition(':')
             files, dirs = tree_files(m.root, rel, suffix)
             for dd in dirs:
-                if os.stat(dd).st_mtime > start - SLACK:
+                if moved_since(dd, start):
                     raise Refused('%s gained or lost a file while it ran' % m.rel(dd))
                 inputs[('ls', m.rel(dd))] = m.state('ls', m.rel(dd))
             for f in files:
-                if os.stat(f).st_mtime > start - SLACK:
+                if moved_since(f, start):
                     raise Refused('%s was modified while it ran' % m.rel(f))
                 inputs[('f', m.rel(f))] = m.state('f', m.rel(f))
         else:
@@ -487,11 +502,11 @@ def write_entry(root, entry):
 
 
 def tools_moved(m, since):
-    """True when verify.sh, this file or a tracer was modified after `since`,
-    less the slack -- or cannot be read at all."""
+    """True when verify.sh, this file or a tracer was modified after `since`
+    (see moved_since) -- or cannot be read at all."""
     for f in TOOL_FILES:
         try:
-            if os.stat(m.abs(f)).st_mtime > since - SLACK:
+            if moved_since(m.abs(f), since):
                 return True
         except OSError:
             return True
