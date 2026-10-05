@@ -32,6 +32,12 @@
 --   * Every connected player's market state, pushed again (BR.Market.push):
 --     whether the page is sent emote ownership and the wheel is the season's
 --     to decide, so nobody is left holding the old season's answer.
+--   * Every crate still standing (BR.Loot.reseason): the look Season 2 crates
+--     stamp once, as a crate is made, is re-stamped for the new season --
+--     cleared, or given -- on the warmup pad's crates, its four, every husk,
+--     and re-announced once to whoever is looking. The pad is stocked at
+--     server start and outlives every switch; without this a Season 1 pad
+--     kept Season 2's boxes (owner, 2026-10-04).
 --   * Every client is told (BR.Net.SEASON_SWITCHED): one F8 line naming who
 --     switched, and br_core/client/season.lua re-reads its season off the
 --     replicated value and raises `br:season:changed` for everything on that
@@ -210,6 +216,16 @@ local function apply(target, by)
     -- built at call time against the new season.
     if BR.Market and BR.Market.push and BR.Roster and BR.Roster.each then
         BR.Roster.each(nil, function(src) BR.Market.push(src) end)
+    end
+
+    -- Every crate still standing, restyled for the new season, before the
+    -- clients are told -- a client handles either order (client/loot.lua).
+    if BR.Loot and BR.Loot.reseason then
+        local r = BR.Loot.reseason()
+        if r.stamped + r.cleared > 0 then
+            print(('[br_core] brseason: crates restyled for Season %d -- %d given a Season 2 look, %d back to wood, %d opening burst now, %d player(s) told')
+                :format(now, r.stamped, r.cleared, r.burst, r.told))
+        end
     end
 
     TriggerClientEvent(BR.Net.SEASON_SWITCHED, -1, { season = now, from = from, by = by })

@@ -160,6 +160,40 @@ end
 -- The registry
 -- --------------------------------------------------------------------------
 
+-- ═══ ONE ANSWER TO crates2 ON THIS SIDE ═══
+--
+-- Owner, 2026-10-04: "let's also be efficient in how we're checking. That
+-- could turn out to be a lot of repeated checks." Every crate stamp, every
+-- open and the airdrop's look ask this rather than the season, and it asks the
+-- season only when the season in force is not the one it answered for -- a
+-- table read and a compare, so a switch (or a suite's boot) can never leave it
+-- answering for the season before. BR.Loot.reseason re-asks it the moment a
+-- switch lands. br_core/server/airdrop.lua shares it (BR.Loot.crates2On).
+local gate = { season = false, on = false }
+
+--- Are Season 2 crates on, in the season in force?
+--- @return boolean
+local function crates2On()
+    local s = BR.Season and BR.Season.current and BR.Season.current() or nil
+    if s ~= gate.season then
+        gate.season = s
+        gate.on = (BR.Season ~= nil and BR.Season.has('crates2')) == true
+    end
+    return gate.on
+end
+BR.Loot.crates2On = crates2On
+
+--- The look a crate of this rarity wears in this zone: its tier and festive.
+--- @param loot table
+--- @param rarity integer
+--- @return integer bt
+--- @return boolean|nil bf
+local function lookFor(loot, rarity)
+    local festive = loot.festive
+    if festive == nil then festive = BR.Crates.festiveNow() end
+    return BR.Crates.tierOf(rarity), festive == true or nil
+end
+
 --- Stamp a crate's Season 2 look as it enters the registry (#395).
 ---
 --- EVERY CRATE PASSES HERE -- the match layout, the warmup pad's, the landing
@@ -167,9 +201,11 @@ end
 --- dev crates -- because all of them are indexed, so there is one place the
 --- look is decided rather than seven.
 ---
---- ONCE. A stamped crate is left alone: a repair re-indexes it, and a crate
---- must not change its tape or its festive set because somebody nudged it.
---- `brbox` crates arrive stamped and keep what they asked for.
+--- ONCE PER SEASON. A stamped crate is left alone: a repair re-indexes it, and
+--- a crate must not change its tape or its festive set because somebody nudged
+--- it. `brbox` crates arrive stamped and keep what they asked for. The one
+--- thing that does restyle a crate is the season itself moving under it -- the
+--- warmup pad outlives a `brseason` -- and that is restampLook, below.
 ---
 --- THE TIER IS THE CRATE'S RARITY, which is already the best rarity inside
 --- (BR.LootContentsRarity); the odds are untouched. FESTIVE IS THE ZONE'S: a
@@ -183,11 +219,47 @@ end
 --- @param e table
 local function stampLook(loot, e)
     if e.kind ~= 'chest' or e.bt ~= nil then return end
-    if not BR.Crates or not (BR.Season and BR.Season.has('crates2')) then return end
-    e.bt = BR.Crates.tierOf(e.rarity)
-    local festive = loot.festive
-    if festive == nil then festive = BR.Crates.festiveNow() end
-    e.bf = festive == true or nil
+    if not BR.Crates or not crates2On() then return end
+    e.bt, e.bf = lookFor(loot, e.rarity)
+end
+
+--- The look this crate or husk wears in the season in force NOW, set on it:
+--- none at all while crates2 is off, and while it is on, the one it has, or
+--- else the one it would have been stamped with -- what `brbox` asked for, or
+--- the tier of its sealed rarity (a husk's own rarity is common; toHusk keeps
+--- the one it had as `sealedRarity`) and the zone's festive answer.
+---
+--- So Season 1 after a switch is today's crates field for field -- no `bt`,
+--- `bf` or `bg` anywhere -- and Season 2 after a switch is what stampLook and
+--- toHusk would have made had it been Season 2 all along.
+--- @param loot table
+--- @param e table
+--- @return boolean changed  whether the wire's look fields moved
+local function restampLook(loot, e)
+    if e.kind ~= 'chest' and e.kind ~= 'husk' then return false end
+    local bt, bf, bg = e.bt, e.bf, e.bg
+    if not BR.Crates or not crates2On() then
+        e.bt, e.bf, e.bg = nil, nil, nil
+    elseif e.bt == nil then
+        if e.asked then
+            e.bt, e.bf, e.bg = e.asked.bt, e.asked.bf, e.asked.bg
+        else
+            local rarity = e.rarity
+            if e.kind == 'husk' then rarity = e.sealedRarity end
+            if rarity ~= nil then e.bt, e.bf = lookFor(loot, rarity) end
+        end
+    end
+    return e.bt ~= bt or e.bf ~= bf or e.bg ~= bg
+end
+
+--- One entry's look, for the season in force: restampLook for another file
+--- (server/warmupcrates.lua, as a crate reseals). The caller re-announces.
+--- @param m table
+--- @param e table
+--- @return boolean changed
+function BR.Loot.restamp(m, e)
+    if not m or not m.loot or not e then return false end
+    return restampLook(m.loot, e)
 end
 
 --- Index one entry into its cell.
@@ -334,6 +406,11 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from, standZ)
         bt = stack.bt,
         bf = stack.bf,
         bg = stack.bg,
+        -- AND KEPT, SERVER-SIDE ONLY, so a switch to Season 1 and back gives the
+        -- crate the look it was asked for rather than one derived from its
+        -- rarity (restampLook). Nil on every crate but a `brbox` one.
+        asked = (stack.bt ~= nil or stack.bg ~= nil)
+            and { bt = stack.bt, bf = stack.bf, bg = stack.bg } or nil,
     }
     index(m.loot, e)
     announce(m, e, true)
@@ -361,13 +438,16 @@ end
 ---
 --- THE LOOK STAYS (#395). `bt`/`bf`/`bg` are not touched, so a Season 2 box
 --- opens into ITS open prop -- the tape of the tier it was -- while `rarity`
---- goes to common exactly as it always has.
+--- goes to common exactly as it always has. The rarity it had is kept,
+--- server-side only, as `sealedRarity`: a husk opened in Season 1 has no look,
+--- and a switch to Season 2 gives it the tape it would have had (restampLook).
 --- @param m table
 --- @param crate table
 local function toHusk(m, crate)
     crate.kind     = 'husk'
     crate.item     = crate.huskItem or 'husk'
     crate.prop     = crate.huskProp or L.chestOpenProp
+    crate.sealedRarity = crate.rarity
     crate.rarity   = BR.Rarity.COMMON
     crate.contents = nil
     crate.opening  = nil
@@ -1104,7 +1184,7 @@ end
 --- @param item table
 --- @return number|nil ms
 function BR.Loot.openingMsOf(item)
-    if not BR.Crates or not (BR.Season and BR.Season.has('crates2')) then return nil end
+    if not BR.Crates or not crates2On() then return nil end
     local look = BR.Crates.lookOf(item)
     if not look then return nil end
     return BR.Crates.openMs(look)
@@ -1115,10 +1195,11 @@ BR.Loot.openings = { started = 0, burst = 0, dropped = 0, lastWhy = nil }
 
 --- The clip's last frame: burst, unless something ended the opening first.
 ---
---- FOUR WAYS IT CAN BE TOO LATE, and each is a silent no-op with its reason
+--- FIVE WAYS IT CAN BE TOO LATE, and each is a silent no-op with its reason
 --- recorded: the match's loot was torn down (`loot` is no longer `m.loot`), the
---- entry left the registry, another opening replaced this one, or the match is
---- over and nobody is left to pick anything up.
+--- entry left the registry, a season switch already burst it (burstNow), another
+--- opening replaced this one, or the match is over and nobody is left to pick
+--- anything up.
 --- @param m table
 --- @param loot table  m.loot as it was when the opening began
 --- @param item table
@@ -1131,6 +1212,8 @@ local function finishOpening(m, loot, item, token)
         why = 'the match loot was torn down'
     elseif loot.items[item.id] ~= item then
         why = 'the crate left the registry'
+    elseif item.opening == nil then
+        why = 'a season switch already burst it'
     elseif item.opening ~= token then
         why = 'a newer opening replaced it'
     end
@@ -1146,6 +1229,28 @@ local function finishOpening(m, loot, item, token)
     O.burst, O.lastWhy = O.burst + 1, 'burst'
     openChest(m, item)
     return 'burst'
+end
+
+--- A crate caught mid-clip by a switch to a season without Season 2 crates:
+--- it bursts NOW, the way every Season 1 crate opens, rather than standing
+--- sealed and unclaimable -- a state Season 1 does not have -- until a clip
+--- nobody is drawing would have ended. The hold was the commitment, exactly
+--- as for an opener who dies mid-clip. Its timer, when it fires, finds the
+--- opening gone and drops (finishOpening). A match that is over bursts
+--- nothing, as there.
+--- @param m table
+--- @param item table
+--- @return boolean burst  false when the match is over and it only stopped
+local function burstNow(m, item)
+    local O = BR.Loot.openings
+    item.opening = nil
+    if m.state == BR.MatchState.ENDED or m.state == BR.MatchState.CLEANUP then
+        O.dropped, O.lastWhy = O.dropped + 1, 'the match is over'
+        return false
+    end
+    O.burst, O.lastWhy = O.burst + 1, 'burst at a season switch'
+    openChest(m, item)
+    return true
 end
 
 --- Start a crate opening: tell everyone looking, and time the burst.
@@ -2289,6 +2394,80 @@ local function eachZone(fn)
     if warmupZone then fn(warmupZone) end
 end
 
+-- ═══ A SEASON SWITCH RESTYLES EVERY CRATE STILL STANDING ═══
+--
+-- Owner, 2026-10-04: "while on dev I live-switched to season 1 and when I went
+-- to warmup the crates fell through again. That means our new crate code is
+-- not properly locked to season 2." stampLook decides a crate's look ONCE, as
+-- it is indexed -- and the warmup pad is stocked at server start and outlives
+-- every `brseason`, its four permanent crates reseal in place forever, and a
+-- husk keeps the look its crate had. So a Season 1 pad kept Season 2's boxes.
+--
+-- br_core/server/season.lua calls this the moment a switch applies. A switch
+-- only ever applies with no match running, so in the game this is the warmup
+-- pad -- its generated crates, its respawns, its four, every husk, a `brbox`
+-- crate -- but it walks every registry there is, as eachZone does, rather
+-- than trusting that. (An airdrop's record lives on its match, m.airdrop, and
+-- is gone with it; the next match's layout, landing crates and airdrops are
+-- stamped as they are made, under the season then in force.)
+--
+-- EVERY CRATE AND HUSK takes the look restampLook gives it; a crate caught
+-- mid-clip by a switch that takes the clip away bursts now (burstNow). Then
+-- each player looking at the zone is sent EVERY entry that changed in the
+-- cells they hold, in ONE message -- the same LOOT_ADD re-announce a husk
+-- swap is, which br_core/client/loot.lua's addEntries rebuilds as the other
+-- model -- and a crate that burst is announced by its burst, once.
+--
+-- Nothing changes when crates2 says the same before and after (a switch
+-- between two seasons that both have it): no field moves, no message goes.
+--- @return table  { zones, stamped, cleared, burst, told }
+function BR.Loot.reseason()
+    local on = crates2On()
+    local r = { zones = 0, stamped = 0, cleared = 0, burst = 0, told = 0 }
+    eachZone(function(m)
+        r.zones = r.zones + 1
+        local byCell, opening = {}, {}
+        for _, e in pairs(m.loot.items) do
+            local changed = restampLook(m.loot, e)
+            if changed then
+                if e.bt ~= nil then r.stamped = r.stamped + 1 else r.cleared = r.cleared + 1 end
+            end
+            if e.opening and not on then
+                opening[#opening + 1] = e
+            elseif changed then
+                local list = byCell[e.cell]
+                if not list then list = {} byCell[e.cell] = list end
+                list[#list + 1] = e
+            end
+        end
+
+        local wire = {}
+        for src, keys in pairs(m.loot.subs) do
+            local out = {}
+            for key in pairs(keys) do
+                for _, e in ipairs(byCell[key] or {}) do out[#out + 1] = e end
+            end
+            if #out > 0 then
+                table.sort(out, function(a, b) return a.id < b.id end)
+                local payload = {}
+                for i, e in ipairs(out) do
+                    local w = wire[e.id]
+                    if not w then w = wireEntry(e) wire[e.id] = w end
+                    payload[i] = w
+                end
+                TriggerClientEvent(BR.Net.LOOT_ADD, src, payload)
+                r.told = r.told + 1
+            end
+        end
+
+        table.sort(opening, function(a, b) return a.id < b.id end)
+        for _, e in ipairs(opening) do
+            if burstNow(m, e) then r.burst = r.burst + 1 else announce(m, e) end
+        end
+    end)
+    return r
+end
+
 -- Subscriptions belong to players, and players leave. Left behind they would
 -- keep a departed src in every announce() loop for the rest of the match.
 BR.Sched.every(5000, 'loot.sweep', function()
@@ -2374,7 +2553,7 @@ end
 --- @return string|nil error
 local function devBoxStack(m, box, x, y, z)
     if not BR.Crates then return nil, 'br_lib/shared/crates.lua is not loaded' end
-    if not (BR.Season and BR.Season.has('crates2')) then
+    if not crates2On() then
         return nil, ('Season 2 crates are off on Season %s -- `brseason 2` first')
             :format(tostring(BR.Season and BR.Season.current()))
     end
@@ -2577,7 +2756,7 @@ RegisterCommand('brfestive', function(_, args)
     print('  applies to crates laid out from now on: the next match\'s layout (at')
     print('  its warmup), warmup-pad crates as they are stocked, and brbox crates.')
     print('  A match already laid out keeps the answer it started with.')
-    if not BR.Season.has('crates2') then
+    if not crates2On() then
         print(('  (Season 2 crates are off on Season %s, so no crate carries it yet)')
             :format(tostring(BR.Season.current())))
     end

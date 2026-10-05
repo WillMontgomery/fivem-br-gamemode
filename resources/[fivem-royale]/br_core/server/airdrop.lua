@@ -91,11 +91,22 @@ local A = BR.Config.Airdrop
 --- festive answer. Nil on a Season 1 server, so the record is the one it always
 --- was; the client draws the wooden crate whenever these are absent or its
 --- build lacks the model.
+---
+--- STAMPED AT SITING AND NEVER RESTYLED, and nothing has to: a record lives on
+--- its match (m.airdrop), and `brseason` applies only with no match running,
+--- so no record outlives a switch. The gate is br_core/server/loot.lua's one
+--- cached answer (BR.Loot.crates2On), asked of the season only when it moved.
 --- @param m table
 --- @param rec table
 local function stampLook(m, rec)
     if not rec or not BR.Crates then return end
-    if not (BR.Season and BR.Season.has('crates2')) then return end
+    local on
+    if BR.Loot and BR.Loot.crates2On then
+        on = BR.Loot.crates2On()
+    else
+        on = BR.Season ~= nil and BR.Season.has('crates2')
+    end
+    if not on then return end
     rec.bt = BR.Crates.tierOf(BR.Rarity.LEGENDARY)
     local festive = m.loot and m.loot.festive
     if festive == nil then festive = BR.Crates.festiveNow() end

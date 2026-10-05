@@ -281,6 +281,12 @@ end
 --- DIFFERENT cell would be a crate announced to the wrong people. It cannot be:
 --- a repair is bounded to 30m (FIX_RADIUS), cells are 256m, and the nearest cell
 --- boundary to any of the four anchors is over a hundred metres away.
+---
+--- THE LOOK IS THE SEASON IN FORCE'S (#395). toHusk keeps a box's look and the
+--- rarity it had (`sealedRarity`); a crate reseals wearing the look this season
+--- gives it -- BR.Loot.restamp, the one a `brseason` switch gives every crate --
+--- so these four, which outlive every switch, can never come back as the
+--- season before's. Within a season that is the look it already had.
 --- @param rec table
 --- @param m table
 local function reseal(rec, m)
@@ -291,9 +297,11 @@ local function reseal(rec, m)
     e.kind     = 'chest'
     e.item     = 'chest'
     e.prop     = L.chestProp
+    e.sealedRarity = nil
     e.rarity   = BR.LootContentsRarity(e.contents)
     e.heading  = a.heading
     e.x, e.y, e.z = a.x, a.y, a.z
+    if BR.Loot.restamp then BR.Loot.restamp(m, e) end
 
     BR.Loot.reannounce(m, e)
 

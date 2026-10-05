@@ -374,6 +374,7 @@ local function openCrate(e)
     end
     e.kind, e.item = 'husk', 'husk'
     e.prop = BR.Config.Loot.chestOpenProp
+    e.sealedRarity = e.rarity
     e.rarity = BR.Rarity.COMMON
     e.contents = nil
 end
@@ -562,6 +563,38 @@ do
     local n = 0
     for _ in pairs(zone.loot.items) do n = n + 1 end
     eq(n, 4, 'and the registry holds four entries, not eighty-four')
+end
+
+describe('the reseal wears the look of the season in force (#395)')
+do
+    -- THESE FOUR OUTLIVE EVERY `brseason`. A husk keeps the look its crate had
+    -- (toHusk), so a reseal that kept it too would bring Season 2's box back on
+    -- a Season 1 pad. The reseal asks br_core/server/loot.lua for the look --
+    -- BR.Loot.restamp, the same one a switch gives every crate -- BEFORE the
+    -- re-announce, so what the clients are sent is already right.
+    local seasonOn = true
+    BR.Loot.restamp = function(_, e)
+        sent[#sent + 1] = { event = 'restamp', id = e.id, sealed = e.sealedRarity }
+        if not seasonOn then e.bt, e.bf, e.bg = nil, nil, nil end
+        return true
+    end
+    clearRoster()
+    local e = entriesAt()[2]
+    e.bt = e.rarity                        -- a Season 2 box of its tier
+    openCrate(e)
+    eq(e.sealedRarity, W.anchors[2].rarity, 'a husk keeps the rarity it was sealed at (as toHusk does)')
+    seasonOn = false                       -- a switch to Season 1 meanwhile
+    local before = #sent
+    for _ = 1, math.ceil(((W.settleMs or 5000) + (W.returnMs or 520)) / 250) + 2 do step() end
+    local r, a = nil, nil
+    for i = before + 1, #sent do
+        if sent[i].event == 'restamp' and sent[i].id == e.id then r = r or i end
+        if sent[i].event == 'reannounce' and sent[i].id == e.id then a = a or i end
+    end
+    ok(r ~= nil and a ~= nil and r < a, 'the reseal asks for the look before it re-announces the crate')
+    eq(r and sent[r].sealed, nil, 'as a sealed crate: the husk\'s sealed rarity is gone')
+    ok(e.kind == 'chest' and e.bt == nil, 'and it comes back as the season says: a wooden crate')
+    BR.Loot.restamp = nil
 end
 
 describe('diagnostics')

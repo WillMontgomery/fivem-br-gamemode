@@ -886,6 +886,327 @@ do
     devTrust = true
 end
 
+-- =========================================================================
+-- PART C -- `brseason` under crates already standing
+-- =========================================================================
+--
+-- Owner, 2026-10-04: "while on dev I live-switched to season 1 and when I went
+-- to warmup the crates fell through again. That means our new crate code is
+-- not properly locked to season 2." The warmup pad is stocked at server start
+-- and outlives every switch; its look was stamped once. So the switch is driven
+-- here the way the game drives it -- the real `brseason` (br_core/server/
+-- season.lua) over the real loot registry -- and the pad is checked crate by
+-- crate, husk by husk, on the wire and in the registry.
+
+-- The real switch. Its match count reads BR.Server.matches, which reset() swaps.
+setmetatable(BR.Server, { __index = function(_, k) if k == 'matches' then return matches end end })
+loadAll({ 'br_core/server/season.lua' })
+
+--- Every crate and husk in a zone.
+local function cratesIn(zone)
+    local out = {}
+    for _, it in pairs(zone.loot.items) do
+        if it.kind == 'chest' or it.kind == 'husk' then out[#out + 1] = it end
+    end
+    table.sort(out, function(a, b) return a.id < b.id end)
+    return out
+end
+
+--- How many of them wear any look at all.
+local function lookCount(zone)
+    local n = 0
+    for _, it in ipairs(cratesIn(zone)) do
+        if it.bt ~= nil or it.bf ~= nil or it.bg ~= nil then n = n + 1 end
+    end
+    return n
+end
+
+--- The warmup pad's entry at anchor `i`.
+local function anchorEntry(zone, i)
+    local a = BR.Config.WarmupCrates.anchors[i]
+    for _, it in pairs(zone.loot.items) do
+        if it.x == a.x and it.y == a.y and (it.kind == 'chest' or it.kind == 'husk') then return it end
+    end
+    return nil
+end
+
+--- A warmup player standing on `e`, holding its cell, claims it.
+local function padClaim(src, zone, e)
+    roster[src] = { name = 'p' .. src, state = BR.PlayerState.WARMUP,
+                    pos = { x = e.x, y = e.y, z = e.z } }
+    zone.loot.subs[src] = { [e.cell] = true }
+    claim(src, e.id)
+end
+
+--- [id] = how many LOOT_ADD payloads to `src` carried that id since `sent` was cleared.
+local function toldIds(src)
+    local n = {}
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        if s.src == src then
+            for _, w in ipairs(s.payload) do n[w.id] = (n[w.id] or 0) + 1 end
+        end
+    end
+    return n
+end
+
+--- Is any of Season 2's four wire fields on any LOOT_ADD sent since `sent` was cleared?
+local function wireHasLook()
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, w in ipairs(s.payload) do
+            if w.bt ~= nil or w.bf ~= nil or w.bg ~= nil or w.op ~= nil then return true end
+        end
+    end
+    return false
+end
+
+local WATCHER = 40   -- a warmup player holding every cell of the pad
+local padState = {}  -- what the 2 -> 1 block leaves for the 1 -> 2 block
+
+describe('brseason 2 -> 1 with the pad stocked: no look left anywhere, told once, opened at once')
+do
+    reset()
+    season(2)
+    realNames()
+    resources.br_crates = 'started'
+    local zone = BR.Loot.warmupZone()
+    jobs['warmupcrates.tick']()
+    local pad = BR.Config.Match.warmupPos
+
+    roster[WATCHER] = { name = 'w', state = BR.PlayerState.WARMUP,
+                        pos = { x = pad.x, y = pad.y, z = pad.z } }
+    local all = {}
+    for key in pairs(zone.loot.cells) do all[key] = true end
+    zone.loot.subs[WATCHER] = all
+
+    -- A HUSK OPENED UNDER SEASON 2: anchor 1, burst.
+    local e1 = anchorEntry(zone, 1)
+    padClaim(41, zone, e1)
+    advance(1500)
+    ok(e1.kind == 'husk' and e1.bt ~= nil, 'before: a husk opened under Season 2 wears its open box')
+    -- A CRATE MID-CLIP: anchor 2, its hold done, its burst not yet.
+    local e2 = anchorEntry(zone, 2)
+    padClaim(42, zone, e2)
+    ok(e2.opening ~= nil and e2.kind == 'chest', 'before: anchor 2 is mid-clip')
+    -- A brbox GIFT BOX on the pad: a look somebody asked for.
+    roster[43] = { name = 'b', state = BR.PlayerState.WARMUP, pos = { x = pad.x, y = pad.y, z = pad.z } }
+    source = 43
+    handlers[BR.Net.LOOT_DEV]({ box = { gift = 'green' }, x = pad.x + 3.0, y = pad.y, z = pad.z })
+    source = nil
+    local gift = nil
+    for _, it in pairs(zone.loot.items) do
+        if it.bg == 'green' and (not gift or it.id > gift.id) then gift = it end
+    end
+    ok(gift ~= nil, 'before: a green gift box stands on the pad')
+    zone.loot.subs[WATCHER][gift.cell] = true
+    local before = lookCount(zone)
+    eq(before, #cratesIn(zone), ('before: every one of the pad\'s %d crates and husks wears a look'):format(before))
+    ok(before > 200, 'and the pad is stocked', before)
+
+    -- THE SWITCH.
+    sent, logs = {}, {}
+    local items = 0
+    for _ in pairs(zone.loot.items) do items = items + 1 end
+    commands.brseason(0, { '1' })
+    eq(BR.Season.current(), 1, 'brseason 1 applies at once: no match is running')
+    eq(lookCount(zone), 0, 'not one crate or husk on the pad carries a look any more')
+    eq(e1.bt, nil, 'the Season 2 husk is the wooden husk')
+    ok(gift.bg == nil and gift.bt == nil, 'the gift box is a plain wooden crate')
+    ok(said('crates restyled for Season 1'), 'and the console says what the switch restyled')
+
+    -- MID-CLIP: it bursts now, the way a Season 1 crate opens.
+    ok(e2.kind == 'husk' and e2.opening == nil and e2.bt == nil,
+        'the crate caught mid-clip burst at the switch, into the wooden husk')
+    local after = 0
+    for _ in pairs(zone.loot.items) do after = after + 1 end
+    ok(after > items, 'and its contents are on the ground', ('%d -> %d'):format(items, after))
+
+    -- TOLD ONCE: every restyled entry reached the player looking, in one message.
+    local n = toldIds(WATCHER)
+    local once, missing = true, 0
+    for _, it in ipairs(cratesIn(zone)) do
+        if (n[it.id] or 0) > 1 then once = false end
+        if (n[it.id] or 0) == 0 then missing = missing + 1 end
+    end
+    ok(once, 'no crate was announced to the watcher twice')
+    eq(missing, 0, 'and none was left out')
+    local restyle = 0
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        if s.src == WATCHER and #s.payload > 50 then restyle = restyle + 1 end
+    end
+    eq(restyle, 1, 'the restyle itself is ONE message to the watcher')
+    eq(#eventsOf(BR.Net.SEASON_SWITCHED), 1, 'and every client is told of the switch once')
+
+    -- BYTE FOR BYTE TODAY'S SEASON 1: none of the four fields on the wire, as
+    -- the restyle sent it and as a player streaming the pad in would get it.
+    eq(wireHasLook(), false, 'nothing sent at the switch carries bt, bf, bg or op')
+    local view = BR.Loot.viewFor(WATCHER) or {}
+    local clean = #view > 0
+    for _, w in ipairs(view) do
+        if w.bt ~= nil or w.bf ~= nil or w.bg ~= nil or w.op ~= nil then clean = false end
+    end
+    ok(clean, 'nor does the pad as a player streaming it in now is sent it')
+
+    -- OPENED AT ONCE -- one of the four and a generated pad crate, whose husk
+    -- stays (the pad respawns a crate elsewhere). The stale clip timer finds
+    -- nothing to burst.
+    sent = {}
+    local e3 = anchorEntry(zone, 3)
+    padClaim(44, zone, e3)
+    eq(e3.kind, 'husk', 'a crate claimed after the switch opens on the spot')
+    local g1 = nil
+    for _, it in ipairs(cratesIn(zone)) do
+        if it.kind == 'chest' and it.warmup and not g1 then g1 = it end
+    end
+    padClaim(46, zone, g1)
+    eq(g1.kind, 'husk', 'and so does a generated pad crate')
+    eq(#eventsOf(BR.Net.LOOT_OPENING), 0, 'with no clip')
+    local count = 0
+    for _ in pairs(zone.loot.items) do count = count + 1 end
+    advance(3000)
+    local count2 = 0
+    for _ in pairs(zone.loot.items) do count2 = count2 + 1 end
+    eq(count2, count, 'the mid-clip crate\'s timer, when it fires, bursts nothing a second time')
+    eq(BR.Loot.openings.lastWhy, 'a season switch already burst it', 'and records why')
+
+    -- THE FOUR RESEAL AS SEASON 1 CRATES.
+    local W = BR.Config.WarmupCrates
+    for src = 41, 46 do roster[src] = nil end
+    jobs['warmupcrates.tick']()
+    advance((W.settleMs or 5000) + 300)
+    jobs['warmupcrates.tick']()
+    advance((W.returnMs or 520) + 300)
+    jobs['warmupcrates.tick']()
+    ok(e1.kind == 'chest' and e1.bt == nil and e2.kind == 'chest' and e2.bt == nil,
+        'the husks reseal as wooden crates')
+    padState = { husk = g1, gift = gift }
+    resources.br_crates = nil
+    shipped()
+end
+
+describe('brseason 1 -> 2: every crate and husk takes exactly the look Season 2 would have given it')
+do
+    -- From the pad the last block left: Season 1, a husk opened under Season 1,
+    -- a gift box that lost its look.
+    sent, logs = {}, {}
+    realNames()
+    resources.br_crates = 'started'
+    BR.Crates.festiveOverride = true
+    local zone = BR.Loot.warmupZone()
+    local h1, gift = padState.husk, padState.gift
+    ok(h1 and h1.kind == 'husk' and h1.bt == nil, 'before: a husk opened under Season 1, with no look')
+    local sealedTier = BR.Crates.tierOf(h1.sealedRarity)
+    commands.brseason(0, { '2' })
+    eq(BR.Season.current(), 2, 'Season 2 is in force')
+
+    local right, wrong = 0, nil
+    for _, it in ipairs(cratesIn(zone)) do
+        local want
+        if it == gift then
+            want = it.bg == 'green' and it.bt ~= nil
+        elseif it.kind == 'husk' then
+            want = it.bt == BR.Crates.tierOf(it.sealedRarity) and it.bf == true
+        else
+            want = it.bt == BR.Crates.tierOf(it.rarity) and it.bf == true
+        end
+        if want then right = right + 1 else wrong = wrong or it end
+    end
+    eq(right, #cratesIn(zone), 'every crate wears its own tier and the zone\'s festive answer, every husk its sealed tier')
+    ok(wrong == nil, 'none is wrong', wrong and ('#%d %s bt=%s'):format(wrong.id, wrong.kind, tostring(wrong.bt)))
+    ok(h1.bt ~= nil and h1.bt == sealedTier and h1.rarity == R.COMMON,
+        'the husk opened under Season 1 wears the open box of the tier it was -- its own rarity still common')
+    eq(gift.bg, 'green', 'and the gift box is the green gift box it was asked to be')
+
+    local n = toldIds(WATCHER)
+    local once = true
+    for _, it in ipairs(cratesIn(zone)) do
+        if (n[it.id] or 0) ~= 1 then once = false end
+    end
+    ok(once, 'each was told to the watcher exactly once')
+
+    -- AND IT OPENS ON ITS CLIP AGAIN.
+    sent = {}
+    local g = nil
+    for _, it in ipairs(cratesIn(zone)) do
+        if it.kind == 'chest' and it.warmup and not g then g = it end
+    end
+    padClaim(45, zone, g)
+    local mine = 0
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_OPENING)) do
+        if s.src == 45 and s.payload.mine then mine = mine + 1 end
+    end
+    eq(mine, 1, 'a pad crate claimed now plays its clip')
+    ok(g.opening ~= nil and g.kind == 'chest', 'and bursts on its last frame, not at once')
+    advance(2000)
+    eq(g.kind, 'husk', 'which it does')
+    roster[45] = nil
+    BR.Crates.festiveOverride = nil
+    resources.br_crates = nil
+    shipped()
+end
+
+describe('a staged brseason restyles the pad at the teardown, not before')
+do
+    sent, logs = {}, {}
+    local zone = BR.Loot.warmupZone()
+    local looks = lookCount(zone)
+    ok(looks > 200, 'Season 2: the pad wears its looks')
+    local m = newMatch(9)
+    commands.brseason(0, { '1' })
+    ok(BR.SeasonSwitch.staged() ~= nil and BR.Season.current() == 2, 'a match is running: the switch is staged')
+    eq(lookCount(zone), looks, 'and nothing on the pad has moved')
+    eq(#eventsOf(BR.Net.LOOT_ADD), 0, 'nor been sent')
+    matches[m.id] = nil
+    handlers['br:match:destroyed']({ matchId = m.id })
+    eq(BR.Season.current(), 1, 'the teardown applies it')
+    eq(lookCount(zone), 0, 'and restyles the pad then')
+end
+
+describe('the next match\'s map crates are laid out in the season in force')
+do
+    eq(BR.Season.current(), 1, 'Season 1 (from the block before)')
+    local m = { id = 11, seq = 11, state = BR.MatchState.WARMUP }
+    BR.Loot.begin(m, 4242)
+    local looks = 0
+    for _, it in pairs(m.loot.items) do if it.bt ~= nil then looks = looks + 1 end end
+    eq(looks, 0, 'a match laid out after a switch to Season 1: wooden crates')
+    commands.brseason(0, { '2' })
+    local m2 = { id = 12, seq = 12, state = BR.MatchState.WARMUP }
+    BR.Loot.begin(m2, 4242)
+    local chests, stamped = 0, 0
+    for _, it in pairs(m2.loot.items) do
+        if it.kind == 'chest' then
+            chests = chests + 1
+            if it.bt == BR.Crates.tierOf(it.rarity) then stamped = stamped + 1 end
+        end
+    end
+    ok(chests > 100 and stamped == chests, 'and after a switch back to Season 2, every one of them a box',
+        ('%d of %d'):format(stamped, chests))
+end
+
+describe('a switch between two seasons that both have Season 2 crates moves nothing')
+do
+    local S = BR.Config.Seasons
+    local keepLatest = S.latest
+    S.latest = 3
+    sent, logs = {}, {}
+    local zone = BR.Loot.warmupZone()
+    local snap = {}
+    for _, it in ipairs(cratesIn(zone)) do snap[it.id] = { it.bt, it.bf, it.bg } end
+    commands.brseason(0, { '3' })
+    eq(BR.Season.current(), 3, 'Season 3 (a pretend one) is in force')
+    local same = true
+    for _, it in ipairs(cratesIn(zone)) do
+        local s = snap[it.id]
+        if not s or s[1] ~= it.bt or s[2] ~= it.bf or s[3] ~= it.bg then same = false end
+    end
+    ok(same, 'every crate keeps the look it had')
+    eq(#eventsOf(BR.Net.LOOT_ADD), 0, 'and no crate is re-announced')
+    ok(not said('crates restyled'), 'nor said to be')
+    commands.brseason(0, { 'reset' })
+    S.latest = keepLatest
+    eq(BR.Season.current(), 2, 'back to the season this suite booted')
+end
+
 describe('brfestive: forces the set and says when it applies')
 do
     reset()
