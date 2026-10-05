@@ -906,7 +906,7 @@ do
     ok(total / 20 <= wood, ('an opening box: %.1f natives a frame'):format(total / 20))
 end
 
-describe('the warmup pad\'s markers recognise their four crates as boxes')
+describe('the warmup pad\'s markers recognize their four crates as boxes')
 do
     reset()
     propsLanded()
@@ -980,11 +980,17 @@ do
     ok(line('festive 3'):find('MISSING', 1, true) ~= nil,
         'a model this build lacks is MISSING', line('festive 3'))
     shipped()
+    -- The shipped rows are all real now; a row for a prop not made yet is a
+    -- placeholder, and the check says so.
+    local keep = C.gift.red
+    C.gift.red = { sealed = 'PLACEHOLDER_gift_red', open = 'PLACEHOLDER_gift_red_open',
+        dict = 'PLACEHOLDER_anim', clip = 'PLACEHOLDER_open', clipMs = 1200 }
     logs = {}
     commands.brboxcheck(0, {})
     frames(10)
     ok(line('gift red'):find('placeholder', 1, true) ~= nil,
         'and a placeholder row says so', line('gift red'))
+    C.gift.red = keep
 end
 
 -- ----------------------------------------------------------------- result ---

@@ -154,32 +154,49 @@ do
     eq(BR.Season.has('crates2'), true, 'on on a Season 2 server')
 end
 
-describe('the shipped config: one marked placeholder block, inert until filled')
+describe('the shipped config: the owner\'s props, inert until their resource is started')
 do
-    -- EVERY ROW THE OWNER HAS NOT FILLED IS A PLACEHOLDER, and a placeholder is
-    -- today's crate: no model, no clip, no timed open.
-    local real = nil
+    -- THE NAMES ARE THE OWNER'S, read from the props he made (issue #395):
+    -- `blitz_loot_<kind>` sealed and `blitz_loot_<kind>_opened` open, one clipset
+    -- `blitz_lootbox_anims` with `open` (0.933 s) and `gift_open` (1.2 s).
+    local TIER = { 'common', 'uncommon', 'rare', 'epic', 'legendary' }
+    local function want(it)
+        local look = it.look
+        local kind
+        if look.g then kind = 'largegift_' .. look.g
+        else kind = TIER[look.t] .. (look.f and '_xmas' or '') end
+        local gift = look.g ~= nil
+        return 'blitz_loot_' .. kind, gift and 'gift_open' or 'open', gift and 1200 or 934
+    end
+    eq(#BR.Crates.allLooks(), 14, 'five tiers, five festive, four gift colors')
     for _, it in ipairs(BR.Crates.allLooks()) do
         local row = BR.Crates.row(it.look)
+        local name, clip, ms = want(it)
         ok(row ~= nil, ('%s has a row'):format(it.label))
-        for _, k in ipairs({ 'sealed', 'open', 'dict', 'clip' }) do
-            if row and not BR.Crates.placeholder(row[k]) then
-                real = real or ('%s.%s = %s'):format(it.label, k, tostring(row[k]))
-            end
+        if row then
+            eq(row.sealed, name, ('%s: the sealed model is the owner\'s'):format(it.label))
+            eq(row.open, name .. '_opened', ('%s: and the open one'):format(it.label))
+            eq(row.dict, 'blitz_lootbox_anims', ('%s: one clipset for every box'):format(it.label))
+            eq(row.clip, clip, ('%s: the clip'):format(it.label))
+            eq(row.clipMs, ms, ('%s: the clip\'s length, rounded up to the ms'):format(it.label))
         end
-        ok(row and tonumber(row.clipMs) and row.clipMs > 0,
-            ('%s carries a clip length the server can time'):format(it.label))
     end
-    ok(real == nil, 'every shipped name is still a placeholder', real)
-    eq(#BR.Crates.allLooks(), 14, 'five tiers, five festive, four gift colors')
-    ok(BR.Crates.placeholder(C.resource), 'and the resource name is one too')
+    eq(C.resource, 'br_stream_s2', 'the props arrive as resources/[licensed]/br_stream_s2')
+    ok(C.spare and C.spare.plain and C.spare.plain_xmas,
+        '`plain` and its festive twin are on record (owner: unused for now)')
 
+    -- NOT STARTED, NOTHING TIMED: a box without the props opens the way a crate
+    -- does today; the client draws wood when it lacks the model.
+    resources[C.resource] = nil
+    for _, it in ipairs(BR.Crates.allLooks()) do
+        eq(BR.Crates.openMs(it.look), nil,
+            ('%s: no timed open while the props resource is not started'):format(it.label))
+    end
     resources[C.resource] = 'started'
     for _, it in ipairs(BR.Crates.allLooks()) do
-        eq(BR.Crates.modelName(it.look, false), nil,
-            ('%s: no sealed model while it is a placeholder'):format(it.label))
-        eq(BR.Crates.openMs(it.look), nil,
-            ('%s: and no timed open -- it opens at once, as today'):format(it.label))
+        local _, _, ms = want(it)
+        eq(BR.Crates.openMs(it.look), ms,
+            ('%s: and the clip times the burst once it is'):format(it.label))
     end
     resources[C.resource] = nil
 
@@ -517,12 +534,17 @@ do
     season(2)
     local m = newMatch(1)
     standAt(10, m)
-    -- Placeholders, the props running: instant.
+    -- A PLACEHOLDER ROW (a prop not made yet), the props running: instant. The
+    -- shipped rows are all real now, so one is made a placeholder for this.
     resources[C.resource] = 'started'
+    local keep = C.shipping[R.RARE]
+    C.shipping[R.RARE] = { sealed = 'PLACEHOLDER_rare', open = 'PLACEHOLDER_rare_open',
+        dict = 'PLACEHOLDER_anim', clip = 'PLACEHOLDER_open', clipMs = 934 }
     local e = crateAt(m, R.RARE)
     claim(10, e.id)
     eq(e.kind, 'husk', 'placeholder rows: the crate opens on the spot')
     eq(#timers, 0, 'with nothing timed')
+    C.shipping[R.RARE] = keep
     -- Real names, the props NOT running on this box: instant.
     realNames()
     local e2 = crateAt(m, R.RARE)

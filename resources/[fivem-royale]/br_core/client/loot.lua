@@ -528,7 +528,7 @@ local boxInCd = {}
 local boxFailed = {}
 
 --- [hash] = 'sealed' or 'open', for every box model this client has built.
---- client/warmupcrates.lua reads it (BR.Loot.boxModels) to recognise its four
+--- client/warmupcrates.lua reads it (BR.Loot.boxModels) to recognize its four
 --- crates when they are boxes.
 local boxBuilt = {}
 
@@ -2248,7 +2248,7 @@ AddEventHandler(BR.Net.LOOT_OPENING, function(d)
 end)
 
 --- The box models this client has built, as { [hash] = 'sealed'|'open' }.
---- READ-ONLY. client/warmupcrates.lua uses it to recognise its four crates when
+--- READ-ONLY. client/warmupcrates.lua uses it to recognize its four crates when
 --- they are Season 2 boxes; on a Season 1 server it is empty.
 --- @return table
 function BR.Loot.boxModels()

@@ -32,72 +32,80 @@ BR = BR or {}
 BR.Config = BR.Config or {}
 
 BR.Config.Crates = {
-    -- ╔═══════════════════════════════════════════════════════════════════════╗
-    -- ║  PLACEHOLDERS. THE OWNER'S NAMES REPLACE EVERYTHING DOWN TO THE END   ║
-    -- ║  OF THIS BLOCK WHEN THE PROPS LAND.                                   ║
-    -- ╚═══════════════════════════════════════════════════════════════════════╝
+    -- ═══ THE OWNER'S PROPS (Season 2 assets folder, resources/[licensed]/br_stream_s2) ═══
     --
-    -- WHAT TO FILL IN, from the Season 2 assets folder (#391):
+    -- Names read from the props themselves (owner, 2026-10-04; issue #395):
+    -- every box is `blitz_loot_<kind>` sealed (the animated body) and
+    -- `blitz_loot_<kind>_opened` open, posed as its clip's last frame. One
+    -- clipset, `blitz_lootbox_anims`: `open` (0.933 s) for the shipping boxes and
+    -- `gift_open` (1.2 s) for the gift boxes. Model origin is bottom center.
     --
-    --   resource   the folder the props arrive in, resources/[licensed]/<name>.
-    --              The server checks it is started before it plays a clip; while
-    --              it is not, every crate opens the way it does today.
-    --   sealed     the closed box's model name
-    --   open       the already-open box's model name, posed as the clip's last
-    --              frame (the swap happens there)
-    --   dict       the clipset (animation dictionary) that opens the box
-    --   clip       the clip inside it
+    --   resource   the props' folder: br_stream_s2, the one resource that
+    --              streams everything Season 2 needs. The server checks it is
+    --              started before it plays a clip; while it is not, every crate
+    --              opens the way it does today.
     --   clipMs     the clip's length in milliseconds. The SERVER times the burst
     --              off this number, so it has to match the clip: `brboxcheck` in
     --              F8 prints GetAnimDuration for every row beside it.
     --   prompt     where the hold prompt sits, one row for every shipping box and
-    --              one for the gift box. Tune it live with `brboxprompt` standing
-    --              at a box; it prints the line to paste.
+    --              one for the gift box. These are first guesses: tune them live
+    --              with `brboxprompt` standing at a box; it prints the line to
+    --              paste.
     --
-    -- A NAME STILL STARTING `PLACEHOLDER` IS NOT USED. Such a row opens the way a
-    -- crate does today and draws the wooden crate; so does any model this build
-    -- does not have, on any client. Nothing here can break a crate.
-    resource = 'PLACEHOLDER_crates_resource',
+    -- Any model this build does not have, on any client, draws the wooden crate
+    -- and opens the way a crate does today. Nothing here can break a crate.
+    resource = 'br_stream_s2',
 
     -- Tier = BR.Rarity: 1 common, 2 uncommon, 3 rare, 4 epic, 5 legendary.
     shipping = {
-        [1] = { sealed = 'PLACEHOLDER_ship_common',    open = 'PLACEHOLDER_ship_common_open',
-                dict = 'PLACEHOLDER_ship_common_anim',    clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [2] = { sealed = 'PLACEHOLDER_ship_uncommon',  open = 'PLACEHOLDER_ship_uncommon_open',
-                dict = 'PLACEHOLDER_ship_uncommon_anim',  clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [3] = { sealed = 'PLACEHOLDER_ship_rare',      open = 'PLACEHOLDER_ship_rare_open',
-                dict = 'PLACEHOLDER_ship_rare_anim',      clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [4] = { sealed = 'PLACEHOLDER_ship_epic',      open = 'PLACEHOLDER_ship_epic_open',
-                dict = 'PLACEHOLDER_ship_epic_anim',      clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [5] = { sealed = 'PLACEHOLDER_ship_legendary', open = 'PLACEHOLDER_ship_legendary_open',
-                dict = 'PLACEHOLDER_ship_legendary_anim', clip = 'PLACEHOLDER_open', clipMs = 1500 },
+        [1] = { sealed = 'blitz_loot_common', open = 'blitz_loot_common_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [2] = { sealed = 'blitz_loot_uncommon', open = 'blitz_loot_uncommon_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [3] = { sealed = 'blitz_loot_rare', open = 'blitz_loot_rare_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [4] = { sealed = 'blitz_loot_epic', open = 'blitz_loot_epic_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [5] = { sealed = 'blitz_loot_legendary', open = 'blitz_loot_legendary_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
     },
 
     -- The festive set: separate props with festive icons, the common tape candy
-    -- cane. Same tiers, same shape.
+    -- cane. Same tiers, same clip.
     festive = {
-        [1] = { sealed = 'PLACEHOLDER_xmas_common',    open = 'PLACEHOLDER_xmas_common_open',
-                dict = 'PLACEHOLDER_xmas_common_anim',    clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [2] = { sealed = 'PLACEHOLDER_xmas_uncommon',  open = 'PLACEHOLDER_xmas_uncommon_open',
-                dict = 'PLACEHOLDER_xmas_uncommon_anim',  clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [3] = { sealed = 'PLACEHOLDER_xmas_rare',      open = 'PLACEHOLDER_xmas_rare_open',
-                dict = 'PLACEHOLDER_xmas_rare_anim',      clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [4] = { sealed = 'PLACEHOLDER_xmas_epic',      open = 'PLACEHOLDER_xmas_epic_open',
-                dict = 'PLACEHOLDER_xmas_epic_anim',      clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        [5] = { sealed = 'PLACEHOLDER_xmas_legendary', open = 'PLACEHOLDER_xmas_legendary_open',
-                dict = 'PLACEHOLDER_xmas_legendary_anim', clip = 'PLACEHOLDER_open', clipMs = 1500 },
+        [1] = { sealed = 'blitz_loot_common_xmas', open = 'blitz_loot_common_xmas_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [2] = { sealed = 'blitz_loot_uncommon_xmas', open = 'blitz_loot_uncommon_xmas_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [3] = { sealed = 'blitz_loot_rare_xmas', open = 'blitz_loot_rare_xmas_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [4] = { sealed = 'blitz_loot_epic_xmas', open = 'blitz_loot_epic_xmas_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        [5] = { sealed = 'blitz_loot_legendary_xmas', open = 'blitz_loot_legendary_xmas_opened',
+                dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
     },
 
     -- The extra-large gift box. Registered, wired to nothing but `brbox`.
     gift = {
-        white = { sealed = 'PLACEHOLDER_gift_white', open = 'PLACEHOLDER_gift_white_open',
-                  dict = 'PLACEHOLDER_gift_white_anim', clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        blue  = { sealed = 'PLACEHOLDER_gift_blue',  open = 'PLACEHOLDER_gift_blue_open',
-                  dict = 'PLACEHOLDER_gift_blue_anim',  clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        green = { sealed = 'PLACEHOLDER_gift_green', open = 'PLACEHOLDER_gift_green_open',
-                  dict = 'PLACEHOLDER_gift_green_anim', clip = 'PLACEHOLDER_open', clipMs = 1500 },
-        red   = { sealed = 'PLACEHOLDER_gift_red',   open = 'PLACEHOLDER_gift_red_open',
-                  dict = 'PLACEHOLDER_gift_red_anim',   clip = 'PLACEHOLDER_open', clipMs = 1500 },
+        white = { sealed = 'blitz_loot_largegift_white', open = 'blitz_loot_largegift_white_opened',
+                  dict = 'blitz_lootbox_anims', clip = 'gift_open', clipMs = 1200 },
+        blue  = { sealed = 'blitz_loot_largegift_blue', open = 'blitz_loot_largegift_blue_opened',
+                  dict = 'blitz_lootbox_anims', clip = 'gift_open', clipMs = 1200 },
+        green = { sealed = 'blitz_loot_largegift_green', open = 'blitz_loot_largegift_green_opened',
+                  dict = 'blitz_lootbox_anims', clip = 'gift_open', clipMs = 1200 },
+        red   = { sealed = 'blitz_loot_largegift_red', open = 'blitz_loot_largegift_red_opened',
+                  dict = 'blitz_lootbox_anims', clip = 'gift_open', clipMs = 1200 },
+    },
+
+    -- REGISTERED, PICKED BY NOTHING (owner, 2026-10-04: "Plain will be unused for
+    -- now"). The props ship a sixth, tier-less box and its festive twin. They are
+    -- listed so the names are on record beside the rest; no crate, test command
+    -- or check reads this table.
+    spare = {
+        plain      = { sealed = 'blitz_loot_plain', open = 'blitz_loot_plain_opened',
+                       dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
+        plain_xmas = { sealed = 'blitz_loot_plain_xmas', open = 'blitz_loot_plain_xmas_opened',
+                       dict = 'blitz_lootbox_anims', clip = 'open', clipMs = 934 },
     },
 
     -- The hold prompt, in the BOX'S OWN FRAME: x right, y forward, z up, in
@@ -109,7 +117,6 @@ BR.Config.Crates = {
         shipping = { x = 0.0, y = 0.0, z = 0.45, rx = 0.0, ry = 0.0, rz = 0.0, size = 0.40 },
         gift     = { x = 0.0, y = 0.0, z = 0.95, rx = 0.0, ry = 0.0, rz = 0.0, size = 0.55 },
     },
-    -- ═══ END OF THE PLACEHOLDER BLOCK ═══
 
     -- The festive months, by the SERVER's date: December and January (owner,
     -- 2026-10-04). Decided once per match when its loot is laid out and carried on
