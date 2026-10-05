@@ -186,9 +186,12 @@ With no match running it applies at once. While any match is running —
 warmup to cleanup — it is staged and applied when the last one is torn down to
 the lobby, never mid-match; a second `brseason` replaces a staged one. Applying
 moves the season the server's doors answer, replicates it, pushes every
-player's market state again, and prints who switched in the console and in
-every client's F8. Each client re-reads its season off the replicated value, so
-the lobby label, the Market's Emotes tab and the Settings key and Music slider
+player's market state again, restyles every crate still standing (the warmup
+pad's, its four, every husk) for the new season and re-announces each once,
+and prints who switched in the console and in every client's F8. Each client
+holds its season and re-reads the replicated value the moment it lands, so the
+lobby label, the Market's Emotes tab, the Settings key and Music slider, and
+the crates on screen (a Season 2 box rebuilt as today's wooden crate, or back)
 follow. One thing cannot: GTA has no way to withdraw a key mapping, so after a
 switch away from Season 2 the emote wheel's row stays in GTA's own key-binding
 list, and pressing it does nothing. Nor can licensed assets (below): a switch
