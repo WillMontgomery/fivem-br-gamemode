@@ -122,3 +122,13 @@ docs/working-agreement.md
 # ---------------------------------------------------------------------------
 /resources/\[licensed\]/
 /.assets-cache/
+
+# ---------------------------------------------------------------------------
+# verify.sh's pass cache
+#
+# tools/vcache.py keeps, per suite, the hashes of everything it read when it
+# last passed, so `bash tools/verify.sh` can skip what has not changed. It is
+# this machine's record of this working tree and means nothing anywhere else;
+# CI never has one. docs/testing.md, "The pass cache".
+# ---------------------------------------------------------------------------
+/.verify-cache/

@@ -9,14 +9,17 @@ What the suites and gates do, when to run them, and the bugs they have caught.
 ## The one command
 
 ```bash
-bash tools/verify.sh
+bash tools/verify.sh          # skips each suite whose inputs have not changed since it passed
+bash tools/verify.sh --full   # runs everything, and refreshes the pass cache
 ```
 
 Runs everything below in increasing order of strictness and exits non-zero on
 any failure. It is wired as a **pre-commit hook**, and CI runs it after the UI
 and br_ddb package-owned checks have proved both committed bundles match source.
 Pull requests and `main` are covered remotely; `dev` is guarded locally before
-commit.
+commit. Locally, a suite that passed and whose inputs are byte-for-byte what they
+were is skipped — see [the pass cache](#the-pass-cache). CI has no cache and
+always runs everything.
 
 Lua 5.4 is required. `verify.sh` finds the ordinary `lua`/`luac` pair,
 Homebrew's keg-only `lua@5.4`, and the standard Windows install path; when
@@ -25,7 +28,113 @@ absent it prints the matching Homebrew, apt, or winget command.
 Python 3 runs the licensed-asset gate and its suite, and the deploy handover
 suite (`python3`, or `py` on Windows, each tried before it is used so the
 Microsoft Store stand-in is never taken for Python); without it all three print
-`skip`.
+`skip`, and the pass cache is off.
+
+---
+
+## The pass cache
+
+Owner, 2026-10-04: *"The full check skips suites whose files didn't change."*
+On the Windows PC verify.sh had grown to well over six minutes, almost all of it
+a handful of suites that had nothing to do with the change being checked.
+
+**What is skipped, and when.** A *unit* is one suite or one of the slower gates.
+When it passes, the cache stores the hash of everything it read. The next run
+skips it only if
+
+- every one of those inputs hashes the same **in the working tree now** —
+  uncommitted edits count, a file that was absent must still be absent, and a
+  directory it listed must list the same names;
+- `tools/verify.sh`, `tools/vcache.py` and both tracers are unchanged (editing
+  any of them runs everything);
+- the interpreter is the same binary (the Lua executable and its DLL, or the
+  Python build), and for a gate with declared inputs, the same bash.
+
+Anything that cannot be evaluated counts as changed. A skipped unit prints one
+line, `skipped -- unchanged since it passed at <time> (<n> inputs)`, and the
+last line says how many ran and how many were skipped: `PASS  23 ran, 61 skipped`.
+
+**How a unit's inputs are recorded.**
+
+| Kind | How | What counts as read |
+|---|---|---|
+| Lua suites and gates | `tools/vcache_trace.lua` runs the script in place of `lua script` (same `arg`, `...` and exit code) with the I/O functions wrapped | every path given to `io.open`, `io.lines`, `io.input`, `dofile`, `loadfile`; for `require`, every `package.path` candidate up to the one that loaded (so a file that would now shadow it is a change); `io.popen`'s command, exit code and output (re-run at check time); every `os.getenv` and its value. A path the run wrote first is its own output, not an input. `os.execute` or a popen for writing makes the unit uncacheable. |
+| Python suites | `tools/vcache_trace.py`, the same way | `open`/`os.open`, every directory listing (`os.listdir`/`os.scandir`, so `os.walk`, `glob` and `pathlib`), `os.stat` and `os.path`'s existence and size queries, every imported module outside the standard library, the whole environment (children inherit it), and for each child process its program's binary and every argument that names a file or directory. Paths under a directory the run created are its own. `os.system`, `exec*`, `spawn*` make it uncacheable. |
+| Bash gates | declared in `verify.sh`: `vc_begin NAME file:… tree:DIR[:SUFFIX] list:DIR[:SUFFIX] exe:…` | exactly what is declared, plus the whole environment and bash's own binary |
+
+**What is cached, and what always runs.** Measured on the owner's PC before the
+cache (2026-10-05, one full run, 403 s); the stages that cost are units.
+
+| Stage | Before | Cached as |
+|---|---|---|
+| `test_assets.py` | 123 s | traced Python unit |
+| `test_shared`, `test_roster`, `test_storm` | 83, 48, 46 s | traced Lua units |
+| the other 45 Lua suites | 15 s together | one traced unit each |
+| forward locals, bool natives | 16, 15 s | traced units; their file lists are now built in bash alone (they ran `dirname` once per directory level per file, about 1,500 processes, which was nearly all of their time) |
+| `test_configreport.sh` | 12 s | declared: itself and `tools/dispatch.sh` (it points the dispatcher at temp boxes) |
+| dev gate on console commands | 9 s | declared: `tree:resources/[fivem-royale]:.lua` |
+| syntax | 7 s | **per file**: each `.lua` with `luac`'s binary, so one edited file is one `luac` |
+| br_ddb bundle over the wire | 5 s | declared: `dispatch.sh`, the manifest, the bundle, `node` |
+| duplicate console commands | 4 s | declared: `tree:resources/[fivem-royale]:.lua` |
+| frame budget | 3 s | traced Lua unit |
+| emote gate, season gates, player states, notice names, cue call sites, net events | 0.2–2.6 s | traced units; the `find` that builds their arguments is declared as `list:` |
+| secrets | 3 s | **always runs**, on purpose (below) |
+| manifest coverage, shared coverage, vendored third-party, tunable overrides, br_ddb bundle | about 1 s each | **always run**: bash over most of `resources/` (or all of `js-src/br_ddb`), so the declared input would be nearly the whole tree — re-run by almost any change anyway, and one wrong declaration from hiding one |
+| the other thirty-odd gates | under 0.5 s each | **always run**: mostly one `grep` or one Lua process, where checking a cache entry costs about what the gate does |
+
+`secrets` always runs on purpose: it asks git about the whole repository, so
+its input is everything, and it is the gate a stale answer would hurt most.
+The UI bundle's byte comparison is CI's (`npm run build:check`), untouched.
+
+**When it is written.** `vcache.py check` runs once at the start and
+`vcache.py commit` once at the very end, after every gate. Commit stores only
+units that exited 0 — and deletes the entry of any unit that failed — so a
+failure is never stored, and a run stopped part way (Ctrl-C, a closed terminal)
+reaches no commit and stores nothing. It also refuses a unit whose inputs
+moved while it ran: a file whose existence or size differs from what the tracer
+saw, a hash that differs from the one the Python tracer took when it read, or
+any input modified after the unit started (within a two-second slack). Those
+print one line, `not stored: <unit> (<why>)`, and simply run next time.
+
+**Where it lives.** `.verify-cache/` in the checkout (gitignored):
+`entries/` holds one JSON file per unit, `runs/` the traces of a run in
+progress. Deleting the directory is always safe; the next run is a full one.
+
+**`--full`** ignores the cache, runs every unit, and rewrites the cache from
+that run alone (an entry for anything that did not pass in it is dropped).
+Use it after changing something the cache cannot see (below).
+
+**CI always runs everything.** GitHub Actions checks out fresh, so there is no
+`.verify-cache/`; and `verify.sh` turns the cache off outright when `CI` or
+`GITHUB_ACTIONS` is set, so the suites run under the plain interpreter exactly
+as before. It is also off without Python 3 or on a bash older than 5.
+
+**What it cannot see, honestly.**
+
+- **What a child process reads.** A Python suite's subprocess is recorded by
+  its binary and the files named in its arguments, not by what it opens.
+  `test_assets.py` runs `tools/deploy.sh` and `tools/assets.py` against temp
+  trees it builds (both are arguments, so editing either re-runs it), git, bash
+  and `cmd.exe` (binaries recorded). The bash gates' children are covered by
+  what each one declares.
+- **The machine outside the checkout**: git's global config, a different `grep`
+  that is not Git for Windows' own. Bash's binary is recorded for every gate
+  with declared inputs, which covers a Git for Windows upgrade.
+- **The pre-commit hook's environment** differs from a terminal's (git sets
+  `GIT_INDEX_FILE` and friends), so the Python suites and bash gates — which
+  record the whole environment — run again under the hook. The Lua suites read
+  only the variables they ask for and stay skipped.
+
+When in doubt, `--full`.
+
+`tools/test_vcache.py` (the `pass cache` gate) is the cache's own suite: a
+scratch checkout with stand-in suites, driven through the real helper and commit
+blocks of `verify.sh` — an edited input, a file read on only one branch, a new
+file in a listed directory, an absent file appearing, an environment variable,
+a `loadfile`d module, a popen's output, a Python import and a script it runs, a
+declared input, an edit to `verify.sh` or any cache file, `--full`, a failing
+suite, an interrupted run, an input edited while its suite ran, an `os.execute`.
+Each asserts the suite **ran**.
 
 ---
 
@@ -67,6 +176,7 @@ Microsoft Store stand-in is never taken for Python); without it all three print
 | **br_ddb bundle** | Locally, the committed bundle is pinned to the current `js-src/br_ddb` source fingerprint so the gate runs without npm. In CI, Node 22 installs the locked dependencies and `npm run check` rebuilds in memory for an exact byte comparison; the fingerprint can no longer bless a stale or unrelated bundle by itself. The ban-rule cases run on both paths when Node is present. |
 | **br_ddb bundle over the wire** | The same question asked of a **box**: `status` reports the bundle actually deployed there, and every absence as `null` rather than as a blank that reads like an answer. The gate above compares two things in this repository; this one compares this repository against what is running. |
 | **Duplicate console commands** | One name, one registration — three collided at once in #137. |
+| **Pass cache** | `tools/test_vcache.py`: skipping an unchanged suite never hides a change. See [the pass cache](#the-pass-cache). |
 
 ### The suites
 
@@ -126,6 +236,7 @@ is that no row drops or flatlines.
 | `test_terminalfx.lua` | 113 | What the BUILT terminal functions do once #396's door says yes ([docs/terminals.md](terminals.md)), on the real `server/terminal.lua`, `server/terminalfx.lua` and `client/terminalfx.lua`. Scan: the whole squad (a dead member included) is sent every opponent, alive, downed or in the air, every 2 s for the rest of the match, and nobody else is. The bounty to the owner's spec: "has redeemed" before "A new bounty is among us", the protect toast to the squad but not the bounty, ten minutes, everyone outside the squad sent where it is every second (the squad reads the beacon), one empty push to clear, ended by elimination and by the match ending, a solo player a squad of one. The match panel's fields. Supply drop: the terminal's or the next circle's point handed to `BR.Airdrop.call`, and `bad_option`, `no_site`, `no_storm`, `drop_busy` each spending nothing. Max ammo: every squadmate still in the fight filled, `ammo_full` listed and refused. The client: two blips per mark, moved not rebuilt, dropped, cleared in the lobby and when pushes stop, nothing at Season 1. And the beacon bit, the panel glyph and the teammates' blip 58 colour 69, pinned by text. Mutation-checked (#396's app report). |
 | `test_assets.py` | 125 tests | The licensed-asset tool (#391), in Python because the tool is, against a fake `aws` first on PATH that serves a temp dir as the bucket, under paths with spaces and brackets. Packing the same folder twice gives the same sha256; push (of one folder, several, or a `[category]`) uploads once, never overwrites, and checks the lock before uploading; `retire` writes a null pin. The lock: its validation, its one written form, and its one form of pins (no null that removes nothing, no pin repeating the one in force). Season selection, null pins included, and `br_season` as br_core sees it: FXServer's early exec carrying a value past `ensure br_core`, `sets` stopping that, a bare `br_season N` once the convar exists, exec order, `;`, a comment that ends its command and not the line, `ensure` of a `[category]` br_core sits in, one argument or nothing runs, a BOM. Pull: downloads only what the cache lacks, a sha256 mismatch refuses before any archive is opened, one bad pack installs none, removal confined to `resources/[licensed]/`; `--stage` changes nothing installed, `--swap` refuses a missing or stale stage, a failure at every rename restores the old set exactly, a failed undo deletes nothing and leaves a truthful record, a kill at every point is undone by the next pull, everything staged is fsynced first, the cache prune. `publish` from its own clone of a bare remote, beside a shared checkout it must never touch: add, change, retire and re-add through the y/N gate (n leaves no ref, object or lock anywhere); the empty-folder rule (removed from a season on, nothing to remove); a half-copied or unreadable folder, at any depth, refusing before any upload or prompt, and on a retry too; a pack still landing with its `fxmanifest.lua` in, a copy's new creation time under an old mtime, and a Season folder written to lately, each refused until a minute has passed; the folders read again after the `y`, refusing a copy that finished, started or was deleted during the prompt or before a retry; a link, or an entry that cannot be stat'ed, refusing rather than skipped; a same-size, same-mtime edit of an already-published pack; the index sparing packing but never reading; a branch switched mid-prompt; dev moving mid-prompt with the same plan (pushed without asking) and another (asked again); dev rewound mid-prompt staying rewound (the lease); only a fast-forward of the planned dev ever pushed; success read back from the remote; the last check before the push; every refusal; and the real `Publish.cmd` through `cmd.exe` on Windows, bootstrapping its clone. It also runs the real `deploy.sh` with the pull stubbed (stage before the syncs, swap after them and before the stamp, a failed swap, a pre-#391 ref), the real `check_asset_files.sh` in a scratch repo, and the real `pre-push` hook pushing to bare remotes, from an old-base worktree too, with text `.gitattributes` marks binary or gives a textconv scanned as committed. |
 | `test_deploy.py` | 9 tests | `deploy.sh` handing the deploy to the deployed commit's own `deploy.sh`, with the **real** script in both roles: this checkout's runs, and the newer version it fetches is the same file plus a vendored resource and a few lines recording who ran with what. A newer version takes over once and its list is synced; the same version runs alone; the handed-over run keeps the branch and the sha the first run checked while the branch moves, another fetch lands in the served clone and the pin names another branch, and gets the arguments and the `BR_*` environment unchanged; `--dry-run` hands over and stays dry; `--status` only says it would; no `deploy.sh` in the tree, a copy that cannot be made or would sit inside the served clone, and a version that does not take the handover all leave this one deploying (with the red box when it is the older one); a version that never agrees with itself is handed to once, not forever. The private copy is outside the served clone and gone afterwards. |
+| `test_vcache.py` | 30 tests | The pass cache ([above](#the-pass-cache)), through the real helper and commit blocks of `verify.sh` in a scratch checkout: every way an input can change re-runs its suite, and a failure, an interrupted run, an input edited mid-run (Lua or Python), the cache's own files changing mid-run and an `os.execute` are never stored; a declared `list:` is names only and a `tree:` its listings and matching contents. Also the tracers themselves: the script's own `arg`, `...` and exit code, every read path, `require`'s candidates, and the Lua binary's DLL as part of its identity. |
 
 **The three emote suites run three times.** Once as a box with no `br_season`
 (the latest season), and twice from the emote gate section with `BR_SEASON` set

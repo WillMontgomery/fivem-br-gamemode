@@ -2,7 +2,18 @@
 #
 # FiveM Royale verification gate.
 #
-#   ./tools/verify.sh
+#   ./tools/verify.sh           skips each suite whose inputs are unchanged since it passed
+#   ./tools/verify.sh --full    runs everything, and refreshes the pass cache
+#
+# THE PASS CACHE (owner, 2026-10-04: "The full check skips suites whose files
+# didn't change"). Each suite and the slower gates run under a tracer that
+# records every file, directory listing, command and environment variable they
+# read; when one passes, tools/vcache.py stores those inputs' hashes in
+# .verify-cache/ (gitignored). The next run skips it only if every input hashes
+# the same in the working tree now and this script, the tracers, vcache.py and
+# the interpreter are unchanged, and says so on one line. CI runs everything,
+# always: it has no cache, and CI or GITHUB_ACTIONS turns the cache off. See
+# `--- the pass cache ---` below and docs/testing.md.
 #
 # Runs a series of checks, roughly in increasing order of strictness:
 #
@@ -53,6 +64,14 @@ cd "$(dirname "$0")/.."
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
 rc=0
 
+VC_FULL=0
+for a_ in "$@"; do
+    case "$a_" in
+        --full) VC_FULL=1 ;;
+        *) echo "verify.sh: unknown option '$a_' (the one option is --full)"; exit 2 ;;
+    esac
+done
+
 # --- what each gate and suite is for ------------------------------------------
 #
 # ONE LINE PER GATE AND PER SUITE, printed under the gate's header and beside the
@@ -73,7 +92,8 @@ rc=0
 # NOTHING READS THESE LINES. CI and tools/pre-commit act on the exit code alone,
 # and the hook only echoes the last 25 lines of a failure, so a row can be
 # reworded freely. The result lines -- ok, PASS, FAIL, skip and their counts --
-# are exactly what they were.
+# are what they were, except that PASS and FAIL now say how many gates and
+# suites ran and how many the pass cache skipped.
 NOTES=(
     "syntax|Every Lua code file is written correctly enough for the game to load it"
     "tests|Each feature's automated tests, run outside the game; every test file must be on the list"
@@ -172,6 +192,8 @@ NOTES=(
     "br_ddb bundle|The database helper's built file matches its source, and its ban rules pass their cases"
     "br_ddb bundle over the wire|The server status report says truthfully whether the deployed database helper is current"
     "duplicate console commands|No two commands share a name (the later one would silently replace the earlier)"
+    "pass cache|Skipping unchanged suites never hides a change: anything a suite read changes, and it runs again"
+    "test_vcache|Edited, added or branch-only inputs re-run a suite; failures and interrupted runs are never stored"
 )
 
 NL=$'\n'; CR=$'\r'
@@ -196,9 +218,11 @@ note_for() {
 }
 
 # section NAME -- a gate's header, and under it the line saying what it is for.
+# Each one counts as run for the PASS line, until vc_begin skips it.
 section() {
     echo "${DIM}== $1 ==${RST}"
     note_for "$1" && echo "${DIM}   ${note_}${RST}"
+    VC_RAN=$((VC_RAN + 1))
 }
 
 # suite_label NAME -- a suite's name and what it is for, on one line, ahead of
@@ -206,6 +230,7 @@ section() {
 suite_label() {
     note_for "$1"
     printf '%s%-18s %s%s\n' "$DIM" "$1:" "$note_" "$RST"
+    VC_RAN=$((VC_RAN + 1))
 }
 
 # --- locate luac -------------------------------------------------------------
@@ -251,13 +276,163 @@ else
     [ -x "$LUA" ] || LUA="$(command -v lua || true)"
 fi
 
+# --- locate Python 3 -----------------------------------------------------------
+#
+# For the licensed-asset gate (5c) and for the pass cache below.
+#
+# PYTHON 3, AND NOT THE MICROSOFT STORE'S STAND-IN. On Windows `python3` can
+# resolve to an alias that prints an install hint and fails, so a candidate
+# has to RUN before it is used; `py` is the launcher that does not.
+PY_=()
+if command -v python3 >/dev/null 2>&1 \
+   && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+    PY_=(python3)
+elif command -v py >/dev/null 2>&1 && py -3 -c '' >/dev/null 2>&1; then
+    PY_=(py -3)
+fi
+
+# --- the pass cache ------------------------------------------------------------
+#
+# A UNIT is one suite or gate this script can skip: every Lua suite, the frame
+# budget, test_assets.py, and the gates measured as worth it (docs/testing.md has
+# the table). Each is opened with vc_begin and closed with vc_end, and its Lua
+# and Python processes are started through vc_lua / vc_py, which put the tracer
+# in front of the script:
+#
+#   tools/vcache_trace.lua  wraps io.open, io.lines, dofile, loadfile, require,
+#                           io.popen, os.execute and os.getenv
+#   tools/vcache_trace.py   wraps open, os.listdir/scandir (so os.walk and glob),
+#                           os.stat and os.path's queries, subprocess, os.system
+#
+# What a gate's BASH reads no tracer can see, so vc_begin takes it as declared
+# inputs (`file:`, `tree:`, `list:` for a find that builds a suite's arguments,
+# `exe:`), and a unit with any declared input also records the environment and
+# this bash's binary. tools/vcache.py documents each kind.
+#
+# ONE PROCESS BEFORE, ONE AFTER. `vcache.py check` runs once, here, and prints
+# the units whose inputs all hash as they did when they passed; nothing else is
+# skipped. `vcache.py commit` runs once, at the very end, over the units that
+# exited 0 -- so a failure is never stored (its old entry is deleted), and a run
+# interrupted before the end stores nothing at all. Process creation is what
+# costs on Windows; a hash check per suite would eat what the cache saves.
+#
+# OFF, and everything runs as it always did, in CI (CI or GITHUB_ACTIONS is set:
+# a fresh checkout has no cache and must not grow one), without Python 3, or on
+# a bash older than 5 (no $EPOCHREALTIME to timestamp a unit's start with).
+#
+# tools/test_vcache.py runs the code between the two `pass-cache helpers`
+# markers, and between the `pass-cache commit` ones at the end, as they are
+# here -- so keep each block whole.
+# >>> pass-cache helpers
+VC_ON=0
+VC_RAN=0
+VC_SKIPPED=0
+VC_SKIPS=''
+VC_SEQ=0
+VC_UNIT=''
+TAB=$'\t'
+if [ -z "${CI:-}" ] && [ -z "${GITHUB_ACTIONS:-}" ] && [ -n "${EPOCHREALTIME:-}" ] \
+   && [ "${#PY_[@]}" -gt 0 ] && [ -n "${LUA:-}" ]; then
+    VC_RUN=".verify-cache/runs/$$-${EPOCHREALTIME//[.,]/}"
+    if mkdir -p "$VC_RUN" 2>/dev/null; then
+        VC_ON=1
+        # Windows spells this bash's path for Python; bash on Linux already does.
+        VC_BASH="$BASH"
+        if command -v cygpath >/dev/null 2>&1; then VC_BASH="$(cygpath -m "$BASH")"; fi
+        if [ "$VC_FULL" -eq 0 ]; then
+            VC_SKIPS="$NL$("${PY_[@]}" tools/vcache.py check --root . --lua "$LUA")$NL"
+        fi
+    fi
+fi
+
+# vc_begin UNIT [DECLARED...] -- 0 when UNIT must run; 1 when it is skipped, and
+# then it has said so on one line. Called straight after the section or
+# suite_label that names UNIT, which counted it as run.
+vc_begin() {
+    VC_UNIT="$1"; shift
+    VC_ID="${VC_UNIT//[^A-Za-z0-9_.-]/_}"
+    VC_DECL=''
+    if [ "$VC_ON" -eq 1 ]; then
+        case "$VC_SKIPS" in
+            *"$NL$VC_UNIT$TAB"*)
+                local row_="${VC_SKIPS#*"$NL$VC_UNIT$TAB"}"
+                row_="${row_%%"$NL"*}"
+                echo "${DIM}skipped${RST} -- unchanged since it passed at ${row_%%"$TAB"*} (${row_#*"$TAB"} inputs)"
+                VC_RAN=$((VC_RAN - 1)); VC_SKIPPED=$((VC_SKIPPED + 1))
+                VC_UNIT=''
+                return 1 ;;
+        esac
+        local d_
+        for d_ in "$@"; do VC_DECL="$VC_DECL$TAB$d_"; done
+        if [ "$#" -gt 0 ]; then VC_DECL="$VC_DECL${TAB}env${TAB}exe:$VC_BASH"; fi
+        VC_START="${EPOCHREALTIME/,/.}"
+    fi
+    return 0
+}
+
+# vc_end STATUS -- closes the unit vc_begin opened: 0 is a pass for commit to
+# store, anything else a failure whose old entry commit deletes.
+vc_end() {
+    if [ "$VC_ON" -eq 1 ] && [ -n "$VC_UNIT" ]; then
+        if [ "$1" -eq 0 ]; then
+            printf '%s\t%s\t%s%s\n' "$VC_ID" "$VC_UNIT" "$VC_START" "$VC_DECL" >> "$VC_RUN/passed"
+        else
+            printf '%s\t%s\n' "$VC_ID" "$VC_UNIT" >> "$VC_RUN/failed"
+        fi
+    fi
+    VC_UNIT=''
+}
+
+# vc_lua -- VCL is the command that runs a Lua script for the open unit:
+# "$LUA" itself, or the tracer in front of it. Set here rather than inside the
+# $( ) that runs it, so the trace counter survives the subshell.
+vc_lua() {
+    if [ "$VC_ON" -eq 1 ] && [ -n "$VC_UNIT" ]; then
+        VC_SEQ=$((VC_SEQ + 1))
+        VCL=("$LUA" tools/vcache_trace.lua "$VC_RUN/$VC_ID.$VC_SEQ.ltrace")
+    else
+        VCL=("$LUA")
+    fi
+}
+
+# vc_py -- VCP, the same for Python.
+vc_py() {
+    if [ "$VC_ON" -eq 1 ] && [ -n "$VC_UNIT" ]; then
+        VC_SEQ=$((VC_SEQ + 1))
+        VCP=("${PY_[@]}" tools/vcache_trace.py "$VC_RUN/$VC_ID.$VC_SEQ.ptrace")
+    else
+        VCP=("${PY_[@]}")
+    fi
+}
+# <<< pass-cache helpers
+
 # --- 1. syntax ---------------------------------------------------------------
 
+#
+# CACHED PER FILE, because each file's parse is independent of every other's and
+# one luac is one process: a one-file edit re-parses one file, not all of them.
+# A file is skipped when its own content, luac's binary, this bash, the
+# environment and the cache's own files are what they were when it last parsed;
+# `syntax+` marks one that needed the hash-string retry, so the count holds.
+
 section 'syntax'
-n=0; bad=0; hashlit=0
+n=0; bad=0; hashlit=0; synskip_=0
+syn_decl_="${TAB}exe:$LUAC${TAB}env${TAB}exe:${VC_BASH:-}"
+syn_pass_() {
+    [ "$VC_ON" -eq 1 ] && printf 'syntax.%s\t%s %s\t%s\tfile:%s%s\n' \
+        "$n" "$1" "$f" "$syn_t_" "$f" "$syn_decl_" >> "$VC_RUN/passed"
+    return 0
+}
 while IFS= read -r f; do
     n=$((n+1))
-    out=$("$LUAC" -p "$f" 2>&1) && continue
+    if [ "$VC_ON" -eq 1 ]; then
+        case "$VC_SKIPS" in
+            *"${NL}syntax $f$TAB"*) synskip_=$((synskip_+1)); continue ;;
+            *"${NL}syntax+ $f$TAB"*) synskip_=$((synskip_+1)); hashlit=$((hashlit+1)); continue ;;
+        esac
+        syn_t_="${EPOCHREALTIME/,/.}"
+    fi
+    out=$("$LUAC" -p "$f" 2>&1) && { syn_pass_ syntax; continue; }
 
     # CfxLua's HASH-STRING LITERAL. A failure here is not always a syntax error.
     #
@@ -279,17 +454,24 @@ while IFS= read -r f; do
     # which luac never sees.
     if sed -E 's/`([A-Za-z0-9_]*)`/"\1"/g' "$f" | "$LUAC" -p - >/dev/null 2>&1; then
         hashlit=$((hashlit+1))
+        syn_pass_ syntax+
         continue
     fi
 
     echo "${RED}FAIL${RST} $f"
     echo "     $out"
     bad=$((bad+1))
+    [ "$VC_ON" -eq 1 ] && printf 'syntax.%s\tsyntax %s\nsyntax.%s\tsyntax+ %s\n' \
+        "$n" "$f" "$n" "$f" >> "$VC_RUN/failed"
 done < <(find resources -name '*.lua' 2>/dev/null | sort)
 
+synnote_=''
+[ "$synskip_" -gt 0 ] && synnote_=", $synskip_ skipped -- unchanged since they parsed"
 if [ "$bad" -eq 0 ]; then
     if [ "$hashlit" -gt 0 ]; then
-        echo "${GRN}ok${RST}   $n files parsed ($hashlit via the CfxLua hash-string retry)"
+        echo "${GRN}ok${RST}   $n files parsed ($hashlit via the CfxLua hash-string retry$synnote_)"
+    elif [ -n "$synnote_" ]; then
+        echo "${GRN}ok${RST}   $n files parsed (${synnote_#, })"
     else
         echo "${GRN}ok${RST}   $n files parsed"
     fi
@@ -829,10 +1011,18 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # a suite opens with arrives as CR LF, and stripping the LF alone left a
     # blank line under every one of those suites on the machine this is
     # developed on.
+    #
+    # EACH SUITE IS A PASS-CACHE UNIT, traced: what it loads, opens and asks the
+    # environment is what decides whether the next run may skip it.
     for suite in "${suites[@]}"; do
         name_="${suite##*/}"
         suite_label "${name_%.lua}"
-        out_=$("$LUA" "$suite") || rc=1
+        vc_begin "${name_%.lua}" || continue
+        vc_lua
+        st_=0
+        out_=$("${VCL[@]}" "$suite") || st_=1
+        vc_end "$st_"
+        [ "$st_" -eq 0 ] || rc=1
         case "$out_" in
             "$CR$NL"*) out_="${out_#"$CR$NL"}" ;;
             "$NL"*)    out_="${out_#"$NL"}" ;;
@@ -871,8 +1061,14 @@ fi
 # tripwire. docs/testing.md says how to read it and when to rebaseline.
 section 'frame budget'
 if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
-    out_=$("$LUA" tools/perf_client.lua --check --quiet 2>&1) || rc=1
-    printf '%s\n' "$out_"
+    if vc_begin 'frame budget'; then
+        vc_lua
+        st_=0
+        out_=$("${VCL[@]}" tools/perf_client.lua --check --quiet 2>&1) || st_=1
+        vc_end "$st_"
+        [ "$st_" -eq 0 ] || rc=1
+        printf '%s\n' "$out_"
+    fi
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1050,9 +1246,17 @@ fi
 # The regression it exists for looks like correct code: `('%s is down!'):format(
 # entry.name)` is what every one of these call sites used to be, and it produces
 # a perfectly good notice with the bold silently gone.
+#
+# A GATE FED A FILE LIST is a pass-cache unit that DECLARES the listing its
+# `find` takes (`list:`), so a file appearing or going is a change; the files'
+# contents are what the tracer sees the gate read.
 section 'notice names'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    "$LUA" tools/check_notice_names.lua $(find resources -name '*.lua' | sort) || rc=1
+    if vc_begin 'notice names' 'list:resources:.lua'; then
+        vc_lua; st_=0
+        "${VCL[@]}" tools/check_notice_names.lua $(find resources -name '*.lua' | sort) || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1077,7 +1281,11 @@ fi
 # the owner's decision rather than a gate's.
 section 'cue call sites'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    "$LUA" tools/check_cue_sites.lua $(find resources -name '*.lua' | sort) || rc=1
+    if vc_begin 'cue call sites' 'list:resources:.lua'; then
+        vc_lua; st_=0
+        "${VCL[@]}" tools/check_cue_sites.lua $(find resources -name '*.lua' | sort) || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1163,9 +1371,13 @@ nonvendored_lua() {
 
 section 'forward locals'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    nonvendored_lua
-    # shellcheck disable=SC2086
-    "$LUA" tools/check_forward_locals.lua $NONVENDORED_LUA || rc=1
+    if vc_begin 'forward locals' 'list:resources:.lua' 'list:resources:VENDOR.json'; then
+        nonvendored_lua
+        vc_lua; st_=0
+        # shellcheck disable=SC2086
+        "${VCL[@]}" tools/check_forward_locals.lua $NONVENDORED_LUA || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1183,8 +1395,12 @@ fi
 # one thing that cannot be caught by another suite.
 section 'player states'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    # shellcheck disable=SC2046
-    "$LUA" tools/check_player_states.lua $(find resources tools -name '*.lua' | sort) || rc=1
+    if vc_begin 'player states' 'list:resources:.lua' 'list:tools:.lua'; then
+        vc_lua; st_=0
+        # shellcheck disable=SC2046
+        "${VCL[@]}" tools/check_player_states.lua $(find resources tools -name '*.lua' | sort) || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1220,11 +1436,18 @@ fi
 # VENDORED RESOURCES ARE EXCLUDED, on the same argument gate 4 makes: pma-voice
 # is upstream's code, it is not edited here, and its baseline would churn on
 # every version bump for faults that are not ours to fix.
+#
+# The ratchet is the pass-cache unit; the private-isTrue grep under it is one
+# process and always runs.
 section 'bool natives'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    nonvendored_lua
-    # shellcheck disable=SC2086
-    "$LUA" tools/check_bool_natives.lua $NONVENDORED_LUA || rc=1
+    if vc_begin 'bool natives' 'list:resources:.lua' 'list:resources:VENDOR.json'; then
+        nonvendored_lua
+        vc_lua; st_=0
+        # shellcheck disable=SC2086
+        "${VCL[@]}" tools/check_bool_natives.lua $NONVENDORED_LUA || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1942,9 +2165,19 @@ if [ -f tools/dispatch.sh ]; then
     # IT ALSO ASSERTS THE KEY IS ABSENT FROM THE RESPONSE, on every box shape it
     # builds. That is the allowlist's own promise, checked from the outside on
     # output rather than from the inside on a list.
+    #
+    # A PASS-CACHE UNIT WITH DECLARED INPUTS: it is bash, so no tracer sees it.
+    # It builds every box it asks about in a temp directory and points the
+    # dispatcher there (BR_SRC_DIR and BR_REPO_DIR at nowhere), so what it reads
+    # of this checkout is itself and tools/dispatch.sh; the environment and this
+    # bash are recorded with them.
     if [ -f tools/test_configreport.sh ]; then
         suite_label test_configreport
-        bash tools/test_configreport.sh || boundary=1
+        if vc_begin test_configreport 'file:tools/test_configreport.sh' 'file:tools/dispatch.sh'; then
+            st_=0
+            bash tools/test_configreport.sh || st_=1
+            vc_end "$st_"; [ "$st_" -eq 0 ] || boundary=1
+        fi
     fi
 fi
 
@@ -2422,7 +2655,13 @@ fi
 # denylist-inside-the-gate failure the dispatch.sh verb check above records,
 # where `configreport)` did not match `config)` and a new capability was
 # invisible to the thing built to see new capabilities.
+#
+# A PASS-CACHE UNIT WITH DECLARED INPUTS, the whole of it, to `vc_end` below
+# (the body is left at this indent so the gate reads as it always has). It is
+# grep and sed over resources/[fivem-royale]: every directory's listing there,
+# and every .lua's content (the manifests are fxmanifest.lua).
 section 'dev gate on console commands'
+if vc_begin 'dev gate on console commands' 'tree:resources/[fivem-royale]:.lua'; then
 devgate=0
 DEVGATE_FILE="resources/[fivem-royale]/br_lib/shared/devgate.lua"
 
@@ -2619,6 +2858,8 @@ if [ "$devgate" -eq 0 ]; then
 else
     rc=1
 fi
+vc_end "$devgate"
+fi   # vc_begin 'dev gate on console commands'
 
 # --- 4d-ter. no net event treats dev mode as a permission ---------------------
 #
@@ -2646,15 +2887,21 @@ fi
 # the dev gate did nothing for weeks while printing ok.
 section 'dev gate on net events'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    if "$LUA" tools/check_net_gates.lua --selftest; then
+    if vc_begin 'dev gate on net events' 'list:resources/[fivem-royale]:.lua'; then
+    st_=0
+    vc_lua
+    if "${VCL[@]}" tools/check_net_gates.lua --selftest; then
+        vc_lua
         # shellcheck disable=SC2046
-        "$LUA" tools/check_net_gates.lua \
-            $(find "resources/[fivem-royale]" -path '*/server/*.lua' | sort) || rc=1
+        "${VCL[@]}" tools/check_net_gates.lua \
+            $(find "resources/[fivem-royale]" -path '*/server/*.lua' | sort) || st_=1
     else
         echo "${RED}FAIL${RST} tools/check_net_gates.lua's own fixtures no longer hold"
         echo "     The gate is not asserted to fire any more, so a green run"
         echo "     below this line means nothing. Fix the checker first."
-        rc=1
+        st_=1
+    fi
+    vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
     fi
 else
     # NOT SILENT. Without Lua this whole section is absent rather than passing,
@@ -2677,13 +2924,19 @@ fi
 # self-test runs first for the reason the net-event gate's does.
 section 'season gates'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    if "$LUA" tools/check_seasons.lua --selftest; then
+    if vc_begin 'season gates' 'list:resources/[fivem-royale]:.lua'; then
+    st_=0
+    vc_lua
+    if "${VCL[@]}" tools/check_seasons.lua --selftest; then
+        vc_lua
         # shellcheck disable=SC2046
-        "$LUA" tools/check_seasons.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) || rc=1
+        "${VCL[@]}" tools/check_seasons.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) || st_=1
     else
         echo "${RED}FAIL${RST} tools/check_seasons.lua's own fixtures no longer hold"
         echo "     A green run of it would mean nothing. Fix the checker first."
-        rc=1
+        st_=1
+    fi
+    vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
     fi
 else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
 
@@ -2696,12 +2949,21 @@ else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
 # or the season number a second way; the loop after it proves both sides of the
 # row's edge work, by running every emote suite at the season before `from`
 # (emotes off) and at `from` (on).
+#
+# One pass-cache unit for the gate and its runs. BR_SEASON is PINNED: the suites
+# read it, and the value is this script's, read off seasons.lua (declared), so it
+# is not compared with the environment the next run starts in.
 section 'emote gate'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    if "$LUA" tools/check_emote_gate.lua --selftest; then
+    if vc_begin 'emote gate' 'list:resources/[fivem-royale]:.lua' \
+        'file:resources/[fivem-royale]/br_lib/config/seasons.lua' 'pin:BR_SEASON'; then
+    est_=0
+    vc_lua
+    if "${VCL[@]}" tools/check_emote_gate.lua --selftest; then
+        vc_lua
         # shellcheck disable=SC2046
-        "$LUA" tools/check_emote_gate.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) ui-src/src/screens/Settings.tsx ui-src/src/screens/Market.tsx || rc=1
-    else echo "${RED}FAIL${RST} check_emote_gate selftest"; rc=1; fi
+        "${VCL[@]}" tools/check_emote_gate.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) ui-src/src/screens/Settings.tsx ui-src/src/screens/Market.tsx || est_=1
+    else echo "${RED}FAIL${RST} check_emote_gate selftest"; est_=1; fi
     # THE PAIR OF RUNS, READ OFF THE ROW rather than written here, so moving
     # emotes to another season moves the runs with it. check_emote_gate.lua's
     # G1 pins the row to one line in this shape, so the sed cannot miss it
@@ -2713,7 +2975,7 @@ if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     efrom_=$(printf '%s\n' "$erow_" | sed -n 's/.*[{,][[:space:]]*from[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p')
     euntil_=$(printf '%s\n' "$erow_" | sed -n 's/.*untilSeason[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p')
     if [ -z "$efrom_" ]; then
-        echo "${RED}FAIL${RST} could not read the emotes row's \`from\` out of $SEASONS_CFG"; rc=1
+        echo "${RED}FAIL${RST} could not read the emotes row's \`from\` out of $SEASONS_CFG"; est_=1
     else
         eruns_="$efrom_"
         [ "$efrom_" -gt 1 ] && eruns_="$((efrom_ - 1)) $eruns_"
@@ -2721,11 +2983,14 @@ if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
         efail_=0
         for season_ in $eruns_; do
             for s in tools/test_emotes.lua tools/test_emotes_client.lua tools/test_emotes_ui.lua; do
+                vc_lua
                 # Failure output is kept (last 20 lines) so CI shows the reason.
-                out=$(BR_SEASON="$season_" "$LUA" "$s" 2>&1) || { echo "$out" | tail -n 20; echo "${RED}FAIL${RST} $s at Season $season_"; rc=1; efail_=1; }
+                out=$(BR_SEASON="$season_" "${VCL[@]}" "$s" 2>&1) || { echo "$out" | tail -n 20; echo "${RED}FAIL${RST} $s at Season $season_"; est_=1; efail_=1; }
             done
         done
         [ "$efail_" -eq 0 ] && echo "${GRN}ok${RST}   every emote suite passes at Season ${eruns_// /, Season } (emotes are on from Season $efrom_)"
+    fi
+    vc_end "$est_"; [ "$est_" -eq 0 ] || rc=1
     fi
 else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
 
@@ -3082,20 +3347,16 @@ bash tools/check_asset_files.sh || rc=1
 # assets.lock pins the bucket's archives per season and must hold nothing but
 # names, hashes, sizes, file lists and season pins; `assets.py check` says so
 # without touching the bucket. tools/test_assets.py drives the tool against a
-# fake aws, and deploy.sh against stubs.
+# fake aws, and deploy.sh against stubs. PY_ is found at the top of this file.
 #
-# PYTHON 3, AND NOT THE MICROSOFT STORE'S STAND-IN. On Windows `python3` can
-# resolve to an alias that prints an install hint and fails, so a candidate
-# has to RUN before it is used; `py` is the launcher that does not.
+# test_assets.py IS THE SLOWEST THING HERE (about two minutes on Windows: it
+# runs the real deploy.sh and git many times), and a pass-cache unit, traced:
+# the Python tracer records what it opens and lists, and every program it
+# starts with each argument naming a file -- tools/deploy.sh, tools/assets.py --
+# so editing either runs it again. What those children read in turn is the
+# temp trees the suite builds for them; see docs/testing.md.
 
 section 'licensed assets'
-PY_=()
-if command -v python3 >/dev/null 2>&1 \
-   && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
-    PY_=(python3)
-elif command -v py >/dev/null 2>&1 && py -3 -c '' >/dev/null 2>&1; then
-    PY_=(py -3)
-fi
 if [ "${#PY_[@]}" -gt 0 ]; then
     if out_=$("${PY_[@]}" tools/assets.py check 2>&1); then
         echo "${GRN}ok${RST}   ${out_#assets: }"
@@ -3104,7 +3365,11 @@ if [ "${#PY_[@]}" -gt 0 ]; then
         rc=1
     fi
     suite_label test_assets
-    "${PY_[@]}" tools/test_assets.py || rc=1
+    if vc_begin test_assets; then
+        vc_py; st_=0
+        "${VCP[@]}" tools/test_assets.py || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
 else
     echo "${YEL}skip${RST} (Python 3 not found: python3, or py on Windows)"
     suite_label test_assets
@@ -3220,7 +3485,11 @@ elif ! command -v sha256sum >/dev/null 2>&1 \
      && ! command -v shasum >/dev/null 2>&1 \
      && ! command -v openssl >/dev/null 2>&1; then
     echo "${YEL}skip${RST} no sha256 tool -- bundle reading not driven"
-else
+# A PASS-CACHE UNIT WITH DECLARED INPUTS: the dispatcher, the two committed files
+# it is shown copies of, and node when it is there to parse the line. Every box
+# here is built in a temp directory, so nothing else of this checkout is read.
+elif vc_begin 'br_ddb bundle over the wire' 'file:tools/dispatch.sh' "file:$mf_" "file:$js_" \
+        "$(command -v node >/dev/null 2>&1 && printf 'exe:%s' "$(command -v node)")"; then
     bx_=$(mktemp -d)
     bfail_=0
 
@@ -3329,6 +3598,7 @@ else
     else
         rc=1
     fi
+    vc_end "$bfail_"
 fi
 
 # --- 7. duplicate console commands --------------------------------------------
@@ -3354,7 +3624,12 @@ fi
 # tap()/hold() register indirectly -- tap('drop','brdrop',...) becomes
 # RegisterCommand('brdrop'), and hold() becomes '+name' and '-name' -- so a grep
 # for RegisterCommand alone misses exactly the case that caused #137.
+#
+# A pass-cache unit with declared inputs: every .lua under resources/[fivem-royale]
+# and every directory listing there (five processes a file, so about four
+# seconds on Windows).
 section 'duplicate console commands'
+if vc_begin 'duplicate console commands' 'tree:resources/[fivem-royale]:.lua'; then
 dupes=$(
     for side in client server; do
         for f in $(find "resources/[fivem-royale]" -path "*/$side/*.lua" 2>/dev/null); do
@@ -3367,11 +3642,35 @@ dupes=$(
 )
 if [ -z "$dupes" ]; then
     echo "${GRN}ok${RST}   no console command name is registered twice in one Lua state"
+    vc_end 0
 else
     echo "${RED}FAIL${RST} a console command is registered more than once in one Lua state:"
     echo "$dupes"
     echo "     The later registration wins and the earlier one never runs."
     rc=1
+    vc_end 1
+fi
+fi   # vc_begin 'duplicate console commands'
+
+# --- 8. the pass cache itself ---------------------------------------------------
+#
+# tools/test_vcache.py builds a scratch checkout with a stand-in suite of each
+# kind and drives tools/vcache.py and both tracers through every way an input
+# can change: an edited file the suite read, one it read only on one branch, a
+# new file in a directory it listed, an edit to verify.sh, a failing suite, an
+# interrupted run, --full. A cache that hid a change would be worse than none,
+# so this is the gate on the gate.
+section 'pass cache'
+if [ "${#PY_[@]}" -gt 0 ] && [ -n "${LUA:-}" ]; then
+    suite_label test_vcache
+    if vc_begin test_vcache; then
+        vc_py; st_=0
+        "${VCP[@]}" tools/test_vcache.py --lua "$LUA" || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
+else
+    suite_label test_vcache
+    echo "${YEL}skip${RST} (needs Python 3 and Lua)"
 fi
 
 # --- every gate and suite said what it is for ----------------------------------
@@ -3422,11 +3721,28 @@ if [ -n "$nodesc_" ] || [ -n "$leftover_" ]; then
 fi
 
 # --- result ------------------------------------------------------------------
+#
+# The pass cache's one write, here at the end so that a run stopped part way
+# stores nothing. It stores the units that exited 0, refusing any whose inputs
+# moved while it ran, and deletes the entries of the ones that failed; `--full`
+# also drops every entry this run did not pass. It prints one line only when a
+# unit passed and could not be stored, and why.
 
+# >>> pass-cache commit
+if [ "$VC_ON" -eq 1 ]; then
+    vcfull_=()
+    [ "$VC_FULL" -eq 1 ] && vcfull_=(--full)
+    vcout_=$("${PY_[@]}" tools/vcache.py commit --root . --lua "$LUA" --run "$VC_RUN" "${vcfull_[@]}") \
+        || vcout_="${vcout_}${vcout_:+$NL}pass cache: the commit failed, so nothing from this run is stored"
+    [ -n "$vcout_" ] && echo "${DIM}${vcout_}${RST}"
+fi
+
+counts_="$VC_RAN ran, $VC_SKIPPED skipped"
 echo
 if [ "$rc" -eq 0 ]; then
-    echo "${GRN}PASS${RST}"
+    echo "${GRN}PASS${RST}  $counts_"
 else
-    echo "${RED}FAIL${RST}"
+    echo "${RED}FAIL${RST}  $counts_"
 fi
+# <<< pass-cache commit
 exit $rc
