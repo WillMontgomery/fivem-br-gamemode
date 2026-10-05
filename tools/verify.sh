@@ -3395,7 +3395,13 @@ fi
 section 'deploy handover'
 suite_label test_deploy
 if [ "${#PY_[@]}" -gt 0 ]; then
-    "${PY_[@]}" tools/test_deploy.py || rc=1
+    # A pass-cache unit like test_assets: traced, so editing deploy.sh, the
+    # suite or anything it reads runs it again.
+    if vc_begin test_deploy; then
+        vc_py; st_=0
+        "${VCP[@]}" tools/test_deploy.py || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
 else
     echo "${YEL}skip${RST} (Python 3 not found)"
 fi
