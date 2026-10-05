@@ -1,0 +1,178 @@
+-- BR (fivem-royale, #396): THE WHOLE LUA HALF OF THIS RESOURCE.
+--
+-- Not upstream code -- an added file, listed under `added` in ../VENDOR.json.
+-- It replaces upstream's client/main.lua, client/nui.lua and
+-- client/overrides.lua, which opened the computer from a framework item, a
+-- prop or a fixed position, asked a framework server callback for a fake IP,
+-- and ran the roleplay apps. None of that exists here.
+--
+-- ═══ WHAT THIS FILE IS ═══
+--
+-- A shell. It shows the desktop when it is told to, holds NUI focus while the
+-- desktop is up, and forwards what the page asks. It decides nothing: which
+-- terminal, which functions, whether one may run, and what running it does are
+-- all br_core's, and br_core asks the server. The contract, end to end, is
+-- docs/terminals.md.
+--
+-- EXPORTS (called by br_core's client, client/terminal.lua)
+--   Open(state, copy) -> ok, why   show the desktop and the terminal app
+--       state = { terminalId, functions = { { id, available, reason } },
+--                 keyHeld, squadUsed }
+--       copy  = the player-facing lines, from br_lib/config/terminals.lua
+--   Update(state)                  the server's new view, while open
+--   Result(result)                 the answer to a run, while open
+--   Close(why) -> ok               take it down (death, storm, teardown)
+--   IsOpen() -> boolean
+--
+-- EVENTS (local, raised for br_core's client; never net events)
+--   cuchi_computer:opened   (terminalId)            focus taken
+--   cuchi_computer:closed   (terminalId, why)       focus released
+--   cuchi_computer:request  (terminalId, request)   request = { action = 'run',
+--                                                   functionId }
+--
+-- ═══ FOCUS IS THE DANGEROUS PART ═══
+--
+-- This frame is not br_ui's, so br_ui's focus stack cannot hold it: FiveM
+-- keeps one focus vote per RESOURCE (ResourceUIScripting.cpp's focusVotes) and
+-- focuses the frame of whichever resource asked, so this resource has to ask
+-- for its own. A vote left standing is a player who cannot move or shoot, so:
+--
+--   * Open refuses until the page has said it is ready. Focus on a page that
+--     is not listening is a player with a cursor and nothing to close.
+--   * Every way out runs through one function, which releases the vote and
+--     says so -- the page's Escape and power button, br_core's Close, the
+--     opener stopping, and this resource stopping.
+--   * The resource that opened it is remembered. If it stops while the desktop
+--     is up, the desktop comes down: br_core restarting must never strand a
+--     player inside a computer nobody is driving any more.
+--
+-- ═══ AND NOTHING HERE TRUSTS THE PAGE ═══
+--
+-- A run carries only the function id, shape-checked here and again on the
+-- server. The terminal id it is sent with is the one br_core opened, kept on
+-- this side; the page is never asked which terminal it is on.
+
+local RES = GetCurrentResourceName()
+
+-- The shape of a function id (br_lib/config/terminals.lua).
+local FUNCTION_ID = '^[a-z][a-z0-9_]*$'
+local FUNCTION_ID_MAX = 32
+
+local pageReady = false
+local isOpen = false
+local terminalId = nil
+local opener = nil
+
+--- Every way the desktop goes away. Releases the focus vote, tells br_core.
+--- @param why string
+--- @param tellPage boolean  false when the page already closed itself
+--- @return boolean  false when it was not open
+local function shut(why, tellPage)
+    if not isOpen then return false end
+    isOpen = false
+    if tellPage then
+        SendNUIMessage({ type = 'br:close' })
+    end
+    SetNuiFocus(false, false)
+    local id = terminalId
+    terminalId, opener = nil, nil
+    TriggerEvent('cuchi_computer:closed', id, why)
+    return true
+end
+
+--- @param state table
+--- @param copy table|nil
+--- @return boolean ok, string|nil why
+local function open(state, copy)
+    if type(state) ~= 'table' or type(state.terminalId) ~= 'string' then
+        return false, 'bad-state'
+    end
+    if not pageReady then
+        return false, 'page-not-ready'
+    end
+
+    -- Opened again while up: a refresh. The page treats it the same way.
+    if isOpen and terminalId ~= state.terminalId then
+        shut('replaced', true)
+    end
+
+    local was = isOpen
+    isOpen = true
+    terminalId = state.terminalId
+    opener = GetInvokingResource() or opener
+    SendNUIMessage({ type = 'br:open', state = state, copy = type(copy) == 'table' and copy or {} })
+    if not was then
+        SetNuiFocus(true, true)
+        TriggerEvent('cuchi_computer:opened', terminalId)
+    end
+    return true, nil
+end
+
+--- @param state table
+local function update(state)
+    if not isOpen or type(state) ~= 'table' then return end
+    if state.terminalId ~= terminalId then return end
+    SendNUIMessage({ type = 'br:update', state = state })
+end
+
+--- @param result table
+local function result(result_)
+    if not isOpen or type(result_) ~= 'table' then return end
+    SendNUIMessage({ type = 'br:result', result = result_ })
+end
+
+exports('Open', open)
+exports('Update', update)
+exports('Result', result)
+exports('Close', function(why)
+    return shut(type(why) == 'string' and why or 'closed', true)
+end)
+exports('IsOpen', function()
+    return isOpen
+end)
+
+-- ---------------------------------------------------------- the page ---
+
+-- Upstream's own ready signal: script.js posts it from DOMContentLoaded, once
+-- the desktop and its windows exist.
+RegisterNUICallback('NUIOk', function(_, cb)
+    pageReady = true
+    cb({ ok = true })
+end)
+
+-- Escape, or the taskbar's power button. The page has already hidden itself.
+RegisterNUICallback('close', function(data, cb)
+    local why = type(data) == 'table' and data.why or nil
+    shut((why == 'escape' or why == 'exit') and why or 'page', false)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('run', function(data, cb)
+    local id = type(data) == 'table' and data.functionId or nil
+    if not isOpen or type(id) ~= 'string' or #id > FUNCTION_ID_MAX
+            or not id:match(FUNCTION_ID) then
+        cb({ ok = false })
+        return
+    end
+    TriggerEvent('cuchi_computer:request', terminalId, { action = 'run', functionId = id })
+    cb({ ok = true })
+end)
+
+-- ---------------------------------------------------- the ways out ---
+
+AddEventHandler('onResourceStop', function(res)
+    if res == RES then
+        -- The engine drops this resource's focus vote by itself when it stops
+        -- (ResourceUIScripting.cpp); br_core still has to hear it went.
+        shut('stopped', false)
+    elseif opener ~= nil and res == opener then
+        shut('opener-stopped', true)
+    end
+end)
+
+AddEventHandler('onClientResourceStart', function(res)
+    if res ~= RES then return end
+    -- A restart of this resource never inherits a vote, but say so to the
+    -- engine anyway: the same belt br_ui's bridge wears.
+    SetNuiFocus(false, false)
+end)

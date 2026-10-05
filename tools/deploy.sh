@@ -97,10 +97,16 @@ RESOURCE_GROUP="[fivem-royale]"
 # deploying one without the other produces a resource that starts, reports no
 # error, and draws nothing. Listed assets-first to match the start order in
 # server.cfg.example, though rsync order does not itself matter.
+#
+# cuchi_computer (#396) is the Season 2 terminals' desktop: upstream's shell cut
+# down to run standalone, plus the terminal app's committed build. It has no
+# server half, so a box without it still boots -- br_core just has no computer
+# to open, which is a terminal that does nothing rather than an error.
 VENDORED_RESOURCES=(
     "[voice]/pma-voice"
     "[scaleformui]/ScaleformUI_Assets"
     "[scaleformui]/ScaleformUI_Lua"
+    "[computer]/cuchi_computer"
 )
 
 # --- licensed assets (#391) ----------------------------------------------------

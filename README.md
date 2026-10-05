@@ -171,7 +171,7 @@ with no database should play perfectly well, and `persist.lua` checks the
 resource state and says so once per match instead. Both degrade to "no live
 state" rather than to "not running".
 
-**Three more resources are started, and none of them are ours.**
+**Four more resources are started, and none of them are ours.**
 `resources/[voice]/pma-voice` is
 [pma-voice](https://github.com/AvarianKnight/pma-voice) v7.0.2-rc3 (MIT,
 © Dillon Skaggs), vendored whole rather than installed: every byte outside a
@@ -192,6 +192,15 @@ ScaleformUI is CC BY-NC-SA 4.0, not MIT: attribution required, share alike, and
 boundary the owner chose. The in-match Ammu-Nation counter is the first consumer:
 `ScaleformUI_Lua` starts as an include-only resource, and `br_core` loads the
 bundle into its own Lua state once because FiveM resource globals are isolated.
+
+`resources/[computer]/cuchi_computer` is
+[cuchi_computer](https://github.com/Cu-chi/cuchi_computer) v1.1.1 (GPL-3.0,
+© Cu-chi), the desktop the Season 2 terminals open (#396). Vendored with the
+same gates, but **cut down** rather than whole: upstream needs ESX or QBCore and
+oxmysql, so the framework, the database and the roleplay apps are removed and
+listed in `VENDOR.json`, and what is left is the desktop shell and its window
+manager. It has no server half; `br_core` opens and closes it through the
+exports its `client/shell.lua` documents.
 
 The UI build project lives in `ui-src/`, **outside** `resources/`, because
 FXServer auto-builds any resource containing a `package.json` using bundled Node

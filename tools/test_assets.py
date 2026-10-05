@@ -2593,7 +2593,8 @@ class Deploy(unittest.TestCase):
             write(os.path.join(g, r, 'fxmanifest.lua'), MANIFEST)
         write(os.path.join(g, 'br_ui', 'ui', 'index.html'), '<html></html>\n')
         write(os.path.join(g, 'br_ui', 'ui', 'assets', 'app.js'), '1\n')
-        for v in ('[voice]/pma-voice', '[scaleformui]/ScaleformUI_Assets', '[scaleformui]/ScaleformUI_Lua'):
+        for v in ('[voice]/pma-voice', '[scaleformui]/ScaleformUI_Assets', '[scaleformui]/ScaleformUI_Lua',
+                  '[computer]/cuchi_computer'):
             write(os.path.join(cls.work, 'resources', *v.split('/'), 'fxmanifest.lua'), MANIFEST)
         write(os.path.join(cls.work, 'tools', 'dispatch.sh'), '#!/bin/sh\n')
         write(os.path.join(cls.work, 'tools', 'assets.py'), FAKE_PULL)
@@ -2683,7 +2684,7 @@ class Deploy(unittest.TestCase):
                                         ['pull', '--swap', '--server-root', root]])
         self.assertIn('(licensed, from assets.lock', out)
         dests = self.rsync_dests()
-        self.assertEqual(len(dests), 4, dests)
+        self.assertEqual(len(dests), 5, dests)
         for d in dests:
             self.assertNotIn('[licensed]', d)
         self.assertEqual(read(keep), b'licensed bytes')
@@ -2704,7 +2705,7 @@ class Deploy(unittest.TestCase):
         self.assertIn('licensed asset swap failed', out)
         self.assertIn('has not been restarted', out)
         self.assertNotIn('\x1b[32mdeployed', out, 'no success line, so no restart')
-        self.assertEqual(len(self.rsync_dests()), 4, 'the swap runs after every sync')
+        self.assertEqual(len(self.rsync_dests()), 5, 'the swap runs after every sync')
         self.assertFalse(os.path.exists(self.stamp()), 'no served-commit stamp for a deploy that died')
         self.assertEqual(read(keep), b'licensed bytes')
 

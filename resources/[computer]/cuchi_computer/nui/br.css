@@ -1,0 +1,59 @@
+/*
+ * BR (fivem-royale, #396). NOT UPSTREAM -- an added file, listed under `added`
+ * in ../VENDOR.json. Loaded after style.css, which it never restates.
+ *
+ * THE FACE. style.css asks for 'Ubuntu' 300 and 400 and used to fetch both
+ * from fonts.googleapis.com at page load (BR-PATCH 3). These are the same two
+ * weights, latin subset, from @fontsource/ubuntu 5.3.0, under the Ubuntu Font
+ * Licence 1.0 (fonts/LICENSE-UFL-1.0.txt).
+ */
+@font-face {
+    font-family: 'Ubuntu';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 300;
+    src: url(fonts/ubuntu-latin-300-normal.woff2) format('woff2');
+}
+
+@font-face {
+    font-family: 'Ubuntu';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 400;
+    src: url(fonts/ubuntu-latin-400-normal.woff2) format('woff2');
+}
+
+/*
+ * THE TERMINAL APP'S WINDOW. It is the only window, so br.js opens it in the
+ * middle of the desktop rather than at upstream's 25%/25% (960x630 from there
+ * runs off a 1280x720 screen), in pixels, so upstream's drag keeps working
+ * unchanged: MakeElementDraggable moves `top`/`left` and refuses a top above
+ * zero, which is what keeps the title bar on screen. The caps keep the window
+ * inside a small screen; the taskbar is 5% of the height.
+ */
+#app-terminal {
+    max-width: 98vw;
+    max-height: 92vh;
+    box-sizing: border-box;
+}
+
+#app-terminal > h1 {
+    flex: 0 0 auto;
+    height: auto;
+    min-height: 20px;
+}
+
+#terminal-wrapper {
+    flex: 1 1 auto;
+    min-height: 0;
+    border-radius: 6px;
+    overflow: hidden;
+    background-color: var(--darkest-color);
+}
+
+#terminal-frame {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: none;
+}

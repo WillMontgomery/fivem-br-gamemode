@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Cuchi Computer</title>
+        <link rel="stylesheet" href="style.css">
+        <!-- BR-PATCH 2 (fivem-royale, #396): the Ubuntu face, now local, and the
+             terminal app's window. Upstream's look, from files of our own. -->
+        <link rel="stylesheet" href="br.css">
+        <!-- BR-PATCH 2 end -->
+    </head>
+    <body>
+        <div id="loader-container">
+            <div id="loader"></div>
+            <p id="loader-text"></p>
+        </div>
+        <div id="container">
+            <div id="desktop">
+
+            </div>
+            <div id="taskbar">
+                <div id="left">
+                    <button id="exit" class="taskbar-icon">
+                        <img src="assets/images/exit.png">
+                    </button>
+                </div>
+                <div id="right">
+                    <!-- BR-PATCH 2 (fivem-royale, #396): the language picker is
+                         gone. One locale (English), and its only words are the
+                         clock's date format; every other line on this desktop is
+                         br_core's, from one config block. -->
+                    <div id="time">
+                        <p id="hours"></p>
+                        <p id="date"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script src="../locales/main.js" type="text/javascript"></script>
+        <script src="../locales/ui/en.js" type="text/javascript"></script>
+        <!-- BR-PATCH 2 (fivem-royale, #396): fr/es/da/de and the console's
+             commands.js are gone; br.js is the bridge to client/shell.lua. -->
+        <script src="scripts/configs/applications.js" type="text/javascript"></script>
+        <script src="scripts/script.js" type="text/javascript"></script>
+        <script src="br.js" type="text/javascript"></script>
+        <!-- BR-PATCH 2 end -->
+    </body>
+</html>

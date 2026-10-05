@@ -1,0 +1,287 @@
+/* BR-PATCH 3 (fivem-royale, #396): upstream fetched Ubuntu from
+   fonts.googleapis.com here, at page load, on every client -- including
+   every client that never opens a computer, since NUI pages load at join.
+   br.css declares the same face from nui/fonts/, so the look is unchanged
+   and nothing leaves the game. BR-PATCH 3 end */
+
+:root {
+    --main-color:#171730;
+    --lighter-color:#1d1d3d;
+    --darker-color:#0d0d1d;
+    --darkest-color:#0a0a1a;
+    --app-minimize-color:#80bdcf;
+    --app-exit-color:#e75656;
+    --color-transition:background-color 0.8s cubic-bezier(0.01, 1.13, 0.5, 1);
+}
+
+body {
+    display: none;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    background-color: var(--main-color);
+    font-family: 'Ubuntu', sans-serif;
+    color: white;
+    transition: var(--color-transition);
+}
+
+::-webkit-scrollbar {
+    background: rgba(255,255,255,0.05);
+    border-radius: 8px;
+    width: 5px;
+    height: 5px;
+    scroll-behavior: smooth !important;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.4);
+    border-radius: 10px;
+}
+    
+::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0);
+    border-radius: 0px;
+}
+
+::-webkit-scrollbar-corner {
+    background: rgba(0,0,0,0);
+}
+
+input::selection {
+    background-color: rgba(255,255,255,0.2);
+    color: black;
+}
+
+#container {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+#desktop {
+    display: flex;
+    background-color: var(--main-color);
+    height: 95%;
+    transition: var(--color-transition);
+}
+
+#taskbar {
+    position: sticky;
+    z-index: 99999999;
+    background-color: var(--lighter-color);
+    height: 5%;
+    font-weight: 300;
+    color: white;
+    font-size: 16px;
+    transition: var(--color-transition);
+}
+
+.taskbar-icon {
+    width: 50px;
+    height: 50px;
+    background: none;
+    outline: none;
+    border: none;
+    border-radius: 8px;
+    transition: background-color ease-in-out .1s;
+}
+
+.taskbar-icon:hover {
+    background-color: rgba(255,255,255,0.2);
+}
+
+.taskbar-icon img {
+    width: 40px;
+    height: 40px;
+}
+
+#taskbar * {
+    margin: 0;
+}
+
+#taskbar #left {
+    top: 50%;
+    height: 5%;
+    display: flex;
+    align-items: center;
+    position: absolute;
+    left: 0;
+    gap: 5px;
+    box-sizing: border-box;
+}
+
+#taskbar #left img {
+    width: 32px;
+    height: 32px;
+}
+
+#taskbar #right {
+    top: 50%;
+    height: 5%;
+    display: flex;
+    align-items: center;
+    position: absolute;
+    gap: 5px;
+    right: 0;
+}
+
+.desktop-icon {
+    margin-top: 10px;
+    margin-left: 10px;
+    width: 80px;
+    height: 80px;
+    font-weight: 300;
+    font-size: 12px;
+    color: white;
+    background: none;
+    outline: none;
+    border: none;
+    border-radius: 8px;
+    transition: background-color ease-in-out .1s;
+}
+
+.desktop-icon img {
+    width: 50px;
+    height: 50px;
+}
+
+.desktop-icon:hover {
+    background-color: rgba(255,255,255,0.2);
+}
+
+#time {
+    margin-right: 10px;
+    text-align: right;
+}
+
+#loader-container {
+    position: absolute;
+    display: none;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
+
+#loader {
+    transform: rotate(0deg);
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    border: 6px solid rgb(255,255,255,.2);
+    border-top-color: transparent;
+    animation: loader 1s linear infinite;
+}
+
+#loader-text {
+    text-align: center;
+    font-weight: 400;
+    font-size: 24px;
+    color: white;
+}
+  
+@keyframes loader {
+    to {
+      transform: rotate(360deg);
+    }
+}
+
+.application {
+    position: absolute;
+    flex-direction: column;
+    justify-self: stretch;
+    border-radius: 8px;
+    top: 25%;
+    left: 25%;
+    background-color: var(--darker-color);
+    padding: 5px;
+    border: 1px solid rgba(255,255,255,0.05);
+    transition: var(--color-transition);
+}
+
+.application > h1 {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 400;
+    font-size: 18px;
+    color: white;
+    height: 5%;
+    margin: 2px;
+}
+
+.application p {
+    font-weight: 300;
+    font-size: 16px;
+    color: white;
+}
+
+.app-exit {
+    border-radius: 50%;
+    background-color: var(--app-exit-color);
+    outline: none;
+    border: none;
+    height: 16px;
+    width: 16px;
+    cursor: pointer;
+    transition: filter 0.1s ease-in-out;
+}
+
+.app-minimize {
+    border-radius: 50%;
+    background-color: var(--app-minimize-color);
+    outline: none;
+    border: none;
+    height: 16px;
+    width: 16px;
+    cursor: pointer;
+    transition: filter 0.1s ease-in-out;
+}
+
+.app-minimize:hover, .app-exit:hover {
+    filter: brightness(75%);
+}
+
+/* BR-PATCH 4 (fivem-royale, #396): the console app's rules are gone with
+   the console (its commands were the roleplay hacking set). BR-PATCH 4 end */
+
+.app-active {
+    background-color: rgba(255,255,255,0.2);
+}
+
+.msg-box-btn-container {
+    display: flex;
+    justify-content: center;
+}
+
+.msg-box-btn {
+    background-color: rgba(255,255,255,0.4);
+    color: white;
+    font-weight: 400;
+    font-family: 'Ubuntu', sans-serif;
+    font-size: 16px;
+    margin: 4px 2px;
+    border: none;
+    outline: none;
+    border-radius: 4px;
+    transition: background-color 0.1s ease-in-out;
+}
+
+.msg-box-btn:hover {
+    background-color: rgba(255,255,255,0.2);
+}
+
+.msg-box-text {
+    margin: 2px;
+}
+
+/* BR-PATCH 4 (fivem-royale, #396): the language picker's, the
+   informations app's and the roleplay apps' rules (market, themes, mail,
+   addresses) are gone with them. BR-PATCH 4 end */
+
+::selection {
+    background: rgba(255, 255, 255, 0.4);
+}

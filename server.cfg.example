@@ -251,6 +251,15 @@ ensure pma-voice
 ensure ScaleformUI_Assets
 ensure ScaleformUI_Lua
 
+# THE TERMINALS' COMPUTER (#396, Season 2). THIRD-PARTY, VENDORED IN THIS
+# REPOSITORY, GPL-3.0, (c) Cu-chi: cuchi_computer v1.1.1 cut down to its desktop
+# and window manager, at resources/[computer]/cuchi_computer, synced to the box
+# by tools/deploy.sh like the two above. Standalone: no framework, no database,
+# no server half. br_core opens it for a player at a terminal and closes it
+# again; on its own it does nothing. Started before br_core so it is up when
+# br_core first asks, though br_core only asks when a player opens a terminal.
+ensure cuchi_computer
+
 # LICENSED ASSETS (#391). Bought packs (maps, emote animations) this public
 # repository never holds: tools/assets.py pull, which tools/deploy.sh runs,
 # installs the ones assets.lock pins for this box's season into

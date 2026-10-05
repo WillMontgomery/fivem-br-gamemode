@@ -1,0 +1,252 @@
+{
+  "_comment": [
+    "THIRD-PARTY VENDORED SOURCE, CUT DOWN. This directory is upstream release",
+    "v1.1.1 of cuchi_computer with most of it removed: what is left is the desktop",
+    "shell and its window manager. Every file kept is byte-identical to `git",
+    "archive` of the tag named in `commit` outside its BR-PATCH blocks, every file",
+    "removed is listed under `removed`, and every file that did not come from",
+    "upstream is listed under `added`. So the next upstream bump is: extract the",
+    "new tag beside this directory, delete what `removed` names, re-apply the",
+    "patches, and carry `added` across.",
+    "",
+    "tools/verify.sh reads this file. The `vendored third-party` gate checks that",
+    "the LICENSE is present, that every BR-PATCH marker in the tree is declared",
+    "here and every patch declared here is present in the tree, and that",
+    "tools/deploy.sh actually syncs this resource to the box -- because shipping",
+    "a resource that never reaches the server is a failure mode this project has",
+    "already had twice.",
+    "",
+    "THIS RESOURCE DOES NOTHING ON ITS OWN. It has no server half, no command and",
+    "no keybind. br_core opens it, feeds it and closes it; the contract is",
+    "docs/terminals.md, and client/shell.lua's header is the Lua half of it."
+  ],
+
+  "resource": "cuchi_computer",
+  "upstream": "https://github.com/Cu-chi/cuchi_computer",
+  "version": "v1.1.1",
+  "commit": "dc7bf096adbf8cbf9557016b450d9ea8e3b2add1",
+  "commit_date": "2024-05-09",
+  "release": "https://github.com/Cu-chi/cuchi_computer/releases/tag/v1.1.1",
+  "release_date": "2024-05-08",
+  "license": "GPL-3.0",
+  "license_file": "LICENSE",
+  "license_holder": "Cu-chi (https://github.com/Cu-chi)",
+  "vendored_on": "2026-10-04",
+  "deploy_path": "resources/[computer]/cuchi_computer",
+
+  "why_this_pin": [
+    "v1.1.1 is the latest release. main has one commit after it, 604df68",
+    "(2025-12-18, 'feat(app/browser): browser applications'), untagged: an app",
+    "that loads google.com in an iframe. It is not taken -- nothing here browses",
+    "the web -- but it is where the size of this copy's one window came from."
+  ],
+
+  "license_note": [
+    "GNU General Public License v3.0, the notice upstream ships at its root and",
+    "kept here unmodified. The GPL lets this copy be modified and distributed as",
+    "long as the source travels with it and the changes are marked, which this",
+    "repository does by being public, by the BR-PATCH notes in the files, and by",
+    "this file (dated, under `vendored_on`). The added files below are part of",
+    "this modified copy and are under the same licence.",
+    "",
+    "The terminal app that runs inside this desktop is ours: its source is",
+    "ui-src/terminal in this public repository, its build output is committed",
+    "under nui/apps/terminal/ so it ships with the resource, and it talks to the",
+    "desktop only by postMessage. If its terms ever needed to differ from the",
+    "GPL's, serving that output from a resource of its own is the clean line.",
+    "This is a record of what was done, not a lawyer's opinion.",
+    "",
+    "The two font files in nui/fonts/ are a second, separate licence: the Ubuntu",
+    "Font Licence 1.0, whose text travels beside them (see `added`)."
+  ],
+
+  "provenance_check": {
+    "claim": "Of the 53 files at v1.1.1, 7 are here with the SAME GIT BLOB ID as the tag: LICENSE, README.md, locales/main.js and nui/assets/images/{error,exit,info}.png at their own paths, and nui/assets/images/console.png renamed to terminal.png. 6 more are here with BR-PATCH blocks (see `patches`). The other 40 are removed (see `removed`).",
+    "verified_on": "2026-10-04",
+    "how": [
+      "git clone https://github.com/Cu-chi/cuchi_computer.git /tmp/cc",
+      "for f in LICENSE README.md locales/main.js nui/assets/images/error.png nui/assets/images/exit.png nui/assets/images/info.png; do",
+      "  [ \"$(git rev-parse \":resources/[computer]/cuchi_computer/$f\")\" = \"$(git -C /tmp/cc rev-parse \"v1.1.1:$f\")\" ] || echo \"DIFFER $f\"",
+      "done",
+      "[ \"$(git rev-parse ':resources/[computer]/cuchi_computer/nui/assets/images/terminal.png')\" = \"$(git -C /tmp/cc rev-parse 'v1.1.1:nui/assets/images/console.png')\" ] || echo 'DIFFER terminal.png'"
+    ],
+    "note": "Compare BLOB IDS, not worktree files, and extract with `git -c core.autocrlf=false archive v1.1.1`. Upstream's blobs are LF; a Windows clone with core.autocrlf=true hands out CRLF, which is about the clone and not about the code."
+  },
+
+  "why_vendored": [
+    "Owner, 2026-10-04 (#396): Season 2 terminals run a Cloudscape app 'inside a",
+    "modified cuchi_computer'. Upstream needs ESX or QBCore plus oxmysql and this",
+    "gamemode runs neither, so the modified copy keeps the desktop and drops the",
+    "framework, the database and the roleplay apps. Vendored rather than",
+    "installed by hand for the reason every third-party resource here is:",
+    "tools/deploy.sh ships what is in this repository and nothing else."
+  ],
+
+  "removed": {
+    "framework_and_database": [
+      "config.lua",
+      "app_config.lua",
+      "shared/functions.lua",
+      "server/main.lua",
+      "server/applications.lua",
+      "server/fakeIPs.lua",
+      "server/version.lua",
+      "server/addresses/chat.incognito.net.lua",
+      "tables.sql"
+    ],
+    "client_replaced_by_client/shell.lua": [
+      "client/main.lua",
+      "client/nui.lua",
+      "client/overrides.lua",
+      "client/addresses/chat.incognito.net.lua"
+    ],
+    "roleplay_apps_and_their_assets": [
+      "nui/addresses/chat.incognito.net/app.css",
+      "nui/addresses/chat.incognito.net/app.js",
+      "nui/addresses/selldata.com/app.css",
+      "nui/addresses/selldata.com/app.js",
+      "nui/scripts/configs/commands.js",
+      "nui/assets/images/addresses.png",
+      "nui/assets/images/addresses-content.png",
+      "nui/assets/images/code.png",
+      "nui/assets/images/informations.png",
+      "nui/assets/images/mail.png",
+      "nui/assets/images/market.png",
+      "nui/assets/images/themes.png",
+      "assets/screen.gif"
+    ],
+    "sounds": [
+      "nui/assets/sounds/boot.mp3",
+      "nui/assets/sounds/message.mp3"
+    ],
+    "locales_other_than_english": [
+      "locales/main.lua",
+      "locales/lua/da.lua",
+      "locales/lua/de.lua",
+      "locales/lua/en.lua",
+      "locales/lua/es.lua",
+      "locales/lua/fr.lua",
+      "locales/ui/da.js",
+      "locales/ui/de.js",
+      "locales/ui/es.js",
+      "locales/ui/fr.js"
+    ],
+    "repository_files": [
+      ".github/FUNDING.yml",
+      ".gitignore"
+    ],
+    "why_the_sounds_went": "boot.mp3 played on every opening and message.mp3 on every message box. This project's sounds are each the owner's pick (br_lib/config/audio.lua) and these two never were, so they went with the rest; nothing else here ever played a sound. The 'look' the owner chose this resource for is the desktop, which is all still here."
+  },
+
+  "renamed": {
+    "nui/assets/images/console.png": "nui/assets/images/terminal.png -- the terminal app's desktop and taskbar icon, a PLACEHOLDER until the owner picks art. Upstream names each icon after its app id, so the rename is what lets the window manager find it unchanged."
+  },
+
+  "added": {
+    "VENDOR.json": "this file",
+    "client/shell.lua": "the whole Lua half: open, update, result and close for br_core, NUI focus, and the page's callbacks. Its header is the contract's Lua side.",
+    "nui/br.js": "the page's bridge: br_core's messages in, the terminal app's requests out, Escape, and a drag fix for windows that hold an iframe.",
+    "nui/br.css": "the Ubuntu face from nui/fonts/ and the terminal window's sizing.",
+    "nui/fonts/ubuntu-latin-300-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-300-normal.woff2, sha256 998fb9fd2f2845f623afa3fad936a4c832f7213cbb153450ff2908088ca418b4",
+    "nui/fonts/ubuntu-latin-400-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-400-normal.woff2, sha256 dabae363ac0ae6c3b2a137a32f7132b42520a8af252f87aa6c2198f2a79cf91c",
+    "nui/fonts/LICENSE-UFL-1.0.txt": "that package's LICENSE, the Ubuntu Font Licence 1.0, verbatim (sha256 52fdffecb23a020de527f68c516cac16dbbaf2dbb73fd9e29e2149703b881c82)"
+  },
+
+  "patches": [
+    {
+      "id": "BR-PATCH 1",
+      "file": "fxmanifest.lua",
+      "symbol": "shared_scripts / client_scripts / server_scripts / files",
+      "what": "One client script, client/shell.lua; no shared or server scripts, no oxmysql; the English locale only. The header fields (version, name, author, repository) are upstream's.",
+      "why": "Standalone: no framework and no database exist on this server, and br_core drives the desktop.",
+      "upstream_fixable": "no -- upstream is a framework resource by design"
+    },
+    {
+      "id": "BR-PATCH 2",
+      "file": "nui/index.html",
+      "symbol": "head, #lang, the script list",
+      "what": "Adds br.css and br.js; removes the language picker, the four non-English locale scripts and commands.js.",
+      "why": "One locale and one app, and the bridge to client/shell.lua.",
+      "upstream_fixable": "no"
+    },
+    {
+      "id": "BR-PATCH 3",
+      "file": "nui/style.css",
+      "symbol": "the first line's @import",
+      "what": "Removed the @import of Ubuntu from fonts.googleapis.com. br.css declares the same two weights from nui/fonts/.",
+      "why": "NUI pages load at join on every client, so the import was a request to Google from every player on every join, whether or not they ever used a computer -- and no Ubuntu at all for a client that could not reach it. The rest of this project ships its fonts (ui-src's @fontsource imports).",
+      "upstream_fixable": "yes -- shipping the font is an ordinary upstream change"
+    },
+    {
+      "id": "BR-PATCH 4",
+      "file": "nui/style.css",
+      "symbol": "#console-*, #lang, #informations-text, .info-label, market, themes, mail, addresses",
+      "what": "Removed the removed apps' rules. Every rule for the desktop, the taskbar, the loader, windows and message boxes is untouched.",
+      "why": "The apps they styled are gone.",
+      "upstream_fixable": "no"
+    },
+    {
+      "id": "BR-PATCH 5",
+      "file": "nui/scripts/configs/applications.js",
+      "symbol": "Applications",
+      "what": "One app, `terminal`: a window whose body is an iframe (#terminal-frame). Upstream's seven apps are gone.",
+      "why": "The terminal app is a React + Cloudscape page with its own document, so Cloudscape's global styles cannot restyle the desktop around it.",
+      "upstream_fixable": "no"
+    },
+    {
+      "id": "BR-PATCH 6",
+      "file": "nui/scripts/script.js",
+      "symbol": "top-level state; window 'message' handler",
+      "what": "Removed the console history, the roleplay state (fake IP, identifier, mail account) and upstream's message handler (show, version, identifier, force-close). br.js handles every message now.",
+      "why": "The handler booted the desktop from a framework callback's data. Here br_core's payload boots it.",
+      "upstream_fixable": "no"
+    },
+    {
+      "id": "BR-PATCH 7",
+      "file": "nui/scripts/script.js",
+      "symbol": "DOMContentLoaded: SetLocale, the picker, the saved theme",
+      "what": "Removed the language picker's wiring and the theme restored from localStorage. The desktop always opens in style.css's own colors.",
+      "why": "NUI localStorage belongs to the resource NAME on the player's machine, not to this server, so a theme or a locale chosen in cuchi_computer on any other server would have followed the player here -- and a locale this copy no longer ships throws every second. br.js pins the locale to English for the same reason.",
+      "upstream_fixable": "no"
+    },
+    {
+      "id": "BR-PATCH 8",
+      "file": "nui/scripts/script.js",
+      "symbol": "DOMContentLoaded: #exit.onclick",
+      "what": "The taskbar's power button closes at once through br.js, instead of a confirmation box and a 1.5 s 'shutting down' screen.",
+      "why": "The player is standing in a live match and the keyboard is the desktop's until it closes. Escape closes the same way.",
+      "upstream_fixable": "no -- the confirmation is a choice for a roleplay server"
+    },
+    {
+      "id": "BR-PATCH 9",
+      "file": "nui/scripts/script.js",
+      "symbol": "DOMContentLoaded: the mail and market blocks",
+      "what": "Removed. Each began by reading Applications.mail / Applications.market, which no longer exist and would have thrown.",
+      "why": "The apps are gone.",
+      "upstream_fixable": "no"
+    },
+    {
+      "id": "BR-PATCH 10",
+      "file": "nui/scripts/script.js",
+      "symbol": "OnConsoleCommand, AddConsoleLine, ClearConsole, AddInformation, setupMail, refreshMails",
+      "what": "Removed. OpenApp and FocusApp still carry branches for the console and mail app ids; nothing opens those ids, so the branches never run, and they are left as upstream wrote them.",
+      "why": "The apps are gone.",
+      "upstream_fixable": "no"
+    },
+    {
+      "id": "BR-PATCH 11",
+      "file": "locales/ui/en.js",
+      "symbol": "Locales.EN",
+      "what": "One key left, date_format (the taskbar clock's). Every line of text the desktop shows is br_core's, from the copy block in br_lib/config/terminals.lua.",
+      "why": "The owner writes or approves every player-facing line, in one place (#396).",
+      "upstream_fixable": "no"
+    }
+  ],
+
+  "untouched_on_purpose": [
+    "The window manager in script.js -- Load, OpenApp, CloseApp, FocusApp, MinimizeApp, MakeElementDraggable, MessageBox, ShutdownComputer, editTheme -- is upstream's, byte for byte. br.js calls it; nothing in it was changed to make that work.",
+    "style.css's desktop, taskbar, loader, window and message-box rules, and its :root colors (upstream's first theme), which are the look the owner chose this resource for.",
+    "The taskbar clock, which still reads the player's own clock in en-US.",
+    "ShutdownComputer and MessageBox stay although nothing calls them now: they are the window manager's, and a later app may want a message box."
+  ]
+}
