@@ -7020,6 +7020,98 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('server.final')
+do
+    -- ═══ STORM REVEAL (#396) SHOWS WHERE THE STORM WILL END, SO IT HAS TO BE IT ═══
+    --
+    --   "Storm would allow them to see where the storm is going to end for that
+    --    match"                                              -- owner, 2026-10-04
+    --
+    -- BR.Storm.finalCentre walks the phases enterPhase has not drawn yet against a
+    -- COPY of the stream. Two things can go wrong and both would look like a
+    -- working feature: the walk disagrees with enterPhase (a squad spends its key
+    -- on a lie), or the walk advances the real stream (the match is no longer the
+    -- match -- every later phase takes the value meant for the one before, which is
+    -- first.stream's failure arriving through a function that only looks).
+    --
+    -- So the prediction is asked at warmup and at every phase entry of a walked
+    -- match and compared with where the walk actually ended, bit for bit; and the
+    -- whole match is compared with a twin that never asked.
+    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
+    local S = newStormServer()
+    local env = S.env
+    S.roster[1] = nil
+    S.match.storm = nil
+    S.match.anchor = { x = ANCHOR.x, y = ANCHOR.y, name = ANCHOR.name }
+    env.BR.Sched.setEnabled('storm.phase', true)
+
+    ok(env.BR.Storm.finalCentre(S.match) == nil,
+        'before circle 1 is drawn there is no stream and no answer')
+
+    S.match.state = env.BR.MatchState.WARMUP
+    env.BR.Storm.drawFirstCircle(S.match)
+    S.match.state = env.BR.MatchState.PLAYING
+
+    local preds, moved = {}, 0
+    local function predict(label)
+        local s = S.match.stormRng.s
+        local before = { s[1], s[2], s[3], s[4] }
+        local f = env.BR.Storm.finalCentre(S.match)
+        local now = S.match.stormRng.s
+        if now[1] ~= before[1] or now[2] ~= before[2] or now[3] ~= before[3]
+            or now[4] ~= before[4] then
+            moved = moved + 1
+        end
+        preds[#preds + 1] = { label = label, f = f }
+    end
+
+    predict('warmup')
+    env.BR.Storm.begin(S.match)
+    predict('phase 1')
+
+    local last = #env.BR.Config.Storm.phases
+    local seen, final = { [S.match.storm.phase] = true }, nil
+    local guard = 0
+    while guard < 4000 do
+        guard = guard + 1
+        S.now = S.now + 30000
+        env.BR.Sched.step(S.now)
+        local rec = S.match.storm
+        if rec and not seen[rec.phase] then
+            seen[rec.phase] = true
+            predict('phase ' .. rec.phase)
+        end
+        if rec and rec.phase == last then
+            final = { x = rec.cx1, y = rec.cy1, r = rec.r1 }
+            break
+        end
+    end
+
+    ok(S.errored() == nil, 'the match runs clean', S.errored())
+    ok(final ~= nil, ('the walk reached phase %d'):format(last))
+    ok(#preds == last + 1, ('asked at warmup and at each of the %d phases'):format(last), #preds)
+    ok(moved == 0, 'asking never moved the live stream by one draw', moved)
+
+    local wrong = {}
+    for _, p in ipairs(preds) do
+        local f = p.f
+        if not (final and f and f.x == final.x and f.y == final.y and f.r == final.r
+                and f.phase == last) then
+            wrong[#wrong + 1] = p.label
+        end
+    end
+    ok(#wrong == 0, 'every prediction is where the storm actually ended, bit for bit',
+        table.concat(wrong, ', '))
+
+    -- THE TWIN: the same match walked without a single question asked.
+    local twin = walkMatch(ANCHOR, true)
+    local t = twin.phases[last]
+    ok(t and final and t.cx == final.x and t.cy == final.y,
+        'and a twin match that never asked ends in the same place',
+        t and final and ('(%.3f, %.3f) vs (%.3f, %.3f)'):format(t.cx, t.cy, final.x, final.y))
+end
+
+-- ---------------------------------------------------------------------------
 describe('first.once')
 do
     -- ═══ THE DRAW REFUSES TO HAPPEN TWICE, AND THE CLOCK MOVES BETWEEN TRIES ═══

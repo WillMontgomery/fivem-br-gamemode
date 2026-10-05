@@ -206,14 +206,17 @@ end
 --- @param r0 number
 --- @param mo table|nil   the wall's outline, when the phase starts part way through
 ---                       a morph (a thaw, a same-phase brphase)
+--- @param rng table|nil  the stream to draw from; m.stormRng unless given. Only
+---                       BR.Storm.finalCentre passes one -- a COPY of the live
+---                       stream, so looking ahead never advances the real one.
 --- @return number, number, boolean  centre, and whether it broke out
-local function drawCentre(m, phase, cx0, cy0, r0, mo)
+local function drawCentre(m, phase, cx0, cy0, r0, mo, rng)
     local p = cfg.phases[phase]
     local hugM = nil
     if phase > #cfg.phases - (cfg.edgeHugPhases or 0) then
         hugM = cfg.edgeHugM or 0.0
     end
-    return BR.NextZoneCentre(m.stormRng,
+    return BR.NextZoneCentre(rng or m.stormRng,
         BR.StormHost(m.stormSeed, phase, cx0, cy0, r0, mo), cx0, cy0, r0,
         BR.StormUnit(m.stormSeed, phase), p.radius, cfg.edgeBiasMax, cfg.mapAABB,
         hugM, BR.StormBreakoutFor(cfg, phase))
@@ -601,6 +604,58 @@ function BR.Storm.sendPreview(m, src)
     if payload then
         TriggerClientEvent(BR.Net.STORM_PREVIEW, src, payload)
     end
+end
+
+--- WHERE THIS MATCH'S STORM WILL END (#396, Storm reveal).
+---
+---   "Storm would allow them to see where the storm is going to end for that
+---    match"                                              -- owner, 2026-10-04
+---
+--- ═══ NOT STORED ANYWHERE, BECAUSE IT IS NOT DRAWN YET ═══
+---
+--- Each phase's centre is drawn at that phase's entry, off m.stormRng, from the
+--- circle before it (enterPhase). So the end is not a value the server holds; it
+--- is the value the stream WILL produce. This walks the remaining phases the way
+--- enterPhase will -- same function, same arguments, each from the last target --
+--- against a COPY of the stream's state, so asking never moves the real stream
+--- by one draw. That is the whole safety argument: tools/test_storm.lua's
+--- `first.stream` block is why a single extra draw would be a different match.
+---
+--- EXACT FOR AN ORDINARY MATCH, and pinned so by tools/test_storm.lua's
+--- `server.final` block, which asks this at every phase of a walked match and
+--- compares it with where the walk actually ended. The dev paths that re-enter a
+--- phase from wherever the wall stands -- `brphase`, `brstormfreeze` and its
+--- thaw -- draw from a different circle and so end somewhere else; a reveal made
+--- before one of those is a reveal of the match that would have been.
+---
+--- SERVER ONLY. The stream is the thing clients must never be able to predict
+--- (BR.NextZoneCentre's own note), and the answer goes only to the squad that
+--- spent its key on it.
+--- @param m table
+--- @return table|nil { x, y, r, phase }  the last phase's centre and radius, or
+---                   nil before this match has drawn circle 1
+function BR.Storm.finalCentre(m)
+    if not m or not m.stormRng then return nil end
+    local last = #cfg.phases
+    local phase, cx, cy, r
+    local rec = m.storm
+    if rec then
+        phase, cx, cy, r = rec.phase, rec.cx1, rec.cy1, rec.r1
+    elseif m.stormFirst then
+        phase, cx, cy, r = 1, m.stormFirst.cx, m.stormFirst.cy, m.stormFirst.r
+    else
+        return nil
+    end
+    if phase >= last then
+        return { x = cx, y = cy, r = r, phase = phase }
+    end
+    local s = m.stormRng.s
+    local copy = setmetatable({ s = { s[1], s[2], s[3], s[4] } }, getmetatable(m.stormRng))
+    for p = phase + 1, last do
+        cx, cy = drawCentre(m, p, cx, cy, r, nil, copy)
+        r = cfg.phases[p].radius
+    end
+    return { x = cx, y = cy, r = r, phase = last }
 end
 
 --- Start a match's storm. Called when it goes PLAYING: the clock starts when
