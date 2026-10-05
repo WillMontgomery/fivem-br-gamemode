@@ -16,7 +16,7 @@ Four pieces, in three places. Each knows only its neighbors.
 | **The server door** | `br_core/server/terminal.lua` | Opens a session for a player on a terminal, lists the functions, takes a run only inside that session, decides it, answers. |
 | **br_core's client** | `br_core/client/terminal.lua` | Opens and closes the computer when the server says, relays run requests up and answers down, tells the key layer when the computer holds the keyboard. |
 | **The computer** | `resources/[computer]/cuchi_computer` | Vendored, cut-down [cuchi_computer](https://github.com/Cu-chi/cuchi_computer) (GPL-3.0). `client/shell.lua` holds NUI focus while the desktop is up and forwards what the page asks; `nui/br.js` drives the desktop. Decides nothing. |
-| **The app** | `ui-src/terminal`, built into `cuchi_computer/nui/apps/terminal` | React + Cloudscape, in the desktop's one window (an iframe). Renders the state, asks to run. Decides nothing. |
+| **The app** | `ui-src/terminal`, built into `cuchi_computer/nui/apps/terminal` | React + Cloudscape, a web site in the desktop's one window (an iframe) dressed as a browser. Renders the state, the copy and the catalog, asks to run. Decides nothing. |
 
 Around them, the Gameplay half:
 
@@ -25,6 +25,8 @@ Around them, the Gameplay half:
 | **The key** | `br_core/server/yubikey.lua` | Who holds a Yubikey, on the profile row through br_ddb (`yubikey`, `yubikeySeen`); every way one changes hands. |
 | **The world** | `br_core/client/yubikey.lua` | Each terminal's local prop, blip and plate; the hold that asks to open one; the key's HUD glyph; Storm reveal on the maps. Decides nothing. |
 | **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against the storm, the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
+| **The effects** | `br_core/server/terminalfx.lua` | What the built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen. |
+| **The marks** | `br_core/client/terminalfx.lua` | Scan's opponents and the bounty on this player's maps, from the server's pushes. Decides nothing. |
 
 **The server decides everything.** The computer and the app only ask. A run is
 taken only from a player with an open session on that terminal, which only the
@@ -39,40 +41,79 @@ What the computer opens with, and what the server sends again when it changes.
 ```lua
 {
   terminalId = 'dev',            -- string, at most 64 characters
-  functions  = {                 -- in BR.Config.Terminals.functions order
+  functions  = {                 -- every registry row, in its order
     { id = 'storm_reveal', available = true },
     { id = 'scan', available = false, reason = 'squad_used' },
+    { id = 'disarm', available = false, reason = 'fn_offline' },
   },
   keyHeld    = true,             -- this player holds a Yubikey
   squadUsed  = false,            -- their squad has used its one key this match
+  player     = 'NightOwl',       -- the roster name: the app's signed-in user
+  match      = {                 -- BR.Terminal.matchInfo; nil outside a match
+    tag, mode, phase, elapsedMs,
+    storm = { stage, stages, state, leftMs },
+    players, squads,             -- still in the fight (BR.Server.isInMatch)
+    squad = { { name, state = 'alive'|'downed'|'out', me } },  -- theirs only
+    terminals = { online, total },
+    bounties = { { name, leftMs } },
+  },
 }
 ```
 
-`reason` is a code, and a code is a key into the copy: `no_key`, `squad_used`,
-`offline`, or any key a function's own refusal adds. The app shows the line for
-the code, or `unavailable` when there is none.
+`reason` is a code, and a code is a key into the copy: `fn_offline` (the
+effect is not built), `offline`, `squad_used`, `no_key`, `bad_option`, or any
+key a function's own refusal adds (`no_storm`, `no_site`, `drop_busy`,
+`ammo_full`). The app shows the line for the code, or `unavailable` when
+there is none, and maps it to the card's four statuses: available, used
+(`squad_used`), offline (`fn_offline`, `offline`), not here (everything else).
+
+THE SAME STATE, ONCE A SECOND. While a computer is open the server pushes it
+again every `infoPushMs` (TERMINAL_INFO), to that player alone; that is what
+makes the match panel realtime. Nothing in the app runs a clock of its own.
 
 ## The copy
 
 **Every player-facing line is in one block**, `copy` in
-`br_lib/config/terminals.lua`, and every value is a placeholder until the owner
-writes it. The desktop and the app render keys out of it and nothing else: a key
-with no line renders as nothing, never as the key. `br_core`'s client hands the
-whole block to the computer with each opening (the client already has it, so it
-never crosses the network). Changing a line is an edit there and a restart.
+`br_lib/config/terminals.lua`. The desktop and the app render keys out of it and
+nothing else: a key with no line renders as nothing, never as the key.
+`br_core`'s client hands the whole block to the computer with each opening (the
+client already has it, so it never crosses the network). Changing a line is an
+edit there and a restart.
+
+Three kinds of line, marked in the file: the owner's **verbatim** words
+(`no_key`, `notice_access`, `notice_action`, `bounty_new`, `bounty_protect`),
+lines **written** for the 2026-10-05 app at his request and listed in that
+round's report for his review (the app's frame and pages, every function's
+lines, the how-to), and the remaining **placeholders** outside the app
+(`first_pickup`, `already_holding`, `key_label`, `terminal_label`,
+`terminal_use`). A line with a newline in it is a list; `{name}`, `{value}`,
+`{count}`, `{stage}`/`{stages}` and `{online}`/`{total}` are filled by the app.
+
+Every function has, keyed by its id: `_name`, `_summary` (its card), `_what`,
+`_duration`, `_affects`, `_notified`, `_risks` (optional; `risk_notice` is
+always listed first), `_done`, `_description` (the lobby notice's
+`{description}`), and per option `_opt_<option>` and `_opt_<option>_<choice>`
+(with an optional `_desc`). `tools/test_terminal.lua` fails a row missing any.
+
+The table below is the lines outside the functions' own:
 
 | Key | Who reads it |
 |---|---|
 | `shell_boot` | At the terminal: under the boot spinner |
 | `desktop_icon` | At the terminal: under the app's desktop icon |
-| `window_title` | At the terminal: the app's window title bar |
-| `app_heading` | At the terminal: over the function list |
-| `<id>_name` | At the terminal: the function's name in the list |
-| `available` | At the terminal: the status of a function that can run |
+| `window_title` | At the terminal: the browser's one tab |
+| `app_title`, `address_host`, `path_*`, `aria_*` | At the terminal: the top bar, the side navigation, the first breadcrumb, the address bar, the browser's buttons |
+| `search_*`, `mode_*`, `menu_*`, `nav_*` | At the terminal: the search, the light/dark switch, the user menu, the side navigation |
+| `match_heading`, `field_*` and their values | At the terminal: the match panel |
+| `functions_heading`, `filter_*`, `card_*`, `pref_*`, `status_*`, `risk_*`, `category_*` | At the terminal: the cards |
+| `details_heading` .. `cost_line`, `risk_notice`, `run`, `confirm_*` | At the terminal: a function's page and its confirmation |
+| `howto_*` | At the terminal: the how-to page |
 | `unavailable` | At the terminal: why not, for a code with no line |
-| `run` | At the terminal: the button |
-| `<id>_done` | At the terminal: after the server ran it |
-| `no_key`, `squad_used`, `offline` | At the terminal (why not), and in the world (the Gameplay half's prompts) |
+| `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
+| `no_key`, `squad_used`, `offline` | At the terminal (why not; `no_key` is also the login screen), and in the world (the Gameplay half's prompts) |
+| `bounty_new` | A toast to the lobby: Scan's bounty; `{playername}` |
+| `bounty_protect` | A toast to the bounty's squad, not the bounty; `{playername}` |
+| `scan_blip`, `bounty_blip` | The legend names of Scan's and the bounty's marks |
 | `<id>_description` | The lobby: the `{description}` in `notice_action` |
 | `first_pickup` | A toast to a player picking up their first Yubikey ever |
 | `already_holding` | A toast to a holder whose claim on a second key is refused |
@@ -97,24 +138,71 @@ HUD icon replace the first two.
 
 ## The functions
 
-`BR.Config.Terminals.functions` lists the ids, in order. The server half is
-`BR.Terminal.FUNCTIONS[id]` in `br_core/server/terminal.lua`:
+**ONE REGISTRY, READ BY BOTH SIDES**: `BR.Config.Terminals.functions`, each row
+`{ id, category, risk, implemented, options }`, with `categories` beside it.
+The server rules every run against it; br_core's client hands it to the
+computer with each opening (the **catalog**), and the app draws its cards,
+filters and pages from it.
 
-- `refuse(src, session) -> reason|nil` (optional), asked after the shared
-  reasons, which come in this order: `offline`, `squad_used`, `no_key`.
-- `run(src, session) -> { ok, code }`. On `ok`, the server spends the key and
-  the squad's use (`BR.Terminal.consume`).
+- `category`: `intel`, `storm`, `disruption`, `supply` or `squad`.
+- `risk`: `low`, `medium` or `high` -- how much it exposes the player who runs
+  it, drawn as the card's badge.
+- `implemented`: false lists the function, card and page and all, as
+  `fn_offline`, and refuses its run before anything is asked or spent.
+- `options`: `{ { id, choices = { ... }, default } }`. `BR.Terminal.options`
+  takes a run's choices only if every key is a declared option and every value
+  one of its `choices` (strings, at most 8), fills the rest with defaults, and
+  refuses anything else whole (`bad_option`, nothing spent). The shell and the
+  desktop shape-check them on the way too.
 
-A new function is a row in the config, an entry in that table, and its
-`<id>_name` and `<id>_done` lines. `tools/test_terminal.lua` fails a listed id
-missing any of the three.
+The server half of a built function is `BR.Terminal.FUNCTIONS[id]`
+(`server/terminal.lua` for Storm reveal, `server/terminalfx.lua` for the rest):
+
+- `refuse(src, session, opts) -> reason|nil` (optional), asked after the shared
+  reasons, which come in this order: `fn_offline`, `offline`, `squad_used`,
+  `no_key`. `opts` is nil while the terminal is only being listed: answer for
+  ANY choice, so a card says "not here" only when no choice could run.
+- `run(src, session, opts) -> { ok, code, after? }`. On `ok`, the server spends
+  the key and the squad's use (`BR.Terminal.consume`), tells the lobby
+  `notice_action`, then calls `after` -- so Scan's bounty toasts follow the
+  redemption.
+
+| id | Name | Category | Risk | Effect |
+|---|---|---|---|---|
+| `scan` | Scan | intel | high | **live** |
+| `storm_reveal` | Storm reveal | intel | low | **live** |
+| `storm_control` | Storm control | storm | medium | offline |
+| `comms_blackout` | Comms blackout | disruption | medium | offline |
+| `time_weather` | Time & weather | disruption | low | offline |
+| `power_outage` | Power outage | disruption | low | offline |
+| `disarm` | Disarm | disruption | high | offline |
+| `supply_drop` | Supply drop | supply | medium | **live** |
+| `max_ammo` | Max ammo | supply | low | **live** |
+| `reboot` | Reboot | squad | medium | offline |
+| `ghost` | Ghost | squad | low | offline |
+| `emp` | EMP | disruption | medium | offline |
+| `key_finder` | Key finder | intel | low | offline |
+| `storm_delay` | Storm delay | storm | low | offline |
+| `pulse` | Pulse | intel | medium | offline |
+| `lockdown` | Lockdown | disruption | medium | offline |
+| `contract` | Contract | disruption | medium | offline |
+| `field_medic` | Field medic | supply | low | offline |
+
+The first nine are the owner's (2026-10-04), the next four were suggested on
+the issue, and the last five are proposals for him to keep or cut. A new
+function is a row, its copy lines, and -- to go live -- an entry in
+`BR.Terminal.FUNCTIONS` and `implemented = true`. `tools/test_terminal.lua`
+fails a row missing a line, and a built row with no server entry.
 
 ## The wire
 
 | Event | Way | Payload | Rule |
 |---|---|---|---|
 | `BR.Net.TERMINAL_OPEN` | S→C | `{ state }` | Open the computer on this terminal. |
-| `BR.Net.TERMINAL_RUN` | C→S | `{ terminalId, functionId }` | Dropped, unanswered, without an open session on that terminal, with a malformed id, or sooner than `runMinIntervalMs` after the last. |
+| `BR.Net.TERMINAL_RUN` | C→S | `{ terminalId, functionId, options? }` | Dropped, unanswered, without an open session on that terminal, with a malformed id, or sooner than `runMinIntervalMs` after the last. Options the registry does not allow are answered `bad_option`. |
+| `BR.Net.TERMINAL_INFO` | S→C | `{ terminalId, state }` | The open computer's state again, match panel included, every `infoPushMs` (1 s), to that player alone, only while open, never off Season 2. |
+| `BR.Net.TERMINAL_SCAN` | S→C | `{ matchId, list = { { s, x, y, down? } } }` | Scan: every opponent's position, to the scanning squad alone (dead and spectating members included), every `fx.scanPingMs` for the rest of the match. |
+| `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position, to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. |
 | `BR.Net.TERMINAL_RESULT` | S→C | `{ terminalId, functionId, ok, code, state? }` | To the runner alone. `code` is `done` on success, else a reason. |
 | `BR.Net.TERMINAL_CLOSE` | S→C | `{ why }` | The session is over (death, storm, teardown). |
 | `BR.Net.TERMINAL_CLOSED` | C→S | `{ terminalId, why }` | The computer went away on the client; ends only the session it names. |
@@ -130,8 +218,8 @@ missing any of the three.
 
 | Export | Does |
 |---|---|
-| `Open(state, copy) -> ok, why` | Shows the desktop and the app, takes NUI focus (keyboard and cursor). Refuses with `page-not-ready` before the page has loaded, rather than take focus over nothing. Opening another terminal while one is open closes the first (`replaced`). |
-| `Update(state)` | The new state, while open on that terminal. |
+| `Open(state, copy, catalog) -> ok, why` | Shows the desktop and the app, takes NUI focus (keyboard and cursor). Refuses with `page-not-ready` before the page has loaded, rather than take focus over nothing. Opening another terminal while one is open closes the first (`replaced`). `catalog` is `{ functions, categories }`, the registry. |
+| `Update(state)` | The new state, while open on that terminal: after a run, and once a second (TERMINAL_INFO). |
 | `Result(result)` | `{ functionId, ok, code }`, while open. |
 | `Close(why) -> ok` | Takes it down and releases focus. |
 | `IsOpen() -> boolean` | |
@@ -141,7 +229,7 @@ Local events it raises for `br_core`'s client (never net events):
 | Event | Args | When |
 |---|---|---|
 | `cuchi_computer:opened` | `terminalId` | Focus taken |
-| `cuchi_computer:request` | `terminalId, { action = 'run', functionId }` | The page asked; the terminal is the one `br_core` opened |
+| `cuchi_computer:request` | `terminalId, { action = 'run', functionId, options }` | The page asked; the terminal is the one `br_core` opened; `options` shape-checked |
 | `cuchi_computer:closed` | `terminalId, why` | Focus released: `escape`, `exit` (the power button), `page`, `replaced`, `opener-stopped`, `stopped`, or `br_core`'s own why |
 
 **Focus.** The computer is its own resource's page, so it holds its own NUI
@@ -158,11 +246,39 @@ listening only to the other's window, every message carrying `brTerminal: 1`:
 
 | Way | Message |
 |---|---|
-| app → desktop | `{ type: 'ready' }`, `{ type: 'run', functionId }`, `{ type: 'escape' }` |
-| desktop → app | `{ type: 'state', state, copy }`, `{ type: 'result', result }` |
+| app → desktop | `{ type: 'ready' }`, `{ type: 'run', functionId, options? }`, `{ type: 'escape' }`, `{ type: 'mode', mode }` |
+| desktop → app | `{ type: 'state', state, copy?, catalog? }` (copy and catalog on open and on ready; an update is the state alone), `{ type: 'result', result }` |
 
 The app is loaded when the computer opens and unloaded when it closes. Escape,
-on the desktop or inside the app, closes the computer.
+on the desktop or inside the app, closes the computer -- unless a dialog or an
+open dropdown in the app takes it first (the app reads it in the capture phase).
+
+### A web browser, not a terminal (owner, 2026-10-05)
+
+**The frame is the desktop's.** `cuchi_computer/nui/br.css` restyles upstream's
+window title bar -- no markup changed -- into a tab strip: one tab with the
+app's icon and `window_title`, and drawn minimize/close controls. The window is
+1440x880 (BR-PATCH 5), capped at 98vw x 92vh. The tab follows the app's
+light/dark mode (`mode` -> `br-light` on the window).
+
+**The toolbar is the app's** (`Browser.tsx`): back, forward and reload over the
+app's own history, and a read-only address bar whose fictional URL follows the
+page (`https://terminal.blitz/functions/supply-drop`). It lives in the app
+because the history and the address are the app's navigation; a copy in the
+desktop would be a second state kept in step over postMessage. Reload asks the
+desktop for everything again (`ready`) and remounts the page.
+
+**The site** (Cloudscape, like the cards and details examples): TopNavigation
+with the app's name, a search across every function (pick one to open it, or
+search the cards), the light/dark switch, and the gamertag as the signed-in
+user (its menu: How to, Sign out); AppLayout with SideNavigation (Functions,
+How to, each category) and a BreadcrumbGroup on every page; the functions page
+(the match panel over the cards, with a text filter, pagination and
+preferences), a page per function (details, what it does, its options as
+RadioGroups, its risks, Run behind a confirmation), the how-to page, and the
+login screen when the computer opened without a key. The mode is applied on
+`<body>` only and remembered per gamertag in the page's localStorage.
+`ui-src/scripts/check-terminal.mjs` holds #385's findings over it.
 
 ## The Yubikey
 
@@ -247,7 +363,49 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function>` | The function's effect for you: no key, no terminal, no notice, nothing spent |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, nothing spent; the options through `BR.Terminal.options` |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
+
+## Scan and the bounty
+
+**Scan** (`server/terminalfx.lua`): every opponent of the squad still in the
+match -- alive, downed or in the air -- is sent to every member of the squad
+(dead and spectating ones too: "for the whole squad") every `fx.scanPingMs`
+(2 s) for the rest of the match, as TERMINAL_SCAN, from the roster's own 4 Hz
+samples. Nobody else is sent it. `client/terminalfx.lua` draws a mark per
+opponent on both maps (`art.scan`, named `scan_blip`), moves it on every push,
+and clears them in the lobby or when the pushes stop.
+
+**The bounty**, the owner's spec (2026-10-04) verbatim, on the player who ran
+Scan, after the lobby has read `notice_action`:
+
+- `bounty_new` to everyone in the match; `bounty_protect` to their squad (not to
+  the bounty).
+- `fx.bountyMs`: ten minutes. Ended early by elimination, leaving, or the match
+  ending. No reward for the kill: the owner has not ruled.
+- Everyone outside the bounty's squad is sent where it is every
+  `fx.bountyPingMs` (TERMINAL_BOUNTY) and draws blip 58 colour 3 (`art.bounty`,
+  named `bounty_blip`); one empty push clears every map when the last ends.
+- The squad reads the beacon's new `bounty` bit (`server/party.lua`):
+  `client/squadmates.lua` re-dresses that mate's blip as 58 colour 69 (on
+  change only), and the squad panel draws `art.bountyGlyph` beside the name.
+- The match panel lists every live bounty with its time left.
+
+## Supply drop and Max ammo
+
+**Supply drop** (option `site`: `terminal` or `circle`) hands this terminal's
+point, or the next circle's centre, to `BR.Airdrop.call`
+(`server/airdrop.lua`), which sites one extra drop at the nearest airdrop spot
+by the airdrop's own rules (the landing window, `insideBy`, placeable ground,
+no POI another drop is on) and announces it like any drop; from then on it is
+an ordinary drop (the 200 m gate, moves, abandonment, the loot path), holds the
+schedule like a manual one, and draws its heading and payout from a stream of
+its own. Refused, spending nothing: `no_storm`, `drop_busy` (another drop is
+waiting or falling -- the #355 rule), `no_site`.
+
+**Max ammo** fills, for everyone in the squad still in the fight, every pool a
+carried gun draws on to its cap and loads an empty magazine
+(`BR.Inv.fillAmmo`: addAmmo's clamp and loadEmpty's move, one INV_SET each).
+Refused `ammo_full`, spending nothing, when nobody has room.
