@@ -254,6 +254,22 @@ export interface Listeners {
 }
 
 /**
+ * Is a dialog, a menu or a dropdown list open on screen? Each closes itself on
+ * Escape (the preferences dialog, the user menu, the search's list), so while
+ * one is up Escape is its, not the computer's. Hidden ones -- display none, or
+ * TopNavigation's off-screen measuring copy -- do not count.
+ */
+function overlayOpen(): boolean {
+  for (const node of document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')) {
+    const el = node as HTMLElement
+    if (el.getClientRects().length === 0) continue
+    if (window.getComputedStyle(el).visibility === 'hidden') continue
+    return true
+  }
+  return false
+}
+
+/**
  * Listen to the desktop, and tell it this app is ready for its state.
  * Also forwards Escape: a keydown inside this frame never reaches the
  * desktop's document, and Escape is how the player leaves the computer --
@@ -283,6 +299,7 @@ export function connect(on: Listeners): () => void {
     if (e.key !== 'Escape') return
     const el = document.activeElement
     if (el && el.getAttribute('aria-expanded') === 'true') return
+    if (overlayOpen()) return
     if (!on.canEscape()) return
     e.preventDefault()
     post({ type: 'escape' })
