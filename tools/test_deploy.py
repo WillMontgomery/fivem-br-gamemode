@@ -75,7 +75,7 @@ def native(path):
     return os.path.normcase(os.path.realpath(path))
 
 
-def version(trace=True, extra=True, race=False, protocol=True, self_blob=None):
+def version(trace=True, extra=True, race=False, protocol=True, self_blob=None, broken=False):
     """The real deploy.sh, changed the ways a test needs."""
     s = REAL
 
@@ -89,6 +89,10 @@ def version(trace=True, extra=True, race=False, protocol=True, self_blob=None):
         swap(b'    "[computer]/cuchi_computer"\n)', b'    "[computer]/cuchi_computer"\n    "' + EXTRA.encode() + b'"\n)')
     if not protocol:
         swap(b'HANDOVER_PROTOCOL=1\n', b'')
+    if broken:
+        # A syntax error at the very END, below every rsync: run line by line,
+        # bash would sync everything before tripping over it.
+        s = s + b'\nfi\n'
     if self_blob is not None:
         swap(b'SELF_BLOB="$(git -C "$SRC_DIR" hash-object --stdin < "$SELF_SCRIPT" 2>/dev/null || true)"\n',
              b'SELF_BLOB="' + self_blob.encode() + b'"\n')
@@ -391,6 +395,20 @@ class Handover(unittest.TestCase):
                               r"deploys although main's tools/deploy\.sh differs from it")
         self.assertIn('\x1b[32mdeployed', out)
         self.assert_synced_extra(True)
+        self.assert_no_temp_left()
+
+    def test_a_newer_deploy_sh_that_does_not_parse_syncs_nothing(self):
+        # Review of #398: a broken deploy.sh on the branch must fail the deploy
+        # before anything reaches the live resources/, not halfway through.
+        self.publish('main', REAL, version(broken=True))
+        before = self.served()
+        rc, out = self.deploy()
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("tools/deploy.sh does not parse, so nothing was synced", out)
+        self.assertNotIn('handing over', out)
+        self.assertEqual(self.rsync_dests(), [], 'not one rsync ran')
+        self.assertEqual(self.served(), before, 'the server keeps what it has')
+        self.assertEqual(self.runs(), [], 'the broken copy never ran')
         self.assert_no_temp_left()
 
     def test_a_deploy_sh_that_does_not_take_the_handover_is_not_handed_to(self):

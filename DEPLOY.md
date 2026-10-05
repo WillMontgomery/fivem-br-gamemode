@@ -218,8 +218,10 @@ Two things still need a hand on the box:
 - **The handover itself, once per box.** A `deploy.sh` from before it
   (2026-10-05) cannot hand over, so each box's ops clone needs one more pull:
   `git -C /opt/misc/fivem-br-gamemode pull`. A clone tracking `main` gets it
-  once dev is merged into main. Until then, a deploy prints a red box naming
-  that pull.
+  once dev is merged into main. Until then, the dev box's deploy prints a red
+  box naming that pull. Prod's does not: main's current `deploy.sh` predates
+  that warning, so pull prod's ops clone right after the dev->main merge and
+  before its next deploy.
 - **`royale-deploy.service` and the other units.** systemd reads its own copy
   in `/etc/systemd/system`, never the repo's, so a change to a unit file reaches
   a box only when someone copies it there and runs

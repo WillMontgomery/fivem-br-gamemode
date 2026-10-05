@@ -688,6 +688,24 @@ elif [ "$SELF_BLOB" != "$SERVED_BLOB" ]; then
     elif [ "$STATUS_ONLY" -eq 1 ]; then
         STATUS_DEPLOY_SH="a deploy would hand over $HANDOVER_DESC"
     elif handover_copy; then
+        # A COPY THAT DOES NOT PARSE IS NEVER RUN, AND NOTHING IS SYNCED. bash
+        # runs a script one top-level command at a time, so a syntax error
+        # below the first rsync would only be hit after that rsync had written
+        # the new tree into the live resources/ -- half a deploy, which the
+        # next crash restart of royale.service would load. `bash -n` reads the
+        # whole file first. This dies rather than deploying with this older
+        # script: a deploy.sh that does not parse is a broken commit on the
+        # branch, and the server keeps running what it has.
+        if ! "${BASH:-bash}" -n "$HANDOVER_COPY" 2>"$HANDOVER_COPY.parse"; then
+            HANDOVER_PARSE="$(head -n 3 "$HANDOVER_COPY.parse")"
+            rm -rf "$(dirname "$HANDOVER_COPY")"
+            die "$BRANCH ${REMOTE:0:8}'s tools/deploy.sh does not parse, so nothing was synced
+  and the server keeps what it has:
+$HANDOVER_PARSE"
+        fi
+        # Only the copy may be left in its directory: the handed-over run's exit
+        # trap removes the file and then the (now empty) directory.
+        rm -f "$HANDOVER_COPY.parse"
         say "${YEL}handing over${RST} $HANDOVER_DESC"
         export BR_DEPLOY_HANDOVER_SHA="$REMOTE" BR_DEPLOY_HANDOVER_REF="$BRANCH" \
                BR_DEPLOY_HANDOVER_FROM="$SELF_SCRIPT"
