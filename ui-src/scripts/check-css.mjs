@@ -11,14 +11,25 @@
 // palette to oklch would silently break every screen it renders, and nothing in
 // a typecheck or a unit test would notice.
 //
-// Run automatically as part of `npm run build`.
+// Run automatically as part of `npm run build`, once per output: bare for
+// br_ui, and `check-css.mjs terminal` for the Season 2 terminal app (#396),
+// which vite.terminal.config.ts writes into the vendored cuchi_computer.
 
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const outDir = join(here, '..', '..', 'resources', '[fivem-royale]', 'br_ui', 'ui', 'assets')
+const OUTPUTS = {
+  br_ui: ['[fivem-royale]', 'br_ui', 'ui', 'assets'],
+  terminal: ['[computer]', 'cuchi_computer', 'nui', 'apps', 'terminal', 'assets'],
+}
+const target = process.argv[2] ?? 'br_ui'
+if (!OUTPUTS[target]) {
+  console.error(`check-css: unknown output '${target}' (one of ${Object.keys(OUTPUTS).join(', ')})`)
+  process.exit(1)
+}
+const outDir = join(here, '..', '..', 'resources', ...OUTPUTS[target])
 
 // SEVERITY DEPENDS ON *WHERE* THE UNSUPPORTED SYNTAX SITS, and conflating the
 // two made this gate reject a build over a cosmetic rule.
@@ -100,5 +111,5 @@ if (failures > 0) {
 
 const suffix = warnings > 0 ? `, ${warnings} warning(s)` : ''
 console.log(
-  `check-css: ok, ${files.length} stylesheet(s) safe for Chrome ${TARGET_CHROME}${suffix}`,
+  `check-css: ok, ${target}: ${files.length} stylesheet(s) safe for Chrome ${TARGET_CHROME}${suffix}`,
 )

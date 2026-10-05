@@ -39,6 +39,27 @@ if staged | grep -q '^ui-src/src/'; then
     fi
 fi
 
+# --- 1a. the terminal app's source changed without a rebuild (#396) -----------
+#
+# The same hazard for ui-src's second build: the Season 2 terminal app, which
+# vite.terminal.config.ts writes into the vendored cuchi_computer.
+
+if staged | grep -q '^ui-src/terminal/'; then
+    if ! staged | grep -q '^resources/\[computer\]/cuchi_computer/nui/apps/terminal/'; then
+        echo "${RED}pre-commit: ui-src/terminal changed but the built app did not.${RST}"
+        echo
+        echo "  The server serves the committed build and never builds."
+        echo
+        echo "  Fix:"
+        echo "    cd ui-src && npm run build"
+        echo "    git add resources/\[computer\]/cuchi_computer/nui/apps/terminal"
+        echo
+        echo "  Override (only if you know the build is unaffected):"
+        echo "    git commit --no-verify"
+        exit 1
+    fi
+fi
+
 # --- 1b. br_ddb source changed without a rebuild ------------------------------
 #
 # Same hazard as the UI bundle, same guard. The resource ships one pre-bundled

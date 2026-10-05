@@ -37,6 +37,7 @@ done
 echo
 echo "pre-commit blocks a commit when:"
 echo "  * ui-src/src changed but the built bundle did not"
+echo "  * ui-src/terminal changed but the built terminal app did not"
 echo "  * server.cfg or node_modules is staged"
 echo "  * tools/verify.sh fails"
 echo

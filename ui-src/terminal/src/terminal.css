@@ -1,0 +1,42 @@
+/*
+ * The terminal app's own rules, on top of Cloudscape's global styles.
+ *
+ * COLOR-SCHEME STAYS NORMAL (docs/platform.md, #385). `color-scheme: dark`
+ * paints the canvas opaque. Here the canvas is inside the desktop's window, not
+ * over the game, so it would not black anything out today -- but the rule is
+ * the project's, global-styles ships the selector that would flip it on any CEF
+ * from 105, and nothing here needs the dark scheme's form controls.
+ */
+html {
+  color-scheme: normal !important;
+}
+
+/*
+ * The window behind the app is cuchi_computer's (its --darkest-color), so the
+ * app's own document is see-through and the Container reads as a panel on it.
+ */
+html,
+body {
+  margin: 0;
+  background: transparent !important;
+}
+
+.terminal {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.terminal-fn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.terminal-fn-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}

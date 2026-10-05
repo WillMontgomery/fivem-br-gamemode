@@ -13,8 +13,8 @@ import { dirname, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
- * Rebuild the shipped NUI and prove it is byte-for-byte current without leaving
- * the worktree changed.
+ * Rebuild the shipped NUI -- br_ui and the Season 2 terminal app -- and prove
+ * both are byte-for-byte current without leaving the worktree changed.
  *
  * Normal builds carry a human-facing timestamp and source commit. The checker
  * extracts that one exact committed stamp and asks Vite to rebuild with the same
@@ -28,21 +28,35 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const uiRoot = resolve(here, '..')
 const repoRoot = resolve(uiRoot, '..')
-const output = join(
-  repoRoot,
-  'resources',
-  '[fivem-royale]',
-  'br_ui',
-  'ui',
-)
 
-if (!existsSync(output)) {
-  console.error(`br_ui: committed output is missing: ${output}`)
-  process.exit(1)
+/**
+ * EVERY OUTPUT `npm run build` WRITES, each with the variable that carries its
+ * stamp. br_ui is the HUD; the terminal is the Season 2 app (#396), which
+ * vite.terminal.config.ts writes into the vendored cuchi_computer. Each output
+ * holds exactly one stamp of its own -- they are built at different moments --
+ * and is rebuilt with that one, so one `npm run build` reproduces both.
+ */
+const OUTPUTS = [
+  {
+    name: 'br_ui',
+    dir: join(repoRoot, 'resources', '[fivem-royale]', 'br_ui', 'ui'),
+    env: 'BR_BUILD_STAMP',
+  },
+  {
+    name: 'terminal',
+    dir: join(repoRoot, 'resources', '[computer]', 'cuchi_computer', 'nui', 'apps', 'terminal'),
+    env: 'BR_TERMINAL_BUILD_STAMP',
+  },
+]
+
+for (const out of OUTPUTS) {
+  if (!existsSync(out.dir)) {
+    console.error(`${out.name}: committed output is missing: ${out.dir}`)
+    process.exit(1)
+  }
 }
 
 const scratch = mkdtempSync(join(tmpdir(), 'br-ui-build-check-'))
-const original = join(scratch, 'original')
 const stampPattern = /built \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(from [^)]+\)/g
 
 function walk(root, at = root) {
@@ -55,7 +69,7 @@ function walk(root, at = root) {
   return out.sort()
 }
 
-function committedStamp(root) {
+function committedStamp(name, root) {
   const found = []
   for (const file of walk(root)) {
     if (extname(file) !== '.js') continue
@@ -63,14 +77,14 @@ function committedStamp(root) {
     for (const match of source.matchAll(stampPattern)) found.push(match[0])
   }
   if (found.length !== 1) {
-    throw new Error(`expected one committed build stamp, found ${found.length}`)
+    throw new Error(`${name}: expected one committed build stamp, found ${found.length}`)
   }
   return found[0]
 }
 
 function compareTrees(wantRoot, gotRoot) {
   const wantFiles = walk(wantRoot)
-  const gotFiles = walk(gotRoot)
+  const gotFiles = existsSync(gotRoot) ? walk(gotRoot) : []
   const names = [...new Set([...wantFiles, ...gotFiles])].sort()
   const differences = []
 
@@ -87,36 +101,51 @@ function compareTrees(wantRoot, gotRoot) {
 }
 
 let status = 1
+const saved = []
 try {
-  cpSync(output, original, { recursive: true })
-  const stamp = committedStamp(original)
+  const env = { ...process.env }
+  for (const out of OUTPUTS) {
+    const original = join(scratch, out.name)
+    cpSync(out.dir, original, { recursive: true })
+    saved.push({ out, original })
+    env[out.env] = committedStamp(out.name, original)
+  }
 
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   const built = spawnSync(npm, ['run', 'build'], {
     cwd: uiRoot,
-    env: { ...process.env, BR_BUILD_STAMP: stamp },
+    env,
     stdio: 'inherit',
+    // npm.cmd is a batch file, and Node refuses to spawn one without a shell
+    // since the 2024 argument-injection fix. The arguments are constants.
+    shell: process.platform === 'win32',
   })
 
   if (built.error) throw built.error
   if (built.status !== 0) {
     console.error(`br_ui: build failed with status ${built.status}`)
   } else {
-    const differences = compareTrees(original, output)
-    if (differences.length === 0) {
-      console.log('br_ui: committed bundle matches source')
-      status = 0
-    } else {
-      console.error('br_ui: committed bundle does not match source:')
-      for (const difference of differences) console.error(`  ${difference}`)
-      console.error('Fix: cd ui-src && npm run build')
+    let clean = true
+    for (const { out, original } of saved) {
+      const differences = compareTrees(original, out.dir)
+      if (differences.length === 0) {
+        console.log(`${out.name}: committed bundle matches source`)
+      } else {
+        clean = false
+        console.error(`${out.name}: committed bundle does not match source:`)
+        for (const difference of differences) console.error(`  ${difference}`)
+      }
     }
+    if (clean) status = 0
+    else console.error('Fix: cd ui-src && npm run build')
   }
 } catch (error) {
   console.error(`br_ui: build check failed: ${error instanceof Error ? error.message : error}`)
 } finally {
-  rmSync(output, { recursive: true, force: true })
-  if (existsSync(original)) cpSync(original, output, { recursive: true })
+  for (const { out, original } of saved) {
+    rmSync(out.dir, { recursive: true, force: true })
+    if (existsSync(original)) cpSync(original, out.dir, { recursive: true })
+  }
   rmSync(scratch, { recursive: true, force: true })
 }
 

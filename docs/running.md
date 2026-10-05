@@ -400,9 +400,18 @@ hear; `brvoice` in the server console says whether pma-voice is even present.
 ./tools/verify.sh                    # Lua syntax, suites, and repository gates
 cd ui-src && npm run dev             # UI in a browser, no game required
 cd ui-src && npm run build           # typecheck, build, CSS/UI/envelope checks
+cd ui-src && npm run build:terminal  # just the Season 2 terminal app (#396)
 cd ui-src && npm run build:check     # rebuild, compare committed output, restore it
 cd js-src/br_ddb && npm run check    # rebuild in memory and compare its bundle
 ```
+
+`ui-src` builds two pages from one lockfile: br_ui's HUD into
+`resources/[fivem-royale]/br_ui/ui`, and the Season 2 terminal app
+(`ui-src/terminal`, React + Cloudscape, `vite.terminal.config.ts`) into the
+vendored `resources/[computer]/cuchi_computer/nui/apps/terminal`. `npm run build`
+writes both and `build:check` byte-compares both, each against its own committed
+build stamp. The app has its own gate, `scripts/check-terminal.mjs`: the
+Cloudscape-on-CEF-103 findings of #385, and no words written in its JSX.
 
 CI runs both package installs and bundle checks under Node 22 before
 `tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;
