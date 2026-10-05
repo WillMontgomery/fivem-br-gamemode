@@ -532,6 +532,28 @@ do
     shipped()
 end
 
+describe('the season is asked again at the open, not only at the stamp')
+do
+    -- `brseason` moves a dev box between seasons without a restart, and the
+    -- warmup pad outlives it: a crate stocked under Season 2 can be opened under
+    -- Season 1. It opens the Season 1 way -- at once.
+    reset()
+    season(2)
+    realNames()
+    resources.br_crates = 'started'
+    local m = newMatch(1)
+    standAt(10, m)
+    local e = crateAt(m, R.RARE)
+    ok(e.bt ~= nil, 'stamped while Season 2 was in force')
+    season(1)
+    claim(10, e.id)
+    eq(e.kind, 'husk', 'opened under Season 1: at once')
+    eq(#eventsOf(BR.Net.LOOT_OPENING), 0, 'with no clip')
+    eq(#timers, 0, 'and nothing timed')
+    resources.br_crates = nil
+    shipped()
+end
+
 describe('the open: OPENING, the clip to everyone near, the burst on the last frame')
 do
     reset()
