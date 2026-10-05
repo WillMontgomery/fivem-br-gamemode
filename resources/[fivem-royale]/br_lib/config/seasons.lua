@@ -46,5 +46,8 @@ BR.Config.Seasons = {
         -- the opening clip, the festive set and the gift boxes -- are Season 2
         -- content. Off, every crate is today's wooden one and opens at once.
         crates2 = { from = 2 },
+        -- #396. Owner, 2026-10-04: computer terminals that manipulate the
+        -- match, unlocked by a Yubikey, "for Season 2".
+        terminals = { from = 2 },
     },
 }

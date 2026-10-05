@@ -199,8 +199,9 @@ bundle into its own Lua state once because FiveM resource globals are isolated.
 same gates, but **cut down** rather than whole: upstream needs ESX or QBCore and
 oxmysql, so the framework, the database and the roleplay apps are removed and
 listed in `VENDOR.json`, and what is left is the desktop shell and its window
-manager. It has no server half; `br_core` opens and closes it through the
-exports its `client/shell.lua` documents.
+manager. It has no server half; `br_core` opens and closes it, and the terminal
+app inside it is ours (`ui-src/terminal`). The contract is
+[docs/terminals.md](docs/terminals.md).
 
 The UI build project lives in `ui-src/`, **outside** `resources/`, because
 FXServer auto-builds any resource containing a `package.json` using bundled Node
@@ -249,6 +250,7 @@ Each of these stands on its own:
 | **[Deploying](DEPLOY.md)** | Standing the server up on Ubuntu against standard FXServer Linux artifacts. |
 | **[Testing](docs/testing.md)** | The suites and gates, when to run them, the rules that keep them honest, and the real bugs each one has caught. |
 | **[Platform constraints](docs/platform.md)** | FiveM and CEF behaviours discovered the hard way — the ones that cost days — and what each one taught. |
+| **[The terminals' contract](docs/terminals.md)** | Season 2's computer terminals: how `br_core` opens the vendored desktop, the state and the one copy block it shows, and how a run gets to the server and back. |
 | **[Vehicle data overrides](docs/vehicle-data.md)** | Which weapons a vehicle seat accepts, the playtest that proved a resource cannot change it, and the template for folding an add-on vehicle's own `vehiclelayouts.meta` in. |
 
 The moderation half has its own contracts, because two repositories have to agree

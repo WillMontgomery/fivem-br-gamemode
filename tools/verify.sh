@@ -120,6 +120,7 @@ NOTES=(
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
     "test_rarity|The five rarity colors are the owner's, and the same in the game, the page and the built page"
+    "test_terminal|Season 2 terminals: a run only inside a session the server opened; the computer always gives the keyboard back"
     "frame budget|Per-frame game calls, draws and memory stay within budget, lobby to match, every scene"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -696,6 +697,12 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # sprint any more. A pin that skips a state or a tick is damage from
     # nowhere, so the suite steps every player state and a minute of held sprint.
     #
+    # test_terminal.lua stands up the Season 2 terminals' contract (#396) in
+    # all three of its Lua files at once -- br_core's server door, br_core's
+    # client relay and the vendored cuchi_computer's shell -- because the
+    # failure that matters crosses them: a run taken outside the session the
+    # server opened, or a NUI focus vote left standing when the computer goes.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -752,6 +759,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_props.lua
         tools/test_stamina.lua
         tools/test_rarity.lua
+        tools/test_terminal.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

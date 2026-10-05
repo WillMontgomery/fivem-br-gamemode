@@ -200,6 +200,13 @@ shared_scripts {
     -- model and plays the clip. Neither reads anything at load.
     '@br_lib/config/crates.lua',
     '@br_lib/shared/crates.lua',
+    -- TERMINALS (#396, Season 2, the `terminals` row in config/seasons.lua):
+    -- the one block of player-facing copy, the function registry and the run
+    -- interval. SHARED because both halves read it -- the server lists the
+    -- registry, the client hands the copy to the computer -- and it reads
+    -- nothing at load, so the position is a reader's: beside the season list
+    -- that gates it.
+    '@br_lib/config/terminals.lua',
     -- Where the admin console lives. One key, no useful default, and it MUST
     -- precede overrides.lua: that file refuses to boot if a convar names a
     -- BR.Config key that does not exist yet, which is the anti-drift check
@@ -658,6 +665,12 @@ client_scripts {
     -- load; BR.Keys.rawKeyDown (client/keybinds.lua) and BR.Config.Loot are
     -- reached at call time.
     'client/props.lua',
+    -- Terminals (#396): br_core's side of cuchi_computer -- opens and closes it
+    -- when the server says, relays its run requests, and tells the key layer
+    -- when it holds the keyboard. AFTER client/keybinds.lua for a reader:
+    -- BR.Keys.setExternalScreen is reached at call time. The dev command
+    -- `brterminal` opens it anywhere; it asks the server, as `brterminalsv`.
+    'client/terminal.lua',
     'client/debug.lua',
 }
 
@@ -875,6 +888,10 @@ server_scripts {
     -- the dev command `brpropsv`, gated by devgate.lua (shared_scripts, first);
     -- BR.Roster and BR.Sched are reached at call time and nil-guarded.
     'server/props.lua',
+    -- Terminals (#396): the session a run is only ever taken inside, the
+    -- function registry's server half, and the dev command `brterminalsv`.
+    -- Asks BR.Season.has('terminals') at call time; nothing at load.
+    'server/terminal.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

@@ -1191,6 +1191,31 @@ BR.Net = {
     -- S->C '<text>'. One `brseason` answer, to the player who typed it alone,
     -- printed in their F8 console and nowhere else.
     SEASON_RESULT   = 'br:season:result',
+
+    -- TERMINALS (#396, Season 2): the computer a Yubikey unlocks. The whole
+    -- contract, with cuchi_computer's half, is docs/terminals.md. THE SERVER
+    -- OWNS EVERY SESSION: it opens one, and a run is taken only inside the
+    -- session it opened for that player and that terminal -- never because a
+    -- client says it is at a terminal.
+    --
+    -- S->C { state = { terminalId, functions = { { id, available, reason? } },
+    -- keyHeld, squadUsed } }. Open the computer on this terminal.
+    TERMINAL_OPEN   = 'br:terminal:open',
+    -- S->C { why }. Close it: the session is over (death, storm, teardown).
+    TERMINAL_CLOSE  = 'br:terminal:close',
+    -- C->S { terminalId, functionId }. Run this function. Dropped unless the
+    -- sender has an open session on that terminal, and one arriving sooner than
+    -- BR.Config.Terminals.runMinIntervalMs after the last is dropped too.
+    TERMINAL_RUN    = 'br:terminal:run',
+    -- S->C { terminalId, functionId, ok, code, state? }. The answer to a run,
+    -- to the runner alone; `state` is the terminal as it now stands.
+    TERMINAL_RESULT = 'br:terminal:result',
+    -- C->S { terminalId, why }. The computer went away on this client
+    -- (Escape, its power button, or it could not open), so the session ends.
+    TERMINAL_CLOSED = 'br:terminal:closed',
+    -- S->C '<text>'. One `brterminalsv` answer, to the player who typed
+    -- `brterminal`, printed in their F8 console and nowhere else.
+    TERMINAL_DEV    = 'br:terminal:dev',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
