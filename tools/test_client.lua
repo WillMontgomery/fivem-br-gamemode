@@ -11117,6 +11117,92 @@ do
            'and as closed under a screen that owns it', shut)
         closeScreen('players')
     end
+
+    describe('a screen another resource owns takes the keyboard too (#396)')
+    do
+        -- THE TERMINALS' COMPUTER IS cuchi_computer'S PAGE, NOT br_ui'S. FiveM
+        -- focuses the frame of whichever resource asks, so that resource holds
+        -- its own NUI focus and the stack above never sees it: client/terminal.lua
+        -- tells this layer through BR.Keys.setExternalScreen instead, and
+        -- everything a br_ui screen gets from the gate, the computer gets.
+        local savedFrameCount = GetFrameCount
+        local frameNo = 5000
+        GetFrameCount = function() return frameNo end
+
+        bootOn(true, true)
+        fire('br:ui:clearFocus')
+        settle()
+
+        BR.Keys.setExternalScreen('terminal')
+        settle()
+        resetCount()
+        typeKey('use')
+        typeKey('drop')
+        typeKey('inventory')
+        typeKey('pause')
+        local n, which = counted()
+        ok(n == 0, 'nothing fires under the computer, Escape included',
+           ('%d fired: %s'):format(n, which))
+        ok(BR.Keys.uiOwnsKeyboard == true, 'the gate reads closed while it is up')
+        ok(BR.Keys.screenHoldsEscape() == true, "and Escape is the computer's")
+
+        -- br_ui CHANGING ITS OWN TOP UNDERNEATH DOES NOT OPEN IT. Its
+        -- announcement carries only br_ui's screen, and the gate is decided
+        -- with both answers.
+        openScreen('players')
+        settle()
+        closeScreen('players')
+        settle()
+        ok(BR.Keys.uiOwnsKeyboard == true,
+           'br_ui letting go of a screen of its own leaves the computer holding the keyboard')
+        resetCount()
+        typeKey('use')
+        ok(counted() == 0, 'and still nothing fires', ('%d fired'):format(counted()))
+
+        logged = {}
+        commands['brkeys'](nil, {}, '')
+        local brkeys = table.concat(logged, ' | ')
+        ok(brkeys:find('external : terminal', 1, true) ~= nil,
+           '/brkeys names the screen that holds it', brkeys)
+
+        -- THE ESCAPE THAT CLOSES IT. CEF had the keyboard, so the raw layer
+        -- first sees that Escape after focus comes back, still down: the resync
+        -- window adopts it rather than firing the pause menu.
+        resetCount()
+        BR.Keys.setExternalScreen(nil)
+        ok(BR.Keys.uiOwnsKeyboard == false, 'the gate opens the moment it goes')
+        keyDown('pause', true)
+        frame(16)
+        frame(16)
+        keyDown('pause', false)
+        frame(16)
+        settle()
+        ok(fired.pause == 0, 'the Escape that closed the computer does not open the pause menu',
+           ('pause fired %d time(s)'):format(fired.pause))
+
+        -- AND FOR THREE FRAMES ESCAPE IS STILL THE COMPUTER'S, the window
+        -- client/menu.lua's ESCAPE_GRACE_FRAMES argues for: client/natives.lua's
+        -- frontend retake and the pause listener both ask this.
+        frameNo = 6000
+        BR.Keys.setExternalScreen('terminal')
+        BR.Keys.setExternalScreen(nil)
+        ok(BR.Keys.screenHoldsEscape() == true, "Escape stays the computer's on the frame it closed")
+        frameNo = 6003
+        ok(BR.Keys.screenHoldsEscape() == true, '...and three frames after')
+        frameNo = 6004
+        ok(BR.Keys.screenHoldsEscape() == false, "and is the pause menu's again on the fourth")
+        frameNo = 5990
+        ok(BR.Keys.screenHoldsEscape() == false, 'a frame counter that went backwards grants nothing')
+
+        settle()
+        resetCount()
+        typeKey('use')
+        typeKey('pause')
+        ok(fired.use == 1 and fired.pause == 1, 'and the keys come back',
+           ('use %d, pause %d'):format(fired.use, fired.pause))
+
+        GetFrameCount = savedFrameCount
+    end
 end
 
 describe('a browser is not up until the engine says so -- client/dui.lua')

@@ -58,6 +58,30 @@ BR.Keys.uiOwnsKeyboard = false
 --- which is the question Escape has to ask and the other flag cannot.
 BR.Keys.uiScreen = nil
 
+--- A screen ANOTHER RESOURCE owns, or nil (#396).
+---
+--- ═══ br_ui'S STACK IS NOT THE ONLY FRAME THAT CAN HOLD THE KEYBOARD NOW ═══
+---
+--- The Season 2 terminals' computer is cuchi_computer's own NUI page, and
+--- FiveM keeps one focus vote per RESOURCE and focuses the frame of whichever
+--- resource asked (ResourceUIScripting.cpp), so that resource holds its own
+--- focus and br_ui never hears of it. client/terminal.lua tells this layer
+--- instead, through BR.Keys.setExternalScreen near the `br:ui:focusChanged`
+--- handler, and both questions above answer for it: the game does not read
+--- the keyboard under it, and Escape is its way out.
+BR.Keys.externalScreen = nil
+
+--- The frame an external screen last went away on, for screenHoldsEscape's
+--- grace. Declared here because that function reads it.
+local externalGoneFrame = nil
+
+--- Frames after an external screen closes during which Escape is still its.
+--- client/menu.lua's ESCAPE_GRACE_FRAMES carries the argument: the Escape
+--- that closed it is still down when focus comes back, the frontend can hear it
+--- on the frame after, and client/natives.lua's retake redeems a leaked one a
+--- frame after that.
+local EXTERNAL_ESCAPE_GRACE_FRAMES = 3
+
 --- DOES ESCAPE BELONG TO SOMETHING ALREADY ON SCREEN?
 ---
 --- ═══ TWO KINDS OF SCREEN, AND ONLY ONE OF THEM IS ON THE FOCUS STACK (#371)
@@ -81,6 +105,14 @@ BR.Keys.uiScreen = nil
 --- @return boolean
 function BR.Keys.screenHoldsEscape()
     if BR.Keys.uiScreen ~= nil then return true end
+    -- A screen another resource owns (#396), and the frames just after it.
+    -- GetFrameCount is only asked once one has been up, and only where it
+    -- exists -- client/spawn.lua guards it the same way.
+    if BR.Keys.externalScreen ~= nil then return true end
+    if externalGoneFrame ~= nil and type(GetFrameCount) == 'function' then
+        local since = GetFrameCount() - externalGoneFrame
+        if since >= 0 and since <= EXTERNAL_ESCAPE_GRACE_FRAMES then return true end
+    end
     return BR.Menu ~= nil and BR.Menu.holdsEscape ~= nil
         and BR.Menu.holdsEscape() == true
 end
@@ -1946,8 +1978,10 @@ end
 --- empty stack, and it means no screen holds anything.
 --- @param screen string|nil  the top of br_ui's focus stack, or 'none'
 local function setUiKeyboard(screen)
-    local want = false
-    if screen ~= nil and screen ~= 'none' then
+    -- A screen another resource owns takes the keyboard whatever br_ui's top
+    -- is (#396); see BR.Keys.externalScreen.
+    local want = BR.Keys.externalScreen ~= nil
+    if not want and screen ~= nil and screen ~= 'none' then
         want = not BR.FocusResolve({ screen }).keepInput
     end
     if want == BR.Keys.uiOwnsKeyboard then return end
@@ -1968,6 +2002,27 @@ AddEventHandler('br:ui:focusChanged', function(screen)
     BR.Keys.uiScreen = (screen ~= nil and screen ~= 'none') and screen or nil
     setUiKeyboard(screen)
 end)
+
+--- A screen ANOTHER RESOURCE owns came up, or went away (#396).
+---
+--- The terminals' computer, from client/terminal.lua, which hears it from
+--- cuchi_computer in the same breath as that resource's SetNuiFocus -- the
+--- shape `br:ui:focusChanged` has for br_ui. Handled the same way: the
+--- keyboard is not trusted until the reading settles, so the Escape that
+--- closed the computer and is still down is adopted rather than fired, and the
+--- gate is decided again with both answers. On the way out the frame is noted
+--- for screenHoldsEscape's grace.
+--- @param name string|nil  the screen's name while it is up; nil once it is gone
+function BR.Keys.setExternalScreen(name)
+    if name == BR.Keys.externalScreen then return end
+    resyncing = true
+    resyncFrames = 0
+    if name == nil and type(GetFrameCount) == 'function' then
+        externalGoneFrame = GetFrameCount()
+    end
+    BR.Keys.externalScreen = name
+    setUiKeyboard(BR.Keys.uiScreen or 'none')
+end
 
 -- UI actions arrive through br_ui's forwarder, the same road the locker and
 -- the inventory take: br_ui owns the page and the callbacks, br_core owns
@@ -2091,6 +2146,9 @@ RegisterCommand('brkeys', function(_, args)
     print(('  ui input : %s'):format(BR.Keys.uiOwnsKeyboard
         and 'CLOSED -- a NUI screen owns the keyboard, key actions suppressed'
         or  'open   -- key actions reach the game'))
+    if BR.Keys.externalScreen ~= nil then
+        print(('  external : %s (a screen another resource owns, #396)'):format(BR.Keys.externalScreen))
+    end
     -- WHAT THE KEY ACTUALLY IS, WHO IS LISTENING FOR IT, AND WHETHER IT IS
     -- DOWN RIGHT NOW -- the three questions a stuck interaction raises.
     --
