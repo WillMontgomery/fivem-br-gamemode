@@ -249,10 +249,114 @@ do
     eq(answers(2), 0, 'another player cannot run on a session that is not theirs')
 
     S.clock = S.clock + 1000
-    run(1, { terminalId = 'dev', functionId = 'scan' })
+    run(1, { terminalId = 'dev', functionId = 'no_such_function' })
     local r = last(1, BR.Net.TERMINAL_RESULT)
-    ok(r and r.ok == false and r.code == 'unavailable' and r.functionId == 'scan',
+    ok(r and r.ok == false and r.code == 'unavailable' and r.functionId == 'no_such_function',
         'a well-formed id that is not in the registry is answered unavailable', r and r.code)
+end
+
+describe('every registry row is listed; an unbuilt one is offline and never runs')
+do
+    bootServer()
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    sv(1, 'open')
+    local st = last(1, BR.Net.TERMINAL_OPEN).state
+    eq(#st.functions, #BR.Config.Terminals.functions, 'one row per registry row, built or not')
+    for i, row in ipairs(BR.Config.Terminals.functions) do
+        local f = st.functions[i]
+        ok(f and f.id == row.id, ('row %d is %s, in the registry\'s order'):format(i, row.id))
+        if row.implemented then
+            ok(f and f.available == true, ('%s is built and available'):format(row.id))
+        else
+            ok(f and f.available == false and f.reason == 'fn_offline',
+                ('%s is not built: listed, offline'):format(row.id), f and tostring(f.reason))
+        end
+    end
+    -- An unbuilt function is offline before anything else is asked: with no
+    -- key and the squad's use spent, it still says fn_offline.
+    sv(1, 'open nokey used')
+    local unbuilt
+    for _, row in ipairs(BR.Config.Terminals.functions) do
+        if not row.implemented then unbuilt = row.id break end
+    end
+    ok(fnState(last(1, BR.Net.TERMINAL_OPEN).state, unbuilt).reason == 'fn_offline',
+        'an unbuilt function says fn_offline whatever else is true')
+    sv(1, 'open')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = unbuilt })
+    local r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == false and r.code == 'fn_offline', 'its run is refused fn_offline', r and r.code)
+    ok(r and r.state.keyHeld == true and r.state.squadUsed == false, 'and nothing is spent')
+    eq(last(1, BR.Net.TERMINAL_OPEN).state.player, 'Alpha', 'the open payload names the player (their gamertag)')
+end
+
+describe('options: only what the registry allows, defaults filled, the rest refused whole')
+do
+    bootServer()
+    local T = BR.Terminal
+    local row = { id = 'x', options = {
+        { id = 'site', choices = { 'terminal', 'circle' }, default = 'terminal' },
+        { id = 'duration', choices = { '60', '120' }, default = '60' },
+    } }
+    local o = T.options(row, nil)
+    ok(o and o.site == 'terminal' and o.duration == '60', 'nothing chosen: every default')
+    o = T.options(row, { site = 'circle' })
+    ok(o and o.site == 'circle' and o.duration == '60', 'one chosen: that one, and the other default')
+    o = T.options(row, {})
+    ok(o and o.site == 'terminal', 'an empty choice set (JSON {}) is the defaults')
+    for _, bad in ipairs({
+        { site = 'moon' },                 -- not a listed choice
+        { site = 1 },                      -- not a string
+        { colour = 'red' },                -- not a declared option
+        { 'terminal' },                    -- an array, keyed by number
+        'terminal',                        -- not a table
+        7,
+    }) do
+        ok(T.options(row, bad) == nil, ('refused whole: %s'):format(type(bad) == 'table'
+            and (next(bad) and tostring(next(bad)) or '{}') or tostring(bad)))
+    end
+    local many = {}
+    for i = 1, 9 do many['k' .. i] = 'v' end
+    ok(T.options(row, many) == nil, 'more options than any row declares: refused')
+    ok(T.options({ id = 'y' }, { a = 'b' }) == nil, 'a row with no options takes none')
+    o = T.options({ id = 'y' }, nil)
+    ok(o ~= nil and next(o) == nil, 'and runs with none')
+
+    -- Through the net event: a bad choice is ANSWERED (the button waits on
+    -- it) as bad_option, and nothing is spent.
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    sv(1, 'open')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'storm_reveal', options = { zone = 'north' } })
+    local r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == false and r.code == 'bad_option', 'a run with options its row does not declare: bad_option', r and r.code)
+    ok(r and r.state.keyHeld == true and r.state.squadUsed == false, 'and nothing is spent')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'storm_reveal', options = {} })
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == true, 'with an empty choice set it runs', r and r.code)
+end
+
+describe('the panel: pushed to each open computer, to its own player, only while open')
+do
+    bootServer()
+    BR.Terminal.pushInfo()
+    eq(#sentTo(nil, BR.Net.TERMINAL_INFO), 0, 'no open computer: nothing is pushed')
+    sv(1, 'open')
+    sv(2, 'open nokey')
+    BR.Terminal.pushInfo()
+    local a, b = last(1, BR.Net.TERMINAL_INFO), last(2, BR.Net.TERMINAL_INFO)
+    ok(a and a.terminalId == 'dev' and a.state.keyHeld == true and a.state.player == 'Alpha',
+        'player 1 is sent their own state')
+    ok(b and b.state.keyHeld == false and b.state.player == 'Bravo', 'player 2 theirs')
+    eq(#sentTo(nil, BR.Net.TERMINAL_INFO), 2, 'one each')
+    sv(1, 'close')
+    BR.Terminal.pushInfo()
+    eq(#sentTo(1, BR.Net.TERMINAL_INFO), 1, 'a closed computer is sent nothing more')
+    eq(#sentTo(2, BR.Net.TERMINAL_INFO), 2, 'while the one still open is sent its own again')
+    BR.Season.switch(1)
+    BR.Terminal.pushInfo()
+    eq(#sentTo(2, BR.Net.TERMINAL_INFO), 2, 'and off Season 2, nobody is')
 end
 
 describe('a run that is refused, and one that runs')
@@ -332,27 +436,83 @@ do
     bootServer()
     local C = BR.Config.Terminals
     local copy = C.copy
+    local has = function(key) return type(copy[key]) == 'string' and copy[key] ~= '' end
+    local cats, seen = {}, {}
+    for _, c in ipairs(C.categories) do
+        cats[c] = true
+        ok(has('category_' .. c), ('category %s has its line'):format(c))
+    end
     for _, row in ipairs(C.functions) do
-        ok(type(row.id) == 'string' and #row.id <= 32 and row.id:match('^[a-z][a-z0-9_]*$') ~= nil,
-            ('%s is a well-formed id'):format(tostring(row.id)))
-        ok(BR.Terminal.FUNCTIONS[row.id] ~= nil, ('%s has a server entry'):format(row.id))
-        ok(type(copy[row.id .. '_name']) == 'string' and copy[row.id .. '_name'] ~= '',
-            ('%s has its _name line'):format(row.id))
-        ok(type(copy[row.id .. '_done']) == 'string' and copy[row.id .. '_done'] ~= '',
-            ('%s has its _done line'):format(row.id))
-        ok(type(copy[row.id .. '_description']) == 'string' and copy[row.id .. '_description'] ~= '',
-            ('%s has its _description line (the lobby notice\'s {description})'):format(row.id))
+        local id = row.id
+        ok(type(id) == 'string' and #id <= 32 and id:match('^[a-z][a-z0-9_]*$') ~= nil,
+            ('%s is a well-formed id'):format(tostring(id)))
+        ok(not seen[id], ('%s is listed once'):format(id))
+        seen[id] = true
+        ok(cats[row.category] == true, ('%s is in a listed category (%s)'):format(id, tostring(row.category)))
+        ok(row.risk == 'low' or row.risk == 'medium' or row.risk == 'high',
+            ('%s has a risk level'):format(id))
+        ok(type(row.implemented) == 'boolean', ('%s says whether it is built'):format(id))
+        if row.implemented then
+            ok(BR.Terminal.FUNCTIONS[id] ~= nil and type(BR.Terminal.FUNCTIONS[id].run) == 'function',
+                ('%s is built and has a server entry'):format(id))
+        end
+        -- THE CARD AND THE PAGE: every line the app draws for a function.
+        for _, part in ipairs({ 'name', 'summary', 'what', 'duration', 'affects', 'notified',
+                                'done', 'description' }) do
+            ok(has(id .. '_' .. part), ('%s has its _%s line'):format(id, part))
+        end
+        for _, o in ipairs(row.options or {}) do
+            ok(type(o.id) == 'string' and o.id:match('^[a-z][a-z0-9_]*$') ~= nil,
+                ('%s: option %s is a well-formed id'):format(id, tostring(o.id)))
+            ok(type(o.choices) == 'table' and #o.choices >= 2, ('%s.%s offers a choice'):format(id, o.id))
+            local listed = false
+            for _, ch in ipairs(o.choices or {}) do
+                ok(type(ch) == 'string' and ch:match('^[a-z0-9_]+$') ~= nil,
+                    ('%s.%s: choice %s is a well-formed string'):format(id, o.id, tostring(ch)))
+                ok(has(('%s_opt_%s_%s'):format(id, o.id, ch)),
+                    ('%s.%s: choice %s has its line'):format(id, o.id, tostring(ch)))
+                if ch == o.default then listed = true end
+            end
+            ok(listed, ('%s.%s: its default is one of its choices'):format(id, o.id))
+            ok(has(('%s_opt_%s'):format(id, o.id)), ('%s.%s has its label'):format(id, o.id))
+        end
+        -- "just don't tell them how it can help them" (owner, 2026-10-05): a
+        -- function's own lines describe; they never sell.
+        for _, part in ipairs({ 'summary', 'what', 'risks', 'duration', 'affects', 'notified' }) do
+            local text = (copy[id .. '_' .. part] or ''):lower()
+            for _, word in ipairs({ 'help', 'helps', 'helpful', 'advantage', 'useful', 'benefit',
+                                    'edge', 'win', 'winning' }) do
+                ok(not (' ' .. text:gsub('[%p]', ' ') .. ' '):find(' ' .. word .. ' ', 1, true),
+                    ('%s_%s does not say "%s"'):format(id, part, word))
+            end
+        end
     end
     -- Every reason the server can give, and every line the desktop and the app
     -- read, and every line the world shows (#396's Gameplay half).
     for _, key in ipairs({
-        'no_key', 'squad_used', 'offline', 'unavailable',
-        'shell_boot', 'desktop_icon', 'window_title', 'app_heading', 'available', 'run',
+        'no_key', 'squad_used', 'offline', 'unavailable', 'fn_offline', 'bad_option',
+        'no_storm', 'no_site', 'ammo_full',
+        'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
+        'address_host', 'path_functions', 'path_howto', 'path_login',
+        'status_available', 'status_used', 'status_not_here', 'status_offline',
+        'risk_low', 'risk_medium', 'risk_high', 'risk_notice', 'cost_line',
+        'howto_title', 'howto_tips_body', 'match_heading',
         'first_pickup', 'already_holding', 'notice_access', 'notice_action',
+        'bounty_new', 'bounty_protect', 'scan_blip', 'bounty_blip',
         'key_label', 'terminal_label', 'terminal_use', 'storm_reveal_blip',
     }) do
-        ok(type(copy[key]) == 'string' and copy[key] ~= '', ('copy has %s'):format(key))
+        ok(has(key), ('copy has %s'):format(key))
     end
+    -- THE OWNER'S OWN WORDS (#396, 2026-10-04), verbatim.
+    eq(copy.no_key, 'You need a Yubikey to access this system. Search far and wide, and you just might find one.',
+        'the login screen is the owner\'s line')
+    eq(copy.notice_access, '{playername} has gained access to a match terminal using their Yubikey. 1 special power has been granted to them.',
+        'the access notice is the owner\'s line')
+    eq(copy.notice_action, '{playername} has redeemed their special power: {description}',
+        'the action notice is the owner\'s line')
+    eq(copy.bounty_new, 'A new bounty is among us: {playername}.', 'the bounty notice is the owner\'s line')
+    eq(copy.bounty_protect, "Protect {playername}! They've got a bounty for the next 10 minutes.",
+        'the squad\'s bounty notice is the owner\'s line')
     for k, v in pairs(copy) do
         ok(type(k) == 'string' and type(v) == 'string', ('copy.%s is a string'):format(tostring(k)))
     end

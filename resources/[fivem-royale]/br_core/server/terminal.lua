@@ -13,7 +13,14 @@
 --                    read from the world on every ask, never from the client
 --   the notices      the lobby hears when someone gains access, and again when
 --                    a function is picked and runs
---   the registry     BR.Terminal.FUNCTIONS, and Storm reveal end to end
+--   the registry     BR.Config.Terminals.functions, every row listed; the
+--                    built ones' server halves in BR.Terminal.FUNCTIONS, with
+--                    Storm reveal end to end here and Scan, Supply drop and
+--                    Max ammo in server/terminalfx.lua
+--   the options      what the player chose before Run, taken only as the
+--                    registry allows (BR.Terminal.options)
+--   the panel        the match as the open computer shows it, pushed to that
+--                    player alone about once a second while it is open
 --   the dev tools    `brterminalsv`, typed through `brterminal` and `bryubikey`
 --
 -- ═══ THE OWNER'S RULES, 2026-10-04 ═══
@@ -74,6 +81,10 @@ local lastRunAt = {}
 
 --- [src] = GetGameTimer() of the last use request taken
 local lastUseAt = {}
+
+--- The most options one run may carry. The registry's longest list is three;
+--- anything past this is not the app.
+local OPTIONS_MAX = 8
 
 -- ------------------------------------------------------------ the sites ---
 
@@ -236,17 +247,85 @@ end
 
 -- --------------------------------------------------------- the registry ---
 
---- The server half of the function registry: one entry per id in
---- BR.Config.Terminals.functions. A listed id with no entry here is not shown.
+--- The server half of the function registry: one entry per BUILT id in
+--- BR.Config.Terminals.functions (`implemented = true`).
 ---
----   refuse(src, session) -> reason|nil   optional: a reason of its own, asked
----                                        after the shared ones below
----   run(src, session) -> { ok, code }    what running it does; `code` is
----                                        'done' when it ran
+---   refuse(src, session, opts) -> reason|nil   optional: a reason of its own,
+---                                              asked after the shared ones
+---   run(src, session, opts) -> { ok, code, after? }
+---                                              what running it does; `code` is
+---                                              'done' when it ran, and
+---                                              `after`, when given, is called
+---                                              once the lobby has heard
+---                                              notice_action
 ---
---- A function the owner has not decided yet (Scan and its bounty, the rest of
---- #396's list) is a row in the config, an entry here, and its three copy lines.
+--- `opts` is what BR.Terminal.options made of the player's choices: every
+--- option the row declares, each a listed choice, defaults filled.
+---
+--- EVERY ROW IS LISTED, BUILT OR NOT. The owner asked for a card and a page per
+--- function, so a row whose effect is not built yet is shown with the reason
+--- `fn_offline` and its run is refused before anything else is asked. A row
+--- marked implemented with no entry here is the same (and test_terminal.lua
+--- fails it).
 T.FUNCTIONS = {}
+
+--- The registry row for an id, or nil.
+--- @param id string
+--- @return table|nil
+local function rowOf(id)
+    for _, row in ipairs(cfg().functions) do
+        if row.id == id then return row end
+    end
+    return nil
+end
+T.row = rowOf
+
+--- Is this row's effect built and its server half here?
+--- @param row table
+--- @return boolean
+local function built(row)
+    return row.implemented == true and T.FUNCTIONS[row.id] ~= nil
+end
+
+--- The player's choices for a run, as the registry allows them, or nil.
+---
+--- NEVER TRUSTS THE APP. The app only offers the registry's choices, but a run
+--- request is a client's word: every key must be an option this row declares,
+--- every value a string from that option's own `choices`, and there are at
+--- most OPTIONS_MAX of them. Anything else is the whole request refused --
+--- never a half-understood one run with the parts that parsed. A missing
+--- option takes its `default`, so a row whose options the player never
+--- touched runs exactly as its page said it would.
+--- @param row table
+--- @param given any  the request's `options`: nil, or a table of strings
+--- @return table|nil opts
+function T.options(row, given)
+    local out = {}
+    local declared = {}
+    for _, o in ipairs(row.options or {}) do
+        declared[o.id] = o
+        out[o.id] = o.default
+    end
+    if given == nil then return out end
+    if type(given) ~= 'table' then return nil end
+    local n = 0
+    for k, v in pairs(given) do
+        n = n + 1
+        if n > OPTIONS_MAX then return nil end
+        local o = type(k) == 'string' and declared[k] or nil
+        if not o or type(v) ~= 'string' then return nil end
+        local listed = false
+        for _, c in ipairs(o.choices or {}) do
+            if c == v then
+                listed = true
+                break
+            end
+        end
+        if not listed then return nil end
+        out[k] = v
+    end
+    return out
+end
 
 --- Show a squad where this match's storm ends, from now to the end of the match.
 --- @param m table
@@ -273,7 +352,7 @@ T.FUNCTIONS.storm_reveal = {
     -- (typed facts, for walking the app) is never refused for it.
     refuse = function(src, session)
         if session.dev then return nil end
-        if finalFor(src) == nil then return 'unavailable' end
+        if finalFor(src) == nil then return 'no_storm' end
         return nil
     end,
     -- THE SQUAD SEES WHERE THE STORM ENDS (BR.Storm.finalCentre), and nobody
@@ -289,7 +368,7 @@ T.FUNCTIONS.storm_reveal = {
                     .. 'with no match to reveal'):format(src))
                 return { ok = true, code = 'done' }
             end
-            return { ok = false, code = 'unavailable' }
+            return { ok = false, code = 'no_storm' }
         end
         local _, e = whereIs(src)
         T.reveal(m, TS.squadKey(e, src), f)
@@ -335,42 +414,129 @@ function T.consume(src, session, functionId)
     end
 end
 
---- Why `fn` cannot run now, as a reason code (a key into the copy), or nil.
---- The order is the order a player would want to hear them in: a dead
---- terminal first, then the squad, then their own key.
-local function refusal(src, session, fn)
+--- Why the function on `row` cannot run now, as a reason code (a key into the
+--- copy), or nil. The order is the order a player would want to hear them in:
+--- a function that is not built yet first (nothing else about it matters),
+--- then a dead terminal, then the squad, then their own key, then the
+--- function's own reason for these options.
+--- @param opts table|nil  nil when listing: a function's own refusal is asked
+---                        with its defaults
+local function refusal(src, session, row, opts)
+    if not built(row) then return 'fn_offline' end
     local f = T.facts(src, session)
     if f.offline then return 'offline' end
     if f.squadUsed then return 'squad_used' end
     if not f.keyHeld then return 'no_key' end
-    if fn.refuse then return fn.refuse(src, session) end
+    local fn = T.FUNCTIONS[row.id]
+    if fn.refuse then return fn.refuse(src, session, opts or T.options(row, nil)) end
     return nil
 end
 
-local function listed(id)
-    for _, row in ipairs(cfg().functions) do
-        if row.id == id then return true end
-    end
-    return false
+-- ------------------------------------------------------------- the panel ---
+
+--- Still in the fight, for the panel's counts: BR.Server.isInMatch's answer,
+--- the same one the HUD's ALIVE counter reads.
+local function inFight(state)
+    if BR.Server and BR.Server.isInMatch then return BR.Server.isInMatch(state) == true end
+    return state == BR.PlayerState.ALIVE or state == BR.PlayerState.DBNO
 end
 
---- The terminal as this player sees it: the payload the computer opens with.
---- @return table { terminalId, functions = { { id, available, reason } }, keyHeld, squadUsed }
+--- A squadmate's line on the panel: 'alive', 'downed' or 'out'.
+local function mateState(state)
+    if state == BR.PlayerState.DBNO then return 'downed' end
+    if inFight(state) then return 'alive' end
+    return 'out'
+end
+
+--- The match as the open computer shows it (#396, 2026-10-05: "a details table
+--- which shows realtime match info"), or nil outside a match.
+---
+--- EVERY FIELD IS WHAT THIS PLAYER MAY ALREADY KNOW: the match's own tag and
+--- clock, the storm everyone sees, the counts the HUD already shows, their own
+--- squad (the squad panel's), their own key, how many terminals are live (a
+--- key holder's map shows them), and the bounties the lobby was told about.
+--- Nothing about another squad's members or keys crosses here.
+--- @param src integer
+--- @param now number
+--- @return table|nil
+function T.matchInfo(src, now)
+    local m = BR.Server and BR.Server.matchOf and BR.Server.matchOf(src) or nil
+    if not m then return nil end
+    local info = {
+        tag = BR.MatchTag and BR.MatchTag(m.id) or tostring(m.id),
+        mode = m.mode,
+        phase = m.state,
+        elapsedMs = m.startedAt and math.max(0, now - m.startedAt) or nil,
+    }
+
+    local rec = m.storm
+    if rec and BR.StormAt then
+        local _, _, _, st, left = BR.StormAt(rec, now)
+        local phases = BR.Config.Storm and BR.Config.Storm.phases
+        info.storm = { stage = rec.phase, stages = phases and #phases or nil,
+                       state = st, leftMs = math.max(0, math.floor(left or 0)) }
+    end
+
+    local _, _, mine = whereIs(src)
+    local players, squads, seen, squad = 0, 0, {}, {}
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(s, e)
+        local key = TS.squadKey(e, s)
+        if inFight(e.state) then
+            players = players + 1
+            if not seen[key] then
+                seen[key] = true
+                squads = squads + 1
+            end
+        end
+        if key == mine then
+            squad[#squad + 1] = { src = s, name = e.name, state = mateState(e.state),
+                                  me = s == src or nil }
+        end
+    end)
+    table.sort(squad, function(a, b) return a.src < b.src end)
+    for _, row in ipairs(squad) do row.src = nil end
+    info.players, info.squads, info.squad = players, squads, squad
+
+    local list = T.sites()
+    local live = 0
+    for _, s in ipairs(list) do
+        if T.online(s, m, now) then live = live + 1 end
+    end
+    info.terminals = { online = live, total = #list }
+
+    -- THE BOUNTIES THE LOBBY WAS TOLD ABOUT (server/terminalfx.lua): a name
+    -- and a clock, the toast's own facts.
+    if T.bountiesOf then
+        local b = {}
+        for _, row in ipairs(T.bountiesOf(m, now)) do
+            b[#b + 1] = { name = row.name, leftMs = row.leftMs }
+        end
+        info.bounties = b
+    end
+    return info
+end
+
+--- The terminal as this player sees it: the payload the computer opens with,
+--- and what TERMINAL_INFO pushes while it is open.
+--- @return table { terminalId, functions = { { id, available, reason } },
+---                 keyHeld, squadUsed, player, match }
 function T.state(src, session)
     local f = T.facts(src, session)
     local list = {}
     for _, row in ipairs(cfg().functions) do
-        local fn = T.FUNCTIONS[row.id]
-        if fn then
-            local why = refusal(src, session, fn)
-            list[#list + 1] = { id = row.id, available = why == nil, reason = why }
-        end
+        local why = refusal(src, session, row, nil)
+        list[#list + 1] = { id = row.id, available = why == nil, reason = why }
     end
+    local e = BR.Roster and BR.Roster.get and BR.Roster.get(src) or nil
     return {
         terminalId = session.terminalId,
         functions = list,
         keyHeld = f.keyHeld == true,
         squadUsed = f.squadUsed == true,
+        -- THE GAMERTAG, as the app's signed-in username: the roster's display
+        -- name, which is what every toast and the kill feed already call them.
+        player = (e and e.name) or GetPlayerName(src) or nil,
+        match = T.matchInfo(src, GetGameTimer()),
     }
 end
 
@@ -453,6 +619,18 @@ function T.checkSessions(now)
     for _, s in ipairs(shut) do T.close(s.src, s.why) end
 end
 
+--- Every open computer its state again, the match panel included
+--- (TERMINAL_INFO), each to its own player. Run on BR.Sched every infoPushMs;
+--- public so the suites can step it. Off Season 2 it sends nothing: the
+--- session check closes those computers.
+function T.pushInfo()
+    if not on() then return end
+    for src, session in pairs(sessions) do
+        TriggerClientEvent(BR.Net.TERMINAL_INFO, src,
+            { terminalId = session.terminalId, state = T.state(src, session) })
+    end
+end
+
 --- A player held interact at a terminal. Open it, or say why not.
 --- @param src integer
 --- @param terminalId string
@@ -519,19 +697,29 @@ function T.run(src, d, now)
     end
 
     local answer = { terminalId = session.terminalId, functionId = id }
-    local fn = T.FUNCTIONS[id]
-    if not fn or not listed(id) then
+    local row = rowOf(id)
+    if not row then
         answer.ok, answer.code = false, 'unavailable'
         return answer
     end
-    local refused = refusal(src, session, fn)
+    -- THE OPTIONS FIRST, AND WHOLE. A request the registry does not allow is
+    -- answered -- the app's button is waiting on it -- and nothing is asked
+    -- or spent.
+    local opts = T.options(row, d.options)
+    if not opts then
+        answer.ok, answer.code = false, 'bad_option'
+        answer.state = T.state(src, session)
+        return answer
+    end
+    local refused = refusal(src, session, row, opts)
     if refused then
         answer.ok, answer.code = false, refused
         answer.state = T.state(src, session)
         return answer
     end
 
-    local r = fn.run(src, session) or {}
+    local fn = T.FUNCTIONS[id]
+    local r = fn.run(src, session, opts) or {}
     answer.ok = r.ok == true
     answer.code = type(r.code) == 'string' and r.code or (answer.ok and 'done' or 'unavailable')
     if answer.ok then
@@ -544,6 +732,9 @@ function T.run(src, d, now)
             end
             print(('[br_core] terminals: %s (%d) ran %s'):format(e and e.name or '?', src, id))
         end
+        -- WHAT FOLLOWS THE LOBBY'S NOTICE, in that order: "has redeemed their
+        -- special power: Scan..." is read before "A new bounty is among us".
+        if r.after then r.after() end
     end
     answer.state = T.state(src, session)
     return answer
@@ -618,13 +809,20 @@ if BR.Sched and BR.Sched.every then
         if next(sessions) == nil then return end
         T.checkSessions(GetGameTimer())
     end)
+    -- THE PANEL, REALTIME: every open computer its state again, the match
+    -- panel included -- to that player alone, and only while it is open. No
+    -- open computer, no work.
+    BR.Sched.every(cfg().infoPushMs or 1000, 'terminal.info', function()
+        if next(sessions) == nil then return end
+        T.pushInfo()
+    end)
 end
 
 -- ---------------------------------------------------------------- dev ---
 
 local USAGE = 'usage: brterminalsv open [nokey] [used] [offline] | close | key give|take'
     .. ' | place <x> <y> <z> [h] [id] | remove <id> | list | online <id> [off] | reset'
-    .. ' | run <function>  (from the server console, a verb about a player takes'
+    .. ' | run <function> [option=choice ...]  (from the server console, a verb about a player takes'
     .. ' the player id next: brterminalsv open <player id> [...])'
 
 --- One line on the requester's F8 (or this console), and nowhere else.
@@ -798,15 +996,36 @@ RegisterCommand('brterminalsv', function(source, args)
         -- A FUNCTION'S EFFECT, WITHOUT A KEY, A TERMINAL OR A NOTICE: nothing
         -- is spent and the squad's use is untouched. For testing what a
         -- function does, not the door in front of it.
+        -- Options as option=choice words after the id, through the same
+        -- BR.Terminal.options the net event uses.
         local id = words[1] and words[1]:lower() or ''
-        local fn = T.FUNCTIONS[id]
-        if not fn or not listed(id) then
+        local row = rowOf(id)
+        if not row then
             tell(src, ('no function "%s"'):format(id))
             return
         end
-        local r = fn.run(target, { terminalId = 'dev', dev = false }) or {}
+        if not built(row) then
+            tell(src, ('%s is listed but its effect is not built (implemented = false)'):format(id))
+            return
+        end
+        local given = {}
+        for i = 2, #words do
+            local k, v = words[i]:match('^([%w_]+)=([%w_]+)$')
+            if not k then
+                tell(src, ('"%s" is not option=choice'):format(words[i]))
+                return
+            end
+            given[k] = v
+        end
+        local opts = T.options(row, given)
+        if not opts then
+            tell(src, ('%s does not take those options'):format(id))
+            return
+        end
+        local r = T.FUNCTIONS[id].run(target, { terminalId = 'dev', dev = false }, opts) or {}
         tell(src, ('ran %s for %d without a key: %s (%s)'):format(id, target,
             r.ok and 'ok' or 'refused', tostring(r.code)))
+        if r.ok and r.after then r.after() end
 
     else
         tell(src, USAGE)

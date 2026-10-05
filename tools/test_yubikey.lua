@@ -254,6 +254,15 @@ local function noticesTo(src)
     return out
 end
 
+--- One function's row in a terminal state, by id: the registry lists every
+--- function, so a position is not an identity.
+local function fnOf(state, id)
+    for _, f in ipairs(state and state.functions or {}) do
+        if f.id == id then return f end
+    end
+    return nil
+end
+
 local function noticeText(n)
     if type(n.text) == 'table' then return n.text.text end
     return n.text
@@ -613,7 +622,7 @@ do
     local open = lastOf(BR.Net.TERMINAL_OPEN, 1)
     ok(open and open.state.terminalId == 'tower' and open.state.keyHeld == true
         and open.state.squadUsed == false, 'the holder at a live terminal gets the computer, key held')
-    local f = open and open.state.functions[1]
+    local f = open and fnOf(open.state, 'storm_reveal')
     ok(f and f.id == 'storm_reveal' and f.available == true, 'Storm reveal is available')
 
     local n1 = noticesTo(3)
@@ -640,7 +649,7 @@ do
     eq(T.squadUsed(1), true, 'the squad\'s one use is spent')
     eq(T.squadUsed(2), true, 'for every member of the squad')
     eq(T.squadUsed(3), false, 'and not for anyone else\'s')
-    ok(r and r.state.squadUsed == true and r.state.functions[1].reason == 'squad_used',
+    ok(r and r.state.squadUsed == true and fnOf(r.state, 'storm_reveal').reason == 'squad_used',
         'the answer already lists it as used')
 
     local n2 = noticesTo(3)
@@ -686,7 +695,7 @@ do
     notices = {}
     fire(BR.Net.TERMINAL_USE, 2, { terminalId = 'tower' })
     local st = lastOf(BR.Net.TERMINAL_OPEN, 2).state
-    ok(st.keyHeld == true and st.squadUsed == true and st.functions[1].reason == 'squad_used',
+    ok(st.keyHeld == true and st.squadUsed == true and fnOf(st, 'storm_reveal').reason == 'squad_used',
         'the second holder in squad A opens it and every function is squad_used')
     eq(#notices, 0, 'and nobody is told they gained access -- they did not')
     gameMs = gameMs + 1000
@@ -722,7 +731,7 @@ do
     player(1, m, nil, NEAR_SITE, false, false)
     fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
     local st = lastOf(BR.Net.TERMINAL_OPEN, 1).state
-    ok(st.keyHeld == false and st.functions[1].reason == 'no_key',
+    ok(st.keyHeld == false and fnOf(st, 'storm_reveal').reason == 'no_key',
         'without a key it opens, every function no_key')
     eq(#notices, 0, 'and nobody is told anything')
     gameMs = gameMs + 1000
@@ -802,7 +811,7 @@ do
     eq(T.session(3), nil, 'the check closes the other one too')
 end
 
-describe('terminals: Storm reveal with nothing to reveal is unavailable, and spends nothing')
+describe('terminals: Storm reveal with nothing to reveal is refused no_storm, and spends nothing')
 do
     reset()
     local m = newMatch(1)
@@ -810,10 +819,10 @@ do
     player(1, m, nil, NEAR_SITE, true, true)
     fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
     local st = lastOf(BR.Net.TERMINAL_OPEN, 1).state
-    eq(st.functions[1].reason, 'unavailable', 'listed unavailable')
+    eq(fnOf(st, 'storm_reveal').reason, 'no_storm', 'listed no_storm')
     gameMs = gameMs + 1000
     fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'storm_reveal' })
-    eq(lastOf(BR.Net.TERMINAL_RESULT, 1).code, 'unavailable', 'and refused unavailable')
+    eq(lastOf(BR.Net.TERMINAL_RESULT, 1).code, 'no_storm', 'and refused no_storm')
     eq(Y.holds(1), true, 'the key is kept')
     eq(T.squadUsed(1), false, 'and so is the squad\'s use')
 end
@@ -885,8 +894,14 @@ do
     ok(lastOf(BR.Net.TERMINAL_REVEAL, 2) ~= nil, '`run` runs a function with no key and no terminal')
     eq(Y.holds(2), false, 'spending nothing')
     eq(T.squadUsed(2), false, 'not even the squad\'s use')
-    sv(2, 'run scan')
+    sv(2, 'run no_such_function')
     ok((lastOf(BR.Net.TERMINAL_DEV, 2) or ''):find('no function', 1, true) ~= nil, 'an unknown function is refused')
+    sv(2, 'run disarm')
+    ok((lastOf(BR.Net.TERMINAL_DEV, 2) or ''):find('not built', 1, true) ~= nil,
+        'a listed function whose effect is not built says so')
+    sv(2, 'run storm_reveal zone=north')
+    ok((lastOf(BR.Net.TERMINAL_DEV, 2) or ''):find('does not take', 1, true) ~= nil,
+        'options a function does not take are refused')
 end
 
 -- =========================================================================

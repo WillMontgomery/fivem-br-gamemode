@@ -1203,13 +1203,19 @@ BR.Net = {
     TERMINAL_OPEN   = 'br:terminal:open',
     -- S->C { why }. Close it: the session is over (death, storm, teardown).
     TERMINAL_CLOSE  = 'br:terminal:close',
-    -- C->S { terminalId, functionId }. Run this function. Dropped unless the
+    -- C->S { terminalId, functionId, options? }. Run this function, with the
+    -- player's choices (option id -> choice, strings). Dropped unless the
     -- sender has an open session on that terminal, and one arriving sooner than
     -- BR.Config.Terminals.runMinIntervalMs after the last is dropped too.
+    -- Options the registry does not allow are answered `bad_option`.
     TERMINAL_RUN    = 'br:terminal:run',
     -- S->C { terminalId, functionId, ok, code, state? }. The answer to a run,
     -- to the runner alone; `state` is the terminal as it now stands.
     TERMINAL_RESULT = 'br:terminal:result',
+    -- S->C { terminalId, state }. The open computer's state again, with the
+    -- match panel (`state.match`), every infoPushMs while it is open -- to
+    -- that player alone, and to nobody whose computer is closed.
+    TERMINAL_INFO   = 'br:terminal:info',
     -- C->S { terminalId, why }. The computer went away on this client
     -- (Escape, its power button, or it could not open), so the session ends.
     TERMINAL_CLOSED = 'br:terminal:closed',
