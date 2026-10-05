@@ -110,6 +110,8 @@ NOTES=(
     "test_volts|Volts spent in a match are counted only when the purchase actually went through"
     "test_emotes|Emotes on the server: buying, equipping and granting them, all off before Season 2"
     "test_warmupcrates|The four warmup crates: fixed spots, contents match their rarity, and they refill forever"
+    "test_crates|Season 2 crates, server: each tier's box, December-January festive, loot bursts as the clip ends"
+    "test_crates_client|Season 2 crates on screen: the right box or the wooden one, the clip, the open swap, the prompt"
     "test_bool_natives|The yes/no misread check still catches mistakes and leaves correctly written code alone"
     "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
@@ -740,6 +742,8 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_volts.lua
         tools/test_emotes.lua
         tools/test_warmupcrates.lua
+        tools/test_crates.lua
+        tools/test_crates_client.lua
         tools/test_bool_natives.lua
         tools/test_tutorial.lua
         tools/test_gitref.lua

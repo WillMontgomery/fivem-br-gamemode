@@ -5468,6 +5468,49 @@ do
         'and neither does a weaponHash that is not a number')
 end
 
+describe('server: on a Season 2 server the falling crate carries the box it lands as (#395)')
+do
+    -- THE BOX UNDER THE CANOPY IS THE BOX THAT LANDS. The client builds the
+    -- falling crate from the record alone, so the record carries the look the
+    -- landed entry will carry: LEGENDARY, festive if the match is. On a Season 1
+    -- server it carries nothing, and the record is the one it always was.
+    loadAll({ 'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
+              'br_lib/config/crates.lua', 'br_lib/shared/crates.lua' })
+    local function season(n)
+        BR.Season.boot(function(name)
+            return name == 'br_season' and tostring(n) or ''
+        end, function() end)
+    end
+
+    reset()
+    season(2)
+    BR.Crates.festiveOverride = true
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    commands['brairdrop'](0, { 'now' }, '')
+    local rec = m.airdrop.waiting[1] and m.airdrop.waiting[1].rec or {}
+    eq(rec.bt, BR.Rarity.LEGENDARY, 'Season 2: the record names the legendary tier')
+    eq(rec.bf, true, 'and the festive set, with no match answer to defer to')
+
+    -- THE MATCH'S ANSWER WINS over today's: a match laid out plain stays plain.
+    m.loot.festive = false
+    commands['brairdrop'](0, { 'now' }, '')
+    local rec2 = m.airdrop.waiting[2] and m.airdrop.waiting[2].rec or {}
+    eq(rec2.bt, BR.Rarity.LEGENDARY, 'a second drop is legendary too')
+    eq(rec2.bf, nil, 'and plain, because this match was laid out plain')
+
+    reset()
+    season(1)
+    local m1 = newMatch(2)
+    BR.Airdrop.begin(m1)
+    commands['brairdrop'](0, { 'now' }, '')
+    local rec1 = m1.airdrop.waiting[1] and m1.airdrop.waiting[1].rec or {}
+    ok(rec1.bt == nil and rec1.bf == nil,
+        'Season 1: the record carries no look -- the wooden crate, as always',
+        ('bt %s, bf %s'):format(tostring(rec1.bt), tostring(rec1.bf)))
+    BR.Crates.festiveOverride = nil
+end
+
 -- =========================================================================
 -- PART C -- the client
 -- =========================================================================
@@ -8413,6 +8456,50 @@ end
 
 removeAudio()
 DeleteEntity = realDeleteEntity
+
+describe('client: Season 2 -- the falling crate is the box it lands as, at normal size (#395)')
+do
+    local C = BR.Config.Crates
+    local was = { ship = C.shipping[5].sealed, xmas = C.festive[5].sealed }
+    C.shipping[5].sealed = 'test_ship_legendary'
+    C.festive[5].sealed  = 'test_xmas_legendary'
+    local inCd = { test_ship_legendary = true, test_xmas_legendary = true }
+    local prevCd = IsModelInCdimage
+    function IsModelInCdimage(m) return inCd[m] and 1 or 0 end
+
+    --- One drop announced with this look; the model its falling crate is.
+    local function drop(bt, bf)
+        clientReset()
+        local rec = BR.BuildAirdropRecord(1,
+            { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 },
+            260.0, gameMs, gameMs + A.descentMs, 90.0)
+        rec.bt, rec.bf = bt, bf
+        fire(BR.Net.AIRDROP_SYNC, rec)
+        render()
+        local e, h = oneEnt()
+        return e and e.model, h
+    end
+
+    eq(drop(nil, nil), A.crateProp,
+        'a record with no look -- every Season 1 drop -- falls as the wooden crate')
+    local model, h = drop(5, nil)
+    eq(model, 'test_ship_legendary', 'a Season 2 record falls as the legendary shipping box')
+    ok(h ~= nil and scaled[h] == nil,
+        'at the normal size: crateScale is 1.0, so nothing rescales it',
+        tostring(h and scaled[h]))
+    eq(drop(5, true), 'test_xmas_legendary', 'and as the festive one when the match is festive')
+
+    inCd.test_ship_legendary = nil
+    eq(drop(5, nil), A.crateProp,
+        'a build without the box model falls back to the wooden crate, and still drops')
+
+    C.shipping[5].sealed = was.ship
+    eq(drop(5, nil), A.crateProp, 'and so does a placeholder row')
+
+    C.festive[5].sealed = was.xmas
+    IsModelInCdimage = prevCd
+    clientReset()
+end
 
 -- ----------------------------------------------------------------- result ---
 
