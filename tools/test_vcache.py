@@ -516,6 +516,18 @@ class NeverStored(Checkout):
         self.assertEqual(self.entries(), [])
 
 
+    def test_a_traced_process_that_left_no_trace_is_not_stored(self):
+        # Review of #397: a unit with declared inputs whose tracer could not
+        # write its trace used to be stored on the declared inputs alone.
+        run = self.p('.verify-cache', 'runs', 'y')
+        os.makedirs(run)
+        write(os.path.join(run, 'passed'), 'u\tunit u\t%f\tlist:data:.txt\ttraces:1\n' % time.time())
+        r = subprocess.run([sys.executable, self.p('tools', 'vcache.py'), 'commit', '--root', self.root,
+                            '--lua', LUA, '--run', run], stdout=subprocess.PIPE)
+        self.assertIn(b'not stored: unit u (0 of 1 traced processes left a trace)', r.stdout)
+        self.assertEqual(self.entries(), [])
+
+
 class Tracers(Checkout):
 
     def lua(self, script, *args):

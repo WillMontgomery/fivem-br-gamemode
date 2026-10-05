@@ -366,6 +366,7 @@ vc_begin() {
         for d_ in "$@"; do VC_DECL="$VC_DECL$TAB$d_"; done
         if [ "$#" -gt 0 ]; then VC_DECL="$VC_DECL${TAB}env${TAB}exe:$VC_BASH"; fi
         VC_START="${EPOCHREALTIME/,/.}"
+        VC_SEQ0=$VC_SEQ
     fi
     return 0
 }
@@ -375,7 +376,12 @@ vc_begin() {
 vc_end() {
     if [ "$VC_ON" -eq 1 ] && [ -n "$VC_UNIT" ]; then
         if [ "$1" -eq 0 ]; then
-            printf '%s\t%s\t%s%s\n' "$VC_ID" "$VC_UNIT" "$VC_START" "$VC_DECL" >> "$VC_RUN/passed"
+            # traces:N -- how many traced processes this unit started. commit
+            # refuses the unit when fewer traces than that exist: a tracer that
+            # could not write its trace must not leave a unit stored on its
+            # declared inputs alone.
+            printf '%s\t%s\t%s%s\ttraces:%s\n' "$VC_ID" "$VC_UNIT" "$VC_START" "$VC_DECL" \
+                "$((VC_SEQ - ${VC_SEQ0:-$VC_SEQ}))" >> "$VC_RUN/passed"
         else
             printf '%s\t%s\n' "$VC_ID" "$VC_UNIT" >> "$VC_RUN/failed"
         fi

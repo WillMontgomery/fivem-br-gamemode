@@ -548,7 +548,8 @@ def cmd_commit(a):
         uid, unit, start = row[0], row[1], float(row[2])
         decl = [d for d in row[3:] if d]
         pinned = set(d[4:] for d in decl if d.startswith('pin:'))
-        decl = [d for d in decl if not d.startswith('pin:')]
+        wanted = [d for d in decl if d.startswith('traces:')]
+        decl = [d for d in decl if not d.startswith(('pin:', 'traces:'))]
         inputs, uses = {}, set()
         try:
             traces = sorted(n for n in os.listdir(run)
@@ -560,6 +561,11 @@ def cmd_commit(a):
                 else:
                     uses.add('py')
                     read_py_trace(m, os.path.join(run, n), start, inputs)
+            if wanted and len(traces) < int(wanted[-1][7:]):
+                # FAIL CLOSED: a traced process ran and left no trace (the
+                # tracer could not write it), so what it read is unknown.
+                raise Refused('%d of %s traced processes left a trace'
+                              % (len(traces), wanted[-1][7:]))
             if not traces and not decl:
                 raise Refused('nothing was recorded')
             declared(m, decl, start, inputs)
