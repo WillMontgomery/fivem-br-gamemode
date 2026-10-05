@@ -2160,12 +2160,22 @@ local function playClip(e, d)
     local obj = e.obj
     local total = tonumber(d.ms) or ms
     local at = tonumber(d.at)
+    local recvAt = GetGameTimer()
 
     --- @return boolean played
     local function start()
         if entries[e.id] ~= e or e.obj ~= obj then return false end
         if not obj or not isTrue(DoesEntityExist(obj)) then return false end
-        local elapsed = at and (BR.Clock.now() - at) or 0.0
+        -- ON THE SERVER'S CLOCK WHEN THIS CLIENT HAS ONE. Before the clock has
+        -- synced, `now - at` is two unrelated timers subtracted, so the clip is
+        -- timed from the message's arrival instead -- one-way latency late, the
+        -- shape client/emotes.lua's posOf uses for the same reason.
+        local elapsed
+        if at and BR.Clock and BR.Clock.synced then
+            elapsed = BR.Clock.now() - at
+        else
+            elapsed = GetGameTimer() - recvAt
+        end
         if elapsed < 0 then elapsed = 0.0 end
         if total <= 0 or elapsed >= total then return false end
         -- STILL WHILE IT OPENS. A dynamic body under an entity anim is a body

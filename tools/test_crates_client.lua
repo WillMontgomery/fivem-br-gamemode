@@ -321,6 +321,9 @@ loadAll({
 local C = BR.Config.Crates
 local L = BR.Config.Loot
 local R = BR.Rarity
+-- A client whose clock has synced with the server's, which is every client a
+-- few seconds after it connects. The one block that is not says so.
+BR.Clock.synced = true
 local SHIPPED = (function()
     local function copy(t)
         if type(t) ~= 'table' then return t end
@@ -665,6 +668,18 @@ do
     anims = {}
     TriggerEvent(BR.Net.LOOT_OPENING, { id = w2.id, at = BR.Clock.now() - 1300, ms = 1200 })
     eq(#anims, 0, 'a message that arrives after the clip would have ended plays nothing')
+
+    -- A CLIENT WHOSE CLOCK HAS NOT SYNCED cannot subtract the server's clock
+    -- from its own, so it times the clip from the message's arrival.
+    local w3 = crateWire({ bt = 1, x = 8.0 })
+    add(w3)
+    frames(15)
+    local box3 = bodyAt(w3.x, w3.y)
+    BR.Clock.synced = false
+    TriggerEvent(BR.Net.LOOT_OPENING, { id = w3.id, at = BR.Clock.now() - 90000, ms = 1200 })
+    BR.Clock.synced = true
+    eq(#anims, 1, 'an unsynced client still plays the clip, however far off its clock is')
+    eq(ents[box3].animTime, nil, 'from its first frame')
 end
 
 describe('a clipset that streams late plays late; one that never streams leaves the box sealed')
