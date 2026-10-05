@@ -205,7 +205,6 @@ BR.Config.Terminals = {
         card_category = 'Category',
         card_risk = 'Risk',
         card_status = 'Status',
-        card_open = 'View details',
         pref_title = 'Preferences',
         pref_confirm = 'Confirm',
         pref_cancel = 'Cancel',
