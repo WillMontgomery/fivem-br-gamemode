@@ -74,11 +74,17 @@ RemainAfterExit=no
 # restart gets it (ExecStartPost runs outside the runuser wrapper).
 #
 # THERE ARE TWO CLONES ON THIS BOX AND THEY HAVE DIFFERENT JOBS. This path is
-# the checkout you `git pull` by hand -- it is where the deploy SCRIPT comes
-# from, so updating the deploy logic is a normal pull. deploy.sh then manages a
-# second clone of its own under $SERVER_ROOT/.gamemode-src, which it
-# `reset --hard`s and `clean -fd`s on every run, because what gets served has
-# to be a deployment artifact rather than somebody's workspace.
+# the checkout you `git pull` by hand -- it is where the deploy SCRIPT starts.
+# deploy.sh then manages a second clone of its own under
+# $SERVER_ROOT/.gamemode-src, which it `reset --hard`s and `clean -fd`s on
+# every run, because what gets served has to be a deployment artifact rather
+# than somebody's workspace. When the commit it deploys carries a different
+# tools/deploy.sh, it hands the rest of the deploy to that one, so a change to
+# the deploy logic lands with its commit (DEPLOY.md, "Deploying").
+#
+# THIS FILE IS NOT THAT. systemd runs its own copy in /etc/systemd/system, so a
+# change here reaches a box only when someone copies it there again and runs
+# `systemctl daemon-reload`; no deploy and no pull does it.
 #
 # Invoked through `bash` rather than executed directly, on purpose: none of
 # this repo's shell scripts carried the executable bit until 2026-08-09 (it was

@@ -198,11 +198,40 @@ server that just went down. Either way `royale-deploy` has no `[Install]` sectio
 and is never enabled, on any box.
 
 **Two clones live on the box, with different jobs.**
-`/opt/misc/fivem-br-gamemode` is the checkout you `git pull` by hand — it is
-where the deploy *script* comes from. `deploy.sh` manages a second clone under
-`/opt/fivem-server-classic/.gamemode-src`, which it `reset --hard`s and
-`clean -fd`s every run, because what gets served has to be a deployment
-artifact rather than somebody's workspace.
+`/opt/misc/fivem-br-gamemode` is the ops clone, the checkout you `git pull` by
+hand — `royale-deploy` starts the deploy *script* from there. `deploy.sh`
+manages a second clone under `/opt/fivem-server-classic/.gamemode-src`, which
+it `reset --hard`s and `clean -fd`s every run, because what gets served has to
+be a deployment artifact rather than somebody's workspace.
+
+**The deployed branch's own `deploy.sh` finishes the deploy, so the ops clone
+no longer needs a pull before a deploy.** The ops clone's copy picks the branch,
+fetches it, runs the branch-switch check and resets the served clone. If that
+commit's `tools/deploy.sh` is a different version, it hands the rest of the
+deploy to a private copy of it, once, pinned to the commit it just checked; the
+journal says `handing over from … to …`. A change to `deploy.sh` (a new vendored
+resource, a new step) therefore lands with the deploy of the commit that has it.
+`--dry-run` hands over too; `--status` only says that a deploy would.
+
+Two things still need a hand on the box:
+
+- **The handover itself, once per box.** A `deploy.sh` from before it
+  (2026-10-05) cannot hand over, so each box's ops clone needs one more pull:
+  `git -C /opt/misc/fivem-br-gamemode pull`. A clone tracking `main` gets it
+  once dev is merged into main. Until then, a deploy prints a red box naming
+  that pull.
+- **`royale-deploy.service` and the other units.** systemd reads its own copy
+  in `/etc/systemd/system`, never the repo's, so a change to a unit file reaches
+  a box only when someone copies it there and runs
+  `sudo systemctl daemon-reload` (as in the install step above).
+
+A change to the steps *before* the handover (how the branch is picked, the
+fetch, the branch-switch check, the handover itself) runs from the ops clone,
+so it takes effect there only after a pull. For the check that is the point: it
+is the copy a branch switch never touches.
+
+A commit whose `deploy.sh` predates the handover (switching a box back to an old
+branch) is deployed by the ops clone's copy, as every commit was before.
 
 ---
 
@@ -368,10 +397,11 @@ never removed by our deploy.
 `rsync --delete` does not remove excluded paths — so its `.git` would survive
 and go on reporting a version the files no longer are.
 
-**`tools/deploy.sh` itself runs from the ops clone** (`/opt/misc/fivem-br-gamemode`),
-not from the deployed tree — so a change to it reaches the box only when that
-clone is pulled. A `deploy.sh` from before the vendoring will sync the gamemode
-and silently skip pma-voice.
+**The vendored list is the deployed commit's own.** `tools/deploy.sh` starts
+from the ops clone (`/opt/misc/fivem-br-gamemode`) but hands the sync to the
+deployed commit's `deploy.sh` when the two differ (see [Deploying](#deploying)),
+so a resource added to `VENDORED_RESOURCES` is synced by the first deploy of the
+commit that adds it, with no pull of the ops clone.
 
 The NUI build output (`br_ui/ui/`) is committed, so **no build step is required
 on the server**, and no Node is needed on it either.

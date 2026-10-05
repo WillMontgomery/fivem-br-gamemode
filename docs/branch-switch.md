@@ -58,6 +58,13 @@ touches (see `royale-deploy.service`'s `ExecStart`). Nothing a deployed branch
 contains can edit, weaken or skip it. `dispatch.sh`'s copy exists to refuse
 early and explain why, not to be the boundary.
 
+**The deploy handover keeps that order.** When the deployed commit's
+`tools/deploy.sh` differs from the ops clone's, the ops clone's copy hands the
+rest of the deploy to it ([DEPLOY.md](../DEPLOY.md#deploying)) — but only after
+this check has passed and the clone has been reset to the checked commit, and the
+copy it hands to is pinned to that commit. Every deploy starts in the ops clone
+again, so the check always runs first.
+
 What this buys: the feature stops being "run arbitrary code, including the
 control channel" and becomes "swap the resource payload; the boundary is
 invariant". The Lua under `resources/` is still arbitrary code from an
@@ -366,6 +373,10 @@ None of these were built. They are listed so their absence is legible.
 - **Lua from an unreviewed branch runs on the live host.** That is the feature.
 - **A branch can still ship a broken game.** The gate protects the control
   channel, not playability. Revert is the answer.
+- **A branch's own `deploy.sh` finishes its deploy.** After the check passes,
+  the deploy hands over to the deployed commit's `tools/deploy.sh`, which runs
+  as the deploy user, as that commit's `tools/assets.py` already did (#391).
+  The check itself, and the reset before it, stay in the ops clone's copy.
 - **Nothing brings the box back to `main` on its own.** The park lease was cut,
   so a box left on a branch stays there until somebody presses the button. The
   banner is deliberately loud and unmissable on every page for exactly this

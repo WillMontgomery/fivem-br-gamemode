@@ -208,12 +208,12 @@ at the repo root pins which version each box runs. A commit bumps an asset,
 
 **Owner, on each box, once, in this order:**
 
-1. Pull the ops clone first: `git -C /opt/misc/fivem-br-gamemode pull` (`deploy.sh` runs from there, so nothing below happens until it has this change)
+1. If the ops clone predates the deploy handover, pull it once: `git -C /opt/misc/fivem-br-gamemode pull` (after that each deploy runs the deployed branch's own `deploy.sh`; see [DEPLOY.md](../DEPLOY.md#deploying))
 2. Add one line to `server.cfg`: `exec resources/[licensed]/licensed.cfg` (where: below)
 3. Deploy as usual; the packs land, and load at that deploy's restart
 
-A deploy whose `deploy.sh` is older than the deployed branch's
-`tools/deploy.sh` prints a red box naming that pull; do it, then deploy again.
+An ops clone too old to hand over prints a red box naming that pull; do it,
+then deploy again.
 
 **Owner, on the PC: the `Blitz Assets` folder on the Desktop.** Its
 `README.txt` says all of this; in short:
