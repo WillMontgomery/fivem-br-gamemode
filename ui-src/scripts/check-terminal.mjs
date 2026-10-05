@@ -11,10 +11,15 @@
  *   T1 spinner     Cloudscape's Spinner animates forever, disableMotion or not,
  *                  and each frame it animates repaints the NUI over the game.
  *                  No Spinner, no `loading`, no spinning status types.
- *   T2 components  Steps (subgrid, Chrome 117), AppLayout (paints an opaque
- *                  page), SideNavigation, Link (a real target=_blank anchor),
- *                  CopyToClipboard (no clipboard in NUI) and the file inputs
- *                  (fivem#3091) are not imported.
+ *   T2 components  Steps (subgrid, Chrome 117), AppLayoutToolbar, Link (a real
+ *                  target=_blank anchor), CopyToClipboard (no clipboard in
+ *                  NUI) and the file inputs (fivem#3091) are not imported.
+ *                  AppLayout and SideNavigation ARE, since 2026-10-05: #385
+ *                  banned AppLayout for painting an opaque page OVER THE GAME,
+ *                  and this app's page is inside the computer's window, where
+ *                  an opaque page is what a browser shows (the owner asked for
+ *                  one); SideNavigation's 103 problem is only its collapsed
+ *                  mode, which the app never turns on.
  *   T3 mode        applyMode never targets <html>; the color-scheme rule
  *                  global-styles keys off it would black out the game on CEF 105+.
  *   T4 scheme      the built CSS pins html{color-scheme:normal!important}.
@@ -89,9 +94,7 @@ if (sources.length === 0) fail('setup', 'terminal/', 'no sources found -- a gate
 const BANNED = {
   spinner: 'T1 spinner',
   steps: 'T2 components',
-  'app-layout': 'T2 components',
   'app-layout-toolbar': 'T2 components',
-  'side-navigation': 'T2 components',
   link: 'T2 components',
   'copy-to-clipboard': 'T2 components',
   'file-upload': 'T2 components',

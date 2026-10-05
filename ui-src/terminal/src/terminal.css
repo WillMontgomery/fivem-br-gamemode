@@ -12,8 +12,8 @@ html {
 }
 
 /*
- * The window behind the app is cuchi_computer's (its --darkest-color), so the
- * app's own document is see-through and the Container reads as a panel on it.
+ * The window behind the app is cuchi_computer's; the app's own document is
+ * see-through, and AppLayout paints the page.
  */
 html,
 body {
@@ -21,22 +21,96 @@ body {
   background: transparent !important;
 }
 
-.terminal {
-  box-sizing: border-box;
-  min-height: 100vh;
-  padding: 16px;
+/*
+ * THE BROWSER'S TOOLBAR AND THE TOP BAR STAY AT THE TOP, as a browser's do;
+ * the page scrolls under them. AppLayout is told their height through
+ * `headerSelector="#terminal-header"`.
+ */
+.terminal-header {
+  position: sticky;
+  top: 0;
+  z-index: 1002;
 }
 
-.terminal-fn {
+/*
+ * The toolbar, in the tab's colour (cuchi_computer's br.css draws the tab in
+ * the same two colours, and follows the mode the app tells it).
+ */
+.browser-toolbar {
+  --browser-bg: #192534;
+  --browser-field: #0f141a;
+  --browser-text: #e9ebed;
+  --browser-muted: #8d99a8;
+  --browser-edge: #2a3542;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 10px 0 6px;
+  background-color: var(--browser-bg);
+  border-bottom: 1px solid var(--browser-edge);
 }
 
-.terminal-fn-text {
+body:not(.awsui-dark-mode) .browser-toolbar {
+  --browser-bg: #ffffff;
+  --browser-field: #f1f3f4;
+  --browser-text: #0f141a;
+  --browser-muted: #5f6b7a;
+  --browser-edge: #dfe3e8;
+}
+
+.browser-buttons {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 2px;
+}
+
+.browser-address {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
   min-width: 0;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 15px;
+  background-color: var(--browser-field);
+  color: var(--browser-text);
+  font-family: 'Open Sans', 'Helvetica Neue', Roboto, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 30px;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: default;
+  user-select: text;
+}
+
+.browser-lock {
+  display: flex;
+  color: var(--browser-muted);
+}
+
+.browser-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The login screen: one card in the middle of the page. */
+.terminal-login {
+  box-sizing: border-box;
+  max-width: 520px;
+  margin: 64px auto 0;
+}
+
+/* A function's risks and the how-to's lists: plain bullets, Cloudscape's text. */
+.terminal-risks,
+.terminal-howto {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.terminal-risks li,
+.terminal-howto li {
+  margin: 0 0 6px;
 }

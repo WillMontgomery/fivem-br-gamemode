@@ -133,6 +133,8 @@ BR.Config.Terminals = {
         aria_forward = 'Forward',
         aria_reload = 'Reload',
         aria_address = 'Address',
+        -- The close button on the confirmation box and on a run's answer.
+        aria_close = 'Close',
         -- The search box in the top bar, its "use what I typed" row and the
         -- row it shows when nothing matches.
         search_placeholder = 'Search functions',
@@ -172,7 +174,7 @@ BR.Config.Terminals = {
         field_terminals = 'Terminals online',
         field_bounty = 'Active bounty',
         mode_solo = 'Solo',
-        mode_squads = 'Squads',
+        mode_squad = 'Squads',
         phase_warmup = 'Warmup',
         phase_bus = 'Battle bus',
         phase_playing = 'In progress',

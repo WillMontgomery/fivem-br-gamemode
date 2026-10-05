@@ -9,6 +9,8 @@ import { App } from './App'
 // `html:has(body.awsui-dark-mode){color-scheme:dark}`; Chromium 103 drops it,
 // a CEF of 105 or later would honor it, and terminal.css pins color-scheme
 // back to normal either way. applyMode's default target is document.body.
+// Dark until the first state names the player and their remembered mode
+// (mode.ts) takes over.
 applyMode(Mode.Dark)
 // Fewer animations, fewer repainted frames over the game.
 disableMotion(true)

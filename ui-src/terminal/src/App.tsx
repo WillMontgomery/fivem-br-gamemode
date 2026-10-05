@@ -1,115 +1,327 @@
-import { useEffect, useState, type ReactElement } from 'react'
-import Alert from '@cloudscape-design/components/alert'
-import Box from '@cloudscape-design/components/box'
-import Button from '@cloudscape-design/components/button'
-import Container from '@cloudscape-design/components/container'
-import Header from '@cloudscape-design/components/header'
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import AppLayout from '@cloudscape-design/components/app-layout'
+import Autosuggest from '@cloudscape-design/components/autosuggest'
+import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group'
+import Flashbar, { type FlashbarProps } from '@cloudscape-design/components/flashbar'
+import SideNavigation, { type SideNavigationProps } from '@cloudscape-design/components/side-navigation'
 import SpaceBetween from '@cloudscape-design/components/space-between'
-import StatusIndicator from '@cloudscape-design/components/status-indicator'
-import { connect, run, type Copy, type FunctionState, type RunResult, type TerminalState } from './bridge'
+import TopNavigation, { type TopNavigationProps } from '@cloudscape-design/components/top-navigation'
+import {
+  connect, reload as askAgain, run, signOut,
+  type Catalog, type Copy, type RunResult, type TerminalState,
+} from './bridge'
+import { Browser } from './Browser'
+import { FunctionCards } from './FunctionCards'
+import { FunctionPage } from './FunctionPage'
+import { HowTo } from './HowTo'
+import { Login } from './Login'
+import { MatchPanel } from './MatchPanel'
+import {
+  HOME, addressOf, back, canBack, canForward, current, fill, forward, hrefOf, line, push, replace,
+  routeOfHref, startHistory, type History, type Route,
+} from './model'
+import { loadMode, saveMode, showMode, type UiMode } from './mode'
 
 /**
- * THE FIRST SCREEN: the terminal's functions, whether each can run and why
- * not, and the button that asks.
+ * THE TERMINAL APP: a web page in a web browser (#396, owner, 2026-10-05).
  *
- * ═══ NOT ONE WORD ON THIS SCREEN IS WRITTEN HERE ═══
+ *   the browser   Browser.tsx: back, forward and reload over THIS app's
+ *                 history, and the address of the page it is on
+ *   the top bar   TopNavigation: the app's name, a search across every
+ *                 function (pick one to open its page; or search the cards),
+ *                 the light/dark switch, and the player's gamertag as the
+ *                 signed-in user (its menu: the how-to, or sign out, which
+ *                 closes the computer)
+ *   the layout    AppLayout with SideNavigation (Functions, How to, each
+ *                 category) and a BreadcrumbGroup on every page; the server's
+ *                 answer to a run is a Flashbar notification
+ *   the pages     the functions (MatchPanel over FunctionCards), a function
+ *                 (FunctionPage), the how-to (HowTo), and the login screen
+ *                 (Login) when the computer opened without a Yubikey
  *
- * The owner writes or approves every player-facing line (#396), so every line
- * is a key into the copy br_core sends with the state, out of the one block in
- * br_lib/config/terminals.lua. A key with no line renders as nothing -- never
- * as the key, and never as a default of ours. The keys:
+ * ═══ NOT ONE WORD IS WRITTEN HERE ═══
  *
- *   app_heading            over the list
- *   <function id>_name     the function, e.g. storm_reveal_name
- *   available              the status of one that can run
- *   <reason code>          why one cannot, e.g. no_key, squad_used, offline
- *   unavailable            why not, for a code with no line of its own
- *   run                    the button
- *   <function id>_done     after a run the server accepted, e.g. storm_reveal_done
+ * Every player-facing line is a key into the copy br_core sends with the
+ * state, out of the one block in br_lib/config/terminals.lua; the function
+ * cards and pages are drawn from the registry (the catalog) that rides with
+ * it. scripts/check-terminal.mjs fails a word written between two tags.
  *
- * ═══ AND NOTHING HERE DECIDES ═══
+ * ═══ NOTHING HERE DECIDES ═══
  *
- * `available` and `reason` are the server's. The button is disabled when the
- * server said no, and while a run is waiting for its answer; pressing it only
- * asks, and the server checks the terminal, the key and the squad again.
+ * `available` and `reason` are the server's; Run asks, and the server checks
+ * the terminal, the key, the squad and the options again.
  *
  * ═══ CEF 103 (#385) ═══
  *
- * No Spinner and no `loading` anywhere: Cloudscape's spinner animates forever,
- * even under disableMotion, and every frame it animates repaints the whole NUI.
- * A waiting button is disabled instead. Arrays, not Fragments, go into
- * SpaceBetween (React 19). scripts/check-terminal.mjs holds these.
+ * No Spinner and no `loading` anywhere: a waiting button is disabled instead.
+ * Arrays, not Fragments, go into SpaceBetween (React 19). Dark mode on <body>
+ * (mode.ts). AppLayout and SideNavigation are used inside this iframe, whose
+ * opaque page is the browser's page -- not over the game, which is what #385
+ * banned them for -- and SideNavigation never collapses (the opt-in that hides
+ * icon-less groups only through :has). scripts/check-terminal.mjs holds these.
  */
 export function App(): ReactElement {
   const [state, setState] = useState<TerminalState | null>(null)
   const [copy, setCopy] = useState<Copy>({})
+  const [catalog, setCatalog] = useState<Catalog>({ functions: [], categories: [] })
+  const [signedIn, setSignedIn] = useState<boolean | null>(null)
+  const [history, setHistory] = useState<History>(() => startHistory(HOME))
   const [pending, setPending] = useState<string | null>(null)
-  const [result, setResult] = useState<RunResult | null>(null)
+  const [flash, setFlash] = useState<RunResult | null>(null)
+  const [mode, setMode] = useState<UiMode>('dark')
+  const [search, setSearch] = useState('')
+  const [reloads, setReloads] = useState(0)
+  const confirmOpen = useRef(false)
+  const player = useRef<string | null>(null)
 
   useEffect(
     () =>
       connect({
-        state(next, nextCopy) {
+        state(next, nextCopy, nextCatalog) {
           setState(next)
-          setCopy(nextCopy)
+          if (nextCopy) setCopy(nextCopy)
+          if (nextCatalog) setCatalog(nextCatalog)
+          // SIGNED IN BY THE KEY THE COMPUTER OPENED WITH. A run spends the
+          // key, and the page that ran it must stay up to show the answer, so
+          // only an opening without one is the login screen.
+          setSignedIn((was) => (was === true ? true : next.keyHeld))
+          if (player.current !== next.player) {
+            player.current = next.player
+            const m = loadMode(next.player)
+            setMode(m)
+            showMode(m)
+          }
         },
         result(next) {
-          setResult(next)
+          setFlash(next)
           setPending(null)
         },
+        canEscape: () => !confirmOpen.current,
       }),
     [],
   )
 
-  const line = (key: string | null): string => (key !== null ? copy[key] ?? '' : '')
+  // A run whose answer never comes (a request the server dropped) must not
+  // leave Run disabled for the rest of the opening.
+  useEffect(() => {
+    if (pending === null) return undefined
+    const t = window.setTimeout(() => setPending(null), 8000)
+    return () => window.clearTimeout(t)
+  }, [pending])
 
-  const ask = (id: string) => {
-    setPending(id)
-    setResult(null)
-    run(id)
+  const L = (k: string | null | undefined) => line(copy, k)
+  const route: Route = signedIn === false ? { page: 'login' } : current(history)
+
+  // A run's answer belongs to the page it was asked on; going anywhere else
+  // takes it down.
+  const go = (next: Route) => {
+    setHistory((h) => push(h, next))
+    setFlash(null)
+    window.scrollTo(0, 0)
+  }
+  const follow = (e: CustomEvent<{ href?: string }>) => {
+    e.preventDefault()
+    const next = routeOfHref(e.detail.href ?? '')
+    if (next) go(next)
   }
 
-  const rows: ReactElement[] = []
-  if (result !== null) {
-    rows.push(
-      <Alert key="result" type={result.ok ? 'success' : 'error'}>
-        {result.ok ? line(`${result.functionId}_done`) : line(result.code) || line('unavailable')}
-      </Alert>,
-    )
-  }
-  for (const fn of state?.functions ?? []) {
-    rows.push(<FunctionRow key={fn.id} fn={fn} line={line} busy={pending !== null} onRun={ask} />)
+  const toggleMode = () => {
+    const next: UiMode = mode === 'dark' ? 'light' : 'dark'
+    setMode(next)
+    showMode(next)
+    saveMode(player.current, next)
   }
 
-  return (
-    <div className="terminal">
-      <Container header={<Header variant="h2">{line('app_heading')}</Header>}>
-        <SpaceBetween size="m">{rows}</SpaceBetween>
-      </Container>
-    </div>
+  const fnById = useMemo(() => new Map((state?.functions ?? []).map((f) => [f.id, f])), [state])
+  const defById = useMemo(() => new Map(catalog.functions.map((f) => [f.id, f])), [catalog])
+
+  // ── the top bar ──────────────────────────────────────────────────────────
+  const utilities: TopNavigationProps.Utility[] = [
+    {
+      type: 'button',
+      iconName: 'light-dark',
+      text: mode === 'dark' ? L('mode_light') : L('mode_dark'),
+      onClick: toggleMode,
+    },
+  ]
+  if (route.page !== 'login' && state?.player) {
+    utilities.push({
+      type: 'menu-dropdown',
+      text: state.player,
+      iconName: 'user-profile',
+      items: [
+        { id: 'howto', text: L('menu_howto') },
+        { id: 'signout', text: L('menu_signout') },
+      ],
+      onItemClick: ({ detail }) => {
+        if (detail.id === 'howto') go({ page: 'howto' })
+        else if (detail.id === 'signout') signOut()
+      },
+    })
+  }
+
+  const searchBox = route.page === 'login' ? undefined : (
+    <Autosuggest
+      value={search}
+      onChange={({ detail }) => setSearch(detail.value)}
+      onSelect={({ detail }) => {
+        setSearch('')
+        if (detail.selectedOption && defById.has(detail.value)) {
+          go({ page: 'function', id: detail.value })
+        } else if (detail.value.trim() !== '') {
+          go({ page: 'functions', category: null, query: detail.value.trim() })
+        }
+      }}
+      options={catalog.functions.map((f) => ({
+        value: f.id,
+        label: L(`${f.id}_name`),
+        description: L(`${f.id}_summary`),
+        tags: [L(`category_${f.category}`)],
+      }))}
+      filteringType="auto"
+      placeholder={L('search_placeholder')}
+      ariaLabel={L('search_placeholder')}
+      enteredTextLabel={(value) => fill(L('search_use'), { value })}
+      empty={L('search_empty')}
+    />
   )
-}
 
-interface RowProps {
-  fn: FunctionState
-  line: (key: string | null) => string
-  busy: boolean
-  onRun: (id: string) => void
-}
+  // ── the breadcrumbs and the side navigation ──────────────────────────────
+  const crumbs: { text: string; href: string }[] = [{ text: L('app_title'), href: hrefOf(HOME) }]
+  if (route.page === 'functions' || route.page === 'function') {
+    crumbs.push({ text: L('nav_functions'), href: hrefOf(HOME) })
+  }
+  if (route.page === 'functions' && route.category) {
+    crumbs.push({ text: L(`category_${route.category}`), href: hrefOf(route) })
+  }
+  if (route.page === 'function') {
+    const def = defById.get(route.id)
+    if (def) crumbs.push({ text: L(`category_${def.category}`), href: hrefOf({ page: 'functions', category: def.category, query: '' }) })
+    crumbs.push({ text: L(`${route.id}_name`), href: hrefOf(route) })
+  }
+  if (route.page === 'howto') crumbs.push({ text: L('nav_howto'), href: hrefOf(route) })
 
-function FunctionRow({ fn, line, busy, onRun }: RowProps): ReactElement {
-  const why = fn.available ? line('available') : line(fn.reason) || line('unavailable')
+  const navItems: SideNavigationProps.Item[] = [
+    { type: 'link', text: L('nav_functions'), href: hrefOf(HOME) },
+    { type: 'link', text: L('nav_howto'), href: hrefOf({ page: 'howto' }) },
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: L('nav_categories'),
+      items: catalog.categories.map((c) => ({
+        type: 'link' as const,
+        text: L(`category_${c}`),
+        href: hrefOf({ page: 'functions', category: c, query: '' }),
+      })),
+    },
+  ]
+  const activeHref = route.page === 'function'
+    ? hrefOf({ page: 'functions', category: defById.get(route.id)?.category ?? null, query: '' })
+    : hrefOf(route)
+
+  // ── the answer to a run ──────────────────────────────────────────────────
+  const notes: FlashbarProps.MessageDefinition[] = flash
+    ? [{
+      id: 'result',
+      type: flash.ok ? 'success' : 'error',
+      content: flash.ok ? L(`${flash.functionId}_done`) : (L(flash.code) || L('unavailable')),
+      dismissible: true,
+      dismissLabel: L('aria_close'),
+      onDismiss: () => setFlash(null),
+    }]
+    : []
+
+  // ── the page ─────────────────────────────────────────────────────────────
+  let content: ReactElement | null = null
+  if (state && route.page === 'login') {
+    content = <Login copy={copy} />
+  } else if (state && route.page === 'functions') {
+    content = (
+      <SpaceBetween size="l">
+        {[
+          <MatchPanel key="match" state={state} copy={copy} />,
+          <FunctionCards
+            key="cards"
+            state={state}
+            catalog={catalog}
+            copy={copy}
+            route={route}
+            onOpen={(id) => go({ page: 'function', id })}
+            onQuery={(query) => setHistory((h) => replace(h, { ...route, query }))}
+          />,
+        ]}
+      </SpaceBetween>
+    )
+  } else if (state && route.page === 'function') {
+    const def = defById.get(route.id)
+    if (def) {
+      content = (
+        <FunctionPage
+          key={route.id}
+          def={def}
+          fn={fnById.get(route.id)}
+          copy={copy}
+          busy={pending !== null}
+          onConfirmChange={(open) => { confirmOpen.current = open }}
+          onRun={(id, options) => {
+            setPending(id)
+            setFlash(null)
+            run(id, options)
+          }}
+        />
+      )
+    }
+  } else if (state && route.page === 'howto') {
+    content = <HowTo copy={copy} />
+  }
+
   return (
-    <div className="terminal-fn" data-function={fn.id}>
-      <div className="terminal-fn-text">
-        <Box variant="h3" padding="n">
-          {line(`${fn.id}_name`)}
-        </Box>
-        <StatusIndicator type={fn.available ? 'success' : 'stopped'}>{why}</StatusIndicator>
+    <div className="terminal" key={reloads}>
+      <div id="terminal-header" className="terminal-header">
+        <Browser
+          address={addressOf(route, copy)}
+          canBack={route.page !== 'login' && canBack(history)}
+          canForward={route.page !== 'login' && canForward(history)}
+          onBack={() => { setHistory(back); setFlash(null) }}
+          onForward={() => { setHistory(forward); setFlash(null) }}
+          onReload={() => {
+            setReloads((n) => n + 1)
+            askAgain()
+          }}
+          labels={{ back: L('aria_back'), forward: L('aria_forward'), reload: L('aria_reload'), address: L('aria_address') }}
+        />
+        <TopNavigation
+          identity={{
+            href: hrefOf(HOME),
+            title: L('app_title'),
+            logo: { src: '../../assets/images/terminal.png', alt: '' },
+            onFollow: (e) => {
+              e.preventDefault()
+              if (route.page !== 'login') go(HOME)
+            },
+          }}
+          search={searchBox}
+          utilities={utilities}
+        />
       </div>
-      <Button variant="primary" disabled={!fn.available || busy} onClick={() => onRun(fn.id)}>
-        {line('run')}
-      </Button>
+      <AppLayout
+        headerSelector="#terminal-header"
+        navigationHide={route.page === 'login'}
+        navigationWidth={240}
+        toolsHide
+        contentType={route.page === 'functions' ? 'cards' : 'default'}
+        notifications={notes.length > 0 ? <Flashbar items={notes} /> : undefined}
+        breadcrumbs={<BreadcrumbGroup items={crumbs} onFollow={follow} />}
+        navigation={
+          <SideNavigation
+            header={{ text: L('app_title'), href: hrefOf(HOME) }}
+            activeHref={activeHref}
+            items={navItems}
+            onFollow={follow}
+          />
+        }
+        content={content}
+      />
     </div>
   )
 }

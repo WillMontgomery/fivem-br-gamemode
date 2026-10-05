@@ -19,7 +19,10 @@ import react from '@vitejs/plugin-react'
 // holds: no Spinner or `loading` (it animates forever), dark mode on <body> and
 // color-scheme pinned normal, arrays rather than Fragments into layout
 // components, no Link / CopyToClipboard / FileUpload / FileInput / FileDropzone
-// / Steps / AppLayout / SideNavigation, no dynamic import. Cloudscape's ~65
+// / Steps / AppLayoutToolbar, no dynamic import (so no I18nProvider, whose
+// entry carries importMessages). AppLayout and SideNavigation are allowed
+// inside the computer's window since 2026-10-05 (check-terminal.mjs says
+// why). Cloudscape's ~65
 // :has() rules are dropped by 103 and degrade polish only; scripts/check-css.mjs
 // reports them as warnings, and fails on any unparseable color.
 

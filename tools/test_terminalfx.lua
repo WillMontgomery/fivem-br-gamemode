@@ -274,7 +274,7 @@ CT.sites = { SITE, { id = 'shack', x = C0.x + 6000.0, y = C0.y, z = 30.0, h = 0.
 
 local function newMatch(id)
     local m = {
-        id = id, seq = id, state = BR.MatchState.PLAYING, mode = 'squads',
+        id = id, seq = id, state = BR.MatchState.PLAYING, mode = 'squad',
         startedAt = gameMs - 125000,
         storm = BR.BuildStormRecord(2, C0.x, C0.y, 1500.0, C0.x + 50.0, C0.y, 800.0,
             gameMs, 600000, 60000, 1.0, 4242),
@@ -498,7 +498,7 @@ do
     local info = st.match
     ok(info ~= nil, 'a panel, in a match')
     eq(info.tag, BR.MatchTag(1), 'the match tag')
-    eq(info.mode, 'squads', 'the mode')
+    eq(info.mode, 'squad', 'the mode')
     eq(info.phase, BR.MatchState.PLAYING, 'the phase')
     eq(info.elapsedMs, 125000, 'the match time')
     ok(info.storm and info.storm.stage == 2 and info.storm.stages == #BR.Config.Storm.phases,
