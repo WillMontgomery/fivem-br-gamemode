@@ -273,7 +273,9 @@ do
 
     ok(A.flareOffset and (A.flareOffset.x or 0.0) > 0.0,
         'and an offset with a positive x -- the sign is what makes it two sides')
-    -- The crate is drawn at 2x now, so an offset that used to clear it may not.
+    -- The offset has to clear the crate at whatever crateScale says. That is
+    -- 1.0 -- the normal size -- since 835254d (the 2x of 2026-08-22 clipped the
+    -- floor), so this binds only if a scale is ever put back.
     ok((A.flareOffset.x or 0.0) >= (A.crateScale or 1.0) * 0.5,
         'and the offset clears a crate drawn at crateScale rather than sitting '
         .. 'inside it')
@@ -4249,7 +4251,8 @@ do
 
     -- ITS OWN ITEM ID, which is not decoration: the client resolves a prop's
     -- SIZE from the item id, and an airdrop crate calling itself 'chest' like
-    -- the other 1300 would be drawn at their size (owner: crate and husk 2x).
+    -- the other 1300 would be drawn at their size. Its rows are 1.0 -- normal
+    -- size -- since 835254d; the id keeps the row, not a bigger box.
     eq(crate.item, 'airdrop', 'it has an item id of its own, for the scale')
     eq(crate.huskItem, 'airdrophusk', 'and names what it becomes when opened')
     eq(crate.huskProp, A.huskProp, 'wearing the airdrop husk prop')
@@ -7377,8 +7380,10 @@ do
     --
     -- SetEntityHeading is a matrix write and a matrix write resets the axis
     -- vectors to unit length -- which is where the scale lives. place() writes
-    -- a heading every frame, so a scale applied only at spawn is a crate that
-    -- is 2x for one frame and authored size for the other 1800 of the descent.
+    -- a heading every frame, so a scale applied only at spawn is a part drawn at
+    -- its scale for one frame and authored size for the other 1800 of the
+    -- descent. The crate's own row is 1.0 since 835254d, so the canopy is the
+    -- part this binds today.
     scaled = {}
     gameMs = gameMs + 5000
     render()
