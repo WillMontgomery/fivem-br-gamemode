@@ -294,6 +294,27 @@ IMPL.GetCurrentResourceName = function() return 'br_core' end
 IMPL.GetResourceState    = function() return 'started' end
 IMPL.GetConvar           = function(n, d) local v = W.convars[n]; if v == nil then return d end return tostring(v) end
 IMPL.GetConvarInt        = function(n, d) local v = tonumber(W.convars[n]); if v == nil then return d end return math.floor(v) end
+-- THE RUNTIME'S CONVAR LISTENER (Cfx, apiset shared): a replicated value lands
+-- by `setr`, which calls every AddConvarChangeListener whose filter names it.
+-- The season module holds br_seasonServed and re-reads it only then, so a write
+-- to W.convars is a `setr`, and each listener runs under its own name.
+local convarListeners = {}
+IMPL.AddConvarChangeListener = function(filter, fn)
+    convarListeners[#convarListeners + 1] = { filter = filter, fn = fn }
+    return #convarListeners
+end
+do
+    local store = W.convars
+    W.convars = setmetatable({}, {
+        __index = store,
+        __newindex = function(_, k, v)
+            store[k] = v
+            for _, l in ipairs(convarListeners) do
+                if l.filter == nil or l.filter == k then call('convar ' .. k, l.fn, k, '') end
+            end
+        end,
+    })
+end
 IMPL.GetHashKey          = jenkins
 IMPL.PlayerId            = function() return 0 end
 IMPL.PlayerPedId         = function() return W.me end

@@ -36,8 +36,10 @@ client_scripts {
     -- shared_scripts above.
     '@br_lib/config/emotes.lua',
     -- SEASONS (#388): emotes are a Season 2 feature, and client/market.lua asks
-    -- BR.Season.has('emotes') -- which reads the season br_core's server
-    -- replicated (br_seasonServed) at call time, so this order is a reader's.
+    -- BR.Season.has('emotes') -- which answers this resource's own copy of the
+    -- season br_core's server replicated (br_seasonServed), re-read as it moves.
+    -- ABOVE client/market.lua ON PURPOSE: the module's `br:season:changed`
+    -- re-read must be registered before the Market's handler of that event.
     '@br_lib/shared/season.lua',
     '@br_lib/config/seasons.lua',
 

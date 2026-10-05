@@ -79,7 +79,26 @@ native('GetHashKey', function(s)
 end)
 local function nm(h) return nameOf[h] or tostring(h) end
 
-local convars = { br_seasonServed = '2', br_devMode = 'true' }
+--- REPLICATED CONVARS, AND THE RUNTIME'S LISTENER ON THEM. A client's
+--- replicated value is applied by `setr`, which calls every
+--- AddConvarChangeListener whose filter names it (Cfx, apiset shared). The
+--- season module holds br_seasonServed and re-reads it only when told, so every
+--- write to `convars` below is a `setr`: it lands, and the listeners hear it.
+local convarListeners = {}
+native('AddConvarChangeListener', function(filter, fn)
+    convarListeners[#convarListeners + 1] = { filter = filter, fn = fn }
+    return #convarListeners
+end)
+local convarStore = { br_seasonServed = '2', br_devMode = 'true' }
+local convars = setmetatable({}, {
+    __index = convarStore,
+    __newindex = function(_, k, v)
+        convarStore[k] = v
+        for _, l in ipairs(convarListeners) do
+            if l.filter == nil or l.filter == k then l.fn(k, '') end
+        end
+    end,
+})
 native('GetConvar', function(n, d)
     local v = convars[n]
     if v == nil then return d end

@@ -61,16 +61,51 @@ local function readFile(path)
     return s
 end
 
+--- The replicated convars as a `setr` delivers them: a write lands, and every
+--- AddConvarChangeListener whose filter names it is called (Cfx, apiset
+--- shared; a client's replicated values are applied by `setr`, and the
+--- listener hangs off OnConvarModified, which every change of value raises).
+--- Turned into one IN PLACE, so the table a block holds is the one
+--- that listens: its values live behind the metatable, every write -- nil
+--- included -- is heard, and pairs() still walks them.
+--- @param t table|nil
+--- @return table
+local function listening(t)
+    t = t or {}
+    local mt = getmetatable(t)
+    if mt and mt.listeners then return t end
+    local store = {}
+    for k, v in pairs(t) do store[k] = v end
+    for k in pairs(store) do t[k] = nil end
+    mt = { listeners = {}, store = store }
+    mt.__index = store
+    mt.__newindex = function(_, k, v)
+        store[k] = v
+        for _, l in ipairs(mt.listeners) do
+            if l.filter == nil or l.filter == k then l.fn(k, '') end
+        end
+    end
+    mt.__pairs = function() return next, store, nil end
+    return setmetatable(t, mt)
+end
+
 --- A Lua state of its own: the module (and the real registry, unless a fake is
 --- handed in) loaded into a fresh environment whose convars, replication and
 --- console are tables this suite can read.
---- @param o table|nil  { cfg = { [name] = value }, wire = table, registry = table }
+---
+--- THE RUNTIME HAS AddConvarChangeListener unless `listener = false`, which is
+--- a runtime from before 2024-10: then `citizen` (a Citizen table) is the only
+--- way the module can re-read, as in the game. `listener = 'raises'` is one
+--- that is there and refuses. `st.reads` counts GetConvar.
+--- @param o table|nil  { cfg = { [name] = value }, wire = table, registry = table,
+---                       listener = false|'raises', citizen = table }
 local function state(o)
     o = o or {}
     local st = {
         cfg = o.cfg or {},          -- this state's own convars (server.cfg on a server)
-        wire = o.wire or {},        -- what replication carries (shared server <-> client)
+        wire = listening(o.wire),   -- what replication carries (shared server <-> client)
         printed = {},
+        reads = 0,
     }
     local env = setmetatable({}, { __index = _G })
     env.BR = {}
@@ -81,11 +116,31 @@ local function state(o)
     end
     -- A convar this state set itself wins; otherwise what replication brought.
     env.GetConvar = function(name, default)
+        st.reads = st.reads + 1
         if st.cfg[name] ~= nil then return st.cfg[name] end
         if st.wire[name] ~= nil then return st.wire[name] end
         return default
     end
     env.SetConvarReplicated = function(name, value) st.wire[name] = value end
+    if o.listener == 'raises' then
+        env.AddConvarChangeListener = function() error('refused') end
+    elseif o.listener ~= false then
+        env.AddConvarChangeListener = function(filter, fn)
+            local ls = getmetatable(st.wire).listeners
+            ls[#ls + 1] = { filter = filter, fn = fn }
+            return #ls
+        end
+    end
+    env.Citizen = o.citizen
+    -- Local events, for the `br:season:changed` re-read.
+    st.handlers = {}
+    env.AddEventHandler = function(name, fn)
+        st.handlers[name] = st.handlers[name] or {}
+        table.insert(st.handlers[name], fn)
+    end
+    function st.raise(name, ...)
+        for _, fn in ipairs(st.handlers[name] or {}) do fn(...) end
+    end
     assert(loadfile(MODULE, 't', env))()
     if o.registry then
         env.BR.Config = { Seasons = o.registry }
@@ -425,8 +480,8 @@ do
     eq(client.S.current(), nil, 'a garbled br_seasonServed is no season')
     eq(client.S.has('emotes'), false, 'and shuts every gate')
 
-    -- READ AT CALL TIME on the client, never held: a value that lands late
-    -- is used as soon as it lands.
+    -- HELD ON THE CLIENT, AND RE-READ THE MOMENT IT LANDS: a value that lands
+    -- late is used as soon as it lands, off the listener.
     wire.br_seasonServed = nil
     local before = client.S.current()
     wire.br_seasonServed = '1'
@@ -1074,17 +1129,16 @@ do
 end
 
 --- A client with br_core's client/season.lua loaded over the real season
---- module, its own copy of the replicated convars, and a SLOW pass this suite
---- steps by hand.
-local function followClient(wire)
-    local cl = state({ wire = wire })
+--- module and its own copy of the replicated convars. `o` is state()'s: a
+--- runtime without the listener (`listener = false`) and its threads.
+local function followClient(wire, o)
+    o = o or {}
+    local cl = state({ wire = wire, listener = o.listener, citizen = o.citizen })
     local env = cl.env
-    cl.handlers, cl.raised, cl.slow = {}, {}, nil
+    cl.handlers, cl.raised, cl.loops = {}, {}, {}
     env.BR.Loop = {
-        SLOW = 'slow',
-        register = function(band, name, fn)
-            if band == 'slow' and name == 'season.follow' then cl.slow = fn end
-        end,
+        SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
+        register = function(band, name) cl.loops[#cl.loops + 1] = band .. ' ' .. name end,
     }
     env.RegisterNetEvent = function() end
     env.AddEventHandler = function(name, fn)
@@ -1119,13 +1173,13 @@ do
     local srvWire, cliWire = {}, {}
     local srv = commandServer({ wire = srvWire })
     local cl = followClient(cliWire)
-    ok(cl.slow ~= nil, "client/season.lua registers a SLOW pass, 'season.follow'")
+    eq(#cl.loops, 0, 'client/season.lua registers no timer pass: it follows the season module\'s copy as it moves')
+    eq(cl.S.follows(), 'listener', 'and the copy follows the runtime\'s convar listener')
     local function land() for k, v in pairs(srvWire) do cliWire[k] = v end end
 
-    cl.slow()
     eq(#cl.changes(), 0, 'no season yet: nothing to re-read')
     land()
-    cl.slow()
+    eq(cl.S.current(), LATEST, 'the season arriving moves the client\'s copy at once')
     eq(#cl.changes(), 0, 'the season arriving is not a switch: the emote gate pass handles an arrival')
 
     -- THE MESSAGE BEFORE THE VALUE.
@@ -1134,28 +1188,24 @@ do
     cl.deliver(cl.Net.SEASON_SWITCHED, p)
     ok(cl.said('[br_core] brseason: P3 (#3) switched this server to Season 1'),
         'every F8 is told who switched', cl.printed[#cl.printed])
-    eq(#cl.changes(), 0, 'the message alone re-reads nothing: the client runs what it reads, and has not read Season 1')
+    eq(#cl.changes(), 0, 'the message alone moves nothing: the client runs what it reads, and has not read Season 1')
     eq(cl.S.has('emotes'), true, 'so its gate still answers the season it has')
-    cl.slow()
-    eq(#cl.changes(), 0, 'nor does a pass before the value lands')
     land()
-    cl.slow()
     local ch = cl.changes()
-    eq(#ch, 1, 'the pass after the value lands raises br:season:changed, once')
+    eq(#ch, 1, 'the value landing raises br:season:changed, once, the moment it lands')
     ok(ch[1] and ch[1].args[1] == 1 and ch[1].args[2] == LATEST, 'carrying the new season and the one before')
     ok(cl.S.has('emotes') == false and srv.S.has('emotes') == false,
         'and the emote gate answers Season 1 on both sides')
-    cl.slow()
-    eq(#cl.changes(), 1, 'a later pass does not raise it again')
+    land()
+    eq(#cl.changes(), 1, 'the same value set again does not raise it again')
 
     -- THE VALUE BEFORE THE MESSAGE.
     srv.clear()
     srv.run(0, 'reset')
     land()
+    eq(#cl.changes(), 2, 'with the value first, it is raised as the value lands')
     cl.deliver(cl.Net.SEASON_SWITCHED, srv.switched()[1].payload)
-    eq(#cl.changes(), 2, 'with the value already there, the message raises it at once')
-    cl.slow()
-    eq(#cl.changes(), 2, 'and the pass after does not raise it twice')
+    eq(#cl.changes(), 2, 'and the message after does not raise it twice')
     ok(cl.S.has('emotes') == true and srv.S.has('emotes') == true, 'both sides open again')
 
     -- A STAGED ONE: nothing reaches the client until the teardown.
@@ -1163,13 +1213,11 @@ do
     srv.match(1, srv.MS.PLAYING)
     srv.run(0, '1')
     land()
-    cl.slow()
     ok(#srv.switched() == 0 and #cl.changes() == 2 and cl.S.current() == LATEST,
         'staged during a match: nothing is sent and nothing moves on the client')
     srv.destroy(1)
     cl.deliver(cl.Net.SEASON_SWITCHED, srv.switched()[1].payload)
     land()
-    cl.slow()
     ok(#cl.changes() == 3 and cl.S.current() == 1, 'the teardown sends it, and the client follows')
 
     -- GARBAGE moves nothing and raises nothing.
@@ -1179,10 +1227,8 @@ do
     cl.deliver(cl.Net.SEASON_SWITCHED, nil)
     ok(#cl.printed == before and #cl.changes() == 3, 'a malformed message prints nothing and moves nothing')
     cliWire.br_seasonServed = 'x'
-    cl.slow()
     eq(#cl.changes(), 3, 'a garbled read is no switch')
     cliWire.br_seasonServed = '1'
-    cl.slow()
     eq(#cl.changes(), 3, 'and the season it was is still the one compared against')
 
     -- THE F8 ANSWER.
@@ -1191,6 +1237,158 @@ do
     before = #cl.printed
     cl.deliver(cl.Net.SEASON_RESULT, { 'x' })
     eq(#cl.printed, before, 'and anything but text is ignored')
+end
+
+-- =========================================================================
+-- the client's copy: held, re-read only when it moves (owner, 2026-10-04)
+-- =========================================================================
+
+describe('season.copy: a question is table reads, not a convar read')
+do
+    -- Owner, 2026-10-04: "let's also be efficient in how we're checking. That
+    -- could turn out to be a lot of repeated checks." The emote wheel asks every
+    -- frame; every one of those used to be a GetConvar.
+    local wire = { br_seasonServed = '2' }
+    local client = state({ wire = wire })
+    local after = client.reads
+    eq(after, 1, 'the module reads br_seasonServed once as it loads')
+    for _ = 1, 1000 do client.S.has('emotes') end
+    for _ = 1, 1000 do client.S.current() end
+    for _ = 1, 1000 do client.S.pick({ [1] = 'one', [2] = 'two' }) end
+    eq(client.reads, after, 'and three thousand questions after that read it no more')
+    wire.br_seasonServed = '1'
+    eq(client.reads, after + 1, 'a value that lands is read once, off the listener')
+    eq(client.S.has('emotes'), false, 'and answered from then on')
+    eq(client.reads, after + 1, 'without reading it again')
+    wire.br_unrelated = 'x'
+    eq(client.reads, after + 1, 'another convar moving reads nothing')
+end
+
+describe('season.copy: onChange hears every move, the first arrival included')
+do
+    local wire = {}
+    local client = state({ wire = wire })
+    local heard = {}
+    client.S.onChange(function(now, before) heard[#heard + 1] = { now = now, before = before } end)
+    wire.br_seasonServed = '1'
+    ok(#heard == 1 and heard[1].now == 1 and heard[1].before == nil, 'the first arrival: (1, nil)')
+    wire.br_seasonServed = '1'
+    eq(#heard, 1, 'the same value again is not a move')
+    wire.br_seasonServed = '2'
+    ok(#heard == 2 and heard[2].now == 2 and heard[2].before == 1, 'a switch: (2, 1)')
+    wire.br_seasonServed = 'x'
+    ok(#heard == 3 and heard[3].now == nil and heard[3].before == 2, 'garbage: (nil, 2) -- not known, every gate shut')
+    eq(client.S.has('emotes'), false, 'and shut it is')
+
+    -- ONE THAT RAISES DOES NOT KEEP THE NEXT FROM HEARING.
+    local second = 0
+    client.S.onChange(function() error('boom') end)
+    client.S.onChange(function() second = second + 1 end)
+    wire.br_seasonServed = '2'
+    eq(second, 1, 'a follower after one that raised still hears the move')
+    ok(client.printed[#client.printed] and client.printed[#client.printed]:find('boom', 1, true) ~= nil,
+        'and the console says which', client.printed[#client.printed])
+    eq(client.S.current(), 2, 'and the copy moved regardless')
+    client.S.strict = true
+    local okR = pcall(function() wire.br_seasonServed = '1' end)
+    ok(not okR, 'under strict -- the suites -- a raising follower fails the run')
+    eq(second, 2, 'after every follower has heard it')
+
+    -- A BOOTED STATE NEVER CALLS THEM: its season moves by boot() or switch().
+    local server = state({ cfg = { br_season = '2' }, wire = {} })
+    local told = 0
+    server.S.onChange(function() told = told + 1 end)
+    server.S.boot()
+    server.S.switch(1)
+    ok(told == 0 and server.S.refresh() == 1, 'br_core\'s server answers its latch, and onChange is never called there')
+end
+
+describe('season.copy: br:season:changed re-reads it before the resource\'s own handlers')
+do
+    -- br_core's listener can fire before br_ui's: br_core's client then raises
+    -- br:season:changed, and br_ui's Market must not ask a copy that has not
+    -- moved yet. The module's handler is registered as it loads -- first.
+    -- A state with no listener stands in for one whose listener has not fired.
+    local wire = { br_seasonServed = '2' }
+    local ui = state({ wire = wire, listener = false })
+    local saw = nil
+    ui.env.AddEventHandler('br:season:changed', function() saw = ui.S.current() end)
+    wire.br_seasonServed = '1'
+    eq(ui.S.current(), 2, 'a resource whose listener has not fired still holds Season 2')
+    ui.raise('br:season:changed', 1, 2)
+    eq(saw, 1, 'br:season:changed re-reads it first, so the resource\'s handler sees Season 1')
+end
+
+describe('season.copy: a listener that will not register leaves the re-read, not a dead module')
+do
+    local st = state({ wire = { br_seasonServed = '2' }, listener = 'raises' })
+    eq(st.S.follows(), 'poll', 'the module loads, and follows by re-reading')
+    eq(st.S.current(), 2, 'with the season it read as it loaded')
+end
+
+describe('season.copy: a runtime without the listener re-reads, bounded')
+do
+    -- AddConvarChangeListener arrived in 2024-10. A runtime older than that
+    -- re-reads on a thread -- every POLL_MS while no season is known, and after
+    -- a SEASON_SWITCHED until the announced one lands -- and stops.
+    local now = 0
+    local threads = {}
+    local citizen = {
+        CreateThread = function(fn) threads[#threads + 1] = { co = coroutine.create(fn), wake = now } end,
+        Wait = function(ms) coroutine.yield(ms) end,
+    }
+    local function run(ms)
+        local stop = now + ms
+        while now < stop do
+            now = now + 50
+            for i = #threads, 1, -1 do
+                local t = threads[i]
+                if t.wake <= now then
+                    local okT, wait = coroutine.resume(t.co)
+                    assert(okT, wait)
+                    if coroutine.status(t.co) == 'dead' then table.remove(threads, i)
+                    else t.wake = now + (wait or 0) end
+                end
+            end
+        end
+    end
+
+    local wire = {}
+    local cl = followClient(wire, { listener = false, citizen = citizen })
+    eq(cl.S.follows(), 'poll', 'no listener: the copy follows by re-reading')
+    eq(#threads, 1, 'a season not known yet starts one re-read thread')
+    wire.br_seasonServed = '2'
+    eq(cl.S.current(), nil, 'the value landing is not heard by itself')
+    run(600)
+    eq(cl.S.current(), 2, 'the next re-read finds it')
+    eq(#threads, 0, 'and the thread ends once a season is known')
+    local reads = cl.reads
+    run(5000)
+    eq(cl.reads, reads, 'nothing re-reads after that')
+
+    -- A SWITCH, THE MESSAGE FIRST.
+    cl.deliver(cl.Net.SEASON_SWITCHED, { season = 1, by = 'x' })
+    eq(#threads, 1, 'SEASON_SWITCHED before its value starts the re-read again')
+    run(1000)
+    eq(cl.S.current(), 2, 'which goes on while the value has not landed')
+    wire.br_seasonServed = '1'
+    run(600)
+    ok(cl.S.current() == 1 and #cl.changes() == 1, 'and finds it when it does, raising br:season:changed')
+    eq(#threads, 0, 'then stops')
+
+    -- THE VALUE FIRST: the message's own re-read finds it, and no thread starts.
+    wire.br_seasonServed = '2'
+    cl.deliver(cl.Net.SEASON_SWITCHED, { season = 2, by = 'x' })
+    ok(cl.S.current() == 2 and #threads == 0 and #cl.changes() == 2,
+        'with the value already there, the message moves it at once and nothing polls')
+
+    -- BOUNDED: an announced season that never lands is given up on.
+    cl.deliver(cl.Net.SEASON_SWITCHED, { season = 1, by = 'x' })
+    reads = cl.reads
+    run(10 * 60 * 1000)
+    eq(#threads, 0, 'a value that never lands stops being re-read')
+    ok(cl.reads - reads <= 241, 'after two minutes of it at most', cl.reads - reads)
+    eq(cl.S.current(), 2, 'and the client keeps the season it reads')
 end
 
 -- =========================================================================

@@ -20,7 +20,7 @@
 -- ═══ THE SEASON DISCIPLINE ═══
 --
 -- A client never reads br_season: it reads br_seasonServed, the season the
--- server booted with and replicated (br_lib/shared/season.lua), at call time.
+-- server booted with and replicated (br_lib/shared/season.lua), as it lands.
 -- So this file sets that convar the way the server would have -- to BR_SEASON
 -- resolved by the module's own rule, the latest when it is unset -- and
 -- verify.sh runs it with no BR_SEASON, then at the season before the emotes
@@ -44,9 +44,25 @@ function PlayerId() return 0 end
 function vector3(x, y, z) return { x = x, y = y, z = z } end
 
 --- Replicated convars as this client sees them. br_seasonServed is the one that
---- matters: BR.Season.current() reads it at call time. br_devMode is never set,
---- so dev mode is off for the whole file.
-local convars = {}
+--- matters: the season module holds it, and re-reads it when the runtime's
+--- convar listener says it moved -- so every write below is a `setr`, and the
+--- listeners (AddConvarChangeListener, apiset shared) hear it. br_devMode is
+--- never set, so dev mode is off for the whole file.
+local convarListeners = {}
+function AddConvarChangeListener(filter, fn)
+    convarListeners[#convarListeners + 1] = { filter = filter, fn = fn }
+    return #convarListeners
+end
+local convarStore = {}
+local convars = setmetatable({}, {
+    __index = convarStore,
+    __newindex = function(_, k, v)
+        convarStore[k] = v
+        for _, l in ipairs(convarListeners) do
+            if l.filter == nil or l.filter == k then l.fn(k, '') end
+        end
+    end,
+})
 function GetConvar(name, default)
     local v = convars[name]
     if v == nil then return default end

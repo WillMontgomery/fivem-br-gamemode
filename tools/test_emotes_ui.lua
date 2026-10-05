@@ -46,9 +46,25 @@ end
 -- ---------------------------------------------------------------------------
 
 -- DEV MODE IS A CONVAR, read at call time by BR.Dev.on(); it stays off. THE
--- SEASON IS ONE TOO: br_seasonServed, read at call time by BR.Season.current().
+-- SEASON IS ONE TOO: br_seasonServed, which the season module holds and
+-- re-reads when the runtime's convar listener (AddConvarChangeListener, apiset
+-- shared) says it moved -- so every write to `convars` is a `setr`, heard.
 local devOn = false
-local convars = {}
+local convarListeners = {}
+function AddConvarChangeListener(filter, fn)
+    convarListeners[#convarListeners + 1] = { filter = filter, fn = fn }
+    return #convarListeners
+end
+local convarStore = {}
+local convars = setmetatable({}, {
+    __index = convarStore,
+    __newindex = function(_, k, v)
+        convarStore[k] = v
+        for _, l in ipairs(convarListeners) do
+            if l.filter == nil or l.filter == k then l.fn(k, '') end
+        end
+    end,
+})
 function GetConvar(name, dflt)
     if name == 'sv_devMode' or name == 'br_devMode' then return devOn and 'true' or 'false' end
     if convars[name] ~= nil then return convars[name] end

@@ -64,7 +64,30 @@ function PlayerPedId() return 1 end
 --- server.cfg.example, which no deploy has ever copied to a server. An empty
 --- table is therefore the DEFAULT here, because an unconfigured box is the
 --- state the issue was reported from.
-local convars = {}
+---
+--- AND EVERY WRITE IS A `setr`, heard by the runtime's convar listeners
+--- (AddConvarChangeListener, apiset shared): the season module holds
+--- br_seasonServed and re-reads it only when told it moved. A block that swaps
+--- in a whole table builds it with convarTable so its writes are heard too.
+local convarListeners = {}
+function AddConvarChangeListener(filter, fn)
+    convarListeners[#convarListeners + 1] = { filter = filter, fn = fn }
+    return #convarListeners
+end
+local function convarTable(t)
+    local store = {}
+    for k, v in pairs(t or {}) do store[k] = v end
+    return setmetatable({}, {
+        __index = store,
+        __newindex = function(_, k, v)
+            store[k] = v
+            for _, l in ipairs(convarListeners) do
+                if l.filter == nil or l.filter == k then l.fn(k, '') end
+            end
+        end,
+    })
+end
+local convars = convarTable({})
 function GetConvar(name, default)
     local v = convars[name]
     return v == nil and default or tostring(v)
@@ -3793,7 +3816,7 @@ do
     --
     -- The default here is an EMPTY convar table -- an unconfigured box, which
     -- is the state the issue was reported from.
-    convars = {}
+    convars = convarTable({})
 
     local probs = BR.Voice.convarProblems()
     local byName = {}
@@ -3865,11 +3888,11 @@ do
     -- THE OTHER HALF, AND THE ONE THAT MAKES THIS A TEST RATHER THAN A COUNTER:
     -- a correctly configured box says NOTHING. A check that fires either way
     -- would be noise, and noise in this console is what hid #150.
-    convars = {
+    convars = convarTable({
         voice_disableAutomaticListenerOnCamera = 1,
         voice_enableUi = 0,
         voice_enableRadioAnim = 0,
-    }
+    })
     ok(#BR.Voice.convarProblems() == 0,
         'a configured box reports no convar problems at all',
         tostring(#BR.Voice.convarProblems()))

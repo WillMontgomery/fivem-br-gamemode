@@ -39,15 +39,36 @@
 -- restart-only because the command is a dev command (br_lib/shared/devgate.lua);
 -- this file still reads no dev mode.
 --
--- ═══ EVERYWHERE ELSE IT IS READ AT CALL TIME ═══
+-- ═══ EVERYWHERE ELSE IT IS LATCHED TOO, AND FOLLOWS THE CONVAR ═══
 --
--- A client, and any server state that is not br_core's, never boots: current()
--- reads br_seasonServed each time it is asked, the way BR.Dev.on() reads
--- br_devMode (br_lib/shared/devgate.lua says why: a replicated convar can land
--- after the scripts load, and a value kept from load time would be wrong for
--- the life of the process). So NOTHING may call has() or pick() while a file
--- loads and keep the answer. It is also what lets a client follow `brseason`:
--- the replicated value moves and the next question gets the new answer.
+-- A client, and any server state that is not br_core's, never boots. It used
+-- to read br_seasonServed on every question, which made every has() a native
+-- call -- the emote wheel asked sixty times a second. Owner, 2026-10-04:
+-- "let's also be efficient in how we're checking. That could turn out to be a
+-- lot of repeated checks." So it holds the value too, read once as this file
+-- loads and AGAIN ONLY WHEN IT CHANGES:
+--
+--   * AddConvarChangeListener (Cfx, apiset shared; added to FiveM 2024-10-13,
+--     citizen-scripting-core's ConsoleScriptFunctions.cpp). It hangs off the
+--     variable manager's OnConvarModified, which every change of value
+--     raises. A client's replicated convars arrive as `setr` (msgConVars),
+--     and one the server creates on this client is made empty and then set,
+--     so the value is re-read the moment it lands -- the first arrival and
+--     every `brseason` after it.
+--   * `br:season:changed`, which br_core's client raises once its own copy
+--     has moved. Every resource that loads this file re-reads on it BEFORE its
+--     own handlers run (this file loads first), so br_ui's Market never asks a
+--     copy that br_core's listener beat it to.
+--   * BR.Season.expect(n), on br_core's SEASON_SWITCHED.
+--   * A runtime without the listener re-reads every POLL_MS until a season
+--     arrives, and after expect() until the announced one does -- POLL_TRIES
+--     times at most either way -- and nowhere else.
+--
+-- So has() is a few table reads wherever it is asked, and the rule above
+-- still holds: NOTHING may call has() or pick() while a file loads and keep
+-- the answer. A copy taken at load would be wrong for the life of the process
+-- once the season moves; this one is not, because it moves with it. A file
+-- that keeps a derived answer of its own follows BR.Season.onChange.
 --
 -- ═══ UNTIL IT ARRIVES, THE SEASON IS UNKNOWN, AND EVERY GATE IS SHUT ═══
 --
@@ -55,11 +76,12 @@
 -- It is not a client's answer to a convar that has not landed yet: a Season 1
 -- client that guessed `latest` would open Season 2's doors until the server's
 -- 1 arrived, and one of those doors -- the emote wheel's RegisterKeyMapping --
--- can never be shut again. So where nothing is latched, an unset or garbled
+-- can never be shut again. So where nothing is booted, an unset or garbled
 -- br_seasonServed is UNKNOWN: current() returns nil, has() answers false for
--- every row and pick() answers nil. The gate passes that ask on a timer pick
--- the season up when it lands. br_core's server latches in onResourceStart,
--- before any handler or job can ask, so it never sees the unknown answer.
+-- every row and pick() answers nil. The value landing moves the copy above,
+-- and the gate passes that ask on a timer pick it up on their next pass.
+-- br_core's server latches in onResourceStart, before any handler or job can
+-- ask, so it never sees the unknown answer.
 --
 -- ═══ THE CLIENT DECIDES NOTHING A PLAYER COULD CHEAT ═══
 --
@@ -97,6 +119,26 @@ local latched = nil
 local reported = false
 --- has() ids already reported as unknown, so a door asked every frame prints once.
 local unknownSeen = {}
+
+--- Every state that never boots: br_seasonServed as last read, parsed -- nil
+--- while it holds no season. Moved only by refresh().
+local served = nil
+--- How this state hears br_seasonServed move: 'listener' or 'poll'.
+local follows = nil
+--- 'poll' only: the season a SEASON_SWITCHED said is on its way, or nil.
+local awaiting = nil
+--- 'poll' only: a re-read thread is running.
+local polling = false
+--- onChange()'s functions, called in order with (now, before).
+local watchers = {}
+
+--- A runtime without AddConvarChangeListener re-reads this often while it is
+--- waiting for a season ...
+local POLL_MS = 500
+--- ... this many times at most (two minutes) per wait: a first arrival, or the
+--- one a SEASON_SWITCHED announced. Bounded, so a value that never comes costs
+--- two minutes of one read a half-second and then nothing.
+local POLL_TRIES = 240
 
 --- The newest season this code knows, off the registry. 1 if the registry is
 --- missing or malformed -- the launch season -- and every has() is then off
@@ -305,13 +347,97 @@ end
 ---
 --- On br_core's server after boot, the season in force: the one it booted
 --- with, or the one `brseason` switched it to since. Everywhere else,
---- br_seasonServed read now, and NIL until it holds a season: a client before
---- the server's answer arrives (see the header). Every caller copes with nil.
+--- br_seasonServed as this state last read it -- which follows every change
+--- (see the header) -- and NIL until it holds a season: a client before the
+--- server's answer arrives. Every caller copes with nil.
+---
+--- TABLE READS, NEVER A NATIVE: this is asked from per-frame passes.
 --- @return integer|nil
 function BR.Season.current()
     if latched then return latched.season end
+    return served
+end
+
+--- Read br_seasonServed again, now, and move this state's copy if it moved.
+---
+--- What the listener, `br:season:changed`, expect() and the fallback re-read
+--- call; nothing else needs to. A no-op on br_core's server, which answers
+--- its own latch. Every onChange() function is told of a move, the first
+--- arrival included, in the order they asked -- and one that raises does not
+--- keep the rest from hearing it.
+--- @return integer|nil  the season this state now runs
+function BR.Season.refresh()
+    if latched then return latched.season end
     local raw = GetConvar and GetConvar(BR.Season.SERVED, '') or ''
-    return (BR.Season.parse(raw))
+    local now = (BR.Season.parse(raw))
+    if awaiting ~= nil and now == awaiting then awaiting = nil end
+    if now == served then return served end
+    local before = served
+    served = now
+    local failed = nil
+    for i = 1, #watchers do
+        local okW, err = pcall(watchers[i], now, before)
+        if not okW then
+            print(('[br_lib] BR.Season.onChange: a follower raised -- %s'):format(tostring(err)))
+            failed = failed or err
+        end
+    end
+    -- The suites hear it as a failure rather than a console line.
+    if failed ~= nil and BR.Season.strict then error(failed, 0) end
+    return served
+end
+
+--- Be told when this state's season moves: fn(now, before), either of which
+--- may be nil (not known). For a file that keeps an answer DERIVED from the
+--- season -- client/loot.lua's crate bodies, client/season.lua's
+--- `br:season:changed` -- so it re-derives once per move instead of asking per
+--- frame. Never called on br_core's server, whose season moves only by boot()
+--- or switch(), and whose followers are named in br_core/server/season.lua.
+--- @param fn function
+function BR.Season.onChange(fn)
+    if type(fn) == 'function' then watchers[#watchers + 1] = fn end
+end
+
+--- The re-read a runtime without the listener falls back to: every POLL_MS
+--- while no season is known, or while an announced one has not landed, for
+--- POLL_TRIES at most. One thread at a time.
+local function poll()
+    if polling or follows ~= 'poll' then return end
+    if type(Citizen) ~= 'table' or type(Citizen.CreateThread) ~= 'function' then return end
+    polling = true
+    Citizen.CreateThread(function()
+        local tries = 0
+        while latched == nil and tries < POLL_TRIES and (served == nil or awaiting ~= nil) do
+            Citizen.Wait(POLL_MS)
+            BR.Season.refresh()
+            tries = tries + 1
+        end
+        awaiting = nil
+        polling = false
+    end)
+end
+
+--- br_core's client, on SEASON_SWITCHED: season `n` is on its way. Re-reads
+--- now; the value and the message travel separately, so when the value has
+--- not landed yet the listener will see it land -- and without one, the
+--- fallback re-reads until it does. The message's number is never TAKEN as
+--- the season: what this machine runs is what br_seasonServed says.
+--- @param n integer
+function BR.Season.expect(n)
+    if latched then return end
+    BR.Season.refresh()
+    if math.type(n) == 'integer' and served ~= n and follows == 'poll' then
+        awaiting = n
+        poll()
+    end
+end
+
+--- How this state follows br_seasonServed: 'listener', 'poll', or nil on a
+--- state that has booted. For /brloot-style readouts and the suites.
+--- @return string|nil
+function BR.Season.follows()
+    if latched then return nil end
+    return follows
 end
 
 --- Is this feature on, in the season this machine is running?
@@ -375,4 +501,27 @@ function BR.Season.pick(versions)
         end
     end
     return best
+end
+
+-- ═══ FOLLOWING br_seasonServed, FROM THE MOMENT THIS FILE LOADS ═══
+--
+-- Read once now, then again only when it moves (the header). Every state wires
+-- the same way, br_core's server included, harmlessly: it boots in
+-- onResourceStart and answers its own latch from then on, and refresh() hands
+-- that back without reading anything.
+BR.Season.refresh()
+-- GUARDED: a listener that will not register must leave the re-read behind it,
+-- not take this file -- and every season gate -- down at load.
+if type(AddConvarChangeListener) == 'function'
+   and pcall(AddConvarChangeListener, BR.Season.SERVED, function() BR.Season.refresh() end) then
+    follows = 'listener'
+else
+    follows = 'poll'
+    poll()
+end
+-- br_core's client raises it once its own copy has moved, and this handler is
+-- registered before any of this resource's own (this file loads first), so
+-- they all ask a copy that has already moved.
+if type(AddEventHandler) == 'function' then
+    AddEventHandler('br:season:changed', function() BR.Season.refresh() end)
 end
