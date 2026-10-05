@@ -42,5 +42,9 @@ BR.Config.Seasons = {
         -- #215. Owner, 2026-10-04: the first Season 2 feature, moved from
         -- dev-only to Season 2 and later.
         emotes = { from = 2 },
+        -- #395. Owner, 2026-10-04: the shipping-box crates -- a prop per tier,
+        -- the opening clip, the festive set and the gift boxes -- are Season 2
+        -- content. Off, every crate is today's wooden one and opens at once.
+        crates2 = { from = 2 },
     },
 }

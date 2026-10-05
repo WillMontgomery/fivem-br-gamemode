@@ -309,6 +309,12 @@ BR.Net = {
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell
     LOOT_ADD        = 'br:loot:add',         -- S->C  array of loot entries entering scope
     LOOT_GONE       = 'br:loot:gone',        -- S->C  array of loot ids removed
+    -- Season 2 crates (#395). A hold completed and the box has started to open:
+    -- play its clip on the local prop. `at` is the server's clock and `ms` the
+    -- clip's length, so a late message starts the clip part-way rather than
+    -- finishing after the burst; `mine` is set only on the opener's copy. The
+    -- burst follows `ms` later as the crate's ordinary husk re-announce.
+    LOOT_OPENING    = 'br:loot:opening',     -- S->C  { id, at, ms, mine? }
 
     -- Volts never enter the inventory, so they never reach the client path that
     -- plays the pickup cue. This is that cue, on its own, for the one kind of

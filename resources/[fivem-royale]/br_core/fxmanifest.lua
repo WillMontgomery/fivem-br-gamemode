@@ -194,6 +194,12 @@ shared_scripts {
     -- `emotes` row in config/seasons.lua). Its rows register into
     -- BR.Config.MarketIndex as it loads, so it must follow config/market.lua.
     '@br_lib/config/emotes.lua',
+    -- SEASON 2 CRATES (#395): the shipping boxes, festive set and gift boxes,
+    -- then the one reader of them. Gated by the `crates2` row above. SHARED: the
+    -- server stamps each crate's look and times the burst, the client picks the
+    -- model and plays the clip. Neither reads anything at load.
+    '@br_lib/config/crates.lua',
+    '@br_lib/shared/crates.lua',
     -- Where the admin console lives. One key, no useful default, and it MUST
     -- precede overrides.lua: that file refuses to boot if a convar names a
     -- BR.Config key that does not exist yet, which is the anti-drift check
