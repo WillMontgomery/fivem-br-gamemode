@@ -1141,18 +1141,31 @@ fi
 # gets ignored. This was a gap rather than a decision -- `bool natives` carried
 # the exclusion and this did not, which only showed when a second library was
 # vendored (2026-09-08).
-section 'forward locals'
-if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    fwdfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
-        d=$(dirname "$f"); keep=1
+#
+# nonvendored_lua -- NONVENDORED_LUA: every .lua under resources/ with no
+# VENDOR.json in any directory above it, sorted. Built once, for this gate and
+# `bool natives`, IN BASH ALONE: it used to call dirname once per directory
+# level per file -- about 1,500 processes, fifteen seconds a gate on Windows.
+# ${d%/*} is dirname for these relative paths, with a path that has no slash
+# left becoming `.`, which is where the walk stops.
+nonvendored_lua() {
+    [ -n "${NONVENDORED_LUA+set}" ] && return 0
+    NONVENDORED_LUA=$(find resources -name '*.lua' | while IFS= read -r f; do
+        case "$f" in */*) d="${f%/*}" ;; *) d=. ;; esac
+        keep=1
         while [ "$d" != "." ] && [ "$d" != "/" ]; do
             [ -f "$d/VENDOR.json" ] && { keep=0; break; }
-            d=$(dirname "$d")
+            case "$d" in */*) d="${d%/*}"; [ -n "$d" ] || d=/ ;; *) d=. ;; esac
         done
         [ "$keep" -eq 1 ] && echo "$f"
     done | sort)
+}
+
+section 'forward locals'
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    nonvendored_lua
     # shellcheck disable=SC2086
-    "$LUA" tools/check_forward_locals.lua $fwdfiles || rc=1
+    "$LUA" tools/check_forward_locals.lua $NONVENDORED_LUA || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1209,16 +1222,9 @@ fi
 # every version bump for faults that are not ours to fix.
 section 'bool natives'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    boolfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
-        d=$(dirname "$f"); keep=1
-        while [ "$d" != "." ] && [ "$d" != "/" ]; do
-            [ -f "$d/VENDOR.json" ] && { keep=0; break; }
-            d=$(dirname "$d")
-        done
-        [ "$keep" -eq 1 ] && echo "$f"
-    done | sort)
+    nonvendored_lua
     # shellcheck disable=SC2086
-    "$LUA" tools/check_bool_natives.lua $boolfiles || rc=1
+    "$LUA" tools/check_bool_natives.lua $NONVENDORED_LUA || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
