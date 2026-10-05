@@ -22,6 +22,7 @@ import { banner, resolvePrefixes } from './prefix.js'
 import { spendCost, spendUpdate } from './spend.js'
 import { buildStatsUpdate } from './stats.js'
 import { projectVerdict } from './verdict.js'
+import { yubikeyFields, yubikeyRefusal, yubikeyUpdate } from './yubikey.js'
 
 /**
  * br_ddb -- the game server's read-only window onto DynamoDB.
@@ -970,7 +971,10 @@ on('br:ddb:inventoryFetch', (req, license) => {
     emit('br:ddb:inventoryResult', req, inv, extra ?? {})
   }
 
-  const empty = { balance: 0, owned: [], equipped: {}, level: 1, xp: 0, tutorial: '' }
+  const empty = {
+    balance: 0, owned: [], equipped: {}, level: 1, xp: 0, tutorial: '',
+    yubikey: false, yubikeySeen: false,
+  }
 
   if (typeof license !== 'string' || license === '') {
     answer(empty, { error: 'no license' })
@@ -1016,6 +1020,11 @@ on('br:ddb:inventoryFetch', (req, license) => {
         // because this read already happens once per connect and costs nothing
         // more.
         tutorial: typeof row.tutorial === 'string' ? row.tutorial : '',
+        // THE YUBIKEY (#396, Season 2): whether this account holds one, and
+        // whether it ever has. Plain booleans, never absent -- see
+        // src/yubikey.js. Read on every season; br_core decides whether a
+        // Season 1 server looks at them (it does not).
+        ...yubikeyFields(row),
       }, {})
     })
     .catch((e) => {
@@ -2182,6 +2191,57 @@ on('br:ddb:tutorialSet', (req, license, state) => {
     .then(() => answer(true, { state }))
     .catch((e) => {
       console.log(`[br_ddb] tutorial state write failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Give an account its one Yubikey, or take it away (#396, Season 2).
+ *
+ * `held` true is a pickup: SET yubikey = 1 and yubikeySeen = true, on the
+ * condition the row does not already hold one. `held` false is a use, a death
+ * or a leave: SET yubikey = 0, on the condition it does. src/yubikey.js has
+ * the reasoning; the condition is the cap of one, at the storage layer.
+ *
+ * A REFUSED CONDITION IS AN ANSWER, `refused`, and never an `error`: the row is
+ * already in the state that was asked for, which is the outcome br_core wanted.
+ */
+on('br:ddb:yubikeySet', (req, license, held) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:yubikeySetResult', req, ok, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+  const built = yubikeyUpdate(held)
+  if (built === null) {
+    answer(false, { error: 'bad state' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        UpdateExpression: built.UpdateExpression,
+        ConditionExpression: built.ConditionExpression,
+        ExpressionAttributeNames: built.ExpressionAttributeNames,
+        // ALREADY AttributeValues -- see yubikeyUpdate. Not marshalled again.
+        ExpressionAttributeValues: built.ExpressionAttributeValues,
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, { held }))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        answer(false, { refused: yubikeyRefusal(held) })
+        return
+      }
+      console.log(`[br_ddb] yubikey write failed for ${license}: ${e.message}`)
       answer(false, { error: e.message })
     })
 })

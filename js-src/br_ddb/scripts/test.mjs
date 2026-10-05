@@ -9,6 +9,7 @@ import { banner, resolvePrefixes } from '../src/prefix.js'
 import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
 import { buildStatsUpdate, STATS_ADDS, STATS_SETS } from '../src/stats.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
+import { yubikeyFields, yubikeyRefusal, yubikeyUpdate } from '../src/yubikey.js'
 
 // NOT `../src/`. These two drive src/index.js itself -- the twenty handlers,
 // which until 2026-08-30 nothing here ran. See scripts/bridge.mjs.
@@ -2550,6 +2551,96 @@ console.log('\nemotes: ownedAdd hands over an emote and nothing else')
   check('no license, no write', answer('br:ddb:ownedAddResult').extra.error, 'no license')
 }
 
+console.log('\nyubikey: one per account, on the profile row (#396)')
+{
+  // ═══ THE BUILDER ═══
+  const give = yubikeyUpdate(true)
+  check('a grant SETs the key and the seen flag', give.UpdateExpression, 'SET #k = :one, #seen = :t')
+  check('only onto a row that does not already hold one', give.ConditionExpression,
+    'attribute_not_exists(#k) OR #k = :zero')
+  check('the attribute names', give.ExpressionAttributeNames, { '#k': 'yubikey', '#seen': 'yubikeySeen' })
+  check('a number and a boolean on the wire', give.ExpressionAttributeValues,
+    { ':one': { N: '1' }, ':zero': { N: '0' }, ':t': { BOOL: true } })
+  const take = yubikeyUpdate(false)
+  check('a spend SETs it to zero', take.UpdateExpression, 'SET #k = :zero')
+  check('only from a row that holds one', take.ConditionExpression, '#k = :one')
+  check('and leaves the seen flag alone', Object.values(take.ExpressionAttributeNames), ['yubikey'])
+  for (const bad of [1, 0, 'true', null, undefined, {}]) {
+    check(`${JSON.stringify(bad) ?? 'undefined'} is not a state`, yubikeyUpdate(bad), null)
+  }
+  check('a refused grant says already held', yubikeyRefusal(true), 'already held')
+  check('a refused spend says not held', yubikeyRefusal(false), 'not held')
+  check('a row with neither field reads as no key, never seen', yubikeyFields({}),
+    { yubikey: false, yubikeySeen: false })
+  check('and a missing row the same', yubikeyFields(undefined), { yubikey: false, yubikeySeen: false })
+  check('yubikey 1 is held', yubikeyFields({ yubikey: 1, yubikeySeen: true }),
+    { yubikey: true, yubikeySeen: true })
+  check('yubikey 0 is not, and seen survives it', yubikeyFields({ yubikey: 0, yubikeySeen: true }),
+    { yubikey: false, yubikeySeen: true })
+
+  // ═══ THE VERB, THROUGH THE REAL src/index.js ═══
+  bridge.reset()
+  bridge.reply({})
+  check('the handler runs', why(bridge.call('br:ddb:yubikeySet', 90, LIC, true)), null)
+  const cmd = sent(0)
+  check('it is an UpdateItem', cmd.kind, 'UpdateItemCommand')
+  check('against the game table', cmd.input.TableName, 'br-players')
+  check('on the profile row', cmd.input.Key, { pk: { S: LIC }, sk: { S: 'profile' } })
+  check('with the grant\'s condition', cmd.input.ConditionExpression, 'attribute_not_exists(#k) OR #k = :zero')
+  check('and no balance anywhere in it', /bal/.test(JSON.stringify(cmd.input)), false)
+  await bridge.settle()
+  check('and answers yes', answer('br:ddb:yubikeySetResult').ok, true)
+  check('naming the state it wrote', answer('br:ddb:yubikeySetResult').extra.held, true)
+
+  bridge.reset()
+  const held = new Error('The conditional request failed')
+  held.name = 'ConditionalCheckFailedException'
+  bridge.reply(held)
+  bridge.call('br:ddb:yubikeySet', 91, LIC, true)
+  await bridge.settle()
+  const res = answer('br:ddb:yubikeySetResult')
+  check('a second key is a refusal', res.ok, false)
+  check('that says already held', res.extra.refused, 'already held')
+  check('and is not reported as an error', res.extra.error, undefined)
+
+  bridge.reset()
+  const none = new Error('The conditional request failed')
+  none.name = 'ConditionalCheckFailedException'
+  bridge.reply(none)
+  bridge.call('br:ddb:yubikeySet', 92, LIC, false)
+  await bridge.settle()
+  check('spending a key that is not there says not held',
+    answer('br:ddb:yubikeySetResult').extra.refused, 'not held')
+
+  bridge.reset()
+  bridge.call('br:ddb:yubikeySet', 93, LIC, 'yes')
+  check('a state that is not a boolean sends nothing', bridge.calls.length, 0)
+  await bridge.settle()
+  check('and is refused as a bad state', answer('br:ddb:yubikeySetResult').extra.error, 'bad state')
+
+  bridge.reset()
+  bridge.call('br:ddb:yubikeySet', 94, '', true)
+  await bridge.settle()
+  check('no license, no write', answer('br:ddb:yubikeySetResult').extra.error, 'no license')
+
+  // ═══ AND THE CONNECT READ CARRIES BOTH ═══
+  bridge.reset()
+  bridge.reply({ Item: marshall({ pk: LIC, sk: 'profile', balance: 10, yubikey: 1, yubikeySeen: true }) })
+  bridge.call('br:ddb:inventoryFetch', 95, LIC)
+  await bridge.settle()
+  const inv = lastEmit('br:ddb:inventoryResult').args[1]
+  check('inventoryFetch reads the key back', inv.yubikey, true)
+  check('and the seen flag', inv.yubikeySeen, true)
+
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:inventoryFetch', 96, LIC)
+  await bridge.settle()
+  const blank = lastEmit('br:ddb:inventoryResult').args[1]
+  check('a missing row is no key', blank.yubikey, false)
+  check('and never seen', blank.yubikeySeen, false)
+}
+
 console.log('\ntutorial: where an account stands with the guided first run')
 {
   // ═══ THE READ, WHICH IS THE HALF EVERY CONNECT RUNS ═══
@@ -3017,6 +3108,8 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
     // The emote wheel's two verbs (#215).
     'br:ddb:unequip': [23, LIC, 'emote3'],
     'br:ddb:ownedAdd': [24, LIC, 'emote_shuffle'],
+    // The Yubikey on the profile row (#396).
+    'br:ddb:yubikeySet': [25, LIC, true],
   }
 
   check(
