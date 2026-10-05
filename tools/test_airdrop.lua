@@ -5401,6 +5401,69 @@ do
     eq(#two.airdrop.waiting, 0, 'with nothing announced')
 end
 
+describe('server: a drop a terminal calls (#396) -- the siting rules, the nearest spot, and its own stream')
+do
+    -- SUPPLY DROP: one extra drop near a point, under exactly the rules a move
+    -- picks by. Everything after the siting is an ordinary drop's life.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    local lsia = BR.Config.Map.GetPOI('lsia')
+    local before = m.airdrop.rng.s and { m.airdrop.rng.s[1], m.airdrop.rng.s[2],
+                                          m.airdrop.rng.s[3], m.airdrop.rng.s[4] } or nil
+    local poi = BR.Airdrop.candidate(m, lsia.x + 30.0, lsia.y, gameMs)
+    ok(poi ~= nil, 'a spot near the asked-for point qualifies')
+    local circles = BR.AirdropLandingCircles(m.storm, gameMs, A, A.blipMaxMs or 240000)
+    local want = BR.AirdropNearestSiteIn(BR.Config.Map.POIs, circles, A.insideBy or 250.0,
+        BR.LootPlaceable, lsia.x + 30.0, lsia.y)
+    eq(poi and poi.id, want and want.id, 'the nearest POI that passes the siting rules')
+
+    local rec, why = BR.Airdrop.call(m, lsia.x + 30.0, lsia.y, gameMs)
+    ok(rec ~= nil and why == nil, 'called: a record comes back')
+    eq(rec and rec.poi, poi and poi.id, 'sited where the candidate said')
+    eq(#m.airdrop.waiting, 1, 'it waits for a player like any drop')
+    ok(m.airdrop.waiting[1].called == true, 'marked as called, for /brairdrop')
+    eq(m.airdrop.announced[#m.airdrop.announced], rec, 'on screen, so it holds the schedule')
+    local sync = 0
+    for _, p in ipairs(published) do if p.event == BR.Net.AIRDROP_SYNC then sync = sync + 1 end end
+    eq(sync, 1, 'the record goes to the match once')
+    eq(#notices, 1, 'and the match gets the airdrop notice')
+    eq(notices[1] and notices[1].text, A.notifyText, 'the config\'s own')
+    if before then
+        local s = m.airdrop.rng.s
+        ok(s[1] == before[1] and s[2] == before[2] and s[3] == before[3] and s[4] == before[4],
+            'the schedule\'s own stream is not drawn from')
+    end
+    local _, why2 = BR.Airdrop.call(m, lsia.x, lsia.y, gameMs)
+    eq(why2, 'busy', 'a second while one is waiting is refused busy (never two out at once)')
+    ok(BR.Airdrop.busy(m), 'busy says so')
+
+    standAt(101, rec.x, rec.y, 10.0)
+    tick()
+    eq(#m.airdrop.live, 1, 'a player at it arms it, through the ordinary gate')
+end
+
+describe('server: a drop a terminal calls (#396) -- nowhere to put it is no_site, and nothing changes')
+do
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    -- A CIRCLE NO POI FITS INSIDE BY THE MARGIN.
+    local lsia = BR.Config.Map.GetPOI('lsia')
+    m.storm = BR.BuildStormRecord(1, lsia.x, lsia.y, 50.0,
+        lsia.x, lsia.y, 50.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    eq(BR.Airdrop.candidate(m, lsia.x, lsia.y, gameMs), nil, 'no candidate')
+    local rec, why = BR.Airdrop.call(m, lsia.x, lsia.y, gameMs)
+    ok(rec == nil and why == 'no_site', 'no_site')
+    eq(#published + #notices, 0, 'nothing announced')
+    eq(#m.airdrop.waiting, 0, 'nothing waiting')
+
+    m.storm = nil
+    eq(BR.Airdrop.candidate(m, lsia.x, lsia.y, gameMs), nil, 'no storm record, no candidate')
+    m.airdrop = nil
+    eq(BR.Airdrop.candidate(m, lsia.x, lsia.y, gameMs), nil, 'no schedule, no candidate')
+end
+
 describe('server: flare projectiles do not replicate, and nothing else changes')
 do
     -- ═══ THE MOST DANGEROUS LINE IN THE FEATURE, DRIVEN AS CODE ═══

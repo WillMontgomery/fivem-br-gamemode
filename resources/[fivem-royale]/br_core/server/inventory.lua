@@ -553,6 +553,76 @@ local function loadEmpty(inv, pool)
     end
 end
 
+--- The pools the guns in this inventory draw on: { [pool] = true }.
+--- @param inv table
+--- @return table
+local function gunPools(inv)
+    local pools = {}
+    for i = 1, SLOTS do
+        local s = inv.slots[i]
+        local w = s and s.kind == BR.ItemKind.WEAPON and BR.Config.WeaponById[s.item] or nil
+        if w and w.ammo and w.clip and not w.melee then pools[w.ammo] = true end
+    end
+    return pools
+end
+
+--- How many rounds a terminal's Max ammo would put into this inventory (#396):
+--- every pool a carried gun draws on, up to its cap, and a load for every empty
+--- magazine on those pools. Zero is "already full", which the terminal refuses
+--- before the key is spent.
+--- @param src integer
+--- @return integer
+function BR.Inv.ammoRoom(src)
+    local inv = BR.Inv.of(src)
+    if not inv then return 0 end
+    -- A gun on this pool with an empty magazine, as loadEmpty would see it:
+    -- the hand's alone when the hand draws the pool, else every one.
+    local function emptyOn(s, pool)
+        local w = s and s.kind == BR.ItemKind.WEAPON and BR.Config.WeaponById[s.item] or nil
+        if w and w.ammo == pool and w.clip and not w.melee then
+            return (s.clip or 0) <= 0 and w.clip or 0, true
+        end
+        return 0, false
+    end
+    local room = 0
+    for pool in pairs(gunPools(inv)) do
+        room = room + math.max(0, (BR.Config.AmmoCaps[pool] or 0) - (inv.ammo[pool] or 0))
+        local hand, draws = emptyOn(inv.slots[inv.active], pool)
+        if draws then
+            room = room + hand
+        else
+            for i = 1, SLOTS do room = room + (emptyOn(inv.slots[i], pool)) end
+        end
+    end
+    return room
+end
+
+--- A TERMINAL'S MAX AMMO (#396): every pool a carried gun draws on filled to its
+--- cap, an empty magazine loaded the way rounds arriving load one (loadEmpty:
+--- the hand's first), and the pool topped back up to its cap after it.
+---
+--- THE ONE PLACE A RESERVE IS MINTED BY A RULE RATHER THAN BY A PICKUP, and it
+--- goes through the same two doors a pickup does: addAmmo's clamp to the cap
+--- and loadEmpty's reload, which MOVES. So the cap is never passed and no
+--- magazine is filled past its size. Throwables are not ammo and are untouched;
+--- a pool no carried gun draws on stays as it is. One INV_SET, with the
+--- pickup cue, because rounds arrived.
+--- @param src integer
+--- @return integer added  rounds minted, 0 when there was no room
+function BR.Inv.fillAmmo(src)
+    local inv = BR.Inv.of(src)
+    if not inv then return 0 end
+    local added = 0
+    for pool in pairs(gunPools(inv)) do
+        local cap = BR.Config.AmmoCaps[pool] or 0
+        added = added + addAmmo(inv, pool, cap)
+        loadEmpty(inv, pool)
+        added = added + addAmmo(inv, pool, cap)
+    end
+    if added > 0 then BR.Inv.push(src) end
+    return added
+end
+
 -- DECLARED HERE, DEFINED ABOVE INV_SELECT, where the owner's ruling it carries
 -- is written down. BR.Inv.give asks it too (#271), and give comes first.
 local channelled

@@ -13267,6 +13267,50 @@ do
     end
 end
 
+describe("inv.fillAmmo -- a terminal's Max ammo (#396)")
+do
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+    -- EVERY POOL A CARRIED GUN DRAWS ON, TO ITS CAP; an empty magazine loaded
+    -- the way arriving rounds load one; nothing past a cap or a magazine;
+    -- throwables and pools no gun draws on untouched.
+    lootMatch()
+    local pdw    = BR.Config.WeaponById['combatpdw']
+    local pistol = BR.Config.WeaponById['pistol']
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 3, carried = true })
+    BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                     rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[pistol.ammo] = 5
+    inv.ammo[pdw.ammo] = 0
+    local other = nil
+    for pool in pairs(BR.Config.AmmoCaps) do
+        if pool ~= pistol.ammo and pool ~= pdw.ammo then other = pool break end
+    end
+    if other then inv.ammo[other] = 7 end
+
+    local room = BR.Inv.ammoRoom(1)
+    local want = (BR.Config.AmmoCaps[pistol.ammo] - 5) + BR.Config.AmmoCaps[pdw.ammo] + pdw.clip
+    eq(room, want, "the room: both pools to their caps, and the empty PDW's magazine")
+    local added = BR.Inv.fillAmmo(1)
+    eq(added, want, 'and that is exactly what is minted')
+    eq(inv.ammo[pistol.ammo], BR.Config.AmmoCaps[pistol.ammo], "the pistol's pool is at its cap")
+    eq(inv.ammo[pdw.ammo], BR.Config.AmmoCaps[pdw.ammo], "so is the PDW's, after loading")
+    eq(inv.slots[2].clip, pdw.clip, 'the empty PDW in the bag is loaded')
+    eq(inv.slots[1].clip, 3, "a magazine with rounds in it is the reload key's, and is left")
+    if other then eq(inv.ammo[other], 7, 'a pool no carried gun draws on is untouched') end
+    eq(BR.Inv.ammoRoom(1), 0, 'full now')
+    eq(BR.Inv.fillAmmo(1), 0, 'and a second fill mints nothing')
+
+    BR.Inv.reset(1)
+    eq(BR.Inv.ammoRoom(1), 0, 'no gun, no room')
+    eq(BR.Inv.fillAmmo(1), 0, 'and nothing minted')
+end
+
 describe('inv.ammo.remainder')
 do
     -- ═══ A BUNDLE CHARGED WHOLE AND DELIVERED CLAMPED ═══

@@ -1098,6 +1098,95 @@ local function nextDropNumber(st)
     return n + 1
 end
 
+-- ---------------------------------------------------------------------------
+-- A drop a terminal calls (#396)
+-- ---------------------------------------------------------------------------
+
+--- The airdrop spot a terminal's Supply drop would get near (x, y), or nil.
+---
+--- THE SITING RULES, EXACTLY, as a move picks them (moveDrop): the landing
+--- window over the full `blipMaxMs` (the wall at the soonest and latest landing,
+--- and the next circle), `insideBy`, BR.LootPlaceable, and no POI another drop
+--- is on -- and of the POIs that pass, the one nearest (x, y). Nil when the
+--- airdrop is off, the match has no schedule or no storm record, the storm is
+--- past the phase cap, or nothing qualifies: the terminal says so and spends
+--- nothing.
+--- @param m table
+--- @param x number
+--- @param y number
+--- @param now number|nil
+--- @return table|nil poi
+function BR.Airdrop.candidate(m, x, y, now)
+    if not A or A.enabled == false then return nil end
+    if not m or not m.airdrop or not m.storm then return nil end
+    if not BR.AirdropStormOk(m.storm, A.maxPhase) then return nil end
+    now = now or GetGameTimer()
+    local circles = BR.AirdropLandingCircles(m.storm, now, A, A.blipMaxMs or 240000)
+    local poi = BR.AirdropNearestSiteIn(freePois(m.airdrop), circles,
+        A.insideBy or 250.0, BR.LootPlaceable, x, y)
+    return poi
+end
+
+--- Is a drop already waiting for a player or falling? The owner's rule for the
+--- match's own two drops (#355, 2026-09-22): "both of the airdrops can never be
+--- armed or live at the same time" -- and a terminal's drop is held to it too,
+--- so it is refused while another is on its way rather than put beside it.
+--- @param m table
+--- @return boolean
+function BR.Airdrop.busy(m)
+    local st = m and m.airdrop
+    return st ~= nil and (#(st.waiting or {}) > 0 or #(st.live or {}) > 0)
+end
+
+--- Site and announce one extra drop near (x, y): a terminal's Supply drop.
+---
+--- FROM HERE ON IT IS AN ORDINARY DROP. Sited by BR.Airdrop.candidate, numbered
+--- by nextDropNumber, announced like any drop (the record to the match and the
+--- config's own notice to its audience), held to the 200m gate, moved by a new
+--- next circle, abandoned at its ceiling, opened through the loot path -- and
+--- it HOLDS THE SCHEDULE like a manual drop does (holdingDrop reads
+--- `announced`), so the match's own next drop waits its three minutes behind
+--- it. It is not counted against `perMatch`: that cap is the schedule's.
+---
+--- ITS OWN RNG STREAM, folded with #396's number on top of the airdrop's prime,
+--- so the heading and the payout it draws take nothing off `st.rng`: the match's
+--- scheduled drops roll exactly what they would have without it.
+--- @param m table
+--- @param x number
+--- @param y number
+--- @param now number|nil
+--- @return table|nil rec, string|nil why  'no_site' | 'busy'
+function BR.Airdrop.call(m, x, y, now)
+    now = now or GetGameTimer()
+    if BR.Airdrop.busy(m) then return nil, 'busy' end
+    local poi = BR.Airdrop.candidate(m, x, y, now)
+    if not poi then return nil, 'no_site' end
+    local st = m.airdrop
+    st.calledRng = st.calledRng or BR.Rng(now + m.seq * 1299709 + 396)
+    local n = nextDropNumber(st)
+    local rec = BR.BuildAirdropSite(n, poi, A.altitude or 260.0,
+        now, st.calledRng:float() * 360.0)
+    stampLook(m, rec)
+    st.waiting[#st.waiting + 1] = {
+        rec = rec, items = BR.AirdropPayout(st.calledRng, A), closest = math.huge,
+        next = BR.AirdropNextCircleOf(m.storm),
+        called = true,
+    }
+    st.sent = (st.sent or 0) + 1
+    st.announced = st.announced or {}
+    st.announced[#st.announced + 1] = rec
+    BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
+    BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
+    print(('[br_core] airdrop: match %s drop %d CALLED by a terminal at %s (%.0f, %.0f), '
+           .. '%.0fm from the spot asked for -- waiting for a player within %.0fm')
+        :format(BR.MatchTag(m.id), n, tostring(poi.id), poi.x, poi.y,
+                BR.Dist(x, y, poi.x, poi.y), A.armWithin or 200.0))
+    -- SOMEBODY MAY ALREADY BE STANDING THERE -- the terminal's own player, at a
+    -- spot near the terminal -- so the gate is asked now, as a sited drop's is.
+    gate(m, st, #st.waiting, now)
+    return rec, nil
+end
+
 --- Print one waiting drop, and exactly why it has not armed (#386).
 ---
 --- Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
