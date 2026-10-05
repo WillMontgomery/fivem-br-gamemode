@@ -136,6 +136,23 @@ local function wireEntry(e, born)
         -- measured rather than guessed. Nothing here reads a `pz` off the wire,
         -- and the repair round-trip below clears it (see the LOOT_FIX handler).
         pz      = e.pz,
+        -- ═══ SEASON 2 CRATES (#395): THE LOOK, AND WHETHER IT IS OPENING ═══
+        --
+        -- `bt`/`bf`/`bg` are the crate's tier, festive flag and gift color
+        -- (br_lib/shared/crates.lua), stamped by stampLook below and nil on
+        -- every entry of a Season 1 server -- so a Season 1 payload is the one
+        -- it always was. They survive the husk swap, which is how the open
+        -- prop knows its tape. The tier says no more than `rarity` already
+        -- said about a sealed crate.
+        --
+        -- `op` is a crate between its hold completing and its burst. A client
+        -- that streams it in now draws the open prop rather than a clip begun
+        -- part-way; the clip is only for clients that had the box when it
+        -- started (LOOT_OPENING).
+        bt      = e.bt,
+        bf      = e.bf,
+        bg      = e.bg,
+        op      = e.opening and true or nil,
     }
 end
 
@@ -143,10 +160,41 @@ end
 -- The registry
 -- --------------------------------------------------------------------------
 
+--- Stamp a crate's Season 2 look as it enters the registry (#395).
+---
+--- EVERY CRATE PASSES HERE -- the match layout, the warmup pad's, the landing
+--- crates, the pad's respawns, its four permanent crates, the airdrop and the
+--- dev crates -- because all of them are indexed, so there is one place the
+--- look is decided rather than seven.
+---
+--- ONCE. A stamped crate is left alone: a repair re-indexes it, and a crate
+--- must not change its tape or its festive set because somebody nudged it.
+--- `brbox` crates arrive stamped and keep what they asked for.
+---
+--- THE TIER IS THE CRATE'S RARITY, which is already the best rarity inside
+--- (BR.LootContentsRarity); the odds are untouched. FESTIVE IS THE ZONE'S: a
+--- match decides once when its loot is laid out (BR.Loot.begin) and every
+--- crate in it carries that answer. The shared warmup pad outlives matches, so
+--- it asks at each stocking.
+---
+--- NOTHING ON A SEASON 1 SERVER, and nothing when br_lib/shared/crates.lua is
+--- not loaded (the older suites): no field, no change on the wire.
+--- @param loot table
+--- @param e table
+local function stampLook(loot, e)
+    if e.kind ~= 'chest' or e.bt ~= nil then return end
+    if not BR.Crates or not (BR.Season and BR.Season.has('crates2')) then return end
+    e.bt = BR.Crates.tierOf(e.rarity)
+    local festive = loot.festive
+    if festive == nil then festive = BR.Crates.festiveNow() end
+    e.bf = festive == true or nil
+end
+
 --- Index one entry into its cell.
 --- @param loot table
 --- @param e table
 local function index(loot, e)
+    stampLook(loot, e)
     local key = BR.LootCellKeyAt(e.x, e.y)
     e.cell = key
     local cell = loot.cells[key]
@@ -265,8 +313,9 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from, standZ)
         -- WHAT THIS CONTAINER BECOMES WHEN IT IS OPENED, and how widely its
         -- contents scatter. Both nil for every crate the generator makes --
         -- toHusk and scatter fall back to the config exactly as they always
-        -- have -- and set only by the airdrop, whose husk is drawn at a
-        -- different size and whose ring holds more items than a crate's.
+        -- have -- and set only by the airdrop, whose husk keeps an item id of
+        -- its own ('airdrophusk', for its scale row -- 1.0, the authored size,
+        -- since 835254d) and whose ring holds more items than a crate's.
         --
         -- SERVER-SIDE ONLY. None of these three reach wireEntry: `huskProp` and
         -- `huskItem` become the entry's own `prop` and `item` the moment it is
@@ -280,6 +329,11 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from, standZ)
         -- is what starts the blip's last minute. A number rather than a
         -- reference so nothing here holds a flight plan.
         airdrop = stack.airdrop,
+        -- A LOOK THE CALLER CHOSE (#395), which only `brbox` does. Every other
+        -- crate arrives without one and index() stamps it.
+        bt = stack.bt,
+        bf = stack.bf,
+        bg = stack.bg,
     }
     index(m.loot, e)
     announce(m, e, true)
@@ -298,12 +352,16 @@ end
 --- there so a room you have already swept reads as swept from the doorway.
 ---
 --- THE HUSK'S IDENTITY CAN BE THE CRATE'S CHOICE, and for exactly one crate it
---- is. An airdrop's box is drawn at twice the authored size on both sides of the
---- open (owner, 2026-08-22), and the client resolves a prop's scale from its
---- ITEM ID -- so an airdrop husk that called itself 'husk' like the other 1300
---- would shrink back to normal on the frame it was opened. `huskItem` and
---- `huskProp` are unset on every generated crate and the fallbacks below are
---- what those have always used.
+--- is. The client resolves a prop's scale from its ITEM ID, and the airdrop
+--- keeps ids of its own ('airdrop', 'airdrophusk') so its box has a scale row
+--- of its own. That row is 1.0 -- the authored size -- on both sides of the
+--- open since 835254d (owner, 2026-08-23: the 2x box clipped the floor); the
+--- 2x of 2026-08-22 is history. `huskItem` and `huskProp` are unset on every
+--- generated crate and the fallbacks below are what those have always used.
+---
+--- THE LOOK STAYS (#395). `bt`/`bf`/`bg` are not touched, so a Season 2 box
+--- opens into ITS open prop -- the tape of the tier it was -- while `rarity`
+--- goes to common exactly as it always has.
 --- @param m table
 --- @param crate table
 local function toHusk(m, crate)
@@ -312,6 +370,7 @@ local function toHusk(m, crate)
     crate.prop     = crate.huskProp or L.chestOpenProp
     crate.rarity   = BR.Rarity.COMMON
     crate.contents = nil
+    crate.opening  = nil
     announce(m, crate)
 end
 
@@ -371,6 +430,14 @@ function BR.Loot.begin(m, seed)
     -- differs per run is a suite that fails one time in twenty for no reason.
     seed = seed or pinnedSeed or (GetGameTimer() + m.seq * 15485863)
 
+    -- THE FESTIVE SET, DECIDED ONCE FOR THE WHOLE MATCH (#395), off the
+    -- server's own date (or `brfestive`), and carried on every crate stampLook
+    -- marks -- so a match that starts at 23:59 on January 31 stays festive to
+    -- the end and every client agrees. false, not nil, when it is not: nil is
+    -- the warmup pad's "ask at each stocking".
+    local festive = nil
+    if BR.Crates then festive = BR.Crates.festiveNow() end
+
     m.loot = {
         seed    = seed,
         nextId  = 0,
@@ -380,6 +447,7 @@ function BR.Loot.begin(m, seed)
         at      = {},
         respawn = {},
         fixed   = 0,
+        festive = festive,
     }
 
     local entries, stats = BR.BuildLootLayout(seed)
@@ -940,6 +1008,161 @@ local function scatter(m, container)
     end
 end
 
+--- A looted warmup-pad crate comes back somewhere else on the island.
+---
+--- The pad must never end up stripped bare by whoever queued first. `warmup` is
+--- set only on the 220 generated pad crates; the four permanent ones reset in
+--- place (server/warmupcrates.lua) and carry no flag.
+--- @param m table
+--- @param item table
+local function respawnLater(m, item)
+    if not item.warmup then return end
+    m.loot.respawn[#m.loot.respawn + 1] = {
+        at   = GetGameTimer() + (BR.Config.Loot.warmup.respawnMs or 45000),
+        tier = BR.Config.Loot.warmup.tier or 2,
+    }
+end
+
+--- Open a crate: the contents burst out, the crate becomes its husk.
+---
+--- THE WHOLE OF TODAY'S OPEN, moved out of the claim handler unchanged so the
+--- Season 2 clip can call it at the clip's last frame. Scatter first: toHusk
+--- clears the contents off the entry.
+---
+--- AND IF IT WAS THE AIRDROP, THE BLIP'S LAST MINUTE STARTS HERE (owner,
+--- 2026-08-22: "we keep the blip on until 1 minute after the crate is opened").
+--- This is the only moment in the codebase that knows an airdrop crate was
+--- opened, because the airdrop is an ORDINARY container and this is the whole of
+--- its open path. ONE FIELD AND ONE CALL, not a branch on kind: `item.airdrop`
+--- is nil on every generated crate, and the guard is there because
+--- br_core/server/airdrop.lua is a separate file and a deployment that dropped
+--- it must not take the loot system with it. With a clip, "opened" is the burst
+--- -- the moment there is anything to see -- not the end of the hold.
+--- @param m table
+--- @param item table
+local function openChest(m, item)
+    scatter(m, item)
+    toHusk(m, item)
+    if item.airdrop and BR.Airdrop and BR.Airdrop.opened then
+        BR.Airdrop.opened(m, item.airdrop)
+    end
+    respawnLater(m, item)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SEASON 2: THE BOX OPENS ON A CLIP, AND THE LOOT BURSTS ON ITS LAST FRAME
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-04: the clip plays AFTER the hold completes, and the loot
+-- bursts out on the clip's LAST frame with today's burst animation. So the
+-- claim no longer opens the crate on the spot; it starts it OPENING:
+--
+--   1. the hold completes and the claim lands here. The crate is marked
+--      `opening` -- a second claim is answered like a husk's (silently), and
+--      there is nothing to pick up because the contents are still inside;
+--   2. everyone subscribed to its cell gets LOOT_OPENING with the server's clock
+--      and the clip's length, and plays the clip on their own copy of the box;
+--   3. `clipMs` later (config, per prop) openChest() runs: the burst and the husk
+--      swap, exactly today's open.
+--
+-- THE TIMER IS THE SERVER'S AND THE LENGTH IS THE CONFIG'S, because the contents
+-- are server-side and every client must see them leave at the same moment.
+-- `brboxcheck` (client) prints GetAnimDuration beside each configured length.
+--
+-- WHEN IT DOES NOT APPLY, NOTHING CHANGES: a Season 1 server, a crate with no
+-- look (the death box, a wooden crate), a row still holding placeholders, or a
+-- box whose props' resource is not running here. BR.Crates.openMs answers nil
+-- and the claim opens the crate at once, as it always has.
+--
+-- THE EDGES, each pinned in tools/test_crates.lua:
+--
+--   * THE OPENER DIES OR LEAVES MID-CLIP. The box opens anyway. The hold was
+--     the commitment; the contents go on the ground, not into anybody's
+--     inventory, so nothing depends on the opener still being there.
+--   * TWO HOLDS FINISH AT ONCE. First claim wins, as every claim here does; the
+--     second finds the crate opening and is answered like a husk. Only the
+--     opener's LOOT_OPENING says `mine`, so only the opener hears the reveal.
+--   * THE MATCH ENDS MID-CLIP. The timer finds the match's loot gone (CLEANUP)
+--     or the match over (ENDED) and bursts nothing.
+--   * THE AIRDROP. Its crate is an ordinary container; its blip's last minute
+--     starts at the burst (openChest).
+--   * THE WARMUP PAD'S FOUR. An opening crate is still a 'chest', so
+--     server/warmupcrates.lua treats it as sealed until the burst makes it a
+--     husk, and then its cycle runs exactly as before.
+
+--- How long this crate's open takes, or nil for today's instant open.
+--- @param item table
+--- @return number|nil ms
+function BR.Loot.openingMsOf(item)
+    if not BR.Crates or not (BR.Season and BR.Season.has('crates2')) then return nil end
+    local look = BR.Crates.lookOf(item)
+    if not look then return nil end
+    return BR.Crates.openMs(look)
+end
+
+--- What the clip-then-burst path has done this session. /brloot prints it.
+BR.Loot.openings = { started = 0, burst = 0, dropped = 0, lastWhy = nil }
+
+--- The clip's last frame: burst, unless something ended the opening first.
+---
+--- FOUR WAYS IT CAN BE TOO LATE, and each is a silent no-op with its reason
+--- recorded: the match's loot was torn down (`loot` is no longer `m.loot`), the
+--- entry left the registry, another opening replaced this one, or the match is
+--- over and nobody is left to pick anything up.
+--- @param m table
+--- @param loot table  m.loot as it was when the opening began
+--- @param item table
+--- @param token table this opening's identity
+--- @return string what happened
+local function finishOpening(m, loot, item, token)
+    local O = BR.Loot.openings
+    local why = nil
+    if m.loot ~= loot then
+        why = 'the match loot was torn down'
+    elseif loot.items[item.id] ~= item then
+        why = 'the crate left the registry'
+    elseif item.opening ~= token then
+        why = 'a newer opening replaced it'
+    end
+    if why then
+        O.dropped, O.lastWhy = O.dropped + 1, why
+        return why
+    end
+    item.opening = nil
+    if m.state == BR.MatchState.ENDED or m.state == BR.MatchState.CLEANUP then
+        O.dropped, O.lastWhy = O.dropped + 1, 'the match is over'
+        return O.lastWhy
+    end
+    O.burst, O.lastWhy = O.burst + 1, 'burst'
+    openChest(m, item)
+    return 'burst'
+end
+
+--- Start a crate opening: tell everyone looking, and time the burst.
+--- @param m table
+--- @param item table
+--- @param src integer  the opener
+--- @param ms number    the clip's length
+local function beginOpening(m, item, src, ms)
+    local loot = m.loot
+    local token = {}
+    local at = GetGameTimer()
+    item.opening = token
+    BR.Loot.openings.started = BR.Loot.openings.started + 1
+
+    -- `mine` ON THE OPENER'S COPY ONLY. Everybody near the box sees it open;
+    -- only the player who opened it hears the reveal, and nobody else is told
+    -- who that was.
+    for _, s in ipairs(subscribersOf(m, item.cell)) do
+        TriggerClientEvent(BR.Net.LOOT_OPENING, s,
+            { id = item.id, at = at, ms = ms, mine = (s == src) or nil })
+    end
+
+    SetTimeout(math.max(0, math.floor(ms)), function()
+        finishOpening(m, loot, item, token)
+    end)
+end
+
 -- --------------------------------------------------------------------------
 -- WHY A REFUSED CLAIM TALKS (#171)
 --
@@ -1324,43 +1547,30 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     end
 
     if item.kind == 'chest' or item.kind == 'deathbox' then
-        local contents = item.contents
         if item.kind == 'chest' then
-            -- The crate STAYS, opened. Scatter first: toHusk clears the
-            -- contents off the entry.
-            scatter(m, item)
-            toHusk(m, item)
+            -- ALREADY OPENING (#395): somebody's hold finished first and the
+            -- clip is playing. Answered exactly like a husk, below -- silently --
+            -- because from here on it is one.
+            if item.opening then return end
 
-            -- AND IF IT WAS THE AIRDROP, THE BLIP'S LAST MINUTE STARTS HERE.
-            --
-            -- Owner, 2026-08-22: "we keep the blip on until 1 minute after the
-            -- crate is opened". This is the only moment in the codebase that
-            -- knows an airdrop crate was opened, because since the same
-            -- playtest removed the auto-open the airdrop is an ORDINARY
-            -- container and this handler is the whole of the open path.
-            --
-            -- ONE FIELD AND ONE CALL, not a branch on kind. `item.airdrop` is
-            -- nil on all 1300 generated crates, so the ordinary path is
-            -- unchanged and unbranched; the guard on the function is there
-            -- because br_core/server/airdrop.lua is a separate file and a
-            -- deployment that dropped it must not take the loot system with it.
-            if item.airdrop and BR.Airdrop and BR.Airdrop.opened then
-                BR.Airdrop.opened(m, item.airdrop)
+            -- A SEASON 2 BOX WITH A REAL CLIP opens on the clip and bursts on
+            -- its last frame (beginOpening above). Everything else -- every
+            -- crate on a Season 1 server -- opens here and now, as always.
+            local ms = BR.Loot.openingMsOf(item)
+            if ms then
+                beginOpening(m, item, src, ms)
+                return
             end
+
+            -- The crate STAYS, opened. See openChest: the scatter, the husk,
+            -- the airdrop's blip and the pad's respawn, in today's order.
+            openChest(m, item)
         else
             -- A death box has no husk -- an empty one lying around would
             -- read as a body nobody had looted.
             retire(m, item)
             scatter(m, item)
-        end
-        local _ = contents
-        if item.warmup then
-            -- The pad must never end up stripped bare by whoever queued
-            -- first: a looted crate comes back somewhere else on the island.
-            m.loot.respawn[#m.loot.respawn + 1] = {
-                at   = GetGameTimer() + (BR.Config.Loot.warmup.respawnMs or 45000),
-                tier = BR.Config.Loot.warmup.tier or 2,
-            }
+            respawnLater(m, item)
         end
         return
     end
@@ -2124,12 +2334,61 @@ local function devStack(item, x, y, z)
     return nil, ('unknown item: %s'):format(item)
 end
 
+--- A Season 2 test crate of any look, for `brbox` (#395).
+---
+--- SERVER-OWNED LIKE REAL LOOT, with real contents: a shipping box holds a
+--- warmup crate's roll at exactly its tier (BR.WarmupCrateContents), so the
+--- tape and what bursts out agree; a gift box holds an ordinary crate's roll.
+--- The look is stamped here and index() leaves it alone, so the box wears what
+--- was asked for whatever the date or the match's festive answer.
+---
+--- REFUSED OUTSIDE crates2, with the reason, because a Season 1 server would
+--- open it at once and the test would prove nothing.
+--- @param m table
+--- @param box table  { tier = 1..5 } or { gift = color }, plus `festive`
+--- @param x number @param y number @param z number
+--- @return table|nil stack
+--- @return string|nil error
+local function devBoxStack(m, box, x, y, z)
+    if not BR.Crates then return nil, 'br_lib/shared/crates.lua is not loaded' end
+    if not (BR.Season and BR.Season.has('crates2')) then
+        return nil, ('Season 2 crates are off on Season %s -- `brseason 2` first')
+            :format(tostring(BR.Season and BR.Season.current()))
+    end
+    if type(box) ~= 'table' then return nil, 'no box asked for' end
+
+    local rng = BR.Rng(GetGameTimer())
+    local stack
+    if box.gift ~= nil then
+        if not BR.Crates.isGift(box.gift) then
+            return nil, ('no gift box %q (%s)')
+                :format(tostring(box.gift), table.concat(BR.Config.Crates.giftColors or {}, ', '))
+        end
+        stack = BR.MakeCrate(rng, 3, x, y, z)
+        stack.bg = box.gift
+    else
+        local tier = math.tointeger(tonumber(box.tier))
+        if not tier or tier < 1 or tier > 5 then return nil, 'the tier is 1 to 5' end
+        stack = BR.WarmupCrateStack(rng,
+            { x = x, y = y, z = z, heading = rng:float() * 360.0, rarity = tier })
+    end
+    stack.bt = BR.Crates.tierOf(stack.rarity)
+
+    -- FESTIVE AS ASKED, or the zone's own answer when not asked.
+    local festive = box.festive
+    if festive == nil then festive = m.loot.festive end
+    if festive == nil then festive = BR.Crates.festiveNow() end
+    stack.bf = festive == true or nil
+    return stack
+end
+
 --- Spawn a crate (or one item) for a player.
 --- @param src integer
 --- @param item string|nil
 --- @param at table|nil  a position, or nil for the player's sampled one
+--- @param box table|nil a Season 2 look for `brbox`; overrides `item`
 --- @return string report
-local function devSpawn(src, item, at)
+local function devSpawn(src, item, at, box)
     local e = BR.Roster.get(src)
     if not e then return 'no roster entry' end
 
@@ -2142,7 +2401,12 @@ local function devSpawn(src, item, at)
             :format(e.name, tostring(e.state))
     end
 
-    local stack, err = devStack(item, pos.x, pos.y, pos.z)
+    local stack, err
+    if box ~= nil then
+        stack, err = devBoxStack(m, box, pos.x, pos.y, pos.z)
+    else
+        stack, err = devStack(item, pos.x, pos.y, pos.z)
+    end
     if not stack then return err end
 
     -- AT SOMEBODY'S FEET, EITHER WAY. `at` is the caller's own ped position
@@ -2234,10 +2498,63 @@ AddEventHandler(BR.Net.LOOT_DEV, function(d)
         at = { x = tonumber(d.x), y = tonumber(d.y), z = tonumber(d.z) }
     end
 
+    -- `box` IS `brbox` (#395): a Season 2 test crate of a chosen look. Its
+    -- report goes to this console only -- no toast -- and the client checks
+    -- the season and the arguments itself before it asks, printing its own
+    -- reasons in F8.
+    if d.box ~= nil then
+        local box = type(d.box) == 'table' and d.box or {}
+        local report = devSpawn(src, nil, at, {
+            tier    = tonumber(box.tier),
+            gift    = type(box.gift) == 'string' and box.gift or nil,
+            festive = (box.festive == true or box.festive == false) and box.festive or nil,
+        })
+        print(('[br_core] brbox (client, %d): %s'):format(src, report))
+        return
+    end
+
     local report = devSpawn(src, d.item, at)
     print(('[br_core] brcrate (client, %d): %s'):format(src, report))
     BR.Server.notify(src, report, 'info')
 end)
+
+--- Force the festive set on or off for testing, or hand it back to the date.
+---
+--- WHEN IT APPLIES IS THE WHOLE QUESTION, so it says so every time: a match
+--- decides once, when its loot is laid out at warmup, so a match already laid
+--- out keeps its answer. The next match's layout, every warmup-pad crate
+--- stocked from now on and every `brbox` crate take the new one.
+RegisterCommand('brfestive', function(_, args)
+    if not BR.Crates then
+        print('[br_core] brfestive: br_lib/shared/crates.lua is not loaded')
+        return
+    end
+    local a = tostring(args[1] or ''):lower()
+    if a == 'on' then
+        BR.Crates.festiveOverride = true
+    elseif a == 'off' then
+        BR.Crates.festiveOverride = false
+    elseif a == 'auto' then
+        BR.Crates.festiveOverride = nil
+    elseif a ~= '' then
+        print('  usage: brfestive [on|off|auto]')
+        return
+    end
+
+    local o = BR.Crates.festiveOverride
+    local byDate = BR.Crates.festiveDate(os.date('*t'))
+    print(('[br_core] festive crates: %s (%s; the date says %s)')
+        :format(BR.Crates.festiveNow() and 'ON' or 'off',
+                o == nil and 'auto, by the server date' or 'forced by brfestive',
+                byDate and 'on' or 'off'))
+    print('  applies to crates laid out from now on: the next match\'s layout (at')
+    print('  its warmup), warmup-pad crates as they are stocked, and brbox crates.')
+    print('  A match already laid out keeps the answer it started with.')
+    if not BR.Season.has('crates2') then
+        print(('  (Season 2 crates are off on Season %s, so no crate carries it yet)')
+            :format(tostring(BR.Season.current())))
+    end
+end, true)
 
 -- The warmup pad refills itself. Whoever queued first must not be able to
 -- strip the island for everyone who arrives after them.

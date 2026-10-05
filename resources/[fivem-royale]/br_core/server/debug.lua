@@ -537,6 +537,22 @@ RegisterCommand('brloot', function(_, args)
         end
         print('  by rarity: ' .. table.concat(parts, '   '))
 
+        -- SEASON 2 CRATES (#395): how many crates wear a look, which festive
+        -- answer this match was laid out with, and what the clip-then-burst path
+        -- has done this session (server-wide).
+        local looked, opening = 0, 0
+        for _, e in pairs(m.loot.items) do
+            if e.bt then looked = looked + 1 end
+            if e.opening then opening = opening + 1 end
+        end
+        local O = BR.Loot.openings
+        print(('  season 2 boxes: %d stamped, %d opening now, festive %s'):format(
+            looked, opening, tostring(m.loot.festive)))
+        if O then
+            print(('  box openings this session: %d started, %d burst, %d dropped (last: %s)')
+                :format(O.started, O.burst, O.dropped, tostring(O.lastWhy)))
+        end
+
         local subs = {}
         for src, keys in pairs(m.loot.subs) do
             local n = 0

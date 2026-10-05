@@ -82,6 +82,26 @@ BR.Airdrop = {}
 
 local A = BR.Config.Airdrop
 
+--- The falling crate's Season 2 look (#395), on the drop's record.
+---
+--- The box under the canopy has to be the box that lands, and the client builds
+--- the falling one from the record alone (br_core/client/airdrop.lua). So the
+--- record carries the same two fields the landed entry gets from
+--- br_core/server/loot.lua: the tier (an airdrop is LEGENDARY) and the match's
+--- festive answer. Nil on a Season 1 server, so the record is the one it always
+--- was; the client draws the wooden crate whenever these are absent or its
+--- build lacks the model.
+--- @param m table
+--- @param rec table
+local function stampLook(m, rec)
+    if not rec or not BR.Crates then return end
+    if not (BR.Season and BR.Season.has('crates2')) then return end
+    rec.bt = BR.Crates.tierOf(BR.Rarity.LEGENDARY)
+    local festive = m.loot and m.loot.festive
+    if festive == nil then festive = BR.Crates.festiveNow() end
+    rec.bf = festive == true or nil
+end
+
 -- ---------------------------------------------------------------------------
 -- Landing
 -- ---------------------------------------------------------------------------
@@ -115,11 +135,17 @@ local A = BR.Config.Airdrop
 --- Every one of those is hardening this file would otherwise have had to
 --- re-earn on the single highest-value target in the match.
 ---
---- `huskProp` AND `huskItem` TRAVEL WITH IT because the airdrop's husk is drawn
---- at a different SIZE from the 1300 ordinary ones (owner, 2026-08-22: "The
---- parachute and crate props (including husk) should be 2x larger"), and the
---- client resolves a scale from the item id. BR.Loot.toHusk reads them; an
---- entry without them becomes the ordinary husk exactly as before.
+--- `huskProp` AND `huskItem` TRAVEL WITH IT because the client resolves a
+--- prop's scale from the item id, and the airdrop's crate and husk have a scale
+--- row of their own (BR.Config.Airdrop.crateScale/huskScale). Both are 1.0 --
+--- the same size as every other crate -- since 835254d (owner, 2026-08-23); the
+--- "2x larger" of 2026-08-22 clipped the floor and was taken back.
+--- BR.Loot.toHusk reads them; an entry without them becomes the ordinary husk
+--- exactly as before.
+---
+--- ON A SEASON 2 SERVER IT IS A LEGENDARY SHIPPING BOX (#395), at normal size,
+--- like the falling one (stampLook below): br_core/server/loot.lua stamps its
+--- look as it enters the registry, off its LEGENDARY rarity.
 --- @param m table
 --- @param d table   { rec, items }
 local function land(m, d)
@@ -361,6 +387,7 @@ local function trySite(m, p, now)
     -- two in when somebody turns up, and the same record is re-broadcast.
     local rec = BR.BuildAirdropSite(p.n, poi, A.altitude or 260.0,
         now, m.airdrop.rng:float() * 360.0)
+    stampLook(m, rec)
 
     -- ROLLED NOW, NOT AT THE ARM. The draw order is unchanged from when this
     -- was one function -- heading, then payout -- so a seed still produces the
@@ -1349,6 +1376,7 @@ RegisterCommand('brairdrop', function(_, args)
     local n = nextDropNumber(st)
     local rec = BR.BuildAirdropSite(n, poi, A.altitude or 260.0,
         now, st.rng:float() * 360.0)
+    stampLook(m, rec)
     st.waiting[#st.waiting + 1] = {
         rec = rec, items = BR.AirdropPayout(st.rng, A), closest = math.huge,
         -- THE FLAG THE MARGIN RE-CHECK READS. This verb bypassed `insideBy` at
