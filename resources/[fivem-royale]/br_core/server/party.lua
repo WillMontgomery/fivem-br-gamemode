@@ -1585,6 +1585,16 @@ BR.Sched.every(250, 'party.squadpos', function()
                 -- a key that was spent, expired or reset stops travelling on the
                 -- next pass with nothing written here to say so.
                 key = keyRow(e, now),
+
+                -- WHETHER THIS MATE HOLDS A SEASON 2 YUBIKEY (#396), AND ONLY
+                -- TO THEIR SQUAD. Owner, 2026-10-04: "In squads, teammates can
+                -- see who holds a key: this could be multiple per squad!" The
+                -- fifth field this beacon carries for the fifth time on the
+                -- same argument: the squad was asked for, and PUBLIC_FIELDS
+                -- would hand every enemy a list of who is carrying a terminal
+                -- key. One bit, absent rather than false, and false on a
+                -- Season 1 server (BR.Yubikey.holds asks the season).
+                yubikey = (BR.Yubikey ~= nil and BR.Yubikey.holds(src)) or nil,
             }
         end
     end)

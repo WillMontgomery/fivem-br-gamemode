@@ -108,9 +108,12 @@ local function bootServer(opts)
         'br_lib/shared/devgate.lua',
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
+        'br_lib/shared/notice.lua',
+        'br_lib/shared/rng.lua',
         'br_lib/shared/season.lua',
         'br_lib/config/seasons.lua',
         'br_lib/config/terminals.lua',
+        'br_lib/shared/terminal_solve.lua',
     })
     BR.Season.strict = true
     BR.Season.boot()
@@ -337,13 +340,16 @@ do
             ('%s has its _name line'):format(row.id))
         ok(type(copy[row.id .. '_done']) == 'string' and copy[row.id .. '_done'] ~= '',
             ('%s has its _done line'):format(row.id))
+        ok(type(copy[row.id .. '_description']) == 'string' and copy[row.id .. '_description'] ~= '',
+            ('%s has its _description line (the lobby notice\'s {description})'):format(row.id))
     end
     -- Every reason the server can give, and every line the desktop and the app
-    -- read, and every line #396 names for the Gameplay half.
+    -- read, and every line the world shows (#396's Gameplay half).
     for _, key in ipairs({
         'no_key', 'squad_used', 'offline', 'unavailable',
         'shell_boot', 'desktop_icon', 'window_title', 'app_heading', 'available', 'run',
         'first_pickup', 'already_holding', 'notice_access', 'notice_action',
+        'key_label', 'terminal_label', 'terminal_use', 'storm_reveal_blip',
     }) do
         ok(type(copy[key]) == 'string' and copy[key] ~= '', ('copy has %s'):format(key))
     end

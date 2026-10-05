@@ -321,6 +321,12 @@ shared_scripts {
     -- argument, and the pickup look reads BR.Config.Loot at call time.
     '@br_lib/config/props.lua',
     '@br_lib/shared/props_solve.lua',
+    -- The terminals' shared rules (#396): online against the storm's current
+    -- zone, the squad's one use, the sites list, the notice tokens and the
+    -- Yubikey's extra roll -- the server rules by them and every client draws
+    -- by them. LAST, beside props_solve and for its reason: it reads nothing at
+    -- load (BR.StormAt, BR.StormZone, BR.Notice and BR.Rng at call time).
+    '@br_lib/shared/terminal_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
@@ -888,9 +894,19 @@ server_scripts {
     -- the dev command `brpropsv`, gated by devgate.lua (shared_scripts, first);
     -- BR.Roster and BR.Sched are reached at call time and nil-guarded.
     'server/props.lua',
-    -- Terminals (#396): the session a run is only ever taken inside, the
-    -- function registry's server half, and the dev command `brterminalsv`.
-    -- Asks BR.Season.has('terminals') at call time; nothing at load.
+    -- The Yubikey (#396): who holds one, on the profile row through br_ddb, and
+    -- every way one changes hands -- the pickup, the airdrop and legendary
+    -- crate rolls, a death, a leave. server/market.lua, loot.lua, combat.lua,
+    -- roster.lua and party.lua call into it at call time, nil-guarded, so its
+    -- place here is a reader's: beside the terminals it opens. AFTER roster.lua
+    -- FOR ONE REAL REASON: its playerDropped handler must run after roster's,
+    -- which hands a leaver's key to BR.Yubikey.leaving first.
+    'server/yubikey.lua',
+    -- Terminals (#396): the world's terminals, the session a run is only ever
+    -- taken inside, the squad's one use, the lobby's two notices, the function
+    -- registry with Storm reveal, and the dev command `brterminalsv`. Asks
+    -- BR.Season.has('terminals') at call time; registers its session check on
+    -- BR.Sched at load.
     'server/terminal.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file

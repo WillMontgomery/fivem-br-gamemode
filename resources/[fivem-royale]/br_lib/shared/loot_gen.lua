@@ -411,6 +411,12 @@ function BR.LootLabel(stack)
         return ('%d %s'):format(math.tointeger(stack.count) or 0,
             (BR.Config.Market and BR.Config.Market.currency) or 'Volts')
     end
+    -- A SEASON 2 YUBIKEY (#396). Its name is the owner's copy, read from the
+    -- one block every line of that feature lives in.
+    if stack.kind == 'yubikey' then
+        local t = BR.Config.Terminals
+        return t and t.copy and t.copy.key_label or ''
+    end
     local w = BR.Config.WeaponById[stack.item]
     return w and w.label or 'Weapon'
 end

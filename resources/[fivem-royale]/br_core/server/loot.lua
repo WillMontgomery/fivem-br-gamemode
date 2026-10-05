@@ -1041,6 +1041,16 @@ end
 --- @param m table
 --- @param item table
 local function openChest(m, item)
+    -- A SEASON 2 YUBIKEY, SOMETIMES (#396): an EXTRA item added to what the
+    -- container already holds, on a stream of its own -- BR.Yubikey.extraFor
+    -- has the odds and why nothing else in the box moves. Before the scatter,
+    -- so it bursts out with the rest. Nil-guarded: a deployment without
+    -- server/yubikey.lua opens every crate exactly as before.
+    local extra = BR.Yubikey and BR.Yubikey.extraFor and BR.Yubikey.extraFor(m, item) or nil
+    if extra then
+        item.contents = item.contents or {}
+        item.contents[#item.contents + 1] = extra
+    end
     scatter(m, item)
     toHusk(m, item)
     if item.airdrop and BR.Airdrop and BR.Airdrop.opened then
@@ -1543,6 +1553,19 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
             ('You collected %d %s.'):format(n,
                 (BR.Config.Market and BR.Config.Market.currency) or 'Volts'),
             'success')
+        return
+    end
+
+    if item.kind == 'yubikey' then
+        -- A SEASON 2 YUBIKEY (#396), WHICH IS NOT AN INVENTORY ITEM EITHER.
+        -- Volts' shape: no slot, so BR.Inv.give is never reached. The key is an
+        -- owned item on the player's profile, and BR.Yubikey.claim decides --
+        -- one per player, so a holder is refused and the key stays exactly
+        -- where it lay. Only a yes retires the entry.
+        if BR.Yubikey and BR.Yubikey.claim and BR.Yubikey.claim(src) then
+            retire(m, item)
+            TriggerClientEvent(BR.Net.LOOT_PICKUP_CUE, src)
+        end
         return
     end
 

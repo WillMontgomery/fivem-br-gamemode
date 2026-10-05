@@ -672,6 +672,14 @@ function BR.Roster.remove(src)
     local entry = roster[src]
     if not entry then return nil end
 
+    -- A SEASON 2 YUBIKEY HELD BY SOMEBODY LEAVING MID-FIGHT (#396). A
+    -- disconnect never reaches BR.Combat.eliminate, so this is the one place it
+    -- can be dropped where they stood -- BEFORE the state below changes, while
+    -- the entry still says where they were and what they were doing.
+    -- BR.Yubikey.leaving decides whether it drops (BR.Config.Terminals.
+    -- leaveDrops). Nil-guarded, like every hook in this function.
+    if BR.Yubikey and BR.Yubikey.leaving then BR.Yubikey.leaving(src, entry) end
+
     entry.state = BR.PlayerState.LEFT
 
     -- SEAL, don't discard, if they were in a match. The entry leaves the roster

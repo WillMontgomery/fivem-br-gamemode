@@ -270,6 +270,9 @@ function BR.Market.load(src)
         -- a reconnect racing a drop, where the license is still cached -- is
         -- covered without a second call here.
         BR.Market.push(src)
+        -- The Yubikey (#396) came out of the same read and is still cached
+        -- under the license; this new source is told it is theirs.
+        if BR.Yubikey and BR.Yubikey.adopt then BR.Yubikey.adopt(src, lic) end
         return
     end
 
@@ -340,6 +343,13 @@ function BR.Market.load(src)
         inv[lic] = withDefaults(entry)
         BR.Market.publishXp(lic)
         BR.Market.push(src)
+
+        -- THE YUBIKEY (#396, Season 2) rides this same read: two booleans on
+        -- the profile row, handed to server/yubikey.lua rather than cached
+        -- here, because nothing in the market sells, equips or shows one. A
+        -- failed read hands over nil, which is no key. Nil-guarded: test_volts
+        -- and test_tutorial load this file without it.
+        if BR.Yubikey and BR.Yubikey.loaded then BR.Yubikey.loaded(src, lic, i) end
 
         -- ═══ AND THE OFFER, NOW THAT WE KNOW WHETHER TO MAKE IT (#261) ═══
         --

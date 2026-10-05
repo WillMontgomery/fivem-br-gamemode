@@ -381,6 +381,16 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         BR.Loot.deathBox(m, src)
     end
 
+    -- A SEASON 2 YUBIKEY DROPS ON THE SAME EDGE (#396): "If they are killed,
+    -- the Yubikey in their possession should drop on the ground as a standard
+    -- pickup." Same moment, same reason -- their position is still true -- and
+    -- below the #144 hold, so a death that will be undone drops nothing. A
+    -- leaver ('left') drops it while BR.Config.Terminals.leaveDrops says so;
+    -- BR.Yubikey.onEliminated decides. Nil-guarded.
+    if m and BR.Yubikey and BR.Yubikey.onEliminated then
+        BR.Yubikey.onEliminated(m, src, cause)
+    end
+
     -- ═══ AND THE KEY IS MINTED ON THE SAME EDGE, WHICH IS THE WHOLE RULE ═══
     --
     -- Owner, 2026-08-30: "The moment that bleed out timer ends and they go to

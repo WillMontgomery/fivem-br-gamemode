@@ -41,26 +41,44 @@ BR.Config = BR.Config or {}
 
 BR.Config.Terminals = {
     copy = {
-        -- ── in the world (the Gameplay half of #396 shows these) ──────────────
+        -- ── in the world ──────────────────────────────────────────────────────
+        --
+        -- TWO TOKENS, and only in the two lobby notices: {playername} is the
+        -- player who did it (drawn bold, like every name in a toast -- it
+        -- travels as BR.Notice.who, never formatted into the string), and
+        -- {description} is the function's `<id>_description` line. The owner's
+        -- own wording for the notices (#396, 2026-10-04) uses exactly these.
 
-        -- To the player picking up a Yubikey for the first time ever: what it
-        -- does and how to use it.
+        -- A toast to the player picking up a Yubikey for the first time ever:
+        -- what it does and how to use it. Once per player, ever (the profile
+        -- row's yubikeySeen).
         first_pickup = '[COPY: first pickup -- what a Yubikey does and how to use it]',
         -- To a player at a terminal without a key: what they need to get in.
-        -- Also the app's reason when a function cannot run for that cause.
+        -- The hint on the terminal's world plate, and the app's reason when a
+        -- function cannot run for that cause.
         no_key = '[COPY: terminal without a key -- what is needed to get access]',
-        -- To a player at a terminal that is outside the storm. Also the app's
-        -- reason for that cause.
+        -- To a player at a terminal that is outside the storm: the plate's
+        -- hint, a toast if they use it anyway, and the app's reason.
         offline = '[COPY: terminal offline -- it is outside the storm]',
-        -- To a holder walking over a second Yubikey.
+        -- A toast to a holder trying to pick up a second Yubikey.
         already_holding = '[COPY: pickup refused -- you already hold a Yubikey]',
-        -- To a holder whose squad has already used its one key this match.
-        -- Also the app's reason for that cause.
+        -- To a holder whose squad has already used its one key this match:
+        -- the plate's hint and the app's reason.
         squad_used = '[COPY: refused -- your squad already used a key this match]',
-        -- To the lobby, when someone gains access to a terminal.
-        notice_access = '[COPY: lobby notice -- someone gained access to a terminal]',
-        -- To the lobby, when an action is selected and activated.
-        notice_action = '[COPY: lobby notice -- an action was selected and activated]',
+        -- A toast to the lobby (everyone in the match, the dead and spectators
+        -- included) when someone gains access to a terminal with a key.
+        notice_access = '[COPY: lobby notice -- {playername} gained access to a terminal]',
+        -- A toast to the lobby when that player picks a function and it runs.
+        notice_action = '[COPY: lobby notice -- {playername} activated: {description}]',
+        -- The Yubikey's name on the world plate over a key lying on the ground,
+        -- read by anyone who walks up to it.
+        key_label = '[COPY: Yubikey -- its name on the ground pickup]',
+        -- The title on a terminal's world plate, read by anyone near it.
+        terminal_label = '[COPY: terminal plate -- title]',
+        -- The plate's hint under that title when this player can use it now
+        -- (holding a key, the squad's use unspent, inside the storm). The key
+        -- cap and the hold ring are drawn beside it.
+        terminal_use = '[COPY: terminal plate -- hold to use]',
 
         -- ── the desktop (cuchi_computer) -- at the terminal ───────────────────
 
@@ -83,13 +101,102 @@ BR.Config.Terminals = {
         -- The button that runs a function.
         run = '[COPY: button -- run this function]',
 
-        -- ── the functions: <id>_name in the list, <id>_done once it ran ──────
+        -- ── the functions ─────────────────────────────────────────────────────
+        --
+        -- Every listed id has three lines: <id>_name in the app's list,
+        -- <id>_done at the terminal once it ran, and <id>_description, the
+        -- {description} in notice_action. tools/test_terminal.lua fails an id
+        -- missing one.
 
         storm_reveal_name = '[COPY: function name -- Storm reveal]',
-        -- At the terminal, once the server has run it. (Whether the squad
-        -- also hears it is the Gameplay half's to decide.)
+        -- At the terminal, once the server has run it. The squad is not sent a
+        -- line of its own: the lobby's notice_action already reaches them, and
+        -- the final zone appears on their maps (art.reveal below).
         storm_reveal_done = '[COPY: Storm reveal confirmation]',
+        storm_reveal_description = '[COPY: Storm reveal -- its {description} in the lobby notice]',
+        -- The revealed final zone's name in the pause map's legend, read by
+        -- the squad that ran it.
+        storm_reveal_blip = '[COPY: map legend -- where the storm ends]',
     },
+
+    -- ═══ THE ART: EVERY PLACEHOLDER IN ONE SPOT ═══
+    --
+    -- The owner's Yubikey prop (`blitz_seckey`, in the Season 2 props resource)
+    -- and HUD icon replace the first two; until then they are a stock GTA prop
+    -- and a plain glyph. The blips are the owner's own numbers (#396,
+    -- 2026-10-04: "type 521, color 51 (draws as a laptop)").
+    art = {
+        -- The Yubikey lying on the ground: any loose key, from a crate, an
+        -- airdrop, a death or a leave. Drawn by client/loot.lua like any loot,
+        -- at keyScale times its authored size (a USB stick is a few
+        -- centimetres long).
+        keyProp = 'prop_cs_usb_drive',
+        keyScale = 4.0,
+        -- The equipped icon on the HUD, and the mark beside a holder's name in
+        -- the squad panel. A string drawn as text.
+        hudGlyph = '⚿',
+        -- A terminal in the world: a local, non-networked prop per site.
+        terminalProp = 'prop_laptop_01a',
+        -- A terminal's blip, drawn only while this player holds a key and only
+        -- for a terminal inside the storm.
+        blipSprite = 521,
+        blipColour = 51,
+        blipScale = 0.9,
+        -- Storm reveal: where the storm ends, on the squad's pause map and
+        -- minimap from activation to the end of the match. A radius blip around
+        -- the final point plus a sprite at it.
+        reveal = { sprite = 161, colour = 1, scale = 1.0, radiusM = 60.0, alpha = 120 },
+    },
+
+    -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04) ═══
+    --
+    -- Both are EXTRA items: rolled on their own stream when the container
+    -- opens, after its contents were decided, so today's loot odds do not
+    -- move. "for now let's only make it a 50/50 chance in airdrops instead of
+    -- every single one", and "a small chance in legendary crates".
+    sources = {
+        airdropChance = 0.5,
+        legendaryCrateChance = 0.05,
+    },
+
+    -- ═══ LEAVING A MATCH ALIVE ═══
+    --
+    -- UNDECIDED (#396): the owner has not ruled. True -- the default, as
+    -- proposed on the issue -- drops a held key where the leaver stood, like
+    -- a death, so quitting is not a way to keep a key you were about to lose.
+    -- False lets a leaver keep it. Covers both walking out (Leave Match) and
+    -- disconnecting mid-match.
+    leaveDrops = true,
+
+    -- ═══ THE TERMINALS ═══
+    --
+    -- One row per terminal in the world, placed in game with the dev tool
+    -- (`brterminal place` prints the row to paste here):
+    --
+    --   { id = 'airport_tower', x = 0.0, y = 0.0, z = 0.0, h = 0.0 },
+    --
+    -- `id` is lower case letters, digits and underscores, at most 32
+    -- characters, and unique; x/y/z is where the prop stands and h its heading.
+    -- EMPTY UNTIL THE OWNER PLACES THEM ("Terminal sites: placed in game with
+    -- a dev placement tool rather than guessed").
+    sites = {
+    },
+
+    -- How close a player must stand to a terminal to see its plate and to use
+    -- it, in metres. The server allows `useSlackM` more, for a position sample
+    -- up to a quarter second old (the loot claim's REACH_SLACK, for the same
+    -- reason).
+    useDistanceM = 2.5,
+    useSlackM = 2.0,
+    -- How long interact is held to open the computer.
+    holdMs = 800,
+    -- How often a client re-asks which terminals are inside the storm and
+    -- redraws their blips. The wall moves metres per second; a second is
+    -- plenty, and it is one zone build per pass however many terminals.
+    clientPassMs = 1000,
+    -- How often the server checks every open computer is still at a live
+    -- terminal with a living player beside it, and closes it if not.
+    sessionCheckMs = 500,
 
     -- ═══ THE FUNCTION REGISTRY ═══
     --

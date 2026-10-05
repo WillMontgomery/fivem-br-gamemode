@@ -1216,6 +1216,29 @@ BR.Net = {
     -- S->C '<text>'. One `brterminalsv` answer, to the player who typed
     -- `brterminal`, printed in their F8 console and nowhere else.
     TERMINAL_DEV    = 'br:terminal:dev',
+    -- C->S { terminalId }. "I held interact at this terminal": open it. The
+    -- server checks the season, that the sender is alive in a live match,
+    -- within reach of that terminal by its own position sample, and that the
+    -- terminal is inside the storm -- and opens a session or refuses aloud.
+    -- One every runMinIntervalMs at most; a faster one is dropped.
+    TERMINAL_USE    = 'br:terminal:use',
+    -- S->C { placed = { { id, x, y, z, h } }, removed = { id... },
+    -- forced = { id... } }. The dev tools' changes to the terminal list --
+    -- placed this session, config rows removed, and terminals forced online
+    -- -- whole, to everyone, on every change and on br:ready. The config's own
+    -- rows are not sent: every client already has br_lib/config/terminals.lua.
+    TERMINAL_SITES  = 'br:terminal:sites',
+    -- S->C { x, y, matchId }. Storm reveal: where this match's storm ends. To
+    -- the squad that ran it and nobody else, and again to a squad member on
+    -- br:ready while that match lasts.
+    TERMINAL_REVEAL = 'br:terminal:reveal',
+
+    -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
+    -- player holds one, and whether their squad has spent its one use this
+    -- match. To that player alone, whenever either changes and on br:ready.
+    -- Their squadmates learn who holds a key from the squad beacon
+    -- (SQUAD_POS's `yubikey`), never from this.
+    YUBIKEY_STATE   = 'br:yubikey:state',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
