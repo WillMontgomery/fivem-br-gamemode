@@ -501,6 +501,104 @@ Citizen.CreateThread(function()
     end
 end)
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SEASON 2 CRATES (#395): THE BOX A CRATE WEARS, AND THE WOODEN ONE BEHIND IT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A crate the server stamped (`bt`, br_core/server/loot.lua) wears a shipping
+-- box for its tier -- the festive one if `bf`, a gift box if `bg` -- sealed, or
+-- open once it is a husk or opening. Picked HERE, on the client, from the look
+-- and the config (BR.Crates), and only when this build has the model: anything
+-- missing, refused or still a placeholder falls back to the wooden crate the
+-- entry's `prop` has always named. So Season 2 code on a box without the Season
+-- 2 assets still shows working crates, and a crate with no stamp -- every crate
+-- on a Season 1 server -- never reaches any of this.
+--
+-- NOTHING HERE RUNS PER FRAME. The choice is made in the spawn worker, the clip
+-- is started by one message, and the prompt's anchor is a config row read
+-- where the lid's box used to be measured.
+
+--- [hash] = true/false: does this build's CD image have this box model? Asked
+--- once per model per session; the answer cannot change under a running game.
+local boxInCd = {}
+
+--- [hash] = true once a stream of this box model timed out. Never asked for
+--- again this session: every crate wearing it falls back to wood at once
+--- rather than each waiting out its own three seconds.
+local boxFailed = {}
+
+--- [hash] = 'sealed' or 'open', for every box model this client has built.
+--- client/warmupcrates.lua reads it (BR.Loot.boxModels) to recognise its four
+--- crates when they are boxes.
+local boxBuilt = {}
+
+--- Sealed bodies kept on screen while their open prop is built: [id] = { obj,
+--- at }. The clip holds its last frame on the sealed box and the open prop is
+--- posed as that frame, so the old body stays until the new one exists --
+--- deleting first would leave a frame of nothing. Collision off and frozen, so
+--- the two cannot shove each other. Swept by forget, forgetAll and loot.props.
+local lingering = {}
+
+--- What the box path has done, for /brloot.
+BR.Loot.boxes = { built = 0, fallback = 0, clips = 0, noClip = 0,
+                  swaps = 0, kept = 0, lastFallback = nil }
+
+--- Is this box model available to build? The CD image and the model table
+--- both, and not one that already failed to stream. Says so in the console the
+--- first time a model is missing, once.
+--- @param hash integer
+--- @param name string  for the console line
+--- @return boolean
+local function boxAvailable(hash, name)
+    if boxFailed[hash] then return false end
+    local known = boxInCd[hash]
+    if known == nil then
+        known = BR.NativeTruthy(IsModelInCdimage(hash))
+            and BR.NativeTruthy(IsModelValid(hash))
+        boxInCd[hash] = known
+        if not known then
+            print(('[br_core] loot: box model %s is not in this build -- '
+                .. 'drawing the wooden crate'):format(tostring(name)))
+        end
+    end
+    return known
+end
+
+--- The box this entry should wear, or nil for the wooden crate.
+---
+--- OPEN for a husk and for a crate that is opening, which is also what a client
+--- that streams one in mid-clip draws: the open prop, never a clip begun
+--- part-way (owner, #395).
+--- @param e table
+--- @return integer|nil hash
+--- @return boolean|nil open
+local function boxModelOf(e)
+    if e.bt == nil or not BR.Crates then return nil end
+    local open = e.kind == 'husk' or e.opening == true
+    local name = BR.Crates.modelName(BR.Crates.lookOf(e), open)
+    if not name then
+        BR.Loot.boxes.fallback = BR.Loot.boxes.fallback + 1
+        BR.Loot.boxes.lastFallback = 'a placeholder or missing row'
+        return nil
+    end
+    local hash = GetHashKey(name)
+    if not boxAvailable(hash, name) then
+        BR.Loot.boxes.fallback = BR.Loot.boxes.fallback + 1
+        BR.Loot.boxes.lastFallback = name
+        return nil
+    end
+    return hash, open
+end
+
+--- Delete a lingering sealed body, if there is one for this id.
+--- @param id integer
+local function dropLinger(id)
+    local l = lingering[id]
+    if not l then return end
+    lingering[id] = nil
+    if l.obj and BR.NativeTruthy(DoesEntityExist(l.obj)) then DeleteEntity(l.obj) end
+end
+
 --- Both gates come from br_lib, because the server reads the SAME tables.
 --- When these were written out twice they drifted, and the symptom was no
 --- loot anywhere with no error to grep for -- see the note on
@@ -639,7 +737,9 @@ end
 --- rather than reusing 'chest' and 'husk' like the 1300 generated ones. An id
 --- is already on the wire, the client already has the config, and keying off
 --- anything else would mean growing every loot payload to re-send a number both
---- ends know (owner, 2026-08-22: crate and husk 2x, Volts 5x).
+--- ends know. The crate and husk rows are 1.0 -- normal size -- since 835254d
+--- (owner, 2026-08-23: the 2x box of 2026-08-22 clipped the floor); Volts are
+--- 3.0. A Season 2 airdrop box (#395) is drawn at the same normal size.
 ---
 --- Built once at load rather than branched per call: this runs at spawn for
 --- every entry and, for a scaled one, ten times a second afterwards.
@@ -668,12 +768,11 @@ end
 ---
 --- MOVED TO BR.Native.propScale (client/natives.lua) on 2026-08-22, WITHOUT a
 --- copy left behind. The airdrop's falling crate and canopy have to be drawn at
---- the same size as the landed ones (owner: "The parachute and crate props
---- (including husk) should be 2x larger") and those are built by
---- client/airdrop.lua, not here -- so the choice was one shared function or two
---- matrix routines that agree until the day one of them is edited. Bound to a
---- local so this file's hot passes still pay one upvalue read, exactly as they
---- did when the body was here.
+--- the same size as the landed ones -- the canopy at 2.5x, the crate at 1.0
+--- since 835254d -- and those are built by client/airdrop.lua, not here -- so
+--- the choice was one shared function or two matrix routines that agree until
+--- the day one of them is edited. Bound to a local so this file's hot passes
+--- still pay one upvalue read, exactly as they did when the body was here.
 local applyPropScale = BR.Native.propScale
 
 -- --------------------------------------------------------------------------
@@ -685,9 +784,16 @@ local applyPropScale = BR.Native.propScale
 --- Weapons resolve through GET_WEAPONTYPE_MODEL rather than an authored prop
 --- name per weapon: 35 hand-typed model names is 35 chances to ship an
 --- invisible rifle, and the engine already knows the answer.
+---
+--- A SEASON 2 CRATE ASKS FOR ITS BOX FIRST (#395) and gets the wooden `prop`
+--- whenever there is no box to have -- see boxModelOf. The second return says
+--- which: true for a box, nil for everything else.
 --- @param e table
 --- @return integer|nil
+--- @return boolean|nil boxed
 local function modelOf(e)
+    local box = boxModelOf(e)
+    if box then return box, true end
     if e.kind == BR.ItemKind.WEAPON or e.kind == BR.ItemKind.THROWABLE then
         local w = BR.Config.WeaponById[e.item]
         return w and GetWeapontypeModel(w.hash) or nil
@@ -1214,6 +1320,8 @@ local function despawn(e)
         if DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
     end
     e.obj = nil
+    -- What the body was (#395): a property of THAT object, gone with it.
+    e.objModel, e.boxKind = nil, nil
 end
 
 --- Hand a prop over to the retiring list instead of deleting it.
@@ -1246,6 +1354,32 @@ local function retireProp(e, toX, toY, toZ)
     return true
 end
 
+--- Keep a sealed box on screen while its open prop is built (#395).
+---
+--- The husk re-announce replaces the entry's model, and the ordinary answer to
+--- that is despawn() and a rebuild -- a frame or two with no box at all, which
+--- the wooden crate has always shown and nobody saw. A box that has just played
+--- its clip is being WATCHED, and the open prop is posed as the clip's last
+--- frame precisely so the swap cannot be seen. So the sealed body is handed to
+--- `lingering` instead: collision off and frozen, so the open body built at the
+--- same pose cannot be shoved by it, and deleted the moment the open one is
+--- adopted (drain) or after `lingerMs` at the latest (loot.props).
+--- @param e table
+local function lingerProp(e)
+    local obj = e.obj
+    if not obj then return end
+    dropLinger(e.id)
+    byObject[obj] = nil
+    e.obj = nil
+    e.objModel, e.boxKind = nil, nil
+    e.restZ, e.settled = nil, false
+    e.arriveAt, e.arcSeen = nil, nil
+    if not BR.NativeTruthy(DoesEntityExist(obj)) then return end
+    SetEntityCollision(obj, false, false)
+    FreezeEntityPosition(obj, true)
+    lingering[e.id] = { obj = obj, at = GetGameTimer() }
+end
+
 --- Delete every retiring prop immediately. Teardown, not animation.
 local function clearRetiring()
     for k, r in pairs(retiring) do
@@ -1274,6 +1408,8 @@ end
 -- local that looks live is the same trap the flares themselves were.
 
 local function forget(id)
+    -- A sealed box waiting on its open prop goes with its entry (#395).
+    dropLinger(id)
     local e = entries[id]
     if not e then return end
     despawn(e)
@@ -1295,6 +1431,9 @@ local function forgetAll()
     clearOutline(entries)
     clearRetiring()
     for id in pairs(entries) do forget(id) end
+    -- And any sealed box still lingering without an entry (#395): an undeleted
+    -- local object outlives everything that knew about it.
+    for id in pairs(lingering) do dropLinger(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
     myCell, target = nil, nil
     clearHold('the whole registry was dropped')
@@ -1375,7 +1514,7 @@ local function drain()
                         end
                     end
 
-                    local model = modelOf(e)
+                    local model, boxed = modelOf(e)
                     -- A MODEL THIS BUILD DOES NOT HAVE IS THE OTHER HALF OF
                     -- #224's fallback, and it is checked before the stream
                     -- rather than after: an entry whose prop name is a typo, or
@@ -1399,6 +1538,29 @@ local function drain()
                         while not HasModelLoaded(model) and waited < 3000 do
                             Citizen.Wait(50)
                             waited = waited + 50
+                        end
+                        -- A SEASON 2 BOX THAT WOULD NOT STREAM IS A WOODEN
+                        -- CRATE (#395). Its CD-image entry said yes and the
+                        -- stream said no, so the model is written off for the
+                        -- session -- every other crate wearing it goes straight
+                        -- to wood -- and this one asks for its `prop`, which is
+                        -- the wooden pair the server always names and which is
+                        -- resident from load.
+                        if boxed and not isTrue(HasModelLoaded(model)) then
+                            boxFailed[model] = true
+                            BR.Loot.boxes.fallback = BR.Loot.boxes.fallback + 1
+                            BR.Loot.boxes.lastFallback = 'a box model that would not stream'
+                            print(('[br_core] loot: box model %s did not stream in '
+                                .. '%dms -- drawing the wooden crate'):format(
+                                tostring(model), waited))
+                            boxed = nil
+                            model = e.prop and GetHashKey(e.prop) or model
+                            RequestModel(model)
+                            waited = 0
+                            while not isTrue(HasModelLoaded(model)) and waited < 3000 do
+                                Citizen.Wait(50)
+                                waited = waited + 50
+                            end
                         end
                         -- The entry can be claimed by someone else while its
                         -- model streams in; re-check before building it.
@@ -1440,7 +1602,23 @@ local function drain()
                             -- engine will not build as an object falls back to a
                             -- marker rather than being invisible on the ground.
                             if not obj or obj == 0 then
-                                noProp(e, 'the engine refused to build it as an object')
+                                if boxed then
+                                    -- A SEASON 2 BOX THE ENGINE WILL NOT BUILD
+                                    -- (#395) is written off like one that will
+                                    -- not stream, and the entry goes round once
+                                    -- more to be built as the wooden crate.
+                                    boxFailed[model] = true
+                                    BR.Loot.boxes.fallback = BR.Loot.boxes.fallback + 1
+                                    BR.Loot.boxes.lastFallback = 'a box model the engine refused'
+                                    print(('[br_core] loot: box model %s was refused as an '
+                                        .. 'object -- drawing the wooden crate'):format(tostring(model)))
+                                    if not queued[id] then
+                                        queued[id] = true
+                                        queue[#queue + 1] = id
+                                    end
+                                else
+                                    noProp(e, 'the engine refused to build it as an object')
+                                end
                             end
                             if obj and obj ~= 0 then
                                 -- CRATES KEEP THEIR COLLISION. You walk up to
@@ -1639,6 +1817,29 @@ local function drain()
                                 if entries[id] == e and not e.obj then
                                     e.obj = obj
                                     byObject[obj] = id
+                                    -- WHAT THIS BODY IS (#395): the model it
+                                    -- wears, and which prompt row it reads
+                                    -- (nil = the wooden lid label). The sealed
+                                    -- box this replaces, if it lingered, goes
+                                    -- now -- on the frame its successor exists.
+                                    e.objModel = model
+                                    e.boxKind = boxed and BR.Crates.kindOf(
+                                        BR.Crates.lookOf(e)) or nil
+                                    dropLinger(id)
+                                    if boxed then
+                                        local open = isHusk(e) or e.opening == true
+                                        if not boxBuilt[model] then
+                                            boxBuilt[model] = open and 'open' or 'sealed'
+                                        end
+                                        BR.Loot.boxes.built = BR.Loot.boxes.built + 1
+                                        -- THE CLIP, ASKED FOR NOW, so it is
+                                        -- resident by the time a hold completes
+                                        -- and LOOT_OPENING asks it to play.
+                                        if not open then
+                                            local dict = BR.Crates.clipOf(BR.Crates.lookOf(e))
+                                            if dict then RequestAnimDict(dict) end
+                                        end
+                                    end
                                 elseif DoesEntityExist(obj) then
                                     DeleteEntity(obj)
                                     obj = nil
@@ -1681,7 +1882,11 @@ local function drain()
                         -- and the sealed->open swap has to be instant --
                         -- re-streaming the open crate at the moment it is
                         -- looted is exactly the delay that was visible.
-                        if model ~= CRATE_MODEL and model ~= CRATE_OPEN_MODEL then
+                        -- So do the Season 2 boxes (#395), for the same
+                        -- reason: the sealed-to-open swap at the clip's last
+                        -- frame has to be instant.
+                        if model ~= CRATE_MODEL and model ~= CRATE_OPEN_MODEL
+                           and not boxed then
                             SetModelAsNoLongerNeeded(model)
                         end
                     end
@@ -1723,8 +1928,13 @@ local function addEntries(list)
                 -- at until it streamed out, and the two answers would disagree
                 -- for as long as the player stood there.
                 local revouched = have.pz ~= d.pz
+                -- A FOURTH, FOR SEASON 2 BOXES (#395): the look changed, or the
+                -- crate started or stopped opening. Either can change which
+                -- model the body should be, at the same place.
+                local restyled = have.bt ~= d.bt or have.bf ~= d.bf
+                    or have.bg ~= d.bg or (have.opening == true) ~= (d.op == true)
 
-                if moved or reskinned or revouched then
+                if moved or reskinned or revouched or restyled then
                     -- THE SERVER ANSWERED, and this is the only place a client
                     -- can see that it did. A crate re-announced as its husk IS
                     -- the confirmation that a claim landed -- there is no reply
@@ -1765,7 +1975,10 @@ local function addEntries(list)
                         -- nothing in it that says "warmup".
                         TriggerEvent('br:loot:opened', d.id, d.x, d.y)
                     end
-                    despawn(have)
+                    -- WHAT THE BODY WAS, read before the fields change: the
+                    -- decision about it is made against what it SHOULD be,
+                    -- which needs the new fields.
+                    local wasModel, wasBox = have.objModel, have.boxKind
                     have.x, have.y, have.z = d.x, d.y, d.z
                     have.kind, have.item, have.prop = d.kind, d.item, d.prop
                     have.rarity = d.rarity or have.rarity
@@ -1775,14 +1988,40 @@ local function addEntries(list)
                     -- a repaired entry loses it, because the server dropped it
                     -- the moment the position changed.
                     have.pz = d.pz
+                    have.bt, have.bf, have.bg = d.bt, d.bf, d.bg
+                    have.opening = d.op == true or nil
                     if moved or revouched then
                         have.gz, have.gzAt, have.gzOk = nil, 0, nil
+                    end
+
+                    -- ═══ THE BODY: REBUILT, KEPT, OR KEPT UNTIL ITS
+                    --     SUCCESSOR EXISTS (#395) ═══
+                    --
+                    -- Every wooden crate and every loose item is rebuilt, as it
+                    -- always was. A Season 2 box in the same place has two better
+                    -- answers: if it should now wear the very model it wears --
+                    -- streamed in while opening, so already open, and now the
+                    -- husk -- nothing changes at all; and if it is swapping
+                    -- sealed for open, the sealed body lingers until the open
+                    -- one is built, so the clip's last frame never blinks out.
+                    local rebuild = reskinned or restyled
+                    local still = not moved and not revouched
+                    if rebuild and still and have.obj and have.bt ~= nil
+                       and wasModel ~= nil and modelOf(have) == wasModel then
+                        have.objModel, have.boxKind = wasModel, wasBox
+                        BR.Loot.boxes.kept = BR.Loot.boxes.kept + 1
+                        rebuild = false
+                    elseif rebuild and still and have.obj and wasBox then
+                        lingerProp(have)
+                        BR.Loot.boxes.swaps = BR.Loot.boxes.swaps + 1
+                    else
+                        despawn(have)
                     end
                     queued[d.id] = nil
                     -- Rebuilt on the NEXT prop pass at the latest, but a
                     -- crate the player is standing over has to change NOW --
                     -- so it jumps the queue.
-                    if reskinned then
+                    if rebuild then
                         queued[d.id] = true
                         table.insert(queue, 1, d.id)
                         drain()
@@ -1805,6 +2044,10 @@ local function addEntries(list)
                     -- minutes later probes for it the same way the dropper did
                     -- and sees it in the same place. See groundUnder.
                     pz = d.pz,
+                    -- A SEASON 2 CRATE'S LOOK, and whether it is opening
+                    -- (#395). Nil on every wooden crate and every loose item.
+                    bt = d.bt, bf = d.bf, bg = d.bg,
+                    opening = d.op == true or nil,
                     bornAt = d.fx and GetGameTimer() or nil,
                     lift = 0.0,
                 }
@@ -1878,6 +2121,129 @@ AddEventHandler(BR.Net.LOOT_GONE, function(ids)
         forget(id)
     end
 end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SEASON 2 CRATES (#395): THE CLIP
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A hold completed somewhere near and the server has started that box opening
+-- (br_core/server/loot.lua, beginOpening). Everyone subscribed to its cell gets
+-- this; whoever has the box streamed in AS A BOX plays the clip on their own
+-- copy and holds its last frame. The burst comes `ms` later as the crate's
+-- ordinary husk re-announce, and addEntries swaps the held sealed body for the
+-- open prop at the same pose (lingerProp).
+--
+-- WHAT DOES NOT PLAY, AND WHY THAT IS RIGHT:
+--
+--   * a crate with no body here, or out of range: nothing to animate. If it is
+--     built before the burst it is built OPEN (boxModelOf), never a clip begun
+--     part-way;
+--   * a crate drawn as the wooden fallback: it has no clip, so it sits sealed
+--     until the burst and then becomes the wooden husk -- today's open;
+--   * a clipset that will not stream in `clipDictWaitMs`, or a message that
+--     arrives after the clip would already have ended.
+--
+-- A LATE MESSAGE STARTS PART-WAY. `at` is the server's clock and BR.Clock.now()
+-- is this client's estimate of it, so a message that took 120ms to arrive
+-- starts the clip 120ms in and it still ends on the burst.
+
+--- Play the opening clip on this entry's sealed box.
+--- @param e table
+--- @param d table  the LOOT_OPENING payload
+local function playClip(e, d)
+    local B = BR.Loot.boxes
+    local dict, clip, ms = BR.Crates.clipOf(BR.Crates.lookOf(e))
+    if not dict then
+        B.noClip = B.noClip + 1
+        return
+    end
+    local obj = e.obj
+    local total = tonumber(d.ms) or ms
+    local at = tonumber(d.at)
+
+    --- @return boolean played
+    local function start()
+        if entries[e.id] ~= e or e.obj ~= obj then return false end
+        if not obj or not isTrue(DoesEntityExist(obj)) then return false end
+        local elapsed = at and (BR.Clock.now() - at) or 0.0
+        if elapsed < 0 then elapsed = 0.0 end
+        if total <= 0 or elapsed >= total then return false end
+        -- STILL WHILE IT OPENS. A dynamic body under an entity anim is a body
+        -- the physics step can walk off its own clip; the open prop that
+        -- replaces it is built at this pose anyway.
+        FreezeEntityPosition(obj, true)
+        -- Not looped, and STAY IN ANIM: the last frame is held until the open
+        -- prop replaces the body.
+        PlayEntityAnim(obj, clip, dict, 1000.0, false, true, false, 0.0, 0)
+        if elapsed > 0 then
+            SetEntityAnimCurrentTime(obj, dict, clip, math.min(elapsed / total, 0.999))
+        end
+        B.clips = B.clips + 1
+        return true
+    end
+
+    if isTrue(HasAnimDictLoaded(dict)) then
+        if not start() then B.noClip = B.noClip + 1 end
+        return
+    end
+    RequestAnimDict(dict)
+    Citizen.CreateThread(function()
+        local limit = (BR.Config.Crates and BR.Config.Crates.clipDictWaitMs) or 1000
+        local waited = 0
+        while not isTrue(HasAnimDictLoaded(dict)) and waited < limit do
+            Citizen.Wait(50)
+            waited = waited + 50
+        end
+        if not isTrue(HasAnimDictLoaded(dict)) or not start() then
+            B.noClip = B.noClip + 1
+        end
+    end)
+end
+
+--- A crate near this client started opening.
+--- @param d table  { id, at, ms, mine? }
+local function crateOpening(d)
+    if type(d) ~= 'table' then return end
+    local id = math.tointeger(d.id)
+    local e = id and entries[id]
+    if not e or not isContainer(e) then return end
+
+    e.opening = true
+    -- THE SERVER ACTED ON SOMEBODY'S CLAIM -- maybe ours. `mine` is on the
+    -- opener's copy alone, so a hold that finished a tick too late is not
+    -- rewarded with the reveal when the box bursts.
+    noteClaimAnswered(id)
+    if d.mine ~= true then claimedByMe[id] = nil end
+
+    -- NOTHING TO OFFER ANY MORE. A hold still running on it ends now, on the
+    -- frame the box starts to open rather than a second later with nothing.
+    if hold.id == id then clearHold('the crate started opening') end
+    if target and target.id == id then target = nil end
+    if outlinedId == id then clearOutline(entries) end
+    if shineId == id then shineId = nil end
+
+    if not BR.Crates then return end
+    -- THE OPEN PROP, asked for now, so the swap at the burst does not stream.
+    local name = BR.Crates.modelName(BR.Crates.lookOf(e), true)
+    if name then
+        local h = GetHashKey(name)
+        if boxAvailable(h, name) then RequestModel(h) end
+    end
+    if e.obj and e.boxKind then playClip(e, d) end
+end
+
+RegisterNetEvent(BR.Net.LOOT_OPENING)
+AddEventHandler(BR.Net.LOOT_OPENING, function(d)
+    crateOpening(d)
+end)
+
+--- The box models this client has built, as { [hash] = 'sealed'|'open' }.
+--- READ-ONLY. client/warmupcrates.lua uses it to recognise its four crates when
+--- they are Season 2 boxes; on a Season 1 server it is empty.
+--- @return table
+function BR.Loot.boxModels()
+    return boxBuilt
+end
 
 -- A br_ui restart does not touch this, but a RECONNECT does: the snapshot
 -- carries whatever cells this player was already subscribed to.
@@ -2000,6 +2366,17 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.props', function()
     local live = 0
 
     local now = GetGameTimer()
+
+    -- THE NET UNDER lingerProp (#395): a sealed box whose open prop never got
+    -- built -- refused, streamed out, the entry gone -- is deleted here rather
+    -- than left standing for the session. Empty, and free, on every pass where
+    -- no box has just burst.
+    if next(lingering) then
+        local ttl = (BR.Config.Crates and BR.Config.Crates.lingerMs) or 3000
+        for id, l in pairs(lingering) do
+            if now - l.at >= ttl then dropLinger(id) end
+        end
+    end
 
     for id, e in pairs(entries) do
         local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
@@ -2127,7 +2504,9 @@ local function beginTargetCandidates()
 end
 
 local function addTargetCandidate(id, e, d2)
-    if isHusk(e) then return end
+    -- A crate that is opening (#395) is offered to nobody: the server answers
+    -- a claim on it like a husk's.
+    if isHusk(e) or e.opening then return end
     local reach = reachOf(e)
     if d2 > reach * reach then return end
 
@@ -2499,12 +2878,14 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
                 end
             end
 
-            -- AND THE SIZE, for the one entry in the match that has one.
+            -- AND THE SIZE, for any container whose item has a scale row.
+            -- Today that is none: the airdrop's crateScale/huskScale are 1.0
+            -- since 835254d, so this is kept for the row rather than for a box.
             --
             -- A CONTAINER IS A PHYSICS OBJECT AND PHYSICS OWNS THE MATRIX. The
             -- hover pass re-asserts the scale after every rotation write it
             -- makes, but it skips containers by design ("a crate is furniture,
-            -- and furniture does not float") -- so an airdrop crate scaled once
+            -- and furniture does not float") -- so a scaled crate scaled once
             -- at spawn is a crate whose size the next simulation step is free
             -- to throw away. This is the containers' equivalent of that line,
             -- and it runs at 10Hz rather than 60 because a box that is the
@@ -2512,7 +2893,7 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
             --
             -- COSTS NOTHING WHEN THERE IS NOTHING TO DO: BR.Native.propScale
             -- returns immediately on a nil or 1.0, which is every one of the
-            -- ~1300 generated crates.
+            -- ~1300 generated crates and the airdrop.
             applyPropScale(e.obj, e.propScale)
 
             -- Remember where it ACTUALLY is. This is the only record of the
@@ -2586,7 +2967,9 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         local best = shineMax * shineMax
         if BR.Loot.openedCount < (L.shineOpenLimit or 2) then
             for id, e in pairs(entries) do
-                if isContainer(e) and e.gzOk then
+                -- Not one that is already opening (#395): it is a husk in
+                -- all but name, and the glow is for a box you can still open.
+                if isContainer(e) and e.gzOk and not e.opening then
                     local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
                     if d2 < best then shineId, best = id, d2 end
                 end
@@ -2935,7 +3318,20 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- where the crate was GENERATED; the prop is where it actually is
         -- after settling, or after a car hit it. Passing the entity also hands
         -- the label the crate's full orientation for free.
-        if isContainer(shown) and shown.obj and L.crateLabelFlat ~= false
+        --
+        -- A SEASON 2 BOX (#395) WEARS IT WHERE ITS CONFIG ROW SAYS: one
+        -- offset and rotation for every shipping box and one for the gift box
+        -- (BR.Config.Crates.prompt, tuned live with /brboxprompt). The wooden
+        -- crate -- and a box drawn as the wooden fallback, whose `boxKind` is
+        -- nil -- keeps the lid label measured off its model, as it always has.
+        local boxPrompt = shown.boxKind and BR.Crates
+            and BR.Crates.prompt(shown.boxKind) or nil
+        if boxPrompt and shown.obj and BR.Dui.drawOnEntityAt
+           and isTrue(DoesEntityExist(shown.obj)) then
+            BR.Dui.drawOnEntityAt(promptPage(), shown.obj, boxPrompt.size,
+                boxPrompt.x, boxPrompt.y, boxPrompt.z,
+                boxPrompt.rx, boxPrompt.ry, boxPrompt.rz)
+        elseif isContainer(shown) and shown.obj and L.crateLabelFlat ~= false
            and DoesEntityExist(shown.obj) then
             BR.Dui.drawOnEntity(promptPage(), shown.obj,
                 L.crateLabelSize or 0.55, L.crateLabelLift or 0.02)
@@ -3387,6 +3783,222 @@ RegisterCommand('brcrate', function(_, args)
     print(('[br_core] asked the server for %s'):format(args[1] or 'a crate'))
 end, false)
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SEASON 2 CRATES (#395): THREE DEV COMMANDS FOR THE DAY THE PROPS LAND
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- The tier names /brbox prints.
+local TIER_NAMES = { 'common', 'uncommon', 'rare', 'epic', 'legendary' }
+
+--- Spawn a Season 2 test crate two meters in front of the ped.
+---
+---   /brbox ship <1-5> [festive|plain]       a shipping box of that tier
+---   /brbox gift <white|blue|green|red>      a gift box
+---
+--- SERVER-OWNED LIKE REAL LOOT (br_core/server/loot.lua, devBoxStack): real
+--- contents at that tier, the hold, the clip, the burst and the open prop, all
+--- through the path a real crate takes. Festive defaults to the zone's own
+--- answer; `festive` or `plain` forces it for this box. Dev mode, and the
+--- server's dev trust, as /brcrate.
+RegisterCommand('brbox', function(_, args)
+    local kind = tostring(args[1] or ''):lower()
+    local C = BR.Config.Crates
+    if not BR.Crates or not C then
+        print('[br_core] brbox: br_lib/shared/crates.lua is not loaded')
+        return
+    end
+    local function usage()
+        print('  usage: brbox ship <1-5> [festive|plain]')
+        print(('         brbox gift <%s>'):format(table.concat(C.giftColors or {}, '|')))
+    end
+    if kind == '' then usage() return end
+    if not BR.Season.has('crates2') then
+        print(('[br_core] brbox: Season 2 crates are off on Season %s -- `brseason 2` on the server first')
+            :format(tostring(BR.Season.current())))
+        return
+    end
+
+    local box, label
+    if kind == 'ship' then
+        local tier = math.tointeger(tonumber(args[2]))
+        if not tier or tier < 1 or tier > 5 then usage() return end
+        box = { tier = tier }
+        label = ('a %s shipping box'):format(TIER_NAMES[tier])
+    elseif kind == 'gift' then
+        local g = tostring(args[2] or ''):lower()
+        if not BR.Crates.isGift(g) then usage() return end
+        box = { gift = g }
+        label = ('a %s gift box'):format(g)
+    else
+        usage()
+        return
+    end
+    local f = tostring(args[3] or ''):lower()
+    if f == 'festive' then box.festive = true elseif f == 'plain' then box.festive = false end
+
+    local ped = PlayerPedId()
+    local p   = GetEntityCoords(ped)
+    local fw  = GetEntityForwardVector(ped)
+    TriggerServerEvent(BR.Net.LOOT_DEV, {
+        box = box,
+        x = p.x + fw.x * 2.0,
+        y = p.y + fw.y * 2.0,
+        z = p.z,
+    })
+    print(('[br_core] asked the server for %s%s (its answer is in the server console)')
+        :format(label, box.festive == true and ', festive'
+                       or (box.festive == false and ', plain' or '')))
+
+    -- WHAT THIS CLIENT WILL DRAW FOR IT, so a wooden crate landing in front of
+    -- you is explained before you have to ask.
+    local look = { t = box.tier or 1, f = box.festive == true, g = box.gift }
+    for _, open in ipairs({ false, true }) do
+        local name = BR.Crates.modelName(look, open)
+        local have = name and boxAvailable(GetHashKey(name), name) or false
+        print(('  %-6s %s  %s'):format(open and 'open' or 'sealed', tostring(name or 'placeholder'),
+            have and 'in this build' or 'NOT in this build -- the wooden crate is drawn'))
+    end
+    local dict, clip, ms = BR.Crates.clipOf(look)
+    print(('  clip   %s'):format(dict and ('%s / %s, %dms'):format(dict, clip, ms)
+        or 'placeholder -- the box opens at once'))
+end, false)
+
+--- The prompt row being tuned, printed as the line to paste.
+--- @param key string 'shipping' or 'gift'
+--- @param r table
+--- @return string
+local function promptLine(key, r)
+    return ('        %-8s = { x = %.3f, y = %.3f, z = %.3f, rx = %.1f, ry = %.1f, rz = %.1f, size = %.2f },')
+        :format(key, r.x or 0.0, r.y or 0.0, r.z or 0.0,
+                r.rx or 0.0, r.ry or 0.0, r.rz or 0.0, r.size or 0.0)
+end
+
+--- The fields /brboxprompt may set.
+local PROMPT_FIELDS = { x = true, y = true, z = true, rx = true, ry = true, rz = true, size = true }
+
+--- Move the hold prompt on a Season 2 box, live, and print the line to paste.
+---
+---   /brboxprompt                               both rows, as they are
+---   /brboxprompt ship z=0.48 rx=-5 size=0.42   set any of x y z rx ry rz size
+---   /brboxprompt gift ...                      the gift box's own row
+---
+--- Stand at a box looking at its prompt and move it until it sits where it
+--- should; it moves on the next frame. Meters and degrees in the BOX'S OWN
+--- frame (x right, y forward, z up from the model's origin). Client-local and
+--- not persisted: paste the printed line into the `prompt` table in
+--- br_lib/config/crates.lua.
+RegisterCommand('brboxprompt', function(_, args)
+    local C = BR.Config.Crates
+    if not C or type(C.prompt) ~= 'table' then
+        print('[br_core] brboxprompt: br_lib/config/crates.lua is not loaded')
+        return
+    end
+    local which = tostring(args[1] or ''):lower()
+    local key = (which == 'ship' or which == 'shipping') and 'shipping'
+        or (which == 'gift' and 'gift') or nil
+
+    if key then
+        local row = C.prompt[key]
+        local bad = nil
+        for i = 2, #args do
+            local f, v = tostring(args[i]):match('^(%a+)=(.+)$')
+            local n = v and tonumber(v)
+            if not f or not PROMPT_FIELDS[f] or not n then
+                bad = bad or tostring(args[i])
+            else
+                row[f] = n
+            end
+        end
+        if bad then print(('[br_core] brboxprompt: not understood: %s'):format(bad)) end
+        print(('[br_core] %s prompt, live:'):format(key))
+        print('  paste into the `prompt` table in br_lib/config/crates.lua:')
+        print(promptLine(key, row))
+        return
+    end
+
+    print('=== Season 2 box prompts ===')
+    print(promptLine('shipping', C.prompt.shipping or {}))
+    print(promptLine('gift', C.prompt.gift or {}))
+    print('  usage: brboxprompt ship|gift x=<m> y=<m> z=<m> rx=<deg> ry=<deg> rz=<deg> size=<m>')
+end, false)
+
+--- One configured model's state on this build, for /brboxcheck.
+--- @param name string|nil
+--- @return string
+local function modelState(name)
+    if BR.Crates.placeholder(name) then return 'placeholder' end
+    local h = GetHashKey(name)
+    local inCd = isTrue(IsModelInCdimage(h))
+    local valid = isTrue(IsModelValid(h))
+    if inCd and valid then return 'ok' end
+    return ('MISSING(cd %s, valid %s)'):format(tostring(inCd), tostring(valid))
+end
+
+--- One configured clip's state on this build, for /brboxcheck. Yields while
+--- the clipset streams, so it runs on the command's own thread.
+--- @param r table  a config row
+--- @return string
+local function clipState(r)
+    if BR.Crates.placeholder(r.dict) or BR.Crates.placeholder(r.clip) then
+        return 'clip placeholder'
+    end
+    if not isTrue(DoesAnimDictExist(r.dict)) then
+        return ('clipset %s MISSING'):format(r.dict)
+    end
+    RequestAnimDict(r.dict)
+    local waited = 0
+    while not isTrue(HasAnimDictLoaded(r.dict)) and waited < 2000 do
+        Citizen.Wait(50)
+        waited = waited + 50
+    end
+    if not isTrue(HasAnimDictLoaded(r.dict)) then
+        return ('clipset %s would not stream'):format(r.dict)
+    end
+    -- GET_ANIM_DURATION answers SECONDS. The config is milliseconds, because
+    -- the server's burst timer is.
+    local real = (tonumber(GetAnimDuration(r.dict, r.clip)) or 0.0) * 1000.0
+    local want = tonumber(r.clipMs) or 0
+    if real <= 0 then return ('clip %s NOT IN %s'):format(r.clip, r.dict) end
+    -- Two frames at 60fps either way is the same frame to the eye.
+    if math.abs(real - want) <= 34 then
+        return ('clip %.0fms, config %dms  ok'):format(real, want)
+    end
+    return ('clip %.0fms, config %dms  MISMATCH: set clipMs = %.0f'):format(real, want, real)
+end
+
+--- Every configured box model and clip, checked against this build.
+---
+--- One line per row: the sealed and open models (in the CD image and valid),
+--- the clipset (exists and streams), and the clip's real length from
+--- GetAnimDuration beside the configured `clipMs` -- the number the SERVER times
+--- the burst with, so a mismatch is a burst early or late. Also the props'
+--- resource, which the server checks before it plays any clip.
+RegisterCommand('brboxcheck', function()
+    local C = BR.Config.Crates
+    if not BR.Crates or not C then
+        print('[br_core] brboxcheck: br_lib/shared/crates.lua is not loaded')
+        return
+    end
+    Citizen.CreateThread(function()
+        print('=== Season 2 boxes: what this build has ===')
+        local res = C.resource
+        local state = 'placeholder'
+        if not BR.Crates.placeholder(res) and GetResourceState then
+            state = tostring(GetResourceState(res))
+        end
+        print(('  resource %s: %s%s'):format(tostring(res), state,
+            state == 'started' and ''
+                or '  (until it runs on the server, every crate opens at once)'))
+        print(('  season gate crates2: %s on Season %s'):format(
+            BR.Season.has('crates2') and 'ON' or 'off', tostring(BR.Season.current())))
+        for _, row in ipairs(BR.Crates.allLooks()) do
+            local r = BR.Crates.row(row.look) or {}
+            print(('  %-12s sealed %-11s open %-11s %s'):format(row.label,
+                modelState(r.sealed), modelState(r.open), clipState(r)))
+        end
+    end)
+end, false)
+
 --- Everything this client knows about the loot around it.
 RegisterCommand('brloot', function()
     local p = GetEntityCoords(PlayerPedId())
@@ -3461,6 +4073,13 @@ RegisterCommand('brloot', function()
         :format(arc.born, arc.armed, arc.late, arc.flights))
     print(('  crate mass: %.0f kg  (glow off after %d opened; %d opened)')
         :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
+    -- SEASON 2 BOXES (#395): built as boxes, drawn as the wooden fallback (and
+    -- the last reason), clips played or not, sealed bodies swapped and kept.
+    local B = BR.Loot.boxes
+    print(('  boxes: %d built, %d wooden fallback (last: %s), %d clips, %d no clip, '
+        .. '%d swaps, %d kept  (/brboxcheck)')
+        :format(B.built, B.fallback, tostring(B.lastFallback), B.clips, B.noClip,
+                B.swaps, B.kept))
 
     -- WHAT IS BEING OFFERED, AND WHAT ELSE IS IN REACH (#128).
     --

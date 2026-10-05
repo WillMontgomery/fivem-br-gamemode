@@ -1144,6 +1144,60 @@ function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     end
 end
 
+--- Draw a page as a label at a FIXED POSE in an entity's own frame (#395).
+---
+--- The Season 2 boxes do not wear their prompt on the lid's bounding box -- a
+--- shipping box's label or tape is where the owner says, and the gift box's bow
+--- is in the way of its lid -- so the anchor is a config row instead
+--- (BR.Config.Crates.prompt): the label's center at (ox, oy, oz) meters from
+--- the model's origin, turned by rx, ry, rz degrees (about the box's own x, then
+--- y, then z). 0, 0, 0 lies flat facing up and reads from the back edge, exactly
+--- like drawOnEntity's lid label.
+---
+--- NO FIT CLAMP: the size is the row's, so `size` is the width as drawn. The
+--- corners still come from the entity's own matrix, so the label rides the box
+--- through any shove, slope or roll, and drawQuad winds it toward the camera.
+--- Fewer natives per frame than the lid label: no model lookup, the same four
+--- offsets, one camera read, two polys.
+--- @param page table
+--- @param entity integer
+--- @param size number|nil  label WIDTH in meters (height follows the page)
+--- @param ox number|nil @param oy number|nil @param oz number|nil  center, meters
+--- @param rx number|nil @param ry number|nil @param rz number|nil  degrees
+--- @param alpha number|nil
+function BR.Dui.drawOnEntityAt(page, entity, size, ox, oy, oz, rx, ry, rz, alpha)
+    if not BR.Dui.ready(page) then return end
+    if not entity or entity == 0 or not isTrue(DoesEntityExist(entity)) then return end
+
+    local hw = (tonumber(size) or 0.4) * 0.5 * prefs.ui
+    local hh = hw * (page.h / page.w)
+    ox, oy, oz = tonumber(ox) or 0.0, tonumber(oy) or 0.0, tonumber(oz) or 0.0
+
+    local ra = math.rad(tonumber(rx) or 0.0)
+    local rb = math.rad(tonumber(ry) or 0.0)
+    local rc = math.rad(tonumber(rz) or 0.0)
+    local ca, sa = math.cos(ra), math.sin(ra)
+    local cb, sb = math.cos(rb), math.sin(rb)
+    local cc, sc = math.cos(rc), math.sin(rc)
+
+    --- One corner: the label-plane point (u, v, 0) turned about x, then y, then
+    --- z, moved to the center, and taken through the entity's matrix.
+    local function corner(u, v)
+        local x1, y1, z1 = u, v * ca, v * sa                    -- about x
+        local x2, z2 = x1 * cb + z1 * sb, -x1 * sb + z1 * cb   -- about y
+        local x3, y3 = x2 * cc - y1 * sc, x2 * sc + y1 * cc    -- about z
+        local w = GetOffsetFromEntityInWorldCoords(entity, ox + x3, oy + y3, oz + z2)
+        return w.x, w.y, w.z
+    end
+
+    local ax, ay, az = corner(-hw,  hh)   -- top-left
+    local bx, by, bz = corner( hw,  hh)   -- top-right
+    local cx, cy, cz = corner(-hw, -hh)   -- bottom-left
+    local dx, dy, dz = corner( hw, -hh)   -- bottom-right
+
+    drawQuad(page, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, alpha)
+end
+
 -- ---------------------------------------------------------------------------
 -- THE ONE GATE: NOTHING IS DRAWN WHILE THE PLAYER IS DOWN, OUT OR SPECTATING
 -- ---------------------------------------------------------------------------
