@@ -125,6 +125,7 @@ NOTES=(
     "test_rarity|The five rarity colors are the owner's, and the same in the game, the page and the built page"
     "test_terminal|Season 2 terminals: a run only inside a session the server opened; the computer always gives the keyboard back"
     "test_yubikey|Season 2 Yubikey: one per player, dropped on death or leaving, one use per squad, terminals live only inside the storm"
+    "test_terminalfx|Season 2 terminal functions: Scan shows the squad every opponent, the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
     "frame budget|Per-frame game calls, draws and memory stay within budget, lobby to match, every scene"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -716,6 +717,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # squad and nobody else, the client's blips and plate, and Season 1 seeing
     # none of it. Its mutations are named in #396's report.
     #
+    # test_terminalfx.lua is what the BUILT terminal functions do once #396's
+    # door says yes: Scan reaching the whole squad and nobody else, the bounty
+    # to the owner's spec (both toasts, in order; ten minutes; everyone outside
+    # the squad sent where it is; ended by elimination), Supply drop and Max
+    # ammo refusing before anything is spent, and the client's marks. Its
+    # mutations are named in #396's app report.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -774,6 +782,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_rarity.lua
         tools/test_terminal.lua
         tools/test_yubikey.lua
+        tools/test_terminalfx.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

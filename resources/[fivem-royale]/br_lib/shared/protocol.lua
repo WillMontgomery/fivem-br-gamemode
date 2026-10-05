@@ -1238,6 +1238,15 @@ BR.Net = {
     -- the squad that ran it and nobody else, and again to a squad member on
     -- br:ready while that match lasts.
     TERMINAL_REVEAL = 'br:terminal:reveal',
+    -- S->C { matchId, list = { { s, x, y, down? } } }. Scan: where every
+    -- opponent of this player's squad is, every scanPingMs for the rest of the
+    -- match. To the scanning squad alone (server/terminalfx.lua).
+    TERMINAL_SCAN   = 'br:terminal:scan',
+    -- S->C { matchId, list = { { s, x, y } } }. Where each live bounty is, to
+    -- everyone in the match outside that bounty's squad, every bountyPingMs
+    -- while one is live and once more, empty, when the last ends. The
+    -- bounty's own squad reads it off the squad beacon's `bounty`.
+    TERMINAL_BOUNTY = 'br:terminal:bounty',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
     -- player holds one, and whether their squad has spent its one use this

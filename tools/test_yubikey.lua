@@ -201,8 +201,18 @@ BR.Server = {
 BR.Inv = {
     give = function() return true end,
     carryMax = function() return nil end,
+    -- Max ammo's two (server/terminalfx.lua): tools/test_terminalfx.lua's.
+    ammoRoom = function() return 30 end,
+    fillAmmo = function() return 30 end,
 }
-BR.Airdrop = { opened = function() end }
+BR.Airdrop = {
+    opened = function() end,
+    -- Supply drop's three (server/terminalfx.lua): tools/test_terminalfx.lua's
+    -- and, under the real siting rules, tools/test_airdrop.lua's.
+    busy = function() return false end,
+    candidate = function(_, x, y) return { id = 'stub', x = x, y = y } end,
+    call = function(_, x, y) return { n = 1, x = x, y = y } end,
+}
 BR.Admin = { devTrusted = function() return true end }
 --- server/storm.lua's finalCentre is tools/test_storm.lua's (`server.final`);
 --- here the match carries the answer.
@@ -212,6 +222,7 @@ loadAll({
     'br_core/server/loot.lua',
     'br_core/server/yubikey.lua',
     'br_core/server/terminal.lua',
+    'br_core/server/terminalfx.lua',
 })
 
 local Y, T = BR.Yubikey, BR.Terminal

@@ -117,7 +117,7 @@ local function bootServer(opts)
     })
     BR.Season.strict = true
     BR.Season.boot()
-    loadAll({ 'br_core/server/terminal.lua' })
+    loadAll({ 'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua' })
 end
 
 local function fireAs(src, name, ...)

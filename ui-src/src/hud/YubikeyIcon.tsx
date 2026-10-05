@@ -61,3 +61,27 @@ export function YubikeyMark({ glyph }: { glyph: string }) {
     </span>
   )
 }
+
+/**
+ * A TERMINAL BOUNTY (#396) on this squadmate: the owner's spec, "Squad panel:
+ * shows the bounty". Beside their name, after the key mark, in the same size;
+ * the danger color, because it is the one mark on the row that says the mate
+ * is on every enemy's map. The glyph is Lua's (`art.bountyGlyph`, a
+ * placeholder), and there is no caption.
+ */
+export function BountyMark({ glyph }: { glyph: string }) {
+  return (
+    <span
+      className="leading-none shrink-0"
+      style={{
+        fontSize: '0.72rem',
+        alignSelf: 'center',
+        color: 'var(--color-danger)',
+        textShadow: 'var(--shadow-text)',
+      }}
+      aria-hidden
+    >
+      {glyph}
+    </span>
+  )
+}

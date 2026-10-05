@@ -1595,6 +1595,16 @@ BR.Sched.every(250, 'party.squadpos', function()
                 -- key. One bit, absent rather than false, and false on a
                 -- Season 1 server (BR.Yubikey.holds asks the season).
                 yubikey = (BR.Yubikey ~= nil and BR.Yubikey.holds(src)) or nil,
+
+                -- WHETHER THIS MATE CARRIES A TERMINAL BOUNTY (#396), AND ONLY
+                -- TO THEIR SQUAD. The owner's spec: "Squad panel: shows the
+                -- bounty" and "Teammates' map: the bounty owner shows as blip
+                -- 58, color 69". Everyone else learns where the bounty is from
+                -- TERMINAL_BOUNTY (server/terminalfx.lua); the squad reads it
+                -- here, on the beacon that already carries their position.
+                -- One bit, absent rather than false.
+                bounty = (BR.Terminal ~= nil and BR.Terminal.hasBounty ~= nil
+                    and BR.Terminal.hasBounty(src)) or nil,
             }
         end
     end)

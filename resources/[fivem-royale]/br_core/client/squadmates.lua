@@ -23,6 +23,7 @@ BR = BR or {}
 BR.Squadmates = BR.Squadmates or {}
 
 local blips    = {}   -- [src] = blip handle
+local looks    = {}   -- [src] = 'mate' | 'bounty': what that blip is wearing
 local tags     = {}   -- [src] = { tag = gamerTagId, ped = pedHandle }
 local mates    = {}   -- [src] = latest server record for that squadmate
 local peds     = {}   -- [src] = local ped handle, or absent when out of scope
@@ -194,6 +195,7 @@ local function dropMate(src)
         if DoesBlipExist(b) then RemoveBlip(b) end
         blips[src] = nil
     end
+    looks[src] = nil
     dropTag(src)
     low[src]   = nil
     mates[src] = nil
@@ -271,8 +273,31 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
                 AddTextComponentSubstringPlayerName(m.name)
                 EndTextCommandSetBlipName(b)
                 blips[m.src] = b
+                looks[m.src] = 'mate'
             else
                 SetBlipCoords(b, m.x + 0.0, m.y + 0.0, 0.0)
+            end
+
+            -- A MATE WITH A TERMINAL BOUNTY (#396) wears the owner's look on
+            -- this squad's maps: "Teammates' map: the bounty owner shows as
+            -- blip 58, color 69". The beacon's `bounty` bit says so; the
+            -- sprite, colour and scale are re-set only when it changes, since
+            -- SetBlipSprite resets a blip's colour and scale. Everyone else's
+            -- map draws the same player in colour 3 (client/terminalfx.lua).
+            local look = (m.bounty == true and BR.TerminalFx and BR.TerminalFx.mateBountyLook)
+                and 'bounty' or 'mate'
+            if looks[m.src] ~= look then
+                looks[m.src] = look
+                if look == 'bounty' then
+                    local sprite, colour, scale = BR.TerminalFx.mateBountyLook()
+                    SetBlipSprite(b, sprite)
+                    SetBlipColour(b, colour)
+                    SetBlipScale(b, scale)
+                else
+                    SetBlipSprite(b, 1)
+                    SetBlipScale(b, 0.85)
+                    SetBlipColour(b, BR.SquadColour(m.i).blip)
+                end
             end
 
             -- An OUT mate's blip STAYS, dimmed. Where they went down is the

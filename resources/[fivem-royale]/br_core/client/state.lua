@@ -2792,6 +2792,12 @@ function pushSquadOrParty()
                 -- per squad!" One bit on the wire; the art is the config's.
                 yubikey = BR.Yubikey and BR.Yubikey.mateGlyph
                     and BR.Yubikey.mateGlyph(b and b.yubikey) or nil,
+
+                -- WHETHER THIS MATE CARRIES A TERMINAL BOUNTY (#396), off the
+                -- same squad-only beacon (`bounty`), as the glyph to draw or
+                -- nil. The owner's spec: "Squad panel: shows the bounty."
+                bounty = BR.TerminalFx and BR.TerminalFx.mateBountyGlyph
+                    and BR.TerminalFx.mateBountyGlyph(b and b.bounty) or nil,
             }
         end
     end

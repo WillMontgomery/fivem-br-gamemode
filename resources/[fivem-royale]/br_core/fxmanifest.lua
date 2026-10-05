@@ -685,6 +685,10 @@ client_scripts {
     -- client/natives.lua because it calls BR.Keys.on and BR.Loop.register at
     -- load.
     'client/yubikey.lua',
+    -- The terminal functions' marks on this player's maps (#396): Scan's
+    -- opponents and the bounty, from the server's pushes. Event-driven, plus
+    -- a SLOW-band pass that clears them in the lobby; nothing per frame.
+    'client/terminalfx.lua',
     'client/debug.lua',
 }
 
@@ -916,6 +920,12 @@ server_scripts {
     -- BR.Season.has('terminals') at call time; registers its session check on
     -- BR.Sched at load.
     'server/terminal.lua',
+    -- What the built terminal functions do (#396): Scan and its bounty,
+    -- Supply drop and Max ammo, registered into BR.Terminal.FUNCTIONS, and
+    -- the pushes that keep Scan and the bounty on screen. AFTER
+    -- server/terminal.lua, which defines BR.Terminal.FUNCTIONS and the
+    -- audiences this reads at load and at call time.
+    'server/terminalfx.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

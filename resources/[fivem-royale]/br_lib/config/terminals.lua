@@ -265,6 +265,8 @@ BR.Config.Terminals = {
         no_site = "There's no airdrop spot inside the next circle right now.",
         -- Max ammo: every gun the squad carries is already full.
         ammo_full = "Your squad's ammo is already full.",
+        -- Supply drop: another airdrop is waiting for a player or falling.
+        drop_busy = 'Another airdrop is already on its way.',
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -675,7 +677,7 @@ BR.Config.Terminals = {
     -- for consideration; Storm delay, Pulse, Lockdown, Contract and Field
     -- medic are this round's proposals, for the owner to keep or cut.
     functions = {
-        { id = 'scan',           category = 'intel',      risk = 'high',   implemented = false },
+        { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true },
         { id = 'storm_reveal',   category = 'intel',      risk = 'low',    implemented = true },
         { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = false,
           options = { { id = 'zone', choices = { 'near', 'center', 'far' }, default = 'near' } } },
@@ -693,9 +695,9 @@ BR.Config.Terminals = {
               { id = 'duration', choices = { '120', '240' }, default = '120' },
           } },
         { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = false },
-        { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = false,
+        { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
           options = { { id = 'site', choices = { 'terminal', 'circle' }, default = 'terminal' } } },
-        { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = false },
+        { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true },
         { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = false },
         { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = false,
           options = { { id = 'duration', choices = { '120', '240' }, default = '120' } } },

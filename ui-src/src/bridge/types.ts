@@ -390,6 +390,14 @@ export interface SquadMember {
    * squad would hunt, so roster.lua's PUBLIC_FIELDS never carries it.
    */
   yubikey?: string
+  /**
+   * THIS MATE CARRIES A TERMINAL BOUNTY (#396), as the glyph to draw beside
+   * their name; absent when they do not. The owner's spec: "Squad panel: shows
+   * the bounty." Squad-only like `yubikey`: the beacon's `bounty` bit
+   * (server/party.lua), turned into the config's `art.bountyGlyph` by
+   * client/state.lua. Everyone else sees the bounty on their map instead.
+   */
+  bounty?: string
 }
 
 export interface SquadPayload {

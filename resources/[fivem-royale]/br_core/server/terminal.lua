@@ -235,6 +235,11 @@ local function squadOf(m, key)
     return out
 end
 
+-- The effects in server/terminalfx.lua address the same audiences.
+T.lobbyOf = lobbyOf
+T.squadOf = squadOf
+T.whereIs = whereIs
+
 local function pushKeys(list)
     if not (BR.Yubikey and BR.Yubikey.push) then return end
     for _, s in ipairs(list) do BR.Yubikey.push(s) end
@@ -251,7 +256,10 @@ end
 --- BR.Config.Terminals.functions (`implemented = true`).
 ---
 ---   refuse(src, session, opts) -> reason|nil   optional: a reason of its own,
----                                              asked after the shared ones
+---                                              asked after the shared ones;
+---                                              `opts` is nil when the terminal
+---                                              is only being listed (answer
+---                                              for any choice)
 ---   run(src, session, opts) -> { ok, code, after? }
 ---                                              what running it does; `code` is
 ---                                              'done' when it ran, and
@@ -419,8 +427,9 @@ end
 --- a function that is not built yet first (nothing else about it matters),
 --- then a dead terminal, then the squad, then their own key, then the
 --- function's own reason for these options.
---- @param opts table|nil  nil when listing: a function's own refusal is asked
----                        with its defaults
+--- @param opts table|nil  nil when listing: a function's own refusal is then
+---                        asked whether ANY of its choices could run, so a
+---                        card says "not here" only when none could
 local function refusal(src, session, row, opts)
     if not built(row) then return 'fn_offline' end
     local f = T.facts(src, session)
@@ -428,7 +437,7 @@ local function refusal(src, session, row, opts)
     if f.squadUsed then return 'squad_used' end
     if not f.keyHeld then return 'no_key' end
     local fn = T.FUNCTIONS[row.id]
-    if fn.refuse then return fn.refuse(src, session, opts or T.options(row, nil)) end
+    if fn.refuse then return fn.refuse(src, session, opts) end
     return nil
 end
 
