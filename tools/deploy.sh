@@ -19,6 +19,11 @@
 # installed, tools/assets.py stages them before the sync (a failure stops the
 # deploy there) and swaps them in after it. See `--- licensed assets ---`.
 #
+# THE DEPLOYED REF'S OWN deploy.sh DOES THE SYNC. This copy picks the ref,
+# fetches it, checks the dispatch rule and resets the served clone; if that
+# tree's tools/deploy.sh is a different version, it hands the rest of the
+# deploy (and a --dry-run) to a private copy of it, once. See `--- hand over ---`.
+#
 # ---------------------------------------------------------------------------
 # A NOTE ON THE SQUARE BRACKETS
 #
@@ -124,6 +129,34 @@ VENDORED_RESOURCES=(
 LICENSED_GROUP="[licensed]"
 PYTHON="${BR_PYTHON:-python3}"
 
+# --- a handed-over run ----------------------------------------------------------
+#
+# Set only by the handover further down, in the environment of the copy it
+# execs (see `--- hand over ---`). The ref and the sha are the ones the deploy
+# that handed over resolved, fetched and checked; this run takes them as they
+# are, so it can neither re-resolve the branch nor fetch a tip that moved since.
+# Set, they are also the guard: a handed-over run never hands over again.
+#
+# HANDOVER_PROTOCOL is what the handing-over script looks for, as this exact
+# line, before it hands over to a deploy.sh: a version without it (or with
+# another number) would ignore the variables above and fetch afresh. Bump it
+# only for a change an older script's handover would get wrong.
+HANDOVER_PROTOCOL=1
+HANDOVER_SHA="${BR_DEPLOY_HANDOVER_SHA:-}"
+HANDOVER_REF="${BR_DEPLOY_HANDOVER_REF:-}"
+HANDOVER_FROM="${BR_DEPLOY_HANDOVER_FROM:-}"
+
+# The private copy this run was handed, removed when the run exits. Only a file
+# sitting in a directory the handover's mktemp named: the variables above come
+# from the environment, and a cleanup must not be pointable at anything else.
+if [ -n "$HANDOVER_SHA$HANDOVER_REF" ]; then
+    HANDOVER_SELF="${BASH_SOURCE[0]}"
+    case "$(basename "$(dirname "$HANDOVER_SELF")")" in
+        br-deploy-handover.*)
+            trap 'rm -f "$HANDOVER_SELF"; rmdir "$(dirname "$HANDOVER_SELF")" 2>/dev/null || true' EXIT ;;
+    esac
+fi
+
 DRY_RUN=0
 STATUS_ONLY=0
 CHECK_PAYLOAD_DIR=""
@@ -136,7 +169,7 @@ for arg in "$@"; do
         --dry-run)       DRY_RUN=1 ;;
         --status)        STATUS_ONLY=1 ;;
         --check-payload) want_payload_dir=1 ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg (try --help)"; exit 2 ;;
     esac
 done
@@ -275,6 +308,12 @@ fi
 # directory. Nothing a deployed branch contains can edit, weaken or skip the
 # check below, which is exactly why the check below is the one that counts.
 #
+# THE HANDOVER DOES NOT CHANGE THAT. It comes after this check and the reset,
+# the copy it hands to is pinned to the very sha this check passed, and every
+# deploy starts here again, in the ops clone's copy. What the branch's own
+# deploy.sh then runs, it runs as the deploy user, the same as the branch's
+# tools/assets.py already does (#391).
+#
 #   A REF IS ONLY DEPLOYABLE IF <sha>:tools/dispatch.sh EXISTS, IS MODE 100755,
 #   AND ITS BLOB ID EQUALS origin/main:tools/dispatch.sh's BLOB ID.
 #
@@ -370,7 +409,17 @@ done
 # behaviour that is never a surprise.
 
 PINNED_SHA=""
-if [ -n "$BRANCH" ]; then
+if [ -n "$HANDOVER_SHA$HANDOVER_REF" ]; then
+    # Handed over: the ref and the sha the first run resolved and checked,
+    # never re-resolved (BR_BRANCH, the pin and the clone could all say
+    # something else by now). Both or neither, and both well formed.
+    valid_ref "$HANDOVER_REF" \
+        || die "handed over with a bad ref ('$HANDOVER_REF'). Nothing has been deployed."
+    printf '%s' "$HANDOVER_SHA" | grep -qE '^[0-9a-f]{40}$' \
+        || die "handed over with a bad sha ('$HANDOVER_SHA'). Nothing has been deployed."
+    BRANCH="$HANDOVER_REF"
+    say "branch from the handover: $BRANCH @ ${HANDOVER_SHA:0:8}"
+elif [ -n "$BRANCH" ]; then
     say "branch from BR_BRANCH: $BRANCH"
 elif [ -r "$PIN_FILE" ]; then
     PIN_REF=""; PIN_SHA=""
@@ -401,8 +450,21 @@ fi
 [ -n "$BRANCH" ] || BRANCH=main
 
 # --- fetch -------------------------------------------------------------------
+#
+# NOT ON A HANDED-OVER RUN. The run that handed over fetched this ref, checked it
+# and reset the clone to it moments ago. A second fetch could only find a tip
+# that has moved since, which the ops clone's dispatch check never saw, so this
+# run deploys the sha it was handed or nothing.
 
-if [ ! -d "$SRC_DIR/.git" ]; then
+if [ -n "$HANDOVER_SHA" ]; then
+    [ -d "$SRC_DIR/.git" ] \
+        || die "handed over, but there is no clone at $SRC_DIR. Nothing has been deployed."
+    git -C "$SRC_DIR" cat-file -e "$HANDOVER_SHA^{commit}" 2>/dev/null \
+        || die "handed over at ${HANDOVER_SHA:0:8}, which $SRC_DIR does not have. Nothing has been deployed."
+    say "not fetching: the handover pinned $BRANCH at ${HANDOVER_SHA:0:8}"
+fi
+
+if [ -z "$HANDOVER_SHA" ] && [ ! -d "$SRC_DIR/.git" ]; then
     # ALWAYS CLONES main, WHATEVER $BRANCH SAYS. A first clone has nothing to
     # measure the invariant against -- there is no origin/main on disk yet -- so
     # cloning the requested branch directly would install an unreviewed
@@ -422,19 +484,25 @@ if [ ! -d "$SRC_DIR/.git" ]; then
       IdentityFile ~/.ssh/fivem_deploy"
 fi
 
-say "fetching $BRANCH"
-git -C "$SRC_DIR" remote set-url origin "$REPO"
-git -C "$SRC_DIR" fetch --quiet origin "$BRANCH" || die "origin has no branch called '$BRANCH'.
+if [ -z "$HANDOVER_SHA" ]; then
+    say "fetching $BRANCH"
+    git -C "$SRC_DIR" remote set-url origin "$REPO"
+    git -C "$SRC_DIR" fetch --quiet origin "$BRANCH" || die "origin has no branch called '$BRANCH'.
   It was probably deleted after the console pinned it. Nothing has been
   deployed and the server is still running what it was.
   To go back to main by hand:  echo main > $PIN_FILE"
-# main as well, always, because the invariant below is measured against it and a
-# stale origin/main would measure against a rule that has since changed.
-[ "$BRANCH" = "main" ] || git -C "$SRC_DIR" fetch --quiet origin main \
-    || die "cannot fetch origin/main, which the branch rule is measured against."
+    # main as well, always, because the invariant below is measured against it
+    # and a stale origin/main would measure against a rule that has since changed.
+    [ "$BRANCH" = "main" ] || git -C "$SRC_DIR" fetch --quiet origin main \
+        || die "cannot fetch origin/main, which the branch rule is measured against."
+fi
 
 LOCAL=$(git -C "$SRC_DIR" rev-parse HEAD)
-REMOTE=$(git -C "$SRC_DIR" rev-parse "origin/$BRANCH")
+if [ -n "$HANDOVER_SHA" ]; then
+    REMOTE="$HANDOVER_SHA"
+else
+    REMOTE=$(git -C "$SRC_DIR" rev-parse "origin/$BRANCH")
+fi
 
 # THE STAGED SHA, IF THERE IS ONE. A moved branch is a refusal and says so; it
 # is never a silent deploy of whatever the tip happens to be now.
@@ -476,7 +544,11 @@ git -C "$SRC_DIR" symbolic-ref HEAD "refs/heads/$BRANCH"
 # Hard reset rather than pull. The server clone is a deployment artifact,
 # not a workspace -- if someone edited a file in place, their change is not
 # in git and must not block a deploy or produce a merge conflict at boot.
-git -C "$SRC_DIR" reset --quiet --hard "origin/$BRANCH"
+#
+# To the sha the gate passed, not to origin/$BRANCH by name: anything that
+# fetches this clone in between (dispatch.sh's `branches` does) moves the name,
+# and a handed-over run is pinned to the sha whatever the name says now.
+git -C "$SRC_DIR" reset --quiet --hard "$REMOTE"
 git -C "$SRC_DIR" clean --quiet -fd
 
 # The staged switch has happened, so the sha has done its job. Rewriting the pin
@@ -490,56 +562,139 @@ fi
 COMMIT=$(git -C "$SRC_DIR" rev-parse --short HEAD)
 SUBJECT=$(git -C "$SRC_DIR" log -1 --pretty=%s)
 
-# --- is this deploy.sh the one the served tree has? (#391) ------------------
+# --- hand over --------------------------------------------------------------------
 #
-# THIS SCRIPT RUNS FROM THE OPS CLONE (/opt/misc/fivem-br-gamemode), WHICH
-# NOTHING PULLS BUT A PERSON. The tree it serves is fetched fresh above, so the
-# two drift: a box whose ops clone was never pulled runs an old deploy.sh
-# against new code -- one that predates the licensed-asset pull would deploy a
-# lock full of packs and install none of them, and say nothing. So compare the
-# content, as git blobs (so no checkout's line endings can count as a change),
-# and when this script is an OLDER version of the served tree's own
-# tools/deploy.sh (its blob is in that file's history), say so loudly and name
-# the pull. A deploy.sh that differs and is in no such history (a newer ops
-# clone deploying an older ref) gets a quieter note. Neither stops the deploy.
+# THE DEPLOYED REF'S OWN deploy.sh DOES THE REST OF THE DEPLOY.
+#
+# This script runs from the OPS clone (/opt/misc/fivem-br-gamemode), which
+# nothing pulls but a person, while the tree it deploys is fetched fresh above.
+# The two drift, and a drifted deploy says nothing: dev's 30cbfcd added
+# cuchi_computer (#396) to VENDORED_RESOURCES, the dev box served that commit,
+# and the ops clone's older list never synced it. #391's asset pull needed the
+# same hand pull of the ops clone before it.
+#
+# So when the served tree's tools/deploy.sh is a different version from this
+# one (compared as git blobs, so no checkout's line endings count), this run
+# hands over to it HERE: the clone is at the target sha and nothing has been
+# synced, so everything from the payload check on is that version's to do.
+#
+#   * TO A PRIVATE COPY, never to the file in the served clone. bash reads a
+#     script while it runs it, and every deploy resets and cleans that clone,
+#     the handed-over one included. The copy is the blob from git, hashed again
+#     once written, in a mktemp directory outside the clone, and it removes
+#     itself on exit (an EXIT trap: a die and a SIGTERM run it, a SIGKILL not).
+#   * WITH THE SAME ARGUMENTS AND ENVIRONMENT, plus the ref and the sha this run
+#     resolved and checked (BR_DEPLOY_HANDOVER_*). The copy takes those as
+#     given: it resolves no ref and fetches nothing, so it deploys this sha.
+#   * ONCE. A handed-over run never hands over again, whatever it finds, so two
+#     versions that disagree about each other cannot loop.
+#   * ONLY TO A deploy.sh THAT TAKES IT (the HANDOVER_PROTOCOL line). An older
+#     one would ignore the pinned sha and fetch again, so a ref from before the
+#     handover is deployed by this script, as every ref was before it.
+#
+# --dry-run HANDS OVER TOO, because a dry run should show what the deploy would
+# do, and that is the new version's sync: a dry run by this script would show
+# none of what the new version adds. It is as inert as a dry run already is:
+# the copy fetches nothing, resets to the sha this run already reset to, runs
+# its own --dry-run, and removes itself. --status does not run the other
+# version at all; it says a deploy would hand over, and to what.
+#
+# When there is no handing over (no tools/deploy.sh in the tree, the copy
+# failed, a deploy.sh that does not take it, a run already handed over once),
+# this script carries on and says why -- and if it is an OLDER version of the
+# served one (its blob is in that file's history), the red box asks for the pull
+# of the ops clone that is still the fix then.
+
 SELF_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
-SERVED_BLOB="$(git -C "$SRC_DIR" rev-parse -q --verify "HEAD:tools/deploy.sh" 2>/dev/null || true)"
+SERVED_BLOB="$(git -C "$SRC_DIR" rev-parse -q --verify "$REMOTE:tools/deploy.sh" 2>/dev/null || true)"
 SELF_BLOB="$(git -C "$SRC_DIR" hash-object --stdin < "$SELF_SCRIPT" 2>/dev/null || true)"
-if [ -n "$SERVED_BLOB" ] && [ "$SELF_BLOB" != "$SERVED_BLOB" ]; then
-    OPS_CLONE="$(git -C "$(dirname "$SELF_SCRIPT")" rev-parse --show-toplevel 2>/dev/null || true)"
-    OPS_ON=""
-    if [ -n "$OPS_CLONE" ]; then
-        OPS_PULL="git -C $OPS_CLONE pull"
-        # A pull brings only its own branch's deploy.sh: one tracking main
-        # catches up with dev's only after the dev->main merge.
-        OPS_ON="$(git -C "$OPS_CLONE" symbolic-ref -q --short HEAD 2>/dev/null || echo 'a detached HEAD')"
-    else
-        OPS_PULL="replace $SELF_SCRIPT with $BRANCH's tools/deploy.sh"
-    fi
+
+# #391's warning, for a run that carries on although the served tree's
+# deploy.sh differs. Loud only when this script is an older version of it.
+older_than_served() {
+    local ops_clone ops_on="" ops_pull blobs
     # Every version tools/deploy.sh has had on the served ref, one blob a line.
     # Into a variable, not `| grep -q`: under pipefail an early grep exit can
     # fail the pipeline with SIGPIPE and read as "not found".
-    DEPLOY_BLOBS="$(git -C "$SRC_DIR" log --format= --raw --no-abbrev HEAD -- tools/deploy.sh \
+    blobs="$(git -C "$SRC_DIR" log --format= --raw --no-abbrev "$REMOTE" -- tools/deploy.sh \
         | awk '{ print $4 }' || true)"
-    SELF_IS_OLDER=0
-    case $'\n'"$DEPLOY_BLOBS"$'\n' in
-        *$'\n'"$SELF_BLOB"$'\n'*) if [ -n "$SELF_BLOB" ]; then SELF_IS_OLDER=1; fi ;;
+    [ -n "$SELF_BLOB" ] || return 0
+    case $'\n'"$blobs"$'\n' in
+        *$'\n'"$SELF_BLOB"$'\n'*) ;;
+        *) return 0 ;;
     esac
-    if [ "$SELF_IS_OLDER" -eq 1 ]; then
-        {
-            echo "${RED}================================================================${RST}"
-            echo "${RED}deploy: THIS deploy.sh IS OLDER THAN $BRANCH's tools/deploy.sh${RST}"
-            echo "${RED}  running: $SELF_SCRIPT${RST}"
-            echo "${RED}  Pull the ops clone, then deploy again:  $OPS_PULL${RST}"
-            if [ -n "$OPS_ON" ]; then
-                echo "${RED}  (it is on $OPS_ON; the pull helps once that branch has $BRANCH's deploy.sh)${RST}"
-            fi
-            echo "${RED}  Until then each deploy runs the old script's steps, and leaves${RST}"
-            echo "${RED}  out whatever the new one added.${RST}"
-            echo "${RED}================================================================${RST}"
-        } >&2
+    ops_clone="$(git -C "$(dirname "$SELF_SCRIPT")" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$ops_clone" ]; then
+        ops_pull="git -C $ops_clone pull"
+        # A pull brings only its own branch's deploy.sh: one tracking main
+        # catches up with dev's only after the dev->main merge.
+        ops_on="$(git -C "$ops_clone" symbolic-ref -q --short HEAD 2>/dev/null || echo 'a detached HEAD')"
     else
-        echo "${YEL}deploy: note: this deploy.sh ($SELF_SCRIPT) is not $BRANCH's tools/deploy.sh, nor an older version of it${RST}" >&2
+        ops_pull="replace $SELF_SCRIPT with $BRANCH's tools/deploy.sh"
+    fi
+    {
+        echo "${RED}================================================================${RST}"
+        echo "${RED}deploy: THIS deploy.sh IS OLDER THAN $BRANCH's tools/deploy.sh${RST}"
+        echo "${RED}  running: $SELF_SCRIPT${RST}"
+        echo "${RED}  Pull the ops clone, then deploy again:  $ops_pull${RST}"
+        if [ -n "$ops_on" ]; then
+            echo "${RED}  (it is on $ops_on; the pull helps once that branch has $BRANCH's deploy.sh)${RST}"
+        fi
+        echo "${RED}  Until then each deploy runs the old script's steps, and leaves${RST}"
+        echo "${RED}  out whatever the new one added.${RST}"
+        echo "${RED}================================================================${RST}"
+    } >&2
+}
+
+# The private copy: sets HANDOVER_COPY, or sets HANDOVER_FAIL and returns
+# non-zero with nothing left behind.
+HANDOVER_COPY=""
+HANDOVER_FAIL=""
+handover_copy() {
+    local tmp="${TMPDIR:-/tmp}" dir
+    dir="$(mktemp -d "$tmp/br-deploy-handover.XXXXXXXX" 2>/dev/null)" \
+        || { HANDOVER_FAIL="no private directory could be made in $tmp"; return 1; }
+    case "$(cd "$dir" && pwd -P)/" in
+        "$(cd "$SRC_DIR" && pwd -P)/"*)
+            rmdir "$dir" 2>/dev/null
+            HANDOVER_FAIL="the temp directory $dir is inside the served clone"
+            return 1 ;;
+    esac
+    if git -C "$SRC_DIR" cat-file blob "$SERVED_BLOB" > "$dir/deploy.sh" 2>/dev/null \
+        && [ "$(git -C "$SRC_DIR" hash-object --stdin < "$dir/deploy.sh" 2>/dev/null)" = "$SERVED_BLOB" ]; then
+        HANDOVER_COPY="$dir/deploy.sh"
+        return 0
+    fi
+    rm -f "$dir/deploy.sh"
+    rmdir "$dir" 2>/dev/null
+    HANDOVER_FAIL="the copy in $dir did not come out as $BRANCH's tools/deploy.sh"
+    return 1
+}
+
+STATUS_DEPLOY_SH="the same as $BRANCH's"
+if [ -z "$SERVED_BLOB" ]; then
+    STATUS_DEPLOY_SH="this one; $BRANCH has none"
+    echo "${YEL}deploy: note: $BRANCH has no tools/deploy.sh, so this one ($SELF_SCRIPT) deploys it${RST}" >&2
+elif [ "$SELF_BLOB" != "$SERVED_BLOB" ]; then
+    HANDOVER_DESC="from $SELF_SCRIPT (${SELF_BLOB:0:8}) to $BRANCH ${REMOTE:0:8}'s tools/deploy.sh (${SERVED_BLOB:0:8})"
+    if [ -n "$HANDOVER_SHA" ]; then
+        # THE GUARD. This run is the handed-over copy and still disagrees with
+        # the tree it was handed: it deploys, and nothing hands over twice.
+        echo "${YEL}deploy: note: already handed over once (from ${HANDOVER_FROM:-another deploy.sh}); this copy deploys although $BRANCH's tools/deploy.sh differs from it${RST}" >&2
+    elif ! git -C "$SRC_DIR" grep -q -E -e "^HANDOVER_PROTOCOL=$HANDOVER_PROTOCOL\$" "$REMOTE" -- tools/deploy.sh; then
+        STATUS_DEPLOY_SH="this one; $BRANCH's differs and does not take a handover"
+        echo "${YEL}deploy: note: $BRANCH's tools/deploy.sh differs from this one ($SELF_SCRIPT) and does not take a handover, so this one deploys it${RST}" >&2
+        older_than_served
+    elif [ "$STATUS_ONLY" -eq 1 ]; then
+        STATUS_DEPLOY_SH="a deploy would hand over $HANDOVER_DESC"
+    elif handover_copy; then
+        say "${YEL}handing over${RST} $HANDOVER_DESC"
+        export BR_DEPLOY_HANDOVER_SHA="$REMOTE" BR_DEPLOY_HANDOVER_REF="$BRANCH" \
+               BR_DEPLOY_HANDOVER_FROM="$SELF_SCRIPT"
+        exec "${BASH:-bash}" "$HANDOVER_COPY" "$@"
+    else
+        echo "${YEL}deploy: could not hand over to $BRANCH's tools/deploy.sh ($HANDOVER_FAIL); this one ($SELF_SCRIPT) deploys it${RST}" >&2
+        older_than_served
     fi
 fi
 
@@ -548,6 +703,7 @@ if [ "$STATUS_ONLY" -eq 1 ]; then
     echo "  source:   $SRC_DIR"
     echo "  branch:   $BRANCH"
     echo "  commit:   $COMMIT  $SUBJECT"
+    echo "  deploy.sh: $STATUS_DEPLOY_SH"
     echo "  target:   $TARGET_DIR/$RESOURCE_GROUP"
     [ -d "$TARGET_DIR/$RESOURCE_GROUP" ] && echo "  deployed: yes" || echo "  deployed: no"
     for v in "${VENDORED_RESOURCES[@]}"; do

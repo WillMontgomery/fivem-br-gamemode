@@ -2776,54 +2776,6 @@ class Deploy(unittest.TestCase):
         self.assertEqual(self.pulls()[-2:], [['pull', '--stage', '--server-root', root],
                                              ['pull', '--swap', '--server-root', root]])
 
-    def served_deploy_sh(self, *versions):
-        """Commit each of `versions` as the served ref's tools/deploy.sh in
-        turn; taken out again after the test."""
-        path = os.path.join(self.work, 'tools', 'deploy.sh')
-        for v in versions:
-            write(path, v)
-            self.git('add', 'tools/deploy.sh')
-            self.git('commit', '-q', '-m', 'deploy.sh')
-        self.git('push', '-q', self.bare, 'main')
-
-        def drop():
-            self.git('rm', '-q', 'tools/deploy.sh')
-            self.git('commit', '-q', '-m', 'no deploy.sh')
-            self.git('push', '-q', self.bare, 'main')
-        self.addCleanup(drop)
-
-    def test_an_ops_clone_behind_the_served_tree_is_loud(self):
-        self.set_lock(None)
-        running = read(os.path.join(TOOLS, 'deploy.sh'))
-        # Not this script, nor any version of it: a quiet note.
-        self.served_deploy_sh(b'#!/usr/bin/env bash\n# some other deploy\n')
-        rc, out = self.deploy()
-        self.assertEqual(rc, 0, out)
-        self.assertIn('deploy: note: this deploy.sh', out)
-        self.assertIn("is not main's tools/deploy.sh, nor an older version of it", out)
-        self.assertNotIn('OLDER THAN', out)
-        # This script, then a newer one: this one is older, and it is loud.
-        write(os.path.join(self.work, 'tools', 'deploy.sh'), running)
-        self.git('commit', '-qam', 'this deploy.sh')
-        write(os.path.join(self.work, 'tools', 'deploy.sh'), running + b'\n# a newer step\n')
-        self.git('commit', '-qam', 'a newer deploy.sh')
-        self.git('push', '-q', self.bare, 'main')
-        rc, out = self.deploy()
-        self.assertEqual(rc, 0, out)
-        self.assertIn("deploy: THIS deploy.sh IS OLDER THAN main's tools/deploy.sh", out)
-        self.assertIn('Pull the ops clone, then deploy again:  git -C ', out)
-        # Which branch it is on: a pull helps only once that branch has it.
-        self.assertRegex(out, r"\(it is on [^;]+; the pull helps once that branch has main's deploy\.sh\)")
-        self.assertIn('\x1b[32mdeployed', out, 'a warning, not a stop')
-        # The same bytes: nothing said.
-        write(os.path.join(self.work, 'tools', 'deploy.sh'), running)
-        self.git('commit', '-qam', 'the same deploy.sh')
-        self.git('push', '-q', self.bare, 'main')
-        rc, out = self.deploy('--status')
-        self.assertEqual(rc, 0, out)
-        self.assertNotIn('OLDER THAN', out)
-        self.assertNotIn('deploy: note:', out)
-
     def test_licensed_cannot_be_a_sync_target(self):
         self.set_lock(LISTING_LOCK)
         keep = self.sentinel()

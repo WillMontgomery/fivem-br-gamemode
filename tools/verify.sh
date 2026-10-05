@@ -42,6 +42,9 @@
 #   5b/5c      -- no purchased game asset in the repo, and the licensed-asset
 #                 lock and tool (#391), which need Python 3.
 #
+#   5d         -- deploy.sh handing the deploy to the deployed ref's own
+#                 deploy.sh, run for real (Python 3 too).
+#
 # Exit code is non-zero if any check fails.
 
 set -uo pipefail
@@ -163,6 +166,8 @@ NOTES=(
     "asset files|No bought game asset (maps, models, animations, sounds) is in the repository, only our own few"
     "licensed assets|The bought-asset list holds only names, checksums, sizes, file lists and seasons, and is well formed"
     "test_assets|Bought assets: same pack, same checksum; checked before unpacking; installed all or nothing, only in [licensed]"
+    "deploy handover|An old deploy script on the server hands the deploy to the newer one it fetched, so nothing new is skipped"
+    "test_deploy|Hands over once, to the exact commit it checked; a dry run stays dry; its copy is cleaned up"
     "br_ddb bundle|The database helper's built file matches its source, and its ban rules pass their cases"
     "br_ddb bundle over the wire|The server status report says truthfully whether the deployed database helper is current"
     "duplicate console commands|No two commands share a name (the later one would silently replace the earlier)"
@@ -3088,6 +3093,24 @@ if [ "${#PY_[@]}" -gt 0 ]; then
 else
     echo "${YEL}skip${RST} (Python 3 not found: python3, or py on Windows)"
     suite_label test_assets
+    echo "${YEL}skip${RST} (Python 3 not found)"
+fi
+
+# --- 5d. deploy.sh hands the deploy to the deployed ref's own -----------------
+#
+# royale-deploy.service runs deploy.sh from the ops clone, which only a person
+# pulls, so the script and the tree it deploys drift -- and a drifted deploy
+# leaves out whatever the newer script added, silently (#391's assets, #396's
+# cuchi_computer). When the fetched tree's deploy.sh is another version, the
+# running one hands it the rest of the deploy, once, pinned to the ref and sha
+# it checked. tools/test_deploy.py runs the real script in both roles against a
+# local bare repo, with the Python found above.
+
+section 'deploy handover'
+suite_label test_deploy
+if [ "${#PY_[@]}" -gt 0 ]; then
+    "${PY_[@]}" tools/test_deploy.py || rc=1
+else
     echo "${YEL}skip${RST} (Python 3 not found)"
 fi
 
