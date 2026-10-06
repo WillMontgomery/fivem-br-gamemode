@@ -2444,22 +2444,33 @@ if [ -f "$worldfile_" ]; then
     # COMMENT LINES ARE STRIPPED FIRST, exactly as the sound gate below does it:
     # all three of those files discuss these natives by name in prose, because
     # the point of those paragraphs is to say why the call is not there.
+    #
+    # AND THE SNOW ON THE GROUND IS THE SKY'S TOO (#399). client/world.lua turns
+    # the ground snow pass on and off beside the weather it writes; a second
+    # writer would leave the island white under a summer sky, or green under
+    # XMAS. By name -- Cfx's ForceSnowPass, the tracks under both their FiveM
+    # and R* names -- and by hash: R*'s _FORCE_GROUND_SNOW_PASS has no FiveM
+    # name and is reached as 0x6E9EF3A33C8899F8, beside the tracks' hashes, the
+    # snow-on-ice foot VFX and FORCE_SNOW_PASS's Cfx hash. ONE grep per file,
+    # as before: this tree is spawn-bound.
+    wxpat_='(^|[^_[:alnum:]])((Set|Clear)WeatherType[[:alnum:]_]*|ForceSnowPass|SetForceVehicleTrails|SetForcePedFootstepsTracks|UseSnowWheelVfxWhenUnsheltered|UseSnowFootVfxWhenUnsheltered|ForceGroundSnowPass|ForceGlobalSnowFx|FORCE_SNOW_PASS|_?SET_FORCE_VEHICLE_TRAILS|_?SET_FORCE_PED_FOOTSTEPS_TRACKS|USE_SNOW_WHEEL_VFX_WHEN_UNSHELTERED|USE_SNOW_FOOT_VFX_WHEN_UNSHELTERED|_?FORCE_GROUND_SNOW_PASS)[[:space:]]*\(|(^|[^[:xdigit:]])(6E9EF3A33C8899F8|6e9ef3a33c8899f8|4CC7F0FEA5283FE0|4cc7f0fea5283fe0|AEEDAD1420C65CC0|aeedad1420c65cc0|A342A3763B3AFB6C|a342a3763b3afb6c|E6E16170|e6e16170)([^[:xdigit:]]|$)'
     wxfiles_=$(
         for f in "resources/[fivem-royale]"/*/client/*.lua; do
             [ -f "$f" ] || continue
             src1_=$(grep -v '^[[:space:]]*--' "$f")
-            if grep -qE '(^|[^_[:alnum:]])(Set|Clear)WeatherType[[:alnum:]_]*[[:space:]]*\(' <<< "$src1_"; then
+            if grep -qE "$wxpat_" <<< "$src1_"; then
                 echo "$f" | sed 's|.*/\([a-z_]*\)/client/|\1/client/|'
             fi
         done | sort -u | tr '\n' ' '
     )
     if [ "$wxfiles_" != "br_core/client/world.lua " ]; then
-        echo "${RED}FAIL${RST} weather natives live in '${wxfiles_}'"
+        echo "${RED}FAIL${RST} weather or ground-snow natives live in '${wxfiles_}'"
         echo "     expected 'br_core/client/world.lua '"
         echo "     The storm and the island CLAIM the sky through BR.World.want"
-        echo "     and one file resolves the claims by priority. A second writer"
-        echo "     wipes a console override at the next tier change or island"
-        echo "     flip, silently, and this is the only thing that would notice."
+        echo "     and one file resolves the claims by priority, and turns the"
+        echo "     ground snow pass with it (#399). A second writer wipes a console"
+        echo "     override at the next tier change or island flip, silently, and"
+        echo "     this is the only thing that would notice."
         boundary=1
     fi
 fi

@@ -71,12 +71,16 @@ end
 --- because the only thing that ever reads this order is a person staring at
 --- `brweather` with no argument, deciding what to try next.
 ---
---- THE SNOW FOUR ARE REAL AND MOSTLY DO NOTHING. BLIZZARD, SNOW, SNOWLIGHT and
---- XMAS are accepted by the native and change the sky, the wind and the
---- particles -- but the white GROUND everybody expects from them is a texture
---- swap that ships with the Christmas DLC and is not loaded here, so they read
---- as a very cold storm over a green island. Listed anyway: refusing a name the
---- engine accepts would be this file inventing a rule.
+--- THE SNOW FOUR. BLIZZARD, SNOW, SNOWLIGHT and XMAS change the sky, the wind
+--- and the particles. The white GROUND is a RENDER PASS, not missing DLC
+--- content (#399; this note used to say it was a texture swap we do not load,
+--- with no in-game check behind it): R*'s _FORCE_GROUND_SNOW_PASS draws it, and
+--- client/world.lua turns that pass on, with tyre and footprint tracks, while
+--- the sky it writes is one of these four (SNOW_WEATHER below) -- so `brweather
+--- XMAS` shows it too. AWAITING THE OWNER'S IN-GAME CHECK of all four names;
+--- XMAS is the clear-sky snow and the one the festive months use. Listed
+--- anyway: refusing a name the engine accepts would be this file inventing a
+--- rule.
 W.WEATHERS = {
     'EXTRASUNNY', 'CLEAR', 'CLEARING', 'NEUTRAL', 'CLOUDS', 'SMOG',
     'OVERCAST', 'FOGGY', 'RAIN', 'THUNDER',
@@ -144,6 +148,22 @@ function W.skyWeather(name, festive)
     local r = W.SKY_ROLE[name]
     if not r then return name end
     return festive and r.festive or r.plain
+end
+
+--- The weathers with snow on the ground (#399): client/world.lua turns the
+--- ground snow pass on while the sky it wrote is one of these.
+W.SNOW_WEATHER = { XMAS = true, SNOWLIGHT = true, SNOW = true, BLIZZARD = true }
+
+--- Should the ground be white under this sky? Yes under a snow weather, and in
+--- the festive months under a role that keeps it (the bus's overcast cover).
+--- @param weather string|nil  the resolved weather
+--- @param role string|nil     the role it was claimed as, if any
+--- @param festive boolean|nil
+--- @return boolean
+function W.snowGround(weather, role, festive)
+    if weather and W.SNOW_WEATHER[weather] then return true end
+    local r = role and W.SKY_ROLE[role]
+    return festive == true and r ~= nil and r.keepsSnow == true
 end
 
 --- Which claim on the sky wins, and how fast it should be blended in.

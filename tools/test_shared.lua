@@ -23152,6 +23152,10 @@ do
     local FESTIVE = {
         '-- lobby',
         'now XMAS',
+        'invoke 6E9EF3A33C8899F8 true',
+        'trails true',
+        'footsteps true',
+        'ptfx request core_snow',
         '-- warmup',
         '-- bus',
         'over OVERCAST 5.0',
@@ -23161,12 +23165,20 @@ do
         '-- storm, caught',
         'tc set REDMIST',
         'tc strength 0.15 x11',
+        'invoke 6E9EF3A33C8899F8 false',
+        'trails false',
+        'footsteps false',
+        'ptfx remove core_snow',
         'over THUNDER 5.0',
         'rain -1.0',
         'tc strength 0.70 x39',
         '-- storm, back inside',
         'tc strength 0.55 x11',
         'over XMAS 5.0',
+        'invoke 6E9EF3A33C8899F8 true',
+        'trails true',
+        'footsteps true',
+        'ptfx request core_snow',
         'tc strength 0.00 x39',
         'tc clear',
         'now XMAS',
@@ -23243,9 +23255,104 @@ do
            'brfestive on in the lobby: OVERCAST to XMAS over festiveBlendSec, not a snap',
            on)
         local off = table.concat(during(L, '-- brfestive off'), ',')
-        ok(off:find('^over EXTRASUNNY 10.0') ~= nil,
+        ok(off:find('over EXTRASUNNY 10.0', 1, true) ~= nil,
            'brfestive off after a storm exit: the storm\'s base sky goes back to '
            .. 'EXTRASUNNY, blended', off)
+        ok(off:find('6E9EF3A33C8899F8 false', 1, true) ~= nil
+           and on:find('6E9EF3A33C8899F8 true', 1, true) ~= nil,
+           'and the ground snow goes with it, both ways', on .. ' | ' .. off)
+    end
+
+    -- ═══ THE GROUND PASS: ON UNDER A RESOLVED SNOW SKY, OFF OTHERWISE, ON CHANGE ═══
+    --
+    -- client/world.lua alone, with the sky's and the ground's natives recorded.
+    do
+        local G = {}
+        local env = {}
+        permissive(env)
+        env.print = function() end
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.RegisterNetEvent = function() end
+        env.TriggerEvent = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.Citizen = { InvokeNative = function(h, a)
+            G[#G + 1] = ('pass %X %s'):format(h, tostring(a))
+        end }
+        env.SetForceVehicleTrails = function(a) G[#G + 1] = 'trails ' .. tostring(a) end
+        env.SetForcePedFootstepsTracks = function(a) G[#G + 1] = 'footsteps ' .. tostring(a) end
+        env.RequestNamedPtfxAsset = function(a) G[#G + 1] = 'request ' .. a end
+        env.RemoveNamedPtfxAsset = function(a) G[#G + 1] = 'remove ' .. a end
+        env.SetWeatherTypeNowPersist = function(w) G[#G + 1] = 'now ' .. w end
+        env.SetWeatherTypeOvertimePersist = function(w) G[#G + 1] = 'over ' .. w end
+        env.ClearWeatherTypePersist = function() G[#G + 1] = 'sky cleared' end
+        env.SetRainLevel = function() end
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_core/client/world.lua' })
+        local function tell(p) for _, fn in ipairs(handlers[env.BR.Net.WORLD_SET]) do fn(p) end end
+        local function since(n)
+            local out = {}
+            for i = n + 1, #G do out[#out + 1] = G[i] end
+            return table.concat(out, ',')
+        end
+        local ON = 'pass 6E9EF3A33C8899F8 true,trails true,footsteps true,request core_snow'
+        local OFF = 'pass 6E9EF3A33C8899F8 false,trails false,footsteps false,remove core_snow'
+
+        env.BR.World.want('island', 'lobby', 0.0)
+        ok(since(0) == 'now OVERCAST', 'not festive, the lobby writes OVERCAST and no ground pass',
+           since(0))
+
+        for _, name in ipairs({ 'XMAS', 'SNOWLIGHT', 'SNOW', 'BLIZZARD' }) do
+            tell({})
+            local n = #G
+            tell({ weather = name })
+            ok(since(n) == 'now ' .. name .. ',' .. ON,
+               ('brweather %s: the sky, then the white ground, tracks and core_snow'):format(name),
+               since(n))
+        end
+        local n = #G
+        tell({ weather = 'XMAS' })
+        ok(since(n) == 'now XMAS',
+           'one snow sky to another: the weather only -- the ground pass is already on',
+           since(n))
+        n = #G
+        tell({ weather = 'XMAS' })
+        ok(since(n) == '', 'and the same snow sky again writes nothing at all', since(n))
+        n = #G
+        tell({ weather = 'RAIN' })
+        ok(since(n) == OFF .. ',now RAIN',
+           'a sky without snow turns the ground off first, then writes the weather', since(n))
+        n = #G
+        tell({})
+        ok(since(n) == 'now OVERCAST', 'reset hands the lobby back with no ground pass', since(n))
+
+        -- THE COVER KEEPS IT, IN THE FESTIVE MONTHS ONLY.
+        n = #G
+        env.BR.World.want('island', 'cover', 5.0)
+        ok(since(n) == '', 'not festive, the cover is the OVERCAST already on screen: nothing')
+        n = #G
+        tell({ festive = true })
+        ok(since(n) == ON,
+           'festive under the cover: OVERCAST stays, and the ground turns white under it',
+           since(n))
+        n = #G
+        tell({ festive = true, weather = 'THUNDER' })
+        ok(since(n) == OFF .. ',now THUNDER', 'a console THUNDER takes the snow away', since(n))
+        n = #G
+        tell({ festive = true })
+        ok(since(n) == 'over OVERCAST,' .. ON, 'and lifting it brings the festive cover back',
+           since(n))
+
+        -- THE FLAG IS THE ENGINE'S AND OUTLIVES THE RESOURCE.
+        n = #G
+        for _, fn in ipairs(handlers['onResourceStop'] or {}) do fn('br_core') end
+        ok(since(n) == OFF, 'stopping br_core turns the ground pass off', since(n))
+        n = #G
+        for _, fn in ipairs(handlers['onResourceStop'] or {}) do fn('br_ui') end
+        ok(since(n) == '', 'and another resource stopping does nothing')
     end
 end
 

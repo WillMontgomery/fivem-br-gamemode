@@ -68,6 +68,48 @@ local claims = { override = nil, storm = nil, island = nil }
 --- restarts it -- a sky that never finishes arriving.
 local wrote = nil
 
+-- ═══ THE WHITE GROUND IS WRITTEN HERE TOO, BESIDE THE WEATHER (#399) ═══
+--
+-- A snow weather changes the sky, the wind and the particles; the snow ON THE
+-- GROUND is a separate render pass. So this file turns that pass on while the
+-- sky it writes is a snow weather (BR.World.snowGround: XMAS, SNOWLIGHT, SNOW,
+-- BLIZZARD -- `brweather XMAS` included -- and in the festive months the bus's
+-- overcast cover, so the island does not turn green under the bus as it
+-- boards), and off otherwise. Written on change only: nothing here runs per
+-- frame or per tick.
+--
+-- THE RECIPE, FOR GAME BUILD 3889:
+--
+--   _FORCE_GROUND_SNOW_PASS (0x6E9EF3A33C8899F8, R*'s own since build 3095,
+--   by hash: FiveM's Lua has no name for it). NOT Cfx's FORCE_SNOW_PASS, which
+--   legacy vMenu's WeatherSync calls: it works by hooking the engine's weather
+--   name lookup, it crashed clients on build 3258 until patched, and vMenu
+--   Enhanced's author dropped it in 2026 because it breaks weather transitions
+--   -- and this file's sky is transitions (the storm's THUNDER and back).
+--   SetForceVehicleTrails / SetForcePedFootstepsTracks: tyre and footprint
+--   tracks in the snow (R*'s USE_SNOW_WHEEL/FOOT_VFX_WHEN_UNSHELTERED).
+--   core_snow: the particle asset those tracks' snow puffs come from, requested
+--   while the pass is on and released when it goes off, as both vMenus do.
+--
+-- The flag is the ENGINE's and outlives this resource, so a stop turns it off.
+local SNOW_PASS = 0x6E9EF3A33C8899F8
+local SNOW_FX   = 'core_snow'
+local groundSnow = false
+
+--- @param on boolean
+local function setGround(on)
+    if on == groundSnow then return end
+    groundSnow = on
+    Citizen.InvokeNative(SNOW_PASS, on)
+    SetForceVehicleTrails(on)
+    SetForcePedFootstepsTracks(on)
+    if on then
+        RequestNamedPtfxAsset(SNOW_FX)
+    else
+        RemoveNamedPtfxAsset(SNOW_FX)
+    end
+end
+
 --- Write whatever wins, if it is not what the engine already has.
 ---
 --- A ROLE IS READ HERE, FOR THE FESTIVE SKY (#399). The island and the storm
@@ -75,12 +117,18 @@ local wrote = nil
 --- SKY_ROLE), and resolveSky reads each as a weather for BR.World.festive, the
 --- server's one fact this client holds. Not festive, every role is the weather
 --- it always was, so `wrote` sees the same names as before and writes the same.
+---
+--- THE GROUND FOLLOWS THE SKY: off before a weather without snow is written,
+--- on after one with it. It is decided whether or not the weather is written,
+--- because the festive fact can move it under an unchanged sky (the cover).
 --- @param force boolean|nil  write even if the winner is unchanged
 --- @param blendOver number|nil  blend over this many seconds instead of the claim's
 local function push(force, blendOver)
-    local name, blend = BR.World.resolveSky(claims, BR.World.isFestive())
+    local festive = BR.World.isFestive()
+    local name, blend, _, role = BR.World.resolveSky(claims, festive)
 
     if name == nil then
+        setGround(false)
         -- NOBODY WANTS THE SKY. Hand it back to the engine rather than picking
         -- a default: this is the state a match ends in and GTA's own weather is
         -- the right thing to be standing under between rounds.
@@ -91,16 +139,27 @@ local function push(force, blendOver)
         return
     end
 
-    if name == wrote and not force then return end
-    wrote = name
-    if blendOver then blend = blendOver end
+    local snow = BR.World.snowGround(name, role, festive)
+    if not snow then setGround(false) end
 
-    if blend and blend > 0.0 then
-        SetWeatherTypeOvertimePersist(name, blend + 0.0)
-    else
-        SetWeatherTypeNowPersist(name)
+    if name ~= wrote or force then
+        wrote = name
+        if blendOver then blend = blendOver end
+
+        if blend and blend > 0.0 then
+            SetWeatherTypeOvertimePersist(name, blend + 0.0)
+        else
+            SetWeatherTypeNowPersist(name)
+        end
     end
+
+    if snow then setGround(true) end
 end
+
+AddEventHandler('onResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    setGround(false)
+end)
 
 --- Claim the sky, or release a claim by passing nil.
 ---
