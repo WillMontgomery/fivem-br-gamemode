@@ -1715,7 +1715,7 @@ else
         # was the first spelling and it needs a character after the key, so a
         # read at the end of a line -- `local n = BR.Config.Match.maxSquadSize`,
         # the single likeliest way this is written -- matched nothing at all.
-        done < <(grep -rnE "\\b${k}\\b" resources/*/br_*/client/*.lua 2>/dev/null \
+        done < <(grep -rnE "\\b${k}\\b" resources/*/br_*/client/*.lua resources/*/br_*/client/*/*.lua 2>/dev/null \
                  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*--' || true)
     done
 
@@ -2275,7 +2275,7 @@ if [ -f "$vehfile_" ]; then
     # straight after `CreateVehicle`), so this gate would have gone on passing
     # while the capability it guards moved out from under it.
     strayveh=$(grep -rlE '(^|[^_[:alnum:]])CreateVehicle(ServerSetter)?[[:space:]]*\(' \
-               "resources/[fivem-royale]"/*/server/*.lua 2>/dev/null \
+               "resources/[fivem-royale]"/*/server/*.lua "resources/[fivem-royale]"/*/server/*/*.lua 2>/dev/null \
                | grep -v 'br_core/server/vehicles\.lua' || true)
     if [ -n "$strayveh" ]; then
         echo "${RED}FAIL${RST} server-side vehicle creation outside br_core/server/vehicles.lua:"
@@ -2461,8 +2461,11 @@ if [ -f "$worldfile_" ]; then
     # snow-on-ice foot VFX and FORCE_SNOW_PASS's Cfx hash. ONE grep per file,
     # as before: this tree is spawn-bound.
     wxpat_='(^|[^_[:alnum:]])((Set|Clear)WeatherType[[:alnum:]_]*|ForceSnowPass|SetForceVehicleTrails|SetForcePedFootstepsTracks|UseSnowWheelVfxWhenUnsheltered|UseSnowFootVfxWhenUnsheltered|ForceGroundSnowPass|ForceGlobalSnowFx|FORCE_SNOW_PASS|_?SET_FORCE_VEHICLE_TRAILS|_?SET_FORCE_PED_FOOTSTEPS_TRACKS|USE_SNOW_WHEEL_VFX_WHEN_UNSHELTERED|USE_SNOW_FOOT_VFX_WHEN_UNSHELTERED|_?FORCE_GROUND_SNOW_PASS)[[:space:]]*\(|(^|[^[:xdigit:]])(6E9EF3A33C8899F8|6e9ef3a33c8899f8|4CC7F0FEA5283FE0|4cc7f0fea5283fe0|AEEDAD1420C65CC0|aeedad1420c65cc0|A342A3763B3AFB6C|a342a3763b3afb6c|E6E16170|e6e16170)([^[:xdigit:]]|$)'
+    # AND THE FILES ONE FOLDER DOWN (#396, wave B): a terminal function's client
+    # half lives in client/terminalfx/, and a glob of client/*.lua alone would
+    # let one write the sky unseen.
     wxfiles_=$(
-        for f in "resources/[fivem-royale]"/*/client/*.lua; do
+        for f in "resources/[fivem-royale]"/*/client/*.lua "resources/[fivem-royale]"/*/client/*/*.lua; do
             [ -f "$f" ] || continue
             src1_=$(grep -v '^[[:space:]]*--' "$f")
             if grep -qE "$wxpat_" <<< "$src1_"; then
@@ -2568,8 +2571,9 @@ fi
 # name in prose, because the whole point of those comments is that the native
 # fails silently. A gate that counted prose would fail on a paragraph explaining
 # why the rule exists, which is the fastest possible route to it being deleted.
+# One folder down too (#396, wave B: client/terminalfx/), as the sky's gate.
 sfxfiles_=$(
-    for f in "resources/[fivem-royale]"/*/client/*.lua; do
+    for f in "resources/[fivem-royale]"/*/client/*.lua "resources/[fivem-royale]"/*/client/*/*.lua; do
         [ -f "$f" ] || continue
         src2_=$(grep -v '^[[:space:]]*--' "$f")
         if grep -qE '(^|[^_[:alnum:]])PlaySound(Frontend|FromEntity)[[:space:]]*\(' <<< "$src2_"; then
