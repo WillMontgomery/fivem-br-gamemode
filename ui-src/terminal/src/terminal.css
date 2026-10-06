@@ -336,3 +336,19 @@ body.awsui-dark-mode {
 .terminal-howto li {
   margin: 0 0 6px;
 }
+
+/*
+ * THE FIRST PAGE, LOADING (owner, 2026-10-06, round 4: "The initial page load
+ * should also take time, and be shown as a white page during that time while
+ * the tab shows the loading icon"). Under the browser's toolbar the page is
+ * blank and white -- a browser's blank page, the same in both of the site's
+ * modes, like the toolbar -- until the first page shows (App.tsx; its top is
+ * the toolbar's height).
+ */
+.terminal-blank {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ffffff;
+}

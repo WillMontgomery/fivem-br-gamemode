@@ -455,9 +455,21 @@ symbol to indicate it's loading."
   on and off, and `br.js` puts `.br-loading` on the tab. `br.css` animates the
   ring only under that class, so the animation is removed with it, not paused
   (#385: a running animation repaints the NUI every frame). `br.js` takes it
-  off when the page shows, when the app's window or the computer closes, when
-  a fresh app is ready, and by a backstop at the load's length plus a second
-  (15 s at most). No Cloudscape Spinner.
+  off when the page shows, when the app's window or the computer closes, and
+  by a backstop at the load's length plus a second (15 s at most). No
+  Cloudscape Spinner.
+- **The first page loads too** (round 4, owner 2026-10-06: "The initial page
+  load should also take time, and be shown as a white page during that time
+  while the tab shows the loading icon"). The app opened from its desktop icon
+  is a fresh document: the tab wears its symbol from the click (the app's own
+  bundle loading included, so its backstop is the 15 s cap), and the app shows
+  the browser's toolbar -- with the address it is loading -- over a blank white
+  page (`.terminal-blank`, white in both of the site's modes, like the
+  toolbar). When the catalog arrives, the app picks a fresh length in
+  `pageMinMs..pageMaxMs` and tells the tab; when it has passed, the first page
+  shows and the tab is itself again. Nothing navigates meanwhile (back and
+  forward have nowhere to go; reload waits). `model.ts` `startOpening`,
+  `openingStarts`, `openingEnds`.
 
 `model.ts` holds the rules (`navigate`, `arrive`, `step`, `rewrite`,
 `loadMs`), tested in `test-terminal-model.mjs`; the tab's class on every way in

@@ -22,8 +22,12 @@
  * AND THE TAB'S LOADING SYMBOL (owner, 2026-10-06): the app's page loads put
  * br.css's loading symbol on the window's tab, and NOTHING MAY LEAVE IT
  * SPINNING (#385) -- the page showing, a load dropped, the app's window
- * closed, the computer closed, a fresh app, and the backstop timer each take
- * it down.
+ * closed, the computer closed, and the backstop timer each take it down.
+ * Round 4: the app's FIRST page loads too, from the icon's click (the app's
+ * own document loading included) until the app says it showed.
+ *
+ * AND THE STORM'S CLOSE (round 4): a blue screen, then a CRT power-off, then
+ * gone -- removed from the page -- and `off` said.
  *
  * What a browser has to show (the boot screen, the windows, the colors) was
  * checked in a browser for #396's reports, not here.
@@ -441,7 +445,9 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   D.boot()
   D.icon()
   D.fromApp({ type: 'ready' })
-  eq(D.tabLoading(), false, 'the tab shows the app\'s icon')
+  D.fromApp({ type: 'loading', on: true, ms: 1500 })
+  D.fromApp({ type: 'loading', on: false })
+  eq(D.tabLoading(), false, 'its first page shown, the tab shows the app\'s icon')
   D.fromApp({ type: 'loading', on: true, ms: 2000 })
   eq(D.tabLoading(), true, 'a load starts: the tab shows the loading symbol')
   D.wait(1999)
@@ -503,8 +509,9 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   F.icon()
   F.fromApp({ type: 'ready' })
   F.fromApp({ type: 'loading', on: true, ms: 2000 })
+  F.fromApp({ type: 'loading', on: false })
   F.fromApp({ type: 'ready' })
-  eq(F.tabLoading(), false, 'a fresh app says it is ready: it is loading nothing')
+  eq(F.tabLoading(), false, 'a reload\'s ready, after its page showed: the tab stays itself')
 
   // Only the app that is up, while the computer is.
   const G = desktop()
@@ -517,6 +524,50 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   G.escape()
   G.fromFrame({ type: 'loading', on: true, ms: 2000 })
   eq(G.tabLoading(), false, 'and after the computer closed, nobody\'s again')
+}
+
+// ── the app's first page loads (owner, 2026-10-06, round 4) ──
+{
+  // "The initial page load should also take time, and be shown as a white
+  // page during that time while the tab shows the loading icon."
+  const D = desktop()
+  D.boot()
+  eq(D.tabLoading(), false, 'the desktop: the tab is itself')
+  D.icon()
+  eq(D.tabLoading(), true, 'the icon\'s click: the tab loads at once -- the app\'s own document loading included')
+  D.wait(3000)
+  eq(D.tabLoading(), true, 'and keeps loading while the app is not up yet')
+  D.fromApp({ type: 'ready' })
+  eq(D.tabLoading(), true, 'the app is ready: its first page is loading, so the symbol stays -- no flicker')
+  D.fromApp({ type: 'loading', on: true, ms: 2400 })
+  D.wait(2399)
+  eq(D.tabLoading(), true, 'the app\'s white page, for its pick in the range')
+  D.fromApp({ type: 'loading', on: false })
+  eq(D.tabLoading(), false, 'the first page shows: the tab is itself again')
+  eq(D.pending(), 0, 'and no timer is left behind')
+
+  // Opened again from the icon while it is up (minimized, say): not a fresh
+  // app, and nothing loads.
+  D.minimize()
+  D.icon()
+  eq(D.tabLoading(), false, 'the icon for an app already loaded loads nothing')
+
+  // THE BACKSTOP: an app that never comes up cannot leave it spinning.
+  const E = desktop()
+  E.boot()
+  E.icon()
+  E.wait(14999)
+  eq(E.tabLoading(), true, 'an app that never says anything: loading up to the cap')
+  E.wait(1)
+  eq(E.tabLoading(), false, 'and taken down at the 15 s cap')
+
+  // The app's window closed while its first page loads.
+  const F = desktop()
+  F.boot()
+  F.icon()
+  F.quit()
+  eq(F.tabLoading(), false, 'its window closed mid-load: off')
+  eq(F.pending(), 0, 'with its timer')
 }
 
 // ── the storm's close (owner, 2026-10-06, round 4) ──

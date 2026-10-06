@@ -362,6 +362,49 @@ export function rewrite(b: Browsing, route: Route): Browsing {
   return { ...b, history: replace(b.history, route) }
 }
 
+// ------------------------------------------------------- the first load ---
+
+/**
+ * THE APP'S FIRST PAGE LOADS TOO (owner, 2026-10-06, round 4): "The initial
+ * page load should also take time, and be shown as a white page during that
+ * time while the tab shows the loading icon."
+ *
+ *   waiting   the app is up (opened from its desktop icon, so a fresh
+ *             document) and the catalog with its page-load range has not
+ *             come yet: a white page under the browser's toolbar
+ *   loading   the catalog came: a fresh pick in its range, the same as any
+ *             navigation's (`loadMs`), still white, and the tab is told a
+ *             load of that length is under way
+ *   null      the first page shows, and the tab is itself again
+ *
+ * The desktop's tab wears its loading symbol from the icon's click (the
+ * app's own document loading included) until the app says the page showed
+ * (cuchi_computer's br.js). Nothing navigates while the first page loads:
+ * back and forward have nowhere to go, and reload and links wait for it.
+ */
+export type Opening = { phase: 'waiting' } | { phase: 'loading'; ms: number } | null
+
+export function startOpening(): Opening {
+  return { phase: 'waiting' }
+}
+
+/**
+ * A catalog arrived: a first page still waiting starts its load. Anything
+ * else -- a load under way, or the first page shown -- is unchanged, and
+ * the tab is told nothing.
+ */
+export function openingStarts(o: Opening, range: LoadRange | null, rnd: () => number): { opening: Opening; tab: TabNote } {
+  if (o === null || o.phase !== 'waiting') return { opening: o, tab: null }
+  const ms = loadMs(range, rnd)
+  return { opening: { phase: 'loading', ms }, tab: { on: true, ms } }
+}
+
+/** The first page's load is over: it shows, and the tab is itself again. */
+export function openingEnds(o: Opening): { opening: Opening; tab: TabNote } {
+  if (o === null || o.phase !== 'loading') return { opening: o, tab: null }
+  return { opening: null, tab: { on: false } }
+}
+
 // -------------------------------------------------------------- functions ---
 
 /**

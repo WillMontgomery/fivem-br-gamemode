@@ -72,8 +72,9 @@
 //     ANIMATES ONLY WHILE A LOAD IS UNDER WAY (#385: a running animation
 //     repaints the NUI every frame): its class goes, and with it the
 //     animation, when the app says the page showed, when the app or the
-//     computer goes away, when a fresh app says it is ready, and at the
-//     latest TAB_LOAD_SLACK_MS after the load was due to end -- so nothing
+//     computer goes away, and at the latest TAB_LOAD_SLACK_MS after the
+//     load was due to end (TAB_LOAD_MAX_MS for a load of no known length,
+//     the app's own document loading, round 4) -- so nothing
 //     here can spin forever, whatever the app does.
 //
 // ═══ ROUND 4 (owner, 2026-10-06) ═══
@@ -89,6 +90,12 @@
 //     screen is gone and the shell is told (`off`), which gives the keyboard
 //     back. THE SCREEN AND ITS ANIMATION ARE REMOVED from the page when it
 //     ends (#385), and an opening that arrives first drops them at once.
+//   * "The initial page load should also take time, and be shown as a white
+//     page during that time while the tab shows the loading icon": the app
+//     launched from its icon shows its first page as a white page for its
+//     own page-load pick; the tab wears .br-loading from the click -- the
+//     app's document loading included -- until the app says that page
+//     showed (and at most TAB_LOAD_MAX_MS).
 //
 // NOTHING HERE DECIDES ANYTHING. A run is forwarded only while the desktop is
 // open and only with a well-formed id, and that is shape-checking, not
@@ -404,12 +411,18 @@
     // Cloudscape is ~1.7 MB and has no business running for a player who
     // never opens it. Its window's close button unloads it again, so every
     // opening of the app is a fresh one.
+    //
+    // ITS FIRST PAGE LOADS (round 4): the tab wears its loading symbol from
+    // this click -- the app's own document loading included, for which there
+    // is no length to give, so the backstop is the cap -- until the app, which
+    // shows a white page for its first load, says the page showed.
     const launch = () => {
         if (!isOpen) return;
         const f = frame();
         if (f && !appLoaded()) {
             appReady = false;
             f.setAttribute("src", APP_URL);
+            tabLoading(TAB_LOAD_MAX_MS);
         }
         OpenApp(APP);
         center(win());
@@ -572,8 +585,10 @@
         if (d.type === "ready") {
             if (isOpen && appLoaded()) {
                 appReady = true;
-                // A fresh app is loading nothing.
-                tabLoading(null);
+                // The tab is left as it is: a fresh app is loading its first
+                // page and says so (round 4) -- the symbol on since the
+                // icon's click stays on without a flicker -- and a reload's
+                // `ready` comes after its page showed, with the symbol off.
                 toApp({ type: "state", state, copy, catalog });
                 if (held) {
                     const r = held;

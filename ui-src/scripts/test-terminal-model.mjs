@@ -31,8 +31,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   HOME, addressOf, arrive, canBack, canForward, current, hrefOf, indicatorOf, loadMs, matches, navigate,
-  pageLinks, progressAfter, rewrite, routeOfHref, shownCategories, shownFunctions, speaker, startBrowsing,
-  statusOf, step, trailOf, voltsText,
+  openingEnds, openingStarts, pageLinks, progressAfter, rewrite, routeOfHref, shownCategories, shownFunctions,
+  speaker, startBrowsing, startOpening, statusOf, step, trailOf, voltsText,
 } from '../terminal/src/model.ts'
 import { parseCatalog, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
 
@@ -384,6 +384,31 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   }
   ok(named > 60, 'the app\'s keys were read', named)
   eq(missing.join(', '), '', 'every say(\'key\') in the app is in br_lib/config/terminals.lua')
+}
+
+// ── the first page loads, as a white page (owner, 2026-10-06, round 4) ───────
+{
+  // "The initial page load should also take time, and be shown as a white
+  // page during that time while the tab shows the loading icon."
+  const range = { minMs: 1000, maxMs: 3000 }
+  const o = startOpening()
+  eq(o && o.phase, 'waiting', 'a fresh app starts on its white page, waiting for the catalog')
+  let r = openingStarts(o, range, () => 0.5)
+  ok(r.opening && r.opening.phase === 'loading' && r.opening.ms === 2000,
+    'the catalog comes: a pick in its range, still white', r.opening)
+  ok(r.tab && r.tab.on === true && r.tab.ms === 2000, 'and the tab is told a load of that length is under way')
+  ok(openingStarts(o, range, () => 0).opening.ms === 1000 && openingStarts(o, range, () => 1).opening.ms === 3000,
+    'the pick spans the range, 1 to 3 s')
+  const again = openingStarts(r.opening, range, () => 0.9)
+  ok(again.opening === r.opening && again.tab === null, 'a later catalog (an update, a reload) starts nothing new')
+  r = openingEnds(r.opening)
+  ok(r.opening === null && r.tab && r.tab.on === false, 'the load ends: the first page shows, the tab is itself')
+  const after = openingStarts(null, range, () => 0.5)
+  ok(after.opening === null && after.tab === null, 'once shown, no catalog brings the white page back')
+  ok(openingEnds(null).tab === null && openingEnds(startOpening()).tab === null,
+    'nothing ends that was not loading')
+  const none = openingStarts(startOpening(), null, () => 0.5)
+  ok(none.opening.ms === 0 && none.tab.ms === 0, 'a catalog with no range: no wait')
 }
 
 if (failed > 0) {

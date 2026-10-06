@@ -19,9 +19,10 @@ import { Login } from './Login'
 import { MatchPanel } from './MatchPanel'
 import { Privacy } from './Privacy'
 import {
-  HOME, addressOf, arrive, canBack, canForward, current, fill, hrefOf, loadMs, navigate, pageLinks, progressAfter,
-  rewrite, routeOfHref, shownCategories, shownFunctions, speaker, startBrowsing, step, trailOf, voltsText,
-  type Browsing, type NavTarget, type Progress, type Route,
+  HOME, addressOf, arrive, canBack, canForward, current, fill, hrefOf, loadMs, navigate, openingEnds, openingStarts,
+  pageLinks, progressAfter, rewrite, routeOfHref, shownCategories, shownFunctions, speaker, startBrowsing,
+  startOpening, step, trailOf, voltsText,
+  type Browsing, type NavTarget, type Opening, type Progress, type Route,
 } from './model'
 import { loadMode, saveMode, showMode, type UiMode } from './mode'
 
@@ -33,7 +34,9 @@ import { loadMode, saveMode, showMode, type UiMode } from './mode'
  *                 history, and the address of the page it is on -- the same
  *                 look in both modes. Every navigation but back and forward
  *                 LOADS for a random 1-3 s (owner, 2026-10-06; model.ts's
- *                 "page loads"), the window's tab showing it
+ *                 "page loads"), the window's tab showing it -- and so does
+ *                 the first page, as a white page under the toolbar (round
+ *                 4; model.ts's "the first load")
  *   the top bar   TopNavigation: the app's name (the one place in the app it
  *                 is written), a search across every function (pick one to
  *                 open its page; or search the cards), the player's Volts, the
@@ -102,6 +105,14 @@ export function App(): ReactElement {
     browsingRef.current = b
     setBrowsingState(b)
   }
+  // THE FIRST PAGE, LOADING (round 4): a white page under the toolbar until
+  // the catalog's range has been waited out (model.ts "the first load").
+  const [opening, setOpeningState] = useState<Opening>(startOpening)
+  const openingRef = useRef(opening)
+  const setOpening = (o: Opening) => {
+    openingRef.current = o
+    setOpeningState(o)
+  }
   const [pending, setPending] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -133,7 +144,17 @@ export function App(): ReactElement {
         state(next, nextCopy, nextCatalog) {
           setState(next)
           if (nextCopy) setCopy(nextCopy)
-          if (nextCatalog) setCatalog(nextCatalog)
+          if (nextCatalog) {
+            setCatalog(nextCatalog)
+            // The first catalog starts the first page's load: a fresh pick in
+            // its range, and the tab told how long (it has been loading since
+            // the icon's click).
+            const first = openingStarts(openingRef.current, nextCatalog.pageLoad, Math.random)
+            if (first.tab) {
+              setOpening(first.opening)
+              tellTab(first.tab)
+            }
+          }
           // SIGNED IN BY THE KEY THE COMPUTER OPENED WITH. A run spends the
           // key, and the page that ran it must stay up to show the answer, so
           // only an opening without one is the login screen.
@@ -192,6 +213,21 @@ export function App(): ReactElement {
     return () => window.clearInterval(t)
   }, [progress])
 
+  // THE FIRST PAGE'S LOAD ENDS: the white page gives way to it, and the tab
+  // is itself again.
+  const openingMs = opening !== null && opening.phase === 'loading' ? opening.ms : null
+  useEffect(() => {
+    if (openingMs === null) return undefined
+    const t = window.setTimeout(() => {
+      const r = openingEnds(openingRef.current)
+      if (!r.tab) return
+      setOpening(r.opening)
+      tellTab(r.tab)
+      window.scrollTo(0, 0)
+    }, openingMs)
+    return () => window.clearTimeout(t)
+  }, [openingMs])
+
   // A PAGE LOAD ENDS: its page shows (a reload: the page again, asked for
   // afresh and remounted), and the tab is itself again. A load replaced or
   // dropped since has no page to show, and its timer is cleared anyway.
@@ -226,6 +262,8 @@ export function App(): ReactElement {
   // always did). A link to the page already on screen loads nothing, and
   // only does what it always did.
   const nav = (target: NavTarget) => {
+    // Nothing navigates while the first page loads (reload included).
+    if (openingRef.current !== null) return
     const r = navigate(browsingRef.current, target, loadMs(catalog.pageLoad, Math.random))
     if (target.kind === 'page') setFlash(null)
     if (r.tab === null) {
@@ -239,6 +277,7 @@ export function App(): ReactElement {
   // BACK AND FORWARD ARE INSTANT (the owner's exception), and drop a load
   // under way.
   const browse = (dir: 'back' | 'forward') => {
+    if (openingRef.current !== null) return
     const r = step(browsingRef.current, dir)
     setBrowsing(r.browsing)
     tellTab(r.tab)
@@ -448,7 +487,7 @@ export function App(): ReactElement {
           onReload={() => nav({ kind: 'reload' })}
           labels={{ back: say('aria_back'), forward: say('aria_forward'), reload: say('aria_reload'), address: say('aria_address') }}
         />
-        <div className="terminal-topnav">
+        {opening === null && <div className="terminal-topnav">
           <TopNavigation
             identity={{
               href: hrefOf(HOME),
@@ -462,10 +501,12 @@ export function App(): ReactElement {
             search={searchBox}
             utilities={utilities}
           />
-        </div>
+        </div>}
       </div>
       <div className="terminal-header-space" aria-hidden="true" style={{ height: headerHeight }} />
-      <AppLayout
+      {/* THE FIRST PAGE, LOADING: a blank white page under the toolbar, the
+          site not drawn at all until it shows (round 4). */}
+      {opening !== null ? <div className="terminal-blank" style={{ top: headerHeight }} /> : <AppLayout
         headerSelector="#terminal-header"
         navigationHide={route.page === 'login'}
         navigationWidth={240}
@@ -483,7 +524,7 @@ export function App(): ReactElement {
           </div>
         }
         content={content}
-      />
+      />}
     </div>
   )
 }
