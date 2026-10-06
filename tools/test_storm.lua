@@ -7560,6 +7560,33 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('view.inside')
+do
+    -- ═══ WHERE THE VIEW STANDS, AS THE STORM'S OWN TICK MEASURED IT (#396) ═══
+    --
+    -- Time & weather claims its weather only inside the circle, and reads that
+    -- off the storm's tick rather than measuring again: the same viewpoint (the
+    -- shot, for a spectator), the same zone the wall draws and the sky reads.
+    local C = newStormClient()
+    local env = C.env
+    C.record(3, 0.0, 0.0, 950.0, 0.0, 0.0, 520.0, 600000, 60000, 1.7)
+    C.pedAt = pt(0.0, 0.0)
+    C.tick(1)
+    eq(env.BR.Storm.viewInside(), true, 'standing in the middle: inside')
+    local p = env.BR.Storm.viewpoint()
+    ok(p and p.x == 0.0 and p.y == 0.0, 'and the viewpoint is this ped')
+    C.pedAt = pt(5000.0, 0.0)
+    C.tick(1)
+    eq(env.BR.Storm.viewInside(), false, 'five kilometers out: not inside')
+    C.pedAt = pt(0.0, 0.0)
+    C.tick(1)
+    eq(env.BR.Storm.viewInside(), true, 'back in the middle: inside again')
+    env.BR.State.match.state = env.BR.MatchState.WAITING
+    C.tick(1)
+    eq(env.BR.Storm.viewInside(), false, 'and with no storm to stand in, never inside')
+end
+
+-- ---------------------------------------------------------------------------
 describe('first.once')
 do
     -- ═══ THE DRAW REFUSES TO HAPPEN TWICE, AND THE CLOCK MOVES BETWEEN TRIES ═══
