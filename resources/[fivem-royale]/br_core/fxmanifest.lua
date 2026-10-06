@@ -706,6 +706,13 @@ client_scripts {
     'client/terminalfx/pulse.lua',
     'client/terminalfx/lockdown.lua',
     'client/debug.lua',
+    -- The wave B terminal functions' client halves (#396, 2026-10-06), one
+    -- file each: Time & weather's sky claim, from the server's pushes. Below
+    -- client/debug.lua only so that wave A's list, above it, and this one are
+    -- two separate edits; each reads BR.World, BR.Storm and BR.Loop at call
+    -- time. A SLOW-band pass that returns at once with nothing to do; nothing
+    -- per frame.
+    'client/terminalfx/time_weather.lua',
 }
 
 -- sched.lua is server-only rather than shared, because the client has its own
@@ -968,6 +975,7 @@ server_scripts {
     -- tools/test_terminal.lua loads every `server/terminalfx/` file named here.
     'server/terminalfx/storm_delay.lua',
     'server/terminalfx/storm_control.lua',
+    'server/terminalfx/time_weather.lua',
     -- Whether a player is already in our Discord: one authenticated GET to
     -- Discord per connection, cached for that connection. AFTER
     -- @br_lib/shared/identity.lua, and that IS a real order rather than a

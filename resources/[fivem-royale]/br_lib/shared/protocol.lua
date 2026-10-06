@@ -1238,6 +1238,13 @@ BR.Net = {
     -- the squad that ran it and nobody else, and again to a squad member on
     -- br:ready while that match lasts.
     TERMINAL_REVEAL = 'br:terminal:reveal',
+    -- S->C { matchId, weather? }. Time & weather (wave B): the weather this
+    -- match's run chose -- a weather name or a sky role ('base') -- which each
+    -- client claims only while its view is inside the circle; absent is the end
+    -- of it. To the whole match when it starts and ends, and on br:ready while
+    -- it lasts (server/terminalfx/time_weather.lua). Its time rides the match
+    -- clock's own anchor, not this.
+    TERMINAL_SKY    = 'br:terminal:sky',
     -- S->C { matchId, list = { { s, x, y, down? } } }. Scan: where every
     -- opponent of this player's squad is, every scanPingMs for the rest of the
     -- match. To the scanning squad alone (server/terminalfx.lua).

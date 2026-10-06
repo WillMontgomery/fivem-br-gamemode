@@ -3397,6 +3397,31 @@ local function weatherWant(tier)
     end
 end
 
+-- ═══ WHERE THIS CLIENT'S VIEW STANDS AGAINST THE ZONE (#396, wave B) ═══
+--
+-- The storm.state tick below already measures it -- the signed distance from
+-- the viewpoint (the shot, for a spectator) to the zone the wall draws, the one
+-- the sky and the grade read -- so it keeps the last answer here instead of a
+-- second file measuring it again. Read by Control Tower's Time & weather
+-- (client/terminalfx/time_weather.lua: its weather only inside the circle) and
+-- Power outage (its area test reads the viewpoint). Nil with no record, which
+-- is "not inside".
+local viewEdge = nil
+
+--- Was this client's view inside the storm's zone on the last storm tick?
+--- @return boolean
+function BR.Storm.viewInside()
+    return viewEdge ~= nil and viewEdge <= 0.0
+end
+
+--- Whose position "where am I" is measured from: the shot while a dead or out
+--- player spectates, else this ped (viewpoint above, #225).
+--- @return vector3|table point
+function BR.Storm.viewpoint()
+    local p = viewpoint()
+    return p
+end
+
 -- NO "clear" envelope is ever sent from here. A nil payload arrives in the
 -- UI as {} (the bridge's `data or {}`), which rendered as a ghost "PHASE
 -- UNDEFINED / NaN" storm card during warmup. The UI clears its own storm
@@ -3414,6 +3439,7 @@ local function teardown()
     -- play the all-clear over the bus.
     caughtWas = nil
     pippedFor = nil
+    viewEdge = nil
     -- Between matches the grade SNAPS off -- there is nothing to fade
     -- against once the world resets around a teleport home. Only our own red
     -- is cleared, and what it took over goes back (#399).
@@ -3526,6 +3552,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- wall morphs by, and the same growth a conjoined zone spreads by.
     local zone = zoneFor(rec, cx, cy, r, t, g)
     local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
+    viewEdge = edge
     BR.Loop.hitchContext(rec.phase, st, edge > 0)
 
     -- Screen FX track being outside AND the storm actually hurting right now

@@ -100,12 +100,27 @@ for _, name in ipairs(W.WEATHERS) do W.WEATHER[name] = true end
 ---             who typed it is standing in the world looking at the result.
 ---   storm     the ring caught somebody outside it. It wins over the island
 ---             because it is a gameplay signal and the island's is scenery.
+---   terminal  Control Tower's Time & weather (#396, wave B): the weather a
+---             player chose, claimed by client/terminalfx/time_weather.lua only
+---             while this client's view is inside the circle. BELOW the storm,
+---             so a player caught outside always gets THUNDER (owner,
+---             2026-10-05: "whatever weather they set is only set while inside
+---             the storm"), and above the island.
 ---   island    br_environment's lobby/mainland choreography: OVERCAST hides the
 ---             mid-flight world swap, the clear sky is what the doors open on.
 ---
 --- A source not on this list is not a claim; client/world.lua refuses it rather
 --- than storing an unranked key that would never win and never be noticed.
-W.SKY_SOURCES = { 'override', 'storm', 'island' }
+---
+--- AND A ROLE YIELDS TO A WEATHER CLAIMED BELOW IT (#396, wave B). The storm's
+--- all-clear is not a choice: it is `base`, the sky a match stands under, held
+--- for the rest of the match once the storm has caught this player (SKY_ROLE
+--- below). A weather somebody chose -- the terminal's RAIN -- is drawn over that
+--- default rather than under it, while THUNDER, a weather, still outranks it.
+--- resolveSky has the rule; it changes nothing among the claims that existed
+--- before it, because the island only ever claims roles and the console only
+--- ever claims weathers.
+W.SKY_SOURCES = { 'override', 'storm', 'terminal', 'island' }
 
 W.SKY_SOURCE = {}
 for _, src in ipairs(W.SKY_SOURCES) do W.SKY_SOURCE[src] = true end
@@ -176,18 +191,30 @@ end
 ---
 --- THE NAME IS THE WEATHER TO WRITE: a role is read for `festive` here (#399),
 --- so the caller never sees one. The winning source comes back too.
---- @param claims table  { override = { name, blend }, storm = ..., island = ... }
+---
+--- A ROLE YIELDS TO A WEATHER CLAIMED BELOW IT (#396, wave B; SKY_SOURCES has
+--- why): the strongest claim that names a weather wins, wherever a role was
+--- claimed above it, and only with no weather claimed at all does the strongest
+--- role win.
+--- @param claims table  { override = { name, blend }, storm = ..., terminal = ..., island = ... }
 --- @param festive boolean|nil  the festive sky (W.festive on a client)
 --- @return string|nil name
 --- @return number|nil blend  seconds; 0 means snap
 --- @return string|nil source  which claim won
 function W.resolveSky(claims, festive)
     if type(claims) ~= 'table' then return nil, nil end
+    local role, roleSrc = nil, nil
     for _, src in ipairs(W.SKY_SOURCES) do
         local c = claims[src]
         if type(c) == 'table' and c.name then
-            return W.skyWeather(c.name, festive), tonumber(c.blend) or 0.0, src
+            if not W.SKY_ROLE[c.name] then
+                return c.name, tonumber(c.blend) or 0.0, src
+            end
+            if role == nil then role, roleSrc = c, src end
         end
+    end
+    if role then
+        return W.skyWeather(role.name, festive), tonumber(role.blend) or 0.0, roleSrc
     end
     return nil, nil
 end

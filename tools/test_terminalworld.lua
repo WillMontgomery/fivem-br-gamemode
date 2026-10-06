@@ -18,6 +18,13 @@
 --           Storm reveal told the new end; refused `no_storm` / `no_circle`
 --           with nothing spent (the Volts included); everything given back
 --           when the final circle is drawn while it loads; the dev path.
+--   PART C  Time & weather: the time through the match clock's own anchor
+--           (#394's one writer follows it) and back to the match's running
+--           clock when it ends; the weather to the match, and on the REAL
+--           client/world.lua claimed only inside the circle, below the
+--           storm's THUNDER and over its all-clear; the festive sky's clear
+--           and its white ground (#399); ended by its time, the match ending
+--           and a season switch.
 --
 -- The storm's own half -- BR.Storm.delay against the real phase job, the 75%
 -- cut, a client's countdown; BR.Storm.futures and steer over many matches,
@@ -269,7 +276,7 @@ loadAll({
 })
 -- WAVE B'S OWN FILES ONLY. Every other built row is a function this suite does
 -- not stand up: its row lists as fn_offline here, and its own suite runs it.
-local WAVE_B = { 'storm_delay', 'storm_control' }
+local WAVE_B = { 'storm_delay', 'storm_control', 'time_weather' }
 local SERVER_FX = {}
 for _, f in ipairs(fxFiles('server')) do
     for _, id in ipairs(WAVE_B) do
@@ -651,6 +658,23 @@ for _, zone in ipairs({ 'near', 'far', 'center' }) do
     end
 end
 
+describe('Storm control: the three are three different ends')
+do
+    -- The terminal stands on the next circle's center, so the end nearest it is
+    -- also the one nearest the center: center has to be another.
+    local ends = { { x = 0.0, y = 0.0 }, { x = 100.0, y = 0.0 }, { x = 1000.0, y = 0.0 },
+                   { x = 50.0, y = 50.0 } }
+    local three = TS.threeEnds(ends, 0.0, 0.0, 0.0, 0.0)
+    eq(three.near, 1, 'near: the end at the terminal')
+    eq(three.far, 3, 'far: the end farthest from it')
+    eq(three.center, 4, 'center: of the rest, the nearest the center -- never near again')
+    local tie = TS.threeEnds({ { x = 10.0, y = 0.0 }, { x = -10.0, y = 0.0 }, { x = 0.0, y = 10.0 } },
+        0.0, 0.0, 0.0, 0.0)
+    eq(tie.near, 1, 'a tie goes to the earlier end')
+    local two = TS.threeEnds({ { x = 1.0, y = 0.0 }, { x = 5.0, y = 0.0 } }, 0.0, 0.0, 0.0, 0.0)
+    ok(two.near == 1 and two.far == 2 and two.center == 1, 'with only two ends the choices share them')
+end
+
 describe("Storm control: near is nearer the terminal than the storm's own plan, far farther")
 do
     reset()
@@ -758,6 +782,394 @@ do
         'and steers to the far one, measured from the player (the dev terminal has no site)')
     eq(#market.charges, 0, 'no Volts')
     eq(#notices, 0, 'no notice')
+end
+
+-- =========================================================================
+-- PART C -- Time & weather, the server
+-- =========================================================================
+
+--- A match clock anchor as server/match.lua stamps it at bus start.
+local function stampClock(m, at)
+    m.clock = BR.World.anchor(at or (gameMs - 600000))
+    return m.clock
+end
+
+local function skySends(src)
+    return eventsOf(BR.Net.TERMINAL_SKY, src)
+end
+
+describe('Time & weather: the time through the match clock, the weather to the match')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local base = stampClock(m)
+    local r = runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '180' })
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    eq(r and r.toast, COPY.time_weather_done, 'and says the page\'s done line')
+    local a = m.clock
+    ok(a ~= base and BR.World.validAnchor(a), 'the match runs from a new clock anchor')
+    local h, mi = table.unpack(CT.fx.skyTime.night)
+    eq(a.startSec, h * 3600 + mi * 60, 'starting at the night the config names')
+    eq(a.msPerMin, base.msPerMin, 'at the match\'s own rate (#394)')
+    eq(a.at, gameMs, 'from the moment it ran')
+    ok(m.terminalSky and m.terminalSky.base == base, 'and the match\'s own anchor is kept')
+    eq(m.terminalSky.untilAt, gameMs + 180000, 'for three minutes')
+    for src = 1, 5 do
+        local p = skySends(src)[1]
+        ok(p and p.payload.weather == CT.fx.skyWeather.rain and p.payload.matchId == m.id,
+            ('p%d is told the weather (%s)'):format(src, CT.fx.skyWeather.rain))
+    end
+    -- THE ONE CLOCK WRITER'S PLAN FOLLOWS THE ANCHOR: one new key, one write.
+    local W = BR.World
+    local plan = W.clockPlan({ state = BR.PlayerState.ALIVE, anchor = m.clock, now = gameMs + 60000, synced = true })
+    eq(plan.mode, 'run', 'a client\'s clock plan runs')
+    ok(math.abs(plan.sec - (a.startSec + 60000 * 60 / a.msPerMin)) < 1e-6,
+        'from the chosen time, a minute on', plan.sec)
+    local was = W.clockPlan({ state = BR.PlayerState.ALIVE, anchor = base, now = gameMs, synced = true })
+    ok(plan.key ~= was.key, 'and its key is new, so the writer writes once')
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Time & weather: it ends, and the match\'s own running clock comes back')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local base = stampClock(m)
+    runAt(1, 'time_weather', { time = 'dusk', weather = 'fog', duration = '300' })
+    eq(skySends(3)[1].payload.weather, 'FOGGY', 'fog is FOGGY')
+    gameMs = gameMs + 299000
+    BR.Sched.step(gameMs)
+    ok(m.terminalSky ~= nil, 'a second before its five minutes it still holds')
+    gameMs = gameMs + 2000
+    BR.Sched.step(gameMs)
+    eq(m.terminalSky, nil, 'at five minutes it is over')
+    ok(m.clock == base, 'the match\'s own anchor is back -- the same one')
+    local W = BR.World
+    local plan = W.clockPlan({ state = BR.PlayerState.ALIVE, anchor = m.clock, now = gameMs, synced = true })
+    ok(math.abs(plan.sec - W.timeAt(base, gameMs)) < 1e-6,
+        'so the clock is where the match\'s own time has run to meanwhile, not where it was')
+    for src = 1, 5 do
+        local p = skySends(src)
+        ok(#p == 2 and p[2].payload.weather == nil, ('p%d is told the weather is over'):format(src))
+    end
+end
+
+describe('Time & weather: clear is the base sky; no thunder')
+do
+    eq(CT.fx.skyWeather.clear, 'base', 'clear is the match\'s own clear sky, the `base` role')
+    ok(BR.World.SKY_ROLE.base ~= nil, 'which is a role the sky knows')
+    for choice, w in pairs(CT.fx.skyWeather) do
+        ok(w ~= 'THUNDER', ('%s is not a thunderstorm (owner, 2026-10-05)'):format(choice))
+        ok(BR.World.WEATHER[w] or BR.World.SKY_ROLE[w], ('%s names a weather or a role (%s)'):format(choice, w))
+    end
+    local row = T.row('time_weather')
+    for _, o in ipairs(row.options) do
+        for _, ch in ipairs(o.choices) do
+            if o.id == 'time' then ok(CT.fx.skyTime[ch] ~= nil, 'time ' .. ch .. ' has its hour') end
+            if o.id == 'weather' then ok(CT.fx.skyWeather[ch] ~= nil, 'weather ' .. ch .. ' has its sky') end
+        end
+    end
+end
+
+describe('Time & weather: the match ending ends it')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local base = stampClock(m)
+    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    eq(m.terminalSky, nil, 'the end screen is not the match: it is over')
+    ok(m.clock == base, 'with the match\'s own clock back for the end screen')
+    eq(skySends(2)[#skySends(2)].payload.weather, nil, 'and the weather released')
+end
+
+describe('Time & weather: a season switch ends it')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local base = stampClock(m)
+    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
+    season(1)
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    season(2)
+    eq(m.terminalSky, nil, 'off Season 2 it is over')
+    ok(m.clock == base, 'and the clock is the match\'s own')
+end
+
+describe('Time & weather: a second run replaces the first, and the match\'s own clock still comes back')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local base = stampClock(m)
+    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
+    -- Squad B's key, the other terminal's reach: run from the same terminal.
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    keys[3] = true
+    runAt(3, 'time_weather', { time = 'day', weather = 'fog', duration = '180' })
+    local h = CT.fx.skyTime.day[1]
+    eq(m.clock.startSec, h * 3600 + CT.fx.skyTime.day[2] * 60, 'the second run\'s time')
+    eq(m.terminalSky.weather, 'FOGGY', 'and weather')
+    ok(m.terminalSky.base == base, 'with the match\'s own anchor still the one kept')
+    gameMs = gameMs + 181000
+    BR.Sched.step(gameMs)
+    ok(m.clock == base, 'which is what comes back')
+end
+
+describe('Time & weather: a client that restarts is told again')
+do
+    reset()
+    local m = lobby('squad', 3)
+    stampClock(m)
+    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
+    sent = {}
+    fire(BR.Net.READY, 4)
+    local p = skySends(4)[1]
+    ok(p and p.payload.weather == 'RAIN', 'br:ready re-sends the weather while it lasts')
+    gameMs = gameMs + 301000
+    BR.Sched.step(gameMs)
+    sent = {}
+    fire(BR.Net.READY, 4)
+    eq(#skySends(4), 0, 'and nothing once it is over')
+end
+
+describe('Time & weather: refused with no clock, and given back when the match ends while it loads')
+do
+    reset()
+    local m = lobby('squad', 3)
+    m.clock = nil
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    local f = listed(1, 'time_weather')
+    ok(f and f.reason == 'unavailable', 'a match with no clock to run from: unavailable', f and f.reason)
+    nothingSpent(1, 'no clock')
+    stampClock(m)
+    local r = runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '180' }, true)
+    eq(r and r.code, 'running', 'accepted')
+    m.state = BR.MatchState.ENDED
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false, 'over, the match ended: it can no longer happen', r and r.code)
+    nothingSpent(1, 'given back')
+    eq(m.terminalSky, nil, 'and nothing of it was set')
+end
+
+describe('Time & weather: squad and solo lines, and the dev path')
+do
+    eq(TS.pick(COPY, 'time_weather_risks', false), COPY.time_weather_risks_solo, 'the risks line has its solo sibling')
+    for _, key in ipairs({ 'time_weather_done', 'time_weather_description', 'time_weather_what' }) do
+        ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
+            ('%s never says squad outside a squad match'):format(key))
+    end
+    reset()
+    local m = lobby('squad', 3)
+    local base = stampClock(m)
+    keys[1] = false
+    sv(1, 'run time_weather time=dusk weather=clear duration=180')
+    ok(m.terminalSky and m.terminalSky.weather == 'base' and m.clock ~= base,
+        '`brterminal run time_weather time=dusk weather=clear duration=180` sets it')
+    eq(#market.charges + #notices, 0, 'for nothing, and with no notice')
+end
+
+-- =========================================================================
+-- PART C, THE CLIENT -- the sky claim, over the REAL client/world.lua
+-- =========================================================================
+
+local SANDBOX_STD = {
+    assert = assert, error = error, ipairs = ipairs, next = next,
+    pairs = pairs, pcall = pcall, rawequal = rawequal, rawget = rawget,
+    rawlen = rawlen, rawset = rawset, select = select, xpcall = xpcall,
+    setmetatable = setmetatable, getmetatable = getmetatable,
+    tonumber = tonumber, tostring = tostring, type = type,
+    math = math, string = string, table = table,
+}
+
+--- A client: its own Lua state, the real br_lib shared files and the files
+--- named, over modeled natives. `C.natives` records every native call.
+local function newClient(files)
+    local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
+    env._G = env
+    local C = { env = env, natives = {}, handlers = {}, jobs = {}, prints = {}, inside = false,
+                at = { x = 0.0, y = 0.0, z = 30.0 } }
+    local function native(name)
+        env[name] = function(...)
+            C.natives[#C.natives + 1] = { name = name, args = { ... } }
+        end
+    end
+    for _, n in ipairs({ 'SetWeatherTypeOvertimePersist', 'SetWeatherTypeNowPersist',
+                         'ClearWeatherTypePersist', 'SetRainLevel', 'SetForceVehicleTrails',
+                         'SetForcePedFootstepsTracks', 'RequestNamedPtfxAsset', 'RemoveNamedPtfxAsset',
+                         'SetArtificialLightsState', 'SetArtificialLightsStateAffectsVehicles' }) do
+        native(n)
+    end
+    env.Citizen = { InvokeNative = function(h, ...)
+        C.natives[#C.natives + 1] = { name = ('0x%X'):format(h), args = { ... } }
+    end }
+    env.print = function(...)
+        local parts = {}
+        for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+        C.prints[#C.prints + 1] = table.concat(parts, ' ')
+    end
+    env.GetGameTimer = function() return gameMs end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetConvar = function(n, d) return n == 'br_season' and convars.br_season or d end
+    env.RegisterNetEvent = function() end
+    env.TriggerEvent = function() end
+    env.AddEventHandler = function(name, fn)
+        C.handlers[name] = C.handlers[name] or {}
+        table.insert(C.handlers[name], fn)
+    end
+    for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+                         'br_lib/shared/world.lua', 'br_lib/config/match.lua',
+                         'br_lib/config/storm.lua', 'br_lib/shared/season.lua',
+                         'br_lib/config/seasons.lua', 'br_lib/config/terminals.lua',
+                         'br_lib/shared/geo.lua', 'br_lib/shared/terminal_solve.lua' }) do
+        local chunk = assert(loadfile(ROOT .. f, 't', env))
+        chunk()
+    end
+    env.BR.Season.boot(function(name) return name == 'br_season' and convars.br_season or '' end,
+        function() end)
+    env.BR.Loop = {
+        SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
+        register = function(_, name, fn) C.jobs[name] = fn end,
+    }
+    env.BR.State = { match = { state = env.BR.MatchState.PLAYING }, me = { state = env.BR.PlayerState.ALIVE } }
+    env.BR.Storm = {
+        viewInside = function() return C.inside end,
+        viewpoint = function() return C.at end,
+    }
+    for _, f in ipairs(files) do
+        local chunk = assert(loadfile(ROOT .. f, 't', env))
+        chunk()
+    end
+    function C.fire(name, ...)
+        for _, fn in ipairs(C.handlers[name] or {}) do fn(...) end
+    end
+    function C.slow()
+        for _, fn in pairs(C.jobs) do fn() end
+    end
+    --- The last weather written, and the ground pass's last state.
+    function C.wrote()
+        local w, ground = nil, nil
+        for _, n in ipairs(C.natives) do
+            if n.name == 'SetWeatherTypeOvertimePersist' or n.name == 'SetWeatherTypeNowPersist' then
+                w = n.args[1]
+            elseif n.name == 'ClearWeatherTypePersist' then
+                w = nil
+            elseif n.name == '0x6E9EF3A33C8899F8' then
+                ground = n.args[1]
+            end
+        end
+        return w, ground
+    end
+    function C.count(name)
+        local k = 0
+        for _, n in ipairs(C.natives) do if n.name == name then k = k + 1 end end
+        return k
+    end
+    return C
+end
+
+local SKY_FILES = { 'br_core/client/world.lua', 'br_core/client/terminalfx/time_weather.lua' }
+
+describe('Time & weather on a client: the weather only inside the circle')
+do
+    local C = newClient(SKY_FILES)
+    local W = C.env.BR.World
+    -- The match's sky: the island's base, as a match stands under.
+    C.fire('br:world:island', 'base', 10.0)
+    eq((W.sky()), 'EXTRASUNNY', 'a match stands under the base sky')
+
+    C.inside = true
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'RAIN' })
+    local name, src = W.sky()
+    eq(name, 'RAIN', 'told RAIN with its view inside the circle: RAIN')
+    eq(src, 'terminal', 'as the terminal\'s claim')
+    eq((C.wrote()), 'RAIN', 'written through client/world.lua')
+    ok(C.count('SetRainLevel') >= 1, 'with the rain knob handed back, so it really rains')
+
+    -- OUTSIDE THE CIRCLE, NOT CAUGHT (phase 1's free-loot hold): no claim.
+    C.inside = false
+    C.slow()
+    eq(C.env.BR.TerminalFx.skyClaim(), nil, 'its view outside the circle: no claim')
+    eq((W.sky()), 'EXTRASUNNY', 'and the sky is the storm\'s own -- here the base')
+
+    -- CAUGHT: THUNDER, whatever was chosen.
+    C.inside = false
+    W.want('storm', 'THUNDER', 5.0)
+    eq((W.sky()), 'THUNDER', 'caught outside, the storm\'s THUNDER')
+    C.inside = true
+    C.slow()
+    eq((W.sky()), 'THUNDER', 'and THUNDER outranks the terminal even while it claims')
+
+    -- BACK INSIDE: the storm's all-clear is a role, and yields to the choice.
+    W.want('storm', 'base', 5.0)
+    eq((W.sky()), 'RAIN', 'back inside, the storm\'s all-clear yields to the chosen RAIN')
+    W.want('override', 'SMOG', 0.0)
+    eq((W.sky()), 'SMOG', 'and a console sky still outranks everything')
+    W.want('override', nil)
+
+    -- THE END: the server's word.
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1 })
+    eq(C.env.BR.TerminalFx.skyClaim(), nil, 'told it is over: released')
+    eq((W.sky()), 'EXTRASUNNY', 'and the match\'s own sky is back')
+end
+
+describe('Time & weather on a client: the festive months, and the white ground')
+do
+    local C = newClient(SKY_FILES)
+    local W = C.env.BR.World
+    W.setFestive(true)
+    C.fire('br:world:island', 'base', 10.0)
+    eq((W.sky()), 'XMAS', 'a festive match stands under XMAS')
+    local _, ground = C.wrote()
+    eq(ground, true, 'with snow on the ground')
+    C.inside = true
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'base' })
+    eq((W.sky()), 'XMAS', 'clear, in December or January, is the base sky: XMAS')
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'RAIN' })
+    eq((W.sky()), 'RAIN', 'rain is RAIN')
+    _, ground = C.wrote()
+    eq(ground, false, 'and the ground is bare under it: the ground follows the resolved weather (#399)')
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1 })
+    _, ground = C.wrote()
+    eq(ground, true, 'over, XMAS and the white ground come back')
+end
+
+describe('Time & weather on a client: the lobby and a season switch end it')
+do
+    local C = newClient(SKY_FILES)
+    local W = C.env.BR.World
+    C.inside = true
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'FOGGY' })
+    eq((W.sky()), 'FOGGY', 'fog inside the circle')
+    C.env.BR.State.me.state = C.env.BR.PlayerState.LOBBY
+    C.slow()
+    eq(C.env.BR.TerminalFx.skyClaim(), nil, 'home in the lobby: released, before the server says so')
+    C.env.BR.State.me.state = C.env.BR.PlayerState.ALIVE
+    C.slow()
+    eq(C.env.BR.TerminalFx.skyClaim(), nil, 'and not taken up again from a match that is over')
+
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 2, weather = 'FOGGY' })
+    eq(C.env.BR.TerminalFx.skyClaim(), 'FOGGY', 'a new run claims again')
+    convars.br_season = '1'
+    C.env.BR.Season.boot(function(name) return name == 'br_season' and '1' or '' end, function() end)
+    C.slow()
+    eq(C.env.BR.TerminalFx.skyClaim(), nil, 'off Season 2: released')
+    convars.br_season = '2'
+    C.env.BR.Season.boot(function(name) return name == 'br_season' and '2' or '' end, function() end)
+    C.slow()
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 2, weather = 'nonsense' })
+    eq(C.env.BR.TerminalFx.skyClaim(), nil, 'a name that is neither a weather nor a role is no claim')
+end
+
+describe('Time & weather on a client: nothing to do costs nothing')
+do
+    local C = newClient(SKY_FILES)
+    local n = #C.natives
+    for _ = 1, 60 do C.slow() end
+    eq(#C.natives, n, 'a minute of passes with no weather to claim calls no native')
 end
 
 realPrint(('\n%d passed, %d failed'):format(pass, fail))

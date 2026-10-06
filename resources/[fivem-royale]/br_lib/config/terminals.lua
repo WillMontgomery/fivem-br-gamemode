@@ -526,7 +526,7 @@ BR.Config.Terminals = {
         comms_blackout_done = 'Comms blackout is running.',
         comms_blackout_description = "Comms blackout. Other squads can't see their teammates on the map.",
 
-        -- Time & weather (owner's; offline)
+        -- Time & weather (owner's; LIVE since wave B, 2026-10-06)
         time_weather_name = 'Time & weather',
         time_weather_summary = "Changes the match's time of day and weather for a while.",
         -- WRITTEN (2026-10-05, round 2; was "Sets the time of day and the
@@ -1046,7 +1046,7 @@ BR.Config.Terminals = {
         -- choice, and the chosen weather applies ONLY to players inside the
         -- circle: outside it the storm's own weather (br_core/client/storm.lua,
         -- BR.World.want('storm', ...)) always wins, whatever was picked here.
-        { id = 'time_weather',   category = 'disruption', risk = 'low',    implemented = false,
+        { id = 'time_weather',   category = 'disruption', risk = 'low',    implemented = true,
           options = {
               { id = 'time', choices = { 'day', 'dusk', 'night' }, default = 'night' },
               { id = 'weather', choices = { 'clear', 'rain', 'fog' }, default = 'clear' },
@@ -1107,6 +1107,36 @@ BR.Config.Terminals = {
         -- obeys every rule a match's storm does. More is a wider spread
         -- between near and far, at a few milliseconds each, once a run.
         stormControlFutures = 8,
+
+        -- How often the server checks whether a timed wave B effect has run
+        -- out, or its match has ended or left Season 2, and ends it (Time &
+        -- weather, Power outage): one pass a second.
+        worldCheckMs = 1000,
+
+        -- Time & weather: the time of day each choice sets, as hour and
+        -- minute. The clock then RUNS from there at the match's own rate
+        -- (#394's slow clock: an hour of game time every five minutes), and
+        -- when it ends hands back to the match's own running clock.
+        skyTime = {
+            day   = { 12, 0 },
+            dusk  = { 19, 30 },
+            night = { 0, 0 },
+        },
+        -- The weather each choice names: a weather the engine knows, or a
+        -- ROLE (br_lib/shared/world.lua's SKY_ROLE). Clear is `base`, the
+        -- match's own clear sky -- EXTRASUNNY, and XMAS with snow on the
+        -- ground in December and January (#399), as a storm exit is. Never
+        -- THUNDER: "thunderstorm cannot be a pickable weather" (owner,
+        -- 2026-10-05), and caught in the storm is the only THUNDER there is.
+        skyWeather = {
+            clear = 'base',
+            rain  = 'RAIN',
+            fog   = 'FOGGY',
+        },
+        -- Seconds a client blends into the chosen weather as its view crosses
+        -- into the circle -- the storm's own sky blend (config/storm.lua's
+        -- weather.blendSec), so walking in looks like a storm exit does.
+        skyBlendSec = 5.0,
 
         -- Scan: how often the scanning squad's opponent marks are refreshed.
         -- Positions are the roster's own 4 Hz samples; two seconds keeps a

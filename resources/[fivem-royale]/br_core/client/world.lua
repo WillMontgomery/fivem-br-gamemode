@@ -57,8 +57,12 @@
 
 -- ---------------------------------------------------------------------- sky ---
 
---- What each source currently wants. Absent means "no claim".
-local claims = { override = nil, storm = nil, island = nil }
+--- What each source currently wants. Absent means "no claim". `terminal` is
+--- Control Tower's Time & weather (#396, wave B), claimed by
+--- client/terminalfx/time_weather.lua only while this client's view is inside
+--- the circle, below the storm and above the island (shared/world.lua's
+--- SKY_SOURCES; a role claimed above it yields to the weather it names).
+local claims = { override = nil, storm = nil, terminal = nil, island = nil }
 
 --- The weather name the engine was last handed by this file, or nil if the last
 --- thing it was handed was ClearWeatherTypePersist.
@@ -176,6 +180,14 @@ function BR.World.want(source, name, blend, force)
         return
     end
     claims[source] = name and { name = name, blend = blend } or nil
+
+    -- THE RAIN KNOB COMES BACK WITH A CHOSEN WEATHER (#396, wave B), as it does
+    -- with the console's (applyOverride, below): the storm's drying schedule may
+    -- have pinned SetRainLevel(0.0) a moment before Time & weather's RAIN took
+    -- the sky, and only the storm's own sky on screen ever hands it back -- so
+    -- the RAIN a player chose would fall dry. A role claimed by the terminal (its
+    -- clear sky) is the base sky's and leaves the knob alone.
+    if source == 'terminal' and name and not BR.World.SKY_ROLE[name] then SetRainLevel(-1.0) end
 
     -- A FORCED WRITE IS ONLY THE WINNER'S TO ASK FOR. storm.lua's drying snap
     -- forces because re-writing the same weather is what hard-resets the
