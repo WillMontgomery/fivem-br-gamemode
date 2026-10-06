@@ -17,9 +17,10 @@ import { FunctionPage } from './FunctionPage'
 import { HowTo } from './HowTo'
 import { Login } from './Login'
 import { MatchPanel } from './MatchPanel'
+import { Privacy } from './Privacy'
 import {
-  HOME, addressOf, arrive, canBack, canForward, current, fill, hrefOf, loadMs, navigate, progressAfter, rewrite,
-  routeOfHref, shownCategories, shownFunctions, speaker, startBrowsing, step, voltsText,
+  HOME, addressOf, arrive, canBack, canForward, current, fill, hrefOf, loadMs, navigate, pageLinks, progressAfter,
+  rewrite, routeOfHref, shownCategories, shownFunctions, speaker, startBrowsing, step, trailOf, voltsText,
   type Browsing, type NavTarget, type Progress, type Route,
 } from './model'
 import { loadMode, saveMode, showMode, type UiMode } from './mode'
@@ -39,13 +40,15 @@ import { loadMode, saveMode, showMode, type UiMode } from './mode'
  *                 light/dark switch, and the player's gamertag as the
  *                 signed-in user (its menu: the how-to, or sign out, which
  *                 closes the computer)
- *   the layout    AppLayout with SideNavigation (Functions, How to, each
+ *   the layout    AppLayout with SideNavigation (Home, How to, Privacy, each
  *                 category with something in it) and a BreadcrumbGroup on
  *                 every page but the login screen; a run's progress and its
  *                 answer are Flashbar notifications
- *   the pages     the functions ("Match stats" over FunctionCards), a function
- *                 (FunctionPage), the how-to (HowTo), and the login screen
- *                 (Login) when the computer opened without a Yubikey
+ *   the pages     Home, the functions ("Match stats" over FunctionCards; Home
+ *                 in its address, link and trail, owner 2026-10-06), a
+ *                 function (FunctionPage), the how-to (HowTo), the privacy
+ *                 policy (Privacy), and the login screen (Login) when the
+ *                 computer opened without a Yubikey
  *
  * ═══ NOT ONE WORD IS WRITTEN HERE ═══
  *
@@ -322,25 +325,13 @@ export function App(): ReactElement {
   // THE APP'S NAME IS IN THE TOP BAR ONLY (round 2: "remove the 'Blitz
   // Terminal' text from the top of the sidebar - it should only remain in the
   // top bar"): the side navigation has no header, the trail starts at the
-  // page's section, and the login screen -- where the name alone was the
-  // "random text" near the top left -- has no trail at all.
-  const crumbs: { text: string; href: string }[] = []
-  if (route.page === 'functions' || route.page === 'function') {
-    crumbs.push({ text: say('nav_functions'), href: hrefOf(HOME) })
-  }
-  if (route.page === 'functions' && route.category) {
-    crumbs.push({ text: say(`category_${route.category}`), href: hrefOf(route) })
-  }
-  if (route.page === 'function') {
-    const def = defById.get(route.id)
-    if (def) crumbs.push({ text: say(`category_${def.category}`), href: hrefOf({ page: 'functions', category: def.category, query: '' }) })
-    crumbs.push({ text: say(`${route.id}_name`), href: hrefOf(route) })
-  }
-  if (route.page === 'howto') crumbs.push({ text: say('nav_howto'), href: hrefOf(route) })
+  // page's section -- Home for the cards and every function (owner,
+  // 2026-10-06) -- and the login screen, where the name alone was the "random
+  // text" near the top left, has no trail at all (model.ts trailOf).
+  const crumbs = trailOf(route, say, (id) => defById.get(id)?.category)
 
   const navItems: SideNavigationProps.Item[] = [
-    { type: 'link', text: say('nav_functions'), href: hrefOf(HOME) },
-    { type: 'link', text: say('nav_howto'), href: hrefOf({ page: 'howto' }) },
+    ...pageLinks(say).map((l) => ({ type: 'link' as const, text: l.text, href: l.href })),
     { type: 'divider' },
     {
       type: 'section',
@@ -441,6 +432,8 @@ export function App(): ReactElement {
     }
   } else if (state && route.page === 'howto') {
     content = <HowTo say={say} />
+  } else if (state && route.page === 'privacy') {
+    content = <Privacy say={say} />
   }
 
   return (

@@ -168,8 +168,15 @@ BR.Config.Terminals = {
         -- kept its name when the app became Control Tower (round 2): a
         -- question for the owner, not a change made for him.
         address_host = 'https://controltower.blitz',
+        -- VERBATIM (owner, 2026-10-06: "the functions page should be called
+        -- Home in the URL, sidebar, and breadcrumbs"), lower case as a path
+        -- is: the cards page. A function's page is still under
+        -- path_functions.
+        path_home = 'home',
         path_functions = 'functions',
         path_howto = 'how-to',
+        -- WRITTEN (2026-10-06). The Privacy page.
+        path_privacy = 'privacy',
         path_login = 'login',
         -- Hover labels on the browser's buttons and the window's close.
         aria_back = 'Back',
@@ -205,8 +212,14 @@ BR.Config.Terminals = {
 
         -- ── the side navigation and the breadcrumbs. WRITTEN ─────────────────
 
-        nav_functions = 'Functions',
+        -- VERBATIM (owner, 2026-10-06, as path_home): the cards page's link
+        -- and its first breadcrumb, which every function's trail starts
+        -- with. The page's heading stays functions_heading.
+        nav_home = 'Home',
         nav_howto = 'How to',
+        -- WRITTEN (2026-10-06). The Privacy page's link, after How to, and
+        -- its breadcrumb.
+        nav_privacy = 'Privacy',
         nav_categories = 'Categories',
 
         -- ── the functions page: the match panel. WRITTEN ─────────────────────
@@ -412,6 +425,16 @@ BR.Config.Terminals = {
         howto_tips_body = "Read a function's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nTalk to your squad before you run anything. You only get one use between you.\nIntel shows the most while many squads are left. Supply matters most when your squad is low on gear.\nStorm functions change where the last fight happens. Think about where your squad will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
         -- WRITTEN (2026-10-05, round 2). The tips outside a squad match.
         howto_tips_body_solo = "Read a function's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nIntel shows the most while many players are left. Supply matters most when you're low on gear.\nStorm functions change where the last fight happens. Think about where you will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
+
+        -- ── the privacy page (owner, 2026-10-06: "a Privacy page in the
+        --    sidebar", a made-up policy sponsored by Lifeinvader) ─────────────
+        --
+        -- VERBATIM: the owner approved this copy word for word ("Perfect",
+        -- 2026-10-06). Not to be edited or re-punctuated without him. At the
+        -- terminal: the page's title, then its body, two paragraphs (the '\n'
+        -- between them). It says no "squad", so it has no _solo sibling.
+        privacy_title = 'Privacy Policy',
+        privacy_body = "Control Tower is proudly sponsored by Lifeinvader, the social network that already knows what you had for breakfast. By opening, touching, standing near, or thinking warmly about this terminal, you agree that everything you do here may be collected, stored, analyzed, monetized, re-monetized, printed out, laminated, and left on the dashboard of a stolen sedan in Vespucci. This includes, but is not limited to, your name, your location, your Volts balance, your loadout, your teammates' names (we will be using these), how long you hovered over Run before losing your nerve, and the exact noise you made when the storm caught you. Your data is stored securely on a server somewhere inside the storm and backed up nightly to a USB stick we found on the ground.\nWe take your privacy extremely seriously, which is why we guarantee complete privacy to every person who has never used, opened, approached, or heard of Control Tower. If you are reading this, that guarantee no longer applies to you, and we thank you for your contribution. Your information may be shared with Lifeinvader, its affiliates, its affiliates' cousins, the Los Santos Police Department, Merryweather Security, every other player in this match (you may have noticed), and anyone who asks nicely or loudly. You may request a copy of your data at any time by writing to an address we have not disclosed, and we will respond within 90 business years. You may opt out by uninstalling the planet. This policy may change at any time without notice, and probably already has since you started reading. If you made it this far, you have read more of this policy than anyone at Lifeinvader, and you are legally entitled to nothing.",
 
         -- ── the functions ─────────────────────────────────────────────────────
         --

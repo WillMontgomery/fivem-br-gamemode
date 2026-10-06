@@ -12,7 +12,10 @@
  * (owner, 2026-10-06): the browser's page loads -- a fresh pick in the
  * config's 1-3 s for every navigation, the page on screen kept while it
  * loads, a newer navigation replacing it, back and forward at once and
- * dropping it, and what the window's tab is told at each step.
+ * dropping it, and what the window's tab is told at each step. And the
+ * polish (owner, 2026-10-06): the cards page is Home -- its address, its link
+ * and the head of its trail and every function's -- and the Privacy page has
+ * its link after How to, its address, its crumb, and loads like any page.
  *
  * WHY node RUNS A .ts FILE DIRECTLY. model.ts has only type imports and
  * bridge.ts none, so node's type stripping (on by default since 22.18) loads
@@ -27,8 +30,9 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  HOME, addressOf, arrive, current, indicatorOf, loadMs, matches, navigate, progressAfter, rewrite,
-  shownCategories, shownFunctions, speaker, startBrowsing, statusOf, step, voltsText,
+  HOME, addressOf, arrive, canBack, canForward, current, hrefOf, indicatorOf, loadMs, matches, navigate,
+  pageLinks, progressAfter, rewrite, routeOfHref, shownCategories, shownFunctions, speaker, startBrowsing,
+  statusOf, step, trailOf, voltsText,
 } from '../terminal/src/model.ts'
 import { parseCatalog, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
 
@@ -201,8 +205,8 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   ok(b.load && b.load.ms === 2400 && b.load.target.route === FN, 'a navigation starts a load of the picked length')
   ok(r.tab && r.tab.on === true && r.tab.ms === 2400, 'and the tab is told it is loading, for that long')
   eq(current(b.history), HOME, 'the page on screen stays while it loads')
-  const say = speaker({ address_host: 'https://controltower.blitz', path_functions: 'functions', path_howto: 'how-to' }, true)
-  eq(addressOf(current(b.history), say), 'https://controltower.blitz/functions',
+  const say = speaker({ address_host: 'https://controltower.blitz', path_home: 'home', path_functions: 'functions', path_howto: 'how-to' }, true)
+  eq(addressOf(current(b.history), say), 'https://controltower.blitz/home',
     'and so does its address: the bar changes when the page shows')
   r = arrive(b, b.load.seq)
   b = r.browsing
@@ -280,6 +284,106 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
     { brTerminal: 1, type: 'loading', on: true, ms: 2413 },
     { brTerminal: 1, type: 'loading', on: false },
   ]), 'the tab is told { loading, on, ms } as a load starts and { loading, off } as it ends; nothing to tell sends nothing')
+}
+
+// ── Home and Privacy (owner, 2026-10-06) ─────────────────────────────────────
+{
+  // The real copy block, as Lua writes it.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const lua = readFileSync(join(here, '..', '..', 'resources', '[fivem-royale]', 'br_lib', 'config', 'terminals.lua'), 'utf8')
+  const copy = {}
+  for (const m of lua.matchAll(/^\s+([a-z_]+) = (['"])(.*)\2,$/gm)) copy[m[1]] = m[3].replace(/\\n/g, '\n')
+  const say = speaker(copy, true)
+  const PRIVACY = { page: 'privacy' }
+  const HOWTO = { page: 'howto' }
+  const FN = { page: 'function', id: 'storm_reveal' }
+
+  // THE ADDRESSES: "called Home in the URL".
+  eq(addressOf(HOME, say), 'https://controltower.blitz/home', 'the cards page is /home')
+  eq(addressOf({ page: 'functions', category: 'intel', query: 'scan' }, say),
+    'https://controltower.blitz/home?category=intel&q=scan', 'narrowed, it is still /home, with its query')
+  eq(addressOf(FN, say), 'https://controltower.blitz/functions/storm-reveal', 'a function\'s page stays under /functions')
+  eq(addressOf(HOWTO, say), 'https://controltower.blitz/how-to', 'the how-to is /how-to')
+  eq(addressOf(PRIVACY, say), 'https://controltower.blitz/privacy', 'the Privacy page is /privacy')
+  eq(routeOfHref(hrefOf(PRIVACY))?.page, 'privacy', 'the Privacy link leads to the Privacy page')
+  eq(routeOfHref(hrefOf(HOME))?.page, 'functions', 'and the Home link to the cards')
+
+  // THE SIDE NAVIGATION: Home, How to, then Privacy.
+  const links = pageLinks(say)
+  eq(links.map((l) => l.text).join(' | '), 'Home | How to | Privacy', 'the side navigation says Home, How to, Privacy')
+  eq(links.map((l) => routeOfHref(l.href)?.page).join(','), 'functions,howto,privacy', 'and each goes to its page')
+  ok(!links.some((l) => l.text === 'Functions'), 'no link calls the cards page Functions')
+
+  // THE TRAILS: Home first, for the cards and every function.
+  const catOf = (id) => (id === 'storm_reveal' ? 'storm' : undefined)
+  const trail = (r) => trailOf(r, say, catOf).map((c) => c.text).join(' > ')
+  eq(trail(HOME), 'Home', 'Home\'s trail is Home')
+  eq(trail({ page: 'functions', category: 'storm', query: '' }), `Home > ${copy.category_storm}`, 'a category under Home')
+  eq(trail(FN), `Home > ${copy.category_storm} > ${copy.storm_reveal_name}`, 'a function\'s trail starts at Home')
+  eq(trailOf(FN, say, catOf)[0].href, hrefOf(HOME), 'and its Home crumb leads home')
+  eq(trailOf({ page: 'function', id: 'not_shown' }, say, catOf).length, 2,
+    'a function this player is not shown has no category crumb')
+  eq(trail(HOWTO), 'How to', 'the how-to\'s trail')
+  eq(trail(PRIVACY), 'Privacy', 'the Privacy page\'s trail is "Privacy"')
+  eq(trailOf(PRIVACY, say, catOf)[0].href, hrefOf(PRIVACY), 'and the crumb is the page itself')
+  eq(trailOf({ page: 'login' }, say, catOf).length, 0, 'the login screen has none')
+  eq(copy.functions_heading, 'Functions', 'the cards\' heading still says Functions')
+
+  // THE PAGE IS THE OWNER'S WORDS: a title and two paragraphs, no squad.
+  eq(say('privacy_title'), 'Privacy Policy', 'the title')
+  const paras = say('privacy_body').split('\n')
+  eq(paras.length, 2, 'two paragraphs')
+  ok(paras[0].startsWith('Control Tower is proudly sponsored by Lifeinvader,') && paras[0].endsWith('a USB stick we found on the ground.'),
+    'the first is his', paras[0].slice(0, 60))
+  ok(paras[1].startsWith('We take your privacy extremely seriously,') && paras[1].endsWith('you are legally entitled to nothing.'),
+    'the second is his', paras[1].slice(0, 60))
+  ok(!/squad/i.test(say('privacy_body')) && speaker(copy, false)('privacy_body') === say('privacy_body'),
+    'it says no squad, so a solo player reads the same words')
+
+  // PRIVACY LOADS LIKE ANY PAGE; BACK AND FORWARD ARE INSTANT.
+  let b = startBrowsing(HOME)
+  let r = navigate(b, { kind: 'page', route: PRIVACY }, 1700)
+  b = r.browsing
+  ok(b.load && b.load.ms === 1700 && r.tab && r.tab.on === true && r.tab.ms === 1700,
+    'the Privacy link starts a load, and the tab shows it')
+  eq(current(b.history), HOME, 'Home stays on screen while it loads')
+  r = arrive(b, b.load.seq)
+  b = r.browsing
+  eq(current(b.history).page, 'privacy', 'then the Privacy page shows')
+  eq(addressOf(current(b.history), say), 'https://controltower.blitz/privacy', 'at /privacy')
+  ok(r.tab && r.tab.on === false, 'and the tab stops loading')
+  r = step(b, 'back')
+  eq(current(r.browsing.history), HOME, 'back: Home, at once')
+  ok(r.browsing.load === null && r.tab === null, 'with no load and nothing for the tab')
+  b = r.browsing
+  ok(canForward(b.history), 'forward is open')
+  r = step(b, 'forward')
+  eq(current(r.browsing.history).page, 'privacy', 'forward: Privacy again, at once')
+  b = r.browsing
+  r = navigate(b, { kind: 'page', route: HOME }, 2600)
+  ok(r.browsing.load && r.tab && r.tab.on === true && r.tab.ms === 2600, 'the Home link from Privacy loads')
+  r = arrive(r.browsing, r.browsing.load.seq)
+  eq(addressOf(current(r.browsing.history), say), 'https://controltower.blitz/home', 'and arrives at /home')
+  ok(canBack(r.browsing.history), 'with Privacy behind it')
+  r = navigate(r.browsing, { kind: 'page', route: HOME }, 2000)
+  ok(r.tab === null, 'the Home link on Home loads nothing')
+
+  // EVERY KEY THE APP NAMES IS A LINE IN THE COPY BLOCK: a key the app reads
+  // that the block lacks is a blank on screen (Home's and Privacy's new ones
+  // included).
+  const src = join(here, '..', 'terminal', 'src')
+  const missing = []
+  const files = ['App.tsx', 'FunctionCards.tsx', 'FunctionPage.tsx', 'HowTo.tsx', 'Login.tsx', 'MatchPanel.tsx', 'Privacy.tsx', 'model.ts']
+  let named = 0
+  for (const f of files) {
+    const text = readFileSync(join(src, f), 'utf8')
+    for (const m of text.matchAll(/\bsay\('([a-z_]+)'\)/g)) {
+      named++
+      if (!(m[1] in copy)) missing.push(`${f}: ${m[1]}`)
+    }
+  }
+  ok(named > 60, 'the app\'s keys were read', named)
+  eq(missing.join(', '), '', 'every say(\'key\') in the app is in br_lib/config/terminals.lua')
 }
 
 if (failed > 0) {

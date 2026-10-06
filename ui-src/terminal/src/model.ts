@@ -63,11 +63,21 @@ export function lines(text: string): string[] {
 
 // ------------------------------------------------------------------ pages ---
 
-/** Where the app is. Every page has an address and a breadcrumb trail. */
+/**
+ * Where the app is. Every page has an address and a breadcrumb trail.
+ *
+ * HOME (owner, 2026-10-06: "the functions page should be called Home in the
+ * URL, sidebar, and breadcrumbs"): the cards page, `functions` here, is Home
+ * at /home, in the side navigation and at the head of every trail it starts;
+ * its heading still counts the functions. A function's own page stays under
+ * /functions. PRIVACY (the same day): the made-up policy, in the side
+ * navigation after How to.
+ */
 export type Route =
   | { page: 'functions'; category: string | null; query: string }
   | { page: 'function'; id: string }
   | { page: 'howto' }
+  | { page: 'privacy' }
   | { page: 'login' }
 
 export const HOME: Route = { page: 'functions', category: null, query: '' }
@@ -78,23 +88,25 @@ export function sameRoute(a: Route, b: Route): boolean {
 
 /**
  * The fictional address the browser's address bar shows for a page, e.g.
- * https://controltower.blitz/functions/storm-reveal. The host and each section's
- * segment are copy; a function's segment is its id, hyphenated as a URL is.
+ * https://controltower.blitz/home, or .../functions/storm-reveal. The host and
+ * each section's segment are copy; a function's segment is its id, hyphenated
+ * as a URL is.
  */
 export function addressOf(route: Route, say: Say): string {
   const host = say('address_host')
-  const fns = say('path_functions')
   switch (route.page) {
     case 'functions': {
       const params: string[] = []
       if (route.category) params.push(`category=${route.category}`)
       if (route.query) params.push(`q=${encodeURIComponent(route.query)}`)
-      return `${host}/${fns}${params.length > 0 ? '?' + params.join('&') : ''}`
+      return `${host}/${say('path_home')}${params.length > 0 ? '?' + params.join('&') : ''}`
     }
     case 'function':
-      return `${host}/${fns}/${route.id.replace(/_/g, '-')}`
+      return `${host}/${say('path_functions')}/${route.id.replace(/_/g, '-')}`
     case 'howto':
       return `${host}/${say('path_howto')}`
+    case 'privacy':
+      return `${host}/${say('path_privacy')}`
     case 'login':
       return `${host}/${say('path_login')}`
   }
@@ -113,6 +125,8 @@ export function hrefOf(route: Route): string {
       return `#fn:${route.id}`
     case 'howto':
       return '#howto'
+    case 'privacy':
+      return '#privacy'
     case 'login':
       return '#login'
   }
@@ -122,12 +136,67 @@ export function hrefOf(route: Route): string {
 export function routeOfHref(href: string): Route | null {
   if (href === '#home') return HOME
   if (href === '#howto') return { page: 'howto' }
+  if (href === '#privacy') return { page: 'privacy' }
   if (href === '#login') return { page: 'login' }
   const cat = /^#cat:([a-z][a-z0-9_]{0,31})$/.exec(href)?.[1]
   if (cat) return { page: 'functions', category: cat, query: '' }
   const fn = /^#fn:([a-z][a-z0-9_]{0,31})$/.exec(href)?.[1]
   if (fn) return { page: 'function', id: fn }
   return null
+}
+
+/** A link the side navigation or a breadcrumb draws: its words and where it goes. */
+export interface PageLink {
+  text: string
+  href: string
+}
+
+/**
+ * The side navigation's pages, above its categories: Home, How to, and
+ * Privacy, in that order.
+ */
+export function pageLinks(say: Say): PageLink[] {
+  return [
+    { text: say('nav_home'), href: hrefOf(HOME) },
+    { text: say('nav_howto'), href: hrefOf({ page: 'howto' }) },
+    { text: say('nav_privacy'), href: hrefOf({ page: 'privacy' }) },
+  ]
+}
+
+/**
+ * A page's breadcrumb trail. Home, then a category when the cards are
+ * narrowed to one; a function's page is Home, its category, its name. The
+ * how-to and the privacy page are their own one crumb; the login screen has
+ * none (round 2: the app's name is in the top bar only). `categoryOf` is the
+ * category a function is shown under, or undefined for one this player is not
+ * shown.
+ */
+export function trailOf(route: Route, say: Say, categoryOf: (id: string) => string | undefined): PageLink[] {
+  const crumbs: PageLink[] = []
+  switch (route.page) {
+    case 'functions':
+      crumbs.push({ text: say('nav_home'), href: hrefOf(HOME) })
+      if (route.category) crumbs.push({ text: say(`category_${route.category}`), href: hrefOf(route) })
+      break
+    case 'function': {
+      crumbs.push({ text: say('nav_home'), href: hrefOf(HOME) })
+      const category = categoryOf(route.id)
+      if (category) {
+        crumbs.push({ text: say(`category_${category}`), href: hrefOf({ page: 'functions', category, query: '' }) })
+      }
+      crumbs.push({ text: say(`${route.id}_name`), href: hrefOf(route) })
+      break
+    }
+    case 'howto':
+      crumbs.push({ text: say('nav_howto'), href: hrefOf(route) })
+      break
+    case 'privacy':
+      crumbs.push({ text: say('nav_privacy'), href: hrefOf(route) })
+      break
+    case 'login':
+      break
+  }
+  return crumbs
 }
 
 // -------------------------------------------------------------- history ---
@@ -186,10 +255,10 @@ export function forward(h: History): History {
  * seconds, and the tab icon should change to a loading symbol to indicate it's
  * loading."
  *
- *   a navigation   anything that changes the page -- the side navigation, a
- *                  card or its title, a breadcrumb, the how-to in the user
- *                  menu, the top bar's name, a search result, and the reload
- *                  button -- starts a LOAD of a uniform pick in the range
+ *   a navigation   anything that changes the page -- the side navigation
+ *                  (Home, How to, Privacy, a category), a card or its title,
+ *                  a breadcrumb, the how-to in the user menu, the top bar's
+ *                  name, a search result, and the reload button -- starts a LOAD of a uniform pick in the range
  *                  (br_lib/config/terminals.lua pageMinMs..pageMaxMs, in the
  *                  catalog), a fresh pick every time
  *   while it loads THE PAGE ON SCREEN STAYS, address and all, as a browser

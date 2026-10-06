@@ -150,6 +150,7 @@ The table below is the lines outside the functions' own:
 | `functions_heading`, `filter_*`, `card_*`, `pref_*`, `status_*`, `risk_*`, `category_*` | At the terminal: the cards |
 | `details_heading` .. `cost_line`, `risk_notice`, `run`, `confirm_*` | At the terminal: a function's page and its confirmation |
 | `howto_*` | At the terminal: the how-to page |
+| `privacy_*` | At the terminal: the Privacy page, the owner's approved policy (VERBATIM, "Perfect", 2026-10-06): its title and two paragraphs |
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
 | `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target`, `lockdown_none` | At the terminal: why not (wave A's functions) |
@@ -390,7 +391,8 @@ colors, and the light/dark switch changes only the site.
 
 **The toolbar is the app's** (`Browser.tsx`): back, forward and reload over the
 app's own history, and a read-only address bar whose fictional URL follows the
-page (`https://controltower.blitz/functions/supply-drop`). It lives in the app
+page (`https://controltower.blitz/home`, `.../functions/supply-drop`,
+`.../privacy`). It lives in the app
 because the history and the address are the app's navigation; a copy in the
 desktop would be a second state kept in step over postMessage. Reload asks the
 desktop for everything again (`ready`) and remounts the page.
@@ -435,13 +437,17 @@ wiring and the stylesheet.
 TopNavigation with the app's name -- the one place in the app it is written --
 a search across every function (pick one to open it, or search the cards), the
 player's Volts, the light/dark switch, and the gamertag as the signed-in user
-(its menu: How to, Sign out); AppLayout with SideNavigation (Functions, How
-to, each category with something in it; no header) and a BreadcrumbGroup on
-every page but the login screen; the functions page ("Match stats", collapsed,
-over the cards, with a text filter, pagination and preferences), a page per
-function (details with its cost, what it does, its options as RadioGroups, its
-risks, Run in its risk badge's color behind a confirmation), the how-to page,
-and the login screen (the lock and `no_key`) when the computer opened without
+(its menu: How to, Sign out); AppLayout with SideNavigation (Home, How to,
+Privacy, each category with something in it; no header) and a BreadcrumbGroup
+on every page but the login screen; Home, the functions page ("Match stats",
+collapsed, over the cards, with a text filter, pagination and preferences;
+"Home" in its address, its link and the trail's first crumb, owner 2026-10-06,
+while its heading still counts the Functions), a page per function (its trail
+Home, its category, its name; details with its cost, what it does, its options
+as RadioGroups, its risks, Run in its risk badge's color behind a
+confirmation), the how-to page, the Privacy page (the owner's approved
+made-up policy, "sponsored by Lifeinvader", in one container), and the login
+screen (the lock and `no_key`) when the computer opened without
 a key. A run the server accepts shows a determinate bar filling over its
 `runMs`, then the server's answer; a state saying nothing is loading takes the
 bar down (an answer that went to a toast never leaves one behind). Shadows give the

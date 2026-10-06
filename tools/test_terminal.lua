@@ -565,7 +565,8 @@ do
         'key_finder_blip', 'pulse_detected', 'pulse_blip', 'no_target', 'contract_protect',
         'contract_target', 'locked', 'lockdown_none',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
-        'address_host', 'path_functions', 'path_howto', 'path_login',
+        'address_host', 'path_home', 'path_functions', 'path_howto', 'path_privacy', 'path_login',
+        'nav_home', 'nav_howto', 'nav_privacy', 'nav_categories', 'privacy_title', 'privacy_body',
         'status_available', 'status_used', 'status_not_here', 'status_offline',
         'risk_low', 'risk_medium', 'risk_high', 'risk_notice', 'cost_line',
         'howto_title', 'howto_tips_body', 'match_heading',
@@ -683,6 +684,33 @@ do
     local server = (readFile(ROOT .. 'br_core/server/terminal.lua') or ''):gsub('%-%-[^\n]*', '')
     ok(server:find('if last ~= nil and now - last < cfg().runMinIntervalMs then return end\n    lastUseAt[src] = now', 1, true) ~= nil,
         'the server still drops a use sooner than runMinIntervalMs after the last')
+end
+
+describe('polish (owner, 2026-10-06): Home, and the Privacy page in his approved words')
+do
+    bootServer()
+    local copy = BR.Config.Terminals.copy
+    -- "the functions page should be called Home in the URL, sidebar, and
+    -- breadcrumbs" -- his word. The cards' heading keeps its own line.
+    eq(copy.nav_home, 'Home', 'the side navigation and the first breadcrumb say Home')
+    eq(copy.path_home, 'home', 'and the address says /home')
+    eq(copy.nav_functions, nil, 'no line still calls that page Functions')
+    eq(copy.functions_heading, 'Functions', 'the cards\' heading stays "Functions"')
+    eq(copy.path_functions, 'functions', 'a function\'s own page is still under /functions')
+    -- The Privacy page's link, breadcrumb and path: WRITTEN, listed for him.
+    eq(copy.nav_privacy, 'Privacy', 'the Privacy link and breadcrumb')
+    eq(copy.path_privacy, 'privacy', 'and its path')
+    -- VERBATIM: approved word for word ("Perfect"), its title and two
+    -- paragraphs, never re-punctuated.
+    eq(copy.privacy_title, 'Privacy Policy', 'the title is the approved "Privacy Policy"')
+    local P1 = "Control Tower is proudly sponsored by Lifeinvader, the social network that already knows what you had for breakfast. By opening, touching, standing near, or thinking warmly about this terminal, you agree that everything you do here may be collected, stored, analyzed, monetized, re-monetized, printed out, laminated, and left on the dashboard of a stolen sedan in Vespucci. This includes, but is not limited to, your name, your location, your Volts balance, your loadout, your teammates' names (we will be using these), how long you hovered over Run before losing your nerve, and the exact noise you made when the storm caught you. Your data is stored securely on a server somewhere inside the storm and backed up nightly to a USB stick we found on the ground."
+    local P2 = "We take your privacy extremely seriously, which is why we guarantee complete privacy to every person who has never used, opened, approached, or heard of Control Tower. If you are reading this, that guarantee no longer applies to you, and we thank you for your contribution. Your information may be shared with Lifeinvader, its affiliates, its affiliates' cousins, the Los Santos Police Department, Merryweather Security, every other player in this match (you may have noticed), and anyone who asks nicely or loudly. You may request a copy of your data at any time by writing to an address we have not disclosed, and we will respond within 90 business years. You may opt out by uninstalling the planet. This policy may change at any time without notice, and probably already has since you started reading. If you made it this far, you have read more of this policy than anyone at Lifeinvader, and you are legally entitled to nothing."
+    eq(copy.privacy_body, P1 .. '\n' .. P2, 'the body is the approved two paragraphs, exactly')
+    -- No squad in any of it, so no solo sibling (the squad rule above agrees).
+    for _, k in ipairs({ 'nav_home', 'path_home', 'nav_privacy', 'path_privacy', 'privacy_title', 'privacy_body' }) do
+        eq(copy[k .. '_solo'], nil, ('%s has no solo sibling'):format(k))
+        ok(not copy[k]:lower():find('squad', 1, true), ('%s says no squad, so needs none'):format(k))
+    end
 end
 
 describe('round 2: the boot and the run, each a range in the registry')
@@ -908,8 +936,12 @@ do
 
     -- AND EVERY LAST WORD'S TOAST FITS WHAT THE SHELL WILL HAND BACK (its
     -- TOAST_MAX, 1000): the longest done line or reason, with the balance.
+    -- Every line counts but the app's two pages of text, the how-to and the
+    -- privacy policy, which the server never says.
     local longest = 0
-    for _, v in pairs(copy) do longest = math.max(longest, #v) end
+    for k, v in pairs(copy) do
+        if not k:find('^howto_') and not k:find('^privacy_') then longest = math.max(longest, #v) end
+    end
     ok(longest + #copy.balance_new + 40 <= 1000, 'the longest possible toast fits the shell\'s 1000', longest)
 end
 
