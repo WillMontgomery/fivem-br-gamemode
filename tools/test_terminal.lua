@@ -1195,16 +1195,26 @@ do
     cb('missed', { toast = 'Late.' })
     eq(#missedEvents(), 2, 'one never relayed (it arrived closed) does not')
 
+    -- AFTER THE PAGE CLOSED IT: the page posts `missed` before `close`, but
+    -- two NUI callbacks are two requests, and the close may land first.
+    C.exports.Open(STATE, COPY)
+    C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = 'Escaped.' })
+    cb('close', { why = 'escape' })
+    cb('missed', { toast = 'Escaped.' })
+    ev = missedEvents()
+    ok(#ev == 3 and ev[3].args[1] == 'Escaped.' and ev[3].args[2] == true,
+        'a relayed answer handed back after the page\'s own close still reaches br_core')
+
     -- A FEW AT MOST: the newest four.
     C.exports.Open(STATE, COPY)
     for i = 1, 5 do C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = 'r' .. i }) end
     cb('missed', { toast = 'r1' })
-    eq(#missedEvents(), 2, 'the oldest of five is forgotten')
+    eq(#missedEvents(), 3, 'the oldest of five is forgotten')
     cb('missed', { toast = 'r5' })
-    eq(#missedEvents(), 3, 'the newest is handed back')
+    eq(#missedEvents(), 4, 'the newest is handed back')
     C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = ('x'):rep(1001) })
     cb('missed', { toast = ('x'):rep(1001) })
-    eq(#missedEvents(), 3, 'and a text longer than any toast is never one')
+    eq(#missedEvents(), 4, 'and a text longer than any toast is never one')
     C.exports.Close('done')
 end
 
