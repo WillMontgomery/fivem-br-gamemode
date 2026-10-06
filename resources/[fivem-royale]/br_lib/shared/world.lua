@@ -138,7 +138,8 @@ for _, src in ipairs(W.SKY_SOURCES) do W.SKY_SOURCE[src] = true end
 --- at once, and a storm exit come back to snow rather than to a summer sky:
 ---
 ---   base   the clear sky: the island's "doors open" sky after the swap, and the
----          storm's all-clear (and its drying snap). EXTRASUNNY; XMAS festive.
+---          storm's all-clear (and its drying snap). EXTRASUNNY; XMAS festive,
+---          and from PLAYING the festive match's cycle (W.CYCLE_ROLE).
 ---   lobby  the island at rest -- the lobby and the warmup pad, and the trip
 ---          home. OVERCAST, as always; XMAS festive.
 ---   cover  the island while the bus climbs out, hiding the swap. OVERCAST
@@ -154,14 +155,30 @@ W.SKY_ROLE = {
     cover = { plain = 'OVERCAST',   festive = 'OVERCAST' },
 }
 
+--- The role a festive match's cycle moves (#399): the clear sky, and no other.
+---
+---   "The match weather can cycle between snow, snowlight, xmas and blizzard
+---    during the months of December and January."     -- owner, 2026-10-06
+---
+--- The MATCH's weather is its clear sky: the island's doors-open sky, the
+--- storm's all-clear, Time & weather's clear. The lobby and warmup (`lobby`)
+--- stay XMAS and the bus keeps its `cover`, and a WEATHER claimed above the
+--- role -- the storm's THUNDER, a console sky, the terminal's chosen weather --
+--- outranks the cycle exactly as it outranks the role.
+W.CYCLE_ROLE = 'base'
+
 --- The weather a claimed name means: a role's weather for the festive answer,
---- or the name itself.
+--- or the name itself. Festive, the cycle role is the match's cycle weather
+--- while one runs (W.cycle on a client), and XMAS before it starts.
 --- @param name string|nil @param festive boolean|nil
+--- @param cycle string|nil  the festive match sky's weather now, or nil
 --- @return string|nil
-function W.skyWeather(name, festive)
+function W.skyWeather(name, festive, cycle)
     local r = W.SKY_ROLE[name]
     if not r then return name end
-    return festive and r.festive or r.plain
+    if not festive then return r.plain end
+    if name == W.CYCLE_ROLE and cycle ~= nil then return cycle end
+    return r.festive
 end
 
 --- The weathers with snow on the ground (#399): client/world.lua turns the
@@ -198,10 +215,11 @@ end
 --- role win.
 --- @param claims table  { override = { name, blend }, storm = ..., terminal = ..., island = ... }
 --- @param festive boolean|nil  the festive sky (W.festive on a client)
+--- @param cycle string|nil  the festive match sky's weather (W.cycle on a client)
 --- @return string|nil name
 --- @return number|nil blend  seconds; 0 means snap
 --- @return string|nil source  which claim won
-function W.resolveSky(claims, festive)
+function W.resolveSky(claims, festive, cycle)
     if type(claims) ~= 'table' then return nil, nil end
     local role, roleSrc = nil, nil
     for _, src in ipairs(W.SKY_SOURCES) do
@@ -214,7 +232,7 @@ function W.resolveSky(claims, festive)
         end
     end
     if role then
-        return W.skyWeather(role.name, festive), tonumber(role.blend) or 0.0, roleSrc
+        return W.skyWeather(role.name, festive, cycle), tonumber(role.blend) or 0.0, roleSrc
     end
     return nil, nil
 end
@@ -434,6 +452,73 @@ end
 --- @return boolean
 function W.isFestive()
     return W.festive == true
+end
+
+-- ---------------------------------------------------------------------------
+-- The festive match sky's cycle (#399)
+-- ---------------------------------------------------------------------------
+--
+--   "The match weather can cycle between snow, snowlight, xmas and blizzard
+--    during the months of December and January."     -- owner, 2026-10-06
+--
+-- THE SERVER DRAWS IT, PER MATCH (server/world.lua, m.sky): from the moment a
+-- festive match goes PLAYING, one weather of BR.Config.Festive.cycle at a time,
+-- never the one just shown, each held a uniformly random whole number of
+-- seconds. Every client in the match is told each weather ONCE -- with the
+-- PLAYING state, then by BR.Net.WORLD_CYCLE on each change, and in the snapshot
+-- a client that (re)loads mid-match is sent -- and holds it here, W.cycle. So
+-- every player in one match stands under the same sky and none of them works
+-- anything out per frame.
+--
+-- WHAT IT MOVES IS THE CLEAR SKY, W.CYCLE_ROLE, and only while the festive sky
+-- is on (W.skyWeather). Not festive, it is never read.
+
+--- The weather the next turn of a cycle shows, and how long it holds.
+---
+--- PURE OVER THE MATCH'S OWN GENERATOR, so a seed replays a whole match's sky:
+--- the weather is drawn uniformly from the configured four MINUS `prev` (never
+--- the same weather twice in a row), then the hold, a whole number of seconds
+--- from holdMinSec to holdMaxSec.
+--- @param rng table  a BR.Rng
+--- @param prev string|nil  the weather showing now; nil to start a cycle
+--- @return string weather
+--- @return integer holdMs
+function W.cycleNext(rng, prev)
+    local c = BR.Config.Festive.cycle
+    local pool = {}
+    for _, w in ipairs(c.weathers) do
+        if w ~= prev then pool[#pool + 1] = w end
+    end
+    local weather = rng:pick(pool)
+    return weather, rng:int(c.holdMinSec, c.holdMaxSec) * 1000
+end
+
+--- Is this one of the cycle's weathers? Checked on arrival: the name came over
+--- the wire, and only these four may stand in for the clear sky.
+--- @param name any
+--- @return boolean
+function W.inCycle(name)
+    local c = BR.Config.Festive and BR.Config.Festive.cycle
+    if type(name) ~= 'string' or type(c) ~= 'table' then return false end
+    for _, w in ipairs(c.weathers) do
+        if w == name then return true end
+    end
+    return false
+end
+
+--- The weather this client's match's cycle shows now, or nil: no festive match
+--- running, or one that has not reached PLAYING. A client's mirror; the
+--- server's copy is per match (m.sky) and never this field.
+W.cycle = nil
+
+--- @param name string|nil  anything not a cycle weather clears it
+function W.setCycle(name)
+    W.cycle = W.inCycle(name) and name or nil
+end
+
+--- @return string|nil
+function W.cycleNow()
+    return W.cycle
 end
 
 -- ---------------------------------------------------------------------------

@@ -193,7 +193,8 @@ shared_scripts {
     -- THE FESTIVE CALENDAR (#395, #399): December and January, and the
     -- `brfestive` switch. One answer, BR.Festive.now(), for the Season 2 crates'
     -- festive set and the festive sky; neither owns it. Only the server asks (a
-    -- client has no `os`); shared like the rest of br_lib's config, and above
+    -- client has no `os`); shared like the rest of br_lib's config -- a client
+    -- reads the festive match sky's `cycle` blend from it -- and above
     -- overrides.lua, which may edit any config table. Reads nothing at load.
     '@br_lib/config/festive.lua',
     '@br_lib/shared/festive.lua',

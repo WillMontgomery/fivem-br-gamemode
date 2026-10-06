@@ -2802,6 +2802,11 @@ RegisterCommand('brfestive', function(_, args)
         else
             print(('  sky: %s for everyone, now'):format(sky and 'the festive sky (XMAS)'
                 or 'the usual clear sky'))
+            -- And a match's clear sky cycles from PLAYING (#399): brsky shows it.
+            if sky then
+                print(('  a PLAYING match\'s sky cycles %s -- brsky shows and forces it')
+                    :format(table.concat(BR.Config.Festive.cycle.weathers, ', ')))
+            end
         end
     end
 

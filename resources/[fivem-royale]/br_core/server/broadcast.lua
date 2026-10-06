@@ -240,9 +240,12 @@ local function viewFor(src)
         -- from PLAYING onward, because enterPhase has spent it by then and `storm`
         -- above is the honest answer from that moment on.
         -- `clock` IS WHAT A MID-MATCH (RE)LOAD RUNS ITS SKY FROM (#394): the
-        -- anchor server/match.lua stamped at bus start, nil before it.
+        -- anchor server/match.lua stamped at bus start, nil before it. `sky` is
+        -- the festive match sky's weather now (#399, server/world.lua), nil
+        -- while no cycle runs: the late joiner's copy of a fact otherwise sent
+        -- once per change.
         return { state = m.state, mode = m.mode, endsAt = m.endsAt,
-                 clock = m.clock },
+                 clock = m.clock, sky = m.sky and m.sky.weather or nil },
                BR.Server.aliveCount(m), BR.Server.squadsAlive(m), m.storm,
                -- ASKED FOR RATHER THAN REBUILT (#344). This used to spell the
                -- table out here, which was a second copy of server/storm.lua's
@@ -319,6 +322,10 @@ function BR.Broadcast.state(m, state, endsAt, meta)
         -- The match clock's anchor (#394). The 'bus' event is the first to
         -- carry one; every state after it carries the same one.
         clock     = m.clock,
+        -- The festive match sky's weather (#399): first carried by PLAYING,
+        -- frozen from ENDED, absent while no cycle runs. Its turns between
+        -- states are BR.Net.WORLD_CYCLE's.
+        sky       = m.sky and m.sky.weather or nil,
         serverNow = GetGameTimer(),
         meta      = meta,
     })

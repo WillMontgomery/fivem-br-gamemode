@@ -527,6 +527,10 @@ function BR.Match.transition(m, state, durationSec)
             or (secs and (' (%ds)'):format(secs) or '')))
 
     stampClock(m, state)
+    -- And the festive match sky's cycle (#399, server/world.lua): started on
+    -- the way into PLAYING, before the broadcast below, so the state event that
+    -- announces the match carries its first weather.
+    if BR.WorldSky and BR.WorldSky.stamp then BR.WorldSky.stamp(m, state) end
 
     -- Broadcast BEFORE onEnter -- the ordering is a CONTRACT. At ENDED the
     -- client must hear the match ended BEFORE the roster sweep flips its

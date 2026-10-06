@@ -54,6 +54,14 @@
 -- instead of EXTRASUNNY, the lobby XMAS instead of OVERCAST, and the bus climb
 -- keeps its OVERCAST cover. THUNDER is THUNDER and a console sky is the
 -- console's. Not festive, every role is the weather it always was.
+--
+-- AND IN A MATCH THE CLEAR SKY CYCLES (#399; owner, 2026-10-06: "The match
+-- weather can cycle between snow, snowlight, xmas and blizzard during the
+-- months of December and January"). The server draws the match's weather and
+-- tells this client each one once (BR.World.cycle, the "cycle" section at the
+-- bottom); the `base` role reads it, so whatever outranks the clear sky -- the
+-- storm's THUNDER, a console sky, Time & weather's weather -- still does, and
+-- leaving the storm comes back to the weather the match is on now.
 
 -- ---------------------------------------------------------------------- sky ---
 
@@ -129,7 +137,8 @@ end
 --- @param force boolean|nil  write even if the winner is unchanged
 --- @param blendOver number|nil  blend over this many seconds instead of the claim's
 local function push(force, blendOver)
-    local name, blend = BR.World.resolveSky(claims, BR.World.isFestive())
+    local name, blend = BR.World.resolveSky(claims, BR.World.isFestive(),
+                                            BR.World.cycleNow())
 
     if name == nil then
         setGround(false)
@@ -207,12 +216,13 @@ end
 --- forcer's to ask for), by client/storm.lua's drying schedule (its rain writes
 --- wait for the storm to be on screen, #399) and by tools/test_shared.lua. The
 --- name is the weather written: a role claimed is already read for the festive
---- sky. No console verb reads it:
+--- sky and the match's cycle. No console verb reads it:
 --- if one ever should, it belongs beside the others in server/debug.lua rather
 --- than as a second command here.
 --- @return string|nil name, string|nil source
 function BR.World.sky()
-    local name, _, src = BR.World.resolveSky(claims, BR.World.isFestive())
+    local name, _, src = BR.World.resolveSky(claims, BR.World.isFestive(),
+                                             BR.World.cycleNow())
     if name == nil then return nil, nil end
     return name, src
 end
@@ -260,6 +270,56 @@ AddEventHandler(BR.Net.WORLD_SET, function(p)
     local wasFestive = BR.World.isFestive()
     BR.World.applyPayload(p)
     applyOverride(BR.World.isFestive() ~= wasFestive)
+end)
+
+-- -------------------------------------------------------------------- cycle ---
+
+-- ═══ THE FESTIVE MATCH SKY'S CYCLE (#399) ═══
+--
+-- The weather this client's match is on, held in BR.World.cycle and read by the
+-- `base` role alone (shared/world.lua's CYCLE_ROLE). The server sends it, once
+-- per change, on three roads:
+--
+--   STATE        `sky` on every state event: the first weather with PLAYING,
+--                none with WARMUP and BUS (a new match starts under XMAS).
+--   WORLD_CYCLE  each turn after that, and the stop when the festive sky goes
+--                off mid-match.
+--   SNAPSHOT     `sky` in the match view, for a client that (re)loads mid-match.
+--
+-- ENDED MOVES NOTHING. The server stops turning when the match leaves PLAYING
+-- and its ENDED event carries the same weather; the digest's local replay of
+-- ENDED carries none, and must not take the sky off a verdict screen.
+--
+-- A NEW WEATHER BLENDS IN OVER BR.Config.Festive.cycle.blendSec, and only if it
+-- is what the sky resolves to: under the storm's THUNDER, a console sky or
+-- Time & weather's weather, the claim above it is still on screen, nothing is
+-- written, and the base role comes back to whatever the cycle shows by then.
+
+--- Take the match's cycle weather (nil: none) and turn the sky if it moved.
+--- @param name string|nil
+local function followCycle(name)
+    local was = BR.World.cycleNow()
+    BR.World.setCycle(name)
+    if BR.World.cycleNow() == was then return end
+    push(false, BR.Config.Festive.cycle.blendSec + 0.0)
+end
+
+RegisterNetEvent(BR.Net.WORLD_CYCLE)
+AddEventHandler(BR.Net.WORLD_CYCLE, function(d)
+    followCycle(type(d) == 'table' and d.weather or nil)
+end)
+
+RegisterNetEvent(BR.Net.STATE)
+AddEventHandler(BR.Net.STATE, function(d)
+    if type(d) ~= 'table' or d.state == BR.MatchState.ENDED then return end
+    followCycle(d.sky)
+end)
+
+RegisterNetEvent(BR.Net.SNAPSHOT)
+AddEventHandler(BR.Net.SNAPSHOT, function(p)
+    local m = type(p) == 'table' and p.match or nil
+    if type(m) ~= 'table' then return end
+    followCycle(m.sky)
 end)
 
 -- ------------------------------------------------------------- the island ---

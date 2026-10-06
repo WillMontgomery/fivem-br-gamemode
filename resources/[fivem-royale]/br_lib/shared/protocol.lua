@@ -1075,6 +1075,14 @@ BR.Net = {
     -- noon while the rest of the session stood at dusk.
     WORLD_SET       = 'br:world:set',
 
+    -- The festive match sky's cycle (#399): S->C { weather }, to ONE MATCH's
+    -- audience, once per change -- the weather its clear sky turns to, or no
+    -- weather when the cycle stops (the festive sky going off mid-match). The
+    -- first weather rides the PLAYING state event instead, and a client that
+    -- (re)loads mid-match finds the current one in its snapshot's match view
+    -- (`sky` on both). Never on a timer: nothing else is ever sent for it.
+    WORLD_CYCLE     = 'br:world:cycle',
+
     -- Client -> server position report (2 Hz), used for validation and spectate
     POS_REPORT      = 'br:pos',              -- C->S  { x, y, z }
 

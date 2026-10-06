@@ -13,6 +13,8 @@
 --   brweather                  print the fifteen names
 --   brweather reset            hand the sky back to the storm and the island
 --
+-- And the festive match sky's cycle (#399), below: `brsky` shows and forces it.
+--
 -- ═══ WHY THIS IS A BROADCAST AND NOT A SETTING ═══
 --
 -- NEITHER OF THESE IS SERVER STATE. GTA's clock is set per client, by
@@ -78,7 +80,100 @@ end
 
 BR.WorldSky = BR.WorldSky or {}
 
+-- ═══ THE FESTIVE MATCH SKY CYCLES (#399) ═══
+--
+--   "The match weather can cycle between snow, snowlight, xmas and blizzard
+--    during the months of December and January."     -- owner, 2026-10-06
+--
+-- PER MATCH, ON THE MATCH RECORD, like the clock's anchor: m.sky holds the
+-- weather showing, when it began and when it turns, and the match's own seeded
+-- generator (BR.World.cycleNext draws from it: never the weather just shown,
+-- each held 180-300 s, br_lib/config/festive.lua). Every player in one match
+-- therefore stands under one sky, and two matches under two.
+--
+-- IT STARTS WHEN THE MATCH GOES PLAYING, which is the moment its first circle
+-- goes on the map (BR.Storm.begin runs in the same transition).
+-- BR.Match.transition stamps it BEFORE it broadcasts, so the PLAYING state
+-- event carries the first weather and nothing else is sent for it. Until then
+-- -- the lobby, warmup, the bus and the doors-open sky -- the festive sky is
+-- #399's XMAS.
+--
+-- ONE MESSAGE PER CHANGE: a one-second job turns a PLAYING match's cycle when
+-- its hold is up and sends the new weather to that match's audience, the dead
+-- watching their squad included. A client that (re)loads mid-match finds it in
+-- the snapshot's match view.
+--
+-- IT ENDS WITH THE MATCH: from ENDED nothing turns, and the state events still
+-- carry the last weather, so the sky does not move under the verdict; the
+-- record goes with the match. A return to WARMUP or BUS (brforce) drops it. The
+-- festive sky going off stops every cycle; coming on starts one in every
+-- PLAYING match.
+
+--- Tell one match's audience the weather its cycle shows now (none: stopped).
+--- @param m table
+local function cycleSend(m)
+    BR.Broadcast.toMatch(m, BR.Net.WORLD_CYCLE,
+                         { weather = m.sky and m.sky.weather or nil })
+end
+
+--- Turn a match's cycle: the next weather -- or `force` -- held from `now`.
+--- @param m table @param now number @param force string|nil
+local function cycleTurn(m, now, force)
+    local s = m.sky
+    local w, holdMs = BR.World.cycleNext(s.rng, s.weather)
+    s.weather = force or w
+    s.since, s.nextAt = now, now + holdMs
+    s.turns = s.turns + 1
+    print(('[br_core] match %s: the festive sky is %s for %d s')
+        :format(BR.MatchTag(m.id), s.weather, holdMs // 1000))
+end
+
+--- Start a match's cycle. Sends nothing: the caller knows who must hear.
+---
+--- SEEDED PER MATCH, from its id and the moment it started, so two matches
+--- never share a sequence and `brsky` can print the seed that replays one.
+--- @param m table @param now number
+local function cycleBegin(m, now)
+    local seed = (math.floor(tonumber(m.id) or 0) * 7919 + math.floor(now)) & 0x7FFFFFFF
+    m.sky = { seed = seed, rng = BR.Rng(seed), turns = 0 }
+    cycleTurn(m, now)
+end
+
+--- The festive sky moved: start a cycle in every PLAYING match, or stop them
+--- all.
+--- @param on boolean
+local function cyclesFollow(on)
+    if not (BR.Server and BR.Server.eachMatch) then return end
+    local now = GetGameTimer()
+    BR.Server.eachMatch(function(m)
+        if on and m.sky == nil and m.state == BR.MatchState.PLAYING then
+            cycleBegin(m, now)
+            cycleSend(m)
+        elseif not on and m.sky ~= nil then
+            m.sky = nil
+            cycleSend(m)
+        end
+    end)
+end
+
+--- Start, keep or drop a match's cycle for the state it is entering. Called by
+--- BR.Match.transition beside stampClock, before the state is broadcast.
+--- @param m table @param state string
+function BR.WorldSky.stamp(m, state)
+    if state == BR.MatchState.WARMUP or state == BR.MatchState.BUS then
+        m.sky = nil
+    elseif state == BR.MatchState.PLAYING and m.sky == nil and BR.World.isFestive() then
+        cycleBegin(m, GetGameTimer())
+    end
+end
+
 --- Read the festive sky again and tell every client if it moved.
+---
+--- THE ORDER OF THE TWO SENDS IS THE BLEND. Coming on, each match's first
+--- weather goes out BEFORE the festive fact: a client holds it under a sky that
+--- is still plain, and the festive fact then turns the clear sky straight to it
+--- -- one blend, not XMAS and then the cycle. Going off, the festive fact goes
+--- first and the cycles stop under a sky that is already plain.
 --- @param why string|nil  what asked, for the console line
 --- @return boolean on  the festive sky now
 --- @return boolean moved  whether it was just sent to everybody
@@ -86,10 +181,32 @@ function BR.WorldSky.refresh(why)
     local on = festiveSkyNow()
     if on == BR.World.isFestive() then return on, false end
     BR.World.setFestive(on)
-    send(-1)
+    if on then
+        cyclesFollow(true)
+        send(-1)
+    else
+        send(-1)
+        cyclesFollow(false)
+    end
     print(('[br_core] festive sky %s for everyone (%s)')
         :format(on and 'ON' or 'off', why or 'the server date'))
     return on, true
+end
+
+-- The cycles' clock: a PLAYING match whose hold is up turns, and its audience
+-- is told. A comparison per match a second; nothing is sent between turns.
+if BR.Sched and BR.Sched.every then
+    BR.Sched.every(1000, 'world.cycle', function()
+        if not (BR.Server and BR.Server.eachMatch) then return end
+        local now = GetGameTimer()
+        BR.Server.eachMatch(function(m)
+            local s = m.sky
+            if s and m.state == BR.MatchState.PLAYING and now >= s.nextAt then
+                cycleTurn(m, now)
+                cycleSend(m)
+            end
+        end)
+    end)
 end
 
 -- The date crossing into or out of December and January. Its first run is the
@@ -250,4 +367,73 @@ RegisterCommand('brweather', function(src, args)
     send(-1)
     print(('[br_core] brweather: %s for everyone, and for anyone who joins')
         :format(name))
+end, RESTRICTED)
+
+-- ═══ brsky: THE FESTIVE MATCH SKY'S CYCLE, SEEN AND FORCED (#399) ═══
+--
+--   brsky              every cycling match: the weather, how long it has held,
+--                      when it turns, its turn count and seed
+--   brsky <weather>    SNOW, SNOWLIGHT, XMAS or BLIZZARD, now, in every PLAYING
+--                      match's cycle, with a fresh hold; its audience is told
+--                      once, as for a turn
+--   brsky next         turn every PLAYING match's cycle now
+--
+-- Dev mode (devgate.lua) plus restricted, as `brfestive` is: a testing verb
+-- for a sky that otherwise takes three to five minutes to move. What it prints
+-- goes to the server console.
+
+--- One match's cycle, in one line.
+--- @param m table @param now number
+--- @return string
+local function cycleLine(m, now)
+    local s = m.sky
+    local turns = s.nextAt > now
+        and ('turns in %d s'):format(math.ceil((s.nextAt - now) / 1000))
+        or 'turns within a second'
+    if m.state ~= BR.MatchState.PLAYING then turns = 'stopped with the match' end
+    return ('  match %s (%s): %s for %d s, %s; turn %d, seed %d')
+        :format(BR.MatchTag(m.id), tostring(m.state), s.weather,
+                math.floor((now - s.since) / 1000), turns, s.turns, s.seed)
+end
+
+RegisterCommand('brsky', function(_, args)
+    local a = args and args[1]
+    local want = nil
+    if a ~= nil and a ~= '' then
+        local word = tostring(a):upper()
+        if word == 'NEXT' then
+            want = 'next'
+        elseif BR.World.inCycle(word) then
+            want = word
+        else
+            print('  usage: brsky [next|' .. table.concat(BR.Config.Festive.cycle.weathers, '|') .. ']')
+            return
+        end
+    end
+
+    local now, any = GetGameTimer(), false
+    BR.Server.eachMatch(function(m)
+        local s = m.sky
+        if not s then return end
+        any = true
+        if want and m.state == BR.MatchState.PLAYING then
+            if want == 'next' then
+                cycleTurn(m, now)
+                cycleSend(m)
+            elseif want ~= s.weather then
+                cycleTurn(m, now, want)
+                cycleSend(m)
+            end
+        end
+        print(cycleLine(m, now))
+    end)
+
+    if any then return end
+    if not BR.World.isFestive() then
+        print('[br_core] brsky: no match sky cycles -- the festive sky is off '
+            .. '(brfestive on, on Season 2 or later)')
+    else
+        print('[br_core] brsky: no match sky cycles yet -- a festive match\'s '
+            .. 'cycle starts when it goes PLAYING')
+    end
 end, RESTRICTED)
