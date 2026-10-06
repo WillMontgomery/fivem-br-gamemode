@@ -33,6 +33,8 @@
 //                  { type: "run", functionId, options? }
 //                                                  the player pressed Run
 //                  { type: "escape" }              Escape, or Sign out, in the app
+//                  { type: "loading", on, ms? }    a page load started (for ms)
+//                                                  or ended: the tab's icon
 //     page -> app  { type: "state", state, copy, catalog }
 //                                                  render this (copy and catalog
 //                                                  only on ready; an update is
@@ -53,6 +55,19 @@
 //     window": eight handles and a maximize button, below.
 //   * "make the computer clock match the game clock": the taskbar shows the
 //     game's hour and minute, and no date.
+//
+// ═══ ROUND 3 (owner, 2026-10-06) ═══
+//
+//   * "the tab icon should change to a loading symbol to indicate it's
+//     loading": while the app's browser loads a page (1-3 s, the app's own
+//     timing), its window's tab -- this page's, outside the app's frame --
+//     wears br.css's loading symbol in place of the app's icon. THE SYMBOL
+//     ANIMATES ONLY WHILE A LOAD IS UNDER WAY (#385: a running animation
+//     repaints the NUI every frame): its class goes, and with it the
+//     animation, when the app says the page showed, when the app or the
+//     computer goes away, when a fresh app says it is ready, and at the
+//     latest TAB_LOAD_SLACK_MS after the load was due to end -- so nothing
+//     here can spin forever, whatever the app does.
 //
 // NOTHING HERE DECIDES ANYTHING. A run is forwarded only while the desktop is
 // open and only with a well-formed id, and that is shape-checking, not
@@ -87,6 +102,11 @@
     // button still on screen.
     const MIN_W = 900;
     const MIN_H = 560;
+    // THE TAB'S LOADING SYMBOL: a load's own length plus this, at the most,
+    // and never longer than TAB_LOAD_MAX_MS whatever length the app sent.
+    const TAB_LOAD_SLACK_MS = 1000;
+    const TAB_LOAD_MAX_MS = 15000;
+    const TAB_LOADING = "br-loading";
 
     let isOpen = false;
     // Bumped by every open and close, so a boot timer that outlives the close
@@ -114,6 +134,9 @@
     let appReady = false;
     // The window's size and place before it was maximized, or null.
     let restoreRect = null;
+    // The timer that takes the tab's loading symbol down if the app never
+    // does, or null.
+    let tabTimer = null;
 
     const post = (name, body) => fetch(`https://${RES}/${name}`, {
         method: "POST",
@@ -191,6 +214,32 @@
         }
         const title = document.getElementById("terminal-window-title");
         if (title) title.textContent = line("window_title");
+    };
+
+    // ── the tab's loading symbol ──────────────────────────────────────────
+
+    // A page load of `ms` under way in the app (a new one replaces the last,
+    // and its own length restarts the backstop), or -- null -- none: the
+    // class and its animation removed, not paused.
+    const tabLoading = (ms) => {
+        const tab = document.getElementById("terminal-window-title");
+        if (tabTimer !== null) {
+            clearTimeout(tabTimer);
+            tabTimer = null;
+        }
+        if (ms === null) {
+            if (tab) tab.classList.remove(TAB_LOADING);
+            return;
+        }
+        if (tab) tab.classList.add(TAB_LOADING);
+        const n = Number(ms);
+        const wait = Number.isFinite(n) && n >= 0
+            ? Math.min(n + TAB_LOAD_SLACK_MS, TAB_LOAD_MAX_MS)
+            : TAB_LOAD_MAX_MS;
+        tabTimer = setTimeout(() => {
+            tabTimer = null;
+            tabLoading(null);
+        }, wait);
     };
 
     // ── the clock ─────────────────────────────────────────────────────────
@@ -339,8 +388,10 @@
     };
 
     // An answer the unloaded app had but the player never saw is held again.
+    // A page it was loading never shows: the tab stops.
     const unload = () => {
         appReady = false;
+        tabLoading(null);
         if (unseen) {
             hold(unseen);
             unseen = null;
@@ -438,6 +489,8 @@
         if (d.type === "ready") {
             if (isOpen && appLoaded()) {
                 appReady = true;
+                // A fresh app is loading nothing.
+                tabLoading(null);
                 toApp({ type: "state", state, copy, catalog });
                 if (held) {
                     const r = held;
@@ -455,6 +508,9 @@
             }
         } else if (d.type === "escape") {
             close("escape");
+        } else if (d.type === "loading") {
+            // Only for the app that is up, and only while the computer is.
+            if (isOpen && appLoaded()) tabLoading(d.on === true ? d.ms : null);
         }
     };
 

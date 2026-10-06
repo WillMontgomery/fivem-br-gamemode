@@ -19,7 +19,7 @@
  * scripts/check-terminal.mjs fails a component that reads the copy another way.
  */
 
-import type { Catalog, Copy, FunctionDef, FunctionState, RunningInfo } from './bridge'
+import type { Catalog, Copy, FunctionDef, FunctionState, RunningInfo, TabNote } from './bridge'
 
 /** Every word the app says: a key in, the line (or nothing) out. */
 export type Say = (key: string | null | undefined) => string
@@ -175,6 +175,122 @@ export function back(h: History): History {
 
 export function forward(h: History): History {
   return canForward(h) ? { stack: h.stack, index: h.index + 1 } : h
+}
+
+// ------------------------------------------------------------ page loads ---
+
+/**
+ * THE BROWSER LOADS ITS PAGES (owner, 2026-10-06): "please make an artificial
+ * page load time when navigating in the web browser between pages, except if
+ * they use the forward/back buttons. The time should be random between 1 and 3
+ * seconds, and the tab icon should change to a loading symbol to indicate it's
+ * loading."
+ *
+ *   a navigation   anything that changes the page -- the side navigation, a
+ *                  card or its title, a breadcrumb, the how-to in the user
+ *                  menu, the top bar's name, a search result, and the reload
+ *                  button -- starts a LOAD of a uniform pick in the range
+ *                  (br_lib/config/terminals.lua pageMinMs..pageMaxMs, in the
+ *                  catalog), a fresh pick every time
+ *   while it loads THE PAGE ON SCREEN STAYS, address and all, as a browser
+ *                  keeps the page you clicked on until the next one arrives;
+ *                  the history moves only when the new page shows
+ *   a new one      replaces the load under way, with its own fresh pick
+ *   back/forward   at once, and a load under way is dropped
+ *   the tab        a loading symbol from the first moment of a load to the
+ *                  last (`TabNote`, which the app hands the desktop): on when
+ *                  a load starts, off when its page shows or it is dropped
+ *
+ * NOT NAVIGATIONS, so never a load: typing in the cards' filter (it rewrites
+ * the page's own entry, `rewrite`), Match stats opening and closing, the
+ * light/dark switch, Run and its bar, and the cards' pagination and
+ * preferences (state inside the page, with no address of its own).
+ */
+
+/** The range a page load is picked from, in milliseconds. */
+export interface LoadRange {
+  minMs: number
+  maxMs: number
+}
+
+/** Where a navigation goes: a page, or the page on screen again (reload). */
+export type NavTarget = { kind: 'page'; route: Route } | { kind: 'reload' }
+
+/** A page load under way: its number, where it goes, and how long it takes. */
+export interface PageLoad {
+  seq: number
+  target: NavTarget
+  ms: number
+}
+
+/** The browser: where it has been, and the load under way, if any. */
+export interface Browsing {
+  history: History
+  load: PageLoad | null
+  /** The last load's number, so a load replaced or dropped is never mistaken for the current one. */
+  seq: number
+}
+
+export function startBrowsing(route: Route): Browsing {
+  return { history: startHistory(route), load: null, seq: 0 }
+}
+
+/**
+ * How long a load takes: uniform in the range, rounded to the millisecond.
+ * `rnd` is Math.random in the app. No range (a catalog that did not carry
+ * one) is no wait.
+ */
+export function loadMs(range: LoadRange | null, rnd: () => number): number {
+  if (!range) return 0
+  const r = Math.min(1, Math.max(0, rnd()))
+  return Math.round(range.minMs + r * (range.maxMs - range.minMs))
+}
+
+/** A browser step and what the tab is to be told about it. */
+export interface BrowseStep {
+  browsing: Browsing
+  tab: TabNote
+}
+
+/**
+ * A navigation. Starts a load of `ms`, replacing any load under way, and
+ * turns the tab's loading symbol on (again, for the new length). A page that
+ * is already the one on screen, with nothing loading, is not a navigation: a
+ * link to where the player already is does nothing, as it did before loads.
+ */
+export function navigate(b: Browsing, target: NavTarget, ms: number): BrowseStep {
+  if (target.kind === 'page' && b.load === null && sameRoute(target.route, current(b.history))) {
+    return { browsing: b, tab: null }
+  }
+  const seq = b.seq + 1
+  return { browsing: { ...b, seq, load: { seq, target, ms } }, tab: { on: true, ms } }
+}
+
+/**
+ * The load `seq` is over: its page shows -- pushed onto the history, or, for
+ * a reload, the same page again (`reload`: the app re-asks and remounts) --
+ * and the tab is itself again. A load that was replaced or dropped since is
+ * nothing.
+ */
+export function arrive(b: Browsing, seq: number): BrowseStep & { reload: boolean; shown: boolean } {
+  if (b.load === null || b.load.seq !== seq) return { browsing: b, tab: null, reload: false, shown: false }
+  const t = b.load.target
+  const history = t.kind === 'page' ? push(b.history, t.route) : b.history
+  return { browsing: { ...b, history, load: null }, tab: { on: false }, reload: t.kind === 'reload', shown: true }
+}
+
+/**
+ * The back or the forward button: AT ONCE (the owner's exception), and a load
+ * under way is dropped -- its page never shows, and the tab stops loading.
+ */
+export function step(b: Browsing, dir: 'back' | 'forward'): BrowseStep {
+  const history = dir === 'back' ? back(b.history) : forward(b.history)
+  return { browsing: { ...b, history, load: null }, tab: b.load !== null ? { on: false } : null }
+}
+
+/** The page's own entry rewritten in place (a filter typed): no load, no history entry. */
+export function rewrite(b: Browsing, route: Route): Browsing {
+  return { ...b, history: replace(b.history, route) }
 }
 
 // -------------------------------------------------------------- functions ---

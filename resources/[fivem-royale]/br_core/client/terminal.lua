@@ -67,12 +67,15 @@ end
 --- The registry as the app reads it: the rows and the categories, as they are
 --- in br_lib/config/terminals.lua -- and the currency's name
 --- (config/market.lua's `currency`, the one place it is spelled), which the
---- app writes after a Volts figure, as every other Volts display does.
+--- app writes after a Volts figure, as every other Volts display does -- and
+--- how long the app's browser takes to load a page (owner, 2026-10-06:
+--- "random between 1 and 3 seconds"; the app picks in the range).
 --- @return table
 local function catalog()
     local C = BR.Config.Terminals
     return { functions = C.functions, categories = C.categories,
-             currency = BR.Config.Market and BR.Config.Market.currency or nil }
+             currency = BR.Config.Market and BR.Config.Market.currency or nil,
+             pageLoad = { minMs = C.pageMinMs, maxMs = C.pageMaxMs } }
 end
 
 --- THE GAME'S CLOCK, as the computer's taskbar shows it (owner, round 2: "make

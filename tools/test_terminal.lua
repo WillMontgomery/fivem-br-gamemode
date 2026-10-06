@@ -671,6 +671,10 @@ do
     eq(C.bootMaxMs, 10000, 'and at most 10 s')
     eq(C.runMinMs, 3000, 'a run loads for at least 3 s ("3-5 seconds (random)")')
     eq(C.runMaxMs, 5000, 'and at most 5 s')
+    -- Round 3 (owner, 2026-10-06): "random between 1 and 3 seconds", a page
+    -- load in the app's browser (the app picks; ui-src's model test holds it).
+    eq(C.pageMinMs, 1000, 'a page loads for at least 1 s')
+    eq(C.pageMaxMs, 3000, 'and at most 3 s')
 
     -- The server picks a run's length in the range, every run anew.
     local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
@@ -1368,6 +1372,9 @@ do
     ok(call and type(call.args[3]) == 'table' and call.args[3].functions == BR.Config.Terminals.functions
             and call.args[3].categories == BR.Config.Terminals.categories,
         'and with the catalog: the registry\'s own rows, which the app draws from')
+    local pl = call and type(call.args[3]) == 'table' and call.args[3].pageLoad or nil
+    ok(type(pl) == 'table' and pl.minMs == BR.Config.Terminals.pageMinMs and pl.maxMs == BR.Config.Terminals.pageMaxMs,
+        'and the page-load range the app\'s browser picks in (round 3)')
     eq(#toServer(BR.Net.TERMINAL_CLOSED), 0, 'an open that worked hands nothing back')
 
     fireB(BR.Net.TERMINAL_OPEN, { state = { functions = {} } })

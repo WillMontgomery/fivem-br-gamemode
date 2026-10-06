@@ -8,7 +8,11 @@
  * player is shown, a Volts figure as every other display writes it, the
  * status words, and the shape checks on the state, the catalog and a run's
  * answer (the balance, the run that is loading, the cost and the new
- * balance). Each is asserted here against the real modules.
+ * balance). Each is asserted here against the real modules. And round 3
+ * (owner, 2026-10-06): the browser's page loads -- a fresh pick in the
+ * config's 1-3 s for every navigation, the page on screen kept while it
+ * loads, a newer navigation replacing it, back and forward at once and
+ * dropping it, and what the window's tab is told at each step.
  *
  * WHY node RUNS A .ts FILE DIRECTLY. model.ts has only type imports and
  * bridge.ts none, so node's type stripping (on by default since 22.18) loads
@@ -23,9 +27,10 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  indicatorOf, matches, progressAfter, shownCategories, shownFunctions, speaker, statusOf, voltsText,
+  HOME, addressOf, arrive, current, indicatorOf, loadMs, matches, navigate, progressAfter, rewrite,
+  shownCategories, shownFunctions, speaker, startBrowsing, statusOf, step, voltsText,
 } from '../terminal/src/model.ts'
-import { parseCatalog, parseResult, parseState } from '../terminal/src/bridge.ts'
+import { parseCatalog, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
 
 let failed = 0
 let ran = 0
@@ -147,6 +152,134 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   eq(progressAfter(bar, null, 10000), null,
     'the server says nothing is loading: no bar, and Run is not left disabled (the answer went to a toast)')
   eq(progressAfter(null, null, 10000), null, 'nothing loading, nothing drawn')
+}
+
+// ── the browser's page loads (owner, 2026-10-06) ────────────────────────────
+{
+  // THE RANGE IS THE CONFIG'S, handed over in the catalog: "random between 1
+  // and 3 seconds".
+  const here = dirname(fileURLToPath(import.meta.url))
+  const lua = readFileSync(join(here, '..', '..', 'resources', '[fivem-royale]', 'br_lib', 'config', 'terminals.lua'), 'utf8')
+  const lo = Number(/^\s+pageMinMs = (\d+),$/m.exec(lua)?.[1])
+  const hi = Number(/^\s+pageMaxMs = (\d+),$/m.exec(lua)?.[1])
+  eq(lo, 1000, 'pageMinMs is 1 s')
+  eq(hi, 3000, 'pageMaxMs is 3 s')
+  const client = readFileSync(join(here, '..', '..', 'resources', '[fivem-royale]', 'br_core', 'client', 'terminal.lua'), 'utf8')
+  ok(client.includes('pageLoad = { minMs = C.pageMinMs, maxMs = C.pageMaxMs }'),
+    'br_core\'s client hands the range to the app in the catalog')
+
+  const cat = parseCatalog({ functions: [], categories: [], currency: 'Volts', pageLoad: { minMs: lo, maxMs: hi } })
+  ok(cat.pageLoad && cat.pageLoad.minMs === 1000 && cat.pageLoad.maxMs === 3000, 'the catalog carries the range')
+  eq(parseCatalog({ functions: [], categories: [] }).pageLoad, null, 'a catalog without one: none')
+  for (const bad of [{ minMs: 3000, maxMs: 1000 }, { minMs: -1, maxMs: 10 }, { minMs: 0, maxMs: 60000 }, { minMs: 'x', maxMs: 1 }, 7]) {
+    eq(parseCatalog({ functions: [], categories: [], pageLoad: bad }).pageLoad, null, `a range that is not one is dropped: ${JSON.stringify(bad)}`)
+  }
+
+  // UNIFORM IN THE RANGE, a fresh pick each time.
+  const range = cat.pageLoad
+  eq(loadMs(range, () => 0), 1000, 'the bottom of the range')
+  eq(loadMs(range, () => 0.999999), 3000, 'the top of the range')
+  eq(loadMs(range, () => 0.5), 2000, 'and the middle in between')
+  eq(loadMs(range, () => 7), 3000, 'a pick never leaves the range')
+  eq(loadMs(null, () => 0.5), 0, 'no range: no wait')
+  const picks = new Set()
+  let inRange = true
+  for (let i = 0; i < 400; i++) {
+    const ms = loadMs(range, Math.random)
+    picks.add(ms)
+    if (ms < 1000 || ms > 3000) inRange = false
+  }
+  ok(inRange, 'four hundred real picks all between 1 and 3 seconds')
+  ok(picks.size > 200, 'and a fresh length nearly every time', picks.size)
+
+  // A NAVIGATION LOADS: the page on screen stays, the tab loads.
+  const FN = { page: 'function', id: 'scan' }
+  const HOWTO = { page: 'howto' }
+  let b = startBrowsing(HOME)
+  let r = navigate(b, { kind: 'page', route: FN }, 2400)
+  b = r.browsing
+  ok(b.load && b.load.ms === 2400 && b.load.target.route === FN, 'a navigation starts a load of the picked length')
+  ok(r.tab && r.tab.on === true && r.tab.ms === 2400, 'and the tab is told it is loading, for that long')
+  eq(current(b.history), HOME, 'the page on screen stays while it loads')
+  const say = speaker({ address_host: 'https://controltower.blitz', path_functions: 'functions', path_howto: 'how-to' }, true)
+  eq(addressOf(current(b.history), say), 'https://controltower.blitz/functions',
+    'and so does its address: the bar changes when the page shows')
+  r = arrive(b, b.load.seq)
+  b = r.browsing
+  eq(current(b.history), FN, 'when it ends, the page shows')
+  ok(r.shown && r.tab && r.tab.on === false, 'and the tab is itself again')
+  eq(b.load, null, 'nothing loads')
+  eq(b.history.stack.length, 2, 'one new entry in the history')
+
+  // A NEW NAVIGATION REPLACES THE LOAD UNDER WAY.
+  r = navigate(b, { kind: 'page', route: HOWTO }, 1200)
+  const first = r.browsing.load.seq
+  r = navigate(r.browsing, { kind: 'page', route: HOME }, 2900)
+  b = r.browsing
+  ok(b.load.seq !== first && b.load.target.route === HOME && b.load.ms === 2900,
+    'a second navigation replaces the first, with its own fresh length')
+  ok(r.tab && r.tab.on === true && r.tab.ms === 2900, 'and the tab is told the new length')
+  r = arrive(b, first)
+  ok(!r.shown && r.tab === null && r.browsing === b, 'the replaced load\'s end shows nothing and tells the tab nothing')
+  eq(current(b.history), FN, 'the page on screen is still the one before both')
+  r = arrive(b, b.load.seq)
+  b = r.browsing
+  eq(current(b.history), HOME, 'the newer load\'s page shows')
+  eq(b.history.stack.map((x) => x.page).join(','), 'functions,function,functions', 'the replaced page never entered the history')
+
+  // BACK AND FORWARD: AT ONCE.
+  r = step(b, 'back')
+  eq(current(r.browsing.history), FN, 'back: the page before, at once')
+  eq(r.tab, null, 'with no load to stop, the tab is told nothing')
+  b = r.browsing
+  r = step(b, 'forward')
+  eq(current(r.browsing.history), HOME, 'forward: at once')
+  b = r.browsing
+
+  // BACK OR FORWARD DURING A LOAD DROPS IT.
+  r = navigate(b, { kind: 'page', route: HOWTO }, 2000)
+  b = r.browsing
+  const dropped = b.load.seq
+  r = step(b, 'back')
+  eq(current(r.browsing.history), FN, 'back during a load goes back at once')
+  eq(r.browsing.load, null, 'and the load is dropped')
+  ok(r.tab && r.tab.on === false, 'and the tab stops loading')
+  b = r.browsing
+  r = arrive(b, dropped)
+  ok(!r.shown && r.tab === null, 'the dropped load\'s timer, if it fired, shows nothing')
+  eq(current(b.history), FN, 'and the page stays where back put it')
+  r = navigate(b, { kind: 'page', route: HOWTO }, 2000)
+  r = step(r.browsing, 'forward')
+  ok(r.browsing.load === null && r.tab && r.tab.on === false, 'forward during a load drops it too')
+
+  // RELOAD IS A LOAD OF THE SAME PAGE.
+  b = startBrowsing(HOME)
+  r = navigate(b, { kind: 'reload' }, 1500)
+  ok(r.browsing.load && r.tab && r.tab.on === true, 'reload loads')
+  r = arrive(r.browsing, r.browsing.load.seq)
+  ok(r.shown && r.reload === true && current(r.browsing.history) === HOME && r.browsing.history.stack.length === 1,
+    'and ends on the same page, asked for again, with no new history entry')
+
+  // NOT NAVIGATIONS.
+  b = startBrowsing(HOME)
+  r = navigate(b, { kind: 'page', route: { page: 'functions', category: null, query: '' } }, 2000)
+  ok(r.browsing === b && r.tab === null, 'a link to the page already on screen loads nothing')
+  const typed = rewrite(b, { page: 'functions', category: null, query: 'scan' })
+  ok(typed.load === null && typed.history.stack.length === 1 && current(typed.history).query === 'scan',
+    'typing in the cards\' filter rewrites the page in place: no load, no entry')
+
+  // WHAT THE DESKTOP IS TOLD, on the wire.
+  const sent = []
+  const saved = globalThis.window
+  globalThis.window = { parent: { postMessage: (m) => sent.push(m) } }
+  tellTab({ on: true, ms: 2412.6 })
+  tellTab({ on: false })
+  tellTab(null)
+  globalThis.window = saved
+  eq(JSON.stringify(sent), JSON.stringify([
+    { brTerminal: 1, type: 'loading', on: true, ms: 2413 },
+    { brTerminal: 1, type: 'loading', on: false },
+  ]), 'the tab is told { loading, on, ms } as a load starts and { loading, off } as it ends; nothing to tell sends nothing')
 }
 
 if (failed > 0) {

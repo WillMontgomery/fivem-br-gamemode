@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react'
+import { useEffect, useRef, useState, type ReactElement } from 'react'
 import Badge from '@cloudscape-design/components/badge'
 import Box from '@cloudscape-design/components/box'
 import Button, { type ButtonProps } from '@cloudscape-design/components/button'
@@ -77,6 +77,15 @@ export function FunctionPage(props: {
     setConfirmState(open)
     props.onConfirmChange(open)
   }
+  // THE BOX GOES WITH ITS PAGE. A page load started before the box opened
+  // (owner, 2026-10-06: every navigation loads for 1-3 s, and the page stays
+  // up meanwhile) can end with the box still up; App.tsx must then hear it
+  // closed, or Escape would wait on a box that is gone. On unmount only: the
+  // latest handler is read through a ref, since App passes a new one every
+  // render.
+  const confirmChange = useRef(props.onConfirmChange)
+  confirmChange.current = props.onConfirmChange
+  useEffect(() => () => confirmChange.current(false), [])
 
   const name = say(`${id}_name`)
   const reason = !available && fn && fn.reason ? (say(fn.reason) || say('unavailable')) : ''

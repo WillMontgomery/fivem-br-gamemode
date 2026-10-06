@@ -9,6 +9,12 @@
  *   app -> desktop   { brTerminal: 1, type: 'ready' }
  *                    { brTerminal: 1, type: 'run', functionId, options? }
  *                    { brTerminal: 1, type: 'escape' }
+ *                    { brTerminal: 1, type: 'loading', on: true, ms }
+ *                    { brTerminal: 1, type: 'loading', on: false }
+ *                      a page load under way for `ms`, or over: the
+ *                      window's tab, which is the desktop's, shows a loading
+ *                      symbol while one is (owner, 2026-10-06; model.ts says
+ *                      what a load is)
  *   desktop -> app   { brTerminal: 1, type: 'state', state, copy?, catalog? }
  *                    { brTerminal: 1, type: 'result', result }
  *
@@ -117,7 +123,21 @@ export interface Catalog {
   categories: string[]
   /** The currency's name (config/market.lua), written after a Volts figure. */
   currency: string
+  /**
+   * How long the browser takes to load a page (pageMinMs..pageMaxMs in
+   * br_lib/config/terminals.lua, owner 2026-10-06), or null when not sent.
+   */
+  pageLoad: { minMs: number; maxMs: number } | null
 }
+
+/**
+ * What the desktop's tab is told: a page load of `ms` started (or replaced
+ * the one under way), or the load is over; null is nothing to tell.
+ */
+export type TabNote = { on: true; ms: number } | { on: false } | null
+
+/** The longest page load the app accepts from a catalog. */
+const PAGE_LOAD_MAX_MS = 10000
 
 /**
  * The server's answer to a run. `code` names the copy line to show:
@@ -254,7 +274,19 @@ export function parseCatalog(v: unknown): Catalog | null {
     })
   }
   const categories = list(v.categories).filter((c): c is string => typeof c === 'string' && ID.test(c))
-  return { functions, categories, currency: typeof v.currency === 'string' ? v.currency : '' }
+  return {
+    functions, categories, currency: typeof v.currency === 'string' ? v.currency : '',
+    pageLoad: parsePageLoad(v.pageLoad),
+  }
+}
+
+/** The page-load range, or null when it is not one: 0 <= min <= max <= 10 s. */
+function parsePageLoad(v: unknown): { minMs: number; maxMs: number } | null {
+  if (!isObj(v)) return null
+  const lo = num(v.minMs)
+  const hi = num(v.maxMs)
+  if (lo === null || hi === null || lo < 0 || hi < lo || hi > PAGE_LOAD_MAX_MS) return null
+  return { minMs: lo, maxMs: hi }
 }
 
 export function parseResult(v: unknown): RunResult | null {
@@ -291,6 +323,12 @@ export function reload(): void {
 /** Close the computer: Escape, or Sign out. */
 export function signOut(): void {
   post({ type: 'escape' })
+}
+
+/** Tell the desktop's tab a page load started, or is over. */
+export function tellTab(note: TabNote): void {
+  if (note === null) return
+  post(note.on ? { type: 'loading', on: true, ms: Math.round(note.ms) } : { type: 'loading', on: false })
 }
 
 export interface Listeners {

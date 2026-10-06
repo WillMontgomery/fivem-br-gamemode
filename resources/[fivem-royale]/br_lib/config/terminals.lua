@@ -864,6 +864,16 @@ BR.Config.Terminals = {
     -- carries the effect out -- and tells the lobby -- only when it is up.
     runMinMs = 3000,
     runMaxMs = 5000,
+    -- AND 2026-10-06, ROUND 3: "please make an artificial page load time when
+    -- navigating in the web browser between pages, except if they use the
+    -- forward/back buttons. The time should be random between 1 and 3
+    -- seconds, and the tab icon should change to a loading symbol". Every
+    -- navigation in the app's browser but back and forward takes a new
+    -- uniform pick in this range (ui-src/terminal's model.ts says which are
+    -- navigations); br_core's client hands the range to the app in the
+    -- catalog with each opening, like the copy.
+    pageMinMs = 1000,
+    pageMaxMs = 3000,
 
     -- ═══ THE FUNCTION REGISTRY ═══
     --

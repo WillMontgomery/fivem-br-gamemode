@@ -19,6 +19,12 @@
  * below, and each must end with the answer shown in the app or handed back to
  * the shell (`missed`) for a toast -- exactly once.
  *
+ * AND THE TAB'S LOADING SYMBOL (owner, 2026-10-06): the app's page loads put
+ * br.css's loading symbol on the window's tab, and NOTHING MAY LEAVE IT
+ * SPINNING (#385) -- the page showing, a load dropped, the app's window
+ * closed, the computer closed, a fresh app, and the backstop timer each take
+ * it down.
+ *
  * What a browser has to show (the boot screen, the windows, the colors) was
  * checked in a browser for #396's reports, not here.
  *
@@ -64,7 +70,8 @@ function classList() {
 
 /** A fresh page with br.js loaded and its DOMContentLoaded run. */
 function desktop() {
-  const page = { posts: [], app: [], timers: [], observers: [], listeners: { window: {}, document: {} } }
+  const page = { posts: [], app: [], timers: [], observers: [], listeners: { window: {}, document: {} },
+    clock: 0, later: new Map(), nextLater: 1 }
   const listen = (where) => (type, fn) => {
     ;(page.listeners[where][type] ||= []).push(fn)
   }
@@ -94,7 +101,7 @@ function desktop() {
     desktop: { clientWidth: 1280, clientHeight: 684 },
     container,
     terminal: icon,
-    'terminal-window-title': { textContent: '' },
+    'terminal-window-title': { textContent: '', classList: classList() },
     hours: { innerText: '' },
     date: { innerText: '' },
     'terminal-quit': buttons.quit,
@@ -146,6 +153,15 @@ function desktop() {
         page.observers.push({ target, cb: this.cb })
       }
     },
+    // A clock that moves only when the test says (D.wait).
+    setTimeout: (fn, ms) => {
+      const id = page.nextLater++
+      page.later.set(id, { at: page.clock + ms, fn })
+      return id
+    },
+    clearTimeout: (id) => {
+      page.later.delete(id)
+    },
     console,
     Math,
     Number,
@@ -174,6 +190,8 @@ function desktop() {
     fromApp: (msg) => {
       if (src !== 'about:blank') message({ brTerminal: 1, ...msg }, appWindow)
     },
+    /** From the frame's window whatever it holds: br.js's own gate decides. */
+    fromFrame: (msg) => message({ brTerminal: 1, ...msg }, appWindow),
     /** br:open, and the boot's timer run out. */
     boot: () => {
       D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
@@ -195,6 +213,23 @@ function desktop() {
     posted: () => page.posts.map((p) => `${p.name}${p.body.toast ? ':' + p.body.toast : ''}${p.body.why ? ':' + p.body.why : ''}`),
     appResults: () => page.app.filter((m) => m.type === 'result').map((m) => m.result.code + (m.result.toast ? ':' + m.result.toast : '')),
     appTypes: () => page.app.map((m) => m.type),
+    /** Is the window's tab showing the loading symbol? */
+    tabLoading: () => els['terminal-window-title'].classList.contains('br-loading'),
+    /** Timers still waiting. */
+    pending: () => page.later.size,
+    /** Let `ms` pass: every timer due by then runs, in order. */
+    wait: (ms) => {
+      const until = page.clock + ms
+      for (;;) {
+        let next = null
+        for (const [id, t] of page.later) if (t.at <= until && (next === null || t.at < next[1].at)) next = [id, t]
+        if (next === null) break
+        page.later.delete(next[0])
+        page.clock = next[1].at
+        next[1].fn()
+      }
+      page.clock = until
+    },
   }
   return D
 }
@@ -371,6 +406,103 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   eq(D.desk(), 'block', 'its own does: the desktop')
   D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
   eq(D.page.timers.length, 0, 'a second open while up is a refresh, not a reboot')
+}
+
+// ── the tab's loading symbol (owner, 2026-10-06) ──
+{
+  // A page load starts and ends: the symbol is on for exactly that long.
+  const D = desktop()
+  D.boot()
+  D.icon()
+  D.fromApp({ type: 'ready' })
+  eq(D.tabLoading(), false, 'the tab shows the app\'s icon')
+  D.fromApp({ type: 'loading', on: true, ms: 2000 })
+  eq(D.tabLoading(), true, 'a load starts: the tab shows the loading symbol')
+  D.wait(1999)
+  eq(D.tabLoading(), true, 'and keeps it while the page loads')
+  D.fromApp({ type: 'loading', on: false })
+  eq(D.tabLoading(), false, 'the page shows: the symbol is taken off (the class goes, and its animation with it)')
+  eq(D.pending(), 0, 'and no timer is left behind')
+
+  // A new load replaces the one under way: the backstop follows the new one.
+  D.fromApp({ type: 'loading', on: true, ms: 1000 })
+  D.wait(900)
+  D.fromApp({ type: 'loading', on: true, ms: 3000 })
+  eq(D.pending(), 1, 'a replacing load re-arms one backstop, not two')
+  D.wait(2500)
+  eq(D.tabLoading(), true, 'the first load\'s backstop does not cut the second one short')
+  D.fromApp({ type: 'loading', on: false })
+  eq(D.tabLoading(), false, 'the second page shows: off')
+
+  // THE BACKSTOP: an app that never says the page showed cannot leave it spinning.
+  D.fromApp({ type: 'loading', on: true, ms: 3000 })
+  D.wait(3999)
+  eq(D.tabLoading(), true, 'an app that goes quiet: still loading at its length plus the slack')
+  D.wait(1)
+  eq(D.tabLoading(), false, 'and taken down a second after the load was due to end')
+  D.fromApp({ type: 'loading', on: true, ms: 1e9 })
+  D.wait(15000)
+  eq(D.tabLoading(), false, 'a length past all reason is cut at the 15 s cap')
+  D.fromApp({ type: 'loading', on: true, ms: 'soon' })
+  D.wait(15000)
+  eq(D.tabLoading(), false, 'and one that is not a number gets the cap too')
+}
+{
+  // Every way the app or the computer goes away takes the symbol down.
+  const D = desktop()
+  D.boot()
+  D.icon()
+  D.fromApp({ type: 'ready' })
+  D.fromApp({ type: 'loading', on: true, ms: 2000 })
+  D.quit()
+  eq(D.tabLoading(), false, 'the app\'s window closed mid-load: off')
+  eq(D.pending(), 0, 'with its timer')
+
+  D.icon()
+  D.fromApp({ type: 'ready' })
+  D.fromApp({ type: 'loading', on: true, ms: 2000 })
+  D.escape()
+  eq(D.tabLoading(), false, 'the computer closed mid-load: off')
+
+  const E = desktop()
+  E.boot()
+  E.icon()
+  E.fromApp({ type: 'ready' })
+  E.fromApp({ type: 'loading', on: true, ms: 2000 })
+  E.lua({ type: 'br:close' })
+  eq(E.tabLoading(), false, 'br_core closing it mid-load: off')
+
+  const F = desktop()
+  F.boot()
+  F.icon()
+  F.fromApp({ type: 'ready' })
+  F.fromApp({ type: 'loading', on: true, ms: 2000 })
+  F.fromApp({ type: 'ready' })
+  eq(F.tabLoading(), false, 'a fresh app says it is ready: it is loading nothing')
+
+  // Only the app that is up, while the computer is.
+  const G = desktop()
+  G.boot()
+  G.fromFrame({ type: 'loading', on: true, ms: 2000 })
+  eq(G.tabLoading(), false, 'no app loaded in the window: a loading message is nobody\'s')
+  G.icon()
+  G.fromFrame({ type: 'loading', on: true, ms: 2000 })
+  eq(G.tabLoading(), true, 'the app loaded: it is the app\'s')
+  G.escape()
+  G.fromFrame({ type: 'loading', on: true, ms: 2000 })
+  eq(G.tabLoading(), false, 'and after the computer closed, nobody\'s again')
+}
+
+// ── the stylesheet: the only animation is the tab's, and only while it loads ──
+{
+  const css = readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  const animated = rules.filter((m) => /(^|;|\s)animation(-name)?\s*:/.test(m[2]))
+  eq(animated.length, 1, 'br.css animates one thing')
+  ok(animated.every((m) => m[1].includes('#terminal-window-title.br-loading')),
+    'the tab\'s icon, and only under .br-loading -- the class br.js takes off', animated.map((m) => m[1].trim()))
+  ok(!/animation-play-state/.test(css), 'never paused in place: removed with its class')
 }
 
 if (failed > 0) {

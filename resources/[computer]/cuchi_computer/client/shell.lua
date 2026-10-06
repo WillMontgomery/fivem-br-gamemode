@@ -21,9 +21,10 @@
 --                   keyHeld, squadUsed, squadMatch, volts, running?, player,
 --                   match }
 --       copy    = the player-facing lines, from br_lib/config/terminals.lua
---       catalog = { functions, categories, currency }: the function registry,
---                 the same file's rows, which the app draws its cards and
---                 pages from
+--       catalog = { functions, categories, currency, pageLoad }: the
+--                 function registry, the same file's rows, which the app
+--                 draws its cards and pages from, and the range its browser
+--                 picks a page load's length in (pageLoad = { minMs, maxMs })
 --       desktop = { bootMinMs, bootMaxMs, clock = { h, m } }: how long a boot
 --                 may take (the page picks in the range) and the game's time
 --   Update(state)                  the server's new view, while open

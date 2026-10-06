@@ -8,7 +8,7 @@ import SideNavigation, { type SideNavigationProps } from '@cloudscape-design/com
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import TopNavigation, { type TopNavigationProps } from '@cloudscape-design/components/top-navigation'
 import {
-  connect, reload as askAgain, run, signOut,
+  connect, reload as askAgain, run, signOut, tellTab,
   type Catalog, type Copy, type RunResult, type TerminalState,
 } from './bridge'
 import { Browser } from './Browser'
@@ -18,9 +18,9 @@ import { HowTo } from './HowTo'
 import { Login } from './Login'
 import { MatchPanel } from './MatchPanel'
 import {
-  HOME, addressOf, back, canBack, canForward, current, fill, forward, hrefOf, progressAfter, push, replace,
-  routeOfHref, shownCategories, shownFunctions, speaker, startHistory, voltsText,
-  type History, type Progress, type Route,
+  HOME, addressOf, arrive, canBack, canForward, current, fill, hrefOf, loadMs, navigate, progressAfter, rewrite,
+  routeOfHref, shownCategories, shownFunctions, speaker, startBrowsing, step, voltsText,
+  type Browsing, type NavTarget, type Progress, type Route,
 } from './model'
 import { loadMode, saveMode, showMode, type UiMode } from './mode'
 
@@ -30,7 +30,9 @@ import { loadMode, saveMode, showMode, type UiMode } from './mode'
  *
  *   the browser   Browser.tsx: back, forward and reload over THIS app's
  *                 history, and the address of the page it is on -- the same
- *                 look in both modes
+ *                 look in both modes. Every navigation but back and forward
+ *                 LOADS for a random 1-3 s (owner, 2026-10-06; model.ts's
+ *                 "page loads"), the window's tab showing it
  *   the top bar   TopNavigation: the app's name (the one place in the app it
  *                 is written), a search across every function (pick one to
  *                 open its page; or search the cards), the player's Volts, the
@@ -86,9 +88,17 @@ const PROGRESS_STEP_MS = 100
 export function App(): ReactElement {
   const [state, setState] = useState<TerminalState | null>(null)
   const [copy, setCopy] = useState<Copy>({})
-  const [catalog, setCatalog] = useState<Catalog>({ functions: [], categories: [], currency: '' })
+  const [catalog, setCatalog] = useState<Catalog>({ functions: [], categories: [], currency: '', pageLoad: null })
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
-  const [history, setHistory] = useState<History>(() => startHistory(HOME))
+  // THE BROWSER: its history and the page load under way. The ref is the one
+  // every handler and timer reads, so two clicks inside one render, or a load
+  // ending as another starts, never step from a stale copy.
+  const [browsing, setBrowsingState] = useState<Browsing>(() => startBrowsing(HOME))
+  const browsingRef = useRef(browsing)
+  const setBrowsing = (b: Browsing) => {
+    browsingRef.current = b
+    setBrowsingState(b)
+  }
   const [pending, setPending] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -179,17 +189,57 @@ export function App(): ReactElement {
     return () => window.clearInterval(t)
   }, [progress])
 
+  // A PAGE LOAD ENDS: its page shows (a reload: the page again, asked for
+  // afresh and remounted), and the tab is itself again. A load replaced or
+  // dropped since has no page to show, and its timer is cleared anyway.
+  const loadSeq = browsing.load ? browsing.load.seq : null
+  const loadFor = browsing.load ? browsing.load.ms : 0
+  useEffect(() => {
+    if (loadSeq === null) return undefined
+    const t = window.setTimeout(() => {
+      const r = arrive(browsingRef.current, loadSeq)
+      if (!r.shown) return
+      setBrowsing(r.browsing)
+      tellTab(r.tab)
+      window.scrollTo(0, 0)
+      if (r.reload) {
+        setReloads((n) => n + 1)
+        setStatsOpen(false)
+        askAgain()
+      }
+    }, loadFor)
+    return () => window.clearTimeout(t)
+  }, [loadSeq])
+
   const squadMatch = state?.squadMatch === true
   const say = useMemo(() => speaker(copy, squadMatch), [copy, squadMatch])
   const currency = catalog.currency
-  const route: Route = signedIn === false ? { page: 'login' } : current(history)
+  const route: Route = signedIn === false ? { page: 'login' } : current(browsing.history)
 
-  // A run's answer belongs to the page it was asked on; going anywhere else
-  // takes it down.
-  const go = (next: Route) => {
-    setHistory((h) => push(h, next))
+  // A NAVIGATION LOADS: the page on screen stays while a fresh pick in the
+  // catalog's range runs, the tab shows a loading symbol, and a newer
+  // navigation replaces it. A run's answer belongs to the page it was asked
+  // on; asking to go anywhere else takes it down (a reload keeps it, as it
+  // always did). A link to the page already on screen loads nothing, and
+  // only does what it always did.
+  const nav = (target: NavTarget) => {
+    const r = navigate(browsingRef.current, target, loadMs(catalog.pageLoad, Math.random))
+    if (target.kind === 'page') setFlash(null)
+    if (r.tab === null) {
+      window.scrollTo(0, 0)
+      return
+    }
+    setBrowsing(r.browsing)
+    tellTab(r.tab)
+  }
+  const go = (next: Route) => nav({ kind: 'page', route: next })
+  // BACK AND FORWARD ARE INSTANT (the owner's exception), and drop a load
+  // under way.
+  const browse = (dir: 'back' | 'forward') => {
+    const r = step(browsingRef.current, dir)
+    setBrowsing(r.browsing)
+    tellTab(r.tab)
     setFlash(null)
-    window.scrollTo(0, 0)
   }
   const follow = (e: CustomEvent<{ href?: string }>) => {
     e.preventDefault()
@@ -364,7 +414,7 @@ export function App(): ReactElement {
             say={say}
             route={route}
             onOpen={(id) => go({ page: 'function', id })}
-            onQuery={(query) => setHistory((h) => replace(h, { ...route, query }))}
+            onQuery={(query) => setBrowsing(rewrite(browsingRef.current, { ...route, query }))}
           />,
         ]}
       </SpaceBetween>
@@ -398,15 +448,11 @@ export function App(): ReactElement {
       <div id="terminal-header" className="terminal-header">
         <Browser
           address={addressOf(route, say)}
-          canBack={route.page !== 'login' && canBack(history)}
-          canForward={route.page !== 'login' && canForward(history)}
-          onBack={() => { setHistory(back); setFlash(null) }}
-          onForward={() => { setHistory(forward); setFlash(null) }}
-          onReload={() => {
-            setReloads((n) => n + 1)
-            setStatsOpen(false)
-            askAgain()
-          }}
+          canBack={route.page !== 'login' && canBack(browsing.history)}
+          canForward={route.page !== 'login' && canForward(browsing.history)}
+          onBack={() => browse('back')}
+          onForward={() => browse('forward')}
+          onReload={() => nav({ kind: 'reload' })}
           labels={{ back: say('aria_back'), forward: say('aria_forward'), reload: say('aria_reload'), address: say('aria_address') }}
         />
         <div className="terminal-topnav">

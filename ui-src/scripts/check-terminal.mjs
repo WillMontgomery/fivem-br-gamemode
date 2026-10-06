@@ -41,6 +41,18 @@
  *                  (round 2): Browser.tsx takes no Cloudscape control (whose
  *                  colors are the mode's), terminal.css gives the toolbar no
  *                  per-mode rule, and nothing tells the desktop the mode.
+ *   T10 page loads every navigation but back and forward loads for 1-3 s
+ *                  (owner, 2026-10-06), and the tab's loading symbol is the
+ *                  one animation anywhere in the computer's own styles: in
+ *                  br.css only under .br-loading, never paused in place, and
+ *                  terminal.css animates nothing -- T1's rule, that nothing
+ *                  may animate forever, for the symbol that replaces a
+ *                  Spinner. In App.tsx back and forward step the history at
+ *                  once (model.ts `step`), reload loads (`nav`), and nothing
+ *                  pushes a page but a load's end (`arrive`). br.js takes the
+ *                  class off on every way out, and caps how long it stays.
+ *                  What they do is test-terminal-model.mjs's and
+ *                  test-terminal-desktop.mjs's.
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -178,6 +190,49 @@ for (const f of sources) {
   const css = readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8')
   if (/awsui-dark-mode[^{]*\.browser-/.test(code(css, false))) {
     fail('T9 chrome', 'terminal/src/terminal.css', 'a .browser- rule per mode -- the toolbar has one look')
+  }
+}
+
+// T10: the page loads and the tab's symbol.
+{
+  const app = code(readFileSync(join(SRC, 'src', 'App.tsx'), 'utf8'), false)
+  const browse = /const browse = \(dir: 'back' \| 'forward'\) => \{([\s\S]*?)\n  \}/.exec(app)?.[1] ?? ''
+  if (!/\bstep\(/.test(browse) || /\bnavigate\(|setTimeout/.test(browse)) {
+    fail('T10 page loads', 'terminal/src/App.tsx', 'back and forward must step the history at once (model.ts step), never load')
+  }
+  if (!/onBack=\{\(\) => browse\('back'\)\}/.test(app) || !/onForward=\{\(\) => browse\('forward'\)\}/.test(app)) {
+    fail('T10 page loads', 'terminal/src/App.tsx', 'the back and forward buttons are not browse(\'back\') and browse(\'forward\')')
+  }
+  if (!/onReload=\{\(\) => nav\(\{ kind: 'reload' \}\)\}/.test(app)) {
+    fail('T10 page loads', 'terminal/src/App.tsx', 'the reload button does not load (nav({ kind: \'reload\' }))')
+  }
+  if (/(?<![.\w])(push|back|forward|replace|startHistory)\(/.test(app)) {
+    fail('T10 page loads', 'terminal/src/App.tsx', 'moves the history itself -- every page change goes through navigate, arrive, step or rewrite')
+  }
+  if (!/loadMs\(catalog\.pageLoad, Math\.random\)/.test(app)) {
+    fail('T10 page loads', 'terminal/src/App.tsx', 'a load\'s length is not a fresh loadMs pick in the catalog\'s range')
+  }
+  const own = code(readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8'), false)
+  if (/\banimation\b|@keyframes/.test(own)) {
+    fail('T10 page loads', 'terminal/src/terminal.css', 'animates something -- the app\'s only moving thing is the tab\'s symbol, in br.css')
+  }
+  const brCss = readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  for (const m of brCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (/(^|[;\s])animation(-name)?\s*:/.test(m[2]) && !m[1].includes('.br-loading')) {
+      fail('T10 page loads', 'cuchi_computer/nui/br.css', `${m[1].trim()} animates outside .br-loading`)
+    }
+  }
+  if (/animation-play-state/.test(brCss)) {
+    fail('T10 page loads', 'cuchi_computer/nui/br.css', 'pauses an animation in place -- take its class off instead')
+  }
+  const brJs = code(readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.js'), 'utf8'), false)
+  const unload = /const unload = \(\) => \{([\s\S]*?)\n    \};/.exec(brJs)?.[1] ?? ''
+  if (!/tabLoading\(null\)/.test(unload)) {
+    fail('T10 page loads', 'cuchi_computer/nui/br.js', 'unloading the app (its window\'s close, the computer\'s) leaves the tab\'s symbol on')
+  }
+  if (!/const TAB_LOAD_MAX_MS = \d+;/.test(brJs) || !/tabTimer = setTimeout\(/.test(brJs)) {
+    fail('T10 page loads', 'cuchi_computer/nui/br.js', 'no backstop: an app that never says the page showed would leave the symbol spinning')
   }
 }
 
