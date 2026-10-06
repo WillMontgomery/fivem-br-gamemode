@@ -865,6 +865,26 @@ do
         r and r.toast)
 end
 
+describe('Storm control: measured from the terminal, not the player standing at it')
+do
+    -- The player reaches the terminal from a couple of meters off it, and
+    -- "this terminal" on the page is the terminal (the wave B review).
+    reset()
+    lobby('squad', 3)
+    roster[1].pos = { x = SITE.x + 2.0, y = SITE.y - 1.0, z = 30.0 }
+    local real = TS.threeEnds
+    local from = nil
+    TS.threeEnds = function(ends, ax, ay, ...)
+        from = { x = ax, y = ay }
+        return real(ends, ax, ay, ...)
+    end
+    local r = runAt(1, 'storm_control', { zone = 'near' })
+    TS.threeEnds = real
+    ok(r and r.ok == true, 'it runs from two meters off', r and r.code)
+    ok(from and from.x == SITE.x and from.y == SITE.y, 'the three are measured from the terminal itself',
+        from and ('(%.1f, %.1f)'):format(from.x, from.y))
+end
+
 describe('Storm control: the dev path steers for nothing')
 do
     reset()
@@ -1296,6 +1316,18 @@ do
             ('p%d is sent the area'):format(src))
     end
     ok(errored() == nil, 'clean', errored())
+end
+
+describe('Power outage: around the terminal, not the player standing at it')
+do
+    reset()
+    local m = lobby('squad', 3)
+    roster[1].pos = { x = SITE.x + 2.0, y = SITE.y - 1.0, z = 30.0 }
+    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    ok(r and r.ok == true, 'it runs from two meters off', r and r.code)
+    local a = T.outagesOf(m)[1] and T.outagesOf(m)[1].area
+    ok(a and a.x == SITE.x and a.y == SITE.y, 'the area is centered on the terminal itself',
+        a and ('(%.1f, %.1f)'):format(a.x or 0, a.y or 0))
 end
 
 describe('Power outage: Los Santos and Blaine County are the storm\'s city line')

@@ -7586,6 +7586,21 @@ do
     C.pedAt = pt(0.0, 0.0)
     C.tick(1)
     eq(env.BR.Storm.viewInside(), true, 'back in the middle: inside again')
+    -- AND THE LINE IS THE WALL ITSELF (the wave B review): three meters either
+    -- side of it along the boundary's own normal, at two places round it. An
+    -- answer with any slack in it -- inside up to fifty meters out, say -- would
+    -- claim the chosen weather over a player the storm has caught.
+    local zone = zoneOf(env, env.BR.State.storm)
+    for _, at in ipairs({ 0.25, 0.7 }) do
+        local ox, oy = offBoundary(env, zone, zone.P * at, 3.0)
+        C.pedAt = pt(ox, oy)
+        C.tick(1)
+        eq(env.BR.Storm.viewInside(), false, ('three meters outside the wall (%.2f round): not inside'):format(at))
+        local ix, iy = offBoundary(env, zone, zone.P * at, -3.0)
+        C.pedAt = pt(ix, iy)
+        C.tick(1)
+        eq(env.BR.Storm.viewInside(), true, ('three meters inside it (%.2f round): inside'):format(at))
+    end
     env.BR.State.match.state = env.BR.MatchState.WAITING
     C.tick(1)
     eq(env.BR.Storm.viewInside(), false, 'and with no storm to stand in, never inside')
