@@ -650,16 +650,29 @@ BR.Config.Terminals = {
         max_ammo_description = "Max ammo. Their squad's ammo is full.",
         max_ammo_description_solo = 'Max ammo. Their ammo is full.',
 
-        -- Reboot (suggested; offline)
+        -- Reboot (suggested; LIVE since wave C, 2026-10-06)
         reboot_name = 'Reboot',
         reboot_summary = 'Brings eliminated squadmates back at this terminal.',
-        reboot_what = "Every eliminated player in your squad comes back at this terminal with full health.\nThey come back with an empty inventory.\nPlayers who left the match don't come back.",
+        -- WRITTEN (2026-10-06, wave C; was "Every eliminated player in your
+        -- squad comes back at this terminal with full health.\n..."). A
+        -- rebooted player comes back the way a revive key brings one back
+        -- over an ambulance (server/revivekey.lua): dropped 150 meters over
+        -- the terminal with a parachute, not stood beside it.
+        reboot_what = "Every eliminated player in your squad comes back with full health, by parachute over this terminal.\nThey come back with an empty inventory.\nPlayers who left the match don't come back.",
         reboot_duration = 'Instant',
         reboot_affects = 'Your squad',
         reboot_notified = 'Everyone in the match',
-        reboot_risks = "Rebooted players start with nothing.\nThey come back here, where the notice was just sent from.",
+        -- WRITTEN (2026-10-06, wave C; the third line is new). A revive key
+        -- for a rebooted player is spent with the reboot -- they are back --
+        -- even one the squad paid for at an ambulance.
+        reboot_risks = "Rebooted players start with nothing.\nThey come back here, where the notice was just sent from.\nA revive key for any of them is used up, even one your squad bought.",
         reboot_done = 'Your squad is back.',
         reboot_description = 'Reboot. Their squad is back.',
+        -- WRITTEN (2026-10-06, wave C). Reboot's own reason: nobody in the
+        -- squad is eliminated and still in the match (a player who left
+        -- cannot come back) -- refused, spending nothing, the Volts included
+        -- (at the terminal: why not). Squad-only, like every Reboot line.
+        reboot_none = "There's nobody in your squad to bring back.",
 
         -- Ghost (suggested; LIVE since wave A, 2026-10-06)
         ghost_name = 'Ghost',
@@ -1090,8 +1103,10 @@ BR.Config.Terminals = {
         { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
           options = { { id = 'site', choices = { 'terminal', 'circle' }, default = 'terminal' } } },
         { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true },
-        -- SQUAD-ONLY (round 2): it brings back squadmates.
-        { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = false, cost = 150,
+        -- SQUAD-ONLY (round 2): it brings back squadmates. LIVE SINCE WAVE C
+        -- (2026-10-06): server/terminalfx/reboot.lua, through the revive key's
+        -- own return (BR.ReviveKey.bringBackAt).
+        { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = true, cost = 150,
           squadOnly = true },
         -- DISRUPTION ON ITS OWN (round 2): alone, it still hides the player
         -- from other players' Scan, Pulse and bounty markers -- what Comms

@@ -970,6 +970,7 @@ server_scripts {
     -- Wave C (#396, 2026-10-06), the same way.
     'server/terminalfx/emp.lua',
     'server/terminalfx/comms_blackout.lua',
+    'server/terminalfx/reboot.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

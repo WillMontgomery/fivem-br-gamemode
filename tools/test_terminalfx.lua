@@ -2695,6 +2695,396 @@ do
     ok(r and r.code == 'bad_option' and keys[1] == true, 'a duration the row does not offer: bad_option, nothing spent')
 end
 
+-- ── Reboot's world: the REAL revive key return (server/revivekey.lua), over
+--    this suite's roster, so what is proved is the one way back into a match
+--    the gamemode already has ──
+local cleared, spectateStops = {}, {}
+function BR.Roster.clearFields(src, fields)
+    cleared[#cleared + 1] = { src = src, fields = ',' .. table.concat(fields, ',') .. ',' }
+    local e = roster[src]
+    if e then
+        for _, f in ipairs(fields) do e[f] = nil end
+    end
+end
+function BR.Roster.update(src, f)
+    local e = roster[src]
+    if e then
+        for k, v in pairs(f) do e[k] = v end
+    end
+end
+function BR.Roster.setState(src, st)
+    if roster[src] then roster[src].state = st end
+end
+BR.Spectate = { stop = function(src, why) spectateStops[#spectateStops + 1] = { src = src, why = why } end }
+loadAll({ 'br_lib/config/revivekey.lua', 'br_core/server/revivekey.lua' })
+local RK = BR.Config.ReviveKey
+
+--- Run the timers pending NOW, and only those: one step of a run (its load,
+--- then the arrival's wait).
+local function stepTimers()
+    local due = timers
+    timers = {}
+    table.sort(due, function(a, b) return a.at < b.at end)
+    for _, t in ipairs(due) do
+        if t.at > gameMs then gameMs = t.at end
+        t.fn()
+    end
+end
+
+--- Squads still in the fight -- BR.Server.squadsAlive's rule, the match's end
+--- check (server/main.lua, server/match.lua: `<= 1` is a win).
+local function squadsAlive(m)
+    local seen, n = {}, 0
+    for src, e in pairs(roster) do
+        if e.matchId == m.id and BR.Server.isInMatch(e.state) then
+            local k = e.squadId or ('solo:' .. src)
+            if not seen[k] then
+                seen[k] = true
+                n = n + 1
+            end
+        end
+    end
+    return n
+end
+local function inFight(m)
+    local n = 0
+    for _, e in pairs(roster) do
+        if e.matchId == m.id and BR.Server.isInMatch(e.state) then n = n + 1 end
+    end
+    return n
+end
+
+--- lobby() with squad A's p2 eliminated by B's p3: OUT where they fell,
+--- placed, their death stamped. The runner stands beside the tower, not on
+--- its point, so "over this terminal" and "over the runner" differ.
+local function rebootLobby()
+    cleared, spectateStops = {}, {}
+    local m = lobby()
+    BR.Server.matches = matches
+    roster[1].pos = { x = SITE.x + 1.5, y = SITE.y + 0.5, z = SITE.z + 1.0 }
+    roster[2].state = BR.PlayerState.OUT
+    roster[2].placement, roster[2].diedAt, roster[2].engineHp = 3, gameMs - 5000, 0
+    roster[3].kills = 1
+    return m
+end
+
+local function arrivals(src) return eventsOf(BR.Net.REVIVEKEY_ARRIVE, src) end
+local function places(src) return eventsOf(BR.Net.REVIVEKEY_PLACE, src) end
+local function clearedOf(src, field)
+    for _, c in ipairs(cleared) do
+        if c.src == src and c.fields:find(',' .. field .. ',', 1, true) then return true end
+    end
+    return false
+end
+
+describe('Reboot: registered, built, squad-only, 150 Volts')
+do
+    local row = T.row('reboot')
+    ok(row and row.implemented == true and T.FUNCTIONS.reboot ~= nil, 'reboot is built')
+    ok(row and row.squadOnly == true, 'and squad-only')
+    eq(row and T.costOf(row), 150, 'and costs 150 Volts')
+    ok(type(BR.ReviveKey.bringBackAt) == 'function', 'through the revive key\'s own return')
+end
+
+describe('Reboot: every eliminated squadmate comes back over this terminal, by the revive key\'s return')
+do
+    reset()
+    local m = rebootLobby()
+    -- p6: out, with a key the squad bought. p7: left mid-match. p8: out, but
+    -- no longer connected.
+    player(6, m, 'A', { x = C0.x + 90.0, y = C0.y }, BR.PlayerState.OUT)
+    roster[6].reviveKey = { x = C0.x + 90.0, y = C0.y, z = 30.0, held = true, via = 'bought',
+                            mintedAt = gameMs - 9000, expiresAt = gameMs - 1000 }
+    player(7, m, 'A', { x = C0.x + 95.0, y = C0.y }, BR.PlayerState.LEFT)
+    player(8, m, 'A', { x = C0.x + 99.0, y = C0.y }, BR.PlayerState.OUT)
+    roster[8].name = nil
+    local squadsBefore, fightBefore = squadsAlive(m), inFight(m)
+
+    useAt(1)
+    local f = listedAs(1, 'reboot')
+    ok(f and f.available == true, 'the card is available: two to bring back', f and tostring(f.reason))
+    local r = ask(1, 'reboot')
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    eq(market.wallet[1], 850, 'the 150 Volts are spent as it is accepted')
+    stepTimers()                                       -- the load is over: it runs
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    eq(r and r.toast, COPY.reboot_done .. ' ' .. 'Your new balance is: 850 Volts.', 'the done line, and the new balance')
+    ok(noticeIndex('has redeemed their special power', 5) ~= nil, 'the lobby is told')
+    local a2, a6 = arrivals(2)[1], arrivals(6)[1]
+    ok(a2 and a2.payload.x == SITE.x and a2.payload.y == SITE.y and a2.payload.z == SITE.z,
+        'p2 is promised the arrival: black, and the focus on this terminal')
+    ok(a6 ~= nil, 'and so is p6')
+    eq(#arrivals(7) + #arrivals(8), 0, 'not the player who left, nor the one no longer connected')
+    ok(#spectateStops == 2 and spectateStops[1].why == 'in-the-fight', 'the spectate camera comes down for both')
+    eq(roster[2].state, BR.PlayerState.OUT, 'and nothing is written until the screen is black')
+
+    local promisedAt = gameMs
+    stepTimers()                                       -- a fade later
+    eq(gameMs - promisedAt, RK.fadeMs + RK.focusMs, 'after the key\'s own wait: fadeMs + focusMs of black')
+    local p2 = places(2)[1]
+    ok(p2 and p2.payload.x == SITE.x and p2.payload.y == SITE.y and p2.payload.z == SITE.z,
+        'REVIVEKEY_PLACE over this terminal: resurrected 150 m up, with the parachute (client/revivekey.lua)')
+    ok(roster[2].state == BR.PlayerState.ALIVE and roster[6].state == BR.PlayerState.ALIVE, 'both ALIVE')
+    ok(roster[2].hp == 100.0 and roster[2].armour == 0.0, 'at full health, no armor')
+    local hs = lastOf(BR.Net.HEALTH_SYNC, 2)
+    ok(hs and hs.hp == 100, 'their client told its health')
+    ok(clearedOf(2, 'placement') and roster[2].placement == nil, 'the placement retracted on every client')
+    ok(clearedOf(2, 'diedAt') and roster[2].diedAt == nil, 'the death stamp cleared: they are not counted as died')
+    ok(clearedOf(2, 'engineHp'), 'and the corpse sample, or the death check eliminates them again')
+    eq(roster[6].reviveKey, nil, 'the key the squad bought for p6 is spent: they are back')
+    eq(roster[3].kills, 1, 'the kill that eliminated p2 stays credited')
+    ok(roster[1].revives == nil and roster[3].revives == nil, 'and nobody is credited a revive')
+    ok(roster[7].state == BR.PlayerState.LEFT and roster[8].state == BR.PlayerState.OUT,
+        'the player who left and the one gone stay where they are')
+    eq(squadsAlive(m), squadsBefore, 'the squads still standing are what they were: the match\'s end check is untouched')
+    eq(inFight(m), fightBefore + 2, 'and the players left grows by the two')
+    ok(#eventsOf(BR.Net.SFX_CUE, 1) >= 1, 'the squad hears the revive cue')
+end
+
+describe('Reboot: a revive key in play')
+do
+    -- A HOLD FILLING AT AN AMBULANCE FOR p2: stopped, its reviver told, p2 rebooted.
+    reset()
+    local m = rebootLobby()
+    roster[2].reviveKey = { x = C0.x, y = C0.y, z = 30.0, held = true, via = 'collected',
+                            mintedAt = gameMs, expiresAt = gameMs + 180000,
+                            byS = 1, from = gameMs, beat = gameMs, veh = 77, spot = { x = 1.0, y = 2.0, z = 3.0 } }
+    runAt(1, 'reboot')
+    local pr = lastOf(BR.Net.REVIVEKEY_PROGRESS, 1)
+    ok(pr and pr.cancelled == true and pr.target == 2, 'the hold at the ambulance is stopped, and its reviver told')
+    ok(roster[2].state == BR.PlayerState.ALIVE and roster[2].reviveKey == nil, 'p2 is back, the key spent')
+    eq(#places(2), 1, 'brought back once')
+
+    -- A KEY ARRIVAL ALREADY COMMITTED: p2 is on the way back by key; a Reboot
+    -- does not take them twice, and with nobody else it is refused.
+    reset()
+    m = rebootLobby()
+    roster[2].reviveKey = { x = C0.x, y = C0.y, z = 30.0, held = true, byS = 1, arriveAt = gameMs + 900,
+                            spot = { x = 1.0, y = 2.0, z = 3.0 } }
+    useAt(1)
+    local f = listedAs(1, 'reboot')
+    ok(f and f.available == false and f.reason == 'reboot_none', 'the card says reboot_none', f and tostring(f.reason))
+    local r = ask(1, 'reboot')
+    ok(r and r.code == 'reboot_none' and r.toast == COPY.reboot_none, 'a run is refused in its own line', r and r.code)
+    ok(#market.charges == 0 and keys[1] == true and not T.squadUsed(1), 'spending nothing, the Volts included')
+
+    -- AND ONE THAT COMMITS DURING THE LOAD: everything given back at the end.
+    reset()
+    m = rebootLobby()
+    useAt(1)
+    r = ask(1, 'reboot')
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    roster[2].reviveKey = { held = true, byS = 1, arriveAt = gameMs + 900, spot = { x = 1.0, y = 2.0, z = 3.0 } }
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'reboot_none', 'the only one came back by key meanwhile: reboot_none', r and r.code)
+    ok(market.wallet[1] == 1000 and keys[1] == true and not T.squadUsed(1),
+        'the Volts, the key and the use given back')
+    eq(#arrivals(2), 0, 'and no second return was started')
+    local _ = m
+end
+
+describe('Reboot: a rebooted player eliminated again')
+do
+    reset()
+    local m = rebootLobby()
+    runAt(1, 'reboot')
+    eq(roster[2].state, BR.PlayerState.ALIVE, 'p2 is back')
+    -- ELIMINATED AGAIN, somewhere else: the elimination edge mints a fresh key
+    -- where they fell this time -- no key outlived the reboot to be reused.
+    roster[2].pos = { x = 50.0, y = 60.0, z = 10.0 }
+    roster[2].state = BR.PlayerState.OUT
+    local k = BR.ReviveKey.onEliminated(m, 2)
+    ok(k and k.x == 50.0 and k.y == 60.0 and k.held == false, 'a new key, at the new body, not held')
+    -- The squad's one use is spent: a second Reboot is refused at the door.
+    keys[1] = true
+    useAt(1)
+    local r = ask(1, 'reboot')
+    eq(r and r.code, 'squad_used', 'and the squad cannot Reboot twice in a match')
+    -- The dev command can, and brings them back again by the same return.
+    local said = devRun(1, 'reboot')
+    ok(said:find('ok (done)', 1, true) ~= nil, 'brterminal run reboot', said)
+    flush()
+    eq(roster[2].state, BR.PlayerState.ALIVE, 'back again')
+end
+
+describe('Reboot: a squad with nobody left in the fight is never brought back')
+do
+    -- THE RUNNER WAS THE LAST ONE STANDING AND FELL DURING THE LOAD.
+    reset()
+    local m = rebootLobby()
+    useAt(1)
+    local r = ask(1, 'reboot')
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    roster[1].state = BR.PlayerState.OUT
+    local squads = squadsAlive(m)
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'unavailable', 'nobody left in the fight: it cannot happen', r and r.code)
+    ok(market.wallet[1] == 1000 and keys[1] == true and not T.squadUsed(1),
+        'the Volts, the key and the use given back')
+    ok(#arrivals(1) + #arrivals(2) == 0 and roster[2].state == BR.PlayerState.OUT, 'and nobody comes back')
+    eq(squadsAlive(m), squads, 'so the squads standing -- the end check -- are what the eliminations left')
+
+    -- A DOWNED SQUADMATE IS STILL IN THE FIGHT: the runner out, p6 down.
+    reset()
+    m = rebootLobby()
+    player(6, m, 'A', { x = C0.x + 90.0, y = C0.y }, BR.PlayerState.DBNO)
+    useAt(1)
+    ask(1, 'reboot')
+    roster[1].state = BR.PlayerState.OUT
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'done', 'a downed squadmate still standing for the squad: it runs', r and r.code)
+    ok(roster[1].state == BR.PlayerState.ALIVE and roster[2].state == BR.PlayerState.ALIVE,
+        'the runner, eliminated while it loaded, comes back with p2')
+    eq(roster[6].state, BR.PlayerState.DBNO, 'and the downed one is not revived')
+end
+
+describe('Reboot: refused, spending nothing')
+do
+    -- NOBODY ELIMINATED.
+    reset()
+    lobby()
+    BR.Server.matches = matches
+    useAt(1)
+    local f = listedAs(1, 'reboot')
+    ok(f and f.available == false and f.reason == 'reboot_none', 'nobody out: the card says reboot_none')
+    local r = ask(1, 'reboot')
+    ok(r and r.code == 'reboot_none' and #market.charges == 0 and keys[1] == true,
+        'and a run is refused, the market never asked', r and r.code)
+
+    -- NOT ENOUGH VOLTS: the door's own refusal, after every other.
+    reset()
+    rebootLobby()
+    market.wallet[1] = 100
+    useAt(1)
+    r = ask(1, 'reboot')
+    ok(r and r.code == 'no_volts' and keys[1] == true and market.wallet[1] == 100, 'no_volts, nothing spent',
+        r and r.code)
+
+    -- OUTSIDE A SQUAD MATCH: not listed, and refused.
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    BR.Server.matches = matches
+    player(1, m, nil, SITE)
+    player(2, m, nil, { x = 0.0, y = 0.0 }, BR.PlayerState.OUT)
+    keys[1] = true
+    market.wallet[1] = 1000
+    useAt(1)
+    eq(listedAs(1, 'reboot'), nil, 'a solo match lists no Reboot')
+    r = ask(1, 'reboot')
+    ok(r and r.code == 'unavailable' and keys[1] == true and market.wallet[1] == 1000,
+        'and a run is refused, spending nothing', r and r.code)
+
+    -- OUTSIDE A MATCH.
+    ok(T.FUNCTIONS.reboot.refuse(99, { dev = false }) == 'unavailable', 'outside a match: unavailable')
+    ok(T.FUNCTIONS.reboot.refuse(99, { dev = true }) == nil, 'a dev session is never refused for it')
+end
+
+describe('Reboot: the match ending during the load or the arrival, Season 1')
+do
+    reset()
+    local m = rebootLobby()
+    useAt(1)
+    ask(1, 'reboot')
+    m.state = BR.MatchState.ENDED
+    flush()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and market.wallet[1] == 1000 and keys[1] == true,
+        'the match over during the load: everything back', r and r.code)
+    eq(#arrivals(2), 0, 'and nobody promised a return')
+
+    -- DURING THE ARRIVAL: the promise is withdrawn, nobody stands up in a
+    -- finished match.
+    reset()
+    m = rebootLobby()
+    useAt(1)
+    ask(1, 'reboot')
+    stepTimers()
+    ok(#arrivals(2) == 1, 'p2 promised')
+    m.state = BR.MatchState.ENDED
+    stepTimers()
+    local last = arrivals(2)[#arrivals(2)]
+    ok(last and last.payload.cancelled == true, 'the match ended in the black: the promise is withdrawn')
+    eq(roster[2].state, BR.PlayerState.OUT, 'and p2 is not brought back')
+    eq(#places(2), 0, 'nothing placed')
+
+    -- SEASON 1 DURING THE LOAD.
+    reset()
+    m = rebootLobby()
+    useAt(1)
+    ask(1, 'reboot')
+    season(1)
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and market.wallet[1] == 1000 and keys[1] == true,
+        'Season 1 during the load: everything back', r and r.code)
+    season(2)
+    local _ = m
+end
+
+describe('Reboot: full health whatever the key\'s reviveHp; the return once per player')
+do
+    -- THE PAGE SAYS FULL HEALTH. The key's reviveHp is the owner's number for a
+    -- key revive and may move; a Reboot passes its own.
+    reset()
+    rebootLobby()
+    local was = RK.reviveHp
+    RK.reviveHp = 40
+    runAt(1, 'reboot')
+    eq(roster[2].hp, 100.0, 'a Reboot brings them back at 100 with the key\'s reviveHp at 40')
+    RK.reviveHp = was
+
+    -- THE RETURN ITSELF REFUSES A PLAYER ALREADY ON THE WAY BACK, whoever asks.
+    reset()
+    rebootLobby()
+    local at = { x = 1.0, y = 2.0, z = 3.0 }
+    local ok1 = BR.ReviveKey.bringBackAt(2, at, 100.0)
+    local ok2, why2 = BR.ReviveKey.bringBackAt(2, at, 100.0)
+    ok(ok1 == true and ok2 == false and why2 == 'already on the way back', 'a second return for p2 is refused',
+        tostring(why2))
+    ok(BR.ReviveKey.returning(2), 'p2 is returning meanwhile')
+    eq(#arrivals(2), 1, 'one promise')
+    flush()
+    eq(#places(2), 1, 'one arrival')
+    ok(not BR.ReviveKey.returning(2), 'and not returning once back')
+    local okNo, whyNo = BR.ReviveKey.bringBackAt(2, at, 100.0)
+    ok(okNo == false and whyNo ~= nil, 'and a player who is not out is not brought back', tostring(whyNo))
+
+    -- A RETURN THAT CANNOT START FOR ANYBODY: the run says so and gives it all back.
+    reset()
+    rebootLobby()
+    local real = BR.ReviveKey.bringBackAt
+    BR.ReviveKey.bringBackAt = function() return false, 'test' end
+    useAt(1)
+    ask(1, 'reboot')
+    flush()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'reboot_none' and market.wallet[1] == 1000 and keys[1] == true,
+        'nobody could be brought back: reboot_none, everything back', r and r.code)
+    BR.ReviveKey.bringBackAt = real
+end
+
+
+describe('Reboot: the dev command brings them back over the player')
+do
+    reset()
+    rebootLobby()
+    roster[1].pos = { x = 10.0, y = 20.0, z = 5.0 }
+    keys[1] = false
+    local said = devRun(1, 'reboot')
+    ok(said:find('ok (done)', 1, true) ~= nil, 'brterminal run reboot', said)
+    flush()
+    local p = places(2)[1]
+    ok(p and p.payload.x == 10.0 and p.payload.y == 20.0 and p.payload.z == 5.0,
+        'the dev terminal is nowhere: over the player')
+    ok(roster[2].state == BR.PlayerState.ALIVE and not T.squadUsed(1) and #market.charges == 0,
+        'and nothing is spent')
+end
+
 -- =========================================================================
 -- PART D -- the client
 -- =========================================================================

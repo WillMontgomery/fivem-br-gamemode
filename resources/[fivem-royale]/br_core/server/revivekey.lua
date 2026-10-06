@@ -1348,15 +1348,19 @@ end
 ---
 --- @param src integer
 --- @param e table
---- @param reviverSrc integer|nil  credited; nil for the console path
+--- @param reviverSrc integer|nil  credited; nil for the console path and a
+---                               terminal's Reboot, which nobody performed
 --- @param at table                { x, y, z } of the ambulance they arrive over
-local function bringBack(src, e, reviverSrc, at)
+---                               (or the terminal a Reboot ran at)
+--- @param hpOverride number|nil   the health a caller's own page promises
+---                               (Reboot's "full health"); nil is reviveHp
+local function bringBack(src, e, reviverSrc, at, hpOverride)
     -- FULL HEALTH, WHICH IS THE OWNER'S SENTENCE OF 2026-08-31: "when a revive
     -- is processed using the key, the player should come back with full health".
     -- It was BR.Config.Match.dbnoReviveHp -- the 30 an in-person pick-up hands
     -- back, which still does. See config/revivekey.lua's `reviveHp` for the
     -- argument this replaced.
-    local hp = tonumber(K and K.reviveHp) or 100
+    local hp = tonumber(hpOverride) or tonumber(K and K.reviveHp) or 100
 
     BR.Roster.clearFields(src, {
         -- THE ONE PUBLIC FIELD IN THIS LIST, AND THE WHOLE REASON FOR THE VERB.
@@ -1478,6 +1482,90 @@ local function bringBack(src, e, reviverSrc, at)
         :format(tostring(e.name), src, hp,
                 tonumber(K and K.dropM) or 150.0, at.x, at.y,
                 r and (' -- brought back by ' .. tostring(r.name)) or ''))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE SAME RETURN, WITH NO KEY: A TERMINAL'S REBOOT (#396, wave C)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The Reboot page: "Every eliminated player in your squad comes back at this
+-- terminal with full health. They come back with an empty inventory."
+--
+-- IT IS THIS FILE'S RETURN, NOT A SECOND ONE. A player coming back into a
+-- match has one path in this codebase and it is the one above: the promise
+-- (REVIVEKEY_ARRIVE -- black, the streaming focus on the point, the spectate
+-- camera down under it), then `arriveMs()` later `bringBack` -- the clears
+-- (`placement` retracted on every client, `diedAt`, the corpse's `engineHp`,
+-- the key), REVIVEKEY_PLACE (resurrected 150 m over the point with the
+-- parachute), the health, ALIVE, the squad's cue. server/terminalfx/reboot.lua
+-- asks for exactly that over the terminal instead of an ambulance, with no
+-- key, no hold and nobody credited: nobody performed a revive.
+--
+-- THE EMPTY INVENTORY IS THE ELIMINATION'S, as it is for a key: the death box
+-- emptied it on the edge that made them OUT (see this file's header), so
+-- nothing is given back and nothing has to be taken.
+--
+-- AND A KEY FOR THEM IS SPENT. `bringBack` clears `reviveKey`, held or not,
+-- picked up or bought -- the player it would have brought back is back, and a
+-- key left on a living player would be a free revive the next time they fall.
+-- A hold filling at an ambulance for them is stopped (its reviver is told); an
+-- arrival a key has already committed is left to land, and this refuses: that
+-- player is already on the way back and is not brought back twice.
+
+--- The returns in flight that are not a key's: [src] = { at, matchId, hp }.
+local returns = {}
+
+--- Is this player already on the way back -- a key's committed arrival, or
+--- a return of this section's?
+--- @param src integer
+--- @return boolean
+function BR.ReviveKey.returning(src)
+    if returns[src] ~= nil then return true end
+    local e = BR.Roster.get(src)
+    return e ~= nil and e.reviveKey ~= nil and e.reviveKey.arriveAt ~= nil
+end
+
+--- Bring a player who is OUT back into their match over `at`, by the key's
+--- own return (see above). Refuses a player who is not OUT, in a match no
+--- longer played, or already on the way back.
+--- @param src integer
+--- @param at table          { x, y, z }: where they come back over
+--- @param hp number|nil     the health they come back with; nil is reviveHp
+--- @return boolean ok, string|nil why
+function BR.ReviveKey.bringBackAt(src, at, hp)
+    local e = BR.Roster.get(src)
+    if not e then return false, 'no roster entry' end
+    local okP, whyP = stillPossible(e)
+    if not okP then return false, whyP end
+    if BR.ReviveKey.returning(src) then return false, 'already on the way back' end
+    if not (at and tonumber(at.x) and tonumber(at.y) and tonumber(at.z)) then
+        return false, 'nowhere to come back'
+    end
+    if e.reviveKey and e.reviveKey.byS then stopHold(src, e, 'rebooted') end
+
+    local point = { x = at.x + 0.0, y = at.y + 0.0, z = at.z + 0.0 }
+    local r = { at = point, matchId = e.matchId, hp = hp }
+    returns[src] = r
+    -- STEPS 1 AND 2, AND THE CAMERA DOWN UNDER THE BLACK, exactly as the
+    -- stepper does it when a hold completes.
+    TriggerClientEvent(BR.Net.REVIVEKEY_ARRIVE, src, point)
+    if BR.Spectate and BR.Spectate.stop then
+        BR.Spectate.stop(src, 'in-the-fight')
+    end
+    SetTimeout(arriveMs(), function()
+        if returns[src] ~= r then return end
+        returns[src] = nil
+        local now = BR.Roster.get(src)
+        local still = now ~= nil and now.matchId == r.matchId and (stillPossible(now))
+        if not still then
+            -- THE PROMISE IS WITHDRAWN, as the stepper withdraws a key's.
+            unpromise(src)
+            print(('[br_core] revivekey: the return of %d fell through'):format(src))
+            return
+        end
+        bringBack(src, now, nil, r.at, r.hp)
+    end)
+    return true, nil
 end
 
 --- Complete a revive by hand, from the console. The same path, not a shortcut.
