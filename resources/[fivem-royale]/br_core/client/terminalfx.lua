@@ -40,12 +40,12 @@ end
 --- One mark on each map: display 3 is the pause map, 5 the minimap (the pair
 --- client/yubikey.lua and client/airdrop.lua draw, which a playtest proved
 --- shows on both).
-local function newMark(x, y, look, colour, name)
+local function newMark(x, y, look, color, name)
     local pair = {}
     for i, display in ipairs({ 3, 5 }) do
         local b = AddBlipForCoord(x, y, 0.0)
         SetBlipSprite(b, look.sprite or 1)
-        SetBlipColour(b, colour or look.colour or 1)
+        SetBlipColour(b, color or look.colour or 1)
         SetBlipScale(b, look.scale or 1.0)
         SetBlipDisplay(b, display)
         SetBlipAsShortRange(b, false)
@@ -103,7 +103,7 @@ end
 -- their own under client/terminalfx/, with these four, so every terminal mark
 -- is drawn the one way: a blip on each map, moved rather than rebuilt.
 --
---   F.newMark(x, y, look, colour, name) -> mark   one mark, both maps
+--   F.newMark(x, y, look, color, name) -> mark    one mark, both maps
 --   F.dropMark(mark)                              both of its blips gone
 --   F.clear(set)                                  every mark in a set gone
 --   F.apply(set, list, look, name)                a set made to match a push

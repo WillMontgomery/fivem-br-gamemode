@@ -33,7 +33,7 @@ local FULL_HP = 100.0
 local SLACK = 0.5
 
 --- @return number
-local function fullArmour()
+local function fullArmor()
     return (BR.Config.Match and BR.Config.Match.maxArmour) or 100
 end
 
@@ -55,7 +55,7 @@ end
 --- @return boolean
 local function short(e)
     return (tonumber(e.hp) or 0) < FULL_HP - SLACK
-        or (tonumber(e.armour) or 0) < fullArmour() - SLACK
+        or (tonumber(e.armour) or 0) < fullArmor() - SLACK
 end
 
 T.FUNCTIONS.field_medic = {
@@ -81,13 +81,13 @@ T.FUNCTIONS.field_medic = {
             end
             return { ok = false, code = 'unavailable' }
         end
-        local armour = fullArmour()
+        local armor = fullArmor()
         local healed = 0
         for _, s in ipairs(standing(m, key)) do
             local e = BR.Roster.get(s)
             if e and short(e) and BR.Inv.grantEffect(s, {
                 health = FULL_HP, healthCap = FULL_HP,
-                armour = armour, armourCap = armour,
+                armour = armor, armourCap = armor,
             }) then
                 healed = healed + 1
             end
