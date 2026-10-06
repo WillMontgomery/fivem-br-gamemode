@@ -872,7 +872,17 @@ setr sv_showBusySpinnerOnLoadingScreen false
 #   - Overhead names      (gamemode shows squadmates only)
 #   - Join/quit notifications (the gamemode hides GTA's feed entirely)
 #   - PvP / friendly fire settings (the gamemode forces PvP on)
+#   - Weather sync and time sync (#399): br_core writes the sky
+#     (client/world.lua) and holds the clock (client/natives.lua, #394), and
+#     vMenu's syncs re-assert their own every second or faster. Legacy vMenu
+#     (3.x) is switched off below. vMenu Enhanced's switches DEFAULT ON:
+#       setr vMenu.Enhanced.WeatherOptions.Enabled false
+#       setr vMenu.Enhanced.TimeOptions.Enabled false
+#     Either way, AFTER vMenu's own config is exec'd: the last write wins.
+# Note: vMenu's TM (timecycle modifier) menu shares the storm's red-grade slot.
 # ---------------------------------------------------------------------------
+setr vmenu_enable_weather_sync false
+setr vmenu_enable_time_sync false
 
 # ---------------------------------------------------------------------------
 # Development
