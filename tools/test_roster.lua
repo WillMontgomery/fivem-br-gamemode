@@ -475,7 +475,16 @@ for _, f in ipairs({
     -- commit, and `lobby.commit` below reads it off the broadcast.
     'br_lib/shared/season.lua',
     'br_lib/config/seasons.lua',
+    -- The festive calendar and the festive match sky's cycle (#399), in
+    -- fxmanifest order: server/world.lua below starts a festive match's cycle
+    -- from BR.Match.transition, and `match.sky` drives it through the real
+    -- match.lua and broadcast.lua. PINNED OFF just after this list, so no block
+    -- here depends on the month the suite runs in.
+    'br_lib/config/festive.lua',
+    'br_lib/shared/festive.lua',
     'br_core/server/main.lua',
+    -- After main.lua, as the manifest orders it (BR.Sched, BR.Server).
+    'br_core/server/world.lua',
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
     'br_core/server/evidence.lua',    -- BR.Evidence; combat.lua notes kills into it
@@ -581,6 +590,11 @@ end
 
 -- br_core/server/chat.lua is not loaded here, so stub what match.lua calls.
 BR.Server.systemMessage = function() end
+
+-- THE FESTIVE SKY, PINNED OFF (#399). server/world.lua's minute job asks the
+-- calendar, and run in December it would turn the festive sky on and start a
+-- cycle in every PLAYING match below. `match.sky` turns it on and off itself.
+BR.Festive.override = false
 
 local pass, fail = 0, 0
 local group = ''
@@ -5910,6 +5924,148 @@ do
     ok(m.clock ~= nil and m.clock.at == fakeTime and first ~= nil and first.clock == m.clock,
         '`brforce playing` straight off the pad stamps the anchor on arrival, and the '
         .. 'state event announcing it carries it')
+end
+
+describe('match.sky')
+do
+    -- THE FESTIVE MATCH SKY CYCLES (#399). Owner, 2026-10-06: "The match weather
+    -- can cycle between snow, snowlight, xmas and blizzard during the months of
+    -- December and January." The server's half through the real match.lua,
+    -- broadcast.lua and world.lua: which messages carry the weather -- the
+    -- PLAYING state event first, one WORLD_CYCLE per turn, the snapshot for a
+    -- client that (re)loads -- and that nothing else ever does.
+    local function form()
+        reset()
+        BR.Server.devMode = true
+        join(1, 'A'); join(2, 'B')
+        fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+        fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        return theMatch()
+    end
+    local function skyKeys(name)
+        local n = 0
+        for _, s in ipairs(eventsOf(name)) do
+            local p = s.args[1]
+            if type(p) == 'table' and (p.sky ~= nil or (type(p.match) == 'table'
+                                                       and p.match.sky ~= nil)) then
+                n = n + 1
+            end
+        end
+        return n
+    end
+    local function stepFor(ms)
+        local stop = fakeTime + ms
+        while fakeTime < stop do
+            fakeTime = fakeTime + 1000
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    -- ── NOT FESTIVE: THE WIRE IS TODAY'S ──
+    BR.Festive.override = false
+    BR.WorldSky.refresh('match.sky')
+    local m = form()
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.BUS)
+    BR.Match.transition(m, BR.MatchState.PLAYING)
+    BR.Broadcast.snapshot(1)
+    stepFor(400000)
+    ok(m.sky == nil and skyKeys(BR.Net.STATE) == 0 and skyKeys(BR.Net.SNAPSHOT) == 0
+       and skyKeys(BR.Net.DIGEST) == 0 and #eventsOf(BR.Net.WORLD_CYCLE) == 0,
+       'not festive: no state event, snapshot or digest carries a sky, and nothing cycles',
+       ('%d %d %d %d'):format(skyKeys(BR.Net.STATE), skyKeys(BR.Net.SNAPSHOT),
+                              skyKeys(BR.Net.DIGEST), #eventsOf(BR.Net.WORLD_CYCLE)))
+
+    -- ── FESTIVE ──
+    BR.Festive.override = true
+    BR.WorldSky.refresh('match.sky')
+    m = form()
+    join(3, 'Bystander')
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.BUS)
+    ok(m.sky == nil and skyKeys(BR.Net.STATE) == 0,
+       'festive: the bus carries no cycle -- its doors open on XMAS')
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.PLAYING)
+    local first = m.sky and m.sky.weather
+    local playing = {}
+    for _, s in ipairs(eventsOf(BR.Net.STATE)) do
+        if s.args[1].state == BR.MatchState.PLAYING then playing[s.target] = s.args[1].sky end
+    end
+    ok(first ~= nil and BR.World.inCycle(first) and playing[1] == first and playing[2] == first
+       and playing[3] == nil,
+       'PLAYING starts the cycle, and the state event announcing it carries the first weather '
+       .. 'to every player in the match', tostring(first))
+    ok(#eventsOf(BR.Net.WORLD_CYCLE) == 0, 'and nothing else is sent for it')
+
+    sent = {}
+    BR.Broadcast.snapshot(1)
+    BR.Broadcast.snapshot(3)
+    local snaps = {}
+    for _, s in ipairs(eventsOf(BR.Net.SNAPSHOT)) do snaps[s.target] = s.args[1].match.sky end
+    ok(snaps[1] == first and snaps[3] == nil,
+       'a client (re)loading mid-match finds it in its snapshot; a lobby bystander does not')
+
+    -- ONE MESSAGE PER TURN, TO THE MATCH ALONE.
+    sent = {}
+    local due = m.sky.nextAt
+    stepFor(due - 1000 - fakeTime)
+    ok(#eventsOf(BR.Net.WORLD_CYCLE) == 0 and skyKeys(BR.Net.DIGEST) == 0,
+       'until its hold is up nothing is sent -- the twice-a-second digest carries no sky',
+       #eventsOf(BR.Net.WORLD_CYCLE))
+    stepFor(1000)
+    local turns = {}
+    for _, s in ipairs(eventsOf(BR.Net.WORLD_CYCLE)) do turns[s.target] = s.args[1].weather end
+    local count = #eventsOf(BR.Net.WORLD_CYCLE)
+    ok(count == 2 and turns[1] == m.sky.weather and turns[2] == m.sky.weather
+       and m.sky.weather ~= first and turns[3] == nil,
+       'at the hold, one message to each player in the match: the next weather, never the '
+       .. 'same one; the lobby hears nothing', ('%d sent, %s -> %s'):format(count,
+                                                tostring(first), tostring(m.sky.weather)))
+
+    sent = {}
+    fire(BR.Net.READY, 1)
+    local late = nil
+    for _, s in ipairs(eventsOf(BR.Net.SNAPSHOT)) do late = s.args[1].match.sky end
+    ok(late == m.sky.weather, 'a late joiner\'s snapshot carries the weather now', tostring(late))
+
+    -- IT ENDS WITH THE MATCH.
+    local last = m.sky.weather
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.ENDED)
+    local ended = nil
+    for _, s in ipairs(eventsOf(BR.Net.STATE)) do
+        if s.args[1].state == BR.MatchState.ENDED then ended = s.args[1].sky end
+    end
+    ok(ended == last, 'ENDED carries the last weather: the sky holds under the verdict')
+    sent = {}
+    stepFor(400000)
+    ok(#eventsOf(BR.Net.WORLD_CYCLE) == 0, 'and nothing turns after it',
+       #eventsOf(BR.Net.WORLD_CYCLE))
+
+    -- brfestive OFF MID-MATCH: the plain sky to everyone, then the stop.
+    m = form()
+    BR.Match.transition(m, BR.MatchState.PLAYING)
+    ok(m.sky ~= nil, '`brforce playing` off the pad starts a cycle too')
+    sent = {}
+    BR.Festive.override = false
+    BR.WorldSky.refresh('match.sky')
+    local order = {}
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.WORLD_SET then order[#order + 1] = 'set ' .. tostring(s.target)
+        elseif s.event == BR.Net.WORLD_CYCLE then
+            order[#order + 1] = ('cycle %s %s'):format(tostring(s.target),
+                                                       tostring(s.args[1].weather))
+        end
+    end
+    ok(table.concat(order, ',') == 'set -1,cycle 1 nil,cycle 2 nil' and m.sky == nil,
+       'brfestive off mid-match: the plain sky first, then the match\'s cycle stops',
+       table.concat(order, ','))
+
+    BR.Festive.override = false
+    BR.WorldSky.refresh('match.sky')
 end
 
 describe('match.teardownWire')

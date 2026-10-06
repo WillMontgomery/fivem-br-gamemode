@@ -22929,6 +22929,438 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- #399: THE FESTIVE MATCH SKY CYCLES, DRAWN BY THE SERVER PER MATCH
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-06: "The match weather can cycle between snow, snowlight, xmas
+-- and blizzard during the months of December and January." The draw is pure
+-- (BR.World.cycleNext over the match's own generator); the server's half is the
+-- real server/world.lua: started at PLAYING, one message per turn to the
+-- match's audience, stopped when the match leaves PLAYING or the festive sky
+-- goes off, and `brsky`.
+describe('world / the festive match sky: the draw')
+do
+    local env = newSandbox()
+    loadInto(env, SANDBOX_LIB)
+    loadInto(env, { 'br_lib/config/festive.lua' })
+    local W, C = env.BR.World, env.BR.Config.Festive.cycle
+
+    ok(#C.weathers == 4 and W.inCycle('SNOW') and W.inCycle('SNOWLIGHT')
+       and W.inCycle('XMAS') and W.inCycle('BLIZZARD'),
+       'the cycle is the four the owner named: SNOW, SNOWLIGHT, XMAS, BLIZZARD',
+       table.concat(C.weathers, ','))
+    ok(C.holdMinSec == 180 and C.holdMaxSec == 300 and C.blendSec == 30.0,
+       'each held 180 to 300 s, blended over 30 s',
+       ('%s %s %s'):format(C.holdMinSec, C.holdMaxSec, C.blendSec))
+    local notOne = {}
+    for _, w in ipairs({ 'EXTRASUNNY', 'THUNDER', 'RAIN', 'OVERCAST', 'base', 'snow', '' }) do
+        if W.inCycle(w) then notOne[#notOne + 1] = w end
+    end
+    ok(#notOne == 0 and not W.inCycle(nil) and not W.inCycle(7),
+       'and nothing else is a cycle weather -- not THUNDER, not a role, not lower case',
+       table.concat(notOne, ','))
+    for _, w in ipairs(C.weathers) do
+        ok(W.SNOW_WEATHER[w] == true,
+           ('%s is a snow weather, so the ground stays white under it'):format(w))
+    end
+
+    -- NEVER THE SAME WEATHER TWICE IN A ROW, AND EVERY HOLD IN BOUNDS. Twenty
+    -- thousand turns over one generator, every weather the previous turn left.
+    local rng = env.BR.Rng(399)
+    local prev, repeats, outOf, whole = nil, 0, 0, true
+    local seen, after = {}, {}
+    local lo, hi = math.huge, -math.huge
+    for i = 1, 20000 do
+        local w, hold = W.cycleNext(rng, prev)
+        if w == prev then repeats = repeats + 1 end
+        if not W.inCycle(w) then outOf = outOf + 1 end
+        if hold % 1000 ~= 0 or math.type(hold) ~= 'integer' then whole = false end
+        lo, hi = math.min(lo, hold), math.max(hi, hold)
+        seen[w] = (seen[w] or 0) + 1
+        if prev then after[prev .. '>' .. w] = true end
+        prev = w
+        if i == 1 then ok(w ~= nil, 'the first turn draws a weather with no previous one') end
+    end
+    ok(repeats == 0, 'twenty thousand turns: never the weather just shown', repeats)
+    ok(outOf == 0, 'and always one of the four', outOf)
+    local pairs12 = 0
+    for _ in pairs(after) do pairs12 = pairs12 + 1 end
+    ok(pairs12 == 12, 'every weather follows every other one -- all twelve changes occur',
+       pairs12)
+    local fair = true
+    for _, w in ipairs(C.weathers) do
+        if math.abs((seen[w] or 0) - 5000) > 400 then fair = false end
+    end
+    ok(fair, 'each weather about a quarter of the time',
+       ('%d %d %d %d'):format(seen.SNOW or 0, seen.SNOWLIGHT or 0, seen.XMAS or 0,
+                              seen.BLIZZARD or 0))
+    ok(lo == 180000 and hi == 300000 and whole,
+       'every hold a whole number of seconds from 180 to 300, both ends reached',
+       ('%s..%s whole=%s'):format(tostring(lo), tostring(hi), tostring(whole)))
+
+    -- A FIRST TURN CAN SHOW ANY OF THE FOUR: the sky before the cycle (XMAS)
+    -- is not "the weather just shown" -- the cycle has shown nothing yet.
+    local firsts = {}
+    for seed = 1, 400 do
+        local w = W.cycleNext(env.BR.Rng(seed), nil)
+        firsts[w] = true
+    end
+    ok(firsts.SNOW and firsts.SNOWLIGHT and firsts.XMAS and firsts.BLIZZARD,
+       'over four hundred seeds, a cycle can open on any of the four')
+
+    -- SEEDED: one seed, one sky; two seeds, two.
+    local function sequence(seed, n)
+        local r, out, p = env.BR.Rng(seed), {}, nil
+        for _ = 1, n do
+            local w, hold = W.cycleNext(r, p)
+            out[#out + 1] = w .. '/' .. hold
+            p = w
+        end
+        return table.concat(out, ',')
+    end
+    ok(sequence(4242, 40) == sequence(4242, 40), 'the same seed replays the same forty turns')
+    ok(sequence(4242, 40) ~= sequence(4243, 40), 'and the next seed draws another sky')
+end
+
+describe('world / the festive match sky: the roles it moves')
+do
+    local env = newSandbox()
+    loadInto(env, SANDBOX_LIB)
+    loadInto(env, { 'br_lib/config/festive.lua' })
+    local W = env.BR.World
+
+    ok(W.CYCLE_ROLE == 'base' and W.SKY_ROLE[W.CYCLE_ROLE] ~= nil,
+       'the cycle moves the clear sky, the base role')
+    for _, wx in ipairs({ 'SNOW', 'SNOWLIGHT', 'XMAS', 'BLIZZARD' }) do
+        ok(W.skyWeather('base', true, wx) == wx,
+           ('festive, the base role is the cycle\'s %s'):format(wx))
+    end
+    ok(W.skyWeather('base', true, nil) == 'XMAS',
+       'before the cycle starts, festive base is #399\'s XMAS')
+    ok(W.skyWeather('base', false, 'BLIZZARD') == 'EXTRASUNNY'
+       and W.skyWeather('lobby', false, 'BLIZZARD') == 'OVERCAST'
+       and W.skyWeather('cover', false, 'BLIZZARD') == 'OVERCAST',
+       'not festive, a cycle weather moves no role at all')
+    ok(W.skyWeather('lobby', true, 'BLIZZARD') == 'XMAS',
+       'the lobby and warmup stay XMAS whatever the match is on')
+    ok(W.skyWeather('cover', true, 'BLIZZARD') == 'OVERCAST',
+       'and the bus keeps its OVERCAST cover')
+    ok(W.skyWeather('THUNDER', true, 'BLIZZARD') == 'THUNDER'
+       and W.skyWeather('RAIN', true, 'SNOW') == 'RAIN',
+       'a weather is itself, cycle or not')
+
+    -- WHATEVER OUTRANKS THE CLEAR SKY STILL DOES.
+    local function rs(claims) return (W.resolveSky(claims, true, 'BLIZZARD')) end
+    ok(rs({ island = { name = 'base', blend = 10.0 } }) == 'BLIZZARD',
+       'the doors-open sky in a cycling match is the cycle weather')
+    ok(rs({ storm = { name = 'base', blend = 5.0 }, island = { name = 'base' } }) == 'BLIZZARD',
+       'and so is the storm\'s all-clear')
+    ok(rs({ storm = { name = 'THUNDER', blend = 5.0 }, island = { name = 'base' } }) == 'THUNDER',
+       'caught in the storm is THUNDER')
+    ok(rs({ override = { name = 'RAIN' }, storm = { name = 'base' } }) == 'RAIN',
+       'a console sky outranks it')
+    ok(rs({ storm = { name = 'base' }, terminal = { name = 'FOGGY' }, island = { name = 'base' } })
+       == 'FOGGY', 'Time & weather\'s chosen weather is drawn over it')
+    ok(rs({ terminal = { name = 'base' }, island = { name = 'base' } }) == 'BLIZZARD',
+       'and Time & weather\'s clear is the match\'s own clear sky, the cycle')
+    ok(rs({ island = { name = 'lobby' } }) == 'XMAS' and rs({ island = { name = 'cover' } }) == 'OVERCAST',
+       'the island at rest and under its cover ignore the match\'s cycle')
+
+    -- THE CLIENT'S MIRROR TAKES ONLY A CYCLE WEATHER.
+    W.setCycle('SNOW')
+    ok(W.cycleNow() == 'SNOW', 'a client holds the weather it was sent')
+    W.setCycle('THUNDER')
+    ok(W.cycleNow() == nil, 'and anything that is not a cycle weather clears it -- never THUNDER')
+    W.setCycle('base')
+    ok(W.cycleNow() == nil, 'nor a role')
+    W.setCycle(nil)
+end
+
+describe('world / the festive match sky: the server')
+do
+    --- The real server/world.lua over a hand-built registry of matches.
+    local function newCycleServer(seasonN, month)
+        local env = newSandbox()
+        local S = { sent = {}, prints = {}, jobs = {}, cmds = {}, matches = {}, now = 50000 }
+        env.print = function(s) S.prints[#S.prints + 1] = tostring(s) end
+        env.RegisterNetEvent = function() end
+        env.AddEventHandler = function() end
+        env.RegisterCommand = function(n, fn) S.cmds[n] = fn end
+        env.GetGameTimer = function() return S.now end
+        env.TriggerClientEvent = function(evt, target, payload)
+            S.sent[#S.sent + 1] = { event = evt, target = target, payload = payload }
+        end
+        S.month = month
+        env.os = setmetatable({ date = function() return { month = S.month } end },
+                              { __index = os })
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_lib/shared/matchtag.lua', 'br_lib/shared/season.lua',
+                        'br_lib/config/seasons.lua', 'br_lib/config/festive.lua',
+                        'br_lib/shared/festive.lua' })
+        env.BR.Season.boot(function(n) return n == 'br_season' and tostring(seasonN) or '' end,
+                           function() end)
+        env.BR.Sched.every = function(_, name, fn) S.jobs[name] = fn end
+        env.BR.Server = {
+            devMode = true,
+            eachMatch = function(fn) for _, m in ipairs(S.matches) do fn(m) end end,
+        }
+        env.BR.Broadcast = {
+            toMatch = function(m, evt, payload)
+                S.sent[#S.sent + 1] = { event = evt, match = m.id, payload = payload }
+            end,
+        }
+        loadInto(env, { 'br_core/server/world.lua' })
+        S.env, S.MS = env, env.BR.MatchState
+        S.newMatch = function(id, state)
+            local m = { id = id, seq = #S.matches + 1, state = nil }
+            S.matches[#S.matches + 1] = m
+            S.enter(m, state or S.MS.WARMUP)
+            return m
+        end
+        S.enter = function(m, state)
+            m.state = state
+            env.BR.WorldSky.stamp(m, state)
+        end
+        --- Every send since `from`, as 'cycle <match> <weather>' or 'set <target> <festive>'.
+        S.log = function(from)
+            local out = {}
+            for i = (from or 0) + 1, #S.sent do
+                local s = S.sent[i]
+                if s.event == env.BR.Net.WORLD_CYCLE then
+                    out[#out + 1] = ('cycle %s %s'):format(tostring(s.match),
+                                                          tostring(s.payload.weather))
+                elseif s.event == env.BR.Net.WORLD_SET then
+                    out[#out + 1] = ('set %s %s'):format(tostring(s.target),
+                                                         tostring(s.payload.festive == true))
+                else
+                    out[#out + 1] = 'other ' .. tostring(s.event)
+                end
+            end
+            return out
+        end
+        S.said = function(needle)
+            for _, p in ipairs(S.prints) do
+                if p:find(needle, 1, true) then return true end
+            end
+            return false
+        end
+        return S
+    end
+
+    -- ── NOT FESTIVE: NOTHING STARTS, NOTHING IS SENT ──
+    do
+        local S = newCycleServer(2, 10)
+        S.jobs['world.festive']()
+        local m = S.newMatch(11)
+        S.enter(m, S.MS.BUS)
+        S.enter(m, S.MS.PLAYING)
+        ok(m.sky == nil, 'October: a match goes PLAYING with no cycle')
+        for _ = 1, 900 do
+            S.now = S.now + 1000
+            S.jobs['world.cycle']()
+        end
+        ok(#S.log() == 0, 'and fifteen minutes of the cycle\'s job send nothing at all',
+           table.concat(S.log(), ' | '))
+        S.prints = {}
+        S.cmds.brsky(0, {})
+        ok(S.said('the festive sky is off'), 'brsky says why nothing cycles',
+           table.concat(S.prints, ' | '))
+    end
+    do
+        local S = newCycleServer(1, 12)
+        S.jobs['world.festive']()
+        local m = S.newMatch(12, S.MS.PLAYING)
+        ok(m.sky == nil, 'Season 1 in December: no festive sky, so no cycle')
+    end
+
+    -- ── FESTIVE: STARTED AT PLAYING, ONE MESSAGE PER TURN ──
+    do
+        local S = newCycleServer(2, 12)
+        S.jobs['world.festive']()
+        local m = S.newMatch(0x1234567)
+        ok(m.sky == nil, 'December: the warmup pad has no cycle -- it is XMAS')
+        S.enter(m, S.MS.BUS)
+        ok(m.sky == nil, 'nor the bus, which keeps its cover and opens its doors on XMAS')
+        local before = #S.sent
+        S.enter(m, S.MS.PLAYING)
+        local s = m.sky
+        ok(s ~= nil and S.env.BR.World.inCycle(s.weather),
+           'PLAYING starts the cycle on one of the four', s and s.weather)
+        ok(s ~= nil and s.since == S.now and s.nextAt - S.now >= 180000
+           and s.nextAt - S.now <= 300000 and (s.nextAt - S.now) % 1000 == 0,
+           'held a whole number of seconds from 180 to 300', s and (s.nextAt - S.now))
+        ok(#S.sent == before,
+           'starting sends nothing of its own: the PLAYING state event carries the first weather')
+
+        -- NOTHING BETWEEN TURNS.
+        local hold = s.nextAt - S.now
+        local mark = #S.sent
+        for _ = 1, hold // 1000 - 1 do
+            S.now = S.now + 1000
+            S.jobs['world.cycle']()
+        end
+        ok(#S.sent == mark and m.sky.turns == 1,
+           'a second short of its hold, the job has sent nothing', #S.sent - mark)
+        local first = m.sky.weather
+        S.now = S.now + 1000
+        S.jobs['world.cycle']()
+        local L = S.log(mark)
+        ok(#L == 1 and L[1] == ('cycle %d %s'):format(m.id, m.sky.weather)
+           and m.sky.weather ~= first,
+           'at the hold, one message to the match: the next weather, never the same one',
+           table.concat(L, ' | '))
+        S.jobs['world.cycle']()
+        ok(#S.log(mark) == 1, 'and the same second again sends nothing more')
+
+        -- THREE HUNDRED TURNS: the match's own seed replays them, in order.
+        local rng = S.env.BR.Rng(m.sky.seed)
+        local want, p = {}, nil
+        for _ = 1, 302 do
+            local w, h = S.env.BR.World.cycleNext(rng, p)
+            want[#want + 1] = { w = w, h = h }
+            p = w
+        end
+        local got, holdsOk = { first, m.sky.weather }, true
+        for _ = 1, 300 do
+            local due = m.sky.nextAt
+            S.now = due - 1000
+            S.jobs['world.cycle']()
+            S.now = due
+            S.jobs['world.cycle']()
+            got[#got + 1] = m.sky.weather
+            if m.sky.since ~= due then holdsOk = false end
+        end
+        local sent = S.log(mark)
+        ok(#sent == 301 and m.sky.turns == 302,
+           'three hundred turns more: exactly one message each, none between', #sent)
+        local same, rep = got[1] == want[1].w, 0
+        for i = 2, 302 do
+            if sent[i - 1] ~= ('cycle %d %s'):format(m.id, want[i].w) then same = false end
+        end
+        for i = 2, #got do if got[i] == got[i - 1] then rep = rep + 1 end end
+        ok(same, 'every turn is the one the match\'s seed draws: brsky\'s seed replays the sky')
+        ok(rep == 0 and holdsOk, 'never a weather twice in a row, each turn on its due second',
+           rep)
+
+        -- A SECOND MATCH, A SECOND SKY, AND ONLY ITS OWN AUDIENCE.
+        local m2 = S.newMatch(0x7654321, S.MS.PLAYING)
+        ok(m2.sky ~= nil and m2.sky.seed ~= m.sky.seed,
+           'a second match draws from its own seed')
+        local cut = #S.sent
+        local w1 = m.sky.weather
+        S.now = m2.sky.nextAt
+        -- The first match mid-hold at that second, so only the second turns.
+        m.sky.nextAt = math.max(m.sky.nextAt, S.now + 1000)
+        S.jobs['world.cycle']()
+        local two = S.log(cut)
+        ok(#two == 1 and two[1] == ('cycle %d %s'):format(m2.id, m2.sky.weather)
+           and m.sky.weather == w1,
+           'its turn goes to its own audience alone, and the sky of the first match holds',
+           table.concat(two, ' | '))
+
+        -- IT ENDS WITH THE MATCH.
+        local frozen = m.sky.weather
+        S.enter(m, S.MS.ENDED)
+        ok(m.sky ~= nil and m.sky.weather == frozen,
+           'ENDED keeps the last weather, so the state events carry it and the sky holds')
+        cut = #S.sent
+        for _ = 1, 700 do
+            S.now = S.now + 1000
+            S.jobs['world.cycle']()
+        end
+        local ended = 0
+        for _, line in ipairs(S.log(cut)) do
+            if line:find(('^cycle %d '):format(m.id)) then ended = ended + 1 end
+        end
+        ok(ended == 0 and m.sky.weather == frozen,
+           'and from ENDED the cycle never turns again', ended)
+        S.enter(m, S.MS.CLEANUP)
+        ok(m.sky ~= nil and m.sky.weather == frozen, 'nor at CLEANUP')
+        S.enter(m, S.MS.WARMUP)
+        ok(m.sky == nil, '`brforce warmup` drops it: the pad is XMAS again')
+        S.enter(m, S.MS.PLAYING)
+        ok(m.sky ~= nil and m.sky.turns == 1, 'and the next PLAYING starts a fresh cycle')
+
+        -- brsky: SEE IT, FORCE IT.
+        S.prints = {}
+        cut = #S.sent
+        S.cmds.brsky(0, {})
+        ok(#S.sent == cut and S.said(('match %s (playing): %s')
+                                     :format(S.env.BR.MatchTag(m.id), m.sky.weather))
+           and S.said('seed ' .. m.sky.seed),
+           'brsky prints each cycling match\'s weather and seed, and sends nothing',
+           table.concat(S.prints, ' | '))
+        local target = m.sky.weather == 'BLIZZARD' and 'SNOW' or 'BLIZZARD'
+        S.cmds.brsky(0, { target:lower() })
+        local forced = 0
+        for _, line in ipairs(S.log(cut)) do
+            if line == ('cycle %d %s'):format(m.id, target) then forced = forced + 1 end
+        end
+        ok(m.sky.weather == target and forced == 1
+           and m.sky.nextAt - S.now >= 180000 and m.sky.nextAt - S.now <= 300000,
+           'brsky <weather> shows it now, told once, with a fresh hold', forced)
+        cut = #S.sent
+        S.cmds.brsky(0, { target })
+        local again = 0
+        for _, line in ipairs(S.log(cut)) do
+            if line:find(('^cycle %d '):format(m.id)) then again = again + 1 end
+        end
+        ok(again == 0, 'the weather already showing: nothing sent', again)
+        cut = #S.sent
+        S.cmds.brsky(0, { 'next' })
+        local nextLine = nil
+        for _, line in ipairs(S.log(cut)) do
+            if line:find(('^cycle %d '):format(m.id)) then nextLine = line end
+        end
+        ok(nextLine ~= nil and m.sky.weather ~= target,
+           'brsky next turns it now, to another weather', nextLine)
+        cut = #S.sent
+        S.prints = {}
+        S.cmds.brsky(0, { 'rain' })
+        ok(#S.sent == cut and S.said('usage'), 'brsky RAIN is refused with the usage')
+        S.enter(m2, S.MS.ENDED)
+        local w2 = m2.sky.weather
+        S.cmds.brsky(0, { 'next' })
+        ok(m2.sky.weather == w2, 'and a finished match\'s sky is not forced')
+    end
+
+    -- ── brfestive / brseason / THE DATE FLIP MID-MATCH ──
+    do
+        local S = newCycleServer(2, 11)
+        S.jobs['world.festive']()
+        local pad = S.newMatch(21)
+        local live = S.newMatch(22, S.MS.PLAYING)
+        ok(live.sky == nil, 'November: a live match has no cycle')
+        local cut = #S.sent
+        S.month = 12
+        S.jobs['world.festive']()
+        local L = S.log(cut)
+        ok(#L == 2 and L[1] == 'cycle 22 ' .. tostring(live.sky and live.sky.weather)
+           and L[2] == 'set -1 true',
+           'the festive sky coming on mid-match starts the live match\'s cycle and tells it '
+           .. 'FIRST, then the festive fact to everyone -- one blend on screen, not XMAS then '
+           .. 'the cycle', table.concat(L, ' | '))
+        ok(pad.sky == nil, 'a match still on the pad starts nothing until it goes PLAYING')
+        cut = #S.sent
+        S.env.BR.Festive.override = false
+        S.env.BR.WorldSky.refresh('brfestive')
+        L = S.log(cut)
+        ok(#L == 2 and L[1] == 'set -1 false' and L[2] == 'cycle 22 nil' and live.sky == nil,
+           'brfestive off: the plain sky to everyone first, then the cycle stops', table.concat(L, ' | '))
+        cut = #S.sent
+        for _ = 1, 400 do
+            S.now = S.now + 1000
+            S.jobs['world.cycle']()
+        end
+        ok(#S.log(cut) == 0, 'and nothing turns after it')
+        S.env.BR.Festive.override = true
+        S.env.BR.WorldSky.refresh('brfestive')
+        ok(live.sky ~= nil and live.sky.turns == 1, 'brfestive on again: a fresh cycle')
+        S.env.BR.Festive.override = nil
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- #399: THE SKY, WALKED THROUGH A WHOLE SESSION
 -- ═══════════════════════════════════════════════════════════════════════════
 --
@@ -22965,7 +23397,13 @@ do
         env._G = env
     end
 
-    --- @param o table|nil { festive = boolean, flips = { [step] = boolean } }
+    --- `sky` and `cycle` are the festive match sky's (#399, 2026-10-06): the
+    --- weather the server's PLAYING state event carries, and a turn of the cycle
+    --- (WORLD_CYCLE; false for the stop) after a step. The state events reach
+    --- br_core as the server sends them: `sky` from PLAYING until the match is
+    --- gone, none before.
+    --- @param o table|nil { festive = boolean, flips = { [step] = boolean },
+    ---                      sky = string|nil, cycle = { [step] = string|false } }
     --- @return table  every write, in order (runs of strength writes folded)
     local function skyWalk(o)
         o = o or {}
@@ -23024,7 +23462,7 @@ do
         env.DoesBlipExist = function() return false end
 
         loadInto(env, SANDBOX_LIB)
-        loadInto(env, { 'br_core/client/main.lua' })
+        loadInto(env, { 'br_lib/config/festive.lua', 'br_core/client/main.lua' })
         env.BR.Native = env.BR.Native or {}
         env.BR.Native.radiusBlip = function() return 1 end
         env.BR.Native.blipName = function() end
@@ -23086,16 +23524,35 @@ do
                 end
             end
         end
+        -- The festive match sky the server holds for this match (#399): set at
+        -- PLAYING, turned by `cycle`, gone with the match.
+        local matchSky = nil
         local function state(s)
             for _, fn in ipairs(ih[BRi.Net.STATE] or {}) do fn({ state = s }) end
+            if s == BRi.MatchState.PLAYING then matchSky = o.sky end
+            if s == BRi.MatchState.WAITING or s == BRi.MatchState.WARMUP
+               or s == BRi.MatchState.BUS then matchSky = nil end
+            fire(BRc.Net.STATE, { state = s, sky = matchSky })
+        end
+        local function cycle(name)
+            local w = o.cycle and o.cycle[name]
+            if w == nil then return end
+            rec('-- cycle ' .. tostring(w or 'stop'))
+            matchSky = w or nil
+            fire(BRc.Net.WORLD_CYCLE, { weather = matchSky })
         end
         local function step(name, fn)
             rec('-- ' .. name)
             fn()
-            if o.flips and o.flips[name] ~= nil then
-                rec('-- brfestive ' .. (o.flips[name] and 'on' or 'off'))
-                festive(o.flips[name])
+            -- The server's order (server/world.lua's refresh): coming on, the
+            -- match's weather before the festive fact; going off, after it.
+            local flip = o.flips and o.flips[name]
+            if flip == true then cycle(name) end
+            if flip ~= nil then
+                rec('-- brfestive ' .. (flip and 'on' or 'off'))
+                festive(flip)
             end
+            if flip ~= true then cycle(name) end
         end
 
         if o.festive then festive(true) end
@@ -23370,6 +23827,139 @@ do
            table.concat(bad, ' | '))
     end
 
+    -- ═══ THE FESTIVE MATCH SKY CYCLES (#399, owner 2026-10-06) ═══
+    --
+    -- "The match weather can cycle between snow, snowlight, xmas and blizzard
+    -- during the months of December and January." The same session with the
+    -- server's cycle: SNOW carried by PLAYING, BLIZZARD a turn later while the
+    -- player is inside, SNOWLIGHT a turn while the storm has them. The lobby,
+    -- warmup, the bus and the doors-open sky are the festive walk's; the clear
+    -- sky follows the cycle, blended over 30 s; THUNDER outranks it and leaving
+    -- the storm comes back to the weather the match is on NOW; the trip home is
+    -- the lobby's XMAS.
+    local CYCLING = {}
+    for i = 1, 19 do CYCLING[i] = FESTIVE[i] end   -- the lobby through the swap
+    for _, line in ipairs({
+        '-- match, inside',
+        'over SNOW 30.0',
+        '-- cycle BLIZZARD',
+        'over BLIZZARD 30.0',
+        '-- storm, caught',
+        'tc set REDMIST',
+        'tc strength 0.15 x11',
+        'invoke 6E9EF3A33C8899F8 false',
+        'trails false',
+        'footsteps false',
+        'ptfx remove core_snow',
+        'over THUNDER 5.0',
+        'rain -1.0',
+        'tc strength 0.70 x39',
+        '-- cycle SNOWLIGHT',
+        '-- storm, back inside',
+        'tc strength 0.55 x11',
+        'over SNOWLIGHT 5.0',
+        'invoke 6E9EF3A33C8899F8 true',
+        'trails true',
+        'footsteps true',
+        'ptfx request core_snow',
+        'tc strength 0.00 x39',
+        'tc clear',
+        'now SNOWLIGHT',
+        'rain 0.0',
+        'rain -1.0',
+        '-- end',
+        'rain -1.0',
+        'now XMAS',
+    }) do CYCLING[#CYCLING + 1] = line end
+    local TURNS = { ['match, inside'] = 'BLIZZARD', ['storm, caught'] = 'SNOWLIGHT' }
+
+    do
+        ok(CYCLING[19] == 'ptfx request core_snow' and CYCLING[20] == '-- match, inside',
+           'the pinned cycling walk shares the festive walk up to the doors opening')
+        local L = skyWalk({ festive = true, sky = 'SNOW', cycle = TURNS })
+        local d = firstDiff(L, CYCLING)
+        ok(d == nil, 'festive, cycling: the whole session, as recorded above', d)
+        ok(table.concat(during(L, '-- match, inside'), ',') == 'over SNOW 30.0',
+           'PLAYING turns the doors-open XMAS to the match\'s first weather over 30 s',
+           table.concat(during(L, '-- match, inside'), ','))
+        ok(table.concat(during(L, '-- cycle BLIZZARD'), ',') == 'over BLIZZARD 30.0',
+           'a turn while the clear sky is on screen: one blend, the ground already white')
+        ok(#during(L, '-- cycle SNOWLIGHT') == 0,
+           'a turn while the storm has the player writes nothing: THUNDER stays')
+        local back = during(L, '-- storm, back inside')
+        ok(back[2] == 'over SNOWLIGHT 5.0'
+           and table.concat(back, ','):find('now SNOWLIGHT,rain 0.0', 1, true) ~= nil,
+           'leaving the storm comes back to the weather the match is on now, and the '
+           .. 'drying snap re-asserts it', table.concat(back, ','))
+        ok(table.concat(during(L, '-- end'), ',') == 'rain -1.0,now XMAS',
+           'the trip home is the lobby\'s XMAS', table.concat(during(L, '-- end'), ','))
+        ok(groundDisagrees(L) == nil, 'and the ground agrees with the sky throughout',
+           groundDisagrees(L))
+    end
+
+    -- NOT FESTIVE, A CYCLE MOVES NOTHING -- even one that arrived anyway.
+    do
+        local L = skyWalk({ festive = false, sky = 'SNOW', cycle = TURNS })
+        local plain = {}
+        for _, line in ipairs(L) do
+            if line:sub(1, 9) ~= '-- cycle ' then plain[#plain + 1] = line end
+        end
+        local d = firstDiff(plain, TODAY)
+        ok(d == nil, 'festive off: a state event carrying a sky and two turns of a cycle '
+           .. 'leave every write exactly as origin/dev wrote it before #399', d)
+    end
+
+    -- brfestive OFF MID-MATCH: the server's order -- the plain sky, then the stop.
+    do
+        local L = skyWalk({ festive = true, sky = 'SNOW',
+                            flips = { ['storm, back inside'] = false },
+                            cycle = { ['storm, back inside'] = false } })
+        local off = table.concat(during(L, '-- brfestive off'), ',')
+        ok(off == 'invoke 6E9EF3A33C8899F8 false,trails false,footsteps false,'
+                  .. 'ptfx remove core_snow,over EXTRASUNNY 10.0',
+           'brfestive off mid-match: the match\'s snow blends to EXTRASUNNY over 10 s', off)
+        ok(#during(L, '-- cycle stop') == 0, 'and the cycle stopping after it writes nothing')
+        ok(table.concat(during(L, '-- end'), ',') == 'rain -1.0,now OVERCAST',
+           'and the trip home is the plain lobby')
+    end
+
+    -- brfestive ON MID-MATCH: the server's order -- the weather, then the fact.
+    do
+        local L = skyWalk({ festive = false, flips = { ['match, inside'] = true },
+                            cycle = { ['match, inside'] = 'SNOWLIGHT' } })
+        ok(#during(L, '-- cycle SNOWLIGHT') == 0,
+           'brfestive on mid-match: the match\'s weather arrives under the plain sky and '
+           .. 'writes nothing')
+        local on = table.concat(during(L, '-- brfestive on'), ',')
+        ok(on == 'over SNOWLIGHT 10.0,invoke 6E9EF3A33C8899F8 true,trails true,'
+                 .. 'footsteps true,ptfx request core_snow',
+           'then the festive fact turns EXTRASUNNY straight to it: one blend, never XMAS '
+           .. 'first', on)
+        local back = during(L, '-- storm, back inside')
+        ok(back[2] == 'over SNOWLIGHT 5.0', 'and a storm exit after it comes back to it',
+           table.concat(back, ','))
+    end
+
+    -- A TURN AT EVERY STEP: it writes only while the clear sky is on screen.
+    do
+        local steps = { 'lobby', 'warmup', 'bus', 'island swap', 'match, inside',
+                        'storm, caught', 'storm, back inside', 'end' }
+        local SHOWS = { ['island swap'] = true, ['match, inside'] = true,
+                        ['storm, back inside'] = true }
+        local bad = {}
+        for _, at in ipairs(steps) do
+            local L = skyWalk({ festive = true, sky = 'SNOW', cycle = { [at] = 'BLIZZARD' } })
+            local w = table.concat(during(L, '-- cycle BLIZZARD'), ',')
+            local want = SHOWS[at] and 'over BLIZZARD 30.0' or ''
+            if w ~= want then bad[#bad + 1] = ('%s: %q'):format(at, w) end
+            local g = groundDisagrees(L)
+            if g then bad[#bad + 1] = at .. ': ' .. g end
+        end
+        ok(#bad == 0, 'a turn at every step of the session moves the sky only under the '
+           .. 'clear sky -- never the lobby, the cover or THUNDER -- and the ground agrees',
+           table.concat(bad, ' | '))
+    end
+
     -- ═══ THE GROUND PASS: ON UNDER A RESOLVED SNOW SKY, OFF OTHERWISE, ON CHANGE ═══
     --
     -- client/world.lua alone, with the sky's and the ground's natives recorded.
@@ -23540,6 +24130,223 @@ do
         n = #G
         for _, fn in ipairs(handlers['onResourceStop'] or {}) do fn('br_ui') end
         ok(since(n) == '', 'and another resource stopping does nothing')
+    end
+
+    -- ═══ THE FESTIVE MATCH SKY ON A CLIENT, UNDER EVERY CLAIM (#399) ═══
+    --
+    -- client/world.lua alone: the cycle arrives on its three roads (the state
+    -- event, WORLD_CYCLE, the snapshot), and the base role follows it under the
+    -- storm, a console sky and Time & weather's weather -- each of which still
+    -- wins, and each of which hands the sky back to the weather the match is on
+    -- by then.
+    do
+        local G = {}
+        local env = {}
+        permissive(env)
+        env.print = function() end
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.RegisterNetEvent = function() end
+        env.TriggerEvent = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.Citizen = { InvokeNative = function(_, a) G[#G + 1] = 'pass ' .. tostring(a) end }
+        env.SetForceVehicleTrails = function() end
+        env.SetForcePedFootstepsTracks = function() end
+        env.RequestNamedPtfxAsset = function() end
+        env.RemoveNamedPtfxAsset = function() end
+        env.SetWeatherTypeNowPersist = function(w) G[#G + 1] = 'now ' .. w end
+        env.SetWeatherTypeOvertimePersist = function(w, b)
+            G[#G + 1] = ('over %s %.1f'):format(w, b)
+        end
+        env.ClearWeatherTypePersist = function() G[#G + 1] = 'sky cleared' end
+        env.SetRainLevel = function() end
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_lib/config/festive.lua', 'br_core/client/world.lua' })
+        local W, Net, MS = env.BR.World, env.BR.Net, env.BR.MatchState
+        local function fire(n, p) for _, fn in ipairs(handlers[n] or {}) do fn(p) end end
+        local function since(n)
+            local out = {}
+            for i = n + 1, #G do out[#out + 1] = G[i] end
+            return table.concat(out, ',')
+        end
+        local function turn(w) fire(Net.WORLD_CYCLE, { weather = w }) end
+
+        fire(Net.WORLD_SET, { festive = true })
+        W.want('island', 'base', 10.0)          -- the doors are open
+        local n = #G
+        fire(Net.STATE, { state = MS.PLAYING, sky = 'SNOW' })
+        ok(since(n) == 'over SNOW 30.0' and W.cycleNow() == 'SNOW',
+           'the PLAYING state event carries the first weather: blended in over 30 s', since(n))
+        n = #G
+        turn('BLIZZARD')
+        ok(since(n) == 'over BLIZZARD 30.0', 'a turn: over 30 s', since(n))
+        n = #G
+        turn('BLIZZARD')
+        fire(Net.STATE, { state = MS.PLAYING, sky = 'BLIZZARD' })
+        fire(Net.SNAPSHOT, { match = { state = MS.PLAYING, sky = 'BLIZZARD' } })
+        ok(since(n) == '', 'the same weather again, on any road, writes nothing', since(n))
+
+        -- THE STORM: THUNDER while caught, the cycle's NOW weather after it.
+        W.want('storm', 'THUNDER', 5.0)
+        n = #G
+        turn('SNOWLIGHT')
+        ok(since(n) == '' and W.sky() == 'THUNDER', 'caught: a turn writes nothing', since(n))
+        W.want('storm', 'base', 5.0)
+        ok(since(n) == 'over SNOWLIGHT 5.0,pass true', 'out again: the storm\'s all-clear is the turn '
+           .. 'that happened while it was caught', since(n))
+
+        -- A CONSOLE SKY.
+        fire(Net.WORLD_SET, { festive = true, weather = 'RAIN' })
+        n = #G
+        turn('XMAS')
+        ok(since(n) == '' and W.sky() == 'RAIN', 'under brweather RAIN a turn writes nothing',
+           since(n))
+        fire(Net.WORLD_SET, { festive = true })
+        ok(since(n) == 'over XMAS 5.0,pass true', 'and brweather reset hands back the weather the '
+           .. 'match is on now', since(n))
+
+        -- TIME & WEATHER'S CHOSEN WEATHER, and its clear.
+        W.want('terminal', 'FOGGY', 5.0)
+        n = #G
+        turn('BLIZZARD')
+        ok(since(n) == '' and W.sky() == 'FOGGY',
+           'under Time & weather\'s FOGGY a turn writes nothing', since(n))
+        W.want('terminal', nil)
+        ok(since(n) == 'over BLIZZARD 5.0,pass true', 'and its end hands back the cycle',
+           since(n))
+        n = #G
+        W.want('terminal', 'base', 5.0)
+        ok(since(n) == '' and W.sky() == 'BLIZZARD',
+           'Time & weather\'s clear is the match\'s own clear sky -- the cycle', since(n))
+        W.want('terminal', nil)
+
+        -- A NAME THAT IS NOT A CYCLE WEATHER IS NO WEATHER AT ALL.
+        n = #G
+        turn('THUNDER')
+        ok(W.cycleNow() == nil and since(n) == 'over XMAS 30.0',
+           'a turn naming THUNDER is refused: the clear sky goes back to XMAS, never THUNDER',
+           since(n))
+        turn('SNOW')
+
+        -- THE END OF THE MATCH.
+        n = #G
+        fire(Net.STATE, { state = MS.ENDED, meta = { reason = 'digest' } })
+        ok(since(n) == '' and W.cycleNow() == 'SNOW',
+           'ENDED moves nothing -- not even the digest\'s replay of it, which carries no sky')
+        fire(Net.STATE, { state = MS.CLEANUP, sky = 'SNOW' })
+        ok(since(n) == '' and W.cycleNow() == 'SNOW', 'nor CLEANUP, which carries the same one')
+        W.want('storm', nil)
+        W.want('island', 'lobby', 0.0)
+        n = #G
+        fire(Net.STATE, { state = MS.WAITING })
+        ok(W.cycleNow() == nil and since(n) == '',
+           'home: the cycle is gone, under the lobby\'s XMAS', since(n))
+        n = #G
+        turn('BLIZZARD')
+        W.want('island', 'cover', 5.0)
+        turn('SNOWLIGHT')
+        ok(since(n) == 'pass false,over OVERCAST 5.0',
+           'a cycle weather moves neither the lobby nor the bus\'s cover', since(n))
+        fire(Net.STATE, { state = MS.WARMUP })
+        ok(W.cycleNow() == nil, 'and the next match\'s warmup state clears it')
+
+        -- THE LATE JOINER: a client (re)loading mid-match.
+        W.want('island', 'base', 10.0)
+        n = #G
+        fire(Net.SNAPSHOT, { match = { state = MS.PLAYING, sky = 'SNOWLIGHT' } })
+        ok(since(n):find('over SNOWLIGHT 30.0', 1, true) ~= nil and W.cycleNow() == 'SNOWLIGHT',
+           'a snapshot mid-match brings the weather the match is on', since(n))
+        fire(Net.SNAPSHOT, { match = { state = MS.WAITING } })
+        ok(W.cycleNow() == nil, 'and a lobby snapshot takes it away')
+        fire(Net.SNAPSHOT, nil)
+        fire(Net.SNAPSHOT, { match = 'x' })
+        fire(Net.STATE, nil)
+        fire(Net.WORLD_CYCLE, nil)
+        fire(Net.WORLD_CYCLE, 'SNOW')
+        ok(W.cycleNow() == nil, 'and payloads of the wrong shape are no weather')
+
+        -- ═══ ANY CLAIMS, ANY TURNS, ANY FESTIVE ANSWER ═══
+        --
+        -- The class: a turn moves the sky on screen only while a festive match's
+        -- clear sky is what shows -- every other winner keeps it -- and then to
+        -- exactly the turn's weather (XMAS for a stop), over 30 s; otherwise it
+        -- writes nothing. Four thousand steps from a fixed seed, judged by an
+        -- oracle of the priority order written out here, not by resolveSky.
+        do
+            local seed = 1206
+            local function pick(t)
+                seed = (seed * 1103515245 + 12345) % 2147483648
+                return t[(seed >> 16) % #t + 1]
+            end
+            local c = { override = false, storm = false, terminal = false,
+                        island = 'base', f = true }
+            fire(Net.WORLD_SET, { festive = true })
+            W.want('storm', nil)
+            W.want('terminal', nil)
+            W.want('island', 'base', 5.0)
+            --- Is the clear sky the winner? No weather claimed anywhere, and the
+            --- strongest role claimed is `base`.
+            local function baseShows()
+                for _, src in ipairs({ 'override', 'storm', 'terminal', 'island' }) do
+                    local v = c[src]
+                    if v and not W.SKY_ROLE[v] then return false end
+                end
+                for _, src in ipairs({ 'storm', 'terminal', 'island' }) do
+                    if c[src] then return c[src] == 'base' end
+                end
+                return false
+            end
+            local bad, moved, held = nil, 0, 0
+            for i = 1, 4000 do
+                local what = pick({ 'override', 'storm', 'terminal', 'island', 'festive',
+                                    'turn', 'turn', 'turn' })
+                if what == 'turn' then
+                    local before = W.sky()
+                    local w = pick({ 'SNOW', 'SNOWLIGHT', 'XMAS', 'BLIZZARD', false })
+                    local n0 = #G
+                    turn(w or nil)
+                    local after, wrote = W.sky(), since(n0)
+                    if c.f and baseShows() then
+                        local want = w or 'XMAS'
+                        local wantWrote = want ~= before and ('over %s 30.0'):format(want) or ''
+                        if after ~= want or wrote ~= wantWrote then
+                            bad = bad or ('step %d: the clear sky showed %s, turn %s: got %s, '
+                                .. 'wrote %q'):format(i, tostring(before), tostring(w),
+                                                      tostring(after), wrote)
+                        end
+                        if after ~= before then moved = moved + 1 end
+                    else
+                        held = held + 1
+                        if after ~= before or wrote ~= '' then
+                            bad = bad or ('step %d: %s was showing, turn %s: got %s, wrote %q')
+                                :format(i, tostring(before), tostring(w), tostring(after), wrote)
+                        end
+                    end
+                elseif what == 'override' then
+                    c.override = pick({ false, false, false, 'RAIN', 'XMAS' })
+                    fire(Net.WORLD_SET, { weather = c.override or nil, festive = c.f or nil })
+                elseif what == 'festive' then
+                    c.f = pick({ false, true, true })
+                    fire(Net.WORLD_SET, { weather = c.override or nil, festive = c.f or nil })
+                elseif what == 'storm' then
+                    c.storm = pick({ false, 'base', 'THUNDER' })
+                    W.want('storm', c.storm or nil, c.storm and 5.0 or nil)
+                elseif what == 'terminal' then
+                    c.terminal = pick({ false, false, false, 'FOGGY', 'base' })
+                    W.want('terminal', c.terminal or nil, c.terminal and 5.0 or nil)
+                else
+                    c.island = pick({ 'lobby', 'cover', 'base', 'base' })
+                    W.want('island', c.island, 5.0)
+                end
+            end
+            ok(bad == nil and moved > 100 and held > 100,
+               'four thousand random claims, festive flips and turns: a turn moves the sky '
+               .. 'only while the clear sky of a festive match shows, to that weather over 30 s, '
+               .. 'and writes nothing otherwise', bad or ('%d moved, %d held'):format(moved, held))
+        end
     end
 end
 
