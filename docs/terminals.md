@@ -153,7 +153,7 @@ The table below is the lines outside the functions' own:
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
 | `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target`, `lockdown_none` | At the terminal: why not (wave A's functions) |
-| `locked` | A terminal a Lockdown has taken: its world plate (nothing to hold), a toast to a player who presses there anyway, and the app's reason |
+| `locked` | A terminal a Lockdown has taken: its world plate (nothing to hold), a toast to a player who presses there anyway, the app's reason, and the refusal of a second Lockdown whose own terminal the first one took while it loaded |
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
 | `pulse_detected` | A toast to each player a Pulse found, after the lobby's notice |
 | `contract_protect` | A toast to a Contract target's squadmates (never the target): the owner's `bounty_protect` says ten minutes, Scan's; `{playername}` |
@@ -655,7 +655,7 @@ sibling through the picker. Nothing runs per frame.
 | Pulse | `radius` 250 / 500 m around this terminal: every player outside the squad in the fight inside it, found once and followed wherever they go (`TERMINAL_PULSE`, every `fx.pulsePingMs`) for `fx.pulseMs` (30 s). Each one found is told (`pulse_detected`). | Never for finding nobody -- a refusal is free, so it would be free intel |
 | Ghost | `duration` 120 / 240 s: the squad is left out of other squads' Scan and Pulse marks, and a bounty on one of them leaves every other map. It hides nobody from sight. | -- |
 | Contract | A bounty for `fx.contractMs` (5 min) on the player outside the squad with the most eliminations; a tie to whoever reached the count first (`killsAt`, stamped as a kill is credited), then the lower id (`BR.Terminal.contractPick`). | `no_target`: nobody outside the squad has one |
-| Lockdown | `duration` 180 / 300 s: every terminal but this one offline -- open computers there close, nobody can open them, a key holder's map shows only this one (`TERMINAL_LOCKDOWN`, the one online rule's `lock`). | `lockdown_none`: no other terminal is online |
+| Lockdown | `duration` 180 / 300 s: every terminal but this one offline -- open computers there close, nobody can open them, a key holder's map shows only this one (`TERMINAL_LOCKDOWN`, the one online rule's `lock`). | `lockdown_none`: no other terminal is online. `locked`: another squad's Lockdown has taken this terminal -- two loading in the same 3-5 s, the second to land is given everything back instead of locking the terminal the first kept |
 
 Each refusal is asked again when the load ends, so an effect that can no
 longer happen gives everything back (the door's rule). Every function runs

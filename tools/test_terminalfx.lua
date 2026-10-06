@@ -1322,8 +1322,11 @@ do
     reset()
     local m = lobby()
     looseKeys(m, { { x = 300.0, y = 400.0 }, { x = 100.0, y = 200.0 } })
+    keys[3] = true                                -- an opponent holding one
     local r = runAt(1, 'key_finder', { target = 'ground' })
     ok(r and r.ok == true and r.code == 'done', 'Keys on the ground: it runs', r and r.code)
+    eq(noticeIndex('Key finder located your Yubikey', 3), nil,
+        'a holder is not warned: the ground marks loose keys, never them (key_finder_risks)')
     local d = lastOf(BR.Net.TERMINAL_KEYS, 2)
     ok(d and d.matchId == 1 and #d.list == 2, 'the squadmate is sent both loose keys, and not the crate')
     ok(d and d.list[1].x == 100.0 and d.list[1].y == 200.0 and d.list[2].x == 300.0,
@@ -2113,6 +2116,91 @@ do
     eq(T.offlineWhy(T.site('hut'), m, gameMs), nil, 'beside the hut: the hut is kept')
     eq(T.offlineWhy(T.site('tower'), m, gameMs), 'locked', 'and the tower is locked')
     ok(m.terminalFx.lockdown.untilAt == gameMs + 300000, 'for 5 minutes')
+
+    -- THE DEV COMMAND SKIPS THE DOOR'S REFUSAL, so the run asks its own
+    -- questions (the wave A review: nothing reached these two before). A second
+    -- one at the tower, which the first locked: `locked`, and the first holds.
+    roster[1].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    said = devRun(1, 'lockdown duration=180')
+    ok(said:find('locked', 1, true) ~= nil, 'a dev Lockdown at the terminal another one locked: locked', said)
+    ok(m.terminalFx.lockdown.keep == 'hut' and m.terminalFx.lockdown.untilAt == gameMs + 300000,
+        'the first Lockdown is untouched')
+    removeHut()
+
+    -- ...and with nothing else online: `lockdown_none`, and no Lockdown made.
+    reset()
+    m = lobby()                                       -- the shack is outside the storm
+    keys[1] = false
+    said = devRun(1, 'lockdown')
+    ok(said:find('lockdown_none', 1, true) ~= nil, 'a dev Lockdown with nothing else online: lockdown_none', said)
+    ok(m.terminalFx == nil or m.terminalFx.lockdown == nil, 'and nothing is locked')
+end
+
+describe('Lockdown: two loading at once -- the second to land finds its own terminal locked and gives everything back')
+do
+    -- THE WAVE A REVIEW'S RACE. B starts a Lockdown at the hut and A one at
+    -- the tower inside the same 3-5 s load. Whichever lands first keeps its
+    -- terminal; the other's terminal is then locked, and its run is refused
+    -- `locked` when its load ends -- instead of locking the terminal the first
+    -- one kept, which that squad's page promised stays online.
+    for _, order in ipairs({ 'hut first', 'tower first' }) do
+        reset()
+        placeHut()
+        local m = lobby()
+        keys[3] = true
+        roster[3].pos = { x = HUT.x, y = HUT.y, z = HUT.z }
+        fire(BR.Net.TERMINAL_USE, 3, { terminalId = 'hut' })
+        gameMs = gameMs + 1000
+        fire(BR.Net.TERMINAL_RUN, 3, { terminalId = 'hut', functionId = 'lockdown',
+                                       options = { duration = '300' } })
+        local rb = lastOf(BR.Net.TERMINAL_RESULT, 3)
+        useAt(1)
+        local ra = ask(1, 'lockdown', { duration = '180' })
+        ok(rb and rb.code == 'running' and ra and ra.code == 'running', order .. ': both accepted, both loading',
+            ('%s / %s'):format(tostring(rb and rb.code), tostring(ra and ra.code)))
+        ok(#timers == 2, order .. ': two loads in flight', #timers)
+        -- Which lands first is the load's random length; set it.
+        local hutFirst = order == 'hut first'
+        timers[1].at = gameMs + (hutFirst and 3000 or 4000)    -- B's, at the hut
+        timers[2].at = gameMs + (hutFirst and 4000 or 3000)    -- A's, at the tower
+        flush()
+        local first, second = hutFirst and 3 or 1, hutFirst and 1 or 3
+        local keptId, lostId = hutFirst and 'hut' or 'tower', hutFirst and 'tower' or 'hut'
+        local r1 = lastOf(BR.Net.TERMINAL_RESULT, first)
+        ok(r1 and r1.code == 'done', order .. ': the first to land is done', r1 and r1.code)
+        -- The second's computer was closed by the first (open sessions at a
+        -- locked terminal close), so its answer is a toast, in `locked`'s words.
+        eq(lastToast(second), COPY.locked, order .. ': the second is refused `locked`, said as a toast')
+        local heard = 0
+        for _, x in ipairs(noticesTo(5)) do
+            if (textOf(x) or ''):find('has redeemed their special power', 1, true) then heard = heard + 1 end
+        end
+        eq(heard, 1, order .. ': and the lobby hears of one Lockdown, not two')
+        ok(keys[second] == true and not T.squadUsed(second), order .. ': and gets its key and its use back')
+        ok(m.terminalFx.lockdown.keep == keptId, order .. ': the first Lockdown holds', m.terminalFx.lockdown.keep)
+        eq(T.offlineWhy(T.site(keptId), m, gameMs), nil, order .. ': its terminal stays online')
+        eq(T.offlineWhy(T.site(lostId), m, gameMs), 'locked', order .. ': the other stays locked')
+        -- THE DOOR'S OWN QUESTION says so too, before anything is charged:
+        -- the card at the terminal the first one locked reads `locked`.
+        eq(T.FUNCTIONS.lockdown.refuse(second, { matchId = m.id, terminalId = lostId }), 'locked',
+            order .. ': refuse() at the locked terminal: locked')
+        eq(T.FUNCTIONS.lockdown.refuse(first, { matchId = m.id, terminalId = keptId }), 'lockdown_none',
+            order .. ': and at the kept one, nothing left to take offline')
+        removeHut()
+    end
+end
+
+describe('Lockdown: an app still open at a terminal a Lockdown took reads `locked`, not the storm\'s offline')
+do
+    reset()
+    placeHut()
+    local m = lobby()
+    runAt(1, 'lockdown', { duration = '180' })
+    local f = T.facts(3, { matchId = m.id, terminalId = 'hut' })
+    ok(f.offline == true and f.locked == true, 'the hut: offline, and locked',
+        ('offline %s locked %s'):format(tostring(f.offline), tostring(f.locked)))
+    f = T.facts(1, { matchId = m.id, terminalId = 'tower' })
+    ok(f.offline == false and f.locked == false, 'the tower it kept: neither')
     removeHut()
 end
 

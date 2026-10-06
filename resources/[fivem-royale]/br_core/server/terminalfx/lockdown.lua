@@ -31,8 +31,12 @@
 --                   asks the match), and off Season 2.
 --
 -- REFUSED, SPENDING NOTHING, when no other terminal is online to take offline
--- (`lockdown_none`) -- and again when the load ends. Its client half is
--- client/terminalfx/lockdown.lua.
+-- (`lockdown_none`) -- and again when the load ends. And `locked` when another
+-- squad's Lockdown has taken this run's own terminal offline: two can load in
+-- the same 3-5 s, and the second to land would otherwise lock the terminal the
+-- first kept and keep its own, breaking the first squad's "This terminal stays
+-- online" (the wave A review). Asked when the load ends, it gives the second
+-- squad everything back. Its client half is client/terminalfx/lockdown.lua.
 
 BR = BR or {}
 BR.Terminal = BR.Terminal or {}
@@ -71,6 +75,13 @@ local function kept(src, session)
         if d2 < bestD2 then best, bestD2 = s, d2 end
     end
     return best
+end
+
+--- Has another Lockdown taken the terminal this run keeps offline? One is in
+--- force and kept some other terminal (or none).
+local function lockedOut(m, keep, now)
+    local l = T.lockOf(m, now)
+    return l ~= nil and (keep == nil or l.keep ~= keep.id)
 end
 
 --- Is any terminal but `keep` online in this match right now?
@@ -116,7 +127,9 @@ T.FUNCTIONS.lockdown = {
     refuse = function(src, session)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
-        if not othersOnline(m, kept(src, session), GetGameTimer()) then return 'lockdown_none' end
+        local now, keep = GetGameTimer(), kept(src, session)
+        if lockedOut(m, keep, now) then return 'locked' end
+        if not othersOnline(m, keep, now) then return 'lockdown_none' end
         return nil
     end,
     run = function(src, session, opts)
@@ -131,6 +144,7 @@ T.FUNCTIONS.lockdown = {
         end
         local now = GetGameTimer()
         local keep = kept(src, session)
+        if lockedOut(m, keep, now) then return { ok = false, code = 'locked' } end
         if not othersOnline(m, keep, now) then return { ok = false, code = 'lockdown_none' } end
         local seconds = tonumber(opts and opts.duration) or 180
         local st = T.fxOf(m)
