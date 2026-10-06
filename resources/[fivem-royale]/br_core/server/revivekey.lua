@@ -348,6 +348,11 @@ end
 --- always runs.
 local buying = {}
 
+--- The returns in flight that are not a key's -- a terminal's Reboot (#396,
+--- wave C): [src] = { at, matchId, hp }. Up here, above `reviveAllowed`, which
+--- refuses a hold on a player in it; see BR.ReviveKey.bringBackAt.
+local returns = {}
+
 --- Is the feature switched on and configured?
 --- @return boolean
 local function enabled()
@@ -1168,6 +1173,14 @@ local function reviveAllowed(reviverSrc, src, e, netId)
     if e.state ~= BR.PlayerState.OUT then
         return false, 'the target is ' .. tostring(e.state) .. ', not out'
     end
+    -- ═══ AND NOT ALREADY ON THE WAY BACK BY A REBOOT ═══
+    --
+    -- A terminal's Reboot is coming for them (BR.ReviveKey.bringBackAt): for
+    -- the second and a half of black they are still OUT with their key, and a
+    -- hold started then would be cleared with the key at the arrival, its
+    -- reviver's ring left up with nobody to take it down. Refused instead,
+    -- whether the hold is starting or running.
+    if returns[src] ~= nil then return false, 'already on the way back' end
 
     local r = BR.Roster.get(reviverSrc)
     if not r then return false, 'no such reviver' end
@@ -1508,12 +1521,12 @@ end
 -- AND A KEY FOR THEM IS SPENT. `bringBack` clears `reviveKey`, held or not,
 -- picked up or bought -- the player it would have brought back is back, and a
 -- key left on a living player would be a free revive the next time they fall.
--- A hold filling at an ambulance for them is stopped (its reviver is told); an
--- arrival a key has already committed is left to land, and this refuses: that
--- player is already on the way back and is not brought back twice.
+-- A hold filling at an ambulance for them is stopped (its reviver is told),
+-- and none can start or run while they are on the way back (`reviveAllowed`);
+-- an arrival a key has already committed is left to land, and this refuses:
+-- that player is already on the way back and is not brought back twice.
 
---- The returns in flight that are not a key's: [src] = { at, matchId, hp }.
-local returns = {}
+--- (`returns`, the Reboots in flight, is declared above `reviveAllowed`.)
 
 --- Is this player already on the way back -- a key's committed arrival, or
 --- a return of this section's?

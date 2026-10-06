@@ -2900,6 +2900,32 @@ do
     ok(market.wallet[1] == 1000 and keys[1] == true and not T.squadUsed(1),
         'the Volts, the key and the use given back')
     eq(#arrivals(2), 0, 'and no second return was started')
+
+    -- A HOLD ON p2 IN THE BLACK, after Reboot has promised the return: refused
+    -- as it starts, and stopped if one is somehow running, its reviver told --
+    -- never left filling until the arrival clears the key under it.
+    reset()
+    m = rebootLobby()
+    useAt(1)
+    ask(1, 'reboot')
+    stepTimers()                                       -- the load is over: the promise
+    ok(BR.ReviveKey.returning(2) and roster[2].state == BR.PlayerState.OUT, 'p2 is on the way back, still OUT')
+    roster[2].reviveKey = { x = C0.x, y = C0.y, z = 30.0, held = true, via = 'bought',
+                            mintedAt = gameMs, expiresAt = gameMs + 180000 }
+    fire(BR.Net.REVIVEKEY_START, 1, { target = 2, n = 77 })
+    local pr = lastOf(BR.Net.REVIVEKEY_PROGRESS, 1)
+    ok(pr and pr.cancelled == true and pr.target == 2 and pr.reason == 'already on the way back',
+        'a hold starting in the black is refused, and why', pr and tostring(pr.reason))
+    ok(roster[2].reviveKey.byS == nil, 'and no hold is running')
+    local rec = roster[2].reviveKey
+    rec.byS, rec.from, rec.beat, rec.veh = 1, gameMs, gameMs, 77
+    jobs['revivekey.hold']()
+    pr = lastOf(BR.Net.REVIVEKEY_PROGRESS, 1)
+    ok(pr and pr.cancelled == true and pr.reason == 'already on the way back' and rec.byS == nil,
+        'one running in the black is stopped on the next step, its reviver told', pr and tostring(pr.reason))
+    flush()
+    ok(roster[2].state == BR.PlayerState.ALIVE and roster[2].reviveKey == nil, 'p2 is back, the key spent')
+    eq(#places(2), 1, 'once')
     local _ = m
 end
 
@@ -2972,6 +2998,24 @@ do
     local r = ask(1, 'reboot')
     ok(r and r.code == 'reboot_none' and #market.charges == 0 and keys[1] == true,
         'and a run is refused, the market never asked', r and r.code)
+
+    -- A SQUADMATE DOWNED, OR STILL IN THE AIR, IS NOT ELIMINATED: nobody to
+    -- bring back, on the card and at a run.
+    for _, st in ipairs({ BR.PlayerState.DBNO, BR.PlayerState.GLIDE, BR.PlayerState.FREEFALL,
+                          BR.PlayerState.BUS }) do
+        reset()
+        lobby()
+        BR.Server.matches = matches
+        roster[2].state = st
+        useAt(1)
+        f = listedAs(1, 'reboot')
+        ok(f and f.available == false and f.reason == 'reboot_none',
+            ('a squadmate %s and nobody out: the card says reboot_none'):format(st), f and tostring(f.reason))
+        r = ask(1, 'reboot')
+        ok(r and r.code == 'reboot_none' and #market.charges == 0 and keys[1] == true,
+            ('and a run is refused, spending nothing (%s)'):format(st), r and r.code)
+        eq(roster[2].state, st, 'and the squadmate is left as they were')
+    end
 
     -- NOT ENOUGH VOLTS: the door's own refusal, after every other.
     reset()

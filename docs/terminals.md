@@ -879,8 +879,11 @@ line saying it would stop was taken out.
 on every client (written again at the next elimination or the match's end),
 `diedAt` cleared, the killer keeping the kill, nobody credited a revive, and a
 revive key for a rebooted player spent -- held or not, bought or not (the
-page's risks say so). A hold filling at an ambulance for one is stopped; a key
-arrival already committed lands on its own and is not doubled. Only a squad
+page's risks say so). A hold filling at an ambulance for one is stopped, and
+none can start or keep running while they are on the way back (the review of
+wave C: one started in the black would have been cleared with the key at the
+arrival, its reviver's ring left up); a key arrival already committed lands on
+its own and is not doubled. Only a squad
 with somebody still in the fight is rebooted, so `BR.Server.squadsAlive` and
 the match's end check (`<= 1`) are exactly what the eliminations left; the
 players-left count grows. The match ending in the black withdraws the
