@@ -37,7 +37,9 @@ import { fill, indicatorOf, lines, riskColor, statusOf, voltsText, type Say } fr
  * RUN WEARS THE FUNCTION'S RISK (round 2: "the Run button - make it the risk
  * color instead"): the same color as its low, medium or high risk badge, in
  * both modes, with the badge's own text color -- terminal.css's
- * `--terminal-run-*` variables, which are the badge's tokens.
+ * `--terminal-run-*` variables, which are the badge's tokens. NO SHADOW
+ * (owner, 2026-10-06: "not sure why these buttons have shadows"): a button
+ * sits on its surface, like every control (terminal.css).
  */
 export function runStyle(risk: FunctionDef['risk']): ButtonProps.Style {
   const v = (part: string) => `var(--terminal-run-${risk}-${part})`
@@ -47,12 +49,6 @@ export function runStyle(risk: FunctionDef['risk']): ButtonProps.Style {
       background: { default: v('bg'), hover: v('bg-hover'), active: v('bg-active'), disabled: off('bg') },
       borderColor: { default: v('bg'), hover: v('bg-hover'), active: v('bg-active'), disabled: off('bg') },
       color: { default: v('text'), hover: v('text'), active: v('text'), disabled: off('text') },
-      boxShadow: {
-        default: 'var(--terminal-raise-control)',
-        hover: 'var(--terminal-raise-control-hover)',
-        active: 'none',
-        disabled: 'none',
-      },
     },
   }
 }

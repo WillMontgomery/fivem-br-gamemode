@@ -53,6 +53,15 @@
  *                  class off on every way out, and caps how long it stays.
  *                  What they do is test-terminal-model.mjs's and
  *                  test-terminal-desktop.mjs's.
+ *   T11 depth      shadows on surfaces only, and never on text (owner,
+ *                  2026-10-06: "not sure why these buttons have shadows",
+ *                  and "If they don't have shadows on the text we shouldn't
+ *                  either"). terminal.css draws a box-shadow in ONE rule,
+ *                  whose selectors are SURFACES below -- every one of them,
+ *                  and nothing else -- and none names a control; no other
+ *                  shadow property is set; the sources set no boxShadow or
+ *                  textShadow; and every text-shadow in the built CSS is
+ *                  `none` (Cloudscape's own resets).
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -239,6 +248,67 @@ for (const f of sources) {
   }
 }
 
+// T11: the depth. THE SURFACES are the parts the page is built of (terminal.css
+// says which is which); a control is anything that sits on one.
+const SURFACES = [
+  '.terminal-topnav',
+  '.terminal-nav',
+  '.terminal-raised',
+  '.terminal-login',
+  '.terminal-cards [class*="awsui_header-variant-cards"]',
+  '.terminal-cards li[class*="awsui_card_"] > div',
+  '[class*="awsui_dialog_"] [class*="awsui_container_"]',
+  '.terminal [class*="awsui_flash-type-"]',
+]
+// A selector naming any of these reaches a control. `awsui_flash_` is the
+// progress bar's class as much as the flash's (round 2's rule shadowed the
+// bar through it); the flash itself is `awsui_flash-type-`.
+const CONTROL = /button|badge|progress|input|toggle|pagination|radio|checkbox|select|segmented|icon|utility|trigger|link|awsui_flash_/i
+// The only shadow-valued properties terminal.css may set besides the one rule's
+// box-shadow: the two values per mode.
+const SHADOW_VALUES = new Set(['--terminal-raise', '--terminal-raise-strong'])
+{
+  for (const s of SURFACES) {
+    if (CONTROL.test(s)) fail('T11 depth', 'scripts/check-terminal.mjs', `the surface ${s} names a control`)
+  }
+  const css = code(readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8'), false)
+  const shadowRules = []
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = m[1].split(',').map((s) => s.trim().replace(/\s+/g, ' ')).filter((s) => s !== '')
+    for (const d of m[2].split(';')) {
+      const colon = d.indexOf(':')
+      if (colon < 0) continue
+      const prop = d.slice(0, colon).trim().toLowerCase()
+      const value = d.slice(colon + 1).replace(/!important/i, '').trim()
+      if (prop === 'text-shadow' && value !== 'none') {
+        fail('T11 depth', 'terminal/src/terminal.css', `${selectors.join(', ')} gives text a shadow -- no text has one`)
+      } else if (prop === 'box-shadow' && value !== 'none') {
+        shadowRules.push(selectors)
+      } else if (/shadow/.test(prop) && prop !== 'text-shadow' && prop !== 'box-shadow' && !SHADOW_VALUES.has(prop)) {
+        fail('T11 depth', 'terminal/src/terminal.css', `${selectors.join(', ')} sets ${prop} -- a shadow by another name`)
+      }
+    }
+  }
+  if (shadowRules.length !== 1) {
+    fail('T11 depth', 'terminal/src/terminal.css', `${shadowRules.length} rules draw a box-shadow -- the surfaces are one rule`)
+  }
+  for (const selectors of shadowRules) {
+    for (const s of selectors) {
+      if (CONTROL.test(s)) fail('T11 depth', 'terminal/src/terminal.css', `${s} puts a box-shadow on a control`)
+      else if (!SURFACES.includes(s)) fail('T11 depth', 'terminal/src/terminal.css', `${s} has a box-shadow and is not a surface`)
+    }
+  }
+  const drawn = shadowRules.flat()
+  for (const s of SURFACES) {
+    if (!drawn.includes(s)) fail('T11 depth', 'terminal/src/terminal.css', `the surface ${s} lost its shadow`)
+  }
+  for (const f of sources) {
+    if (/\b(boxShadow|textShadow)\b/.test(code(readFileSync(f, 'utf8'), false))) {
+      fail('T11 depth', rel(f), 'sets a boxShadow or textShadow -- shadows are terminal.css\'s, on surfaces only')
+    }
+  }
+}
+
 // The build.
 if (!existsSync(OUT)) {
   fail('T5 one bundle', rel(OUT), 'no build output -- run the build first')
@@ -264,6 +334,17 @@ if (!existsSync(OUT)) {
       if (!css.includes(`${name}:`)) {
         fail('T8 risk', `${rel(OUT)}/${s}`, `${name} is not defined by Cloudscape's CSS -- Run and its badge would differ`)
       }
+    }
+    // T11: no text in the build has a shadow, ours or Cloudscape's.
+    const texts = [...css.matchAll(/text-shadow\s*:\s*([^;}]*)/g)].map((m) => m[1].replace(/!important/, '').trim())
+    const shaded = texts.filter((v) => v !== 'none')
+    if (shaded.length > 0) {
+      fail('T11 depth', `${rel(OUT)}/${s}`, `${shaded.length} text-shadow(s) other than none: ${[...new Set(shaded)].join(' | ')}`)
+    }
+    // ...and the one rule of ours that draws a box-shadow is the surfaces'.
+    const ours = [...css.matchAll(/([^{}]+)\{([^{}]*box-shadow\s*:[^;}]*var\(--terminal-[^{}]*)\}/g)]
+    if (ours.length !== 1 || !/box-shadow:\s*var\(--terminal-surface,\s*var\(--terminal-raise\)\)\s*!important/.test(ours[0]?.[2] ?? '')) {
+      fail('T11 depth', `${rel(OUT)}/${s}`, `${ours.length} built rule(s) draw our box-shadow -- the surfaces are one rule`)
     }
   }
 }

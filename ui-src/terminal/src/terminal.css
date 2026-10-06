@@ -25,30 +25,31 @@ body {
 }
 
 /*
- * ═══ THE DEPTH: SHADOWS, IN BOTH MODES (owner, round 2) ═══
+ * ═══ THE DEPTH: SHADOWS ON SURFACES, NONE ON TEXT ═══
  *
- * "Seems none of the text or other elements has texture - could you add some
- * shadows?" One set of values per mode, on <body> (where Cloudscape puts the
- * mode): a soft drop under raised surfaces, a tighter one under controls, and
- * a hairline of shade under headings. Dark mode's are deeper, because a shadow
- * has less to darken there.
+ * Round 2: "Seems none of the text or other elements has texture - could you
+ * add some shadows?" Then the owner, 2026-10-06: "not sure why these buttons
+ * have shadows", "the progress bar inside the colored card doesn't need a
+ * shadow", and, Cloudscape's own demos having no text shadow at all, "If they
+ * don't have shadows on the text we shouldn't either."
+ *
+ * So a shadow is a SURFACE's: a part the page is built of, standing off what
+ * is under it (THE SURFACES, below, the one rule that draws one). Nothing
+ * inside a surface casts one -- no button (the pagination's arrows and
+ * numbers, the preferences gear, Run, the top bar's items), badge, progress
+ * bar, input or toggle -- and no text anywhere has a shadow. One value per
+ * mode, on <body> (where Cloudscape puts the mode), and a deeper one for what
+ * floats over the page; dark mode's are deeper, because a shadow has less to
+ * darken there. scripts/check-terminal.mjs T11 holds all of it.
  */
 body {
   --terminal-raise: 0 1px 2px rgba(0, 7, 22, 0.10), 0 4px 14px rgba(0, 7, 22, 0.10);
   --terminal-raise-strong: 0 2px 4px rgba(0, 7, 22, 0.12), 0 10px 28px rgba(0, 7, 22, 0.16);
-  --terminal-raise-control: 0 1px 1px rgba(0, 7, 22, 0.14), 0 2px 5px rgba(0, 7, 22, 0.12);
-  --terminal-raise-control-hover: 0 2px 3px rgba(0, 7, 22, 0.18), 0 4px 10px rgba(0, 7, 22, 0.16);
-  --terminal-text-shade: 0 1px 1px rgba(0, 7, 22, 0.16);
-  --terminal-raise-badge: 0 1px 2px rgba(0, 7, 22, 0.22);
 }
 
 body.awsui-dark-mode {
   --terminal-raise: 0 1px 2px rgba(0, 0, 0, 0.50), 0 6px 18px rgba(0, 0, 0, 0.45);
   --terminal-raise-strong: 0 2px 6px rgba(0, 0, 0, 0.55), 0 12px 32px rgba(0, 0, 0, 0.55);
-  --terminal-raise-control: 0 1px 2px rgba(0, 0, 0, 0.55), 0 3px 8px rgba(0, 0, 0, 0.40);
-  --terminal-raise-control-hover: 0 2px 4px rgba(0, 0, 0, 0.60), 0 5px 12px rgba(0, 0, 0, 0.45);
-  --terminal-text-shade: 0 1px 2px rgba(0, 0, 0, 0.70);
-  --terminal-raise-badge: 0 1px 3px rgba(0, 0, 0, 0.60);
 }
 
 /*
@@ -209,60 +210,60 @@ body.awsui-dark-mode {
   text-overflow: ellipsis;
 }
 
-/* The top bar: a shadow onto the page under it (the site's, not the
-   browser's -- the toolbar above casts none), and its name and buttons with a
-   little depth. */
+/*
+ * ═══ THE SURFACES: THE ONE RULE THAT DRAWS A SHADOW ═══
+ *
+ *   .terminal-topnav      the top bar, onto the page under it (the site's;
+ *                         the browser's toolbar above casts none)
+ *   .terminal-nav         the side navigation's panel, along its edge
+ *   .terminal-raised      every container the app draws, each wrapped with
+ *                         the container's own corner: the match panel, a
+ *                         function page's sections, the how-to's, the privacy
+ *                         policy's
+ *   .terminal-login       the login screen's one card
+ *   the cards' heading    the block that holds Functions, its filter and its
+ *                         pages -- the block, not what is in it
+ *   a card                the surface inside the list item Cards draws
+ *   the box               the confirmation's (and the preferences') dialog
+ *   a flash               a run's colored card and its answer: the card
+ *                         itself, by its `flash-type-` class -- never the
+ *                         progress bar in it, whose class also starts
+ *                         `awsui_flash_`, which is how round 2's rule gave
+ *                         the bar a shadow
+ *
+ * On Cloudscape's own elements it is !important: their rules carry
+ * `:not(#\9)`, an id's weight. The box, over the page, and a card under the
+ * pointer sit deeper by changing the value, not by a second rule.
+ */
+.terminal-topnav,
+.terminal-nav,
+.terminal-raised,
+.terminal-login,
+.terminal-cards [class*="awsui_header-variant-cards"],
+.terminal-cards li[class*="awsui_card_"] > div,
+[class*="awsui_dialog_"] [class*="awsui_container_"],
+.terminal [class*="awsui_flash-type-"] {
+  box-shadow: var(--terminal-surface, var(--terminal-raise)) !important;
+}
+
+[class*="awsui_dialog_"] [class*="awsui_container_"],
+.terminal-cards li[class*="awsui_card_"] > div:hover {
+  --terminal-surface: var(--terminal-raise-strong);
+}
+
+/* The top bar sits over the page it shades. */
 .terminal-topnav {
   position: relative;
-  box-shadow: var(--terminal-raise);
 }
 
-/* The top bar: its buttons and its name with a little depth. */
-.terminal-topnav [class*="awsui_title_"],
-.terminal-topnav [class*="awsui_utility-button_"] {
-  text-shadow: var(--terminal-text-shade);
-}
-
-/* The side navigation's panel: a shadow along its edge, onto the page. */
+/* The side navigation's panel runs the page's height. */
 .terminal-nav {
   min-height: 100%;
-  box-shadow: var(--terminal-raise);
 }
 
-/*
- * Raised surfaces: every container the app draws (the match panel, a page's
- * sections, the how-to's), each wrapped in `.terminal-raised` with the
- * container's own corner, and every card. On Cloudscape's own elements the
- * shadow is !important: its rules carry `:not(#\9)`, an id's weight.
- */
+/* A container's wrapper takes the container's corner, so the shadow does. */
 .terminal-raised {
   border-radius: 16px;
-  box-shadow: var(--terminal-raise);
-}
-
-/* The cards' heading block (Functions, its filter and its pages)... */
-.terminal-cards [class*="awsui_header-variant-cards"] {
-  box-shadow: var(--terminal-raise) !important;
-}
-
-/* ...and each card: the surface inside the list item Cards draws. */
-.terminal-cards li[class*="awsui_card_"] > div {
-  box-shadow: var(--terminal-raise) !important;
-}
-
-.terminal-cards li[class*="awsui_card_"] > div:hover {
-  box-shadow: var(--terminal-raise-strong) !important;
-}
-
-/* Headings and card titles: a hairline of shade under the letters. */
-.terminal-raised h1,
-.terminal-raised h2,
-.terminal-raised h3,
-.terminal-cards h1,
-.terminal-cards h2,
-[class*="awsui_content-header_"] h1,
-[class*="awsui_dialog_"] h2 {
-  text-shadow: var(--terminal-text-shade);
 }
 
 /*
@@ -274,7 +275,6 @@ body.awsui-dark-mode {
   display: block;
   min-width: 0;
   overflow-wrap: anywhere;
-  text-shadow: var(--terminal-text-shade);
 }
 
 .terminal-card-title,
@@ -285,35 +285,12 @@ body.awsui-dark-mode {
   white-space: normal !important;
 }
 
-/* Buttons and badges stand off the page a little; a pressed one does not. */
-.terminal-raised [class*="awsui_button_"],
-.terminal-cards [class*="awsui_button_"]:not([class*="awsui_variant-inline-link_"]),
-[class*="awsui_content-header_"] [class*="awsui_button_"],
-[class*="awsui_dialog_"] [class*="awsui_variant-primary_"] {
-  box-shadow: var(--terminal-raise-control) !important;
-}
-
-[class*="awsui_badge_"] {
-  box-shadow: var(--terminal-raise-badge) !important;
-}
-
-/* The confirmation box: a deeper shadow than anything under it. */
-[class*="awsui_dialog_"] [class*="awsui_container_"] {
-  box-shadow: var(--terminal-raise-strong) !important;
-}
-
-/* A run's bar and its answer, raised like the rest. */
-.terminal [class*="awsui_flash_"] {
-  box-shadow: var(--terminal-raise) !important;
-}
-
 /* The login screen: one card in the middle of the page. */
 .terminal-login {
   box-sizing: border-box;
   max-width: 520px;
   margin: 64px auto 0;
   border-radius: 16px;
-  box-shadow: var(--terminal-raise);
 }
 
 /* A function's risks and the how-to's lists: plain bullets, Cloudscape's text. */

@@ -444,8 +444,14 @@ risks, Run in its risk badge's color behind a confirmation), the how-to page,
 and the login screen (the lock and `no_key`) when the computer opened without
 a key. A run the server accepts shows a determinate bar filling over its
 `runMs`, then the server's answer; a state saying nothing is loading takes the
-bar down (an answer that went to a toast never leaves one behind). Shadows give the cards, containers, bars,
-buttons and badges depth in both modes. The mode is applied on `<body>` only,
+bar down (an answer that went to a toast never leaves one behind). Shadows give the
+surfaces depth in both modes -- the top and side navigation, the containers,
+the cards and their heading block, the confirmation box and the flashes -- and
+nothing on them casts one: no button (the pagination, the preferences gear,
+Run), badge, progress bar, input or toggle, and no text anywhere (owner,
+2026-10-06: "If they don't have shadows on the text we shouldn't either";
+Cloudscape's own demos have none). `terminal.css` draws them in one rule over
+the surfaces, and `check-terminal.mjs` T11 holds it. The mode is applied on `<body>` only,
 light by default, and remembered per gamertag in the page's localStorage
 (`control-tower-mode:`). The header is fixed rather than sticky: focus moving
 into a sticky box scrolled the page to its top. `ui-src/scripts/check-terminal.mjs`
