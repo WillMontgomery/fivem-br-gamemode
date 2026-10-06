@@ -1335,6 +1335,56 @@ do
         'and says who goes dark: the players inside the area, not the district for everyone')
 end
 
+describe('Wave B\'s lines say whose lights go out and where the weather holds')
+do
+    -- ═══ THE LINES DESCRIBE WHAT WAS BUILT, NOT WHAT WAS FIRST IMAGINED ═══
+    --
+    -- The engine's blackout is one switch per player for the whole map, so a
+    -- Power outage puts the lights out for the players in an area -- someone
+    -- outside it sees the area lit. And Time & weather's weather holds only
+    -- inside the circle (the owner's rule). The wave B review found the card,
+    -- the done line and the lobby's notice still saying the area goes dark and
+    -- the match's weather changes. So every line of the two functions (the
+    -- option labels aside: those name a choice) is read here: one that puts
+    -- the lights out says for whom, and one that names the weather says it is
+    -- the weather inside the circle. The function's own name is taken out
+    -- first ("Time & weather" names the weather and says nothing about it).
+    local function lines(id)
+        local out = {}
+        for k, v in pairs(COPY) do
+            if k:sub(1, #id + 1) == id .. '_' and k ~= id .. '_name'
+                and not k:find('_opt_', 1, true) then
+                local text = v
+                local i, j = text:find(COPY[id .. '_name'], 1, true)
+                if i then text = text:sub(1, i - 1) .. text:sub(j + 1) end
+                out[#out + 1] = { key = k, text = text:lower() }
+            end
+        end
+        table.sort(out, function(a, b) return a.key < b.key end)
+        return out
+    end
+    local lightLines, weatherLines = 0, 0
+    for _, l in ipairs(lines('power_outage')) do
+        if l.text:find('light', 1, true) or l.text:find('dark', 1, true)
+            or l.text:find('power', 1, true) then
+            lightLines = lightLines + 1
+            ok(l.text:find('player', 1, true) or l.text:find('squad', 1, true)
+                or l.text:find("you're", 1, true),
+                ('%s says whose lights go out'):format(l.key), COPY[l.key])
+        end
+    end
+    for _, l in ipairs(lines('time_weather')) do
+        if l.text:find('weather', 1, true) then
+            weatherLines = weatherLines + 1
+            ok(l.text:find('inside the circle', 1, true),
+                ('%s says the weather is the weather inside the circle'):format(l.key), COPY[l.key])
+        end
+    end
+    ok(lightLines >= 6, 'the card, the page, the done line, the notice and both risks lines were read',
+        lightLines)
+    ok(weatherLines >= 3, 'the card, the page and the done line were read', weatherLines)
+end
+
 describe('Power outage: it ends, one at a time, and with the match and the season')
 do
     reset()

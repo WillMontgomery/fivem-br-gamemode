@@ -530,7 +530,11 @@ BR.Config.Terminals = {
 
         -- Time & weather (owner's; LIVE since wave B, 2026-10-06)
         time_weather_name = 'Time & weather',
-        time_weather_summary = "Changes the match's time of day and weather for a while.",
+        -- WRITTEN (2026-10-06, wave B review; was "Changes the match's time of
+        -- day and weather for a while."). The weather holds only inside the
+        -- circle (the owner's rule, below), so the card says so, as the page
+        -- does.
+        time_weather_summary = "Changes the match's time of day, and the weather inside the circle, for a while.",
         -- WRITTEN (2026-10-05, round 2; was "Sets the time of day and the
         -- weather for everyone in the match.\nWhen it ends, ..."). The owner's
         -- round-2 rule (the registry row says it in full): the weather chosen
@@ -553,12 +557,19 @@ BR.Config.Terminals = {
         time_weather_notified = 'Everyone in the match',
         time_weather_risks = 'It changes what your squad can see too.',
         time_weather_risks_solo = 'It changes what you can see too.',
-        time_weather_done = 'The time and weather have changed.',
+        -- WRITTEN (2026-10-06, wave B review; was 'The time and weather have
+        -- changed.'). The same: the time changed for everyone, the weather
+        -- only inside the circle.
+        time_weather_done = 'The time of day has changed, and so has the weather inside the circle.',
         time_weather_description = 'Time & weather. The sky has changed.',
 
         -- Power outage (owner's; LIVE since wave B, 2026-10-06)
         power_outage_name = 'Power outage',
-        power_outage_summary = 'Turns the lights off in an area for a while.',
+        -- WRITTEN (2026-10-06, wave B review; was 'Turns the lights off in an
+        -- area for a while.'). The lights go off for the players in the area,
+        -- not for the area itself (power_outage_what says why), so the card,
+        -- the done line and the lobby's notice say whose lights go out.
+        power_outage_summary = 'Turns the lights off for every player in an area for a while.',
         -- WRITTEN (2026-10-06, wave B; was "Street lights, building lights and
         -- signs go dark in the area you choose. / Vehicle headlights still
         -- work. / The lights come back when it ends."). The game's blackout is
@@ -581,8 +592,11 @@ BR.Config.Terminals = {
         power_outage_notified = 'Everyone in the match',
         power_outage_risks = "Your squad is in the dark too while it's in the area.",
         power_outage_risks_solo = "You're in the dark too while you're in the area.",
-        power_outage_done = 'The power is out.',
-        power_outage_description = 'Power outage. The lights are out.',
+        -- WRITTEN (2026-10-06, wave B review; was 'The power is out.').
+        power_outage_done = 'The lights are out for every player in the area.',
+        -- WRITTEN (2026-10-06, wave B review; was 'Power outage. The lights are
+        -- out.').
+        power_outage_description = 'Power outage. The lights are out for every player in an area.',
 
         -- Disarm (owner's; LIVE since wave A, 2026-10-06)
         disarm_name = 'Disarm',
