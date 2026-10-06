@@ -614,11 +614,13 @@ end
 --- Every possible end BR.Storm.futures worked out on its last call, kept by a
 --- spy around the real function.
 local lastEnds = nil
+local seenEnds = {}
 do
     local real = BR.Storm.futures
     BR.Storm.futures = function(...)
         local ends, why = real(...)
         lastEnds = ends
+        if ends then seenEnds[#seenEnds + 1] = ends end
         return ends, why
     end
 end
@@ -647,7 +649,7 @@ for _, zone in ipairs({ 'near', 'far', 'center' }) do
         ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
         ok(lastEnds ~= nil and #lastEnds == CT.fx.stormControlFutures,
             ('the server worked out fx.stormControlFutures (%d) possible ends'):format(CT.fx.stormControlFutures))
-        local three = TS.threeEnds(lastEnds or {}, SITE.x, SITE.y, rec.cx1, rec.cy1)
+        local three = TS.threeEnds(lastEnds or {}, SITE.x, SITE.y)
         local want = lastEnds and lastEnds[three[zone]]
         local f = BR.Storm.finalCentre(m)
         ok(f and want and f.x == want.x and f.y == want.y,
@@ -666,19 +668,108 @@ end
 
 describe('Storm control: the three are three different ends')
 do
-    -- The terminal stands on the next circle's center, so the end nearest it is
-    -- also the one nearest the center: center has to be another.
+    -- Near 0 m, far 1000 m: halfway is 500 m, and of the rest (100, 71 and
+    -- 600 m) the end at 600 m is nearest it.
     local ends = { { x = 0.0, y = 0.0 }, { x = 100.0, y = 0.0 }, { x = 1000.0, y = 0.0 },
-                   { x = 50.0, y = 50.0 } }
-    local three = TS.threeEnds(ends, 0.0, 0.0, 0.0, 0.0)
+                   { x = 50.0, y = 50.0 }, { x = 0.0, y = -600.0 } }
+    local three = TS.threeEnds(ends, 0.0, 0.0)
     eq(three.near, 1, 'near: the end at the terminal')
     eq(three.far, 3, 'far: the end farthest from it')
-    eq(three.center, 4, 'center: of the rest, the nearest the center -- never near again')
+    eq(three.center, 5, 'center: of the rest, the one nearest halfway between them, 500 m out')
+    -- Every end the same distance away: near, far and center still three.
     local tie = TS.threeEnds({ { x = 10.0, y = 0.0 }, { x = -10.0, y = 0.0 }, { x = 0.0, y = 10.0 } },
-        0.0, 0.0, 0.0, 0.0)
-    eq(tie.near, 1, 'a tie goes to the earlier end')
-    local two = TS.threeEnds({ { x = 1.0, y = 0.0 }, { x = 5.0, y = 0.0 } }, 0.0, 0.0, 0.0, 0.0)
+        0.0, 0.0)
+    ok(tie.near == 1 and tie.far == 2 and tie.center == 3, 'a tie goes to the earlier end, and all three differ')
+    local two = TS.threeEnds({ { x = 1.0, y = 0.0 }, { x = 5.0, y = 0.0 } }, 0.0, 0.0)
     ok(two.near == 1 and two.far == 2 and two.center == 1, 'with only two ends the choices share them')
+    local none = TS.threeEnds({}, 0.0, 0.0)
+    ok(none.near == nil and none.far == nil and none.center == nil, 'and with none there is nothing to name')
+end
+
+describe('Storm control: every zone label is true of the circle it picks')
+do
+    -- ═══ A LABEL IS A CLAIM, AND THIS IS WHERE IT IS CHECKED ═══
+    --
+    -- Each zone choice's label says something about the circle it picks. Every
+    -- label the page can show is written down here with the claim it makes, and
+    -- the claim is checked against BR.TerminalSolve.threeEnds over thousands of
+    -- random sets of ends, terminals and next circles, and over the real ends
+    -- every run above worked out. A label with no claim here fails: rewording a
+    -- choice means saying here what the new words promise.
+    --
+    -- THE FAILURE THIS CATCHES (the wave B review): center was picked from the
+    -- ends near and far left, by distance to the next circle's center, under
+    -- "Closest to the next circle's center" -- and about one draw in nine the
+    -- end nearest that point had already gone to near or far.
+    local function dist(e, x, y) return math.sqrt((e.x - x) ^ 2 + (e.y - y) ^ 2) end
+    local CLAIMS = {
+        ['Closest to this terminal'] = function(c)
+            for _, e in ipairs(c.ends) do
+                if dist(e, c.ax, c.ay) < dist(c.ends[c.pick], c.ax, c.ay) then return false end
+            end
+            return true
+        end,
+        ['Farthest from this terminal'] = function(c)
+            for _, e in ipairs(c.ends) do
+                if dist(e, c.ax, c.ay) > dist(c.ends[c.pick], c.ax, c.ay) then return false end
+            end
+            return true
+        end,
+        -- Of the three offered, the one between the other two.
+        ['Middle distance from this terminal'] = function(c)
+            local others = {}
+            for zone, i in pairs(c.three) do
+                if zone ~= c.zone then others[#others + 1] = i end
+            end
+            if others[1] == c.pick or others[2] == c.pick then return false end
+            local d = dist(c.ends[c.pick], c.ax, c.ay)
+            local d1, d2 = dist(c.ends[others[1]], c.ax, c.ay), dist(c.ends[others[2]], c.ax, c.ay)
+            return math.min(d1, d2) <= d and d <= math.max(d1, d2)
+        end,
+    }
+    local zones
+    for _, o in ipairs(BR.Terminal.row('storm_control').options) do
+        if o.id == 'zone' then zones = o.choices end
+    end
+    ok(zones ~= nil and #zones == 3, 'the row offers three zones')
+
+    -- The draws: a seeded stream, so a failure replays.
+    local rng = BR.Rng(396)
+    local function coord() return (rng:float() - 0.5) * 8000.0 end
+    local sets = {}
+    for _ = 1, 3000 do
+        local n = 3 + math.floor(rng:float() * 10)
+        local ends = {}
+        for k = 1, n do ends[k] = { x = coord(), y = coord() } end
+        sets[#sets + 1] = { ends = ends, ax = coord(), ay = coord(), cx = coord(), cy = coord() }
+    end
+    for _, ends in ipairs(seenEnds) do
+        sets[#sets + 1] = { ends = ends, ax = SITE.x, ay = SITE.y, cx = C0.x, cy = C0.y }
+    end
+    ok(#seenEnds >= 3, 'the real ends the runs above worked out are among them', #seenEnds)
+
+    for _, zone in ipairs(zones or {}) do
+        local line = COPY['storm_control_opt_zone_' .. zone]
+        local claim = CLAIMS[line]
+        ok(claim ~= nil, ('the %s label is a claim this test checks'):format(zone), line)
+        if claim then
+            local wrong, first = 0, nil
+            for k, set in ipairs(sets) do
+                -- The next circle's center rides along: a rule that measured
+                -- from it would be held to the same claims.
+                local three = TS.threeEnds(set.ends, set.ax, set.ay, set.cx, set.cy)
+                local c = { ends = set.ends, three = three, zone = zone, pick = three[zone],
+                            ax = set.ax, ay = set.ay, cx = set.cx, cy = set.cy }
+                if not (three.near ~= three.far and three.far ~= three.center
+                        and three.near ~= three.center and claim(c)) then
+                    wrong = wrong + 1
+                    first = first or k
+                end
+            end
+            ok(wrong == 0, ('"%s" is true of the %s circle in all %d draws'):format(line, zone, #sets),
+                first and ('wrong in %d, the first at draw %d'):format(wrong, first))
+        end
+    end
 end
 
 describe("Storm control: near is nearer the terminal than the storm's own plan, far farther")
@@ -765,8 +856,8 @@ do
     end
     eq(TS.pick(COPY, 'storm_control_risks', false), COPY.storm_control_risks_solo,
         'the risks line has its solo sibling')
-    eq(COPY.storm_control_opt_zone_center, "Closest to the next circle's center",
-        'center is measured from the next circle, as the server measures it')
+    eq(COPY.storm_control_opt_zone_center, 'Middle distance from this terminal',
+        'center is measured from this terminal, as near and far are')
     reset()
     lobby('solo', 3)
     local r = runAt(1, 'storm_control', { zone = 'center' })
@@ -783,7 +874,7 @@ do
     sv(1, 'run storm_control zone=far')
     ok(lastEnds ~= nil, '`brterminal run storm_control zone=far` works the ends out')
     local after = BR.Storm.finalCentre(m)
-    local three = TS.threeEnds(lastEnds or {}, roster[1].pos.x, roster[1].pos.y, m.storm.cx1, m.storm.cy1)
+    local three = TS.threeEnds(lastEnds or {}, roster[1].pos.x, roster[1].pos.y)
     ok(lastEnds and after.x == lastEnds[three.far].x and after.y == lastEnds[three.far].y,
         'and steers to the far one, measured from the player (the dev terminal has no site)')
     eq(#market.charges, 0, 'no Volts')

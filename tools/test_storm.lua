@@ -7437,21 +7437,25 @@ do
         if ends and plan and ends[1].x == plan.x and ends[1].y == plan.y then
             sameAsPlan = sameAsPlan + 1
         end
-        local rec0 = base.match.storm
         local ax, ay = anchor.x + 900.0, anchor.y - 400.0
-        local three = env.BR.TerminalSolve.threeEnds(ends, ax, ay, rec0.cx1, rec0.cy1)
+        local three = env.BR.TerminalSolve.threeEnds(ends, ax, ay)
         if three.near ~= three.far and three.far ~= three.center and three.near ~= three.center then
             distinct = distinct + 1
         end
-        -- NEAR IS THE NEAREST OF ALL OF THEM, FAR THE FARTHEST OF THE REST, AND
-        -- CENTER THE NEAREST THE NEXT CIRCLE'S CENTER OF WHAT IS LEFT.
-        local function d2(e, x, y) return (e.x - x) ^ 2 + (e.y - y) ^ 2 end
-        local okNear, okFar, okCenter = true, true, true
+        -- ALL THREE MEASURED FROM THE TERMINAL: NEAR THE NEAREST OF ALL OF
+        -- THEM, FAR THE FARTHEST OF THE REST, AND CENTER, OF WHAT IS LEFT, THE
+        -- ONE NEAREST HALFWAY BETWEEN THOSE TWO -- between them, as its label
+        -- says ("Middle distance from this terminal").
+        local function d(e) return math.sqrt((e.x - ax) ^ 2 + (e.y - ay) ^ 2) end
+        local half = (d(ends[three.near]) + d(ends[three.far])) * 0.5
+        local okNear, okFar = true, true
+        local okCenter = d(ends[three.near]) <= d(ends[three.center])
+            and d(ends[three.center]) <= d(ends[three.far])
         for k, e in ipairs(ends) do
-            if d2(e, ax, ay) < d2(ends[three.near], ax, ay) then okNear = false end
-            if k ~= three.near and d2(e, ax, ay) > d2(ends[three.far], ax, ay) then okFar = false end
+            if d(e) < d(ends[three.near]) then okNear = false end
+            if k ~= three.near and d(e) > d(ends[three.far]) then okFar = false end
             if k ~= three.near and k ~= three.far
-                and d2(e, rec0.cx1, rec0.cy1) < d2(ends[three.center], rec0.cx1, rec0.cy1) then
+                and math.abs(d(e) - half) < math.abs(d(ends[three.center]) - half) then
                 okCenter = false
             end
         end
@@ -7514,7 +7518,8 @@ do
     eq(distinct, MATCHES, 'the three are three different ends, every match')
     eq(nearOk, MATCHES, 'near is the end nearest the terminal')
     eq(farOk, MATCHES, 'far is, of the others, the end farthest from it')
-    eq(centerOk, MATCHES, 'center is, of the rest, the end nearest the next circle\'s center')
+    eq(centerOk, MATCHES, 'center is, of the rest, the end nearest halfway between near and far, '
+        .. 'and between them')
 end
 
 -- ---------------------------------------------------------------------------

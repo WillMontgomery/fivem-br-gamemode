@@ -492,12 +492,14 @@ BR.Config.Terminals = {
         storm_control_what = "The server works out three possible final circles.\nYou pick one, and the storm closes toward it for the rest of the match.\nCircles already on the map don't move. The change starts with the next circle the storm draws.",
         storm_control_opt_zone = 'Final circle',
         storm_control_opt_zone_near = 'Closest to this terminal',
-        -- WRITTEN (2026-10-06, wave B; was "Closest to the current circle's
-        -- center"): the circle it is measured from is the next circle -- the
-        -- one the storm is closing toward, the newest on the map -- as Supply
-        -- drop's "next circle's center" is; "current" could name either of the
-        -- two circles a hold shows.
-        storm_control_opt_zone_center = "Closest to the next circle's center",
+        -- WRITTEN (2026-10-06, wave B review; was "Closest to the current
+        -- circle's center"). All three choices are measured from this
+        -- terminal, so each label is true of the circle it picks: the middle
+        -- one is picked from the ends near and far left, and "closest to" any
+        -- other point named a circle that was not, about one run in nine
+        -- (BR.TerminalSolve.threeEnds says why; tools/test_terminalworld.lua
+        -- holds every zone label to its claim).
+        storm_control_opt_zone_center = 'Middle distance from this terminal',
         storm_control_opt_zone_far = 'Farthest from this terminal',
         storm_control_duration = 'Rest of the match',
         storm_control_affects = 'Everyone in the match',
@@ -1105,9 +1107,9 @@ BR.Config.Terminals = {
         --    they are used; everything else is here. ──
 
         -- Storm control: how many possible ends the server works out before
-        -- it names the three the page offers -- the one nearest this
-        -- terminal, of the others the one farthest from it, and of the rest
-        -- the one nearest the next circle's center
+        -- it names the three the page offers, all measured from this
+        -- terminal -- the one nearest it, of the others the one farthest from
+        -- it, and of the rest the one nearest halfway between those two
         -- (BR.TerminalSolve.threeEnds). Each is the storm's own planner run
         -- forward on a stream of its own (BR.Storm.futures), so every one
         -- obeys every rule a match's storm does. More is a wider spread

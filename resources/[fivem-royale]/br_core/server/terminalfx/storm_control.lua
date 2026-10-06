@@ -15,12 +15,12 @@
 -- chosen one's stream. The record on the map and the seed every shape comes
 -- from are not touched.
 --
--- THE THREE (BR.TerminalSolve.threeEnds over fx.stormControlFutures ends):
---   near    the end nearest THIS terminal
---   far     of the others, the end farthest from it
---   center  of the rest, the end nearest the next circle's center -- the
---           circle the storm is closing toward, the newest on the map, as
---           Supply drop's "next circle" is
+-- THE THREE (BR.TerminalSolve.threeEnds over fx.stormControlFutures ends),
+-- each measured from THIS terminal, so each is what its label says:
+--   near    the end nearest it                 "Closest to this terminal"
+--   far     of the others, the end farthest    "Farthest from this terminal"
+--   center  of the rest, the end whose distance is nearest halfway between
+--           near's and far's          "Middle distance from this terminal"
 -- "This terminal" is the session's terminal, or the player at the dev
 -- terminal (Supply drop's rule).
 --
@@ -105,8 +105,7 @@ T.FUNCTIONS.storm_control = {
         local now = GetGameTimer()
         local ends, bad = BR.Storm.futures(m, fx().stormControlFutures or 8, now)
         if not ends then return { ok = false, code = bad or 'no_storm' } end
-        local rec = m.storm
-        local three = TS.threeEnds(ends, ax, ay, rec.cx1, rec.cy1)
+        local three = TS.threeEnds(ends, ax, ay)
         local zone = opts and opts.zone or 'near'
         local chosen = ends[three[zone] or three.near]
         BR.Storm.steer(m, chosen)

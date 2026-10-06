@@ -615,14 +615,20 @@ the storm's own planner -- `drawCentre`, the function and arguments
 obeys the planner's rules: the play area and its water, the nesting and the
 breakout's gap, the edge hug, each zone's shape (#344, from the seed, which
 nothing here changes). `BR.TerminalSolve.threeEnds` names three different
-ones: **near** (nearest this terminal), **far** (of the others, the farthest
-from it) and **center** (of the rest, the nearest the next circle's center);
-"this terminal" is the player at the dev terminal. `BR.Storm.steer` hands the
-match the chosen stream, and nothing else moves: the record on the map and
-the circle already drawn stay, and the change starts with the next circle
-`enterPhase` draws -- which reaches every client, the map's morph (#350) and
-the airdrop's re-site (#386) as any record does. A squad that ran Storm
-reveal is sent the new end. Refused `no_storm`, and `no_circle` once the
+ones, all measured from this terminal so each label is true of the circle it
+picks: **near** (nearest it, "Closest to this terminal"), **far** (of the
+others, the farthest from it, "Farthest from this terminal") and **center**
+(of the rest, the one whose distance is nearest halfway between those two,
+"Middle distance from this terminal"); at the dev terminal "this terminal"
+is the player. A middle choice measured from anywhere else would be "of the
+rest", and its label false whenever near or far had taken the end it named.
+`tools/test_terminalworld.lua` holds each zone label to its claim over
+thousands of draws, and a label it has no claim for fails. `BR.Storm.steer`
+hands the match the chosen stream, and nothing else moves: the record on the
+map and the circle already drawn stay, and the change starts with the next
+circle `enterPhase` draws -- which reaches every client, the map's morph
+(#350) and the airdrop's re-site (#386) as any record does. A squad that ran
+Storm reveal is sent the new end. Refused `no_storm`, and `no_circle` once the
 final circle is on the map. `tools/test_storm.lua`'s `control.valid` steers
 24 matches to each of the three at every phase and checks every later circle
 against the planner's own geometry.

@@ -8,9 +8,6 @@
 --                     the wall as it stands now, by its real shape
 --   offlineWhy        is this terminal online: a Lockdown, the storm and the
 --                     dev tool's forcing, in that order
---   threeEnds         Storm control's near, far and center final circles
---   outageArea /      Power outage's area for a choice, and whether a point
---     inOutage        is in it
 --   squadKey          which squad a player's one use belongs to (a solo
 --                     player is a squad of one)
 --   sites             the terminal rows in a config, checked
@@ -18,6 +15,10 @@
 --   line              a copy line with its {playername} / {description}
 --                     tokens filled, as a BR.Notice line
 --   extraRoll         the Yubikey's extra-item roll for one container
+--   threeEnds         Storm control's near, middle and far final circles,
+--                     each measured from this terminal
+--   outageArea /      Power outage's area for a choice, and whether a point
+--     inOutage        is in it
 --
 -- Nothing here reads a native or sends anything.
 
@@ -101,85 +102,6 @@ function T.offlineWhy(site, zone, forced, lock)
     if forced == true then return nil end
     if T.inside(zone, site.x, site.y) then return nil end
     return 'offline'
-end
-
---- Storm control's three final circles out of the possible ends the server
---- worked out (#396, wave B; BR.Storm.futures): which end each choice is.
----   near    the end nearest this terminal (ax, ay)
----   far     of the others, the end farthest from it
----   center  of the rest, the end nearest the next circle's center (cx, cy)
---- THREE DIFFERENT ENDS, so "three possible final circles" is true: the page
---- offers three, and two choices that were the same circle would be two. Ties go
---- to the earlier end, so the answer replays from the same list. Fewer than
---- three ends, and the choices share them.
---- @param ends table[]  { { x, y } }
---- @param ax number @param ay number  the terminal
---- @param cx number @param cy number  the next circle's center
---- @return table { near = i, far = j, center = k }  indices into `ends`
-function T.threeEnds(ends, ax, ay, cx, cy)
-    local taken = {}
-    local function best(score)
-        local pick, top = nil, nil
-        for i, e in ipairs(ends) do
-            if not taken[i] then
-                local v = score(e)
-                if top == nil or v < top then pick, top = i, v end
-            end
-        end
-        if pick then taken[pick] = true end
-        return pick
-    end
-    local function d2(e, x, y) return (e.x - x) ^ 2 + (e.y - y) ^ 2 end
-    local out = {}
-    out.near = best(function(e) return d2(e, ax, ay) end)
-    out.far = best(function(e) return -d2(e, ax, ay) end) or out.near
-    out.center = best(function(e) return d2(e, cx, cy) end) or out.near
-    return out
-end
-
---- Power outage's area for one `area` choice (#396, wave B), as the server
---- sends it and every client tests it: one spelling for both sides.
----
----   here    { kind = 'radius', x, y, r }: within `radius` meters of (x, y),
----           this terminal
----   city    { kind = 'city', line }: below the city line
----   county  { kind = 'county', line }: on it or above it
----
---- THE CITY LINE IS THE STORM'S (#381, BR.StormCityLine): the same line that
---- decides whether a match opens in the city or the county decides which side
---- goes dark. Nil for a choice that is not one of these, or a `here` with no
---- point to center on.
---- @param choice string
---- @param x number|nil @param y number|nil  this terminal
---- @param radius number  meters, for `here`
---- @return table|nil area
-function T.outageArea(choice, x, y, radius)
-    if choice == 'here' then
-        if not (finite(x) and finite(y) and finite(radius) and radius > 0) then return nil end
-        return { kind = 'radius', x = x + 0.0, y = y + 0.0, r = radius + 0.0 }
-    elseif choice == 'city' or choice == 'county' then
-        return { kind = choice, line = BR.StormCityLine() }
-    end
-    return nil
-end
-
---- Is (x, y) in this outage area? An area that is not one -- off the wire,
---- malformed -- holds nobody.
---- @param area table|nil
---- @param x number @param y number
---- @return boolean
-function T.inOutage(area, x, y)
-    if type(area) ~= 'table' or not (finite(x) and finite(y)) then return false end
-    if area.kind == 'radius' then
-        if not (finite(area.x) and finite(area.y) and finite(area.r)) then return false end
-        local dx, dy = x - area.x, y - area.y
-        return dx * dx + dy * dy <= area.r * area.r
-    elseif area.kind == 'city' then
-        return finite(area.line) and y < area.line
-    elseif area.kind == 'county' then
-        return finite(area.line) and y >= area.line
-    end
-    return false
 end
 
 -- ------------------------------------------------------------------ squad ---
@@ -313,4 +235,100 @@ function T.extraRoll(layoutSeed, containerId, chance)
     local seed = ((math.tointeger(layoutSeed) or 0) * 31
         + (math.tointeger(containerId) or 0) * 2246822519 + 396) % 2147483647
     return BR.Rng(seed):float() < chance
+end
+
+-- ------------------------------------------------- the world (wave B) ---
+
+--- Storm control's three final circles out of the possible ends the server
+--- worked out (#396, wave B; BR.Storm.futures): which end each choice is.
+--- ALL THREE ARE MEASURED FROM THIS TERMINAL (ax, ay), and each is what its
+--- label on the page says it is:
+---
+---   near    "Closest to this terminal": the end nearest it
+---   far     "Farthest from this terminal": of the others, the end farthest
+---           from it -- the farthest of them all
+---   center  "Middle distance from this terminal": of the rest, the end whose
+---           distance from it is nearest halfway between near's and far's
+---
+--- ONE MEASURE FOR ALL THREE, because two measures cannot both be honest. The
+--- third choice is picked from what the first two left, so a center measured
+--- from another point (it was the next circle's center) was "of the rest":
+--- about one run in nine the end nearest that point had already gone to near
+--- or far, and "Closest to the next circle's center" named a circle that was
+--- not. Measured from the terminal, every one of the rest lies between near
+--- and far, so the middle label holds whichever is picked.
+--- tools/test_terminalworld.lua holds each label to the claim it makes.
+---
+--- THREE DIFFERENT ENDS, so "three possible final circles" is true: the page
+--- offers three, and two choices that were the same circle would be two. Ties go
+--- to the earlier end, so the answer replays from the same list. Fewer than
+--- three ends, and the choices share them.
+--- @param ends table[]  { { x, y } }
+--- @param ax number @param ay number  the terminal
+--- @return table { near = i, far = j, center = k }  indices into `ends`
+function T.threeEnds(ends, ax, ay)
+    local taken = {}
+    local function best(score)
+        local pick, top = nil, nil
+        for i, e in ipairs(ends) do
+            if not taken[i] then
+                local v = score(e)
+                if top == nil or v < top then pick, top = i, v end
+            end
+        end
+        if pick then taken[pick] = true end
+        return pick
+    end
+    local function dist(e) return math.sqrt((e.x - ax) ^ 2 + (e.y - ay) ^ 2) end
+    local out = {}
+    out.near = best(dist)
+    out.far = best(function(e) return -dist(e) end) or out.near
+    local half = out.near and (dist(ends[out.near]) + dist(ends[out.far])) * 0.5
+    out.center = best(function(e) return math.abs(dist(e) - half) end) or out.near
+    return out
+end
+
+--- Power outage's area for one `area` choice (#396, wave B), as the server
+--- sends it and every client tests it: one spelling for both sides.
+---
+---   here    { kind = 'radius', x, y, r }: within `radius` meters of (x, y),
+---           this terminal
+---   city    { kind = 'city', line }: below the city line
+---   county  { kind = 'county', line }: on it or above it
+---
+--- THE CITY LINE IS THE STORM'S (#381, BR.StormCityLine): the same line that
+--- decides whether a match opens in the city or the county decides which side
+--- goes dark. Nil for a choice that is not one of these, or a `here` with no
+--- point to center on.
+--- @param choice string
+--- @param x number|nil @param y number|nil  this terminal
+--- @param radius number  meters, for `here`
+--- @return table|nil area
+function T.outageArea(choice, x, y, radius)
+    if choice == 'here' then
+        if not (finite(x) and finite(y) and finite(radius) and radius > 0) then return nil end
+        return { kind = 'radius', x = x + 0.0, y = y + 0.0, r = radius + 0.0 }
+    elseif choice == 'city' or choice == 'county' then
+        return { kind = choice, line = BR.StormCityLine() }
+    end
+    return nil
+end
+
+--- Is (x, y) in this outage area? An area that is not one -- off the wire,
+--- malformed -- holds nobody.
+--- @param area table|nil
+--- @param x number @param y number
+--- @return boolean
+function T.inOutage(area, x, y)
+    if type(area) ~= 'table' or not (finite(x) and finite(y)) then return false end
+    if area.kind == 'radius' then
+        if not (finite(area.x) and finite(area.y) and finite(area.r)) then return false end
+        local dx, dy = x - area.x, y - area.y
+        return dx * dx + dy * dy <= area.r * area.r
+    elseif area.kind == 'city' then
+        return finite(area.line) and y < area.line
+    elseif area.kind == 'county' then
+        return finite(area.line) and y >= area.line
+    end
+    return false
 end
