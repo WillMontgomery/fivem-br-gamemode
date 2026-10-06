@@ -456,10 +456,13 @@ containers, the cards and their heading block, the confirmation box and the
 flashes -- and the app gives nothing on them one: no button (the pagination,
 the preferences gear, Run), badge, progress bar or input, and no text anywhere
 (owner, 2026-10-06: "If they don't have shadows on the text we shouldn't
-either"; Cloudscape's own demos have none). Cloudscape's own drawing is left as
-it is: the toggle's knob in the preferences keeps its 1 px shade, and the
-search's dropdown floats with its own. `terminal.css` draws the shadows in one
-rule over the surfaces, and `check-terminal.mjs` T11 holds it. The mode is
+either"; Cloudscape's own demos have none). Where Cloudscape shades a control
+itself -- the knob of each toggle in the preferences is the one a player sees
+-- `terminal.css` takes it off; a dropdown, which floats (the search's, the
+user menu), keeps Cloudscape's own. `terminal.css`
+draws the shadows in one rule over the surfaces and takes Cloudscape's off its
+controls in one more, and `check-terminal.mjs` T11 holds both, reading every
+shade in the built CSS. The mode is
 applied on `<body>` only,
 light by default, and remembered per gamertag in the page's localStorage
 (`control-tower-mode:`). The header is fixed rather than sticky: focus moving

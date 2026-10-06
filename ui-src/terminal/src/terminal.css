@@ -35,15 +35,16 @@ body {
  *
  * So a shadow is a SURFACE's: a part the page is built of, standing off what
  * is under it (THE SURFACES, below, the one rule that draws one). Nothing
- * here gives a shadow to what sits on a surface -- no button (the
- * pagination's arrows and numbers, the preferences gear, Run, the top bar's
- * items), badge, progress bar, input or toggle -- and no text anywhere has a
- * shadow. Cloudscape's own drawing is left as Cloudscape draws it: the
- * toggle's knob in the preferences (a 1 px shade) and the search's dropdown,
- * which floats. One value per mode, on <body> (where Cloudscape puts the
- * mode), and a deeper one for what floats over the page; dark mode's are
- * deeper, because a shadow has less to darken there.
- * scripts/check-terminal.mjs T11 holds all of it.
+ * that sits on a surface has one -- no button (the pagination's arrows and
+ * numbers, the preferences gear, Run, the top bar's items), badge, progress
+ * bar, input or toggle -- and no text anywhere has a shadow. Where Cloudscape
+ * shades a control itself, the knob of each toggle in the preferences among
+ * them, THE CONTROLS CLOUDSCAPE SHADES (below) takes it off. A dropdown
+ * floats over the page (the search's, the user menu) and keeps Cloudscape's
+ * own. One value per mode, on <body> (where Cloudscape puts the mode), and a
+ * deeper one for what floats over the page; dark mode's are deeper, because a
+ * shadow has less to darken there. scripts/check-terminal.mjs T11 holds all
+ * of it.
  */
 body {
   --terminal-raise: 0 1px 2px rgba(0, 7, 22, 0.10), 0 4px 14px rgba(0, 7, 22, 0.10);
@@ -252,6 +253,34 @@ body.awsui-dark-mode {
 [class*="awsui_dialog_"] [class*="awsui_container_"],
 .terminal-cards li[class*="awsui_card_"] > div:hover {
   --terminal-surface: var(--terminal-raise-strong);
+}
+
+/*
+ * ═══ THE CONTROLS CLOUDSCAPE SHADES: THE ONE RULE THAT TAKES A SHADOW AWAY ═══
+ *
+ * Every control Cloudscape's own CSS gives a shade in this build, each by its
+ * class:
+ *
+ *   toggle-handle     a toggle's knob: the preferences' content toggles, the
+ *                     one the player sees (a 1 px shade, in both modes)
+ *   trigger-wrapper   the side navigation's open button once it is closed,
+ *                     shaded only under a high-contrast header (not this app's)
+ *   direction-button  a drag handle's arrow buttons (no drag handle here)
+ *   notification-bar  a stacked Flashbar's bar, which opens the stack (the
+ *                     app's Flashbar does not stack)
+ *
+ * The list is the build's, not a choice: check-terminal.mjs T11 reads every
+ * box-shadow in the built CSS that is offset or blurred, and fails the build
+ * on a control's that is not here, on a name here that no longer shades, and
+ * on a shade it cannot place as a surface or a control. A focus ring (a
+ * spread with no offset or blur) and a dropdown option's divider (inset) are
+ * lines, not shades, and stay.
+ */
+[class*="awsui_toggle-handle_"],
+[class*="awsui_trigger-wrapper_"],
+[class*="awsui_direction-button_"],
+[class*="awsui_notification-bar_"] {
+  box-shadow: none !important;
 }
 
 /* The top bar sits over the page it shades. */

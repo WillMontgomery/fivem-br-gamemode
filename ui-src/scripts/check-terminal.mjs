@@ -61,7 +61,14 @@
  *                  and nothing else -- and none names a control; no other
  *                  shadow property is set; the sources set no boxShadow or
  *                  textShadow; and every text-shadow in the built CSS is
- *                  `none` (Cloudscape's own resets).
+ *                  `none` (Cloudscape's own resets). And Cloudscape's own
+ *                  shades: every box-shadow in the built CSS that is offset
+ *                  or blurred, its tokens resolved, is placed by the class it
+ *                  is on (and the Cloudscape component that owns the class)
+ *                  as a surface (STOCK_SURFACES) or a control, and every
+ *                  control's is taken off by terminal.css's one
+ *                  `box-shadow: none` rule, which names nothing else (the
+ *                  preferences' toggle knobs kept a 1 px shade until this).
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -260,19 +267,56 @@ const SURFACES = [
   '[class*="awsui_dialog_"] [class*="awsui_container_"]',
   '.terminal [class*="awsui_flash-type-"]',
 ]
-// A selector naming any of these reaches a control. `awsui_flash_` is the
-// progress bar's class as much as the flash's (round 2's rule shadowed the
-// bar through it); the flash itself is `awsui_flash-type-`.
-const CONTROL = /button|badge|progress|input|toggle|pagination|radio|checkbox|select|segmented|icon|utility|trigger|link|awsui_flash_/i
+// A selector or class naming any of these reaches a control. `awsui_flash_` is
+// the progress bar's class as much as the flash's (round 2's rule shadowed the
+// bar through it); the flash itself is `awsui_flash-type-`. A handle is a
+// toggle's knob or a drag handle; a stacked Flashbar's notification bar is a
+// button the width of the stack.
+const CONTROL = /button|badge|progress|input|toggle|pagination|radio|checkbox|select|segmented|icon|utility|trigger|link|handle|notification-bar|awsui_flash_/i
 // The only shadow-valued properties terminal.css may set besides the one rule's
 // box-shadow: the two values per mode.
 const SHADOW_VALUES = new Set(['--terminal-raise', '--terminal-raise-strong'])
+// What Cloudscape shades itself and is a surface: it floats over the page or
+// is a part the page is built of. Keyed by the Cloudscape component that owns
+// the class (its directory in @cloudscape-design/components) and the class.
+// Every other Cloudscape shade in the build is a control's, and terminal.css's
+// `box-shadow: none` rule must take it off.
+const STOCK_SURFACES = {
+  'popover/container-body': 'a popover, which floats',
+  'popover/arrow-outer': 'a popover\'s tail',
+  'dropdown/dropdown-content-wrapper': 'a dropdown (the search\'s, the user menu\'s), which floats',
+  'modal/container': 'the dialog',
+  'container/root': 'a container',
+  'container/header-variant-cards': 'the cards\' heading block',
+  'container/header-stuck': 'a container\'s heading once it sticks',
+  'container/header-variant-full-page': 'a full-page heading once it sticks',
+  'flashbar/flash': 'a flash (and each flash in a collapsed stack)',
+  'app-layout/visual-refresh/mobile-toolbar': 'the layout\'s bar on a narrow page',
+  'app-layout/visual-refresh/split-panel-bottom': 'a split panel',
+  'internal/components/sortable-area/drag-overlay': 'an item being dragged',
+}
+// Filled from terminal.css's one `box-shadow: none` rule: the class names whose
+// Cloudscape shade it takes off, as `class` or `class::after`.
+const RESETS = []
+/** `[class*=awsui_<class>_]` (quotes taken out), with any pseudo-element, as `class` or `class::after`; else null. */
+function resetName(selector) {
+  const m = /^\[class\*=awsui_([a-z0-9-]+)_\](::?(?:before|after))?$/.exec(selector)
+  return m ? m[1] + (m[2] ? m[2].replace(/^:+/, '::') : '') : null
+}
+const resetSelector = (name) => {
+  const [cls, pseudo] = name.split('::')
+  return `[class*="awsui_${cls}_"]${pseudo ? `::${pseudo}` : ''}`
+}
 {
   for (const s of SURFACES) {
     if (CONTROL.test(s)) fail('T11 depth', 'scripts/check-terminal.mjs', `the surface ${s} names a control`)
   }
+  for (const k of Object.keys(STOCK_SURFACES)) {
+    if (CONTROL.test(k.split('/').pop())) fail('T11 depth', 'scripts/check-terminal.mjs', `the stock surface ${k} is a control`)
+  }
   const css = code(readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8'), false)
   const shadowRules = []
+  const resetRules = []
   for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selectors = m[1].split(',').map((s) => s.trim().replace(/\s+/g, ' ')).filter((s) => s !== '')
     for (const d of m[2].split(';')) {
@@ -284,6 +328,8 @@ const SHADOW_VALUES = new Set(['--terminal-raise', '--terminal-raise-strong'])
         fail('T11 depth', 'terminal/src/terminal.css', `${selectors.join(', ')} gives text a shadow -- no text has one`)
       } else if (prop === 'box-shadow' && value !== 'none') {
         shadowRules.push(selectors)
+      } else if (prop === 'box-shadow') {
+        resetRules.push(selectors)
       } else if (/shadow/.test(prop) && prop !== 'text-shadow' && prop !== 'box-shadow' && !SHADOW_VALUES.has(prop)) {
         fail('T11 depth', 'terminal/src/terminal.css', `${selectors.join(', ')} sets ${prop} -- a shadow by another name`)
       }
@@ -302,11 +348,144 @@ const SHADOW_VALUES = new Set(['--terminal-raise', '--terminal-raise-strong'])
   for (const s of SURFACES) {
     if (!drawn.includes(s)) fail('T11 depth', 'terminal/src/terminal.css', `the surface ${s} lost its shadow`)
   }
+  // The one rule that takes a shadow away names Cloudscape's shaded controls by
+  // class, and nothing else.
+  if (resetRules.length > 1) {
+    fail('T11 depth', 'terminal/src/terminal.css', `${resetRules.length} rules set box-shadow: none -- the controls Cloudscape shades are one rule`)
+  }
+  for (const s of resetRules.flat()) {
+    const name = resetName(s.replace(/"/g, ''))
+    if (name === null) {
+      fail('T11 depth', 'terminal/src/terminal.css', `${s} takes a shadow away but is not [class*="awsui_<class>_"] -- the rule names Cloudscape's classes`)
+    } else if (!CONTROL.test(name.split('::')[0])) {
+      fail('T11 depth', 'terminal/src/terminal.css', `${s} takes a shadow away from what is not a control`)
+    } else {
+      RESETS.push(name)
+    }
+  }
   for (const f of sources) {
     if (/\b(boxShadow|textShadow)\b/.test(code(readFileSync(f, 'utf8'), false))) {
       fail('T11 depth', rel(f), 'sets a boxShadow or textShadow -- shadows are terminal.css\'s, on surfaces only')
     }
   }
+}
+
+// T11 over Cloudscape's own CSS: which of its box-shadows shade, and on what.
+
+/** `text` split on `sep` outside parentheses and brackets. */
+function topSplit(text, sep) {
+  const out = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '(' || c === '[') depth++
+    else if (c === ')' || c === ']') depth--
+    else if (c === sep && depth === 0) {
+      out.push(text.slice(start, i))
+      start = i + 1
+    }
+  }
+  out.push(text.slice(start))
+  return out.map((s) => s.trim()).filter((s) => s !== '')
+}
+
+/**
+ * Every value `value` can compute to, each var() resolved every way the CSS
+ * allows: through each definition of the token anywhere in the sheet, and
+ * through its fallback where it is not set. null is a value that computes to
+ * nothing (a token never set, with no fallback), which for box-shadow is none.
+ */
+function computedValues(value, tokens, depth = 0) {
+  const at = value.indexOf('var(')
+  if (at < 0 || depth > 16) return [value]
+  let level = 0
+  let end = at + 3
+  for (; end < value.length; end++) {
+    if (value[end] === '(') level++
+    else if (value[end] === ')' && --level === 0) break
+  }
+  const inner = value.slice(at + 4, end)
+  const comma = inner.indexOf(',')
+  const name = (comma < 0 ? inner : inner.slice(0, comma)).trim()
+  const fallback = comma < 0 ? null : inner.slice(comma + 1).trim()
+  const ways = []
+  for (const def of tokens.get(name) ?? []) {
+    for (const r of computedValues(def, tokens, depth + 1)) ways.push(r === null ? fallback : r)
+  }
+  ways.push(fallback)
+  const out = new Set()
+  for (const w of ways) {
+    if (w === null) out.add(null)
+    else for (const r of computedValues(value.slice(0, at) + w + value.slice(end + 1), tokens, depth + 1)) out.add(r)
+  }
+  return [...out]
+}
+
+/**
+ * A SHADE: a layer offset or blurred off its box, or blurred inside it. A
+ * spread with no offset or blur is a ring (Cloudscape's focus ring, a control's
+ * edge) and an inset with no blur is a line (a dropdown option's divider);
+ * neither is a shadow. A value that is not a shadow at all (Cloudscape's input
+ * falls back to a bare token name) is invalid, and computes to none.
+ */
+function shades(value) {
+  if (value === null) return false
+  const v = value.replace(/!important/i, '').trim()
+  if (/^(none|initial|unset|inherit|revert|)$/i.test(v)) return false
+  const layers = topSplit(v, ',').map((layer) => {
+    const parts = layer
+      .replace(/\b(?:rgba?|hsla?)\([^()]*\)/gi, ' color ')
+      .replace(/calc\((?:[^()]|\([^()]*\))*\)/gi, ' 1px ')
+      .split(/\s+/)
+      .filter((p) => p !== '')
+    const lengths = []
+    let inset = false
+    for (const p of parts) {
+      if (/^inset$/i.test(p)) inset = true
+      else if (/^-?(?:\d*\.)?\d+[a-z%]*$/i.test(p)) lengths.push(parseFloat(p))
+      else if (!/^#[0-9a-f]{3,8}$/i.test(p) && !/^[a-z]+$/i.test(p)) return null
+    }
+    return lengths.length < 2 || lengths.length > 4
+      ? null
+      : { inset, x: lengths[0], y: lengths[1], blur: lengths[2] ?? 0 }
+  })
+  if (layers.some((l) => l === null)) return false
+  return layers.some((l) => (l.inset ? l.blur !== 0 : l.x !== 0 || l.y !== 0 || l.blur !== 0))
+}
+
+/** The Cloudscape component that owns each class name: its directory, then the class. */
+function cloudscapeOwners() {
+  const root = join(ROOT, 'node_modules', '@cloudscape-design', 'components')
+  const owners = new Map()
+  const visit = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) visit(p)
+      else if (e.name === 'styles.css.js') {
+        const owner = relative(root, dir).replace(/\\/g, '/')
+        for (const m of readFileSync(p, 'utf8').matchAll(/"([a-z0-9-]+)":\s*"(awsui_[a-z0-9_-]+)"/g)) {
+          owners.set(m[2], `${owner}/${m[1]}`)
+        }
+      }
+    }
+  }
+  if (existsSync(root)) visit(root)
+  return owners
+}
+
+/** The box a selector styles: its last compound, `:not()`s dropped, and its pseudo-element. */
+function subject(selector) {
+  let s = selector
+  for (let prev = ''; prev !== s;) {
+    prev = s
+    s = s.replace(/:not\([^()]*\)/g, '')
+  }
+  const compounds = s.split(/\s*[>+~]\s*|\s+/).filter((c) => c !== '')
+  const last = compounds[compounds.length - 1] ?? ''
+  const classes = [...last.matchAll(/\.(awsui_[a-z0-9_-]+?_[a-z0-9]{5}_[a-z0-9]{5}_\d+)/g)].map((m) => m[1])
+  const pseudo = /::?(before|after)\b/.exec(last)?.[1]
+  return { classes, pseudo: pseudo ? `::${pseudo}` : '' }
 }
 
 // The build.
@@ -342,9 +521,67 @@ if (!existsSync(OUT)) {
       fail('T11 depth', `${rel(OUT)}/${s}`, `${shaded.length} text-shadow(s) other than none: ${[...new Set(shaded)].join(' | ')}`)
     }
     // ...and the one rule of ours that draws a box-shadow is the surfaces'.
-    const ours = [...css.matchAll(/([^{}]+)\{([^{}]*box-shadow\s*:[^;}]*var\(--terminal-[^{}]*)\}/g)]
+    // (Every rule is read once, here: a pattern that scans the sheet for one
+    // rule's body backtracks through every selector, seconds on 2 MB.)
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    const ours = rules.filter((m) => /box-shadow\s*:[^;}]*var\(--terminal-/.test(m[2]))
     if (ours.length !== 1 || !/box-shadow:\s*var\(--terminal-surface,\s*var\(--terminal-raise\)\)\s*!important/.test(ours[0]?.[2] ?? '')) {
       fail('T11 depth', `${rel(OUT)}/${s}`, `${ours.length} built rule(s) draw our box-shadow -- the surfaces are one rule`)
+    }
+    // ...and every shade Cloudscape draws is a surface's, or one terminal.css
+    // takes off a control. A focus ring and a divider are not shades.
+    const owners = cloudscapeOwners()
+    if (owners.size === 0) fail('T11 depth', 'node_modules/@cloudscape-design/components', 'no styles.css.js found -- cannot tell whose shade is whose')
+    const tokens = new Map()
+    for (const m of rules) {
+      for (const d of m[2].matchAll(/(--[\w-]+)\s*:([^;}]*)/g)) {
+        if (!tokens.has(d[1])) tokens.set(d[1], new Set())
+        tokens.get(d[1]).add(d[2].trim())
+      }
+    }
+    const shadedControls = new Set()
+    let stockShades = 0
+    for (const m of rules) {
+      for (const d of m[2].matchAll(/(?:^|;)\s*box-shadow\s*:([^;}]*)/g)) {
+        const value = d[1].trim()
+        if (value.includes('var(--terminal-') || !computedValues(value, tokens).some(shades)) continue
+        for (const sel of topSplit(m[1], ',')) {
+          stockShades++
+          const { classes, pseudo } = subject(sel)
+          const keys = classes.map((c) => owners.get(c) ?? `?/${c}`)
+          const where = `${rel(OUT)}/${s}`
+          if (keys.length === 0 || keys[0].startsWith('?/')) {
+            fail('T11 depth', where, `a shade on ${sel.slice(0, 120)}: no Cloudscape class owns it -- say whose it is`)
+            continue
+          }
+          const stem = (k) => k.split('/').pop()
+          const control = keys.find((k) => CONTROL.test(stem(k)))
+          if (control) {
+            const name = stem(control) + pseudo
+            shadedControls.add(name)
+            if (/!important/i.test(value)) {
+              fail('T11 depth', where, `${control} shades a control with !important -- terminal.css cannot take it off`)
+            } else if (!RESETS.includes(name)) {
+              fail('T11 depth', 'terminal/src/terminal.css', `Cloudscape shades the control ${control}${pseudo} (${value.slice(0, 80)}) -- add ${resetSelector(name)} to the box-shadow: none rule`)
+            }
+          } else if (!keys.some((k) => STOCK_SURFACES[k])) {
+            fail('T11 depth', where, `Cloudscape shades ${keys[0]}${pseudo} (${sel.slice(0, 100)}) -- a surface (STOCK_SURFACES) or a control (terminal.css's box-shadow: none rule)?`)
+          }
+        }
+      }
+    }
+    if (stockShades === 0) fail('T11 depth', `${rel(OUT)}/${s}`, 'found no Cloudscape shade at all -- the reader is broken, not the build clean')
+    for (const name of RESETS) {
+      if (!shadedControls.has(name)) {
+        fail('T11 depth', 'terminal/src/terminal.css', `${resetSelector(name)} takes off a shade Cloudscape no longer draws -- take it out of the rule`)
+      }
+    }
+    // The rule reached the build, as one rule.
+    const built = rules
+      .filter((m) => m[2].trim() === 'box-shadow:none!important')
+      .map((m) => topSplit(m[1], ',').map((x) => resetName(x.replace(/"/g, ''))).sort().join(','))
+    if (RESETS.length > 0 && !built.includes([...RESETS].sort().join(','))) {
+      fail('T11 depth', `${rel(OUT)}/${s}`, `terminal.css's box-shadow: none rule (${RESETS.join(', ')}) is not in the built CSS as one rule`)
     }
   }
 }
