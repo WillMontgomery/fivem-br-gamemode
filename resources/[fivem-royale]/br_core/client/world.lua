@@ -73,10 +73,10 @@ local wrote = nil
 -- A snow weather changes the sky, the wind and the particles; the snow ON THE
 -- GROUND is a separate render pass. So this file turns that pass on while the
 -- sky it writes is a snow weather (BR.World.snowGround: XMAS, SNOWLIGHT, SNOW,
--- BLIZZARD -- `brweather XMAS` included -- and in the festive months the bus's
--- overcast cover, so the island does not turn green under the bus as it
--- boards), and off otherwise. Written on change only: nothing here runs per
--- frame or per tick.
+-- BLIZZARD -- `brweather XMAS` included), and off under every other sky -- the
+-- bus's overcast cover and the storm's THUNDER in the festive months too. The
+-- resolved weather decides it and nothing else. Written on change only:
+-- nothing here runs per frame or per tick.
 --
 -- THE RECIPE, FOR GAME BUILD 3889:
 --
@@ -119,13 +119,13 @@ end
 --- it always was, so `wrote` sees the same names as before and writes the same.
 ---
 --- THE GROUND FOLLOWS THE SKY: off before a weather without snow is written,
---- on after one with it. It is decided whether or not the weather is written,
---- because the festive fact can move it under an unchanged sky (the cover).
+--- on after one with it, decided by the resolved name alone. It is decided
+--- whether or not the weather is written, so it can never drift from the name
+--- on screen; setGround writes only when it moves.
 --- @param force boolean|nil  write even if the winner is unchanged
 --- @param blendOver number|nil  blend over this many seconds instead of the claim's
 local function push(force, blendOver)
-    local festive = BR.World.isFestive()
-    local name, blend, _, role = BR.World.resolveSky(claims, festive)
+    local name, blend = BR.World.resolveSky(claims, BR.World.isFestive())
 
     if name == nil then
         setGround(false)
@@ -139,7 +139,7 @@ local function push(force, blendOver)
         return
     end
 
-    local snow = BR.World.snowGround(name, role, festive)
+    local snow = BR.World.snowGround(name)
     if not snow then setGround(false) end
 
     if name ~= wrote or force then

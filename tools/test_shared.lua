@@ -22798,14 +22798,51 @@ do
     ok(W.resolveSky({ island = { name = 'lobby' } }, false) == 'OVERCAST'
        and W.resolveSky({ island = { name = 'lobby' } }, true) == 'XMAS',
        'the lobby at rest is OVERCAST, and XMAS festive')
-    local cn, cb, csrc, crole = W.resolveSky({ island = { name = 'cover', blend = 5.0 } }, true)
-    ok(cn == 'OVERCAST' and cb == 5.0 and csrc == 'island' and crole == 'cover',
-       'the bus cover is OVERCAST either way, and says which claim and role won')
+    local cn, cb, csrc = W.resolveSky({ island = { name = 'cover', blend = 5.0 } }, true)
+    ok(cn == 'OVERCAST' and cb == 5.0 and csrc == 'island',
+       'the bus cover is OVERCAST either way, and says which claim won')
     ok(W.resolveSky({ override = { name = 'RAIN' }, storm = { name = 'base' } }, true) == 'RAIN',
        'and the console still outranks the festive sky')
     for role in pairs(W.SKY_ROLE) do
         ok(not W.WEATHER[role], ('no role is a weather brweather could name (%s)'):format(role))
     end
+
+    -- THE WHITE GROUND IS THE RESOLVED WEATHER AND NOTHING ELSE. "ON whenever
+    -- the RESOLVED sky is a snow weather, OFF otherwise": not the role it was
+    -- claimed as (the bus's cover kept the snow under OVERCAST once), not the
+    -- festive months, not the claim that won. So snowGround takes the weather
+    -- alone, a role row carries nothing but its two weathers, and every name
+    -- the engine accepts answers exactly SNOW_WEATHER.
+    ok(debug.getinfo(W.snowGround, 'u').nparams == 1,
+       'snowGround takes one argument, the resolved weather',
+       debug.getinfo(W.snowGround, 'u').nparams)
+    for role, row in pairs(W.SKY_ROLE) do
+        for k in pairs(row) do
+            ok(k == 'plain' or k == 'festive',
+               ('the %s role is two weathers and nothing else -- no ground rule rides '
+                .. 'on a role (%s)'):format(role, tostring(k)))
+        end
+    end
+    local wrongGround = {}
+    for _, festive in ipairs({ false, true }) do
+        for _, name in ipairs(W.WEATHERS) do
+            if W.snowGround(name) ~= (W.SNOW_WEATHER[name] == true) then
+                wrongGround[#wrongGround + 1] = name
+            end
+        end
+        for role in pairs(W.SKY_ROLE) do
+            local wx = W.skyWeather(role, festive)
+            if W.snowGround(wx) ~= (W.SNOW_WEATHER[wx] == true) then
+                wrongGround[#wrongGround + 1] = role .. (festive and ' festive' or '')
+            end
+        end
+    end
+    ok(#wrongGround == 0 and W.snowGround(nil) == false and W.snowGround('cover') == false,
+       'white ground under XMAS, SNOWLIGHT, SNOW and BLIZZARD only, for every weather and '
+       .. 'every role festive or not; never for no sky, never for a role\'s own name',
+       table.concat(wrongGround, ','))
+    ok(W.skyWeather('cover', true) == 'OVERCAST' and not W.snowGround(W.skyWeather('cover', true)),
+       'the festive bus cover is OVERCAST, so its ground is not white')
 
     --- The real server/world.lua on a season, with the festive calendar.
     local function newSkyServer(seasonN, month)
@@ -23158,9 +23195,17 @@ do
         'ptfx request core_snow',
         '-- warmup',
         '-- bus',
+        'invoke 6E9EF3A33C8899F8 false',
+        'trails false',
+        'footsteps false',
+        'ptfx remove core_snow',
         'over OVERCAST 5.0',
         '-- island swap',
         'over XMAS 10.0',
+        'invoke 6E9EF3A33C8899F8 true',
+        'trails true',
+        'footsteps true',
+        'ptfx request core_snow',
         '-- match, inside',
         '-- storm, caught',
         'tc set REDMIST',
@@ -23207,6 +23252,37 @@ do
         end
         return out
     end
+    --- Replays a walk and finds the first step at which the ground pass and
+    --- the weather on screen disagree: white ground under a sky without snow,
+    --- or a snow sky over a bare one. A repeated write of the pass (not on
+    --- change) is a disagreement too.
+    local SNOWY = { XMAS = true, SNOWLIGHT = true, SNOW = true, BLIZZARD = true }
+    local function groundDisagrees(L)
+        local weather, ground, last = nil, false, nil
+        local function check(at)
+            if ground ~= (weather ~= nil and SNOWY[weather] == true) then
+                return ('at %s: ground %s under %s'):format(at, tostring(ground),
+                                                             tostring(weather))
+            end
+        end
+        local where = 'the start'
+        for _, s in ipairs(L) do
+            if s:sub(1, 3) == '-- ' then
+                local bad = check(where)
+                if bad then return bad end
+                where = s:sub(4)
+            end
+            local w = s:match('^now (%u+)$') or s:match('^over (%u+) ')
+            if w then weather = w end
+            if s == 'sky cleared' then weather = nil end
+            local g = s:match('^invoke 6E9EF3A33C8899F8 (%a+)$')
+            if g then
+                if g == last then return ('at %s: the pass written %s twice'):format(where, g) end
+                ground, last = (g == 'true'), g
+            end
+        end
+        return check(where)
+    end
 
     -- ── NOT FESTIVE: TODAY'S SKY, WRITE FOR WRITE ──
     do
@@ -23216,6 +23292,8 @@ do
            'festive off: lobby, warmup, the bus and its swap, a storm out and back, the '
            .. 'drying snap and the trip home write exactly what origin/dev wrote before #399',
            d)
+        ok(groundDisagrees(L) == nil, 'festive off: the ground never disagrees with the sky',
+           groundDisagrees(L))
     end
 
     -- ── FESTIVE: SNOW EVERYWHERE, THE COVER KEPT, THE STORM STILL A STORM ──
@@ -23225,9 +23303,15 @@ do
         ok(d == nil, 'festive on: the whole session, as recorded below', d)
         ok(during(L, '-- lobby')[1] == 'now XMAS',
            'the lobby island is XMAS', table.concat(during(L, '-- lobby'), ','))
-        ok(during(L, '-- bus')[1] == 'over OVERCAST 5.0',
+        local bus = table.concat(during(L, '-- bus'), ',')
+        ok(bus == 'invoke 6E9EF3A33C8899F8 false,trails false,footsteps false,'
+                  .. 'ptfx remove core_snow,over OVERCAST 5.0',
            'the bus climb keeps its overcast cover for the island swap, blended in '
-           .. 'while the bus sits', table.concat(during(L, '-- bus'), ','))
+           .. 'while the bus sits -- and OVERCAST is not snow, so the white ground goes '
+           .. 'first', bus)
+        ok(groundDisagrees(L) == nil,
+           'festive on: at every step of the session the ground is white exactly when '
+           .. 'the sky on screen is snow', groundDisagrees(L))
         ok(during(L, '-- island swap')[1] == 'over XMAS 10.0',
            'the doors open on XMAS, over the same ten seconds EXTRASUNNY took')
         local caught = table.concat(during(L, '-- storm, caught'), ',')
@@ -23261,6 +23345,29 @@ do
         ok(off:find('6E9EF3A33C8899F8 false', 1, true) ~= nil
            and on:find('6E9EF3A33C8899F8 true', 1, true) ~= nil,
            'and the ground snow goes with it, both ways', on .. ' | ' .. off)
+        ok(groundDisagrees(L) == nil, 'and through every flip the ground agrees with the sky',
+           groundDisagrees(L))
+    end
+
+    -- ── `brfestive` FLIPPED AT EVERY STEP, BOTH WAYS ──
+    --
+    -- Whatever moment the festive answer moves at -- under the cover, in the
+    -- storm, during the drying snap, on the way home -- the ground follows the
+    -- weather the sky resolves to, and nothing else.
+    do
+        local steps = { 'lobby', 'warmup', 'bus', 'island swap', 'match, inside',
+                        'storm, caught', 'storm, back inside', 'end' }
+        local bad = {}
+        for _, start in ipairs({ false, true }) do
+            for _, at in ipairs(steps) do
+                local L = skyWalk({ festive = start, flips = { [at] = not start } })
+                local d = groundDisagrees(L)
+                if d then bad[#bad + 1] = ('%s, flipped at %s: %s'):format(
+                    start and 'festive' or 'plain', at, d) end
+            end
+        end
+        ok(#bad == 0, 'brfestive on or off at any step: the ground agrees with the sky after it',
+           table.concat(bad, ' | '))
     end
 
     -- ═══ THE GROUND PASS: ON UNDER A RESOLVED SNOW SKY, OFF OTHERWISE, ON CHANGE ═══
@@ -23329,24 +23436,104 @@ do
         tell({})
         ok(since(n) == 'now OVERCAST', 'reset hands the lobby back with no ground pass', since(n))
 
-        -- THE COVER KEEPS IT, IN THE FESTIVE MONTHS ONLY.
+        -- THE COVER IS OVERCAST, FESTIVE OR NOT, AND OVERCAST HAS NO SNOW.
         n = #G
         env.BR.World.want('island', 'cover', 5.0)
         ok(since(n) == '', 'not festive, the cover is the OVERCAST already on screen: nothing')
         n = #G
         tell({ festive = true })
-        ok(since(n) == ON,
-           'festive under the cover: OVERCAST stays, and the ground turns white under it',
+        ok(since(n) == '',
+           'festive under the cover: OVERCAST stays, and the ground stays bare -- not white',
            since(n))
         n = #G
-        tell({ festive = true, weather = 'THUNDER' })
-        ok(since(n) == OFF .. ',now THUNDER', 'a console THUNDER takes the snow away', since(n))
+        tell({ festive = true, weather = 'XMAS' })
+        ok(since(n) == 'now XMAS,' .. ON, 'a console XMAS over the cover turns it white',
+           since(n))
         n = #G
         tell({ festive = true })
-        ok(since(n) == 'over OVERCAST,' .. ON, 'and lifting it brings the festive cover back',
+        ok(since(n) == OFF .. ',over OVERCAST',
+           'and lifting it brings the festive cover back, without its snow', since(n))
+        n = #G
+        env.BR.World.want('island', 'lobby', 5.0)
+        ok(since(n) == 'over XMAS,' .. ON, 'the festive lobby after the cover: XMAS, white',
            since(n))
+        n = #G
+        env.BR.World.want('island', 'cover', 5.0)
+        ok(since(n) == OFF .. ',over OVERCAST', 'and the cover again: OVERCAST, not white',
+           since(n))
+        tell({})
+
+        -- ═══ EVERY CLAIM, EVERY FESTIVE ANSWER, IN ANY ORDER ═══
+        --
+        -- The class, not the instance: whichever source wins and whatever it
+        -- claimed -- a weather, a role, festive or not -- the ground pass is on
+        -- exactly when BR.World.sky() is a snow weather, and it is written only
+        -- when that answer moves. Two thousand steps from a fixed seed, over
+        -- every weather the console can name, the storm's and the island's real
+        -- claims, and the festive fact.
+        do
+            local W = env.BR.World
+            local overrides = { false }
+            for _, w in ipairs(W.WEATHERS) do overrides[#overrides + 1] = w end
+            local storms = { false, 'base', 'THUNDER' }
+            local islands = { false, 'lobby', 'cover', 'base' }
+            local seed = 399
+            local function pick(t)
+                seed = (seed * 1103515245 + 12345) % 2147483648
+                return t[(seed >> 16) % #t + 1]
+            end
+            local cur = { o = false, f = false }
+            local groundOn = false
+            for i = #G, 1, -1 do
+                local g = G[i]:match('^pass 6E9EF3A33C8899F8 (%a+)$')
+                if g then groundOn = (g == 'true'); break end
+            end
+            local bad, repeats, seen = nil, nil, { [true] = 0, [false] = 0 }
+            for i = 1, 2000 do
+                local what = pick({ 'override', 'storm', 'island', 'festive' })
+                local before = #G
+                if what == 'override' then
+                    cur.o = pick(overrides)
+                    tell({ weather = cur.o or nil, festive = cur.f or nil })
+                elseif what == 'festive' then
+                    cur.f = pick({ false, true })
+                    tell({ weather = cur.o or nil, festive = cur.f or nil })
+                elseif what == 'storm' then
+                    local c = pick(storms)
+                    W.want('storm', c or nil, c and 5.0 or nil)
+                else
+                    local c = pick(islands)
+                    W.want('island', c or nil, c and 5.0 or nil)
+                end
+                for j = before + 1, #G do
+                    local g = G[j]:match('^pass 6E9EF3A33C8899F8 (%a+)$')
+                    if g then
+                        if (g == 'true') == groundOn and not repeats then
+                            repeats = ('step %d: the pass written %s again'):format(i, g)
+                        end
+                        groundOn = (g == 'true')
+                    end
+                end
+                local sky = W.sky()
+                local want = sky ~= nil and W.SNOW_WEATHER[sky] == true
+                seen[want] = seen[want] + 1
+                if groundOn ~= want and not bad then
+                    bad = ('step %d (%s): ground %s under %s, festive %s'):format(
+                        i, what, tostring(groundOn), tostring(sky), tostring(cur.f))
+                end
+            end
+            ok(bad == nil and seen[true] > 100 and seen[false] > 100,
+               'two thousand random claims and festive flips: the ground is white exactly '
+               .. 'when the resolved sky is a snow weather',
+               bad or ('%d snow, %d not'):format(seen[true], seen[false]))
+            ok(repeats == nil, 'and the pass is written only when that answer moves', repeats)
+            tell({})
+            W.want('storm', nil)
+            W.want('island', 'lobby', 0.0)
+        end
 
         -- THE FLAG IS THE ENGINE'S AND OUTLIVES THE RESOURCE.
+        tell({ weather = 'XMAS' })
         n = #G
         for _, fn in ipairs(handlers['onResourceStop'] or {}) do fn('br_core') end
         ok(since(n) == OFF, 'stopping br_core turns the ground pass off', since(n))

@@ -127,9 +127,8 @@ for _, src in ipairs(W.SKY_SOURCES) do W.SKY_SOURCE[src] = true end
 ---   lobby  the island at rest -- the lobby and the warmup pad, and the trip
 ---          home. OVERCAST, as always; XMAS festive.
 ---   cover  the island while the bus climbs out, hiding the swap. OVERCAST
----          either way -- and in the festive months the ground keeps its snow
----          under it (`keepsSnow`), so the island does not turn green under the
----          bus as it boards.
+---          either way. OVERCAST is not a snow weather, so in the festive
+---          months the ground under it is not white either (W.snowGround).
 ---
 --- LOWER CASE, SO NO ROLE IS EVER A WEATHER: W.WEATHER is upper case, and
 --- `brweather` can only name a weather. Not festive, every role is exactly the
@@ -137,7 +136,7 @@ for _, src in ipairs(W.SKY_SOURCES) do W.SKY_SOURCE[src] = true end
 W.SKY_ROLE = {
     base  = { plain = 'EXTRASUNNY', festive = 'XMAS' },
     lobby = { plain = 'OVERCAST',   festive = 'XMAS' },
-    cover = { plain = 'OVERCAST',   festive = 'OVERCAST', keepsSnow = true },
+    cover = { plain = 'OVERCAST',   festive = 'OVERCAST' },
 }
 
 --- The weather a claimed name means: a role's weather for the festive answer,
@@ -154,16 +153,18 @@ end
 --- ground snow pass on while the sky it wrote is one of these.
 W.SNOW_WEATHER = { XMAS = true, SNOWLIGHT = true, SNOW = true, BLIZZARD = true }
 
---- Should the ground be white under this sky? Yes under a snow weather, and in
---- the festive months under a role that keeps it (the bus's overcast cover).
+--- Should the ground be white under this sky? Yes under a snow weather, and
+--- under nothing else.
+---
+--- THE RESOLVED WEATHER AND NOTHING ELSE (#399): "ON whenever the resolved sky
+--- is a snow weather, OFF otherwise". Not the role it was claimed as, not the
+--- festive months, not the source that won -- so a white ground is never left
+--- on under a sky without snow (the bus's overcast cover, the storm's THUNDER,
+--- a console RAIN), and `brweather XMAS` shows it on any day of the year.
 --- @param weather string|nil  the resolved weather
---- @param role string|nil     the role it was claimed as, if any
---- @param festive boolean|nil
 --- @return boolean
-function W.snowGround(weather, role, festive)
-    if weather and W.SNOW_WEATHER[weather] then return true end
-    local r = role and W.SKY_ROLE[role]
-    return festive == true and r ~= nil and r.keepsSnow == true
+function W.snowGround(weather)
+    return weather ~= nil and W.SNOW_WEATHER[weather] == true
 end
 
 --- Which claim on the sky wins, and how fast it should be blended in.
@@ -174,20 +175,18 @@ end
 --- claim that was still sitting in this table the whole time.
 ---
 --- THE NAME IS THE WEATHER TO WRITE: a role is read for `festive` here (#399),
---- so the caller never sees one. The role and the winning source come back too.
+--- so the caller never sees one. The winning source comes back too.
 --- @param claims table  { override = { name, blend }, storm = ..., island = ... }
 --- @param festive boolean|nil  the festive sky (W.festive on a client)
 --- @return string|nil name
 --- @return number|nil blend  seconds; 0 means snap
 --- @return string|nil source  which claim won
---- @return string|nil role    the role it claimed, if it claimed one
 function W.resolveSky(claims, festive)
     if type(claims) ~= 'table' then return nil, nil end
     for _, src in ipairs(W.SKY_SOURCES) do
         local c = claims[src]
         if type(c) == 'table' and c.name then
-            local role = W.SKY_ROLE[c.name] and c.name or nil
-            return W.skyWeather(c.name, festive), tonumber(c.blend) or 0.0, src, role
+            return W.skyWeather(c.name, festive), tonumber(c.blend) or 0.0, src
         end
     end
     return nil, nil
