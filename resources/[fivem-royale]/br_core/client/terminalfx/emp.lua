@@ -33,6 +33,23 @@
 --                  in scope for), the lobby, Season 1, the resource stopping,
 --                  and `LATE_MS` past the time the bag said it had left.
 --
+-- ═══ WHOEVER WROTE THE HOLD UNDOES IT, OWNER OR NOT ═══
+--
+-- A stall is a write to THIS machine's copy of the vehicle: the undriveable
+-- flag and the engine's no-auto-start flag. Nothing promises the owner's sync
+-- writes either back over it -- no-auto-start is not in the vehicle's synced
+-- game state at all -- so a client that stalled a car, lost it to a driver,
+-- and was not its owner when the EMP ended would keep a dead copy: the day the
+-- car came back to it, it would not start, with no bag left to say why. So
+-- every vehicle this client has written the hold to is kept (`wrote`) until
+-- it is undone, and EVERY way an EMP ends here undoes it (`undo`): as the
+-- owner, the whole release; not the owner, both flags on this copy cleared and
+-- the engine left as it runs (the owner's to run). And getting into a vehicle
+-- with no bag that this client marked or stalled undoes it again, now and as
+-- ownership reaches the driver: a vehicle entered without a bag comes out
+-- driveable. Nothing else in resources/ writes SetVehicleUndriveable, so
+-- clearing it fights nobody.
+--
 -- A BICYCLE HAS NO ENGINE (class 13; client/boost.lua's carve-out): it is
 -- marked like any vehicle the server picked and never held.
 --
@@ -69,6 +86,10 @@ local REASSERT_MS = { 250, 1000 }
 --- The marked vehicles this client has heard of, by network id:
 --- { lateAt, held } -- `held` while this client owns it and has stalled it.
 local marked = {}
+
+--- The vehicles this client has written the hold to and not yet undone as
+--- their owner, by network id (see WHOEVER WROTE THE HOLD UNDOES IT).
+local wrote = {}
 
 --- The vehicle behind a network id here, or 0 when it is not in scope.
 --- @param netId integer
@@ -115,8 +136,12 @@ local function running(veh)
     return ok and isTrue(on)
 end
 
---- Engine off at once, no auto-start, undriveable.
-local function stall(veh)
+--- Engine off at once, no auto-start, undriveable -- and remembered as this
+--- client's write, to be undone however ownership moves.
+--- @param netId integer
+--- @param veh integer
+local function stall(netId, veh)
+    wrote[netId] = true
     pcall(SetVehicleEngineOn, veh, false, true, true)
     pcall(SetVehicleUndriveable, veh, true)
 end
@@ -147,29 +172,55 @@ local function settle(netId, rec)
     end
     if not engined(veh) then return end
     if not rec.held or running(veh) then
-        stall(veh)
+        stall(netId, veh)
         rec.held = true
     end
 end
 
---- Done with one: forgotten, and let go if this client owns it.
+--- Undo the hold on one vehicle no longer marked. As its owner: the whole
+--- release, and nothing of this client's left to undo. Not its owner, but
+--- this client wrote the hold to its copy: both flags cleared on that copy,
+--- the engine left as it runs; still remembered, so getting in and coming to
+--- own it releases it in full. Out of scope (0): this machine has no copy to
+--- undo -- the one it comes back with is fresh.
+--- @param netId integer
+--- @param veh integer
+local function undo(netId, veh)
+    if veh == 0 then return end
+    if owns(veh) then
+        release(veh)
+        wrote[netId] = nil
+    elseif wrote[netId] then
+        pcall(SetVehicleUndriveable, veh, false)
+        pcall(SetVehicleEngineOn, veh, running(veh), true, false)
+    end
+end
+
+--- Done with one: forgotten, and this client's hold undone, owner or not.
 --- @param netId integer
 local function forget(netId)
     marked[netId] = nil
-    local veh = netVeh(netId)
-    if veh ~= 0 and owns(veh) then release(veh) end
+    undo(netId, netVeh(netId))
 end
 
---- How many vehicles this client holds as marked, and how many it is
---- stalling. For the suites.
---- @return integer marked, integer held
+--- Every vehicle this client still has a write on, undone and forgotten: the
+--- lobby, Season 1, the resource stopping.
+local function undoAll()
+    for netId in pairs(wrote) do undo(netId, netVeh(netId)) end
+    wrote = {}
+end
+
+--- How many vehicles this client holds as marked, how many it is stalling,
+--- and how many it still has a write on to undo. For the suites.
+--- @return integer marked, integer held, integer wrote
 function F.empMarks()
-    local n, held = 0, 0
+    local n, held, w = 0, 0, 0
     for _, rec in pairs(marked) do
         n = n + 1
         if rec.held then held = held + 1 end
     end
-    return n, held
+    for _ in pairs(wrote) do w = w + 1 end
+    return n, held, w
 end
 
 -- ON CHANGE: set as it goes off (or as the vehicle comes into scope), cleared
@@ -191,7 +242,9 @@ if AddStateBagChangeHandler then
 end
 
 -- ON ENTERING: a driver getting in mid-EMP. Asked of the entity itself, so a
--- change this client missed still counts.
+-- change this client missed still counts. And getting into one with NO bag
+-- that this client marked or stalled: undone now, and again as ownership
+-- reaches the driver (the release is the owner's).
 AddEventHandler('gameEventTriggered', function(name, args)
     if name ~= 'CEventNetworkPlayerEnteredVehicle' or not F.on() then return end
     local veh = math.tointeger(tonumber(type(args) == 'table' and args[2] or nil)) or 0
@@ -203,7 +256,13 @@ AddEventHandler('gameEventTriggered', function(name, args)
     if not netId then return end
     local left = bagOf(veh)
     if not left then
-        if marked[netId] then forget(netId) end
+        if not (marked[netId] or wrote[netId]) then return end
+        forget(netId)
+        for _, ms in ipairs(REASSERT_MS) do
+            Citizen.SetTimeout(ms, function()
+                if wrote[netId] and not marked[netId] then undo(netId, netVeh(netId)) end
+            end)
+        end
         return
     end
     local rec = marked[netId] or { lateAt = GetGameTimer() + left + LATE_MS }
@@ -219,15 +278,22 @@ AddEventHandler('gameEventTriggered', function(name, args)
 end)
 
 -- ONCE A SECOND (client/terminalfx.lua's SLOW pass), and nothing at all with
--- no vehicle marked: ownership that moved, an engine somebody started, a
--- clear this client was not told of, and the ends behind the server's.
+-- no vehicle marked and no write left: ownership that moved, an engine
+-- somebody started, a clear this client was not told of, and the ends behind
+-- the server's. A write left on a vehicle no longer marked costs no native
+-- here until the lobby or Season 1 undoes it (getting in undoes it sooner).
 F.onSlow(function()
-    if next(marked) == nil then return end
+    if next(marked) == nil and next(wrote) == nil then return end
     local S = BR.State
     local lobby = S and S.me and S.me.state == BR.PlayerState.LOBBY
+    if lobby or not F.on() then
+        for netId in pairs(marked) do forget(netId) end
+        undoAll()
+        return
+    end
     local now = GetGameTimer()
     for netId, rec in pairs(marked) do
-        if lobby or not F.on() or now > rec.lateAt then
+        if now > rec.lateAt then
             forget(netId)
         else
             local veh = netVeh(netId)
@@ -243,4 +309,5 @@ end)
 AddEventHandler('onResourceStop', function(name)
     if name ~= GetCurrentResourceName() then return end
     for netId in pairs(marked) do forget(netId) end
+    undoAll()
 end)

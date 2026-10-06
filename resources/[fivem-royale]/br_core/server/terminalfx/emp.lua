@@ -13,17 +13,19 @@
 --                    terminal is the player -- that a player may use in this
 --                    gamemode. A vehicle that drives in afterwards was never
 --                    picked, so it is never stalled.
---   NOT PICKED       anything BR.Config.VehicleRefusalFor refuses -- the
---                    owner's "anything that flies or has built-in weapons"
---                    (#193), aircraft above all: nobody may fly one here
---                    (client/vehrefuse.lua ejects them, server/vehicles.lua
---                    files a case), and a stalled helicopter in the air falls
---                    on whoever is under it, which the page does not say; a
---                    trailer or a train (no engine to stall); and the CPR
---                    ride's ambulance while it carries a downed player
---                    (BR.Rescue.vehicleBusy) -- the game's own machinery, not
---                    a player's car. The station ambulances are ordinary cars
---                    players may take, and are picked like any other.
+--   NOT PICKED       anything BR.Config.VehicleRefusalFor refuses -- what
+--                    flies and the tanks (#193), aircraft above all: nobody
+--                    may fly one here (client/vehrefuse.lua ejects them,
+--                    server/vehicles.lua files a case), and a stalled
+--                    helicopter in the air falls on whoever is under it, which
+--                    the page does not say; a trailer or a train (no engine to
+--                    stall); and the CPR ride's ambulance while it carries a
+--                    downed player (BR.Rescue.vehicleBusy) -- the game's own
+--                    machinery, not a player's car. An ARMED model-table row
+--                    is no refusal since #322 (its weapons are switched off
+--                    and it is an ordinary car), so it IS picked and stalls
+--                    like any car; so are the station ambulances, ordinary
+--                    cars players may take.
 --   MARKED           with an entity state bag, `fx.empBag`, holding the
 --                    milliseconds it has left as it is set -- replicated to
 --                    every client the vehicle is relevant to, and to a client
@@ -36,9 +38,11 @@
 --                    frame.
 --   IT ENDS          on its own clock (the job below clears each bag), with
 --                    the match (the job, and `br:match:destroyed` for a match
---                    torn down between two passes), and off Season 2 -- the
---                    bags are CLEARED there, not just forgotten: they live on
---                    entities, not on the match.
+--                    torn down between two passes), off Season 2, and with
+--                    br_core stopping -- the bags are CLEARED there, not just
+--                    forgotten: they live on entities, not on the match, and a
+--                    bag left on a car after a restart would stall whoever got
+--                    in next.
 --
 -- NOT REFUSED FOR FINDING NO VEHICLE. A refusal spends nothing, so "no car
 -- near this terminal" would be free intel (Pulse's rule); an EMP over an empty
@@ -96,7 +100,8 @@ local function setBag(veh, ms)
 end
 
 --- Does the EMP take this vehicle? It has an engine, it is not one this
---- gamemode refuses (aircraft, armed, tanks), and it is not the CPR ride.
+--- gamemode refuses (aircraft and tanks; an armed row is allowed since #322,
+--- so it is taken), and it is not the CPR ride.
 --- @param veh integer
 --- @return boolean
 local function takes(veh)
@@ -240,11 +245,9 @@ if BR.Sched and BR.Sched.every then
     end)
 end
 
--- A MATCH TORN DOWN BETWEEN TWO PASSES (an abandoned one never reaches ENDED)
--- is no longer in BR.Server.matches, so the job above cannot see it: its bags
--- are cleared here, from the index.
-AddEventHandler('br:match:destroyed', function(d)
-    local id = type(d) == 'table' and d.matchId or nil
+--- Every bag one match's EMPs set, cleared, from the index.
+--- @param id any  the match id
+local function clearMatch(id)
     local marks = id ~= nil and byMatch[id] or nil
     if not marks then return end
     byMatch[id] = nil
@@ -252,4 +255,20 @@ AddEventHandler('br:match:destroyed', function(d)
         marks[veh] = nil
         setBag(veh, nil)
     end
+end
+
+-- A MATCH TORN DOWN BETWEEN TWO PASSES (an abandoned one never reaches ENDED)
+-- is no longer in BR.Server.matches, so the job above cannot see it: its bags
+-- are cleared here, from the index.
+AddEventHandler('br:match:destroyed', function(d)
+    clearMatch(type(d) == 'table' and d.matchId or nil)
+end)
+
+-- BR_CORE STOPPING (a restart mid-EMP): the bags outlive the resource on the
+-- entities, so every one is cleared on the way out.
+AddEventHandler('onResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    local ids = {}
+    for id in pairs(byMatch) do ids[#ids + 1] = id end
+    for _, id in ipairs(ids) do clearMatch(id) end
 end)

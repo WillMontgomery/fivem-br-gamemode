@@ -839,16 +839,26 @@ new driver), and on `client/terminalfx.lua`'s one SLOW pass for ownership that
 moved or an engine somebody started (a refuel's ignition, a revive hold's
 siren). Behind the server's clear: a vehicle this client owns whose bag is
 gone, the lobby, Season 1, the resource stopping, and 5 s past the time the
-bag gave. Nothing per frame; with nothing marked the SLOW hook calls no
-native. **Not picked:** anything `BR.Config.VehicleRefusalFor` refuses --
-**aircraft** above all: nobody may fly one here (#215 ejects them, #211 files
-a case), the bus and the airdrop's plane are local and never networked, and a
-stalled helicopter in the air falls on whoever is under it, which the page
-does not say -- a trailer or a train (no engine), and the CPR ride while it
-carries a downed player. A bicycle is marked and never held: it has no
-engine. Nothing is created, deleted or moved (`server/vehicles.lua`'s
+bag gave. **Whoever stalled a vehicle undoes it, owner or not** (the wave C
+review): a stall writes the undriveable and no-auto-start flags to that
+client's own copy, and nothing promises the owner's sync writes them back, so
+every client keeps the vehicles it wrote to and every way an EMP ends undoes
+them -- the owner releases in full, any other client clears both flags on its
+copy and leaves the engine to the owner -- and getting into a vehicle with no
+bag that this client marked or stalled undoes it again as ownership arrives.
+Nothing per frame; with nothing marked and nothing left to undo the SLOW hook
+calls no native. **Not picked:** anything `BR.Config.VehicleRefusalFor`
+refuses -- **aircraft** above all: nobody may fly one here (#215 ejects them,
+#211 files a case), the bus and the airdrop's plane are local and never
+networked, and a stalled helicopter in the air falls on whoever is under it,
+which the page does not say -- and the tanks; a trailer or a train (no
+engine), and the CPR ride while it carries a downed player. An armed
+model-table vehicle is NOT refused since #322 (its weapons are switched off),
+so it is picked and stalls like any car. A bicycle is marked and never held:
+it has no engine. Nothing is created, deleted or moved (`server/vehicles.lua`'s
 creation rule, the fuel ledger and `sv_entityLockdown` are untouched); the
-only write is the server's own state bag.
+only write is the server's own state bag, cleared with its end, its match,
+Season 1 and br_core stopping.
 
 **Comms blackout is one predicate.** `BR.Terminal.blackedOut(m, key, now)`: a
 blackout run by another squad, in force, in a match being played, on Season
