@@ -687,7 +687,7 @@ client_scripts {
     -- The Yubikey and the terminals in the world (#396): the key the server
     -- says this player holds, each terminal's blip and plate (the laptops are
     -- the owner's ymap's, hidden by a model hide where terminals are off),
-    -- the hold that asks the server to open one, and Storm reveal on both
+    -- the press that asks the server to open one, and Storm reveal on both
     -- maps. AFTER client/terminal.lua for a reader (BR.Terminal.computerOpen
     -- is asked at call time), and after client/keybinds.lua, client/dui.lua
     -- and client/natives.lua because it calls BR.Keys.on and

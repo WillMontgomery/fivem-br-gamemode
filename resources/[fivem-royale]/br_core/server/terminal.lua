@@ -6,7 +6,7 @@
 --
 --   the terminals    the config's sites plus the dev tool's, each online only
 --                    while it stands inside the storm's current safe zone
---   the session      opened by TERMINAL_USE when a living player holds
+--   the session      opened by TERMINAL_USE when a living player presses
 --                    interact beside a live terminal (or by the dev command
 --                    `brterminalsv open`, with typed facts, for the app alone)
 --   the rules        a key, the squad's ONE use this match, a live terminal --
@@ -799,7 +799,9 @@ function T.pushInfo()
     end
 end
 
---- A player held interact at a terminal. Open it, or say why not.
+--- A player pressed interact at a terminal (owner, 2026-10-06: "press to
+--- open" -- it was an 800 ms hold, and every check here is the same). Open
+--- it, or say why not.
 --- @param src integer
 --- @param terminalId string
 --- @param now number
@@ -1154,7 +1156,8 @@ end
 
 -- ---------------------------------------------------------- net events ---
 
--- THE USE REQUEST. Season, shape and rate here; the rest is BR.Terminal.use,
+-- THE USE REQUEST, one per press. Season, shape and rate (the anti-spam
+-- interval, runMinIntervalMs) here; the rest is BR.Terminal.use,
 -- which reads the sender's state, match, position and terminal off this
 -- server. An offline terminal is the one refusal said aloud -- the plate
 -- already said it, and a player who pressed anyway is told why nothing

@@ -107,7 +107,7 @@ BR.Config.Terminals = {
         -- function cannot run for that cause.
         no_key = 'You need a Yubikey to access this system. Search far and wide, and you just might find one.',
         -- WRITTEN. A terminal outside the storm: the world plate's hint, a
-        -- toast if the player holds interact anyway, and the app's reason.
+        -- toast if the server hears a press there anyway, and the app's reason.
         offline = 'This terminal is outside the storm and offline.',
         -- [COPY] A toast to a holder trying to pick up a second Yubikey.
         already_holding = '[COPY: pickup refused -- you already hold a Yubikey]',
@@ -130,10 +130,15 @@ BR.Config.Terminals = {
         bounty_protect = "Protect {playername}! They've got a bounty for the next 10 minutes.",
         -- [COPY] The Yubikey's name on the world plate over a key on the ground.
         key_label = '[COPY: Yubikey -- its name on the ground pickup]',
-        -- [COPY] The title on a terminal's world plate, and its blip's name.
-        terminal_label = '[COPY: terminal plate -- title]',
-        -- [COPY] The plate's hint when this player can use the terminal now.
-        terminal_use = '[COPY: terminal plate -- hold to use]',
+        -- VERBATIM (owner, 2026-10-06: 'When approaching one of these, a DUI
+        -- should be shown: "Computer system" "press to open" with the
+        -- interact key on it'). The title on every terminal's world plate,
+        -- whatever its hint -- and its blip's name on the map.
+        terminal_label = 'Computer system',
+        -- VERBATIM (the same words). The plate's hint when a press opens the
+        -- computer with this player's key, beside the interact key's cap.
+        -- The no_key, squad_used and offline plates keep their own lines.
+        terminal_use = 'press to open',
 
         -- ── the desktop (cuchi_computer) -- at the terminal. WRITTEN ─────────
 
@@ -365,7 +370,9 @@ BR.Config.Terminals = {
         howto_key_title = 'Getting a Yubikey',
         howto_key_body = "Airdrops have a 50/50 chance of carrying a Yubikey, and legendary crates have a small chance.\nYou can hold one Yubikey at a time. It doesn't take an inventory slot, and its icon shows on your HUD.\nIf you're eliminated, your Yubikey drops where you fell, and anyone can pick it up.\nA Yubikey you don't use stays with you into your next match.",
         howto_terminal_title = 'Using a terminal',
-        howto_terminal_body = "While you hold a Yubikey, terminals inside the storm show on your map as laptops.\nWalk up to one and hold interact to open it.\nA terminal outside the storm is offline and won't open.\nPick a function, read its page, choose its options and press Run.",
+        -- WRITTEN (2026-10-06, round 3: "hold interact" became "press
+        -- interact", as the plate's press opens the computer now).
+        howto_terminal_body = "While you hold a Yubikey, terminals inside the storm show on your map as laptops.\nWalk up to one and press interact to open it.\nA terminal outside the storm is offline and won't open.\nPick a function, read its page, choose its options and press Run.",
         howto_rules_title = 'One use per squad',
         howto_rules_body = "Each squad gets one terminal use per match. A solo player is a squad of one.\nRunning a function uses your Yubikey and your squad's use. A Yubikey is gone after one use.\nIf a squadmate already ran a function this match, your Yubikey stays with you for a later match.\nA function that can't run uses nothing.",
         -- WRITTEN (2026-10-05, round 2). The same section outside a squad
@@ -830,8 +837,6 @@ BR.Config.Terminals = {
     -- reason).
     useDistanceM = 2.5,
     useSlackM = 2.0,
-    -- How long interact is held to open the computer.
-    holdMs = 800,
     -- How often a client re-asks which terminals are inside the storm and
     -- redraws their blips. The wall moves metres per second; a second is
     -- plenty, and it is one zone build per pass however many terminals.

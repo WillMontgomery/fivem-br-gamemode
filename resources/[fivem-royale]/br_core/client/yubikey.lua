@@ -9,8 +9,10 @@
 --   the terminals  the config's sites plus the dev tool's (TERMINAL_SITES):
 --                  a blip each, only while this player holds a key and only
 --                  for a terminal inside the storm; and the shared world plate
---                  within reach, whose hold asks the server to open the
---                  computer (TERMINAL_USE). THE LAPTOPS ARE NOT OURS: the
+--                  within reach -- the owner's "Computer system" / "press to
+--                  open" with the interact key (2026-10-06) -- whose PRESS
+--                  asks the server to open the computer (TERMINAL_USE). THE
+--                  LAPTOPS ARE NOT OURS: the
 --                  owner's ymap places them (2026-10-06, streamed with
 --                  br_stream_s2), and every site row says where one stands --
 --                  this file makes no prop, and reads nothing off one.
@@ -24,7 +26,7 @@
 --
 -- Nothing, unless a plate is up. The terminals are walked on the SLOW band
 -- (blips, which ones the storm has taken) and on the TICK band (which one is
--- in reach, and the hold), and both return before calling a native on a
+-- in reach), and both return before calling a native on a
 -- Season 1 server or with no terminal anywhere. The FRAME band only draws the
 -- plate, and only while there is one. tools/perf_client.lua's budget holds it.
 -- The Season 1 hides cost their natives once per season move, never per pass.
@@ -93,16 +95,14 @@ local near = nil
 --- What the plate shows, or nil: { id, x, y, z, hint, press }.
 local plate = nil
 
---- The plate's last message, so it is sent only on change (a re-send restarts
---- the ring from zero -- client/dbno.lua's #129 note).
+--- The plate's last message, so it is sent only on change.
 local shownKey = nil
 
---- A hold under way: { id, at }, or nil.
-local holding = nil
-
---- False from the moment a hold completes until interact is let go, so one
---- long press cannot ask twice.
-local armed = true
+--- GetGameTimer() of the last press that asked the server, or nil. A press
+--- sooner than runMinIntervalMs after it asks nothing: the server drops a use
+--- that soon anyway (its own anti-spam interval, server/terminal.lua), so a
+--- mashed key sends one request, not ten.
+local lastAsk = nil
 
 --- @return boolean  this player holds a key (false on Season 1)
 function Y.held()
@@ -127,7 +127,7 @@ end
 --- Is this file's plate on screen? Read by client/dbno.lua, which owns the one
 --- BR.Loot.suppress call: a terminal on a floor with loot near it must not
 --- take two answers from one press, nor share the one prompt browser with a
---- crate's plate -- so even an offline plate, with nothing to hold, counts.
+--- crate's plate -- so even an offline plate, with nothing to press, counts.
 --- @return boolean
 function Y.prompting()
     return plate ~= nil
@@ -312,7 +312,7 @@ end
 
 local function dropAll()
     for id in pairs(world) do dropTerminal(id) end
-    near, holding = nil, nil
+    near = nil
 end
 
 --- Is the player in a live match, where terminals and their blips belong?
@@ -397,8 +397,7 @@ end
 
 --- Show, change or take down the plate. Sent on change only.
 local function setPrompt()
-    local k = plate and table.concat({ plate.id, plate.hint, tostring(plate.press),
-        tostring(holding ~= nil) }, ':') or nil
+    local k = plate and table.concat({ plate.id, plate.hint, tostring(plate.press) }, ':') or nil
     if k == shownKey then return end
     local wasUp = shownKey ~= nil
     shownKey = k
@@ -406,29 +405,31 @@ local function setPrompt()
         if wasUp then BR.Dui.send(promptPage(), { t = 'prompt', show = false }) end
         return
     end
+    -- THE OWNER'S PLATE (2026-10-06): "Computer system" over "press to open"
+    -- with the interact key on it -- the page's key-cap badge, the loose
+    -- items' plate. No ring: nothing is held.
     BR.Dui.send(promptPage(), {
         t      = 'prompt',
         show   = true,
         label  = copy().terminal_label,
         hint   = plate.hint,
-        -- THE KEY CAP ONLY WHERE THERE IS A HOLD: an offline terminal has
-        -- nothing to press, and a cap on its plate would be a lie the player
-        -- acts on (client/revivekey.lua's rule).
+        -- THE KEY CAP ONLY WHERE A PRESS DOES SOMETHING: an offline terminal
+        -- opens nothing, and a cap on its plate would be a lie the player
+        -- acts on (client/revivekey.lua's rule). The player's own key for
+        -- interact, whatever they bound it to.
         key    = plate.press and BR.Native.keyLabelForCommand(
                      'brinteract', BR.Config.Loot.promptControl or 51) or nil,
-        ring   = holding ~= nil,
-        holdMs = cfg().holdMs,
     })
 end
 
 --- What this player's plate says at this terminal.
 ---
----   offline     the storm has it: the offline line, nothing to hold
+---   offline     the storm has it: the offline line, nothing to press
 ---   no key      the no_key line ("what they need to do to gain access"); the
----               hold still opens the computer, which lists every function
+---               press still opens the computer, which lists every function
 ---               unavailable for the same reason
----   squad used  the squad_used line; the hold opens it the same way
----   usable      terminal_use, the key cap and the ring
+---   squad used  the squad_used line; the press opens it the same way
+---   usable      terminal_use ("press to open") and the key cap
 local function plateFor(s)
     local w = world[s.id]
     local online = (w and w.online) or dev.forced[s.id] == true
@@ -438,17 +439,17 @@ local function plateFor(s)
     return { hint = copy().terminal_use, press = true }
 end
 
--- WHICH TERMINAL IS IN REACH, AND THE HOLD, TEN TIMES A SECOND.
+-- WHICH TERMINAL IS IN REACH, TEN TIMES A SECOND.
 BR.Loop.register(BR.Loop.TICK, 'terminals.near', function()
     if not on() then
         if plate then plate = nil; setPrompt() end
-        near, holding = nil, nil
+        near = nil
         return
     end
     local all = sites()
     if #all == 0 then
         if plate then plate = nil; setPrompt() end
-        near, holding = nil, nil
+        near = nil
         return
     end
 
@@ -478,20 +479,6 @@ BR.Loop.register(BR.Loop.TICK, 'terminals.near', function()
     else
         plate = nil
     end
-
-    -- THE HOLD: a level, not an edge -- let go, walk off or lose the press and
-    -- it ends; held long enough and the server is ASKED.
-    if holding then
-        local still = plate ~= nil and plate.press and plate.id == holding.id
-            and BR.Keys.isHeld('interact')
-        if not still then
-            holding = nil
-        elseif GetGameTimer() - holding.at >= (cfg().holdMs or 800) then
-            TriggerServerEvent(BR.Net.TERMINAL_USE, { terminalId = holding.id })
-            holding, armed = nil, false
-        end
-    end
-    if not armed and not BR.Keys.isHeld('interact') then armed = true end
     setPrompt()
 end)
 
@@ -501,16 +488,22 @@ BR.Loop.register(BR.Loop.FRAME, 'terminals.plate', function()
     BR.Dui.drawWorld(promptPage(), plate.x, plate.y, plate.z + PLATE_LIFT, PLATE_SCALE)
 end)
 
--- THE PRESS ACTS ON WHAT WAS DRAWN, never on a fresh search (client/loot.lua's
--- #128). Not while a br_ui screen holds the keyboard, and not while the
--- computer is up.
+-- THE PRESS OPENS IT (owner, 2026-10-06: "press to open"; it was an 800 ms
+-- hold). The press ASKS: the server opens the computer only for a living
+-- player in reach of a live terminal in a match on Season 2, and says why
+-- not otherwise (server/terminal.lua's BR.Terminal.use). It acts on what was
+-- drawn, never on a fresh search (client/loot.lua's #128). Not while a br_ui
+-- screen holds the keyboard, not while the computer is up, and not again
+-- within runMinIntervalMs of the last ask.
 BR.Keys.on('interact', function(pressed)
     if not pressed then return end
-    if not plate or not plate.press or holding or not armed then return end
+    if not plate or not plate.press then return end
     if BR.Keys.uiScreen ~= nil then return end
     if BR.Terminal and BR.Terminal.computerOpen and BR.Terminal.computerOpen() then return end
-    holding = { id = plate.id, at = GetGameTimer() }
-    setPrompt()
+    local now = GetGameTimer()
+    if lastAsk ~= nil and now - lastAsk < (cfg().runMinIntervalMs or 500) then return end
+    lastAsk = now
+    TriggerServerEvent(BR.Net.TERMINAL_USE, { terminalId = plate.id })
 end)
 
 -- ------------------------------------------------------------- the wire ---

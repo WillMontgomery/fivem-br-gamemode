@@ -1255,7 +1255,7 @@ do
     eq(W.spriteBlips(521), 2, 'from the bus on -- "from the start" -- it does')
 end
 
-describe('client: the plate says what the player needs, and the hold asks the server')
+describe('client: the plate says what the player needs, and a press asks the server')
 do
     local W = bootClient({ sites = { SITE } })
     W.B.State.storm = stormAround(W.B, W.now)
@@ -1265,7 +1265,14 @@ do
     local p = W.lastPrompt()
     ok(p and p.show == true and p.label == COPY.terminal_label, 'in reach, the plate is up with the terminal_label title')
     eq(p and p.hint, COPY.no_key, 'without a key it says no_key -- what they need to get access')
+    eq(p and p.key, 'E', 'with the interact key on it: a press still opens the computer, to its login screen')
     eq(W.B.Yubikey.prompting(), true, 'and the loot prompt is told to stand down')
+    W.keys.listeners.interact(true)
+    ok(#W.server == 1 and W.server[1].ev == W.B.Net.TERMINAL_USE and W.server[1].d.terminalId == 'tower',
+        'no key: a press asks the server all the same (the app opens on no_key)')
+    W.keys.listeners.interact(false)
+    W.server = {}
+    W.now = W.now + CT.runMinIntervalMs
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
     W.tick()
@@ -1275,6 +1282,11 @@ do
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = true })
     W.tick()
     eq(W.lastPrompt().hint, COPY.squad_used, 'the squad has used its one: squad_used')
+    eq(W.lastPrompt().key, 'E', 'with the key cap: the press opens it the same way')
+    W.keys.listeners.interact(true)
+    eq(#W.server, 1, 'and asks the server')
+    W.server = {}
+    W.now = W.now + CT.runMinIntervalMs
     -- "SQUAD" ONLY IN A SQUAD MATCH (round 2): the plate picks its solo line.
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = false })
     W.tick()
@@ -1290,36 +1302,45 @@ do
     W.slow()
     W.tick()
     p = W.lastPrompt()
-    ok(p.hint == COPY.offline and p.key == nil, 'outside the storm: offline, and no key cap -- nothing to hold')
+    ok(p.hint == COPY.offline and p.key == nil, 'outside the storm: offline, and no key cap -- nothing to press')
+    W.keys.listeners.interact(true)
+    eq(#W.server, 0, 'and a press there asks nothing')
 
-    -- THE HOLD.
+    -- THE PRESS (owner, 2026-10-06: '"Computer system" "press to open" with
+    -- the interact key on it'; it was an 800 ms hold).
     W.B.State.storm = stormAround(W.B, W.now)
     W.slow()
     W.tick()
+    p = W.lastPrompt()
+    ok(p.label == 'Computer system' and p.hint == 'press to open',
+        'with a key at a live terminal: "Computer system", "press to open" -- the owner\'s words')
+    eq(p.key, 'E', 'with the player\'s own interact key on it')
+    ok(not p.ring and p.holdMs == nil, 'and no ring, no hold time: nothing is held')
     W.keys.listeners.interact(true)
-    W.keys.held.interact = true
-    W.tick()
-    eq(#W.server, 0, 'a hold just started asks nothing yet')
-    ok(W.lastPrompt().ring == true, 'and the plate shows the ring')
-    W.now = W.now + CT.holdMs
-    W.tick()
     ok(#W.server == 1 and W.server[1].ev == W.B.Net.TERMINAL_USE and W.server[1].d.terminalId == 'tower',
-        'held for holdMs: the server is asked to open this terminal')
-    W.now = W.now + 2000
+        'one press: the server is asked to open this terminal, at once')
+    eq(W.lastPrompt().ring, nil, 'and the plate never turns into a ring')
+    W.keys.listeners.interact(false)
     W.tick()
-    eq(#W.server, 1, 'still held afterwards: asked once, not again')
-    W.keys.held.interact = false
-    W.tick()
-
+    eq(#W.server, 1, 'the release asks nothing')
+    W.now = W.now + CT.runMinIntervalMs - 1
     W.keys.listeners.interact(true)
+    eq(#W.server, 1, 'a press inside the anti-spam interval asks nothing (the server would drop it)')
+    W.now = W.now + 1
+    W.keys.listeners.interact(true)
+    eq(#W.server, 2, 'one after it asks again -- the server decides whether anything opens')
+    W.now = W.now + CT.runMinIntervalMs
+    W.B.Keys.uiScreen = 'map'
+    W.keys.listeners.interact(true)
+    eq(#W.server, 2, 'not while a br_ui screen holds the keyboard')
+    W.B.Keys.uiScreen = nil
     W.keys.held.interact = true
-    W.now = W.now + 300
-    W.tick()
+    for _ = 1, 30 do
+        W.now = W.now + 100
+        W.tick()
+    end
+    eq(#W.server, 2, 'and holding the key down asks nothing more: only a press asks')
     W.keys.held.interact = false
-    W.tick()
-    W.now = W.now + 2000
-    W.tick()
-    eq(#W.server, 1, 'let go early: nothing is asked')
 
     W.ped = { x = SITE.x + 40.0, y = SITE.y, z = SITE.z }
     W.tick()
@@ -1331,10 +1352,55 @@ do
     W.computer = true
     W.tick()
     eq(W.B.Yubikey.prompting(), false, 'no plate while the computer is open')
+    W.now = W.now + CT.runMinIntervalMs
+    local before = #W.server
+    W.keys.listeners.interact(true)
+    eq(#W.server, before, 'and no press asks while it is')
     W.computer = false
     W.B.State.me.state = W.B.PlayerState.DBNO
     W.tick()
     eq(W.B.Yubikey.prompting(), false, 'nor while downed')
+end
+
+describe('a press, end to end: the client asks, and the server\'s door decides as it always did')
+do
+    -- The client's own request, carried to the real server/terminal.lua: the
+    -- press replaced the hold, and nothing the server checks moved.
+    local W = bootClient({ sites = { NEAR_SITE } })
+    W.B.State.storm = stormAround(W.B, W.now)
+    W.ped = { x = NEAR_SITE.x + 1.0, y = NEAR_SITE.y, z = NEAR_SITE.z }
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
+    W.slow()
+    W.tick()
+    W.keys.listeners.interact(true)
+    local ask = W.server[1] or { d = {} }
+    ok(ask.ev == BR.Net.TERMINAL_USE and ask.d.terminalId == 'tower', 'the press sends TERMINAL_USE for this terminal')
+
+    reset()
+    -- The dev tests above took 'tower' out of play for this server session;
+    -- the dev tool's place puts it back where it stood.
+    sv(1, ('place %s %s %s 0 tower'):format(NEAR_SITE.x, NEAR_SITE.y, NEAR_SITE.z))
+    local m = newMatch(1)
+    player(1, m, nil, NEAR_SITE, true, true)
+    fire(BR.Net.TERMINAL_USE, 1, ask.d)
+    eq(#eventsOf(BR.Net.TERMINAL_OPEN, 1), 1, 'at the terminal, alive, in a live match, with a key: it opens')
+    fire(BR.Net.TERMINAL_USE, 1, ask.d)
+    eq(#eventsOf(BR.Net.TERMINAL_OPEN, 1), 1, 'the same request again inside the interval: dropped')
+
+    -- What the server sees, not what the client says.
+    gameMs = gameMs + 1000
+    player(2, m, nil, { x = NEAR_SITE.x + 30.0, y = NEAR_SITE.y }, true, true)
+    fire(BR.Net.TERMINAL_USE, 2, ask.d)
+    eq(#eventsOf(BR.Net.TERMINAL_OPEN, 2), 0, 'a press the server places thirty meters away opens nothing')
+    player(3, m, nil, NEAR_SITE, true, true)
+    roster[3].state = BR.PlayerState.DBNO
+    fire(BR.Net.TERMINAL_USE, 3, ask.d)
+    eq(#eventsOf(BR.Net.TERMINAL_OPEN, 3), 0, 'nor one from a downed player')
+    season(1)
+    player(4, m, nil, NEAR_SITE, true, true)
+    fire(BR.Net.TERMINAL_USE, 4, ask.d)
+    eq(#eventsOf(BR.Net.TERMINAL_OPEN, 4), 0, 'nor one on Season 1')
+    season(2)
 end
 
 describe('client: Storm reveal on both maps until the lobby')

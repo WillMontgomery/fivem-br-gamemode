@@ -625,6 +625,44 @@ do
         'time_weather\'s row carries the owner\'s rule: the storm\'s weather wins outside the circle')
 end
 
+describe('round 3: the plate is the owner\'s, and a press opens the computer')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    local copy = C.copy
+    -- VERBATIM (owner, 2026-10-06): 'a DUI should be shown: "Computer system"
+    -- "press to open" with the interact key on it'. Case and all.
+    eq(copy.terminal_label, 'Computer system', 'the plate\'s title is the owner\'s "Computer system"')
+    eq(copy.terminal_use, 'press to open', 'and its hint his "press to open", lower case as he wrote it')
+    eq(copy.terminal_label_solo, nil, 'neither has a rewritten twin')
+    eq(copy.terminal_use_solo, nil, 'not the hint either')
+    -- THE HOLD IS GONE: no hold time, and no line tells a player to hold
+    -- interact (holding a Yubikey is another thing, and still said).
+    eq(C.holdMs, nil, 'no holdMs: nothing is held')
+    local holds = {}
+    for k, v in pairs(copy) do
+        if v:lower():find('hold interact', 1, true) then holds[#holds + 1] = k end
+    end
+    eq(table.concat(holds, ', '), '', 'no copy line says "hold interact"')
+    ok(copy.howto_terminal_body:find('Walk up to one and press interact to open it.', 1, true) ~= nil,
+        'the how-to says press')
+    -- The other plates keep their own lines.
+    eq(copy.no_key, 'You need a Yubikey to access this system. Search far and wide, and you just might find one.',
+        'the no-key plate keeps the owner\'s no_key line')
+    eq(copy.squad_used, 'Your squad already used its terminal this match.', 'the squad-used plate keeps its line')
+    eq(copy.offline, 'This terminal is outside the storm and offline.', 'the offline plate keeps its line')
+    -- The press goes straight to the server's door, which keeps its interval.
+    local src = (readFile(ROOT .. 'br_core/client/yubikey.lua') or ''):gsub('%-%-[^\n]*', '')
+    ok(not src:find('holdMs', 1, true) and not src:find('%f[%w_]ring%f[^%w_]'),
+        'client/yubikey.lua sends the plate no ring and no hold time')
+    ok(src:find("BR.Keys.on('interact'", 1, true) ~= nil
+        and src:find('TriggerServerEvent(BR.Net.TERMINAL_USE, { terminalId = plate.id })', 1, true) ~= nil,
+        'and its interact press asks the server for the terminal on the plate')
+    local server = (readFile(ROOT .. 'br_core/server/terminal.lua') or ''):gsub('%-%-[^\n]*', '')
+    ok(server:find('if last ~= nil and now - last < cfg().runMinIntervalMs then return end\n    lastUseAt[src] = now', 1, true) ~= nil,
+        'the server still drops a use sooner than runMinIntervalMs after the last')
+end
+
 describe('round 2: the boot and the run, each a range in the registry')
 do
     bootServer()
@@ -888,6 +926,7 @@ do
     end
     -- THE OWNER'S VERBATIM LINES ARE UNTOUCHED, and have no solo lines.
     for _, k in ipairs({ 'no_key', 'notice_access', 'notice_action', 'bounty_new', 'bounty_protect',
+                         'terminal_label', 'terminal_use',
                          'status_offline', 'status_not_here', 'match_heading', 'app_title' }) do
         eq(copy[k .. '_solo'], nil, ('the owner\'s %s has no rewritten twin'):format(k))
     end
