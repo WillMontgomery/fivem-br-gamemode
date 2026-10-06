@@ -676,12 +676,17 @@ the target `contract_target`. Same blip 58 in his colors, same pushes and
 endings; a bounty already running keeps whichever clock is longer.
 
 **Disarm and the anticheat.** The INV_SET takes a round trip; until it lands
-the ped still holds the gun, so a shot from it is NOT_HELD (a case on the first
-hit) and the client's strip of it is counted by `server/strip.lua`.
+the ped still holds the weapon, so a hit from it is refused -- a gun NOT_HELD,
+a launcher NOT_THROWN, each a case on the first hit -- and the client's strip
+of it is counted by `server/strip.lua`. A launcher's round fired just before
+the INV_SET lands is still in the air, and lands after the weapon is gone.
 `BR.Inv.revoke` remembers the weapon on the inventory for `fx.disarmGraceMs`
-(3 s; never on the wire, gone with a reset), and `server/damage.lua` and
-`server/strip.lua` stand down for that weapon from that player alone: the shot
-is still refused, nobody is filed.
+(10 s: an RPG rocket lives 5 s, a grenade launcher's round lobbed straight up
+about 6.1 s, the railgun is instant, plus a round trip -- the stock
+weapons.meta numbers are in the config note; never on the wire, gone with a
+reset), and `server/damage.lua` and `server/strip.lua` stand down for that
+weapon from that player alone, whatever the hit is refused for: the hit is
+still refused, nobody is filed.
 
 **Field medic and the ledger.** `BR.Inv.grantEffect` is a med kit landing's
 authorization (a window and a ceiling per stat, `authorize`) and its

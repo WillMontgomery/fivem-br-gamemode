@@ -1665,13 +1665,22 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                         BR.Damage.vehicleGuns = (BR.Damage.vehicleGuns or 0) + 1
                     end
 
-                    -- ...AND A GUN THE SERVER ITSELF TOOK A MOMENT AGO (a
-                    -- terminal's Disarm, #396) is refused like any gun that is
-                    -- not in the hand -- no damage from it -- and accuses
+                    -- ...AND A WEAPON THE SERVER ITSELF TOOK A MOMENT AGO (a
+                    -- terminal's Disarm, #396) is refused like any weapon that
+                    -- is not in the hand -- no damage from it -- and accuses
                     -- nobody: the ped held it until the INV_SET landed, a
-                    -- round trip the server started. That weapon, that
-                    -- shooter, BR.Inv.revoke's few seconds; see its note.
-                    local revoked = why == BR.ShotRefusal.NOT_HELD and BR.Inv ~= nil
+                    -- round trip the server started, and a rocket or a grenade
+                    -- it fired before then can still be in the air.
+                    --
+                    -- WHATEVER THE REASON, NOT ONE OF THEM. A gun comes back
+                    -- NOT_HELD, but a launcher -- the RPG, the grenade launcher,
+                    -- the railgun, all LEGENDARY, so Disarm's ranking takes
+                    -- them first -- is refused NOT_THROWN by the explosive
+                    -- branch, and both are high with a bar of one. Asking for a
+                    -- reason is asking to miss the next one, so the excuse is
+                    -- keyed on what was taken: that weapon, that shooter,
+                    -- BR.Inv.revoke's grace (fx.disarmGraceMs); see its note.
+                    local revoked = why ~= nil and BR.Inv ~= nil
                         and BR.Inv.revokedRecently ~= nil
                         and BR.Inv.revokedRecently(shooter, data.weaponType, now)
                     if revoked then

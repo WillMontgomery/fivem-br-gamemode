@@ -18,8 +18,10 @@
 --   GONE                 BR.Inv.revoke: the slot emptied through the
 --                        inventory's own API (never a client native), one
 --                        INV_SET, and the weapon remembered for fx.disarmGraceMs
---                        so the shots and the strip report of the round trip
---                        before the INV_SET lands accuse nobody.
+--                        so the hits of the round trip before the INV_SET
+--                        lands (a launcher's round still in the air among
+--                        them, whatever they are refused for) and the strip
+--                        report accuse nobody.
 --
 -- No client half: the INV_SET is client/inventory.lua's, which takes the gun
 -- out of the hand. Nothing is kept after the run.
@@ -107,7 +109,7 @@ T.FUNCTIONS.disarm = {
             end
             return { ok = false, code = 'unavailable' }
         end
-        local grace = tonumber(fx().disarmGraceMs) or 3000
+        local grace = tonumber(fx().disarmGraceMs) or 10000
         local taken = {}
         for _, t in ipairs(targets(m)) do
             local stack = BR.Inv.revoke(t.src, t.slot, grace)

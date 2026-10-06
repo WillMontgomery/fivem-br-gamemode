@@ -1037,23 +1037,28 @@ end
 --- ═══ WHY IT IS REMEMBERED: TWO OF OUR OWN DETECTORS WOULD ACCUSE THEM ═══
 ---
 --- The INV_SET takes a round trip to land, and until it does the player's ped
---- is still holding the gun. Two things then happen that look exactly like a
---- trainer to the anticheat, and neither is one:
+--- is still holding the weapon. Two things then happen that look exactly like
+--- a trainer to the anticheat, and neither is one:
 ---
----   a shot fired in that window is refused NOT_HELD by server/damage.lua --
----     means-class, `high`, a bar of ONE: a case on the first hit;
+---   a hit from it is refused by server/damage.lua -- a gun NOT_HELD, a
+---     launcher NOT_THROWN, both means-class, `high`, a bar of ONE: a case on
+---     the first hit. A launcher's round fired just before the INV_SET lands
+---     is the same weapon still in the air, and lands later;
 ---   the ped's hand no longer matches the inventory when it lands, so
 ---     client/inventory.lua strips the gun and reports it, and
 ---     server/strip.lua finds it in no slot and counts it.
 ---
 --- Both ask BR.Inv.revokedRecently first and stand down for exactly this
---- weapon, from exactly this player, until `graceMs` is up: the shot is still
---- refused (no damage from a gun the server took), the strip still happens,
---- nobody is accused. ON THE INVENTORY, so a reset or a new match (newInv)
---- forgets it, and never on the wire (BR.Inv.publicFor does not carry it).
+--- weapon, from exactly this player, until `graceMs` is up -- whatever reason
+--- the hit is refused for: the hit is still refused (no damage from a weapon
+--- the server took), the strip still happens, nobody is accused. The grace has
+--- to outlast the round trip AND the longest flight in the arsenal; Disarm
+--- passes BR.Config.Terminals.fx.disarmGraceMs, whose note has the numbers. ON
+--- THE INVENTORY, so a reset or a new match (newInv) forgets it, and never on
+--- the wire (BR.Inv.publicFor does not carry it).
 --- @param src integer
 --- @param slot integer
---- @param graceMs number|nil  how long the two detectors stand down (3 s)
+--- @param graceMs number|nil  how long the two detectors stand down (10 s)
 --- @return table|nil stack  what was taken, or nil when the slot was empty
 function BR.Inv.revoke(src, slot, graceMs)
     local inv = BR.Inv.of(src)
@@ -1064,14 +1069,14 @@ function BR.Inv.revoke(src, slot, graceMs)
     if not stack then return nil end
     if w and w.hash then
         inv.revoked = inv.revoked or {}
-        inv.revoked[BR.NormHash(w.hash)] = GetGameTimer() + (tonumber(graceMs) or 3000)
+        inv.revoked[BR.NormHash(w.hash)] = GetGameTimer() + (tonumber(graceMs) or 10000)
     end
     BR.Inv.push(src)
     return stack
 end
 
 --- Did the server take this weapon from this player a moment ago
---- (BR.Inv.revoke)? Asked by server/damage.lua about a NOT_HELD shot and by
+--- (BR.Inv.revoke)? Asked by server/damage.lua about any refused hit and by
 --- server/strip.lua about a strip report. A READ: it never makes an inventory.
 --- @param src integer
 --- @param hash integer|nil  the weapon's hash, signed or not

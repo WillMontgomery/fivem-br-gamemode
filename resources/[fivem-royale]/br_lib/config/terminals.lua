@@ -1069,11 +1069,18 @@ BR.Config.Terminals = {
         --    own numbers (Ghost's and Lockdown's seconds, Pulse's meters),
         --    read as numbers where they are used; everything else is here. ──
 
-        -- Disarm: how long the server remembers a weapon it took, so a shot
-        -- from it -- or the client's strip report of it -- in the round trip
-        -- before the inventory update lands accuses nobody
-        -- (BR.Inv.revoke). A few round trips, never a match.
-        disarmGraceMs = 3000,
+        -- Disarm: how long the server remembers a weapon it took, so a hit
+        -- from it -- or the client's strip report of it -- accuses nobody
+        -- (BR.Inv.revoke). It has to outlast the round trip before the
+        -- inventory update lands AND the longest flight of a round fired just
+        -- before it, because that round lands after the weapon is gone. From
+        -- the stock weapons.meta: an RPG rocket lives 5 s at most (AMMO_RPG
+        -- LifeTime); a grenade launcher's round leaves at 25 m/s and goes off
+        -- 1 s after it first lands (AMMO_GRENADELAUNCHER LaunchSpeed,
+        -- LifeTimeAfterImpact), so one lobbed straight up is about 6.1 s; the
+        -- railgun is INSTANT_HIT. 10 s covers those and a slow round trip,
+        -- with room for a lob off a roof. Seconds, never a match.
+        disarmGraceMs = 10000,
         -- How often the server checks whether a timed effect has run out (Key
         -- finder's marks; Ghost; Lockdown) and ends it: one pass a second.
         endCheckMs = 1000,

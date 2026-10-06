@@ -1220,6 +1220,9 @@ do
         'the STACK\'s rarity, not the row\'s: a legendary carbine over an epic special carbine')
     eq(P({ stack('carbinerifle', BR.Rarity.LEGENDARY), stack('militaryrifle') }), 2,
         'two legendaries: the military rifle\'s 42 over the carbine\'s 32')
+    eq(P({ stack('militaryrifle', BR.Rarity.LEGENDARY), stack('railgun'), stack('grenadelauncher') }), 2,
+        'a launcher is a weapon too, and a legendary one: the railgun\'s 110 over the military rifle\'s 42 '
+        .. 'and the grenade launcher\'s 85 -- so its anticheat excuse has to cover NOT_THROWN')
     eq(P({ false, false, stack('bat') }), 3, 'a melee weapon is a weapon')
     eq(P({ stack('grenade', nil, BR.ItemKind.THROWABLE), stack('bat') }), 2,
         'a throwable is not, whatever its rarity')

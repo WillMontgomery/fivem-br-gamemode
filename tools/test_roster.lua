@@ -11372,6 +11372,97 @@ do
     ok(BR.Inv.revokedRecently(1, CARBINE - 0x100000000, fakeTime), 'the carbine, asked for by its signed hash')
     BR.Inv.reset(1)
     ok(not BR.Inv.revokedRecently(1, CARBINE, fakeTime), 'and a reset inventory remembers nothing')
+
+    -- ═══ EVERY WEAPON DISARM CAN TAKE, WHATEVER IT IS REFUSED FOR (#396, the
+    --     wave A review) ═══
+    --
+    -- The excuse used to be asked about NOT_HELD alone. A launcher is refused
+    -- NOT_THROWN by the explosive branch instead -- high, a bar of one -- and
+    -- the RPG, the grenade launcher and the railgun are all LEGENDARY, so
+    -- Disarm's ranking takes them first. A round fired just before the INV_SET
+    -- landed filed a case against the player Disarm had just disarmed.
+    --
+    -- THE SHIPPED GRACE, read from the config in an environment of its own so
+    -- nothing else in this suite sees a terminals table it never loaded.
+    local cfgEnv = setmetatable({ BR = {} }, { __index = _G })
+    assert(loadfile(ROOT .. 'br_lib/config/terminals.lua', 't', cfgEnv))()
+    local GRACE = cfgEnv.BR.Config.Terminals.fx.disarmGraceMs
+    local NOT_THROWN = BR.ShotRefusal.NOT_THROWN
+    local function signed(h) return h >= 0x80000000 and h - 0x100000000 or h end
+
+    -- IT OUTLASTS THE LONGEST FLIGHT IN THE ARSENAL AND A ROUND TRIP. A round
+    -- fired the moment before the INV_SET lands is still the weapon Disarm took
+    -- when it lands. From the stock weapons.meta: an RPG rocket lives 5 s
+    -- (AMMO_RPG LifeTime); a grenade launcher's round leaves at 25 m/s and goes
+    -- off 1 s after it lands (LaunchSpeed, LifeTimeAfterImpact), so straight
+    -- up and back is 2 * 25 / 9.81 s + 1 s; the railgun is INSTANT_HIT. Plus a
+    -- second for the round trip.
+    local flightMs = math.max(5000, (2 * 25 / 9.81 + 1) * 1000, 0)
+    ok(type(GRACE) == 'number' and GRACE >= flightMs + 1000,
+        'the grace outlasts the longest flight in the arsenal plus a round trip',
+        ('grace %s, flight %.0f ms'):format(tostring(GRACE), flightMs))
+
+    for _, id in ipairs({ 'rpg', 'grenadelauncher', 'railgun' }) do
+        local w = BR.Config.WeaponById[id]
+        local function holding()
+            twoAlive()
+            BR.Inv.reset(1)
+            BR.Inv.give(1, { item = id, kind = BR.ItemKind.WEAPON,
+                             rarity = w.rarity, count = 1, clip = w.clip })
+            BR.Inv.of(1).active = 1
+            fired = {}
+        end
+        ok(w.explosive and w.clip and w.rarity == BR.Rarity.LEGENDARY,
+            id .. ' is a legendary launcher: the explosive branch, and Disarm takes it first')
+
+        -- A ROUND FROM IT HALF A SECOND LATER, AND ONE STILL IN THE AIR.
+        holding()
+        BR.Inv.revoke(1, 1, GRACE)
+        local before = BR.Damage.refusals or 0
+        shoot(signed(w.hash), 500)
+        eq(BR.Damage.refusals or 0, before + 1, id .. ': a round from the taken launcher is still refused')
+        eq(announced(), nil, id .. ': and opens no case')
+        shoot(signed(w.hash), 6000)
+        eq(announced(), nil, id .. ': nor does one landing 6.5 s after Disarm, past the old 3 s grace')
+
+        -- THE CONTROL, AND IT NAMES THE REASON THAT WAS EXCUSED: past the
+        -- grace the same round is the NOT_THROWN case it always was.
+        holding()
+        BR.Inv.revoke(1, 1, GRACE)
+        shoot(signed(w.hash), GRACE + 500)
+        local c = announced()
+        ok(c and c.reasons and c.reasons[NOT_THROWN] == 1,
+            id .. ': past the grace, NOT_THROWN opens a case on the first one',
+            c and tostring(c.reason) or 'no case')
+    end
+
+    -- AND A REASON NOBODY WROTE DOWN: the excuse is keyed on the weapon taken,
+    -- not on a list of reasons. Two pistols, the empty one in the hand and its
+    -- pool dry, the loaded rarer one taken: the shot is refused NO_AMMO.
+    local function twoPistols()
+        twoAlive()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 0 })
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = 12 })
+        local inv1 = BR.Inv.of(1)
+        inv1.active = 1
+        inv1.slots[1].clip = 0
+        inv1.ammo[BR.Config.WeaponById['pistol'].ammo] = 0
+        fired = {}
+    end
+    twoPistols()
+    ok(BR.Inv.of(1).slots[2] and BR.Inv.of(1).slots[2].rarity == 3, 'the rarer pistol is in slot 2')
+    BR.Inv.revoke(1, 2, GRACE)
+    shoot(PISTOL, 500)
+    eq(announced(), nil, 'a NO_AMMO refusal of the weapon taken opens no case either')
+    twoPistols()
+    shoot(PISTOL, 500)
+    a = announced()
+    ok(a and a.reasons and a.reasons[BR.ShotRefusal.NO_AMMO] == 1,
+        'the control: with nothing taken the same shot is the NO_AMMO case',
+        a and tostring(a.reason) or 'no case')
 end
 
 describe('damage.vehicle-gun')
