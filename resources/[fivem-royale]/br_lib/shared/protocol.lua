@@ -1257,6 +1257,12 @@ BR.Net = {
     -- pulsePingMs for pulseMs -- and once more, empty, when it is over
     -- (server/terminalfx/pulse.lua).
     TERMINAL_PULSE  = 'br:terminal:pulse',
+    -- S->C { matchId, on, keep?, leftMs? }. Lockdown (wave A): every terminal
+    -- but `keep` is offline in this match, for `leftMs` -- to everyone in the
+    -- match when it starts, again when it ends (`on` false), and to a player
+    -- on br:ready while it lasts (server/terminalfx/lockdown.lua). The one
+    -- online rule's `lock` (BR.TerminalSolve.offlineWhy).
+    TERMINAL_LOCKDOWN = 'br:terminal:lockdown',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
     -- player holds one, and whether their squad has spent its one use this

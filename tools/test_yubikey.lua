@@ -1410,6 +1410,49 @@ do
     season(2)
 end
 
+describe('client: a Lockdown -- only the terminal it kept on a holder\'s map, the others\' plates locked')
+do
+    -- WAVE A (2026-10-06): the world reads BR.TerminalFx.lock() (client/
+    -- terminalfx/lockdown.lua, modeled here) through the one online rule.
+    local HUT = { id = 'hut', x = SITE.x + 300.0, y = SITE.y, z = 30.0, h = 0.0 }
+    local W = bootClient({ sites = { SITE, HUT } })
+    local lock = nil
+    W.B.TerminalFx = { lock = function() return lock end }
+    W.B.State.storm = stormAround(W.B, W.now)
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
+    W.slow()
+    eq(W.spriteBlips(BR.Config.Terminals.art.blipSprite), 4, 'with a key, both terminals on both maps')
+
+    lock = { keep = 'tower' }
+    W.slow()
+    eq(W.spriteBlips(BR.Config.Terminals.art.blipSprite), 2, 'a Lockdown at the tower: only the tower')
+    local b
+    for _, x in pairs(W.blips) do if x.sprite == BR.Config.Terminals.art.blipSprite then b = x end end
+    ok(b and b.x == SITE.x, 'and it is the tower\'s blip')
+
+    W.ped = { x = HUT.x + 1.0, y = HUT.y, z = HUT.z }
+    W.tick()
+    local p = W.lastPrompt()
+    ok(p and p.hint == COPY.locked and p.key == nil, 'at the hut: the plate says locked, with nothing to hold')
+    W.net(W.B.Net.TERMINAL_SITES, { placed = {}, removed = {}, forced = { 'hut' } })
+    W.slow()
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.locked, 'forced online by the dev tool, it is still locked')
+    W.net(W.B.Net.TERMINAL_SITES, { placed = {}, removed = {}, forced = {} })
+
+    W.ped = { x = SITE.x + 1.0, y = SITE.y, z = SITE.z }
+    W.slow()
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.terminal_use, 'at the tower it is business as usual')
+
+    lock = nil
+    W.slow()
+    eq(W.spriteBlips(BR.Config.Terminals.art.blipSprite), 4, 'the Lockdown over: both again')
+    W.ped = { x = HUT.x + 1.0, y = HUT.y, z = HUT.z }
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.terminal_use, 'and the hut opens')
+end
+
 describe('client: Storm reveal on both maps until the lobby')
 do
     local W = bootClient({ sites = {} })

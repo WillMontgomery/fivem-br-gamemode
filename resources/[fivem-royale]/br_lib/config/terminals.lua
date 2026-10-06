@@ -109,6 +109,10 @@ BR.Config.Terminals = {
         -- WRITTEN. A terminal outside the storm: the world plate's hint, a
         -- toast if the server hears a press there anyway, and the app's reason.
         offline = 'This terminal is outside the storm and offline.',
+        -- WRITTEN (2026-10-06, wave A). A terminal a Lockdown has taken: the
+        -- world plate's hint (nothing to hold), a toast if the player presses
+        -- anyway, and the app's reason.
+        locked = 'A lockdown has taken this terminal offline.',
         -- [COPY] A toast to a holder trying to pick up a second Yubikey.
         already_holding = '[COPY: pickup refused -- you already hold a Yubikey]',
         -- WRITTEN. A holder whose squad has already used its one key this
@@ -382,6 +386,9 @@ BR.Config.Terminals = {
         -- has an elimination yet -- refused, spending nothing.
         no_target = 'Nobody outside your squad has an elimination yet.',
         no_target_solo = 'Nobody else has an elimination yet.',
+        -- WRITTEN (2026-10-06, wave A). Lockdown: no other terminal is online
+        -- to take offline -- refused, spending nothing.
+        lockdown_none = 'There are no other terminals online to take offline.',
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -708,10 +715,13 @@ BR.Config.Terminals = {
         -- legend.
         pulse_blip = 'Detected',
 
-        -- Lockdown (new; offline)
+        -- Lockdown (new; LIVE since wave A, 2026-10-06)
         lockdown_name = 'Lockdown',
         lockdown_summary = 'Takes every other terminal offline for a while.',
-        lockdown_what = "Every other terminal goes offline for the time you choose.\nNobody can open them.\nThis terminal stays online.",
+        -- WRITTEN (2026-10-06, wave A; was "...\nThis terminal stays
+        -- online."): the storm still takes this terminal like any other --
+        -- Lockdown takes the others, it does not hold the wall back.
+        lockdown_what = "Every other terminal goes offline for the time you choose.\nNobody can open them.\nThis terminal stays online, unless the storm reaches it.",
         lockdown_opt_duration = 'Duration',
         lockdown_opt_duration_180 = '3 minutes',
         lockdown_opt_duration_300 = '5 minutes',
@@ -1033,8 +1043,8 @@ BR.Config.Terminals = {
           options = { { id = 'delay', choices = { '60', '120' }, default = '60' } } },
         { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true,
           options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters
-        { id = 'lockdown',       category = 'disruption', risk = 'medium', implemented = false,
-          options = { { id = 'duration', choices = { '180', '300' }, default = '180' } } },
+        { id = 'lockdown',       category = 'disruption', risk = 'medium', implemented = true,
+          options = { { id = 'duration', choices = { '180', '300' }, default = '180' } } },  -- seconds
         { id = 'contract',       category = 'disruption', risk = 'medium', implemented = true },
         { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true },
     },

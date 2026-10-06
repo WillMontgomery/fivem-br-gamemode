@@ -8,7 +8,9 @@
 --                  loot and client/loot.lua draws it.
 --   the terminals  the config's sites plus the dev tool's (TERMINAL_SITES):
 --                  a blip each, only while this player holds a key and only
---                  for a terminal inside the storm; and the shared world plate
+--                  for an online terminal -- inside the storm and not taken by
+--                  a Lockdown, the one rule the server reads
+--                  (BR.TerminalSolve.offlineWhy); and the shared world plate
 --                  within reach -- the owner's "Computer system" / "press to
 --                  open" with the interact key (2026-10-06) -- whose PRESS
 --                  asks the server to open the computer (TERMINAL_USE). THE
@@ -82,7 +84,8 @@ local dev = { placed = {}, removed = {}, forced = {} }
 --- The merged terminal list, rebuilt when the dev changes arrive.
 local list = nil
 
---- [id] = { online, big, mini } for every terminal: whether the storm has it,
+--- [id] = { online, why, big, mini } for every terminal: whether it is online,
+--- why not (BR.TerminalSolve.offlineWhy's answer: 'offline', 'locked' or nil),
 --- and its blip on each map
 local world = {}
 
@@ -360,6 +363,9 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
     if live and S.storm then
         zone = TS.zoneAt(S.storm, BR.Clock and BR.Clock.now() or now)
     end
+    -- A LOCKDOWN IN THIS MATCH (wave A; client/terminalfx/lockdown.lua): every
+    -- terminal but the one it kept is offline, and its blip goes with it.
+    local lock = live and BR.TerminalFx and BR.TerminalFx.lock and BR.TerminalFx.lock() or nil
     local blips = live and held
 
     local present = {}
@@ -370,7 +376,9 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
             w = {}
             world[s.id] = w
         end
-        w.online = dev.forced[s.id] == true or TS.inside(zone, s.x, s.y)
+        -- THE ONE ONLINE RULE, the server's own (BR.TerminalSolve.offlineWhy).
+        w.why = TS.offlineWhy(s, zone, dev.forced[s.id] == true, lock)
+        w.online = w.why == nil
         -- "Terminal blips should appear from the start only when a Yubikey
         -- is equipped", and, the owner's own spec, only for a terminal
         -- INSIDE the storm.
@@ -426,6 +434,7 @@ end
 
 --- What this player's plate says at this terminal.
 ---
+---   locked      a Lockdown has it (wave A): the locked line, nothing to press
 ---   offline     the storm has it: the offline line, nothing to press
 ---   no key      the no_key line ("what they need to do to gain access"); the
 ---               press still opens the computer, which lists every function
@@ -434,6 +443,7 @@ end
 ---   usable      terminal_use ("press to open") and the key cap
 local function plateFor(s)
     local w = world[s.id]
+    if w and w.why == 'locked' then return { hint = copy().locked, press = false } end
     local online = (w and w.online) or dev.forced[s.id] == true
     if not online then return { hint = copy().offline, press = false } end
     if not held then return { hint = copy().no_key, press = true } end

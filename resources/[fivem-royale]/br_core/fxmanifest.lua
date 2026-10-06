@@ -704,6 +704,7 @@ client_scripts {
     -- returns at once with nothing drawn.
     'client/terminalfx/key_finder.lua',
     'client/terminalfx/pulse.lua',
+    'client/terminalfx/lockdown.lua',
     'client/debug.lua',
 }
 
@@ -952,6 +953,7 @@ server_scripts {
     'server/terminalfx/pulse.lua',
     'server/terminalfx/ghost.lua',
     'server/terminalfx/contract.lua',
+    'server/terminalfx/lockdown.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

@@ -1900,6 +1900,194 @@ do
     ok(said:find('ok (done)', 1, true) ~= nil and T.hasBounty(5), 'brterminal run contract', said)
 end
 
+describe('Lockdown: the one online rule -- a Lockdown, then the storm, then the dev tool\'s forcing')
+do
+    local row = T.row('lockdown')
+    ok(row and row.implemented == true and T.FUNCTIONS.lockdown ~= nil, 'lockdown is built')
+    local TSo = BR.TerminalSolve.offlineWhy
+    local m = { storm = BR.BuildStormRecord(2, C0.x, C0.y, 1500.0, C0.x + 50.0, C0.y, 800.0,
+        gameMs, 600000, 60000, 1.0, 4242) }
+    local zone = BR.TerminalSolve.zoneAt(m.storm, gameMs)
+    local inS = { id = 'a', x = C0.x, y = C0.y }
+    local outS = { id = 'b', x = C0.x + 6000.0, y = C0.y }
+    eq(TSo(inS, zone, false, nil), nil, 'inside the storm, no lock: online')
+    eq(TSo(outS, zone, false, nil), 'offline', 'outside it: offline')
+    eq(TSo(outS, zone, true, nil), nil, 'outside it but forced by the dev tool: online')
+    eq(TSo(inS, nil, false, nil), nil, 'no storm yet: online')
+    eq(TSo(inS, zone, false, { keep = 'a' }), nil, 'the terminal a Lockdown keeps: online')
+    eq(TSo(outS, zone, false, { keep = 'b' }), 'offline', 'kept, but the storm has it: the storm wins')
+    eq(TSo({ id = 'c', x = C0.x, y = C0.y }, zone, false, { keep = 'a' }), 'locked',
+        'any other, inside the storm: locked')
+    eq(TSo({ id = 'c', x = C0.x, y = C0.y }, zone, true, { keep = 'a' }), 'locked',
+        'and forcing it online does not beat the lock')
+    eq(TSo(inS, zone, false, { keep = nil }), 'locked', 'a Lockdown that kept nothing locks everything')
+end
+
+--- A third terminal, inside the storm 300 m from the tower (the suite's other
+--- one, the shack, is outside it), placed through the dev tool for these
+--- blocks and removed after them.
+local HUT = { x = C0.x + 300.0, y = C0.y + 10.0, z = 30.0 }
+local function placeHut()
+    commands.brterminalsv(0, { 'place', tostring(HUT.x), tostring(HUT.y), tostring(HUT.z), '0', 'hut' })
+end
+local function removeHut()
+    commands.brterminalsv(0, { 'online', 'hut', 'off' })
+    commands.brterminalsv(0, { 'remove', 'hut' })
+end
+
+describe('Lockdown: every other terminal offline, open computers there closed, the match told')
+do
+    reset()
+    placeHut()
+    local m = lobby()
+    local hut, tower = T.site('hut'), T.site('tower')
+    ok(hut ~= nil and T.online(hut, m, gameMs) and T.online(tower, m, gameMs), 'the hut and the tower are online')
+    keys[3] = true
+    roster[3].pos = { x = HUT.x, y = HUT.y, z = HUT.z }
+    fire(BR.Net.TERMINAL_USE, 3, { terminalId = 'hut' })
+    ok(T.session(3) ~= nil, 'p3 has the hut\'s computer open')
+    local r = runAt(1, 'lockdown', { duration = '180' })
+    ok(r and r.ok == true and r.code == 'done', 'p1 runs Lockdown at the tower, 3 minutes', r and r.code)
+    eq(T.offlineWhy(hut, m, gameMs), 'locked', 'the hut is locked')
+    ok(T.online(tower, m, gameMs), 'the tower stays online')
+    ok(T.session(3) == nil and lastOf(BR.Net.TERMINAL_CLOSE, 3) ~= nil,
+        'p3\'s computer at the hut closed at once, as the storm closes one')
+    ok(T.session(1) ~= nil, 'p1\'s, at the tower, did not')
+    for src = 1, 5 do
+        local d = lastOf(BR.Net.TERMINAL_LOCKDOWN, src)
+        ok(d and d.on == true and d.keep == 'tower' and d.leftMs == 180000 and d.matchId == 1,
+            ('p%d is told: only the tower, for 3 minutes'):format(src))
+    end
+    local info = T.matchInfo(1, gameMs)
+    ok(info.terminals.online == 1 and info.terminals.total == 3, 'the panel counts one online of three')
+
+    -- NOBODY CAN OPEN IT, and is told why in the Lockdown's words.
+    local opens = #eventsOf(BR.Net.TERMINAL_OPEN, 3)
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_USE, 3, { terminalId = 'hut' })
+    eq(#eventsOf(BR.Net.TERMINAL_OPEN, 3), opens, 'a press at the hut opens nothing')
+    eq(lastToast(3), COPY.locked, 'and says `locked`')
+    commands.brterminalsv(0, { 'online', 'hut' })
+    eq(T.offlineWhy(hut, m, gameMs), 'locked', 'the dev tool forcing it online does not beat the lock')
+    commands.brterminalsv(0, { 'online', 'hut', 'off' })
+    commands.brterminalsv(1, { 'list' })
+    local listed = table.concat((function()
+        local out = {}
+        for _, e in ipairs(eventsOf(BR.Net.TERMINAL_DEV, 1)) do out[#out + 1] = e.payload end
+        return out
+    end)(), '\n')
+    ok(listed:find('hut', 1, true) and listed:find('LOCKED (Lockdown)', 1, true), '`brterminal list` says LOCKED',
+        listed)
+
+    -- THREE MINUTES.
+    local t0 = gameMs - 1000
+    gameMs = t0 + 179000
+    jobs['terminal.lockdown']()
+    eq(T.offlineWhy(hut, m, gameMs), 'locked', 'still locked at 2:59')
+    gameMs = t0 + 180000
+    jobs['terminal.lockdown']()
+    eq(T.offlineWhy(hut, m, gameMs), nil, 'online again at 3:00')
+    local d = lastOf(BR.Net.TERMINAL_LOCKDOWN, 5)
+    ok(d and d.on == false, 'and the match is told it is over')
+    ok(m.terminalFx.lockdown == nil, 'the record is gone')
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_USE, 3, { terminalId = 'hut' })
+    ok(T.session(3) ~= nil, 'p3 can open the hut again')
+    removeHut()
+end
+
+describe('Lockdown: the storm still takes the terminal it kept; the match\'s end and Season 1 end it')
+do
+    reset()
+    placeHut()
+    local m = lobby()
+    runAt(1, 'lockdown', { duration = '300' })
+    local hut, tower = T.site('hut'), T.site('tower')
+    m.storm = BR.BuildStormRecord(8, C0.x + 9000.0, C0.y, 50.0, C0.x + 9000.0, C0.y, 0.0,
+        gameMs, 600000, 60000, 6.7, 4242)
+    eq(T.offlineWhy(tower, m, gameMs), 'offline', 'the wall passes the tower: offline, the storm\'s way')
+    eq(T.offlineWhy(hut, m, gameMs), 'locked', 'and the hut is still locked')
+
+    reset()
+    placeHut()
+    m = lobby()
+    runAt(1, 'lockdown')
+    m.state = BR.MatchState.ENDED
+    eq(T.lockOf(m, gameMs), nil, 'a match that ended has no Lockdown')
+    jobs['terminal.lockdown']()
+    local d = lastOf(BR.Net.TERMINAL_LOCKDOWN, 3)
+    ok(d and d.on == false, 'and its players are told so')
+
+    reset()
+    placeHut()
+    m = lobby()
+    runAt(1, 'lockdown')
+    season(1)
+    eq(T.lockOf(m, gameMs), nil, 'off Season 2 there is none')
+    local n = #sent
+    jobs['terminal.lockdown']()
+    eq(#sent, n, 'nothing is sent')
+    ok(m.terminalFx.lockdown == nil, 'and it is forgotten')
+    season(2)
+    eq(T.offlineWhy(T.site('hut'), m, gameMs), nil, 'so Season 2 coming back finds the hut online')
+
+    -- br:ready, while one lasts.
+    reset()
+    placeHut()
+    m = lobby()
+    runAt(1, 'lockdown')
+    gameMs = gameMs + 60000
+    fire(BR.Net.READY, 4)
+    d = lastOf(BR.Net.TERMINAL_LOCKDOWN, 4)
+    ok(d and d.on == true and d.keep == 'tower' and d.leftMs == 120000,
+        'a client that restarts is told again, with the time left')
+    removeHut()
+end
+
+describe('Lockdown: nothing to take offline is refused, spending nothing; the dev command')
+do
+    reset()
+    lobby()                                           -- the shack is outside the storm
+    useAt(1)
+    local f = listedAs(1, 'lockdown')
+    ok(f and f.available == false and f.reason == 'lockdown_none', 'no other terminal online: lockdown_none',
+        f and tostring(f.reason))
+    local r = ask(1, 'lockdown')
+    ok(r and r.code == 'lockdown_none' and r.toast == COPY.lockdown_none, 'refused, in its line', r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1), 'nothing spent')
+    commands.brterminalsv(0, { 'online', 'shack' })
+    useAt(1)
+    ok(listedAs(1, 'lockdown').available == true, 'the shack forced online is one to take offline')
+    commands.brterminalsv(0, { 'online', 'shack', 'off' })
+
+    -- THE END OF THE RUN: the only other terminal gone during the load.
+    reset()
+    placeHut()
+    lobby()
+    useAt(1)
+    r = ask(1, 'lockdown')
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    removeHut()
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'lockdown_none' and keys[1] == true and not T.squadUsed(1),
+        'nothing left to take offline by the end: given back', r and r.code)
+    eq(#eventsOf(BR.Net.TERMINAL_LOCKDOWN, nil), 0, 'and nobody is told of a Lockdown')
+
+    -- THE DEV TERMINAL IS NOWHERE: the terminal nearest the player is kept.
+    reset()
+    placeHut()
+    local m = lobby()
+    keys[1] = false
+    roster[1].pos = { x = HUT.x + 5.0, y = HUT.y, z = HUT.z }
+    local said = devRun(1, 'lockdown duration=300')
+    ok(said:find('ok (done)', 1, true) ~= nil, 'brterminal run lockdown duration=300', said)
+    eq(T.offlineWhy(T.site('hut'), m, gameMs), nil, 'beside the hut: the hut is kept')
+    eq(T.offlineWhy(T.site('tower'), m, gameMs), 'locked', 'and the tower is locked')
+    ok(m.terminalFx.lockdown.untilAt == gameMs + 300000, 'for 5 minutes')
+    removeHut()
+end
+
 -- =========================================================================
 -- PART D -- the client
 -- =========================================================================
@@ -2127,6 +2315,40 @@ do
     W.slow()
     W.net(BR.Net.TERMINAL_PULSE, { matchId = 1, list = { { s = 3, x = 1.0, y = 1.0 } } })
     eq(W.count(), 0, 'and Season 1 draws none')
+    W.done()
+end
+
+describe('client: Lockdown -- the fact the one online rule reads, until the server says')
+do
+    local W = clientWorld()
+    local F = W.F
+    eq(F.lock(), nil, 'no Lockdown to begin with')
+    W.net(BR.Net.TERMINAL_LOCKDOWN, { matchId = 1, on = true, keep = 'tower', leftMs = 180000 })
+    local l = F.lock()
+    ok(l and l.keep == 'tower', 'told: only the tower')
+    eq(BR.TerminalSolve.offlineWhy({ id = 'hut', x = 0.0, y = 0.0 }, nil, false, l), 'locked',
+        'which the one rule reads as every other terminal locked')
+    W.slow()
+    ok(F.lock() ~= nil, 'a SLOW pass leaves it be')
+    W.net(BR.Net.TERMINAL_LOCKDOWN, { matchId = 1, on = false })
+    eq(F.lock(), nil, 'the server says it is over: gone')
+
+    W.net(BR.Net.TERMINAL_LOCKDOWN, { matchId = 1, on = true, keep = 'Not An Id!', leftMs = 1000 })
+    ok(F.lock() and F.lock().keep == nil, 'a kept id that is not an id keeps nothing')
+    gameMs = gameMs + 1000 + 5000 + 1
+    W.slow()
+    eq(F.lock(), nil, 'past its time and then some, it ends here too')
+    W.net(BR.Net.TERMINAL_LOCKDOWN, { matchId = 1, on = true, keep = 'tower', leftMs = 180000 })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    W.slow()
+    eq(F.lock(), nil, 'back in the lobby, it is over')
+    BR.State.me.state = BR.PlayerState.ALIVE
+    W.net(BR.Net.TERMINAL_LOCKDOWN, { matchId = 1, on = true, keep = 'tower', leftMs = 180000 })
+    W.season = 1
+    W.slow()
+    eq(F.lock(), nil, 'and off Season 2')
+    W.net(BR.Net.TERMINAL_LOCKDOWN, { matchId = 1, on = true, keep = 'tower', leftMs = 180000 })
+    eq(F.lock(), nil, 'which takes no new one')
     W.done()
 end
 

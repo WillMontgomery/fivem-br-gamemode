@@ -5,7 +5,9 @@
 -- docs/terminals.md. This file holds:
 --
 --   the terminals    the config's sites plus the dev tool's, each online only
---                    while it stands inside the storm's current safe zone
+--                    while it stands inside the storm's current safe zone and
+--                    no Lockdown has it (BR.TerminalSolve.offlineWhy through
+--                    BR.Terminal.offlineWhy: the one rule every client reads too)
 --   the session      opened by TERMINAL_USE when a living player presses
 --                    interact beside a live terminal (or by the dev command
 --                    `brterminalsv open`, with typed facts, for the app alone)
@@ -166,17 +168,30 @@ local function sendSites(target)
     TriggerClientEvent(BR.Net.TERMINAL_SITES, target, sitesPayload())
 end
 
---- Is this terminal online -- inside the match's storm, as it stands now?
---- A terminal forced online by the dev tool always is.
+--- Why this terminal is offline in this match now, or nil when it is online:
+--- BR.TerminalSolve.offlineWhy, the one rule both sides read -- 'locked' (a
+--- Lockdown, wave A: BR.Terminal.lockOf, server/terminalfx/lockdown.lua) or
+--- 'offline' (outside the storm as it stands now; a terminal forced online by
+--- the dev tool never is, but nothing beats a Lockdown).
+--- @param site table|nil
+--- @param m table|nil
+--- @param now number
+--- @return string|nil
+function T.offlineWhy(site, m, now)
+    if not site then return 'offline' end
+    local lock = (m ~= nil and T.lockOf ~= nil) and T.lockOf(m, now) or nil
+    -- The zone is a shape build; a forced terminal never needs it.
+    local zone = (not forced[site.id]) and TS.zoneAt(m and m.storm or nil, now) or nil
+    return TS.offlineWhy(site, zone, forced[site.id] == true, lock)
+end
+
+--- Is this terminal online? (BR.Terminal.offlineWhy says nothing against it.)
 --- @param site table|nil
 --- @param m table|nil
 --- @param now number
 --- @return boolean
 function T.online(site, m, now)
-    if not site then return false end
-    if forced[site.id] then return true end
-    local rec = m and m.storm or nil
-    return TS.inside(TS.zoneAt(rec, now), site.x, site.y)
+    return T.offlineWhy(site, m, now) == nil
 end
 
 --- Is this player, by the server's own position sample, at this terminal?
@@ -469,15 +484,21 @@ T.FUNCTIONS.storm_reveal = {
 --- A REAL SESSION READS THE WORLD on every ask: the key on the player's
 --- profile, the squad's use this match, the terminal against the storm as it
 --- stands now. A DEV session reads the facts `brterminalsv open` was typed with.
---- @return table { keyHeld: boolean, squadUsed: boolean, offline: boolean }
+--- @return table { keyHeld: boolean, squadUsed: boolean, offline: boolean, locked: boolean }
 function T.facts(src, session)
     if session.dev then return session.facts end
     local m = BR.Server.matchOf(src)
+    local why = 'offline'
+    if m ~= nil and m.id == session.matchId then
+        why = T.offlineWhy(T.site(session.terminalId), m, GetGameTimer())
+    end
     return {
         keyHeld = BR.Yubikey ~= nil and BR.Yubikey.holds(src),
         squadUsed = T.squadUsed(src),
-        offline = not (m ~= nil and m.id == session.matchId
-            and T.online(T.site(session.terminalId), m, GetGameTimer())),
+        offline = why ~= nil,
+        -- OFFLINE BECAUSE OF A LOCKDOWN (wave A), which the app says in its
+        -- own words rather than the storm's.
+        locked = why == 'locked',
     }
 end
 
@@ -558,7 +579,7 @@ local function refusal(src, session, row, opts, self)
     if not built(row) then return 'fn_offline' end
     if row.squadOnly == true and not T.squadMatch(src) then return 'unavailable' end
     local f = T.facts(src, session)
-    if f.offline then return 'offline' end
+    if f.offline then return f.locked and 'locked' or 'offline' end
     if f.squadUsed then return 'squad_used' end
     if not f.keyHeld then return 'no_key' end
     local busy = inflight[src]
@@ -805,7 +826,7 @@ end
 --- @param src integer
 --- @param terminalId string
 --- @param now number
---- @return boolean ok, string|nil why  'state' | 'match' | 'site' | 'reach' | 'offline'
+--- @return boolean ok, string|nil why  'state' | 'match' | 'site' | 'reach' | 'offline' | 'locked'
 function T.use(src, terminalId, now)
     local e = BR.Roster.get(src)
     if not e or e.state ~= BR.PlayerState.ALIVE then return false, 'state' end
@@ -814,7 +835,9 @@ function T.use(src, terminalId, now)
     local site = T.site(terminalId)
     if not site then return false, 'site' end
     if not inReach(e, site) then return false, 'reach' end
-    if not T.online(site, m, now) then return false, 'offline' end
+    -- 'offline' (the storm) or 'locked' (a Lockdown): each said aloud below.
+    local off = T.offlineWhy(site, m, now)
+    if off then return false, off end
 
     T.open(src, site.id, nil, false)
 
@@ -1161,7 +1184,7 @@ end
 -- which reads the sender's state, match, position and terminal off this
 -- server. An offline terminal is the one refusal said aloud -- the plate
 -- already said it, and a player who pressed anyway is told why nothing
--- opened. Every other refusal is a client out of step with the server, and
+-- opened (the storm's `offline`, or a Lockdown's `locked`). Every other refusal is a client out of step with the server, and
 -- silence is the answer the loot claim gives that too.
 RegisterNetEvent(BR.Net.TERMINAL_USE)
 AddEventHandler(BR.Net.TERMINAL_USE, function(d)
@@ -1175,6 +1198,8 @@ AddEventHandler(BR.Net.TERMINAL_USE, function(d)
     local ok, why = BR.Terminal.use(src, d.terminalId, now)
     if not ok and why == 'offline' then
         BR.Server.notify(src, copy().offline, 'warn')
+    elseif not ok and why == 'locked' then
+        BR.Server.notify(src, copy().locked, 'warn')
     end
 end)
 
@@ -1275,10 +1300,12 @@ local function devList(src)
     local m = src > 0 and BR.Server.matchOf(src) or nil
     local now = GetGameTimer()
     for _, s in ipairs(list) do
+        local why = m and T.offlineWhy(s, m, now) or nil
         tell(src, ('%s  (%.1f, %.1f, %.1f) h %.0f  %s%s%s'):format(s.id, s.x, s.y, s.z, s.h or 0,
             placed[s.id] and 'placed' or 'config',
             forced[s.id] and ', forced online' or '',
-            m and (T.online(s, m, now) and ', online' or ', OFFLINE') or ''))
+            m and (why == nil and ', online' or why == 'locked' and ', LOCKED (Lockdown)' or ', OFFLINE')
+                or ''))
     end
 end
 
