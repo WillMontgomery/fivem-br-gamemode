@@ -272,10 +272,10 @@ first.
 |---|---|---|---|---|---|
 | `scan` | Scan | intel | high | 200 | **live** |
 | `storm_reveal` | Storm reveal | intel | low | | **live** |
-| `storm_control` | Storm control | storm | medium | 150 | offline (wave B) |
+| `storm_control` | Storm control | storm | medium | 150 | **live** (wave B) |
 | `comms_blackout` | Comms blackout | disruption (squad-only) | medium | | offline (wave C) |
-| `time_weather` | Time & weather | disruption | low | | offline (wave B) |
-| `power_outage` | Power outage | disruption | low | | offline (wave B) |
+| `time_weather` | Time & weather | disruption | low | | **live** (wave B) |
+| `power_outage` | Power outage | disruption | low | | **live** (wave B) |
 | `disarm` | Disarm | disruption | high | 200 | **live** (wave A) |
 | `supply_drop` | Supply drop | supply | medium | | **live** |
 | `max_ammo` | Max ammo | supply | low | | **live** |
@@ -283,7 +283,7 @@ first.
 | `ghost` | Ghost | squad (disruption alone) | low | | **live** (wave A) |
 | `emp` | EMP | disruption | medium | | offline (wave C) |
 | `key_finder` | Key finder | intel | low | | **live** (wave A) |
-| `storm_delay` | Storm delay | storm | low | | offline (wave B) |
+| `storm_delay` | Storm delay | storm | low | | **live** (wave B) |
 | `pulse` | Pulse | intel | medium | | **live** (wave A) |
 | `lockdown` | Lockdown | disruption | medium | | **live** (wave A) |
 | `contract` | Contract | disruption | medium | | **live** (wave A) |
@@ -291,8 +291,14 @@ first.
 
 The costs are the coordinator's proposal for the owner (round 2). Time &
 weather offers no thunderstorm, and its chosen weather holds only inside the
-circle -- outside, the storm's own weather wins (the owner's rule, written on
-its row for whoever builds it).
+circle -- outside, the storm's own weather wins (the owner's rule; how it is
+built is [wave B's section](#the-storm-the-sky-the-clock-and-the-lights-wave-b)).
+
+**Wave B's functions are a file each** (#396, 2026-10-06), as wave A's are:
+the server half in `br_core/server/terminalfx/<id>.lua`, the client half (when
+there is one) in `br_core/client/terminalfx/<id>.lua`, both listed in
+`br_core/fxmanifest.lua` after `terminalfx.lua`; `tools/test_terminal.lua`
+loads every `server/terminalfx/` file the manifest names.
 
 The first nine are the owner's (2026-10-04), the next four were suggested on
 the issue, and the last five are proposals for him to keep or cut. A new
@@ -318,7 +324,9 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_DEV` | S→C | `'<text>'` | A `brterminalsv` answer, printed on F8. |
 | `BR.Net.TERMINAL_USE` | C→S | `{ terminalId }` | "I pressed interact here." Opens a session only for a living player within reach by the server's own sample, in a PLAYING match, at an online terminal; offline is refused aloud. One per `runMinIntervalMs`. |
 | `BR.Net.TERMINAL_SITES` | S→C | `{ placed, removed, forced }` | The dev tools' changes, whole, to everyone, and on `br:ready`. |
-| `BR.Net.TERMINAL_REVEAL` | S→C | `{ x, y, r, matchId }` | Storm reveal, to the squad that ran it alone; again on `br:ready` while that match lasts. |
+| `BR.Net.TERMINAL_REVEAL` | S→C | `{ x, y, r, matchId }` | Storm reveal, to the squad that ran it alone; again on `br:ready` while that match lasts, and again when Storm control moves the end. |
+| `BR.Net.TERMINAL_SKY` | S→C | `{ matchId, weather? }` | Time & weather: the chosen weather (a weather name or the `base` role), to the whole match when it starts and when it ends (no `weather`), and on `br:ready` while it lasts. Each client claims it only while its view is inside the circle. |
+| `BR.Net.TERMINAL_POWER` | S→C | `{ matchId, list = { { kind, x?, y?, r?, line? } } }` | Power outage: every live outage area, to the whole match when one starts or ends (an empty list: the lights back), and on `br:ready` while one lasts. |
 | `BR.Net.YUBIKEY_STATE` | S→C | `{ held, squadUsed, squadMatch }` | This player's key and their squad's use, to them alone, on every change and on `br:ready`; `squadMatch` picks the plate's `squad_used` line. Squadmates learn who holds a key from the squad beacon's `yubikey` bit. |
 
 ## br_core and the computer
@@ -582,6 +590,90 @@ nothing to reveal (no storm stream yet) the function is `unavailable` and spends
 nothing. A dev `brphase` or `brstormfreeze` after a reveal ends the storm
 somewhere else.
 
+## The storm, the sky, the clock and the lights (wave B)
+
+Four functions change the world everybody in the match stands in (#396,
+2026-10-06). Each is built to its own page in `copy`, and where a line could
+not be true it was changed (the report of wave B lists every one).
+
+**Storm delay** (`server/terminalfx/storm_delay.lua`, option `delay` 60 or
+120 s): the hold is the storm record's own `tWait`. While the storm holds,
+`BR.Storm.delay` rebuilds the record with the same tStart, circles, seed and
+outline and `delay` more hold, and publishes it, so every client's countdown,
+the sweep after it, the airdrop's landing circles and the match panel follow
+it. While the wall closes the delay waits in `m.stormDelayNextMs` and
+`enterPhase` adds it to the next hold. Real seconds, never scaled by
+`brstormscale`; the next circle never moves; the 75% cut (#352) cuts to 1:30
+plus the delay. Refused `no_storm`, and `no_hold` once the final circle is
+closing or closed (`BR.Storm.holdLeft`).
+
+**Storm control** (`storm_control.lua`, 150 Volts, option `zone`): where the
+match ends is where its storm stream takes it, so a possible final circle is
+the storm's own planner -- `drawCentre`, the function and arguments
+`enterPhase` uses -- run forward on another stream (`BR.Storm.futures`):
+`fx.stormControlFutures` (8) of them, the storm's own plan first. Every one
+obeys the planner's rules: the play area and its water, the nesting and the
+breakout's gap, the edge hug, each zone's shape (#344, from the seed, which
+nothing here changes). `BR.TerminalSolve.threeEnds` names three different
+ones: **near** (nearest this terminal), **far** (of the others, the farthest
+from it) and **center** (of the rest, the nearest the next circle's center);
+"this terminal" is the player at the dev terminal. `BR.Storm.steer` hands the
+match the chosen stream, and nothing else moves: the record on the map and
+the circle already drawn stay, and the change starts with the next circle
+`enterPhase` draws -- which reaches every client, the map's morph (#350) and
+the airdrop's re-site (#386) as any record does. A squad that ran Storm
+reveal is sent the new end. Refused `no_storm`, and `no_circle` once the
+final circle is on the map. `tools/test_storm.lua`'s `control.valid` steers
+24 matches to each of the three at every phase and checks every later circle
+against the planner's own geometry.
+
+**Time & weather** (`time_weather.lua`, both sides; options `time`,
+`weather`, `duration`):
+
+- **The time** is the match clock's anchor (#394). The run gives the match a
+  new anchor -- the chosen hour from `fx.skyTime` (day 12:00, dusk 19:30,
+  night 00:00), running from now at the match's own rate -- which the digest,
+  the state events, the snapshot and a spectator's pushes already carry; the
+  one clock writer (`BR.Native.applyClock`) writes once when it arrives and
+  once when the match's own anchor comes back at the end, so the clock returns
+  to where the match's own time has run to. No client writes the clock for it.
+- **The weather** is a sky claim, `terminal`, ranked below `storm` and above
+  `island` (`br_lib/shared/world.lua`'s `SKY_SOURCES`), claimed only while the
+  client's view is inside the circle (`BR.Storm.viewInside`, kept by the
+  storm's own tick; the shot for a spectator). Caught outside is THUNDER
+  whatever was chosen; outside the circle and not caught (phase 1's free-loot
+  hold) the storm's own sky stands. **A role yields to a weather claimed below
+  it**: the storm's all-clear is the `base` role, held for the rest of a match
+  once the storm has caught the player, and the chosen RAIN is drawn over it.
+  Claiming a weather hands the rain knob back, as the console's does.
+- **Clear** is the `base` role: EXTRASUNNY, and **XMAS with snow on the
+  ground in December and January** (#399), as a storm exit is. The ground
+  follows the resolved weather as #399 shipped -- bare under RAIN or FOGGY.
+- **It ends** when its time is up, when the match stops PLAYING (the end
+  screen included) or off Season 2, on a 1 s pass (`fx.worldCheckMs`): the
+  match's own clock back, the weather released on every client. A client lets
+  go in the lobby too. A second run replaces the first.
+
+**Power outage** (`power_outage.lua`, both sides; options `area`,
+`duration`): the engine's blackout (`SET_ARTIFICIAL_LIGHTS_STATE`) is one
+switch per client for the whole map, so a client whose view is inside a live
+outage area turns its own lights off -- vehicles left out of it
+(`_SET_ARTIFICIAL_LIGHTS_STATE_AFFECTS_VEHICLES(false)`), so headlights work --
+and one outside keeps its lights. **here** is `fx.outageRadiusM` (1000 m, the
+page's 1 km) around this terminal; **city** is below the storm's city line
+and **county** on or above it (`BR.StormCityLine`, the #381 line the anchor's
+draw reads). `BR.TerminalSolve.outageArea` / `inOutage` are the one spelling
+both sides use. Several can run at once. The lights are written on a change
+only, and put back at the end, in the lobby, off Season 2 and when `br_core`
+stops; `tools/verify.sh` allows the two natives (by name and by hash) in
+`client/terminalfx/power_outage.lua` alone. vMenu's weather sync writes the
+blackout every second while it is on, which is why `server.cfg.example` keeps
+it off.
+
+**Daytime, mostly.** A match runs from noon at the slow clock's rate -- about
+17:00 by its end -- so an outage barely shows unless Time & weather has made
+it dusk or night.
+
 ## Dev
 
 Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
@@ -597,7 +689,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online (`LOCKED (Lockdown)` when a Lockdown has it) |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`, `brterminal run lockdown duration=300`). "This terminal" is the dev terminal, which is nowhere: Pulse is centered on you and Lockdown keeps the terminal nearest you |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`, `brterminal run lockdown duration=300`). "This terminal" is the dev terminal, which is nowhere: Pulse is centered on you and Lockdown keeps the terminal nearest you. Wave B: `run storm_delay delay=120`, `run storm_control zone=far`, `run time_weather time=night weather=rain duration=300`, `run power_outage area=here duration=240`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
