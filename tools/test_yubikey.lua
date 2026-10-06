@@ -22,7 +22,7 @@
 --             storm takes the terminal; every dev tool.
 --   PART B  br_core/client/yubikey.lua over modelled natives: blips only while
 --           holding a key, only for a terminal inside the storm, only in a
---           match; the plate's four readings; the hold that asks the server;
+--           match; the plate's four readings; the press that asks the server;
 --           Storm reveal on both maps until the lobby; and no native at all on
 --           a frame without a plate.
 --   PART C  Season 1: none of it, anywhere.
@@ -1484,8 +1484,8 @@ end
 
 describe('Season 1 hides the owner\'s laptops, and Season 2 shows them again')
 do
-    -- THE OWNER'S YMAP STREAMS WHATEVER THE SEASON (2026-10-06), so a client
-    -- where terminals are off hides the laptop at every config row.
+    -- A LIVE `brseason 1` CANNOT UNSTREAM THE OWNER'S YMAP (2026-10-06), so a
+    -- client where terminals are off hides the laptop at every config row.
     local TWO = { SITE, { id = 'shack', x = -500.25, y = 800.5, z = 12.0, h = 0.0 } }
     local W = bootClient({ sites = TWO, season = 1 })
     local hash = #CT.art.terminalProp   -- the stub's GetHashKey

@@ -728,10 +728,12 @@ BR.Config.Terminals = {
         -- string drawn as text; a placeholder like hudGlyph.
         bountyGlyph = '◎',
         -- The laptop the owner's ymap stands at every site (2026-10-06). No
-        -- script makes one; this names the model, not a prop to spawn. The
-        -- ymap streams whatever the season, so a client where terminals are
-        -- off (Season 1) hides this model within hideRadiusM of every site
-        -- (client/yubikey.lua), and only map objects, never a script's.
+        -- script makes one; this names the model, not a prop to spawn. A
+        -- running server cannot swap a streamed asset, so after a live
+        -- `brseason 1` on a box started at Season 2 the ymap still streams,
+        -- and a client where terminals are off (Season 1) hides this model
+        -- within hideRadiusM of every site (client/yubikey.lua), and only map
+        -- objects, never a script's.
         terminalProp = 'prop_laptop_01a',
         -- 2 meters, not less: in the ymap he published (br_stream_s2
         -- 5ec1f721), the paleto_pd and calafia_way laptops stand 1.7 m from
@@ -777,15 +779,19 @@ BR.Config.Terminals = {
     -- ═══ THE TERMINALS (owner, 2026-10-06) ═══
     --
     -- "we don't need a script to place the props - I've just done so with a
-    -- ymap". THE LAPTOPS ARE THE OWNER'S YMAP'S: fifteen prop_laptop_01a in
-    -- the Season 2 drop on S3, streamed with br_stream_s2 (assets.lock), so
-    -- nothing in this repository makes one. These rows are WHERE THOSE PROPS
-    -- STAND, exactly as he gave them. Each terminal's plate, blip, reach and
-    -- session check is read from its row (client/yubikey.lua,
-    -- server/terminal.lua) and from nothing in the world, so a row moved
-    -- without its laptop is a plate beside empty air, and the other way round.
-    -- The ymap streams whatever the season, so a client where terminals are
-    -- off hides the laptop at every row (art.terminalProp, art.hideRadiusM).
+    -- ymap". THE LAPTOPS ARE THE OWNER'S YMAP'S: prop_laptop_01a in
+    -- LaptopTerminals.ymap in the Season 2 drop on S3, streamed with
+    -- br_stream_s2 (assets.lock), so nothing in this repository makes one.
+    -- These rows are WHERE THOSE PROPS STAND, exactly as he gave them. Each
+    -- terminal's plate, blip, reach and session check is read from its row
+    -- (client/yubikey.lua, server/terminal.lua) and from nothing in the
+    -- world, so a row moved without its laptop is a plate beside empty air,
+    -- and the other way round.
+    -- br_stream_s2 is installed from Season 2 on, so a box started at Season
+    -- 1 has no laptops; a running server cannot swap a streamed asset, so
+    -- after a live `brseason 1` they still stream, and a client where
+    -- terminals are off hides the laptop at every row (art.terminalProp,
+    -- art.hideRadiusM).
     --
     -- `id` is lower case letters, digits and underscores, at most 32
     -- characters, and unique; x/y/z is where the prop stands and h its heading

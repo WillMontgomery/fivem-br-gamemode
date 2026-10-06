@@ -457,8 +457,8 @@ The owner's rules (#396, 2026-10-04), and where each lives:
 
 ## Terminals in the world
 
-**The laptops are the owner's** (2026-10-06): fifteen `prop_laptop_01a`
-placed by his ymap, `stream/LaptopTerminals.ymap` in the Season 2 drop
+**The laptops are the owner's** (2026-10-06): `prop_laptop_01a` placed by
+his ymap, `stream/LaptopTerminals.ymap` in the Season 2 drop
 (`br_stream_s2`). Nothing in this repository spawns one. `sites` in
 `br_lib/config/terminals.lua` holds where they stand, in his order and his
 numbers -- Mount Gordo, the top of Chiliad, Fort Zancudo, Paleto PD, Calafia
@@ -473,8 +473,13 @@ session, no laptop, and the row to paste.
 A terminal is **online only inside the storm's current zone**, by its real
 shape; before there is a storm everything is inside it.
 
-- **Season 1 hides the laptops.** The ymap streams whatever the season, so a
-  client where `BR.Season.has('terminals')` is false hides `terminalProp`
+- **Season 1 hides the laptops.** `br_stream_s2` is installed from Season 2
+  on (`assets.lock`), so a box started at Season 1 has no laptops at all (and
+  a live `brseason 2` there gives plates and blips with none: playtest on a
+  box started at Season 2). A running server cannot swap a streamed asset, so
+  after a live `brseason 1` on a box started at Season 2 the ymap's laptops
+  still stream, and a client where `BR.Season.has('terminals')` is false
+  hides `terminalProp`
   within `hideRadiusM` (2 m) of every config row with
   `CreateModelHideExcludingScriptObjects(x, y, z, radius, model, true)` -- map
   objects only, and surviving a map reload, so a laptop that streams in later

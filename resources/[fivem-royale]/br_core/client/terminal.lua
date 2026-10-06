@@ -99,7 +99,7 @@ local function desktop()
 end
 
 --- Is the computer up on this client? Read by client/yubikey.lua, whose plate
---- and hold stand down while it is.
+--- and press stand down while it is.
 --- @return boolean
 function BR.Terminal.computerOpen()
     return shown ~= nil

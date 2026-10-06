@@ -1222,7 +1222,7 @@ BR.Net = {
     -- S->C '<text>'. One `brterminalsv` answer, to the player who typed
     -- `brterminal`, printed in their F8 console and nowhere else.
     TERMINAL_DEV    = 'br:terminal:dev',
-    -- C->S { terminalId }. "I held interact at this terminal": open it. The
+    -- C->S { terminalId }. "I pressed interact at this terminal": open it. The
     -- server checks the season, that the sender is alive in a live match,
     -- within reach of that terminal by its own position sample, and that the
     -- terminal is inside the storm -- and opens a session or refuses aloud.

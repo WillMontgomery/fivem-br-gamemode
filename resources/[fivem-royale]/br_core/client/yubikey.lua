@@ -156,10 +156,12 @@ end
 --
 -- ═══ SEASON 1 HIDES THE OWNER'S LAPTOPS (2026-10-06) ═══
 --
--- His ymap streams its laptops whatever the season, and terminals are Season
--- 2. So on a client where they are off, the laptop at every config row is
--- hidden with a MODEL HIDE, and the hide comes off when they come on -- a live
--- `brseason` switch included. NOT PER FRAME: on start, on every move of this
+-- His ymap is in br_stream_s2, installed from Season 2 on, and a running
+-- server cannot swap a streamed asset: after a live `brseason 1` its laptops
+-- still stream, and terminals are Season 2. So on a client where they are
+-- off, the laptop at every config row is hidden with a MODEL HIDE, and the
+-- hide comes off when they come on -- a live `brseason` switch included. NOT
+-- PER FRAME: on start, on every move of this
 -- client's season (BR.Season.onChange; the SLOW pass's own refresh catches a
 -- move the latch did not announce), and only a change calls a native. A
 -- model hide is this client's alone ("Network players do not see changes
