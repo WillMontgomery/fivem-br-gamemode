@@ -19,7 +19,7 @@
  * scripts/check-terminal.mjs fails a component that reads the copy another way.
  */
 
-import type { Catalog, Copy, FunctionDef, FunctionState } from './bridge'
+import type { Catalog, Copy, FunctionDef, FunctionState, RunningInfo } from './bridge'
 
 /** Every word the app says: a key in, the line (or nothing) out. */
 export type Say = (key: string | null | undefined) => string
@@ -267,4 +267,28 @@ export function clock(ms: number | null): string {
   const s = total % 60
   const ss = String(s).padStart(2, '0')
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
+}
+
+// ---------------------------------------------------------------- the run ---
+
+/** A run that is loading, on this page's own clock. */
+export interface Progress {
+  functionId: string
+  runMs: number
+  startedAt: number
+}
+
+/**
+ * THE BAR, AFTER A STATE: the run the server says is loading -- the bar
+ * already drawn for it kept as it is, or one drawn where the server's clock
+ * puts it (an app opened again while the run loads) -- and NO BAR when the
+ * server says nothing is loading. The last is the review of round 2: an
+ * answer this app will never get (it went to the player as a toast, because
+ * the session that asked was replaced) must not leave a full bar and a
+ * disabled Run behind it. A run's last state always comes just ahead of its
+ * answer, so a bar is never taken down before the answer that ends it.
+ */
+export function progressAfter(was: Progress | null, running: RunningInfo | null, now: number): Progress | null {
+  if (!running) return null
+  return was ?? { functionId: running.functionId, runMs: running.runMs, startedAt: now - (running.runMs - running.leftMs) }
 }

@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  indicatorOf, matches, shownCategories, shownFunctions, speaker, statusOf, voltsText,
+  indicatorOf, matches, progressAfter, shownCategories, shownFunctions, speaker, statusOf, voltsText,
 } from '../terminal/src/model.ts'
 import { parseCatalog, parseResult, parseState } from '../terminal/src/bridge.ts'
 
@@ -134,6 +134,19 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   const done = parseResult({ functionId: 'scan', ok: true, code: 'done', balance: 1050 })
   ok(done.balance === 1050 && done.cost === null && done.runMs === null, 'a paid done carries the new balance')
   eq(parseResult({ functionId: 'scan', ok: true, code: 'done', balance: 'x' }).balance, null, 'a balance that is not a number is dropped')
+}
+
+// ── the bar follows the server (review of round 2) ──────────────────────────
+{
+  const run = { functionId: 'scan', runMs: 4000, leftMs: 1000 }
+  const drawn = progressAfter(null, run, 10000)
+  ok(drawn && drawn.functionId === 'scan' && drawn.runMs === 4000 && drawn.startedAt === 7000,
+    'an app opened again while it loads draws the bar where the server clock puts it', drawn)
+  const bar = { functionId: 'scan', runMs: 4000, startedAt: 9000 }
+  eq(progressAfter(bar, run, 10000), bar, 'a bar already drawn is kept as it is')
+  eq(progressAfter(bar, null, 10000), null,
+    'the server says nothing is loading: no bar, and Run is not left disabled (the answer went to a toast)')
+  eq(progressAfter(null, null, 10000), null, 'nothing loading, nothing drawn')
 }
 
 if (failed > 0) {

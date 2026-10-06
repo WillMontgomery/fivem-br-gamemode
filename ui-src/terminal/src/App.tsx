@@ -18,9 +18,9 @@ import { HowTo } from './HowTo'
 import { Login } from './Login'
 import { MatchPanel } from './MatchPanel'
 import {
-  HOME, addressOf, back, canBack, canForward, current, fill, forward, hrefOf, push, replace,
+  HOME, addressOf, back, canBack, canForward, current, fill, forward, hrefOf, progressAfter, push, replace,
   routeOfHref, shownCategories, shownFunctions, speaker, startHistory, voltsText,
-  type History, type Route,
+  type History, type Progress, type Route,
 } from './model'
 import { loadMode, saveMode, showMode, type UiMode } from './mode'
 
@@ -83,13 +83,6 @@ import { loadMode, saveMode, showMode, type UiMode } from './mode'
 /** How often a loading run's bar moves: ten times a second, for 3-5 s. */
 const PROGRESS_STEP_MS = 100
 
-/** A run that is loading, on this page's own clock. */
-interface Progress {
-  functionId: string
-  runMs: number
-  startedAt: number
-}
-
 export function App(): ReactElement {
   const [state, setState] = useState<TerminalState | null>(null)
   const [copy, setCopy] = useState<Copy>({})
@@ -139,13 +132,10 @@ export function App(): ReactElement {
             showMode(m)
           }
           // A RUN THE SERVER SAYS IS LOADING -- this app opened again while
-          // it loads -- shows the same bar, at the same place.
-          const r = next.running
-          if (r) {
-            setProgress((was) => was ?? {
-              functionId: r.functionId, runMs: r.runMs, startedAt: Date.now() - (r.runMs - r.leftMs),
-            })
-          }
+          // it loads -- shows the same bar, at the same place; and none
+          // when the server says nothing is (model.ts progressAfter).
+          const running = next.running
+          setProgress((was) => progressAfter(was, running, Date.now()))
         },
         result(next) {
           if (next.code === 'running' && next.ok) {
