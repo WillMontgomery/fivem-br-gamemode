@@ -172,8 +172,8 @@ Every placeholder is in one block, `art` in `br_lib/config/terminals.lua`:
 and the squad panel's holder mark), `terminalProp` (the model the owner's ymap
 stands at every site, which Season 1 hides) and `hideRadiusM`,
 `blipSprite`/`blipColour` (the owner's 521 and 51) and `blipScale`, and
-`reveal` (the final zone's sprite, colour, scale, radius and alpha). The
-owner's `blitz_seckey` prop and HUD icon replace the first two.
+`reveal` (the final zone's `sprite`, `colour`, `scale`, `radiusM` and
+`alpha`). The owner's `blitz_seckey` prop and HUD icon replace the first two.
 
 ## The functions
 
