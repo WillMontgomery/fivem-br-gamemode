@@ -1727,6 +1727,11 @@ do
     eq(r and r.toast, COPY.ghost_done_solo, 'a solo player reads the solo done line')
     ok(T.hidden(m, 'solo:1', gameMs + 239000) and not T.hidden(m, 'solo:1', gameMs + 240000),
         'hidden for exactly the 4 minutes chosen')
+    -- A SECOND, SHORTER GHOST (only the dev command can) never cuts the first.
+    local ends = gameMs + 240000
+    devRun(1, 'ghost duration=120')
+    ok(T.hidden(m, 'solo:1', ends - 1) and not T.hidden(m, 'solo:1', ends),
+        'a 2-minute Ghost over a 4-minute one keeps the four')
 end
 
 --- Give `src` this many eliminations, reached at `at`.
@@ -1817,7 +1822,26 @@ do
     gameMs = gameMs + 1000
     jobs['terminal.bounty']()
     ok(not T.hasBounty(4) and #lastOf(BR.Net.TERMINAL_BOUNTY, 1).list == 0, 'over at 5:00, every map cleared')
-    local _ = m
+
+    -- THE MATCH ENDING, AND SEASON 1, END A CONTRACT LIKE ANY BOUNTY.
+    reset()
+    m = lobby()
+    killsOf(3, 1, 100)
+    runAt(1, 'contract')
+    ok(T.hasBounty(3), 'a fresh contract')
+    m.state = BR.MatchState.ENDED
+    jobs['terminal.bounty']()
+    ok(not T.hasBounty(3) and #lastOf(BR.Net.TERMINAL_BOUNTY, 1).list == 0, 'ended with the match, maps cleared')
+    reset()
+    m = lobby()
+    killsOf(3, 1, 100)
+    runAt(1, 'contract')
+    season(1)
+    local n = #sent
+    gameMs = gameMs + 1000
+    jobs['terminal.bounty']()
+    eq(#sent, n, 'off Season 2, nothing more is pushed')
+    season(2)
 end
 
 describe('Contract: a Scan bounty keeps its longer clock; Ghost hides the contract too')
@@ -1985,8 +2009,9 @@ do
     jobs['terminal.lockdown']()
     eq(T.offlineWhy(hut, m, gameMs), 'locked', 'still locked at 2:59')
     gameMs = t0 + 180000
+    eq(T.offlineWhy(hut, m, gameMs), nil, 'online again at 3:00, by its own clock, before any job has run')
     jobs['terminal.lockdown']()
-    eq(T.offlineWhy(hut, m, gameMs), nil, 'online again at 3:00')
+    eq(T.offlineWhy(hut, m, gameMs), nil, 'and after it')
     local d = lastOf(BR.Net.TERMINAL_LOCKDOWN, 5)
     ok(d and d.on == false, 'and the match is told it is over')
     ok(m.terminalFx.lockdown == nil, 'the record is gone')
