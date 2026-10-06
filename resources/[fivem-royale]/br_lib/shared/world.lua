@@ -317,6 +317,33 @@ function W.weatherName()
 end
 
 -- ---------------------------------------------------------------------------
+-- The festive sky (#399)
+-- ---------------------------------------------------------------------------
+
+--- Is the festive sky on? ONE FACT, decided by the server and mirrored here.
+---
+--- Owner, 2026-10-05: "yes snow is meant to reach the players" -- December and
+--- January, on the festive crates' switch, everywhere. The server decides it
+--- (server/world.lua: the `snow` Season row AND the festive calendar,
+--- BR.Festive.now) and sends it with the override, whole, when it moves and to
+--- a late joiner on br:ready. A client holds it here and reads a table field:
+--- no convar, no state bag, nothing per tick.
+---
+--- NOT AN OVERRIDE, though it travels with one: the console never sets it, and
+--- `brweather` still outranks whatever it does to the sky.
+W.festive = false
+
+--- @param on boolean
+function W.setFestive(on)
+    W.festive = on == true
+end
+
+--- @return boolean
+function W.isFestive()
+    return W.festive == true
+end
+
+-- ---------------------------------------------------------------------------
 -- The wire
 -- ---------------------------------------------------------------------------
 
@@ -334,6 +361,8 @@ function W.payload()
         hour    = W.override.hour,
         minute  = W.override.minute,
         weather = W.override.weather,
+        -- The festive sky (#399): true, or absent -- absent is off.
+        festive = W.festive == true or nil,
     }
 end
 
@@ -359,6 +388,8 @@ function W.applyPayload(p)
     else
         W.clearWeather()
     end
+
+    W.setFestive(p.festive == true)
 end
 
 -- ---------------------------------------------------------------------------

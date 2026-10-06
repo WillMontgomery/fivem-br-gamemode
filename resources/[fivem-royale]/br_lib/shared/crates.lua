@@ -8,9 +8,9 @@
 --       Set when the crate enters the registry and KEPT when it becomes a husk,
 --       which is how the open prop knows its tape -- the husk's own `rarity` is
 --       common, as it always has been.
---   bf  true for the festive set. Decided once per match from the server's
---       date (festiveNow below) and stamped on every crate, so every client
---       agrees without a clock of its own.
+--   bf  true for the festive set. Decided once per match from the festive
+--       calendar (BR.Festive.now, br_lib/shared/festive.lua) and stamped on
+--       every crate, so every client agrees without a clock of its own.
 --   bg  a gift color, for the gift box. Only `brbox` makes one.
 --
 -- A crate with no `bt` is today's wooden crate, which is what every crate on a
@@ -28,10 +28,10 @@
 BR = BR or {}
 BR.Crates = BR.Crates or {}
 
--- THE DEV SWITCH, server side: BR.Crates.festiveOverride. nil (the default)
--- follows the date; true or false forces the festive set. Written only by
--- `brfestive` (br_core/server/loot.lua), and never assigned here, so a second
--- load of this file cannot quietly drop it.
+-- THE FESTIVE ANSWER IS NOT HERE ANY MORE (#399). It is the festive calendar's,
+-- BR.Festive.now() in br_lib/shared/festive.lua, because the festive sky asks
+-- the same question on the same `brfestive` switch and neither feature owns the
+-- other.
 
 --- @return table|nil
 local function cfg()
@@ -170,32 +170,6 @@ function BR.Crates.openMs(look, stateFn)
     if not BR.Crates.rowReady(row) then return nil end
     if not BR.Crates.assetsPresent(stateFn) then return nil end
     return tonumber(row.clipMs)
-end
-
---- Is this date in the festive months?
---- @param date table|nil  os.date('*t') shape; only `month` is read
---- @return boolean
-function BR.Crates.festiveDate(date)
-    local C = cfg()
-    local months = C and C.festiveMonths or nil
-    if type(date) ~= 'table' or type(months) ~= 'table' then return false end
-    local m = math.tointeger(tonumber(date.month))
-    return m ~= nil and months[m] == true
-end
-
---- The festive answer right now: the dev switch if it is set, the date if not.
----
---- SERVER ONLY. The client has no `os` library and never asks: it reads `bf`
---- off the crate.
---- @param dateFn function|nil  os.date by default
---- @return boolean
-function BR.Crates.festiveNow(dateFn)
-    if BR.Crates.festiveOverride ~= nil then return BR.Crates.festiveOverride == true end
-    dateFn = dateFn or (os and os.date)
-    if not dateFn then return false end
-    local ok, d = pcall(dateFn, '*t')
-    if not ok then return false end
-    return BR.Crates.festiveDate(d)
 end
 
 --- The prompt row for a kind ('shipping' or 'gift'). The gift box has its own;

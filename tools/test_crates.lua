@@ -88,6 +88,8 @@ loadAll({
     'br_lib/config/warmupcrates.lua',
     'br_lib/shared/season.lua',
     'br_lib/config/seasons.lua',
+    'br_lib/config/festive.lua',
+    'br_lib/shared/festive.lua',
     'br_lib/config/crates.lua',
     'br_lib/shared/crates.lua',
     'br_lib/shared/loot_gen.lua',
@@ -271,10 +273,13 @@ end
 
 describe('festive: December and January by the server date, and the dev switch')
 do
+    -- ONE CALENDAR FOR THE CRATES AND THE SKY (#399): BR.Festive, in
+    -- br_lib/shared/festive.lua. The crates ask it; they no longer own it.
+    eq(BR.Crates.festiveNow, nil, 'the crates no longer keep a festive answer of their own')
     local function on(month, day)
-        return BR.Crates.festiveNow(function() return { month = month, day = day, year = 2026 } end)
+        return BR.Festive.now(function() return { month = month, day = day, year = 2026 } end)
     end
-    BR.Crates.festiveOverride = nil
+    BR.Festive.override = nil
     eq(on(11, 30), false, 'November 30 is not festive')
     eq(on(12, 1), true, 'December 1 is')
     eq(on(12, 31), true, 'December 31 is')
@@ -283,18 +288,19 @@ do
     eq(on(2, 1), false, 'February 1 is not')
     eq(on(10, 4), false, 'and today, October, is not')
 
-    BR.Crates.festiveOverride = true
+    BR.Festive.override = true
     eq(on(10, 4), true, 'brfestive on forces it in October')
-    BR.Crates.festiveOverride = false
+    BR.Festive.override = false
     eq(on(12, 25), false, 'brfestive off forces it off on December 25')
-    BR.Crates.festiveOverride = nil
+    BR.Festive.override = nil
     eq(on(12, 25), true, 'and auto hands it back to the date')
 
-    -- THE MONTHS ARE CONFIG, as the owner asked.
-    C.festiveMonths = { [11] = true }
+    -- THE MONTHS ARE CONFIG, as the owner asked -- the festive calendar's own.
+    local months = BR.Config.Festive.months
+    BR.Config.Festive.months = { [11] = true }
     eq(on(11, 30), true, 'moving the months in config moves the window')
-    shipped()
-    eq(BR.Crates.festiveNow(function() error('no clock') end), false,
+    BR.Config.Festive.months = months
+    eq(BR.Festive.now(function() error('no clock') end), false,
         'a date that cannot be read is not festive, rather than an error')
 end
 
@@ -414,7 +420,7 @@ end
 local function reset()
     sent, timers, notices, given, airdropOpened, logs = {}, {}, {}, {}, {}, {}
     roster, matches = {}, {}
-    BR.Crates.festiveOverride = nil
+    BR.Festive.override = nil
     gameMs = gameMs + 100000
 end
 
@@ -481,7 +487,7 @@ do
     -- ONCE: a repair re-indexes the crate and must not restyle it.
     local e = crateAt(m, R.RARE)
     m.loot.festive = false
-    BR.Crates.festiveOverride = false
+    BR.Festive.override = false
     e.repaired = nil
     source = 10
     handlers[BR.Net.LOOT_FIX]({ id = e.id, x = SPOT.x + 1.0, y = SPOT.y, z = SPOT.z })
@@ -495,7 +501,7 @@ describe('festive is decided ONCE per match, when its loot is laid out')
 do
     reset()
     season(2)
-    BR.Crates.festiveOverride = true
+    BR.Festive.override = true
     local m = { id = 5, seq = 5, state = BR.MatchState.WARMUP }
     matches[5] = m
     BR.Loot.begin(m, 4242)
@@ -512,7 +518,7 @@ do
 
     -- THE CLOCK TURNING MID-MATCH CHANGES NOTHING. A crate born later in the
     -- same match -- a landing crate -- takes the match's answer, not today's.
-    BR.Crates.festiveOverride = false
+    BR.Festive.override = false
     standAt(11, m)
     local later = crateAt(m, R.RARE)
     eq(later.bf, true, 'a crate added later in the match is still festive')
@@ -525,7 +531,7 @@ do
     local any = false
     for _, e in pairs(m2.loot.items) do if e.bf then any = true end end
     eq(any, false, 'and none of its crates is festive')
-    BR.Crates.festiveOverride = nil
+    BR.Festive.override = nil
 end
 
 describe('a missing clip or props falls back to today\'s instant open')
@@ -1090,7 +1096,7 @@ do
     sent, logs = {}, {}
     realNames()
     resources.br_crates = 'started'
-    BR.Crates.festiveOverride = true
+    BR.Festive.override = true
     local zone = BR.Loot.warmupZone()
     local h1, gift = padState.husk, padState.gift
     ok(h1 and h1.kind == 'husk' and h1.bt == nil, 'before: a husk opened under Season 1, with no look')
@@ -1139,7 +1145,7 @@ do
     advance(2000)
     eq(g.kind, 'husk', 'which it does')
     roster[45] = nil
-    BR.Crates.festiveOverride = nil
+    BR.Festive.override = nil
     resources.br_crates = nil
     shipped()
 end
@@ -1212,16 +1218,55 @@ do
     reset()
     season(2)
     commands['brfestive'](0, { 'on' })
-    eq(BR.Crates.festiveOverride, true, 'on forces it on')
+    eq(BR.Festive.override, true, 'on forces it on')
     ok(said('ON') and said('next match'), 'and says it applies from the next match\'s layout')
     commands['brfestive'](0, { 'off' })
-    eq(BR.Crates.festiveOverride, false, 'off forces it off')
+    eq(BR.Festive.override, false, 'off forces it off')
     commands['brfestive'](0, { 'auto' })
-    eq(BR.Crates.festiveOverride, nil, 'auto hands it back to the date')
+    eq(BR.Festive.override, nil, 'auto hands it back to the date')
     logs = {}
     commands['brfestive'](0, { 'sideways' })
     ok(said('usage'), 'anything else prints the usage')
-    eq(BR.Crates.festiveOverride, nil, 'and changes nothing')
+    eq(BR.Festive.override, nil, 'and changes nothing')
+end
+
+describe('brfestive drives the sky too (#399): one switch, told to everyone at once')
+do
+    -- THE REAL server/world.lua, which sends the festive sky with the world
+    -- payload. Loaded last: its br:ready handler replaces this harness's one
+    -- handler slot, and no block below needs the old one.
+    loadAll({ 'br_lib/shared/world.lua', 'br_core/server/world.lua' })
+    local function skies()
+        local out = {}
+        for _, s in ipairs(eventsOf(BR.Net.WORLD_SET)) do
+            if s.src == -1 then out[#out + 1] = s.payload.festive == true end
+        end
+        return out
+    end
+
+    reset()
+    season(2)
+    BR.World.setFestive(false)
+    commands['brfestive'](0, { 'on' })
+    local s = skies()
+    ok(#s == 1 and s[1] == true, 'brfestive on sends the festive sky to every client, once',
+       ('%d sent'):format(#s))
+    ok(said('festive crates and sky: ON') and said('sky: the festive sky (XMAS) for everyone'),
+       'and says it drives both', table.concat(logs, ' | '))
+    commands['brfestive'](0, { 'on' })
+    eq(#skies(), 1, 'saying it again sends nothing: the fact moves on change only')
+    commands['brfestive'](0, { 'off' })
+    s = skies()
+    ok(#s == 2 and s[2] == false, 'brfestive off takes it back, for everyone',
+       ('%d sent'):format(#s))
+
+    reset()
+    season(1)
+    BR.World.setFestive(false)
+    commands['brfestive'](0, { 'on' })
+    eq(#skies(), 0, 'on Season 1 the sky never turns festive: snow is Season 2\'s')
+    ok(said('Season 2\'s, and this is Season 1'), 'and it says why')
+    commands['brfestive'](0, { 'auto' })
 end
 
 -- ----------------------------------------------------------------- result ---

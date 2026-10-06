@@ -13,8 +13,9 @@
 -- ═══ WHO READS THIS ═══
 --
 --   br_lib/shared/crates.lua    every question about a look: which model, which
---                               clip and how long, whether the festive set is in
---                               season. Nothing else reads these tables.
+--                               clip and how long. Nothing else reads these
+--                               tables. Whether it is the festive months is the
+--                               festive calendar's (br_lib/shared/festive.lua).
 --   br_core/server/loot.lua     stamps each crate's look when it enters the
 --                               registry and times the burst off `clipMs`.
 --   br_core/client/loot.lua     picks the model, plays the clip, swaps to the
@@ -118,10 +119,10 @@ BR.Config.Crates = {
         gift     = { x = 0.0, y = 0.0, z = 0.95, rx = 0.0, ry = 0.0, rz = 0.0, size = 0.55 },
     },
 
-    -- The festive months, by the SERVER's date: December and January (owner,
-    -- 2026-10-04). Decided once per match when its loot is laid out and carried on
-    -- every crate, so every client agrees. `brfestive` forces it for testing.
-    festiveMonths = { [12] = true, [1] = true },
+    -- THE FESTIVE MONTHS ARE br_lib/config/festive.lua's (#399): one calendar for
+    -- the festive set and the festive sky, asked through BR.Festive.now(). Decided
+    -- once per match when its loot is laid out and carried on every crate, so
+    -- every client agrees. `brfestive` forces it for testing.
 
     -- The order the gift colors are listed and checked in.
     giftColors = { 'white', 'blue', 'green', 'red' },

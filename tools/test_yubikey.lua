@@ -121,6 +121,8 @@ loadAll({
     'br_lib/config/airdrop.lua',
     'br_lib/shared/season.lua',
     'br_lib/config/seasons.lua',
+    'br_lib/config/festive.lua',
+    'br_lib/shared/festive.lua',
     'br_lib/config/crates.lua',
     'br_lib/shared/crates.lua',
     'br_lib/config/terminals.lua',

@@ -5541,6 +5541,7 @@ do
     -- landed entry will carry: LEGENDARY, festive if the match is. On a Season 1
     -- server it carries nothing, and the record is the one it always was.
     loadAll({ 'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
+              'br_lib/config/festive.lua', 'br_lib/shared/festive.lua',
               'br_lib/config/crates.lua', 'br_lib/shared/crates.lua' })
     local function season(n)
         BR.Season.boot(function(name)
@@ -5550,7 +5551,7 @@ do
 
     reset()
     season(2)
-    BR.Crates.festiveOverride = true
+    BR.Festive.override = true
     local m = newMatch(1)
     BR.Airdrop.begin(m)
     commands['brairdrop'](0, { 'now' }, '')
@@ -5574,7 +5575,7 @@ do
     ok(rec1.bt == nil and rec1.bf == nil,
         'Season 1: the record carries no look -- the wooden crate, as always',
         ('bt %s, bf %s'):format(tostring(rec1.bt), tostring(rec1.bf)))
-    BR.Crates.festiveOverride = nil
+    BR.Festive.override = nil
 end
 
 -- =========================================================================

@@ -190,6 +190,13 @@ shared_scripts {
     -- server/main.lua calls BR.Season.boot() at resource start.
     '@br_lib/shared/season.lua',
     '@br_lib/config/seasons.lua',
+    -- THE FESTIVE CALENDAR (#395, #399): December and January, and the
+    -- `brfestive` switch. One answer, BR.Festive.now(), for the Season 2 crates'
+    -- festive set and the festive sky; neither owns it. Only the server asks (a
+    -- client has no `os`); shared like the rest of br_lib's config, and above
+    -- overrides.lua, which may edit any config table. Reads nothing at load.
+    '@br_lib/config/festive.lua',
+    '@br_lib/shared/festive.lua',
     -- EMOTES (#215, "Scope v2"): the dance catalogue. Gated by the season (the
     -- `emotes` row in config/seasons.lua). Its rows register into
     -- BR.Config.MarketIndex as it loads, so it must follow config/market.lua.

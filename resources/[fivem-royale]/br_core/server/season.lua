@@ -38,6 +38,8 @@
 --     and re-announced once to whoever is looking. The pad is stocked at
 --     server start and outlives every switch; without this a Season 1 pad
 --     kept Season 2's boxes (owner, 2026-10-04).
+--   * The festive sky (server/world.lua, #399), a Season 2 feature: re-read,
+--     and sent to every client if the switch moved it.
 --   * Every client is told (BR.Net.SEASON_SWITCHED): one F8 line naming who
 --     switched, and br_core/client/season.lua re-reads its season off the
 --     replicated value and raises `br:season:changed` for everything on that
@@ -227,6 +229,10 @@ local function apply(target, by)
                 :format(now, r.stamped, r.cleared, r.burst, r.told))
         end
     end
+
+    -- The festive sky is a Season 2 feature (#399): re-read, and sent to every
+    -- client if the switch moved it.
+    if BR.WorldSky and BR.WorldSky.refresh then BR.WorldSky.refresh('brseason') end
 
     TriggerClientEvent(BR.Net.SEASON_SWITCHED, -1, { season = now, from = from, by = by })
 end

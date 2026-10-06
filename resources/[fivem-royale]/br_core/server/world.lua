@@ -56,10 +56,56 @@ local function send(target)
     TriggerClientEvent(BR.Net.WORLD_SET, target, BR.World.payload())
 end
 
+-- ═══ THE FESTIVE SKY TRAVELS WITH IT (#399) ═══
+--
+-- Owner, 2026-10-05: "yes snow is meant to reach the players" -- December and
+-- January, on the festive crates' switch (`brfestive` drives both),
+-- everywhere. The server decides it, ONE fact: the `snow` Season row AND the
+-- festive calendar (BR.Festive.now, br_lib/shared/festive.lua). It rides the
+-- payload above, so it reaches everybody when it moves and a late joiner on
+-- br:ready, and a client holds it (BR.World.festive) without reading anything
+-- per tick. What it does to the sky is client/world.lua's.
+--
+-- IT MOVES ONLY ON CHANGE: `brfestive`, a `brseason` switch, and the date
+-- crossing into or out of the festive months, which a one-minute job notices.
+
+--- The festive sky by the server's own answer.
+--- @return boolean
+local function festiveSkyNow()
+    return BR.Season ~= nil and BR.Season.has('snow')
+       and BR.Festive ~= nil and BR.Festive.now() == true
+end
+
+BR.WorldSky = BR.WorldSky or {}
+
+--- Read the festive sky again and tell every client if it moved.
+--- @param why string|nil  what asked, for the console line
+--- @return boolean on  the festive sky now
+--- @return boolean moved  whether it was just sent to everybody
+function BR.WorldSky.refresh(why)
+    local on = festiveSkyNow()
+    if on == BR.World.isFestive() then return on, false end
+    BR.World.setFestive(on)
+    send(-1)
+    print(('[br_core] festive sky %s for everyone (%s)')
+        :format(on and 'ON' or 'off', why or 'the server date'))
+    return on, true
+end
+
+-- The date crossing into or out of December and January. Its first run is the
+-- scheduler's first pass, after server/main.lua has booted the season.
+if BR.Sched and BR.Sched.every then
+    BR.Sched.every(60000, 'world.festive', function() BR.WorldSky.refresh() end)
+end
+
 -- The late joiner's copy. `source` is the client that just finished loading.
+-- The festive sky is read first, so a client that arrives before the job's
+-- first pass is not told an answer that is about to move.
 RegisterNetEvent(BR.Net.READY)
 AddEventHandler(BR.Net.READY, function()
-    send(source)
+    local src = source
+    local _, moved = BR.WorldSky.refresh()
+    if not moved then send(src) end
 end)
 
 --- Refuse a verb unless it came from the server console AND this box is a dev

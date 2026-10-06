@@ -190,7 +190,7 @@ BR.Loot.crates2On = crates2On
 --- @return boolean|nil bf
 local function lookFor(loot, rarity)
     local festive = loot.festive
-    if festive == nil then festive = BR.Crates.festiveNow() end
+    if festive == nil then festive = BR.Festive.now() end
     return BR.Crates.tierOf(rarity), festive == true or nil
 end
 
@@ -510,13 +510,13 @@ function BR.Loot.begin(m, seed)
     -- differs per run is a suite that fails one time in twenty for no reason.
     seed = seed or pinnedSeed or (GetGameTimer() + m.seq * 15485863)
 
-    -- THE FESTIVE SET, DECIDED ONCE FOR THE WHOLE MATCH (#395), off the
-    -- server's own date (or `brfestive`), and carried on every crate stampLook
-    -- marks -- so a match that starts at 23:59 on January 31 stays festive to
-    -- the end and every client agrees. false, not nil, when it is not: nil is
-    -- the warmup pad's "ask at each stocking".
+    -- THE FESTIVE SET, DECIDED ONCE FOR THE WHOLE MATCH (#395), off the festive
+    -- calendar (BR.Festive: the server's date, or `brfestive`), and carried on
+    -- every crate stampLook marks -- so a match that starts at 23:59 on January
+    -- 31 stays festive to the end and every client agrees. false, not nil, when
+    -- it is not: nil is the warmup pad's "ask at each stocking".
     local festive = nil
-    if BR.Crates then festive = BR.Crates.festiveNow() end
+    if BR.Festive then festive = BR.Festive.now() end
 
     m.loot = {
         seed    = seed,
@@ -2579,7 +2579,7 @@ local function devBoxStack(m, box, x, y, z)
     -- FESTIVE AS ASKED, or the zone's own answer when not asked.
     local festive = box.festive
     if festive == nil then festive = m.loot.festive end
-    if festive == nil then festive = BR.Crates.festiveNow() end
+    if festive == nil then festive = BR.Festive.now() end
     stack.bf = festive == true or nil
     return stack
 end
@@ -2724,37 +2724,55 @@ AddEventHandler(BR.Net.LOOT_DEV, function(d)
     BR.Server.notify(src, report, 'info')
 end)
 
---- Force the festive set on or off for testing, or hand it back to the date.
+--- Force the festive months on or off for testing, or hand them back to the
+--- date -- for the crates AND the sky, which ask one calendar (#399,
+--- br_lib/shared/festive.lua).
 ---
---- WHEN IT APPLIES IS THE WHOLE QUESTION, so it says so every time: a match
---- decides once, when its loot is laid out at warmup, so a match already laid
---- out keeps its answer. The next match's layout, every warmup-pad crate
---- stocked from now on and every `brbox` crate take the new one.
+--- WHEN IT APPLIES IS THE WHOLE QUESTION, so it says so every time. The sky
+--- moves at once, for everyone (server/world.lua sends the one fact when it
+--- moves, and each client blends to it). A match's crates decide once, when its
+--- loot is laid out at warmup, so a match already laid out keeps its answer;
+--- the next match's layout, every warmup-pad crate stocked from now on and
+--- every `brbox` crate take the new one.
 RegisterCommand('brfestive', function(_, args)
-    if not BR.Crates then
-        print('[br_core] brfestive: br_lib/shared/crates.lua is not loaded')
+    if not BR.Festive then
+        print('[br_core] brfestive: br_lib/shared/festive.lua is not loaded')
         return
     end
     local a = tostring(args[1] or ''):lower()
     if a == 'on' then
-        BR.Crates.festiveOverride = true
+        BR.Festive.override = true
     elseif a == 'off' then
-        BR.Crates.festiveOverride = false
+        BR.Festive.override = false
     elseif a == 'auto' then
-        BR.Crates.festiveOverride = nil
+        BR.Festive.override = nil
     elseif a ~= '' then
         print('  usage: brfestive [on|off|auto]')
         return
     end
 
-    local o = BR.Crates.festiveOverride
-    local byDate = BR.Crates.festiveDate(os.date('*t'))
-    print(('[br_core] festive crates: %s (%s; the date says %s)')
-        :format(BR.Crates.festiveNow() and 'ON' or 'off',
+    local o = BR.Festive.override
+    local byDate = BR.Festive.date(os.date('*t'))
+    print(('[br_core] festive crates and sky: %s (%s; the date says %s)')
+        :format(BR.Festive.now() and 'ON' or 'off',
                 o == nil and 'auto, by the server date' or 'forced by brfestive',
                 byDate and 'on' or 'off'))
-    print('  applies to crates laid out from now on: the next match\'s layout (at')
-    print('  its warmup), warmup-pad crates as they are stocked, and brbox crates.')
+
+    -- THE SKY, NOW. server/world.lua re-reads the calendar and tells every
+    -- client if the festive sky moved.
+    if BR.WorldSky and BR.WorldSky.refresh then
+        local sky = BR.WorldSky.refresh('brfestive')
+        if not BR.Season.has('snow') then
+            print(('  sky: the usual clear sky -- the festive sky is Season 2\'s, and this is Season %s')
+                :format(tostring(BR.Season.current())))
+        else
+            print(('  sky: %s for everyone, now'):format(sky and 'the festive sky (XMAS)'
+                or 'the usual clear sky'))
+        end
+    end
+
+    print('  crates: laid out from now on -- the next match\'s layout (at its')
+    print('  warmup), warmup-pad crates as they are stocked, and brbox crates.')
     print('  A match already laid out keeps the answer it started with.')
     if not crates2On() then
         print(('  (Season 2 crates are off on Season %s, so no crate carries it yet)')

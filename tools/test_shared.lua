@@ -22754,6 +22754,114 @@ do
     end
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- #399: THE FESTIVE SKY IS ONE FACT, SENT WHEN IT MOVES AND HELD BY THE CLIENT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-05: "yes snow is meant to reach the players" -- December and
+-- January, on the festive crates' switch, everywhere. The server decides it
+-- (the `snow` Season row AND BR.Festive.now) and sends it in the world payload;
+-- a client holds it and never reads a convar or a state bag for it.
+describe('world / the festive sky is one fact')
+do
+    local W = BR.World
+    W.setFestive(false)
+    ok(W.payload().festive == nil, 'off, the payload carries no festive key at all')
+    W.setFestive(true)
+    ok(W.payload().festive == true, 'on, it carries festive = true')
+    W.applyPayload({ weather = 'RAIN' })
+    ok(W.isFestive() == false, 'and a payload without it turns it off -- absent is off, '
+       .. 'like every other field of the payload')
+    W.applyPayload({ festive = true })
+    ok(W.isFestive() == true, 'one with it turns it on')
+    W.applyPayload({ festive = 'yes' })
+    ok(W.isFestive() == false, 'and anything but true is off')
+    W.applyPayload(nil)
+
+    --- The real server/world.lua on a season, with the festive calendar.
+    local function newSkyServer(seasonN, month)
+        local env = newSandbox()
+        local S = { sent = {}, prints = {}, jobs = {} }
+        env.print = function(s) S.prints[#S.prints + 1] = tostring(s) end
+        env.RegisterNetEvent = function() end
+        local handlers = {}
+        env.AddEventHandler = function(n, fn) handlers[n] = fn end
+        env.RegisterCommand = function() end
+        env.TriggerClientEvent = function(evt, target, payload)
+            S.sent[#S.sent + 1] = { event = evt, target = target, payload = payload }
+        end
+        S.month = month
+        env.os = setmetatable({ date = function() return { month = S.month } end },
+                              { __index = os })
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
+                        'br_lib/config/festive.lua', 'br_lib/shared/festive.lua' })
+        env.BR.Season.boot(function(n) return n == 'br_season' and tostring(seasonN) or '' end,
+                           function() end)
+        env.BR.Sched.every = function(_, name, fn) S.jobs[name] = fn end
+        env.BR.Server = { devMode = true }
+        loadInto(env, { 'br_core/server/world.lua' })
+        S.env = env
+        S.ready = function(src)
+            env.source = src
+            handlers[env.BR.Net.READY]()
+            env.source = nil
+        end
+        S.festiveSent = function()
+            local out = {}
+            for _, s in ipairs(S.sent) do
+                if s.event == env.BR.Net.WORLD_SET then
+                    out[#out + 1] = { target = s.target, on = s.payload.festive == true }
+                end
+            end
+            return out
+        end
+        return S
+    end
+
+    do
+        local S = newSkyServer(2, 11)
+        S.jobs['world.festive']()
+        ok(#S.festiveSent() == 0, 'November on Season 2: nothing to send, nothing sent')
+        S.month = 12
+        S.jobs['world.festive']()
+        local f = S.festiveSent()
+        ok(#f == 1 and f[1].target == -1 and f[1].on == true,
+           'the date crossing into December sends the festive sky to everyone, once',
+           #f)
+        S.jobs['world.festive']()
+        S.jobs['world.festive']()
+        ok(#S.festiveSent() == 1, 'and the minute job sends nothing more while it holds')
+        S.ready(7)
+        f = S.festiveSent()
+        ok(#f == 2 and f[2].target == 7 and f[2].on == true,
+           'a late joiner is told on br:ready')
+        S.month = 2
+        S.jobs['world.festive']()
+        f = S.festiveSent()
+        ok(#f == 3 and f[3].target == -1 and f[3].on == false,
+           'and February takes it back, for everyone')
+    end
+    do
+        local S = newSkyServer(1, 12)
+        S.jobs['world.festive']()
+        S.ready(3)
+        local f = S.festiveSent()
+        ok(#f == 1 and f[1].target == 3 and f[1].on == false,
+           'Season 1 in December: never festive -- snow is a Season 2 feature')
+    end
+    do
+        -- A client that finishes loading before the job's first pass is told
+        -- the answer as it stands, not the one the job is about to send.
+        local S = newSkyServer(2, 1)
+        S.ready(5)
+        local f = S.festiveSent()
+        ok(#f == 1 and f[1].target == -1 and f[1].on == true,
+           'a br:ready before the first pass sends the festive sky to everyone, '
+           .. 'the joiner included, and nothing twice', #f)
+    end
+end
+
 -- ----------------------------------------------------------------- result ---
 
 io.write(('\n%s%d passed%s'):format('\27[32m', pass, '\27[0m'))

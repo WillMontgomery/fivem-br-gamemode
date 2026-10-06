@@ -109,7 +109,7 @@ local function stampLook(m, rec)
     if not on then return end
     rec.bt = BR.Crates.tierOf(BR.Rarity.LEGENDARY)
     local festive = m.loot and m.loot.festive
-    if festive == nil then festive = BR.Crates.festiveNow() end
+    if festive == nil then festive = BR.Festive.now() end
     rec.bf = festive == true or nil
 end
 

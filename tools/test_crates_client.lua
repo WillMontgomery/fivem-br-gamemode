@@ -310,6 +310,7 @@ loadAll({
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
     'br_lib/config/warmupcrates.lua', 'br_lib/config/airdrop.lua',
     'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
+    'br_lib/config/festive.lua', 'br_lib/shared/festive.lua',
     'br_lib/config/crates.lua', 'br_lib/shared/crates.lua',
     'br_lib/shared/loot_gen.lua',
     'br_core/client/main.lua',

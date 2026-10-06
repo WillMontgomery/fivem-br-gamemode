@@ -49,5 +49,10 @@ BR.Config.Seasons = {
         -- #396. Owner, 2026-10-04: computer terminals that manipulate the
         -- match, unlocked by a Yubikey, "for Season 2".
         terminals = { from = 2 },
+        -- #399. Owner, 2026-10-05: "yes snow is meant to reach the players" --
+        -- December and January, on the festive crates' switch (`brfestive`),
+        -- everywhere. The festive sky: the clear sky is XMAS with snow on the
+        -- ground. Off, every sky is the one it has always been.
+        snow = { from = 2 },
     },
 }
