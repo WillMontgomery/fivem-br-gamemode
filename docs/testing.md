@@ -185,6 +185,7 @@ guarantee removed — all fail it.
 | **br_ddb bundle** | Locally, the committed bundle is pinned to the current `js-src/br_ddb` source fingerprint so the gate runs without npm. In CI, Node 22 installs the locked dependencies and `npm run check` rebuilds in memory for an exact byte comparison; the fingerprint can no longer bless a stale or unrelated bundle by itself. The ban-rule cases run on both paths when Node is present. |
 | **br_ddb bundle over the wire** | The same question asked of a **box**: `status` reports the bundle actually deployed there, and every absence as `null` rather than as a blank that reads like an answer. The gate above compares two things in this repository; this one compares this repository against what is running. |
 | **Duplicate console commands** | One name, one registration — three collided at once in #137. |
+| **American spelling** | `tools/check_spelling.sh` (#399's review): the lines a branch adds since it left `origin/dev` — committed, staged, unstaged and untracked, outside vendored code — hold no British form (`colour`, `licence`, `tyre`, `metres`, `-ise`, a doubled `-ll-`). Names the code must keep are not words to it: a `.field`, a native, a one-word string, a `key =`, anything in backticks. The older lines already in the tree are not read. A line that has to keep a British form carries `spelling-ok`. With no `origin/dev` it says so and passes. |
 | **Pass cache** | `tools/test_vcache.py`: skipping an unchanged suite never hides a change. See [the pass cache](#the-pass-cache). |
 
 ### The suites

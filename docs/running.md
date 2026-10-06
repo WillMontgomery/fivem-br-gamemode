@@ -427,7 +427,7 @@ CI runs both package installs and bundle checks under Node 22 before
 `tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;
 the local pre-commit gate remains the first line of defence on `dev`.
 
-`verify.sh` runs **36 gates**, in increasing order of strictness, exiting
+`verify.sh` runs **37 gates**, in increasing order of strictness, exiting
 non-zero on any failure:
 
 | | |
@@ -468,6 +468,7 @@ non-zero on any failure:
 | `br_ddb bundle` | the committed bundle is the one recorded against the current `js-src/br_ddb` |
 | `br_ddb bundle over the wire` | `status` reports the bundle actually deployed on a box, and every absence as null |
 | `duplicate console commands` | one name, one registration |
+| `American spelling` | the lines a branch adds since it left `origin/dev` spell color, license, armor and tire the American way; names the code keeps are skipped |
 
 > **This table said 21 gates and "~3,900 assertions across 10 suites" on
 > 2026-08-27, and 17 gates and "~3,100 across 8" before that.** None of the six
