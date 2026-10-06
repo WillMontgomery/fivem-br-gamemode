@@ -87,9 +87,10 @@ local function fxOf(m)
     return s
 end
 
---- A copy line with {playername} filled, as a toast.
-local function named(key, name)
-    return TS.line(copy()[key], name)
+--- A copy line with {playername} filled, as a toast, through the one picker
+--- (BR.TerminalSolve.pick: "squad" only in a squad match, owner round 2).
+local function named(key, name, squadMatch)
+    return TS.line(TS.pick(copy(), key, squadMatch), name)
 end
 
 -- ------------------------------------------------------------------ Scan ---
@@ -181,16 +182,25 @@ end
 function T.startBounty(m, src, now)
     local e = BR.Roster.get(src)
     if not e then return end
+    -- A BOUNTY ON A PLAYER ALREADY OUT IS NO BOUNTY ("ENDED EARLY BY
+    -- ELIMINATION", above). Reachable since round 2: a run is carried out
+    -- 3 to 5 seconds after it is accepted, and its runner can be eliminated
+    -- in between -- the squad still gets its Scan, and nobody is told of a
+    -- bounty that would end on the next push.
+    if not MARKED[e.state] then return end
     local key = TS.squadKey(e, src)
+    local squadMatch = T.squadMatch ~= nil and T.squadMatch(src) == true
     fxOf(m).bounties[src] = { src = src, name = e.name, squad = key, since = now,
                               untilAt = now + (fx().bountyMs or 600000) }
-    BR.Server.notify(T.lobbyOf(m), named('bounty_new', e.name), 'info', { ms = 8000 })
+    BR.Server.notify(T.lobbyOf(m), named('bounty_new', e.name, squadMatch), 'info', { ms = 8000 })
+    -- THE OWNER'S SQUAD-ONLY TOAST, ONLY TO SQUADMATES: never sent to a player
+    -- with none (a solo player, or the last of a squad).
     local mates = {}
     for _, s in ipairs(T.squadOf(m, key)) do
         if s ~= src then mates[#mates + 1] = s end
     end
     if #mates > 0 then
-        BR.Server.notify(mates, named('bounty_protect', e.name), 'info', { ms = 8000 })
+        BR.Server.notify(mates, named('bounty_protect', e.name, squadMatch), 'info', { ms = 8000 })
     end
     print(('[br_core] terminals: %s (%d) has a bounty for %.0f s in match %s')
         :format(e.name or '?', src, (fx().bountyMs or 600000) / 1000, tostring(m.id)))

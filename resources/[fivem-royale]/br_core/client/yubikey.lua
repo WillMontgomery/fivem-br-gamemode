@@ -70,8 +70,10 @@ local LOAD_WAIT_MS = 5000
 
 -- ------------------------------------------------------------- the state ---
 
---- What the server told this player (YUBIKEY_STATE).
-local held, squadUsed = false, false
+--- What the server told this player (YUBIKEY_STATE). `squadMatch` picks the
+--- squad_used line or its `_solo` sibling (owner, round 2: "squad" only in a
+--- squad match).
+local held, squadUsed, squadMatch = false, false, false
 
 --- The dev tools' changes (TERMINAL_SITES): placed sites, removed config ids,
 --- ids forced online.
@@ -389,7 +391,7 @@ local function plateFor(s)
     local online = (w and w.online) or dev.forced[s.id] == true
     if not online then return { hint = copy().offline, press = false } end
     if not held then return { hint = copy().no_key, press = true } end
-    if squadUsed then return { hint = copy().squad_used, press = true } end
+    if squadUsed then return { hint = TS.pick(copy(), 'squad_used', squadMatch), press = true } end
     return { hint = copy().terminal_use, press = true }
 end
 
@@ -475,6 +477,7 @@ AddEventHandler(BR.Net.YUBIKEY_STATE, function(d)
     if type(d) ~= 'table' then return end
     held = d.held == true
     squadUsed = d.squadUsed == true
+    squadMatch = d.squadMatch == true
     -- Blips follow on the next SLOW pass; a lost key takes them down now.
     if not held then
         for _, w in pairs(world) do dropTerminalBlips(w) end

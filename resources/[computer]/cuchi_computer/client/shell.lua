@@ -15,14 +15,20 @@
 -- docs/terminals.md.
 --
 -- EXPORTS (called by br_core's client, client/terminal.lua)
---   Open(state, copy, catalog) -> ok, why   show the desktop and the app
+--   Open(state, copy, catalog, desktop) -> ok, why
+--                                  boot the desktop; the player opens the app
 --       state   = { terminalId, functions = { { id, available, reason } },
---                   keyHeld, squadUsed, player, match }
+--                   keyHeld, squadUsed, squadMatch, volts, running?, player,
+--                   match }
 --       copy    = the player-facing lines, from br_lib/config/terminals.lua
---       catalog = { functions, categories }: the function registry, the same
---                 file's rows, which the app draws its cards and pages from
+--       catalog = { functions, categories, currency }: the function registry,
+--                 the same file's rows, which the app draws its cards and
+--                 pages from
+--       desktop = { bootMinMs, bootMaxMs, clock = { h, m } }: how long a boot
+--                 may take (the page picks in the range) and the game's time
 --   Update(state)                  the server's new view, while open
 --   Result(result)                 the answer to a run, while open
+--   Clock(h, m)                    the game's hour and minute, for the taskbar
 --   Close(why) -> ok               take it down (death, storm, teardown)
 --   IsOpen() -> boolean
 --
@@ -105,11 +111,33 @@ local function shut(why, tellPage)
     return true
 end
 
+--- A game hour and minute, or nil when they are not in range.
+--- @return table|nil { h, m }
+local function hm(h, m)
+    h, m = math.tointeger(tonumber(h)), math.tointeger(tonumber(m))
+    if not h or not m or h < 0 or h > 23 or m < 0 or m > 59 then return nil end
+    return { h = h, m = m }
+end
+
+--- What the page boots with besides the state: the boot's range (two
+--- numbers, the page picks in it) and the game's time. Shape only.
+--- @param d any
+--- @return table
+local function desktopOf(d)
+    if type(d) ~= 'table' then return {} end
+    local lo, hi = tonumber(d.bootMinMs), tonumber(d.bootMaxMs)
+    local out = {}
+    if lo and hi and lo >= 0 and hi >= lo then out.bootMinMs, out.bootMaxMs = lo, hi end
+    if type(d.clock) == 'table' then out.clock = hm(d.clock.h, d.clock.m) end
+    return out
+end
+
 --- @param state table
 --- @param copy table|nil
 --- @param catalog table|nil
+--- @param desktop table|nil
 --- @return boolean ok, string|nil why
-local function open(state, copy, catalog)
+local function open(state, copy, catalog, desktop)
     if type(state) ~= 'table' or type(state.terminalId) ~= 'string' then
         return false, 'bad-state'
     end
@@ -127,7 +155,8 @@ local function open(state, copy, catalog)
     terminalId = state.terminalId
     opener = GetInvokingResource() or opener
     SendNUIMessage({ type = 'br:open', state = state, copy = type(copy) == 'table' and copy or {},
-                     catalog = type(catalog) == 'table' and catalog or {} })
+                     catalog = type(catalog) == 'table' and catalog or {},
+                     desktop = desktopOf(desktop) })
     if not was then
         SetNuiFocus(true, true)
         TriggerEvent('cuchi_computer:opened', terminalId)
@@ -148,9 +177,18 @@ local function result(result_)
     SendNUIMessage({ type = 'br:result', result = result_ })
 end
 
+--- The game's time, for the taskbar's clock: br_core sends it while the
+--- desktop is up, when the minute changes.
+local function clock(h, m)
+    local t = hm(h, m)
+    if not isOpen or not t then return end
+    SendNUIMessage({ type = 'br:clock', h = t.h, m = t.m })
+end
+
 exports('Open', open)
 exports('Update', update)
 exports('Result', result)
+exports('Clock', clock)
 exports('Close', function(why)
     return shut(type(why) == 'string' and why or 'closed', true)
 end)

@@ -82,6 +82,13 @@ local lastRunAt = {}
 --- [src] = GetGameTimer() of the last use request taken
 local lastUseAt = {}
 
+--- THE RUNS IN FLIGHT (owner, 2026-10-05, round 2): a run is paid for when it
+--- is accepted and carried out runMinMs..runMaxMs later. One per player
+--- ([src] = rec) and one per squad ([squadKey] = rec), from the moment it is
+--- accepted to the moment it is done or refunded -- see BR.Terminal.run.
+local inflight = {}
+local inflightSquad = {}
+
 --- The most options one run may carry. The registry's longest list is three;
 --- anything past this is not the app.
 local OPTIONS_MAX = 8
@@ -250,6 +257,56 @@ local function tellLobby(m, line)
     BR.Server.notify(lobbyOf(m), line, 'info', { ms = 8000 })
 end
 
+--- Is this player actively in a squad match? (owner, 2026-10-05, round 2: "the
+--- mention of 'squad' in the terminal should only be mentioned if the player
+--- is actively in a squad match.")
+---
+--- IN A MATCH'S BUS OR PLAYING PHASE, IN A MODE WHOSE SQUADS ARE BIGGER THAN
+--- ONE (BR.Mode's squadSize). The lobby, the warmup pad, the end screen and a
+--- dev terminal opened outside a match are not. The fact every line that says
+--- squad is picked by (BR.TerminalSolve.pick here, the app's own picker from
+--- the state's `squadMatch`), and what hides the squad-only functions.
+--- @param src integer
+--- @return boolean
+function T.squadMatch(src)
+    local m = BR.Server and BR.Server.matchOf and BR.Server.matchOf(src) or nil
+    if not m then return false end
+    if m.state ~= BR.MatchState.BUS and m.state ~= BR.MatchState.PLAYING then return false end
+    local mode = BR.ResolveMode and BR.ResolveMode(m.mode) or nil
+    return mode ~= nil and (tonumber(mode.squadSize) or 1) > 1
+end
+
+--- A line for this player, through the one picker.
+--- @param key string
+--- @param squadMatch boolean
+--- @return string
+local function say(key, squadMatch)
+    return TS.pick(copy(), key, squadMatch)
+end
+
+--- '{token}'s filled with plain text; an unknown token is left as written.
+--- @param text string
+--- @param vars table
+--- @return string
+local function fill(text, vars)
+    return (tostring(text or ''):gsub('{(%a+)}', function(k)
+        local v = vars[k]
+        if v == nil then return nil end
+        return tostring(v)
+    end))
+end
+
+--- A Volts figure as every other Volts display writes it: grouped, then the
+--- currency word (BR.ShopSolve.priceLine, "the only 'N Volts' formatter").
+--- @param n number
+--- @return string
+local function volts(n)
+    if BR.ShopSolve and BR.ShopSolve.priceLine then
+        return BR.ShopSolve.priceLine(n, BR.Config.Market and BR.Config.Market.currency or nil)
+    end
+    return tostring(math.floor(tonumber(n) or 0))
+end
+
 -- --------------------------------------------------------- the registry ---
 
 --- The server half of the function registry: one entry per BUILT id in
@@ -294,6 +351,17 @@ T.row = rowOf
 local function built(row)
     return row.implemented == true and T.FUNCTIONS[row.id] ~= nil
 end
+
+--- What a run of this row costs, in Volts: its `cost`, or nothing.
+--- tools/test_terminal.lua holds every row to 0..200 (owner, round 2: "the max
+--- being no more than 200").
+--- @param row table
+--- @return integer
+local function costOf(row)
+    local c = math.floor(tonumber(row.cost) or 0)
+    return c > 0 and c or 0
+end
+T.costOf = costOf
 
 --- The player's choices for a run, as the registry allows them, or nil.
 ---
@@ -405,37 +473,92 @@ function T.facts(src, session)
     }
 end
 
---- Spend the key and the squad's one use, after a run that happened.
+--- The player's Volts, as every other Volts display shows them: the market's
+--- spendable figure (BR.Market.balanceOf -- the lobby's, the Store's and the
+--- gun shop's), or a dev session's typed `volts`.
+--- @return integer
+function T.balance(src, session)
+    if session.dev then return math.floor(tonumber(session.facts.volts) or 0) end
+    if BR.Market and BR.Market.balanceOf then return BR.Market.balanceOf(src) end
+    return 0
+end
+
+--- Spend the key and the squad's one use, when a run is accepted.
 --- A DEV session spends its typed facts and touches nothing real.
+--- @return table what was spent, for BR.Terminal's refund: { key, keyLic, m, squad }
 function T.consume(src, session, functionId)
     if session.dev then
         session.facts.keyHeld = false
         session.facts.squadUsed = true
-        return
+        return { dev = true }
     end
+    local spent = {}
     local m, _, key = whereIs(src)
-    if BR.Yubikey then BR.Yubikey.take(src, 'used') end
+    if BR.Yubikey then
+        spent.keyLic = BR.Yubikey.licenseOf and BR.Yubikey.licenseOf(src) or nil
+        spent.key = BR.Yubikey.take(src, 'used') == true
+    end
     if m then
-        matchState(m).used[key] = { by = src, fn = functionId, at = GetGameTimer() }
+        local mark = { by = src, fn = functionId, at = GetGameTimer() }
+        matchState(m).used[key] = mark
+        spent.m, spent.squad, spent.mark = m, key, mark
         -- The squad's other holders: their plates turn to squad_used now.
         pushKeys(squadOf(m, key))
+    end
+    return spent
+end
+
+--- Give back what T.consume spent, for a run whose effect could not happen.
+--- The squad's use only while it is still this run's mark, and the key by the
+--- account it was taken from (BR.Yubikey.restore), so a player who has
+--- disconnected meanwhile gets it back on the row.
+--- @param session table
+--- @param spent table  T.consume's answer
+local function unconsume(session, spent)
+    if session.dev then
+        session.facts.keyHeld = true
+        session.facts.squadUsed = false
+        return
+    end
+    local m = spent.m
+    if m and m.terminals and m.terminals.used[spent.squad] == spent.mark then
+        m.terminals.used[spent.squad] = nil
+        pushKeys(squadOf(m, spent.squad))
+    end
+    if spent.key and BR.Yubikey and BR.Yubikey.restore then
+        BR.Yubikey.restore(spent.keyLic, 'refund')
     end
 end
 
 --- Why the function on `row` cannot run now, as a reason code (a key into the
 --- copy), or nil. The order is the order a player would want to hear them in:
 --- a function that is not built yet first (nothing else about it matters),
---- then a dead terminal, then the squad, then their own key, then the
---- function's own reason for these options.
+--- one that only means something in a squad match, then a dead terminal, then
+--- the squad, then their own key, then a run of theirs (or their squad's)
+--- already in flight, then the function's own reason for these options.
+---
+--- THE VOLTS ARE NOT HERE. Run stays pressable whatever the balance (owner,
+--- round 2: "some way to reject after they attempt to use it"), so a listing
+--- never says a function is unaffordable; BR.Terminal.run asks the balance
+--- after this has said yes.
 --- @param opts table|nil  nil when listing: a function's own refusal is then
 ---                        asked whether ANY of its choices could run, so a
 ---                        card says "not here" only when none could
-local function refusal(src, session, row, opts)
+--- @param self table|nil  the run asking again after its own Volts landed,
+---                        which is not "a run already in flight"
+local function refusal(src, session, row, opts, self)
     if not built(row) then return 'fn_offline' end
+    if row.squadOnly == true and not T.squadMatch(src) then return 'unavailable' end
     local f = T.facts(src, session)
     if f.offline then return 'offline' end
     if f.squadUsed then return 'squad_used' end
     if not f.keyHeld then return 'no_key' end
+    local busy = inflight[src]
+    if not busy and not session.dev then
+        local _, _, key = whereIs(src)
+        busy = key and inflightSquad[key] or nil
+    end
+    if busy ~= nil and busy ~= self then return 'unavailable' end
     local fn = T.FUNCTIONS[row.id]
     if fn.refuse then return fn.refuse(src, session, opts) end
     return nil
@@ -527,21 +650,43 @@ end
 
 --- The terminal as this player sees it: the payload the computer opens with,
 --- and what TERMINAL_INFO pushes while it is open.
+---
+--- A SQUAD-ONLY FUNCTION IS NOT LISTED OUTSIDE A SQUAD MATCH (round 2), and
+--- its run is refused there; `squadMatch` is the fact the app picks every
+--- line that says squad by.
 --- @return table { terminalId, functions = { { id, available, reason } },
----                 keyHeld, squadUsed, player, match }
+---                 keyHeld, squadUsed, squadMatch, volts, running?, player, match }
 function T.state(src, session)
     local f = T.facts(src, session)
+    local squad = T.squadMatch(src)
     local list = {}
     for _, row in ipairs(cfg().functions) do
-        local why = refusal(src, session, row, nil)
-        list[#list + 1] = { id = row.id, available = why == nil, reason = why }
+        if squad or row.squadOnly ~= true then
+            local why = refusal(src, session, row, nil)
+            list[#list + 1] = { id = row.id, available = why == nil, reason = why }
+        end
     end
     local e = BR.Roster and BR.Roster.get and BR.Roster.get(src) or nil
+    -- THE RUN THIS PLAYER HAS LOADING, so an app opened again while it loads
+    -- (the toolbar's reload, the computer closed and opened) shows the same
+    -- bar, at the same place, with Run disabled.
+    local rec = inflight[src]
+    local running = nil
+    if rec and rec.endsAt then
+        running = { functionId = rec.id, runMs = rec.runMs,
+                    leftMs = math.max(0, rec.endsAt - GetGameTimer()) }
+    end
     return {
         terminalId = session.terminalId,
         functions = list,
         keyHeld = f.keyHeld == true,
         squadUsed = f.squadUsed == true,
+        squadMatch = squad,
+        -- THE BALANCE, beside the gamertag in the app's top bar (owner, round
+        -- 2: "we need a way for them to see their balance"), live with every
+        -- push.
+        volts = T.balance(src, session),
+        running = running,
         -- THE GAMERTAG, as the app's signed-in username: the roster's display
         -- name, which is what every toast and the kill feed already call them.
         player = (e and e.name) or GetPlayerName(src) or nil,
@@ -557,12 +702,18 @@ end
 function T.open(src, terminalId, facts, dev)
     local session
     if dev then
+        -- THE VOLTS A DEV SESSION SPENDS ARE TYPED TOO: `volts=<n>`, or the
+        -- player's real balance at the moment it opened. Spent and refunded
+        -- in the session alone; the profile row is never touched.
+        local v = tonumber(facts.volts)
+        if v == nil then v = BR.Market and BR.Market.balanceOf and BR.Market.balanceOf(src) or 0 end
         session = {
             terminalId = terminalId,
             facts = {
                 keyHeld = facts.keyHeld == true,
                 squadUsed = facts.squadUsed == true,
                 offline = facts.offline == true,
+                volts = math.max(0, math.floor(v)),
             },
             dev = true,
         }
@@ -672,11 +823,196 @@ function T.use(src, terminalId, now)
     return true, nil
 end
 
+-- ------------------------------------------------------------- the run ---
+--
+-- ═══ ACCEPTED, LOADING, DONE (owner, 2026-10-05, round 2) ═══
+--
+--   "We also need a loading indicator for 3-5 seconds (random) to show when a
+--    function is being used, before showing them it was successful."
+--   "For the most powerful items there should be a cost by Volts ... some way
+--    to reject after they attempt to use it and don't have a sufficient
+--    balance. We need to inform them of their new balance after using it too."
+--
+-- SO A RUN HAS THREE MOMENTS, AND THE SERVER OWNS ALL THREE:
+--
+--   asked     every refusal (BR.Terminal.run, below), then the Volts: a run the
+--             balance cannot cover is answered `no_volts`, with its cost and
+--             the balance, and nothing is spent.
+--   accepted  the Volts are spent first -- BR.Market.charge, the conditional
+--             write the revive key spends through, so a second press, a
+--             second player or a second terminal can never spend them twice;
+--             a write that fails or cannot be made refuses with nothing spent
+--             -- then the door is asked again, then the key and the squad's
+--             use are spent. The server picks how long it loads (runMinMs ..
+--             runMaxMs) and answers `running` with it: the app's bar.
+--   done      when that time is up, the effect -- and only then the lobby's
+--             notice_action, so nobody hears about it before the player sees
+--             it finish. An effect that can no longer happen (the match ended,
+--             another airdrop appeared, the function's own refusal now says
+--             no, the player left the server) gives EVERYTHING back -- the
+--             Volts, the key and the squad's use -- and answers its reason.
+--
+-- ONE RUN IN FLIGHT PER PLAYER AND PER SQUAD, from accepted to done: the
+-- app's Run is disabled while one loads, a second request from the same
+-- player is dropped, and a squadmate's is refused.
+--
+-- ═══ CLOSING, WALKING AWAY, GOING DOWN OR DYING WHILE IT LOADS ═══
+--
+-- THE PAID RUN STILL COMPLETES. It was paid for, and Scan, Storm reveal,
+-- Supply drop and Max ammo all mean something to a squad whose runner is
+-- down or out (a bounty on a player already out is no bounty -- see
+-- BR.Terminal.startBounty). The player is never left without knowing: while
+-- the computer is still open on that session the app shows the answer; once
+-- it has closed, the done line -- and the new balance, for a run that cost
+-- Volts -- or the reason it could not run arrive as a toast. Only leaving the
+-- server, or the match ending, stops it, and both refund.
+
+--- What a player is told about a run whose computer has closed: the line the
+--- app would have shown, through the one picker.
+--- @param rec table
+--- @param a table  the answer
+--- @return string
+local function toastOf(rec, a)
+    if a.ok then
+        local text = say(rec.id .. '_done', rec.squadMatch)
+        if rec.cost > 0 and a.balance ~= nil then
+            local b = fill(say('balance_new', rec.squadMatch), { volts = volts(a.balance) })
+            text = text ~= '' and (text .. ' ' .. b) or b
+        end
+        return text
+    end
+    local line = say(a.code, rec.squadMatch)
+    if line == '' then line = say('unavailable', rec.squadMatch) end
+    if a.code == 'no_volts' then
+        line = fill(line, { cost = volts(a.cost or rec.cost), balance = volts(a.balance or 0) })
+    end
+    return line
+end
+
+--- Send the runner an answer about this run: to the app while the computer is
+--- still open on the session that asked, and otherwise -- for the last word
+--- only -- as a toast.
+--- @param rec table
+--- @param a table  { ok, code, ... }
+local function deliver(rec, a)
+    local src, session = rec.src, rec.session
+    a.terminalId, a.functionId = session.terminalId, rec.id
+    if a.code == 'no_volts' then
+        a.cost = rec.cost
+        a.balance = T.balance(src, session)
+    end
+    if sessions[src] == session then
+        a.state = T.state(src, session)
+        TriggerClientEvent(BR.Net.TERMINAL_RESULT, src, a)
+        return
+    end
+    if a.code == 'running' or not GetPlayerName(src) then return end
+    local text = toastOf(rec, a)
+    if text ~= '' then BR.Server.notify(src, text, a.ok and 'success' or 'warn') end
+end
+
+--- The run is over, done or refunded: the player and their squad may run again.
+local function settle(rec)
+    if inflight[rec.src] == rec then inflight[rec.src] = nil end
+    if rec.squad and inflightSquad[rec.squad] == rec then inflightSquad[rec.squad] = nil end
+end
+
+--- Give back everything this run spent: the Volts it was charged and, once it
+--- was accepted, the key and the squad's use.
+local function refund(rec)
+    if rec.paid then
+        rec.paid = false
+        if rec.session.dev then
+            rec.session.facts.volts = (tonumber(rec.session.facts.volts) or 0) + rec.cost
+        elseif BR.Market and BR.Market.refund then
+            BR.Market.refund(rec.lic, rec.cost, 'terminal ' .. rec.id)
+        end
+    end
+    if rec.spent then
+        unconsume(rec.session, rec.spent)
+        rec.spent = nil
+    end
+end
+
+--- THE EFFECT, WHEN THE LOADING IS OVER. Public so the suites can step it.
+--- @param rec table  the run, as BR.Terminal.run accepted it
+function T.finish(rec)
+    if rec.finished then return end
+    rec.finished = true
+    local src, session = rec.src, rec.session
+    local why, m, e = nil, nil, nil
+    if not on() then why = 'unavailable' end
+    if not why and not session.dev then
+        e = BR.Roster.get(src)
+        m = BR.Server.matchOf(src)
+        local lic = BR.Market and BR.Market.licenseOf and BR.Market.licenseOf(src) or nil
+        -- THE PLAYER LEFT THE SERVER (or the source is somebody else's now),
+        -- or THE MATCH IS OVER: nothing left to do it in.
+        if not e or (rec.lic ~= nil and lic ~= rec.lic) then
+            why = 'unavailable'
+        elseif not m or m.id ~= rec.matchId or m.state ~= BR.MatchState.PLAYING then
+            why = 'unavailable'
+        end
+    end
+    local fn = T.FUNCTIONS[rec.id]
+    local r = nil
+    if not why and fn.refuse then why = fn.refuse(src, session, rec.opts) end
+    if not why then
+        r = fn.run(src, session, rec.opts) or {}
+        if r.ok ~= true then why = type(r.code) == 'string' and r.code or 'unavailable' end
+    end
+    if why then
+        refund(rec)
+        settle(rec)
+        print(('[br_core] terminals: %d\'s %s could not happen (%s) -- everything given back')
+            :format(src, rec.id, why))
+        deliver(rec, { ok = false, code = why })
+        return
+    end
+    settle(rec)
+    if not session.dev and m and e then
+        tellLobby(m, TS.line(copy().notice_action, e.name, say(rec.id .. '_description', rec.squadMatch)))
+        print(('[br_core] terminals: %s (%d) ran %s'):format(e.name or '?', src, rec.id))
+    end
+    -- WHAT FOLLOWS THE LOBBY'S NOTICE, in that order: "has redeemed their
+    -- special power: Scan..." is read before "A new bounty is among us".
+    if r.after then r.after() end
+    deliver(rec, { ok = true, code = 'done',
+                   balance = rec.cost > 0 and T.balance(src, session) or nil })
+end
+
+--- The Volts are in (or there were none to pay): ask the door again, spend
+--- the key and the squad's use, and start the loading.
+--- @param rec table
+local function accept(rec)
+    local src, session = rec.src, rec.session
+    -- A DATABASE ROUND TRIP IS LONG ENOUGH FOR THE WORLD TO MOVE: a key
+    -- dropped, a squadmate's run landed, the wall passed the terminal. The
+    -- Volts go back and the reason is said.
+    local why = (not on() and 'unavailable') or refusal(src, session, rec.row, rec.opts, rec)
+    if why then
+        refund(rec)
+        settle(rec)
+        deliver(rec, { ok = false, code = why })
+        return
+    end
+    rec.spent = T.consume(src, session, rec.id)
+    local lo = math.floor(tonumber(cfg().runMinMs) or 3000)
+    local hi = math.floor(tonumber(cfg().runMaxMs) or lo)
+    if hi < lo then hi = lo end
+    rec.runMs = math.random(lo, hi)
+    rec.endsAt = GetGameTimer() + rec.runMs
+    deliver(rec, { ok = true, code = 'running', runMs = rec.runMs })
+    SetTimeout(rec.runMs, function() T.finish(rec) end)
+end
+
 --- One run request. Returns the answer to send the runner, or nil and why it
---- was dropped without one -- a request with no session, the wrong shape or
---- too soon after the last earns no answer at all.
+--- was not answered here -- a request with no session, the wrong shape, too
+--- soon after the last or while a run of theirs is in flight earns no answer
+--- at all, and an ACCEPTED run ('accepted') is answered by the run itself
+--- (`running`, then `done` or a reason), from BR.Terminal's own delivery.
 --- @param now integer  GetGameTimer()
---- @return table|nil result, string|nil dropped
+--- @return table|nil result, string|nil why
 function T.run(src, d, now)
     if type(d) ~= 'table' then return nil, 'shape' end
     local session = sessions[src]
@@ -704,6 +1040,9 @@ function T.run(src, d, now)
         T.close(src, why)
         return nil, why
     end
+    -- ONE RUN IN FLIGHT PER PLAYER. The app disables Run while one loads, so
+    -- a second request is not a person; it is dropped, and the first goes on.
+    if inflight[src] then return nil, 'in-flight' end
 
     local answer = { terminalId = session.terminalId, functionId = id }
     local row = rowOf(id)
@@ -726,27 +1065,59 @@ function T.run(src, d, now)
         answer.state = T.state(src, session)
         return answer
     end
-
-    local fn = T.FUNCTIONS[id]
-    local r = fn.run(src, session, opts) or {}
-    answer.ok = r.ok == true
-    answer.code = type(r.code) == 'string' and r.code or (answer.ok and 'done' or 'unavailable')
-    if answer.ok then
-        T.consume(src, session, id)
-        if not session.dev then
-            local m = BR.Server.matchOf(src)
-            local e = BR.Roster.get(src)
-            if m and e then
-                tellLobby(m, TS.line(copy().notice_action, e.name, copy()[id .. '_description']))
-            end
-            print(('[br_core] terminals: %s (%d) ran %s'):format(e and e.name or '?', src, id))
+    -- THE VOLTS, AFTER EVERY OTHER REASON AND BEFORE ANYTHING IS SPENT. The
+    -- key, the squad's use and the Volts all stay, and the answer carries the
+    -- cost and the balance the app says them with.
+    local cost = costOf(row)
+    if cost > 0 then
+        local balance = T.balance(src, session)
+        if balance < cost then
+            answer.ok, answer.code = false, 'no_volts'
+            answer.cost, answer.balance = cost, balance
+            answer.state = T.state(src, session)
+            return answer
         end
-        -- WHAT FOLLOWS THE LOBBY'S NOTICE, in that order: "has redeemed their
-        -- special power: Scan..." is read before "A new bounty is among us".
-        if r.after then r.after() end
     end
-    answer.state = T.state(src, session)
-    return answer
+
+    -- ACCEPTED. In flight from here, for this player and their squad.
+    local _, _, key = whereIs(src)
+    local rec = {
+        src = src, session = session, row = row, id = id, opts = opts, cost = cost,
+        squad = (not session.dev) and key or nil,
+        matchId = session.matchId,
+        squadMatch = T.squadMatch(src),
+        paid = false,
+    }
+    inflight[src] = rec
+    if rec.squad then inflightSquad[rec.squad] = rec end
+
+    if cost <= 0 then
+        accept(rec)
+    elseif session.dev then
+        -- A DEV SESSION'S VOLTS ARE ITS TYPED ONES (`volts=<n>`).
+        session.facts.volts = T.balance(src, session) - cost
+        rec.paid = true
+        accept(rec)
+    elseif not (BR.Market and BR.Market.charge) then
+        settle(rec)
+        deliver(rec, { ok = false, code = 'unavailable' })
+    else
+        rec.lic = BR.Market.licenseOf and BR.Market.licenseOf(src) or nil
+        BR.Market.charge(src, cost, 'terminal ' .. id, function(paid)
+            if not paid then
+                -- NOTHING WAS SPENT. Short (the row knew better than the
+                -- cache) is no_volts with the corrected balance; a write that
+                -- failed or timed out is unavailable.
+                settle(rec)
+                deliver(rec, { ok = false,
+                               code = T.balance(src, session) < cost and 'no_volts' or 'unavailable' })
+                return
+            end
+            rec.paid = true
+            accept(rec)
+        end)
+    end
+    return nil, 'accepted'
 end
 
 -- ---------------------------------------------------------- net events ---
@@ -829,7 +1200,7 @@ end
 
 -- ---------------------------------------------------------------- dev ---
 
-local USAGE = 'usage: brterminalsv open [nokey] [used] [offline] | close | key give|take'
+local USAGE = 'usage: brterminalsv open [nokey] [used] [offline] [volts=<n>] | close | key give|take'
     .. ' | place <x> <y> <z> [h] [id] | remove <id> | list | online <id> [off] | reset'
     .. ' | run <function> [option=choice ...]  (from the server console, a verb about a player takes'
     .. ' the player id next: brterminalsv open <player id> [...])'
@@ -841,15 +1212,19 @@ local function tell(src, text)
 end
 
 --- The facts a dev session opens with: a key and nothing against it, unless
---- the words say otherwise.
+--- the words say otherwise. `volts=<n>` is the balance its runs spend (round
+--- 2's costs); without it, the player's real balance as it opens. Either way
+--- only the session's own figure moves.
 --- @return table|nil facts, string|nil the word that was not understood
 local function devFacts(words)
     local facts = { keyHeld = true, squadUsed = false, offline = false }
     for _, w in ipairs(words) do
         w = w:lower()
+        local v = w:match('^volts=(%d+)$')
         if w == 'nokey' then facts.keyHeld = false
         elseif w == 'used' then facts.squadUsed = true
         elseif w == 'offline' then facts.offline = true
+        elseif v then facts.volts = tonumber(v)
         else return nil, w end
     end
     return facts, nil
@@ -963,11 +1338,11 @@ RegisterCommand('brterminalsv', function(source, args)
             tell(src, ('"%s"? %s'):format(bad, USAGE))
             return
         end
-        T.open(target, 'dev', facts, true)
-        tell(src, ('opened terminal "dev" for %d: key %s, squad %s, %s')
+        local session = T.open(target, 'dev', facts, true)
+        tell(src, ('opened terminal "dev" for %d: key %s, squad %s, %s, %d Volts')
             :format(target, facts.keyHeld and 'held' or 'none',
                 facts.squadUsed and 'used' or 'unused',
-                facts.offline and 'offline' or 'online'))
+                facts.offline and 'offline' or 'online', session.facts.volts))
 
     elseif verb == 'close' then
         if T.close(target, 'dev') then
@@ -1003,8 +1378,11 @@ RegisterCommand('brterminalsv', function(source, args)
 
     elseif verb == 'run' then
         -- A FUNCTION'S EFFECT, WITHOUT A KEY, A TERMINAL OR A NOTICE: nothing
-        -- is spent and the squad's use is untouched. For testing what a
-        -- function does, not the door in front of it.
+        -- is spent and the squad's use is untouched -- AND IT CHARGES NOTHING:
+        -- a function's `cost` in Volts (round 2) is the door's, and this skips
+        -- the door, the loading included. For testing what a function does,
+        -- not the door in front of it; `brvolts <id> <amount>` is how a
+        -- balance is set up for testing the door's Volts.
         -- Options as option=choice words after the id, through the same
         -- BR.Terminal.options the net event uses.
         local id = words[1] and words[1]:lower() or ''

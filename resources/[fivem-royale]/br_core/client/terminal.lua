@@ -9,6 +9,8 @@
 --                                TERMINAL_INFO    -> :Update(state), once a second
 --                                TERMINAL_RESULT  -> :Update(state), :Result
 --                                TERMINAL_CLOSE   -> :Close
+--   the game -> computer         the game clock   -> :Clock(h, m), on each new
+--                                                    minute while it is open
 --   computer -> here -> server   cuchi_computer:request -> TERMINAL_RUN
 --                                cuchi_computer:closed  -> TERMINAL_CLOSED
 --   computer -> here -> keys     cuchi_computer:opened/closed
@@ -41,6 +43,11 @@ local SCREEN = 'terminal'
 --- The terminal the computer is showing, or nil.
 local shown = nil
 
+--- The game minute (h * 60 + m) the computer's taskbar was last given, so the
+--- clock crosses to the page only when it changes: once a game minute at
+--- most, never per frame. Nil while it is closed.
+local clockSent = nil
+
 --- The computer's exports, or nil when the resource is not running -- a box
 --- without it has no computer to open, which is a terminal that does
 --- nothing rather than an error.
@@ -56,11 +63,34 @@ local function setKeys(open)
 end
 
 --- The registry as the app reads it: the rows and the categories, as they are
---- in br_lib/config/terminals.lua.
+--- in br_lib/config/terminals.lua -- and the currency's name
+--- (config/market.lua's `currency`, the one place it is spelled), which the
+--- app writes after a Volts figure, as every other Volts display does.
 --- @return table
 local function catalog()
     local C = BR.Config.Terminals
-    return { functions = C.functions, categories = C.categories }
+    return { functions = C.functions, categories = C.categories,
+             currency = BR.Config.Market and BR.Config.Market.currency or nil }
+end
+
+--- THE GAME'S CLOCK, as the computer's taskbar shows it (owner, round 2: "make
+--- the computer clock match the game clock"). Read, never written: the clock
+--- has one writer, client/natives.lua (#394), and this only looks at what it
+--- shows -- noon in the lobby and on the warmup pad, about five real seconds a
+--- game minute in a match.
+--- @return table { h, m }
+local function gameClock()
+    return { h = GetClockHours(), m = GetClockMinutes() }
+end
+
+--- What the computer was opened with besides the copy and the catalog: the
+--- boot's length range (bootMinMs / bootMaxMs -- br.js picks a new length in
+--- it every boot) and the game's time now, so the taskbar is right from its
+--- first frame.
+--- @return table
+local function desktop()
+    local C = BR.Config.Terminals
+    return { bootMinMs = C.bootMinMs, bootMaxMs = C.bootMaxMs, clock = gameClock() }
 end
 
 --- Is the computer up on this client? Read by client/yubikey.lua, whose plate
@@ -85,7 +115,11 @@ AddEventHandler(BR.Net.TERMINAL_OPEN, function(d)
     if BR.Keys and BR.Keys.uiScreen ~= nil then
         c, why = nil, 'screen-busy'
     end
-    if c then ok, why = c:Open(state, BR.Config.Terminals.copy, catalog()) end
+    if c then
+        local desk = desktop()
+        ok, why = c:Open(state, BR.Config.Terminals.copy, catalog(), desk)
+        if ok == true then clockSent = desk.clock.h * 60 + desk.clock.m end
+    end
     if ok ~= true then
         -- Said out loud, and the session handed back: a server waiting on a
         -- computer that never opened would take this player's run requests
@@ -102,7 +136,11 @@ AddEventHandler(BR.Net.TERMINAL_RESULT, function(r)
     local c = computer()
     if not c then return end
     if type(r.state) == 'table' then c:Update(r.state) end
-    c:Result({ functionId = r.functionId, ok = r.ok == true, code = r.code })
+    -- The answer alone: `running` carries how long the server will take
+    -- (runMs), `no_volts` the cost and the balance, a paid `done` the new
+    -- balance -- numbers, or nothing.
+    c:Result({ functionId = r.functionId, ok = r.ok == true, code = r.code,
+               runMs = tonumber(r.runMs), cost = tonumber(r.cost), balance = tonumber(r.balance) })
 end)
 
 -- THE MATCH PANEL, REALTIME: the server's state again, once a second while
@@ -127,8 +165,24 @@ AddEventHandler('cuchi_computer:opened', function(terminalId)
     setKeys(true)
 end)
 
+-- THE TASKBAR'S CLOCK, while the computer is open and only then: the game's
+-- hour and minute, sent when the minute changes. Ten reads a second of two
+-- natives that only read; nothing at all while it is closed.
+if BR.Loop and BR.Loop.register then
+    BR.Loop.register(BR.Loop.TICK, 'terminal.clock', function()
+        if shown == nil then return end
+        local t = gameClock()
+        local key = t.h * 60 + t.m
+        if key == clockSent then return end
+        clockSent = key
+        local c = computer()
+        if c then c:Clock(t.h, t.m) end
+    end)
+end
+
 AddEventHandler('cuchi_computer:closed', function(terminalId, why)
     shown = nil
+    clockSent = nil
     setKeys(false)
     TriggerServerEvent(BR.Net.TERMINAL_CLOSED, { terminalId = terminalId, why = why })
 end)

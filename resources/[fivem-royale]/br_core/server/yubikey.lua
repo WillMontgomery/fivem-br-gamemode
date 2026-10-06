@@ -144,14 +144,18 @@ local function squadUsed(src)
         and BR.Terminal.squadUsed(src) == true
 end
 
---- Tell one player where they stand: their key and their squad's use. Season 1
---- sends nothing at all.
+--- Tell one player where they stand: their key and their squad's use, and
+--- whether they are in a squad match -- the fact the world's plate picks
+--- `squad_used` or its `_solo` line by (BR.TerminalSolve.pick; owner, round 2).
+--- Season 1 sends nothing at all.
 --- @param src integer
 function Y.push(src)
     if not on() then return end
     TriggerClientEvent(BR.Net.YUBIKEY_STATE, src, {
         held = Y.holds(src),
         squadUsed = squadUsed(src),
+        squadMatch = BR.Terminal ~= nil and BR.Terminal.squadMatch ~= nil
+            and BR.Terminal.squadMatch(src) == true,
     })
 end
 
@@ -194,6 +198,43 @@ function Y.give(src, why)
     print(('[br_core] yubikey: %s (%d) now holds a key (%s%s)')
         :format(GetPlayerName(src) or '?', src, why, first and ', first ever' or ''))
     return true, nil
+end
+
+--- The account a connected player's key is held under, or nil before the
+--- profile has been read. server/terminal.lua keeps it with a run that spent
+--- the key, so a refund reaches the right row however the source has moved.
+--- @param src integer
+--- @return string|nil
+function Y.licenseOf(src)
+    return licenseOf[src]
+end
+
+--- Give a key back to the account a terminal run took it from, when the run's
+--- effect could not happen (server/terminal.lua; owner, round 2: a run is
+--- paid for when it is accepted and carried out seconds later).
+---
+--- BY THE ACCOUNT, NOT THE SOURCE: the player may have disconnected in the
+--- seconds between, and the account's entry outlives the source (see the
+--- playerDropped handler below). Never the first-pickup message -- this
+--- account has had a key. Refused when it already holds one again (a key
+--- picked up while the run loaded): the cap of one stands.
+--- @param lic string|nil
+--- @param why string  for the console
+--- @return boolean
+function Y.restore(lic, why)
+    local k = type(lic) == 'string' and keys[lic] or nil
+    if not (on() and k and k.loaded) or k.held then
+        print(('[br_core] yubikey: %s not given back (%s) -- %s'):format(tostring(lic), tostring(why),
+            not k and 'no such account this session' or k.held and 'it holds one already' or 'off'))
+        return false
+    end
+    k.held = true
+    write(lic, true, why)
+    for src, l in pairs(licenseOf) do
+        if l == lic then Y.push(src) end
+    end
+    print(('[br_core] yubikey: %s holds its key again (%s)'):format(lic, tostring(why)))
+    return true
 end
 
 --- Take this player's key away.

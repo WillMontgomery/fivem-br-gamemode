@@ -293,7 +293,7 @@ local FAR_SITE  = { id = 'shack', x = C0.x + 6000.0, y = C0.y, z = 30.0, h = 0.0
 
 local function newMatch(id)
     local m = {
-        id = id, seq = id, state = BR.MatchState.PLAYING,
+        id = id, seq = id, state = BR.MatchState.PLAYING, mode = 'squad',
         loot = { seed = 77, nextId = 0, items = {}, cells = {}, subs = {}, at = {},
                  respawn = {}, fixed = 0 },
         -- A storm holding on a 1500 m zone round C0 for ten minutes.
@@ -319,7 +319,25 @@ local function player(src, m, squad, at, held, seen)
     Y.loaded(src, LIC[src], { yubikey = held == true, yubikeySeen = seen == true })
 end
 
+--- Every pending timer, in order, the clock moved to each: a run's loading
+--- over (round 2), and whatever else was waiting.
+local function flush()
+    for _ = 1, 20 do
+        if #timers == 0 then return end
+        local due = timers
+        timers = {}
+        table.sort(due, function(a, b) return a.at < b.at end)
+        for _, t in ipairs(due) do
+            if t.at > gameMs then gameMs = t.at end
+            t.fn()
+        end
+    end
+end
+
 local function reset()
+    -- The last block's runs, finished first: a run left loading would still be
+    -- in flight for its player in the next block.
+    flush()
     sent, timers, notices, writes, logs = {}, {}, {}, {}, {}
     roster, matches = {}, {}
     gameMs = gameMs + 100000
@@ -654,7 +672,11 @@ do
     writes = {}
     fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'storm_reveal' })
     local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.ok == true and r.code == 'done', 'the run is answered done', r and r.code)
+    ok(r and r.ok == true and r.code == 'running', 'the run is accepted, and loads', r and r.code)
+    eq(#noticesTo(3), 1, 'nobody hears it ran while it loads')
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == true and r.code == 'done', 'then it is answered done', r and r.code)
     eq(Y.holds(1), false, 'the key is spent')
     ok(#writes == 1 and writes[1].held == false, 'and the profile row says so')
     eq(T.squadUsed(1), true, 'the squad\'s one use is spent')
@@ -733,6 +755,43 @@ do
     local m2 = newMatch(2)
     roster[2].matchId = m2.id
     eq(T.squadUsed(2), false, 'in the next match the squad\'s use is unspent again')
+end
+
+describe('round 2: a key given back by the account, and the squad match on the push')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, 'A', NEAR_SITE, true, true)
+    eq(Y.licenseOf(1), 'license:1', 'the account a key is held under')
+    ok(Y.take(1, 'used'), 'a run takes the key')
+    writes = {}
+    ok(Y.restore('license:1', 'refund') == true, 'and a refund gives it back, by the account')
+    eq(Y.holds(1), true, 'held again')
+    ok(#writes == 1 and writes[1].held == true and writes[1].lic == 'license:1', 'the profile row is written')
+    local st = lastOf(BR.Net.YUBIKEY_STATE, 1)
+    ok(st and st.held == true, 'and the player is told')
+    eq(Y.restore('license:1', 'refund'), false, 'never a second key: the cap of one stands')
+    eq(Y.restore('license:404', 'refund'), false, 'nor a key for an account this session never read')
+
+    -- Gone from the server: the account's entry outlives the source.
+    Y.take(1, 'used')
+    fire('playerDropped', 1)
+    roster[1] = nil
+    ok(Y.restore('license:1', 'refund') == true, 'a player who left is given it back on the row')
+
+    -- The push says whether this is a squad match (the plate's line).
+    reset()
+    m = newMatch(1)
+    player(1, m, 'A', NEAR_SITE, true, true)
+    Y.push(1)
+    eq(lastOf(BR.Net.YUBIKEY_STATE, 1).squadMatch, true, 'a squad match, playing: squadMatch')
+    m.mode = 'solo'
+    Y.push(1)
+    eq(lastOf(BR.Net.YUBIKEY_STATE, 1).squadMatch, false, 'a solo match: not')
+    m.mode = 'squad'
+    m.state = BR.MatchState.WARMUP
+    Y.push(1)
+    eq(lastOf(BR.Net.YUBIKEY_STATE, 1).squadMatch, false, 'in a squad match, at warmup: not yet')
 end
 
 describe('terminals: no key -- the computer opens and nothing can run')
@@ -1118,9 +1177,18 @@ do
     p = W.lastPrompt()
     ok(p.hint == COPY.terminal_use and p.key == 'E', 'with a key: terminal_use and the player\'s own key cap')
 
-    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true })
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = true })
     W.tick()
     eq(W.lastPrompt().hint, COPY.squad_used, 'the squad has used its one: squad_used')
+    -- "SQUAD" ONLY IN A SQUAD MATCH (round 2): the plate picks its solo line.
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = false })
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.squad_used_solo, 'outside a squad match: its solo line, without the word')
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true })
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.squad_used_solo, 'and a state that does not say is not a squad match')
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = true })
+    W.tick()
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
     W.B.State.storm = stormAway(W.B, W.now)

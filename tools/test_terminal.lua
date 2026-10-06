@@ -78,8 +78,12 @@ local function bootServer(opts)
     }
     S.clock = 100000
     S.players = { [1] = 'Alpha', [2] = 'Bravo' }
+    S.timers = {}
 
     function GetGameTimer() return S.clock end
+    -- A RUN LOADS FOR runMinMs..runMaxMs (round 2): the server's SetTimeout,
+    -- held here and stepped by `flush`.
+    function SetTimeout(ms, fn) S.timers[#S.timers + 1] = { at = S.clock + ms, fn = fn, ms = ms } end
     function GetCurrentResourceName() return 'br_core' end
     function IsDuplicityVersion() return true end
     function GetConvar(n, d)
@@ -114,9 +118,17 @@ local function bootServer(opts)
         'br_lib/config/seasons.lua',
         'br_lib/config/terminals.lua',
         'br_lib/shared/terminal_solve.lua',
+        'br_lib/shared/shop_solve.lua',
     })
     BR.Season.strict = true
     BR.Season.boot()
+    -- The toasts a run's last word becomes once its computer has closed, and
+    -- the currency's name the Volts are written with (config/market.lua's).
+    S.notices = {}
+    BR.Config.Market = { currency = 'Volts' }
+    BR.Server = { notify = function(target, text, tone)
+        S.notices[#S.notices + 1] = { target = target, text = text, tone = tone }
+    end }
     loadAll({ 'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua' })
 end
 
@@ -125,6 +137,21 @@ local function fireAs(src, name, ...)
     source = src
     for _, fn in ipairs(S.handlers[name] or {}) do fn(...) end
     source = prev
+end
+
+--- Let every pending timer run, the clock moved to each one's time: a run's
+--- loading, over.
+local function flush()
+    for _ = 1, 20 do
+        if #S.timers == 0 then return end
+        local due = S.timers
+        S.timers = {}
+        table.sort(due, function(a, b) return a.at < b.at end)
+        for _, t in ipairs(due) do
+            if t.at > S.clock then S.clock = t.at end
+            t.fn()
+        end
+    end
 end
 
 --- Type one `brterminalsv` line as `src` (0 is the server console).
@@ -261,8 +288,16 @@ do
     local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
     sv(1, 'open')
     local st = last(1, BR.Net.TERMINAL_OPEN).state
-    eq(#st.functions, #BR.Config.Terminals.functions, 'one row per registry row, built or not')
-    for i, row in ipairs(BR.Config.Terminals.functions) do
+    -- A dev terminal outside a match is not a squad match: the squad-only
+    -- rows are not listed (round 2), every other one is.
+    local listed = {}
+    for _, row in ipairs(BR.Config.Terminals.functions) do
+        if not row.squadOnly then listed[#listed + 1] = row end
+    end
+    ok(#listed < #BR.Config.Terminals.functions, 'the registry has squad-only rows to leave out')
+    eq(st.squadMatch, false, 'and the state says this is not a squad match')
+    eq(#st.functions, #listed, 'one row per registry row, built or not, but the squad-only ones')
+    for i, row in ipairs(listed) do
         local f = st.functions[i]
         ok(f and f.id == row.id, ('row %d is %s, in the registry\'s order'):format(i, row.id))
         if row.implemented then
@@ -276,7 +311,7 @@ do
     -- key and the squad's use spent, it still says fn_offline.
     sv(1, 'open nokey used')
     local unbuilt
-    for _, row in ipairs(BR.Config.Terminals.functions) do
+    for _, row in ipairs(listed) do
         if not row.implemented then unbuilt = row.id break end
     end
     ok(fnState(last(1, BR.Net.TERMINAL_OPEN).state, unbuilt).reason == 'fn_offline',
@@ -375,17 +410,32 @@ do
     S.clock = S.clock + 1000
     run(1, req)
     r = last(1, BR.Net.TERMINAL_RESULT)
-    ok(r and r.ok == true and r.code == 'done' and r.terminalId == 'dev', 'with a key: it runs', r and r.code)
+    ok(r and r.ok == true and r.code == 'running' and r.terminalId == 'dev',
+        'with a key: it is accepted, and loads', r and r.code)
+    local C = BR.Config.Terminals
+    ok(r and type(r.runMs) == 'number' and r.runMs >= C.runMinMs and r.runMs <= C.runMaxMs,
+        'for as long as the server picked, inside runMinMs..runMaxMs', r and tostring(r.runMs))
     ok(r and r.state.keyHeld == false and r.state.squadUsed == true,
-        'and the key and the squad use are spent')
+        'the key and the squad use are spent as it is accepted')
     ok(r and fnState(r.state, 'storm_reveal').reason == 'squad_used',
         'so the answer already lists it as used')
+    ok(r and r.state.running and r.state.running.functionId == 'storm_reveal'
+            and r.state.running.leftMs == r.runMs,
+        'and the state carries the run that is loading')
 
     local n = #sentTo(1, BR.Net.TERMINAL_RESULT)
     S.clock = S.clock + BR.Config.Terminals.runMinIntervalMs - 1
     run(1, req)
     eq(#sentTo(1, BR.Net.TERMINAL_RESULT), n, 'a second request inside the interval is dropped')
     S.clock = S.clock + 1
+    run(1, req)
+    eq(#sentTo(1, BR.Net.TERMINAL_RESULT), n, 'and one while the first loads is dropped too')
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == true and r.code == 'done', 'when the loading is over: done', r and r.code)
+    ok(r and r.state.running == nil, 'and nothing is loading any more')
+    eq(r and r.balance, nil, 'a free function reports no balance')
+    S.clock = S.clock + 1000
     run(1, req)
     r = last(1, BR.Net.TERMINAL_RESULT)
     ok(r and r.ok == false and r.code == 'squad_used', 'and after it, refused: the squad has used its one',
@@ -517,6 +567,313 @@ do
         ok(type(k) == 'string' and type(v) == 'string', ('copy.%s is a string'):format(tostring(k)))
     end
     ok(type(C.runMinIntervalMs) == 'number' and C.runMinIntervalMs > 0, 'the run interval is a positive number')
+end
+
+-- =========================================================================
+-- PART A, ROUND 2 (owner, 2026-10-05) -- the words, the costs, the squad
+-- lines and the loading
+-- =========================================================================
+
+local function readFile(path)
+    local fh = io.open(path, 'rb')
+    if not fh then return nil end
+    local text = fh:read('a')
+    fh:close()
+    return text
+end
+
+describe('round 2: the owner\'s words, verbatim, and no thunderstorm')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    local copy = C.copy
+    eq(copy.status_offline, 'Not available', '"offline" is "Not available" (owner\'s words)')
+    eq(copy.status_not_here, 'Not available at this terminal', '"Not here" is "Not available at this terminal"')
+    eq(copy.fn_offline, 'This function is not available.', 'an unbuilt function\'s page line says it too')
+    ok(not copy.fn_offline:lower():find('offline', 1, true), 'and never says offline beside that badge')
+    eq(copy.offline, 'This terminal is outside the storm and offline.',
+        'a TERMINAL outside the storm keeps its wording (a question for the owner)')
+    for _, key in ipairs({ 'app_title', 'desktop_icon', 'window_title' }) do
+        eq(copy[key], 'Control Tower', ('%s is the app\'s name, "Control Tower"'):format(key))
+    end
+    eq(copy.match_heading, 'Match stats', 'the match table says "Match stats"')
+    eq(copy.address_host, 'https://terminal.blitz', 'the address bar\'s fictional host is unchanged')
+    for k, v in pairs(copy) do
+        ok(not v:find('Blitz Terminal', 1, true), ('copy.%s no longer names the app Blitz Terminal'):format(k))
+        ok(not k:find('thunder', 1, true), ('copy.%s is not a thunderstorm line'):format(k))
+    end
+
+    -- NO THUNDERSTORM: not a choice, so the server's option check refuses it.
+    local tw = BR.Terminal.row('time_weather')
+    local weather
+    for _, o in ipairs(tw.options) do if o.id == 'weather' then weather = o end end
+    for _, ch in ipairs(weather.choices) do ok(ch ~= 'thunder', ('weather choice %s is not thunder'):format(ch)) end
+    eq(BR.Terminal.options(tw, { weather = 'thunder' }), nil, 'weather=thunder is not an option')
+    ok(BR.Terminal.options(tw, { weather = 'rain' }) ~= nil, 'and a listed weather still is')
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    sv(1, 'open')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'time_weather', options = { weather = 'thunder' } })
+    local r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == false and r.code == 'bad_option', 'a run asking for thunder is refused bad_option', r and r.code)
+    ok(r and r.state.keyHeld == true and r.state.squadUsed == false, 'and nothing is spent')
+
+    -- The owner's rule for whoever builds it, where they will read it.
+    local src = readFile(ROOT .. 'br_lib/config/terminals.lua') or ''
+    ok(src:find('whatever weather they set%s+%-%- is only set while inside the storm') ~= nil
+        and src:find("BR.World.want('storm'", 1, true) ~= nil,
+        'time_weather\'s row carries the owner\'s rule: the storm\'s weather wins outside the circle')
+end
+
+describe('round 2: the boot and the run, each a range in the registry')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    eq(C.bootMinMs, 7000, 'a boot takes at least 7 s ("random between 7 and 10 seconds")')
+    eq(C.bootMaxMs, 10000, 'and at most 10 s')
+    eq(C.runMinMs, 3000, 'a run loads for at least 3 s ("3-5 seconds (random)")')
+    eq(C.runMaxMs, 5000, 'and at most 5 s')
+
+    -- The server picks a run's length in the range, every run anew.
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    local lo, hi, seen = math.huge, -math.huge, {}
+    for _ = 1, 60 do
+        sv(1, 'open')
+        S.clock = S.clock + 1000
+        run(1, { terminalId = 'dev', functionId = 'storm_reveal' })
+        local r = last(1, BR.Net.TERMINAL_RESULT)
+        local ms = r and r.runMs or -1
+        lo, hi = math.min(lo, ms), math.max(hi, ms)
+        seen[ms] = true
+        flush()
+    end
+    ok(lo >= C.runMinMs and hi <= C.runMaxMs, ('every run loads inside the range (%d..%d)'):format(lo, hi))
+    local distinct = 0
+    for _ in pairs(seen) do distinct = distinct + 1 end
+    ok(distinct > 10, 'and a fresh length each time, not one fixed number', distinct)
+end
+
+describe('round 2: the Volts -- every cost 0..200, the most powerful ones priced')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    for _, row in ipairs(C.functions) do
+        local c = row.cost
+        ok(c == nil or (type(c) == 'number' and c == math.floor(c) and c >= 0 and c <= 200),
+            ('%s costs 0..200 Volts ("no more than 200"): %s'):format(row.id, tostring(c)))
+    end
+    local want = { scan = 200, disarm = 200, storm_control = 150, reboot = 150 }
+    for _, row in ipairs(C.functions) do
+        eq(BR.Terminal.costOf(row), want[row.id] or 0, ('%s costs %d'):format(row.id, want[row.id] or 0))
+    end
+end
+
+describe('round 2: the Volts in a dev session -- refused short, spent exact, new balance said')
+do
+    bootServer()
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    local scan = { terminalId = 'dev', functionId = 'scan' }
+
+    -- SHORT: refused after every other reason, with nothing spent.
+    sv(1, 'open volts=150')
+    eq(last(1, BR.Net.TERMINAL_OPEN).state.volts, 150, 'the state carries the balance (the top bar\'s)')
+    local f = fnState(last(1, BR.Net.TERMINAL_OPEN).state, 'scan')
+    ok(f and f.available == true, 'Run stays pressable whatever the balance: Scan is listed available')
+    S.clock = S.clock + 1000
+    run(1, scan)
+    local r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == false and r.code == 'no_volts', 'a run the balance cannot cover: no_volts', r and r.code)
+    ok(r and r.cost == 200 and r.balance == 150, 'with the cost and the balance to say', r and (tostring(r.cost) .. ' ' .. tostring(r.balance)))
+    ok(r and r.state.keyHeld == true and r.state.squadUsed == false and r.state.volts == 150,
+        'and the key, the squad\'s use and the Volts all stay')
+    eq(#S.timers, 0, 'nothing loads')
+
+    -- THE OTHER REASONS COME FIRST.
+    sv(1, 'open nokey volts=0')
+    S.clock = S.clock + 1000
+    run(1, scan)
+    eq(last(1, BR.Net.TERMINAL_RESULT).code, 'no_key', 'no key and no Volts: no_key, the earlier reason')
+    sv(1, 'open used volts=0')
+    S.clock = S.clock + 1000
+    run(1, scan)
+    eq(last(1, BR.Net.TERMINAL_RESULT).code, 'squad_used', 'the squad\'s use spent and no Volts: squad_used')
+
+    -- EXACT: 200 of 200, spent as it is accepted, the new balance said at the end.
+    sv(1, 'open volts=200')
+    S.clock = S.clock + 1000
+    run(1, scan)
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == true and r.code == 'running', 'exactly enough: accepted', r and r.code)
+    ok(r and r.state.volts == 0 and r.state.keyHeld == false,
+        'the Volts, the key and the use are spent as it is accepted (the top bar moves at once)')
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == true and r.code == 'done' and r.balance == 0, 'done, with the new balance: 0', r and tostring(r.balance))
+    eq(BR.Terminal.session(1).facts.volts, 0, 'and the session spent exactly the cost, once')
+
+    -- A FREE FUNCTION behaves as before: nothing about Volts.
+    sv(1, 'open volts=0')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'storm_reveal' })
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.code == 'done' and r.balance == nil, 'a free function runs on no Volts and reports no balance')
+end
+
+describe('round 2: an effect that can no longer happen gives everything back')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    local T = BR.Terminal
+    -- A built, paid function whose effect fails when the loading is over.
+    C.functions[#C.functions + 1] = { id = 'paid_test', category = 'intel', risk = 'low',
+                                     implemented = true, cost = 120 }
+    local verdict = { ok = false, code = 'no_site' }
+    T.FUNCTIONS.paid_test = { run = function() return verdict end }
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+
+    sv(1, 'open volts=500')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'paid_test' })
+    local r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.code == 'running' and r.state.volts == 380 and r.state.keyHeld == false,
+        'accepted: 120 Volts, the key and the use spent')
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == false and r.code == 'no_site', 'the effect could not happen: its reason', r and r.code)
+    ok(r and r.state.volts == 500 and r.state.keyHeld == true and r.state.squadUsed == false,
+        'and the Volts, the key and the squad\'s use are all given back')
+
+    verdict = { ok = true, code = 'done' }
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'paid_test' })
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.code == 'done' and r.balance == 380 and r.state.volts == 380,
+        'the same run, now possible: done, 380 left')
+    table.remove(C.functions)
+    T.FUNCTIONS.paid_test = nil
+end
+
+describe('round 2: closing the computer while a run loads -- it still completes, said as a toast')
+do
+    bootServer()
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    sv(1, 'open volts=300')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'scan' })
+    local before = #sentTo(1, BR.Net.TERMINAL_RESULT)
+    fireAs(1, BR.Net.TERMINAL_CLOSED, { terminalId = 'dev', why = 'escape' })
+    ok(BR.Terminal.session(1) == nil, 'the computer closed mid-load')
+    flush()
+    eq(#sentTo(1, BR.Net.TERMINAL_RESULT), before, 'no answer goes to a computer that is gone')
+    local n = S.notices[#S.notices]
+    local copy = BR.Config.Terminals.copy
+    ok(n and n.target == 1 and n.tone == 'success', 'the runner is told by a toast')
+    eq(n and n.text, BR.TerminalSolve.pick(copy, 'scan_done', false) .. ' Your new balance is: 100 Volts.',
+        'the done line, then the new balance in the owner\'s #239 sentence')
+end
+
+describe('round 2: "squad" only in a squad match -- the copy')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    local copy = C.copy
+    -- What is only ever shown in a squad match: a squad-only function's lines,
+    -- and a category nothing fills outside one.
+    local squadOnlyIds, soloCats = {}, {}
+    for _, row in ipairs(C.functions) do
+        if row.squadOnly then squadOnlyIds[#squadOnlyIds + 1] = row.id
+        else soloCats[row.soloCategory or row.category] = true end
+    end
+    ok(#squadOnlyIds >= 1, 'some functions are squad-only (Reboot)')
+    local function squadOnlyKey(k)
+        for _, id in ipairs(squadOnlyIds) do
+            if k:sub(1, #id + 1) == id .. '_' then return true end
+        end
+        local cat = k:match('^category_(.+)$')
+        return cat ~= nil and not soloCats[cat]
+    end
+    for k, v in pairs(copy) do
+        if v:lower():find('squad', 1, true) and not k:find('_solo$') then
+            local solo = copy[k .. '_solo']
+            if squadOnlyKey(k) then
+                ok(solo == nil, ('%s is only shown in a squad match, and needs no solo line'):format(k))
+            else
+                ok(type(solo) == 'string', ('%s says squad, and has a %s_solo sibling'):format(k, k))
+                ok(type(solo) == 'string' and not solo:lower():find('squad', 1, true),
+                    ('%s_solo does not say squad, in any case or form'):format(k), solo)
+            end
+        end
+        -- (`mode_solo` is the solo mode's own name, not a sibling: there is
+        -- no `mode` line.)
+        if k:find('_solo$') and copy[k:sub(1, -6)] ~= nil then
+            ok(not v:lower():find('squad', 1, true), ('%s does not say squad'):format(k))
+        end
+    end
+    -- THE OWNER'S VERBATIM LINES ARE UNTOUCHED, and have no solo lines.
+    for _, k in ipairs({ 'no_key', 'notice_access', 'notice_action', 'bounty_new', 'bounty_protect',
+                         'status_offline', 'status_not_here', 'match_heading', 'app_title' }) do
+        eq(copy[k .. '_solo'], nil, ('the owner\'s %s has no rewritten twin'):format(k))
+    end
+    -- The categories: the squad one empties outside a squad match.
+    ok(soloCats.squad == nil, 'outside a squad match nothing is listed under Squad')
+    eq(BR.Terminal.row('ghost').soloCategory, 'disruption', 'Ghost is listed under Disruption there')
+    ok(BR.Terminal.row('reboot').squadOnly == true, 'Reboot is squad-only')
+end
+
+describe('round 2: "squad" only in a squad match -- the one Lua picker')
+do
+    bootServer()
+    local TS = BR.TerminalSolve
+    local copy = { a = 'Your squad', a_solo = 'You', b = 'Plain', e = 'Squads', e_solo = '' }
+    eq(TS.pick(copy, 'a', true), 'Your squad', 'in a squad match: the line')
+    eq(TS.pick(copy, 'a', false), 'You', 'outside one: its solo sibling')
+    eq(TS.pick(copy, 'a', nil), 'You', 'no answer is not a squad match')
+    eq(TS.pick(copy, 'b', false), 'Plain', 'a line with no sibling is itself either way')
+    eq(TS.pick(copy, 'e', false), '', 'an empty sibling is empty: the row is not shown')
+    eq(TS.pick(copy, 'zz', true), '', 'a key with no line is nothing')
+    eq(TS.pick(nil, 'a', true), '', 'and no copy is nothing')
+
+    -- THE READERS: every Lua file that speaks the copy reads a line with a
+    -- sibling, or a computed key, only through the picker.
+    local real = BR.Config.Terminals.copy
+    for _, f in ipairs({ 'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua',
+                         'br_core/server/yubikey.lua', 'br_core/client/yubikey.lua',
+                         'br_core/client/terminal.lua', 'br_core/client/terminalfx.lua' }) do
+        local src = (readFile(ROOT .. f) or ''):gsub('%-%-[^\n]*', '')
+        ok(src ~= '', ('%s is read'):format(f))
+        for key in src:gmatch('copy%(%)%.([%a_][%w_]*)') do
+            ok(real[key .. '_solo'] == nil and not (real[key] or ''):lower():find('squad', 1, true),
+                ('%s reads copy().%s directly: a line with no squad and no sibling'):format(f, key))
+        end
+        ok(not src:find('copy%(%)%['), ('%s never indexes the copy by a computed key'):format(f))
+        ok(not src:find('Terminals%.copy%['), ('%s never indexes BR.Config.Terminals.copy by key'):format(f))
+    end
+end
+
+describe('round 2: squad-only functions -- hidden and refused outside a squad match')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    local T = BR.Terminal
+    C.functions[#C.functions + 1] = { id = 'squad_test', category = 'squad', risk = 'low',
+                                     implemented = true, squadOnly = true }
+    T.FUNCTIONS.squad_test = { run = function() return { ok = true, code = 'done' } end }
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    sv(1, 'open')
+    local st = last(1, BR.Net.TERMINAL_OPEN).state
+    eq(fnState(st, 'squad_test'), nil, 'a squad-only function is not listed outside a squad match')
+    eq(fnState(st, 'reboot'), nil, 'nor is Reboot')
+    ok(fnState(st, 'ghost') ~= nil, 'Ghost, which still means something alone, is')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'squad_test' })
+    local r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == false and r.code == 'unavailable', 'and asked for anyway, it is refused', r and r.code)
+    ok(r and r.state.keyHeld == true and r.state.squadUsed == false, 'spending nothing')
+    eq(#S.timers, 0, 'nothing loads')
+    table.remove(C.functions)
+    T.FUNCTIONS.squad_test = nil
 end
 
 -- =========================================================================
@@ -688,6 +1045,38 @@ do
     eq(#C.nui, n, 'nothing reaches a closed page')
 end
 
+describe('round 2: the shell boots with the range and the game time, and relays the clock')
+do
+    bootShell()
+    cb('NUIOk', nil)
+    C.exports.Open(STATE, COPY, {}, { bootMinMs = 7000, bootMaxMs = 10000, clock = { h = 12, m = 0 } })
+    local m = C.nui[#C.nui]
+    ok(m and m.type == 'br:open' and m.desktop and m.desktop.bootMinMs == 7000 and m.desktop.bootMaxMs == 10000,
+        'the page gets the boot\'s range')
+    ok(m and m.desktop.clock and m.desktop.clock.h == 12 and m.desktop.clock.m == 0, 'and the game\'s time')
+    C.exports.Close('done')
+    for _, bad in ipairs({ { bootMinMs = 9, bootMaxMs = 3 }, { bootMinMs = 'x', bootMaxMs = 3 },
+                           { bootMinMs = -1, bootMaxMs = 3 } }) do
+        C.exports.Open(STATE, COPY, {}, bad)
+        local d = C.nui[#C.nui].desktop
+        ok(d and d.bootMinMs == nil and d.bootMaxMs == nil, 'a range that is not one is not sent')
+        C.exports.Close('done')
+    end
+    C.exports.Open(STATE, COPY, {}, { clock = { h = 24, m = 0 } })
+    ok(C.nui[#C.nui].desktop.clock == nil, 'an hour out of range is not sent')
+    local n = #C.nui
+    C.exports.Clock(18, 5)
+    m = C.nui[#C.nui]
+    ok(#C.nui == n + 1 and m.type == 'br:clock' and m.h == 18 and m.m == 5, 'Clock(h, m) reaches the page')
+    C.exports.Clock(18, 60)
+    C.exports.Clock('x', 1)
+    eq(#C.nui, n + 1, 'a time out of range does not')
+    C.exports.Close('done')
+    n = #C.nui
+    C.exports.Clock(19, 0)
+    eq(#C.nui, n, 'nor does any time once it is closed')
+end
+
 describe('a resource stopping never strands the vote')
 do
     bootShell()
@@ -740,8 +1129,13 @@ local function bootClient(opts)
         return (res == 'cuchi_computer' and B.computer) and 'started' or 'missing'
     end
     print = function(s) B.printed[#B.printed + 1] = tostring(s) end
+    -- THE GAME'S CLOCK, as the engine would answer it (read only).
+    B.clock = { h = 12, m = 0 }
+    function GetClockHours() return B.clock.h end
+    function GetClockMinutes() return B.clock.m end
+    B.loops = {}
     local comp = {}
-    for _, name in ipairs({ 'Open', 'Update', 'Result', 'Close' }) do
+    for _, name in ipairs({ 'Open', 'Update', 'Result', 'Close', 'Clock' }) do
         comp[name] = function(_, ...)
             B.computer.calls[#B.computer.calls + 1] = { name = name, args = { ... } }
             if name == 'Open' then
@@ -763,6 +1157,7 @@ local function bootClient(opts)
         'br_lib/config/terminals.lua',
     })
     BR.Keys = { setExternalScreen = function(name) B.screens[#B.screens + 1] = name or 'none' end }
+    BR.Loop = { TICK = 'tick', register = function(_, name, fn) B.loops[name] = fn end }
     loadAll({ 'br_core/client/terminal.lua' })
 end
 
@@ -857,6 +1252,57 @@ do
         'and the server hears the session is over')
     fireB('cuchi_computer:request', 'dev', { action = 'run', functionId = 'storm_reveal' })
     eq(#toServer(BR.Net.TERMINAL_RUN), 1, 'nothing is relayed once it closed')
+end
+
+describe('round 2: br_core hands over the boot range, and the game clock while open')
+do
+    bootClient()
+    B.clock = { h = 6, m = 30 }
+    fireB(BR.Net.TERMINAL_OPEN, { state = STATE })
+    local call = B.computer.calls[#B.computer.calls]
+    local desk = call and call.args[4]
+    ok(desk and desk.bootMinMs == BR.Config.Terminals.bootMinMs and desk.bootMaxMs == BR.Config.Terminals.bootMaxMs,
+        'Open carries the boot\'s range from the registry, with each opening')
+    ok(desk and desk.clock and desk.clock.h == 6 and desk.clock.m == 30, 'and the game\'s time now')
+
+    local tick = B.loops['terminal.clock']
+    ok(type(tick) == 'function', 'the clock is watched on the TICK band')
+    local clocks = function()
+        local n = 0
+        for _, c in ipairs(B.computer.calls) do if c.name == 'Clock' then n = n + 1 end end
+        return n
+    end
+    tick()
+    eq(clocks(), 0, 'nothing is sent before the computer says it opened')
+    fireB('cuchi_computer:opened', 'dev')
+    tick()
+    tick()
+    eq(clocks(), 0, 'the minute it opened with is not sent again')
+    B.clock.m = 31
+    tick()
+    tick()
+    eq(clocks(), 1, 'a new minute is sent once')
+    local last = B.computer.calls[#B.computer.calls]
+    ok(last.name == 'Clock' and last.args[1] == 6 and last.args[2] == 31, 'as the hour and the minute')
+    B.clock = { h = 7, m = 0 }
+    tick()
+    eq(clocks(), 2, 'and the next one')
+    fireB('cuchi_computer:closed', 'dev', 'escape')
+    B.clock.m = 1
+    tick()
+    eq(clocks(), 2, 'nothing at all once it closed')
+
+    -- The answer's numbers ride through.
+    fireB(BR.Net.TERMINAL_OPEN, { state = STATE })
+    fireB('cuchi_computer:opened', 'dev')
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = false, code = 'no_volts',
+                                    cost = 200, balance = 150, state = { terminalId = 'dev', functions = {} } })
+    local res = B.computer.calls[#B.computer.calls].args[1]
+    ok(res.code == 'no_volts' and res.cost == 200 and res.balance == 150, 'no_volts carries the cost and the balance')
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = true, code = 'running', runMs = 4200 })
+    res = B.computer.calls[#B.computer.calls].args[1]
+    ok(res.code == 'running' and res.runMs == 4200, 'running carries how long')
+    ok(type(B.computer.calls[1].args[3]) == 'table', 'the catalog is handed over')
 end
 
 describe('brterminal types the server command')
@@ -958,9 +1404,16 @@ do
     pump()
     local upd, res = C.nui[#C.nui - 1], C.nui[#C.nui]
     ok(upd and upd.type == 'br:update' and upd.state.squadUsed == true, 'the page gets the new state')
+    ok(res and res.type == 'br:result' and res.result.ok == true and res.result.code == 'running'
+            and type(res.result.runMs) == 'number',
+        'and the answer: accepted, loading for runMs')
+    BR = serverBR
+    flush()
+    pump()
+    res = C.nui[#C.nui]
     ok(res and res.type == 'br:result' and res.result.ok == true and res.result.code == 'done'
             and res.result.functionId == 'storm_reveal',
-        'and the answer: Storm reveal ran')
+        'then, when the server says, the answer: Storm reveal ran')
 
     -- Escape on the page.
     BR = clientBR

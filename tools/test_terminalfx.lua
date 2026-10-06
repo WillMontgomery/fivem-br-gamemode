@@ -111,7 +111,10 @@ loadAll({
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/storm_shape.lua',
     'br_lib/shared/terminal_solve.lua',
+    'br_lib/shared/shop_solve.lua',
 })
+-- The currency's name a Volts figure is written with (config/market.lua's).
+BR.Config.Market = { currency = 'Volts' }
 
 local CT = BR.Config.Terminals
 local COPY = CT.copy
@@ -127,6 +130,10 @@ season(2)
 -- ---------------------------------------------------------------- stubs ---
 
 local jobs, handlers = {}, {}
+-- A RUN LOADS FOR runMinMs..runMaxMs (round 2): the server's SetTimeout,
+-- held here and stepped by `flush`.
+local timers = {}
+function SetTimeout(ms, fn) timers[#timers + 1] = { at = gameMs + ms, fn = fn } end
 local sent = {}          -- TriggerClientEvent: { event, src, payload }
 local notices = {}       -- BR.Server.notify: { target, text, tone }
 local keys = {}          -- [src] = true while holding a Yubikey
@@ -190,6 +197,41 @@ BR.Yubikey = {
     holds = function(src) return keys[src] == true end,
     take = function(src) local had = keys[src] == true; keys[src] = false; return had end,
     push = function() end,
+    licenseOf = function(src) return 'license:' .. src end,
+    -- A key given back to the account a run took it from (server/yubikey.lua's
+    -- cap of one stands).
+    restore = function(lic)
+        local src = tonumber(tostring(lic):match('(%d+)$'))
+        if not src or keys[src] == true then return false end
+        keys[src] = true
+        return true
+    end,
+}
+
+-- THE MARKET, MODELED ON ITS CONTRACT (server/market.lua; tools/test_volts.lua
+-- holds the real one): balanceOf is the spendable figure; charge answers
+-- through a callback -- at once, or held like a DynamoDB round trip while
+-- `market.hold` is set -- and the row's condition decides; refund puts an
+-- amount back on the account.
+local market = { wallet = {}, charges = {}, refunds = {}, hold = false, pending = {}, broken = false }
+BR.Market = {
+    balanceOf = function(src) return market.wallet[src] or 0 end,
+    licenseOf = function(src) return roster[src] and ('license:' .. src) or nil end,
+    charge = function(src, cost, reason, done)
+        market.charges[#market.charges + 1] = { src = src, cost = cost, reason = reason }
+        local function answer()
+            if market.broken then done(false, 'timed out') return end
+            if (market.wallet[src] or 0) < cost then done(false, 'cannot afford it') return end
+            market.wallet[src] = market.wallet[src] - cost
+            done(true, nil, market.wallet[src])
+        end
+        if market.hold then market.pending[#market.pending + 1] = answer else answer() end
+    end,
+    refund = function(lic, amount)
+        market.refunds[#market.refunds + 1] = { lic = lic, amount = amount }
+        local src = tonumber(tostring(lic):match('(%d+)$'))
+        market.wallet[src] = (market.wallet[src] or 0) + amount
+    end,
 }
 BR.Storm = { finalCentre = function(m) return m and m.finalStub or nil end }
 
@@ -229,6 +271,21 @@ local function fire(name, src, ...)
     source = src
     for _, fn in ipairs(handlers[name] or {}) do fn(...) end
     source = prev
+end
+
+--- Let every pending timer run, the clock moved to each one's time: a run's
+--- loading, over.
+local function flush()
+    for _ = 1, 20 do
+        if #timers == 0 then return end
+        local due = timers
+        timers = {}
+        table.sort(due, function(a, b) return a.at < b.at end)
+        for _, t in ipairs(due) do
+            if t.at > gameMs then gameMs = t.at end
+            t.fn()
+        end
+    end
 end
 
 local function eventsOf(name, src)
@@ -293,16 +350,26 @@ local function player(src, m, squad, at, state)
 end
 
 local function reset()
+    -- The last block's runs, finished first: a run left loading would still be
+    -- in flight for its player in the next block.
+    market.hold = false
+    for _, answer in ipairs(market.pending) do answer() end
+    flush()
     sent, notices, logs, airdropCalls, filled = {}, {}, {}, {}, {}
     roster, matches, keys = {}, {}, {}
+    timers = {}
+    market.wallet, market.charges, market.refunds, market.pending = {}, {}, {}, {}
+    market.hold, market.broken = false, false
     gameMs = gameMs + 100000
 end
 
---- Open the terminal for `src` the real way and run `id`.
+--- Open the terminal for `src` the real way and run `id`, to its last word:
+--- the loading is let run out (round 2).
 local function runAt(src, id, options)
     fire(BR.Net.TERMINAL_USE, src, { terminalId = 'tower' })
     gameMs = gameMs + 1000
     fire(BR.Net.TERMINAL_RUN, src, { terminalId = 'tower', functionId = id, options = options })
+    flush()
     return lastOf(BR.Net.TERMINAL_RESULT, src)
 end
 
@@ -315,6 +382,7 @@ local function lobby()
     player(4, m, 'B', { x = C0.x + 310.0, y = C0.y - 10.0 }, BR.PlayerState.DBNO)
     player(5, m, nil, { x = C0.x - 500.0, y = C0.y })
     keys[1] = true
+    for src = 1, 5 do market.wallet[src] = 1000 end
     return m
 end
 
@@ -481,6 +549,7 @@ do
     player(5, m, nil, SITE)
     player(3, m, 'B', { x = 0.0, y = 0.0 })
     keys[5] = true
+    market.wallet[5] = 200
     local r = runAt(5, 'scan')
     ok(r and r.ok, 'a solo player runs Scan')
     eq(noticeIndex('Protect', 5), nil, 'and has no squad to tell')
@@ -619,6 +688,329 @@ do
     end
     ok(listed and listed.available == false and listed.reason == 'ammo_full',
         'and the card already said so: listed ammo_full', listed and tostring(listed.reason))
+end
+
+-- =========================================================================
+-- PART F -- round 2 (owner, 2026-10-05): the Volts, the loading and the
+-- squad's words, at a real terminal in a real match
+-- =========================================================================
+
+local function useAt(src)
+    fire(BR.Net.TERMINAL_USE, src, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+end
+
+local function ask(src, id, options)
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, src, { terminalId = 'tower', functionId = id, options = options })
+    return lastOf(BR.Net.TERMINAL_RESULT, src)
+end
+
+local function results(src) return #eventsOf(BR.Net.TERMINAL_RESULT, src) end
+
+describe('round 2: a run the balance cannot cover is refused, with nothing spent')
+do
+    reset()
+    lobby()
+    market.wallet[1] = 150
+    useAt(1)
+    local f
+    for _, x in ipairs(lastOf(BR.Net.TERMINAL_OPEN, 1).state.functions) do
+        if x.id == 'scan' then f = x end
+    end
+    ok(f and f.available == true, 'Run stays pressable whatever the balance (listed available)')
+    eq(lastOf(BR.Net.TERMINAL_OPEN, 1).state.volts, 150, 'the state carries the balance the market shows')
+    local r = ask(1, 'scan')
+    ok(r and r.ok == false and r.code == 'no_volts', 'Scan at 150 Volts: no_volts', r and r.code)
+    ok(r and r.cost == 200 and r.balance == 150, 'with its cost and the balance', r and tostring(r.cost))
+    eq(#market.charges, 0, 'the market is never asked')
+    ok(keys[1] == true and not T.squadUsed(1) and market.wallet[1] == 150,
+        'the key, the squad\'s use and the Volts all stay')
+    eq(#timers, 0, 'and nothing loads')
+end
+
+describe('round 2: spent exactly, as it is accepted; the effect and the lobby only when it is done')
+do
+    reset()
+    lobby()
+    market.wallet[1] = 200
+    useAt(1)
+    local r = ask(1, 'scan')
+    ok(r and r.ok == true and r.code == 'running', 'accepted', r and r.code)
+    ok(#market.charges == 1 and market.charges[1].cost == 200 and market.charges[1].src == 1,
+        'charged once, 200, through BR.Market.charge')
+    eq(market.wallet[1], 0, 'exactly the cost')
+    ok(r and r.state.volts == 0, 'the top bar moves at once')
+    ok(keys[1] == false and T.squadUsed(1), 'the key and the squad\'s use are spent as it is accepted')
+    ok(r and r.runMs >= CT.runMinMs and r.runMs <= CT.runMaxMs, 'and it loads for the server\'s pick')
+    eq(noticeIndex('has redeemed their special power', 3), nil, 'nobody hears about it while it loads')
+    eq(#eventsOf(BR.Net.TERMINAL_SCAN, 1), 0, 'and the effect has not happened')
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == true and r.code == 'done' and r.balance == 0, 'done, with the new balance', r and tostring(r.balance))
+    ok(#eventsOf(BR.Net.TERMINAL_SCAN, 1) > 0, 'the effect happened when the loading was over')
+    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'and the lobby heard it then')
+    eq(#market.charges, 1, 'one charge, start to finish')
+    eq(#market.refunds, 0, 'and nothing given back')
+end
+
+describe('round 2: an effect that can no longer happen gives everything back')
+do
+    reset()
+    local m = lobby()
+    market.wallet[1] = 500
+    useAt(1)
+    ask(1, 'scan')
+    m.state = BR.MatchState.ENDED
+    flush()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    -- The match ending also closes the session on the next check; the last
+    -- word then reaches the player as a toast. Here the check has not run.
+    ok(r and r.ok == false and r.code == 'unavailable', 'the match ended while it loaded: unavailable', r and r.code)
+    ok(#market.refunds == 1 and market.refunds[1].amount == 200 and market.refunds[1].lic == 'license:1',
+        'the 200 Volts are refunded to the account charged')
+    eq(market.wallet[1], 500, 'all of them')
+    ok(keys[1] == true, 'the key is given back')
+    ok(not T.squadUsed(1), 'and the squad\'s use')
+    eq(noticeIndex('has redeemed their special power', 3), nil, 'and the lobby is told nothing')
+    eq(#eventsOf(BR.Net.TERMINAL_SCAN, 1), 0, 'nothing happened')
+
+    -- A free function: the key and the use come back, no Volts move.
+    reset()
+    m = lobby()
+    useAt(1)
+    local r2 = ask(1, 'supply_drop', { site = 'terminal' })
+    ok(r2 and r2.code == 'running', 'Supply drop is accepted')
+    m.dropBusy = true
+    flush()
+    r2 = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r2 and r2.ok == false and r2.code == 'drop_busy', 'another drop appeared while it loaded: drop_busy', r2 and r2.code)
+    ok(keys[1] == true and not T.squadUsed(1) and #airdropCalls == 0, 'key and use back, no drop called')
+    eq(#market.charges + #market.refunds, 0, 'and a free function never touched the market')
+end
+
+describe('round 2: two presses, two players -- never two spends, never a spend without a run')
+do
+    reset()
+    lobby()
+    keys[2] = true
+    roster[2].pos = { x = SITE.x, y = SITE.y, z = SITE.z }
+    market.hold = true
+    useAt(1)
+    useAt(2)
+    local before1 = results(1)
+    ask(1, 'scan')
+    eq(results(1), before1, 'while the charge is in flight, no answer yet')
+    ask(1, 'scan')
+    eq(#market.charges, 1, 'a second press by the same player is dropped: one charge')
+    local r2 = ask(2, 'scan')
+    ok(r2 and r2.ok == false and r2.code == 'unavailable', 'a squadmate\'s run while it is in flight is refused',
+        r2 and r2.code)
+    eq(#market.charges, 1, 'and is never charged')
+    ok(keys[2] == true, 'keeping their key')
+    market.pending[1]()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'running', 'the charge landed: accepted')
+    r2 = ask(2, 'scan')
+    ok(r2 and r2.code == 'squad_used', 'from here the squadmate is refused squad_used', r2 and r2.code)
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'done', 'and the run is done')
+    ok(market.wallet[1] == 800 and market.wallet[2] == 1000 and #market.charges == 1,
+        'one run, one spend: 200 from the runner, nothing from the squadmate')
+end
+
+describe('round 2: a write that fails or cannot be made refuses with nothing spent')
+do
+    reset()
+    lobby()
+    market.broken = true
+    useAt(1)
+    local r = ask(1, 'scan')
+    ok(r and r.ok == false and r.code == 'unavailable', 'the write timed out: unavailable', r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1) and market.wallet[1] == 1000 and #timers == 0,
+        'nothing spent, nothing loads')
+
+    -- THE ROW KNEW BETTER THAN THE CACHE: refused by the condition.
+    reset()
+    lobby()
+    market.hold = true
+    useAt(1)
+    ask(1, 'scan')
+    market.wallet[1] = 100
+    market.pending[1]()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'no_volts' and r.balance == 100, 'refused by the row: no_volts, at 100',
+        r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1), 'and nothing else was spent')
+
+    -- The run can be asked again once it is over.
+    market.hold = false
+    market.wallet[1] = 1000
+    r = ask(1, 'scan')
+    ok(r and r.code == 'running', 'a refused run is over: the next one is taken')
+
+    -- NO MARKET ON THIS BUILD: a paid run cannot be paid.
+    reset()
+    lobby()
+    local saved = BR.Market
+    BR.Market = nil
+    useAt(1)
+    r = ask(1, 'scan')
+    ok(r and r.code == 'no_volts' and r.balance == 0 and keys[1] == true,
+        'no market at all: no Volts to spend, nothing spent', r and r.code)
+    BR.Market = saved
+end
+
+describe('round 2: the door asked again after the round trip')
+do
+    reset()
+    lobby()
+    market.hold = true
+    useAt(1)
+    ask(1, 'scan')
+    keys[1] = false   -- the key went while the charge was in flight
+    market.pending[1]()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'no_key', 'the key went meanwhile: no_key', r and r.code)
+    ok(#market.refunds == 1 and market.wallet[1] == 1000, 'and the Volts just charged are refunded')
+    ok(not T.squadUsed(1), 'the squad\'s use never spent')
+end
+
+describe('round 2: closing, going down or dying while it loads -- the paid run completes')
+do
+    reset()
+    lobby()
+    useAt(1)
+    ask(1, 'scan')
+    fire(BR.Net.TERMINAL_CLOSED, 1, { terminalId = 'tower', why = 'escape' })
+    roster[1].state = BR.PlayerState.OUT
+    local before = results(1)
+    flush()
+    eq(results(1), before, 'no answer goes to a computer that has closed')
+    ok(#eventsOf(BR.Net.TERMINAL_SCAN, 2) > 0, 'the squad gets its Scan')
+    eq(noticeIndex('A new bounty is among us', 3), nil, 'but a runner already out gets no bounty')
+    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'the lobby hears the run')
+    local mine = noticesTo(1)
+    local last = mine[#mine]
+    eq(last and textOf(last), COPY.scan_done .. ' Your new balance is: 800 Volts.',
+        'the runner reads the done line and the new balance as a toast')
+    eq(#market.refunds, 0, 'nothing is refunded')
+
+    -- Downed is still in the fight: the bounty stands.
+    reset()
+    lobby()
+    useAt(1)
+    ask(1, 'scan')
+    roster[1].state = BR.PlayerState.DBNO
+    flush()
+    ok(noticeIndex('A new bounty is among us', 3) ~= nil, 'a downed runner still gets the bounty')
+end
+
+describe('round 2: leaving the server while it loads gives everything back')
+do
+    reset()
+    lobby()
+    useAt(1)
+    ask(1, 'scan')
+    roster[1] = nil
+    fire('playerDropped', 1)
+    flush()
+    ok(#market.refunds == 1 and market.refunds[1].lic == 'license:1' and market.refunds[1].amount == 200,
+        'the Volts go back to the account')
+    ok(keys[1] == true, 'and the key')
+    eq(#eventsOf(BR.Net.TERMINAL_SCAN, 2), 0, 'nothing happened')
+end
+
+describe('round 2: "squad" only in a squad match -- the notices and the listing')
+do
+    -- A SQUAD MATCH: the squad lines, and the squad-only functions listed.
+    reset()
+    local m = lobby()
+    ok(T.squadMatch(1) == true, 'a squad-mode match, playing: a squad match')
+    m.state = BR.MatchState.WARMUP
+    ok(T.squadMatch(1) == false, 'its warmup is not')
+    m.state = BR.MatchState.BUS
+    ok(T.squadMatch(1) == true, 'its bus is')
+    m.state = BR.MatchState.PLAYING
+    useAt(1)
+    local st = lastOf(BR.Net.TERMINAL_OPEN, 1).state
+    eq(st.squadMatch, true, 'the state says so')
+    local listed = {}
+    for _, x in ipairs(st.functions) do listed[x.id] = x end
+    ok(listed.reboot ~= nil and listed.comms_blackout ~= nil, 'the squad-only functions are listed')
+    runAt(1, 'storm_reveal')
+    local n
+    for _, x in ipairs(noticesTo(3)) do
+        if (textOf(x) or ''):find('has redeemed', 1, true) then n = x end
+    end
+    eq(n and textOf(n), 'p1 has redeemed their special power: ' .. COPY.storm_reveal_description,
+        'the lobby reads the squad description')
+
+    -- A SOLO MATCH: never the word.
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(3, m, nil, { x = 0.0, y = 0.0 })
+    keys[1] = true
+    market.wallet[1] = 1000
+    ok(T.squadMatch(1) == false, 'a solo match is not a squad match')
+    useAt(1)
+    st = lastOf(BR.Net.TERMINAL_OPEN, 1).state
+    eq(st.squadMatch, false, 'and the state says so')
+    listed = {}
+    for _, x in ipairs(st.functions) do listed[x.id] = x end
+    ok(listed.reboot == nil and listed.comms_blackout == nil, 'the squad-only functions are not listed')
+    ok(listed.ghost ~= nil, 'Ghost is')
+    local r = runAt(1, 'storm_reveal')
+    ok(r and r.code == 'done', 'a solo Storm reveal runs')
+    for _, x in ipairs(noticesTo(3)) do
+        if (textOf(x) or ''):find('has redeemed', 1, true) then n = x end
+    end
+    eq(n and textOf(n), 'p1 has redeemed their special power: ' .. COPY.storm_reveal_description_solo,
+        'the lobby reads the solo description')
+    for _, x in ipairs(notices) do
+        ok(not (textOf(x) or ''):lower():find('squad', 1, true), ('no toast in a solo match says squad: %s'):format(textOf(x)))
+    end
+    -- And a refusal said as a toast picks too.
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    keys[1] = true
+    filled = { [1] = 0 }
+    market.wallet[1] = 1000
+    useAt(1)
+    ask(1, 'max_ammo')
+    local ra = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    eq(ra and ra.code, 'ammo_full', 'Max ammo with nothing to fill: ammo_full (the app picks its solo line)')
+    fire(BR.Net.TERMINAL_CLOSED, 1, { terminalId = 'tower' })
+    -- (a run whose effect fails after the computer closed is said as a toast)
+    useAt(1)
+    filled = { [1] = 10 }
+    ask(1, 'max_ammo')
+    fire(BR.Net.TERMINAL_CLOSED, 1, { terminalId = 'tower' })
+    filled = { [1] = 0 }
+    flush()
+    local mine = noticesTo(1)
+    eq(mine[#mine] and textOf(mine[#mine]), COPY.ammo_full_solo, 'the toast is the solo line')
+end
+
+describe('round 2: bounty_protect is never sent to a player with no squadmates')
+do
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(3, m, nil, { x = 0.0, y = 0.0 })
+    keys[1] = true
+    market.wallet[1] = 1000
+    runAt(1, 'scan')
+    ok(noticeIndex('A new bounty is among us', 3) ~= nil, 'the lobby hears of the bounty')
+    for _, x in ipairs(notices) do
+        ok(not (textOf(x) or ''):find('Protect', 1, true), 'nobody is told to protect a solo player')
+    end
 end
 
 -- =========================================================================
