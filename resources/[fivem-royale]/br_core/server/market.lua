@@ -1113,7 +1113,21 @@ function BR.Market.charge(src, amount, reason, done)
     end, lic, cost)
 end
 
---- A match paid out: mirror it into the cache the lobby reads.
+--- The license BR.Market.charge charges this source under, or nil before its
+--- profile has loaded.
+---
+--- FOR A CALLER THAT MAY HAVE TO REFUND AFTER THE PLAYER HAS GONE. The license
+--- outlives the source: a Season 2 terminal run (server/terminal.lua) is paid
+--- for when it is accepted and carried out seconds later, and a player who
+--- disconnects in between is refunded against the row, not the source.
+--- @param src integer
+--- @return string|nil
+function BR.Market.licenseOf(src)
+    return licenseOf[src]
+end
+
+--- A match paid out (or a refund landed): mirror it into the cache the lobby
+--- reads.
 ---
 --- THE WRITE ALREADY HAPPENED ELSEWHERE. br_stats owns the atomic ADD; this
 --- only keeps the in-memory copy from going stale, so the numbers do not have
@@ -1121,7 +1135,13 @@ end
 --- until the next reconnect -- it can never be wrong in a way that lets
 --- somebody spend money they do not have, because the purchase condition is
 --- evaluated by DynamoDB against the real row and not against this.
-AddEventHandler('br:market:credited', function(license, xpEarned, volts)
+---
+--- A LOCAL BEFORE IT IS AN EVENT: `br:market:credited` (registered below)
+--- is this, and BR.Market.refund calls it directly for its own credit.
+--- @param license string
+--- @param xpEarned number
+--- @param volts number
+local function credit(license, xpEarned, volts)
     local entry = inv[license]
     if not entry then return end
 
@@ -1135,7 +1155,98 @@ AddEventHandler('br:market:credited', function(license, xpEarned, volts)
     for src, lic in pairs(licenseOf) do
         if lic == license then BR.Market.push(src) end
     end
+end
+
+--- Refunds waiting on br_ddb. [req] = callback.
+---
+--- STRING REQUEST IDS, AND THAT IS WHAT MAKES SHARING THE VERB SAFE.
+--- `br:ddb:statsApply` answers on `br:ddb:statsResult`, which br_stats (the
+--- match payout) and `brvolts` also listen to, each with numeric ids of its
+--- own. A refund's id is 'market-refund:<n>', which no numeric counter can
+--- produce, so each listener only ever recognizes its own answers.
+local refunds = {}
+local refundSeq = 0
+
+AddEventHandler('br:ddb:statsResult', function(req, ok, extra)
+    local cb = type(req) == 'string' and refunds[req] or nil
+    if not cb then return end
+    refunds[req] = nil
+    cb(ok == true, extra or {})
 end)
+
+--- Give back Volts a charge took, when what was paid for could not happen.
+---
+--- ═══ THE PAYOUT'S OWN WRITE, NOT A NEW ONE ═══
+---
+--- `br:ddb:statsApply` with `{ balance = n }` is the unconditional atomic ADD
+--- a match payout and `brvolts` already use (js-src/br_ddb/src/stats.js:
+--- every other counter is ADDed zero). A refund is the one Volts movement that
+--- can only ever make a row whole again, so it needs no condition: it is the
+--- exact amount a successful BR.Market.charge took, for a purchase that did
+--- not happen, asked for once.
+---
+--- ═══ ONE CALLER TODAY: A TERMINAL RUN WHOSE EFFECT COULD NOT HAPPEN ═══
+---
+--- (server/terminal.lua, owner 2026-10-05 round 2: a paid run is charged when
+--- it is accepted and carried out three to five seconds later; a match that
+--- ended in between, or another airdrop that appeared, refunds it.) Every
+--- other spend path in the game delivers inside `charge`'s callback and has
+--- nothing to give back.
+---
+--- THE CACHE AND THE MATCH LEDGER FOLLOW THE ROW, AS THEY DO FOR A CHARGE:
+--- `credit` (what `br:market:credited` runs) moves the balance and pushes the
+--- lobby, exactly as a payout does, and the `voltsSpent` the charge added to this match's ledger is
+--- taken off again. A refund that does not land is said loudly on the console
+--- and never retried: the row still holds the debit, and a retry that raced a
+--- late answer would pay twice.
+--- @param lic string  BR.Market.licenseOf at the time of the charge
+--- @param amount number
+--- @param reason string  for the console only
+--- @param done fun(ok:boolean, why:string|nil, balance:integer|nil)|nil
+function BR.Market.refund(lic, amount, reason, done)
+    done = done or function() end
+    local n = math.floor(tonumber(amount) or 0)
+    if type(lic) ~= 'string' or lic == '' or n <= 0 then
+        done(false, 'nothing to refund')
+        return
+    end
+    if GetResourceState('br_ddb') ~= 'started' then
+        print(('^1[br_core] market: %s was NOT refunded %d Volts (%s) -- br_ddb is not started^7')
+            :format(lic, n, tostring(reason)))
+        done(false, 'br_ddb not started')
+        return
+    end
+    refundSeq = refundSeq + 1
+    local req = ('market-refund:%d'):format(refundSeq)
+    refunds[req] = function(ok, extra)
+        if not ok then
+            print(('^1[br_core] market: %s was NOT refunded %d Volts (%s) -- %s^7')
+                :format(lic, n, tostring(reason), tostring(extra.error or 'the write did not land')))
+            done(false, extra.error or 'the write did not land')
+            return
+        end
+        credit(lic, 0, n)
+        for src, l in pairs(licenseOf) do
+            local e = l == lic and BR.Roster and BR.Roster.get and BR.Roster.get(src) or nil
+            if e and BR.Roster.licenseOf(src) == lic then
+                e.voltsSpent = math.max(0, (tonumber(e.voltsSpent) or 0) - n)
+            end
+        end
+        local left = BR.Market.spendable(inv[lic])
+        print(('[br_core] market: %s refunded %d Volts (%s) -- %d now'):format(lic, n, tostring(reason), left))
+        done(true, nil, left)
+    end
+    SetTimeout(8000, function()
+        if not refunds[req] then return end
+        refunds[req] = nil
+        print(('^1[br_core] market: no answer from br_ddb refunding %s %d Volts (%s) -- the write '
+            .. 'may or may not have landed^7'):format(lic, n, tostring(reason)))
+        done(false, 'timed out')
+    end)
+    TriggerEvent('br:ddb:statsApply', req, lic, { balance = n })
+end
+
+AddEventHandler('br:market:credited', credit)
 
 AddEventHandler('playerDropped', function()
     local src = source

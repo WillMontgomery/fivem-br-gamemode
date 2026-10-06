@@ -605,6 +605,78 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('a refund: the payout\'s own ADD, the cache and the ledger follow (round 2)')
+-- ---------------------------------------------------------------------------
+do
+    reset()
+    player(21, 1000)
+    local c = charge(21, 200, { ok = true, extra = { balance = 800 } })
+    ok(c.ok == true and BR.Market.balanceOf(21) == 800 and spentOf(21) == 200, 'charged 200: 800 left, 200 spent')
+
+    ok(BR.Market.licenseOf(21) == 'license:test21', 'the license a charge is made under, for a later refund')
+    local out = {}
+    BR.Market.refund('license:test21', 200, 'terminal scan', function(okd, why, left)
+        out.called, out.ok, out.why, out.left = true, okd, why, left
+    end)
+    local req = reqOf('br:ddb:statsApply')
+    ok(type(req) == 'string' and req:find('^market%-refund:') ~= nil,
+        'asked as br:ddb:statsApply with a string id no numeric listener can mistake', tostring(req))
+    local f = fired[#fired]
+    ok(f.event == 'br:ddb:statsApply' and f.args[2] == 'license:test21' and f.args[3].balance == 200,
+        'for this account, +200 to the balance')
+    local keys = 0
+    for _ in pairs(f.args[3]) do keys = keys + 1 end
+    ok(keys == 1, 'and nothing else: no match fields claimed')
+    ok(out.called == nil, 'nothing happens before the row answers')
+
+    -- Another listener's numeric answer is not ours.
+    fire('br:ddb:statsResult', nil, 1, true, {})
+    ok(out.called == nil, 'a payout\'s answer (a numeric id) is not mistaken for it')
+
+    fire('br:ddb:statsResult', nil, req, true, {})
+    ok(out.called and out.ok == true, 'the row answered: refunded')
+    ok(BR.Market.balanceOf(21) == 1000 and out.left == 1000, 'the cache is whole again: 1000', out.left)
+    ok(spentOf(21) == 0, 'and the match ledger no longer counts the 200')
+    local pushed = false
+    for _, s in ipairs(sent) do if s.event == BR.Net.MARKET_STATE and s.target == 21 then pushed = true end end
+    ok(pushed, 'the lobby is pushed the figure')
+
+    fire('br:ddb:statsResult', nil, req, true, {})
+    ok(BR.Market.balanceOf(21) == 1000, 'a second answer to the same id moves nothing')
+
+    -- A REFUND THAT DOES NOT LAND: said, never retried.
+    local n = countOf('br:ddb:statsApply')
+    out = {}
+    BR.Market.refund('license:test21', 50, 'terminal scan', function(okd, why) out.ok, out.why = okd, why end)
+    fire('br:ddb:statsResult', nil, reqOf('br:ddb:statsApply'), false, { error = 'throttled' })
+    ok(out.ok == false and out.why == 'throttled', 'a failed write is reported', out.why)
+    ok(BR.Market.balanceOf(21) == 1000, 'and the cache does not move')
+    ok(countOf('br:ddb:statsApply') == n + 1, 'and it is not asked again')
+    out = {}
+    BR.Market.refund('license:test21', 50, 'terminal scan', function(okd, why) out.ok, out.why = okd, why end)
+    runTimers()
+    ok(out.ok == false and out.why == 'timed out', 'no answer at all: timed out, said once')
+
+    -- Nothing to refund, or nowhere to write it.
+    out = {}
+    BR.Market.refund('license:test21', 0, 'x', function(okd) out.ok = okd end)
+    ok(out.ok == false, 'zero is not a refund')
+    ddbState = 'missing'
+    out = {}
+    BR.Market.refund('license:test21', 10, 'x', function(okd, why) out.ok, out.why = okd, why end)
+    ok(out.ok == false and out.why == 'br_ddb not started', 'no br_ddb: refused, said')
+
+    -- THE PLAYER HAS GONE: the row is still refunded, by the license.
+    ddbState = 'started'
+    out = {}
+    BR.Market.refund('license:gone', 75, 'terminal scan', function(okd) out.ok = okd end)
+    local g = fired[#fired]
+    ok(g.event == 'br:ddb:statsApply' and g.args[2] == 'license:gone', 'an account with nobody connected is written')
+    fire('br:ddb:statsResult', nil, g.args[1], true, {})
+    ok(out.ok == true, 'and answered')
+end
+
+-- ---------------------------------------------------------------------------
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m, %d passed'):format(fail, pass))
     os.exit(1)
