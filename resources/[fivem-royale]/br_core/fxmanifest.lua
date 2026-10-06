@@ -705,6 +705,10 @@ client_scripts {
     'client/terminalfx/key_finder.lua',
     'client/terminalfx/pulse.lua',
     'client/terminalfx/lockdown.lua',
+    -- Wave C (#396, 2026-10-06): EMP holds a vehicle the server marked
+    -- stalled on the client that owns it -- on the state bag's change, on
+    -- getting in, and on that one SLOW pass. Nothing per frame.
+    'client/terminalfx/emp.lua',
     'client/debug.lua',
     -- The wave B terminal functions' client halves (#396, 2026-10-06), one
     -- file each: Time & weather's sky claim and Power outage's lights, from
@@ -963,6 +967,8 @@ server_scripts {
     'server/terminalfx/ghost.lua',
     'server/terminalfx/contract.lua',
     'server/terminalfx/lockdown.lua',
+    -- Wave C (#396, 2026-10-06), the same way.
+    'server/terminalfx/emp.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

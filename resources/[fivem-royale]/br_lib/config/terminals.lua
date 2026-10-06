@@ -676,7 +676,7 @@ BR.Config.Terminals = {
         ghost_description = 'Ghost. Their squad is hidden from scans.',
         ghost_description_solo = 'Ghost. They are hidden from scans.',
 
-        -- EMP (suggested; offline)
+        -- EMP (suggested; LIVE since wave C, 2026-10-06)
         emp_name = 'EMP',
         emp_summary = 'Stalls every vehicle in an area for a short time.',
         emp_what = "Every vehicle within the radius you choose stalls and won't start.\nVehicles that drive in after it goes off aren't affected.\nThey start again when it ends.",
@@ -1093,10 +1093,12 @@ BR.Config.Terminals = {
         { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = true,
           soloCategory = 'disruption',
           options = { { id = 'duration', choices = { '120', '240' }, default = '120' } } },  -- seconds
-        { id = 'emp',            category = 'disruption', risk = 'medium', implemented = false,
+        -- LIVE SINCE WAVE C (2026-10-06): server/terminalfx/emp.lua picks the
+        -- vehicles as it goes off, client/terminalfx/emp.lua stalls them.
+        { id = 'emp',            category = 'disruption', risk = 'medium', implemented = true,
           options = {
-              { id = 'radius', choices = { '300', '600' }, default = '300' },
-              { id = 'duration', choices = { '30', '60' }, default = '30' },
+              { id = 'radius', choices = { '300', '600' }, default = '300' },   -- meters
+              { id = 'duration', choices = { '30', '60' }, default = '30' },    -- seconds
           } },
         { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true,
           options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
@@ -1204,6 +1206,14 @@ BR.Config.Terminals = {
         -- Contract: the bounty it puts out lasts "5 minutes" (Scan's is
         -- bountyMs, the owner's ten).
         contractMs = 5 * 60 * 1000,
+
+        -- ── wave C (2026-10-06). EMP's radius and duration are its row's own
+        --    choices (meters, seconds), like wave A's. ──
+
+        -- EMP: the entity state bag a stalled vehicle carries while it lasts
+        -- -- the milliseconds left as it was set -- set and cleared by
+        -- server/terminalfx/emp.lua alone, read by client/terminalfx/emp.lua.
+        empBag = 'brEmp',
     },
 
     -- The server drops a second run request from one player sooner than this
