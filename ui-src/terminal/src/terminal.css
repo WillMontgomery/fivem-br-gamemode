@@ -35,12 +35,15 @@ body {
  *
  * So a shadow is a SURFACE's: a part the page is built of, standing off what
  * is under it (THE SURFACES, below, the one rule that draws one). Nothing
- * inside a surface casts one -- no button (the pagination's arrows and
- * numbers, the preferences gear, Run, the top bar's items), badge, progress
- * bar, input or toggle -- and no text anywhere has a shadow. One value per
- * mode, on <body> (where Cloudscape puts the mode), and a deeper one for what
- * floats over the page; dark mode's are deeper, because a shadow has less to
- * darken there. scripts/check-terminal.mjs T11 holds all of it.
+ * here gives a shadow to what sits on a surface -- no button (the
+ * pagination's arrows and numbers, the preferences gear, Run, the top bar's
+ * items), badge, progress bar, input or toggle -- and no text anywhere has a
+ * shadow. Cloudscape's own drawing is left as Cloudscape draws it: the
+ * toggle's knob in the preferences (a 1 px shade) and the search's dropdown,
+ * which floats. One value per mode, on <body> (where Cloudscape puts the
+ * mode), and a deeper one for what floats over the page; dark mode's are
+ * deeper, because a shadow has less to darken there.
+ * scripts/check-terminal.mjs T11 holds all of it.
  */
 body {
   --terminal-raise: 0 1px 2px rgba(0, 7, 22, 0.10), 0 4px 14px rgba(0, 7, 22, 0.10);
