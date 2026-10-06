@@ -12,10 +12,10 @@
 --                  within reach -- the owner's "Computer system" / "press to
 --                  open" with the interact key (2026-10-06) -- whose PRESS
 --                  asks the server to open the computer (TERMINAL_USE). THE
---                  LAPTOPS ARE NOT OURS: the
---                  owner's ymap places them (2026-10-06, streamed with
---                  br_stream_s2), and every site row says where one stands --
---                  this file makes no prop, and reads nothing off one.
+--                  LAPTOPS ARE NOT OURS: the owner's ymap places them
+--                  (2026-10-06, streamed with br_stream_s2), and every site
+--                  row says where one stands -- this file makes no prop, and
+--                  reads nothing off one.
 --   the laptops    hidden where terminals are off (Season 1): a model hide at
 --                  each config row, made and taken down only when the season
 --                  moves (below, "the laptops, Season 1").
