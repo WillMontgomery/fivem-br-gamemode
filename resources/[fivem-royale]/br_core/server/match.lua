@@ -1149,6 +1149,8 @@ end
 --- @param e table
 function BR.Match.resetPlayer(src, e)
     e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
+    -- And when the kills were reached (a Contract's tie-break, #396).
+    e.killsAt = nil
     -- Per-match like the four above, and for the reason #161 spells out: a
     -- counter left standing follows the player into their NEXT match and is
     -- banked a second time there. One airdrop, paid twice.

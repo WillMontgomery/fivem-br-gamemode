@@ -231,11 +231,21 @@ function T.hasBounty(src)
 end
 
 --- Put a bounty on `src`, and tell the match: everyone, then their squad.
---- A second bounty on the same player restarts their clock.
+--- A second bounty on the same player restarts their clock -- and never
+--- shortens one still running (a Contract's 5 minutes on a Scan bounty with 8
+--- left keeps the 8).
+---
+--- A CONTRACT (wave A, server/terminalfx/contract.lua) IS THIS BOUNTY with its
+--- own clock and its own words: `opts.ms`, and `opts.protect` in place of the
+--- owner's `bounty_protect` -- whose "for the next 10 minutes" is Scan's ten
+--- and must never be said about five -- plus `opts.target`, a line to the
+--- target themselves. The owner's `bounty_new` to the lobby, blip 58 and his
+--- colours are the same for both.
 --- @param m table
 --- @param src integer
 --- @param now number
-function T.startBounty(m, src, now)
+--- @param opts table|nil  { ms, protect, target } for a Contract; nil is Scan's
+function T.startBounty(m, src, now, opts)
     local e = BR.Roster.get(src)
     if not e then return end
     -- A BOUNTY ON A PLAYER ALREADY OUT IS NO BOUNTY ("ENDED EARLY BY
@@ -246,8 +256,12 @@ function T.startBounty(m, src, now)
     if not MARKED[e.state] then return end
     local key = TS.squadKey(e, src)
     local squadMatch = T.squadMatch ~= nil and T.squadMatch(src) == true
+    local ms = (opts and tonumber(opts.ms)) or fx().bountyMs or 600000
+    local untilAt = now + ms
+    local was = fxOf(m).bounties[src]
+    if was and live(m, was, now) and was.untilAt > untilAt then untilAt = was.untilAt end
     fxOf(m).bounties[src] = { src = src, name = e.name, squad = key, since = now,
-                              untilAt = now + (fx().bountyMs or 600000) }
+                              untilAt = untilAt }
     BR.Server.notify(T.lobbyOf(m), named('bounty_new', e.name, squadMatch), 'info', { ms = 8000 })
     -- THE OWNER'S SQUAD-ONLY TOAST, ONLY TO SQUADMATES: never sent to a player
     -- with none (a solo player, or the last of a squad).
@@ -256,10 +270,14 @@ function T.startBounty(m, src, now)
         if s ~= src then mates[#mates + 1] = s end
     end
     if #mates > 0 then
-        BR.Server.notify(mates, named('bounty_protect', e.name, squadMatch), 'info', { ms = 8000 })
+        BR.Server.notify(mates, named((opts and opts.protect) or 'bounty_protect', e.name, squadMatch),
+            'info', { ms = 8000 })
+    end
+    if opts and opts.target then
+        BR.Server.notify(src, named(opts.target, e.name, squadMatch), 'warn', { ms = 8000 })
     end
     print(('[br_core] terminals: %s (%d) has a bounty for %.0f s in match %s')
-        :format(e.name or '?', src, (fx().bountyMs or 600000) / 1000, tostring(m.id)))
+        :format(e.name or '?', src, (untilAt - now) / 1000, tostring(m.id)))
     T.pushBounties(m, now)
 end
 

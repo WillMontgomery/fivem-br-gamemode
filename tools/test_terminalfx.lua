@@ -1729,6 +1729,177 @@ do
         'hidden for exactly the 4 minutes chosen')
 end
 
+--- Give `src` this many eliminations, reached at `at`.
+local function killsOf(src, n, at)
+    roster[src].kills = n
+    roster[src].killsAt = at
+end
+
+describe('Contract: the one rule -- most eliminations outside the squad, a tie to whoever got there first')
+do
+    local row = T.row('contract')
+    ok(row and row.implemented == true and T.FUNCTIONS.contract ~= nil, 'contract is built')
+    ok(row and (row.options == nil or #row.options == 0), 'and takes no options')
+    reset()
+    local m = lobby()
+    local P = function() return T.contractPick(m, 'squad:A') end
+    eq(P(), nil, 'nobody with an elimination: nobody')
+    killsOf(5, 1, 5000)
+    eq(P(), 5, 'one elimination is enough')
+    killsOf(3, 2, 9000)
+    eq(P(), 3, 'the most eliminations wins')
+    killsOf(4, 2, 8000)
+    eq(P(), 4, 'a tie goes to whoever reached it first (the downed one counts: still in the fight)')
+    killsOf(3, 2, 8000)
+    eq(P(), 3, 'reached in the same millisecond: the lower server id')
+    killsOf(2, 9, 1000)
+    killsOf(1, 9, 1000)
+    eq(P(), 3, 'the runner\'s own squad is never the target, however many it has')
+    roster[3].state = BR.PlayerState.OUT
+    eq(P(), 4, 'an eliminated player is not')
+    roster[4].kills = 3
+    roster[4].killsAt = 99999
+    eq(P(), 4, 'more kills beats an earlier time')
+    roster[4].killsAt = nil
+    killsOf(5, 3, 5)
+    eq(P(), 5, 'a count with no time on it loses the tie')
+    eq(T.contractPick(m, 'squad:B'), 1, 'and B\'s contract finds A\'s top player')
+end
+
+describe('Contract: the bounty, five minutes, in its own words to the target and their squad')
+do
+    reset()
+    local m = lobby()
+    killsOf(3, 2, 9000)
+    killsOf(4, 2, 8000)
+    killsOf(5, 1, 100)
+    local r = runAt(1, 'contract')
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    ok(T.hasBounty(4) and not T.hasBounty(3), 'the bounty is on p4, who reached two first')
+    local action = noticeIndex('has redeemed their special power', 5)
+    local new = noticeIndex('A new bounty is among us', 5)
+    ok(action and new and action < new, 'the lobby hears the redemption, then the owner\'s bounty line')
+    for _, src in ipairs({ 1, 2, 3, 4, 5 }) do
+        ok(noticeIndex('A new bounty is among us', src) ~= nil, ('p%d hears the bounty'):format(src))
+        eq(noticeIndex('Protect p4! They\'ve got a bounty for the next 10 minutes', src), nil,
+            ('p%d never reads the owner\'s ten-minute line about a five-minute contract'):format(src))
+    end
+    local protect = nil
+    for _, x in ipairs(noticesTo(3)) do
+        if (textOf(x) or ''):find('contract on them', 1, true) then protect = textOf(x) end
+    end
+    eq(protect, "Protect p4! There's a contract on them for the next 5 minutes.",
+        'the target\'s squadmate reads contract_protect, the name filled')
+    for _, src in ipairs({ 1, 2, 4, 5 }) do
+        eq(noticeIndex('contract on them', src), nil, ('p%d does not'):format(src))
+    end
+    eq(lastToast(4), COPY.contract_target, 'the target reads contract_target')
+    for _, src in ipairs({ 1, 2, 3, 5 }) do
+        eq(noticeIndex('contract on you', src), nil, ('p%d does not'):format(src))
+    end
+
+    -- ON EVERY MAP OUTSIDE THE TARGET'S SQUAD (their squad reads the beacon).
+    for _, src in ipairs({ 1, 2, 5 }) do
+        local d = lastOf(BR.Net.TERMINAL_BOUNTY, src)
+        ok(d and #d.list == 1 and d.list[1].s == 4, ('p%d is sent where the target is'):format(src))
+    end
+    local d3 = lastOf(BR.Net.TERMINAL_BOUNTY, 3)
+    ok(d3 == nil or #d3.list == 0, 'the target\'s squad is not (the beacon carries it)')
+    local info = T.matchInfo(1, gameMs)
+    ok(info.bounties[1] and info.bounties[1].name == 'p4' and info.bounties[1].leftMs == CT.fx.contractMs,
+        'the panel lists it with five minutes')
+    eq(CT.fx.contractMs, 300000, '"a bounty for 5 minutes"')
+
+    -- FIVE MINUTES.
+    gameMs = gameMs + CT.fx.contractMs - 1000
+    jobs['terminal.bounty']()
+    ok(T.hasBounty(4), 'still on at 4:59')
+    gameMs = gameMs + 1000
+    jobs['terminal.bounty']()
+    ok(not T.hasBounty(4) and #lastOf(BR.Net.TERMINAL_BOUNTY, 1).list == 0, 'over at 5:00, every map cleared')
+    local _ = m
+end
+
+describe('Contract: a Scan bounty keeps its longer clock; Ghost hides the contract too')
+do
+    reset()
+    local m = lobby()
+    killsOf(3, 4, 1000)
+    T.startBounty(m, 3, gameMs)                      -- p3 ran Scan: ten minutes
+    local scanEnds = gameMs + CT.fx.bountyMs
+    gameMs = gameMs + 60000
+    runAt(1, 'contract')
+    local b = m.terminalFx.bounties[3]
+    eq(b and b.untilAt, scanEnds, 'a contract on a player with nine minutes of bounty left keeps the nine')
+
+    devRun(3, 'ghost')
+    ok(#lastOf(BR.Net.TERMINAL_BOUNTY, 1).list == 0, 'and B under Ghost: the contract\'s marker goes too')
+end
+
+describe('Contract: nobody to put it on is refused, spending nothing')
+do
+    reset()
+    lobby()
+    killsOf(2, 5, 100)                               -- only the runner's own squad has any
+    useAt(1)
+    local f = listedAs(1, 'contract')
+    ok(f and f.available == false and f.reason == 'no_target', 'the card says no_target', f and tostring(f.reason))
+    local r = ask(1, 'contract')
+    ok(r and r.code == 'no_target' and r.toast == COPY.no_target, 'a run is refused, in the squad line', r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1), 'nothing spent')
+
+    -- THE END OF THE RUN: the only target eliminated during the load.
+    reset()
+    local m = lobby()
+    killsOf(3, 1, 100)
+    useAt(1)
+    r = ask(1, 'contract')
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    roster[3].state = BR.PlayerState.OUT
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'no_target' and keys[1] == true and not T.squadUsed(1),
+        'nobody left by the end of the load: given back', r and r.code)
+    eq(noticeIndex('A new bounty is among us', 5), nil, 'and nobody is told of a bounty')
+
+    -- ...AND WHEN SOMEBODY ELSE QUALIFIES BY THEN, THE CONTRACT IS THEIRS.
+    reset()
+    m = lobby()
+    killsOf(3, 2, 100)
+    killsOf(5, 1, 50)
+    useAt(1)
+    ask(1, 'contract')
+    roster[3].state = BR.PlayerState.OUT
+    flush()
+    ok(T.hasBounty(5), 'the target eliminated during the load: the next one is chosen when it runs')
+    local _ = m
+
+    -- SOLO: never "squad".
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    keys[1] = true
+    useAt(1)
+    r = ask(1, 'contract')
+    eq(r and r.toast, COPY.no_target_solo, 'alone: the solo refusal')
+    player(3, m, nil, { x = 0.0, y = 0.0 })
+    killsOf(3, 1, 100)
+    r = runAt(1, 'contract')
+    eq(r and r.toast, COPY.contract_done, 'and with a target, done')
+    for _, x in ipairs(notices) do
+        ok(not (textOf(x) or ''):find('Protect', 1, true), 'nobody is told to protect a solo player')
+    end
+
+    -- THE DEV COMMAND.
+    reset()
+    lobby()
+    keys[1] = false
+    killsOf(5, 2, 100)
+    local said = devRun(1, 'contract')
+    ok(said:find('ok (done)', 1, true) ~= nil and T.hasBounty(5), 'brterminal run contract', said)
+end
+
 -- =========================================================================
 -- PART D -- the client
 -- =========================================================================

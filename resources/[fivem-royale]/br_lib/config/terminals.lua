@@ -378,6 +378,10 @@ BR.Config.Terminals = {
         no_keys_ground = 'There are no Yubikeys on the ground right now.',
         no_keys_held = 'Nobody outside your squad is holding a Yubikey right now.',
         no_keys_held_solo = 'Nobody else is holding a Yubikey right now.',
+        -- WRITTEN (2026-10-06, wave A). Contract: nobody outside the squad
+        -- has an elimination yet -- refused, spending nothing.
+        no_target = 'Nobody outside your squad has an elimination yet.',
+        no_target_solo = 'Nobody else has an elimination yet.',
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -718,7 +722,7 @@ BR.Config.Terminals = {
         lockdown_done = 'Every other terminal is offline.',
         lockdown_description = 'Lockdown. Every other terminal is offline.',
 
-        -- Contract (new; offline)
+        -- Contract (new; LIVE since wave A, 2026-10-06)
         contract_name = 'Contract',
         contract_summary = 'Puts a bounty on the player with the most eliminations.',
         contract_what = "The player outside your squad with the most eliminations gets a bounty for 5 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
@@ -730,6 +734,12 @@ BR.Config.Terminals = {
         contract_risks = "The target is told a contract is on them.",
         contract_done = 'The contract is out.',
         contract_description = 'Contract. The top player has a bounty.',
+        -- WRITTEN (2026-10-06, wave A). A toast to the target's squadmates
+        -- (never the target): the owner's bounty_protect says "the next 10
+        -- minutes", Scan's ten, so a Contract's five has its own line.
+        contract_protect = "Protect {playername}! There's a contract on them for the next 5 minutes.",
+        -- WRITTEN (2026-10-06, wave A). A toast to the target.
+        contract_target = "There's a contract on you. Every player can see where you are for the next 5 minutes.",
 
         -- Field medic (new; LIVE since wave A, 2026-10-06)
         field_medic_name = 'Field medic',
@@ -1025,7 +1035,7 @@ BR.Config.Terminals = {
           options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters
         { id = 'lockdown',       category = 'disruption', risk = 'medium', implemented = false,
           options = { { id = 'duration', choices = { '180', '300' }, default = '180' } } },
-        { id = 'contract',       category = 'disruption', risk = 'medium', implemented = false },
+        { id = 'contract',       category = 'disruption', risk = 'medium', implemented = true },
         { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true },
     },
 
@@ -1062,6 +1072,9 @@ BR.Config.Terminals = {
         -- Pulse: "The marks follow them for 30 seconds", moved this often.
         pulseMs = 30 * 1000,
         pulsePingMs = 1000,
+        -- Contract: the bounty it puts out lasts "5 minutes" (Scan's is
+        -- bountyMs, the owner's ten).
+        contractMs = 5 * 60 * 1000,
     },
 
     -- The server drops a second run request from one player sooner than this

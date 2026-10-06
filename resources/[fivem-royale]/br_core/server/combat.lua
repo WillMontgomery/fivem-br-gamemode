@@ -536,6 +536,9 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     local killer = killerSrc and BR.Roster.get(killerSrc)
     if killer and killerSrc ~= src then
         killer.kills = (killer.kills or 0) + 1
+        -- WHEN THEY GOT THERE, server-side only: a terminal's Contract (#396)
+        -- breaks a tie on eliminations by who reached the count first.
+        killer.killsAt = GetGameTimer()
         BR.Broadcast.delta({ op = 'update', src = killerSrc, e = { kills = killer.kills } })
 
         -- WHO TO POINT THE VICTIM'S CAMERA AT, IN SOLOS. "If in solos, the

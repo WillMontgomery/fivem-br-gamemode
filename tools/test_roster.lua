@@ -1963,10 +1963,19 @@ do
     BR.Combat.eliminate(2, 'weapon', 1)
     ok(BR.Roster.get(1).kills == 1, 'the killer is credited')
     ok(BR.Roster.get(3).kills == 0, 'bystanders are not')
+    -- WHEN THEY GOT THERE (#396's Contract breaks a tie on it), server-side.
+    ok(BR.Roster.get(1).killsAt == fakeTime, 'and the moment they reached it is stamped',
+        tostring(BR.Roster.get(1).killsAt))
+    ok(BR.Roster.get(3).killsAt == nil, 'on the killer alone')
 
     -- A player cannot farm kills off themselves.
     BR.Combat.eliminate(3, 'weapon', 3)
     ok(BR.Roster.get(3).kills == 0, 'a self-kill credits nobody')
+    ok(BR.Roster.get(3).killsAt == nil, 'and stamps nothing')
+    -- AND IT IS PER MATCH, like the count it dates (#161).
+    BR.Match.resetPlayer(1, BR.Roster.get(1))
+    ok(BR.Roster.get(1).kills == 0 and BR.Roster.get(1).killsAt == nil,
+        'the slate a match leaves behind clears it with the kills')
 end
 
 describe('combat.serverObserved')
