@@ -414,7 +414,10 @@ cd js-src/br_ddb && npm run check    # rebuild in memory and compare its bundle
 vendored `resources/[computer]/cuchi_computer/nui/apps/terminal`. `npm run build`
 writes both and `build:check` byte-compares both, each against its own committed
 build stamp. The app has its own gate, `scripts/check-terminal.mjs`: the
-Cloudscape-on-CEF-103 findings of #385, and no words written in its JSX.
+Cloudscape-on-CEF-103 findings of #385, no words written in its JSX, every
+line read through one speaker (the squad words), Run's risk colors on tokens
+Cloudscape defines, and a browser chrome that takes no mode -- and its pure
+parts' tests, `scripts/test-terminal-model.mjs`.
 
 CI runs both package installs and bundle checks under Node 22 before
 `tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;

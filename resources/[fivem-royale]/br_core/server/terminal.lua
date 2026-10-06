@@ -19,6 +19,14 @@
 --                    Max ammo in server/terminalfx.lua
 --   the options      what the player chose before Run, taken only as the
 --                    registry allows (BR.Terminal.options)
+--   the run          asked, accepted, loading, done (round 2): every refusal,
+--                    then the Volts a row costs (BR.Market.charge), then the
+--                    key and the squad's use, a 3-5 s load the server times,
+--                    and the effect and the lobby's notice only at its end --
+--                    everything given back when the effect cannot happen
+--   squad's words    a line that says squad only to a player in a squad match
+--                    (BR.Terminal.squadMatch, BR.TerminalSolve.pick), and the
+--                    squad-only functions listed and run only there
 --   the panel        the match as the open computer shows it, pushed to that
 --                    player alone about once a second while it is open
 --   the dev tools    `brterminalsv`, typed through `brterminal` and `bryubikey`
