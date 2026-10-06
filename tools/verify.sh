@@ -150,6 +150,7 @@ NOTES=(
     "test_rarity|The five rarity colors are the owner's, and the same in the game, the page and the built page"
     "test_terminal|Season 2 terminals: a run only inside a session the server opened; the computer always gives the keyboard back"
     "test_yubikey|Season 2 Yubikey: one per player, dropped on death or leaving, one use per squad, terminals live only inside the storm"
+    "test_terminalworld|Season 2 terminal functions that change the match's world (storm, sky, clock, lights) spend nothing when they can't run"
     "test_terminalfx|Season 2 terminal functions: Scan shows the squad every opponent, the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
     "frame budget|Per-frame game calls, draws and memory stay within budget, lobby to match, every scene"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
@@ -918,6 +919,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # ammo refusing before anything is spent, and the client's marks. Its
     # mutations are named in #396's app report.
     #
+    # test_terminalworld.lua is #396's wave B (2026-10-06): the functions that
+    # change the world everybody in the match stands in -- the storm's hold and
+    # its last circles, the sky and the clock, the lights -- run at a real
+    # terminal over the REAL server/storm.lua, each refusal spending nothing and
+    # an effect that can no longer happen giving everything back. Their planner
+    # halves are test_storm.lua's `delay.*` and `control.*` blocks.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -976,6 +984,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_rarity.lua
         tools/test_terminal.lua
         tools/test_yubikey.lua
+        tools/test_terminalworld.lua
         tools/test_terminalfx.lua
     )
 

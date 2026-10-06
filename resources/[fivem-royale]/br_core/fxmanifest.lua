@@ -959,6 +959,14 @@ server_scripts {
     -- is in br_lib's `files` glob like every config file, and a role id is not a
     -- secret. guild.lua reads it at call time, so the order is a reader's.
     '@br_lib/config/allowlist.lua',
+    -- The wave B terminal functions (#396, 2026-10-06), one file each, each
+    -- registering its own BR.Terminal.FUNCTIONS entry: the storm, the sky, the
+    -- clock and the lights. AFTER server/terminal.lua and server/terminalfx.lua
+    -- (the door and its audiences, read at call time) and server/storm.lua
+    -- (BR.Storm, read at call time). Listed below the allowlist only so that
+    -- wave A's list, above it, and this one are two separate edits.
+    -- tools/test_terminal.lua loads every `server/terminalfx/` file named here.
+    'server/terminalfx/storm_delay.lua',
     -- Whether a player is already in our Discord: one authenticated GET to
     -- Discord per connection, cached for that connection. AFTER
     -- @br_lib/shared/identity.lua, and that IS a real order rather than a

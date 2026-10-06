@@ -695,7 +695,7 @@ BR.Config.Terminals = {
         -- legend.
         key_finder_blip = 'Yubikey',
 
-        -- Storm delay (new; offline)
+        -- Storm delay (new; LIVE since wave B, 2026-10-06)
         storm_delay_name = 'Storm delay',
         storm_delay_summary = 'Holds the storm in place longer before its next sweep.',
         storm_delay_what = "The storm's current hold gets longer by the time you choose.\nIf the storm is already closing, the delay is added to its next hold.\nThe next circle doesn't change.",
@@ -709,6 +709,10 @@ BR.Config.Terminals = {
         storm_delay_risks_solo = 'It delays the storm for every player, not just you.',
         storm_delay_done = 'The storm is delayed.',
         storm_delay_description = 'Storm delay. The storm holds longer before its next sweep.',
+        -- WRITTEN (2026-10-06, wave B). Storm delay's own reason: the final
+        -- circle is closing or closed, so no hold is left to lengthen --
+        -- refused, spending nothing (at the terminal: why not).
+        no_hold = 'The storm has no hold left to delay.',
 
         -- Pulse (new; LIVE since wave A, 2026-10-06)
         pulse_name = 'Pulse',
@@ -1065,7 +1069,7 @@ BR.Config.Terminals = {
           } },
         { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true,
           options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
-        { id = 'storm_delay',    category = 'storm',      risk = 'low',    implemented = false,
+        { id = 'storm_delay',    category = 'storm',      risk = 'low',    implemented = true,
           options = { { id = 'delay', choices = { '60', '120' }, default = '60' } } },
         { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true,
           options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters

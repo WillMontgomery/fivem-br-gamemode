@@ -298,6 +298,12 @@ end
 ---
 --- NOT WHILE brstormfreeze HOLDS THE STORM. The freeze is a phase-1 record with a
 --- day of hold, and cutting it to 1:30 would thaw it by the back door.
+---
+--- AND NEVER THROUGH A STORM DELAY (#396). Control Tower's Storm delay adds its
+--- time to this record's hold (BR.Storm.delay, m.stormHeldMs), and the cap is
+--- 1:30 PLUS that time: "the storm's current hold gets longer by the time you
+--- choose" would otherwise be undone on the next tick by a cap that never heard
+--- of it.
 --- @param m table
 --- @param now number
 --- @param quiet boolean|nil  build the record but leave publishing to the caller
@@ -324,6 +330,7 @@ local function capFirstHold(m, now, quiet)
     local floorMs = math.max((cfg.phases[1].warn or 0) * 1000.0 * timeScale,
                              (cfg.render.fadeInSec or 0) * 1000.0)
     local capMs = math.max((H.capSeconds or 0) * 1000.0 * timeScale, floorMs)
+        + (m.stormHeldMs or 0)
     if msLeft <= capMs then return end
 
     local elapsed = now - rec.tStart
@@ -447,13 +454,23 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
     local shrinkSec, furthest = BR.StormSweepSeconds(probeFor, stood,
         cfg.shrinkPace.metersPerSec, cfg.shrinkPace.minSeconds, ceiling)
 
+    -- A STORM DELAY RUN WHILE THE WALL WAS CLOSING IS THIS HOLD'S (#396): "If
+    -- the storm is already closing, the delay is added to its next hold."
+    -- BR.Storm.delay left it here, and the hold it lengthens is this one -- in
+    -- real milliseconds, not scaled by the dev time scale, because it is a
+    -- promise made to players in minutes. It is spent as it is applied, and
+    -- remembered as this record's held time, which the 75% cut honors.
+    local delayed = m.stormDelayNextMs or 0
+    m.stormDelayNextMs = nil
+    m.stormHeldMs = delayed
+
     -- THE SEED RIDES ALONG, WHICH IS WHAT MAKES THE WALL A SHAPE (#344). It is the
     -- match's own storm seed, unchanged every phase -- the phase INDEX is the other
     -- half of the derivation, and the record already carries that. seedRng has
     -- always run before any route into a phase, so this is never nil in the game;
     -- BR.BuildStormRecord's header says what a missing one would mean.
     m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
-        now, (waitSec or p.wait) * 1000 * timeScale,
+        now, (waitSec or p.wait) * 1000 * timeScale + delayed,
         shrinkSec * 1000 * timeScale, p.dps, m.stormSeed, mo)
 
     -- ARMED FOR THIS PHASE'S SWEEP. Every route into a phase comes through
@@ -656,6 +673,74 @@ function BR.Storm.finalCentre(m)
         r = cfg.phases[p].radius
     end
     return { x = cx, y = cy, r = r, phase = last }
+end
+
+-- ═══ STORM DELAY (#396, Control Tower, wave B) ═══
+--
+--   "The storm's current hold gets longer by the time you choose. If the storm
+--    is already closing, the delay is added to its next hold. The next circle
+--    doesn't change."                      -- the function's own page (WRITTEN)
+--
+-- THROUGH THE RECORD'S OWN TIMING, AND NOTHING ELSE. A hold is `tWait` on the
+-- published record, the same field the 75% cut shortens (capFirstHold), so a
+-- longer hold is the same record with a longer tWait, published at once: every
+-- client's countdown, the sweep that follows it, the airdrop's landing circles
+-- and the terminal panel all read it off the record, as they do every hold.
+-- The circles do not move -- cx/cy/r on both ends, the seed and the outline
+-- are copied as they are.
+
+--- Which hold a Storm delay run now would lengthen.
+---
+---   'hold'  the storm is holding: this record's own hold
+---   'next'  the wall is closing (or has just arrived and the 1 Hz job has not
+---           drawn the next circle yet): the next phase's hold, which
+---           enterPhase lengthens as it builds it
+---   nil     no hold is left: the final phase is closing or closed, or there is
+---           no storm record (before the storm starts, or outside PLAYING)
+--- @param m table
+--- @param now number
+--- @return string|nil
+function BR.Storm.holdLeft(m, now)
+    local rec = m and m.storm
+    if not rec or m.state ~= BR.MatchState.PLAYING then return nil end
+    local _, _, _, st = BR.StormAt(rec, now)
+    if st == BR.StormPhase.HOLDING then return 'hold' end
+    if rec.phase < #cfg.phases then return 'next' end
+    return nil
+end
+
+--- Lengthen the storm's hold by `ms` (Storm delay).
+---
+--- HOLDING: the live record is rebuilt with `ms` more hold -- the same tStart,
+--- the same circles, the same seed and outline -- and published. It is added
+--- to m.stormHeldMs, so the 75% cut (capFirstHold) keeps it.
+---
+--- CLOSING: `ms` waits in m.stormDelayNextMs for enterPhase, which adds it to
+--- the next hold as it builds that record. Two delays add up either way.
+--- @param m table
+--- @param ms number  real milliseconds, never scaled by brstormscale
+--- @param now number
+--- @return string|nil which  'hold' | 'next', or nil with nothing changed
+function BR.Storm.delay(m, ms, now)
+    ms = math.floor(tonumber(ms) or 0)
+    if ms <= 0 then return nil end
+    local which = BR.Storm.holdLeft(m, now)
+    if which == 'hold' then
+        local rec = m.storm
+        m.storm = BR.BuildStormRecord(rec.phase, rec.cx0, rec.cy0, rec.r0,
+            rec.cx1, rec.cy1, rec.r1, rec.tStart, rec.tWait + ms,
+            rec.tShrink, rec.dps, rec.seed, rec.mo)
+        m.stormHeldMs = (m.stormHeldMs or 0) + ms
+        publish(m)
+    elseif which == 'next' then
+        m.stormDelayNextMs = (m.stormDelayNextMs or 0) + ms
+    else
+        return nil
+    end
+    print(('[br_core] storm: match %s phase %d -- %s hold delayed %.0fs (Storm delay)')
+        :format(BR.MatchTag(m.id), m.storm.phase, which == 'hold' and 'this' or 'the next',
+            ms / 1000))
+    return which
 end
 
 --- Start a match's storm. Called when it goes PLAYING: the clock starts when
