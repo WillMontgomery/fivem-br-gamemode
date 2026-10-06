@@ -796,9 +796,9 @@ BR.Config.Terminals = {
         -- within hideRadiusM of every site (client/yubikey.lua), and only map
         -- objects, never a script's.
         terminalProp = 'prop_laptop_01a',
-        -- 2 meters, not less: in the ymap he published (br_stream_s2
-        -- 5ec1f721), the paleto_pd and calafia_way laptops stand 1.7 m from
-        -- their rows (1.6 m higher), and the other thirteen at them.
+        -- 2 meters: every row stands at its laptop in the ymap he published
+        -- (br_stream_s2 5ec1f721) since paleto_pd and calafia_way were moved
+        -- the 1.7 m onto theirs (2026-10-06), so this is slack, not reach.
         hideRadiusM = 2.0,
         -- A terminal's blip, drawn only while this player holds a key and only
         -- for a terminal inside the storm.
@@ -850,11 +850,11 @@ BR.Config.Terminals = {
     -- ymap". THE LAPTOPS ARE THE OWNER'S YMAP'S: prop_laptop_01a in
     -- LaptopTerminals.ymap in the Season 2 drop on S3, streamed with
     -- br_stream_s2 (assets.lock), so nothing in this repository makes one.
-    -- These rows are WHERE THOSE PROPS STAND, exactly as he gave them. Each
-    -- terminal's plate, blip, reach and session check is read from its row
-    -- (client/yubikey.lua, server/terminal.lua) and from nothing in the
-    -- world, so a row moved without its laptop is a plate beside empty air,
-    -- and the other way round.
+    -- These rows are WHERE THOSE PROPS STAND: his numbers, and two moved the
+    -- 1.7 m onto their laptops (below). Each terminal's plate, blip, reach and
+    -- session check is read from its row (client/yubikey.lua,
+    -- server/terminal.lua) and from nothing in the world, so a row moved
+    -- without its laptop is a plate beside empty air, and the other way round.
     -- br_stream_s2 is installed from Season 2 on, so a box started at Season
     -- 1 has no laptops; a running server cannot swap a streamed asset, so
     -- after a live `brseason 1` they still stream, and a client where
@@ -878,10 +878,13 @@ BR.Config.Terminals = {
         { id = 'chiliad_top',      x = 472.667969,  y = 5536.955,    z = 785.8789,   h = 0.0 },
         -- fort zancudo
         { id = 'fort_zancudo',     x = -2455.12769, y = 3703.64917,  z = 15.4468756, h = 0.0 },
-        -- paleto PD
-        { id = 'paleto_pd',        x = -429.23584,  y = 5963.753,    z = 30.50765,   h = 0.0 },
-        -- calafia way
-        { id = 'calafia_way',      x = 361.000427,  y = 4434.68652,  z = 61.91766,   h = 0.0 },
+        -- paleto PD. ON ITS LAPTOP, as his ymap stands it (2026-10-06, read
+        -- from LaptopTerminals.ymap): his row was -429.23584, 5963.753,
+        -- 30.50765, 1.7 m from the prop.
+        { id = 'paleto_pd',        x = -428.793182, y = 5963.445801, z = 32.129494,  h = 0.0 },
+        -- calafia way. ON ITS LAPTOP, the same way: his row was 361.000427,
+        -- 4434.68652, 61.91766, 1.7 m from the prop.
+        { id = 'calafia_way',      x = 361.20929,   y = 4434.358887, z = 63.535072,  h = 0.0 },
         -- vineyard
         { id = 'vineyard',         x = -1847.0896,  y = 1929.22607,  z = 150.897141, h = 0.0 },
         -- rebel radio

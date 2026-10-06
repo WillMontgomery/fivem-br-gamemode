@@ -145,17 +145,20 @@ BR.Season.strict = true
 --- The config's own rows, kept before this suite puts its two in their place.
 local OWNER_SITES = nil
 
-describe('the sites: the owner\'s fifteen laptops, his order, his numbers')
+describe('the sites: the owner\'s fifteen laptops, his order, where they stand')
 do
     -- "they're located at 15 places shown below", word for word: his order,
     -- his x / y / z. The ids are his labels (la_mesa_pd is "chumash? PD",
-    -- whose coordinates are La Mesa's).
+    -- whose coordinates are La Mesa's). Two are ON THEIR LAPTOPS instead
+    -- (2026-10-06): his ymap stands those 1.7 m from the numbers he typed
+    -- (-429.23584, 5963.753, 30.50765 and 361.000427, 4434.68652, 61.91766),
+    -- and a row is where its laptop stands.
     local WANT = {
         { 'mount_gordo', 2825.834, 5969.14648, 351.6426 },
         { 'chiliad_top', 472.667969, 5536.955, 785.8789 },
         { 'fort_zancudo', -2455.12769, 3703.64917, 15.4468756 },
-        { 'paleto_pd', -429.23584, 5963.753, 30.50765 },
-        { 'calafia_way', 361.000427, 4434.68652, 61.91766 },
+        { 'paleto_pd', -428.793182, 5963.445801, 32.129494 },
+        { 'calafia_way', 361.20929, 4434.358887, 63.535072 },
         { 'vineyard', -1847.0896, 1929.22607, 150.897141 },
         { 'rebel_radio', 764.2342, 2569.98633, 75.97378 },
         { 'panorama_drive', 1901.3136, 3201.079, 46.3064651 },
@@ -173,7 +176,7 @@ do
     for i, w in ipairs(WANT) do
         local r = rows[i] or {}
         ok(r.id == w[1] and r.x == w[2] and r.y == w[3] and r.z == w[4] and r.h == 0.0,
-            ('row %d is %s at the owner\'s %.6f, %.6f, %.6f, heading 0'):format(i, w[1], w[2], w[3], w[4]),
+            ('row %d is %s at %.6f, %.6f, %.6f, heading 0'):format(i, w[1], w[2], w[3], w[4]),
             ('%s %s %s %s %s'):format(tostring(r.id), tostring(r.x), tostring(r.y), tostring(r.z), tostring(r.h)))
     end
     -- Every row a terminal: the shared check skips none and names none.
@@ -1617,9 +1620,10 @@ do
     -- THE OWNER'S FIFTEEN, at Season 1: one hide each, at his rows.
     local U = bootClient({ sites = OWNER_SITES, season = 1 })
     eq(U.hidden(), 15, 'the owner\'s fifteen rows: fifteen hides')
-    -- THE RADIUS REACHES EVERY LAPTOP IN HIS YMAP (br_stream_s2 5ec1f721,
-    -- stream/LaptopTerminals.ymap, read 2026-10-06): thirteen stand at their
-    -- rows, and these two 1.6 m above theirs.
+    -- EVERY ROW IS ON ITS LAPTOP (br_stream_s2 5ec1f721,
+    -- stream/LaptopTerminals.ymap, read 2026-10-06): thirteen stood at his
+    -- rows, and these two 1.7 m from his numbers until their rows were moved
+    -- onto them. The hide reaches each with the radius to spare.
     local YMAP = {
         paleto_pd   = { -428.793182, 5963.445801, 32.129494 },
         calafia_way = { 361.209290, 4434.358887, 63.535072 },
@@ -1630,11 +1634,11 @@ do
         if m then
             checked = checked + 1
             local d = math.sqrt((m[1] - s.x) ^ 2 + (m[2] - s.y) ^ 2 + (m[3] - s.z) ^ 2)
-            ok(d < CT.art.hideRadiusM, ('%s: its ymap laptop is %.2f m from the row, inside the %.1f m hide')
-                :format(s.id, d, CT.art.hideRadiusM))
+            ok(d < 0.001, ('%s: the row stands on its ymap laptop (%.4f m off)'):format(s.id, d))
+            ok(d < CT.art.hideRadiusM, ('%s: inside the %.1f m hide'):format(s.id, CT.art.hideRadiusM))
         end
     end
-    eq(checked, 2, 'both offset laptops were measured')
+    eq(checked, 2, 'both moved rows were measured against the ymap')
 end
 
 -- =========================================================================

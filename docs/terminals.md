@@ -479,8 +479,10 @@ The owner's rules (#396, 2026-10-04), and where each lives:
 **The laptops are the owner's** (2026-10-06): `prop_laptop_01a` placed by
 his ymap, `stream/LaptopTerminals.ymap` in the Season 2 drop
 (`br_stream_s2`). Nothing in this repository spawns one. `sites` in
-`br_lib/config/terminals.lua` holds where they stand, in his order and his
-numbers -- Mount Gordo, the top of Chiliad, Fort Zancudo, Paleto PD, Calafia
+`br_lib/config/terminals.lua` holds where they stand, in his order and at his
+numbers except Paleto PD and Calafia Way, whose rows were moved the 1.7 m onto
+their laptops as his ymap stands them (his numbers are in each row's comment)
+-- Mount Gordo, the top of Chiliad, Fort Zancudo, Paleto PD, Calafia
 Way, the vineyard, Rebel Radio, Panorama Drive, the towers by the Vinewood
 sign, the Vinewood Bowl, the Hillcrest Ridge access road, the lot south of the
 college, La Mesa PD (his "chumash? PD"), the factory by the heliport and the
