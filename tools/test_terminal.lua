@@ -304,6 +304,22 @@ describe('every registry row is listed; an unbuilt one is offline and never runs
 do
     bootServer()
     local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    -- EVERY ROW IS BUILT since wave C (#396, 2026-10-06), so the unbuilt one
+    -- is made here, both ways a row can be unbuilt: one marked
+    -- `implemented = false`, and one marked built with no server half. The
+    -- first two rows a non-squad dev terminal lists; put back at the end.
+    local unbuiltRows, putBack = {}, {}
+    for _, row in ipairs(BR.Config.Terminals.functions) do
+        if not row.squadOnly and #unbuiltRows < 2 then unbuiltRows[#unbuiltRows + 1] = row end
+    end
+    do
+        local flagged, headless = unbuiltRows[1], unbuiltRows[2]
+        putBack[#putBack + 1] = function() flagged.implemented = true end
+        flagged.implemented = false
+        local fn = BR.Terminal.FUNCTIONS[headless.id]
+        putBack[#putBack + 1] = function() BR.Terminal.FUNCTIONS[headless.id] = fn end
+        BR.Terminal.FUNCTIONS[headless.id] = nil
+    end
     sv(1, 'open')
     local st = last(1, BR.Net.TERMINAL_OPEN).state
     -- A dev terminal outside a match is not a squad match: the squad-only
@@ -318,7 +334,7 @@ do
     for i, row in ipairs(listed) do
         local f = st.functions[i]
         ok(f and f.id == row.id, ('row %d is %s, in the registry\'s order'):format(i, row.id))
-        if row.implemented then
+        if row.implemented and BR.Terminal.FUNCTIONS[row.id] then
             ok(f and f.available == true, ('%s is built and available'):format(row.id))
         else
             ok(f and f.available == false and f.reason == 'fn_offline',
@@ -327,19 +343,19 @@ do
     end
     -- An unbuilt function is offline before anything else is asked: with no
     -- key and the squad's use spent, it still says fn_offline.
-    sv(1, 'open nokey used')
-    local unbuilt
-    for _, row in ipairs(listed) do
-        if not row.implemented then unbuilt = row.id break end
+    for _, row in ipairs(unbuiltRows) do
+        local unbuilt = row.id
+        sv(1, 'open nokey used')
+        ok(fnState(last(1, BR.Net.TERMINAL_OPEN).state, unbuilt).reason == 'fn_offline',
+            unbuilt .. ', unbuilt, says fn_offline whatever else is true')
+        sv(1, 'open')
+        S.clock = S.clock + 1000
+        run(1, { terminalId = 'dev', functionId = unbuilt })
+        local r = last(1, BR.Net.TERMINAL_RESULT)
+        ok(r and r.ok == false and r.code == 'fn_offline', unbuilt .. "'s run is refused fn_offline", r and r.code)
+        ok(r and r.state.keyHeld == true and r.state.squadUsed == false, 'and nothing is spent')
     end
-    ok(fnState(last(1, BR.Net.TERMINAL_OPEN).state, unbuilt).reason == 'fn_offline',
-        'an unbuilt function says fn_offline whatever else is true')
-    sv(1, 'open')
-    S.clock = S.clock + 1000
-    run(1, { terminalId = 'dev', functionId = unbuilt })
-    local r = last(1, BR.Net.TERMINAL_RESULT)
-    ok(r and r.ok == false and r.code == 'fn_offline', 'its run is refused fn_offline', r and r.code)
-    ok(r and r.state.keyHeld == true and r.state.squadUsed == false, 'and nothing is spent')
+    for _, f in ipairs(putBack) do f() end
     eq(last(1, BR.Net.TERMINAL_OPEN).state.player, 'Alpha', 'the open payload names the player (their gamertag)')
 end
 
