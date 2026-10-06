@@ -576,39 +576,56 @@ BR.Config.Terminals = {
         comms_blackout_done = 'Comms blackout is running.',
         comms_blackout_description = "Comms blackout. Other squads can't see their teammates on the map.",
 
-        -- Time & weather (owner's; LIVE since wave B, 2026-10-06)
+        -- Time & weather (owner's; LIVE since wave B, 2026-10-06; ROUND 4, the
+        -- same day: "either time or weather to be set. Not both. Weather should
+        -- be any weather the game engine allows, except rain and thunder since
+        -- those are reserved for the storm only. The duration should be the
+        -- remainder of the match")
         time_weather_name = 'Time & weather',
-        -- WRITTEN (2026-10-06, wave B review; was "Changes the match's time of
-        -- day and weather for a while."). The weather holds only inside the
-        -- circle (the owner's rule, below), so the card says so, as the page
-        -- does.
-        time_weather_summary = "Changes the match's time of day, and the weather inside the circle, for a while.",
-        -- WRITTEN (2026-10-05, round 2; was "Sets the time of day and the
-        -- weather for everyone in the match.\nWhen it ends, ..."). The owner's
-        -- round-2 rule (the registry row says it in full): the weather chosen
-        -- here holds only inside the circle, and the storm's own weather wins
-        -- outside it.
-        time_weather_what = "Sets the time of day for everyone in the match, and the weather inside the circle.\nOutside the circle, the storm's own weather stays.\nWhen it ends, the match's own time and weather come back.",
+        -- WRITTEN (2026-10-06, round 4; was "Changes the match's time of day,
+        -- and the weather inside the circle, for a while."). One or the other,
+        -- for the rest of the match.
+        time_weather_summary = "Changes the match's time of day, or the weather inside the circle, until the match ends.",
+        -- WRITTEN (2026-10-06, round 4; was "Sets the time of day for everyone
+        -- in the match, and the weather inside the circle.\nOutside the circle,
+        -- the storm's own weather stays.\nWhen it ends, the match's own time
+        -- and weather come back."). The owner's round-2 rule still holds: the
+        -- weather chosen here holds only inside the circle, and the storm's
+        -- own weather wins outside it. The clock runs on from the time chosen
+        -- at the match's own rate (#394), so the second line says it runs.
+        time_weather_what = "Pick the time of day or the weather. One run changes one of them, not both.\nThe time of day changes for everyone in the match, and the clock runs on from there.\nThe weather changes only inside the circle. Outside it, the storm's own weather stays.\nIt lasts until the match ends, or until another run changes it.",
+        -- WRITTEN (2026-10-06, round 4). The first option: which of the two
+        -- this run changes. Only the chosen one's own option is shown under it.
+        time_weather_opt_change = 'What to change',
+        time_weather_opt_change_time = 'Time of day',
+        time_weather_opt_change_weather = 'Weather',
         time_weather_opt_time = 'Time of day',
         time_weather_opt_time_day = 'Day',
         time_weather_opt_time_dusk = 'Dusk',
         time_weather_opt_time_night = 'Night',
         time_weather_opt_weather = 'Weather',
+        -- WRITTEN (2026-10-06, round 4; was Clear, Rain and Fog). One per
+        -- engine weather offered (fx.skyWeather), clearest first. "Clear" is
+        -- the engine's CLEAR now, not the match's own clear sky.
+        time_weather_opt_weather_sunny = 'Extra sunny',
         time_weather_opt_weather_clear = 'Clear',
-        time_weather_opt_weather_rain = 'Rain',
+        time_weather_opt_weather_clouds = 'Cloudy',
+        time_weather_opt_weather_smog = 'Smog',
+        time_weather_opt_weather_overcast = 'Overcast',
         time_weather_opt_weather_fog = 'Fog',
-        time_weather_opt_duration = 'Duration',
-        time_weather_opt_duration_180 = '3 minutes',
-        time_weather_opt_duration_300 = '5 minutes',
-        time_weather_duration = '3 or 5 minutes, as chosen',
+        time_weather_opt_weather_xmas = 'Christmas',
+        time_weather_opt_weather_snowlight = 'Light snow',
+        time_weather_opt_weather_snow = 'Snow',
+        time_weather_opt_weather_blizzard = 'Blizzard',
+        -- WRITTEN (2026-10-06, round 4; was '3 or 5 minutes, as chosen').
+        time_weather_duration = 'Rest of the match',
         time_weather_affects = 'Everyone in the match',
         time_weather_notified = 'Everyone in the match',
         time_weather_risks = 'It changes what your squad can see too.',
         time_weather_risks_solo = 'It changes what you can see too.',
-        -- WRITTEN (2026-10-06, wave B review; was 'The time and weather have
-        -- changed.'). The same: the time changed for everyone, the weather
-        -- only inside the circle.
-        time_weather_done = 'The time of day has changed, and so has the weather inside the circle.',
+        -- WRITTEN (2026-10-06, round 4; was 'The time of day has changed, and
+        -- so has the weather inside the circle.'). One line for either choice.
+        time_weather_done = 'Your change is made. It lasts until the match ends.',
         time_weather_description = 'Time & weather. The sky has changed.',
 
         -- Power outage (owner's; LIVE since wave B, 2026-10-06)
@@ -1055,9 +1072,14 @@ BR.Config.Terminals = {
     --                card and page and all, as `fn_offline`, and the server
     --                refuses its run before anything is spent.
     --   options      what the player chooses before Run, each
-    --                { id, choices = { ... }, default }. A choice is a string;
-    --                the server takes only a listed one, for a listed option,
-    --                and fills a missing one with its default.
+    --                { id, choices = { ... }, default, when? }. A choice is a
+    --                string; the server takes only a listed one, for a listed
+    --                option, and fills a missing one with its default.
+    --                `when = { <option> = <choice> }` offers an option only
+    --                while another has that choice (round 4: Time & weather's
+    --                time OR weather): the app shows it only then, and the
+    --                server drops it otherwise and refuses a choice made for
+    --                it (BR.Terminal.options).
     --   cost         Volts the run costs, 0 to 200 (owner, 2026-10-05, round 2:
     --                "For the most powerful items there should be a cost by
     --                Volts, with the max being no more than 200"). Absent is
@@ -1112,11 +1134,19 @@ BR.Config.Terminals = {
         -- choice, and the chosen weather applies ONLY to players inside the
         -- circle: outside it the storm's own weather (br_core/client/storm.lua,
         -- BR.World.want('storm', ...)) always wins, whatever was picked here.
+        --
+        -- AND ROUND 4 (owner, 2026-10-06): "either time or weather to be set.
+        -- Not both", "any weather the game engine allows, except rain and
+        -- thunder", for "the remainder of the match". So `change` picks which,
+        -- and only that one's own option applies (`when`); no duration.
         { id = 'time_weather',   category = 'disruption', risk = 'low',    implemented = true,
           options = {
-              { id = 'time', choices = { 'day', 'dusk', 'night' }, default = 'night' },
-              { id = 'weather', choices = { 'clear', 'rain', 'fog' }, default = 'clear' },
-              { id = 'duration', choices = { '180', '300' }, default = '180' },
+              { id = 'change', choices = { 'time', 'weather' }, default = 'time' },
+              { id = 'time', when = { change = 'time' },
+                choices = { 'day', 'dusk', 'night' }, default = 'night' },
+              { id = 'weather', when = { change = 'weather' },
+                choices = { 'sunny', 'clear', 'clouds', 'smog', 'overcast', 'fog',
+                            'xmas', 'snowlight', 'snow', 'blizzard' }, default = 'clear' },
           } },
         { id = 'power_outage',   category = 'disruption', risk = 'low',    implemented = true,
           options = {
@@ -1181,23 +1211,43 @@ BR.Config.Terminals = {
 
         -- Time & weather: the time of day each choice sets, as hour and
         -- minute. The clock then RUNS from there at the match's own rate
-        -- (#394's slow clock: an hour of game time every five minutes), and
-        -- when it ends hands back to the match's own running clock.
+        -- (#394's slow clock: an hour of game time every five minutes) for
+        -- the rest of the match, whose own running clock comes back for the
+        -- end screen.
         skyTime = {
             day   = { 12, 0 },
             dusk  = { 19, 30 },
             night = { 0, 0 },
         },
-        -- The weather each choice names: a weather the engine knows, or a
-        -- ROLE (br_lib/shared/world.lua's SKY_ROLE). Clear is `base`, the
-        -- match's own clear sky -- EXTRASUNNY, and XMAS with snow on the
-        -- ground in December and January (#399), as a storm exit is. Never
-        -- THUNDER: "thunderstorm cannot be a pickable weather" (owner,
-        -- 2026-10-05), and caught in the storm is the only THUNDER there is.
+        -- The engine weather each choice names (round 4, owner, 2026-10-06:
+        -- "any weather the game engine allows, except rain and thunder since
+        -- those are reserved for the storm only"). Of the fifteen the engine
+        -- has (br_lib/shared/world.lua's WEATHERS), FIVE ARE NOT OFFERED, each
+        -- because it rains:
+        --   RAIN, THUNDER  the owner's two, the storm's
+        --   CLEARING       light rain: the engine's weather 8, which alt:V's
+        --                  weather reference and the menus that set weather by
+        --                  index name "Light rain" (rageOS's admin commands:
+        --                  "Light rain (Clearing)")
+        --   NEUTRAL        weather 9, "Smoggy light rain" in the same places
+        --                  ("Smoggy light rain (Neutral)")
+        --   HALLOWEEN      rains: the Cfx.re thread on keeping it on ("Permanent
+        --                  Halloween") asks how to stop its rain
+        -- A choice is the engine's own weather by its own name, the festive
+        -- months included: "clear" is CLEAR, not the match's `base` sky.
+        -- server/terminalfx/time_weather.lua refuses any name here that is not
+        -- an engine weather, or is RAIN or THUNDER, whatever this table says.
         skyWeather = {
-            clear = 'base',
-            rain  = 'RAIN',
-            fog   = 'FOGGY',
+            sunny     = 'EXTRASUNNY',
+            clear     = 'CLEAR',
+            clouds    = 'CLOUDS',
+            smog      = 'SMOG',
+            overcast  = 'OVERCAST',
+            fog       = 'FOGGY',
+            xmas      = 'XMAS',
+            snowlight = 'SNOWLIGHT',
+            snow      = 'SNOW',
+            blizzard  = 'BLIZZARD',
         },
         -- Seconds a client blends into the chosen weather as its view crosses
         -- into the circle -- the storm's own sky blend (config/storm.lua's

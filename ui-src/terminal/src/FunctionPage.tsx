@@ -12,7 +12,7 @@ import RadioGroup from '@cloudscape-design/components/radio-group'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import type { FunctionDef, FunctionState } from './bridge'
-import { fill, indicatorOf, riskColor, showsSquads, statusOf, type Say } from './model'
+import { fill, indicatorOf, riskColor, runChoices, showsSquads, shownOptions, statusOf, type Say } from './model'
 import { Squads } from './Squads'
 import { voltsLine, voltsLines } from './Volts'
 
@@ -138,12 +138,15 @@ export function FunctionPage(props: {
       </Container>
     </div>,
   ]
-  if (def.options.length > 0) {
+  // ONLY THE OPTIONS OFFERED UNDER THE CHOICES MADE (round 4: Time &
+  // weather's time OR weather), and a run carries only theirs.
+  const offered = shownOptions(def, choice)
+  if (offered.length > 0) {
     sections.push(
       <div key="options" className="terminal-raised">
         <Container header={<Header variant="h2">{say('options_heading')}</Header>}>
           <SpaceBetween size="l">
-            {def.options.map((o) => (
+            {offered.map((o) => (
               <FormField key={o.id} label={say(`${id}_opt_${o.id}`)}>
                 <RadioGroup
                   value={choice[o.id] ?? o.default}
@@ -204,7 +207,7 @@ export function FunctionPage(props: {
                 <Button key="yes" variant="primary" style={runStyle(def.risk)} disabled={!available || props.busy}
                   onClick={() => {
                     setConfirm(false)
-                    props.onRun(id, choice)
+                    props.onRun(id, runChoices(def, choice))
                   }}>
                   {say('confirm_yes')}
                 </Button>,

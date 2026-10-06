@@ -32,8 +32,8 @@ import { fileURLToPath } from 'node:url'
 import {
   HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, costOf, current, filtersOf, hrefOf,
   indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, progressAfter,
-  rewrite, routeOfHref, sameRoute, showsSquads, shownCategories, shownFunctions, speaker, startBrowsing,
-  startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
+  rewrite, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions, shownOptions, speaker,
+  startBrowsing, startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
 } from '../terminal/src/model.ts'
 import { parseCatalog, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
 
@@ -107,6 +107,39 @@ const eq = (got, want, name) => ok(got === want, name, { got, want })
   eq(shownCategories(catalog, alone).join(','), 'intel,disruption', 'and no Squad category')
   const say = speaker({ ghost_name: 'Ghost', category_disruption: 'Disruption' }, false)
   ok(matches(alone[1], say, 'disruption'), 'the search finds Ghost by its solo category')
+}
+
+// ── round 4: an option offered only under another's choice (owner, 2026-10-06:
+//    Time & weather's "either time or weather to be set. Not both") ─────────
+{
+  const catalog = parseCatalog({
+    functions: [
+      { id: 'time_weather', category: 'disruption', risk: 'low', implemented: true,
+        options: [
+          { id: 'change', choices: ['time', 'weather'], default: 'time' },
+          { id: 'time', when: { change: 'time' }, choices: ['day', 'night'], default: 'night' },
+          { id: 'weather', when: { change: 'weather' }, choices: ['fog', 'snow'], default: 'fog' },
+          { id: 'bad', when: { 'Not An Id': 'x' }, choices: ['a', 'b'], default: 'a' },
+        ] },
+    ],
+    categories: ['disruption'],
+    currency: 'Volts',
+  })
+  const def = catalog.functions[0]
+  ok(def.options[1].when && def.options[1].when.change === 'time', 'a `when` crosses the bridge')
+  eq(def.options[0].when, null, 'an option without one has none')
+  eq(def.options[3].when, null, 'a `when` that is not one is none: the option is offered always')
+  const ids = (list) => list.map((o) => o.id).join(',')
+  eq(ids(shownOptions(def, {})), 'change,time,bad', 'nothing touched: the default change, and its own option')
+  eq(ids(shownOptions(def, { change: 'weather' })), 'change,weather,bad', 'the weather chosen: the weather offered, never the time')
+  eq(ids(shownOptions(def, { change: 'time', weather: 'snow' })), 'change,time,bad',
+    'a weather picked earlier is not offered once the time is chosen again')
+  const sent = runChoices(def, { change: 'weather', time: 'day', weather: 'snow' })
+  ok(sent.change === 'weather' && sent.weather === 'snow' && !('time' in sent),
+    'a run carries the weather and nothing for the time, whatever was picked before', sent)
+  const defaults = runChoices(def, {})
+  ok(defaults.change === 'time' && defaults.time === 'night' && !('weather' in defaults),
+    'untouched, a run carries the defaults of what is offered', defaults)
 }
 
 // ── Volts ───────────────────────────────────────────────────────────────────

@@ -391,6 +391,26 @@ do
     o = T.options({ id = 'y' }, nil)
     ok(o ~= nil and next(o) == nil, 'and runs with none')
 
+    -- ROUND 4: AN OPTION OFFERED ONLY UNDER ANOTHER'S CHOICE (`when`) --
+    -- Time & weather's time OR weather, never both.
+    local either = { id = 'z', options = {
+        { id = 'change', choices = { 'time', 'weather' }, default = 'time' },
+        { id = 'time', when = { change = 'time' }, choices = { 'day', 'night' }, default = 'night' },
+        { id = 'weather', when = { change = 'weather' }, choices = { 'fog', 'snow' }, default = 'fog' },
+    } }
+    o = T.options(either, nil)
+    ok(o and o.change == 'time' and o.time == 'night' and o.weather == nil,
+        "nothing chosen: the default change, its option's default, and the other left out")
+    o = T.options(either, { change = 'weather' })
+    ok(o and o.weather == 'fog' and o.time == nil, 'the weather chosen: its default, and no time')
+    o = T.options(either, { change = 'weather', weather = 'snow' })
+    ok(o and o.weather == 'snow' and o.time == nil, 'the weather and its choice')
+    o = T.options(either, { time = 'day' })
+    ok(o and o.time == 'day' and o.weather == nil, 'a time alone is the default change, time')
+    eq(T.options(either, { change = 'weather', time = 'day' }), nil,
+        'a choice for the option that does not apply refuses the whole request')
+    eq(T.options(either, { weather = 'snow' }), nil, 'and so does a weather under the default change, time')
+
     -- Through the net event: a bad choice is ANSWERED (the button waits on
     -- it) as bad_option, and nothing is spent.
     local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
@@ -559,6 +579,19 @@ do
             end
             ok(listed, ('%s.%s: its default is one of its choices'):format(id, o.id))
             ok(has(('%s_opt_%s'):format(id, o.id)), ('%s.%s has its label'):format(id, o.id))
+            -- `when` (round 4) names another option of this row and one of
+            -- its choices, or the option could never be offered.
+            if o.when ~= nil then
+                local good = type(o.when) == 'table' and next(o.when) ~= nil
+                for k, v in pairs(type(o.when) == 'table' and o.when or {}) do
+                    local other = nil
+                    for _, p in ipairs(row.options) do if p.id == k and p ~= o then other = p end end
+                    local named = false
+                    for _, ch in ipairs(other and other.choices or {}) do if ch == v then named = true end end
+                    if not named then good = false end
+                end
+                ok(good, ('%s.%s: its `when` names another option and one of its choices'):format(id, o.id))
+            end
         end
         -- "just don't tell them how it can help them" (owner, 2026-10-05): a
         -- function's own lines describe; they never sell.
@@ -731,17 +764,21 @@ do
         ok(not k:find('thunder', 1, true), ('copy.%s is not a thunderstorm line'):format(k))
     end
 
-    -- NO THUNDERSTORM: not a choice, so the server's option check refuses it.
+    -- NO THUNDERSTORM, AND SINCE ROUND 4 NO RAIN: not a choice, so the
+    -- server's option check refuses them.
     local tw = BR.Terminal.row('time_weather')
     local weather
     for _, o in ipairs(tw.options) do if o.id == 'weather' then weather = o end end
-    for _, ch in ipairs(weather.choices) do ok(ch ~= 'thunder', ('weather choice %s is not thunder'):format(ch)) end
-    eq(BR.Terminal.options(tw, { weather = 'thunder' }), nil, 'weather=thunder is not an option')
-    ok(BR.Terminal.options(tw, { weather = 'rain' }) ~= nil, 'and a listed weather still is')
+    for _, ch in ipairs(weather.choices) do
+        ok(ch ~= 'thunder' and ch ~= 'rain', ('weather choice %s is neither thunder nor rain'):format(ch))
+    end
+    eq(BR.Terminal.options(tw, { change = 'weather', weather = 'thunder' }), nil, 'weather=thunder is not an option')
+    eq(BR.Terminal.options(tw, { change = 'weather', weather = 'rain' }), nil, 'nor, since round 4, weather=rain')
+    ok(BR.Terminal.options(tw, { change = 'weather', weather = 'fog' }) ~= nil, 'and a listed weather still is')
     local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
     sv(1, 'open')
     S.clock = S.clock + 1000
-    run(1, { terminalId = 'dev', functionId = 'time_weather', options = { weather = 'thunder' } })
+    run(1, { terminalId = 'dev', functionId = 'time_weather', options = { change = 'weather', weather = 'thunder' } })
     local r = last(1, BR.Net.TERMINAL_RESULT)
     ok(r and r.ok == false and r.code == 'bad_option', 'a run asking for thunder is refused bad_option', r and r.code)
     ok(r and r.state.keyHeld == true and r.state.squadUsed == false, 'and nothing is spent')

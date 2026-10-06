@@ -19,7 +19,7 @@
  * scripts/check-terminal.mjs fails a component that reads the copy another way.
  */
 
-import type { Catalog, Copy, FunctionDef, FunctionState, RunningInfo, TabNote } from './bridge'
+import type { Catalog, Copy, FunctionDef, FunctionState, OptionDef, RunningInfo, TabNote } from './bridge'
 
 /** Every word the app says: a key in, the line (or nothing) out. */
 export type Say = (key: string | null | undefined) => string
@@ -470,6 +470,31 @@ export function shownFunctions(catalog: Catalog, squadMatch: boolean): FunctionD
   return catalog.functions
     .filter((f) => squadMatch || !f.squadOnly)
     .map((f) => (!squadMatch && f.soloCategory ? { ...f, category: f.soloCategory } : f))
+}
+
+/**
+ * THE OPTIONS A FUNCTION OFFERS UNDER THESE CHOICES (round 4, owner,
+ * 2026-10-06: Time & weather's "either time or weather to be set. Not
+ * both"): every option with no `when`, and each whose `when` holds -- the
+ * other option's choice, or its default while the player has not touched it.
+ * The server drops the rest (BR.Terminal.options), so the page shows exactly
+ * what a run can carry.
+ */
+export function shownOptions(def: FunctionDef, choice: Readonly<Record<string, string>>): OptionDef[] {
+  const now = (id: string): string | undefined =>
+    choice[id] ?? def.options.find((o) => o.id === id)?.default
+  return def.options.filter((o) => !o.when || Object.entries(o.when).every(([k, v]) => now(k) === v))
+}
+
+/**
+ * What a run sends: the choice of every option offered, the player's own or
+ * its default, and nothing for an option that is not offered -- a choice for
+ * one the server would refuse the whole run over.
+ */
+export function runChoices(def: FunctionDef, choice: Readonly<Record<string, string>>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const o of shownOptions(def, choice)) out[o.id] = choice[o.id] ?? o.default
+  return out
 }
 
 /** The categories with something in them, in the registry's order. */

@@ -393,6 +393,12 @@ T.costOf = costOf
 --- never a half-understood one run with the parts that parsed. A missing
 --- option takes its `default`, so a row whose options the player never
 --- touched runs exactly as its page said it would.
+---
+--- AN OPTION WITH `when` APPLIES ONLY UNDER ANOTHER'S CHOICE (round 4: Time &
+--- weather's time OR weather). Once every choice is in, an option whose
+--- `when` does not hold is left out of the answer -- its default dropped --
+--- and a choice the request made for it refuses the whole request: a run that
+--- asks for the weather and a time at once is not one the page can make.
 --- @param row table
 --- @param given any  the request's `options`: nil, or a table of strings
 --- @return table|nil opts
@@ -403,10 +409,9 @@ function T.options(row, given)
         declared[o.id] = o
         out[o.id] = o.default
     end
-    if given == nil then return out end
-    if type(given) ~= 'table' then return nil end
+    if given ~= nil and type(given) ~= 'table' then return nil end
     local n = 0
-    for k, v in pairs(given) do
+    for k, v in pairs(given or {}) do
         n = n + 1
         if n > OPTIONS_MAX then return nil end
         local o = type(k) == 'string' and declared[k] or nil
@@ -420,6 +425,18 @@ function T.options(row, given)
         end
         if not listed then return nil end
         out[k] = v
+    end
+    for _, o in ipairs(row.options or {}) do
+        if type(o.when) == 'table' then
+            local holds = true
+            for k, v in pairs(o.when) do
+                if out[k] ~= v then holds = false end
+            end
+            if not holds then
+                if given ~= nil and given[o.id] ~= nil then return nil end
+                out[o.id] = nil
+            end
+        end
     end
     return out
 end

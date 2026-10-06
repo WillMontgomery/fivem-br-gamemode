@@ -95,11 +95,16 @@ export interface TerminalState {
   match: MatchInfo | null
 }
 
-/** One option a function takes: its id, its choices, and the default. */
+/**
+ * One option a function takes: its id, its choices, and the default -- and,
+ * for one offered only under another option's choice (round 4: Time &
+ * weather's time OR weather), `when`: { otherOptionId: choice }.
+ */
 export interface OptionDef {
   id: string
   choices: string[]
   default: string
+  when: Record<string, string> | null
 }
 
 /** One registry row (br_lib/config/terminals.lua). */
@@ -270,7 +275,7 @@ export function parseCatalog(v: unknown): Catalog | null {
       const choices = list(o.choices).filter((c): c is string => typeof c === 'string' && CHOICE.test(c))
       if (oid === null || choices.length === 0) continue
       const def = typeof o.default === 'string' && choices.includes(o.default) ? o.default : (choices[0] ?? '')
-      options.push({ id: oid, choices, default: def })
+      options.push({ id: oid, choices, default: def, when: parseWhen(o.when) })
     }
     const cost = num(f.cost)
     functions.push({
@@ -287,6 +292,24 @@ export function parseCatalog(v: unknown): Catalog | null {
     functions, categories, currency: typeof v.currency === 'string' ? v.currency : '',
     pageLoad: parsePageLoad(v.pageLoad),
   }
+}
+
+/**
+ * An option's `when`, or null: { optionId: choice }, each a well-formed id
+ * and choice. One that is not one is null -- the option offered always -- since
+ * the server, which drops an option whose `when` does not hold, is the one
+ * that decides what a run carries.
+ */
+function parseWhen(v: unknown): Record<string, string> | null {
+  if (!isObj(v)) return null
+  const out: Record<string, string> = {}
+  let n = 0
+  for (const [k, c] of Object.entries(v)) {
+    if (!ID.test(k) || typeof c !== 'string' || !CHOICE.test(c)) return null
+    out[k] = c
+    n++
+  }
+  return n > 0 ? out : null
 }
 
 /** The page-load range, or null when it is not one: 0 <= min <= max <= 10 s. */

@@ -774,77 +774,168 @@ local function skySends(src)
     return eventsOf(BR.Net.TERMINAL_SKY, src)
 end
 
-describe('Time & weather: the time through the match clock, the weather to the match')
+describe('Time & weather: a time run moves the match clock, and touches no weather')
 do
     reset()
     local m = lobby('squad', 3)
     local base = stampClock(m)
-    local r = runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '180' })
+    local r = runAt(1, 'time_weather', { change = 'time', time = 'night' })
     ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
-    eq(r and r.toast, COPY.time_weather_done, 'and says the page\'s done line')
+    eq(r and r.toast, COPY.time_weather_done, "and says the page's done line")
     local a = m.clock
     ok(a ~= base and BR.World.validAnchor(a), 'the match runs from a new clock anchor')
     local h, mi = table.unpack(CT.fx.skyTime.night)
     eq(a.startSec, h * 3600 + mi * 60, 'starting at the night the config names')
-    eq(a.msPerMin, base.msPerMin, 'at the match\'s own rate (#394)')
+    eq(a.msPerMin, base.msPerMin, "at the match's own rate (#394)")
     eq(a.at, gameMs, 'from the moment it ran')
-    ok(m.terminalSky and m.terminalSky.base == base, 'and the match\'s own anchor is kept')
-    eq(m.terminalSky.untilAt, gameMs + 180000, 'for three minutes')
+    ok(m.terminalSky and m.terminalSky.base == base, "and the match's own anchor is kept")
+    eq(m.terminalSky.time, 'night', 'the time chosen is on the record (Power outage asks it)')
+    eq(m.terminalSky.weather, nil, 'NOT BOTH: no weather was set')
+    eq(m.terminalSky.untilAt, nil, 'and no clock of its own: it lasts the rest of the match')
     for src = 1, 5 do
         local p = skySends(src)[1]
-        ok(p and p.payload.weather == CT.fx.skyWeather.rain and p.payload.matchId == m.id,
-            ('p%d is told the weather (%s)'):format(src, CT.fx.skyWeather.rain))
+        ok(p and p.payload.weather == nil and p.payload.matchId == m.id,
+            ('p%d is told there is no weather of the terminal\'s'):format(src))
     end
     -- THE ONE CLOCK WRITER'S PLAN FOLLOWS THE ANCHOR: one new key, one write.
     local W = BR.World
     local plan = W.clockPlan({ state = BR.PlayerState.ALIVE, anchor = m.clock, now = gameMs + 60000, synced = true })
-    eq(plan.mode, 'run', 'a client\'s clock plan runs')
+    eq(plan.mode, 'run', "a client's clock plan runs")
     ok(math.abs(plan.sec - (a.startSec + 60000 * 60 / a.msPerMin)) < 1e-6,
         'from the chosen time, a minute on', plan.sec)
     local was = W.clockPlan({ state = BR.PlayerState.ALIVE, anchor = base, now = gameMs, synced = true })
     ok(plan.key ~= was.key, 'and its key is new, so the writer writes once')
+    -- THE REST OF THE MATCH: an hour on, it still holds.
+    gameMs = gameMs + 3600000
+    BR.Sched.step(gameMs)
+    ok(m.terminalSky ~= nil and m.clock == a, 'an hour later the match still runs on its clock')
     ok(errored() == nil, 'clean', errored())
 end
 
-describe('Time & weather: it ends, and the match\'s own running clock comes back')
+describe('Time & weather: a weather run sets the weather, and touches no clock')
 do
     reset()
     local m = lobby('squad', 3)
     local base = stampClock(m)
-    runAt(1, 'time_weather', { time = 'dusk', weather = 'fog', duration = '300' })
-    eq(skySends(3)[1].payload.weather, 'FOGGY', 'fog is FOGGY')
-    gameMs = gameMs + 299000
-    BR.Sched.step(gameMs)
-    ok(m.terminalSky ~= nil, 'a second before its five minutes it still holds')
-    gameMs = gameMs + 2000
-    BR.Sched.step(gameMs)
-    eq(m.terminalSky, nil, 'at five minutes it is over')
-    ok(m.clock == base, 'the match\'s own anchor is back -- the same one')
-    local W = BR.World
-    local plan = W.clockPlan({ state = BR.PlayerState.ALIVE, anchor = m.clock, now = gameMs, synced = true })
-    ok(math.abs(plan.sec - W.timeAt(base, gameMs)) < 1e-6,
-        'so the clock is where the match\'s own time has run to meanwhile, not where it was')
+    local r = runAt(1, 'time_weather', { change = 'weather', weather = 'snow' })
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    ok(m.clock == base, 'NOT BOTH: the match clock is its own, untouched')
+    eq(m.terminalSky.weather, 'SNOW', 'snow is SNOW')
+    eq(m.terminalSky.anchor, nil, 'and no time was set')
     for src = 1, 5 do
-        local p = skySends(src)
-        ok(#p == 2 and p[2].payload.weather == nil, ('p%d is told the weather is over'):format(src))
+        local p = skySends(src)[1]
+        ok(p and p.payload.weather == 'SNOW', ('p%d is told the weather'):format(src))
     end
+    gameMs = gameMs + 3600000
+    BR.Sched.step(gameMs)
+    eq(m.terminalSky and m.terminalSky.weather, 'SNOW', 'an hour later it still holds: the rest of the match')
+    -- A WEATHER RUN ON A MATCH WITH NO CLOCK: the weather needs none.
+    reset()
+    m = lobby('squad', 3)
+    m.clock = nil
+    r = runAt(1, 'time_weather', { change = 'weather', weather = 'fog' })
+    ok(r and r.ok == true and m.terminalSky and m.terminalSky.weather == 'FOGGY',
+        'a match with no clock still takes a weather', r and r.code)
 end
 
-describe('Time & weather: clear is the base sky; no thunder')
+describe('Time & weather: either one, never both, on the wire')
 do
-    eq(CT.fx.skyWeather.clear, 'base', 'clear is the match\'s own clear sky, the `base` role')
-    ok(BR.World.SKY_ROLE.base ~= nil, 'which is a role the sky knows')
-    for choice, w in pairs(CT.fx.skyWeather) do
-        ok(w ~= 'THUNDER', ('%s is not a thunderstorm (owner, 2026-10-05)'):format(choice))
-        ok(BR.World.WEATHER[w] or BR.World.SKY_ROLE[w], ('%s names a weather or a role (%s)'):format(choice, w))
+    reset()
+    local m = lobby('squad', 3)
+    stampClock(m)
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'time_weather',
+        options = { change = 'time', time = 'night', weather = 'snow' } })
+    flush()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'bad_option', 'a run asking for a time and a weather: bad_option',
+        r and r.code)
+    nothingSpent(1, 'both asked')
+    eq(m.terminalSky, nil, 'and nothing was set')
+    for _, w in ipairs({ 'rain', 'thunder', 'clearing', 'neutral', 'halloween' }) do
+        gameMs = gameMs + 1000
+        fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'time_weather',
+            options = { change = 'weather', weather = w } })
+        flush()
+        r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+        ok(r and r.code == 'bad_option', ('weather=%s is not a choice'):format(w), r and r.code)
     end
+    nothingSpent(1, 'the storm\'s weathers asked')
+    -- And the default: no choice at all is the time, at night.
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'time_weather' })
+    flush()
+    ok(m.terminalSky and m.terminalSky.time == 'night' and m.terminalSky.weather == nil,
+        'a run with no choices is the defaults: the time, night')
+end
+
+describe('Time & weather: the weathers are the engine\'s, less the five that rain')
+do
+    local W = BR.World
+    local offered, n = {}, 0
+    for choice, w in pairs(CT.fx.skyWeather) do
+        ok(W.WEATHER[w] == true, ('%s names an engine weather (%s)'):format(choice, tostring(w)))
+        ok(not W.SKY_ROLE[w], ('%s is not a role: the engine\'s own weather by name'):format(choice))
+        offered[w] = true
+        n = n + 1
+    end
+    for _, w in ipairs({ 'RAIN', 'THUNDER', 'CLEARING', 'NEUTRAL', 'HALLOWEEN' }) do
+        ok(not offered[w], ('%s is not offered: it rains'):format(w))
+    end
+    eq(n, #W.WEATHERS - 5, 'every other engine weather is offered')
     local row = T.row('time_weather')
+    local seen = 0
     for _, o in ipairs(row.options) do
         for _, ch in ipairs(o.choices) do
             if o.id == 'time' then ok(CT.fx.skyTime[ch] ~= nil, 'time ' .. ch .. ' has its hour') end
-            if o.id == 'weather' then ok(CT.fx.skyWeather[ch] ~= nil, 'weather ' .. ch .. ' has its sky') end
+            if o.id == 'weather' then
+                ok(CT.fx.skyWeather[ch] ~= nil, 'weather ' .. ch .. ' has its engine weather')
+                seen = seen + 1
+            end
         end
     end
+    eq(seen, n, 'and the row offers each of them, once')
+    -- THE SERVER'S OWN GUARD: a table that named the storm's two would still
+    -- be refused.
+    reset()
+    local m = lobby('squad', 3)
+    CT.fx.skyWeather.fog = 'RAIN'
+    ok(not T.startSky(m, { change = 'weather', weather = 'fog' }, gameMs), 'a choice mapped to RAIN is refused')
+    CT.fx.skyWeather.fog = 'THUNDER'
+    ok(not T.startSky(m, { change = 'weather', weather = 'fog' }, gameMs), 'and to THUNDER')
+    CT.fx.skyWeather.fog = 'FOGGY'
+    eq(m.terminalSky, nil, 'and neither set anything')
+end
+
+describe('Time & weather: one run each, and the second keeps the first')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local base = stampClock(m)
+    runAt(1, 'time_weather', { change = 'time', time = 'night' })
+    local night = m.clock
+    -- Squad B's key, the other terminal's reach: run from the same terminal.
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    keys[3] = true
+    runAt(3, 'time_weather', { change = 'weather', weather = 'fog' })
+    ok(m.clock == night, "a weather run keeps the first run's time")
+    eq(m.terminalSky.weather, 'FOGGY', 'and sets its weather')
+    eq(m.terminalSky.time, 'night', 'the time chosen still on the record')
+    ok(m.terminalSky.base == base, "with the match's own anchor still the one kept")
+    -- A third squad's time run keeps the weather.
+    player(6, m, 'C', SITE)
+    keys[6] = true
+    market.wallet[6] = 1000
+    runAt(6, 'time_weather', { change = 'time', time = 'day' })
+    local h = CT.fx.skyTime.day[1]
+    eq(m.clock.startSec, h * 3600 + CT.fx.skyTime.day[2] * 60, 'a later time run sets its time')
+    eq(m.terminalSky.weather, 'FOGGY', 'and keeps the weather')
+    ok(m.terminalSky.base == base, "and the match's own anchor is still the one kept")
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    ok(m.clock == base, 'which is what comes back')
 end
 
 describe('Time & weather: the match ending ends it')
@@ -852,12 +943,15 @@ do
     reset()
     local m = lobby('squad', 3)
     local base = stampClock(m)
-    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
+    runAt(1, 'time_weather', { change = 'time', time = 'night' })
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    keys[3] = true
+    runAt(3, 'time_weather', { change = 'weather', weather = 'overcast' })
     m.state = BR.MatchState.ENDED
     gameMs = gameMs + 1000
     BR.Sched.step(gameMs)
     eq(m.terminalSky, nil, 'the end screen is not the match: it is over')
-    ok(m.clock == base, 'with the match\'s own clock back for the end screen')
+    ok(m.clock == base, "with the match's own clock back for the end screen")
     eq(skySends(2)[#skySends(2)].payload.weather, nil, 'and the weather released')
 end
 
@@ -866,32 +960,31 @@ do
     reset()
     local m = lobby('squad', 3)
     local base = stampClock(m)
-    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
+    runAt(1, 'time_weather', { change = 'time', time = 'night' })
     season(1)
     gameMs = gameMs + 1000
     BR.Sched.step(gameMs)
     season(2)
     eq(m.terminalSky, nil, 'off Season 2 it is over')
-    ok(m.clock == base, 'and the clock is the match\'s own')
+    ok(m.clock == base, "and the clock is the match's own")
 end
 
-describe('Time & weather: a second run replaces the first, and the match\'s own clock still comes back')
+describe('Time & weather: a weather run alone leaves the clock alone at the end')
 do
     reset()
     local m = lobby('squad', 3)
-    local base = stampClock(m)
-    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
-    -- Squad B's key, the other terminal's reach: run from the same terminal.
-    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
-    keys[3] = true
-    runAt(3, 'time_weather', { time = 'day', weather = 'fog', duration = '180' })
-    local h = CT.fx.skyTime.day[1]
-    eq(m.clock.startSec, h * 3600 + CT.fx.skyTime.day[2] * 60, 'the second run\'s time')
-    eq(m.terminalSky.weather, 'FOGGY', 'and weather')
-    ok(m.terminalSky.base == base, 'with the match\'s own anchor still the one kept')
-    gameMs = gameMs + 181000
+    stampClock(m)
+    runAt(1, 'time_weather', { change = 'weather', weather = 'smog' })
+    -- Something else gave the match a new anchor meanwhile (a `brforce` back
+    -- to warmup stamps none; a test stands in): the end must not put back a
+    -- clock no time run took.
+    local other = BR.World.anchor(gameMs)
+    m.clock = other
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
     BR.Sched.step(gameMs)
-    ok(m.clock == base, 'which is what comes back')
+    eq(m.terminalSky, nil, 'over')
+    ok(m.clock == other, 'and the clock is whatever the match has: a weather run took none')
 end
 
 describe('Time & weather: a client that restarts is told again')
@@ -899,29 +992,45 @@ do
     reset()
     local m = lobby('squad', 3)
     stampClock(m)
-    runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '300' })
+    runAt(1, 'time_weather', { change = 'weather', weather = 'blizzard' })
     sent = {}
     fire(BR.Net.READY, 4)
     local p = skySends(4)[1]
-    ok(p and p.payload.weather == 'RAIN', 'br:ready re-sends the weather while it lasts')
-    gameMs = gameMs + 301000
+    ok(p and p.payload.weather == 'BLIZZARD', 'br:ready re-sends the weather while it lasts')
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
     BR.Sched.step(gameMs)
     sent = {}
     fire(BR.Net.READY, 4)
     eq(#skySends(4), 0, 'and nothing once it is over')
+    -- A time run alone has no weather to re-send: the clock rides the snapshot.
+    reset()
+    m = lobby('squad', 3)
+    stampClock(m)
+    runAt(1, 'time_weather', { change = 'time', time = 'dusk' })
+    sent = {}
+    fire(BR.Net.READY, 4)
+    eq(#skySends(4), 0, 'a time run alone re-sends nothing')
 end
 
-describe('Time & weather: refused with no clock, and given back when the match ends while it loads')
+describe('Time & weather: a time run refused with no clock, and given back when the match ends while it loads')
 do
     reset()
     local m = lobby('squad', 3)
     m.clock = nil
     fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
     local f = listed(1, 'time_weather')
-    ok(f and f.reason == 'unavailable', 'a match with no clock to run from: unavailable', f and f.reason)
+    ok(f and f.available == true, 'the card: available, since a weather run needs no clock', f and f.reason)
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'time_weather',
+        options = { change = 'time', time = 'night' } })
+    flush()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'unavailable', 'a time run with no clock to run from: unavailable',
+        r and r.code)
     nothingSpent(1, 'no clock')
     stampClock(m)
-    local r = runAt(1, 'time_weather', { time = 'night', weather = 'rain', duration = '180' }, true)
+    r = runAt(1, 'time_weather', { change = 'time', time = 'night' }, true)
     eq(r and r.code, 'running', 'accepted')
     m.state = BR.MatchState.ENDED
     flush()
@@ -934,17 +1043,37 @@ end
 describe('Time & weather: squad and solo lines, and the dev path')
 do
     eq(TS.pick(COPY, 'time_weather_risks', false), COPY.time_weather_risks_solo, 'the risks line has its solo sibling')
-    for _, key in ipairs({ 'time_weather_done', 'time_weather_description', 'time_weather_what' }) do
+    for _, key in ipairs({ 'time_weather_done', 'time_weather_description', 'time_weather_what',
+                           'time_weather_summary', 'time_weather_duration', 'time_weather_opt_change' }) do
         ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
             ('%s never says squad outside a squad match'):format(key))
     end
+    -- EVERY LINE THAT NAMES THE WEATHER SAYS IT IS THE WEATHER INSIDE THE
+    -- CIRCLE, and none promises a few minutes any more.
+    for _, key in ipairs({ 'time_weather_summary', 'time_weather_what' }) do
+        ok(COPY[key]:find('inside the circle', 1, true) ~= nil, key .. ' says the weather is inside the circle')
+        ok(not COPY[key]:find('a while', 1, true) and not COPY[key]:find('minute', 1, true),
+            key .. ' promises no few minutes')
+    end
+    ok(COPY.time_weather_what:find('not both', 1, true) ~= nil, 'the page says one or the other, not both')
+    eq(COPY.time_weather_duration, 'Rest of the match', 'and the duration is the rest of the match')
+    local durations = {}
+    for k in pairs(COPY) do
+        if k:find('^time_weather_opt_duration') then durations[#durations + 1] = k end
+    end
+    eq(#durations, 0, 'and no duration option is left in the copy ' .. table.concat(durations, ', '))
     reset()
     local m = lobby('squad', 3)
     local base = stampClock(m)
     keys[1] = false
-    sv(1, 'run time_weather time=dusk weather=clear duration=180')
-    ok(m.terminalSky and m.terminalSky.weather == 'base' and m.clock ~= base,
-        '`brterminal run time_weather time=dusk weather=clear duration=180` sets it')
+    sv(1, 'run time_weather change=time time=dusk')
+    ok(m.terminalSky and m.terminalSky.time == 'dusk' and m.clock ~= base,
+        '`brterminal run time_weather change=time time=dusk` sets the time')
+    sv(1, 'run time_weather change=weather weather=xmas')
+    eq(m.terminalSky and m.terminalSky.weather, 'XMAS', '`run time_weather change=weather weather=xmas` the weather')
+    local before = m.terminalSky.weather
+    sv(1, 'run time_weather time=night weather=snow')
+    eq(m.terminalSky.weather, before, 'both at once is refused')
     eq(#market.charges + #notices, 0, 'for nothing, and with no notice')
 end
 
@@ -1062,12 +1191,12 @@ do
     eq((W.sky()), 'EXTRASUNNY', 'a match stands under the base sky')
 
     C.inside = true
-    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'RAIN' })
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'SNOW' })
     local name, src = W.sky()
-    eq(name, 'RAIN', 'told RAIN with its view inside the circle: RAIN')
+    eq(name, 'SNOW', 'told SNOW with its view inside the circle: SNOW')
     eq(src, 'terminal', 'as the terminal\'s claim')
-    eq((C.wrote()), 'RAIN', 'written through client/world.lua')
-    ok(C.count('SetRainLevel') >= 1, 'with the rain knob handed back, so it really rains')
+    eq((C.wrote()), 'SNOW', 'written through client/world.lua')
+    ok(C.count('SetRainLevel') >= 1, 'with the rain knob handed back to the weather written')
 
     -- OUTSIDE THE CIRCLE, NOT CAUGHT (phase 1's free-loot hold): no claim.
     C.inside = false
@@ -1085,7 +1214,7 @@ do
 
     -- BACK INSIDE: the storm's all-clear is a role, and yields to the choice.
     W.want('storm', 'base', 5.0)
-    eq((W.sky()), 'RAIN', 'back inside, the storm\'s all-clear yields to the chosen RAIN')
+    eq((W.sky()), 'SNOW', 'back inside, the storm\'s all-clear yields to the chosen SNOW')
     W.want('override', 'SMOG', 0.0)
     eq((W.sky()), 'SMOG', 'and a console sky still outranks everything')
     W.want('override', nil)
@@ -1106,15 +1235,26 @@ do
     local _, ground = C.wrote()
     eq(ground, true, 'with snow on the ground')
     C.inside = true
-    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'base' })
-    eq((W.sky()), 'XMAS', 'clear, in December or January, is the base sky: XMAS')
-    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'RAIN' })
-    eq((W.sky()), 'RAIN', 'rain is RAIN')
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'CLEAR' })
+    eq((W.sky()), 'CLEAR', 'clear, in December or January too, is the engine\'s CLEAR (round 4)')
     _, ground = C.wrote()
     eq(ground, false, 'and the ground is bare under it: the ground follows the resolved weather (#399)')
-    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1 })
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'BLIZZARD' })
     _, ground = C.wrote()
-    eq(ground, true, 'over, XMAS and the white ground come back')
+    eq((W.sky()), 'BLIZZARD', 'blizzard is BLIZZARD')
+    eq(ground, true, 'with snow on the ground')
+    C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1 })
+    eq((W.sky()), 'XMAS', 'over, the festive sky comes back')
+end
+
+describe('Time & weather on a client: never the storm\'s two, never a role')
+do
+    local C = newClient(SKY_FILES)
+    C.inside = true
+    for _, w in ipairs({ 'RAIN', 'THUNDER', 'base', 'lobby' }) do
+        C.fire(C.env.BR.Net.TERMINAL_SKY, { matchId = 1, weather = w })
+        eq(C.env.BR.TerminalFx.skyClaim(), nil, ('told %s: no claim'):format(w))
+    end
 end
 
 describe('Time & weather on a client: the lobby and a season switch end it')
@@ -1277,7 +1417,9 @@ do
     end
     ok(lightLines >= 6, 'the card, the page, the done line, the notice and both risks lines were read',
         lightLines)
-    ok(weatherLines >= 3, 'the card, the page and the done line were read', weatherLines)
+    -- (Round 4's done line names neither the time nor the weather: one line
+    -- for either choice.)
+    ok(weatherLines >= 2, 'the card and the page were read', weatherLines)
 end
 
 describe('Power outage: it ends, one at a time, and with the match and the season')

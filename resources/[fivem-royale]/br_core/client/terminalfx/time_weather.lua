@@ -11,7 +11,8 @@
 -- the circle gets THUNDER whatever was chosen -- and above the island's. A role
 -- the storm holds for the rest of a match (its all-clear, `base`) yields to it
 -- (br_lib/shared/world.lua's resolveSky). The ground's snow pass follows the
--- resolved weather there, as it always does (#399).
+-- resolved weather there, as it always does (#399): white under the chosen
+-- SNOW, bare under the chosen CLEAR, festive months or not.
 --
 -- ONLY WHILE THIS CLIENT'S VIEW IS INSIDE THE CIRCLE: the storm's own tick
 -- measures where the view stands against the zone the wall draws -- the shot,
@@ -32,7 +33,7 @@
 BR = BR or {}
 BR.TerminalFx = BR.TerminalFx or {}
 
---- The weather the server says this match chose: a weather name or a role.
+--- The weather the server says this match chose: an engine weather's name.
 --- Nil while there is none.
 local sky = nil
 
@@ -81,8 +82,10 @@ AddEventHandler(BR.Net.TERMINAL_SKY, function(d)
     if type(d) ~= 'table' then return end
     local w = d.weather
     local W = BR.World
-    -- A WEATHER THE ENGINE KNOWS, OR A ROLE: anything else is no claim at all.
-    if type(w) == 'string' and (W.WEATHER[w] or W.SKY_ROLE[w]) then
+    -- A WEATHER THE ENGINE KNOWS, NEVER THE STORM'S TWO (round 4: "except
+    -- rain and thunder since those are reserved for the storm only"):
+    -- anything else is no claim at all. The server sends only these.
+    if type(w) == 'string' and W.WEATHER[w] and w ~= 'RAIN' and w ~= 'THUNDER' then
         sky = w
     else
         sky = nil

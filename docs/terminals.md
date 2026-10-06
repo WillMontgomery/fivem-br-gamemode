@@ -299,7 +299,8 @@ first.
 | `field_medic` | Field medic | supply | low | | **live** (wave A) |
 
 The costs are the coordinator's proposal for the owner (round 2). Time &
-weather offers no thunderstorm, and its chosen weather holds only inside the
+weather changes the time or the weather, never both, for the rest of the match;
+it offers no thunderstorm and no rain, and its chosen weather holds only inside the
 circle -- outside, the storm's own weather wins (the owner's rule; how it is
 built is [wave B's section](#the-storm-the-sky-the-clock-and-the-lights-wave-b)).
 
@@ -338,7 +339,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_USE` | C→S | `{ terminalId }` | "I pressed interact here." Opens a session only for a living player within reach by the server's own sample, in a PLAYING match, at an online terminal; offline is refused aloud. One per `runMinIntervalMs`. |
 | `BR.Net.TERMINAL_SITES` | S→C | `{ placed, removed, forced }` | The dev tools' changes, whole, to everyone, and on `br:ready`. |
 | `BR.Net.TERMINAL_REVEAL` | S→C | `{ x, y, r, matchId }` | Storm reveal, to the squad that ran it alone; again on `br:ready` while that match lasts, and again when Storm control moves the end. |
-| `BR.Net.TERMINAL_SKY` | S→C | `{ matchId, weather? }` | Time & weather: the chosen weather (a weather name or the `base` role), to the whole match when it starts and when it ends (no `weather`), and on `br:ready` while it lasts. Each client claims it only while its view is inside the circle. |
+| `BR.Net.TERMINAL_SKY` | S→C | `{ matchId, weather? }` | Time & weather: the chosen weather (an engine weather's name, never RAIN or THUNDER), to the whole match when a run sets the time or the weather and when the match ends (no `weather`), and on `br:ready` while one is set. Each client claims it only while its view is inside the circle. |
 | `BR.Net.TERMINAL_POWER` | S→C | `{ matchId, list = { { kind, x?, y?, r?, line? } } }` | Power outage: every live outage area, to the whole match when one starts or ends (an empty list: the lights back), and on `br:ready` while one lasts. |
 | `BR.Net.YUBIKEY_STATE` | S→C | `{ held, squadUsed, squadMatch }` | This player's key and their squad's use, to them alone, on every change and on `br:ready`; `squadMatch` picks the plate's `squad_used` line. Squadmates learn who holds a key from the squad beacon's `yubikey` bit. |
 
@@ -717,8 +718,20 @@ final circle is on the map. `tools/test_storm.lua`'s `control.valid` steers
 24 matches to each of the three at every phase and checks every later circle
 against the planner's own geometry.
 
-**Time & weather** (`time_weather.lua`, both sides; options `time`,
-`weather`, `duration`):
+**Time & weather** (`time_weather.lua`, both sides; options `change`, then
+`time` or `weather`). Round 4 (owner, 2026-10-06): "either time or weather to
+be set. Not both. Weather should be any weather the game engine allows, except
+rain and thunder since those are reserved for the storm only. The duration
+should be the remainder of the match".
+
+- **One or the other.** `change` is `time` or `weather`, and the registry
+  offers the matching option only under it (`when = { change = ... }`):
+  `BR.Terminal.options` drops the other and refuses a run that chose both
+  (`bad_option`), and the app shows only the one offered (model.ts
+  `shownOptions`, `runChoices`). A run changes that one and keeps the other as
+  an earlier run left it; `m.terminalSky` holds `base`, `anchor` and `time` (a
+  time run's) and `weather` (a weather run's) -- `time` is what Power outage
+  asks.
 
 - **The time** is the match clock's anchor (#394). The run gives the match a
   new anchor -- the chosen hour from `fx.skyTime` (day 12:00, dusk 19:30,
@@ -727,6 +740,8 @@ against the planner's own geometry.
   one clock writer (`BR.Native.applyClock`) writes once when it arrives and
   once when the match's own anchor comes back at the end, so the clock returns
   to where the match's own time has run to. No client writes the clock for it.
+  A weather needs no clock, so only a time run is refused (`unavailable`) in a
+  match with none.
 - **The weather** is a sky claim, `terminal`, ranked below `storm` and above
   `island` (`br_lib/shared/world.lua`'s `SKY_SOURCES`), claimed only while the
   client's view is inside the circle (`BR.Storm.viewInside`, kept by the
@@ -734,15 +749,24 @@ against the planner's own geometry.
   whatever was chosen; outside the circle and not caught (phase 1's free-loot
   hold) the storm's own sky stands. **A role yields to a weather claimed below
   it**: the storm's all-clear is the `base` role, held for the rest of a match
-  once the storm has caught the player, and the chosen RAIN is drawn over it.
-  Claiming a weather hands the rain knob back, as the console's does.
-- **Clear** is the `base` role: EXTRASUNNY, and **XMAS with snow on the
-  ground in December and January** (#399), as a storm exit is. The ground
-  follows the resolved weather as #399 shipped -- bare under RAIN or FOGGY.
-- **It ends** when its time is up, when the match stops PLAYING (the end
-  screen included) or off Season 2, on a 1 s pass (`fx.worldCheckMs`): the
-  match's own clock back, the weather released on every client. A client lets
-  go in the lobby too. A second run replaces the first.
+  once the storm has caught the player, and the chosen weather is drawn over
+  it. Claiming a weather hands the rain knob back, as the console's does.
+- **The weathers** are the engine's own, by name (`fx.skyWeather`): ten of the
+  fifteen -- EXTRASUNNY, CLEAR, CLOUDS, SMOG, OVERCAST, FOGGY, XMAS, SNOWLIGHT,
+  SNOW and BLIZZARD. Not RAIN or THUNDER (the owner's: the storm's), and not
+  the three more that rain: CLEARING (the engine's weather 8, "Light rain" in
+  alt:V's weather reference and in admin tools that set weather by index) and
+  NEUTRAL (weather 9, "Smoggy light rain" in the same places), and HALLOWEEN
+  (rain is what the Cfx.re "Permanent Halloween" thread asks how to stop). The
+  server refuses RAIN and THUNDER whatever the table says, and a client claims
+  neither. The festive months change nothing here: "clear" is CLEAR, and the
+  ground follows the resolved weather as #399 shipped -- white under XMAS,
+  SNOWLIGHT, SNOW and BLIZZARD, bare under the rest.
+- **It lasts the rest of the match.** It ends when the match stops PLAYING
+  (the end screen included) or off Season 2, on a 1 s pass
+  (`fx.worldCheckMs`): the match's own clock back (only if a time run moved
+  it), the weather released on every client. A client lets go in the lobby
+  too.
 
 **Power outage** (`power_outage.lua`, both sides; options `area`,
 `duration`): the engine's blackout (`SET_ARTIFICIAL_LIGHTS_STATE`) is one
@@ -779,7 +803,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you. Wave B: `run storm_control zone=far`, `run time_weather time=night weather=rain duration=300`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you. Wave B: `run storm_control zone=far`, `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
