@@ -26,8 +26,8 @@ Around them, the Gameplay half:
 | **The world** | `br_core/client/yubikey.lua` | Each terminal's blip and plate (the laptops are the owner's ymap's, hidden where terminals are off); the press that asks to open one; the key's HUD glyph; Storm reveal on the maps. Decides nothing. |
 | **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against a Lockdown and the storm (`offlineWhy`), the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
 | **The effects** | `br_core/server/terminalfx.lua` | What the first built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen; and the helpers the files below share. |
-| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Key finder, Pulse, Ghost, Contract, Lockdown -- see [Wave A](#wave-a-owner-2026-10-06). |
-| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents, the bounty, Key finder's keys and Pulse's finds on this player's maps, and a Lockdown's fact for the world's online rule, from the server's pushes. Decides nothing. |
+| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Key finder, Pulse, Ghost, Contract, Lockdown -- see [Wave A](#wave-a-owner-2026-10-06); and wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06). |
+| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents, the bounty, Key finder's keys and Pulse's finds on this player's maps, a Lockdown's fact for the world's online rule, and an EMP's stalled vehicles held on the client that owns them, from the server's pushes and state bags. Decides nothing. |
 
 **The server decides everything.** The computer and the app only ask. A run is
 taken only from a player with an open session on that terminal, which only the
@@ -70,7 +70,7 @@ effect is not built), `offline`, `locked` (a Lockdown has this terminal),
 squad's in flight, a squad-only function outside a squad match), or any key a
 function's own refusal adds (`no_storm`, `no_site`, `drop_busy`, `ammo_full`;
 wave A's `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`,
-`no_keys_held`, `no_target`, `lockdown_none`). The app shows the line for the
+`no_keys_held`, `no_target`, `lockdown_none`; wave C's `reboot_none`). The app shows the line for the
 code, or `unavailable` when there is none, and maps it to the card's four
 statuses: Available, Used (`squad_used`), Not available (`fn_offline`,
 `offline`), Not available at this terminal (everything else, `locked`
@@ -154,6 +154,7 @@ The table below is the lines outside the functions' own:
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
 | `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target`, `lockdown_none` | At the terminal: why not (wave A's functions) |
+| `reboot_none` | At the terminal: why not (Reboot: nobody in the squad eliminated and still in the match). Squad-only, so no `_solo` line |
 | `locked` | A terminal a Lockdown has taken: its world plate (nothing to press), a toast to a player who presses there anyway, the app's reason, and the refusal of a second Lockdown whose own terminal the first one took while it loaded |
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
 | `pulse_detected` | A toast to each player a Pulse found, after the lobby's notice |
@@ -273,15 +274,15 @@ first.
 | `scan` | Scan | intel | high | 200 | **live** |
 | `storm_reveal` | Storm reveal | intel | low | | **live** |
 | `storm_control` | Storm control | storm | medium | 150 | **live** (wave B) |
-| `comms_blackout` | Comms blackout | disruption (squad-only) | medium | | offline (wave C) |
+| `comms_blackout` | Comms blackout | disruption (squad-only) | medium | | **live** (wave C) |
 | `time_weather` | Time & weather | disruption | low | | **live** (wave B) |
 | `power_outage` | Power outage | disruption | low | | **live** (wave B) |
 | `disarm` | Disarm | disruption | high | 200 | **live** (wave A) |
 | `supply_drop` | Supply drop | supply | medium | | **live** |
 | `max_ammo` | Max ammo | supply | low | | **live** |
-| `reboot` | Reboot | squad (squad-only) | medium | 150 | offline (wave C) |
+| `reboot` | Reboot | squad (squad-only) | medium | 150 | **live** (wave C) |
 | `ghost` | Ghost | squad (disruption alone) | low | | **live** (wave A) |
-| `emp` | EMP | disruption | medium | | offline (wave C) |
+| `emp` | EMP | disruption | medium | | **live** (wave C) |
 | `key_finder` | Key finder | intel | low | | **live** (wave A) |
 | `storm_delay` | Storm delay | storm | low | | **live** (wave B) |
 | `pulse` | Pulse | intel | medium | | **live** (wave A) |
@@ -318,6 +319,9 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_KEYS` | S→C | `{ matchId, list = { { x, y } }, leftMs }` | Key finder: where each Yubikey was when it ran, to the squad that ran it alone; once more, empty, when its `fx.keyFinderMs` is up or the match ends; again on `br:ready` while it lasts. |
 | `BR.Net.TERMINAL_PULSE` | S→C | `{ matchId, list = { { s, x, y } } }` | Pulse: where each player it found is now, to the squad that ran it alone, every `fx.pulsePingMs` for `fx.pulseMs`, and once more, empty, when it is over. |
 | `BR.Net.TERMINAL_LOCKDOWN` | S→C | `{ matchId, on, keep?, leftMs? }` | Lockdown: every terminal but `keep` is offline in this match, to everyone in it, when it starts and when it ends (`on` false), and on `br:ready` while it lasts. The `lock` of the one online rule. |
+| `fx.empBag` (`brEmp`), an entity state bag | S→C | the milliseconds an EMP has left, on each vehicle it stalled | EMP: set by the server alone (`server/terminalfx/emp.lua`) as it goes off, replicated to every client the vehicle is relevant to (and to one it becomes relevant to later), cleared when it ends, when its match ends or is torn down, and off Season 2. `client/terminalfx/emp.lua` reads it. |
+| `BR.Net.SQUAD_POS` (`server/party.lua`) | S→C | the squad beacon's rows | Comms blackout: while one another squad ran is in force, every row sent to a blacked-out squad leaves `x` and `y` off, and nothing else (`BR.Terminal.beaconDark`). |
+| `BR.Net.REVIVEKEY_ARRIVE`, `BR.Net.REVIVEKEY_PLACE` | S→C | `{ x, y, z }` / `{ cancelled }` | Reboot: the revive key's own return (`BR.ReviveKey.bringBackAt`), over this terminal. |
 | `BR.Net.TERMINAL_RESULT` | S→C | `{ terminalId, functionId, ok, code, state?, runMs?, cost?, balance?, toast? }` | To the runner alone. `code` is `running` when a run is accepted (with `runMs`), `done` when it is over (a paid one with the new `balance`), else a reason (`no_volts` with `cost` and `balance`). Every answer but `running` carries `toast`, the line the server would toast for it; a client whose computer cannot show the answer toasts that. Once the server knows the computer has closed, the last word is its own toast instead. |
 | `BR.Net.TERMINAL_CLOSE` | S→C | `{ why }` | The session is over (death, storm, teardown). |
 | `BR.Net.TERMINAL_CLOSED` | C→S | `{ terminalId, why }` | The computer went away on the client; ends only the session it names. |
@@ -695,7 +699,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online (`LOCKED (Lockdown)` when a Lockdown has it) |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`, `brterminal run lockdown duration=300`). "This terminal" is the dev terminal, which is nowhere: Pulse is centered on you and Lockdown keeps the terminal nearest you. Wave B: `run storm_delay delay=120`, `run storm_control zone=far`, `run time_weather time=night weather=rain duration=300`, `run power_outage area=here duration=240`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`, `brterminal run lockdown duration=300`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you, and Lockdown keeps the terminal nearest you. Wave B: `run storm_delay delay=120`, `run storm_control zone=far`, `run time_weather time=night weather=rain duration=300`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
@@ -811,3 +815,63 @@ authorization (a window and a ceiling per stat, `authorize`) and its
 INV_EFFECT, so `server/roster.lua`'s ledger follows the ped to full instead of
 snapping it back; a heal or shield channel still running is ended first (its
 item left unspent), or its next slice would pull the ceiling back down.
+
+## Wave C (owner, 2026-10-06)
+
+The last three of "all 14": EMP, Comms blackout and Reboot, built the wave A
+way -- a file each under `server/terminalfx/` (and, for EMP,
+`client/terminalfx/`), listed in `br_core/fxmanifest.lua`, each keeping its
+state on `m.terminalFx` and its clock on the server, ending with its match and
+off Season 2, each through `brterminal run <id> [option=choice]`.
+
+| Function | What it does | Refused, spending nothing |
+|---|---|---|
+| EMP | `radius` 300 / 600 m around this terminal, `duration` 30 / 60 s. As it goes off the server picks every vehicle in the match's routing bucket inside the radius (on the ground) that a player may use here (`BR.Terminal.empPick`), and marks each with the `fx.empBag` state bag. The client that owns a marked vehicle holds it stalled -- engine off, no auto-start, undriveable -- and lets it go when the bag clears: started again with a driver in the seat, else free to start. A vehicle that drives in later was never picked. | Outside a match, or on a build with no server vehicle natives. Never for finding no vehicle (Pulse's rule: a refusal is free intel) |
+| Comms blackout | `duration` 60 / 120 / 180 s; squad-only. Every OTHER squad's beacon rows leave the server without `x`/`y`, so their teammates' dots leave both maps -- a downed mate's, one left where a mate fell, and a bounty mate's blip 58 color 69 included -- and come back when it ends. Names, states, the bleed clock, levels, the voice bit and the Yubikey, bounty and revive key marks still travel: the beacon is the client's membership model. | Outside a squad match (the door), outside a match |
+| Reboot | 150 Volts; squad-only. Every member of the squad who is OUT, in this match, still connected and not already on the way back comes back over this terminal at full health with an empty inventory, through the revive key's own return (`BR.ReviveKey.bringBackAt`): black, the focus on the terminal, the spectate camera down, then a fade later resurrected 150 m over it with the parachute. | `reboot_none`: nobody to bring back (asked again at the end of the load). `unavailable`: nobody in the squad left in the fight |
+
+**EMP, who stalls it.** A vehicle's engine is its network owner's to run, so
+every client keeps the marked vehicles it hears of (the bag's change handler,
+which also fires as a vehicle comes into scope) and the one that owns each
+holds it: on the bag's change, on `CEventNetworkPlayerEnteredVehicle` (read off
+the entity itself, held again 250 ms and 1 s later as ownership reaches the
+new driver), and on `client/terminalfx.lua`'s one SLOW pass for ownership that
+moved or an engine somebody started (a refuel's ignition, a revive hold's
+siren). Behind the server's clear: a vehicle this client owns whose bag is
+gone, the lobby, Season 1, the resource stopping, and 5 s past the time the
+bag gave. Nothing per frame; with nothing marked the SLOW hook calls no
+native. **Not picked:** anything `BR.Config.VehicleRefusalFor` refuses --
+**aircraft** above all: nobody may fly one here (#215 ejects them, #211 files
+a case), the bus and the airdrop's plane are local and never networked, and a
+stalled helicopter in the air falls on whoever is under it, which the page
+does not say -- a trailer or a train (no engine), and the CPR ride while it
+carries a downed player. A bicycle is marked and never held: it has no
+engine. Nothing is created, deleted or moved (`server/vehicles.lua`'s
+creation rule, the fuel ledger and `sv_entityLockdown` are untouched); the
+only write is the server's own state bag.
+
+**Comms blackout is one predicate.** `BR.Terminal.blackedOut(m, key, now)`: a
+blackout run by another squad, in force, in a match being played, on Season
+2. The squad beacon asks it (`BR.Terminal.beaconDark`, by squad id) every
+push; `client/squadmates.lua` takes a row with no position as no dot (the
+blip removed, not hidden: an alpha-0 blip keeps its last coordinates) and
+makes it afresh when positions come back. It answers a different question
+from Ghost, and neither changes the other: a squad under Ghost is blacked out
+like any squad and stays off other squads' Scan, Pulse and bounty marks. A
+bounty on a blacked-out squad's member leaves their own maps with the other
+dots and stays on every other map. The revive key's ground marker and plate
+stay (they are in the world, within 120 m, and how the key is picked up);
+overhead names hang off peds already in sight; map pings are where a mate
+pointed. The squad panel never showed where a teammate is, so the page's
+line saying it would stop was taken out.
+
+**Reboot's records** are the revive key's return's: the placement retracted
+on every client (written again at the next elimination or the match's end),
+`diedAt` cleared, the killer keeping the kill, nobody credited a revive, and a
+revive key for a rebooted player spent -- held or not, bought or not (the
+page's risks say so). A hold filling at an ambulance for one is stopped; a key
+arrival already committed lands on its own and is not doubled. Only a squad
+with somebody still in the fight is rebooted, so `BR.Server.squadsAlive` and
+the match's end check (`<= 1`) are exactly what the eliminations left; the
+players-left count grows. The match ending in the black withdraws the
+promise.
