@@ -652,7 +652,9 @@ BR.Config.Terminals = {
 
         -- Reboot (suggested; LIVE since wave C, 2026-10-06)
         reboot_name = 'Reboot',
-        reboot_summary = 'Brings eliminated squadmates back at this terminal.',
+        -- WRITTEN (2026-10-06, wave C review; was "...back at this terminal."):
+        -- the card says what the page says, by parachute over it.
+        reboot_summary = 'Brings eliminated squadmates back by parachute over this terminal.',
         -- WRITTEN (2026-10-06, wave C; was "Every eliminated player in your
         -- squad comes back at this terminal with full health.\n..."). A
         -- rebooted player comes back the way a revive key brings one back

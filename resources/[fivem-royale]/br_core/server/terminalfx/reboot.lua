@@ -1,8 +1,9 @@
 -- Season 2 terminals (#396), wave C: REBOOT, the server half.
 --
 -- THE PAGE (br_lib/config/terminals.lua, `reboot_*`): "Every eliminated player
--- in your squad comes back at this terminal with full health. They come back
--- with an empty inventory. Players who left the match don't come back." The
+-- in your squad comes back with full health, by parachute over this terminal.
+-- They come back with an empty inventory. Players who left the match don't
+-- come back." The
 -- risks: "Rebooted players start with nothing. They come back here, where the
 -- notice was just sent from." 150 Volts (its row). Squad-only: the door hides
 -- it and refuses it outside a squad match (round 2).
