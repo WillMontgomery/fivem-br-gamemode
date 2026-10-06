@@ -9,6 +9,7 @@
 --   squadKey          which squad a player's one use belongs to (a solo
 --                     player is a squad of one)
 --   sites             the terminal rows in a config, checked
+--   pick              a copy line, or its `_solo` sibling outside a squad match
 --   line              a copy line with its {playername} / {description}
 --                     tokens filled, as a BR.Notice line
 --   extraRoll         the Yubikey's extra-item roll for one container
@@ -129,6 +130,31 @@ function T.siteLine(s)
 end
 
 -- ------------------------------------------------------------------- copy ---
+
+--- The line `key` as this player may read it.
+---
+--- "SQUAD" ONLY IN A SQUAD MATCH (owner, 2026-10-05, round 2: "the mention of
+--- 'squad' in the terminal should only be mentioned if the player is actively
+--- in a squad match"). A line that says squad has a `<key>_solo` sibling that
+--- does not, and outside a squad match that sibling is the line -- an empty
+--- one included, which means "not shown". THE LUA SIDE'S ONE PICKER: the
+--- server's toasts, notices and reasons and the world's plate read every
+--- line through here (tools/test_terminal.lua fails a reader that indexes the
+--- copy by a computed key, or names a line that has a sibling, any other
+--- way). The app has its own, model.ts's `speaker`, over the same fact.
+--- @param copy table|nil  BR.Config.Terminals.copy
+--- @param key string
+--- @param squadMatch boolean  BR.Terminal.squadMatch's answer
+--- @return string  '' for a key with no line
+function T.pick(copy, key, squadMatch)
+    if type(copy) ~= 'table' or type(key) ~= 'string' then return '' end
+    if squadMatch ~= true then
+        local solo = copy[key .. '_solo']
+        if type(solo) == 'string' then return solo end
+    end
+    local v = copy[key]
+    return type(v) == 'string' and v or ''
+end
 
 --- A copy line with its tokens filled, as BR.Notice.line returns it.
 ---

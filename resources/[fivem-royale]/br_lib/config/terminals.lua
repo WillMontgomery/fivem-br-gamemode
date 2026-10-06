@@ -23,6 +23,14 @@
 -- how-to page, and "please build all of the cards for all the tools I
 -- suggested, as well as any other strategic ones you can suggest".
 --
+-- ═══ AND 2026-10-05, ROUND 2 ═══
+--
+-- The app is "Control Tower". Thunderstorm is not a weather anyone can pick.
+-- "Squad" is only said to a player in a squad match (`<key>_solo` below).
+-- The most powerful functions cost Volts, 200 at most (`cost` on the rows).
+-- "Offline" became "Not available". The desktop boots for 7 to 10 seconds
+-- (bootMinMs / bootMaxMs) and a run loads for 3 to 5 (runMinMs / runMaxMs).
+--
 -- ═══ THIS FILE IS FOUR THINGS ═══
 --
 --   copy       every player-facing line the feature shows, in ONE block
@@ -50,13 +58,30 @@
 --              without him.
 --   WRITTEN    written for the 2026-10-05 app at his request ("descriptions,
 --              risks and how-to"), for him to review: every one is listed in
---              that round's report.
+--              that round's report. "WRITTEN (2026-10-05, round 2)" marks a
+--              line new or changed in the second round, listed in its report.
 --   [COPY: ...] still a placeholder, outside the app's scope.
 --
 -- A LINE WITH '\n' IN IT IS A LIST: the app draws one paragraph or bullet per
--- piece. `{name}`, `{value}`, `{count}`, `{stage}`, `{stages}` and `{online}`
--- / `{total}` are filled by the app; `{playername}` and `{description}` by the
--- server (BR.TerminalSolve.line), only in the lobby's notices.
+-- piece. `{name}`, `{value}`, `{count}`, `{stage}`, `{stages}`, `{online}`
+-- / `{total}`, and `{volts}`, `{cost}` and `{balance}` (each a figure and the
+-- currency word, "1,250 Volts") are filled by the app; `{playername}` and
+-- `{description}` by the server (BR.TerminalSolve.line), only in the lobby's
+-- notices.
+--
+-- ═══ "SQUAD" ONLY IN A SQUAD MATCH (owner, 2026-10-05, round 2) ═══
+--
+-- "the mention of 'squad' in the terminal should only be mentioned if the
+-- player is actively in a squad match." A line that says squad has a
+-- `<key>_solo` sibling that does not, and ONE picker per side chooses between
+-- them -- BR.TerminalSolve.pick for the server's toasts, notices and reasons
+-- and the world's plate, model.ts's `speaker` for the app -- from the
+-- server's `squadMatch` (BR.Terminal.squadMatch: in a match's bus or playing
+-- phase, in a mode whose squads are bigger than one). An EMPTY `_solo` line
+-- means the row it labels is not shown outside a squad match. The lines of a
+-- squad-only function (`squadOnly` on its row) and of a category only those
+-- fill are never shown outside one, so they have no sibling.
+-- tools/test_terminal.lua fails a line that says squad with neither.
 --
 -- WHO READS EACH LINE is in its comment. "At the terminal" is the one player
 -- using the computer; "the lobby" is everyone in that match.
@@ -89,6 +114,8 @@ BR.Config.Terminals = {
         -- WRITTEN. A holder whose squad has already used its one key this
         -- match: the world plate's hint and the app's reason.
         squad_used = 'Your squad already used its terminal this match.',
+        -- WRITTEN (2026-10-05, round 2). The same, outside a squad match.
+        squad_used_solo = 'You already used your terminal this match.',
         -- VERBATIM (owner, 2026-10-04, "Lobby notices"). A toast to the lobby
         -- (everyone in the match, the dead and spectators included) when
         -- someone gains access to a terminal with a key.
@@ -110,20 +137,27 @@ BR.Config.Terminals = {
 
         -- ── the desktop (cuchi_computer) -- at the terminal. WRITTEN ─────────
 
-        -- Under the boot spinner, for the quarter second the desktop starts.
+        -- Under the boot spinner, for the 7 to 10 seconds the desktop takes
+        -- to start (bootMinMs .. bootMaxMs below, a new pick every boot).
         shell_boot = 'Starting up...',
-        -- Under the terminal app's desktop icon.
-        desktop_icon = 'Blitz Terminal',
-        -- The browser's one tab: the app's name, beside its icon.
-        window_title = 'Blitz Terminal',
+        -- VERBATIM (owner, 2026-10-05, round 2: 'change the app name to
+        -- "Control Tower"'). The app's name, in its three places: under its
+        -- desktop icon...
+        desktop_icon = 'Control Tower',
+        -- ...on the browser's one tab, beside its icon...
+        window_title = 'Control Tower',
 
         -- ── the app's frame: the browser and the top bar. WRITTEN ────────────
 
-        -- The app's name: the top bar's title, the side navigation's header,
-        -- the first breadcrumb and the login screen's heading.
-        app_title = 'Blitz Terminal',
+        -- ...and the top bar's title -- the only place inside the app it is
+        -- written (owner, round 2: "it should only remain in the top bar"; the
+        -- side navigation's header, the first breadcrumb and the login
+        -- screen's heading no longer say it). VERBATIM, as above.
+        app_title = 'Control Tower',
         -- The address bar: the fictional site the pages live on, and each
-        -- page's path segment. A function's own segment is its id.
+        -- page's path segment. A function's own segment is its id. The host
+        -- kept its name when the app became Control Tower (round 2): a
+        -- question for the owner, not a change made for him.
         address_host = 'https://terminal.blitz',
         path_functions = 'functions',
         path_howto = 'how-to',
@@ -147,6 +181,18 @@ BR.Config.Terminals = {
         -- computer.
         menu_howto = 'How to',
         menu_signout = 'Sign out',
+        -- WRITTEN (2026-10-05, round 2). The bar under a run while the server
+        -- carries it out (runMinMs .. runMaxMs below), over the page the
+        -- player is on.
+        running = 'Running {name}...',
+        -- WRITTEN (2026-10-05, round 2). After a run that cost Volts: in the
+        -- app's done line, after `<id>_done`, and in the toast that carries
+        -- them both when the computer was closed before the run finished. The
+        -- owner's #239 sentence for the vehicle shop ("Your new balance is:
+        -- [X] Volts."), reused word for word. The top bar shows the balance
+        -- itself, beside the gamertag, with no words of its own: the figure
+        -- and the currency word.
+        balance_new = 'Your new balance is: {volts}.',
 
         -- ── the side navigation and the breadcrumbs. WRITTEN ─────────────────
 
@@ -157,9 +203,13 @@ BR.Config.Terminals = {
         -- ── the functions page: the match panel. WRITTEN ─────────────────────
         --
         -- The details panel over the cards, refreshed by the server about once
-        -- a second while the computer is open.
+        -- a second while the computer is open. A row whose label (or, for the
+        -- mode, whose value) is an empty line is not shown.
 
-        match_heading = 'Match',
+        -- VERBATIM (owner, 2026-10-05, round 2: 'Can you make the match table
+        -- say "Match stats" and be collapsed by default?'). Its header; the
+        -- panel starts collapsed every time the app opens.
+        match_heading = 'Match stats',
         field_match = 'Match ID',
         field_mode = 'Mode',
         field_phase = 'Phase',
@@ -168,13 +218,24 @@ BR.Config.Terminals = {
         field_sweep = 'Next sweep',
         field_players = 'Players left',
         field_squads = 'Squads left',
+        -- WRITTEN (2026-10-05, round 2): empty -- outside a squad match the
+        -- count of squads is the count of players, and the row goes.
+        field_squads_solo = '',
         field_squad = 'Your squad',
+        -- WRITTEN (2026-10-05, round 2): empty -- a squad of one is the
+        -- player, and the row goes.
+        field_squad_solo = '',
         field_key = 'Yubikey',
         field_squad_key = "Squad's terminal use",
+        -- WRITTEN (2026-10-05, round 2).
+        field_squad_key_solo = 'Your terminal use',
         field_terminals = 'Terminals online',
         field_bounty = 'Active bounty',
         mode_solo = 'Solo',
         mode_squad = 'Squads',
+        -- WRITTEN (2026-10-05, round 2): empty -- a squad match's warmup is
+        -- not a squad match yet, and the mode row goes until the bus.
+        mode_squad_solo = '',
         phase_warmup = 'Warmup',
         phase_bus = 'Battle bus',
         phase_playing = 'In progress',
@@ -215,8 +276,14 @@ BR.Config.Terminals = {
         -- What a card says about a function right now.
         status_available = 'Available',
         status_used = 'Used',
-        status_not_here = 'Not here',
-        status_offline = 'Offline',
+        -- VERBATIM (owner, 2026-10-05, round 2: 'for "Not here" let's
+        -- instead say "Not available at this terminal"').
+        status_not_here = 'Not available at this terminal',
+        -- VERBATIM (owner, 2026-10-05, round 2: 'the term "offline" is
+        -- confusing when we use "Available" to indicate the opposite. Let's
+        -- instead say "Not available"'). A function not built yet, or a
+        -- terminal outside the storm.
+        status_offline = 'Not available',
         -- How much a function exposes the player who runs it.
         risk_low = 'Low risk',
         risk_medium = 'Medium risk',
@@ -225,6 +292,9 @@ BR.Config.Terminals = {
         category_storm = 'Storm',
         category_disruption = 'Disruption',
         category_supply = 'Supply',
+        -- Shown only in a squad match: outside one, Reboot (squadOnly) is
+        -- hidden and Ghost is listed under its soloCategory, so the category
+        -- is empty and goes.
         category_squad = 'Squad',
 
         -- ── a function's page. WRITTEN ───────────────────────────────────────
@@ -239,8 +309,14 @@ BR.Config.Terminals = {
         field_affects = 'Affects',
         field_notified = 'Who is told',
         field_cost = 'Cost',
-        -- Every function's cost, the same for all.
+        -- A function's cost, when it costs no Volts.
         cost_line = "Your Yubikey and your squad's one terminal use this match",
+        -- WRITTEN (2026-10-05, round 2). The same, outside a squad match.
+        cost_line_solo = 'Your Yubikey and your one terminal use this match',
+        -- WRITTEN (2026-10-05, round 2). A function with a `cost` in Volts
+        -- (the registry, below): {volts} is that cost.
+        cost_line_volts = "{volts}, your Yubikey and your squad's one terminal use this match",
+        cost_line_volts_solo = '{volts}, your Yubikey and your one terminal use this match',
         -- The first risk on every function's page: notice_action reaches the
         -- whole match whatever was run.
         risk_notice = 'Everyone in the match is told your name and what you ran.',
@@ -248,14 +324,25 @@ BR.Config.Terminals = {
         run = 'Run',
         confirm_title = 'Run {name}?',
         confirm_body = "This uses your Yubikey and your squad's terminal use for this match. It can't be undone.",
+        -- WRITTEN (2026-10-05, round 2). The box outside a squad match, and
+        -- the box for a function that costs Volts ({volts}), each way.
+        confirm_body_solo = "This uses your Yubikey and your terminal use for this match. It can't be undone.",
+        confirm_body_volts = "This uses {volts}, your Yubikey and your squad's terminal use for this match. It can't be undone.",
+        confirm_body_volts_solo = "This uses {volts}, your Yubikey and your terminal use for this match. It can't be undone.",
         confirm_yes = 'Run',
         confirm_no = 'Cancel',
 
         -- ── why a function cannot run. WRITTEN, beside no_key, offline and
         --    squad_used above ──────────────────────────────────────────────────
 
-        -- A function whose effect is not built yet: listed, described, never run.
-        fn_offline = 'This function is offline.',
+        -- WRITTEN (2026-10-05, round 2; was 'This function is offline.'). A
+        -- function whose effect is not built yet: listed, described, never
+        -- run. Beside the "Not available" badge, so it does not say offline.
+        fn_offline = 'This function is not available.',
+        -- WRITTEN (2026-10-05, round 2). A run whose cost the player's Volts
+        -- cannot cover: refused by the server after every other reason, with
+        -- nothing spent. {cost} and {balance} are the figure and the word.
+        no_volts = "You don't have enough Volts. This costs {cost}, and your balance is {balance}.",
         -- A reason with no line of its own.
         unavailable = "This function can't run right now.",
         -- Options the server would not take (the app only offers valid ones).
@@ -266,6 +353,8 @@ BR.Config.Terminals = {
         no_site = "There's no airdrop spot inside the next circle right now.",
         -- Max ammo: every gun the squad carries is already full.
         ammo_full = "Your squad's ammo is already full.",
+        -- WRITTEN (2026-10-05, round 2). The same, outside a squad match.
+        ammo_full_solo = 'Your ammo is already full.',
         -- Supply drop: another airdrop is waiting for a player or falling.
         drop_busy = 'Another airdrop is already on its way.',
 
@@ -279,10 +368,16 @@ BR.Config.Terminals = {
         howto_terminal_body = "While you hold a Yubikey, terminals inside the storm show on your map as laptops.\nWalk up to one and hold interact to open it.\nA terminal outside the storm is offline and won't open.\nPick a function, read its page, choose its options and press Run.",
         howto_rules_title = 'One use per squad',
         howto_rules_body = "Each squad gets one terminal use per match. A solo player is a squad of one.\nRunning a function uses your Yubikey and your squad's use. A Yubikey is gone after one use.\nIf a squadmate already ran a function this match, your Yubikey stays with you for a later match.\nA function that can't run uses nothing.",
+        -- WRITTEN (2026-10-05, round 2). The same section outside a squad
+        -- match.
+        howto_rules_title_solo = 'One use per match',
+        howto_rules_body_solo = "You get one terminal use per match.\nRunning a function uses your Yubikey and your terminal use. A Yubikey is gone after one use.\nA function that can't run uses nothing.",
         howto_notices_title = 'What everyone is told',
         howto_notices_body = "When you open a terminal with a Yubikey, everyone in the match is told your name.\nWhen you run a function, everyone is told your name and what you ran.\nSome functions tell more. Each function's page lists who is told.",
         howto_tips_title = 'Tips',
         howto_tips_body = "Read a function's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nTalk to your squad before you run anything. You only get one use between you.\nIntel shows the most while many squads are left. Supply matters most when your squad is low on gear.\nStorm functions change where the last fight happens. Think about where your squad will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
+        -- WRITTEN (2026-10-05, round 2). The tips outside a squad match.
+        howto_tips_body_solo = "Read a function's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nIntel shows the most while many players are left. Supply matters most when you're low on gear.\nStorm functions change where the last fight happens. Think about where you will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
 
         -- ── the functions ─────────────────────────────────────────────────────
         --
@@ -294,18 +389,25 @@ BR.Config.Terminals = {
         -- option `<id>_opt_<option>`, and per choice `<id>_opt_<option>_<choice>`
         -- with an optional `..._desc`. And for the lobby, `<id>_description`,
         -- the {description} in notice_action. tools/test_terminal.lua fails a
-        -- listed id missing any of them. ALL WRITTEN.
+        -- listed id missing any of them. ALL WRITTEN; every `..._solo` line
+        -- among them -- the same line for a player outside a squad match --
+        -- is WRITTEN (2026-10-05, round 2).
 
         -- Scan (owner's; LIVE)
         scan_name = 'Scan',
         scan_summary = "Shows every opponent on your squad's maps for the rest of the match.",
+        scan_summary_solo = "Shows every opponent on your map for the rest of the match.",
         scan_what = "Every opponent still in the match appears on the maps of everyone in your squad.\nThe marks update every 2 seconds until the match ends.\nThe player who runs it gets a bounty for 10 minutes.",
+        scan_what_solo = "Every opponent still in the match appears on your map.\nThe marks update every 2 seconds until the match ends.\nThe player who runs it gets a bounty for 10 minutes.",
         scan_duration = 'Rest of the match. The bounty lasts 10 minutes.',
         scan_affects = 'Your squad',
+        scan_affects_solo = 'You',
         scan_notified = 'Everyone in the match, and your squad',
+        scan_notified_solo = 'Everyone in the match',
         scan_risks = "You get a bounty. Everyone in the match is told your name.\nFor 10 minutes your position shows on every player's map.\nThe bounty ends early only if you're eliminated.",
         scan_done = 'Scan is running. You have a bounty for the next 10 minutes.',
         scan_description = 'Scan. Their squad sees every opponent for the rest of the match.',
+        scan_description_solo = 'Scan. They see every opponent for the rest of the match.',
         -- The opponents' and the bounty's names in the pause map's legend.
         scan_blip = 'Opponent',
         bounty_blip = 'Bounty',
@@ -313,12 +415,17 @@ BR.Config.Terminals = {
         -- Storm reveal (owner's; LIVE)
         storm_reveal_name = 'Storm reveal',
         storm_reveal_summary = 'Shows your squad where the storm will end this match.',
+        storm_reveal_summary_solo = 'Shows you where the storm will end this match.',
         storm_reveal_what = "The final circle is marked on the maps of everyone in your squad.\nThe mark stays until the match ends.",
+        storm_reveal_what_solo = "The final circle is marked on your map.\nThe mark stays until the match ends.",
         storm_reveal_duration = 'Rest of the match',
         storm_reveal_affects = 'Your squad',
+        storm_reveal_affects_solo = 'You',
         storm_reveal_notified = 'Everyone in the match',
         storm_reveal_done = "The final circle is on your squad's maps.",
+        storm_reveal_done_solo = 'The final circle is on your map.',
         storm_reveal_description = 'Storm reveal. Their squad sees where the storm will end.',
+        storm_reveal_description_solo = 'Storm reveal. They see where the storm will end.',
         -- The revealed final zone's name in the pause map's legend.
         storm_reveal_blip = 'Final circle',
 
@@ -334,6 +441,7 @@ BR.Config.Terminals = {
         storm_control_affects = 'Everyone in the match',
         storm_control_notified = 'Everyone in the match',
         storm_control_risks = 'Your squad still has to reach the circle you pick.',
+        storm_control_risks_solo = 'You still have to reach the circle you pick.',
         storm_control_done = 'The storm will end where you chose.',
         storm_control_description = 'Storm control. They chose where the storm will end.',
 
@@ -355,7 +463,12 @@ BR.Config.Terminals = {
         -- Time & weather (owner's; offline)
         time_weather_name = 'Time & weather',
         time_weather_summary = "Changes the match's time of day and weather for a while.",
-        time_weather_what = "Sets the time of day and the weather for everyone in the match.\nWhen it ends, the match's own time and weather come back.",
+        -- WRITTEN (2026-10-05, round 2; was "Sets the time of day and the
+        -- weather for everyone in the match.\nWhen it ends, ..."). The owner's
+        -- round-2 rule (the registry row says it in full): the weather chosen
+        -- here holds only inside the circle, and the storm's own weather wins
+        -- outside it.
+        time_weather_what = "Sets the time of day for everyone in the match, and the weather inside the circle.\nOutside the circle, the storm's own weather stays.\nWhen it ends, the match's own time and weather come back.",
         time_weather_opt_time = 'Time of day',
         time_weather_opt_time_day = 'Day',
         time_weather_opt_time_dusk = 'Dusk',
@@ -364,7 +477,6 @@ BR.Config.Terminals = {
         time_weather_opt_weather_clear = 'Clear',
         time_weather_opt_weather_rain = 'Rain',
         time_weather_opt_weather_fog = 'Fog',
-        time_weather_opt_weather_thunder = 'Thunderstorm',
         time_weather_opt_duration = 'Duration',
         time_weather_opt_duration_180 = '3 minutes',
         time_weather_opt_duration_300 = '5 minutes',
@@ -372,6 +484,7 @@ BR.Config.Terminals = {
         time_weather_affects = 'Everyone in the match',
         time_weather_notified = 'Everyone in the match',
         time_weather_risks = 'It changes what your squad can see too.',
+        time_weather_risks_solo = 'It changes what you can see too.',
         time_weather_done = 'The time and weather have changed.',
         time_weather_description = 'Time & weather. The sky has changed.',
 
@@ -393,6 +506,7 @@ BR.Config.Terminals = {
         power_outage_affects = 'Everyone in the area',
         power_outage_notified = 'Everyone in the match',
         power_outage_risks = "Your squad is in the dark too while it's in the area.",
+        power_outage_risks_solo = "You're in the dark too while you're in the area.",
         power_outage_done = 'The power is out.',
         power_outage_description = 'Power outage. The lights are out.',
 
@@ -400,10 +514,13 @@ BR.Config.Terminals = {
         disarm_name = 'Disarm',
         disarm_summary = "Takes away every player's most powerful weapon.",
         disarm_what = "Every player still in the match loses the most powerful weapon they carry, your squad included.\nMost powerful means the highest rarity, then the most damage.\nThe weapons are gone. They aren't dropped.",
+        disarm_what_solo = "Every player still in the match loses the most powerful weapon they carry, you included.\nMost powerful means the highest rarity, then the most damage.\nThe weapons are gone. They aren't dropped.",
         disarm_duration = 'Instant',
         disarm_affects = 'Every player still in the match, your squad included',
+        disarm_affects_solo = 'Every player still in the match, you included',
         disarm_notified = 'Everyone in the match',
         disarm_risks = 'Your squad loses its most powerful weapons too.',
+        disarm_risks_solo = 'You lose your most powerful weapon too.',
         disarm_done = "Every player's most powerful weapon is gone.",
         disarm_description = "Disarm. Every player's most powerful weapon is gone.",
 
@@ -426,13 +543,19 @@ BR.Config.Terminals = {
         -- Max ammo (owner's; LIVE)
         max_ammo_name = 'Max ammo',
         max_ammo_summary = 'Fills the reserve ammo of everyone in your squad.',
+        max_ammo_summary_solo = 'Fills your reserve ammo.',
         max_ammo_what = "Every player in your squad who is still in the fight gets a full reserve for each gun they carry.\nEmpty magazines are loaded too.\nThrowables aren't refilled.",
+        max_ammo_what_solo = "You get a full reserve for each gun you carry.\nEmpty magazines are loaded too.\nThrowables aren't refilled.",
         max_ammo_duration = 'Instant',
         max_ammo_affects = 'Your squad',
+        max_ammo_affects_solo = 'You',
         max_ammo_notified = 'Everyone in the match',
         max_ammo_risks = 'Only guns your squad carries when it runs are filled.',
+        max_ammo_risks_solo = 'Only guns you carry when it runs are filled.',
         max_ammo_done = "Your squad's ammo is full.",
+        max_ammo_done_solo = 'Your ammo is full.',
         max_ammo_description = "Max ammo. Their squad's ammo is full.",
+        max_ammo_description_solo = 'Max ammo. Their ammo is full.',
 
         -- Reboot (suggested; offline)
         reboot_name = 'Reboot',
@@ -448,16 +571,22 @@ BR.Config.Terminals = {
         -- Ghost (suggested; offline)
         ghost_name = 'Ghost',
         ghost_summary = 'Hides your squad from Scan, Pulse and bounty markers for a while.',
+        ghost_summary_solo = 'Hides you from Scan, Pulse and bounty markers for a while.',
         ghost_what = "Your squad doesn't show up on other squads' Scan or Pulse markers.\nIf one of you has a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
+        ghost_what_solo = "You don't show up on other players' Scan or Pulse markers.\nIf you have a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
         ghost_opt_duration = 'Duration',
         ghost_opt_duration_120 = '2 minutes',
         ghost_opt_duration_240 = '4 minutes',
         ghost_duration = '2 or 4 minutes, as chosen',
         ghost_affects = 'Your squad',
+        ghost_affects_solo = 'You',
         ghost_notified = 'Everyone in the match',
         ghost_risks = 'Every squad knows yours went dark, because the notice says so.',
+        ghost_risks_solo = 'Every player knows you went dark, because the notice says so.',
         ghost_done = 'Your squad is hidden.',
+        ghost_done_solo = 'You are hidden.',
         ghost_description = 'Ghost. Their squad is hidden from scans.',
+        ghost_description_solo = 'Ghost. They are hidden from scans.',
 
         -- EMP (suggested; offline)
         emp_name = 'EMP',
@@ -473,22 +602,28 @@ BR.Config.Terminals = {
         emp_affects = 'Every vehicle in the radius, yours included',
         emp_notified = 'Everyone in the match',
         emp_risks = "Your squad's vehicles in the radius stall too.",
+        emp_risks_solo = 'Your own vehicles in the radius stall too.',
         emp_done = 'The EMP went off.',
         emp_description = 'EMP. Vehicles near their terminal have stalled.',
 
         -- Key finder (suggested; offline)
         key_finder_name = 'Key finder',
         key_finder_summary = 'Shows your squad where other Yubikeys are.',
+        key_finder_summary_solo = 'Shows you where other Yubikeys are.',
         key_finder_what = "Marks Yubikeys on your squad's maps.\nThe marks show where the keys were when it ran. They don't follow anyone, and they fade after 2 minutes.",
+        key_finder_what_solo = "Marks Yubikeys on your map.\nThe marks show where the keys were when it ran. They don't follow anyone, and they fade after 2 minutes.",
         key_finder_opt_target = 'Find',
         key_finder_opt_target_ground = 'Keys on the ground',
         key_finder_opt_target_holders = 'Players holding a key',
         key_finder_duration = 'The marks last 2 minutes',
         key_finder_affects = 'Your squad',
+        key_finder_affects_solo = 'You',
         key_finder_notified = 'Everyone in the match',
         key_finder_risks = 'Key holders are warned that keys were located.',
         key_finder_done = "The Yubikeys are on your squad's maps.",
+        key_finder_done_solo = 'The Yubikeys are on your map.',
         key_finder_description = 'Key finder. Their squad sees where the Yubikeys are.',
+        key_finder_description_solo = 'Key finder. They see where the Yubikeys are.',
 
         -- Storm delay (new; offline)
         storm_delay_name = 'Storm delay',
@@ -501,6 +636,7 @@ BR.Config.Terminals = {
         storm_delay_affects = 'Everyone in the match',
         storm_delay_notified = 'Everyone in the match',
         storm_delay_risks = 'It delays the storm for every squad, not just yours.',
+        storm_delay_risks_solo = 'It delays the storm for every player, not just you.',
         storm_delay_done = 'The storm is delayed.',
         storm_delay_description = 'Storm delay. The storm holds longer before its next sweep.',
 
@@ -508,6 +644,7 @@ BR.Config.Terminals = {
         pulse_name = 'Pulse',
         pulse_summary = 'Shows every player near this terminal for a short time.',
         pulse_what = "Every player within the radius you choose shows on your squad's maps.\nThe marks follow them for 30 seconds.",
+        pulse_what_solo = "Every player within the radius you choose shows on your map.\nThe marks follow them for 30 seconds.",
         pulse_opt_radius = 'Radius',
         pulse_opt_radius_250 = '250 meters',
         pulse_opt_radius_500 = '500 meters',
@@ -516,6 +653,7 @@ BR.Config.Terminals = {
         pulse_notified = 'Everyone in the match, and every player it finds',
         pulse_risks = "Every player the pulse finds is told they've been detected.",
         pulse_done = "The pulse is on your squad's maps.",
+        pulse_done_solo = 'The pulse is on your map.',
         pulse_description = 'Pulse. Players near their terminal are on their map.',
 
         -- Lockdown (new; offline)
@@ -536,8 +674,10 @@ BR.Config.Terminals = {
         contract_name = 'Contract',
         contract_summary = 'Puts a bounty on the player with the most eliminations.',
         contract_what = "The player outside your squad with the most eliminations gets a bounty for 5 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
+        contract_what_solo = "The player with the most eliminations, other than you, gets a bounty for 5 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
         contract_duration = '5 minutes',
         contract_affects = 'One player outside your squad',
+        contract_affects_solo = 'One player other than you',
         contract_notified = 'Everyone in the match, the target included',
         contract_risks = "The target is told a contract is on them.",
         contract_done = 'The contract is out.',
@@ -546,13 +686,18 @@ BR.Config.Terminals = {
         -- Field medic (new; offline)
         field_medic_name = 'Field medic',
         field_medic_summary = 'Restores full health and armor to everyone in your squad.',
+        field_medic_summary_solo = 'Restores your full health and armor.',
         field_medic_what = "Every player in your squad who is still standing gets full health and full armor.\nDowned players aren't revived.",
+        field_medic_what_solo = 'You get full health and full armor.',
         field_medic_duration = 'Instant',
         field_medic_affects = 'Your squad',
+        field_medic_affects_solo = 'You',
         field_medic_notified = 'Everyone in the match',
         field_medic_risks = "Only players standing when it runs are healed.",
         field_medic_done = 'Your squad is patched up.',
+        field_medic_done_solo = "You're patched up.",
         field_medic_description = 'Field medic. Their squad is back to full health.',
+        field_medic_description_solo = 'Field medic. They are back to full health.',
     },
 
     -- ═══ THE ART: EVERY PLACEHOLDER IN ONE SPOT ═══
@@ -648,6 +793,22 @@ BR.Config.Terminals = {
     -- The owner asked for "realtime"; the panel's clocks count in seconds.
     infoPushMs = 1000,
 
+    -- ═══ HOW LONG THINGS TAKE (owner, 2026-10-05, round 2) ═══
+    --
+    -- "the starting up animation should take longer - random between 7 and 10
+    -- seconds": the desktop's boot, under shell_boot, a new uniform pick in
+    -- this range every time the computer starts (cuchi_computer's br.js picks
+    -- it; br_core's client hands the range over with each opening, like the
+    -- copy). A second open while the desktop is up is a refresh, not a boot.
+    bootMinMs = 7000,
+    bootMaxMs = 10000,
+    -- "a loading indicator for 3-5 seconds (random) to show when a function is
+    -- being used, before showing them it was successful": the SERVER picks a
+    -- run's length in this range when it accepts the run, tells the app, and
+    -- carries the effect out -- and tells the lobby -- only when it is up.
+    runMinMs = 3000,
+    runMaxMs = 5000,
+
     -- ═══ THE FUNCTION REGISTRY ═══
     --
     -- What a terminal lists, in this order -- the order of the app's cards.
@@ -669,6 +830,18 @@ BR.Config.Terminals = {
     --                { id, choices = { ... }, default }. A choice is a string;
     --                the server takes only a listed one, for a listed option,
     --                and fills a missing one with its default.
+    --   cost         Volts the run costs, 0 to 200 (owner, 2026-10-05, round 2:
+    --                "For the most powerful items there should be a cost by
+    --                Volts, with the max being no more than 200"). Absent is
+    --                free. The saved balance, spent through BR.Market.charge
+    --                as the revive key is; tools/test_terminal.lua fails a row
+    --                outside 0..200. The figures are the coordinator's proposal
+    --                for the owner to confirm.
+    --   squadOnly    true for a function that means nothing outside a squad
+    --                match: not listed there, and its run refused.
+    --   soloCategory the category it is listed under outside a squad match,
+    --                for a `squad`-category function that still means
+    --                something to a player on their own.
     --
     -- The server half of a built function is BR.Terminal.FUNCTIONS[id] in
     -- br_core/server/terminal.lua: an optional `refuse` and a `run`.
@@ -678,16 +851,26 @@ BR.Config.Terminals = {
     -- for consideration; Storm delay, Pulse, Lockdown, Contract and Field
     -- medic are this round's proposals, for the owner to keep or cut.
     functions = {
-        { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true },
+        { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200 },
         { id = 'storm_reveal',   category = 'intel',      risk = 'low',    implemented = true },
-        { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = false,
+        { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = false, cost = 150,
           options = { { id = 'zone', choices = { 'near', 'center', 'far' }, default = 'near' } } },
+        -- SQUAD-ONLY (round 2): it hides teammates' markers from every other
+        -- squad, and outside a squad match nobody has a teammate to hide.
         { id = 'comms_blackout', category = 'disruption', risk = 'medium', implemented = false,
+          squadOnly = true,
           options = { { id = 'duration', choices = { '60', '120', '180' }, default = '60' } } },
+        -- THE OWNER'S RULE FOR WHOEVER BUILDS IT (2026-10-05, round 2):
+        -- "thunderstorm cannot be a pickable weather. Make sure the storm will
+        -- still storm when outside the circle too - whatever weather they set
+        -- is only set while inside the storm." So there is no 'thunder'
+        -- choice, and the chosen weather applies ONLY to players inside the
+        -- circle: outside it the storm's own weather (br_core/client/storm.lua,
+        -- BR.World.want('storm', ...)) always wins, whatever was picked here.
         { id = 'time_weather',   category = 'disruption', risk = 'low',    implemented = false,
           options = {
               { id = 'time', choices = { 'day', 'dusk', 'night' }, default = 'night' },
-              { id = 'weather', choices = { 'clear', 'rain', 'fog', 'thunder' }, default = 'clear' },
+              { id = 'weather', choices = { 'clear', 'rain', 'fog' }, default = 'clear' },
               { id = 'duration', choices = { '180', '300' }, default = '180' },
           } },
         { id = 'power_outage',   category = 'disruption', risk = 'low',    implemented = false,
@@ -695,12 +878,19 @@ BR.Config.Terminals = {
               { id = 'area', choices = { 'here', 'city', 'county' }, default = 'here' },
               { id = 'duration', choices = { '120', '240' }, default = '120' },
           } },
-        { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = false },
+        { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = false, cost = 200 },
         { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
           options = { { id = 'site', choices = { 'terminal', 'circle' }, default = 'terminal' } } },
         { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true },
-        { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = false },
+        -- SQUAD-ONLY (round 2): it brings back squadmates.
+        { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = false, cost = 150,
+          squadOnly = true },
+        -- DISRUPTION ON ITS OWN (round 2): alone, it still hides the player
+        -- from other players' Scan, Pulse and bounty markers -- what Comms
+        -- blackout, filed under disruption, does to every other squad's
+        -- teammate markers.
         { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = false,
+          soloCategory = 'disruption',
           options = { { id = 'duration', choices = { '120', '240' }, default = '120' } } },
         { id = 'emp',            category = 'disruption', risk = 'medium', implemented = false,
           options = {
