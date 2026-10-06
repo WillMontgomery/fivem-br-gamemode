@@ -137,6 +137,54 @@ local CT = BR.Config.Terminals
 local COPY = CT.copy
 BR.Season.strict = true
 
+-- =========================================================================
+-- THE OWNER'S FIFTEEN SITES (2026-10-06), as the config has them -- read
+-- here, before this suite puts its own two in their place
+-- =========================================================================
+
+describe('the sites: the owner\'s fifteen laptops, his order, his numbers')
+do
+    -- "they're located at 15 places shown below", word for word: his order,
+    -- his x / y / z. The ids are his labels (la_mesa_pd is "chumash? PD",
+    -- whose coordinates are La Mesa's).
+    local WANT = {
+        { 'mount_gordo', 2825.834, 5969.14648, 351.6426 },
+        { 'chiliad_top', 472.667969, 5536.955, 785.8789 },
+        { 'fort_zancudo', -2455.12769, 3703.64917, 15.4468756 },
+        { 'paleto_pd', -429.23584, 5963.753, 30.50765 },
+        { 'calafia_way', 361.000427, 4434.68652, 61.91766 },
+        { 'vineyard', -1847.0896, 1929.22607, 150.897141 },
+        { 'rebel_radio', 764.2342, 2569.98633, 75.97378 },
+        { 'panorama_drive', 1901.3136, 3201.079, 46.3064651 },
+        { 'vinewood_towers', 793.333, 1286.544, 360.9136 },
+        { 'vinewood_bowl', 998.1884, 408.309143, 93.7109 },
+        { 'hillcrest_road', -781.49176, 593.5306, 128.329178 },
+        { 'college_lot', -1725.14148, 76.23494, 67.39259 },
+        { 'la_mesa_pd', 852.3667, -1368.79871, 26.7313938 },
+        { 'heliport_factory', -630.0207, -1664.05212, 26.5907326 },
+        { 'vespucci_canals', -1111.44263, -966.7761, 2.909578 },
+    }
+    local rows = CT.sites
+    eq(#rows, #WANT, 'fifteen rows')
+    for i, w in ipairs(WANT) do
+        local r = rows[i] or {}
+        ok(r.id == w[1] and r.x == w[2] and r.y == w[3] and r.z == w[4] and r.h == 0.0,
+            ('row %d is %s at the owner\'s %.6f, %.6f, %.6f, heading 0'):format(i, w[1], w[2], w[3], w[4]),
+            ('%s %s %s %s %s'):format(tostring(r.id), tostring(r.x), tostring(r.y), tostring(r.z), tostring(r.h)))
+    end
+    -- Every row a terminal: the shared check skips none and names none.
+    local usable, why = BR.TerminalSolve.sites(rows)
+    eq(#usable, #WANT, 'BR.TerminalSolve.sites takes every row')
+    eq(#why, 0, 'and skips none')
+    -- INSIDE THE PLAY AREA the owner surveyed (tools/check_boundary.lua holds
+    -- the POIs and the ambulance spawns to it, and the sites since this round),
+    -- and in no authored water rectangle.
+    for _, r in ipairs(rows) do
+        ok(BR.Config.Map.InBounds(r.x, r.y), ('%s is inside the surveyed boundary'):format(r.id))
+        ok(not BR.Config.Map.IsWater(r.x, r.y), ('%s is not in a water rectangle'):format(r.id))
+    end
+end
+
 --- Put this process on a season, the way br_core's server does at start.
 local function season(n)
     BR.Season.boot(function(name)

@@ -759,18 +759,59 @@ BR.Config.Terminals = {
     -- disconnecting mid-match.
     leaveDrops = true,
 
-    -- ═══ THE TERMINALS ═══
+    -- ═══ THE TERMINALS (owner, 2026-10-06) ═══
     --
-    -- One row per terminal in the world, placed in game with the dev tool
-    -- (`brterminal place` prints the row to paste here):
-    --
-    --   { id = 'airport_tower', x = 0.0, y = 0.0, z = 0.0, h = 0.0 },
+    -- "we don't need a script to place the props - I've just done so with a
+    -- ymap". THE LAPTOPS ARE THE OWNER'S YMAP'S: fifteen prop_laptop_01a in
+    -- the Season 2 drop on S3, streamed with br_stream_s2 (assets.lock), so
+    -- nothing in this repository makes one. These rows are WHERE THOSE PROPS
+    -- STAND, exactly as he gave them. Each terminal's plate, blip, reach and
+    -- session check is read from its row (client/yubikey.lua,
+    -- server/terminal.lua) and from nothing in the world, so a row moved
+    -- without its laptop is a plate beside empty air, and the other way round.
     --
     -- `id` is lower case letters, digits and underscores, at most 32
-    -- characters, and unique; x/y/z is where the prop stands and h its heading.
-    -- EMPTY UNTIL THE OWNER PLACES THEM ("Terminal sites: placed in game with
-    -- a dev placement tool rather than guessed").
+    -- characters, and unique; x/y/z is where the prop stands and h its heading
+    -- (0.0: the ymap sets each laptop's heading, and nothing here reads it).
+    -- In his order, under his label for each. tools/check_boundary.lua holds every row
+    -- inside the surveyed play area, as it holds the POIs and the ambulance
+    -- spawns.
+    --
+    -- `brterminal place` stays only as a DEV AID for a future site: for this
+    -- server session it puts a plate and a blip where you look, with no
+    -- laptop, and prints the row to paste here -- the laptop goes in the ymap.
     sites = {
+        -- mount gordo
+        { id = 'mount_gordo',      x = 2825.834,    y = 5969.14648,  z = 351.6426,   h = 0.0 },
+        -- top of chilliad
+        { id = 'chiliad_top',      x = 472.667969,  y = 5536.955,    z = 785.8789,   h = 0.0 },
+        -- fort zancudo
+        { id = 'fort_zancudo',     x = -2455.12769, y = 3703.64917,  z = 15.4468756, h = 0.0 },
+        -- paleto PD
+        { id = 'paleto_pd',        x = -429.23584,  y = 5963.753,    z = 30.50765,   h = 0.0 },
+        -- calafia way
+        { id = 'calafia_way',      x = 361.000427,  y = 4434.68652,  z = 61.91766,   h = 0.0 },
+        -- vineyard
+        { id = 'vineyard',         x = -1847.0896,  y = 1929.22607,  z = 150.897141, h = 0.0 },
+        -- rebel radio
+        { id = 'rebel_radio',      x = 764.2342,    y = 2569.98633,  z = 75.97378,   h = 0.0 },
+        -- panorama drive
+        { id = 'panorama_drive',   x = 1901.3136,   y = 3201.079,    z = 46.3064651, h = 0.0 },
+        -- towers on the hill by vinewood sign
+        { id = 'vinewood_towers',  x = 793.333,     y = 1286.544,    z = 360.9136,   h = 0.0 },
+        -- vinewood bowl
+        { id = 'vinewood_bowl',    x = 998.1884,    y = 408.309143,  z = 93.7109,    h = 0.0 },
+        -- hillcrest ridge access road
+        { id = 'hillcrest_road',   x = -781.49176,  y = 593.5306,    z = 128.329178, h = 0.0 },
+        -- parking lot south of the college
+        { id = 'college_lot',      x = -1725.14148, y = 76.23494,    z = 67.39259,   h = 0.0 },
+        -- chumash? PD -- his words. The coordinates are La Mesa's police
+        -- station, east of the river, so the id says la_mesa.
+        { id = 'la_mesa_pd',       x = 852.3667,    y = -1368.79871, z = 26.7313938, h = 0.0 },
+        -- factory by the heliport
+        { id = 'heliport_factory', x = -630.0207,   y = -1664.05212, z = 26.5907326, h = 0.0 },
+        -- vespucci canals
+        { id = 'vespucci_canals',  x = -1111.44263, y = -966.7761,   z = 2.909578,   h = 0.0 },
     },
 
     -- How close a player must stand to a terminal to see its plate and to use

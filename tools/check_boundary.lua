@@ -33,6 +33,10 @@
 --      #191 drives a vehicle to one -- an off-map destination is a rescue into
 --      the sea. All 23 pass today; the gate is so that stays true.
 --
+--   5. EVERY TERMINAL SITE IS INSIDE. Season 2's laptops (#396), placed by the
+--      owner's own ymap on 2026-10-06; br_lib/config/terminals.lua's `sites`
+--      say where they stand. All 15 pass today.
+--
 -- ═══ WHAT IT DELIBERATELY DOES NOT CHECK ═══
 --
 -- Recorded because these were measured and decided, not missed.
@@ -61,7 +65,7 @@
 
 local ROOT = 'resources/[fivem-royale]/br_lib/'
 for _, f in ipairs({ 'shared/enums.lua', 'shared/geo.lua', 'shared/polygon.lua',
-                     'config/storm.lua', 'config/map.lua' }) do
+                     'config/storm.lua', 'config/map.lua', 'config/terminals.lua' }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
         io.write('\27[31mload error\27[0m ', f, ': ', tostring(err), '\n')
@@ -192,6 +196,28 @@ for i, a in ipairs(BR.Config.Map.AmbulanceSpawns or {}) do
     end
 end
 
+-- ----------------------------------------------------- 5. the terminal sites --
+--
+-- Season 2's terminals (#396): the owner's own laptops, placed by his ymap
+-- (2026-10-06), at the rows in br_lib/config/terminals.lua. The same class of
+-- hand-authored point, and a terminal off the map is one nobody can reach in
+-- a match.
+
+local termWorst, termWorstId = math.huge, '-'
+local terminals = BR.Config.Terminals and BR.Config.Terminals.sites or {}
+if #terminals == 0 then
+    fail('br_lib/config/terminals.lua has no sites -- this check would pass on nothing')
+end
+for _, t in ipairs(terminals) do
+    local d = BR.Config.Map.BoundaryDistance(t.x, t.y)
+    if not BR.Config.Map.InBounds(t.x, t.y) then
+        fail('terminal site %s at %.1f, %.1f is %.0fm OUTSIDE the surveyed boundary',
+             tostring(t.id), t.x, t.y, d)
+    elseif d < termWorst then
+        termWorst, termWorstId = d, tostring(t.id)
+    end
+end
+
 -- ------------------------------------------------------------------ report --
 
 if fails == 0 then
@@ -202,6 +228,8 @@ if fails == 0 then
         '     %d POIs and %d ambulance spawns inside; tightest margins %.0fm (%s) and %.0fm (%s)\n',
         #BR.Config.Map.POIs, #(BR.Config.Map.AmbulanceSpawns or {}),
         poiWorst, poiWorstId, ambWorst, ambWorstId))
+    io.write(string.format('     %d terminal sites inside; tightest margin %.0fm (%s)\n',
+        #terminals, termWorst, termWorstId))
 else
     io.write(string.format('\27[31m%d boundary problem(s)\27[0m\n', fails))
     io.write('     The boundary is HAND-SURVEYED map data (br_lib/config/map.lua).\n')
