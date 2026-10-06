@@ -742,9 +742,52 @@ RegisterCommand('brfx', function(_, args)
     print(('[br_core] playing postfx "%s" -- "brfx stop" to clear'):format(name))
 end, false)
 
+--- A getter's answer, or nil if this build does not have it.
+--- @param fn function|nil
+--- @return any
+local function tcRead(fn, ...)
+    if type(fn) ~= 'function' then return nil end
+    local ok, v = pcall(fn, ...)
+    if not ok then return nil end
+    return v
+end
+
 RegisterCommand('brtc', function(_, args)
     local name, strength = args[1], tonumber(args[2] or '1.0')
     if not name then
+        -- WHAT IS ON SCREEN (#399). Bare, it reads both slots and says whether
+        -- the storm's grade holds the primary one -- the first question when a
+        -- vMenu TM "does nothing": -1 means nothing was written, the right name
+        -- at 0.00 means a zero intensity, and REDMIST means the storm has it.
+        -- Reads only.
+        local idx = tcRead(GetTimecycleModifierIndex)
+        if idx == nil then
+            print('[br_core] primary slot: unreadable on this build')
+        elseif idx == -1 then
+            print('[br_core] primary slot: empty (-1)')
+        else
+            print(('[br_core] primary slot: %d %s at %.2f'):format(idx,
+                tostring(tcRead(GetTimecycleModifierNameByIndex, idx) or '(no name)'),
+                tcRead(GetTimecycleModifierStrength) or -1.0))
+        end
+        local extra = tcRead(GetExtraTimecycleModifierIndex)
+        print(('[br_core] extra slot: %s'):format(extra == nil and 'unreadable'
+            or (extra == -1 and 'empty (-1)' or tostring(extra))))
+        local g = BR.Storm and BR.Storm.grade and BR.Storm.grade() or nil
+        local grade
+        if not g then
+            grade = 'not loaded'
+        elseif not g.applied then
+            grade = 'at rest, not in the slot'
+        elseif g.ours ~= nil and g.ours == idx then
+            grade = ('OWNS the primary slot (level %.2f)'):format(g.level)
+        else
+            grade = 'up, but another modifier holds the slot; not touching it'
+        end
+        if g and g.saved then
+            grade = grade .. (', will put back %s at %.2f'):format(g.saved.name, g.saved.strength)
+        end
+        print('[br_core] storm grade: ' .. grade)
         print('  usage: brtc <timecycleName> [strength]  |  brtc clear')
         return
     end

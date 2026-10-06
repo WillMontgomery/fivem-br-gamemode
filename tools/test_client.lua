@@ -23340,6 +23340,70 @@ do
     Citizen.SetTimeout = realSetTimeout
 end
 
+-- ---------------------------------------------------------------------------
+describe('#399 -- brtc, bare, reads what is on screen')
+-- ---------------------------------------------------------------------------
+--
+-- "When the storm is frozen and I'm outside of it, using vMenu to select a TM
+-- does absolutely nothing" (owner, 2026-10-05). The first question is what is
+-- in the slot: -1 says vMenu wrote nothing, the right name at 0.00 says its
+-- intensity is zero, REDMIST says the storm holds it. So `brtc` with no
+-- arguments reads both slots and the grade, and writes nothing.
+do
+    local saved = {}
+    local NAMES = { 'GetTimecycleModifierIndex', 'GetTimecycleModifierNameByIndex',
+                    'GetTimecycleModifierStrength', 'GetExtraTimecycleModifierIndex',
+                    'SetTimecycleModifier', 'SetTimecycleModifierStrength',
+                    'ClearTimecycleModifier' }
+    for _, n in ipairs(NAMES) do saved[n] = _G[n] end
+    local prevStorm = BR.Storm
+    local slot, extra, grade, writes = nil, -1, nil, 0
+    local IDS = { REDMIST = 7, Kifflom = 3 }
+    GetTimecycleModifierIndex = function() return slot and IDS[slot.name] or -1 end
+    GetTimecycleModifierNameByIndex = function(i)
+        for n, id in pairs(IDS) do if id == i then return n end end
+    end
+    GetTimecycleModifierStrength = function() return slot and slot.strength or 0.0 end
+    GetExtraTimecycleModifierIndex = function() return extra end
+    SetTimecycleModifier = function() writes = writes + 1 end
+    SetTimecycleModifierStrength = function() writes = writes + 1 end
+    ClearTimecycleModifier = function() writes = writes + 1 end
+    BR.Storm = { grade = function() return grade end }
+
+    local function brtc()
+        logged = {}
+        commands['brtc'](nil, {})
+        return table.concat(logged, '\n')
+    end
+    local function has(text, s) return text:find(s, 1, true) ~= nil end
+
+    slot = { name = 'REDMIST', strength = 0.7 }
+    grade = { applied = true, ours = 7, level = 1.0, saved = { name = 'Kifflom', strength = 0.5 } }
+    local out = brtc()
+    ok(has(out, 'primary slot: 7 REDMIST at 0.70'), 'the primary slot: index, name and strength', out)
+    ok(has(out, 'extra slot: empty (-1)'), 'the extra slot: its index', out)
+    ok(has(out, 'storm grade: OWNS the primary slot (level 1.00), will put back Kifflom at 0.50'),
+       'and that the storm grade owns it, with what it will put back', out)
+
+    slot = { name = 'Kifflom', strength = 0.0 }
+    extra = 3
+    grade = { applied = true, ours = nil, level = 1.0 }
+    out = brtc()
+    ok(has(out, 'primary slot: 3 Kifflom at 0.00') and has(out, 'extra slot: 3')
+       and has(out, 'another modifier holds the slot'),
+       'a dev\'s TM at zero intensity reads as exactly that, and the grade as not holding it', out)
+
+    slot, extra = nil, -1
+    grade = { applied = false, level = 0.0 }
+    out = brtc()
+    ok(has(out, 'primary slot: empty (-1)') and has(out, 'storm grade: at rest, not in the slot'),
+       'an empty slot reads -1, with the grade at rest', out)
+    ok(writes == 0, 'and bare brtc writes nothing at all', ('%d writes'):format(writes))
+
+    for _, n in ipairs(NAMES) do _G[n] = saved[n] end
+    BR.Storm = prevStorm
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
