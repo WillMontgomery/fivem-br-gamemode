@@ -817,10 +817,10 @@ BR.Config.Terminals = {
         bounty = { sprite = 58, colour = 3, mateColour = 69, scale = 1.0 },
         -- ── wave A (2026-10-06): PLACEHOLDERS the owner has not picked ──
         -- Key finder: where each Yubikey was, on the squad's maps for 2
-        -- minutes. Sprite 1 is the plain dot (Scan's); colour 5 is yellow.
+        -- minutes. Sprite 1 is the plain dot (Scan's); color 5 is yellow.
         keyFinder = { sprite = 1, colour = 5, scale = 0.9 },
         -- Pulse: each player it found, followed for 30 seconds. The plain dot
-        -- again; colour 17 is orange.
+        -- again; color 17 is orange.
         pulse = { sprite = 1, colour = 17, scale = 0.8 },
     },
 

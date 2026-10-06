@@ -21,7 +21,7 @@
 --                but `contract_protect` to the target's squad instead of his
 --                `bounty_protect`, whose "for the next 10 minutes" is Scan's,
 --                and `contract_target` to the target. The same blip 58 in his
---                colours, the same pushes, ended the same ways (elimination,
+--                colors, the same pushes, ended the same ways (elimination,
 --                leaving, the match ending), hidden the same way by Ghost; a
 --                bounty already on the target keeps whichever clock is longer.
 --

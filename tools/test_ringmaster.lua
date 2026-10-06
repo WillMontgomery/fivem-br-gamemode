@@ -2568,7 +2568,7 @@ local function newTimelineWorld(opts)
     -- server/inventory.lua is needed to answer "is this weapon theirs".
     BRs.Inv = { of = function(src) return S.invs[src] end }
     -- A WEAPON THE SERVER TOOK A MOMENT AGO (a terminal's Disarm, #396):
-    -- [src] = { [normalised hash] = until }. The real record is
+    -- [src] = { [normalized hash] = until }. The real record is
     -- server/inventory.lua's BR.Inv.revoke, driven in tools/test_roster.lua;
     -- what is asserted here is that this file asks it, with the hash and the
     -- clock, and stands down for that weapon alone.

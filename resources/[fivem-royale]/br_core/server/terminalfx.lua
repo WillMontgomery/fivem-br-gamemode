@@ -122,7 +122,7 @@ function T.marked(state)
     return MARKED[state] == true
 end
 
---- Where a function that works "around this terminal" is centred.
+--- Where a function that works "around this terminal" is centered.
 --- @param src integer
 --- @param session table
 --- @return number|nil x, number|nil y, table|nil site  the site, when it is one
@@ -240,7 +240,7 @@ end
 --- owner's `bounty_protect` -- whose "for the next 10 minutes" is Scan's ten
 --- and must never be said about five -- plus `opts.target`, a line to the
 --- target themselves. The owner's `bounty_new` to the lobby, blip 58 and his
---- colours are the same for both.
+--- colors are the same for both.
 --- @param m table
 --- @param src integer
 --- @param now number

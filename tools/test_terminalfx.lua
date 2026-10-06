@@ -1583,7 +1583,7 @@ do
     eq(noticeIndex('A pulse detected you', 3), nil, 'nobody is told')
 end
 
-describe('Pulse: a solo match, the dev command centred on the player, and Season 1')
+describe('Pulse: a solo match, the dev command centered on the player, and Season 1')
 do
     reset()
     local m = newMatch(1)
@@ -1595,7 +1595,7 @@ do
     eq(r and r.toast, COPY.pulse_done_solo, 'the runner reads the solo done line')
     eq(lastToast(3), COPY.pulse_detected_solo, 'and the one found the solo warning')
 
-    -- THE DEV TERMINAL IS NOWHERE: the pulse is centred on the player.
+    -- THE DEV TERMINAL IS NOWHERE: the pulse is centered on the player.
     reset()
     m = lobby()
     keys[1] = false
