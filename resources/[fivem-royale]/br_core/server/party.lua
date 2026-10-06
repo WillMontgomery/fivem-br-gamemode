@@ -1449,6 +1449,8 @@ BR.Sched.every(250, 'party.squadpos', function()
     -- the moment people spread out, which is the moment they jump.
     local aboard = { [BR.PlayerState.BUS] = true }
     local squads = {}
+    -- Each squad's match, for the Comms blackout's question below.
+    local squadMatch = {}
     BR.Roster.each(nil, function(src, e)
         local em = e.matchId and BR.Server.matches[e.matchId]
         if em and liveStates[em.state] and e.squadId and e.pos
@@ -1458,6 +1460,7 @@ BR.Sched.every(250, 'party.squadpos', function()
             if not sq then
                 sq = {}
                 squads[e.squadId] = sq
+                squadMatch[e.squadId] = em
             end
             sq[#sq + 1] = {
                 src   = src,
@@ -1609,11 +1612,21 @@ BR.Sched.every(250, 'party.squadpos', function()
         end
     end)
 
-    for _, members in pairs(squads) do
+    for squadId, members in pairs(squads) do
         if #members > 1 then
             -- Stable member index -> stable blip colour on every client.
             table.sort(members, function(a, b) return a.src < b.src end)
             for i, m in ipairs(members) do m.i = i end
+            -- A COMMS BLACKOUT ANOTHER SQUAD RAN (#396, wave C) LEAVES THE
+            -- POSITIONS OFF, and only them: "Players in every other squad stop
+            -- seeing their teammates on the map and the minimap." The one
+            -- predicate is server/terminalfx/comms_blackout.lua's; nothing
+            -- else on these rows is a position, and the list still goes out
+            -- -- it IS the client's membership model (see OUT MATES above).
+            if BR.Terminal ~= nil and BR.Terminal.beaconDark ~= nil
+               and BR.Terminal.beaconDark(squadMatch[squadId], squadId, now) then
+                for _, m in ipairs(members) do m.x, m.y = nil, nil end
+            end
             for _, m in ipairs(members) do
                 TriggerClientEvent(BR.Net.SQUAD_POS, m.src, members)
             end

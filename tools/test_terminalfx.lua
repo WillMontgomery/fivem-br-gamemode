@@ -2488,6 +2488,213 @@ do
     local _ = m
 end
 
+-- ── Comms blackout's world: the REAL squad beacon (server/party.lua), loaded
+--    here so its `party.squadpos` job can be stepped like the terminal's ──
+loadAll({ 'br_core/server/party.lua' })
+
+--- One beacon push, against this block's matches; each squad member's last
+--- SQUAD_POS row for `who`, or nil.
+local function beacon()
+    BR.Server.matches = matches
+    jobs['party.squadpos']()
+end
+local function rowFor(target, who)
+    local d = lastOf(BR.Net.SQUAD_POS, target)
+    for _, r in ipairs(d or {}) do
+        if r.src == who then return r end
+    end
+    return nil
+end
+local function positioned(target, who)
+    local r = rowFor(target, who)
+    return r ~= nil and r.x ~= nil and r.y ~= nil
+end
+
+--- lobby() plus a third member of B, out where they fell.
+local function darkLobby()
+    local m = lobby()
+    player(6, m, 'B', { x = C0.x + 330.0, y = C0.y }, BR.PlayerState.OUT)
+    roster[4].dbnoUntil = gameMs + 30000
+    return m
+end
+
+describe('Comms blackout: registered, built, squad-only, its durations')
+do
+    local row = T.row('comms_blackout')
+    ok(row and row.implemented == true and T.FUNCTIONS.comms_blackout ~= nil, 'comms_blackout is built')
+    ok(row and row.squadOnly == true, 'and squad-only')
+    ok(row and (row.cost or 0) == 0, 'and costs no Volts')
+    eq(row and table.concat(row.options[1].choices, ','), '60,120,180', 'duration: 1, 2 or 3 minutes')
+    ok(not COPY.comms_blackout_what:find('panel', 1, true),
+        'the page no longer says the squad panel shows where teammates are: it never did')
+end
+
+describe('Comms blackout: every other squad\'s beacon leaves the positions off; the runner\'s does not')
+do
+    reset()
+    local m = darkLobby()
+    beacon()
+    ok(positioned(3, 4) and positioned(3, 6) and positioned(1, 2), 'before: every squad sees its teammates')
+    local r = runAt(1, 'comms_blackout', { duration = '60' })
+    ok(r and r.ok == true and r.code == 'done', 'A runs it, 1 minute', r and r.code)
+    eq(r and r.toast, COPY.comms_blackout_done, 'the done line')
+    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'the lobby is told')
+    ok(T.blackedOut(m, 'squad:B', gameMs) and not T.blackedOut(m, 'squad:A', gameMs),
+        'B is blacked out, A is not')
+    sent = {}
+    beacon()
+    for _, who in ipairs({ 3, 4, 6 }) do
+        ok(rowFor(3, who) ~= nil and not positioned(3, who),
+            ('B\'s beacon still lists p%d, with no position'):format(who))
+    end
+    ok(not positioned(4, 3), 'to every member of B')
+    local downed = rowFor(3, 4)
+    ok(downed and downed.state == BR.PlayerState.DBNO and downed.bleedEndsAt == roster[4].dbnoUntil,
+        'a downed mate\'s dot goes too, but the panel keeps their state and bleed clock')
+    ok(rowFor(3, 6) and rowFor(3, 6).state == BR.PlayerState.OUT, 'and the mate out stays a mate, with no dot')
+    ok(positioned(1, 2) and positioned(2, 1), 'A, which ran it, still sees its own')
+    ok(#eventsOf(BR.Net.SQUAD_POS, 5) == 0, 'the solo player has no beacon, before or after')
+
+    -- ONE MINUTE, THEN THE POSITIONS ARE BACK ON THE NEXT PUSH.
+    local t0 = gameMs
+    gameMs = t0 + 59999
+    jobs['terminal.blackout']()
+    beacon()
+    ok(not positioned(3, 4), 'still dark at 59.999 s')
+    gameMs = t0 + 60000
+    jobs['terminal.blackout']()
+    beacon()
+    ok(positioned(3, 4) and positioned(4, 3) and positioned(3, 6), 'and at the minute every dot is back')
+    ok(m.terminalFx.blackouts == nil, 'the record is gone')
+end
+
+describe('Comms blackout: Ghost and the bounty -- each answers its own question')
+do
+    -- B UNDER GHOST IS BLACKED OUT LIKE ANY SQUAD, and stays hidden from A's Scan.
+    reset()
+    local m = darkLobby()
+    runAt(1, 'scan')                                       -- A sees every opponent; p1 has a bounty
+    devRun(3, 'ghost duration=240')
+    devRun(1, 'comms_blackout duration=180')
+    sent = {}
+    beacon()
+    jobs['terminal.scan']()
+    ok(not positioned(3, 4), 'B under Ghost: blacked out all the same')
+    eq(scanIds(1), '5', 'and still off A\'s Scan: Ghost holds')
+    ok(positioned(1, 2), 'A sees its own')
+
+    -- A UNDER GHOST, RUNNING IT: untouched by its own blackout.
+    devRun(1, 'ghost duration=240')
+    beacon()
+    ok(positioned(1, 2), 'A under Ghost and running the blackout: still sees its own')
+
+    -- THE BOUNTY ON A BLACKED-OUT SQUAD'S MEMBER: off their own maps (the beacon
+    -- carries no position), its mark still in their panel, and still on every
+    -- other map. A's bounty is the case here: C runs the blackout.
+    reset()
+    m = darkLobby()
+    player(7, m, 'C', { x = C0.x - 900.0, y = C0.y })
+    player(8, m, 'C', { x = C0.x - 910.0, y = C0.y })
+    runAt(1, 'scan')                                       -- p1, squad A, has the bounty
+    devRun(7, 'comms_blackout duration=60')
+    sent = {}
+    beacon()
+    gameMs = gameMs + 1000
+    jobs['terminal.bounty']()
+    local mate = rowFor(2, 1)
+    ok(mate and mate.bounty == true and mate.x == nil,
+        'p1\'s own squad: the bounty bit for the panel, and no position for the blip 58 color 69 dot')
+    local b3 = lastOf(BR.Net.TERMINAL_BOUNTY, 3)
+    local b7 = lastOf(BR.Net.TERMINAL_BOUNTY, 7)
+    ok(b3 and #b3.list == 1 and b3.list[1].s == 1, 'B, blacked out too, still sees A\'s bounty: not a teammate of theirs')
+    ok(b7 and #b7.list == 1 and b7.list[1].s == 1, 'and C, which ran it, sees it as before')
+    ok(positioned(7, 8), 'and C sees its own')
+    local b2 = lastOf(BR.Net.TERMINAL_BOUNTY, 2)
+    ok(b2 == nil or #b2.list == 0, 'nobody in A is sent the bounty as a mark: their beacon carried it, as always')
+end
+
+describe('Comms blackout: the match ending, Season 1, the dev command, the predicate itself')
+do
+    reset()
+    local m = darkLobby()
+    devRun(1, 'comms_blackout')
+    ok(T.blackedOut(m, 'squad:B', gameMs), 'dark in a match being played (brterminal run comms_blackout)')
+    m.state = BR.MatchState.ENDED
+    ok(not T.blackedOut(m, 'squad:B', gameMs), 'not once the match is over')
+    m.state = BR.MatchState.PLAYING
+    ok(not T.blackedOut(m, nil, gameMs) and not T.blackedOut(nil, 'squad:B', gameMs),
+        'nothing for no squad or no match')
+    ok(not T.beaconDark(m, nil, gameMs), 'and the beacon\'s question for no squad id is no')
+    ok(T.beaconDark(m, 'B', gameMs) and not T.beaconDark(m, 'A', gameMs),
+        'the beacon asks by squad id: B dark, A not')
+    season(1)
+    ok(not T.blackedOut(m, 'squad:B', gameMs), 'nobody is blacked out off Season 2')
+    sent = {}
+    beacon()
+    ok(positioned(3, 4), 'so the beacon sends positions at once')
+    jobs['terminal.blackout']()
+    ok(m.terminalFx.blackouts == nil, 'and the blackouts are forgotten')
+    season(2)
+    ok(not T.blackedOut(m, 'squad:B', gameMs), 'so Season 2 coming back does not bring it back')
+
+    -- A SECOND, SHORTER ONE (only the dev command can) NEVER CUTS THE FIRST.
+    reset()
+    m = darkLobby()
+    devRun(1, 'comms_blackout duration=180')
+    local ends = gameMs + 180000
+    devRun(1, 'comms_blackout duration=60')
+    ok(T.blackedOut(m, 'squad:B', ends - 1) and not T.blackedOut(m, 'squad:B', ends),
+        'a 1-minute blackout over a 3-minute one keeps the three')
+
+    -- TWO SQUADS' BLACKOUTS AT ONCE: each blacks out the other.
+    reset()
+    m = darkLobby()
+    devRun(1, 'comms_blackout')
+    devRun(3, 'comms_blackout')
+    sent = {}
+    beacon()
+    ok(not positioned(1, 2) and not positioned(3, 4), 'A\'s and B\'s at once: neither sees its own')
+end
+
+describe('Comms blackout: squad-only, refused spending nothing, and the end-of-load refund')
+do
+    -- OUTSIDE A SQUAD MATCH: not listed, and a run is refused by the door.
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    keys[1] = true
+    useAt(1)
+    eq(listedAs(1, 'comms_blackout'), nil, 'a solo match lists no Comms blackout')
+    local r = ask(1, 'comms_blackout')
+    ok(r and r.code == 'unavailable' and keys[1] == true and not T.squadUsed(1),
+        'and a run is refused, spending nothing', r and r.code)
+
+    -- OUTSIDE A MATCH, a real session is refused.
+    ok(T.FUNCTIONS.comms_blackout.refuse(99, { dev = false }) == 'unavailable', 'outside a match: unavailable')
+    ok(T.FUNCTIONS.comms_blackout.refuse(99, { dev = true }) == nil, 'a dev session is never refused for it')
+
+    -- THE END OF THE LOAD: the match over before it starts. Everything back.
+    reset()
+    m = darkLobby()
+    useAt(1)
+    r = ask(1, 'comms_blackout', { duration = '120' })
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    m.state = BR.MatchState.ENDED
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and keys[1] == true and not T.squadUsed(1),
+        'the match ended during the load: the key and the use given back', r and r.code)
+    ok(m.terminalFx == nil or m.terminalFx.blackouts == nil, 'and no blackout began')
+
+    -- AND bad_option.
+    reset()
+    darkLobby()
+    useAt(1)
+    r = ask(1, 'comms_blackout', { duration = '30' })
+    ok(r and r.code == 'bad_option' and keys[1] == true, 'a duration the row does not offer: bad_option, nothing spent')
+end
+
 -- =========================================================================
 -- PART D -- the client
 -- =========================================================================
@@ -2983,6 +3190,14 @@ do
     local mates = readFile(ROOT .. 'br_core/client/squadmates.lua') or ''
     ok(mates:find('BR.TerminalFx.mateBountyLook()', 1, true) ~= nil and mates:find("looks[m.src] ~= look", 1, true) ~= nil,
         'teammates\' blip changes look with the bit, on change only (squadmates.lua)')
+    -- WAVE C: Comms blackout's two hooks (the beacon's half is driven above,
+    -- on the real party.lua; the client's is tools/test_client.lua's).
+    ok(party:find('BR.Terminal.beaconDark(squadMatch[squadId], squadId, now)', 1, true) ~= nil
+            and party:find('for _, m in ipairs(members) do m.x, m.y = nil, nil end', 1, true) ~= nil,
+        'the squad beacon asks the Comms blackout and leaves the positions off (party.lua)')
+    ok(mates:find('if m.x == nil or m.y == nil then', 1, true) ~= nil
+            and mates:find('dropBlip(m.src)', 1, true) ~= nil,
+        'and a row with no position takes the dot down (squadmates.lua)')
     local panel = readFile('ui-src/src/hud/SquadPanel.tsx') or ''
     ok(panel:find('<BountyMark glyph={m.bounty} />', 1, true) ~= nil, 'the panel draws the mark (SquadPanel.tsx)')
     local manifest = readFile(ROOT .. 'br_core/fxmanifest.lua') or ''

@@ -189,13 +189,19 @@ local function disbandAllies()
     allied = {}
 end
 
-local function dropMate(src)
+--- One mate's map blip down, and nothing else about them: their record, tag
+--- and name stay. A blip made again later is made from scratch.
+local function dropBlip(src)
     local b = blips[src]
     if b then
         if DoesBlipExist(b) then RemoveBlip(b) end
         blips[src] = nil
     end
     looks[src] = nil
+end
+
+local function dropMate(src)
+    dropBlip(src)
     dropTag(src)
     low[src]   = nil
     mates[src] = nil
@@ -261,6 +267,18 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
         if m.src ~= BR.State.me.src then
             seen[m.src] = true
             mates[m.src] = m
+
+            -- NO POSITION, NO DOT: A COMMS BLACKOUT (#396, wave C). Another
+            -- squad's terminal has the server leaving `x` and `y` off every row
+            -- of this squad's beacon (server/party.lua), so the mate's blip
+            -- comes off both maps -- a downed one and one left where a mate
+            -- fell included -- until positions arrive again, when the block
+            -- below makes it from scratch. They stay a mate: the record, the
+            -- overhead name and the panel row are untouched.
+            if m.x == nil or m.y == nil then
+                dropBlip(m.src)
+                goto continue
+            end
 
             local b = blips[m.src]
             if not b or not DoesBlipExist(b) then
@@ -334,6 +352,7 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
             SetBlipAlpha(blips[m.src],
                 sharing and 0 or (out and 120 or 255))
         end
+        ::continue::
     end
 
     -- Anyone the server stopped sending is out -- died, left, next match's

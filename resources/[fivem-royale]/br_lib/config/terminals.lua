@@ -513,10 +513,15 @@ BR.Config.Terminals = {
         -- spending nothing (at the terminal: why not).
         no_circle = 'The final circle is already on the map.',
 
-        -- Comms blackout (owner's; offline)
+        -- Comms blackout (owner's; LIVE since wave C, 2026-10-06)
         comms_blackout_name = 'Comms blackout',
         comms_blackout_summary = "Hides teammates' map markers from every other squad for a while.",
-        comms_blackout_what = "Players in every other squad stop seeing their teammates on the map and the minimap.\nTheir squad panel stops showing where their teammates are.\nYour squad isn't affected. Voice chat isn't affected.",
+        -- WRITTEN (2026-10-06, wave C; was "...\nTheir squad panel stops
+        -- showing where their teammates are.\n..."): the squad panel never
+        -- showed where a teammate is -- client/state.lua folds no position
+        -- into its rows -- so there is nothing there to stop showing, and the
+        -- line went.
+        comms_blackout_what = "Players in every other squad stop seeing their teammates on the map and the minimap.\nYour squad isn't affected. Voice chat isn't affected.",
         comms_blackout_opt_duration = 'Duration',
         comms_blackout_opt_duration_60 = '1 minute',
         comms_blackout_opt_duration_120 = '2 minutes',
@@ -1058,9 +1063,11 @@ BR.Config.Terminals = {
           options = { { id = 'zone', choices = { 'near', 'center', 'far' }, default = 'near' } } },
         -- SQUAD-ONLY (round 2): it hides teammates' markers from every other
         -- squad, and outside a squad match nobody has a teammate to hide.
-        { id = 'comms_blackout', category = 'disruption', risk = 'medium', implemented = false,
+        -- LIVE SINCE WAVE C (2026-10-06): server/terminalfx/comms_blackout.lua,
+        -- the one predicate the squad beacon asks before it sends positions.
+        { id = 'comms_blackout', category = 'disruption', risk = 'medium', implemented = true,
           squadOnly = true,
-          options = { { id = 'duration', choices = { '60', '120', '180' }, default = '60' } } },
+          options = { { id = 'duration', choices = { '60', '120', '180' }, default = '60' } } },  -- seconds
         -- THE OWNER'S RULE FOR WHOEVER BUILDS IT (2026-10-05, round 2):
         -- "thunderstorm cannot be a pickable weather. Make sure the storm will
         -- still storm when outside the circle too - whatever weather they set

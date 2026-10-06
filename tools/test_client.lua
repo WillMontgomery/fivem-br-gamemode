@@ -10448,6 +10448,39 @@ do
         ('%d add(s) before the first transition, %d after four of them')
             :format(addsBefore, blipAdds))
 
+    -- ═══ A COMMS BLACKOUT (#396, wave C): A ROW WITH NO POSITION, NO DOT ═══
+    --
+    -- Another squad's terminal has the server leave `x` and `y` off every row
+    -- of this squad's beacon (server/party.lua; tools/test_terminalfx.lua
+    -- holds that half). The blip comes off both maps -- REMOVED, not hidden
+    -- by alpha: an alpha-0 blip still holds the last coordinates it was given
+    -- -- a downed mate's and one out included, and the mate stays a mate:
+    -- their record, which the panel reads, is the row that arrived. When the
+    -- positions come back the blip is made from scratch.
+    local DARK = {
+        { src = 2, name = 'Bravo',  i = 2, state = BR.PlayerState.DBNO, bleedEndsAt = 5000 },
+        { src = 3, name = 'Victor', i = 3, state = BR.PlayerState.OUT },
+    }
+    local bravoWas, victorWas = blipAtX[BRAVO_X], blipAtX[VICTOR_X]
+    fire(BR.Net.SQUAD_POS, DARK)
+    ok(blipAlive[bravoWas] == nil and blipAlive[victorWas] == nil,
+        'a blackout row with no position takes the blip off the map -- the '
+            .. 'downed mate\'s and the one out alike',
+        ('Bravo %s, Victor %s'):format(tostring(blipAlive[bravoWas]), tostring(blipAlive[victorWas])))
+    local row = BR.Squadmates.beaconOf(2)
+    ok(row ~= nil and row.bleedEndsAt == 5000 and row.state == BR.PlayerState.DBNO,
+        'and the mate is still a mate: the panel reads their state and bleed clock off the row')
+    local addsDark = blipAdds
+    fire(BR.Net.SQUAD_POS, DARK)
+    tickBand()
+    ok(blipAdds == addsDark, 'and nothing is made while they stay dark',
+        ('%d add(s)'):format(blipAdds - addsDark))
+    beacon()
+    ok(blipAdds == addsDark + 2 and blipAlive[blipAtX[BRAVO_X]] == true
+            and alphaAt(BRAVO_X) == 255 and alphaAt(VICTOR_X) == 255,
+        'positions back: both blips made afresh, at full alpha',
+        ('%d add(s), Bravo alpha %s'):format(blipAdds - addsDark, tostring(alphaAt(BRAVO_X))))
+
     ok(select(1, loopHealth('squadmates.tags')) == 0,
         'with the tags loop still not having thrown',
         ('errors %s'):format(tostring(select(1, loopHealth('squadmates.tags')))))
