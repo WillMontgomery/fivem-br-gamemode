@@ -3,7 +3,7 @@
 -- decided here and nothing is drawn: client/yubikey.lua hands BR.TerminalFx
 -- .lock() to BR.TerminalSolve.offlineWhy, the one online rule, so a terminal
 -- a Lockdown has taken shows no blip on a key holder's map and its plate says
--- `locked` with nothing to hold.
+-- `locked` with nothing to press.
 --
 -- It ends when the server says so. Behind that, the lobby, Season 1 and a
 -- message that never came (a few seconds past the `leftMs` the server gave)

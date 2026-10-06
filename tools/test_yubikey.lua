@@ -1433,7 +1433,7 @@ do
     W.ped = { x = HUT.x + 1.0, y = HUT.y, z = HUT.z }
     W.tick()
     local p = W.lastPrompt()
-    ok(p and p.hint == COPY.locked and p.key == nil, 'at the hut: the plate says locked, with nothing to hold')
+    ok(p and p.hint == COPY.locked and p.key == nil, 'at the hut: the plate says locked, with nothing to press')
     W.net(W.B.Net.TERMINAL_SITES, { placed = {}, removed = {}, forced = { 'hut' } })
     W.slow()
     W.tick()

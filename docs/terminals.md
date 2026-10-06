@@ -153,7 +153,7 @@ The table below is the lines outside the functions' own:
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
 | `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target`, `lockdown_none` | At the terminal: why not (wave A's functions) |
-| `locked` | A terminal a Lockdown has taken: its world plate (nothing to hold), a toast to a player who presses there anyway, the app's reason, and the refusal of a second Lockdown whose own terminal the first one took while it loaded |
+| `locked` | A terminal a Lockdown has taken: its world plate (nothing to press), a toast to a player who presses there anyway, the app's reason, and the refusal of a second Lockdown whose own terminal the first one took while it loaded |
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
 | `pulse_detected` | A toast to each player a Pulse found, after the lobby's notice |
 | `contract_protect` | A toast to a Contract target's squadmates (never the target): the owner's `bounty_protect` says ten minutes, Scan's; `{playername}` |

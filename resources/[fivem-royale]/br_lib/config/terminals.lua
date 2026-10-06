@@ -110,7 +110,7 @@ BR.Config.Terminals = {
         -- toast if the server hears a press there anyway, and the app's reason.
         offline = 'This terminal is outside the storm and offline.',
         -- WRITTEN (2026-10-06, wave A). A terminal a Lockdown has taken: the
-        -- world plate's hint (nothing to hold), a toast if the player presses
+        -- world plate's hint (nothing to press), a toast if the player presses
         -- anyway, and the app's reason.
         locked = 'A lockdown has taken this terminal offline.',
         -- [COPY] A toast to a holder trying to pick up a second Yubikey.
