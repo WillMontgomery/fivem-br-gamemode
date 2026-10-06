@@ -417,11 +417,14 @@ writes both and `build:check` byte-compares both, each against its own committed
 build stamp. The app has its own gate, `scripts/check-terminal.mjs`: the
 Cloudscape-on-CEF-103 findings of #385, no words written in its JSX, every
 line read through one speaker (the squad words), Run's risk colors on tokens
-Cloudscape defines, and a browser chrome that takes no mode -- its pure
-parts' tests, `scripts/test-terminal-model.mjs`, and the computer's desktop
-(`cuchi_computer/nui/br.js`) driven in a node:vm page model,
+Cloudscape defines, a browser chrome that takes no mode, and the page loads
+(T10: back and forward never load, and the tab's loading symbol is the one
+animation, only while a page loads) -- its pure parts' tests,
+`scripts/test-terminal-model.mjs` (the page loads' rules among them), and the
+computer's desktop (`cuchi_computer/nui/br.js`) driven in a node:vm page model,
 `scripts/test-terminal-desktop.mjs`: a run's last word is shown in the app or
-handed back for a toast, on every path.
+handed back for a toast, on every path, and the tab's loading symbol comes off
+on every way out.
 
 CI runs both package installs and bundle checks under Node 22 before
 `tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;

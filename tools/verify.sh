@@ -154,7 +154,7 @@ NOTES=(
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
     "POI siting|Named map spots and ambulance spawns are spread out, on land, and follow placement rules"
-    "map boundary|Every map spot and ambulance spawn sits inside the play area the owner surveyed"
+    "map boundary|Every map spot, ambulance spawn and terminal site sits inside the play area the owner surveyed"
     "spectator microphone|Spectators are muted whenever they start watching and unmuted once when they stop"
     "spectator HUD|A spectator's HUD shows the watched player, whose loadout is sent to that spectator alone"
     "squad voice marks|The squad panel shows who is talking without telling anyone more about other players"
@@ -1165,7 +1165,8 @@ fi
 #
 # check_boundary.lua also pins the ring to the survey's own perimeter, area and
 # centroid, which is what stops this gate being circular: without it, a boundary
-# widened to admit a coordinate would still pass every check it makes.
+# widened to admit a coordinate would still pass every check it makes. Since
+# 2026-10-06 it holds the Season 2 terminal sites (#396) to the ring too.
 section 'map boundary'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_boundary.lua || rc=1

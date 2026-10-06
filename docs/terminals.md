@@ -23,7 +23,7 @@ Around them, the Gameplay half:
 | Piece | Where | Its job |
 |---|---|---|
 | **The key** | `br_core/server/yubikey.lua` | Who holds a Yubikey, on the profile row through br_ddb (`yubikey`, `yubikeySeen`); every way one changes hands. |
-| **The world** | `br_core/client/yubikey.lua` | Each terminal's local prop, blip and plate; the hold that asks to open one; the key's HUD glyph; Storm reveal on the maps. Decides nothing. |
+| **The world** | `br_core/client/yubikey.lua` | Each terminal's blip and plate (the laptops are the owner's ymap's, hidden where terminals are off); the press that asks to open one; the key's HUD glyph; Storm reveal on the maps. Decides nothing. |
 | **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against the storm, the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
 | **The effects** | `br_core/server/terminalfx.lua` | What the built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen. |
 | **The marks** | `br_core/client/terminalfx.lua` | Scan's opponents and the bounty on this player's maps, from the server's pushes. Decides nothing. |
@@ -95,14 +95,16 @@ edit there and a restart.
 
 Three kinds of line, marked in the file: the owner's **verbatim** words
 (`no_key`, `notice_access`, `notice_action`, `bounty_new`, `bounty_protect`,
-and round 2's `app_title`/`desktop_icon`/`window_title` "Control Tower",
+round 2's `app_title`/`desktop_icon`/`window_title` "Control Tower",
 `match_heading` "Match stats", `status_offline` "Not available" and
-`status_not_here` "Not available at this terminal"), lines **written** for the
-2026-10-05 app at his request and listed in that round's report for his
-review (the app's frame and pages, every function's lines, the how-to, and
-round 2's lines, marked "WRITTEN (2026-10-05, round 2)"), and the remaining
+`status_not_here` "Not available at this terminal", and round 3's plate,
+`terminal_label` "Computer system" and `terminal_use` "press to open"), lines
+**written** for the 2026-10-05 app at his request and listed in that round's
+report for his review (the app's frame and pages, every function's lines, the
+how-to, round 2's lines, marked "WRITTEN (2026-10-05, round 2)", and round 3's
+one edit, `howto_terminal_body`'s "press interact"), and the remaining
 **placeholders** outside the app (`first_pickup`, `already_holding`,
-`key_label`, `terminal_label`, `terminal_use`). A line with a newline in it is
+`key_label`). A line with a newline in it is
 a list; `{name}`, `{value}`, `{count}`, `{stage}`/`{stages}`,
 `{online}`/`{total}` and `{volts}`/`{cost}`/`{balance}` (a figure and the
 currency word, "1,250 Volts") are filled by the app.
@@ -157,7 +159,7 @@ The table below is the lines outside the functions' own:
 | `notice_action` | A toast to the lobby when a function ran; `{playername}`, `{description}` |
 | `key_label` | Anyone near a key on the ground: its plate |
 | `terminal_label` | Anyone near a terminal: its plate's title, and its blip's legend name |
-| `terminal_use` | A holder at a live terminal: the plate's hint, with the key cap and the ring |
+| `terminal_use` | A holder at a live terminal: the plate's hint, beside their interact key's cap |
 | `storm_reveal_blip` | The squad that ran Storm reveal: the legend name of the final zone |
 
 `{playername}` travels as `BR.Notice.who` (drawn bold, never formatted into the
@@ -167,10 +169,11 @@ sentence); `{description}` as plain text. `BR.TerminalSolve.line` fills both.
 
 Every placeholder is in one block, `art` in `br_lib/config/terminals.lua`:
 `keyProp` and `keyScale` (a key on the ground), `hudGlyph` (the equipped icon
-and the squad panel's holder mark), `terminalProp`, `blipSprite`/`blipColour`
-(the owner's 521 and 51) and `blipScale`, and `reveal` (the final zone's
-sprite, colour, scale, radius and alpha). The owner's `blitz_seckey` prop and
-HUD icon replace the first two.
+and the squad panel's holder mark), `terminalProp` (the model the owner's ymap
+stands at every site, which Season 1 hides) and `hideRadiusM`,
+`blipSprite`/`blipColour` (the owner's 521 and 51) and `blipScale`, and
+`reveal` (the final zone's sprite, colour, scale, radius and alpha). The
+owner's `blitz_seckey` prop and HUD icon replace the first two.
 
 ## The functions
 
@@ -293,7 +296,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_CLOSE` | S→C | `{ why }` | The session is over (death, storm, teardown). |
 | `BR.Net.TERMINAL_CLOSED` | C→S | `{ terminalId, why }` | The computer went away on the client; ends only the session it names. |
 | `BR.Net.TERMINAL_DEV` | S→C | `'<text>'` | A `brterminalsv` answer, printed on F8. |
-| `BR.Net.TERMINAL_USE` | C→S | `{ terminalId }` | "I held interact here." Opens a session only for a living player within reach by the server's own sample, in a PLAYING match, at an online terminal; offline is refused aloud. One per `runMinIntervalMs`. |
+| `BR.Net.TERMINAL_USE` | C→S | `{ terminalId }` | "I pressed interact here." Opens a session only for a living player within reach by the server's own sample, in a PLAYING match, at an online terminal; offline is refused aloud. One per `runMinIntervalMs`. |
 | `BR.Net.TERMINAL_SITES` | S→C | `{ placed, removed, forced }` | The dev tools' changes, whole, to everyone, and on `br:ready`. |
 | `BR.Net.TERMINAL_REVEAL` | S→C | `{ x, y, r, matchId }` | Storm reveal, to the squad that ran it alone; again on `br:ready` while that match lasts. |
 | `BR.Net.YUBIKEY_STATE` | S→C | `{ held, squadUsed, squadMatch }` | This player's key and their squad's use, to them alone, on every change and on `br:ready`; `squadMatch` picks the plate's `squad_used` line. Squadmates learn who holds a key from the squad beacon's `yubikey` bit. |
@@ -304,7 +307,7 @@ fails a row missing a line, and a built row with no server entry.
 
 | Export | Does |
 |---|---|
-| `Open(state, copy, catalog, desktop) -> ok, why` | Boots the desktop (the player opens the app from its icon), takes NUI focus (keyboard and cursor). Refuses with `page-not-ready` before the page has loaded, rather than take focus over nothing. Opening another terminal while one is open closes the first (`replaced`). `catalog` is `{ functions, categories, currency }`, the registry; `desktop` is `{ bootMinMs, bootMaxMs, clock = { h, m } }`. |
+| `Open(state, copy, catalog, desktop) -> ok, why` | Boots the desktop (the player opens the app from its icon), takes NUI focus (keyboard and cursor). Refuses with `page-not-ready` before the page has loaded, rather than take focus over nothing. Opening another terminal while one is open closes the first (`replaced`). `catalog` is `{ functions, categories, currency, pageLoad }`, the registry and the browser's page-load range (`{ minMs, maxMs }`); `desktop` is `{ bootMinMs, bootMaxMs, clock = { h, m } }`. |
 | `Update(state)` | The new state, while open on that terminal: after a run, and once a second (TERMINAL_INFO). |
 | `Result(result) -> shown` | `{ functionId, ok, code, runMs?, cost?, balance?, toast? }`, while open; `false` when nothing is up to show it, and `br_core` toasts `toast` instead. |
 | `Clock(h, m)` | The game's hour and minute for the taskbar: `br_core` reads the clock (never writes it) while the computer is open and sends it on each new minute. |
@@ -334,7 +337,7 @@ listening only to the other's window, every message carrying `brTerminal: 1`:
 
 | Way | Message |
 |---|---|
-| app → desktop | `{ type: 'ready' }`, `{ type: 'run', functionId, options? }`, `{ type: 'escape' }` |
+| app → desktop | `{ type: 'ready' }`, `{ type: 'run', functionId, options? }`, `{ type: 'escape' }`, `{ type: 'loading', on: true, ms }` / `{ type: 'loading', on: false }` (a page load started or ended: the tab's symbol) |
 | desktop → app | `{ type: 'state', state, copy?, catalog? }` (copy and catalog on ready; an update is the state alone), `{ type: 'result', result }` |
 
 **The boot** lasts a uniform pick in `bootMinMs..bootMaxMs` (7-10 s), new every
@@ -372,6 +375,42 @@ page (`https://controltower.blitz/functions/supply-drop`). It lives in the app
 because the history and the address are the app's navigation; a copy in the
 desktop would be a second state kept in step over postMessage. Reload asks the
 desktop for everything again (`ready`) and remounts the page.
+
+### Pages load (owner, 2026-10-06)
+
+"please make an artificial page load time when navigating in the web browser
+between pages, except if they use the forward/back buttons. The time should be
+random between 1 and 3 seconds, and the tab icon should change to a loading
+symbol to indicate it's loading."
+
+- **A navigation loads** for a fresh uniform pick in `pageMinMs..pageMaxMs`
+  (1-3 s, `br_lib/config/terminals.lua`, handed over in the catalog): the side
+  navigation, a card or its title, a breadcrumb, the user menu's How to, the
+  top bar's name, a search result, and the reload button. A link to the page
+  already on screen is not a navigation.
+- **The page on screen stays while it loads, address and all.** The address
+  bar changes with the page when it shows -- a browser keeps the page you
+  clicked on until the next one arrives -- and the history moves then too.
+- **A new navigation replaces** the load under way, with its own pick.
+- **Back and forward are instant**, and drop a load under way: its page never
+  shows.
+- **Not navigations, never a load:** typing in the cards' filter (the page's
+  own entry is rewritten in place, as before), the cards' pagination and
+  preferences (state inside the page, with no address of their own), Match
+  stats, the light/dark switch, and Run with its 3-5 s bar.
+- **The tab** (the desktop's, outside the app) shows a turning ring in place of
+  the app's icon for exactly the length of the load: the app posts `loading`
+  on and off, and `br.js` puts `.br-loading` on the tab. `br.css` animates the
+  ring only under that class, so the animation is removed with it, not paused
+  (#385: a running animation repaints the NUI every frame). `br.js` takes it
+  off when the page shows, when the app's window or the computer closes, when
+  a fresh app is ready, and by a backstop at the load's length plus a second
+  (15 s at most). No Cloudscape Spinner.
+
+`model.ts` holds the rules (`navigate`, `arrive`, `step`, `rewrite`,
+`loadMs`), tested in `test-terminal-model.mjs`; the tab's class on every way in
+and out is `test-terminal-desktop.mjs`'s; `check-terminal.mjs` T10 holds the
+wiring and the stylesheet.
 
 **The site** (Cloudscape, like the cards and details examples): a fixed
 TopNavigation with the app's name -- the one place in the app it is written --
@@ -418,21 +457,44 @@ The owner's rules (#396, 2026-10-04), and where each lives:
 
 ## Terminals in the world
 
-`sites` in `br_lib/config/terminals.lua` is empty until the owner places them
-(`brterminal place` prints each row). A terminal is **online only inside the
-storm's current zone**, by its real shape; before there is a storm everything is
-inside it.
+**The laptops are the owner's** (2026-10-06): fifteen `prop_laptop_01a`
+placed by his ymap, `stream/LaptopTerminals.ymap` in the Season 2 drop
+(`br_stream_s2`). Nothing in this repository spawns one. `sites` in
+`br_lib/config/terminals.lua` holds where they stand, in his order and his
+numbers -- Mount Gordo, the top of Chiliad, Fort Zancudo, Paleto PD, Calafia
+Way, the vineyard, Rebel Radio, Panorama Drive, the towers by the Vinewood
+sign, the Vinewood Bowl, the Hillcrest Ridge access road, the lot south of the
+college, La Mesa PD (his "chumash? PD"), the factory by the heliport and the
+Vespucci canals -- and every terminal check reads those rows, never a prop.
+`tools/check_boundary.lua` holds them inside the surveyed play area. `brterminal
+place` stays as a dev aid for a future site: a plate and a blip for the
+session, no laptop, and the row to paste.
 
-- **Its prop** is local to each client, within 150 m.
+A terminal is **online only inside the storm's current zone**, by its real
+shape; before there is a storm everything is inside it.
+
+- **Season 1 hides the laptops.** The ymap streams whatever the season, so a
+  client where `BR.Season.has('terminals')` is false hides `terminalProp`
+  within `hideRadiusM` (2 m) of every config row with
+  `CreateModelHideExcludingScriptObjects(x, y, z, radius, model, true)` -- map
+  objects only, and surviving a map reload, so a laptop that streams in later
+  arrives hidden -- and `RemoveModelHide(..., false)` brings each back at once
+  when the season turns terminals on. On start, on every move of the client's
+  season (`BR.Season.onChange`, with the SLOW pass catching a move it did not
+  announce), and taken down when br_core stops; never per frame. The dev
+  tool's changes do not touch the hides.
 - **Its blip** shows only while this player holds a key, only for an online
   terminal, and only in a match (from the bus on).
-- **Its plate** (the shared prompt browser) reads `terminal_label` over one
-  of four hints:
-  - `terminal_use`: the hold opens the computer;
-  - `no_key`: it opens too, every function `no_key`;
-  - `squad_used`;
-  - `offline`: nothing to hold.
-- **Holding interact** for `holdMs` sends TERMINAL_USE.
+- **Its plate** (the shared prompt browser) reads `terminal_label` ("Computer
+  system") over one of four hints:
+  - `terminal_use` ("press to open") with the player's interact key: a press
+    opens the computer;
+  - `no_key`: the key cap too, and a press opens it, every function `no_key`;
+  - `squad_used`: the same;
+  - `offline`: no key cap, nothing to press.
+- **A press of interact** sends TERMINAL_USE (it was an 800 ms hold until
+  round 3), no sooner than `runMinIntervalMs` after the last; the server's
+  door is unchanged and drops one sooner itself.
 
 ## The rules, server-side
 
@@ -472,7 +534,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal [nokey] [used] [offline] [volts=<n>]` | The computer anywhere, on a dev terminal whose facts are those words -- the app alone. Its runs spend `volts` (or the real balance as it opened) in the session alone, never the row |
 | `brterminal close` | Close it |
 | `bryubikey [give or take]` | A key for yourself, or yours taken: the real profile write and messages |
-| `brterminal place [id]` | A terminal where you look (or on the ground ahead), facing you; prints the config row |
+| `brterminal place [id]` | A terminal where you look (or on the ground ahead), facing you, for this session -- a plate and a blip, no laptop (the owner's ymap holds those); prints the config row |
 | `brterminal remove <id>` | Out of play for this session (a config row stays in the file) |
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
