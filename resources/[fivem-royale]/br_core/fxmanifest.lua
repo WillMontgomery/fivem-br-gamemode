@@ -967,6 +967,7 @@ server_scripts {
     -- wave A's list, above it, and this one are two separate edits.
     -- tools/test_terminal.lua loads every `server/terminalfx/` file named here.
     'server/terminalfx/storm_delay.lua',
+    'server/terminalfx/storm_control.lua',
     -- Whether a player is already in our Discord: one authenticated GET to
     -- Discord per connection, cached for that connection. AFTER
     -- @br_lib/shared/identity.lua, and that IS a real order rather than a

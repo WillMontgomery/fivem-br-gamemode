@@ -486,13 +486,18 @@ BR.Config.Terminals = {
         -- The revealed final zone's name in the pause map's legend.
         storm_reveal_blip = 'Final circle',
 
-        -- Storm control (owner's; offline)
+        -- Storm control (owner's; LIVE since wave B, 2026-10-06)
         storm_control_name = 'Storm control',
         storm_control_summary = 'Picks where the storm ends, from three possible final circles.',
         storm_control_what = "The server works out three possible final circles.\nYou pick one, and the storm closes toward it for the rest of the match.\nCircles already on the map don't move. The change starts with the next circle the storm draws.",
         storm_control_opt_zone = 'Final circle',
         storm_control_opt_zone_near = 'Closest to this terminal',
-        storm_control_opt_zone_center = "Closest to the current circle's center",
+        -- WRITTEN (2026-10-06, wave B; was "Closest to the current circle's
+        -- center"): the circle it is measured from is the next circle -- the
+        -- one the storm is closing toward, the newest on the map -- as Supply
+        -- drop's "next circle's center" is; "current" could name either of the
+        -- two circles a hold shows.
+        storm_control_opt_zone_center = "Closest to the next circle's center",
         storm_control_opt_zone_far = 'Farthest from this terminal',
         storm_control_duration = 'Rest of the match',
         storm_control_affects = 'Everyone in the match',
@@ -501,6 +506,10 @@ BR.Config.Terminals = {
         storm_control_risks_solo = 'You still have to reach the circle you pick.',
         storm_control_done = 'The storm will end where you chose.',
         storm_control_description = 'Storm control. They chose where the storm will end.',
+        -- WRITTEN (2026-10-06, wave B). Storm control's own reason: the final
+        -- circle is already drawn, so no circle is left to change -- refused,
+        -- spending nothing (at the terminal: why not).
+        no_circle = 'The final circle is already on the map.',
 
         -- Comms blackout (owner's; offline)
         comms_blackout_name = 'Comms blackout',
@@ -1023,7 +1032,7 @@ BR.Config.Terminals = {
     functions = {
         { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200 },
         { id = 'storm_reveal',   category = 'intel',      risk = 'low',    implemented = true },
-        { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = false, cost = 150,
+        { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = true, cost = 150,
           options = { { id = 'zone', choices = { 'near', 'center', 'far' }, default = 'near' } } },
         -- SQUAD-ONLY (round 2): it hides teammates' markers from every other
         -- squad, and outside a squad match nobody has a teammate to hide.
@@ -1084,6 +1093,21 @@ BR.Config.Terminals = {
 
     -- ═══ THE BUILT EFFECTS' NUMBERS ═══
     fx = {
+        -- ── wave B (2026-10-06): Storm control, Time & weather, Power
+        --    outage. An option's choices are the registry row's own numbers
+        --    (Storm delay's seconds, the durations), read as numbers where
+        --    they are used; everything else is here. ──
+
+        -- Storm control: how many possible ends the server works out before
+        -- it names the three the page offers -- the one nearest this
+        -- terminal, of the others the one farthest from it, and of the rest
+        -- the one nearest the next circle's center
+        -- (BR.TerminalSolve.threeEnds). Each is the storm's own planner run
+        -- forward on a stream of its own (BR.Storm.futures), so every one
+        -- obeys every rule a match's storm does. More is a wider spread
+        -- between near and far, at a few milliseconds each, once a run.
+        stormControlFutures = 8,
+
         -- Scan: how often the scanning squad's opponent marks are refreshed.
         -- Positions are the roster's own 4 Hz samples; two seconds keeps a
         -- whole match's worth of marks to one small event per scanning

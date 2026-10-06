@@ -8,6 +8,7 @@
 --                     the wall as it stands now, by its real shape
 --   offlineWhy        is this terminal online: a Lockdown, the storm and the
 --                     dev tool's forcing, in that order
+--   threeEnds         Storm control's near, far and center final circles
 --   squadKey          which squad a player's one use belongs to (a solo
 --                     player is a squad of one)
 --   sites             the terminal rows in a config, checked
@@ -98,6 +99,40 @@ function T.offlineWhy(site, zone, forced, lock)
     if forced == true then return nil end
     if T.inside(zone, site.x, site.y) then return nil end
     return 'offline'
+end
+
+--- Storm control's three final circles out of the possible ends the server
+--- worked out (#396, wave B; BR.Storm.futures): which end each choice is.
+---   near    the end nearest this terminal (ax, ay)
+---   far     of the others, the end farthest from it
+---   center  of the rest, the end nearest the next circle's center (cx, cy)
+--- THREE DIFFERENT ENDS, so "three possible final circles" is true: the page
+--- offers three, and two choices that were the same circle would be two. Ties go
+--- to the earlier end, so the answer replays from the same list. Fewer than
+--- three ends, and the choices share them.
+--- @param ends table[]  { { x, y } }
+--- @param ax number @param ay number  the terminal
+--- @param cx number @param cy number  the next circle's center
+--- @return table { near = i, far = j, center = k }  indices into `ends`
+function T.threeEnds(ends, ax, ay, cx, cy)
+    local taken = {}
+    local function best(score)
+        local pick, top = nil, nil
+        for i, e in ipairs(ends) do
+            if not taken[i] then
+                local v = score(e)
+                if top == nil or v < top then pick, top = i, v end
+            end
+        end
+        if pick then taken[pick] = true end
+        return pick
+    end
+    local function d2(e, x, y) return (e.x - x) ^ 2 + (e.y - y) ^ 2 end
+    local out = {}
+    out.near = best(function(e) return d2(e, ax, ay) end)
+    out.far = best(function(e) return -d2(e, ax, ay) end) or out.near
+    out.center = best(function(e) return d2(e, cx, cy) end) or out.near
+    return out
 end
 
 -- ------------------------------------------------------------------ squad ---

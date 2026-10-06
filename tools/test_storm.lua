@@ -7141,10 +7141,13 @@ end
 --- @param anchor table
 --- @param stop function(rec, state) -> boolean
 --- @param stepMs number|nil  how far the clock moves per pass (default 5 s)
+--- @param t0 number|nil  the server clock it starts at: the storm seed is drawn
+---                       off it, so a different t0 is a different match
 --- @return table S
-local function walkUntil(anchor, stop, stepMs)
+local function walkUntil(anchor, stop, stepMs, t0)
     local S = newStormServer()
     local env = S.env
+    if t0 then S.now = t0 end
     S.roster[1] = nil
     S.match.storm = nil
     S.match.anchor = { x = anchor.x, y = anchor.y, name = anchor.name or 'Test' }
@@ -7352,6 +7355,208 @@ do
     ok(C.last() and C.last().endsAt == T0 + 210000,
         'and the tick that solves the delayed record sends the delayed end',
         C.last() and tostring(C.last().endsAt))
+end
+
+--- Is the zone `phase` closes on at (cx1, cy1, r1) one the planner could draw
+--- from the zone at (cx0, cy0, r0)? The planner's own rules, by its own
+--- geometry (BR.NextZoneCentre): nested inside the zone before, or a breakout
+--- no further from it than gapMax of its radius -- and its center on the
+--- surveyed map (the boundary and the water), or where the zone before stood
+--- when every step in was off it.
+--- @return boolean ok, string why
+local function plannerValid(env, seed, phase, cx0, cy0, r0, cx1, cy1, r1)
+    local SS = env.BR.StormShape
+    local host = env.BR.StormHost(seed, phase, cx0, cy0, r0, nil)
+    local hks = host and host.hull and host.hull.ks
+    if not hks then
+        local d = host and host.discs and host.discs[1]
+        hks = SS.discHull({ { x = d and d.x or cx0, y = d and d.y or cy0, r = d and d.r or r0 } })
+    end
+    local unit = env.BR.StormUnit(seed, phase)
+    local D0 = {}
+    if unit and r1 > 0.0 then
+        for k, d in ipairs(unit.discs) do D0[k] = { x = d.x * r1, y = d.y * r1, r = d.r * r1 } end
+    else
+        D0[1] = { x = 0.0, y = 0.0, r = 0.0 }
+    end
+    local nested = SS.fit(hks, D0, cx1, cy1, 1.0) <= 1e-6
+    local gap = SS.hullDistance(SS.sumOf(hks, SS.reflect(SS.discHull(D0))), cx1, cy1)
+    local gapMax = (env.BR.Config.Storm.breakout.gapMax or 0.5) * r0
+    local within = gap <= gapMax + 1e-6
+    local M = env.BR.Config.Map
+    local onMap = not M.IsWater(cx1, cy1) and M.InBounds(cx1, cy1)
+    local stayed = cx1 == cx0 and cy1 == cy0
+    if not (nested or within) then
+        return false, ('phase %d: %.1f m from the zone before, past the breakout\'s %.1f')
+            :format(phase, gap, gapMax)
+    end
+    if not (onMap or stayed) then
+        return false, ('phase %d: center (%.1f, %.1f) is off the map'):format(phase, cx1, cy1)
+    end
+    return true, ''
+end
+
+-- ---------------------------------------------------------------------------
+describe('control.valid')
+do
+    -- ═══ STORM CONTROL'S THREE CIRCLES, OVER MANY MATCHES (#396, wave B) ═══
+    --
+    --   "The server works out three possible final circles. You pick one, and the
+    --    storm closes toward it for the rest of the match. Circles already on the
+    --    map don't move. The change starts with the next circle the storm draws."
+    --
+    -- For each of a spread of matches -- different anchors and seeds, steered at
+    -- every phase from 1 to 7, holding and mid-sweep -- the possible ends are
+    -- worked out, the three named, and the match steered to each through the REAL
+    -- phase job, to its last circle. Each must: leave the record on the map and
+    -- the circle already drawn exactly where they were; draw every later circle by
+    -- the planner's own rules; publish every one of them to the match (every
+    -- client follows the record); and end on the end it chose, bit for bit.
+    local MATCHES = 24
+    local P = {}
+    local first = newStormServer()
+    for _, poi in ipairs(first.env.BR.Config.Map.POIs) do P[#P + 1] = poi end
+    local last = #first.env.BR.Config.Storm.phases
+    local bad, steered, phasesSeen, distinct, sameAsPlan = {}, 0, 0, 0, 0
+    local nearOk, farOk, centerOk = 0, 0, 0
+    for i = 1, MATCHES do
+        local poi = P[(i * 7) % #P + 1]
+        local anchor = { x = poi.x, y = poi.y, name = poi.name }
+        local t0 = 1000000 + i * 104729
+        local phase = 1 + (i % (last - 1))
+        local sweep = (i % 2) == 0 and phase > 1
+        local stop = function(rec, st)
+            return rec.phase == phase and st == (sweep and 'shrinking' or 'holding')
+        end
+        local base = walkUntil(anchor, stop, 5000, t0)
+        local env = base.env
+        loadInto(env, { 'br_lib/shared/terminal_solve.lua' })
+        local salt = base.now
+        local ends = env.BR.Storm.futures(base.match, 8, salt)
+        local plan = env.BR.Storm.finalCentre(base.match)
+        if ends and plan and ends[1].x == plan.x and ends[1].y == plan.y then
+            sameAsPlan = sameAsPlan + 1
+        end
+        local rec0 = base.match.storm
+        local ax, ay = anchor.x + 900.0, anchor.y - 400.0
+        local three = env.BR.TerminalSolve.threeEnds(ends, ax, ay, rec0.cx1, rec0.cy1)
+        if three.near ~= three.far and three.far ~= three.center and three.near ~= three.center then
+            distinct = distinct + 1
+        end
+        -- NEAR IS THE NEAREST OF ALL OF THEM, FAR THE FARTHEST OF THE REST, AND
+        -- CENTER THE NEAREST THE NEXT CIRCLE'S CENTER OF WHAT IS LEFT.
+        local function d2(e, x, y) return (e.x - x) ^ 2 + (e.y - y) ^ 2 end
+        local okNear, okFar, okCenter = true, true, true
+        for k, e in ipairs(ends) do
+            if d2(e, ax, ay) < d2(ends[three.near], ax, ay) then okNear = false end
+            if k ~= three.near and d2(e, ax, ay) > d2(ends[three.far], ax, ay) then okFar = false end
+            if k ~= three.near and k ~= three.far
+                and d2(e, rec0.cx1, rec0.cy1) < d2(ends[three.center], rec0.cx1, rec0.cy1) then
+                okCenter = false
+            end
+        end
+        if okNear then nearOk = nearOk + 1 end
+        if okFar then farOk = farOk + 1 end
+        if okCenter then centerOk = centerOk + 1 end
+
+        for _, zone in ipairs({ 'near', 'far', 'center' }) do
+            local S = walkUntil(anchor, stop, 5000, t0)
+            local senv = S.env
+            local mine = senv.BR.Storm.futures(S.match, 8, salt)
+            local chosen = mine[three[zone]]
+            local rec = S.match.storm
+            local snap = {}
+            for k, v in pairs(rec) do snap[k] = v end
+            local sends = #S.sent
+            senv.BR.Storm.steer(S.match, chosen)
+            steered = steered + 1
+            -- THE RECORD ON THE MAP DID NOT MOVE, AND NOTHING WAS SENT FOR IT.
+            local still = S.match.storm == rec and #S.sent == sends
+            for k, v in pairs(snap) do if rec[k] ~= v then still = false end end
+            for k in pairs(rec) do if snap[k] == nil then still = false end end
+            if not still then bad[#bad + 1] = ('match %d %s: the record on the map changed'):format(i, zone) end
+            -- TO THE END, through the real phase job.
+            local prev = { phase = rec.phase, cx1 = rec.cx1, cy1 = rec.cy1, r1 = rec.r1 }
+            local seen = { [rec.phase] = true }
+            walkOn(S, function(r)
+                if not seen[r.phase] then
+                    seen[r.phase] = true
+                    phasesSeen = phasesSeen + 1
+                    -- THE CIRCLE THAT WAS ALREADY DRAWN IS WHERE THIS PHASE STARTS.
+                    if r.phase == prev.phase + 1
+                        and not (r.cx0 == prev.cx1 and r.cy0 == prev.cy1 and r.r0 == prev.r1) then
+                        bad[#bad + 1] = ('match %d %s: phase %d did not start on the circle drawn before it')
+                            :format(i, zone, r.phase)
+                    end
+                    local okv, why = plannerValid(senv, r.seed, r.phase, r.cx0, r.cy0, r.r0,
+                        r.cx1, r.cy1, r.r1)
+                    if not okv then bad[#bad + 1] = ('match %d %s: %s'):format(i, zone, why) end
+                    if S.lastSent(senv.BR.Net.STORM_SYNC) ~= r then
+                        bad[#bad + 1] = ('match %d %s: phase %d was not published'):format(i, zone, r.phase)
+                    end
+                    prev = { phase = r.phase, cx1 = r.cx1, cy1 = r.cy1, r1 = r.r1 }
+                end
+                return r.phase == last
+            end, 30000)
+            local fin = S.match.storm
+            if not (fin.phase == last and fin.cx1 == chosen.x and fin.cy1 == chosen.y) then
+                bad[#bad + 1] = ('match %d %s: ended at (%.3f, %.3f), chose (%.3f, %.3f)')
+                    :format(i, zone, fin.cx1, fin.cy1, chosen.x, chosen.y)
+            end
+            if S.errored() then bad[#bad + 1] = S.errored() end
+        end
+    end
+    ok(#bad == 0, ('%d steered matches: the map stands still, every later circle is the planner\'s, '
+        .. 'published, and the storm ends on the end chosen'):format(steered),
+        table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
+    ok(phasesSeen >= MATCHES * 3, 'phases were really walked after the steer', phasesSeen)
+    eq(sameAsPlan, MATCHES, 'the first possible end is the storm\'s own plan, every match')
+    eq(distinct, MATCHES, 'the three are three different ends, every match')
+    eq(nearOk, MATCHES, 'near is the end nearest the terminal')
+    eq(farOk, MATCHES, 'far is, of the others, the end farthest from it')
+    eq(centerOk, MATCHES, 'center is, of the rest, the end nearest the next circle\'s center')
+end
+
+-- ---------------------------------------------------------------------------
+describe('control.reveal')
+do
+    -- ═══ STORM REVEAL READS THE STEERED STREAM ═══
+    --
+    -- finalCentre walks the match's stream, so once a match is steered it answers
+    -- the chosen end -- which is what Storm control re-sends a squad that ran
+    -- Storm reveal. And working the ends out never moves the live stream.
+    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
+    local S = walkUntil(ANCHOR, function(rec, st) return rec.phase == 2 and st == 'holding' end)
+    local env = S.env
+    local s = S.match.stormRng.s
+    local before = { s[1], s[2], s[3], s[4] }
+    local ends = env.BR.Storm.futures(S.match, 8, S.now)
+    local now = S.match.stormRng.s
+    ok(now[1] == before[1] and now[2] == before[2] and now[3] == before[3] and now[4] == before[4],
+        'working out the ends never moved the live stream')
+    env.BR.Storm.steer(S.match, ends[5])
+    local f = env.BR.Storm.finalCentre(S.match)
+    ok(f and f.x == ends[5].x and f.y == ends[5].y, 'Storm reveal now answers the chosen end')
+    local again = env.BR.Storm.futures(S.match, 8, S.now)
+    ok(again[1].x == ends[5].x and again[1].y == ends[5].y,
+        'and a second Storm control\'s "own plan" is the steered one')
+    ok(S.errored() == nil, 'clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('control.none')
+do
+    -- ═══ NOTHING LEFT TO DRAW, OR NOTHING DRAWN YET ═══
+    local S = newStormServer()
+    local env = S.env
+    local last = #env.BR.Config.Storm.phases
+    S.match.stormRng = env.BR.Rng(7)
+    S.record(last, 0.0, 0.0, 40.0, 5.0, 0.0, 0.0, 30000, 60000, 6.7)
+    local ends, why = env.BR.Storm.futures(S.match, 8, S.now)
+    ok(ends == nil and why == 'no_circle', 'the final circle on the map: no_circle', why)
+    S.match.storm = nil
+    ends, why = env.BR.Storm.futures(S.match, 8, S.now)
+    ok(ends == nil and why == 'no_storm', 'no storm record: no_storm', why)
 end
 
 -- ---------------------------------------------------------------------------

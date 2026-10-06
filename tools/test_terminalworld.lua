@@ -13,9 +13,16 @@
 --           storm record's own timing; refused `no_storm` / `no_hold` with
 --           nothing spent; everything given back when the hold runs out while
 --           it loads; the dev path.
+--   PART B  Storm control: the storm steered to the near, far or center end
+--           for 150 Volts, the record on the map untouched, a squad that ran
+--           Storm reveal told the new end; refused `no_storm` / `no_circle`
+--           with nothing spent (the Volts included); everything given back
+--           when the final circle is drawn while it loads; the dev path.
 --
 -- The storm's own half -- BR.Storm.delay against the real phase job, the 75%
--- cut, a client's countdown -- is tools/test_storm.lua's `delay.*` blocks.
+-- cut, a client's countdown; BR.Storm.futures and steer over many matches,
+-- every later circle the planner's -- is tools/test_storm.lua's `delay.*` and
+-- `control.*` blocks.
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_terminalworld.lua
 
@@ -262,7 +269,7 @@ loadAll({
 })
 -- WAVE B'S OWN FILES ONLY. Every other built row is a function this suite does
 -- not stand up: its row lists as fn_offline here, and its own suite runs it.
-local WAVE_B = { 'storm_delay' }
+local WAVE_B = { 'storm_delay', 'storm_control' }
 local SERVER_FX = {}
 for _, f in ipairs(fxFiles('server')) do
     for _, id in ipairs(WAVE_B) do
@@ -585,6 +592,172 @@ do
     local said = false
     for _, l in ipairs(logs) do if l:find('does not take those options', 1, true) then said = true end end
     ok(said, 'and said so')
+end
+
+-- =========================================================================
+-- PART B -- Storm control
+-- =========================================================================
+
+--- Every possible end BR.Storm.futures worked out on its last call, kept by a
+--- spy around the real function.
+local lastEnds = nil
+do
+    local real = BR.Storm.futures
+    BR.Storm.futures = function(...)
+        local ends, why = real(...)
+        lastEnds = ends
+        return ends, why
+    end
+end
+
+local function snapshot(rec)
+    local out = {}
+    for k, v in pairs(rec) do out[k] = v end
+    return out
+end
+
+local function sameRecord(a, snap)
+    for k, v in pairs(snap) do if a[k] ~= v then return false end end
+    for k in pairs(a) do if snap[k] == nil then return false end end
+    return true
+end
+
+for _, zone in ipairs({ 'near', 'far', 'center' }) do
+    describe('Storm control: the storm ends at the ' .. zone .. ' circle')
+    do
+        reset()
+        local m = lobby('squad', 3)
+        local rec = m.storm
+        local snap = snapshot(rec)
+        lastEnds = nil
+        local r = runAt(1, 'storm_control', { zone = zone })
+        ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+        ok(lastEnds ~= nil and #lastEnds == CT.fx.stormControlFutures,
+            ('the server worked out fx.stormControlFutures (%d) possible ends'):format(CT.fx.stormControlFutures))
+        local three = TS.threeEnds(lastEnds or {}, SITE.x, SITE.y, rec.cx1, rec.cy1)
+        local want = lastEnds and lastEnds[three[zone]]
+        local f = BR.Storm.finalCentre(m)
+        ok(f and want and f.x == want.x and f.y == want.y,
+            'the storm now ends at the ' .. zone .. ' one, measured from this terminal',
+            f and want and ('(%.1f, %.1f) vs (%.1f, %.1f)'):format(f.x, f.y, want.x, want.y))
+        ok(m.storm == rec and sameRecord(rec, snap), 'the record on the map did not move')
+        eq(#eventsOf(BR.Net.STORM_SYNC), 0, 'and nothing about it was published')
+        eq(market.wallet[1], 1000 - 150, '150 Volts were spent')
+        ok(r and r.toast and r.toast:find(COPY.storm_control_done, 1, true) == 1,
+            'the done line, then the new balance', r and r.toast)
+        ok(r and r.toast and r.toast:find('850 Volts', 1, true) ~= nil, 'which is 850 Volts', r and r.toast)
+        eq(keys[1], false, 'the key is spent')
+        ok(errored() == nil, 'clean', errored())
+    end
+end
+
+describe("Storm control: near is nearer the terminal than the storm's own plan, far farther")
+do
+    reset()
+    local m = lobby('squad', 2)
+    local own = BR.Storm.finalCentre(m)
+    runAt(1, 'storm_control', { zone = 'near' })
+    local near = BR.Storm.finalCentre(m)
+    local d = function(p) return math.sqrt((p.x - SITE.x) ^ 2 + (p.y - SITE.y) ^ 2) end
+    ok(d(near) <= d(own), 'near ends no farther from this terminal than the storm would have',
+        ('%.0f vs %.0f m'):format(d(near), d(own)))
+    reset()
+    m = lobby('squad', 2)
+    own = BR.Storm.finalCentre(m)
+    runAt(1, 'storm_control', { zone = 'far' })
+    local far = BR.Storm.finalCentre(m)
+    ok(d(far) >= d(own), 'far ends no nearer than it would have', ('%.0f vs %.0f m'):format(d(far), d(own)))
+end
+
+describe('Storm control: a squad that ran Storm reveal is told the new end')
+do
+    reset()
+    local m = lobby('squad', 3)
+    -- Squad B revealed the end earlier this match.
+    T.reveal(m, 'squad:B', BR.Storm.finalCentre(m))
+    sent = {}
+    runAt(1, 'storm_control', { zone = 'far' })
+    local f = BR.Storm.finalCentre(m)
+    for _, src in ipairs({ 3, 4 }) do
+        local p = lastOf(BR.Net.TERMINAL_REVEAL, src)
+        ok(p and p.x == f.x and p.y == f.y and p.matchId == m.id,
+            ('p%d, of the squad that revealed it, is sent where the storm ends now'):format(src))
+    end
+    eq(lastOf(BR.Net.TERMINAL_REVEAL, 1), nil, 'and nobody who did not reveal it')
+    ok(m.terminals.reveals['squad:B'].x == f.x, 'the reveal a reconnect is re-sent is the new one too')
+end
+
+describe('Storm control: no storm, no circle left -- refused, nothing spent')
+do
+    reset()
+    local m = lobby('squad', #BR.Config.Storm.phases)
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    local f = listed(1, 'storm_control')
+    ok(f and f.available == false and f.reason == 'no_circle', 'the final circle on the map: the card says no_circle',
+        f and f.reason)
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'storm_control', options = { zone = 'far' } })
+    flush()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'no_circle', 'a run is refused no_circle', r and r.code)
+    eq(r and r.toast, COPY.no_circle, 'in its own line')
+    nothingSpent(1, 'no_circle')
+    eq(#market.charges, 0, 'the market was never asked for the 150')
+    m.storm = nil
+    local f2 = listed(1, 'storm_control')
+    ok(f2 and f2.reason == 'no_storm', 'with no storm yet the card says no_storm', f2 and f2.reason)
+end
+
+describe('Storm control: the final circle drawn while it loads gives everything back')
+do
+    reset()
+    local m = lobby('squad', 7)
+    local r = runAt(1, 'storm_control', { zone = 'near' }, true)
+    eq(r and r.code, 'running', 'accepted at phase 7')
+    eq(market.wallet[1], 850, 'the 150 are spent as it is accepted')
+    -- The phase job draws the final circle in those seconds.
+    m.storm = BR.BuildStormRecord(#BR.Config.Storm.phases, C0.x, C0.y, 40.0, C0.x, C0.y, 0.0,
+        gameMs, 30000, 60000, 6.7, SEED)
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'no_circle', 'over, it can no longer happen: no_circle', r and r.code)
+    nothingSpent(1, 'given back')
+    eq(market.wallet[1], 1000, 'the 150 are back')
+end
+
+describe('Storm control: squad and solo lines')
+do
+    for _, key in ipairs({ 'storm_control_done', 'storm_control_description', 'no_circle',
+                           'storm_control_opt_zone_near', 'storm_control_opt_zone_center',
+                           'storm_control_opt_zone_far', 'storm_control_what' }) do
+        ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
+            ('%s never says squad outside a squad match'):format(key))
+    end
+    eq(TS.pick(COPY, 'storm_control_risks', false), COPY.storm_control_risks_solo,
+        'the risks line has its solo sibling')
+    eq(COPY.storm_control_opt_zone_center, "Closest to the next circle's center",
+        'center is measured from the next circle, as the server measures it')
+    reset()
+    lobby('solo', 3)
+    local r = runAt(1, 'storm_control', { zone = 'center' })
+    ok(r and r.toast and not r.toast:lower():find('squad', 1, true), "a solo run's toast says no squad",
+        r and r.toast)
+end
+
+describe('Storm control: the dev path steers for nothing')
+do
+    reset()
+    local m = lobby('squad', 3)
+    keys[1] = false
+    lastEnds = nil
+    sv(1, 'run storm_control zone=far')
+    ok(lastEnds ~= nil, '`brterminal run storm_control zone=far` works the ends out')
+    local after = BR.Storm.finalCentre(m)
+    local three = TS.threeEnds(lastEnds or {}, roster[1].pos.x, roster[1].pos.y, m.storm.cx1, m.storm.cy1)
+    ok(lastEnds and after.x == lastEnds[three.far].x and after.y == lastEnds[three.far].y,
+        'and steers to the far one, measured from the player (the dev terminal has no site)')
+    eq(#market.charges, 0, 'no Volts')
+    eq(#notices, 0, 'no notice')
 end
 
 realPrint(('\n%d passed, %d failed'):format(pass, fail))

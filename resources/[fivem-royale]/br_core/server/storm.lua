@@ -623,6 +623,28 @@ function BR.Storm.sendPreview(m, src)
     end
 end
 
+--- A copy of a stream: the same draws from here on, and drawing from it never
+--- moves the original.
+--- @param rng table  a BR.Rng
+--- @return table
+local function copyStream(rng)
+    local s = rng.s
+    return setmetatable({ s = { s[1], s[2], s[3], s[4] } }, getmetatable(rng))
+end
+
+--- Walk the phases after `phase` the way enterPhase will draw them -- the same
+--- function, the same arguments, each from the last target -- off `rng`, and
+--- answer where the last one ends. ONE SPELLING for Storm reveal's look ahead
+--- and Storm control's futures.
+--- @return number cx, number cy, number r
+local function walkToEnd(m, phase, cx, cy, r, rng)
+    for p = phase + 1, #cfg.phases do
+        cx, cy = drawCentre(m, p, cx, cy, r, nil, rng)
+        r = cfg.phases[p].radius
+    end
+    return cx, cy, r
+end
+
 --- WHERE THIS MATCH'S STORM WILL END (#396, Storm reveal).
 ---
 ---   "Storm would allow them to see where the storm is going to end for that
@@ -666,12 +688,7 @@ function BR.Storm.finalCentre(m)
     if phase >= last then
         return { x = cx, y = cy, r = r, phase = phase }
     end
-    local s = m.stormRng.s
-    local copy = setmetatable({ s = { s[1], s[2], s[3], s[4] } }, getmetatable(m.stormRng))
-    for p = phase + 1, last do
-        cx, cy = drawCentre(m, p, cx, cy, r, nil, copy)
-        r = cfg.phases[p].radius
-    end
+    cx, cy, r = walkToEnd(m, phase, cx, cy, r, copyStream(m.stormRng))
     return { x = cx, y = cy, r = r, phase = last }
 end
 
@@ -741,6 +758,75 @@ function BR.Storm.delay(m, ms, now)
         :format(BR.MatchTag(m.id), m.storm.phase, which == 'hold' and 'this' or 'the next',
             ms / 1000))
     return which
+end
+
+-- ═══ STORM CONTROL (#396, Control Tower, wave B) ═══
+--
+--   "The server works out three possible final circles. You pick one, and the
+--    storm closes toward it for the rest of the match. Circles already on the
+--    map don't move. The change starts with the next circle the storm draws."
+--                                       -- the function's own page (WRITTEN)
+--
+-- A FINAL CIRCLE IS WHERE THE STREAM TAKES THE STORM, SO A FUTURE IS A STREAM.
+-- Every circle the storm has not drawn yet is drawn at its phase's entry off
+-- m.stormRng (enterPhase), so where the match ends is a fact about that stream
+-- and nothing else -- Storm reveal reads it that way (finalCentre). A possible
+-- final circle is therefore the planner run forward on ANOTHER stream: the same
+-- drawCentre, the same arguments, the same rules -- the play area and its
+-- water, the nesting and the breakout's gap, the edge hug, every zone's shape
+-- (#344, drawn from the seed, which nothing here touches) -- so every one of
+-- them is a circle this match's own storm could have drawn. Choosing one is
+-- handing the match that stream; nothing else changes.
+--
+-- WHAT DOES NOT MOVE. The published record -- the zone the wall stands in and
+-- the next circle already on the map -- and the seed every shape is derived
+-- from. The first circle the choice decides is the next one enterPhase draws,
+-- and the airdrop's re-site (#386), the map's morph (#350) and every client's
+-- wall follow from that record as they do in any match.
+
+--- `n` possible ends for this match's storm, each the storm's own planner run
+--- forward on a stream of its own.
+---
+--- The first is the storm's own plan (a copy of the live stream: choosing it
+--- changes nothing); the others are streams drawn from the match's seed, the
+--- phase and `salt` -- the server's clock at the run -- so two runs in one match
+--- work out different ones. `rng` in each is the stream positioned where the
+--- live one stands: BR.Storm.steer hands it to the match.
+--- @param m table
+--- @param n integer
+--- @param salt number
+--- @return table[]|nil ends  { { x, y, r, k, rng } }
+--- @return string|nil why  'no_storm' | 'no_circle'
+function BR.Storm.futures(m, n, salt)
+    local rec = m and m.storm
+    if not rec or not m.stormRng then return nil, 'no_storm' end
+    if rec.phase >= #cfg.phases then return nil, 'no_circle' end
+    local out = {}
+    for k = 0, math.max(1, math.floor(tonumber(n) or 1)) - 1 do
+        local rng
+        if k == 0 then
+            rng = copyStream(m.stormRng)
+        else
+            local seed = ((math.tointeger(m.stormSeed) or 0) * 31
+                + (math.tointeger(math.floor(tonumber(salt) or 0)) or 0) * 7919
+                + rec.phase * 104729 + k * 2246822519 + 396) % 2147483647
+            rng = BR.Rng(seed)
+        end
+        local keep = copyStream(rng)
+        local x, y, r = walkToEnd(m, rec.phase, rec.cx1, rec.cy1, rec.r1, rng)
+        out[#out + 1] = { k = k, x = x, y = y, r = r, rng = keep }
+    end
+    return out, nil
+end
+
+--- Steer this match's storm to one of BR.Storm.futures' ends: its stream is
+--- the match's from now on. The record on the map is not touched.
+--- @param m table
+--- @param future table  one of BR.Storm.futures' answers
+function BR.Storm.steer(m, future)
+    m.stormRng = copyStream(future.rng)
+    print(('[br_core] storm: match %s steered from phase %d -- it now ends at (%.0f, %.0f) (Storm control)')
+        :format(BR.MatchTag(m.id), m.storm and m.storm.phase or 0, future.x, future.y))
 end
 
 --- Start a match's storm. Called when it goes PLAYING: the clock starts when
