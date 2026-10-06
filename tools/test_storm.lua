@@ -761,9 +761,15 @@ local function newStormClient()
     -- The screen grade and the sky, neither of which is this suite's subject --
     -- but both of which client/storm.lua drives every tick, and an unstubbed
     -- native would arrive as a pcall'd line in C.prints rather than a red test.
-    env.SetTimecycleModifier         = function() end
+    -- THE SLOT IS READ BACK SINCE #399 (the grade touches only what it set), so
+    -- it is a slot here rather than three no-ops: -1 while empty, as on the engine.
+    local tcSlot = nil
+    env.SetTimecycleModifier         = function(n) tcSlot = n end
     env.SetTimecycleModifierStrength = function() end
-    env.ClearTimecycleModifier       = function() end
+    env.ClearTimecycleModifier       = function() tcSlot = nil end
+    env.GetTimecycleModifierIndex    = function() return tcSlot and #tcSlot or -1 end
+    env.GetTimecycleModifierNameByIndex = function() return tcSlot end
+    env.GetTimecycleModifierStrength = function() return 1.0 end
     env.AnimpostfxPlay = function() end
     env.AnimpostfxStop = function() end
     env.SetRainLevel   = function() end

@@ -606,6 +606,11 @@ IMPL.IsScaleformMovieMethodReturnValueReady = T
 IMPL.GetScaleformMovieMethodReturnValueInt = function() return 0 end
 IMPL.GetScaleformMovieMethodReturnValueBool = F
 IMPL.GetScaleformMovieMethodReturnValueString = function() return '' end
+-- The primary timecycle slot (#399): -1 while it is empty, as on the engine, so
+-- the storm grade finds it empty and takes it the way it does on a prod client.
+IMPL.GetTimecycleModifierIndex = function() return W.tc or -1 end
+IMPL.SetTimecycleModifier = function() W.tc = 1 end
+IMPL.ClearTimecycleModifier = function() W.tc = nil end
 
 --- Defaults by verb, for the names IMPL does not know.
 local function defaultImpl(name)

@@ -18799,10 +18799,63 @@ do
             end
         end
 
-        -- The colour grade.
-        env.SetTimecycleModifier         = function(n) C.tc.name = n end
-        env.SetTimecycleModifierStrength = function(v) C.tc.strength = v end
-        env.ClearTimecycleModifier       = function() C.tc.name = nil end
+        -- The colour grade, IN ONE SLOT THAT CAN BE READ BACK (#399): the grade
+        -- reads the primary slot's index while it is up, and the CFX getters
+        -- for the name and strength of whatever it is about to take over. An
+        -- index is the modifier's place in the engine's table, so one name is
+        -- always one index; -1 is an empty slot, as on the engine. C.tcLog has
+        -- every timecycle call, reads included, in order, so a test can hold
+        -- the grade to "nothing at all at rest" and to the exact writes a
+        -- player sees.
+        local tcIds, tcNames = {}, {}
+        local function tcId(n)
+            if not tcIds[n] then
+                tcNames[#tcNames + 1] = n
+                tcIds[n] = #tcNames + 10
+            end
+            return tcIds[n]
+        end
+        C.tcLog = {}
+        local function tcSay(s) C.tcLog[#C.tcLog + 1] = s end
+        env.SetTimecycleModifier = function(n)
+            tcSay('set ' .. tostring(n))
+            C.tc.name, C.tc.strength = n, 1.0
+        end
+        env.SetTimecycleModifierStrength = function(v)
+            tcSay(('strength %.3f'):format(v))
+            C.tc.strength = v
+        end
+        env.ClearTimecycleModifier = function()
+            tcSay('clear')
+            C.tc.name, C.tc.strength = nil, nil
+        end
+        env.GetTimecycleModifierIndex = function()
+            tcSay('index?')
+            return C.tc.name and tcId(C.tc.name) or -1
+        end
+        env.GetTimecycleModifierNameByIndex = function(i)
+            tcSay('name?')
+            return tcNames[i - 10]
+        end
+        env.GetTimecycleModifierStrength = function()
+            tcSay('strength?')
+            return C.tc.strength or 0.0
+        end
+        --- Somebody else writes the slot: vMenu's TM menu, `brtc`.
+        C.foreign = function(name, strength)
+            if name then
+                C.tc.name, C.tc.strength = name, strength or 1.0
+            else
+                C.tc.name, C.tc.strength = nil, nil
+            end
+        end
+        C.tcWrites = function()
+            local out = {}
+            for _, s in ipairs(C.tcLog) do
+                if not s:find('?', 1, true) then out[#out + 1] = s end
+            end
+            return out
+        end
         env.AnimpostfxPlay = function() end
         env.AnimpostfxStop = function() end
 
@@ -19701,6 +19754,200 @@ do
            'and the SHRINKING countdown does not pip at five seconds -- that '
                .. 'clock ends with the wall stopping, which is not news',
            table.concat(D.sfx, ','))
+    end
+
+    -- ═══ THE GRADE TOUCHES ONLY WHAT IT SET (#399) ═══
+    --
+    --   "I feel like we're not properly using timecycle modifiers"
+    --                                                  -- owner, 2026-10-05
+    --
+    -- The storm's REDMIST shares the primary timecycle slot with vMenu's TM menu
+    -- and `brtc`. It used to scale and clear whatever was in it at every
+    -- crossing, and to believe its red was up after somebody else had cleared
+    -- it. Each case below is one of the three things it can find in the slot,
+    -- driven at the job's real 10 Hz so the five-second ramp is the real one.
+    do
+        local OUT, HOME = pt(900.0, 0.0), pt(0.0, 0.0)
+        local function step(C, ms) C.now = C.now + ms; C.env.BR.Loop.step(C.env.BR.Loop.TICK) end
+        local function run(C, ms) for _ = 1, math.floor(ms / 100) do step(C, 100) end end
+        local function writes(C, from)
+            local all, out = C.tcWrites(), {}
+            for i = (from or 0) + 1, #all do out[#out + 1] = all[i] end
+            return out
+        end
+        local function grade(C) return C.env.BR.Storm.grade() end
+
+        -- ── THE PROD ROAD: an empty slot, so exactly today's red and fade ──
+        do
+            local C = newStormClient()
+            C.pedAt = HOME
+            run(C, 3000)
+            ok(#C.tcLog == 0,
+               'inside the circle the grade calls no timecycle native at all, reads included',
+               table.concat(C.tcLog, ','))
+
+            C.pedAt = OUT
+            run(C, 7000)
+            local w = writes(C)
+            ok(w[1] == 'set ' .. REDMIST and C.tc.name == REDMIST,
+               'stepping out puts REDMIST in the slot', table.concat(w, ','))
+            local onlyStrength, last = true, 0.0
+            for i = 2, #w do
+                local v = tonumber(w[i]:match('^strength (.+)$'))
+                if not v or v < last then onlyStrength = false end
+                last = v or last
+            end
+            ok(onlyStrength and near(last, 0.7, 1e-6),
+               'and then only rising strength writes, up to 0.7 -- the five-second fade in',
+               table.concat(w, ','))
+
+            local settled = #C.tcLog
+            run(C, 2000)
+            ok(#writes(C, #C.tcWrites()) == 0 and #C.tcLog > settled,
+               'settled in the storm it writes nothing, and reads the slot each tick',
+               ('%d calls'):format(#C.tcLog - settled))
+
+            local before = #C.tcWrites()
+            C.pedAt = HOME
+            run(C, 7000)
+            w = writes(C, before)
+            ok(w[#w] == 'clear' and w[#w - 1] == 'strength 0.000' and C.tc.name == nil,
+               'stepping in fades it to 0 and clears it, exactly as before',
+               table.concat(w, ','))
+            local rest = #C.tcLog
+            run(C, 3000)
+            ok(#C.tcLog == rest,
+               'and at rest again it is back to no timecycle native at all',
+               ('%d calls'):format(#C.tcLog - rest))
+            ok(grade(C).applied == false and grade(C).ours == nil,
+               'with nothing held')
+        end
+
+        -- ── A DEV'S MODIFIER IS IN THE SLOT WHEN THE RED ARRIVES ──
+        do
+            local C = newStormClient()
+            C.foreign('Kifflom', 0.5)
+            C.pedAt = OUT
+            run(C, 7000)
+            ok(C.tc.name == REDMIST and near(C.tc.strength, 0.7, 1e-6),
+               'the red takes the slot', tostring(C.tc.name))
+            local g = grade(C)
+            ok(g.saved and g.saved.name == 'Kifflom' and near(g.saved.strength, 0.5, 1e-6),
+               'and keeps what it took: Kifflom at 0.5',
+               g.saved and g.saved.name)
+
+            local before = #C.tcWrites()
+            C.pedAt = HOME
+            run(C, 7000)
+            local w = writes(C, before)
+            ok(w[#w - 3] == 'strength 0.000' and w[#w - 2] == 'clear'
+               and w[#w - 1] == 'set Kifflom' and w[#w] == 'strength 0.500',
+               'and when the red leaves it clears its own and puts Kifflom back at 0.5',
+               table.concat(w, ','))
+            ok(C.tc.name == 'Kifflom' and near(C.tc.strength, 0.5, 1e-6),
+               'so the dev\'s modifier is on screen again', tostring(C.tc.name))
+        end
+
+        -- ── A MODIFIER SET WHILE THE RED IS UP IS THE DEV'S CHOICE ──
+        do
+            local C = newStormClient()
+            C.pedAt = OUT
+            run(C, 7000)
+            C.foreign('blackNwhite', 0.8)
+            local before = #C.tcWrites()
+            run(C, 1000)
+            ok(#writes(C, before) == 0 and C.tc.name == 'blackNwhite',
+               'vMenu replacing the red is not fought: nothing is written over it')
+            ok(grade(C).ours == nil and grade(C).saved
+               and grade(C).saved.name == 'blackNwhite',
+               'the grade lets go and records it as the dev\'s')
+
+            C.pedAt = HOME
+            run(C, 7000)
+            ok(#writes(C, before) == 0,
+               'and the fade back in neither scales nor clears it',
+               table.concat(writes(C, before), ','))
+            ok(C.tc.name == 'blackNwhite' and near(C.tc.strength, 0.8, 1e-6),
+               'so it is still on screen, at the strength the dev chose')
+            local rest = #C.tcLog
+            run(C, 2000)
+            ok(#C.tcLog == rest, 'and the grade is at rest: no native at all')
+
+            -- The next time out, the red takes the slot again -- and saves it.
+            C.pedAt = OUT
+            run(C, 7000)
+            ok(C.tc.name == REDMIST and grade(C).saved
+               and grade(C).saved.name == 'blackNwhite',
+               'the next exposure takes the slot over again, saving the dev\'s')
+        end
+
+        -- ── SOMEBODY CLEARS THE SLOT WHILE THE RED IS UP ──
+        do
+            local C = newStormClient()
+            C.foreign('Kifflom', 0.5)
+            C.pedAt = OUT
+            run(C, 7000)
+            C.foreign(nil)                 -- vMenu's checkbox, or `brtc clear`
+            local before = #C.tcWrites()
+            step(C, 100)
+            local w = writes(C, before)
+            ok(w[1] == 'set ' .. REDMIST and w[2] == 'strength 0.700'
+               and C.tc.name == REDMIST,
+               'the red comes straight back at the level it was at -- the old '
+               .. 'grade believed it was still up and showed nothing until the next crossing',
+               table.concat(w, ','))
+            ok(grade(C).saved == nil,
+               'and the clear drops what it had saved: the dev emptied the slot')
+
+            C.pedAt = HOME
+            run(C, 7000)
+            ok(C.tc.name == nil,
+               'so walking back in leaves the slot empty rather than bringing Kifflom back',
+               tostring(C.tc.name))
+        end
+
+        -- ── A FREEZE IS A WAY OUT, AND SO IS TEARDOWN ──
+        do
+            local C = newStormClient()
+            C.foreign('Kifflom', 0.5)
+            C.pedAt = OUT
+            run(C, 7000)
+            C.env.BR.State.storm.dps = 0.0     -- `brstormfreeze`: dps 0 for everyone
+            run(C, 7000)
+            ok(C.tc.name == 'Kifflom' and near(C.tc.strength, 0.5, 1e-6),
+               'a freeze fades the red out and puts the dev\'s modifier back',
+               tostring(C.tc.name))
+
+            local D = newStormClient()
+            D.foreign('Kifflom', 0.5)
+            D.pedAt = OUT
+            run(D, 7000)
+            D.env.BR.State.match.state = D.env.BR.MatchState.CLEANUP
+            local before = #D.tcWrites()
+            step(D, 100)
+            local w = writes(D, before)
+            ok(w[1] == 'clear' and w[2] == 'set Kifflom' and w[3] == 'strength 0.500',
+               'teardown snaps the red off and puts the dev\'s modifier back',
+               table.concat(w, ','))
+            local rest = #D.tcLog
+            run(D, 2000)
+            ok(#D.tcLog == rest, 'and the torn-down grade calls nothing after that')
+        end
+
+        -- ── A MODIFIER WHOSE NAME CANNOT BE READ IS NEVER OVERWRITTEN ──
+        do
+            local C = newStormClient()
+            C.foreign('unnamed', 0.4)
+            C.env.GetTimecycleModifierNameByIndex = function() return nil end
+            C.pedAt = OUT
+            run(C, 3000)
+            ok(C.tc.name == 'unnamed' and #C.tcWrites() == 0,
+               'the grade yields rather than take a slot it could not give back')
+            C.foreign(nil)
+            step(C, 100)
+            ok(C.tc.name == REDMIST,
+               'and takes it the moment it is empty')
+        end
     end
 end
 

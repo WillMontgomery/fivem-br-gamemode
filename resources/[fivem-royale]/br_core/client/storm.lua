@@ -3084,6 +3084,169 @@ local fxLevel, fxTarget = 0.0, 0.0
 local fxApplied, postOn  = false, false
 local lastFxAt = 0
 
+-- ═══ THE GRADE SHARES THE PRIMARY SLOT, AND TOUCHES ONLY WHAT IT SET (#399) ═══
+--
+--   "I feel like we're not properly using timecycle modifiers"
+--                                                  -- owner, 2026-10-05
+--
+-- GTA has one script timecycle slot that a strength can be set on, and REDMIST
+-- lives in it. So do vMenu's TM menu and `brtc`. This file used to write the
+-- slot blind: stepping out set REDMIST over whatever a dev had chosen, and the
+-- fade back in scaled THAT modifier towards nothing and then cleared it. And the
+-- other way round, a clear from anybody else left `fxApplied` true with no red on
+-- screen until the next crossing.
+--
+-- NOW THE SLOT IS READ, BUT ONLY WHILE THE GRADE IS UP. At rest at 0 nothing is
+-- read or written, exactly as before. While the red is up, each 10 Hz tick asks
+-- GetTimecycleModifierIndex (-1 when the slot is empty) and compares it with the
+-- index this file recorded right after its own SetTimecycleModifier:
+--
+--   ours        strength while it ramps, and the clear at 0, as always.
+--   empty       somebody cleared it while the red should be up: the red goes
+--               back on at the current level. A clear is also somebody saying
+--               "nothing in the slot", so a saved modifier is dropped with it --
+--               a dev who unticks vMenu's TM inside the storm does not get it
+--               back on the way out.
+--   another     somebody set a modifier while the red was up. That is their
+--               choice: the grade lets go, records it as the dev's, and neither
+--               scales nor clears it. The red comes back the next time it has to
+--               take the slot over, or if the slot goes empty first.
+--
+-- AND A MODIFIER IN THE SLOT WHEN THE RED ARRIVES IS SAVED AND PUT BACK. Its
+-- name and strength are read with Cfx's GetTimecycleModifierNameByIndex and
+-- GetTimecycleModifierStrength (ext/native-decls, apiset client); if the name
+-- cannot be read the grade yields rather than overwrite something it could not
+-- restore. The red leaves at the wall, at a freeze (dps 0) and at teardown.
+--
+-- ON PROD NOTHING ELSE WRITES THE SLOT, so it is empty whenever the red arrives
+-- and these branches are reads that find nothing: the same red, the same five
+-- second fade, the same writes in the same order.
+
+--- The slot index of OUR grade, recorded just after setting it. nil while the
+--- grade does not hold the slot: not set yet, cleared, or replaced by a dev.
+local fxOurs = nil
+--- What was in the slot when the red took it, to put back when it leaves:
+--- { name, strength }, or nil.
+local fxSaved = nil
+
+--- The modifier in the slot at `idx`, as something that can be put back, or
+--- nil when its name cannot be read.
+--- @param idx integer
+--- @return table|nil  { name, strength }
+local function readSlot(idx)
+    local name = GetTimecycleModifierNameByIndex(idx)
+    if type(name) ~= 'string' or name == '' then return nil end
+    return { name = name, strength = GetTimecycleModifierStrength() + 0.0 }
+end
+
+--- Put the red in the slot at `strength`, and remember its index.
+--- @param strength number
+local function putRed(strength)
+    SetTimecycleModifier(cfg.fx.timecycle)
+    SetTimecycleModifierStrength(strength)
+    fxOurs = GetTimecycleModifierIndex()
+end
+
+--- Put back what the red took over, if it took anything.
+local function restoreSaved()
+    local s = fxSaved
+    fxSaved = nil
+    if s then
+        SetTimecycleModifier(s.name)
+        SetTimecycleModifierStrength(s.strength)
+    end
+end
+
+--- The red arrives: save whatever is in the slot, then take it. A modifier
+--- whose name cannot be read is left alone (the grade yields) rather than
+--- overwritten with no way back.
+--- @param strength number
+local function takeSlot(strength)
+    local idx = GetTimecycleModifierIndex()
+    if idx ~= -1 then
+        local saved = readSlot(idx)
+        if not saved then
+            fxOurs, fxSaved = nil, nil
+            return
+        end
+        fxSaved = saved
+    else
+        fxSaved = nil
+    end
+    putRed(strength)
+end
+
+--- The slot, while the grade is up. See the header above for the three cases.
+--- @param moving boolean  the level changed this tick
+local function fxSlot(moving)
+    local want = cfg.fx.timecycleTarget * fxLevel
+
+    if not fxApplied then
+        if fxLevel <= 0.0 then return end
+        fxApplied = true
+        takeSlot(want)
+        return
+    end
+
+    local idx = GetTimecycleModifierIndex()
+
+    if fxOurs ~= nil and idx == fxOurs then
+        if moving then SetTimecycleModifierStrength(want) end
+        if fxLevel <= 0.0 then
+            ClearTimecycleModifier()
+            fxOurs, fxApplied = nil, false
+            restoreSaved()
+        end
+        return
+    end
+
+    if idx == -1 then
+        fxSaved = nil
+        if fxLevel > 0.0 then
+            putRed(want)
+        else
+            fxOurs, fxApplied = nil, false
+        end
+        return
+    end
+
+    -- ANOTHER MODIFIER IS ON SCREEN. If it has just replaced ours, it is the
+    -- dev's now; either way it is not scaled and not cleared.
+    if fxOurs ~= nil then
+        fxOurs = nil
+        fxSaved = readSlot(idx)
+    end
+    if fxLevel <= 0.0 then
+        fxApplied, fxSaved = false, nil
+    end
+end
+
+--- Between matches the grade snaps off: our red is cleared and what it took
+--- over is put back. A slot somebody else holds, or emptied, is left as it is.
+local function fxRelease()
+    if fxApplied and cfg.fx.useTimecycle then
+        if fxOurs ~= nil and GetTimecycleModifierIndex() == fxOurs then
+            ClearTimecycleModifier()
+            restoreSaved()
+        end
+    end
+    fxApplied, fxOurs, fxSaved = false, nil, nil
+end
+
+--- The grade as this file sees it, for `brtc` (client/debug.lua): whether it is
+--- up, the slot index it holds (nil when it does not), its level and what it
+--- will put back. Reads nothing from the engine.
+--- @return table  { applied, ours, level, target, saved = { name, strength } | nil }
+function BR.Storm.grade()
+    return {
+        applied = fxApplied,
+        ours    = fxOurs,
+        level   = fxLevel,
+        target  = fxTarget,
+        saved   = fxSaved and { name = fxSaved.name, strength = fxSaved.strength } or nil,
+    }
+end
+
 local function fxSet(outside)
     fxTarget = outside and 1.0 or 0.0
 end
@@ -3092,26 +3255,21 @@ local function fxStep()
     local now = GetGameTimer()
     local dt = (lastFxAt > 0) and math.min(now - lastFxAt, 500) or 0
     lastFxAt = now
-    if fxLevel == fxTarget then return end
+    -- AT REST AND NOT UP: no native at all, as before #399.
+    local moving = fxLevel ~= fxTarget
+    if not moving and not fxApplied then return end
 
-    local blend = (cfg.weather and cfg.weather.blendSec or 5.0) * 1000.0
-    local step = dt / blend
-    if fxLevel < fxTarget then fxLevel = math.min(fxTarget, fxLevel + step)
-    else fxLevel = math.max(fxTarget, fxLevel - step) end
+    if moving then
+        local blend = (cfg.weather and cfg.weather.blendSec or 5.0) * 1000.0
+        local step = dt / blend
+        if fxLevel < fxTarget then fxLevel = math.min(fxTarget, fxLevel + step)
+        else fxLevel = math.max(fxTarget, fxLevel - step) end
+    end
 
     if cfg.fx.useTimecycle then
-        if fxLevel > 0.0 and not fxApplied then
-            fxApplied = true
-            SetTimecycleModifier(cfg.fx.timecycle)
-        end
-        if fxApplied then
-            SetTimecycleModifierStrength(cfg.fx.timecycleTarget * fxLevel)
-        end
-        if fxLevel <= 0.0 and fxApplied then
-            fxApplied = false
-            ClearTimecycleModifier()
-        end
+        fxSlot(moving)
     end
+    if not moving then return end
     -- The post FX loop has no strength knob; it joins once the grade is
     -- genuinely present and leaves as it goes.
     if cfg.fx.usePostFx then
@@ -3235,9 +3393,10 @@ local function teardown()
     caughtWas = nil
     pippedFor = nil
     -- Between matches the grade SNAPS off -- there is nothing to fade
-    -- against once the world resets around a teleport home.
+    -- against once the world resets around a teleport home. Only our own red
+    -- is cleared, and what it took over goes back (#399).
     fxTarget, fxLevel = 0.0, 0.0
-    if fxApplied then fxApplied = false ClearTimecycleModifier() end
+    fxRelease()
     if postOn then postOn = false AnimpostfxStop(cfg.fx.postFx) end
     -- Hand the sky back between matches: this file drops its claim, and
     -- client/world.lua clears the weather only if nothing else wants it.
