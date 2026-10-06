@@ -192,7 +192,10 @@ end
 --- What the sky resolves to right now, and which claim is showing it.
 ---
 --- Read by BR.World.want above (to decide whether a forced write is the
---- forcer's to ask for) and by tools/test_shared.lua. No console verb reads it:
+--- forcer's to ask for), by client/storm.lua's drying schedule (its rain writes
+--- wait for the storm to be on screen, #399) and by tools/test_shared.lua. The
+--- name is the weather written: a role claimed is already read for the festive
+--- sky. No console verb reads it:
 --- if one ever should, it belongs beside the others in server/debug.lua rather
 --- than as a second command here.
 --- @return string|nil name, string|nil source
