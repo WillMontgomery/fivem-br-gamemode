@@ -1484,6 +1484,136 @@ do
     season(2)
 end
 
+--- Lay the lobby out for a Pulse at the tower: p3 100 m off, p4 (downed) 310
+--- m off, p5 500.1 m off, and p6 (out) 10 m off; p2, the runner's squadmate,
+--- 40 m off.
+local function pulseField(m)
+    roster[3].pos = { x = SITE.x + 100.0, y = SITE.y, z = 30.0 }
+    roster[4].pos = { x = SITE.x + 310.0, y = SITE.y, z = 30.0 }
+    roster[5].pos = { x = SITE.x - 500.1, y = SITE.y, z = 30.0 }
+    player(6, m, 'C', { x = SITE.x + 10.0, y = SITE.y }, BR.PlayerState.OUT)
+end
+
+local function pulseIds(d)
+    local ids = {}
+    for _, p in ipairs(d and d.list or {}) do ids[#ids + 1] = p.s end
+    return table.concat(ids, ',')
+end
+
+describe('Pulse: everyone outside the squad within the radius of this terminal, followed for 30 s')
+do
+    local row = T.row('pulse')
+    ok(row and row.implemented == true and T.FUNCTIONS.pulse ~= nil, 'pulse is built')
+    reset()
+    local m = lobby()
+    pulseField(m)
+    local r = runAt(1, 'pulse', { radius = '250' })
+    ok(r and r.ok == true and r.code == 'done', '250 m: it runs', r and r.code)
+    local d = lastOf(BR.Net.TERMINAL_PULSE, 2)
+    eq(pulseIds(d), '3', 'the one opponent within 250 m, not the squadmate 40 m off, not the eliminated one')
+    ok(d and d.list[1].x == SITE.x + 100.0 and d.matchId == 1, 'where they stand')
+    ok(lastOf(BR.Net.TERMINAL_PULSE, 1) ~= nil, 'to the runner too')
+    eq(#eventsOf(BR.Net.TERMINAL_PULSE, 3) + #eventsOf(BR.Net.TERMINAL_PULSE, 5), 0, 'and nobody outside the squad')
+    local action = noticeIndex('has redeemed their special power', 3)
+    local told = noticeIndex('A pulse detected you', 3)
+    ok(action and told and action < told, 'the one found is told, after the lobby\'s notice')
+    eq(lastToast(3), COPY.pulse_detected, 'in the squad line, in a squad match')
+    for _, src in ipairs({ 1, 2, 4, 5, 6 }) do
+        eq(noticeIndex('A pulse detected you', src), nil, ('p%d is not told'):format(src))
+    end
+
+    -- FOLLOWED, wherever they go, once a second.
+    roster[3].pos = { x = SITE.x + 2000.0, y = SITE.y, z = 30.0 }
+    gameMs = gameMs + 1000
+    jobs['terminal.pulse']()
+    d = lastOf(BR.Net.TERMINAL_PULSE, 2)
+    ok(d and d.list[1] and d.list[1].x == SITE.x + 2000.0, 'out of the radius now, and still followed')
+    roster[4].pos = { x = SITE.x + 1.0, y = SITE.y, z = 30.0 }
+    jobs['terminal.pulse']()
+    eq(pulseIds(lastOf(BR.Net.TERMINAL_PULSE, 2)), '3', 'and nobody who walked in after it ran is added')
+
+    -- THIRTY SECONDS.
+    gameMs = gameMs + CT.fx.pulseMs
+    jobs['terminal.pulse']()
+    d = lastOf(BR.Net.TERMINAL_PULSE, 2)
+    ok(d and #d.list == 0, 'thirty seconds on: one empty push takes them down')
+    local n = #eventsOf(BR.Net.TERMINAL_PULSE, nil)
+    gameMs = gameMs + 1000
+    jobs['terminal.pulse']()
+    eq(#eventsOf(BR.Net.TERMINAL_PULSE, nil), n, 'and then nothing')
+    eq(CT.fx.pulseMs, 30000, '"The marks follow them for 30 seconds"')
+end
+
+describe('Pulse: 500 m, the found leaving the fight, the match ending, finding nobody')
+do
+    reset()
+    local m = lobby()
+    pulseField(m)
+    runAt(1, 'pulse', { radius = '500' })
+    eq(pulseIds(lastOf(BR.Net.TERMINAL_PULSE, 1)), '3,4', '500 m: the downed opponent at 310 m too (not 500.1)')
+    roster[4].state = BR.PlayerState.OUT
+    gameMs = gameMs + 1000
+    jobs['terminal.pulse']()
+    eq(pulseIds(lastOf(BR.Net.TERMINAL_PULSE, 1)), '3', 'an eliminated one drops off the next push')
+    roster[3].state = BR.PlayerState.OUT
+    gameMs = gameMs + 1000
+    jobs['terminal.pulse']()
+    ok(#lastOf(BR.Net.TERMINAL_PULSE, 1).list == 0 and m.terminalFx.pulses[BR.TerminalSolve.squadKey(roster[1], 1)] == nil,
+        'nobody left to mark: one empty push, and it is over')
+
+    reset()
+    m = lobby()
+    pulseField(m)
+    runAt(1, 'pulse')
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
+    jobs['terminal.pulse']()
+    ok(#lastOf(BR.Net.TERMINAL_PULSE, 2).list == 0, 'a match that ended takes them down')
+
+    -- NOBODY NEAR: it still runs (a refusal would be free intel), and tells nobody.
+    reset()
+    m = lobby()
+    roster[3].pos = { x = SITE.x + 5000.0, y = SITE.y }
+    roster[4].pos = { x = SITE.x + 5000.0, y = SITE.y }
+    useAt(1)
+    ok(listedAs(1, 'pulse').available == true, 'the card never says whether anybody is near')
+    local r = runAt(1, 'pulse')
+    ok(r and r.code == 'done' and #lastOf(BR.Net.TERMINAL_PULSE, 1).list == 0,
+        'an empty pulse runs, and says so with an empty list', r and r.code)
+    eq(noticeIndex('A pulse detected you', 3), nil, 'nobody is told')
+end
+
+describe('Pulse: a solo match, the dev command centred on the player, and Season 1')
+do
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(3, m, nil, { x = SITE.x + 20.0, y = SITE.y })
+    keys[1] = true
+    local r = runAt(1, 'pulse')
+    eq(r and r.toast, COPY.pulse_done_solo, 'the runner reads the solo done line')
+    eq(lastToast(3), COPY.pulse_detected_solo, 'and the one found the solo warning')
+
+    -- THE DEV TERMINAL IS NOWHERE: the pulse is centred on the player.
+    reset()
+    m = lobby()
+    keys[1] = false
+    roster[1].pos = { x = -3000.0, y = -3000.0, z = 30.0 }
+    roster[5].pos = { x = -3100.0, y = -3000.0, z = 30.0 }
+    local said = devRun(1, 'pulse radius=250')
+    ok(said:find('ok (done)', 1, true) ~= nil, 'brterminal run pulse radius=250', said)
+    eq(pulseIds(lastOf(BR.Net.TERMINAL_PULSE, 1)), '5', 'around the player, at the dev terminal')
+
+    season(1)
+    local n = #sent
+    gameMs = gameMs + 1000
+    jobs['terminal.pulse']()
+    eq(#sent, n, 'at Season 1 nothing is pushed')
+    ok(m.terminalFx.pulses == nil, 'and the pulse is forgotten')
+    season(2)
+end
+
 -- =========================================================================
 -- PART D -- the client
 -- =========================================================================
@@ -1621,21 +1751,17 @@ local function clientWorld()
     BR.Native = { blipName = function(b, name) W.blips[b].name = name end }
     BR.Loop = { SLOW = 'slow', register = function(_, name, fn) W.loops[name] = fn end }
     BR.State = { me = { state = BR.PlayerState.ALIVE } }
-    W.order = {}
-    local register = BR.Loop.register
-    BR.Loop.register = function(band, name, fn)
-        if name ~= 'terminalfx.clear' then W.order[#W.order + 1] = name end
-        register(band, name, fn)
-    end
     loadAll({ 'br_core/client/terminalfx.lua' })
     loadAll(fxFiles('client'))
     W.F, W.A, W.C = BR.TerminalFx, BR.Config.Terminals.art, BR.Config.Terminals.copy
     function W.net(ev, d) W.handlers[ev](d) end
-    --- One SLOW pass, in registration order as BR.Loop runs it: client/
-    --- terminalfx.lua's (which refreshes the season) first.
+    --- One SLOW pass: client/terminalfx.lua's, the ONE loop callback the
+    --- terminal marks register (the wave A files hook it through F.onSlow).
     function W.slow()
+        local n = 0
+        for _ in pairs(W.loops) do n = n + 1 end
+        ok(n == 1, 'the terminal marks register one SLOW callback between them', n)
         W.loops['terminalfx.clear']()
-        for _, name in ipairs(W.order) do W.loops[name]() end
     end
     function W.count(pred)
         local n = 0
@@ -1680,6 +1806,40 @@ do
     W.slow()
     eq(F.keyMarks(), 0, 'off Season 2, they go')
     W.net(BR.Net.TERMINAL_KEYS, { matchId = 1, leftMs = 120000, list = { { x = 1.0, y = 1.0 } } })
+    eq(W.count(), 0, 'and Season 1 draws none')
+    W.done()
+end
+
+describe('client: Pulse\'s marks -- moved on every push, gone when it ends')
+do
+    local W = clientWorld()
+    local F, A = W.F, W.A
+    W.net(BR.Net.TERMINAL_PULSE, { matchId = 1, list = { { s = 3, x = 10.0, y = 20.0 }, { s = 4, x = 1.0, y = 2.0 } } })
+    eq(F.pulseMarks(), 2, 'one mark per player found')
+    eq(W.count(function(b) return b.sprite == A.pulse.sprite and b.colour == A.pulse.colour
+        and b.name == W.C.pulse_blip end), 4, 'on both maps, in the art block\'s look, named from the copy')
+    local made = W.nextBlip
+    W.net(BR.Net.TERMINAL_PULSE, { matchId = 1, list = { { s = 3, x = 11.0, y = 21.0 } } })
+    eq(F.pulseMarks(), 1, 'one no longer sent is dropped')
+    eq(W.nextBlip, made, 'and the one that moved is moved, not rebuilt')
+    W.net(BR.Net.TERMINAL_PULSE, { matchId = 1, list = {} })
+    eq(F.pulseMarks(), 0, 'the server\'s empty push takes them down')
+    eq(W.count(), 0, 'every blip with them')
+
+    W.net(BR.Net.TERMINAL_PULSE, { matchId = 1, list = { { s = 3, x = 1.0, y = 1.0 } } })
+    W.slow()
+    eq(F.pulseMarks(), 1, 'a fresh push survives the SLOW pass')
+    gameMs = gameMs + 3 * BR.Config.Terminals.fx.pulsePingMs + 1
+    W.slow()
+    eq(F.pulseMarks(), 0, 'and pushes stopping for three periods ends them')
+    W.net(BR.Net.TERMINAL_PULSE, { matchId = 1, list = { { s = 3, x = 1.0, y = 1.0 } } })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    W.slow()
+    eq(F.pulseMarks(), 0, 'as does the lobby')
+    BR.State.me.state = BR.PlayerState.ALIVE
+    W.season = 1
+    W.slow()
+    W.net(BR.Net.TERMINAL_PULSE, { matchId = 1, list = { { s = 3, x = 1.0, y = 1.0 } } })
     eq(W.count(), 0, 'and Season 1 draws none')
     W.done()
 end

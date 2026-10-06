@@ -676,21 +676,33 @@ BR.Config.Terminals = {
         storm_delay_done = 'The storm is delayed.',
         storm_delay_description = 'Storm delay. The storm holds longer before its next sweep.',
 
-        -- Pulse (new; offline)
+        -- Pulse (new; LIVE since wave A, 2026-10-06)
         pulse_name = 'Pulse',
         pulse_summary = 'Shows every player near this terminal for a short time.',
-        pulse_what = "Every player within the radius you choose shows on your squad's maps.\nThe marks follow them for 30 seconds.",
-        pulse_what_solo = "Every player within the radius you choose shows on your map.\nThe marks follow them for 30 seconds.",
+        -- WRITTEN (2026-10-06, wave A; was "Every player within the radius
+        -- ..."): the runner's own squad is not marked, and not told it was
+        -- detected.
+        pulse_what = "Every player outside your squad within the radius you choose shows on your squad's maps.\nThe marks follow them for 30 seconds.",
+        pulse_what_solo = "Every other player within the radius you choose shows on your map.\nThe marks follow them for 30 seconds.",
         pulse_opt_radius = 'Radius',
         pulse_opt_radius_250 = '250 meters',
         pulse_opt_radius_500 = '500 meters',
         pulse_duration = '30 seconds',
-        pulse_affects = 'Every player in the radius',
+        -- WRITTEN (2026-10-06, wave A; was 'Every player in the radius').
+        pulse_affects = 'Every player outside your squad in the radius',
+        pulse_affects_solo = 'Every other player in the radius',
         pulse_notified = 'Everyone in the match, and every player it finds',
         pulse_risks = "Every player the pulse finds is told they've been detected.",
         pulse_done = "The pulse is on your squad's maps.",
         pulse_done_solo = 'The pulse is on your map.',
         pulse_description = 'Pulse. Players near their terminal are on their map.',
+        -- WRITTEN (2026-10-06, wave A). A toast to each player a Pulse found,
+        -- after the lobby's notice.
+        pulse_detected = "A pulse detected you. Another squad can see where you are for 30 seconds.",
+        pulse_detected_solo = "A pulse detected you. Another player can see where you are for 30 seconds.",
+        -- WRITTEN (2026-10-06, wave A). The marks' name in the pause map's
+        -- legend.
+        pulse_blip = 'Detected',
 
         -- Lockdown (new; offline)
         lockdown_name = 'Lockdown',
@@ -787,6 +799,9 @@ BR.Config.Terminals = {
         -- Key finder: where each Yubikey was, on the squad's maps for 2
         -- minutes. Sprite 1 is the plain dot (Scan's); colour 5 is yellow.
         keyFinder = { sprite = 1, colour = 5, scale = 0.9 },
+        -- Pulse: each player it found, followed for 30 seconds. The plain dot
+        -- again; colour 17 is orange.
+        pulse = { sprite = 1, colour = 17, scale = 0.8 },
     },
 
     -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04) ═══
@@ -1006,8 +1021,8 @@ BR.Config.Terminals = {
           options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
         { id = 'storm_delay',    category = 'storm',      risk = 'low',    implemented = false,
           options = { { id = 'delay', choices = { '60', '120' }, default = '60' } } },
-        { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = false,
-          options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },
+        { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true,
+          options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters
         { id = 'lockdown',       category = 'disruption', risk = 'medium', implemented = false,
           options = { { id = 'duration', choices = { '180', '300' }, default = '180' } } },
         { id = 'contract',       category = 'disruption', risk = 'medium', implemented = false },
@@ -1044,6 +1059,9 @@ BR.Config.Terminals = {
         endCheckMs = 1000,
         -- Key finder: "they fade after 2 minutes".
         keyFinderMs = 2 * 60 * 1000,
+        -- Pulse: "The marks follow them for 30 seconds", moved this often.
+        pulseMs = 30 * 1000,
+        pulsePingMs = 1000,
     },
 
     -- The server drops a second run request from one player sooner than this

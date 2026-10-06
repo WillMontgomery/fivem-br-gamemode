@@ -1252,6 +1252,11 @@ BR.Net = {
     -- and once more, empty, when its two minutes are up or the match ends
     -- (server/terminalfx/key_finder.lua). Again on br:ready while it lasts.
     TERMINAL_KEYS   = 'br:terminal:keys',
+    -- S->C { matchId, list = { { s, x, y } } }. Pulse (wave A): where each
+    -- player it found is now, to the squad that ran it alone, every
+    -- pulsePingMs for pulseMs -- and once more, empty, when it is over
+    -- (server/terminalfx/pulse.lua).
+    TERMINAL_PULSE  = 'br:terminal:pulse',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
     -- player holds one, and whether their squad has spent its one use this

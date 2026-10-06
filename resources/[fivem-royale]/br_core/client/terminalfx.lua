@@ -164,11 +164,26 @@ AddEventHandler(BR.Net.TERMINAL_BOUNTY, function(d)
     apply(bountyMarks, d.list, art().bounty or {}, copy().bounty_blip)
 end)
 
+--- THE WAVE A FILES' OWN SLOW CHECKS (client/terminalfx/), run from this
+--- file's one SLOW pass rather than each registering a loop callback of its
+--- own: a registered callback is the loop runner's bookkeeping every second
+--- however little it does, and tools/perf_client.lua's budget counts it. Each
+--- hook returns at once with nothing drawn.
+local slowHooks = {}
+
+--- Run `fn` on this file's SLOW pass, after the season has been refreshed.
+--- @param fn fun()
+function F.onSlow(fn)
+    slowHooks[#slowHooks + 1] = fn
+end
+
 -- ONCE A SECOND: in the lobby, off Season 2, or when the pushes have stopped
 -- for three of their own periods (a match torn down between pushes, a
--- server that went quiet), the marks go.
+-- server that went quiet), the marks go -- this file's and, through
+-- F.onSlow, the wave A files'.
 BR.Loop.register(BR.Loop.SLOW, 'terminalfx.clear', function()
     refreshSeason()
+    for i = 1, #slowHooks do slowHooks[i]() end
     if next(scanMarks) == nil and next(bountyMarks) == nil then return end
     local S = BR.State
     local lobby = S and S.me and S.me.state == BR.PlayerState.LOBBY

@@ -699,9 +699,11 @@ client_scripts {
     'client/terminalfx.lua',
     -- The wave A functions' client halves (#396, 2026-10-06), one file each:
     -- their marks, drawn with client/terminalfx.lua's helpers (read at call
-    -- time), from the server's pushes. Event-driven, plus each one's own
-    -- SLOW-band pass that returns at once with nothing drawn.
+    -- time), from the server's pushes. Event-driven, plus a check on
+    -- client/terminalfx.lua's one SLOW pass (BR.TerminalFx.onSlow) that
+    -- returns at once with nothing drawn.
     'client/terminalfx/key_finder.lua',
+    'client/terminalfx/pulse.lua',
     'client/debug.lua',
 }
 
@@ -947,6 +949,7 @@ server_scripts {
     'server/terminalfx/field_medic.lua',
     'server/terminalfx/disarm.lua',
     'server/terminalfx/key_finder.lua',
+    'server/terminalfx/pulse.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

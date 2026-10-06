@@ -13,8 +13,9 @@
 --
 -- ═══ WHAT IT COSTS A FRAME ═══
 --
--- Nothing. Marks are made when a push arrives; the SLOW pass returns at once
--- with none drawn.
+-- Nothing. Marks are made when a push arrives; the SLOW check (a hook on
+-- client/terminalfx.lua's one pass, not a loop callback of its own) returns
+-- at once with none drawn.
 
 BR = BR or {}
 BR.TerminalFx = BR.TerminalFx or {}
@@ -60,9 +61,10 @@ AddEventHandler(BR.Net.TERMINAL_KEYS, function(d)
     overdueAt = GetGameTimer() + (tonumber(d.leftMs) or 0) + LATE_MS
 end)
 
--- ONCE A SECOND, and nothing at all with no mark up: back in the lobby (the
--- match is over), Season 1, or a clear that never arrived.
-BR.Loop.register(BR.Loop.SLOW, 'terminalfx.keys', function()
+-- ONCE A SECOND (client/terminalfx.lua's SLOW pass, F.onSlow), and nothing
+-- at all with no mark up: back in the lobby (the match is over), Season 1,
+-- or a clear that never arrived.
+F.onSlow(function()
     if next(marks) == nil then return end
     local S = BR.State
     local lobby = S and S.me and S.me.state == BR.PlayerState.LOBBY
