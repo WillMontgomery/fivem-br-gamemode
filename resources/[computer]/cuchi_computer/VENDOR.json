@@ -61,14 +61,13 @@
   ],
 
   "provenance_check": {
-    "claim": "Of the 53 files at v1.1.1, 7 are here with the SAME GIT BLOB ID as the tag: LICENSE, README.md, locales/main.js and nui/assets/images/{error,exit,info}.png at their own paths, and nui/assets/images/console.png renamed to terminal.png. 6 more are here with BR-PATCH blocks (see `patches`). The other 40 are removed (see `removed`).",
+    "claim": "Of the 53 files at v1.1.1, 6 are here with the SAME GIT BLOB ID as the tag: LICENSE, README.md, locales/main.js and nui/assets/images/{error,exit,info}.png at their own paths. 6 more are here with BR-PATCH blocks (see `patches`). The other 41 are removed (see `removed`) -- console.png among them since 2026-10-05: it was here renamed to terminal.png as the app's placeholder icon, and the owner's round-2 icon (our own nui/assets/images/terminal.svg) replaced it.",
     "verified_on": "2026-10-04",
     "how": [
       "git clone https://github.com/Cu-chi/cuchi_computer.git /tmp/cc",
       "for f in LICENSE README.md locales/main.js nui/assets/images/error.png nui/assets/images/exit.png nui/assets/images/info.png; do",
       "  [ \"$(git rev-parse \":resources/[computer]/cuchi_computer/$f\")\" = \"$(git -C /tmp/cc rev-parse \"v1.1.1:$f\")\" ] || echo \"DIFFER $f\"",
-      "done",
-      "[ \"$(git rev-parse ':resources/[computer]/cuchi_computer/nui/assets/images/terminal.png')\" = \"$(git -C /tmp/cc rev-parse 'v1.1.1:nui/assets/images/console.png')\" ] || echo 'DIFFER terminal.png'"
+      "done"
     ],
     "note": "Compare BLOB IDS, not worktree files, and extract with `git -c core.autocrlf=false archive v1.1.1`. Upstream's blobs are LF; a Windows clone with core.autocrlf=true hands out CRLF, which is about the clone and not about the code."
   },
@@ -115,6 +114,9 @@
       "nui/assets/images/themes.png",
       "assets/screen.gif"
     ],
+    "replaced_by_our_own_icon": [
+      "nui/assets/images/console.png -- here as nui/assets/images/terminal.png (the app's placeholder icon) until 2026-10-05, when the owner named the app Control Tower and gave its icon; nui/assets/images/terminal.svg, an original drawing, took its place (see `added`)"
+    ],
     "sounds": [
       "nui/assets/sounds/boot.mp3",
       "nui/assets/sounds/message.mp3"
@@ -138,15 +140,14 @@
     "why_the_sounds_went": "boot.mp3 played on every opening and message.mp3 on every message box. This project's sounds are each the owner's pick (br_lib/config/audio.lua) and these two never were, so they went with the rest; nothing else here ever played a sound. The 'look' the owner chose this resource for is the desktop, which is all still here."
   },
 
-  "renamed": {
-    "nui/assets/images/console.png": "nui/assets/images/terminal.png -- the terminal app's desktop and taskbar icon, a PLACEHOLDER until the owner picks art. Upstream names each icon after its app id, so the rename is what lets the window manager find it unchanged."
-  },
+  "renamed": {},
 
   "added": {
     "VENDOR.json": "this file",
-    "client/shell.lua": "the whole Lua half: open (with the copy block and the function catalog), update, result and close for br_core, NUI focus, and the page's callbacks -- a run's function id and its options shape-checked on the way through. Its header is the contract's Lua side.",
-    "nui/br.js": "the page's bridge: br_core's messages in (the catalog on open, the state alone on each once-a-second update), the terminal app's requests out (a run's options shape-checked), Escape, the app's light/dark mode onto the window's tab, and a drag fix for windows that hold an iframe.",
-    "nui/br.css": "the Ubuntu face from nui/fonts/, and the terminal window as a web browser's frame (owner, 2026-10-05): upstream's title bar restyled -- no markup changed -- into a tab strip with one tab (the app's icon and title) and drawn window controls, following the app's light/dark mode. The browser's toolbar (back, forward, reload, the address bar) is the app's own, since it walks the app's navigation.",
+    "client/shell.lua": "the whole Lua half: open (with the copy block, the function catalog, and the desktop's boot range and game time), update, result, the game clock (Clock) and close for br_core, NUI focus, and the page's callbacks -- a run's function id and its options shape-checked on the way through. Its header is the contract's Lua side.",
+    "nui/br.js": "the page's bridge: br_core's messages in (the catalog on open, the state alone on each once-a-second update, the game's time on each new minute), the terminal app's requests out (a run's options shape-checked), Escape (the boot included), a boot of a random length in br_core's range that ends on the desktop, the app launched from its desktop icon (loaded then, unloaded by its window's close), the window's eight resize handles and its maximize, and a drag fix for windows that hold an iframe.",
+    "nui/br.css": "the Ubuntu face from nui/fonts/, and the terminal window as a web browser's frame (owner, 2026-10-05): upstream's title bar restyled into a tab strip with one tab (the app's icon and title) and drawn window controls (minimize, maximize, close), one look whatever the app's light/dark mode (round 2); the resize handles and their cursors; the taskbar's date hidden. The browser's toolbar (back, forward, reload, the address bar) is the app's own, since it walks the app's navigation.",
+    "nui/assets/images/terminal.svg": "the Control Tower icon (owner, 2026-10-05, round 2: 'use the attached icon'): an ORIGINAL drawing made for this project in the spirit of the owner's reference -- a tall shaft, a glazed cab with mullions over a railed deck, roof antennas -- a white tower on a blue tile. The desktop icon, the taskbar, the window's tab and the app's top bar. Not upstream's, not the reference image.",
     "nui/fonts/ubuntu-latin-300-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-300-normal.woff2, sha256 998fb9fd2f2845f623afa3fad936a4c832f7213cbb153450ff2908088ca418b4",
     "nui/fonts/ubuntu-latin-400-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-400-normal.woff2, sha256 dabae363ac0ae6c3b2a137a32f7132b42520a8af252f87aa6c2198f2a79cf91c",
     "nui/fonts/LICENSE-UFL-1.0.txt": "that package's LICENSE, the Ubuntu Font Licence 1.0, verbatim (sha256 52fdffecb23a020de527f68c516cac16dbbaf2dbb73fd9e29e2149703b881c82)",
@@ -190,8 +191,8 @@
       "id": "BR-PATCH 5",
       "file": "nui/scripts/configs/applications.js",
       "symbol": "Applications",
-      "what": "One app, `terminal`: a window whose body is an iframe (#terminal-frame), 1440x880 (a browser window; br.css caps it at 98vw x 92vh). Upstream's seven apps are gone.",
-      "why": "The terminal app is a React + Cloudscape page with its own document, so Cloudscape's global styles cannot restyle the desktop around it. The size is a browser's because the owner asked for the window to look like one (2026-10-05) and the app's side navigation and cards need the room; upstream's own iframe app was 960x630.",
+      "what": "One app, `terminal`: a window whose body is an iframe (#terminal-frame), 1440x880 (a browser window; br.css caps it at 98vw x 92vh until the player resizes it), with a maximize button in its title bar and eight resize handles (round 2), and `icon`, the app's own icon file. Upstream's seven apps are gone.",
+      "why": "The terminal app is a React + Cloudscape page with its own document, so Cloudscape's global styles cannot restyle the desktop around it. The size is a browser's because the owner asked for the window to look like one (2026-10-05) and the app's side navigation and cards need the room; upstream's own iframe app was 960x630. Round 2: 'We should also have the ability to resize (when grabbing the edges) and maximize the window.'",
       "upstream_fixable": "no"
     },
     {
@@ -235,6 +236,22 @@
       "upstream_fixable": "no"
     },
     {
+      "id": "BR-PATCH 12",
+      "file": "nui/scripts/script.js",
+      "symbol": "DOMContentLoaded: the desktop icon's <img>; OpenApp: the taskbar icon's <img>",
+      "what": "An app's own `icon` (Applications[app].icon) when it names one, else upstream's assets/images/<appName>.png.",
+      "why": "The app's icon is an SVG drawing (Control Tower, owner 2026-10-05 round 2), and upstream builds a .png path from the app id in both places.",
+      "upstream_fixable": "yes -- an icon field per app is an ordinary upstream change"
+    },
+    {
+      "id": "BR-PATCH 13",
+      "file": "nui/scripts/script.js",
+      "symbol": "DOMContentLoaded: the clock's setInterval",
+      "what": "Removed. br.js writes the taskbar's hour and minute from the GAME's clock (br_core sends it on each new minute while the computer is open), and the date is not shown.",
+      "why": "Owner, 2026-10-05 round 2: 'Can you make the computer clock match the game clock?' Upstream wrote the player's own clock and date every second.",
+      "upstream_fixable": "no -- a game clock is this server's"
+    },
+    {
       "id": "BR-PATCH 11",
       "file": "locales/ui/en.js",
       "symbol": "Locales.EN",
@@ -245,9 +262,9 @@
   ],
 
   "untouched_on_purpose": [
-    "The window manager in script.js -- Load, OpenApp, CloseApp, FocusApp, MinimizeApp, MakeElementDraggable, MessageBox, ShutdownComputer, editTheme -- is upstream's, byte for byte. br.js calls it; nothing in it was changed to make that work.",
+    "The window manager in script.js -- Load, OpenApp, CloseApp, FocusApp, MinimizeApp, MakeElementDraggable, MessageBox, ShutdownComputer, editTheme -- is upstream's, byte for byte, but for BR-PATCH 12's icon path in OpenApp. br.js calls it; resizing and maximizing are br.js's own, beside it.",
     "style.css's desktop, taskbar, loader, window and message-box rules, and its :root colors (upstream's first theme), which are the look the owner chose this resource for.",
-    "The taskbar clock, which still reads the player's own clock in en-US.",
+    "The taskbar's markup (#hours, #date) and the en-US date_format the clock is written in; since round 2 the time is the game's (BR-PATCH 13) and #date is hidden by br.css.",
     "ShutdownComputer and MessageBox stay although nothing calls them now: they are the window manager's, and a later app may want a message box."
   ]
 }

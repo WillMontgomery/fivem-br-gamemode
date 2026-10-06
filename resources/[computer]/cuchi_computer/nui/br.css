@@ -41,19 +41,26 @@
  * is the app's own (ui-src/terminal/src/Browser.tsx), because the history it
  * walks and the address it shows are the app's navigation, and a second copy
  * of that state out here would be a second thing to keep in step over
- * postMessage. No upstream file is touched for this: the title bar's markup is
- * upstream's (BR-PATCH 5's window), and only its look changes.
+ * postMessage. The title bar's markup is BR-PATCH 5's window (upstream's
+ * buttons, plus round 2's maximize), and this file is only its look.
  *
- * The active tab is the toolbar's colour, as in a browser, so it follows the
- * app's light/dark mode: br.js puts `br-light` on the window when the app
- * says it went light. Dark is the default, the colours of the app's dark mode.
+ * ONE LOOK, WHATEVER THE SITE'S MODE (owner, 2026-10-05, round 2: "dark/light
+ * mode should not influence the browser's appearance, only the website"). The
+ * frame is a light browser's, the same in both of the app's modes; the app's
+ * own toolbar (Browser.tsx) wears the same fixed colors. The active tab is the
+ * toolbar's white, as in a browser.
+ *
+ * ROUND 2 ALSO MADE IT A REAL WINDOW: eight resize handles (one per edge and
+ * corner, the window kept at 900x560 or more and inside the desktop) and a
+ * maximize button that fills the desktop and gives the old size and place
+ * back. br.js drives them; their markup is BR-PATCH 5's (applications.js).
  */
 #app-terminal {
-    --br-frame: #0f141a;
-    --br-tab: #192534;
-    --br-tab-text: #e9ebed;
-    --br-control: #8d99a8;
-    --br-control-hover: rgba(255, 255, 255, 0.10);
+    --br-frame: #dfe3e8;
+    --br-tab: #ffffff;
+    --br-tab-text: #0f141a;
+    --br-control: #424650;
+    --br-control-hover: rgba(0, 0, 0, 0.08);
     max-width: 98vw;
     max-height: 92vh;
     box-sizing: border-box;
@@ -61,17 +68,28 @@
     border-radius: 10px;
     overflow: hidden;
     background-color: var(--br-frame);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(0, 0, 0, 0.18);
     box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
 
-#app-terminal.br-light {
-    --br-frame: #dfe3e8;
-    --br-tab: #ffffff;
-    --br-tab-text: #0f141a;
-    --br-control: #424650;
-    --br-control-hover: rgba(0, 0, 0, 0.08);
-    border-color: rgba(0, 0, 0, 0.18);
+/* Resized by hand: the size the player gave it, which br.js keeps inside the
+   desktop -- the caps above are for the size it opens at. */
+#app-terminal.br-sized {
+    max-width: none;
+    max-height: none;
+}
+
+/* Maximized: the desktop's whole area, square corners, no shadow to cast. */
+#app-terminal.br-max {
+    max-width: none;
+    max-height: none;
+    border-radius: 0;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+#app-terminal.br-max .br-resize {
+    display: none;
 }
 
 /* The tab strip: upstream's title bar, laid out as a browser's. */
@@ -116,20 +134,32 @@
     flex: 0 0 16px;
     width: 16px;
     height: 16px;
-    background: url(assets/images/terminal.png) center / contain no-repeat;
+    background: url(assets/images/terminal.svg) center / contain no-repeat;
 }
 
-/* The window controls, at the right, drawn rather than lettered. */
+/* The window controls, at the right, drawn rather than lettered: minimize,
+   maximize (or restore), close. */
 #terminal-minimize {
     order: 1;
     margin-left: auto;
 }
 
-#terminal-quit {
+#terminal-maximize {
     order: 2;
 }
 
+#terminal-quit {
+    order: 3;
+}
+
+#app-terminal > h1 > .app-maximize {
+    border: none;
+    outline: none;
+    cursor: pointer;
+}
+
 #app-terminal > h1 > .app-minimize,
+#app-terminal > h1 > .app-maximize,
 #app-terminal > h1 > .app-exit {
     position: relative;
     align-self: center;
@@ -140,9 +170,44 @@
     background-color: transparent;
 }
 
-#app-terminal > h1 > .app-minimize:hover {
+#app-terminal > h1 > .app-minimize:hover,
+#app-terminal > h1 > .app-maximize:hover {
     filter: none;
     background-color: var(--br-control-hover);
+}
+
+/* Maximize: a square; restore (when maximized): two, overlapping. */
+#app-terminal > h1 > .app-maximize::before,
+#app-terminal > h1 > .app-maximize::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    box-sizing: border-box;
+    width: 11px;
+    height: 11px;
+    margin: -5.5px 0 0 -5.5px;
+    border: 1.5px solid var(--br-control);
+    border-radius: 1px;
+}
+
+#app-terminal > h1 > .app-maximize::after {
+    display: none;
+}
+
+#app-terminal.br-max > h1 > .app-maximize::before {
+    width: 9px;
+    height: 9px;
+    margin: -3px 0 0 -6px;
+    background-color: var(--br-frame);
+    z-index: 1;
+}
+
+#app-terminal.br-max > h1 > .app-maximize::after {
+    display: block;
+    width: 9px;
+    height: 9px;
+    margin: -6px 0 0 -3px;
 }
 
 #app-terminal > h1 > .app-exit:hover {
@@ -190,4 +255,63 @@
     width: 100%;
     height: 100%;
     border: none;
+}
+
+/*
+ * THE RESIZE HANDLES: thin strips along the four edges and squares at the
+ * four corners, each with its own cursor, over the window's edge. The corners
+ * sit above the edges.
+ */
+.br-resize {
+    position: absolute;
+    z-index: 2;
+}
+
+.br-resize.br-n,
+.br-resize.br-s {
+    left: 10px;
+    right: 10px;
+    height: 6px;
+    cursor: ns-resize;
+}
+
+.br-resize.br-n { top: 0; }
+.br-resize.br-s { bottom: 0; }
+
+.br-resize.br-e,
+.br-resize.br-w {
+    top: 10px;
+    bottom: 10px;
+    width: 6px;
+    cursor: ew-resize;
+}
+
+.br-resize.br-e { right: 0; }
+.br-resize.br-w { left: 0; }
+
+.br-resize.br-ne,
+.br-resize.br-nw,
+.br-resize.br-se,
+.br-resize.br-sw {
+    z-index: 3;
+    width: 12px;
+    height: 12px;
+}
+
+.br-resize.br-ne { top: 0; right: 0; cursor: nesw-resize; }
+.br-resize.br-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.br-resize.br-nw { top: 0; left: 0; cursor: nwse-resize; }
+.br-resize.br-se { bottom: 0; right: 0; cursor: nwse-resize; }
+
+/* While a resize runs, its cursor everywhere, so it does not flicker as the
+   pointer outruns the handle. */
+body.br-resizing-n, body.br-resizing-s { cursor: ns-resize; }
+body.br-resizing-e, body.br-resizing-w { cursor: ew-resize; }
+body.br-resizing-ne, body.br-resizing-sw { cursor: nesw-resize; }
+body.br-resizing-nw, body.br-resizing-se { cursor: nwse-resize; }
+
+/* THE TASKBAR'S CLOCK IS THE GAME'S (round 2): its hour and minute, and no
+   date -- a battle royale's world has none to show. */
+#date {
+    display: none;
 }

@@ -8,12 +8,16 @@
 // share of it:
 //
 //   Lua -> page (SendNUIMessage from client/shell.lua)
-//     { type: "br:open", state, copy, catalog }
-//                                        boot the desktop, open the terminal app
+//     { type: "br:open", state, copy, catalog, desktop }
+//                                        boot the desktop (or, already up,
+//                                        refresh it); the player opens the app
+//                                        from its icon. desktop = { bootMinMs,
+//                                        bootMaxMs, clock = { h, m } }
 //     { type: "br:update", state }       the server's new view of this terminal
 //                                        (once a second while open: the match
 //                                        panel is in it)
 //     { type: "br:result", result }      the server's answer to a run
+//     { type: "br:clock", h, m }         the game's time, on each new minute
 //     { type: "br:close" }               br_core closed it (no answer is sent)
 //
 //   page -> Lua (NUI callbacks registered by client/shell.lua)
@@ -26,13 +30,26 @@
 //                  { type: "run", functionId, options? }
 //                                                  the player pressed Run
 //                  { type: "escape" }              Escape, or Sign out, in the app
-//                  { type: "mode", mode }          the app went light or dark;
-//                                                  the window's tab follows
 //     page -> app  { type: "state", state, copy, catalog }
 //                                                  render this (copy and catalog
-//                                                  only on open and on ready;
-//                                                  an update is the state alone)
-//                  { type: "result", result }      the answer to the last run
+//                                                  only on ready; an update is
+//                                                  the state alone)
+//                  { type: "result", result }      the answer to a run
+//
+// ═══ ROUND 2 (owner, 2026-10-05) ═══
+//
+//   * "the starting up animation should take longer - random between 7 and 10
+//     seconds": every boot is a new uniform pick in br_core's range.
+//   * "When accessing the computer, please don't make the app open
+//     automatically": the boot ends on the desktop, and the player opens the
+//     app from its icon -- which is when the app is loaded at all.
+//   * "dark/light mode should not influence the browser's appearance, only the
+//     website": the app no longer tells the desktop its mode, and the window's
+//     frame (br.css) has one look.
+//   * "the ability to resize (when grabbing the edges) and maximize the
+//     window": eight handles and a maximize button, below.
+//   * "make the computer clock match the game clock": the taskbar shows the
+//     game's hour and minute, and no date.
 //
 // NOTHING HERE DECIDES ANYTHING. A run is forwarded only while the desktop is
 // open and only with a well-formed id, and that is shape-checking, not
@@ -44,8 +61,8 @@
     // a FiveM client that storage belongs to the resource NAME on the player's
     // machine, not to this server: a player who chose French in cuchi_computer
     // anywhere else would arrive with a locale this copy no longer ships, and
-    // the clock's GetLocale would throw every second. Pinned before the
-    // DOMContentLoaded handler in script.js starts that clock.
+    // the clock's GetLocale would throw. Pinned before the DOMContentLoaded
+    // handler in script.js runs.
     Locale = "EN";
 
     const RES = typeof GetParentResourceName === "function"
@@ -53,22 +70,35 @@
         : "cuchi_computer";
     const APP = "terminal";
     const APP_URL = "apps/terminal/index.html";
-    // Upstream booted with two loader screens, 100 ms and 150 ms. One, the same
-    // quarter second, under br_core's boot line.
-    const BOOT_MS = 250;
+    // A boot whose range did not arrive (or was not one) takes upstream's
+    // quarter second, as every boot did before round 2.
+    const BOOT_FALLBACK_MS = 250;
     // The shape of a function id in br_lib/config/terminals.lua, and of an
     // option's id and its choice.
     const FUNCTION_ID = /^[a-z][a-z0-9_]{0,31}$/;
     const CHOICE = /^[a-z0-9_]{1,32}$/;
     const OPTIONS_MAX = 8;
+    // THE SMALLEST THE WINDOW GOES. The app's side navigation (240 px) beside
+    // a column of cards, the top bar's search with the balance, the light/dark
+    // switch and the gamertag in one row, and a card's page with its Run
+    // button still on screen.
+    const MIN_W = 900;
+    const MIN_H = 560;
 
     let isOpen = false;
     // Bumped by every open and close, so a boot timer that outlives the close
-    // it raced does not put the desktop back up.
+    // it raced does not put the desktop back up -- and never fires into a
+    // later session.
     let session = 0;
     let state = null;
     let copy = {};
     let catalog = {};
+    // A run's last word that arrived while the app was not loaded (its window
+    // closed): handed over after the state when the app is opened again, so
+    // the player still sees how it ended. Forgotten with the session.
+    let held = null;
+    // The window's size and place before it was maximized, or null.
+    let restoreRect = null;
 
     const post = (name, body) => fetch(`https://${RES}/${name}`, {
         method: "POST",
@@ -77,14 +107,22 @@
     }).catch(() => {});
 
     const frame = () => document.getElementById("terminal-frame");
+    const win = () => document.getElementById("app-" + APP);
+    const desk = () => document.getElementById("desktop");
 
     // A line of br_core's copy, or nothing. Never a key name and never a
     // default of our own: every word on this desktop is the owner's.
     const line = (key) => (typeof copy[key] === "string" ? copy[key] : "");
 
+    // Is the app loaded in its window right now?
+    const appLoaded = () => {
+        const f = frame();
+        return !!f && f.getAttribute("src") === APP_URL;
+    };
+
     const toApp = (msg) => {
         const f = frame();
-        if (f && f.contentWindow) {
+        if (f && f.contentWindow && appLoaded()) {
             f.contentWindow.postMessage(Object.assign({ brTerminal: 1 }, msg), "*");
         }
     };
@@ -96,25 +134,164 @@
         if (icon) {
             const img = icon.querySelector("img");
             icon.textContent = "";
-            if (img) icon.appendChild(img);
+            if (img) {
+                img.alt = "";
+                icon.appendChild(img);
+            }
             icon.appendChild(document.createTextNode(line("desktop_icon")));
         }
         const title = document.getElementById("terminal-window-title");
         if (title) title.textContent = line("window_title");
     };
 
+    // ── the clock ─────────────────────────────────────────────────────────
+
+    // THE GAME'S TIME ON THE TASKBAR: the hour and the minute, written the
+    // way upstream wrote the real one (the locale's date_format, en-US), and
+    // no date. Nothing here runs a clock: it shows what br_core last sent.
+    const showClock = (h, m) => {
+        if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) return;
+        const hours = document.getElementById("hours");
+        const date = document.getElementById("date");
+        const fmt = typeof GetLocale === "function" ? GetLocale("date_format") : "en-US";
+        if (hours) hours.innerText = new Date(2000, 0, 1, h, m).toLocaleTimeString(fmt, { hour: "numeric", minute: "2-digit" });
+        if (date) date.innerText = "";
+    };
+
+    // ── the window: its place, its size, maximized ──────────────────────
+
+    // The desktop's area, in pixels: the screen above the taskbar.
+    const area = () => {
+        const d = desk();
+        return { w: d ? d.clientWidth : window.innerWidth, h: d ? d.clientHeight : window.innerHeight };
+    };
+
     // The middle of the desktop, in pixels, unless a drag has already placed
     // it this opening (br.css says why pixels).
     const center = (el) => {
         if (!el || el.style.top || el.style.left) return;
-        const desk = document.getElementById("desktop");
-        const w = desk ? desk.clientWidth : window.innerWidth;
-        const h = desk ? desk.clientHeight : window.innerHeight;
-        el.style.left = Math.max(0, Math.round((w - el.offsetWidth) / 2)) + "px";
-        el.style.top = Math.max(0, Math.round((h - el.offsetHeight) / 2)) + "px";
+        const a = area();
+        el.style.left = Math.max(0, Math.round((a.w - el.offsetWidth) / 2)) + "px";
+        el.style.top = Math.max(0, Math.round((a.h - el.offsetHeight) / 2)) + "px";
     };
 
-    // The player's choices for a run, shape-checked, or false when malformed;
+    const isMax = () => {
+        const w = win();
+        return !!w && w.classList.contains("br-max");
+    };
+
+    // MAXIMIZE TO THE DESKTOP, AND BACK TO WHERE IT WAS. The size and place
+    // before are kept, and restoring puts both back exactly.
+    const maximize = () => {
+        const w = win();
+        if (!w) return;
+        if (isMax()) {
+            w.classList.remove("br-max");
+            if (restoreRect) {
+                w.style.left = restoreRect.left;
+                w.style.top = restoreRect.top;
+                w.style.width = restoreRect.width;
+                w.style.height = restoreRect.height;
+            }
+            restoreRect = null;
+        } else {
+            restoreRect = { left: w.style.left, top: w.style.top, width: w.style.width, height: w.style.height };
+            const a = area();
+            w.classList.add("br-max");
+            w.style.left = "0px";
+            w.style.top = "0px";
+            w.style.width = a.w + "px";
+            w.style.height = a.h + "px";
+        }
+    };
+
+    // The window back to its own size, unmaximized and unplaced: the next
+    // opening of the computer starts as the first did.
+    const forgetWindow = () => {
+        const w = win();
+        if (!w) return;
+        w.classList.remove("br-max", "br-sized");
+        restoreRect = null;
+        w.style.top = "";
+        w.style.left = "";
+        const def = typeof Applications === "object" && Applications[APP];
+        if (def) {
+            w.style.width = def.width + "px";
+            w.style.height = def.height + "px";
+        }
+    };
+
+    // RESIZING FROM ANY EDGE OR CORNER. The window keeps its MIN_W x MIN_H and
+    // stays inside the desktop; the edge that is not being dragged stays
+    // where it is. The app's frame ignores the pointer while it happens (an
+    // iframe swallows mouse events over itself).
+    let resizing = null;
+    const startResize = (e, edge) => {
+        const w = win();
+        if (!w || isMax()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const r = { left: w.offsetLeft, top: w.offsetTop, width: w.offsetWidth, height: w.offsetHeight };
+        resizing = { edge, x: e.clientX, y: e.clientY, r };
+        // From here the size is the player's: the opening size's caps go.
+        w.style.width = r.width + "px";
+        w.style.height = r.height + "px";
+        w.classList.add("br-sized");
+        const f = frame();
+        if (f) f.style.pointerEvents = "none";
+        document.body.classList.add("br-resizing-" + edge);
+    };
+    const moveResize = (e) => {
+        if (!resizing) return;
+        const w = win();
+        if (!w) return;
+        const { edge, x, y, r } = resizing;
+        const a = area();
+        const dx = e.clientX - x;
+        const dy = e.clientY - y;
+        let left = r.left;
+        let top = r.top;
+        let right = r.left + r.width;
+        let bottom = r.top + r.height;
+        if (edge.includes("w")) left = Math.min(Math.max(0, r.left + dx), right - MIN_W);
+        if (edge.includes("e")) right = Math.max(Math.min(a.w, right + dx), left + MIN_W);
+        if (edge.includes("n")) top = Math.min(Math.max(0, r.top + dy), bottom - MIN_H);
+        if (edge.includes("s")) bottom = Math.max(Math.min(a.h, bottom + dy), top + MIN_H);
+        w.style.left = left + "px";
+        w.style.top = top + "px";
+        w.style.width = (right - left) + "px";
+        w.style.height = (bottom - top) + "px";
+    };
+    const endResize = () => {
+        if (!resizing) return;
+        document.body.classList.remove("br-resizing-" + resizing.edge);
+        resizing = null;
+        const f = frame();
+        if (f) f.style.pointerEvents = "";
+    };
+
+    // ── the app ─────────────────────────────────────────────────────────
+
+    // THE APP OPENS WHEN THE PLAYER OPENS IT, from its desktop icon -- and
+    // only then is it loaded. This page loads at join on every client;
+    // Cloudscape is ~1.7 MB and has no business running for a player who
+    // never opens it. Its window's close button unloads it again, so every
+    // opening of the app is a fresh one.
+    const launch = () => {
+        if (!isOpen) return;
+        const f = frame();
+        if (f && !appLoaded()) f.setAttribute("src", APP_URL);
+        OpenApp(APP);
+        center(win());
+        if (f) f.focus();
+    };
+
+    const unload = () => {
+        const f = frame();
+        if (f) f.setAttribute("src", "about:blank");
+    };
+
+    // The choices for a run, shape-checked, or false when malformed;
     // undefined stays undefined. The server checks them against the registry.
     const choices = (o) => {
         if (o === undefined || o === null) return undefined;
@@ -129,19 +306,21 @@
         return out;
     };
 
-    // THE TAB FOLLOWS THE PAGE'S MODE. The app's toolbar is the tab's colour
-    // in a browser, so the window's tab strip (br.css) wears the app's light
-    // or dark; nothing else about the desktop changes.
-    const setMode = (mode) => {
-        const win = document.getElementById("app-" + APP);
-        if (win) win.classList.toggle("br-light", mode === "light");
+    // A boot's length: a uniform pick in br_core's range, every boot anew.
+    const bootMs = (d) => {
+        const lo = d && Number(d.bootMinMs);
+        const hi = d && Number(d.bootMaxMs);
+        if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < 0 || hi < lo) return BOOT_FALLBACK_MS;
+        return Math.round(lo + Math.random() * (hi - lo));
     };
 
     const open = (msg) => {
         state = msg.state && typeof msg.state === "object" ? msg.state : null;
         copy = msg.copy && typeof msg.copy === "object" ? msg.copy : {};
         catalog = msg.catalog && typeof msg.catalog === "object" ? msg.catalog : {};
+        const d = msg.desktop && typeof msg.desktop === "object" ? msg.desktop : {};
         applyCopy();
+        if (d.clock) showClock(d.clock.h, d.clock.m);
 
         // Already up: a second open is a refresh, not a reboot.
         if (isOpen) {
@@ -150,24 +329,14 @@
         }
 
         isOpen = true;
+        held = null;
         const mine = ++session;
         document.body.style.display = "block";
-        Load(true, line("shell_boot"), BOOT_MS, () => {
+        Load(true, line("shell_boot"), bootMs(d), () => {
             if (!isOpen || mine !== session) return;
+            // THE BOOT ENDS ON THE DESKTOP. The app's icon is how it opens.
             document.getElementById("container").style.display = "block";
             Load(false);
-
-            // THE APP IS LOADED ON OPEN AND UNLOADED ON CLOSE. This page loads
-            // at join on every client; Cloudscape is ~1.7 MB and has no
-            // business running for the whole session of every player who never
-            // touches a terminal. A fresh document per opening is also a fresh
-            // app state -- nothing from the last terminal survives into this one.
-            const f = frame();
-            if (f && f.getAttribute("src") !== APP_URL) f.setAttribute("src", APP_URL);
-
-            OpenApp(APP);
-            center(document.getElementById("app-" + APP));
-            if (f) f.focus();
         });
     };
 
@@ -178,10 +347,11 @@
 
         document.body.style.display = "none";
         Load(false);
+        endResize();
 
         // What upstream's ShutdownComputer did, without its 1.5 s screen: every
         // window shut, and every window's place forgotten, so the next opening
-        // centers it again.
+        // starts as the first did.
         openedApps.forEach((name) => CloseApp(name));
         openedApps = [];
         apps.forEach((name) => {
@@ -191,11 +361,11 @@
                 el.style.left = "";
             }
         });
+        forgetWindow();
 
-        const f = frame();
-        if (f) f.setAttribute("src", "about:blank");
+        unload();
         state = null;
-        setMode("dark");
+        held = null;
 
         if (!fromLua) post("close", { why });
     };
@@ -203,7 +373,13 @@
     const fromApp = (d) => {
         if (d.brTerminal !== 1) return;
         if (d.type === "ready") {
-            if (isOpen) toApp({ type: "state", state, copy, catalog });
+            if (isOpen) {
+                toApp({ type: "state", state, copy, catalog });
+                if (held) {
+                    toApp({ type: "result", result: held });
+                    held = null;
+                }
+            }
         } else if (d.type === "run") {
             const options = choices(d.options);
             if (isOpen && typeof d.functionId === "string" && FUNCTION_ID.test(d.functionId)
@@ -214,8 +390,6 @@
             }
         } else if (d.type === "escape") {
             close("escape");
-        } else if (d.type === "mode") {
-            setMode(d.mode);
         }
     };
 
@@ -243,7 +417,15 @@
                 }
                 break;
             case "br:result":
-                if (isOpen) toApp({ type: "result", result: d.result || null });
+                if (!isOpen) break;
+                if (appLoaded()) {
+                    toApp({ type: "result", result: d.result || null });
+                } else if (d.result && d.result.code !== "running") {
+                    held = d.result;
+                }
+                break;
+            case "br:clock":
+                if (isOpen) showClock(d.h, d.m);
                 break;
             case "br:close":
                 close("closed", true);
@@ -251,9 +433,10 @@
         }
     });
 
-    // ESCAPE SHUTS THE COMPUTER. Here for a key pressed on the desktop; the app
-    // forwards its own (a keydown inside the iframe never reaches this
-    // document). client/shell.lua releases NUI focus when the close lands.
+    // ESCAPE SHUTS THE COMPUTER, the boot included. Here for a key pressed on
+    // the desktop; the app forwards its own (a keydown inside the iframe never
+    // reaches this document). client/shell.lua releases NUI focus when the
+    // close lands, so the keyboard and the mouse are the game's at once.
     document.addEventListener("keydown", (e) => {
         if (isOpen && e.key === "Escape") {
             e.preventDefault();
@@ -265,18 +448,63 @@
     // mouse with document.onmousemove, and an iframe swallows mouse events
     // over itself, so a window dragged quickly by its title stuck wherever the
     // pointer first crossed the app. The frame ignores the pointer from the
-    // title's mousedown to the mouseup.
+    // title's mousedown to the mouseup. A MAXIMIZED window does not move: the
+    // title's mousedown stops here, before upstream's drag sees it.
     document.addEventListener("mousedown", (e) => {
         const t = e.target;
-        if (t && t.closest && t.closest("#app-terminal-title")) {
+        const handle = t && t.closest && t.closest(".br-resize");
+        if (handle && handle.dataset.edge) {
+            startResize(e, handle.dataset.edge);
+            return;
+        }
+        if (t && t.closest && t.closest("#app-terminal-title") && !t.closest("button")) {
+            if (isMax()) {
+                e.stopPropagation();
+                return;
+            }
             const f = frame();
             if (f) f.style.pointerEvents = "none";
         }
     }, true);
+    document.addEventListener("mousemove", moveResize, true);
     document.addEventListener("mouseup", () => {
+        endResize();
         const f = frame();
         if (f) f.style.pointerEvents = "";
     }, true);
+
+    // THE WINDOW'S BUTTONS AND THE APP'S ICON, wired after script.js's own
+    // DOMContentLoaded (this listener is added later, so it runs later): the
+    // icon launches the app; close unloads it as well as hiding it; maximize,
+    // and a double-click on the title bar, toggle the desktop-sized window.
+    document.addEventListener("DOMContentLoaded", () => {
+        const icon = document.getElementById(APP);
+        if (icon) icon.onclick = launch;
+        const quit = document.getElementById(APP + "-quit");
+        if (quit) {
+            quit.onclick = () => {
+                CloseApp(APP);
+                unload();
+            };
+        }
+        const max = document.getElementById(APP + "-maximize");
+        if (max) max.onclick = maximize;
+        const title = document.getElementById("app-" + APP + "-title");
+        if (title) {
+            title.addEventListener("dblclick", (e) => {
+                if (e.target && e.target.closest && e.target.closest("button")) return;
+                maximize();
+            });
+        }
+        // A maximized window follows the desktop when the screen changes size.
+        window.addEventListener("resize", () => {
+            const w = win();
+            if (!w || !isMax()) return;
+            const a = area();
+            w.style.width = a.w + "px";
+            w.style.height = a.h + "px";
+        });
+    });
 
     window.BRShell = { close: (why) => close(why || "exit") };
 })();

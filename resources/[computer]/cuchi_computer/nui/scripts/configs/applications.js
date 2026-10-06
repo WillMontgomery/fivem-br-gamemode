@@ -20,17 +20,26 @@
 // app one commit after v1.1.1 -- the Cloudscape app's side navigation and its
 // cards need the room. ../br.css caps it at 98vw x 92vh, so on 1280x720 it is
 // 1254x662.
+//
+// Round 2 (owner, 2026-10-05): "We should also have the ability to resize
+// (when grabbing the edges) and maximize the window." So the title bar has a
+// maximize button between minimize and close, and the window eight resize
+// handles, one per edge and corner; ../br.js drives both and ../br.css draws
+// them. And the app's icon is our own drawing, `icon` below, which the window
+// manager reads where it used to build `<appName>.png` (BR-PATCH 12).
 const Applications = {
     "terminal": {
         usable: true,
         width: 1440,
         height: 880,
+        icon: "assets/images/terminal.svg",
         appCode: `
 <div id="app-terminal" class="application">
-    <h1 id="app-terminal-title"><button id="terminal-quit" class="app-exit"></button><button id="terminal-minimize" class="app-minimize"></button><span id="terminal-window-title"></span></h1>
+    <h1 id="app-terminal-title"><button id="terminal-quit" class="app-exit"></button><button id="terminal-minimize" class="app-minimize"></button><button id="terminal-maximize" class="app-maximize"></button><span id="terminal-window-title"></span></h1>
     <div id="terminal-wrapper">
         <iframe id="terminal-frame" src="about:blank" tabindex="0"></iframe>
     </div>
+    <div class="br-resize br-n" data-edge="n"></div><div class="br-resize br-s" data-edge="s"></div><div class="br-resize br-e" data-edge="e"></div><div class="br-resize br-w" data-edge="w"></div><div class="br-resize br-ne" data-edge="ne"></div><div class="br-resize br-nw" data-edge="nw"></div><div class="br-resize br-se" data-edge="se"></div><div class="br-resize br-sw" data-edge="sw"></div>
 </div>`
     }
 };

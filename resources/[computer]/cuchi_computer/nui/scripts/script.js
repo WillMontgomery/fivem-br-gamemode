@@ -30,13 +30,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // themes app is gone, so the stylesheet's own :root colors are the one
     // theme. editTheme below is left as upstream wrote it. BR-PATCH 7 end
 
-    setInterval(() => {
-        let date = new Date();
-
-        const dateFormat = GetLocale("date_format");
-        document.getElementById("hours").innerText = date.toLocaleTimeString(dateFormat);
-        document.getElementById("date").innerText = date.toLocaleDateString(dateFormat);
-    }, 1000);
+    // BR-PATCH 13 (fivem-royale, #396): THE TASKBAR CLOCK IS THE GAME'S.
+    // Upstream wrote the player's own clock and date here every second. The
+    // owner asked for the computer's clock to match the game clock (round 2),
+    // so br.js writes the game's hour and minute, sent by br_core when the
+    // minute changes, and the date -- which a battle royale's world does not
+    // have -- is not shown. BR-PATCH 13 end
 
     // BR-PATCH 8 (fivem-royale, #396): THE POWER BUTTON SHUTS DOWN AT ONCE.
     // Upstream asked first, in a message box, and then played a 1.5 s
@@ -54,7 +53,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!Applications[appName].hide)
         {
             let appNameCapitalized = appName.charAt(0).toUpperCase() + appName.slice(1);
-            desktop.innerHTML += `<button id="${appName}" class="desktop-icon"><img src="assets/images/${appName}.png">${appNameCapitalized}</button>`;
+            // BR-PATCH 12 (fivem-royale, #396): an app's own `icon` when it
+            // names one (the Control Tower drawing), else upstream's
+            // <appName>.png.
+            desktop.innerHTML += `<button id="${appName}" class="desktop-icon"><img src="${appData.icon || "assets/images/" + appName + ".png"}">${appNameCapitalized}</button>`;
+            // BR-PATCH 12 end
         }
 
         if (appData.usable) {
@@ -150,7 +153,9 @@ const OpenApp = (appName, msgBox) => {
         taskbarIcon = document.createElement("button");
         taskbarIcon.id = "taskbar-"+appName;
         taskbarIcon.classList.add("taskbar-icon");
-        taskbarIcon.innerHTML = `<img src="assets/images/${msgBox ? appName.split("_")[1] : appName}.png">`;
+        // BR-PATCH 12 (fivem-royale, #396): the app's own `icon` here too.
+        taskbarIcon.innerHTML = `<img src="${(!msgBox && Applications[appName] && Applications[appName].icon) || "assets/images/" + (msgBox ? appName.split("_")[1] : appName) + ".png"}">`;
+        // BR-PATCH 12 end
         taskbarIcon.onclick = () => {
             if (elem.style.visibility === "hidden" || elem.style.zIndex < 9999999) {
                 FocusApp(false, appName);
