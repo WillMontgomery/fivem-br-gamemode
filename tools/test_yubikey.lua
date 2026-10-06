@@ -1174,13 +1174,13 @@ do
     local W = bootClient({ sites = { SITE } })
     W.B.State.storm = stormAround(W.B, W.now)
     W.ped = { x = SITE.x + 20.0, y = SITE.y, z = SITE.z }
+    W.natives = 0
     W.slow()
     W.slow()
     eq(W.spriteBlips(521), 0, 'no key: no terminal blip')
-    ok(next(W.objects) ~= nil, 'but the terminal\'s prop is in the world for everyone near it')
-    W.ped = { x = SITE.x + 2000.0, y = SITE.y, z = SITE.z }
-    W.slow()
-    eq(next(W.objects), nil, 'and let go of once they are far away')
+    eq(W.natives, 0, 'and a pass with no key calls no native, however near the player stands')
+    -- THE LAPTOP IS THE OWNER'S YMAP'S (2026-10-06): no script makes one.
+    eq(next(W.objects), nil, 'no prop is made beside the player -- the ymap stands the laptop there')
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
     W.slow()
@@ -1407,6 +1407,32 @@ do
 
     local dbno = readFile(ROOT .. 'br_core/client/dbno.lua') or ''
     ok(dbno:find('BR.Yubikey.prompting()', 1, true) ~= nil, 'dbno.lua stands the loot prompt down under a terminal plate')
+
+    -- NO SCRIPTED LAPTOP (owner, 2026-10-06: "we don't need a script to place
+    -- the props"). Code only, comments blanked: client/yubikey.lua makes,
+    -- streams and deletes no object, and none of the terminal files makes one
+    -- or names the laptop's model (the art block's terminalProp is the one
+    -- spelling). A fixed list, not a directory walk: io.popen is cmd.exe on
+    -- this box (check_notice_names.lua says why that is a gate that can pass
+    -- on nothing).
+    local ykey = (readFile(ROOT .. 'br_core/client/yubikey.lua') or ''):gsub('%-%-[^\n]*', '')
+    ok(ykey ~= '', 'client/yubikey.lua is read')
+    for _, native in ipairs({ 'CreateObject', 'CreateObjectNoOffset', 'RequestModel', 'HasModelLoaded',
+                              'DeleteEntity', 'DeleteObject', 'SetEntityHeading', 'FreezeEntityPosition' }) do
+        ok(not ykey:find('%f[%w_]' .. native .. '%f[^%w_]'), ('client/yubikey.lua calls no %s'):format(native))
+    end
+    local makers = {}
+    for _, f in ipairs({ 'br_core/client/yubikey.lua', 'br_core/client/terminal.lua',
+                         'br_core/client/terminalfx.lua', 'br_core/server/terminal.lua',
+                         'br_core/server/terminalfx.lua', 'br_core/server/yubikey.lua' }) do
+        local src = readFile(ROOT .. f)
+        ok(src ~= nil, ('%s is read'):format(f))
+        src = (src or ''):gsub('%-%-[^\n]*', '')
+        if src:find('CreateObject', 1, true) or src:find('prop_laptop_01a', 1, true) then
+            makers[#makers + 1] = f
+        end
+    end
+    eq(table.concat(makers, ', '), '', 'no terminal file makes a laptop or names its model')
 end
 
 realPrint(('%d passed, %d failed'):format(pass, fail))

@@ -7,18 +7,21 @@
 --                  draws the equipped icon. A key on the GROUND is ordinary
 --                  loot and client/loot.lua draws it.
 --   the terminals  the config's sites plus the dev tool's (TERMINAL_SITES):
---                  a local prop each, within STREAM_M; a blip each, only while
---                  this player holds a key and only for a terminal inside the
---                  storm; and the shared world plate within reach, whose hold
---                  asks the server to open the computer (TERMINAL_USE).
+--                  a blip each, only while this player holds a key and only
+--                  for a terminal inside the storm; and the shared world plate
+--                  within reach, whose hold asks the server to open the
+--                  computer (TERMINAL_USE). THE LAPTOPS ARE NOT OURS: the
+--                  owner's ymap places them (2026-10-06, streamed with
+--                  br_stream_s2), and every site row says where one stands --
+--                  this file makes no prop, and reads nothing off one.
 --   Storm reveal   where this match's storm ends, on both maps, from the
 --                  squad's TERMINAL_REVEAL to the trip back to the lobby.
 --
 -- ═══ WHAT IT COSTS A FRAME ═══
 --
 -- Nothing, unless a plate is up. The terminals are walked on the SLOW band
--- (props, blips, which ones the storm has taken) and on the TICK band (which
--- one is in reach, and the hold), and both return before calling a native on a
+-- (blips, which ones the storm has taken) and on the TICK band (which one is
+-- in reach, and the hold), and both return before calling a native on a
 -- Season 1 server or with no terminal anywhere. The FRAME band only draws the
 -- plate, and only while there is one. tools/perf_client.lua's budget holds it.
 
@@ -53,20 +56,11 @@ local function on()
     return seasonOn
 end
 
---- Props exist within this many metres of the player, and are let go of past
---- STREAM_M * 1.25 -- the gap stops one standing on the line being rebuilt
---- every pass.
-local STREAM_M = 150.0
-
 --- The plate's size and height over the terminal's origin. PLATE_SCALE is the
 --- other world plates' number (client/revivekey.lua's PROMPT_SCALE), so the
 --- seventh consumer of the one prompt browser draws like the other six.
 local PLATE_SCALE = 1.6
 local PLATE_LIFT = 0.9
-
---- How long a model may take to stream before the terminal is drawn as
---- nothing and said so on F8.
-local LOAD_WAIT_MS = 5000
 
 -- ------------------------------------------------------------- the state ---
 
@@ -82,8 +76,8 @@ local dev = { placed = {}, removed = {}, forced = {} }
 --- The merged terminal list, rebuilt when the dev changes arrive.
 local list = nil
 
---- [id] = { state = 'loading'|'built'|'failed', hash, since, obj, online,
----          big, mini }  -- big/mini: the blip on each map
+--- [id] = { online, big, mini } for every terminal: whether the storm has it,
+--- and its blip on each map
 local world = {}
 
 --- Storm reveal: { x, y, r, matchId, radius, big, mini }, or nil.
@@ -207,71 +201,18 @@ local function drawReveal()
         R.sprite or 161, R.colour or 1, R.scale or 1.0, name)
 end
 
--- ----------------------------------------------------------------- props ---
+-- ------------------------------------------------------------- the list ---
 
-local function dropProp(id)
+local function dropTerminal(id)
     local w = world[id]
     if not w then return end
-    if w.obj and isTrue(DoesEntityExist(w.obj)) then DeleteEntity(w.obj) end
-    if w.state == 'loading' and w.hash then SetModelAsNoLongerNeeded(w.hash) end
     dropTerminalBlips(w)
     world[id] = nil
 end
 
 local function dropAll()
-    for id in pairs(world) do dropProp(id) end
+    for id in pairs(world) do dropTerminal(id) end
     near, holding = nil, nil
-end
-
---- Stream, build or let go of one terminal's prop for where the player stands.
---- The entry exists for every terminal, near or not -- its blip is on the
---- whole map -- and `state` says what the prop is doing: 'away' (none, out of
---- range), 'loading', 'built' or 'failed'.
-local function stepProp(s, d2, now)
-    local w = world[s.id]
-    if not w then
-        w = { state = 'away' }
-        world[s.id] = w
-    end
-    local within = d2 <= STREAM_M * STREAM_M
-    if w.state == 'away' then
-        if not within then return end
-        local hash = w.hash or GetHashKey(art().terminalProp or 'prop_laptop_01a')
-        if not isTrue(IsModelInCdimage(hash)) then
-            w.state = 'failed'
-            print(("[br_core] terminals: '%s' is not in this game's CD image, so terminal %s "
-                .. 'is not drawn'):format(tostring(art().terminalProp), s.id))
-            return
-        end
-        RequestModel(hash)
-        w.hash, w.state, w.since = hash, 'loading', now
-        return
-    end
-    if d2 > (STREAM_M * 1.25) ^ 2 and w.state ~= 'failed' then
-        -- Out of range: the prop goes; the entry, and its blip, stay.
-        if w.obj and isTrue(DoesEntityExist(w.obj)) then DeleteEntity(w.obj) end
-        if w.state == 'loading' and w.hash then SetModelAsNoLongerNeeded(w.hash) end
-        w.obj, w.state = nil, 'away'
-        return
-    end
-    if w.state == 'loading' then
-        if isTrue(HasModelLoaded(w.hash)) then
-            local obj = CreateObjectNoOffset(w.hash, s.x, s.y, s.z, false, false, false)
-            SetModelAsNoLongerNeeded(w.hash)
-            if not obj or obj == 0 then
-                w.state = 'failed'
-                return
-            end
-            SetEntityHeading(obj, s.h or 0.0)
-            FreezeEntityPosition(obj, true)
-            w.obj, w.state = obj, 'built'
-        elseif now - w.since > LOAD_WAIT_MS then
-            SetModelAsNoLongerNeeded(w.hash)
-            w.state = 'failed'
-            print(('[br_core] terminals: the terminal prop did not load within %d ms; %s is '
-                .. 'not drawn'):format(LOAD_WAIT_MS, s.id))
-        end
-    end
 end
 
 --- Is the player in a live match, where terminals and their blips belong?
@@ -284,9 +225,9 @@ local function inMatch()
         and S.me.state ~= BR.PlayerState.LOBBY
 end
 
--- THE TERMINALS, ONCE A SECOND: props near the player, which terminals the
--- storm has taken, and their blips. One zone build per pass however many
--- terminals there are.
+-- THE TERMINALS, ONCE A SECOND: which ones the storm has taken, and their
+-- blips. One zone build per pass however many terminals there are, and no
+-- native at all for a terminal while this player holds no key.
 BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
     refreshSeason()
     if not on() then
@@ -309,7 +250,6 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
     end
 
     local now = GetGameTimer()
-    local p = GetEntityCoords(PlayerPedId())
     local live = inMatch()
     local zone = nil
     if live and S.storm then
@@ -320,29 +260,29 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
     local present = {}
     for _, s in ipairs(all) do
         present[s.id] = true
-        local dx, dy = p.x - s.x, p.y - s.y
-        stepProp(s, dx * dx + dy * dy, now)
         local w = world[s.id]
-        if w then
-            w.online = dev.forced[s.id] == true or TS.inside(zone, s.x, s.y)
-            -- "Terminal blips should appear from the start only when a Yubikey
-            -- is equipped", and, the owner's own spec, only for a terminal
-            -- INSIDE the storm.
-            if blips and w.online then
-                if not (w.big and isTrue(DoesBlipExist(w.big))) then
-                    dropTerminalBlips(w)
-                    local a = art()
-                    w.big, w.mini = blipPair(s.x, s.y, s.z, a.blipSprite or 521,
-                        a.blipColour or 51, a.blipScale or 0.9, copy().terminal_label)
-                end
-            elseif w.big or w.mini then
+        if not w then
+            w = {}
+            world[s.id] = w
+        end
+        w.online = dev.forced[s.id] == true or TS.inside(zone, s.x, s.y)
+        -- "Terminal blips should appear from the start only when a Yubikey
+        -- is equipped", and, the owner's own spec, only for a terminal
+        -- INSIDE the storm.
+        if blips and w.online then
+            if not (w.big and isTrue(DoesBlipExist(w.big))) then
                 dropTerminalBlips(w)
+                local a = art()
+                w.big, w.mini = blipPair(s.x, s.y, s.z, a.blipSprite or 521,
+                    a.blipColour or 51, a.blipScale or 0.9, copy().terminal_label)
             end
+        elseif w.big or w.mini then
+            dropTerminalBlips(w)
         end
     end
     -- A terminal the dev tool took away.
     for id in pairs(world) do
-        if not present[id] then dropProp(id) end
+        if not present[id] then dropTerminal(id) end
     end
 end)
 
@@ -498,9 +438,9 @@ AddEventHandler(BR.Net.TERMINAL_SITES, function(d)
     end
     dev = { placed = placed, removed = removed, forced = forced }
     list = nil
-    -- A moved terminal is rebuilt where it now stands.
+    -- A moved terminal's blip is drawn again where it now stands.
     for _, s in ipairs(placed) do
-        if world[s.id] then dropProp(s.id) end
+        if world[s.id] then dropTerminal(s.id) end
     end
 end)
 

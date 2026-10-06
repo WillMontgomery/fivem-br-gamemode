@@ -720,7 +720,8 @@ BR.Config.Terminals = {
         -- The mark beside a squadmate with a bounty in the squad panel. A
         -- string drawn as text; a placeholder like hudGlyph.
         bountyGlyph = '◎',
-        -- A terminal in the world: a local, non-networked prop per site.
+        -- The laptop the owner's ymap stands at every site (2026-10-06). No
+        -- script makes one; this names the model, not a prop to spawn.
         terminalProp = 'prop_laptop_01a',
         -- A terminal's blip, drawn only while this player holds a key and only
         -- for a terminal inside the storm.
