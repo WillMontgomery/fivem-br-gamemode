@@ -86,7 +86,7 @@ local wrote = nil
 --   name lookup, it crashed clients on build 3258 until patched, and vMenu
 --   Enhanced's author dropped it in 2026 because it breaks weather transitions
 --   -- and this file's sky is transitions (the storm's THUNDER and back).
---   SetForceVehicleTrails / SetForcePedFootstepsTracks: tyre and footprint
+--   SetForceVehicleTrails / SetForcePedFootstepsTracks: tire and footprint
 --   tracks in the snow (R*'s USE_SNOW_WHEEL/FOOT_VFX_WHEN_UNSHELTERED).
 --   core_snow: the particle asset those tracks' snow puffs come from, requested
 --   while the pass is on and released when it goes off, as both vMenus do.

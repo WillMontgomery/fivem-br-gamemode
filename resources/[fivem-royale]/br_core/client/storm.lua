@@ -3092,7 +3092,7 @@ local lastFxAt = 0
 -- GTA has one script timecycle slot that a strength can be set on, and REDMIST
 -- lives in it. So do vMenu's TM menu and `brtc`. This file used to write the
 -- slot blind: stepping out set REDMIST over whatever a dev had chosen, and the
--- fade back in scaled THAT modifier towards nothing and then cleared it. And the
+-- fade back in scaled THAT modifier toward nothing and then cleared it. And the
 -- other way round, a clear from anybody else left `fxApplied` true with no red on
 -- screen until the next crossing.
 --

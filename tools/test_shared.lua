@@ -18799,7 +18799,7 @@ do
             end
         end
 
-        -- The colour grade, IN ONE SLOT THAT CAN BE READ BACK (#399): the grade
+        -- The color grade, IN ONE SLOT THAT CAN BE READ BACK (#399): the grade
         -- reads the primary slot's index while it is up, and the CFX getters
         -- for the name and strength of whatever it is about to take over. An
         -- index is the modifier's place in the engine's table, so one name is

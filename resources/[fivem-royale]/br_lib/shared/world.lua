@@ -75,7 +75,7 @@ end
 --- and the particles. The white GROUND is a RENDER PASS, not missing DLC
 --- content (#399; this note used to say it was a texture swap we do not load,
 --- with no in-game check behind it): R*'s _FORCE_GROUND_SNOW_PASS draws it, and
---- client/world.lua turns that pass on, with tyre and footprint tracks, while
+--- client/world.lua turns that pass on, with tire and footprint tracks, while
 --- the sky it writes is one of these four (SNOW_WEATHER below) -- so `brweather
 --- XMAS` shows it too. AWAITING THE OWNER'S IN-GAME CHECK of all four names;
 --- XMAS is the clear-sky snow and the one the festive months use. Listed
