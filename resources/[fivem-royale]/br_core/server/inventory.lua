@@ -1029,6 +1029,62 @@ function BR.Inv.take(src, slot)
     return released(s)
 end
 
+--- A WEAPON THE SERVER TAKES OUT OF A PLAYER'S HANDS: a terminal's Disarm
+--- (#396, wave A) -- "gone, not dropped". The slot is emptied (BR.Inv.take),
+--- the player is told (one INV_SET), and the weapon is REMEMBERED for
+--- `graceMs`, because the server is the only one that knows it happened yet.
+---
+--- ═══ WHY IT IS REMEMBERED: TWO OF OUR OWN DETECTORS WOULD ACCUSE THEM ═══
+---
+--- The INV_SET takes a round trip to land, and until it does the player's ped
+--- is still holding the gun. Two things then happen that look exactly like a
+--- trainer to the anticheat, and neither is one:
+---
+---   a shot fired in that window is refused NOT_HELD by server/damage.lua --
+---     means-class, `high`, a bar of ONE: a case on the first hit;
+---   the ped's hand no longer matches the inventory when it lands, so
+---     client/inventory.lua strips the gun and reports it, and
+---     server/strip.lua finds it in no slot and counts it.
+---
+--- Both ask BR.Inv.revokedRecently first and stand down for exactly this
+--- weapon, from exactly this player, until `graceMs` is up: the shot is still
+--- refused (no damage from a gun the server took), the strip still happens,
+--- nobody is accused. ON THE INVENTORY, so a reset or a new match (newInv)
+--- forgets it, and never on the wire (BR.Inv.publicFor does not carry it).
+--- @param src integer
+--- @param slot integer
+--- @param graceMs number|nil  how long the two detectors stand down (3 s)
+--- @return table|nil stack  what was taken, or nil when the slot was empty
+function BR.Inv.revoke(src, slot, graceMs)
+    local inv = BR.Inv.of(src)
+    if not inv then return nil end
+    local s = inv.slots[slot]
+    local w = s and BR.Config.WeaponById[s.item] or nil
+    local stack = BR.Inv.take(src, slot)
+    if not stack then return nil end
+    if w and w.hash then
+        inv.revoked = inv.revoked or {}
+        inv.revoked[BR.NormHash(w.hash)] = GetGameTimer() + (tonumber(graceMs) or 3000)
+    end
+    BR.Inv.push(src)
+    return stack
+end
+
+--- Did the server take this weapon from this player a moment ago
+--- (BR.Inv.revoke)? Asked by server/damage.lua about a NOT_HELD shot and by
+--- server/strip.lua about a strip report. A READ: it never makes an inventory.
+--- @param src integer
+--- @param hash integer|nil  the weapon's hash, signed or not
+--- @param now number|nil
+--- @return boolean
+function BR.Inv.revokedRecently(src, hash, now)
+    local e = BR.Roster.get(src)
+    local r = e and e.inv and e.inv.revoked
+    if not r or hash == nil then return false end
+    local untilAt = r[BR.NormHash(hash)]
+    return untilAt ~= nil and (now or GetGameTimer()) < untilAt
+end
+
 --- Everything a player was carrying, emptied out. The death box's contents.
 --- @param src integer
 --- @return table[] stacks

@@ -367,6 +367,9 @@ BR.Config.Terminals = {
         -- standing) -- refused, spending nothing.
         health_full = 'Everyone in your squad who is standing is already at full health and armor.',
         health_full_solo = "You're already at full health and armor.",
+        -- WRITTEN (2026-10-06, wave A). Disarm: nobody still in the match
+        -- carries a weapon -- refused, spending nothing (the Volts included).
+        no_weapons = 'Nobody in the match is carrying a weapon.',
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -522,7 +525,7 @@ BR.Config.Terminals = {
         power_outage_done = 'The power is out.',
         power_outage_description = 'Power outage. The lights are out.',
 
-        -- Disarm (owner's; offline)
+        -- Disarm (owner's; LIVE since wave A, 2026-10-06)
         disarm_name = 'Disarm',
         disarm_summary = "Takes away every player's most powerful weapon.",
         disarm_what = "Every player still in the match loses the most powerful weapon they carry, your squad included.\nMost powerful means the highest rarity, then the most damage.\nThe weapons are gone. They aren't dropped.",
@@ -955,7 +958,7 @@ BR.Config.Terminals = {
               { id = 'area', choices = { 'here', 'city', 'county' }, default = 'here' },
               { id = 'duration', choices = { '120', '240' }, default = '120' },
           } },
-        { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = false, cost = 200 },
+        { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = true, cost = 200 },
         { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
           options = { { id = 'site', choices = { 'terminal', 'circle' }, default = 'terminal' } } },
         { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true },
@@ -1001,6 +1004,16 @@ BR.Config.Terminals = {
         -- How often everyone outside the bounty's squad is sent where the
         -- bounty is. Their squad sees them on the 4 Hz squad beacon already.
         bountyPingMs = 1000,
+
+        -- ── wave A (2026-10-06). An option's choices are the registry row's
+        --    own numbers (Ghost's and Lockdown's seconds, Pulse's meters),
+        --    read as numbers where they are used; everything else is here. ──
+
+        -- Disarm: how long the server remembers a weapon it took, so a shot
+        -- from it -- or the client's strip report of it -- in the round trip
+        -- before the inventory update lands accuses nobody
+        -- (BR.Inv.revoke). A few round trips, never a match.
+        disarmGraceMs = 3000,
     },
 
     -- The server drops a second run request from one player sooner than this

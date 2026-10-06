@@ -940,6 +940,7 @@ server_scripts {
     -- namedLine, anchorOf) they read at call time. tools/test_terminal.lua and
     -- tools/test_terminalfx.lua load exactly the files listed here.
     'server/terminalfx/field_medic.lua',
+    'server/terminalfx/disarm.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

@@ -561,7 +561,7 @@ do
         'no_key', 'squad_used', 'offline', 'unavailable', 'fn_offline', 'bad_option',
         'no_storm', 'no_site', 'ammo_full',
         -- Wave A's (2026-10-06).
-        'health_full',
+        'health_full', 'no_weapons',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
         'address_host', 'path_functions', 'path_howto', 'path_login',
         'status_available', 'status_used', 'status_not_here', 'status_offline',

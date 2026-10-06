@@ -119,6 +119,7 @@ loadAll({
     'br_lib/config/match.lua',
     'br_lib/config/storm.lua',
     'br_lib/config/map.lua',
+    'br_lib/config/weapons.lua',
     'br_lib/shared/season.lua',
     'br_lib/config/seasons.lua',
     'br_lib/config/terminals.lua',
@@ -154,6 +155,8 @@ local keys = {}          -- [src] = true while holding a Yubikey
 local airdropCalls = {}  -- BR.Airdrop.call: { m, x, y }
 local filled = {}        -- BR.Inv.fillAmmo: [src] = rounds it would add
 local granted = {}       -- BR.Inv.grantEffect: { src, effect } (Field medic)
+local invs = {}          -- BR.Inv.of: [src] = { slots = { [i] = stack|false } } (Disarm)
+local revoked = {}       -- BR.Inv.revoke: { src, slot, item, grace }
 
 BR.Sched = { every = function(_, name, fn) jobs[name] = fn end }
 function RegisterNetEvent() end
@@ -287,6 +290,21 @@ BR.Inv = {
         granted[#granted + 1] = { src = src, effect = effect }
         return true
     end,
+    -- Disarm's (server/inventory.lua's; the inventory and the anticheat
+    -- halves are tools/test_roster.lua's): the slot emptied and recorded.
+    of = function(src)
+        if not roster[src] then return nil end
+        invs[src] = invs[src] or { slots = { false, false, false, false, false } }
+        return invs[src]
+    end,
+    revoke = function(src, slot, grace)
+        local inv = invs[src]
+        local s = inv and inv.slots[slot]
+        if not s then return nil end
+        inv.slots[slot] = false
+        revoked[#revoked + 1] = { src = src, slot = slot, item = s.item, grace = grace }
+        return s
+    end,
 }
 
 local function fire(name, src, ...)
@@ -381,6 +399,7 @@ local function reset()
     for _, answer in ipairs(market.pending) do answer() end
     flush()
     sent, notices, logs, airdropCalls, filled, granted = {}, {}, {}, {}, {}, {}
+    invs, revoked = {}, {}
     roster, matches, keys = {}, {}, {}
     timers = {}
     market.wallet, market.charges, market.refunds, market.pending = {}, {}, {}, {}
@@ -1170,6 +1189,118 @@ do
     roster[1].matchId = nil
     said = devRun(1, 'field_medic')
     ok(said:find('refused (unavailable)', 1, true) ~= nil, 'and outside a match it says unavailable', said)
+end
+
+--- Put a weapon in `src`'s slot (Disarm's inventories).
+local function arm(src, slot, item, rarity)
+    local inv = BR.Inv.of(src)
+    local w = BR.Config.WeaponById[item]
+    inv.slots[slot] = { item = item, kind = w.melee and BR.ItemKind.WEAPON
+                            or (w.maxStack and BR.ItemKind.THROWABLE) or BR.ItemKind.WEAPON,
+                        rarity = rarity or w.rarity, count = 1 }
+end
+
+describe('Disarm: the one ranking -- highest rarity, then most damage, then the lower slot')
+do
+    local row = T.row('disarm')
+    ok(row and row.implemented == true and T.FUNCTIONS.disarm ~= nil, 'disarm is built')
+    ok(row and row.cost == 200, 'and costs 200 Volts')
+    local W = BR.Config.WeaponById
+    local function stack(item, rarity, kind)
+        return { item = item, kind = kind or BR.ItemKind.WEAPON, rarity = rarity or W[item].rarity, count = 1 }
+    end
+    local P = T.disarmPick
+    eq(P({ stack('pumpshotgun'), stack('pistol', BR.Rarity.LEGENDARY) }), 2,
+        'a legendary pistol over an uncommon pump shotgun: rarity first, whatever the damage')
+    eq(P({ stack('assaultrifle'), stack('revolver') }), 2,
+        'two rares: the one with more damage (revolver 97 over assault rifle 33)')
+    eq(P({ stack('revolver'), stack('assaultrifle') }), 1, 'whichever slot it is in')
+    eq(P({ false, stack('carbinerifle'), stack('carbinerifle') }), 2, 'a tie on both: the lower slot')
+    eq(P({ stack('carbinerifle', BR.Rarity.LEGENDARY), stack('specialcarbine') }), 1,
+        'the STACK\'s rarity, not the row\'s: a legendary carbine over an epic special carbine')
+    eq(P({ stack('carbinerifle', BR.Rarity.LEGENDARY), stack('militaryrifle') }), 2,
+        'two legendaries: the military rifle\'s 42 over the carbine\'s 32')
+    eq(P({ false, false, stack('bat') }), 3, 'a melee weapon is a weapon')
+    eq(P({ stack('grenade', nil, BR.ItemKind.THROWABLE), stack('bat') }), 2,
+        'a throwable is not, whatever its rarity')
+    eq(P({ stack('grenade', nil, BR.ItemKind.THROWABLE) }), nil, 'so a bag of grenades has nothing to take')
+    eq(P({ false, false }), nil, 'and nor does an empty one')
+    eq(P({ { item = 'bandage', kind = BR.ItemKind.CONSUMABLE, rarity = 5, count = 1 } }), nil,
+        'nor a consumable')
+end
+
+describe('Disarm: every player still in the match loses their most powerful weapon, the runner\'s squad too')
+do
+    reset()
+    local m = lobby()
+    arm(1, 1, 'pistol')
+    arm(1, 2, 'assaultrifle')                       -- the runner's rare rifle
+    arm(2, 1, 'pumpshotgun')                        -- their squadmate
+    arm(4, 3, 'smg')                                -- a downed opponent
+    arm(4, 1, 'microsmg')
+    arm(5, 2, 'bat')                                -- the solo player's only weapon
+    player(6, m, 'C', { x = 0.0, y = 0.0 }, BR.PlayerState.OUT)
+    arm(6, 1, 'militaryrifle')                      -- out: not in the match any more
+    local r = runAt(1, 'disarm')
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    local took = {}
+    for _, x in ipairs(revoked) do took[#took + 1] = ('%d:%d:%s'):format(x.src, x.slot, x.item) end
+    eq(table.concat(took, ' '), '1:2:assaultrifle 2:1:pumpshotgun 4:3:smg 5:2:bat',
+        'one weapon from each armed player still in the fight, the best of each')
+    ok(invs[1].slots[1] and invs[1].slots[1].item == 'pistol', 'the runner keeps their lesser pistol')
+    ok(invs[4].slots[1] and invs[4].slots[1].item == 'microsmg', 'and the downed player their micro SMG')
+    ok(invs[6].slots[1] and invs[6].slots[1].item == 'militaryrifle', 'an eliminated player is not touched')
+    eq(revoked[1] and revoked[1].grace, CT.fx.disarmGraceMs, 'through BR.Inv.revoke, with the configured grace')
+    ok(market.charges[1] and market.charges[1].cost == 200 and market.wallet[1] == 800, '200 Volts spent')
+    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'and the lobby is told')
+    eq(r and r.toast, COPY.disarm_done .. ' Your new balance is: 800 Volts.', 'the done line and the balance')
+end
+
+describe('Disarm: nobody armed is refused, spending nothing -- the Volts included')
+do
+    reset()
+    lobby()
+    useAt(1)
+    local f = listedAs(1, 'disarm')
+    ok(f and f.available == false and f.reason == 'no_weapons', 'nobody armed: the card says no_weapons',
+        f and tostring(f.reason))
+    local r = ask(1, 'disarm')
+    ok(r and r.ok == false and r.code == 'no_weapons', 'a run is refused no_weapons', r and r.code)
+    eq(r and r.toast, COPY.no_weapons, 'in its line')
+    ok(#market.charges == 0 and market.wallet[1] == 1000 and keys[1] == true and not T.squadUsed(1),
+        'the market is never asked; the key and the use stay')
+
+    -- A GRENADE IS NOT A WEAPON (it is a throwable): still nothing to take.
+    arm(3, 1, 'grenade')
+    useAt(1)
+    eq(listedAs(1, 'disarm').reason, 'no_weapons', 'a bag of grenades does not make a target')
+
+    -- THE END OF THE RUN: armed when asked, nobody armed when the load is over.
+    reset()
+    lobby()
+    arm(3, 1, 'carbinerifle')
+    useAt(1)
+    r = ask(1, 'disarm')
+    ok(r and r.code == 'running' and market.wallet[1] == 800, 'armed: accepted, 200 Volts charged', r and r.code)
+    invs[3].slots[1] = false                    -- dropped meanwhile
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'no_weapons', 'disarmed by the end of the load: no_weapons', r and r.code)
+    ok(market.wallet[1] == 1000 and #market.refunds == 1 and keys[1] == true and not T.squadUsed(1),
+        'the Volts, the key and the use all come back')
+    eq(#revoked, 0, 'and nothing was taken')
+end
+
+describe('Disarm: the dev command takes the weapons and charges nothing')
+do
+    reset()
+    lobby()
+    keys[1] = false
+    arm(3, 2, 'heavyshotgun')
+    local said = devRun(1, 'disarm')
+    ok(said:find('ok (done)', 1, true) ~= nil and #revoked == 1 and revoked[1].src == 3,
+        'brterminal run disarm', said)
+    ok(#market.charges == 0 and not T.squadUsed(1), 'no Volts, no use')
 end
 
 -- =========================================================================

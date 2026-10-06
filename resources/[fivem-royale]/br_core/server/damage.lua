@@ -1665,6 +1665,19 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                         BR.Damage.vehicleGuns = (BR.Damage.vehicleGuns or 0) + 1
                     end
 
+                    -- ...AND A GUN THE SERVER ITSELF TOOK A MOMENT AGO (a
+                    -- terminal's Disarm, #396) is refused like any gun that is
+                    -- not in the hand -- no damage from it -- and accuses
+                    -- nobody: the ped held it until the INV_SET landed, a
+                    -- round trip the server started. That weapon, that
+                    -- shooter, BR.Inv.revoke's few seconds; see its note.
+                    local revoked = why == BR.ShotRefusal.NOT_HELD and BR.Inv ~= nil
+                        and BR.Inv.revokedRecently ~= nil
+                        and BR.Inv.revokedRecently(shooter, data.weaponType, now)
+                    if revoked then
+                        BR.Damage.revokedShots = (BR.Damage.revokedShots or 0) + 1
+                    end
+
                     -- ...but a rules refusal is not printed unless asked for.
                     -- Warmup fistfights would otherwise fill the console with
                     -- lines that mean "the game said no", drowning the ones
@@ -1685,7 +1698,9 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                             '[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)%s',
                             shooter, victim, tostring(why), dist, since,
                             forced and ('   [FORCED ' .. forced.mode
-                                        .. ' -- not filed]') or '')
+                                        .. ' -- not filed]')
+                                or revoked and '   [taken by Disarm -- not filed]'
+                                or '')
                     end
 
                     -- A MANUFACTURED REFUSAL IS NOT EVIDENCE OF ANYTHING.
@@ -1706,7 +1721,7 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- brrefuse's job, and it drives noteRefusal directly.
                     if forced then
                         forced.refusals = (forced.refusals or 0) + 1
-                    else
+                    elseif not revoked then
                         BR.Damage.noteRefusal(shooter, why)
                     end
                     if cfg.enforce then

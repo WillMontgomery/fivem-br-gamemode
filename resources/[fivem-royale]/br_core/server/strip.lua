@@ -224,6 +224,14 @@ local function ourWeapon(src, h)
             if w and w.hash and BR.NormHash(w.hash) == h then return true end
         end
     end
+    -- AND A WEAPON THE SERVER ITSELF TOOK A MOMENT AGO (a terminal's Disarm,
+    -- #396): the ped held it until the INV_SET landed, and the client stripped
+    -- it then. Our own two halves disagreeing for one round trip, exactly like
+    -- the race above -- see BR.Inv.revoke. That weapon, that player, a few
+    -- seconds; nothing else.
+    if BR.Inv.revokedRecently and BR.Inv.revokedRecently(src, h, GetGameTimer()) then
+        return true
+    end
     return false
 end
 

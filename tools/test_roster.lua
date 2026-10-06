@@ -11277,6 +11277,94 @@ do
         printedSaying('pistol') or 'no row')
 end
 
+describe("inv.revoke -- a terminal's Disarm, and the round trip it starts (#396, wave A)")
+do
+    -- THE SERVER TAKES A GUN; THE PED HOLDS IT FOR ONE MORE ROUND TRIP. A shot
+    -- fired in that window is NOT_HELD -- means-class, a bar of ONE -- and
+    -- would open a case about a player who did nothing. BR.Inv.revoke remembers
+    -- the weapon for a few seconds and server/damage.lua stands down for
+    -- exactly that weapon from exactly that player: still refused, nobody
+    -- accused. Through the real handler, like damage.vehicle-gun below.
+    local PISTOL  = 0x1B06D571
+    local CARBINE = 0x83BF0278          -- top bit set: the engine reports it negative
+    local function twoAlive()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 10.0, y = 0.0, z = 30.0 }
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = 30 })
+        BR.Inv.of(1).active = 1
+        fired = {}
+    end
+    --- One hit on player 2, `afterMs` after the last.
+    local function shoot(weapon, afterMs)
+        fakeTime = fakeTime + (afterMs or 500)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = weapon, hitComponent = 3,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+    end
+    local function announced() return firedOf('br:ringmaster:refusal')[1] end
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+
+    twoAlive()
+    local inv = BR.Inv.of(1)
+    sent = {}
+    local stack = BR.Inv.revoke(1, 1, 3000)
+    ok(stack and stack.item == 'pistol' and inv.slots[1] == false, 'the slot is emptied and the stack handed back')
+    ok(inv.slots[2] and inv.slots[2].item == 'carbinerifle', 'the other weapon stays')
+    ok(#eventsOf(BR.Net.INV_SET) == 1, 'one INV_SET tells the player')
+    ok(BR.Inv.revokedRecently(1, PISTOL, fakeTime), 'the weapon is remembered')
+    ok(not BR.Inv.revokedRecently(1, CARBINE, fakeTime), 'that weapon only')
+    ok(not BR.Inv.revokedRecently(2, PISTOL, fakeTime), 'that player only')
+    ok(not BR.Inv.revokedRecently(1, PISTOL, fakeTime + 3000), 'for the grace and no longer')
+    eq(BR.Inv.revoke(1, 1, 3000), nil, 'an empty slot revokes nothing')
+    ok(BR.Inv.publicFor(1).revoked == nil, 'and the record never goes on the wire')
+
+    -- A SHOT FROM IT INSIDE THE GRACE: refused, nobody accused.
+    local before = BR.Damage.refusals or 0
+    shoot(PISTOL, 500)
+    eq(BR.Damage.refusals or 0, before + 1, 'a shot from the taken pistol is still refused: no damage')
+    eq(announced(), nil, 'and opens no case')
+    ok((BR.Damage.revokedShots or 0) >= 1, 'counted as what it is')
+
+    -- THE CONTROL: the same shot after the grace is the case it always was.
+    shoot(PISTOL, 5000)
+    local a = announced()
+    ok(a and a.reasons and a.reasons[BR.ShotRefusal.NOT_HELD] == 1,
+        'past the grace, a shot from a gun nobody holds opens a case on the first one')
+
+    -- ANOTHER GUN IS NOT EXCUSED: the carbine is in the bag, not the hand.
+    twoAlive()
+    BR.Inv.revoke(1, 1, 3000)
+    shoot(CARBINE - 0x100000000, 500)
+    a = announced()
+    ok(a and a.reasons and a.reasons[BR.ShotRefusal.NOT_HELD] == 1,
+        'a different weapon in the same window is judged exactly as before')
+
+    -- THE SIGNED HASH THE ENGINE SENDS, and a reset forgetting the record.
+    twoAlive()
+    BR.Inv.revoke(1, 2, 3000)
+    ok(BR.Inv.revokedRecently(1, CARBINE - 0x100000000, fakeTime), 'the carbine, asked for by its signed hash')
+    BR.Inv.reset(1)
+    ok(not BR.Inv.revokedRecently(1, CARBINE, fakeTime), 'and a reset inventory remembers nothing')
+end
+
 describe('damage.vehicle-gun')
 do
     -- ═══ THE DEFECT (#322): AN ANTICHEAT CASE FOR SITTING IN A CAR HE ALLOWS ═══

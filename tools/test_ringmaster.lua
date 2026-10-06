@@ -2567,6 +2567,17 @@ local function newTimelineWorld(opts)
     -- BR.Inv.of returns the roster entry's inventory; nothing else about
     -- server/inventory.lua is needed to answer "is this weapon theirs".
     BRs.Inv = { of = function(src) return S.invs[src] end }
+    -- A WEAPON THE SERVER TOOK A MOMENT AGO (a terminal's Disarm, #396):
+    -- [src] = { [normalised hash] = until }. The real record is
+    -- server/inventory.lua's BR.Inv.revoke, driven in tools/test_roster.lua;
+    -- what is asserted here is that this file asks it, with the hash and the
+    -- clock, and stands down for that weapon alone.
+    S.revoked = {}
+    BRs.Inv.revokedRecently = function(src, hash, now)
+        local r = S.revoked[src]
+        local untilAt = r and r[BRs.NormHash(hash)]
+        return untilAt ~= nil and now < untilAt
+    end
 
     -- WHO IS SITTING IN A VEHICLE #322 DISARMED, keyed on the PED rather than on
     -- the src, because that is the argument server/strip.lua passes -- and
@@ -4945,6 +4956,39 @@ do
     ok(p and type(p.summary) == 'string' and p.summary:find('2 unissued') ~= nil,
         'and the queue line counts two offences, not four',
         p and tostring(p.summary))
+end
+
+describe('strip.a-weapon-disarm-just-took-is-not-evidence')
+do
+    -- A TERMINAL'S DISARM (#396) TAKES A GUN ON THE SERVER; the client finds
+    -- it still in the hand when the INV_SET lands, strips it, and reports it.
+    -- Our own two halves disagreeing for one round trip -- the race above, by
+    -- another road -- so it opens nothing, and only for that weapon and only
+    -- while the server remembers it (BR.Inv.revoke's grace).
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:disarmed', 'Disarmed')
+    W.carrying(1, {})
+    W.S.revoked[1] = { [W.BR.NormHash(CARBINE)] = 6500 }
+
+    W.at(4000); W.strip(1, CARBINE)
+    W.at(5000); W.strip(1, CARBINE)
+    ok(#W.S.incidents == 0, 'the gun Disarm took, stripped and reported twice: no case', #W.S.incidents)
+
+    -- THE SAME PLAYER, ANOTHER WEAPON, THE SAME WINDOW: judged as before.
+    W.at(6000); W.strip(1, CONJURED)
+    W.at(7000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'two weapons nobody issued still open a case', #W.S.incidents)
+
+    -- AND ONCE THE GRACE IS OVER, THE TAKEN GUN COUNTS LIKE ANY OTHER.
+    local W2 = newTimelineWorld()
+    W2.startMatch(8, 1000)
+    W2.join(2, 8, 'license:late', 'Late')
+    W2.carrying(2, {})
+    W2.S.revoked[2] = { [W2.BR.NormHash(CARBINE)] = 3000 }
+    W2.at(4000); W2.strip(2, CARBINE)
+    W2.at(5000); W2.strip(2, CARBINE)
+    ok(#W2.S.incidents == 1, 'a strip after the grace is evidence again', #W2.S.incidents)
 end
 
 describe('strip.the-cars-own-gun-is-not-evidence')
