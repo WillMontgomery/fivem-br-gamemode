@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import AppLayout from '@cloudscape-design/components/app-layout'
 import Autosuggest from '@cloudscape-design/components/autosuggest'
 import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group'
 import Flashbar, { type FlashbarProps } from '@cloudscape-design/components/flashbar'
+import ProgressBar from '@cloudscape-design/components/progress-bar'
 import SideNavigation, { type SideNavigationProps } from '@cloudscape-design/components/side-navigation'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import TopNavigation, { type TopNavigationProps } from '@cloudscape-design/components/top-navigation'
@@ -17,62 +18,108 @@ import { HowTo } from './HowTo'
 import { Login } from './Login'
 import { MatchPanel } from './MatchPanel'
 import {
-  HOME, addressOf, back, canBack, canForward, current, fill, forward, hrefOf, line, push, replace,
-  routeOfHref, startHistory, type History, type Route,
+  HOME, addressOf, back, canBack, canForward, current, fill, forward, hrefOf, push, replace,
+  routeOfHref, shownCategories, shownFunctions, speaker, startHistory, voltsText,
+  type History, type Route,
 } from './model'
 import { loadMode, saveMode, showMode, type UiMode } from './mode'
 
 /**
- * THE TERMINAL APP: a web page in a web browser (#396, owner, 2026-10-05).
+ * THE TERMINAL APP, "Control Tower": a web page in a web browser (#396, owner,
+ * 2026-10-05).
  *
  *   the browser   Browser.tsx: back, forward and reload over THIS app's
- *                 history, and the address of the page it is on
- *   the top bar   TopNavigation: the app's name, a search across every
- *                 function (pick one to open its page; or search the cards),
- *                 the light/dark switch, and the player's gamertag as the
+ *                 history, and the address of the page it is on -- the same
+ *                 look in both modes
+ *   the top bar   TopNavigation: the app's name (the one place in the app it
+ *                 is written), a search across every function (pick one to
+ *                 open its page; or search the cards), the player's Volts, the
+ *                 light/dark switch, and the player's gamertag as the
  *                 signed-in user (its menu: the how-to, or sign out, which
  *                 closes the computer)
  *   the layout    AppLayout with SideNavigation (Functions, How to, each
- *                 category) and a BreadcrumbGroup on every page; the server's
- *                 answer to a run is a Flashbar notification
- *   the pages     the functions (MatchPanel over FunctionCards), a function
+ *                 category with something in it) and a BreadcrumbGroup on
+ *                 every page but the login screen; a run's progress and its
+ *                 answer are Flashbar notifications
+ *   the pages     the functions ("Match stats" over FunctionCards), a function
  *                 (FunctionPage), the how-to (HowTo), and the login screen
  *                 (Login) when the computer opened without a Yubikey
  *
  * ═══ NOT ONE WORD IS WRITTEN HERE ═══
  *
  * Every player-facing line is a key into the copy br_core sends with the
- * state, out of the one block in br_lib/config/terminals.lua; the function
- * cards and pages are drawn from the registry (the catalog) that rides with
- * it. scripts/check-terminal.mjs fails a word written between two tags.
+ * state, out of the one block in br_lib/config/terminals.lua, read through
+ * ONE speaker (model.ts) that picks a line's `_solo` sibling whenever the
+ * server says the player is not in a squad match (round 2: "the mention of
+ * 'squad' in the terminal should only be mentioned if the player is actively
+ * in a squad match"). The function cards and pages are drawn from the
+ * registry (the catalog) that rides with it. scripts/check-terminal.mjs fails
+ * a word written between two tags, and a component reading the copy without
+ * the speaker.
  *
  * ═══ NOTHING HERE DECIDES ═══
  *
  * `available` and `reason` are the server's; Run asks, and the server checks
- * the terminal, the key, the squad and the options again.
+ * the terminal, the key, the squad, the options and the Volts again. A run
+ * the server accepts LOADS for as long as the server says (runMs, 3 to 5
+ * seconds, round 2): a bar fills over it, Run stays disabled, and the answer
+ * that ends it is the server's -- done, with the new balance when it cost
+ * Volts, or why it could not happen.
  *
  * ═══ CEF 103 (#385) ═══
  *
- * No Spinner and no `loading` anywhere: a waiting button is disabled instead.
- * Arrays, not Fragments, go into SpaceBetween (React 19). Dark mode on <body>
- * (mode.ts). AppLayout and SideNavigation are used inside this iframe, whose
- * opaque page is the browser's page -- not over the game, which is what #385
- * banned them for -- and SideNavigation never collapses (the opt-in that hides
- * icon-less groups only through :has). scripts/check-terminal.mjs holds these.
+ * No Spinner and no `loading` anywhere: a waiting button is disabled, and a
+ * loading run is a determinate ProgressBar that fills over the server's
+ * duration and stops (#385's rule is against an indicator that animates
+ * forever, repainting the NUI every frame; this one moves ten times a second
+ * for at most a few seconds, then is gone). Arrays, not Fragments, go into
+ * SpaceBetween (React 19). The mode on <body> (mode.ts). AppLayout and
+ * SideNavigation are used inside this iframe, whose opaque page is the
+ * browser's page -- not over the game, which is what #385 banned them for --
+ * and SideNavigation never collapses (the opt-in that hides icon-less groups
+ * only through :has). scripts/check-terminal.mjs holds these.
  */
+
+/** How often a loading run's bar moves: ten times a second, for 3-5 s. */
+const PROGRESS_STEP_MS = 100
+
+/** A run that is loading, on this page's own clock. */
+interface Progress {
+  functionId: string
+  runMs: number
+  startedAt: number
+}
+
 export function App(): ReactElement {
   const [state, setState] = useState<TerminalState | null>(null)
   const [copy, setCopy] = useState<Copy>({})
-  const [catalog, setCatalog] = useState<Catalog>({ functions: [], categories: [] })
+  const [catalog, setCatalog] = useState<Catalog>({ functions: [], categories: [], currency: '' })
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [history, setHistory] = useState<History>(() => startHistory(HOME))
   const [pending, setPending] = useState<string | null>(null)
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const [flash, setFlash] = useState<RunResult | null>(null)
-  const [mode, setMode] = useState<UiMode>('dark')
+  const [mode, setMode] = useState<UiMode>('light')
   const [search, setSearch] = useState('')
   const [reloads, setReloads] = useState(0)
+  // "Match stats" starts collapsed every time the app opens, and stays as the
+  // player leaves it while they move between pages.
+  const [statsOpen, setStatsOpen] = useState(false)
   const confirmOpen = useRef(false)
   const player = useRef<string | null>(null)
+  // The fixed header's height, which its placeholder in the page keeps
+  // (terminal.css says why the header is fixed rather than sticky).
+  const [headerHeight, setHeaderHeight] = useState(0)
+  useLayoutEffect(() => {
+    const el = document.getElementById('terminal-header')
+    if (!el) return undefined
+    const measure = () => setHeaderHeight(Math.ceil(el.getBoundingClientRect().height))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [reloads])
 
   useEffect(
     () =>
@@ -91,10 +138,25 @@ export function App(): ReactElement {
             setMode(m)
             showMode(m)
           }
+          // A RUN THE SERVER SAYS IS LOADING -- this app opened again while
+          // it loads -- shows the same bar, at the same place.
+          const r = next.running
+          if (r) {
+            setProgress((was) => was ?? {
+              functionId: r.functionId, runMs: r.runMs, startedAt: Date.now() - (r.runMs - r.leftMs),
+            })
+          }
         },
         result(next) {
+          if (next.code === 'running' && next.ok) {
+            setPending(null)
+            setFlash(null)
+            setProgress({ functionId: next.functionId, runMs: next.runMs ?? 0, startedAt: Date.now() })
+            return
+          }
           setFlash(next)
           setPending(null)
+          setProgress(null)
         },
         canEscape: () => !confirmOpen.current,
       }),
@@ -102,14 +164,34 @@ export function App(): ReactElement {
   )
 
   // A run whose answer never comes (a request the server dropped) must not
-  // leave Run disabled for the rest of the opening.
+  // leave Run disabled for the rest of the opening: the first answer within
+  // the charge's round trip, the last within the loading and a margin.
   useEffect(() => {
     if (pending === null) return undefined
     const t = window.setTimeout(() => setPending(null), 8000)
     return () => window.clearTimeout(t)
   }, [pending])
+  useEffect(() => {
+    if (progress === null) return undefined
+    const t = window.setTimeout(() => setProgress(null), progress.runMs + 10000)
+    return () => window.clearTimeout(t)
+  }, [progress])
 
-  const L = (k: string | null | undefined) => line(copy, k)
+  // THE BAR MOVES while the run loads, and stops when it is full.
+  useEffect(() => {
+    if (progress === null) return undefined
+    setNow(Date.now())
+    const t = window.setInterval(() => {
+      const at = Date.now()
+      setNow(at)
+      if (at - progress.startedAt >= progress.runMs) window.clearInterval(t)
+    }, PROGRESS_STEP_MS)
+    return () => window.clearInterval(t)
+  }, [progress])
+
+  const squadMatch = state?.squadMatch === true
+  const say = useMemo(() => speaker(copy, squadMatch), [copy, squadMatch])
+  const currency = catalog.currency
   const route: Route = signedIn === false ? { page: 'login' } : current(history)
 
   // A run's answer belongs to the page it was asked on; going anywhere else
@@ -132,26 +214,36 @@ export function App(): ReactElement {
     saveMode(player.current, next)
   }
 
+  // THE FUNCTIONS THIS PLAYER IS SHOWN: outside a squad match, not the
+  // squad-only ones, and Ghost under its solo category (the server lists and
+  // runs the same set).
+  const shown = useMemo(() => shownFunctions(catalog, squadMatch), [catalog, squadMatch])
+  const categories = useMemo(() => shownCategories(catalog, shown), [catalog, shown])
   const fnById = useMemo(() => new Map((state?.functions ?? []).map((f) => [f.id, f])), [state])
-  const defById = useMemo(() => new Map(catalog.functions.map((f) => [f.id, f])), [catalog])
+  const defById = useMemo(() => new Map(shown.map((f) => [f.id, f])), [shown])
 
   // ── the top bar ──────────────────────────────────────────────────────────
-  const utilities: TopNavigationProps.Utility[] = [
-    {
-      type: 'button',
-      iconName: 'light-dark',
-      text: mode === 'dark' ? L('mode_light') : L('mode_dark'),
-      onClick: toggleMode,
-    },
-  ]
+  // THE PLAYER'S VOLTS, BESIDE THE GAMERTAG (round 2: "we need a way for them
+  // to see their balance"), the figure every other Volts display shows,
+  // pushed again with every state.
+  const utilities: TopNavigationProps.Utility[] = []
+  if (route.page !== 'login' && state && state.volts !== null) {
+    utilities.push({ type: 'button', text: voltsText(state.volts, currency), disableUtilityCollapse: true })
+  }
+  utilities.push({
+    type: 'button',
+    iconName: 'light-dark',
+    text: mode === 'dark' ? say('mode_light') : say('mode_dark'),
+    onClick: toggleMode,
+  })
   if (route.page !== 'login' && state?.player) {
     utilities.push({
       type: 'menu-dropdown',
       text: state.player,
       iconName: 'user-profile',
       items: [
-        { id: 'howto', text: L('menu_howto') },
-        { id: 'signout', text: L('menu_signout') },
+        { id: 'howto', text: say('menu_howto') },
+        { id: 'signout', text: say('menu_signout') },
       ],
       onItemClick: ({ detail }) => {
         if (detail.id === 'howto') go({ page: 'howto' })
@@ -172,45 +264,50 @@ export function App(): ReactElement {
           go({ page: 'functions', category: null, query: detail.value.trim() })
         }
       }}
-      options={catalog.functions.map((f) => ({
+      options={shown.map((f) => ({
         value: f.id,
-        label: L(`${f.id}_name`),
-        description: L(`${f.id}_summary`),
-        tags: [L(`category_${f.category}`)],
+        label: say(`${f.id}_name`),
+        description: say(`${f.id}_summary`),
+        tags: [say(`category_${f.category}`)],
       }))}
       filteringType="auto"
-      placeholder={L('search_placeholder')}
-      ariaLabel={L('search_placeholder')}
-      enteredTextLabel={(value) => fill(L('search_use'), { value })}
-      empty={L('search_empty')}
+      placeholder={say('search_placeholder')}
+      ariaLabel={say('search_placeholder')}
+      enteredTextLabel={(value) => fill(say('search_use'), { value })}
+      empty={say('search_empty')}
     />
   )
 
   // ── the breadcrumbs and the side navigation ──────────────────────────────
-  const crumbs: { text: string; href: string }[] = [{ text: L('app_title'), href: hrefOf(HOME) }]
+  // THE APP'S NAME IS IN THE TOP BAR ONLY (round 2: "remove the 'Blitz
+  // Terminal' text from the top of the sidebar - it should only remain in the
+  // top bar"): the side navigation has no header, the trail starts at the
+  // page's section, and the login screen -- where the name alone was the
+  // "random text" near the top left -- has no trail at all.
+  const crumbs: { text: string; href: string }[] = []
   if (route.page === 'functions' || route.page === 'function') {
-    crumbs.push({ text: L('nav_functions'), href: hrefOf(HOME) })
+    crumbs.push({ text: say('nav_functions'), href: hrefOf(HOME) })
   }
   if (route.page === 'functions' && route.category) {
-    crumbs.push({ text: L(`category_${route.category}`), href: hrefOf(route) })
+    crumbs.push({ text: say(`category_${route.category}`), href: hrefOf(route) })
   }
   if (route.page === 'function') {
     const def = defById.get(route.id)
-    if (def) crumbs.push({ text: L(`category_${def.category}`), href: hrefOf({ page: 'functions', category: def.category, query: '' }) })
-    crumbs.push({ text: L(`${route.id}_name`), href: hrefOf(route) })
+    if (def) crumbs.push({ text: say(`category_${def.category}`), href: hrefOf({ page: 'functions', category: def.category, query: '' }) })
+    crumbs.push({ text: say(`${route.id}_name`), href: hrefOf(route) })
   }
-  if (route.page === 'howto') crumbs.push({ text: L('nav_howto'), href: hrefOf(route) })
+  if (route.page === 'howto') crumbs.push({ text: say('nav_howto'), href: hrefOf(route) })
 
   const navItems: SideNavigationProps.Item[] = [
-    { type: 'link', text: L('nav_functions'), href: hrefOf(HOME) },
-    { type: 'link', text: L('nav_howto'), href: hrefOf({ page: 'howto' }) },
+    { type: 'link', text: say('nav_functions'), href: hrefOf(HOME) },
+    { type: 'link', text: say('nav_howto'), href: hrefOf({ page: 'howto' }) },
     { type: 'divider' },
     {
       type: 'section',
-      text: L('nav_categories'),
-      items: catalog.categories.map((c) => ({
+      text: say('nav_categories'),
+      items: categories.map((c) => ({
         type: 'link' as const,
-        text: L(`category_${c}`),
+        text: say(`category_${c}`),
         href: hrefOf({ page: 'functions', category: c, query: '' }),
       })),
     },
@@ -219,32 +316,62 @@ export function App(): ReactElement {
     ? hrefOf({ page: 'functions', category: defById.get(route.id)?.category ?? null, query: '' })
     : hrefOf(route)
 
-  // ── the answer to a run ──────────────────────────────────────────────────
-  const notes: FlashbarProps.MessageDefinition[] = flash
-    ? [{
+  // ── a run loading, and its answer ────────────────────────────────────────
+  const notes: FlashbarProps.MessageDefinition[] = []
+  if (progress) {
+    const pct = progress.runMs > 0 ? Math.min(100, ((now - progress.startedAt) / progress.runMs) * 100) : 100
+    notes.push({
+      id: 'running',
+      type: 'info',
+      content: (
+        <ProgressBar
+          variant="flash"
+          value={pct}
+          label={fill(say('running'), { name: say(`${progress.functionId}_name`) })}
+        />
+      ),
+    })
+  }
+  if (flash) {
+    let text: string
+    if (flash.ok) {
+      text = say(`${flash.functionId}_done`)
+      if (flash.balance !== null) {
+        const b = fill(say('balance_new'), { volts: voltsText(flash.balance, currency) })
+        text = text !== '' ? `${text} ${b}` : b
+      }
+    } else if (flash.code === 'no_volts') {
+      text = fill(say('no_volts'), {
+        cost: voltsText(flash.cost ?? 0, currency),
+        balance: voltsText(flash.balance ?? 0, currency),
+      })
+    } else {
+      text = say(flash.code) || say('unavailable')
+    }
+    notes.push({
       id: 'result',
       type: flash.ok ? 'success' : 'error',
-      content: flash.ok ? L(`${flash.functionId}_done`) : (L(flash.code) || L('unavailable')),
+      content: text,
       dismissible: true,
-      dismissLabel: L('aria_close'),
+      dismissLabel: say('aria_close'),
       onDismiss: () => setFlash(null),
-    }]
-    : []
+    })
+  }
 
   // ── the page ─────────────────────────────────────────────────────────────
   let content: ReactElement | null = null
   if (state && route.page === 'login') {
-    content = <Login copy={copy} />
+    content = <Login say={say} />
   } else if (state && route.page === 'functions') {
     content = (
       <SpaceBetween size="l">
         {[
-          <MatchPanel key="match" state={state} copy={copy} />,
+          <MatchPanel key="match" state={state} say={say} expanded={statsOpen} onExpand={setStatsOpen} />,
           <FunctionCards
             key="cards"
             state={state}
-            catalog={catalog}
-            copy={copy}
+            functions={shown}
+            say={say}
             route={route}
             onOpen={(id) => go({ page: 'function', id })}
             onQuery={(query) => setHistory((h) => replace(h, { ...route, query }))}
@@ -260,8 +387,9 @@ export function App(): ReactElement {
           key={route.id}
           def={def}
           fn={fnById.get(route.id)}
-          copy={copy}
-          busy={pending !== null}
+          say={say}
+          currency={currency}
+          busy={pending !== null || progress !== null}
           onConfirmChange={(open) => { confirmOpen.current = open }}
           onRun={(id, options) => {
             setPending(id)
@@ -272,38 +400,42 @@ export function App(): ReactElement {
       )
     }
   } else if (state && route.page === 'howto') {
-    content = <HowTo copy={copy} />
+    content = <HowTo say={say} />
   }
 
   return (
     <div className="terminal" key={reloads}>
       <div id="terminal-header" className="terminal-header">
         <Browser
-          address={addressOf(route, copy)}
+          address={addressOf(route, say)}
           canBack={route.page !== 'login' && canBack(history)}
           canForward={route.page !== 'login' && canForward(history)}
           onBack={() => { setHistory(back); setFlash(null) }}
           onForward={() => { setHistory(forward); setFlash(null) }}
           onReload={() => {
             setReloads((n) => n + 1)
+            setStatsOpen(false)
             askAgain()
           }}
-          labels={{ back: L('aria_back'), forward: L('aria_forward'), reload: L('aria_reload'), address: L('aria_address') }}
+          labels={{ back: say('aria_back'), forward: say('aria_forward'), reload: say('aria_reload'), address: say('aria_address') }}
         />
-        <TopNavigation
-          identity={{
-            href: hrefOf(HOME),
-            title: L('app_title'),
-            logo: { src: '../../assets/images/terminal.png', alt: '' },
-            onFollow: (e) => {
-              e.preventDefault()
-              if (route.page !== 'login') go(HOME)
-            },
-          }}
-          search={searchBox}
-          utilities={utilities}
-        />
+        <div className="terminal-topnav">
+          <TopNavigation
+            identity={{
+              href: hrefOf(HOME),
+              title: say('app_title'),
+              logo: { src: '../../assets/images/terminal.svg', alt: '' },
+              onFollow: (e) => {
+                e.preventDefault()
+                if (route.page !== 'login') go(HOME)
+              },
+            }}
+            search={searchBox}
+            utilities={utilities}
+          />
+        </div>
       </div>
+      <div className="terminal-header-space" aria-hidden="true" style={{ height: headerHeight }} />
       <AppLayout
         headerSelector="#terminal-header"
         navigationHide={route.page === 'login'}
@@ -311,14 +443,15 @@ export function App(): ReactElement {
         toolsHide
         contentType={route.page === 'functions' ? 'cards' : 'default'}
         notifications={notes.length > 0 ? <Flashbar items={notes} /> : undefined}
-        breadcrumbs={<BreadcrumbGroup items={crumbs} onFollow={follow} />}
+        breadcrumbs={crumbs.length > 0 ? <BreadcrumbGroup items={crumbs} onFollow={follow} /> : undefined}
         navigation={
-          <SideNavigation
-            header={{ text: L('app_title'), href: hrefOf(HOME) }}
-            activeHref={activeHref}
-            items={navItems}
-            onFollow={follow}
-          />
+          <div className="terminal-nav">
+            <SideNavigation
+              activeHref={activeHref}
+              items={navItems}
+              onFollow={follow}
+            />
+          </div>
         }
         content={content}
       />

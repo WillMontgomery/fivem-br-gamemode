@@ -5,19 +5,50 @@
  * ═══ EVERY WORD IS THE COPY BLOCK'S ═══
  *
  * The owner writes or approves every player-facing line (#396), so the app
- * says nothing of its own: `line` looks a key up in the copy br_core sends
+ * says nothing of its own: `speaker` looks a key up in the copy br_core sends
  * (br_lib/config/terminals.lua), and a key with no line is nothing -- never
  * the key, never a default. scripts/check-terminal.mjs holds the JSX to it.
  * The only characters this file makes are digits, colons and separators.
+ *
+ * ═══ "SQUAD" ONLY IN A SQUAD MATCH (owner, 2026-10-05, round 2) ═══
+ *
+ * A line that says squad has a `<key>_solo` sibling that does not, and
+ * `speaker` -- THE APP'S ONE PICKER, the server's BR.TerminalSolve.pick on
+ * this side -- reads the sibling whenever the server says the player is not
+ * in a squad match. Every word the app shows goes through a speaker;
+ * scripts/check-terminal.mjs fails a component that reads the copy another way.
  */
 
-import type { Copy, FunctionDef, FunctionState } from './bridge'
+import type { Catalog, Copy, FunctionDef, FunctionState } from './bridge'
 
-/** A line of the copy, or nothing. */
-export function line(copy: Copy, key: string | null | undefined): string {
-  if (!key) return ''
-  const v = copy[key]
-  return typeof v === 'string' ? v : ''
+/** Every word the app says: a key in, the line (or nothing) out. */
+export type Say = (key: string | null | undefined) => string
+
+/**
+ * The app's one way to read the copy: the line, or -- outside a squad match
+ * -- its `_solo` sibling when it has one (an empty sibling is nothing, which
+ * hides the row it labels).
+ */
+export function speaker(copy: Copy, squadMatch: boolean): Say {
+  return (key) => {
+    if (!key) return ''
+    if (!squadMatch) {
+      const solo = copy[`${key}_solo`]
+      if (typeof solo === 'string') return solo
+    }
+    const v = copy[key]
+    return typeof v === 'string' ? v : ''
+  }
+}
+
+/**
+ * A Volts figure as every other Volts display writes it: grouped, then the
+ * currency's name (config/market.lua's, handed over in the catalog) --
+ * "1,250 Volts", BR.ShopSolve.priceLine's shape.
+ */
+export function voltsText(n: number, currency: string): string {
+  const figure = Math.floor(n).toLocaleString('en-US')
+  return currency ? `${figure} ${currency}` : figure
 }
 
 /** A line with its `{token}`s filled. An unknown token is left as written. */
@@ -50,9 +81,9 @@ export function sameRoute(a: Route, b: Route): boolean {
  * https://terminal.blitz/functions/storm-reveal. The host and each section's
  * segment are copy; a function's segment is its id, hyphenated as a URL is.
  */
-export function addressOf(route: Route, copy: Copy): string {
-  const host = line(copy, 'address_host')
-  const fns = line(copy, 'path_functions')
+export function addressOf(route: Route, say: Say): string {
+  const host = say('address_host')
+  const fns = say('path_functions')
   switch (route.page) {
     case 'functions': {
       const params: string[] = []
@@ -63,9 +94,9 @@ export function addressOf(route: Route, copy: Copy): string {
     case 'function':
       return `${host}/${fns}/${route.id.replace(/_/g, '-')}`
     case 'howto':
-      return `${host}/${line(copy, 'path_howto')}`
+      return `${host}/${say('path_howto')}`
     case 'login':
-      return `${host}/${line(copy, 'path_login')}`
+      return `${host}/${say('path_login')}`
   }
 }
 
@@ -148,13 +179,36 @@ export function forward(h: History): History {
 
 // -------------------------------------------------------------- functions ---
 
-/** What a card says about a function now: the four the owner named. */
+/**
+ * The functions this player is shown, in the registry's order: outside a
+ * squad match, without the squad-only ones (Reboot, Comms blackout) and with
+ * a `soloCategory` in place of the category (Ghost). The server lists and
+ * runs the same set.
+ */
+export function shownFunctions(catalog: Catalog, squadMatch: boolean): FunctionDef[] {
+  return catalog.functions
+    .filter((f) => squadMatch || !f.squadOnly)
+    .map((f) => (!squadMatch && f.soloCategory ? { ...f, category: f.soloCategory } : f))
+}
+
+/** The categories with something in them, in the registry's order. */
+export function shownCategories(catalog: Catalog, shown: FunctionDef[]): string[] {
+  const used = new Set(shown.map((f) => f.category))
+  return catalog.categories.filter((c) => used.has(c))
+}
+
+/**
+ * What a card says about a function now: the four the owner named
+ * (round 2's words: available, used, not available at this terminal, not
+ * available).
+ */
 export type Status = 'available' | 'used' | 'not_here' | 'offline'
 
 /**
- * A function's status, from the server's reason. Offline is a function not
- * built yet, or a terminal the storm has taken; used is the squad's one use
- * spent; not here is everything else that stops it at this terminal now.
+ * A function's status, from the server's reason. Offline ("Not available") is
+ * a function not built yet, or a terminal the storm has taken; used is the
+ * squad's one use spent; not here ("Not available at this terminal") is
+ * everything else that stops it at this terminal now.
  */
 export function statusOf(fn: FunctionState | undefined, def: FunctionDef | undefined): Status {
   if (def && !def.implemented) return 'offline'
@@ -191,13 +245,13 @@ export function riskColor(r: FunctionDef['risk']): 'severity-low' | 'severity-me
 }
 
 /** Does a function match the search box? Its name, summary or category. */
-export function matches(def: FunctionDef, copy: Copy, query: string): boolean {
+export function matches(def: FunctionDef, say: Say, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (q === '') return true
   const hay = [
-    line(copy, `${def.id}_name`),
-    line(copy, `${def.id}_summary`),
-    line(copy, `category_${def.category}`),
+    say(`${def.id}_name`),
+    say(`${def.id}_summary`),
+    say(`category_${def.category}`),
   ].join(' ').toLowerCase()
   return q.split(/\s+/).every((word) => hay.includes(word))
 }

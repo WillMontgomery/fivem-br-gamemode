@@ -5,13 +5,13 @@ import { createRoot } from 'react-dom/client'
 import { applyMode, disableMotion, Mode } from '@cloudscape-design/global-styles'
 import { App } from './App'
 
-// DARK MODE ON <body>, NEVER ON <html> (#385). global-styles ships
+// THE MODE ON <body>, NEVER ON <html> (#385). global-styles ships
 // `html:has(body.awsui-dark-mode){color-scheme:dark}`; Chromium 103 drops it,
 // a CEF of 105 or later would honor it, and terminal.css pins color-scheme
 // back to normal either way. applyMode's default target is document.body.
-// Dark until the first state names the player and their remembered mode
-// (mode.ts) takes over.
-applyMode(Mode.Dark)
+// LIGHT (owner, round 2: "Make light mode the default") until the first state
+// names the player and their remembered choice (mode.ts) takes over.
+applyMode(Mode.Light)
 // Fewer animations, fewer repainted frames over the game.
 disableMotion(true)
 

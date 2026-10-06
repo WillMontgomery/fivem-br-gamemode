@@ -6,6 +6,9 @@
  * over the game, so it would not black anything out today -- but the rule is
  * the project's, global-styles ships the selector that would flip it on any CEF
  * from 105, and nothing here needs the dark scheme's form controls.
+ *
+ * EVERY COLOR HERE IS HEX OR rgba() -- check-css.mjs fails a build with a
+ * color function Chromium 103 cannot parse.
  */
 html {
   color-scheme: normal !important;
@@ -22,26 +25,112 @@ body {
 }
 
 /*
+ * ═══ THE DEPTH: SHADOWS, IN BOTH MODES (owner, round 2) ═══
+ *
+ * "Seems none of the text or other elements has texture - could you add some
+ * shadows?" One set of values per mode, on <body> (where Cloudscape puts the
+ * mode): a soft drop under raised surfaces, a tighter one under controls, and
+ * a hairline of shade under headings. Dark mode's are deeper, because a shadow
+ * has less to darken there.
+ */
+body {
+  --terminal-raise: 0 1px 2px rgba(0, 7, 22, 0.10), 0 4px 14px rgba(0, 7, 22, 0.10);
+  --terminal-raise-strong: 0 2px 4px rgba(0, 7, 22, 0.12), 0 10px 28px rgba(0, 7, 22, 0.16);
+  --terminal-raise-control: 0 1px 1px rgba(0, 7, 22, 0.14), 0 2px 5px rgba(0, 7, 22, 0.12);
+  --terminal-raise-control-hover: 0 2px 3px rgba(0, 7, 22, 0.18), 0 4px 10px rgba(0, 7, 22, 0.16);
+  --terminal-text-shade: 0 1px 1px rgba(0, 7, 22, 0.16);
+  --terminal-raise-badge: 0 1px 2px rgba(0, 7, 22, 0.22);
+}
+
+body.awsui-dark-mode {
+  --terminal-raise: 0 1px 2px rgba(0, 0, 0, 0.50), 0 6px 18px rgba(0, 0, 0, 0.45);
+  --terminal-raise-strong: 0 2px 6px rgba(0, 0, 0, 0.55), 0 12px 32px rgba(0, 0, 0, 0.55);
+  --terminal-raise-control: 0 1px 2px rgba(0, 0, 0, 0.55), 0 3px 8px rgba(0, 0, 0, 0.40);
+  --terminal-raise-control-hover: 0 2px 4px rgba(0, 0, 0, 0.60), 0 5px 12px rgba(0, 0, 0, 0.45);
+  --terminal-text-shade: 0 1px 2px rgba(0, 0, 0, 0.70);
+  --terminal-raise-badge: 0 1px 3px rgba(0, 0, 0, 0.60);
+}
+
+/*
+ * ═══ RUN WEARS ITS RISK (owner, round 2: "the Run button - make it the risk
+ * color instead") ═══
+ *
+ * The same color as the function's low, medium or high risk badge: the
+ * badge's own tokens, read straight from Cloudscape's variables, so the two
+ * cannot differ in either mode (the fallback after each is the light value).
+ * Hover and active are a step darker in light mode and a step lighter in dark,
+ * as Cloudscape's own buttons move. scripts/check-terminal.mjs fails the build
+ * if a token named here is not in Cloudscape's built CSS.
+ */
+body {
+  --terminal-run-high-bg: var(--color-background-notification-severity-high-44r6oe, #ce3311);
+  --terminal-run-high-text: var(--color-text-badge-severity-high-kckiuo, #f9f9fa);
+  --terminal-run-high-bg-hover: #b02b0e;
+  --terminal-run-high-bg-active: #95240b;
+  --terminal-run-medium-bg: var(--color-background-notification-severity-medium-87oafh, #f89256);
+  --terminal-run-medium-text: var(--color-text-badge-severity-medium-ns9l4d, #0f141a);
+  --terminal-run-medium-bg-hover: #f27d3c;
+  --terminal-run-medium-bg-active: #e46b28;
+  --terminal-run-low-bg: var(--color-background-notification-severity-low-g8anka, #f2cd54);
+  --terminal-run-low-text: var(--color-text-badge-severity-low-pnvr07, #0f141a);
+  --terminal-run-low-bg-hover: #ecc137;
+  --terminal-run-low-bg-active: #dfb020;
+  --terminal-run-disabled-bg: #e9ebed;
+  --terminal-run-disabled-text: #9ba7b6;
+}
+
+body.awsui-dark-mode {
+  --terminal-run-high-bg-hover: #ff8a8e;
+  --terminal-run-high-bg-active: #ffa3a6;
+  --terminal-run-medium-bg-hover: #fba674;
+  --terminal-run-medium-bg-active: #fcb98f;
+  --terminal-run-low-bg-hover: #f5d872;
+  --terminal-run-low-bg-active: #f7e08e;
+  --terminal-run-disabled-bg: #333843;
+  --terminal-run-disabled-text: #656871;
+}
+
+/*
  * THE BROWSER'S TOOLBAR AND THE TOP BAR STAY AT THE TOP, as a browser's do;
  * the page scrolls under them. AppLayout is told their height through
- * `headerSelector="#terminal-header"`.
+ * `headerSelector="#terminal-header"`, and `.terminal-header-space` (App.tsx
+ * keeps it the header's height) holds their place in the page.
+ *
+ * FIXED, NOT STICKY (round 2: "clicking the profile jumps me to the top of the
+ * page after I've scrolled down"). Opening the gamertag's menu moves focus
+ * into it, and Chromium scrolls a focused element inside a `position: sticky`
+ * box into view by where the box sits in the page's flow -- the top of the
+ * page -- not where it is stuck: every top-bar control that takes focus
+ * (the menu, the search, the switch, the balance) scrolled the page up. A
+ * fixed header is always in view, so focus never scrolls for it.
  */
 .terminal-header {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 1002;
 }
 
 /*
- * The toolbar, in the tab's colour (cuchi_computer's br.css draws the tab in
- * the same two colours, and follows the mode the app tells it).
+ * ═══ THE BROWSER LOOKS THE SAME IN BOTH MODES (owner, round 2) ═══
+ *
+ * "dark/light mode should not influence the browser's appearance, only the
+ * website." The toolbar's colors are fixed here and never read from
+ * Cloudscape: a light browser's, the same as the desktop's tab strip
+ * (cuchi_computer's br.css). Its buttons are plain <button>s (Browser.tsx),
+ * and everything in it sets its own color and font rather than inherit the
+ * site's.
  */
 .browser-toolbar {
-  --browser-bg: #192534;
-  --browser-field: #0f141a;
-  --browser-text: #e9ebed;
-  --browser-muted: #8d99a8;
-  --browser-edge: #2a3542;
+  --browser-bg: #ffffff;
+  --browser-field: #f1f3f4;
+  --browser-text: #0f141a;
+  --browser-muted: #5f6b7a;
+  --browser-edge: #dfe3e8;
+  --browser-control: #424650;
+  --browser-control-off: #b6bec9;
+  --browser-control-hover: rgba(0, 0, 0, 0.08);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -50,20 +139,44 @@ body {
   padding: 0 10px 0 6px;
   background-color: var(--browser-bg);
   border-bottom: 1px solid var(--browser-edge);
-}
-
-body:not(.awsui-dark-mode) .browser-toolbar {
-  --browser-bg: #ffffff;
-  --browser-field: #f1f3f4;
-  --browser-text: #0f141a;
-  --browser-muted: #5f6b7a;
-  --browser-edge: #dfe3e8;
+  color: var(--browser-text);
+  font-family: 'Open Sans', 'Helvetica Neue', Roboto, Arial, sans-serif;
+  font-size: 13px;
 }
 
 .browser-buttons {
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+.browser-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 16px;
+  background-color: transparent;
+  color: var(--browser-control);
+  cursor: pointer;
+}
+
+.browser-button:hover:not(:disabled) {
+  background-color: var(--browser-control-hover);
+}
+
+.browser-button:disabled {
+  color: var(--browser-control-off);
+  cursor: default;
+}
+
+.browser-button:focus-visible {
+  outline: 2px solid #0972d3;
+  outline-offset: -2px;
 }
 
 .browser-address {
@@ -96,11 +209,111 @@ body:not(.awsui-dark-mode) .browser-toolbar {
   text-overflow: ellipsis;
 }
 
+/* The top bar: a shadow onto the page under it (the site's, not the
+   browser's -- the toolbar above casts none), and its name and buttons with a
+   little depth. */
+.terminal-topnav {
+  position: relative;
+  box-shadow: var(--terminal-raise);
+}
+
+/* The top bar: its buttons and its name with a little depth. */
+.terminal-topnav [class*="awsui_title_"],
+.terminal-topnav [class*="awsui_utility-button_"] {
+  text-shadow: var(--terminal-text-shade);
+}
+
+/* The side navigation's panel: a shadow along its edge, onto the page. */
+.terminal-nav {
+  min-height: 100%;
+  box-shadow: var(--terminal-raise);
+}
+
+/*
+ * Raised surfaces: every container the app draws (the match panel, a page's
+ * sections, the how-to's), each wrapped in `.terminal-raised` with the
+ * container's own corner, and every card. On Cloudscape's own elements the
+ * shadow is !important: its rules carry `:not(#\9)`, an id's weight.
+ */
+.terminal-raised {
+  border-radius: 16px;
+  box-shadow: var(--terminal-raise);
+}
+
+/* The cards' heading block (Functions, its filter and its pages)... */
+.terminal-cards [class*="awsui_header-variant-cards"] {
+  box-shadow: var(--terminal-raise) !important;
+}
+
+/* ...and each card: the surface inside the list item Cards draws. */
+.terminal-cards li[class*="awsui_card_"] > div {
+  box-shadow: var(--terminal-raise) !important;
+}
+
+.terminal-cards li[class*="awsui_card_"] > div:hover {
+  box-shadow: var(--terminal-raise-strong) !important;
+}
+
+/* Headings and card titles: a hairline of shade under the letters. */
+.terminal-raised h1,
+.terminal-raised h2,
+.terminal-raised h3,
+.terminal-cards h1,
+.terminal-cards h2,
+[class*="awsui_content-header_"] h1,
+[class*="awsui_dialog_"] h2 {
+  text-shadow: var(--terminal-text-shade);
+}
+
+/*
+ * THE CARD'S TITLE, LARGER (round 2: "the card titles should be larger font
+ * size"): 20 px, set on the title's link and everything in it, wrapping onto a
+ * second line inside the card rather than running past it.
+ */
+.terminal-card-title {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-shadow: var(--terminal-text-shade);
+}
+
+.terminal-card-title,
+.terminal-card-title * {
+  font-size: 20px !important;
+  line-height: 26px !important;
+  font-weight: 700 !important;
+  white-space: normal !important;
+}
+
+/* Buttons and badges stand off the page a little; a pressed one does not. */
+.terminal-raised [class*="awsui_button_"],
+.terminal-cards [class*="awsui_button_"]:not([class*="awsui_variant-inline-link_"]),
+[class*="awsui_content-header_"] [class*="awsui_button_"],
+[class*="awsui_dialog_"] [class*="awsui_variant-primary_"] {
+  box-shadow: var(--terminal-raise-control) !important;
+}
+
+[class*="awsui_badge_"] {
+  box-shadow: var(--terminal-raise-badge) !important;
+}
+
+/* The confirmation box: a deeper shadow than anything under it. */
+[class*="awsui_dialog_"] [class*="awsui_container_"] {
+  box-shadow: var(--terminal-raise-strong) !important;
+}
+
+/* A run's bar and its answer, raised like the rest. */
+.terminal [class*="awsui_flash_"] {
+  box-shadow: var(--terminal-raise) !important;
+}
+
 /* The login screen: one card in the middle of the page. */
 .terminal-login {
   box-sizing: border-box;
   max-width: 520px;
   margin: 64px auto 0;
+  border-radius: 16px;
+  box-shadow: var(--terminal-raise);
 }
 
 /* A function's risks and the how-to's lists: plain bullets, Cloudscape's text. */

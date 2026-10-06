@@ -1,7 +1,7 @@
 import { useState, type ReactElement } from 'react'
 import Badge from '@cloudscape-design/components/badge'
 import Box from '@cloudscape-design/components/box'
-import Button from '@cloudscape-design/components/button'
+import Button, { type ButtonProps } from '@cloudscape-design/components/button'
 import Container from '@cloudscape-design/components/container'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import FormField from '@cloudscape-design/components/form-field'
@@ -11,8 +11,8 @@ import Modal from '@cloudscape-design/components/modal'
 import RadioGroup from '@cloudscape-design/components/radio-group'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
-import type { Copy, FunctionDef, FunctionState } from './bridge'
-import { fill, indicatorOf, line, lines, riskColor, statusOf } from './model'
+import type { FunctionDef, FunctionState } from './bridge'
+import { fill, indicatorOf, lines, riskColor, statusOf, voltsText, type Say } from './model'
 
 /**
  * ONE FUNCTION'S PAGE, in the shape of Cloudscape's details example.
@@ -26,20 +26,47 @@ import { fill, indicatorOf, line, lines, riskColor, statusOf } from './model'
  * Run button. Nothing here says what it is good for.
  *
  * RUN ONLY ASKS. The button is disabled when the server says the function
- * cannot run and while a run waits for its answer; a box confirms first,
- * because a run spends the key and the squad's one use; the server checks
- * the terminal, the key, the squad and every option again.
+ * cannot run and while a run of this player's is waiting or loading; a box
+ * confirms first, because a run spends the key, the squad's one use and --
+ * for the most powerful functions -- Volts (the cost line and the box both
+ * say how many, round 2); the server checks the terminal, the key, the squad,
+ * every option and the balance again. RUN IS PRESSABLE WHATEVER THE BALANCE:
+ * a run the Volts cannot cover is refused by the server, which says the cost
+ * and the balance (no_volts).
+ *
+ * RUN WEARS THE FUNCTION'S RISK (round 2: "the Run button - make it the risk
+ * color instead"): the same color as its low, medium or high risk badge, in
+ * both modes, with the badge's own text color -- terminal.css's
+ * `--terminal-run-*` variables, which are the badge's tokens.
  */
+export function runStyle(risk: FunctionDef['risk']): ButtonProps.Style {
+  const v = (part: string) => `var(--terminal-run-${risk}-${part})`
+  const off = (part: string) => `var(--terminal-run-disabled-${part})`
+  return {
+    root: {
+      background: { default: v('bg'), hover: v('bg-hover'), active: v('bg-active'), disabled: off('bg') },
+      borderColor: { default: v('bg'), hover: v('bg-hover'), active: v('bg-active'), disabled: off('bg') },
+      color: { default: v('text'), hover: v('text'), active: v('text'), disabled: off('text') },
+      boxShadow: {
+        default: 'var(--terminal-raise-control)',
+        hover: 'var(--terminal-raise-control-hover)',
+        active: 'none',
+        disabled: 'none',
+      },
+    },
+  }
+}
+
 export function FunctionPage(props: {
   def: FunctionDef
   fn: FunctionState | undefined
-  copy: Copy
+  say: Say
+  currency: string
   busy: boolean
   onRun: (id: string, options: Record<string, string>) => void
   onConfirmChange: (open: boolean) => void
 }): ReactElement {
-  const { def, fn, copy } = props
-  const L = (k: string) => line(copy, k)
+  const { def, fn, say } = props
   const id = def.id
   const status = statusOf(fn, def)
   const available = status === 'available'
@@ -51,69 +78,80 @@ export function FunctionPage(props: {
     props.onConfirmChange(open)
   }
 
-  const name = L(`${id}_name`)
-  const reason = !available && fn && fn.reason ? (L(fn.reason) || L('unavailable')) : ''
+  const name = say(`${id}_name`)
+  const reason = !available && fn && fn.reason ? (say(fn.reason) || say('unavailable')) : ''
+  const volts = voltsText(def.cost, props.currency)
+  const cost = def.cost > 0 ? fill(say('cost_line_volts'), { volts }) : say('cost_line')
+  const body = def.cost > 0 ? fill(say('confirm_body_volts'), { volts }) : say('confirm_body')
 
   const details = [
-    { label: L('field_category'), value: L(`category_${def.category}`) },
+    { label: say('field_category'), value: say(`category_${def.category}`) },
     {
-      label: L('field_status'),
+      label: say('field_status'),
       value: (
         <SpaceBetween size="xxs">
           {[
-            <StatusIndicator key="s" type={indicatorOf(status)}>{L(`status_${status}`)}</StatusIndicator>,
+            <StatusIndicator key="s" type={indicatorOf(status)}>{say(`status_${status}`)}</StatusIndicator>,
             ...(reason !== '' ? [<Box key="r" variant="small">{reason}</Box>] : []),
           ]}
         </SpaceBetween>
       ),
     },
-    { label: L('card_risk'), value: <Badge color={riskColor(def.risk)}>{L(`risk_${def.risk}`)}</Badge> },
-    { label: L('field_duration'), value: L(`${id}_duration`) },
-    { label: L('field_affects'), value: L(`${id}_affects`) },
-    { label: L('field_notified'), value: L(`${id}_notified`) },
-    { label: L('field_cost'), value: L('cost_line') },
+    { label: say('card_risk'), value: <Badge color={riskColor(def.risk)}>{say(`risk_${def.risk}`)}</Badge> },
+    { label: say('field_duration'), value: say(`${id}_duration`) },
+    { label: say('field_affects'), value: say(`${id}_affects`) },
+    { label: say('field_notified'), value: say(`${id}_notified`) },
+    { label: say('field_cost'), value: cost },
   ]
 
-  const risks = [L('risk_notice'), ...lines(L(`${id}_risks`))].filter((s) => s !== '')
+  const risks = [say('risk_notice'), ...lines(say(`${id}_risks`))].filter((s) => s !== '')
 
   const sections: ReactElement[] = [
-    <Container key="details" header={<Header variant="h2">{L('details_heading')}</Header>}>
-      <KeyValuePairs columns={3} items={details} />
-    </Container>,
-    <Container key="what" header={<Header variant="h2">{L('what_heading')}</Header>}>
-      <SpaceBetween size="s">
-        {lines(L(`${id}_what`)).map((p, i) => <Box key={i} variant="p">{p}</Box>)}
-      </SpaceBetween>
-    </Container>,
+    <div key="details" className="terminal-raised">
+      <Container header={<Header variant="h2">{say('details_heading')}</Header>}>
+        <KeyValuePairs columns={3} items={details} />
+      </Container>
+    </div>,
+    <div key="what" className="terminal-raised">
+      <Container header={<Header variant="h2">{say('what_heading')}</Header>}>
+        <SpaceBetween size="s">
+          {lines(say(`${id}_what`)).map((p, i) => <Box key={i} variant="p">{p}</Box>)}
+        </SpaceBetween>
+      </Container>
+    </div>,
   ]
   if (def.options.length > 0) {
     sections.push(
-      <Container key="options" header={<Header variant="h2">{L('options_heading')}</Header>}>
-        <SpaceBetween size="l">
-          {def.options.map((o) => (
-            <FormField key={o.id} label={L(`${id}_opt_${o.id}`)}>
-              <RadioGroup
-                value={choice[o.id] ?? o.default}
-                onChange={({ detail }) => setChoice({ ...choice, [o.id]: detail.value })}
-                items={o.choices.map((c) => ({
-                  value: c,
-                  label: L(`${id}_opt_${o.id}_${c}`),
-                  description: L(`${id}_opt_${o.id}_${c}_desc`) || undefined,
-                  disabled: !available,
-                }))}
-              />
-            </FormField>
-          ))}
-        </SpaceBetween>
-      </Container>,
+      <div key="options" className="terminal-raised">
+        <Container header={<Header variant="h2">{say('options_heading')}</Header>}>
+          <SpaceBetween size="l">
+            {def.options.map((o) => (
+              <FormField key={o.id} label={say(`${id}_opt_${o.id}`)}>
+                <RadioGroup
+                  value={choice[o.id] ?? o.default}
+                  onChange={({ detail }) => setChoice({ ...choice, [o.id]: detail.value })}
+                  items={o.choices.map((c) => ({
+                    value: c,
+                    label: say(`${id}_opt_${o.id}_${c}`),
+                    description: say(`${id}_opt_${o.id}_${c}_desc`) || undefined,
+                    disabled: !available,
+                  }))}
+                />
+              </FormField>
+            ))}
+          </SpaceBetween>
+        </Container>
+      </div>,
     )
   }
   sections.push(
-    <Container key="risks" header={<Header variant="h2">{L('risks_heading')}</Header>}>
-      <ul className="terminal-risks">
-        {risks.map((r, i) => <li key={i}>{r}</li>)}
-      </ul>
-    </Container>,
+    <div key="risks" className="terminal-raised">
+      <Container header={<Header variant="h2">{say('risks_heading')}</Header>}>
+        <ul className="terminal-risks">
+          {risks.map((r, i) => <li key={i}>{r}</li>)}
+        </ul>
+      </Container>
+    </div>,
   )
 
   return (
@@ -121,10 +159,11 @@ export function FunctionPage(props: {
       header={
         <Header
           variant="h1"
-          description={L(`${id}_summary`)}
+          description={say(`${id}_summary`)}
           actions={
-            <Button variant="primary" disabled={!available || props.busy} onClick={() => setConfirm(true)}>
-              {L('run')}
+            <Button variant="primary" style={runStyle(def.risk)} disabled={!available || props.busy}
+              onClick={() => setConfirm(true)}>
+              {say('run')}
             </Button>
           }
         >
@@ -136,26 +175,26 @@ export function FunctionPage(props: {
       <Modal
         visible={confirm}
         onDismiss={() => setConfirm(false)}
-        closeAriaLabel={L('aria_close')}
-        header={fill(L('confirm_title'), { name })}
+        closeAriaLabel={say('aria_close')}
+        header={fill(say('confirm_title'), { name })}
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
               {[
-                <Button key="no" variant="link" onClick={() => setConfirm(false)}>{L('confirm_no')}</Button>,
-                <Button key="yes" variant="primary" disabled={!available || props.busy}
+                <Button key="no" variant="link" onClick={() => setConfirm(false)}>{say('confirm_no')}</Button>,
+                <Button key="yes" variant="primary" style={runStyle(def.risk)} disabled={!available || props.busy}
                   onClick={() => {
                     setConfirm(false)
                     props.onRun(id, choice)
                   }}>
-                  {L('confirm_yes')}
+                  {say('confirm_yes')}
                 </Button>,
               ]}
             </SpaceBetween>
           </Box>
         }
       >
-        {L('confirm_body')}
+        {body}
       </Modal>
     </ContentLayout>
   )

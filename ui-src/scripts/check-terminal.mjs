@@ -28,6 +28,19 @@
  *   T6 copy        no words in the JSX. Every player-facing line is a key into
  *                  br_core's copy block (br_lib/config/terminals.lua); text
  *                  written between two tags here is a line the owner never saw.
+ *   T7 speaker     every line goes through ONE picker, model.ts's `speaker`,
+ *                  which reads a line's `_solo` sibling outside a squad match
+ *                  (owner, 2026-10-05, round 2: "squad" only in a squad
+ *                  match). A component that indexes the copy, or a `line`
+ *                  helper that bypasses the speaker, fails.
+ *   T8 risk        the Run button's colors are the risk badge's own tokens
+ *                  (terminal.css): every Cloudscape variable it names must be
+ *                  defined in the built CSS, or a Cloudscape bump would leave
+ *                  Run on its fallback while the badge moved.
+ *   T9 chrome      the browser around the site looks the same in both modes
+ *                  (round 2): Browser.tsx takes no Cloudscape control (whose
+ *                  colors are the mode's), terminal.css gives the toolbar no
+ *                  per-mode rule, and nothing tells the desktop the mode.
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -131,6 +144,40 @@ for (const f of sources) {
         fail('T6 copy', rel(f), `"${text}" is written in the JSX -- make it a key into br_core's copy`)
       }
     }
+    // T7: the copy is read through the speaker and nowhere else.
+    if (/\bcopy\s*(\[|\.|\?\.)/.test(bare)) {
+      fail('T7 speaker', rel(f), 'reads the copy directly -- every line goes through model.ts speaker')
+    }
+    if (/\bline\s*\(/.test(bare)) {
+      fail('T7 speaker', rel(f), 'calls line() -- every line goes through model.ts speaker')
+    }
+  }
+  if (rel(f).endsWith('/model.ts') && /export\s+function\s+line\b/.test(bare)) {
+    fail('T7 speaker', rel(f), 'exports a line() reader beside the speaker -- one picker')
+  }
+  if (/type:\s*'mode'/.test(withStrings)) {
+    fail('T9 chrome', rel(f), 'tells the desktop the mode -- the browser around the site has one look')
+  }
+}
+
+// T7: the speaker exists, and picks the solo sibling.
+{
+  const model = readFileSync(join(SRC, 'src', 'model.ts'), 'utf8')
+  if (!/export function speaker\(copy: Copy, squadMatch: boolean\): Say/.test(model)
+      || !model.includes('copy[`${key}_solo`]')) {
+    fail('T7 speaker', 'terminal/src/model.ts', 'no speaker(copy, squadMatch) reading `${key}_solo`')
+  }
+}
+
+// T9: the browser's toolbar is the app's own drawing, in fixed colors.
+{
+  const browser = readFileSync(join(SRC, 'src', 'Browser.tsx'), 'utf8')
+  for (const m of code(browser, false).matchAll(/from\s+['"]@cloudscape-design\/components\/([a-z-]+)['"]/g)) {
+    if (m[1] !== 'icon') fail('T9 chrome', 'terminal/src/Browser.tsx', `imports ${m[1]} -- its colors follow the mode`)
+  }
+  const css = readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8')
+  if (/awsui-dark-mode[^{]*\.browser-/.test(code(css, false))) {
+    fail('T9 chrome', 'terminal/src/terminal.css', 'a .browser- rule per mode -- the toolbar has one look')
   }
 }
 
@@ -146,10 +193,19 @@ if (!existsSync(OUT)) {
   if (scripts.length !== 1) fail('T5 one bundle', rel(OUT), `${scripts.length} scripts: ${scripts.join(', ')}`)
   if (sheets.length !== 1) fail('T5 one bundle', rel(OUT), `${sheets.length} stylesheets: ${sheets.join(', ')}`)
   if (other.length > 0) fail('T5 one bundle', rel(OUT), `unexpected files: ${other.join(', ')}`)
+  // T8: every Cloudscape token the Run button borrows is one Cloudscape defines.
+  const own = readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8')
+  const borrowed = [...own.matchAll(/var\((--color-[a-z0-9-]+)/g)].map((m) => m[1])
+  if (borrowed.length < 6) fail('T8 risk', 'terminal/src/terminal.css', 'the Run colors do not name the badge tokens')
   for (const s of sheets) {
     const css = readFileSync(join(OUT, s), 'utf8')
     if (!/html\{color-scheme:normal!important\}/.test(css)) {
       fail('T4 scheme', `${rel(OUT)}/${s}`, 'html{color-scheme:normal!important} is not in the built CSS')
+    }
+    for (const name of borrowed) {
+      if (!css.includes(`${name}:`)) {
+        fail('T8 risk', `${rel(OUT)}/${s}`, `${name} is not defined by Cloudscape's CSS -- Run and its badge would differ`)
+      }
     }
   }
 }

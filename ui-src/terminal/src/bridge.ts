@@ -9,9 +9,12 @@
  *   app -> desktop   { brTerminal: 1, type: 'ready' }
  *                    { brTerminal: 1, type: 'run', functionId, options? }
  *                    { brTerminal: 1, type: 'escape' }
- *                    { brTerminal: 1, type: 'mode', mode }
  *   desktop -> app   { brTerminal: 1, type: 'state', state, copy?, catalog? }
  *                    { brTerminal: 1, type: 'result', result }
+ *
+ * The light/dark mode is the app's alone since round 2 (owner, 2026-10-05:
+ * "dark/light mode should not influence the browser's appearance, only the
+ * website"), so the desktop is no longer told it.
  *
  * The copy and the catalog come with the opening (and again on 'ready'); the
  * once-a-second update is the state alone, and the app keeps what it has.
@@ -59,12 +62,28 @@ export interface MatchInfo {
   bounties: { name: string; leftMs: number }[]
 }
 
+/** The run this player has loading, as the server times it. */
+export interface RunningInfo {
+  functionId: string
+  runMs: number
+  leftMs: number
+}
+
 /** What br_core opens the computer with, and pushes again once a second. */
 export interface TerminalState {
   terminalId: string
   functions: FunctionState[]
   keyHeld: boolean
   squadUsed: boolean
+  /**
+   * Is the player actively in a squad match? Every line that says squad is
+   * picked by it (model.ts `speaker`), and the squad-only functions shown.
+   */
+  squadMatch: boolean
+  /** The player's Volts, as every other Volts display shows them; null when not sent. */
+  volts: number | null
+  /** A run of theirs that is loading, or null. */
+  running: RunningInfo | null
   /** The player's gamertag, the app's signed-in username. */
   player: string | null
   match: MatchInfo | null
@@ -84,19 +103,34 @@ export interface FunctionDef {
   risk: 'low' | 'medium' | 'high'
   implemented: boolean
   options: OptionDef[]
+  /** Volts a run costs; 0 is free. */
+  cost: number
+  /** Only listed in a squad match. */
+  squadOnly: boolean
+  /** The category it is listed under outside a squad match, or null. */
+  soloCategory: string | null
 }
 
 /** The registry as the app reads it. */
 export interface Catalog {
   functions: FunctionDef[]
   categories: string[]
+  /** The currency's name (config/market.lua), written after a Volts figure. */
+  currency: string
 }
 
-/** The server's answer to a run. `code` names the copy line to show. */
+/**
+ * The server's answer to a run. `code` names the copy line to show:
+ * 'running' (accepted, loading for runMs), 'done', or why not. `cost` and
+ * `balance` come with no_volts; `balance` with a paid run's done.
+ */
 export interface RunResult {
   functionId: string
   ok: boolean
   code: string | null
+  runMs: number | null
+  cost: number | null
+  balance: number | null
 }
 
 /** Every player-facing line, keyed; from br_lib/config/terminals.lua. */
@@ -162,11 +196,23 @@ export function parseState(v: unknown): TerminalState | null {
     const available = f.available === true
     functions.push({ id, available, reason: available ? null : code(f.reason) })
   }
+  let running: RunningInfo | null = null
+  if (isObj(v.running)) {
+    const fid = code(v.running.functionId)
+    const runMs = num(v.running.runMs)
+    const leftMs = num(v.running.leftMs)
+    if (fid !== null && runMs !== null && runMs > 0 && leftMs !== null) {
+      running = { functionId: fid, runMs, leftMs: Math.max(0, Math.min(runMs, leftMs)) }
+    }
+  }
   return {
     terminalId: v.terminalId,
     functions,
     keyHeld: v.keyHeld === true,
     squadUsed: v.squadUsed === true,
+    squadMatch: v.squadMatch === true,
+    volts: num(v.volts),
+    running,
     player: str(v.player),
     match: parseMatch(v.match),
   }
@@ -199,17 +245,26 @@ export function parseCatalog(v: unknown): Catalog | null {
       const def = typeof o.default === 'string' && choices.includes(o.default) ? o.default : (choices[0] ?? '')
       options.push({ id: oid, choices, default: def })
     }
-    functions.push({ id, category, risk, implemented: f.implemented === true, options })
+    const cost = num(f.cost)
+    functions.push({
+      id, category, risk, implemented: f.implemented === true, options,
+      cost: cost !== null && cost > 0 ? Math.floor(cost) : 0,
+      squadOnly: f.squadOnly === true,
+      soloCategory: code(f.soloCategory),
+    })
   }
   const categories = list(v.categories).filter((c): c is string => typeof c === 'string' && ID.test(c))
-  return { functions, categories }
+  return { functions, categories, currency: typeof v.currency === 'string' ? v.currency : '' }
 }
 
 export function parseResult(v: unknown): RunResult | null {
   if (!isObj(v)) return null
   const functionId = code(v.functionId)
   if (functionId === null) return null
-  return { functionId, ok: v.ok === true, code: code(v.code) }
+  return {
+    functionId, ok: v.ok === true, code: code(v.code),
+    runMs: num(v.runMs), cost: num(v.cost), balance: num(v.balance),
+  }
 }
 
 function post(msg: Record<string, unknown>): void {
@@ -236,11 +291,6 @@ export function reload(): void {
 /** Close the computer: Escape, or Sign out. */
 export function signOut(): void {
   post({ type: 'escape' })
-}
-
-/** Tell the desktop the app went light or dark, so the window's tab follows. */
-export function tellMode(mode: 'light' | 'dark'): void {
-  post({ type: 'mode', mode })
 }
 
 export interface Listeners {
