@@ -45,6 +45,10 @@
 --                    them on the squad beacon (server/party.lua), which now
 --                    carries `bounty` so their map and panel can say so.
 --
+-- AND NEITHER PUTS A SQUAD UNDER GHOST ON ANYBODY'S MAP (wave A): its members
+-- drop out of every Scan list and its bounty out of every bounty list until
+-- Ghost ends -- `hidden` below, the one predicate Pulse asks too.
+--
 -- SEASON 2 ONLY, by construction: nothing here runs until a terminal function
 -- has, and every job asks the season too.
 
@@ -130,6 +134,18 @@ function T.anchorOf(src, session)
     return nil, nil, nil
 end
 
+--- IS SQUAD `key` HIDDEN FROM OTHER SQUADS' MARKS RIGHT NOW? Ghost's
+--- predicate (server/terminalfx/ghost.lua, BR.Terminal.hidden), the ONE
+--- question Scan's push, the bounty's push and Pulse all ask before they put
+--- anybody on another squad's map. No squad is while Ghost is not loaded.
+--- @param m table
+--- @param key string
+--- @param now number
+--- @return boolean
+local function hidden(m, key, now)
+    return T.hidden ~= nil and T.hidden(m, key, now) == true
+end
+
 -- ------------------------------------------------------------------ Scan ---
 
 --- Start a squad's scan in this match: from now to the end of the match.
@@ -142,12 +158,14 @@ function T.startScan(m, key, by, now)
     T.pushScans(m)
 end
 
---- Every opponent of `key` this match has a position for.
+--- Every opponent of `key` this match has a position for -- but a squad
+--- under Ghost.
 --- @return table[] { { s, x, y, down } }
-local function opponentsOf(m, key)
+local function opponentsOf(m, key, now)
     local out = {}
     BR.Roster.each(function(e) return e.matchId == m.id end, function(src, e)
-        if MARKED[e.state] and e.pos and TS.squadKey(e, src) ~= key then
+        local theirs = TS.squadKey(e, src)
+        if MARKED[e.state] and e.pos and theirs ~= key and not hidden(m, theirs, now) then
             out[#out + 1] = { s = src, x = e.pos.x + 0.0, y = e.pos.y + 0.0,
                               down = e.state == BR.PlayerState.DBNO or nil }
         end
@@ -162,8 +180,9 @@ end
 function T.pushScans(m)
     local st = m.terminalFx
     if not st or next(st.scans) == nil then return end
+    local now = GetGameTimer()
     for key in pairs(st.scans) do
-        local payload = { matchId = m.id, list = opponentsOf(m, key) }
+        local payload = { matchId = m.id, list = opponentsOf(m, key, now) }
         for _, src in ipairs(T.squadOf(m, key)) do
             TriggerClientEvent(BR.Net.TERMINAL_SCAN, src, payload)
         end
@@ -254,7 +273,12 @@ function T.pushBounties(m, now)
     for src, b in pairs(st.bounties) do
         if not live(m, b, now) then st.bounties[src] = nil end
     end
-    local active = T.bountiesOf(m, now)
+    -- A BOUNTY ON A SQUAD UNDER GHOST IS ON NOBODY'S MAP (its own squad's
+    -- beacon still carries it), and the match panel still lists it.
+    local active = {}
+    for _, b in ipairs(T.bountiesOf(m, now)) do
+        if not hidden(m, b.squad, now) then active[#active + 1] = b end
+    end
     if #active == 0 then
         if st.shown then
             st.shown = false

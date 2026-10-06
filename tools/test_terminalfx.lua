@@ -1614,6 +1614,121 @@ do
     season(2)
 end
 
+local function scanIds(src)
+    local d = lastOf(BR.Net.TERMINAL_SCAN, src)
+    local ids = {}
+    for _, p in ipairs(d and d.list or {}) do ids[#ids + 1] = p.s end
+    return table.concat(ids, ',')
+end
+
+describe('Ghost: the squad drops off other squads\' Scan at once, and comes back when it ends')
+do
+    local row = T.row('ghost')
+    ok(row and row.implemented == true and T.FUNCTIONS.ghost ~= nil, 'ghost is built')
+    reset()
+    local m = lobby()
+    runAt(1, 'scan')
+    eq(scanIds(1), '3,4,5', 'A\'s Scan shows B and the solo player')
+    keys[3] = true
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = SITE.z }
+    local r = runAt(3, 'ghost', { duration = '120' })
+    ok(r and r.code == 'done', 'B runs Ghost, 2 minutes', r and r.code)
+    eq(scanIds(1), '5', 'and drops off A\'s Scan at once -- both of B, the downed one too')
+    eq(scanIds(2), '5', 'for all of A')
+    ok(T.hidden(m, 'squad:B', gameMs) and not T.hidden(m, 'squad:A', gameMs), 'B is hidden, A is not')
+    eq(r and r.toast, COPY.ghost_done, 'the squad done line')
+
+    -- 119 s on, still hidden; 120 s, back on the next push.
+    local t0 = gameMs
+    gameMs = t0 + 119000
+    jobs['terminal.ghost']()
+    jobs['terminal.scan']()
+    eq(scanIds(1), '5', 'still hidden at 1:59')
+    gameMs = t0 + 120000
+    jobs['terminal.ghost']()
+    jobs['terminal.scan']()
+    eq(scanIds(1), '3,4,5', 'and back on A\'s Scan when the two minutes are up')
+    ok(m.terminalFx.ghosts['squad:B'] == nil, 'the record is gone')
+end
+
+describe('Ghost: a bounty marker on the squad is hidden too; the squad\'s own view is not')
+do
+    reset()
+    local m = lobby()
+    runAt(1, 'scan')                                   -- p1, squad A, has the bounty
+    ok(#lastOf(BR.Net.TERMINAL_BOUNTY, 3).list == 1, 'B sees A\'s bounty')
+    local said = devRun(1, 'ghost duration=240')
+    ok(said:find('ok (done)', 1, true) ~= nil, 'A goes dark (brterminal run ghost duration=240)', said)
+    ok(#lastOf(BR.Net.TERMINAL_BOUNTY, 3).list == 0 and #lastOf(BR.Net.TERMINAL_BOUNTY, 5).list == 0,
+        'the bounty marker leaves every other map at once')
+    ok(T.hasBounty(1), 'the bounty itself stands (its squad\'s beacon still carries it)')
+    local info = T.matchInfo(3, gameMs)
+    ok(info.bounties and #info.bounties == 1, 'and the match panel still lists it: the lobby was told')
+    gameMs = gameMs + 1000
+    local n = #eventsOf(BR.Net.TERMINAL_BOUNTY, 3)
+    jobs['terminal.bounty']()
+    eq(#eventsOf(BR.Net.TERMINAL_BOUNTY, 3), n, 'and nothing more is pushed while it is hidden')
+    eq(scanIds(1), '3,4,5', 'A\'s own Scan is untouched: Ghost hides A from others, not others from A')
+
+    -- FOUR MINUTES, THEN THE BOUNTY'S MARKER IS BACK.
+    gameMs = gameMs + 240000
+    jobs['terminal.ghost']()
+    jobs['terminal.bounty']()
+    ok(#lastOf(BR.Net.TERMINAL_BOUNTY, 3).list == 1, 'four minutes on, the marker is back on B\'s map')
+    local _ = m
+end
+
+describe('Ghost: Pulse does not find a squad under it')
+do
+    reset()
+    local m = lobby()
+    roster[3].pos = { x = SITE.x + 50.0, y = SITE.y, z = 30.0 }
+    roster[5].pos = { x = SITE.x + 60.0, y = SITE.y, z = 30.0 }
+    devRun(3, 'ghost')
+    runAt(1, 'pulse')
+    eq(pulseIds(lastOf(BR.Net.TERMINAL_PULSE, 1)), '5', 'the solo player is found; B, 50 m off, is not')
+    eq(noticeIndex('A pulse detected you', 3), nil, 'and B is not told it was detected')
+
+    -- A FOUND PLAYER WHO GOES DARK MEANWHILE DROPS OFF THE NEXT PUSH.
+    reset()
+    m = lobby()
+    roster[3].pos = { x = SITE.x + 50.0, y = SITE.y, z = 30.0 }
+    roster[5].pos = { x = SITE.x + 60.0, y = SITE.y, z = 30.0 }
+    runAt(1, 'pulse')
+    eq(pulseIds(lastOf(BR.Net.TERMINAL_PULSE, 1)), '3,5', 'found: B\'s p3 and the solo player')
+    devRun(5, 'ghost')
+    eq(pulseIds(lastOf(BR.Net.TERMINAL_PULSE, 1)), '3', 'the solo player goes dark: off the pulse at once')
+    local _ = m
+end
+
+describe('Ghost: the match ending, Season 1, a solo player, the predicate itself')
+do
+    reset()
+    local m = lobby()
+    devRun(3, 'ghost')
+    ok(T.hidden(m, 'squad:B', gameMs), 'hidden in a match being played')
+    m.state = BR.MatchState.ENDED
+    ok(not T.hidden(m, 'squad:B', gameMs), 'not once the match is over')
+    m.state = BR.MatchState.PLAYING
+    ok(not T.hidden(m, nil, gameMs) and not T.hidden(nil, 'squad:B', gameMs), 'nothing for no squad or no match')
+    season(1)
+    ok(not T.hidden(m, 'squad:B', gameMs), 'nobody is hidden off Season 2')
+    jobs['terminal.ghost']()
+    ok(m.terminalFx.ghosts == nil, 'and the ghosts are forgotten')
+    season(2)
+    ok(not T.hidden(m, 'squad:B', gameMs), 'so Season 2 coming back does not bring it back')
+
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    keys[1] = true
+    local r = runAt(1, 'ghost', { duration = '240' })
+    eq(r and r.toast, COPY.ghost_done_solo, 'a solo player reads the solo done line')
+    ok(T.hidden(m, 'solo:1', gameMs + 239000) and not T.hidden(m, 'solo:1', gameMs + 240000),
+        'hidden for exactly the 4 minutes chosen')
+end
+
 -- =========================================================================
 -- PART D -- the client
 -- =========================================================================

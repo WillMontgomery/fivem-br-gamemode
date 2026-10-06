@@ -591,7 +591,7 @@ BR.Config.Terminals = {
         reboot_done = 'Your squad is back.',
         reboot_description = 'Reboot. Their squad is back.',
 
-        -- Ghost (suggested; offline)
+        -- Ghost (suggested; LIVE since wave A, 2026-10-06)
         ghost_name = 'Ghost',
         ghost_summary = 'Hides your squad from Scan, Pulse and bounty markers for a while.',
         ghost_summary_solo = 'Hides you from Scan, Pulse and bounty markers for a while.',
@@ -1009,9 +1009,9 @@ BR.Config.Terminals = {
         -- from other players' Scan, Pulse and bounty markers -- what Comms
         -- blackout, filed under disruption, does to every other squad's
         -- teammate markers.
-        { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = false,
+        { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = true,
           soloCategory = 'disruption',
-          options = { { id = 'duration', choices = { '120', '240' }, default = '120' } } },
+          options = { { id = 'duration', choices = { '120', '240' }, default = '120' } } },  -- seconds
         { id = 'emp',            category = 'disruption', risk = 'medium', implemented = false,
           options = {
               { id = 'radius', choices = { '300', '600' }, default = '300' },
