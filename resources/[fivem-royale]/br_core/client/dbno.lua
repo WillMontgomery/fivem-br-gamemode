@@ -3226,7 +3226,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- underfoot, which is the shape #274 asked not to ship.
     --
     -- AND A SEASON 2 TERMINAL'S PLATE IS THE FOURTH (#396): a terminal stands
-    -- in a building where loot lies on the floor, and its hold must not also
+    -- in a building where loot lies on the floor, and its press must not also
     -- claim the crate underfoot. BR.Yubikey.prompting is true while its plate
     -- is up.
     local busy = target ~= nil or holding ~= nil
