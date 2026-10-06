@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import AppLayout from '@cloudscape-design/components/app-layout'
 import Autosuggest from '@cloudscape-design/components/autosuggest'
 import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group'
@@ -25,6 +25,7 @@ import {
   type Browsing, type NavTarget, type Opening, type Progress, type Route,
 } from './model'
 import { loadMode, saveMode, showMode, type UiMode } from './mode'
+import { voltsLine } from './Volts'
 
 /**
  * THE TERMINAL APP, "Control Tower": a web page in a web browser (#396, owner,
@@ -307,9 +308,13 @@ export function App(): ReactElement {
   // ── the top bar ──────────────────────────────────────────────────────────
   // THE PLAYER'S VOLTS, BESIDE THE GAMERTAG (round 2: "we need a way for them
   // to see their balance"), the figure every other Volts display shows,
-  // pushed again with every state.
+  // pushed again with every state. IN THE VOLTS STYLE (round 4): a utility's
+  // text is a string, so the top bar is marked `terminal-topnav-volts` while
+  // the balance is its FIRST item, and terminal.css draws that item as
+  // Volts.tsx draws every other Volts (check-terminal T12).
   const utilities: TopNavigationProps.Utility[] = []
-  if (route.page !== 'login' && state && state.volts !== null) {
+  const balanceShown = route.page !== 'login' && state !== null && state.volts !== null
+  if (balanceShown && state && state.volts !== null) {
     utilities.push({ type: 'button', text: voltsText(state.volts, currency), disableUtilityCollapse: true })
   }
   utilities.push({
@@ -403,20 +408,19 @@ export function App(): ReactElement {
     })
   }
   if (flash) {
-    let text: string
+    // EVERY VOLTS IN A RUN'S ANSWER IN THE VOLTS STYLE (round 4): the new
+    // balance, and no_volts's word, cost and balance.
+    let text: ReactNode[]
     if (flash.ok) {
-      text = say(`${flash.functionId}_done`)
+      text = voltsLine(say(`${flash.functionId}_done`), currency)
       if (flash.balance !== null) {
-        const b = fill(say('balance_new'), { volts: voltsText(flash.balance, currency) })
-        text = text !== '' ? `${text} ${b}` : b
+        const b = voltsLine(say('balance_new'), currency, { volts: flash.balance })
+        text = text.length > 0 ? [...text, ' ', ...b] : b
       }
     } else if (flash.code === 'no_volts') {
-      text = fill(say('no_volts'), {
-        cost: voltsText(flash.cost ?? 0, currency),
-        balance: voltsText(flash.balance ?? 0, currency),
-      })
+      text = voltsLine(say('no_volts'), currency, { cost: flash.cost ?? 0, balance: flash.balance ?? 0 })
     } else {
-      text = say(flash.code) || say('unavailable')
+      text = voltsLine(say(flash.code) || say('unavailable'), currency)
     }
     notes.push({
       id: 'result',
@@ -441,10 +445,12 @@ export function App(): ReactElement {
             key="cards"
             state={state}
             functions={shown}
+            categories={categories}
             say={say}
+            currency={currency}
             route={route}
             onOpen={(id) => go({ page: 'function', id })}
-            onQuery={(query) => setBrowsing(rewrite(browsingRef.current, { ...route, query }))}
+            onRoute={(next) => setBrowsing(rewrite(browsingRef.current, next))}
           />,
         ]}
       </SpaceBetween>
@@ -459,6 +465,7 @@ export function App(): ReactElement {
           fn={fnById.get(route.id)}
           say={say}
           currency={currency}
+          squadMatch={squadMatch}
           busy={pending !== null || progress !== null}
           onConfirmChange={(open) => { confirmOpen.current = open }}
           onRun={(id, options) => {
@@ -470,9 +477,9 @@ export function App(): ReactElement {
       )
     }
   } else if (state && route.page === 'howto') {
-    content = <HowTo say={say} />
+    content = <HowTo say={say} currency={currency} />
   } else if (state && route.page === 'privacy') {
-    content = <Privacy say={say} />
+    content = <Privacy say={say} currency={currency} />
   }
 
   return (
@@ -487,7 +494,7 @@ export function App(): ReactElement {
           onReload={() => nav({ kind: 'reload' })}
           labels={{ back: say('aria_back'), forward: say('aria_forward'), reload: say('aria_reload'), address: say('aria_address') }}
         />
-        {opening === null && <div className="terminal-topnav">
+        {opening === null && <div className={balanceShown ? 'terminal-topnav terminal-topnav-volts' : 'terminal-topnav'}>
           <TopNavigation
             identity={{
               href: hrefOf(HOME),

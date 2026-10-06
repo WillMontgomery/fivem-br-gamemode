@@ -352,3 +352,107 @@ body.awsui-dark-mode {
   bottom: 0;
   background-color: #ffffff;
 }
+
+/*
+ * ═══ VOLTS, IN THE GAME'S VOLTS STYLE (owner, 2026-10-06, round 4) ═══
+ *
+ * "Any mention of volts must use our proper font for that and the gold color."
+ * The game's: br_ui's display face, Anton (ui-src/src's `font-display`), in the
+ * gold the owner gave Volts, `--color-volts` #d9ae35 (ui-src/src/index.css) --
+ * the same in both of the site's modes, as the currency's color is the
+ * game's, not the site's. Anton is bundled here from @fontsource/anton, the
+ * latin subset br_ui ships, under the SIL Open Font License 1.1 (its license
+ * file is copied beside the font, public/assets/). It has one weight, 400,
+ * so nothing here asks the browser to fake a bold one.
+ *
+ * Volts.tsx puts `.terminal-volts` on every Volts amount and every mention of
+ * the word; the top bar's balance is a TopNavigation utility's string, so
+ * App.tsx marks the top bar `.terminal-topnav-volts` while the balance is its
+ * first utility, and the rule below dresses that utility the same way.
+ * scripts/check-terminal.mjs T12 holds every reader to it.
+ */
+@font-face {
+  font-family: 'Anton';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('../../node_modules/@fontsource/anton/files/anton-latin-400-normal.woff2') format('woff2');
+}
+
+body {
+  --terminal-volts-color: #d9ae35;
+  --terminal-volts-font: 'Anton', 'Segoe UI', sans-serif;
+}
+
+.terminal-volts,
+.terminal-topnav-volts [data-utility-index="0"] button,
+.terminal-topnav-volts [data-utility-index="0"] a,
+.terminal-topnav-volts [data-utility-index="0"] button *,
+.terminal-topnav-volts [data-utility-index="0"] a * {
+  font-family: var(--terminal-volts-font) !important;
+  font-weight: 400 !important;
+  font-style: normal;
+  letter-spacing: 0.02em;
+  color: var(--terminal-volts-color) !important;
+}
+
+/*
+ * ═══ A CARD'S TITLE, THEN "SQUADS!" (owner, 2026-10-06, round 4) ═══
+ *
+ * The title and, on a function that reaches the whole squad in a squad match,
+ * the blue "Squads!" after it (Squads.tsx): one row that wraps, the link on
+ * the title's line while it fits.
+ */
+.terminal-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 2px;
+  min-width: 0;
+}
+
+.terminal-card-head > .terminal-card-title {
+  flex: 0 1 auto;
+}
+
+/*
+ * "Squads!": the AWS console's blue, dotted "New" from the owner's
+ * screenshot -- a popover's text trigger (Cloudscape draws the dashed line
+ * under it), in Cloudscape's own link blue (its token, so it follows the
+ * mode as every link does), bold, at the body's size.
+ */
+.terminal-squads,
+.terminal-squads button {
+  color: var(--color-text-link-default-qabnuk, #006ce0) !important;
+  font-size: 14px !important;
+  line-height: 20px !important;
+  font-weight: 700 !important;
+  white-space: nowrap;
+}
+
+/*
+ * ═══ HOME'S FILTERS (owner, 2026-10-06, round 4) ═══
+ *
+ * The text search, then the five filters -- category, risk, cost, bounty,
+ * status -- in one row that wraps on a narrow window: the search takes what
+ * is left, each Select at least wide enough for its label and its longest
+ * choice's start.
+ */
+.terminal-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+}
+
+.terminal-filter-text {
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+
+.terminal-filter-select {
+  flex: 0 1 auto;
+  min-width: 150px;
+  max-width: 300px;
+}

@@ -514,6 +514,151 @@ function subject(selector) {
   return { classes, pseudo: pseudo ? `::${pseudo}` : '' }
 }
 
+// T12: VOLTS IN THE VOLTS STYLE (owner, 2026-10-06, round 4: "Any mention of
+// volts must use our proper font for that and the gold color").
+//
+//   (a) a Volts amount is drawn by Volts.tsx (VoltsAmount, voltsLine,
+//       voltsLines) and nowhere else: voltsText() -- the figure and the word
+//       as a bare string -- is called only by model.ts and Volts.tsx, and once
+//       by App.tsx for the top bar's balance, a TopNavigation utility's string,
+//       which must be the bar's FIRST utility while App.tsx marks the bar
+//       `terminal-topnav-volts`
+//   (b) no fill() fills a Volts token ({volts}, {cost}, {balance}) as text
+//   (c) every line of the copy block that says Volts -- a Volts token, or the
+//       currency's word (config/market.lua) -- is read only as
+//       voltsLine(say(...)) or voltsLines(say(...)), by its key or, for a
+//       function's own `<id>_<part>` line, by the template that reads it
+//   (d) the style is the game's: `.terminal-volts` and the top bar's
+//       utility in Anton and `--terminal-volts-color`, which is br_ui's
+//       `--color-volts`, and Anton's face from the bundled woff2 (the build's
+//       half is in "The build", below)
+const FONT_FILES = {
+  'assets/anton-latin-400-normal.woff2': 'files/anton-latin-400-normal.woff2',
+  'assets/LICENSE-OFL-1.1-anton.txt': 'LICENSE',
+}
+{
+  const R = 'T12 volts'
+  const OK_TEXT = new Set(['terminal/src/model.ts', 'terminal/src/Volts.tsx'])
+  for (const f of sources) {
+    const r = rel(f)
+    const withStrings = code(readFileSync(f, 'utf8'), false)
+    const calls = [...withStrings.matchAll(/\bvoltsText\s*\(/g)].length
+    if (r === 'terminal/src/App.tsx') {
+      const pushes = [...withStrings.matchAll(/\butilities\.push\(([^\n]*)/g)].map((m) => m[1])
+      if (calls !== 1 || !/^\{ type: 'button', text: voltsText\(/.test(pushes[0] ?? '')) {
+        fail(R, r, 'voltsText() is App.tsx\'s only for the top bar\'s balance, its first utility -- draw a Volts amount with Volts.tsx')
+      }
+      if (!/const balanceShown = /.test(withStrings)
+          || !/className=\{balanceShown \? 'terminal-topnav terminal-topnav-volts' : 'terminal-topnav'\}/.test(withStrings)) {
+        fail(R, r, 'the top bar is not marked terminal-topnav-volts while it shows the balance -- the balance would not be in the Volts style')
+      }
+    } else if (!OK_TEXT.has(r) && calls > 0) {
+      fail(R, r, 'draws a Volts amount with voltsText() -- use Volts.tsx (VoltsAmount, voltsLine)')
+    }
+    if (r !== 'terminal/src/model.ts') {
+      // Each fill( call's own arguments, to its closing parenthesis.
+      for (const m of withStrings.matchAll(/\bfill\(/g)) {
+        let depth = 1
+        let i = m.index + m[0].length
+        for (; i < withStrings.length && depth > 0; i++) {
+          if (withStrings[i] === '(') depth++
+          else if (withStrings[i] === ')') depth--
+        }
+        if (/\b(volts|cost|balance)\s*[:,}]/.test(withStrings.slice(m.index, i))) {
+          fail(R, r, 'fills a Volts token with fill() -- voltsLine(text, currency, { volts }) draws it in the Volts style')
+        }
+      }
+    }
+  }
+
+  // (c) The copy block's Volts lines, read only through voltsLine(s).
+  const cfgDir = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_lib', 'config')
+  const lua = readFileSync(join(cfgDir, 'terminals.lua'), 'utf8')
+  const currency = /BR\.Config\.Market\.currency\s*=\s*'([^']+)'/.exec(readFileSync(join(cfgDir, 'market.lua'), 'utf8'))?.[1]
+  if (!currency) fail(R, 'br_lib/config/market.lua', 'no currency name found -- cannot tell which lines say Volts')
+  const ids = [...lua.matchAll(/\{ id = '([a-z_]+)'/g)].map((m) => m[1])
+  const word = new RegExp(`\\b${currency ?? 'Volts'}\\b`)
+  const voltsKeys = new Set()
+  for (const m of lua.matchAll(/^\s+([a-z_]+) = (['"])(.*)\2,$/gm)) {
+    if (/\{(volts|cost|balance)\}/.test(m[3]) || word.test(m[3])) voltsKeys.add(m[1].replace(/_solo$/, ''))
+  }
+  if (!voltsKeys.has('no_volts') || !voltsKeys.has('balance_new')) {
+    fail(R, 'br_lib/config/terminals.lua', 'the reader found no Volts lines -- it is broken, not the copy clean')
+  }
+  const tsx = sources.filter((f) => extname(f) === '.tsx').map((f) => [rel(f), code(readFileSync(f, 'utf8'), false)])
+  const wrapped = (text, at) => /volts(Line|Lines)\(\s*$/.test(text.slice(Math.max(0, at - 40), at))
+  for (const key of voltsKeys) {
+    const id = ids.find((i) => key.startsWith(`${i}_`))
+    const reads = [new RegExp(`say\\(\\s*'${key}'\\s*\\)`, 'g')]
+    if (id) reads.push(new RegExp(`say\\(\\s*\`[^\`]*\\}${key.slice(id.length)}\`\\s*\\)`, 'g'))
+    for (const [r, text] of tsx) {
+      for (const re of reads) {
+        for (const m of text.matchAll(re)) {
+          if (!wrapped(text, m.index)) {
+            fail(R, r, `${m[0]} says Volts (${key}) but is not read as voltsLine(say(...)) -- its Volts would not be in the Volts style`)
+          }
+        }
+      }
+    }
+  }
+
+  // (d) The style itself.
+  const volts = readFileSync(join(SRC, 'src', 'Volts.tsx'), 'utf8')
+  const drawn = [...code(volts, false).matchAll(/className="terminal-volts"/g)].length
+  if (drawn < 2) fail(R, 'terminal/src/Volts.tsx', 'VoltsAmount and voltsLine do not both draw className="terminal-volts"')
+  const css = code(readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8'), false)
+  const gold = /--color-volts:\s*(#[0-9a-f]{6})/i.exec(readFileSync(join(ROOT, 'src', 'index.css'), 'utf8'))?.[1]
+  const own = /--terminal-volts-color:\s*(#[0-9a-f]{6})/i.exec(css)?.[1]
+  if (!gold || !own || gold.toLowerCase() !== own.toLowerCase()) {
+    fail(R, 'terminal/src/terminal.css', `--terminal-volts-color (${own}) is not br_ui's --color-volts (${gold})`)
+  }
+  if (!/--terminal-volts-font:\s*'Anton'/.test(css)) {
+    fail(R, 'terminal/src/terminal.css', '--terminal-volts-font is not Anton, the game\'s display face')
+  }
+  const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find((m) => m[1].split(',').map((s) => s.trim()).includes('.terminal-volts'))
+  const sels = rule ? rule[1].split(',').map((s) => s.trim()) : []
+  if (!rule || !/font-family:\s*var\(--terminal-volts-font\)\s*!important/.test(rule[2])
+      || !/color:\s*var\(--terminal-volts-color\)\s*!important/.test(rule[2])) {
+    fail(R, 'terminal/src/terminal.css', '.terminal-volts does not set the Volts face and gold')
+  } else if (!sels.includes('.terminal-topnav-volts [data-utility-index="0"] button')
+      || !sels.includes('.terminal-topnav-volts [data-utility-index="0"] button *')) {
+    fail(R, 'terminal/src/terminal.css', 'the top bar\'s balance (its first utility, under .terminal-topnav-volts) is not in the Volts rule')
+  }
+  if (!/@font-face\s*\{[^}]*font-family:\s*'Anton'[^}]*@fontsource\/anton\/files\/anton-latin-400-normal\.woff2/.test(css)) {
+    fail(R, 'terminal/src/terminal.css', 'no @font-face for Anton from @fontsource/anton\'s latin woff2')
+  }
+}
+
+// T13: "SQUADS!" ONLY ON A SQUAD-WIDE ROW, AND ONLY IN A SQUAD MATCH (owner,
+// 2026-10-06, round 4; round 2's rule that a solo player is never told
+// "squad"). Every <Squads> the app draws sits behind model.ts showsSquads(),
+// which asks both; Squads.tsx draws nothing when the speaker gives it no words
+// (the empty _solo lines); and its words are the owner's keys.
+{
+  const R = 'T13 squads'
+  const model = code(readFileSync(join(SRC, 'src', 'model.ts'), 'utf8'), false)
+  if (!/export function showsSquads\(def: FunctionDef, squadMatch: boolean\): boolean \{\s*return squadMatch && def\.squadWide === true\s*\}/.test(model)) {
+    fail(R, 'terminal/src/model.ts', 'showsSquads does not ask both the squad match and the row\'s squadWide')
+  }
+  let drawn = 0
+  for (const f of sources.filter((s) => extname(s) === '.tsx')) {
+    const text = code(readFileSync(f, 'utf8'), false)
+    for (const m of text.matchAll(/<Squads\b/g)) {
+      drawn++
+      const line = text.slice(text.lastIndexOf('\n', m.index) + 1, m.index)
+      if (!/showsSquads\([^)]*\) \? $/.test(line)) {
+        fail(R, rel(f), '<Squads> is drawn without showsSquads(def, squadMatch) ? in front of it')
+      }
+    }
+  }
+  if (drawn < 2) fail(R, 'terminal/src', `<Squads> is drawn ${drawn} time(s) -- a card's title and a function page's title each draw it`)
+  const squads = code(readFileSync(join(SRC, 'src', 'Squads.tsx'), 'utf8'), false)
+  if (!/say\('squads_link'\)/.test(squads) || !/say\('squads_popover'\)/.test(squads)
+      || !/if \(link === '' \|\| body === ''\) return null/.test(squads)) {
+    fail(R, 'terminal/src/Squads.tsx', 'Squads does not draw the owner\'s squads_link and squads_popover, or draws them when the speaker gives none')
+  }
+}
+
 // The build.
 if (!existsSync(OUT)) {
   fail('T5 one bundle', rel(OUT), 'no build output -- run the build first')
@@ -521,11 +666,28 @@ if (!existsSync(OUT)) {
   const files = walk(OUT).map((f) => relative(OUT, f).replace(/\\/g, '/')).sort()
   const scripts = files.filter((f) => f.endsWith('.js'))
   const sheets = files.filter((f) => f.endsWith('.css'))
-  const other = files.filter((f) => !f.endsWith('.js') && !f.endsWith('.css') && f !== 'index.html')
+  // THE VOLTS FACE (round 4, T12) is the one other thing the build ships:
+  // Anton's latin woff2 and its license, each byte for byte the package's.
+  const other = files.filter((f) => !f.endsWith('.js') && !f.endsWith('.css') && f !== 'index.html'
+    && !Object.hasOwn(FONT_FILES, f))
   if (!files.includes('index.html')) fail('T5 one bundle', rel(OUT), 'no index.html')
   if (scripts.length !== 1) fail('T5 one bundle', rel(OUT), `${scripts.length} scripts: ${scripts.join(', ')}`)
   if (sheets.length !== 1) fail('T5 one bundle', rel(OUT), `${sheets.length} stylesheets: ${sheets.join(', ')}`)
   if (other.length > 0) fail('T5 one bundle', rel(OUT), `unexpected files: ${other.join(', ')}`)
+  for (const [f, from] of Object.entries(FONT_FILES)) {
+    const src = join(ROOT, 'node_modules', '@fontsource', 'anton', from)
+    if (!files.includes(f)) {
+      fail('T12 volts', rel(OUT), `${f} is not in the build -- the Volts face, or its license, does not ship`)
+    } else if (!existsSync(src) || !readFileSync(join(OUT, f)).equals(readFileSync(src))) {
+      fail('T12 volts', `${rel(OUT)}/${f}`, `is not @fontsource/anton's ${from}, byte for byte`)
+    }
+  }
+  for (const s of sheets) {
+    const css = readFileSync(join(OUT, s), 'utf8')
+    if (!/@font-face\{font-family:Anton;[^}]*src:url\(\.\/anton-latin-400-normal\.woff2\)/.test(css)) {
+      fail('T12 volts', `${rel(OUT)}/${s}`, 'no @font-face for Anton from the bundled woff2 -- the Volts face would fall back')
+    }
+  }
   // T8: every Cloudscape token the Run button borrows is one Cloudscape defines.
   const own = readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8')
   const borrowed = [...own.matchAll(/var\((--color-[a-z0-9-]+)/g)].map((m) => m[1])

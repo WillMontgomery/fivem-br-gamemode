@@ -30,9 +30,10 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  HOME, addressOf, arrive, canBack, canForward, current, hrefOf, indicatorOf, loadMs, matches, navigate,
-  openingEnds, openingStarts, pageLinks, progressAfter, rewrite, routeOfHref, shownCategories, shownFunctions,
-  speaker, startBrowsing, startOpening, statusOf, step, trailOf, voltsText,
+  HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, costOf, current, filtersOf, hrefOf,
+  indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, progressAfter,
+  rewrite, routeOfHref, sameRoute, showsSquads, shownCategories, shownFunctions, speaker, startBrowsing,
+  startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
 } from '../terminal/src/model.ts'
 import { parseCatalog, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
 
@@ -373,7 +374,8 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   // included).
   const src = join(here, '..', 'terminal', 'src')
   const missing = []
-  const files = ['App.tsx', 'FunctionCards.tsx', 'FunctionPage.tsx', 'HowTo.tsx', 'Login.tsx', 'MatchPanel.tsx', 'Privacy.tsx', 'model.ts']
+  const files = ['App.tsx', 'FunctionCards.tsx', 'FunctionPage.tsx', 'HowTo.tsx', 'Login.tsx', 'MatchPanel.tsx', 'Privacy.tsx',
+    'Squads.tsx', 'Volts.tsx', 'model.ts']
   let named = 0
   for (const f of files) {
     const text = readFileSync(join(src, f), 'utf8')
@@ -409,6 +411,121 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
     'nothing ends that was not loading')
   const none = openingStarts(startOpening(), null, () => 0.5)
   ok(none.opening.ms === 0 && none.tab.ms === 0, 'a catalog with no range: no wait')
+}
+
+// ── round 4: the cards, the filters, Volts and Squads! (owner, 2026-10-06) ────
+{
+  // The real copy block and registry, as Lua writes them.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const lua = readFileSync(join(here, '..', '..', 'resources', '[fivem-royale]', 'br_lib', 'config', 'terminals.lua'), 'utf8')
+  const copy = {}
+  for (const m of lua.matchAll(/^\s+([a-z_]+) = (['"])(.*)\2,$/gm)) copy[m[1]] = m[3].replace(/\\n/g, '\n')
+  const squad = speaker(copy, true)
+  const solo = speaker(copy, false)
+
+  // THE REGISTRY'S NEW FIELDS, as the app reads them.
+  const catalog = parseCatalog({
+    functions: [
+      { id: 'scan', category: 'intel', risk: 'high', implemented: true, cost: 200, bounty: 'runner', squadWide: true },
+      { id: 'storm_reveal', category: 'intel', risk: 'low', implemented: true, squadWide: true },
+      { id: 'storm_control', category: 'storm', risk: 'medium', implemented: true, cost: 150 },
+      { id: 'disarm', category: 'disruption', risk: 'high', implemented: true, cost: 200 },
+      { id: 'contract', category: 'disruption', risk: 'medium', implemented: true, bounty: 'target' },
+      { id: 'max_ammo', category: 'supply', risk: 'low', implemented: true, squadWide: true },
+      { id: 'emp', category: 'disruption', risk: 'medium', implemented: false, bounty: 'everyone', squadWide: 'yes' },
+    ],
+    categories: ['intel', 'storm', 'disruption', 'supply', 'squad'],
+    currency: 'Volts',
+  })
+  const fn = Object.fromEntries(catalog.functions.map((f) => [f.id, f]))
+  ok(fn.scan.bounty === 'runner' && fn.contract.bounty === 'target' && fn.storm_reveal.bounty === null,
+    'bounty: runner, target, or none')
+  ok(fn.emp.bounty === null && fn.emp.squadWide === false, 'a bounty or squadWide that is not one is dropped')
+  ok(fn.scan.squadWide && fn.storm_reveal.squadWide && fn.max_ammo.squadWide && !fn.disarm.squadWide, 'squadWide')
+
+  // "The cards should show cost in volts and bounty".
+  eq(costOf(fn.scan), 'paid', 'Scan costs Volts')
+  eq(costOf(fn.storm_reveal), 'free', 'Storm reveal is free')
+  eq(squad(`bounty_${bountyOf(fn.scan)}`), 'You get one', 'Scan\'s card: you get the bounty')
+  eq(squad(`bounty_${bountyOf(fn.contract)}`), 'Another player gets one', 'Contract\'s card: another player does')
+  eq(squad(`bounty_${bountyOf(fn.storm_reveal)}`), 'None', 'every other card: none')
+  eq(squad('cost_free'), 'Free', 'a free card says Free')
+  ok(squad('card_cost') === 'Cost' && squad('card_bounty') === 'Bounty', 'the sections\' names, in the preferences too')
+
+  // "Any mention of volts must use our proper font for that and the gold color".
+  const parts = (text, amounts) => voltsParts(text, 'Volts', amounts).map((p) => (p.volts ? `[${p.text}]` : p.text)).join('')
+  eq(parts(squad('no_volts'), { cost: 200, balance: 150 }),
+    'You don\'t have enough [Volts]. This costs [200 Volts], and your balance is [150 Volts].',
+    'no_volts: the word, the cost and the balance, each in the Volts style')
+  eq(parts(squad('balance_new'), { volts: 1050 }), 'Your new balance is: [1,050 Volts].', 'the new balance')
+  eq(parts(squad('cost_line_volts'), { volts: 150 }), '[150 Volts], your Yubikey and your squad\'s one terminal use this match',
+    'a page\'s cost')
+  eq(parts(squad('confirm_body_volts'), { volts: 200 }),
+    'This uses [200 Volts], your Yubikey and your squad\'s terminal use for this match. It can\'t be undone.', 'the box')
+  ok(parts(squad('privacy_body')).includes('your [Volts] balance'), 'the privacy policy\'s "your Volts balance", the word alone')
+  eq(parts('Run {name}? {volts}', { volts: 5 }), 'Run {name}? [5 Volts]', 'any other token is left as written')
+  eq(parts('No Voltsy words.'), 'No Voltsy words.', 'only the whole word')
+  ok(voltsParts('5 Volts', '').every((p) => !p.volts), 'no currency word: nothing to style by word')
+  eq(voltsParts(squad('cost_line'), 'Volts').filter((p) => p.volts).length, 0, 'a line without Volts has no Volts pieces')
+
+  // SQUADS!: on a squadWide row, in a squad match -- and nowhere else.
+  ok(showsSquads(fn.scan, true), 'Scan, in a squad match: Squads!')
+  ok(!showsSquads(fn.scan, false), 'Scan, outside one: none')
+  ok(!showsSquads(fn.disarm, true), 'Disarm, not squad-wide: none, even in a squad match')
+  eq(squad('squads_link'), 'Squads!', 'its words, verbatim')
+  eq(squad('squads_popover'), 'This function will apply to your entire squad.', 'and its box\'s, verbatim')
+  ok(solo('squads_link') === '' && solo('squads_popover') === '', 'outside a squad match the speaker says neither')
+
+  // THE FILTERS, each alone, then together with the text search.
+  const states = new Map([
+    ['scan', { id: 'scan', available: true, reason: null }],
+    ['storm_reveal', { id: 'storm_reveal', available: false, reason: 'squad_used' }],
+    ['storm_control', { id: 'storm_control', available: false, reason: 'no_key' }],
+    ['disarm', { id: 'disarm', available: true, reason: null }],
+    ['contract', { id: 'contract', available: true, reason: null }],
+    ['max_ammo', { id: 'max_ammo', available: true, reason: null }],
+  ])
+  const funcs = catalog.functions
+  const home = HOME
+  const ids = (route) => cardsFor(route, funcs, states, squad).items.map((f) => f.id).join(',')
+  const f = (over) => withFilters(home, { ...NO_FILTERS, ...over })
+  eq(ids(home), 'scan,storm_reveal,storm_control,disarm,contract,max_ammo,emp', 'no filter: every card')
+  eq(ids({ ...home, category: 'disruption' }), 'disarm,contract,emp', 'category')
+  eq(ids(f({ risk: 'high' })), 'scan,disarm', 'risk')
+  eq(ids(f({ cost: 'free' })), 'storm_reveal,contract,max_ammo,emp', 'cost: free')
+  eq(ids(f({ cost: 'paid' })), 'scan,storm_control,disarm', 'cost: paid')
+  eq(ids(f({ bounty: 'runner' })), 'scan', 'bounty: the runner gets one')
+  eq(ids(f({ bounty: 'target' })), 'contract', 'bounty: another player does')
+  eq(ids(f({ bounty: 'none' })), 'storm_reveal,storm_control,disarm,max_ammo,emp', 'bounty: none')
+  eq(ids(f({ status: 'available' })), 'scan,disarm,contract,max_ammo', 'status: available')
+  eq(ids(f({ status: 'used' })), 'storm_reveal', 'status: used')
+  eq(ids(f({ status: 'not_here' })), 'storm_control', 'status: not available at this terminal')
+  eq(ids(f({ status: 'offline' })), 'emp', 'status: not available')
+  eq(ids({ ...f({ cost: 'paid', status: 'available' }), category: 'disruption' }), 'disarm', 'several together')
+  eq(ids({ ...f({ cost: 'paid' }), query: 'storm' }), 'storm_control',
+    'a filter with the text search: both narrow (paid, and "storm" in its name, summary or category)')
+  eq(ids({ ...f({ risk: 'low' }), query: 'zzz' }), '', 'nothing left is nothing')
+  const counted = cardsFor({ ...f({ cost: 'paid' }), category: 'disruption' }, funcs, states, squad)
+  ok(counted.items.length === 1 && counted.all === 3, 'the heading counts what is left of the category\'s', counted.all)
+
+  // In the route: no load, no new entry, the address says them, and an empty
+  // set is no set at all.
+  eq(filtersOf(home), NO_FILTERS, 'Home filters nothing')
+  ok(sameRoute(withFilters(home, NO_FILTERS), home), 'every filter back to Any is Home again')
+  ok(!narrowed(home) && narrowed(f({ risk: 'low' })) && narrowed({ ...home, query: 'x' }) && narrowed({ ...home, category: 'intel' }),
+    'narrowed: by a filter, the search or a category')
+  eq(addressOf({ ...f({ risk: 'high', cost: 'paid', bounty: 'runner', status: 'available' }), category: 'intel', query: 'scan' }, squad),
+    'https://controltower.blitz/home?category=intel&risk=high&cost=paid&bounty=runner&status=available&q=scan',
+    'the address carries every filter')
+  let b = startBrowsing(home)
+  b = rewrite(b, f({ status: 'available' }))
+  ok(b.load === null && b.history.stack.length === 1 && filtersOf(current(b.history)).status === 'available',
+    'a filter rewrites the page\'s own entry: no load, no new entry')
+  const r = navigate(b, { kind: 'page', route: { page: 'function', id: 'scan' } }, 1000)
+  const there = arrive(r.browsing, r.browsing.load.seq).browsing
+  const back = step(there, 'back').browsing
+  eq(filtersOf(current(back.history)).status, 'available', 'back from a function: the filters are as they were')
+  ok(passes(fn.scan, states.get('scan'), NO_FILTERS), 'Any passes everything')
 }
 
 if (failed > 0) {

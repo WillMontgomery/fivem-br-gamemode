@@ -621,6 +621,60 @@ local function readFile(path)
     return text
 end
 
+describe('round 4: the cards\' cost and bounty, and Squads! on every squad-wide row')
+do
+    bootServer()
+    local C = BR.Config.Terminals
+    local copy = C.copy
+    local byId = {}
+    for _, row in ipairs(C.functions) do byId[row.id] = row end
+    -- "The cards should show cost in volts and bounty": `bounty` is who a run
+    -- puts one on, as the card says it.
+    for _, row in ipairs(C.functions) do
+        ok(row.bounty == nil or row.bounty == 'runner' or row.bounty == 'target',
+            ('%s: bounty is runner, target or nothing'):format(row.id), tostring(row.bounty))
+        ok(row.squadWide == nil or row.squadWide == true, ('%s: squadWide is true or absent'):format(row.id))
+    end
+    if byId.scan then eq(byId.scan.bounty, 'runner', 'Scan: the player who runs it gets the bounty') end
+    if byId.contract then eq(byId.contract.bounty, 'target', 'Contract: it puts one on another player') end
+    local bounties = {}
+    for _, row in ipairs(C.functions) do
+        if row.bounty then bounties[#bounties + 1] = row.id end
+    end
+    eq(table.concat(bounties, ','), (byId.scan and 'scan' or '') .. (byId.scan and byId.contract and ',' or '')
+        .. (byId.contract and 'contract' or ''), 'and no other row gives a bounty')
+
+    -- "Any tool that can impact the whole squad": every row whose effect is
+    -- the squad's -- its affects line is "Your squad", or its marks show on
+    -- the squad's maps -- and none other. Reboot is squad-only, Pulse marks
+    -- other players on the squad's maps.
+    local want = { scan = true, storm_reveal = true, max_ammo = true, reboot = true, ghost = true,
+                   key_finder = true, pulse = true, field_medic = true }
+    for _, row in ipairs(C.functions) do
+        local affects = copy[row.id .. '_affects'] or ''
+        local what = copy[row.id .. '_what'] or ''
+        local squads = affects == 'Your squad' or what:find("your squad's maps", 1, true) ~= nil
+        eq(row.squadWide == true, want[row.id] == true, ('%s: squadWide as its effect says'):format(row.id))
+        if row.squadWide then ok(squads, ('%s: its own lines say the squad is affected'):format(row.id), affects) end
+        if affects == 'Your squad' then ok(row.squadWide == true, ('%s affects "Your squad", so it is squadWide'):format(row.id)) end
+    end
+
+    -- THE OWNER'S WORDS, verbatim, and never outside a squad match.
+    eq(copy.squads_link, 'Squads!', 'the link says "Squads!" (owner\'s word)')
+    eq(copy.squads_popover, 'This function will apply to your entire squad.', 'and its box, verbatim')
+    eq(copy.squads_link_solo, '', 'outside a squad match the link has no words, so it is not drawn')
+    eq(copy.squads_popover_solo, '', 'nor its box')
+    eq(BR.TerminalSolve.pick(copy, 'squads_link', false), '', 'the solo picker reads it empty')
+    eq(BR.TerminalSolve.pick(copy, 'squads_link', true), 'Squads!', 'the squad picker reads it')
+
+    -- THE CARDS' AND THE FILTERS' WORDS.
+    for _, key in ipairs({ 'card_cost', 'card_bounty', 'cost_free', 'cost_paid', 'bounty_none', 'bounty_runner',
+                           'bounty_target', 'filter_any' }) do
+        ok(type(copy[key]) == 'string' and copy[key] ~= '', ('copy has %s'):format(key))
+        ok(not copy[key]:lower():find('squad', 1, true), ('%s says no squad'):format(key))
+    end
+end
+
 describe('round 2: the owner\'s words, verbatim, and no thunderstorm')
 do
     bootServer()

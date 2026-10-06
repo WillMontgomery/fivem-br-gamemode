@@ -302,6 +302,42 @@ BR.Config.Terminals = {
         card_category = 'Category',
         card_risk = 'Risk',
         card_status = 'Status',
+        -- WRITTEN (2026-10-06, round 4: "The cards should show cost in volts
+        -- and bounty"). A card's cost and bounty sections, their names in
+        -- the preferences' "Card content", and the labels of the filters of
+        -- the same names on Home (with card_category, card_risk and
+        -- card_status). A cost in Volts is its figure and the word, in the
+        -- Volts style; a function that costs no Volts is cost_free.
+        card_cost = 'Cost',
+        card_bounty = 'Bounty',
+        cost_free = 'Free',
+        -- WRITTEN (round 4). The Cost filter's choice for every function that
+        -- costs Volts.
+        cost_paid = 'Paid',
+        -- WRITTEN (round 4). A card's bounty, from its registry row's
+        -- `bounty`: none, the runner gets one (Scan), another player gets
+        -- one (Contract). The Bounty filter's choices too.
+        bounty_none = 'None',
+        bounty_runner = 'You get one',
+        bounty_target = 'Another player gets one',
+        -- WRITTEN (round 4: "the "Functions" search should have filters
+        -- available for category, risk, Volts cost (free/paid), bounty, and
+        -- availability status"). Each filter's choice that filters nothing,
+        -- after its label (card_category, card_risk, card_cost, card_bounty,
+        -- card_status). The other choices are the cards' own words:
+        -- category_*, risk_*, cost_free / cost_paid, bounty_*, status_*.
+        filter_any = 'Any',
+        -- VERBATIM (owner, 2026-10-06: "Any tool that can impact the whole
+        -- squad should have a tooltip next to the card title (the blue
+        -- text, see attached) which should read "Squads!" upon clicking it,
+        -- the new box should read "This function will apply to your entire
+        -- squad.""). The blue link beside the title of a card and of a page
+        -- whose row is `squadWide`, and the box it opens. IN A SQUAD MATCH
+        -- ONLY: the empty `_solo` lines hide both outside one.
+        squads_link = 'Squads!',
+        squads_link_solo = '',
+        squads_popover = 'This function will apply to your entire squad.',
+        squads_popover_solo = '',
         pref_title = 'Preferences',
         pref_confirm = 'Confirm',
         pref_cancel = 'Cancel',
@@ -1077,6 +1113,18 @@ BR.Config.Terminals = {
     --   soloCategory the category it is listed under outside a squad match,
     --                for a `squad`-category function that still means
     --                something to a player on their own.
+    --   bounty       who a run puts a bounty on, as the card and the filters
+    --                say (round 4, owner 2026-10-06: "The cards should show
+    --                cost in volts and bounty"): 'runner' (the player who
+    --                runs it gets one: Scan), 'target' (it puts one on
+    --                another player: Contract), absent for none. The app's
+    --                words, never the server's rule: each effect gives its
+    --                own bounty.
+    --   squadWide    true for a function whose effect reaches the runner's
+    --                whole squad (its `_affects` is "Your squad", or its
+    --                marks show on the squad's maps): the app shows "Squads!"
+    --                beside its title IN A SQUAD MATCH, whose popover says it
+    --                applies to the whole squad (round 4). Presentation only.
     --
     -- The server half of a built function is BR.Terminal.FUNCTIONS[id] in
     -- br_core/server/terminal.lua: an optional `refuse` and a `run`.
@@ -1086,8 +1134,9 @@ BR.Config.Terminals = {
     -- for consideration; Storm delay, Pulse, Lockdown, Contract and Field
     -- medic are this round's proposals, for the owner to keep or cut.
     functions = {
-        { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200 },
-        { id = 'storm_reveal',   category = 'intel',      risk = 'low',    implemented = true },
+        { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200,
+          bounty = 'runner', squadWide = true },
+        { id = 'storm_reveal',   category = 'intel',      risk = 'low',    implemented = true, squadWide = true },
         { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = true, cost = 150,
           options = { { id = 'zone', choices = { 'near', 'center', 'far' }, default = 'near' } } },
         -- SQUAD-ONLY (round 2): it hides teammates' markers from every other
@@ -1118,18 +1167,18 @@ BR.Config.Terminals = {
         { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = true, cost = 200 },
         { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
           options = { { id = 'site', choices = { 'terminal', 'circle' }, default = 'terminal' } } },
-        { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true },
+        { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true, squadWide = true },
         -- SQUAD-ONLY (round 2): it brings back squadmates. LIVE SINCE WAVE C
         -- (2026-10-06): server/terminalfx/reboot.lua, through the revive key's
         -- own return (BR.ReviveKey.bringBackAt).
         { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = true, cost = 150,
-          squadOnly = true },
+          squadOnly = true, squadWide = true },
         -- DISRUPTION ON ITS OWN (round 2): alone, it still hides the player
         -- from other players' Scan, Pulse and bounty markers -- what Comms
         -- blackout, filed under disruption, does to every other squad's
         -- teammate markers.
         { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = true,
-          soloCategory = 'disruption',
+          soloCategory = 'disruption', squadWide = true,
           options = { { id = 'duration', choices = { '120', '240' }, default = '120' } } },  -- seconds
         -- LIVE SINCE WAVE C (2026-10-06): server/terminalfx/emp.lua picks the
         -- vehicles as it goes off, client/terminalfx/emp.lua stalls them.
@@ -1138,16 +1187,16 @@ BR.Config.Terminals = {
               { id = 'radius', choices = { '300', '600' }, default = '300' },   -- meters
               { id = 'duration', choices = { '30', '60' }, default = '30' },    -- seconds
           } },
-        { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true,
+        { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true, squadWide = true,
           options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
         { id = 'storm_delay',    category = 'storm',      risk = 'low',    implemented = true,
           options = { { id = 'delay', choices = { '60', '120' }, default = '60' } } },
-        { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true,
+        { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true, squadWide = true,
           options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters
         { id = 'lockdown',       category = 'disruption', risk = 'medium', implemented = true,
           options = { { id = 'duration', choices = { '180', '300' }, default = '180' } } },  -- seconds
-        { id = 'contract',       category = 'disruption', risk = 'medium', implemented = true },
-        { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true },
+        { id = 'contract',       category = 'disruption', risk = 'medium', implemented = true, bounty = 'target' },
+        { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true, squadWide = true },
     },
 
     -- The categories, in the order the side navigation lists them.

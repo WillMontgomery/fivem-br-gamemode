@@ -152,7 +152,7 @@
     "nui/fonts/ubuntu-latin-300-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-300-normal.woff2, sha256 998fb9fd2f2845f623afa3fad936a4c832f7213cbb153450ff2908088ca418b4",
     "nui/fonts/ubuntu-latin-400-normal.woff2": "from @fontsource/ubuntu 5.3.0 (npm), files/ubuntu-latin-400-normal.woff2, sha256 dabae363ac0ae6c3b2a137a32f7132b42520a8af252f87aa6c2198f2a79cf91c",
     "nui/fonts/LICENSE-UFL-1.0.txt": "that package's LICENSE, the Ubuntu Font Licence 1.0, verbatim (sha256 52fdffecb23a020de527f68c516cac16dbbaf2dbb73fd9e29e2149703b881c82)",
-    "nui/apps/terminal/": "BUILD OUTPUT, NOT SOURCE: the Season 2 terminal app (React + Cloudscape), written here by ui-src's `npm run build` (vite.terminal.config.ts) from ui-src/terminal, and byte-compared with a fresh build by `npm run build:check` in CI. Never edit it by hand; rebuild. It holds no BR-PATCH marker and must not."
+    "nui/apps/terminal/": "BUILD OUTPUT, NOT SOURCE: the Season 2 terminal app (React + Cloudscape), written here by ui-src's `npm run build` (vite.terminal.config.ts) from ui-src/terminal, and byte-compared with a fresh build by `npm run build:check` in CI. Never edit it by hand; rebuild. It holds no BR-PATCH marker and must not. Since round 4 it also carries the Volts face: assets/anton-latin-400-normal.woff2, @fontsource/anton 5.3.0's files/anton-latin-400-normal.woff2 byte for byte (sha256 d0fa07ff63dd60cbc0e2f58e29c802dca2a5ae0276c999f59c6111ab7bbaec3b, the file br_ui ships), under the SIL Open Font License 1.1, whose text is beside it as assets/LICENSE-OFL-1.1-anton.txt (that package's LICENSE, verbatim; sha256 9267baca92b7a7ce9db6dd9e6cc32c9fe3ddf1ac96e421d5f87c5746b9089d6a)."
   },
 
   "patches": [

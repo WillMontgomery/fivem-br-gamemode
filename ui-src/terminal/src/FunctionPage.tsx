@@ -12,7 +12,9 @@ import RadioGroup from '@cloudscape-design/components/radio-group'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import type { FunctionDef, FunctionState } from './bridge'
-import { fill, indicatorOf, lines, riskColor, statusOf, voltsText, type Say } from './model'
+import { fill, indicatorOf, riskColor, showsSquads, statusOf, type Say } from './model'
+import { Squads } from './Squads'
+import { voltsLine, voltsLines } from './Volts'
 
 /**
  * ONE FUNCTION'S PAGE, in the shape of Cloudscape's details example.
@@ -37,7 +39,10 @@ import { fill, indicatorOf, lines, riskColor, statusOf, voltsText, type Say } fr
  * RUN WEARS THE FUNCTION'S RISK (round 2: "the Run button - make it the risk
  * color instead"): the same color as its low, medium or high risk badge, in
  * both modes, with the badge's own text color -- terminal.css's
- * `--terminal-run-*` variables, which are the badge's tokens. NO SHADOW
+ * `--terminal-run-*` variables, which are the badge's tokens. "SQUADS!"
+ * FOLLOWS THE TITLE on a function whose effect reaches the whole squad, in a
+ * squad match (round 4, Squads.tsx), and EVERY VOLTS on the page -- the cost,
+ * the confirmation -- is in the Volts style (Volts.tsx). NO SHADOW
  * (owner, 2026-10-06: "not sure why these buttons have shadows"): a button
  * sits on its surface, like every control (terminal.css).
  */
@@ -58,6 +63,7 @@ export function FunctionPage(props: {
   fn: FunctionState | undefined
   say: Say
   currency: string
+  squadMatch: boolean
   busy: boolean
   onRun: (id: string, options: Record<string, string>) => void
   onConfirmChange: (open: boolean) => void
@@ -84,10 +90,15 @@ export function FunctionPage(props: {
   useEffect(() => () => confirmChange.current(false), [])
 
   const name = say(`${id}_name`)
+  const currency = props.currency
   const reason = !available && fn && fn.reason ? (say(fn.reason) || say('unavailable')) : ''
-  const volts = voltsText(def.cost, props.currency)
-  const cost = def.cost > 0 ? fill(say('cost_line_volts'), { volts }) : say('cost_line')
-  const body = def.cost > 0 ? fill(say('confirm_body_volts'), { volts }) : say('confirm_body')
+  // THE COST AND THE BOX SAY THE VOLTS IN THE VOLTS STYLE: {volts} is the
+  // run's cost, the figure and the word.
+  const volts = { volts: def.cost }
+  const cost = def.cost > 0 ? voltsLine(say('cost_line_volts'), currency, volts) : voltsLine(say('cost_line'), currency)
+  const body = def.cost > 0
+    ? voltsLine(say('confirm_body_volts'), currency, volts)
+    : voltsLine(say('confirm_body'), currency)
 
   const details = [
     { label: say('field_category'), value: say(`category_${def.category}`) },
@@ -97,19 +108,19 @@ export function FunctionPage(props: {
         <SpaceBetween size="xxs">
           {[
             <StatusIndicator key="s" type={indicatorOf(status)}>{say(`status_${status}`)}</StatusIndicator>,
-            ...(reason !== '' ? [<Box key="r" variant="small">{reason}</Box>] : []),
+            ...(reason !== '' ? [<Box key="r" variant="small">{voltsLine(reason, currency)}</Box>] : []),
           ]}
         </SpaceBetween>
       ),
     },
     { label: say('card_risk'), value: <Badge color={riskColor(def.risk)}>{say(`risk_${def.risk}`)}</Badge> },
-    { label: say('field_duration'), value: say(`${id}_duration`) },
-    { label: say('field_affects'), value: say(`${id}_affects`) },
-    { label: say('field_notified'), value: say(`${id}_notified`) },
+    { label: say('field_duration'), value: voltsLine(say(`${id}_duration`), currency) },
+    { label: say('field_affects'), value: voltsLine(say(`${id}_affects`), currency) },
+    { label: say('field_notified'), value: voltsLine(say(`${id}_notified`), currency) },
     { label: say('field_cost'), value: cost },
   ]
 
-  const risks = [say('risk_notice'), ...lines(say(`${id}_risks`))].filter((s) => s !== '')
+  const risks = [...voltsLines(say('risk_notice'), currency), ...voltsLines(say(`${id}_risks`), currency)]
 
   const sections: ReactElement[] = [
     <div key="details" className="terminal-raised">
@@ -120,7 +131,7 @@ export function FunctionPage(props: {
     <div key="what" className="terminal-raised">
       <Container header={<Header variant="h2">{say('what_heading')}</Header>}>
         <SpaceBetween size="s">
-          {lines(say(`${id}_what`)).map((p, i) => <Box key={i} variant="p">{p}</Box>)}
+          {voltsLines(say(`${id}_what`), currency).map((p, i) => <Box key={i} variant="p">{p}</Box>)}
         </SpaceBetween>
       </Container>
     </div>,
@@ -164,7 +175,8 @@ export function FunctionPage(props: {
       header={
         <Header
           variant="h1"
-          description={say(`${id}_summary`)}
+          description={voltsLine(say(`${id}_summary`), currency)}
+          info={showsSquads(def, props.squadMatch) ? <Squads say={say} /> : undefined}
           actions={
             <Button variant="primary" style={runStyle(def.risk)} disabled={!available || props.busy}
               onClick={() => setConfirm(true)}>

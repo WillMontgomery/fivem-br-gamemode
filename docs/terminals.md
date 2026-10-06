@@ -149,6 +149,8 @@ The table below is the lines outside the functions' own:
 | `search_*`, `mode_*`, `menu_*`, `nav_*` | At the terminal: the search, the light/dark switch, the user menu, the side navigation |
 | `match_heading`, `field_*` and their values | At the terminal: the "Match stats" panel, collapsed when the app opens |
 | `functions_heading`, `filter_*`, `card_*`, `pref_*`, `status_*`, `risk_*`, `category_*` | At the terminal: the cards |
+| `card_cost`, `card_bounty`, `cost_free`, `cost_paid`, `bounty_none`, `bounty_runner`, `bounty_target`, `filter_any` | At the terminal (round 4): a card's Cost and Bounty sections (and their names in the preferences' Card content), and Home's filters -- each labeled with a `card_*` line, `filter_any` its no-filter choice, the cards' own words its others (`cost_paid` the Cost filter's choice for every priced function) |
+| `squads_link`, `squads_popover` (VERBATIM) | At the terminal, in a squad match only (their `_solo` lines are empty): "Squads!" beside the title of a `squadWide` function's card and page, and the box it opens |
 | `details_heading` .. `cost_line`, `risk_notice`, `run`, `confirm_*` | At the terminal: a function's page and its confirmation |
 | `howto_*` | At the terminal: the how-to page |
 | `privacy_*` | At the terminal: the Privacy page, the owner's approved policy (VERBATIM, "Perfect", 2026-10-06): its title and two paragraphs |
@@ -196,7 +198,7 @@ finder's marks: sprite 1, the plain dot, color 5, yellow) and `pulse`
 ## The functions
 
 **ONE REGISTRY, READ BY BOTH SIDES**: `BR.Config.Terminals.functions`, each row
-`{ id, category, risk, implemented, options, cost?, squadOnly?, soloCategory? }`,
+`{ id, category, risk, implemented, options, cost?, squadOnly?, soloCategory?, bounty?, squadWide? }`,
 with `categories` beside it.
 The server rules every run against it; br_core's client hands it to the
 computer with each opening (the **catalog**), and the app draws its cards,
@@ -212,6 +214,15 @@ filters and pages from it.
 - `squadOnly`: not listed, and its run refused, outside a squad match.
 - `soloCategory`: the category a squad-category function is listed under
   outside a squad match.
+- `bounty` (round 4): who a run puts a bounty on, as its card and Home's
+  Bounty filter say it -- `'runner'` (Scan: the player who runs it gets one),
+  `'target'` (Contract: another player does), absent for none. The app's
+  words only; each effect gives its own bounty.
+- `squadWide` (round 4): the effect reaches the runner's whole squad (its
+  `_affects` is "Your squad", or its marks show on the squad's maps): Scan,
+  Storm reveal, Max ammo, Reboot, Ghost, Key finder, Pulse and Field medic.
+  In a squad match the app draws "Squads!" beside its title. Presentation
+  only; `test_terminal.lua` holds the set to the rows' own lines.
 - `options`: `{ { id, choices = { ... }, default } }`. `BR.Terminal.options`
   takes a run's choices only if every key is a declared option and every value
   one of its `choices` (strings, at most 8), fills the rest with defaults, and
@@ -511,6 +522,51 @@ light by default, and remembered per gamertag in the page's localStorage
 (`control-tower-mode:`). The header is fixed rather than sticky: focus moving
 into a sticky box scrolled the page to its top. `ui-src/scripts/check-terminal.mjs`
 holds #385's findings over it, and that every line goes through the speaker.
+
+### Round 4 (owner, 2026-10-06)
+
+- **The cards show their cost and their bounty** ("The cards should show cost
+  in volts and bounty"): Cost is the function's Volts, or `cost_free`; Bounty
+  is its row's `bounty` in words. The preferences' Card content lists both.
+- **Home's filters** ("the "Functions" search should have filters available
+  for category, risk, Volts cost (free/paid), bounty, and availability
+  status"): five Selects beside the text search, each labeled inside its own
+  trigger and "Any" until set. The category is the page's own (the side
+  navigation's); the other four ride in the route. All of them and the text
+  search narrow the cards together, pagination runs over what is left, and
+  the heading counts what is left of what there is ("(4/18)") while anything
+  but the category narrows them. A change rewrites the page's own history
+  entry, as typing does -- no load, no new entry -- and the address carries
+  them (`/home?category=intel&risk=high&cost=paid&bounty=runner&status=available&q=scan`).
+  "Clear filter" on an empty page clears them all. `model.ts` "the filters".
+- **Every mention of Volts in the game's Volts style** ("Any mention of volts
+  must use our proper font for that and the gold color"): br_ui's display
+  face, Anton, in its Volts gold, `#d9ae35` (`--color-volts`), the same in
+  both modes. Anton ships in the app's build (`assets/anton-latin-400-normal.woff2`
+  from `@fontsource/anton` 5.3.0, the file br_ui ships, under the SIL Open
+  Font License 1.1, whose text is copied beside it as
+  `assets/LICENSE-OFL-1.1-anton.txt`). `Volts.tsx` draws every Volts amount
+  and every mention of the word: a card's cost, a page's cost line, the
+  confirmation, a run's answer (the new balance; `no_volts`'s word, cost and
+  balance) and the privacy policy's "your Volts balance" (the style only, not
+  a word of it). The top bar's balance is a TopNavigation utility's string, so
+  the bar is marked `terminal-topnav-volts` while the balance is its first
+  utility and `terminal.css` dresses that one the same way.
+  `check-terminal.mjs` T12 fails a Volts amount drawn any other way, a Volts
+  token filled as text, a copy line that says Volts read without the style,
+  and a style or a face that is not the game's.
+- **"Squads!"** (the owner's words, verbatim): on a `squadWide` function, in a
+  squad match only, a blue dotted "Squads!" after the card's title and the
+  function page's -- a Cloudscape popover's text trigger, as in the AWS
+  console screenshot he sent -- whose box reads "This function will apply to
+  your entire squad." Clicking it opens the box and nothing else (not the
+  card). Outside a squad match it is not drawn, and its lines' empty `_solo`
+  siblings say nothing even if it were. `check-terminal.mjs` T13 holds the
+  gate (`model.ts` `showsSquads`).
+- **The font weight** (the owner asked whether ours differs from Cloudscape's
+  public demos): it does not -- both are Open Sans, 400 for the body and 700
+  for headings and labels, at 14 px; the cards' titles are 20 px at the
+  owner's own request (round 2).
 
 ## The Yubikey
 

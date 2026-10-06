@@ -56,6 +56,54 @@ export function fill(text: string, vars: Record<string, string | number>): strin
   return text.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m))
 }
 
+/**
+ * EVERY MENTION OF VOLTS IN THE VOLTS STYLE (owner, 2026-10-06, round 4: "Any
+ * mention of volts must use our proper font for that and the gold color").
+ *
+ * A line cut into its pieces, each saying whether it is Volts: a `{token}`
+ * named in `amounts` -- {volts}, {cost}, {balance} -- becomes that figure and
+ * the currency's word ("1,250 Volts"), and the currency's word wherever the
+ * line itself writes it ("You don't have enough Volts.") is a Volts piece
+ * too. Any other token is left as written (fill it first). Volts.tsx draws
+ * the Volts pieces in the game's display face and gold; scripts/
+ * check-terminal.mjs T12 fails a Volts amount drawn any other way.
+ */
+export interface Piece {
+  text: string
+  volts: boolean
+}
+
+export function voltsParts(text: string, currency: string, amounts: Record<string, number> = {}): Piece[] {
+  const out: Piece[] = []
+  const plain = (t: string) => {
+    if (t === '') return
+    if (currency === '') {
+      out.push({ text: t, volts: false })
+      return
+    }
+    const word = new RegExp(`\\b${currency.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
+    let at = 0
+    for (const m of t.matchAll(word)) {
+      const i = m.index ?? 0
+      if (i > at) out.push({ text: t.slice(at, i), volts: false })
+      out.push({ text: m[0], volts: true })
+      at = i + m[0].length
+    }
+    if (at < t.length) out.push({ text: t.slice(at), volts: false })
+  }
+  let at = 0
+  for (const m of text.matchAll(/\{(\w+)\}/g)) {
+    const k = m[1] ?? ''
+    if (!(k in amounts)) continue
+    const i = m.index ?? 0
+    plain(text.slice(at, i))
+    out.push({ text: voltsText(amounts[k] ?? 0, currency), volts: true })
+    at = i + m[0].length
+  }
+  plain(text.slice(at))
+  return out
+}
+
 /** A line that is a list: one entry per '\n'-separated piece. */
 export function lines(text: string): string[] {
   return text.split('\n').map((s) => s.trim()).filter((s) => s !== '')
@@ -74,7 +122,7 @@ export function lines(text: string): string[] {
  * navigation after How to.
  */
 export type Route =
-  | { page: 'functions'; category: string | null; query: string }
+  | { page: 'functions'; category: string | null; query: string; filters?: CardFilters }
   | { page: 'function'; id: string }
   | { page: 'howto' }
   | { page: 'privacy' }
@@ -98,6 +146,11 @@ export function addressOf(route: Route, say: Say): string {
     case 'functions': {
       const params: string[] = []
       if (route.category) params.push(`category=${route.category}`)
+      const f = filtersOf(route)
+      for (const k of FILTER_KEYS) {
+        const v = f[k]
+        if (v !== null) params.push(`${k}=${v}`)
+      }
       if (route.query) params.push(`q=${encodeURIComponent(route.query)}`)
       return `${host}/${say('path_home')}${params.length > 0 ? '?' + params.join('&') : ''}`
     }
@@ -453,6 +506,15 @@ export function statusOf(fn: FunctionState | undefined, def: FunctionDef | undef
   }
 }
 
+/**
+ * Does this function's title carry "Squads!" (round 4, Squads.tsx)? Only on a
+ * row whose effect reaches the runner's whole squad (`squadWide`), and only
+ * in a squad match -- round 2's rule, no "squad" to a solo player.
+ */
+export function showsSquads(def: FunctionDef, squadMatch: boolean): boolean {
+  return squadMatch && def.squadWide === true
+}
+
 /** The StatusIndicator type for a status. None of them spins (#385). */
 export function indicatorOf(s: Status): 'success' | 'info' | 'warning' | 'stopped' {
   switch (s) {
@@ -482,6 +544,91 @@ export function matches(def: FunctionDef, say: Say, query: string): boolean {
     say(`category_${def.category}`),
   ].join(' ').toLowerCase()
   return q.split(/\s+/).every((word) => hay.includes(word))
+}
+
+// ---------------------------------------------------------- the filters ---
+
+/**
+ * HOME'S FILTERS (owner, 2026-10-06, round 4: "the "Functions" search should
+ * have filters available for category, risk, Volts cost (free/paid), bounty,
+ * and availability status"). Beside the text search, each narrows the cards
+ * to one value or, null, filters nothing; all of them and the text search
+ * together, and pagination over what is left. The CATEGORY filter is the
+ * page's own category -- the side navigation's -- so it lives in the route's
+ * `category`; the other four ride in the route's `filters`. Changing any of
+ * them rewrites the page's own history entry, as typing does: no load, no new
+ * entry (model.ts `rewrite`), and back and forward keep them.
+ */
+export interface CardFilters {
+  risk: FunctionDef['risk'] | null
+  cost: Cost | null
+  bounty: Bounty | null
+  status: Status | null
+}
+
+/** A function's cost, as the Cost filter reads it. */
+export type Cost = 'free' | 'paid'
+/** Who a function's run puts a bounty on, as its card and the Bounty filter say it. */
+export type Bounty = 'runner' | 'target' | 'none'
+
+export const NO_FILTERS: CardFilters = { risk: null, cost: null, bounty: null, status: null }
+/** The four, in the order the address and the filter row put them. */
+export const FILTER_KEYS = ['risk', 'cost', 'bounty', 'status'] as const
+export const RISKS: readonly FunctionDef['risk'][] = ['low', 'medium', 'high']
+export const COSTS: readonly Cost[] = ['free', 'paid']
+export const BOUNTIES: readonly Bounty[] = ['none', 'runner', 'target']
+export const STATUSES: readonly Status[] = ['available', 'used', 'not_here', 'offline']
+
+export function costOf(def: FunctionDef): Cost {
+  return def.cost > 0 ? 'paid' : 'free'
+}
+
+export function bountyOf(def: FunctionDef): Bounty {
+  return def.bounty ?? 'none'
+}
+
+/** The cards page's four filters; none for any other page. */
+export function filtersOf(route: Route): CardFilters {
+  return route.page === 'functions' && route.filters ? route.filters : NO_FILTERS
+}
+
+/**
+ * The cards page with these filters. A page that filters nothing carries no
+ * `filters` at all, so it is the same page as one that never had any (Home
+ * is Home, `sameRoute`).
+ */
+export function withFilters(route: Extract<Route, { page: 'functions' }>, f: CardFilters): Route {
+  const { filters: _, ...rest } = route
+  return FILTER_KEYS.some((k) => f[k] !== null) ? { ...rest, filters: { ...f } } : rest
+}
+
+/** Is the cards page narrowed by anything: a category, a filter or the text search? */
+export function narrowed(route: Route): boolean {
+  if (route.page !== 'functions') return false
+  const f = filtersOf(route)
+  return route.category !== null || route.query.trim() !== '' || FILTER_KEYS.some((k) => f[k] !== null)
+}
+
+/** Does a function pass the four filters, its status as the server says it now? */
+export function passes(def: FunctionDef, fn: FunctionState | undefined, f: CardFilters): boolean {
+  if (f.risk !== null && def.risk !== f.risk) return false
+  if (f.cost !== null && costOf(def) !== f.cost) return false
+  if (f.bounty !== null && bountyOf(def) !== f.bounty) return false
+  if (f.status !== null && statusOf(fn, def) !== f.status) return false
+  return true
+}
+
+/**
+ * The cards the page shows, before pagination: the page's category, the text
+ * search and the four filters, all together. `all` is the category's own
+ * (what the heading counts when nothing else narrows it).
+ */
+export function cardsFor(route: Extract<Route, { page: 'functions' }>, functions: FunctionDef[],
+  states: Map<string, FunctionState>, say: Say): { items: FunctionDef[]; all: number } {
+  const inCategory = functions.filter((f) => route.category === null || f.category === route.category)
+  const f = filtersOf(route)
+  const items = inCategory.filter((d) => matches(d, say, route.query) && passes(d, states.get(d.id), f))
+  return { items, all: inCategory.length }
 }
 
 // ----------------------------------------------------------------- clocks ---

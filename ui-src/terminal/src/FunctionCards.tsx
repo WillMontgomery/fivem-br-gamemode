@@ -6,11 +6,17 @@ import Cards from '@cloudscape-design/components/cards'
 import CollectionPreferences from '@cloudscape-design/components/collection-preferences'
 import Header from '@cloudscape-design/components/header'
 import Pagination from '@cloudscape-design/components/pagination'
+import Select, { type SelectProps } from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import TextFilter from '@cloudscape-design/components/text-filter'
 import type { FunctionDef, TerminalState } from './bridge'
-import { fill, indicatorOf, matches, riskColor, statusOf, type Route, type Say } from './model'
+import {
+  BOUNTIES, COSTS, NO_FILTERS, RISKS, STATUSES, bountyOf, cardsFor, fill, filtersOf, indicatorOf, narrowed,
+  riskColor, showsSquads, statusOf, withFilters, type CardFilters, type Route, type Say,
+} from './model'
+import { Squads } from './Squads'
+import { VoltsAmount, voltsLine } from './Volts'
 
 /**
  * ONE CARD PER FUNCTION, as in Cloudscape's cards example: a text filter,
@@ -19,10 +25,11 @@ import { fill, indicatorOf, matches, riskColor, statusOf, type Route, type Say }
  * Owner, 2026-10-05: "each card should be an action that the terminal can
  * perform, so the user can pick between them, navigate between them,
  * understand what they do". A card is the function's name (the way to its
- * page), its one-line summary, its category, its risk and whether it can run
- * here now -- available, used, not available at this terminal or not
- * available. Never how it helps: the summary says what it does, and nothing on
- * a card sells it.
+ * page), its one-line summary, its category, its risk, its cost and its
+ * bounty (round 4: "The cards should show cost in volts and bounty") and
+ * whether it can run here now -- available, used, not available at this
+ * terminal or not available. Never how it helps: the summary says what it
+ * does, and nothing on a card sells it.
  *
  * THE FUNCTIONS THIS PLAYER IS SHOWN (App.tsx, model.ts shownFunctions): in a
  * squad match all of them; outside one, not the squad-only ones, and Ghost
@@ -30,39 +37,105 @@ import { fill, indicatorOf, matches, riskColor, statusOf, type Route, type Say }
  *
  * THE CARD'S TITLE IS LARGE (round 2: "the card titles should be larger font
  * size"): terminal.css's `.terminal-card-title`, 20 px, wrapping inside the
- * card rather than running past it.
+ * card rather than running past it. "SQUADS!" FOLLOWS IT on a function whose
+ * effect reaches the whole squad, in a squad match (Squads.tsx).
+ *
+ * A CARD'S COST is its Volts in the Volts style (Volts.tsx), or cost_free;
+ * its BOUNTY is its row's `bounty` in words (bounty_none / _runner / _target).
+ *
+ * THE FILTERS (round 4: "the "Functions" search should have filters available
+ * for category, risk, Volts cost (free/paid), bounty, and availability
+ * status"): five Selects beside the text search, each labeled inside its
+ * own trigger, each "Any" until set (model.ts "the filters"). They work
+ * together with the search and with pagination; while anything but the
+ * category narrows the cards, the heading counts what is left of what there
+ * is. The category is the page's own, the side navigation's.
  *
  * PREFERENCES ARE THIS OPENING'S ONLY. They live in React state and go with
  * the document when the app closes; the one thing remembered across openings
  * is the light/dark mode (mode.ts).
  */
-const SECTIONS = ['summary', 'category', 'risk', 'status'] as const
+const SECTIONS = ['summary', 'category', 'risk', 'cost', 'bounty', 'status'] as const
 const PAGE_SIZES = [6, 9, 18]
 
 export function FunctionCards(props: {
   state: TerminalState
   functions: FunctionDef[]
+  categories: string[]
   say: Say
+  currency: string
   route: Extract<Route, { page: 'functions' }>
   onOpen: (id: string) => void
-  onQuery: (query: string) => void
+  onRoute: (route: Route) => void
 }): ReactElement {
-  const { state, say, route } = props
+  const { state, say, route, currency } = props
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(9)
   const [visible, setVisible] = useState<readonly string[]>(SECTIONS)
+  const filters = filtersOf(route)
 
-  // A new filter or category starts on the first page.
-  useEffect(() => setPage(1), [route.query, route.category])
+  // A new search, category or filter starts on the first page.
+  const filterKey = JSON.stringify(filters)
+  useEffect(() => setPage(1), [route.query, route.category, filterKey])
 
   const byId = new Map(state.functions.map((f) => [f.id, f]))
-  const items = props.functions.filter((f) =>
-    (route.category === null || f.category === route.category) && matches(f, say, route.query))
+  const { items, all } = cardsFor(route, props.functions, byId, say)
   const pages = Math.max(1, Math.ceil(items.length / pageSize))
   const current = Math.min(page, pages)
   const shown = items.slice((current - 1) * pageSize, current * pageSize)
 
   const heading = route.category ? say(`category_${route.category}`) : say('functions_heading')
+  // WHAT IS LEFT OF WHAT THERE IS, while the search or a filter narrows the
+  // cards beyond their category: "(3/18)", as Cloudscape's filtered
+  // collections count.
+  const counter = narrowed({ ...route, category: null }) ? `(${items.length}/${all})` : `(${items.length})`
+
+  // ── the filters ──────────────────────────────────────────────────────────
+  const any: SelectProps.Option = { value: '', label: say('filter_any') }
+  const setFilter = (key: keyof CardFilters, value: string) => {
+    props.onRoute(withFilters(route, { ...filters, [key]: value === '' ? null : value } as CardFilters))
+  }
+  const select = (id: string, label: string, value: string | null, options: SelectProps.Option[],
+    onPick: (value: string) => void) => {
+    const choices = [any, ...options]
+    return (
+      <div key={id} className="terminal-filter-select" data-filter={id}>
+        <Select
+          inlineLabelText={label}
+          selectedOption={choices.find((o) => o.value === (value ?? '')) ?? any}
+          options={choices}
+          expandToViewport
+          onChange={({ detail }) => onPick(detail.selectedOption.value ?? '')}
+        />
+      </div>
+    )
+  }
+  const filterRow = (
+    <div className="terminal-filters">
+      {[
+        <div key="text" className="terminal-filter-text">
+          <TextFilter
+            filteringText={route.query}
+            filteringPlaceholder={say('filter_placeholder')}
+            filteringAriaLabel={say('filter_placeholder')}
+            countText={fill(say('filter_matches'), { count: items.length })}
+            onChange={({ detail }) => props.onRoute({ ...route, query: detail.filteringText })}
+          />
+        </div>,
+        select('category', say('card_category'), route.category,
+          props.categories.map((c) => ({ value: c, label: say(`category_${c}`) })),
+          (v) => props.onRoute({ ...route, category: v === '' ? null : v })),
+        select('risk', say('card_risk'), filters.risk,
+          RISKS.map((r) => ({ value: r, label: say(`risk_${r}`) })), (v) => setFilter('risk', v)),
+        select('cost', say('card_cost'), filters.cost,
+          COSTS.map((c) => ({ value: c, label: say(`cost_${c}`) })), (v) => setFilter('cost', v)),
+        select('bounty', say('card_bounty'), filters.bounty,
+          BOUNTIES.map((b) => ({ value: b, label: say(`bounty_${b}`) })), (v) => setFilter('bounty', v)),
+        select('status', say('card_status'), filters.status,
+          STATUSES.map((s) => ({ value: s, label: say(`status_${s}`) })), (v) => setFilter('status', v)),
+      ]}
+    </div>
+  )
 
   return (
     <div className="terminal-cards">
@@ -73,20 +146,29 @@ export function FunctionCards(props: {
         cardsPerRow={[{ cards: 1 }, { minWidth: 560, cards: 2 }, { minWidth: 900, cards: 3 }]}
         cardDefinition={{
           header: (f) => (
-            <span className="terminal-card-title">
-              <Button variant="inline-link" onClick={() => props.onOpen(f.id)}>
-                {say(`${f.id}_name`)}
-              </Button>
-            </span>
+            <div className="terminal-card-head">
+              <span className="terminal-card-title">
+                <Button variant="inline-link" onClick={() => props.onOpen(f.id)}>
+                  {say(`${f.id}_name`)}
+                </Button>
+              </span>
+              {showsSquads(f, state.squadMatch) ? <Squads say={say} /> : null}
+            </div>
           ),
           sections: [
-            { id: 'summary', content: (f) => say(`${f.id}_summary`) },
+            { id: 'summary', content: (f) => voltsLine(say(`${f.id}_summary`), currency) },
             { id: 'category', header: say('card_category'), content: (f) => say(`category_${f.category}`) },
             {
               id: 'risk',
               header: say('card_risk'),
               content: (f) => <Badge color={riskColor(f.risk)}>{say(`risk_${f.risk}`)}</Badge>,
             },
+            {
+              id: 'cost',
+              header: say('card_cost'),
+              content: (f) => (f.cost > 0 ? <VoltsAmount n={f.cost} currency={currency} /> : say('cost_free')),
+            },
+            { id: 'bounty', header: say('card_bounty'), content: (f) => say(`bounty_${bountyOf(f)}`) },
             {
               id: 'status',
               header: say('card_status'),
@@ -98,19 +180,11 @@ export function FunctionCards(props: {
           ],
         }}
         header={
-          <Header variant="awsui-h1-sticky" counter={`(${items.length})`}>
+          <Header variant="awsui-h1-sticky" counter={counter}>
             {heading}
           </Header>
         }
-        filter={
-          <TextFilter
-            filteringText={route.query}
-            filteringPlaceholder={say('filter_placeholder')}
-            filteringAriaLabel={say('filter_placeholder')}
-            countText={fill(say('filter_matches'), { count: items.length })}
-            onChange={({ detail }) => props.onQuery(detail.filteringText)}
-          />
-        }
+        filter={filterRow}
         pagination={
           <Pagination currentPageIndex={current} pagesCount={pages}
             onChange={({ detail }) => setPage(detail.currentPageIndex)} />
@@ -146,7 +220,10 @@ export function FunctionCards(props: {
             <SpaceBetween size="m">
               {[
                 <Box key="text" variant="p" color="inherit">{say('filter_empty')}</Box>,
-                <Button key="clear" onClick={() => props.onQuery('')}>{say('filter_clear')}</Button>,
+                <Button key="clear"
+                  onClick={() => props.onRoute(withFilters({ ...route, category: null, query: '' }, NO_FILTERS))}>
+                  {say('filter_clear')}
+                </Button>,
               ]}
             </SpaceBetween>
           </Box>

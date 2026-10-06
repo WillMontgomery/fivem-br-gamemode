@@ -115,6 +115,13 @@ export interface FunctionDef {
   squadOnly: boolean
   /** The category it is listed under outside a squad match, or null. */
   soloCategory: string | null
+  /**
+   * Who a run puts a bounty on, as its card says (round 4): the runner
+   * (Scan), another player (Contract), or nobody.
+   */
+  bounty: 'runner' | 'target' | null
+  /** Its effect reaches the runner's whole squad: "Squads!" in a squad match (round 4). */
+  squadWide: boolean
 }
 
 /** The registry as the app reads it. */
@@ -271,6 +278,8 @@ export function parseCatalog(v: unknown): Catalog | null {
       cost: cost !== null && cost > 0 ? Math.floor(cost) : 0,
       squadOnly: f.squadOnly === true,
       soloCategory: code(f.soloCategory),
+      bounty: f.bounty === 'runner' || f.bounty === 'target' ? f.bounty : null,
+      squadWide: f.squadWide === true,
     })
   }
   const categories = list(v.categories).filter((c): c is string => typeof c === 'string' && ID.test(c))
