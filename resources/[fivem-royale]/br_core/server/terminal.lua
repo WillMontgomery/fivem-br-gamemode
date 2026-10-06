@@ -5,9 +5,9 @@
 -- docs/terminals.md. This file holds:
 --
 --   the terminals    the config's sites plus the dev tool's, each online only
---                    while it stands inside the storm's current safe zone and
---                    no Lockdown has it (BR.TerminalSolve.offlineWhy through
---                    BR.Terminal.offlineWhy: the one rule every client reads too)
+--                    while it stands inside the storm's current safe zone
+--                    (BR.TerminalSolve.offlineWhy through BR.Terminal.offlineWhy:
+--                    the one rule every client reads too)
 --   the session      opened by TERMINAL_USE when a living player presses
 --                    interact beside a live terminal (or by the dev command
 --                    `brterminalsv open`, with typed facts, for the app alone)
@@ -169,20 +169,18 @@ local function sendSites(target)
 end
 
 --- Why this terminal is offline in this match now, or nil when it is online:
---- BR.TerminalSolve.offlineWhy, the one rule both sides read -- 'locked' (a
---- Lockdown, wave A: BR.Terminal.lockOf, server/terminalfx/lockdown.lua) or
---- 'offline' (outside the storm as it stands now; a terminal forced online by
---- the dev tool never is, but nothing beats a Lockdown).
+--- BR.TerminalSolve.offlineWhy, the one rule both sides read -- 'offline'
+--- outside the storm as it stands now (a terminal forced online by the dev
+--- tool never is).
 --- @param site table|nil
 --- @param m table|nil
 --- @param now number
 --- @return string|nil
 function T.offlineWhy(site, m, now)
     if not site then return 'offline' end
-    local lock = (m ~= nil and T.lockOf ~= nil) and T.lockOf(m, now) or nil
     -- The zone is a shape build; a forced terminal never needs it.
     local zone = (not forced[site.id]) and TS.zoneAt(m and m.storm or nil, now) or nil
-    return TS.offlineWhy(site, zone, forced[site.id] == true, lock)
+    return TS.offlineWhy(site, zone, forced[site.id] == true)
 end
 
 --- Is this terminal online? (BR.Terminal.offlineWhy says nothing against it.)
@@ -484,7 +482,7 @@ T.FUNCTIONS.storm_reveal = {
 --- A REAL SESSION READS THE WORLD on every ask: the key on the player's
 --- profile, the squad's use this match, the terminal against the storm as it
 --- stands now. A DEV session reads the facts `brterminalsv open` was typed with.
---- @return table { keyHeld: boolean, squadUsed: boolean, offline: boolean, locked: boolean }
+--- @return table { keyHeld: boolean, squadUsed: boolean, offline: boolean }
 function T.facts(src, session)
     if session.dev then return session.facts end
     local m = BR.Server.matchOf(src)
@@ -496,9 +494,6 @@ function T.facts(src, session)
         keyHeld = BR.Yubikey ~= nil and BR.Yubikey.holds(src),
         squadUsed = T.squadUsed(src),
         offline = why ~= nil,
-        -- OFFLINE BECAUSE OF A LOCKDOWN (wave A), which the app says in its
-        -- own words rather than the storm's.
-        locked = why == 'locked',
     }
 end
 
@@ -579,7 +574,7 @@ local function refusal(src, session, row, opts, self)
     if not built(row) then return 'fn_offline' end
     if row.squadOnly == true and not T.squadMatch(src) then return 'unavailable' end
     local f = T.facts(src, session)
-    if f.offline then return f.locked and 'locked' or 'offline' end
+    if f.offline then return 'offline' end
     if f.squadUsed then return 'squad_used' end
     if not f.keyHeld then return 'no_key' end
     local busy = inflight[src]
@@ -779,10 +774,9 @@ end
 
 --- Is a real session's player still alive, in its match, at its terminal, and
 --- is the terminal still live? Nil when so; otherwise why not. A terminal
---- that is not live answers the one rule's own word -- 'offline' (the storm)
---- or 'locked' (a Lockdown) -- and the close carries it to the client, whose
---- computer plays a blue screen and a power-off for the storm's alone (round
---- 4, cuchi_computer's client/shell.lua).
+--- that is not live answers the one rule's own word, 'offline' (the storm),
+--- and the close carries it to the client, whose computer plays a blue screen
+--- and a power-off for it (round 4, cuchi_computer's client/shell.lua).
 --- @return string|nil
 local function gone(src, session, now)
     if session.dev then return nil end
@@ -829,7 +823,7 @@ end
 --- @param src integer
 --- @param terminalId string
 --- @param now number
---- @return boolean ok, string|nil why  'state' | 'match' | 'site' | 'reach' | 'offline' | 'locked'
+--- @return boolean ok, string|nil why  'state' | 'match' | 'site' | 'reach' | 'offline'
 function T.use(src, terminalId, now)
     local e = BR.Roster.get(src)
     if not e or e.state ~= BR.PlayerState.ALIVE then return false, 'state' end
@@ -838,7 +832,7 @@ function T.use(src, terminalId, now)
     local site = T.site(terminalId)
     if not site then return false, 'site' end
     if not inReach(e, site) then return false, 'reach' end
-    -- 'offline' (the storm) or 'locked' (a Lockdown): each said aloud below.
+    -- 'offline' (the storm): said aloud below.
     local off = T.offlineWhy(site, m, now)
     if off then return false, off end
 
@@ -1187,9 +1181,9 @@ end
 -- which reads the sender's state, match, position and terminal off this
 -- server. An offline terminal is the one refusal said aloud: outside the
 -- storm a terminal has no plate at all (round 4), so a press there is a
--- client a step behind the storm, and it is told why nothing opened (the
--- storm's `offline`, or a Lockdown's `locked`). Every other refusal is a client out of step with the server, and
--- silence is the answer the loot claim gives that too.
+-- client a step behind the storm, and it is told why nothing opened
+-- (`offline`). Every other refusal is a client out of step with the server,
+-- and silence is the answer the loot claim gives that too.
 RegisterNetEvent(BR.Net.TERMINAL_USE)
 AddEventHandler(BR.Net.TERMINAL_USE, function(d)
     local src = tonumber(source)
@@ -1202,8 +1196,6 @@ AddEventHandler(BR.Net.TERMINAL_USE, function(d)
     local ok, why = BR.Terminal.use(src, d.terminalId, now)
     if not ok and why == 'offline' then
         BR.Server.notify(src, copy().offline, 'warn')
-    elseif not ok and why == 'locked' then
-        BR.Server.notify(src, copy().locked, 'warn')
     end
 end)
 
@@ -1308,8 +1300,7 @@ local function devList(src)
         tell(src, ('%s  (%.1f, %.1f, %.1f) h %.0f  %s%s%s'):format(s.id, s.x, s.y, s.z, s.h or 0,
             placed[s.id] and 'placed' or 'config',
             forced[s.id] and ', forced online' or '',
-            m and (why == nil and ', online' or why == 'locked' and ', LOCKED (Lockdown)' or ', OFFLINE')
-                or ''))
+            m and (why == nil and ', online' or ', OFFLINE') or ''))
     end
 end
 

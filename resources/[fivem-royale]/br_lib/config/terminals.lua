@@ -113,10 +113,6 @@ BR.Config.Terminals = {
         -- terminal outside the storm has no plate at all (owner, 2026-10-06:
         -- "no blip and no DUI - hence it's unusable").
         offline = 'This terminal is outside the storm and offline.',
-        -- WRITTEN (2026-10-06, wave A). A terminal a Lockdown has taken: the
-        -- world plate's hint (nothing to press), a toast if the player presses
-        -- anyway, and the app's reason.
-        locked = 'A lockdown has taken this terminal offline.',
         -- [COPY] A toast to a holder trying to pick up a second Yubikey.
         already_holding = '[COPY: pickup refused -- you already hold a Yubikey]',
         -- WRITTEN. A holder whose squad has already used its one key this
@@ -449,9 +445,6 @@ BR.Config.Terminals = {
         -- has an elimination yet -- refused, spending nothing.
         no_target = 'Nobody outside your squad has an elimination yet.',
         no_target_solo = 'Nobody else has an elimination yet.',
-        -- WRITTEN (2026-10-06, wave A). Lockdown: no other terminal is online
-        -- to take offline -- refused, spending nothing.
-        lockdown_none = 'There are no other terminals online to take offline.',
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -796,25 +789,6 @@ BR.Config.Terminals = {
         -- legend.
         key_finder_blip = 'Yubikey',
 
-        -- Storm delay (new; LIVE since wave B, 2026-10-06)
-        storm_delay_name = 'Storm delay',
-        storm_delay_summary = 'Holds the storm in place longer before its next sweep.',
-        storm_delay_what = "The storm's current hold gets longer by the time you choose.\nIf the storm is already closing, the delay is added to its next hold.\nThe next circle doesn't change.",
-        storm_delay_opt_delay = 'Delay',
-        storm_delay_opt_delay_60 = '1 minute',
-        storm_delay_opt_delay_120 = '2 minutes',
-        storm_delay_duration = '1 or 2 minutes, as chosen',
-        storm_delay_affects = 'Everyone in the match',
-        storm_delay_notified = 'Everyone in the match',
-        storm_delay_risks = 'It delays the storm for every squad, not just yours.',
-        storm_delay_risks_solo = 'It delays the storm for every player, not just you.',
-        storm_delay_done = 'The storm is delayed.',
-        storm_delay_description = 'Storm delay. The storm holds longer before its next sweep.',
-        -- WRITTEN (2026-10-06, wave B). Storm delay's own reason: the final
-        -- circle is closing or closed, so no hold is left to lengthen --
-        -- refused, spending nothing (at the terminal: why not).
-        no_hold = 'The storm has no hold left to delay.',
-
         -- Pulse (new; LIVE since wave A, 2026-10-06)
         pulse_name = 'Pulse',
         pulse_summary = 'Shows every player near this terminal for a short time.',
@@ -842,23 +816,6 @@ BR.Config.Terminals = {
         -- WRITTEN (2026-10-06, wave A). The marks' name in the pause map's
         -- legend.
         pulse_blip = 'Detected',
-
-        -- Lockdown (new; LIVE since wave A, 2026-10-06)
-        lockdown_name = 'Lockdown',
-        lockdown_summary = 'Takes every other terminal offline for a while.',
-        -- WRITTEN (2026-10-06, wave A; was "...\nThis terminal stays
-        -- online."): the storm still takes this terminal like any other --
-        -- Lockdown takes the others, it does not hold the wall back.
-        lockdown_what = "Every other terminal goes offline for the time you choose.\nNobody can open them.\nThis terminal stays online, unless the storm reaches it.",
-        lockdown_opt_duration = 'Duration',
-        lockdown_opt_duration_180 = '3 minutes',
-        lockdown_opt_duration_300 = '5 minutes',
-        lockdown_duration = '3 or 5 minutes, as chosen',
-        lockdown_affects = 'Every other terminal',
-        lockdown_notified = 'Everyone in the match',
-        lockdown_risks = "This terminal is the only one left online, and every key holder's map shows it.",
-        lockdown_done = 'Every other terminal is offline.',
-        lockdown_description = 'Lockdown. Every other terminal is offline.',
 
         -- Contract (new; LIVE since wave A, 2026-10-06)
         contract_name = 'Contract',
@@ -1131,8 +1088,10 @@ BR.Config.Terminals = {
     --
     -- WHERE EACH CAME FROM: the owner's list (2026-10-04) is the first nine;
     -- Reboot, Ghost, EMP and Key finder were suggested on #396 and approved
-    -- for consideration; Storm delay, Pulse, Lockdown, Contract and Field
-    -- medic are this round's proposals, for the owner to keep or cut.
+    -- for consideration; Pulse, Contract and Field medic are the app round's
+    -- proposals, for the owner to keep or cut. He cut two more of them on
+    -- 2026-10-06: Lockdown ("The player gains nothing from using that") and
+    -- Storm delay ("We have to keep the pace of the match").
     functions = {
         { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200,
           bounty = 'runner', squadWide = true },
@@ -1189,12 +1148,8 @@ BR.Config.Terminals = {
           } },
         { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true, squadWide = true,
           options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
-        { id = 'storm_delay',    category = 'storm',      risk = 'low',    implemented = true,
-          options = { { id = 'delay', choices = { '60', '120' }, default = '60' } } },
         { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true, squadWide = true,
           options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters
-        { id = 'lockdown',       category = 'disruption', risk = 'medium', implemented = true,
-          options = { { id = 'duration', choices = { '180', '300' }, default = '180' } } },  -- seconds
         { id = 'contract',       category = 'disruption', risk = 'medium', implemented = true, bounty = 'target' },
         { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true, squadWide = true },
     },
@@ -1206,8 +1161,8 @@ BR.Config.Terminals = {
     fx = {
         -- ── wave B (2026-10-06): Storm control, Time & weather, Power
         --    outage. An option's choices are the registry row's own numbers
-        --    (Storm delay's seconds, the durations), read as numbers where
-        --    they are used; everything else is here. ──
+        --    (the durations), read as numbers where they are used;
+        --    everything else is here. ──
 
         -- Storm control: how many possible ends the server works out before
         -- it names the three the page offers, all measured from this
@@ -1267,7 +1222,7 @@ BR.Config.Terminals = {
         bountyPingMs = 1000,
 
         -- ── wave A (2026-10-06). An option's choices are the registry row's
-        --    own numbers (Ghost's and Lockdown's seconds, Pulse's meters),
+        --    own numbers (Ghost's seconds, Pulse's meters),
         --    read as numbers where they are used; everything else is here. ──
 
         -- Disarm: how long the server remembers a weapon it took, so a hit
@@ -1283,7 +1238,7 @@ BR.Config.Terminals = {
         -- with room for a lob off a roof. Seconds, never a match.
         disarmGraceMs = 10000,
         -- How often the server checks whether a timed effect has run out (Key
-        -- finder's marks; Ghost; Lockdown) and ends it: one pass a second.
+        -- finder's marks; Ghost) and ends it: one pass a second.
         endCheckMs = 1000,
         -- Key finder: "they fade after 2 minutes".
         keyFinderMs = 2 * 60 * 1000,

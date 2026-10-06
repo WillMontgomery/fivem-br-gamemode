@@ -7131,10 +7131,9 @@ end
 -- CONTROL TOWER'S STORM FUNCTIONS (#396, wave B): the planner's half
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- Storm delay and Storm control change the storm through server/storm.lua and
--- nothing else: a hold is the record's own tWait (BR.Storm.delay), and the
--- circles still to be drawn are the match's own stream (BR.Storm.futures /
--- BR.Storm.steer). The door in front of them -- the key, the refusals, the
+-- Storm control changes the storm through server/storm.lua and nothing else:
+-- the circles still to be drawn are the match's own stream (BR.Storm.futures /
+-- BR.Storm.steer). The door in front of it -- the key, the refusals, the
 -- refund -- is tools/test_terminalworld.lua's.
 
 --- A match walked through the REAL phase job, from its first record, until
@@ -7183,181 +7182,41 @@ local function walkOn(S, stop, stepMs)
 end
 
 -- ---------------------------------------------------------------------------
-describe('delay.hold')
+describe('removed.delay')
 do
-    -- ═══ "THE STORM'S CURRENT HOLD GETS LONGER BY THE TIME YOU CHOOSE" ═══
+    -- ═══ STORM DELAY IS GONE (owner, 2026-10-06: "Storm delay doesn't make
+    --     sense to have really. We have to keep the pace of the match.") ═══
     --
-    -- The record is rebuilt with the same tStart, the same two circles, the same
-    -- seed and outline, and `ms` more tWait -- and published, because every
-    -- client's countdown is derived from the record.
+    -- Nothing of it is left in the planner: no BR.Storm.delay or holdLeft, and
+    -- the 75% cut (#352) is 1:30 flat again -- it reads no held time off the
+    -- match, so a leftover field from anywhere cannot stretch a hold.
     local S = newStormServer()
     local env = S.env
-    local rec0 = S.record(3, 100.0, -50.0, 1600.0, 300.0, 10.0, 950.0, 90000, 90000, 1.7)
-    local sends = S.countSent(env.BR.Net.STORM_SYNC)
-    local which = env.BR.Storm.delay(S.match, 60000, S.now + 1000)
-    eq(which, 'hold', 'a holding storm lengthens THIS hold')
-    local rec = S.match.storm
-    ok(rec ~= rec0, 'as a new record (a state bag replicates whole tables)')
-    eq(rec.tWait, rec0.tWait + 60000, 'its hold is 60 s longer')
-    local same = true
-    for _, k in ipairs({ 'phase', 'seed', 'cx0', 'cy0', 'r0', 'cx1', 'cy1', 'r1',
-                         'tStart', 'tShrink', 'dps' }) do
-        if rec[k] ~= rec0[k] then same = false end
-    end
-    ok(same and rec.mo == rec0.mo, 'and nothing else about it moved: the circles, the seed, the clock it started on')
-    eq(S.countSent(env.BR.Net.STORM_SYNC), sends + 1, 'published to the match at once')
-    ok(S.lastSent(env.BR.Net.STORM_SYNC) == rec, 'the record itself')
-    eq(S.match.stormHeldMs, 60000, 'and remembered as this hold\'s delay')
-
-    -- A minute and a half in, the undelayed record would be sweeping.
-    local _, _, _, was = env.BR.StormAt(rec0, rec0.tStart + 100000)
-    local _, _, _, now = env.BR.StormAt(rec, rec0.tStart + 100000)
-    eq(was, env.BR.StormPhase.SHRINKING, 'without it the wall would be moving at 1:40')
-    eq(now, env.BR.StormPhase.HOLDING, 'with it the storm still holds')
-
-    -- TWO DELAYS ADD UP.
-    env.BR.Storm.delay(S.match, 120000, S.now + 2000)
-    eq(S.match.storm.tWait, rec0.tWait + 180000, 'a second delay adds to the first')
-    eq(S.match.stormHeldMs, 180000, 'and to what the cut must honor')
-
-    -- REAL MILLISECONDS, NOT SCALED BY THE DEV TIME SCALE.
-    S.cmds.brstormscale(0, { '0.1' })
-    local before = S.match.storm.tWait
-    env.BR.Storm.delay(S.match, 60000, S.now + 3000)
-    eq(S.match.storm.tWait, before + 60000, 'brstormscale does not shrink a promise made in minutes')
-    S.cmds.brstormscale(0, { '1.0' })
-    ok(S.errored() == nil, 'clean', S.errored())
-end
-
--- ---------------------------------------------------------------------------
-describe('delay.next')
-do
-    -- ═══ "IF THE STORM IS ALREADY CLOSING, THE DELAY IS ADDED TO ITS NEXT HOLD.
-    --     THE NEXT CIRCLE DOESN'T CHANGE." ═══
-    --
-    -- Two matches walked from the same anchor and seed: one delayed while phase 3
-    -- sweeps, one left alone. The sweep in progress is untouched, the next hold is
-    -- the twin's plus the delay, the next circle is the twin's bit for bit -- and
-    -- the hold after that is an ordinary one again.
-    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
-    local sweeping = function(rec, st) return rec.phase == 3 and st == 'shrinking' end
-    local A = walkUntil(ANCHOR, sweeping)
-    local B = walkUntil(ANCHOR, sweeping)
-    local env = A.env
-    eq(A.match.storm.phase, 3, 'the walk stops in phase 3')
-    local _, _, _, st = env.BR.StormAt(A.match.storm, A.now)
-    eq(st, env.BR.StormPhase.SHRINKING, 'with the wall moving')
-
-    local rec3 = A.match.storm
-    local sends = A.countSent(env.BR.Net.STORM_SYNC)
-    eq(env.BR.Storm.holdLeft(A.match, A.now), 'next', 'a closing storm has a next hold to lengthen')
-    eq(env.BR.Storm.delay(A.match, 120000, A.now), 'next', 'and the delay goes to it')
-    ok(A.match.storm == rec3, 'the sweep in progress is the same record')
-    eq(A.countSent(env.BR.Net.STORM_SYNC), sends, 'and nothing is published for it')
-
-    local into4 = function(rec) return rec.phase == 4 end
-    walkOn(A, into4)
-    walkOn(B, into4)
-    local a, b = A.match.storm, B.match.storm
-    eq(a.phase, 4, 'the delayed match reaches phase 4')
-    eq(a.tWait, b.tWait + 120000, 'and its hold is the ordinary one plus the delay')
-    ok(a.cx1 == b.cx1 and a.cy1 == b.cy1 and a.r1 == b.r1,
-        'the next circle is exactly the one it would have been',
-        ('(%.3f, %.3f) vs (%.3f, %.3f)'):format(a.cx1, a.cy1, b.cx1, b.cy1))
-    eq(A.match.stormDelayNextMs, nil, 'the delay is spent')
-    eq(A.match.stormHeldMs, 120000, 'and is this hold\'s, for the cut')
-
-    local into5 = function(rec) return rec.phase == 5 end
-    walkOn(A, into5)
-    walkOn(B, into5)
-    eq(A.match.storm.tWait, B.match.storm.tWait, 'the hold after it is an ordinary one')
-    eq(A.match.stormHeldMs, 0, 'with nothing held over')
-    ok(A.match.storm.cx1 == B.match.storm.cx1 and A.match.storm.cy1 == B.match.storm.cy1,
-        'and every circle after it is the undelayed match\'s')
-    ok(A.errored() == nil and B.errored() == nil, 'both run clean', A.errored() or B.errored())
-end
-
--- ---------------------------------------------------------------------------
-describe('delay.final')
-do
-    -- ═══ NO HOLD LEFT: THE FINAL CIRCLE CLOSING OR CLOSED ═══
-    local S = newStormServer()
-    local env = S.env
-    local last = #env.BR.Config.Storm.phases
-    local rec = S.record(last, 0.0, 0.0, 40.0, 10.0, 0.0, 0.0, 30000, 60000, 6.7)
-    eq(env.BR.Storm.holdLeft(S.match, S.now + 1000), 'hold', 'the final phase\'s own hold can still be lengthened')
-    local sweeping = rec.tStart + 31000
-    eq(env.BR.Storm.holdLeft(S.match, sweeping), nil, 'once it closes there is no hold left')
-    local sends = S.countSent(env.BR.Net.STORM_SYNC)
-    eq(env.BR.Storm.delay(S.match, 60000, sweeping), nil, 'and a delay changes nothing')
-    ok(S.match.storm == rec and S.match.stormDelayNextMs == nil, 'not this record, not a next one')
-    eq(S.countSent(env.BR.Net.STORM_SYNC), sends, 'and nothing is published')
-    eq(env.BR.Storm.holdLeft(S.match, rec.tStart + 100000), nil, 'closed, the same')
-    S.match.state = env.BR.MatchState.ENDED
-    eq(env.BR.Storm.holdLeft(S.match, S.now + 1000), nil, 'and outside PLAYING there is no hold at all')
-    S.match.state = env.BR.MatchState.PLAYING
-    S.match.storm = nil
-    eq(env.BR.Storm.holdLeft(S.match, S.now), nil, 'nor before the storm')
-    eq(env.BR.Storm.delay(S.match, 60000, S.now), nil, 'and a delay before it changes nothing')
-end
-
--- ---------------------------------------------------------------------------
-describe('delay.cap')
-do
-    -- ═══ THE 75% CUT (#352) NEVER UNDOES A DELAY ═══
-    --
-    -- Once the lobby is in, phase 1's hold is cut to 1:30 on every tick that finds
-    -- more left -- and a delay is "more left". The cut honors the hold's delay:
-    -- 1:30 plus it.
-    local S = newStormServer()
-    local env = S.env
+    eq(env.BR.Storm.delay, nil, 'no BR.Storm.delay')
+    eq(env.BR.Storm.holdLeft, nil, 'no BR.Storm.holdLeft')
     env.BR.Sched.setEnabled('storm.phase', true)
     S.roster[1] = nil
     S.match.stormHoldCapped = true
+    S.match.stormSeed = 7
+    S.match.stormRng = env.BR.Rng(7)
     S.record(1, 0.0, 0.0, 4000.0, 300.0, 0.0, 2600.0, 300000, 240000, 0.5)
-    S.match.stormHeldMs = 0
+    S.match.stormHeldMs = 60000
+    S.match.stormDelayNextMs = 60000
     S.tick()
     local CAP = env.BR.Config.Storm.hold.capSeconds * 1000.0
     local _, _, _, st, left = env.BR.StormAt(S.match.storm, S.now)
     eq(st, env.BR.StormPhase.HOLDING, 'phase 1 holds')
-    ok(near(left, CAP, 1.0), 'cut to 1:30 by the latched cut', left)
-
-    env.BR.Storm.delay(S.match, 60000, S.now)
-    S.tick()
-    S.tick()
-    _, _, _, st, left = env.BR.StormAt(S.match.storm, S.now)
-    ok(near(left, CAP + 60000 - 2000, 1.0),
-        'a minute delayed, and the cut leaves the minute where it is', left)
+    ok(near(left, CAP, 1.0), 'and the latched cut takes it to 1:30, whatever the match carries', left)
+    -- AND THE NEXT HOLD IS ITS OWN: enterPhase adds nothing to it.
+    for _ = 1, 2000 do
+        if S.match.storm.phase == 2 then break end
+        S.now = S.now + 5000
+        env.BR.Sched.step(S.now)
+    end
+    eq(S.match.storm.phase, 2, 'the storm moves on to phase 2')
+    eq(S.match.storm.tWait, env.BR.Config.Storm.phases[2].wait * 1000,
+        'whose hold is its own, with nothing carried into it')
     ok(S.errored() == nil, 'clean', S.errored())
-end
-
--- ---------------------------------------------------------------------------
-describe('delay.client')
-do
-    -- ═══ EVERY CLIENT'S COUNTDOWN FOLLOWS THE RECORD THE SERVER PUBLISHED ═══
-    --
-    -- What the server sends for a delayed hold is handed to the real client storm,
-    -- and the countdown it forwards on that same tick ends where the delayed hold
-    -- does -- hold.cut's path, the other way.
-    local S = newStormServer()
-    local senv = S.env
-    S.record(3, 0.0, 0.0, 1600.0, 100.0, 0.0, 950.0, 90000, 90000, 1.7)
-    local C = newStormClient()
-    local env = C.env
-    C.now = S.now
-    env.BR.State.storm = S.match.storm
-    C.fire(env.BR.Net.STORM_SYNC)
-    C.tick(1)
-    local T0 = S.match.storm.tStart
-    ok(C.last() and C.last().endsAt == T0 + 90000, 'the countdown starts at the authored hold',
-        C.last() and tostring(C.last().endsAt))
-    senv.BR.Storm.delay(S.match, 120000, S.now)
-    env.BR.State.storm = S.lastSent(senv.BR.Net.STORM_SYNC)
-    C.fire(env.BR.Net.STORM_SYNC)
-    C.tick(1)
-    ok(C.last() and C.last().endsAt == T0 + 210000,
-        'and the tick that solves the delayed record sends the delayed end',
-        C.last() and tostring(C.last().endsAt))
 end
 
 --- Is the zone `phase` closes on at (cx1, cy1, r1) one the planner could draw

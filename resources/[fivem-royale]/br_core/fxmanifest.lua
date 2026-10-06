@@ -705,7 +705,6 @@ client_scripts {
     -- returns at once with nothing drawn.
     'client/terminalfx/key_finder.lua',
     'client/terminalfx/pulse.lua',
-    'client/terminalfx/lockdown.lua',
     -- Wave C (#396, 2026-10-06): EMP holds a vehicle the server marked
     -- stalled on the client that owns it -- on the state bag's change, on
     -- getting in, and on that one SLOW pass. Nothing per frame.
@@ -967,7 +966,6 @@ server_scripts {
     'server/terminalfx/pulse.lua',
     'server/terminalfx/ghost.lua',
     'server/terminalfx/contract.lua',
-    'server/terminalfx/lockdown.lua',
     -- Wave C (#396, 2026-10-06), the same way.
     'server/terminalfx/emp.lua',
     'server/terminalfx/comms_blackout.lua',
@@ -984,7 +982,6 @@ server_scripts {
     -- (BR.Storm, read at call time). Listed below the allowlist only so that
     -- wave A's list, above it, and this one are two separate edits.
     -- tools/test_terminal.lua loads every `server/terminalfx/` file named here.
-    'server/terminalfx/storm_delay.lua',
     'server/terminalfx/storm_control.lua',
     'server/terminalfx/time_weather.lua',
     'server/terminalfx/power_outage.lua',

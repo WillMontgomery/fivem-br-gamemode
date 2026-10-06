@@ -920,11 +920,11 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # mutations are named in #396's app report.
     #
     # test_terminalworld.lua is #396's wave B (2026-10-06): the functions that
-    # change the world everybody in the match stands in -- the storm's hold and
-    # its last circles, the sky and the clock, the lights -- run at a real
-    # terminal over the REAL server/storm.lua, each refusal spending nothing and
-    # an effect that can no longer happen giving everything back. Their planner
-    # halves are test_storm.lua's `delay.*` and `control.*` blocks.
+    # change the world everybody in the match stands in -- the storm's last
+    # circles, the sky and the clock, the lights -- run at a real terminal over
+    # the REAL server/storm.lua, each refusal spending nothing and an effect
+    # that can no longer happen giving everything back. Their planner half is
+    # test_storm.lua's `control.*` blocks.
     #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text

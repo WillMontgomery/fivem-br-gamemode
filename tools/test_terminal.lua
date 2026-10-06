@@ -579,7 +579,7 @@ do
         -- Wave A's (2026-10-06).
         'health_full', 'no_weapons', 'no_keys', 'no_keys_ground', 'no_keys_held', 'key_finder_warned',
         'key_finder_blip', 'pulse_detected', 'pulse_blip', 'no_target', 'contract_protect',
-        'contract_target', 'locked', 'lockdown_none',
+        'contract_target',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
         'address_host', 'path_home', 'path_functions', 'path_howto', 'path_privacy', 'path_login',
         'nav_home', 'nav_howto', 'nav_privacy', 'nav_categories', 'privacy_title', 'privacy_body',
@@ -673,6 +673,41 @@ do
         ok(type(copy[key]) == 'string' and copy[key] ~= '', ('copy has %s'):format(key))
         ok(not copy[key]:lower():find('squad', 1, true), ('%s says no squad'):format(key))
     end
+end
+
+describe('round 4: Lockdown and Storm delay are gone (owner, 2026-10-06)')
+do
+    -- "I don't like the Lockdown tool, please remove it as well. The player
+    -- gains nothing from using that." "Storm delay doesn't make sense to have
+    -- really. We have to keep the pace of the match." Nothing of either is
+    -- left: no row, no line, no server half, no file, no wire, no online rule.
+    bootServer()
+    local C = BR.Config.Terminals
+    for _, id in ipairs({ 'lockdown', 'storm_delay' }) do
+        eq(BR.Terminal.row(id), nil, id .. ': no registry row')
+        eq(BR.Terminal.FUNCTIONS[id], nil, id .. ': no server half')
+        local lines = {}
+        for k in pairs(C.copy) do
+            if k:sub(1, #id + 1) == id .. '_' then lines[#lines + 1] = k end
+        end
+        eq(#lines, 0, id .. ': no copy line ' .. table.concat(lines, ', '))
+        for _, side in ipairs({ 'server', 'client' }) do
+            ok(io.open(ROOT .. 'br_core/' .. side .. '/terminalfx/' .. id .. '.lua', 'rb') == nil,
+                ('%s: no %s file'):format(id, side))
+        end
+    end
+    for _, key in ipairs({ 'locked', 'lockdown_none', 'no_hold' }) do
+        eq(C.copy[key], nil, ('copy.%s is gone with them'):format(key))
+    end
+    eq(BR.Net.TERMINAL_LOCKDOWN, nil, 'no TERMINAL_LOCKDOWN on the wire')
+    local manifest = readFile(ROOT .. 'br_core/fxmanifest.lua') or ''
+    ok(not manifest:find('lockdown.lua', 1, true) and not manifest:find('storm_delay.lua', 1, true),
+        'and br_core manifest lists neither')
+    -- THE ONE ONLINE RULE IS THE STORM'S ALONE: a fourth argument (the old
+    -- Lockdown's `lock`) changes nothing.
+    local site = { id = 'hut', x = 0.0, y = 0.0 }
+    eq(BR.TerminalSolve.offlineWhy(site, nil, false, { keep = 'tower' }), nil,
+        'no storm, not forced: online, whatever else is passed')
 end
 
 describe('round 2: the owner\'s words, verbatim, and no thunderstorm')
@@ -1315,7 +1350,7 @@ do
     C.exports.Close('done')
 
     -- EVERY OTHER CLOSE IS AS IT WAS: at once, and no screen.
-    for _, why in ipairs({ 'locked', 'state', 'walked', 'season', 'dev', 'storm' }) do
+    for _, why in ipairs({ 'match', 'state', 'walked', 'season', 'dev', 'storm' }) do
         C.exports.Open(STATE, COPY)
         C.exports.Close(why)
         local last = C.nui[#C.nui]

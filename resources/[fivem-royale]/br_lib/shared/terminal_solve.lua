@@ -6,8 +6,8 @@
 --
 --   zoneAt / inside   is this point inside the storm's CURRENT safe zone --
 --                     the wall as it stands now, by its real shape
---   offlineWhy        is this terminal online: a Lockdown, the storm and the
---                     dev tool's forcing, in that order
+--   offlineWhy        is this terminal online: the storm, and the dev tool's
+--                     forcing
 --   squadKey          which squad a player's one use belongs to (a solo
 --                     player is a squad of one)
 --   sites             the terminal rows in a config, checked
@@ -83,22 +83,14 @@ end
 --- read by the server (every use, every run, every session check, the
 --- panel's count) and by every client (the blip, the plate):
 ---
----   'locked'   a Lockdown is in force in this match (wave A, 2026-10-06) and
----              this is not the terminal it was run at. Nothing overrides it:
----              not the storm, and not the dev tool's forcing either -- "Nobody
----              can open them" is the page's promise.
 ---   'offline'  outside the storm's current zone ("every computer works
 ---              unless it's outside the storm", owner 2026-10-04), unless the
----              dev tool forced it online. The terminal a Lockdown keeps is
----              still the storm's: Lockdown takes the others offline, it does
----              not hold the wall back from its own.
+---              dev tool forced it online.
 --- @param site table  { id, x, y }
 --- @param zone table|nil  the storm's current zone (T.zoneAt); nil is no storm
 --- @param forced boolean  `brterminal online <id>`: online whatever the storm
---- @param lock table|nil  the Lockdown in force in this match, { keep = id|nil }
 --- @return string|nil
-function T.offlineWhy(site, zone, forced, lock)
-    if lock ~= nil and lock.keep ~= site.id then return 'locked' end
+function T.offlineWhy(site, zone, forced)
     if forced == true then return nil end
     if T.inside(zone, site.x, site.y) then return nil end
     return 'offline'

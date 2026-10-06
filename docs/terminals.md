@@ -24,10 +24,10 @@ Around them, the Gameplay half:
 |---|---|---|
 | **The key** | `br_core/server/yubikey.lua` | Who holds a Yubikey, on the profile row through br_ddb (`yubikey`, `yubikeySeen`); every way one changes hands. |
 | **The world** | `br_core/client/yubikey.lua` | Each terminal's blip and plate (the laptops are the owner's ymap's, hidden where terminals are off); the press that asks to open one; the key's HUD glyph; Storm reveal on the maps. Decides nothing. |
-| **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against a Lockdown and the storm (`offlineWhy`), the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
+| **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against the storm (`offlineWhy`), the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
 | **The effects** | `br_core/server/terminalfx.lua` | What the first built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen; and the helpers the files below share. |
-| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Key finder, Pulse, Ghost, Contract, Lockdown -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm delay, Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); and wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06). Every row is built. |
-| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents, the bounty, Key finder's keys and Pulse's finds on this player's maps, a Lockdown's fact for the world's online rule, and an EMP's stalled vehicles held on the client that owns them, from the server's pushes and state bags. Decides nothing. |
+| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Key finder, Pulse, Ghost, Contract -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); and wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06). Every row is built. |
+| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents, the bounty, Key finder's keys and Pulse's finds on this player's maps, and an EMP's stalled vehicles held on the client that owns them, from the server's pushes and state bags. Decides nothing. |
 
 **The server decides everything.** The computer and the app only ask. A run is
 taken only from a player with an open session on that terminal, which only the
@@ -65,16 +65,14 @@ What the computer opens with, and what the server sends again when it changes.
 ```
 
 `reason` is a code, and a code is a key into the copy: `fn_offline` (the
-effect is not built), `offline`, `locked` (a Lockdown has this terminal),
-`squad_used`, `no_key`, `bad_option`, `unavailable` (a run of theirs or their
+effect is not built), `offline`, `squad_used`, `no_key`, `bad_option`, `unavailable` (a run of theirs or their
 squad's in flight, a squad-only function outside a squad match), or any key a
 function's own refusal adds (`no_storm`, `no_site`, `drop_busy`, `ammo_full`;
 wave A's `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`,
-`no_keys_held`, `no_target`, `lockdown_none`; wave C's `reboot_none`). The app shows the line for the
+`no_keys_held`, `no_target`; wave C's `reboot_none`). The app shows the line for the
 code, or `unavailable` when there is none, and maps it to the card's four
 statuses: Available, Used (`squad_used`), Not available (`fn_offline`,
-`offline`), Not available at this terminal (everything else, `locked`
-included). The balance is
+`offline`), Not available at this terminal (everything else). The balance is
 never a listing's reason: Run stays pressable whatever it is, and only a run
 is refused `no_volts`.
 
@@ -156,9 +154,8 @@ The table below is the lines outside the functions' own:
 | `privacy_*` | At the terminal: the Privacy page, the owner's approved policy (VERBATIM, "Perfect", 2026-10-06): its title and two paragraphs |
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
-| `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target`, `lockdown_none` | At the terminal: why not (wave A's functions) |
+| `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target` | At the terminal: why not (wave A's functions) |
 | `reboot_none` | At the terminal: why not (Reboot: nobody in the squad eliminated and still in the match). Squad-only, so no `_solo` line |
-| `locked` | A terminal a Lockdown has taken: its world plate (nothing to press), a toast to a player who presses there anyway, the app's reason, and the refusal of a second Lockdown whose own terminal the first one took while it loaded |
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
 | `pulse_detected` | A toast to each player a Pulse found, after the lobby's notice |
 | `contract_protect` | A toast to a Contract target's squadmates (never the target): the owner's `bounty_protect` says ten minutes, Scan's; `{playername}` |
@@ -297,9 +294,7 @@ first.
 | `ghost` | Ghost | squad (disruption alone) | low | | **live** (wave A) |
 | `emp` | EMP | disruption | medium | | **live** (wave C) |
 | `key_finder` | Key finder | intel | low | | **live** (wave A) |
-| `storm_delay` | Storm delay | storm | low | | **live** (wave B) |
 | `pulse` | Pulse | intel | medium | | **live** (wave A) |
-| `lockdown` | Lockdown | disruption | medium | | **live** (wave A) |
 | `contract` | Contract | disruption | medium | | **live** (wave A) |
 | `field_medic` | Field medic | supply | low | | **live** (wave A) |
 
@@ -315,7 +310,9 @@ there is one) in `br_core/client/terminalfx/<id>.lua`, both listed in
 loads every `server/terminalfx/` file the manifest names.
 
 The first nine are the owner's (2026-10-04), the next four were suggested on
-the issue, and the last five are proposals for him to keep or cut. A new
+the issue, and the last three are proposals for him to keep or cut. He cut two
+more proposals on 2026-10-06: Lockdown ("The player gains nothing from using
+that") and Storm delay ("We have to keep the pace of the match"). A new
 function is a row, its copy lines, and -- to go live -- an entry in
 `BR.Terminal.FUNCTIONS` and `implemented = true`. `tools/test_terminal.lua`
 fails a row missing a line, and a built row with no server entry.
@@ -331,7 +328,6 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
 | `BR.Net.TERMINAL_KEYS` | S→C | `{ matchId, list = { { x, y } }, leftMs }` | Key finder: where each Yubikey was when it ran, to the squad that ran it alone; once more, empty, when its `fx.keyFinderMs` is up or the match ends; again on `br:ready` while it lasts. |
 | `BR.Net.TERMINAL_PULSE` | S→C | `{ matchId, list = { { s, x, y } } }` | Pulse: where each player it found is now, to the squad that ran it alone, every `fx.pulsePingMs` for `fx.pulseMs`, and once more, empty, when it is over. |
-| `BR.Net.TERMINAL_LOCKDOWN` | S→C | `{ matchId, on, keep?, leftMs? }` | Lockdown: every terminal but `keep` is offline in this match, to everyone in it, when it starts and when it ends (`on` false), and on `br:ready` while it lasts. The `lock` of the one online rule. |
 | `fx.empBag` (`brEmp`), an entity state bag | S→C | the milliseconds an EMP has left, on each vehicle it stalled | EMP: set by the server alone (`server/terminalfx/emp.lua`) as it goes off, replicated to every client the vehicle is relevant to (and to one it becomes relevant to later), cleared when it ends, when its match ends or is torn down, and off Season 2. `client/terminalfx/emp.lua` reads it. |
 | `BR.Net.SQUAD_POS` (`server/party.lua`) | S→C | the squad beacon's rows | Comms blackout: while one another squad ran is in force, every row sent to a blacked-out squad leaves `x` and `y` off, and nothing else (`BR.Terminal.beaconDark`). |
 | `BR.Net.REVIVEKEY_ARRIVE`, `BR.Net.REVIVEKEY_PLACE` | S→C | `{ x, y, z }` / `{ cancelled }` | Reboot: the revive key's own return (`BR.ReviveKey.bringBackAt`), over this terminal. |
@@ -617,18 +613,13 @@ place` stays as a dev aid for a future site: a plate and a blip for the
 session, no laptop, and the row to paste.
 
 A terminal is **online only inside the storm's current zone**, by its real
-shape; before there is a storm everything is inside it -- **and only while no
-Lockdown has it** (wave A).
+shape; before there is a storm everything is inside it.
 
 **ONE ONLINE RULE, BOTH SIDES**: `BR.TerminalSolve.offlineWhy(site, zone,
-forced, lock)` answers `'locked'` (a Lockdown is in force in this match and
-this is not the terminal it kept -- nothing beats it, not even the dev tool's
-forcing), else `'offline'` (outside the storm, unless forced online), else nil.
-The server reads it through `BR.Terminal.offlineWhy` (and `T.online`, its
+forced)` answers `'offline'` (outside the storm, unless forced online), else
+nil. The server reads it through `BR.Terminal.offlineWhy` (and `T.online`, its
 boolean) for every use, every run, every session check, the panel's count and
-`brterminal list`; every client reads it in `client/yubikey.lua`, with the
-Lockdown `client/terminalfx/lockdown.lua` was told about. The terminal a
-Lockdown keeps is still the storm's.
+`brterminal list`; every client reads it in `client/yubikey.lua`.
 
 - **Season 1 hides the laptops.** `br_stream_s2` is installed from Season 2
   on (`assets.lock`), so a box started at Season 1 has no laptops at all (and
@@ -646,22 +637,18 @@ Lockdown keeps is still the storm's.
   announce), and taken down when br_core stops; never per frame. The dev
   tool's changes do not touch the hides.
 - **Its blip** shows only while this player holds a key, only for an online
-  terminal, and only in a match (from the bus on) -- so during a Lockdown a
-  key holder's map shows only the terminal it kept.
+  terminal, and only in a match (from the bus on).
 - **Its plate** (the shared prompt browser) reads `terminal_label` ("Computer
-  system") over one of four hints:
+  system") over one of three hints:
   - `terminal_use` ("press to open") with the player's interact key: a press
     opens the computer;
   - `no_key`: the key cap too, and a press opens it, every function `no_key`;
   - `squad_used`: the same;
-  - `locked` (a Lockdown has it): no key cap, nothing to press.
 - **Outside the storm it has no plate at all, for anyone** (round 4, owner
   2026-10-06: "A terminal outside the storm should have no blip and no DUI -
   hence it's unusable"): nothing is sent to the prompt browser, nothing is
   drawn, the loot prompt keeps the floor, and there is nothing to press. A
-  terminal the SLOW pass has not placed yet counts as outside, and so does a
-  locked one: the online rule answers `locked` before it asks the storm, so
-  the plate asks the storm first (`w.outside`). The server
+  terminal the SLOW pass has not placed yet counts as outside. The server
   still refuses a use there, aloud (`offline`), for a client a step behind
   the storm.
 - **A press of interact** sends TERMINAL_USE (it was an 800 ms hold until
@@ -674,7 +661,7 @@ Lockdown keeps is still the storm's.
    server's own sample, in a PLAYING match, at an online terminal.
 2. **Access** is a key and a squad that has not spent its use. The lobby (the
    whole match) hears `notice_access` once per player per match.
-3. **A run** is refused, in this order, `offline` (or `locked`),
+3. **A run** is refused, in this order, `offline`,
    `squad_used`, `no_key`, a run in flight, the function's own reason, then
    `no_volts`.
 4. **When it is accepted**: its Volts, then the key and the squad's ONE use
@@ -683,8 +670,8 @@ Lockdown keeps is still the storm's.
    and keep their keys. **When it is done**, 3-5 s later, the lobby hears
    `notice_action` -- or, if it could not happen, everything comes back.
 5. **Every fact is read from the world on every ask.** A session closes when its
-   player goes down, dies, leaves, walks away or the storm (or a Lockdown)
-   takes the terminal: on a 500 ms check, and again inside every run.
+   player goes down, dies, leaves, walks away or the storm takes the
+   terminal: on a 500 ms check, and again inside every run.
 
 ## Storm reveal
 
@@ -699,20 +686,10 @@ somewhere else.
 
 ## The storm, the sky, the clock and the lights (wave B)
 
-Four functions change the world everybody in the match stands in (#396,
-2026-10-06). Each is built to its own page in `copy`, and where a line could
+Three functions change the world everybody in the match stands in (#396,
+2026-10-06); a fourth, Storm delay, was removed by the owner the same day
+("We have to keep the pace of the match"). Each is built to its own page in `copy`, and where a line could
 not be true it was changed (the report of wave B lists every one).
-
-**Storm delay** (`server/terminalfx/storm_delay.lua`, option `delay` 60 or
-120 s): the hold is the storm record's own `tWait`. While the storm holds,
-`BR.Storm.delay` rebuilds the record with the same tStart, circles, seed and
-outline and `delay` more hold, and publishes it, so every client's countdown,
-the sweep after it, the airdrop's landing circles and the match panel follow
-it. While the wall closes the delay waits in `m.stormDelayNextMs` and
-`enterPhase` adds it to the next hold. Real seconds, never scaled by
-`brstormscale`; the next circle never moves; the 75% cut (#352) cuts to 1:30
-plus the delay. Refused `no_storm`, and `no_hold` once the final circle is
-closing or closed (`BR.Storm.holdLeft`).
 
 **Storm control** (`storm_control.lua`, 150 Volts, option `zone`): where the
 match ends is where its storm stream takes it, so a possible final circle is
@@ -799,10 +776,10 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `bryubikey [give or take]` | A key for yourself, or yours taken: the real profile write and messages |
 | `brterminal place [id]` | A terminal where you look (or on the ground ahead), facing you, for this session -- a plate and a blip, no laptop (the owner's ymap holds those); prints the config row |
 | `brterminal remove <id>` | Out of play for this session (a config row stays in the file) |
-| `brterminal list` | Every terminal, and whether your match has it online (`LOCKED (Lockdown)` when a Lockdown has it) |
+| `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`, `brterminal run lockdown duration=300`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you, and Lockdown keeps the terminal nearest you. Wave B: `run storm_delay delay=120`, `run storm_control zone=far`, `run time_weather time=night weather=rain duration=300`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you. Wave B: `run storm_control zone=far`, `run time_weather time=night weather=rain duration=300`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
@@ -851,10 +828,11 @@ Refused `ammo_full`, spending nothing, when nobody has room.
 
 ## Wave A (owner, 2026-10-06)
 
-"All 14 others" are being built in three waves; wave A is these seven. Each is
+"All 14 others" are being built in three waves; wave A is these six (a
+seventh, Lockdown, was removed by the owner on 2026-10-06). Each is
 **a file of its own**, `server/terminalfx/<id>.lua`, registering its
-`BR.Terminal.FUNCTIONS` entry -- and, for the three that draw or read
-something on a client, `client/terminalfx/<id>.lua` -- listed in
+`BR.Terminal.FUNCTIONS` entry -- and, for the two that draw something on a
+client, `client/terminalfx/<id>.lua` -- listed in
 `br_core/fxmanifest.lua` after `terminalfx.lua`, whose shared helpers they
 use: on the server `T.fxOf` (the match's effects record), `T.marked`,
 `T.namedLine`, `T.anchorOf` ("this terminal": the session's, or the player at
@@ -880,7 +858,6 @@ sibling through the picker. Nothing runs per frame.
 | Pulse | `radius` 250 / 500 m around this terminal: every player outside the squad in the fight inside it, found once and followed wherever they go (`TERMINAL_PULSE`, every `fx.pulsePingMs`) for `fx.pulseMs` (30 s). Each one found is told (`pulse_detected`). | Never for finding nobody -- a refusal is free, so it would be free intel |
 | Ghost | `duration` 120 / 240 s: the squad is left out of other squads' Scan and Pulse marks, and a bounty on one of them leaves every other map. It hides nobody from sight. | -- |
 | Contract | A bounty for `fx.contractMs` (5 min) on the player outside the squad with the most eliminations; a tie to whoever reached the count first (`killsAt`, stamped as a kill is credited), then the lower id (`BR.Terminal.contractPick`). | `no_target`: nobody outside the squad has one |
-| Lockdown | `duration` 180 / 300 s: every terminal but this one offline -- open computers there close, nobody can open them, a key holder's map shows only this one (`TERMINAL_LOCKDOWN`, the one online rule's `lock`). | `lockdown_none`: no other terminal is online. `locked`: another squad's Lockdown has taken this terminal -- two loading in the same 3-5 s, the second to land is given everything back instead of locking the terminal the first kept |
 
 Each refusal is asked again when the load ends, so an effect that can no
 longer happen gives everything back (the door's rule). Every function runs

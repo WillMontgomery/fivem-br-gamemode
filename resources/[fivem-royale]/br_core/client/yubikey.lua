@@ -8,8 +8,8 @@
 --                  loot and client/loot.lua draws it.
 --   the terminals  the config's sites plus the dev tool's (TERMINAL_SITES):
 --                  a blip each, only while this player holds a key and only
---                  for an online terminal -- inside the storm and not taken by
---                  a Lockdown, the one rule the server reads
+--                  for an online terminal -- inside the storm, the one rule
+--                  the server reads
 --                  (BR.TerminalSolve.offlineWhy); and the shared world plate
 --                  within reach -- the owner's "Computer system" / "press to
 --                  open" with the interact key (2026-10-06) -- whose PRESS
@@ -86,10 +86,9 @@ local dev = { placed = {}, removed = {}, forced = {} }
 --- The merged terminal list, rebuilt when the dev changes arrive.
 local list = nil
 
---- [id] = { online, why, outside, big, mini } for every terminal: whether it
---- is online, why not (BR.TerminalSolve.offlineWhy's answer: 'offline',
---- 'locked' or nil), whether the storm has it (a Lockdown or not), and its
---- blip on each map
+--- [id] = { online, why, big, mini } for every terminal: whether it is online,
+--- why not (BR.TerminalSolve.offlineWhy's answer: 'offline' or nil),
+--- and its blip on each map
 local world = {}
 
 --- Storm reveal: { x, y, r, matchId, radius, big, mini }, or nil.
@@ -133,8 +132,8 @@ end
 --- Is this file's plate on screen? Read by client/dbno.lua, which owns the one
 --- BR.Loot.suppress call: a terminal on a floor with loot near it must not
 --- take two answers from one press, nor share the one prompt browser with a
---- crate's plate -- so even a locked plate, with nothing to press, counts. A
---- terminal outside the storm has no plate, so it never counts.
+--- crate's plate. A terminal outside the storm has no plate, so it never
+--- counts.
 --- @return boolean
 function Y.prompting()
     return plate ~= nil
@@ -367,9 +366,6 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
     if live and S.storm then
         zone = TS.zoneAt(S.storm, BR.Clock and BR.Clock.now() or now)
     end
-    -- A LOCKDOWN IN THIS MATCH (wave A; client/terminalfx/lockdown.lua): every
-    -- terminal but the one it kept is offline, and its blip goes with it.
-    local lock = live and BR.TerminalFx and BR.TerminalFx.lock and BR.TerminalFx.lock() or nil
     local blips = live and held
 
     local present = {}
@@ -381,12 +377,8 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
             world[s.id] = w
         end
         -- THE ONE ONLINE RULE, the server's own (BR.TerminalSolve.offlineWhy).
-        w.why = TS.offlineWhy(s, zone, dev.forced[s.id] == true, lock)
+        w.why = TS.offlineWhy(s, zone, dev.forced[s.id] == true)
         w.online = w.why == nil
-        -- The storm's answer alone, a Lockdown aside: the rule says 'locked'
-        -- before it asks the storm, and a locked terminal outside the storm
-        -- has no plate either (round 4: "no blip and no DUI").
-        w.outside = TS.offlineWhy(s, zone, dev.forced[s.id] == true, nil) ~= nil
         -- "Terminal blips should appear from the start only when a Yubikey
         -- is equipped", and, the owner's own spec, only for a terminal
         -- INSIDE the storm.
@@ -431,9 +423,9 @@ local function setPrompt()
         show   = true,
         label  = copy().terminal_label,
         hint   = plate.hint,
-        -- THE KEY CAP ONLY WHERE A PRESS DOES SOMETHING: a locked terminal
-        -- opens nothing, and a cap on its plate would be a lie the player
-        -- acts on (client/revivekey.lua's rule). The player's own key for
+        -- THE KEY CAP ONLY WHERE A PRESS DOES SOMETHING (client/revivekey.lua's
+        -- rule): every plate this file shows opens the computer, since a
+        -- terminal outside the storm has none. The player's own key for
         -- interact, whatever they bound it to.
         key    = plate.press and BR.Native.keyLabelForCommand(
                      'brinteract', BR.Config.Loot.promptControl or 51) or nil,
@@ -449,8 +441,6 @@ end
 ---               A terminal the SLOW pass has not placed yet counts as
 ---               outside. The server still refuses a use there (its toast,
 ---               `offline`, answers a client a step behind the storm).
----   locked      a Lockdown has it (wave A), INSIDE the storm: the locked
----               line, nothing to press. Locked and outside it: no plate.
 ---   no key      the no_key line ("what they need to do to gain access"); the
 ---               press still opens the computer, which lists every function
 ---               unavailable for the same reason
@@ -458,7 +448,6 @@ end
 ---   usable      terminal_use ("press to open") and the key cap
 local function plateFor(s)
     local w = world[s.id]
-    if w and w.why == 'locked' and not w.outside then return { hint = copy().locked, press = false } end
     local online = (w and w.online) or dev.forced[s.id] == true
     if not online then return nil end
     if not held then return { hint = copy().no_key, press = true } end

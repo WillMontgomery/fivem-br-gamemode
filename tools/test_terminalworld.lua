@@ -1,6 +1,7 @@
--- Unit tests for Control Tower's wave B functions (#396, 2026-10-06): the four
--- that change the world everybody in the match stands in -- Storm delay,
--- Storm control, Time & weather and Power outage.
+-- Unit tests for Control Tower's wave B functions (#396, 2026-10-06): the three
+-- that change the world everybody in the match stands in -- Storm control,
+-- Time & weather and Power outage. (Wave B's fourth, Storm delay, was removed
+-- by the owner on 2026-10-06.)
 --
 -- The door in front of them (the session, the key, the squad's one use, the
 -- Volts, the 3-5 s load, the lobby's notice, the refund) is
@@ -9,33 +10,27 @@
 -- every `server/terminalfx/` file the manifest lists, over a stubbed roster,
 -- key and market, and runs each function at a real terminal, the real way:
 --
---   PART A  Storm delay: the hold the page names gets longer, through the
---           storm record's own timing; refused `no_storm` / `no_hold` with
---           nothing spent; everything given back when the hold runs out while
---           it loads; the dev path.
---   PART B  Storm control: the storm steered to the near, far or center end
+--   PART A  Storm control: the storm steered to the near, far or center end
 --           for 150 Volts, the record on the map untouched, a squad that ran
 --           Storm reveal told the new end; refused `no_storm` / `no_circle`
 --           with nothing spent (the Volts included); everything given back
 --           when the final circle is drawn while it loads; the dev path.
---   PART C  Time & weather: the time through the match clock's own anchor
+--   PART B  Time & weather: the time through the match clock's own anchor
 --           (#394's one writer follows it) and back to the match's running
 --           clock when it ends; the weather to the match, and on the REAL
 --           client/world.lua claimed only inside the circle, below the
 --           storm's THUNDER and over its all-clear; the festive sky's clear
 --           and its white ground (#399); ended by its time, the match ending
 --           and a season switch.
---   PART D  Power outage: around this terminal (fx.outageRadiusM, the
+--   PART C  Power outage: around this terminal (fx.outageRadiusM, the
 --           page's 1 km), Los Santos or Blaine County by the storm's city
 --           line (#381); on the client, the one writer of the lights turns
 --           them off only while the view is inside an area, vehicles left
 --           out, and back on outside, at the end, in the lobby, off Season 2
 --           and when br_core stops -- on a change only.
 --
--- The storm's own half -- BR.Storm.delay against the real phase job, the 75%
--- cut, a client's countdown; BR.Storm.futures and steer over many matches,
--- every later circle the planner's -- is tools/test_storm.lua's `delay.*` and
--- `control.*` blocks.
+-- The storm's own half -- BR.Storm.futures and steer over many matches, every
+-- later circle the planner's -- is tools/test_storm.lua's `control.*` blocks.
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_terminalworld.lua
 
@@ -282,7 +277,7 @@ loadAll({
 })
 -- WAVE B'S OWN FILES ONLY. Every other built row is a function this suite does
 -- not stand up: its row lists as fn_offline here, and its own suite runs it.
-local WAVE_B = { 'storm_delay', 'storm_control', 'time_weather', 'power_outage' }
+local WAVE_B = { 'storm_control', 'time_weather', 'power_outage' }
 local SERVER_FX = {}
 for _, f in ipairs(fxFiles('server')) do
     for _, id in ipairs(WAVE_B) do
@@ -458,7 +453,7 @@ end
 -- THE REGISTRY: wave B's rows are built and have their server halves
 -- =========================================================================
 
-describe('wave B: the four rows are built, each a file the manifest lists')
+describe('wave B: the three rows are built, each a file the manifest lists')
 do
     for _, id in ipairs(WAVE_B) do
         local row = T.row(id)
@@ -472,143 +467,7 @@ do
 end
 
 -- =========================================================================
--- PART A -- Storm delay
--- =========================================================================
-
-describe('Storm delay: the current hold gets longer by the time chosen')
-do
-    reset()
-    local m = lobby('squad', 3, 90000)
-    local rec0 = m.storm
-    local r = runAt(1, 'storm_delay', { delay = '120' })
-    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
-    eq(r and r.toast, COPY.storm_delay_done, 'and says the page\'s done line')
-    local rec = m.storm
-    eq(rec.tWait, rec0.tWait + 120000, 'two minutes more hold, the record\'s own tWait')
-    ok(rec.cx1 == rec0.cx1 and rec.cy1 == rec0.cy1 and rec.r1 == rec0.r1
-        and rec.cx0 == rec0.cx0 and rec.tStart == rec0.tStart,
-        'the circles and the clock it started on do not move')
-    local syncs = {}
-    for _, e in ipairs(eventsOf(BR.Net.STORM_SYNC)) do syncs[e.src] = e.payload end
-    for src = 1, 5 do
-        ok(syncs[src] == rec, ('p%d is sent the delayed record'):format(src))
-    end
-    eq(keys[1], false, 'the key is spent')
-    ok(T.squadUsed(1) and T.squadUsed(2), 'and the squad\'s one use')
-    local heard = 0
-    for _, n in ipairs(noticesTo(3)) do
-        if textOf(n) == 'p1 has redeemed their special power: ' .. COPY.storm_delay_description then
-            heard = heard + 1
-        end
-    end
-    eq(heard, 1, 'the lobby hears it once, in the function\'s description')
-    ok(errored() == nil, 'clean', errored())
-end
-
-describe('Storm delay: closing, the delay goes to the next hold')
-do
-    reset()
-    local m = lobby('squad', 3, 90000)
-    -- The hold is over and the wall is moving.
-    m.storm.tStart = gameMs - 100000
-    local rec0 = m.storm
-    local r = runAt(1, 'storm_delay', { delay = '60' })
-    ok(r and r.code == 'done', 'it runs while the wall moves', r and r.code)
-    ok(m.storm == rec0, 'the sweep in progress is left exactly as it is')
-    eq(m.stormDelayNextMs, 60000, 'and the minute waits for the next hold')
-    -- The next phase, entered the ordinary way: its hold is a minute longer.
-    BR.Sched.setEnabled('storm.phase', true)
-    gameMs = rec0.tStart + rec0.tWait + rec0.tShrink + 1000
-    BR.Sched.step(gameMs)
-    BR.Sched.setEnabled('storm.phase', false)
-    eq(m.storm.phase, 4, 'phase 4 is drawn')
-    eq(m.storm.tWait, BR.Config.Storm.phases[4].wait * 1000 + 60000, 'its hold is the authored one and a minute')
-    ok(errored() == nil, 'clean', errored())
-end
-
-describe('Storm delay: no storm, no hold -- refused, nothing spent')
-do
-    reset()
-    local m = lobby('squad', 3)
-    local rec = m.storm
-    -- THE FINAL CIRCLE CLOSING: no hold left.
-    local last = #BR.Config.Storm.phases
-    m.storm = BR.BuildStormRecord(last, C0.x, C0.y, 400.0, C0.x, C0.y, 0.0,
-        gameMs - 40000, 30000, 600000, 6.7, SEED)
-    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
-    local f = listed(1, 'storm_delay')
-    ok(f and f.available == false and f.reason == 'no_hold', 'the card says no_hold', f and f.reason)
-    gameMs = gameMs + 1000
-    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'storm_delay', options = { delay = '60' } })
-    flush()
-    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.ok == false and r.code == 'no_hold', 'a run is refused no_hold', r and r.code)
-    eq(r and r.toast, COPY.no_hold, 'in its own line')
-    nothingSpent(1, 'no_hold')
-    ok(m.storm.tWait == 30000 and m.stormDelayNextMs == nil, 'and the storm is untouched')
-
-    -- BEFORE THE STORM: no record.
-    m.storm = nil
-    local f2 = listed(1, 'storm_delay')
-    ok(f2 and f2.reason == 'no_storm', 'with no storm yet the card says no_storm', f2 and f2.reason)
-    local _ = rec
-end
-
-describe('Storm delay: a hold that runs out while it loads gives everything back')
-do
-    reset()
-    local last = #BR.Config.Storm.phases
-    local m = lobby('squad', last, 30000)
-    -- The final phase holds for two more seconds: the run is accepted, and by
-    -- the time the 3 to 5 seconds of loading are over the wall is moving.
-    m.storm.tStart = gameMs - 27000
-    local r = runAt(1, 'storm_delay', { delay = '120' }, true)
-    eq(r and r.code, 'running', 'accepted while the final hold lasts')
-    eq(keys[1], false, 'the key is spent as it is accepted')
-    flush()
-    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.ok == false and r.code == 'no_hold', 'over, it can no longer happen: no_hold', r and r.code)
-    nothingSpent(1, 'given back')
-    eq(m.storm.tWait, 30000, 'and the storm was never touched')
-end
-
-describe('Storm delay: squad and solo lines')
-do
-    reset()
-    local m = lobby('solo', 3)
-    local r = runAt(1, 'storm_delay', { delay = '60' })
-    eq(r and r.toast, TS.pick(COPY, 'storm_delay_done', false), 'a solo run says the done line')
-    local got
-    for _, n in ipairs(noticesTo(5)) do got = textOf(n) end
-    eq(got, 'p1 has redeemed their special power: ' .. TS.pick(COPY, 'storm_delay_description', false),
-        'and the lobby reads the description')
-    for _, key in ipairs({ 'storm_delay_done', 'storm_delay_description', 'no_hold' }) do
-        ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
-            ('%s never says squad outside a squad match'):format(key))
-    end
-    eq(TS.pick(COPY, 'storm_delay_risks', false), COPY.storm_delay_risks_solo, 'the risks line has its solo sibling')
-    local _ = m
-end
-
-describe('Storm delay: the dev path, nothing spent and no notice')
-do
-    reset()
-    local m = lobby('squad', 3, 90000)
-    keys[1] = false
-    sv(1, 'run storm_delay delay=120')
-    eq(m.storm.tWait, 90000 + 120000, '`brterminal run storm_delay delay=120` delays the hold')
-    eq(#notices, 0, 'with no notice')
-    eq(#market.charges, 0, 'and no Volts')
-    local before = m.storm.tWait
-    sv(1, 'run storm_delay delay=30')
-    eq(m.storm.tWait, before, 'a choice the row does not list is refused')
-    local said = false
-    for _, l in ipairs(logs) do if l:find('does not take those options', 1, true) then said = true end end
-    ok(said, 'and said so')
-end
-
--- =========================================================================
--- PART B -- Storm control
+-- PART A -- Storm control
 -- =========================================================================
 
 --- Every possible end BR.Storm.futures worked out on its last call, kept by a
@@ -902,7 +761,7 @@ do
 end
 
 -- =========================================================================
--- PART C -- Time & weather, the server
+-- PART B -- Time & weather, the server
 -- =========================================================================
 
 --- A match clock anchor as server/match.lua stamps it at bus start.
@@ -1090,7 +949,7 @@ do
 end
 
 -- =========================================================================
--- PART C, THE CLIENT -- the sky claim, over the REAL client/world.lua
+-- PART B, THE CLIENT -- the sky claim, over the REAL client/world.lua
 -- =========================================================================
 
 local SANDBOX_STD = {
@@ -1294,7 +1153,7 @@ do
 end
 
 -- =========================================================================
--- PART D -- Power outage, the server
+-- PART C -- Power outage, the server
 -- =========================================================================
 
 local function powerSends(src)
@@ -1504,7 +1363,7 @@ do
 end
 
 -- =========================================================================
--- PART D, THE CLIENT -- the one writer of the lights
+-- PART C, THE CLIENT -- the one writer of the lights
 -- =========================================================================
 
 local POWER_FILES = { 'br_core/client/terminalfx/power_outage.lua' }
