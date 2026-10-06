@@ -471,7 +471,7 @@ non-zero on any failure:
 | `br_ddb bundle` | the committed bundle is the one recorded against the current `js-src/br_ddb` |
 | `br_ddb bundle over the wire` | `status` reports the bundle actually deployed on a box, and every absence as null |
 | `duplicate console commands` | one name, one registration |
-| `American spelling` | the lines a branch adds since it left `origin/dev` spell color, license, armor and tire the American way; names the code keeps are skipped |
+| `American spelling` | the lines a branch adds since it left `origin/dev`, and its commit messages, spell color, license, armor and tire the American way; names the code keeps are skipped, names a line declares are read; the rules prove themselves on a scratch repo first (`--self-test`) |
 
 > **This table said 21 gates and "~3,900 assertions across 10 suites" on
 > 2026-08-27, and 17 gates and "~3,100 across 8" before that.** None of the six

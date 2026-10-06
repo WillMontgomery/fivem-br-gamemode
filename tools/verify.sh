@@ -57,7 +57,9 @@
 #                 deploy.sh, run for real (Python 3 too).
 #
 #   7b. SPELLING -- American spelling in the lines a branch ADDS since it left
-#                 origin/dev, anywhere outside vendored code. Not the tree.
+#                 origin/dev, anywhere outside vendored code, and in its
+#                 commit messages. Not the tree. The rules prove themselves
+#                 on a scratch repo first.
 #
 # Exit code is non-zero if any check fails.
 
@@ -195,7 +197,7 @@ NOTES=(
     "br_ddb bundle|The database helper's built file matches its source, and its ban rules pass their cases"
     "br_ddb bundle over the wire|The server status report says truthfully whether the deployed database helper is current"
     "duplicate console commands|No two commands share a name (the later one would silently replace the earlier)"
-    "American spelling|Lines added since this branch left dev say color, license, armor and tire, not the British forms"
+    "American spelling|Lines and commit messages added since this branch left dev say color, license, armor and tire, not the British forms"
     "pass cache|Skipping unchanged suites never hides a change: anything a suite read changes, and it runs again"
     "test_vcache|Edited, added or branch-only inputs re-run a suite; failures and interrupted runs are never stored"
 )
@@ -3736,10 +3738,15 @@ fi   # vc_begin 'duplicate console commands'
 # the lines added since HEAD left origin/dev (committed, staged, unstaged and
 # untracked) and fails on a British form, with the line. Only the added lines:
 # the older ones in the tree go when somebody is in that text. Names the code
-# must keep (a `.armour` field, SetBlipColour) are not words and are skipped.
+# must keep (a `.armour` field, SetBlipColour) are not words and are skipped;
+# a name the line declares (`local armour`) is ours and is read, and so are
+# the branch's commit messages (#396 wave A's review: three slipped past).
+# --self-test runs first and proves those rules on a scratch repo, so a rule
+# that stops catching anything fails here instead of passing everything.
 # See tools/check_spelling.sh. Not a pass-cache unit: its input is the diff
 # against a ref, and one git diff is cheaper than tracing it.
 section 'American spelling'
+bash tools/check_spelling.sh --self-test || rc=1
 bash tools/check_spelling.sh || rc=1
 
 # --- 8. the pass cache itself ---------------------------------------------------
