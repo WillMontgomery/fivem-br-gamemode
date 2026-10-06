@@ -19948,6 +19948,34 @@ do
             ok(C.tc.name == REDMIST,
                'and takes it the moment it is empty')
         end
+
+        -- ── THE RAIN KNOB WAITS FOR THE STORM TO BE ON SCREEN ──
+        --
+        -- The drying snap pins SetRainLevel(0.0) for 45 s after a storm clears,
+        -- and hands it back after. Under a `brweather RAIN` the forced weather
+        -- write already yielded; the rain did not, so the console's rainstorm
+        -- went dry. Both now wait for the storm to be the sky's winner.
+        local function rainRun(override)
+            local C = newStormClient()
+            C.rain = {}
+            C.env.SetRainLevel = function(v) C.rain[#C.rain + 1] = v end
+            C.pedAt = OUT
+            C.tick(3)                              -- caught: THUNDER, rain handed back
+            if override then C.env.BR.World.want('override', override, 0.0) end
+            C.pedAt = HOME
+            C.tick(40)                             -- 60 s: the clear, the snap, the undo
+            return C
+        end
+        do
+            local C = rainRun(nil)
+            ok(table.concat(C.rain, ',') == '-1.0,0.0,-1.0',
+               'with the storm on screen: handed back on thunder, dried at the snap, '
+               .. 'handed back 45 s later -- as before', table.concat(C.rain, ','))
+            local D = rainRun('RAIN')
+            ok(table.concat(D.rain, ',') == '-1.0',
+               'under a console RAIN the snap and its undo write nothing -- the rain '
+               .. 'stays the console\'s', table.concat(D.rain, ','))
+        end
     end
 end
 

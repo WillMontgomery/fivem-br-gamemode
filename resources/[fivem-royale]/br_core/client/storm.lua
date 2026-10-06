@@ -3321,6 +3321,13 @@ local wxDryAt = nil       -- when to force the ground dry after clearing
 local wxUndryAt = nil     -- when to hand rain control back to the engine
 local WX_NAME = { clear = 'EXTRASUNNY', thunder = 'THUNDER' }
 
+--- Is the storm's claim the sky on screen? (client/world.lua resolves it.)
+--- @return boolean
+local function stormOnScreen()
+    local _, winner = BR.World.sky()
+    return winner == 'storm'
+end
+
 local function weatherWant(tier)
     local wcfg = cfg.weather
     if not (wcfg and wcfg.enabled) then return end
@@ -3346,12 +3353,19 @@ local function weatherWant(tier)
         -- the write, which is correct for every other claim on this page and
         -- exactly wrong for this one.
         BR.World.want('storm', WX_NAME.clear, 0.0, true)
-        SetRainLevel(0.0)
+        -- ═══ THE RAIN KNOB IS THE SKY'S WINNER'S TOO (#399) ═══
+        --
+        -- The forced write above already does nothing while somebody else's
+        -- sky is on screen (client/world.lua). The rain did not ask, so a
+        -- `brweather RAIN` went dry for forty-five seconds after every storm
+        -- clear. Both writes of the schedule now wait for the storm to be the
+        -- winner; the hand-backs on thunder and at teardown stay as they are.
+        if stormOnScreen() then SetRainLevel(0.0) end
         wxUndryAt = now + 45000
     end
     if wxUndryAt and now >= wxUndryAt then
         wxUndryAt = nil
-        SetRainLevel(-1.0)
+        if stormOnScreen() then SetRainLevel(-1.0) end
     end
 
     if tier ~= wxWant then

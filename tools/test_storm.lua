@@ -1153,6 +1153,9 @@ local function newStormClient()
     -- the weather and the resolver has its own suite.
     env.BR.World = env.BR.World or {}
     env.BR.World.want = function() end
+    -- Nobody's sky is on screen here, so the storm's rain writes (which wait
+    -- for the storm to be the sky's winner, #399) are never made.
+    env.BR.World.sky = function() return nil, nil end
     env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
 
     -- IN MANIFEST ORDER: client/mapoverlay.lua comes AFTER client/storm.lua in
