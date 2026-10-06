@@ -25,6 +25,12 @@
 --           storm's THUNDER and over its all-clear; the festive sky's clear
 --           and its white ground (#399); ended by its time, the match ending
 --           and a season switch.
+--   PART D  Power outage: around this terminal (fx.outageRadiusM, the
+--           page's 1 km), Los Santos or Blaine County by the storm's city
+--           line (#381); on the client, the one writer of the lights turns
+--           them off only while the view is inside an area, vehicles left
+--           out, and back on outside, at the end, in the lobby, off Season 2
+--           and when br_core stops -- on a change only.
 --
 -- The storm's own half -- BR.Storm.delay against the real phase job, the 75%
 -- cut, a client's countdown; BR.Storm.futures and steer over many matches,
@@ -276,7 +282,7 @@ loadAll({
 })
 -- WAVE B'S OWN FILES ONLY. Every other built row is a function this suite does
 -- not stand up: its row lists as fn_offline here, and its own suite runs it.
-local WAVE_B = { 'storm_delay', 'storm_control', 'time_weather' }
+local WAVE_B = { 'storm_delay', 'storm_control', 'time_weather', 'power_outage' }
 local SERVER_FX = {}
 for _, f in ipairs(fxFiles('server')) do
     for _, id in ipairs(WAVE_B) do
@@ -1170,6 +1176,241 @@ do
     local n = #C.natives
     for _ = 1, 60 do C.slow() end
     eq(#C.natives, n, 'a minute of passes with no weather to claim calls no native')
+end
+
+-- =========================================================================
+-- PART D -- Power outage, the server
+-- =========================================================================
+
+local function powerSends(src)
+    return eventsOf(BR.Net.TERMINAL_POWER, src)
+end
+
+describe('Power outage: around this terminal, to the whole match')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    eq(r and r.toast, COPY.power_outage_done, 'and says the page\'s done line')
+    local list = T.outagesOf(m)
+    eq(#list, 1, 'one outage is live')
+    local a = list[1] and list[1].area
+    ok(a and a.kind == 'radius' and a.x == SITE.x and a.y == SITE.y and a.r == CT.fx.outageRadiusM,
+        ('a %.0f m radius around this terminal'):format(CT.fx.outageRadiusM))
+    eq(list[1].untilAt, gameMs + 120000, 'for two minutes')
+    for src = 1, 5 do
+        local p = powerSends(src)[1]
+        ok(p and #p.payload.list == 1 and p.payload.list[1].kind == 'radius' and p.payload.matchId == m.id,
+            ('p%d is sent the area'):format(src))
+    end
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Power outage: Los Santos and Blaine County are the storm\'s city line')
+do
+    eq(BR.StormCityLine(), BR.Config.Storm.anchorRegion.cityMaxY, 'the line is the anchor\'s own (#381)')
+    for _, choice in ipairs({ 'city', 'county' }) do
+        reset()
+        local m = lobby('squad', 3)
+        runAt(1, 'power_outage', { area = choice, duration = '240' })
+        local a = T.outagesOf(m)[1].area
+        ok(a.kind == choice and a.line == BR.StormCityLine(), choice .. ': by the city line')
+        eq(T.outagesOf(m)[1].untilAt, gameMs + 240000, 'for four minutes')
+    end
+    local line = BR.StormCityLine()
+    local city = TS.outageArea('city', nil, nil, 1000.0)
+    local county = TS.outageArea('county', nil, nil, 1000.0)
+    ok(TS.inOutage(city, 0.0, line - 1.0) and not TS.inOutage(city, 0.0, line),
+        'a point below the line is the city, one on it is not')
+    ok(TS.inOutage(county, 0.0, line) and not TS.inOutage(county, 0.0, line - 1.0),
+        'and one on it or above it is the county, as the anchor\'s draw has it')
+    local here = TS.outageArea('here', 100.0, 200.0, 1000.0)
+    ok(TS.inOutage(here, 1100.0, 200.0) and not TS.inOutage(here, 1100.5, 200.0),
+        'here: within the radius, and not a half meter past it')
+    ok(TS.outageArea('here', nil, 200.0, 1000.0) == nil and TS.outageArea('moon', 1, 2, 3) == nil,
+        'no area with no point to center on, or for a choice that is not one')
+    ok(not TS.inOutage({ kind = 'radius', x = 'a' }, 0, 0) and not TS.inOutage(nil, 0, 0),
+        'and a malformed area holds nobody')
+end
+
+describe('Power outage: the page\'s 1 km is the config\'s radius')
+do
+    local km = tonumber(COPY.power_outage_opt_area_here_desc:match('within ([%d%.]+) km'))
+    ok(km ~= nil and km * 1000 == CT.fx.outageRadiusM, 'the page says the radius the server uses',
+        COPY.power_outage_opt_area_here_desc)
+    ok(COPY.power_outage_what:find('for every player inside the area', 1, true) ~= nil
+        and COPY.power_outage_what:find('Players outside the area keep their lights.', 1, true) ~= nil,
+        'and says who goes dark: the players inside the area, not the district for everyone')
+end
+
+describe('Power outage: it ends, one at a time, and with the match and the season')
+do
+    reset()
+    local m = lobby('squad', 3)
+    runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    keys[3] = true
+    runAt(3, 'power_outage', { area = 'county', duration = '240' })
+    eq(#T.outagesOf(m), 2, 'two outages at once')
+    eq(#powerSends(2)[#powerSends(2)].payload.list, 2, 'and the match is sent both')
+    gameMs = gameMs + 120000
+    BR.Sched.step(gameMs)
+    eq(#T.outagesOf(m), 1, 'the first ends at its two minutes')
+    local last = powerSends(4)[#powerSends(4)].payload.list
+    ok(#last == 1 and last[1].kind == 'county', 'and the match is sent the one left')
+    gameMs = gameMs + 120000
+    BR.Sched.step(gameMs)
+    eq(m.terminalPower, nil, 'the second at its four')
+    eq(#powerSends(4)[#powerSends(4)].payload.list, 0, 'and an empty list puts the lights back')
+    local n = #powerSends(4)
+    gameMs = gameMs + 5000
+    BR.Sched.step(gameMs)
+    eq(#powerSends(4), n, 'then nothing more is sent')
+
+    reset()
+    m = lobby('squad', 3)
+    runAt(1, 'power_outage', { area = 'city', duration = '240' })
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    eq(m.terminalPower, nil, 'the match ending ends it')
+    eq(#powerSends(2)[#powerSends(2)].payload.list, 0, 'with the lights back for everyone')
+
+    reset()
+    m = lobby('squad', 3)
+    runAt(1, 'power_outage', { area = 'city', duration = '240' })
+    season(1)
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    season(2)
+    eq(m.terminalPower, nil, 'and a season switch')
+end
+
+describe('Power outage: a client that restarts is sent the live areas')
+do
+    reset()
+    lobby('squad', 3)
+    runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    sent = {}
+    fire(BR.Net.READY, 4)
+    local p = powerSends(4)[1]
+    ok(p and #p.payload.list == 1, 'br:ready re-sends them while they last')
+end
+
+describe('Power outage: the match ending while it loads gives everything back; the dev path')
+do
+    reset()
+    local m = lobby('squad', 3)
+    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' }, true)
+    eq(r and r.code, 'running', 'accepted')
+    m.state = BR.MatchState.ENDED
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false, 'over, the match ended: it can no longer happen', r and r.code)
+    nothingSpent(1, 'given back')
+    eq(m.terminalPower, nil, 'and no outage was started')
+
+    reset()
+    m = lobby('squad', 3)
+    keys[1] = false
+    sv(1, 'run power_outage area=county duration=240')
+    local a = T.outagesOf(m)[1]
+    ok(a and a.area.kind == 'county', '`brterminal run power_outage area=county duration=240` starts it')
+    eq(#market.charges + #notices, 0, 'for nothing, and with no notice')
+    eq(TS.pick(COPY, 'power_outage_risks', false), COPY.power_outage_risks_solo,
+        'the risks line has its solo sibling')
+    for _, key in ipairs({ 'power_outage_done', 'power_outage_description', 'power_outage_what' }) do
+        ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
+            ('%s never says squad outside a squad match'):format(key))
+    end
+end
+
+-- =========================================================================
+-- PART D, THE CLIENT -- the one writer of the lights
+-- =========================================================================
+
+local POWER_FILES = { 'br_core/client/terminalfx/power_outage.lua' }
+
+--- The lights writes since `from`: { { state, vehicles } } pairs, as written.
+local function lightWrites(C, from)
+    local out = {}
+    for i = (from or 0) + 1, #C.natives do
+        local n = C.natives[i]
+        if n.name == 'SetArtificialLightsState' then
+            out[#out + 1] = { state = n.args[1] }
+        elseif n.name == 'SetArtificialLightsStateAffectsVehicles' then
+            if out[#out] then out[#out].vehicles = n.args[1] end
+        end
+    end
+    return out
+end
+
+describe('Power outage on a client: dark inside the area, lit outside, written on a change only')
+do
+    local C = newClient(POWER_FILES)
+    local Net = C.env.BR.Net
+    C.at = { x = 100.0, y = 100.0, z = 30.0 }
+    C.fire(Net.TERMINAL_POWER, { matchId = 1, list = { { kind = 'radius', x = 0.0, y = 0.0, r = 1000.0 } } })
+    local w = lightWrites(C)
+    ok(#w == 1 and w[1].state == true and w[1].vehicles == false,
+        'inside the radius: the lights off, vehicles left out of it (headlights work)')
+    eq(C.env.BR.TerminalFx.dark(), true, 'and this client is in the dark')
+    local n = #C.natives
+    for _ = 1, 10 do C.slow() end
+    eq(#lightWrites(C, n), 0, 'ten seconds still inside: nothing written again')
+
+    C.at = { x = 1500.0, y = 0.0, z = 30.0 }
+    C.slow()
+    w = lightWrites(C, n)
+    ok(#w == 1 and w[1].state == false and w[1].vehicles == true, 'outside it: the lights back, as they were')
+
+    -- THE CITY AND THE COUNTY, by the line.
+    C.at = { x = 0.0, y = 2000.0, z = 30.0 }
+    C.fire(Net.TERMINAL_POWER, { matchId = 1, list = { { kind = 'city', line = 1050.0 } } })
+    eq(C.env.BR.TerminalFx.dark(), false, 'up in the county, a city outage leaves the lights on')
+    C.fire(Net.TERMINAL_POWER, { matchId = 1, list = { { kind = 'county', line = 1050.0 } } })
+    eq(C.env.BR.TerminalFx.dark(), true, 'and a county outage turns them off')
+
+    -- THE END: an empty list.
+    C.fire(Net.TERMINAL_POWER, { matchId = 1, list = {} })
+    eq(C.env.BR.TerminalFx.dark(), false, 'the server\'s empty list: the lights back')
+end
+
+describe('Power outage on a client: the lobby, a season switch and a stop put the lights back')
+do
+    local C = newClient(POWER_FILES)
+    local Net = C.env.BR.Net
+    C.at = { x = 0.0, y = 0.0, z = 30.0 }
+    local area = { kind = 'radius', x = 0.0, y = 0.0, r = 500.0 }
+    C.fire(Net.TERMINAL_POWER, { matchId = 1, list = { area } })
+    eq(C.env.BR.TerminalFx.dark(), true, 'dark')
+    C.env.BR.State.me.state = C.env.BR.PlayerState.LOBBY
+    C.slow()
+    eq(C.env.BR.TerminalFx.dark(), false, 'home in the lobby: lit, before the server says so')
+    C.env.BR.State.me.state = C.env.BR.PlayerState.ALIVE
+    C.slow()
+    eq(C.env.BR.TerminalFx.dark(), false, 'and not dark again from a match that is over')
+
+    C.fire(Net.TERMINAL_POWER, { matchId = 2, list = { area } })
+    eq(C.env.BR.TerminalFx.dark(), true, 'a new outage')
+    C.env.BR.Season.boot(function(name) return name == 'br_season' and '1' or '' end, function() end)
+    C.slow()
+    eq(C.env.BR.TerminalFx.dark(), false, 'off Season 2: lit')
+    C.env.BR.Season.boot(function(name) return name == 'br_season' and '2' or '' end, function() end)
+    C.slow()
+    eq(C.env.BR.TerminalFx.dark(), true, 'back on Season 2 with the outage still live: dark again')
+    C.env.GetCurrentResourceName = function() return 'br_core' end
+    C.fire('onResourceStop', 'br_core')
+    eq(C.env.BR.TerminalFx.dark(), false, 'br_core stopping puts the lights back: the switch outlives it')
+end
+
+describe('Power outage on a client: nothing to do costs nothing')
+do
+    local C = newClient(POWER_FILES)
+    local n = #C.natives
+    for _ = 1, 60 do C.slow() end
+    eq(#C.natives, n, 'a minute of passes with no outage calls no native')
 end
 
 realPrint(('\n%d passed, %d failed'):format(pass, fail))

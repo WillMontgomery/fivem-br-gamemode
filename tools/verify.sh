@@ -2541,6 +2541,45 @@ if [ "$clkfiles_" != "br_core/client/natives.lua " ]; then
     boundary=1
 fi
 
+# AND THE LIGHTS HAVE ONE WRITER (#396, wave B): Control Tower's Power outage,
+# br_core/client/terminalfx/power_outage.lua, and no other file under
+# resources/ -- the vendored ones included, for the clock gate's reason: the
+# blackout is ONE engine switch per client for the whole map, and anything
+# else that writes it turns an outage's lights back on in the dark or leaves
+# them off after it. vMenu's weather sync writes it every second while that
+# sync is on (server.cfg.example keeps it off).
+#
+# BY NAME AND BY HASH: SET_ARTIFICIAL_LIGHTS_STATE (0x1268615ACE24D504, once
+# 0xAA2A0EAF) and _SET_ARTIFICIAL_LIGHTS_STATE_AFFECTS_VEHICLES
+# (0xE2B187C0939B3D32), from citizenfx/natives. The clock gate's one grep over
+# the tree finds the candidates; only those are read again, comments stripped.
+LIGHTS_NAMES_='SetArtificialLightsState|SetArtificialLightsStateAffectsVehicles|SET_ARTIFICIAL_LIGHTS_STATE|_?SET_ARTIFICIAL_LIGHTS_STATE_AFFECTS_VEHICLES'
+LIGHTS_HASHES_='1268615ACE24D504|E2B187C0939B3D32|AA2A0EAF'
+lgtname_="(^|[^_[:alnum:]])(${LIGHTS_NAMES_})([^_[:alnum:]]|\$)"
+lgthash_="(^|[^[:xdigit:]])(${LIGHTS_HASHES_})([^[:xdigit:]]|\$)"
+lgtfiles_=$(
+    { grep -rlE "${clkinc_[@]}" "$lgtname_" resources 2>/dev/null
+      grep -rliE "${clkinc_[@]}" "$lgthash_" resources 2>/dev/null; } \
+    | LC_ALL=C sort -u | while IFS= read -r f; do
+        case "$f" in
+            *.lua) code_=$(sed -e 's/--.*$//' "$f") ;;
+            *)     code_=$(sed -e 's|//.*$||' "$f") ;;
+        esac
+        if grep -qE "$lgtname_" <<< "$code_" || grep -qiE "$lgthash_" <<< "$code_"; then
+            echo "$f"
+        fi
+    done | sed 's|^resources/[^/]*/||' | tr '\n' ' '
+)
+if [ "$lgtfiles_" != "br_core/client/terminalfx/power_outage.lua " ]; then
+    echo "${RED}FAIL${RST} artificial-lights natives live in '${lgtfiles_}' (${clkscanned_} files searched)"
+    echo "     expected 'br_core/client/terminalfx/power_outage.lua '"
+    echo "     The blackout is one engine switch per client for the whole map, and"
+    echo "     Power outage turns it with the area it is told (#396). A second"
+    echo "     writer, ours or vendored, by name or by hash, lights an outage up"
+    echo "     or leaves the lights off after it."
+    boundary=1
+fi
+
 # THE THIRD DIRECTION: WHAT CAN MAKE THIS CLIENT PLAY A SOUND.
 #
 # Lighter than the two above and gated for the same reason they are -- the
@@ -2717,6 +2756,7 @@ if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky and the clock each have one writer"
     echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"
     echo "${GRN}ok${RST}   the timecycle slot is written by the storm's grade, brtc and the brnativecheck probe, nothing else"
+    echo "${GRN}ok${RST}   the artificial lights have one writer: Power outage's client half"
 else
     rc=1
 fi

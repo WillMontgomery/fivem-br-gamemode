@@ -1344,6 +1344,33 @@ end
 local ANCHOR_CITY_MAX_Y = 1050.0
 local ANCHOR_CITY_SHARE = 0.62
 
+--- Whether `y` is a line on the map: a number, not NaN, strictly inside the
+--- storm's mapAABB (and finite, wherever no AABB is configured).
+--- @param y any
+--- @return boolean
+local function lineOnMap(y)
+    if type(y) ~= 'number' or y ~= y or y == math.huge or y == -math.huge then
+        return false
+    end
+    local A = BR.Config and BR.Config.Storm and BR.Config.Storm.mapAABB
+    if A and A.min and A.max then return y > A.min.y and y < A.max.y end
+    return true
+end
+
+--- THE CITY LINE (#381): a point is CITY when its y is below this, and COUNTY
+--- otherwise -- the owner's "y = 1050". The config's anchorRegion.cityMaxY, or
+--- the shipped value when that is not a y on the map, exactly as the anchor's
+--- draw reads it (BR.PickStormAnchor). ONE SPELLING for everything that asks
+--- "city or county": the anchor, and Control Tower's Power outage (#396).
+--- @return number
+function BR.StormCityLine()
+    local S = BR.Config and BR.Config.Storm
+    local region = S and S.anchorRegion
+    local line = type(region) == 'table' and region.cityMaxY or nil
+    if not lineOnMap(line) then line = ANCHOR_CITY_MAX_Y end
+    return line
+end
+
 --- Pick the match anchor: the POI the whole storm sequence homes on.
 ---
 --- The scheme (user-designed, 2026-08-02): one random waypoint of THIS match's
@@ -1418,17 +1445,6 @@ function BR.PickStormAnchor(rng, waypoints, pois, band, region)
 
     local wps, pool, line = waypoints, pois, nil
 
-    --- Whether `y` is a line on the map: a number, not NaN, strictly inside the
-    --- storm's mapAABB (and finite, wherever no AABB is configured).
-    local function onMap(y)
-        if type(y) ~= 'number' or y ~= y or y == math.huge or y == -math.huge then
-            return false
-        end
-        local A = BR.Config and BR.Config.Storm and BR.Config.Storm.mapAABB
-        if A and A.min and A.max then return y > A.min.y and y < A.max.y end
-        return true
-    end
-
     -- A CONFIG TYPO MUST NOT KILL WARMUP. anchorRegion = 0.62 (a number where a
     -- table belongs) would index a number here; anything that is not a table is
     -- read as the shipped defaults instead.
@@ -1439,7 +1455,7 @@ function BR.PickStormAnchor(rng, waypoints, pois, band, region)
             share = ANCHOR_CITY_SHARE
         end
         line = region.cityMaxY
-        if not onMap(line) then line = ANCHOR_CITY_MAX_Y end
+        if not lineOnMap(line) then line = ANCHOR_CITY_MAX_Y end
 
         local wantCity = rng:float() < share
 

@@ -1245,6 +1245,13 @@ BR.Net = {
     -- it lasts (server/terminalfx/time_weather.lua). Its time rides the match
     -- clock's own anchor, not this.
     TERMINAL_SKY    = 'br:terminal:sky',
+    -- S->C { matchId, list = { { kind, x?, y?, r?, line? } } }. Power outage
+    -- (wave B): every live outage area in this match -- a radius, or the city
+    -- or the county by the storm's city line (BR.TerminalSolve.outageArea).
+    -- A client whose view is in one turns its own lights off. To the whole
+    -- match when one starts or ends (an empty list: the lights back on), and
+    -- on br:ready while one lasts (server/terminalfx/power_outage.lua).
+    TERMINAL_POWER  = 'br:terminal:power',
     -- S->C { matchId, list = { { s, x, y, down? } } }. Scan: where every
     -- opponent of this player's squad is, every scanPingMs for the rest of the
     -- match. To the scanning squad alone (server/terminalfx.lua).

@@ -9,6 +9,8 @@
 --   offlineWhy        is this terminal online: a Lockdown, the storm and the
 --                     dev tool's forcing, in that order
 --   threeEnds         Storm control's near, far and center final circles
+--   outageArea /      Power outage's area for a choice, and whether a point
+--     inOutage        is in it
 --   squadKey          which squad a player's one use belongs to (a solo
 --                     player is a squad of one)
 --   sites             the terminal rows in a config, checked
@@ -133,6 +135,51 @@ function T.threeEnds(ends, ax, ay, cx, cy)
     out.far = best(function(e) return -d2(e, ax, ay) end) or out.near
     out.center = best(function(e) return d2(e, cx, cy) end) or out.near
     return out
+end
+
+--- Power outage's area for one `area` choice (#396, wave B), as the server
+--- sends it and every client tests it: one spelling for both sides.
+---
+---   here    { kind = 'radius', x, y, r }: within `radius` meters of (x, y),
+---           this terminal
+---   city    { kind = 'city', line }: below the city line
+---   county  { kind = 'county', line }: on it or above it
+---
+--- THE CITY LINE IS THE STORM'S (#381, BR.StormCityLine): the same line that
+--- decides whether a match opens in the city or the county decides which side
+--- goes dark. Nil for a choice that is not one of these, or a `here` with no
+--- point to center on.
+--- @param choice string
+--- @param x number|nil @param y number|nil  this terminal
+--- @param radius number  meters, for `here`
+--- @return table|nil area
+function T.outageArea(choice, x, y, radius)
+    if choice == 'here' then
+        if not (finite(x) and finite(y) and finite(radius) and radius > 0) then return nil end
+        return { kind = 'radius', x = x + 0.0, y = y + 0.0, r = radius + 0.0 }
+    elseif choice == 'city' or choice == 'county' then
+        return { kind = choice, line = BR.StormCityLine() }
+    end
+    return nil
+end
+
+--- Is (x, y) in this outage area? An area that is not one -- off the wire,
+--- malformed -- holds nobody.
+--- @param area table|nil
+--- @param x number @param y number
+--- @return boolean
+function T.inOutage(area, x, y)
+    if type(area) ~= 'table' or not (finite(x) and finite(y)) then return false end
+    if area.kind == 'radius' then
+        if not (finite(area.x) and finite(area.y) and finite(area.r)) then return false end
+        local dx, dy = x - area.x, y - area.y
+        return dx * dx + dy * dy <= area.r * area.r
+    elseif area.kind == 'city' then
+        return finite(area.line) and y < area.line
+    elseif area.kind == 'county' then
+        return finite(area.line) and y >= area.line
+    end
+    return false
 end
 
 -- ------------------------------------------------------------------ squad ---

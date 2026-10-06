@@ -554,10 +554,16 @@ BR.Config.Terminals = {
         time_weather_done = 'The time and weather have changed.',
         time_weather_description = 'Time & weather. The sky has changed.',
 
-        -- Power outage (owner's; offline)
+        -- Power outage (owner's; LIVE since wave B, 2026-10-06)
         power_outage_name = 'Power outage',
         power_outage_summary = 'Turns the lights off in an area for a while.',
-        power_outage_what = "Street lights, building lights and signs go dark in the area you choose.\nVehicle headlights still work.\nThe lights come back when it ends.",
+        -- WRITTEN (2026-10-06, wave B; was "Street lights, building lights and
+        -- signs go dark in the area you choose. / Vehicle headlights still
+        -- work. / The lights come back when it ends."). The game's blackout is
+        -- one switch per player for the whole map, not per district: a player
+        -- in the area sees every light go dark, and a player outside it keeps
+        -- every light, the area's included. The line says so.
+        power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.",
         power_outage_opt_area = 'Area',
         power_outage_opt_area_here = 'Around this terminal',
         power_outage_opt_area_here_desc = 'Everything within 1 km of this terminal.',
@@ -1052,7 +1058,7 @@ BR.Config.Terminals = {
               { id = 'weather', choices = { 'clear', 'rain', 'fog' }, default = 'clear' },
               { id = 'duration', choices = { '180', '300' }, default = '180' },
           } },
-        { id = 'power_outage',   category = 'disruption', risk = 'low',    implemented = false,
+        { id = 'power_outage',   category = 'disruption', risk = 'low',    implemented = true,
           options = {
               { id = 'area', choices = { 'here', 'city', 'county' }, default = 'here' },
               { id = 'duration', choices = { '120', '240' }, default = '120' },
@@ -1137,6 +1143,12 @@ BR.Config.Terminals = {
         -- into the circle -- the storm's own sky blend (config/storm.lua's
         -- weather.blendSec), so walking in looks like a storm exit does.
         skyBlendSec = 5.0,
+
+        -- Power outage: how far "Around this terminal" reaches, in meters. The
+        -- page says it (power_outage_opt_area_here_desc, "within 1 km"), and
+        -- tools/test_terminalworld.lua holds the two together. "Los Santos" and
+        -- "Blaine County" are the storm's own city line (#381).
+        outageRadiusM = 1000.0,
 
         -- Scan: how often the scanning squad's opponent marks are refreshed.
         -- Positions are the roster's own 4 Hz samples; two seconds keeps a
