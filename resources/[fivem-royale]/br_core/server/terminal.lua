@@ -1182,9 +1182,10 @@ end
 -- THE USE REQUEST, one per press. Season, shape and rate (the anti-spam
 -- interval, runMinIntervalMs) here; the rest is BR.Terminal.use,
 -- which reads the sender's state, match, position and terminal off this
--- server. An offline terminal is the one refusal said aloud -- the plate
--- already said it, and a player who pressed anyway is told why nothing
--- opened (the storm's `offline`, or a Lockdown's `locked`). Every other refusal is a client out of step with the server, and
+-- server. An offline terminal is the one refusal said aloud: outside the
+-- storm a terminal has no plate at all (round 4), so a press there is a
+-- client a step behind the storm, and it is told why nothing opened (the
+-- storm's `offline`, or a Lockdown's `locked`). Every other refusal is a client out of step with the server, and
 -- silence is the answer the loot claim gives that too.
 RegisterNetEvent(BR.Net.TERMINAL_USE)
 AddEventHandler(BR.Net.TERMINAL_USE, function(d)

@@ -161,7 +161,8 @@ The table below is the lines outside the functions' own:
 | `contract_protect` | A toast to a Contract target's squadmates (never the target): the owner's `bounty_protect` says ten minutes, Scan's; `{playername}` |
 | `contract_target` | A toast to a Contract's target |
 | `key_finder_blip`, `pulse_blip` | The legend names of Key finder's and Pulse's marks |
-| `no_key`, `squad_used`, `offline` | At the terminal (why not; `no_key` is also the login screen), and in the world (the Gameplay half's prompts) |
+| `no_key`, `squad_used` | At the terminal (why not; `no_key` is also the login screen), and in the world (the terminal's plate) |
+| `offline` | At the terminal (why not: the dev tool's `brterminal offline`, or the moment before the storm's close), and a toast to a player whose press reached the server a step behind the storm. Never a plate since round 4: a terminal outside the storm has none |
 | `bounty_new` | A toast to the lobby: Scan's bounty; `{playername}` |
 | `bounty_protect` | A toast to the bounty's squad, not the bounty; `{playername}` |
 | `scan_blip`, `bounty_blip` | The legend names of Scan's and the bounty's marks |
@@ -554,13 +555,19 @@ Lockdown keeps is still the storm's.
   terminal, and only in a match (from the bus on) -- so during a Lockdown a
   key holder's map shows only the terminal it kept.
 - **Its plate** (the shared prompt browser) reads `terminal_label` ("Computer
-  system") over one of five hints:
+  system") over one of four hints:
   - `terminal_use` ("press to open") with the player's interact key: a press
     opens the computer;
   - `no_key`: the key cap too, and a press opens it, every function `no_key`;
   - `squad_used`: the same;
-  - `offline`: no key cap, nothing to press;
   - `locked` (a Lockdown has it): no key cap, nothing to press.
+- **Outside the storm it has no plate at all, for anyone** (round 4, owner
+  2026-10-06: "A terminal outside the storm should have no blip and no DUI -
+  hence it's unusable"): nothing is sent to the prompt browser, nothing is
+  drawn, the loot prompt keeps the floor, and there is nothing to press. A
+  terminal the SLOW pass has not placed yet counts as outside. The server
+  still refuses a use there, aloud (`offline`), for a client a step behind
+  the storm.
 - **A press of interact** sends TERMINAL_USE (it was an 800 ms hold until
   round 3), no sooner than `runMinIntervalMs` after the last; the server's
   door is unchanged and drops one sooner itself.

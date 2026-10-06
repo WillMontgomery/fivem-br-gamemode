@@ -689,9 +689,14 @@ do
     eq(copy.no_key, 'You need a Yubikey to access this system. Search far and wide, and you just might find one.',
         'the no-key plate keeps the owner\'s no_key line')
     eq(copy.squad_used, 'Your squad already used its terminal this match.', 'the squad-used plate keeps its line')
-    eq(copy.offline, 'This terminal is outside the storm and offline.', 'the offline plate keeps its line')
+    eq(copy.offline, 'This terminal is outside the storm and offline.',
+        'offline keeps its line: the server\'s toast for a press a step behind the storm, and the app\'s reason')
     -- The press goes straight to the server's door, which keeps its interval.
     local src = (readFile(ROOT .. 'br_core/client/yubikey.lua') or ''):gsub('%-%-[^\n]*', '')
+    -- ROUND 4 (owner, 2026-10-06: "A terminal outside the storm should have no
+    -- blip and no DUI"): the world plate no longer reads the offline line.
+    ok(not src:find('copy().offline', 1, true) and not src:find("copy()['offline']", 1, true),
+        'client/yubikey.lua reads no offline line: outside the storm there is no plate')
     ok(not src:find('holdMs', 1, true) and not src:find('%f[%w_]ring%f[^%w_]'),
         'client/yubikey.lua sends the plate no ring and no hold time')
     ok(src:find("BR.Keys.on('interact'", 1, true) ~= nil

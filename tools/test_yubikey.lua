@@ -1305,7 +1305,8 @@ do
     W.slow()
     W.tick()
     p = W.lastPrompt()
-    ok(p.hint == COPY.offline and p.key == nil, 'outside the storm: offline, and no key cap -- nothing to press')
+    ok(p.show == false, 'outside the storm: the plate goes -- no offline plate, nothing at all')
+    eq(W.B.Yubikey.prompting(), false, 'and the loot prompt keeps the floor')
     W.keys.listeners.interact(true)
     eq(#W.server, 0, 'and a press there asks nothing')
 
@@ -1370,6 +1371,63 @@ do
     W.B.State.me.state = W.B.PlayerState.DBNO
     W.tick()
     eq(W.B.Yubikey.prompting(), false, 'nor while downed')
+end
+
+describe('round 4: a terminal outside the storm has no plate, for anyone')
+do
+    -- Owner, 2026-10-06: "A terminal outside the storm should have no blip and
+    -- no DUI - hence it's unusable." No key, a key, a key whose squad used its
+    -- one: whoever walks up, nothing is sent to the prompt page, nothing is
+    -- drawn, and the press asks nothing.
+    local W = bootClient({ sites = { SITE } })
+    local drawn = 0
+    W.B.Dui.drawWorld = function() drawn = drawn + 1 end
+    W.B.State.storm = stormAway(W.B, W.now)
+    W.ped = { x = SITE.x + 1.0, y = SITE.y, z = SITE.z }
+    local holders = {
+        { name = 'no key', d = { held = false } },
+        { name = 'a key', d = { held = true, squadUsed = false, squadMatch = true } },
+        { name = 'a key, the squad\'s use spent', d = { held = true, squadUsed = true, squadMatch = true } },
+        { name = 'a key, solo', d = { held = true, squadUsed = false, squadMatch = false } },
+    }
+    for _, h in ipairs(holders) do
+        W.net(W.B.Net.YUBIKEY_STATE, h.d)
+        W.slow()
+        W.tick()
+        W.frame()
+        eq(#W.dui, 0, ('%s, in reach, outside the storm: the prompt page is sent nothing'):format(h.name))
+        eq(W.B.Yubikey.prompting(), false, ('%s: no plate, so the loot prompt keeps the floor'):format(h.name))
+        W.keys.listeners.interact(true)
+        W.keys.listeners.interact(false)
+        W.now = W.now + CT.runMinIntervalMs
+    end
+    eq(drawn, 0, 'nothing was drawn in the world')
+    eq(#W.server, 0, 'and no press asked the server')
+    eq(W.spriteBlips(BR.Config.Terminals.art.blipSprite), 0, 'and no blip either')
+
+    -- Not even before the first SLOW pass has placed it: unknown is outside.
+    local V = bootClient({ sites = { SITE } })
+    V.B.State.storm = stormAway(V.B, V.now)
+    V.ped = { x = SITE.x + 1.0, y = SITE.y, z = SITE.z }
+    V.net(V.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
+    V.tick()
+    eq(#V.dui, 0, 'a terminal no pass has placed yet shows no plate')
+
+    -- The storm reaching a terminal with its plate up takes the plate down.
+    W.B.State.storm = stormAround(W.B, W.now)
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false, squadMatch = true })
+    W.slow()
+    W.tick()
+    ok(W.lastPrompt().show == true and W.lastPrompt().hint == COPY.terminal_use, 'inside the storm: the plate is up')
+    W.B.State.storm = stormAway(W.B, W.now)
+    W.slow()
+    W.tick()
+    eq(W.lastPrompt().show, false, 'the storm takes it: the plate comes down')
+    for _, m in ipairs(W.dui) do
+        ok(m.hint ~= COPY.offline, 'and no message ever carried the offline line')
+    end
+    W.frame()
+    eq(drawn, 0, 'nor is it drawn')
 end
 
 describe('a press, end to end: the client asks, and the server\'s door decides as it always did')

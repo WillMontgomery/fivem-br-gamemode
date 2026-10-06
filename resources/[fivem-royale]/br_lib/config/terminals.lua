@@ -106,9 +106,13 @@ BR.Config.Terminals = {
         -- world plate without a key, the app's login screen, and the reason a
         -- function cannot run for that cause.
         no_key = 'You need a Yubikey to access this system. Search far and wide, and you just might find one.',
-        -- WRITTEN. A terminal outside the storm: the world plate's hint, a
-        -- toast if the server hears a press there anyway, and the app's reason.
-        offline = 'This terminal is outside the storm and offline.',
+        -- WRITTEN. A terminal outside the storm: a toast if the server hears
+        -- a press there anyway (a client a step behind the storm), and the
+        -- app's reason (the dev tool's `brterminal offline`, or the moment
+        -- before the storm's close). NOT the world plate since round 4: a
+        -- terminal outside the storm has no plate at all (owner, 2026-10-06:
+        -- "no blip and no DUI - hence it's unusable").
+        offline ='This terminal is outside the storm and offline.',
         -- WRITTEN (2026-10-06, wave A). A terminal a Lockdown has taken: the
         -- world plate's hint (nothing to press), a toast if the player presses
         -- anyway, and the app's reason.
@@ -141,7 +145,8 @@ BR.Config.Terminals = {
         terminal_label = 'Computer system',
         -- VERBATIM (the same words). The plate's hint when a press opens the
         -- computer with this player's key, beside the interact key's cap.
-        -- The no_key, squad_used and offline plates keep their own lines.
+        -- The no_key and squad_used plates keep their own lines; a terminal
+        -- outside the storm has no plate.
         terminal_use = 'press to open',
 
         -- ── the desktop (cuchi_computer) -- at the terminal. WRITTEN ─────────

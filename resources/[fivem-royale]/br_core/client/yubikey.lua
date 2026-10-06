@@ -13,7 +13,9 @@
 --                  (BR.TerminalSolve.offlineWhy); and the shared world plate
 --                  within reach -- the owner's "Computer system" / "press to
 --                  open" with the interact key (2026-10-06) -- whose PRESS
---                  asks the server to open the computer (TERMINAL_USE). THE
+--                  asks the server to open the computer (TERMINAL_USE). A
+--                  terminal outside the storm has NEITHER, for anyone (owner,
+--                  2026-10-06: "no blip and no DUI - hence it's unusable"). THE
 --                  LAPTOPS ARE NOT OURS: the owner's ymap places them
 --                  (2026-10-06, streamed with br_stream_s2), and every site
 --                  row says where one stands -- this file makes no prop, and
@@ -130,7 +132,8 @@ end
 --- Is this file's plate on screen? Read by client/dbno.lua, which owns the one
 --- BR.Loot.suppress call: a terminal on a floor with loot near it must not
 --- take two answers from one press, nor share the one prompt browser with a
---- crate's plate -- so even an offline plate, with nothing to press, counts.
+--- crate's plate -- so even a locked plate, with nothing to press, counts. A
+--- terminal outside the storm has no plate, so it never counts.
 --- @return boolean
 function Y.prompting()
     return plate ~= nil
@@ -423,7 +426,7 @@ local function setPrompt()
         show   = true,
         label  = copy().terminal_label,
         hint   = plate.hint,
-        -- THE KEY CAP ONLY WHERE A PRESS DOES SOMETHING: an offline terminal
+        -- THE KEY CAP ONLY WHERE A PRESS DOES SOMETHING: a locked terminal
         -- opens nothing, and a cap on its plate would be a lie the player
         -- acts on (client/revivekey.lua's rule). The player's own key for
         -- interact, whatever they bound it to.
@@ -432,10 +435,16 @@ local function setPrompt()
     })
 end
 
---- What this player's plate says at this terminal.
+--- What this player's plate says at this terminal, or nil for NO PLATE.
 ---
+---   offline     the storm has it: NO PLATE AT ALL, for anyone (owner,
+---               2026-10-06: "A terminal outside the storm should have no
+---               blip and no DUI - hence it's unusable"). Nothing is drawn,
+---               nothing can be pressed, and the loot prompt keeps the floor.
+---               A terminal the SLOW pass has not placed yet counts as
+---               outside. The server still refuses a use there (its toast,
+---               `offline`, answers a client a step behind the storm).
 ---   locked      a Lockdown has it (wave A): the locked line, nothing to press
----   offline     the storm has it: the offline line, nothing to press
 ---   no key      the no_key line ("what they need to do to gain access"); the
 ---               press still opens the computer, which lists every function
 ---               unavailable for the same reason
@@ -445,7 +454,7 @@ local function plateFor(s)
     local w = world[s.id]
     if w and w.why == 'locked' then return { hint = copy().locked, press = false } end
     local online = (w and w.online) or dev.forced[s.id] == true
-    if not online then return { hint = copy().offline, press = false } end
+    if not online then return nil end
     if not held then return { hint = copy().no_key, press = true } end
     if squadUsed then return { hint = TS.pick(copy(), 'squad_used', squadMatch), press = true } end
     return { hint = copy().terminal_use, press = true }
@@ -484,8 +493,8 @@ BR.Loop.register(BR.Loop.TICK, 'terminals.near', function()
         if near and BR.NativeTruthy(IsPedInAnyVehicle(ped, false)) then near = nil end
     end
 
-    if near then
-        local f = plateFor(near)
+    local f = near and plateFor(near) or nil
+    if f then
         plate = { id = near.id, x = near.x, y = near.y, z = near.z,
                   hint = f.hint, press = f.press }
     else
