@@ -93,6 +93,43 @@ local function named(key, name, squadMatch)
     return TS.line(TS.pick(copy(), key, squadMatch), name)
 end
 
+-- ═══ THE SHARED HELPERS (wave A, 2026-10-06) ═══
+--
+-- Each function built after these four has its own file under
+-- server/terminalfx/ (one per function, beside each other); these are what
+-- they share with this file, so there is one spelling of each:
+--
+--   T.fxOf(m)          this match's effects record, made on first use and gone
+--                      with the match -- every function keeps its state on it,
+--                      so nothing outlives the match it was run in
+--   T.marked(state)    in the fight with a position worth marking: standing,
+--                      downed or in the air (MARKED above)
+--   T.namedLine(key, name, squadMatch)
+--                      a toast line with {playername}, through the picker
+--   T.anchorOf(src, session)
+--                      where "this terminal" is: the session's terminal, or,
+--                      for a terminal the server does not know (the dev
+--                      terminal), the player -- Supply drop's rule
+T.fxOf = fxOf
+T.namedLine = named
+--- @param state string|nil
+--- @return boolean
+function T.marked(state)
+    return MARKED[state] == true
+end
+
+--- Where a function that works "around this terminal" is centred.
+--- @param src integer
+--- @param session table
+--- @return number|nil x, number|nil y, table|nil site  the site, when it is one
+function T.anchorOf(src, session)
+    local t = T.site(session.terminalId)
+    if t then return t.x, t.y, t end
+    local e = BR.Roster and BR.Roster.get(src) or nil
+    if e and e.pos then return e.pos.x, e.pos.y, nil end
+    return nil, nil, nil
+end
+
 -- ------------------------------------------------------------------ Scan ---
 
 --- Start a squad's scan in this match: from now to the end of the match.
@@ -276,11 +313,8 @@ local function dropAim(src, session, site, m)
         if not rec then return nil, nil end
         return rec.cx1, rec.cy1
     end
-    local t = T.site(session.terminalId)
-    if t then return t.x, t.y end
-    local e = BR.Roster.get(src)
-    if e and e.pos then return e.pos.x, e.pos.y end
-    return nil, nil
+    local x, y = T.anchorOf(src, session)
+    return x, y
 end
 
 --- Why Supply drop cannot run for this choice (nil: any choice), or nil.

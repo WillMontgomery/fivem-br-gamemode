@@ -97,6 +97,21 @@ local function apply(set, list, look, name)
     end
 end
 
+-- ═══ THE SHARED MARK HELPERS (wave A, 2026-10-06) ═══
+--
+-- The functions built after Scan and the bounty draw their marks in files of
+-- their own under client/terminalfx/, with these four, so every terminal mark
+-- is drawn the one way: a blip on each map, moved rather than rebuilt.
+--
+--   F.newMark(x, y, look, colour, name) -> mark   one mark, both maps
+--   F.dropMark(mark)                              both of its blips gone
+--   F.clear(set)                                  every mark in a set gone
+--   F.apply(set, list, look, name)                a set made to match a push
+F.newMark = newMark
+F.dropMark = dropMark
+F.clear = clear
+F.apply = apply
+
 --- THE SEASON, ASKED ONCE A SECOND (client/yubikey.lua's reason: a client's
 --- BR.Season.has reads a replicated convar, a native, and the squad panel asks
 --- F.mateBountyGlyph on every push).
@@ -109,6 +124,9 @@ refreshSeason()
 local function on()
     return seasonOn
 end
+--- The same answer, for the files under client/terminalfx/ (refreshed by this
+--- file's SLOW pass, once a second).
+F.on = on
 
 --- How many marks of each kind are up. For the suites.
 --- @return integer scans, integer bounties
