@@ -142,6 +142,9 @@ BR.Season.strict = true
 -- here, before this suite puts its own two in their place
 -- =========================================================================
 
+--- The config's own rows, kept before this suite puts its two in their place.
+local OWNER_SITES = nil
+
 describe('the sites: the owner\'s fifteen laptops, his order, his numbers')
 do
     -- "they're located at 15 places shown below", word for word: his order,
@@ -165,6 +168,7 @@ do
         { 'vespucci_canals', -1111.44263, -966.7761, 2.909578 },
     }
     local rows = CT.sites
+    OWNER_SITES = rows
     eq(#rows, #WANT, 'fifteen rows')
     for i, w in ipairs(WANT) do
         local r = rows[i] or {}
@@ -1035,6 +1039,8 @@ local function bootClient(opts)
         server = {}, dui = {}, loops = { frame = {}, tick = {}, slow = {} },
         keys = { listeners = {}, held = {} }, ped = { x = 0, y = 0, z = 30 },
         now = 500000, season = opts.season or 2, handlers = {},
+        -- The model hides: every call in order, and the live ones by place.
+        hideCalls = {}, hides = {}, watchers = {},
     }
     local env = setmetatable({}, { __index = _G })
     local function n() W.natives = W.natives + 1 end
@@ -1060,6 +1066,25 @@ local function bootClient(opts)
     env.FreezeEntityPosition = function() n() end
     env.DoesEntityExist = function(h) n() return W.objects[h] ~= nil end
     env.DeleteEntity = function(h) n() W.objects[h] = nil end
+    local function hideAt(x, y, z, r, hash) return ('%.4f,%.4f,%.4f/%.2f/%s'):format(x, y, z, r, tostring(hash)) end
+    env.CreateModelHideExcludingScriptObjects = function(x, y, z, r, hash, survive)
+        n()
+        W.hideCalls[#W.hideCalls + 1] = { op = 'hide', x = x, y = y, z = z, r = r, hash = hash, flag = survive }
+        local k = hideAt(x, y, z, r, hash)
+        W.hides[k] = (W.hides[k] or 0) + 1
+    end
+    env.CreateModelHide = function(x, y, z, r, hash, survive)
+        n()
+        W.hideCalls[#W.hideCalls + 1] = { op = 'hide_scripts_too', x = x, y = y, z = z, r = r, hash = hash, flag = survive }
+    end
+    env.RemoveModelHide = function(x, y, z, r, hash, lazy)
+        n()
+        W.hideCalls[#W.hideCalls + 1] = { op = 'unhide', x = x, y = y, z = z, r = r, hash = hash, flag = lazy }
+        local k = hideAt(x, y, z, r, hash)
+        if W.hides[k] then
+            W.hides[k] = W.hides[k] > 1 and W.hides[k] - 1 or nil
+        end
+    end
     env.AddBlipForCoord = function(x, y)
         n()
         local h = W.nextBlip
@@ -1091,7 +1116,10 @@ local function bootClient(opts)
     end
     local B = env.BR
     B.Config.Terminals.sites = opts.sites or {}
-    B.Season = { has = function(id) return id == 'terminals' and W.season >= 2 end }
+    B.Season = {
+        has = function(id) return id == 'terminals' and W.season >= 2 end,
+        onChange = function(fn) W.watchers[#W.watchers + 1] = fn end,
+    }
     B.Clock = { now = function() return W.now end }
     B.State = {
         match = { state = B.MatchState.PLAYING },
@@ -1137,6 +1165,23 @@ local function bootClient(opts)
         return c
     end
     function W.lastPrompt() return W.dui[#W.dui] end
+    --- The season moves, and the latch says so (BR.Season.onChange).
+    function W.switch(season)
+        local before = W.season
+        W.season = season
+        for _, fn in ipairs(W.watchers) do fn(season, before) end
+    end
+    --- How many hides are live, and the hide calls made after the first `from`.
+    function W.hidden()
+        local c = 0
+        for _, v in pairs(W.hides) do c = c + v end
+        return c
+    end
+    function W.callsSince(from)
+        local out = {}
+        for i = from + 1, #W.hideCalls do out[#out + 1] = W.hideCalls[i] end
+        return out
+    end
     return W
 end
 
@@ -1351,16 +1396,116 @@ do
     W.B.State.storm = stormAround(W.B, W.now)
     W.net(W.B.Net.YUBIKEY_STATE, { held = true })
     W.ped = { x = SITE.x + 1.0, y = SITE.y, z = SITE.z }
+    eq(W.hidden(), 1, 'its one native act was at start: the laptop at the row is hidden')
     W.natives = 0
     W.slow()
     W.tick()
     for _ = 1, 10 do W.frame() end
-    eq(W.natives, 0, 'a Season 1 client calls no native for any of it')
+    eq(W.natives, 0, 'and past the start a Season 1 client calls no native for any of it')
     eq(next(W.blips), nil, 'draws no blip')
     eq(next(W.objects), nil, 'builds no terminal')
     eq(W.B.Yubikey.glyph(), nil, 'and shows no icon')
     W.net(W.B.Net.TERMINAL_REVEAL, { x = 1.0, y = 2.0 })
     eq(next(W.blips), nil, 'and draws no reveal')
+end
+
+describe('Season 1 hides the owner\'s laptops, and Season 2 shows them again')
+do
+    -- THE OWNER'S YMAP STREAMS WHATEVER THE SEASON (2026-10-06), so a client
+    -- where terminals are off hides the laptop at every config row.
+    local TWO = { SITE, { id = 'shack', x = -500.25, y = 800.5, z = 12.0, h = 0.0 } }
+    local W = bootClient({ sites = TWO, season = 1 })
+    local hash = #CT.art.terminalProp   -- the stub's GetHashKey
+    eq(#W.hideCalls, 2, 'on start: one hide per row')
+    local h1, h2 = W.hideCalls[1] or {}, W.hideCalls[2] or {}
+    ok(h1.op == 'hide' and h2.op == 'hide',
+        'each with CreateModelHideExcludingScriptObjects -- map objects only, never a script\'s')
+    ok(h1.x == SITE.x and h1.y == SITE.y and h1.z == SITE.z and h2.x == TWO[2].x and h2.z == TWO[2].z,
+        'at the rows themselves')
+    ok(h1.r == CT.art.hideRadiusM and (h1.r or 99) <= 3.0,
+        ('a small sphere, art.hideRadiusM (%s m)'):format(tostring(h1.r)))
+    eq(h1.hash, hash, 'of the art block\'s terminalProp')
+    eq(h1.flag, true, 'surviving a map reload: a laptop not streamed in yet is hidden when it is')
+
+    -- NOT PER FRAME: nothing more while the season stands.
+    W.natives = 0
+    for _ = 1, 5 do W.slow() W.tick() W.frame() end
+    eq(W.natives, 0, 'passes, ticks and frames on the same season call no native')
+    W.switch(1)
+    eq(#W.hideCalls, 2, 'and a season "move" to the same season makes no second hide')
+
+    -- A LIVE `brseason 2`: the latch announces it, and the hides come off at once.
+    local mark = #W.hideCalls
+    W.switch(2)
+    local undo = W.callsSince(mark)
+    eq(#undo, 2, 'switched to Season 2: both hides come off, before any pass')
+    ok(undo[1] and undo[1].op == 'unhide' and undo[2] and undo[2].op == 'unhide', 'with RemoveModelHide')
+    ok(undo[1] and undo[1].flag == false and undo[2] and undo[2].flag == false,
+        'not lazily: the laptops come back now')
+    eq(W.hidden(), 0, 'each removal names exactly the hide that was made')
+    W.slow()
+    eq(#W.hideCalls, mark + 2, 'and the pass after it has nothing to do')
+
+    -- And back to Season 1.
+    W.switch(1)
+    eq(W.hidden(), 2, '`brseason 1`: hidden again')
+    eq(#W.hideCalls, mark + 4, 'one hide each, made once')
+
+    -- A MOVE THE LATCH DID NOT ANNOUNCE: the SLOW pass's own refresh.
+    W.season = 2
+    W.slow()
+    eq(W.hidden(), 0, 'a season that moved unannounced: the next pass takes the hides down')
+    W.season = 1
+    W.slow()
+    eq(W.hidden(), 2, 'and puts them back')
+
+    -- THE DEV TOOL'S CHANGES ARE NOT THE LAPTOPS': on a Season 1 box a removed
+    -- or placed terminal leaves the ymap's laptops hidden where they stand.
+    mark = #W.hideCalls
+    W.net(W.B.Net.TERMINAL_SITES, { placed = { { id = 'dev1', x = 1.0, y = 2.0, z = 3.0 } },
+                                     removed = { 'tower' }, forced = {} })
+    W.slow()
+    eq(#W.hideCalls, mark, 'a dev change touches no hide')
+    eq(W.hidden(), 2, 'both laptops stay hidden')
+
+    -- The resource stopping takes every hide down; a restart makes them again.
+    W.handlers.onResourceStop('br_ui')
+    eq(W.hidden(), 2, 'another resource stopping changes nothing')
+    W.handlers.onResourceStop('br_core')
+    eq(W.hidden(), 0, 'br_core stopping removes every hide it made')
+
+    -- A SEASON 2 CLIENT HIDES NOTHING until it is switched.
+    local V = bootClient({ sites = TWO, season = 2 })
+    eq(#V.hideCalls, 0, 'a Season 2 client makes no hide')
+    V.switch(1)
+    eq(V.hidden(), 2, 'until `brseason 1`')
+    local scriptsToo = 0
+    for _, c in ipairs(V.hideCalls) do
+        if c.op == 'hide_scripts_too' then scriptsToo = scriptsToo + 1 end
+    end
+    eq(scriptsToo, 0, 'never CreateModelHide, which would hide a script\'s laptop too')
+
+    -- THE OWNER'S FIFTEEN, at Season 1: one hide each, at his rows.
+    local U = bootClient({ sites = OWNER_SITES, season = 1 })
+    eq(U.hidden(), 15, 'the owner\'s fifteen rows: fifteen hides')
+    -- THE RADIUS REACHES EVERY LAPTOP IN HIS YMAP (br_stream_s2 5ec1f721,
+    -- stream/LaptopTerminals.ymap, read 2026-10-06): thirteen stand at their
+    -- rows, and these two 1.6 m above theirs.
+    local YMAP = {
+        paleto_pd   = { -428.793182, 5963.445801, 32.129494 },
+        calafia_way = { 361.209290, 4434.358887, 63.535072 },
+    }
+    local checked = 0
+    for _, s in ipairs(OWNER_SITES or {}) do
+        local m = YMAP[s.id]
+        if m then
+            checked = checked + 1
+            local d = math.sqrt((m[1] - s.x) ^ 2 + (m[2] - s.y) ^ 2 + (m[3] - s.z) ^ 2)
+            ok(d < CT.art.hideRadiusM, ('%s: its ymap laptop is %.2f m from the row, inside the %.1f m hide')
+                :format(s.id, d, CT.art.hideRadiusM))
+        end
+    end
+    eq(checked, 2, 'both offset laptops were measured')
 end
 
 -- =========================================================================

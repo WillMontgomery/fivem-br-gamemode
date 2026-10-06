@@ -721,8 +721,15 @@ BR.Config.Terminals = {
         -- string drawn as text; a placeholder like hudGlyph.
         bountyGlyph = '◎',
         -- The laptop the owner's ymap stands at every site (2026-10-06). No
-        -- script makes one; this names the model, not a prop to spawn.
+        -- script makes one; this names the model, not a prop to spawn. The
+        -- ymap streams whatever the season, so a client where terminals are
+        -- off (Season 1) hides this model within hideRadiusM of every site
+        -- (client/yubikey.lua), and only map objects, never a script's.
         terminalProp = 'prop_laptop_01a',
+        -- 2 meters, not less: in the ymap he published (br_stream_s2
+        -- 5ec1f721), the paleto_pd and calafia_way laptops stand 1.7 m from
+        -- their rows (1.6 m higher), and the other thirteen at them.
+        hideRadiusM = 2.0,
         -- A terminal's blip, drawn only while this player holds a key and only
         -- for a terminal inside the storm.
         blipSprite = 521,
@@ -770,6 +777,8 @@ BR.Config.Terminals = {
     -- session check is read from its row (client/yubikey.lua,
     -- server/terminal.lua) and from nothing in the world, so a row moved
     -- without its laptop is a plate beside empty air, and the other way round.
+    -- The ymap streams whatever the season, so a client where terminals are
+    -- off hides the laptop at every row (art.terminalProp, art.hideRadiusM).
     --
     -- `id` is lower case letters, digits and underscores, at most 32
     -- characters, and unique; x/y/z is where the prop stands and h its heading

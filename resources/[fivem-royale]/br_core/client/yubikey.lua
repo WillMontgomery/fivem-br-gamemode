@@ -14,6 +14,9 @@
 --                  owner's ymap places them (2026-10-06, streamed with
 --                  br_stream_s2), and every site row says where one stands --
 --                  this file makes no prop, and reads nothing off one.
+--   the laptops    hidden where terminals are off (Season 1): a model hide at
+--                  each config row, made and taken down only when the season
+--                  moves (below, "the laptops, Season 1").
 --   Storm reveal   where this match's storm ends, on both maps, from the
 --                  squad's TERMINAL_REVEAL to the trip back to the lobby.
 --
@@ -24,6 +27,7 @@
 -- in reach, and the hold), and both return before calling a native on a
 -- Season 1 server or with no terminal anywhere. The FRAME band only draws the
 -- plate, and only while there is one. tools/perf_client.lua's budget holds it.
+-- The Season 1 hides cost their natives once per season move, never per pass.
 
 BR = BR or {}
 BR.Yubikey = BR.Yubikey or {}
@@ -148,6 +152,102 @@ local function sites()
     return out
 end
 
+-- ------------------------------------------------ the laptops, Season 1 ---
+--
+-- ═══ SEASON 1 HIDES THE OWNER'S LAPTOPS (2026-10-06) ═══
+--
+-- His ymap streams its laptops whatever the season, and terminals are Season
+-- 2. So on a client where they are off, the laptop at every config row is
+-- hidden with a MODEL HIDE, and the hide comes off when they come on -- a live
+-- `brseason` switch included. NOT PER FRAME: on start, on every move of this
+-- client's season (BR.Season.onChange; the SLOW pass's own refresh catches a
+-- move the latch did not announce), and only a change calls a native. A
+-- model hide is this client's alone ("Network players do not see changes
+-- done with this"), which is what a per-client season answer wants.
+--
+-- THE NATIVES, from the Cfx docs (citizenfx/natives, ENTITY, read 2026-10-06):
+--
+--   CreateModelHideExcludingScriptObjects(x, y, z, radius, model,
+--       surviveMapReload)  0x3A52AE588830BF7F. Hides every object of `model`
+--       intersecting the sphere, "only ... map objects", never one a script
+--       made. surviveMapReload is TRUE: false hides "only currently loaded
+--       objects", and a laptop across the map is not loaded when this runs --
+--       it streams in later and must stream in hidden.
+--   RemoveModelHide(x, y, z, radius, model, lazy)  0xD9E3006FB3CBD765. Undoes
+--       either kind; lazy is FALSE, so "all matching objects currently in
+--       scope are restored immediately".
+--
+-- Both return nothing, so there is no BOOL to read. A ymap's entities are
+-- map objects: the game's own scripts hide map props with these.
+--
+-- ONLY THE CONFIG ROWS, which say where the ymap's laptops stand. A terminal
+-- the dev tool placed has no laptop, and a row it removed for a session keeps
+-- its laptop as furniture -- and on a Season 1 box no dev change may unhide
+-- one. The rows themselves change only with a restart of this resource, which
+-- takes every hide down as it stops and makes them again from the new rows.
+
+--- Every model hide this client has made: [key] = { x, y, z, r, hash }. The
+--- key names the row it was made for, its id and its place.
+local hides = {}
+
+--- The season answer the hides were last made for (nil: never made).
+local hidesFor = nil
+
+local function hideKey(s)
+    return ('%s@%.3f,%.3f,%.3f'):format(s.id, s.x, s.y, s.z)
+end
+
+--- Make this client's hides match its season: the laptop at every config row
+--- hidden while terminals are off here, none while they are on. Only a hide
+--- that has to be made or taken down calls a native.
+local function syncHides()
+    hidesFor = on()
+    local model = art().terminalProp
+    local want, order = {}, {}
+    if not hidesFor and type(model) == 'string' and model ~= '' then
+        for _, s in ipairs((TS.sites(cfg().sites))) do
+            local k = hideKey(s)
+            want[k] = s
+            order[#order + 1] = k
+        end
+    end
+    for k, h in pairs(hides) do
+        if not want[k] then
+            RemoveModelHide(h.x, h.y, h.z, h.r, h.hash, false)
+            hides[k] = nil
+        end
+    end
+    local hash = nil
+    local r = tonumber(art().hideRadiusM) or 2.0
+    for _, k in ipairs(order) do
+        if not hides[k] then
+            hash = hash or GetHashKey(model)
+            local s = want[k]
+            CreateModelHideExcludingScriptObjects(s.x, s.y, s.z, r, hash, true)
+            hides[k] = { x = s.x, y = s.y, z = s.z, r = r, hash = hash }
+        end
+    end
+end
+
+--- Every hide taken down: this resource is stopping, and a restart makes them
+--- again from its own rows.
+local function dropHides()
+    for k, h in pairs(hides) do
+        RemoveModelHide(h.x, h.y, h.z, h.r, h.hash, false)
+        hides[k] = nil
+    end
+    hidesFor = nil
+end
+
+-- ON START, and on every move of the season.
+syncHides()
+if BR.Season and BR.Season.onChange then
+    BR.Season.onChange(function()
+        refreshSeason()
+        syncHides()
+    end)
+end
+
 -- -------------------------------------------------------------- the maps ---
 
 local function removeBlip(b)
@@ -230,6 +330,9 @@ end
 -- native at all for a terminal while this player holds no key.
 BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
     refreshSeason()
+    -- A season move the latch did not announce: the hides follow it here. A
+    -- boolean compared, and nothing more, on every pass that moved nothing.
+    if hidesFor ~= on() then syncHides() end
     if not on() then
         if next(world) ~= nil then dropAll() end
         clearReveal()
@@ -457,4 +560,5 @@ AddEventHandler('onResourceStop', function(name)
     if name ~= GetCurrentResourceName() then return end
     dropAll()
     clearReveal()
+    dropHides()
 end)
