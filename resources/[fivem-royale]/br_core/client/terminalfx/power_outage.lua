@@ -96,7 +96,9 @@ AddEventHandler(BR.Net.TERMINAL_POWER, function(d)
     settle()
 end)
 
-BR.Loop.register(BR.Loop.SLOW, 'terminalfx.power', function()
+-- ONCE A SECOND, on client/terminalfx.lua's one SLOW pass (F.onSlow), as
+-- every function file's client half does: no pass of its own.
+BR.TerminalFx.onSlow(function()
     refreshSeason()
     if areas == nil and not dark then return end
     -- THE LOBBY ENDS IT HERE TOO: the server's last word may still be on its

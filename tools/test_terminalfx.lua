@@ -116,6 +116,7 @@ loadAll({
     'br_lib/shared/geo.lua',
     'br_lib/shared/polygon.lua',
     'br_lib/shared/clock.lua',
+    'br_lib/shared/world.lua',
     'br_lib/config/match.lua',
     'br_lib/config/storm.lua',
     'br_lib/config/map.lua',
@@ -251,7 +252,18 @@ BR.Market = {
         market.wallet[src] = (market.wallet[src] or 0) + amount
     end,
 }
-BR.Storm = { finalCentre = function(m) return m and m.finalStub or nil end }
+-- The storm as far as these functions ask it. Wave B's storm functions
+-- (storm_delay, storm_control) load here too, since this suite loads every
+-- function file the manifest lists; their own suite, tools/test_terminalworld.lua,
+-- runs them over the real server/storm.lua. Here they only need answers that
+-- keep them out of the way: no hold to lengthen, no futures to choose from.
+BR.Storm = {
+    finalCentre = function(m) return m and m.finalStub or nil end,
+    holdLeft = function() return nil end,
+    futures = function() return nil, 'no_circle' end,
+    steer = function() end,
+    delay = function() end,
+}
 
 loadAll({
     'br_core/server/terminal.lua',

@@ -1151,6 +1151,10 @@ local function newClient(files)
         SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
         register = function(_, name, fn) C.jobs[name] = fn end,
     }
+    -- client/terminalfx.lua's one SLOW pass, as the function files hook it
+    -- (F.onSlow); its own body is test_terminalfx.lua's.
+    env.BR.TerminalFx = env.BR.TerminalFx or {}
+    env.BR.TerminalFx.onSlow = function(fn) C.jobs['onSlow' .. tostring(fn)] = fn end
     env.BR.State = { match = { state = env.BR.MatchState.PLAYING }, me = { state = env.BR.PlayerState.ALIVE } }
     env.BR.Storm = {
         viewInside = function() return C.inside end,

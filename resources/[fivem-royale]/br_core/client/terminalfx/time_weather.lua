@@ -90,7 +90,9 @@ AddEventHandler(BR.Net.TERMINAL_SKY, function(d)
     settle()
 end)
 
-BR.Loop.register(BR.Loop.SLOW, 'terminalfx.sky', function()
+-- ONCE A SECOND, on client/terminalfx.lua's one SLOW pass (F.onSlow), as
+-- every function file's client half does: no pass of its own.
+BR.TerminalFx.onSlow(function()
     refreshSeason()
     if sky == nil and claimed == nil then return end
     -- THE LOBBY ENDS IT HERE TOO: the server's last word may still be on its
