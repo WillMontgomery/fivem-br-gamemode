@@ -19,7 +19,6 @@ BR.Native = {}
 -- Implementation switches. Flipped by /brnativecheck findings or by config.
 BR.Native.use = {
     spectatorNative = false,  -- false = free-cam + SetFocusEntity (the safer default)
-    stormPostFx     = false,  -- off until an effect name is confirmed in-game
 }
 
 -- ---------------------------------------------------------------- parachute ---
@@ -1143,33 +1142,13 @@ function BR.Native.inputForCommand(command)
 end
 
 -- ------------------------------------------------------------- storm screen ---
-
-local stormFxActive = false
-
---- @param inside boolean  true when the player is outside the safe circle
-function BR.Native.setStormScreen(inside)
-    local fx = BR.Config.Storm.fx
-    if inside == stormFxActive then return end
-    stormFxActive = inside
-
-    if inside then
-        if fx.useTimecycle then
-            SetTimecycleModifier(fx.timecycle)
-            SetTimecycleModifierStrength(fx.timecycleTarget)
-        end
-        -- postFX names are the most likely thing to differ between builds, so
-        -- this stays off until /brfx confirms one. The timecycle plus the NUI
-        -- vignette keep the storm fully readable without it.
-        if fx.usePostFx and BR.Native.use.stormPostFx then
-            AnimpostfxPlay(fx.postFx, 0, true)
-        end
-    else
-        ClearTimecycleModifier()
-        if fx.usePostFx and BR.Native.use.stormPostFx then
-            AnimpostfxStop(fx.postFx)
-        end
-    end
-end
+--
+-- THE STORM'S SCREEN GRADE IS client/storm.lua's AND NOBODY ELSE'S (#399). An
+-- M2-era BR.Native.setStormScreen lived here with no caller: a second REDMIST
+-- writer at full strength with no fade, gated on its own flag, that would have
+-- fought the real one the day anything called it. Deleted, with that flag.
+-- tools/verify.sh's timecycle gate keeps the slot's writers to storm.lua,
+-- debug.lua's brtc and the brnativecheck probe below.
 
 -- ------------------------------------------------------------ engine teams ---
 --
@@ -3257,10 +3236,47 @@ function BR.Native.check()
     probe('DrawMarker',              function()
         DrawMarker(1, 0.0, 0.0, -200.0, 0,0,0, 0,0,0, 1.0,1.0,1.0, 0,0,0, 0, false, false, 2, false, nil, nil, false)
     end)
-    probe('SetTimecycleModifier',    function()
-        SetTimecycleModifier(BR.Config.Storm.fx.timecycle)
-        ClearTimecycleModifier()
-    end)
+    -- THE TIMECYCLE SLOT, AND WHAT WAS IN IT GOES BACK (#399). The probe used to
+    -- set REDMIST and clear it, which wiped whatever was there -- the storm's own
+    -- grade, or a TM a dev had picked in vMenu. Now it reads the slot first and
+    -- puts it back after, and proves the one assumption client/storm.lua's grade
+    -- is built on: an empty slot reads -1. A slot holding something whose name
+    -- cannot be read is not probed at all, since it could not be put back.
+    do
+        local tc = BR.Config.Storm.fx.timecycle
+        local had, hadName, hadStrength = -1, nil, 0.0
+        local readOk = pcall(function()
+            had = GetTimecycleModifierIndex()
+            if had ~= -1 then
+                hadName = GetTimecycleModifierNameByIndex(had)
+                hadStrength = GetTimecycleModifierStrength() + 0.0
+            end
+        end)
+        local canRestore = had == -1 or (type(hadName) == 'string' and hadName ~= '')
+        local mine, after = nil, nil
+        if readOk and canRestore then
+            probe('SetTimecycleModifier', function()
+                SetTimecycleModifier(tc)
+                mine = GetTimecycleModifierIndex()
+                ClearTimecycleModifier()
+                after = GetTimecycleModifierIndex()
+            end)
+            if had ~= -1 then
+                pcall(function()
+                    SetTimecycleModifier(hadName)
+                    SetTimecycleModifierStrength(hadStrength)
+                end)
+            end
+        end
+        local put = had == -1 and ''
+            or (canRestore and (', put back %s at %.2f'):format(hadName, hadStrength)
+                or (', not probed: the slot holds index %d and its name cannot be read'):format(had))
+        results[#results + 1] = {
+            name   = 'GetTimecycleModifierIndex',
+            ok     = readOk and canRestore and mine ~= nil and mine ~= -1 and after == -1,
+            detail = ('%s=%s, after clear=%s%s'):format(tc, tostring(mine), tostring(after), put),
+        }
+    end
     -- The underscore is real: FiveM keeps it when a native name segment
     -- starts with a digit. The unadorned spelling is nil, and the storm wall
     -- shipped calling it once -- this probe is what makes that a boot-time

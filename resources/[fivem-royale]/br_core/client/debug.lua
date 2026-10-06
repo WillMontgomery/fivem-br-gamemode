@@ -730,10 +730,12 @@ RegisterCommand('brfx', function(_, args)
         print('  try:   DeathFailOut, ChopVision, DrugsMichaelAliensFightIn, RaceTurbo')
         return
     end
+    -- POST EFFECTS ONLY (#399). It used to clear the timecycle slot too, which
+    -- took the storm's red off a player standing in the storm (and a dev's vMenu
+    -- TM with it). `brtc clear` is the timecycle's own clear.
     if name == 'stop' then
         AnimpostfxStopAll()
-        ClearTimecycleModifier()
-        print('[br_core] all effects stopped')
+        print('[br_core] post effects stopped (the timecycle is brtc\'s)')
         return
     end
     AnimpostfxPlay(name, 0, true)

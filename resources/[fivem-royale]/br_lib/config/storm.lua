@@ -981,10 +981,13 @@ BR.Config.Storm = {
     -- likely thing in this config to be wrong on a given build, so the storm stays
     -- fully readable from the timecycle and the NUI vignette alone -- a missing
     -- postFX name is cosmetic, not gameplay-breaking. Audition names with /brfx.
+    --
+    -- THE GRADE FADES ON weather.blendSec, the sky's clock (client/storm.lua), so
+    -- the red, the thunder and the NUI vignette arrive together; there is no
+    -- separate ramp to tune here (#399 deleted an unread timecycleRampMs).
     fx = {
         timecycle       = 'REDMIST',
         timecycleTarget = 0.7,
-        timecycleRampMs = 1500,
         postFx          = 'DeathFailOut',
         useTimecycle    = true,
         usePostFx       = false,  -- opt in once a name is confirmed in-game

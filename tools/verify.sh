@@ -2631,12 +2631,61 @@ if grep -rq "RegisterCommand('brsound'" "resources/[fivem-royale]" 2>/dev/null; 
     boundary=1
 fi
 
+# AND THE TIMECYCLE SLOT HAS THREE WRITERS, NAMED (#399): client/storm.lua's
+# REDMIST grade, client/debug.lua's `brtc`, and the brnativecheck probe in
+# client/natives.lua (which puts back what it found). Nothing else under
+# resources/, vendored included -- the clock gate's reason: a third-party
+# resource that sets a modifier fights the grade exactly as one of ours would.
+#
+# WHY IT EXISTS. The grade shares GTA's one script slot with vMenu's TM menu and
+# touches only what it set; that only holds if nothing else of ours writes the
+# slot behind it. A dead second writer (BR.Native.setStormScreen) survived for
+# months because nothing looked.
+#
+# EVERY WRITE FAMILY, BY NAME AND BY HASH: the primary slot (set, strength,
+# clear), the extra slot (set, clear, and its strength -- ENABLE_MOON_CYCLE_
+# OVERRIDE in today's nativedb, SetExtraTimecycleModifierStrength in vMenu's C#),
+# transitions in and out, push/pop, the player TC modifiers and the modifier
+# overrides. Hashes from citizenfx/natives and alloc8or's nativedb. The getters
+# (GetTimecycleModifierIndex, the CFX name and strength reads, the extra index)
+# are reads, not writes, and are not here.
+#
+# WHICH FUNCTION in debug.lua and natives.lua (brtc, BR.Native.check) is held by
+# tools/test_shared.lua, which can read a function's extent; this is the file list.
+TC_NAMES_='SetTimecycleModifier|SetTimecycleModifierStrength|ClearTimecycleModifier|SetExtraTimecycleModifier|ClearExtraTimecycleModifier|SetExtraTimecycleModifierStrength|SetExtraTcmodifier|ClearExtraTcmodifier|EnableMoonCycleOverride|DisableMoonCycleOverride|SetTransitionTimecycleModifier|SetTransitionOutOfTimecycleModifier|PushTimecycleModifier|PopTimecycleModifier|SetCurrentPlayerTcmodifier|SetNextPlayerTcmodifier|SetPlayerTcmodifierTransition|AddTcmodifierOverride|RemoveTcmodifierOverride|ClearAllTcmodifierOverrides|SET_TIMECYCLE_MODIFIER|SET_TIMECYCLE_MODIFIER_STRENGTH|CLEAR_TIMECYCLE_MODIFIER|_?SET_EXTRA_TIMECYCLE_MODIFIER|_?CLEAR_EXTRA_TIMECYCLE_MODIFIER|_?SET_EXTRA_TIMECYCLE_MODIFIER_STRENGTH|SET_EXTRA_TCMODIFIER|CLEAR_EXTRA_TCMODIFIER|ENABLE_MOON_CYCLE_OVERRIDE|DISABLE_MOON_CYCLE_OVERRIDE|SET_TRANSITION_TIMECYCLE_MODIFIER|SET_TRANSITION_OUT_OF_TIMECYCLE_MODIFIER|PUSH_TIMECYCLE_MODIFIER|POP_TIMECYCLE_MODIFIER|SET_CURRENT_PLAYER_TCMODIFIER|SET_NEXT_PLAYER_TCMODIFIER|SET_PLAYER_TCMODIFIER_TRANSITION|ADD_TCMODIFIER_OVERRIDE|REMOVE_TCMODIFIER_OVERRIDE|CLEAR_ALL_TCMODIFIER_OVERRIDES'
+TC_HASHES_='2C933ABF17A1DF41|82E7FFCD5B2326B3|0F07E7745A236711|5096FD9CCB49056D|92CCC17A7A2285DA|2C328AF17210F009|2BF72AD5B41AA739|3BCF567485E1971C|1CBA05AE7BD7EE05|58F735290861E6B4|3C8938D7D872211E|BBF327DED94E4DEB|BF59707B3E5ED531|BDEB86F4D5809204|1A8E2C8B9CF4549C|15E33297C3E8DC60'
+tcname_="(^|[^_[:alnum:]])(${TC_NAMES_})([^_[:alnum:]]|\$)"
+tchash_="(^|[^[:xdigit:]])(${TC_HASHES_})([^[:xdigit:]]|\$)"
+tcfiles_=$(
+    { grep -rlE "${clkinc_[@]}" "$tcname_" resources 2>/dev/null
+      grep -rliE "${clkinc_[@]}" "$tchash_" resources 2>/dev/null; } \
+    | LC_ALL=C sort -u | while IFS= read -r f; do
+        case "$f" in
+            *.lua) code_=$(sed -e 's/--.*$//' "$f") ;;
+            *)     code_=$(sed -e 's|//.*$||' "$f") ;;
+        esac
+        if grep -qE "$tcname_" <<< "$code_" || grep -qiE "$tchash_" <<< "$code_"; then
+            echo "$f"
+        fi
+    done | sed 's|^resources/[^/]*/||' | tr '\n' ' '
+)
+if [ "$tcfiles_" != "br_core/client/debug.lua br_core/client/natives.lua br_core/client/storm.lua " ]; then
+    echo "${RED}FAIL${RST} timecycle-writing natives live in '${tcfiles_}' (${clkscanned_} files searched)"
+    echo "     expected 'br_core/client/debug.lua br_core/client/natives.lua br_core/client/storm.lua '"
+    echo "     The storm's red shares GTA's one timecycle slot with vMenu's TM menu"
+    echo "     and touches only what it set (#399). A writer outside the storm's"
+    echo "     grade, brtc and the brnativecheck probe -- ours or vendored, by name"
+    echo "     or by hash -- changes the slot behind it."
+    boundary=1
+fi
+
 if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
     echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
     echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
     echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky and the clock each have one writer"
     echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"
+    echo "${GRN}ok${RST}   the timecycle slot is written by the storm's grade, brtc and the brnativecheck probe, nothing else"
 else
     rc=1
 fi

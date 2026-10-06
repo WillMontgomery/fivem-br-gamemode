@@ -19951,6 +19951,152 @@ do
     end
 end
 
+-- ═══ AND THE SLOT HAS THREE WRITERS, EACH IN ONE PLACE (#399) ═══
+--
+-- tools/verify.sh's timecycle gate holds the FILE list: client/storm.lua,
+-- client/debug.lua and client/natives.lua, by name and by hash, across all of
+-- resources/. This holds the two files that are allowed for one function each:
+-- debug.lua only inside `brtc` (`brfx stop` used to clear the slot too), and
+-- natives.lua only inside BR.Native.check, the brnativecheck probe. A write
+-- anywhere else in those files is a second writer the gate cannot tell apart.
+describe('storm / the timecycle slot\'s writers')
+do
+    local WRITE = {
+        'SetTimecycleModifier', 'SetTimecycleModifierStrength', 'ClearTimecycleModifier',
+        'SetExtraTimecycleModifier', 'ClearExtraTimecycleModifier',
+        'SetExtraTimecycleModifierStrength', 'EnableMoonCycleOverride',
+        'DisableMoonCycleOverride', 'SetTransitionTimecycleModifier',
+        'SetTransitionOutOfTimecycleModifier', 'PushTimecycleModifier',
+        'PopTimecycleModifier', 'SetCurrentPlayerTcmodifier', 'SetNextPlayerTcmodifier',
+        'SetPlayerTcmodifierTransition', 'AddTcmodifierOverride',
+    }
+
+    --- Lines of `rel` that call a timecycle write, outside [from, to).
+    --- @return table  line numbers outside, integer calls inside
+    local function outside(rel, startPat, endPat)
+        local fh = assert(io.open(RES .. rel, 'r'))
+        local text = fh:read('a')
+        fh:close()
+        local stray, inside, n, open, seen = {}, 0, 0, false, false
+        for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+            n = n + 1
+            if not open and line:find(startPat) then open, seen = true, true
+            elseif open and line:find(endPat) then open = false end
+            local code = line:gsub('%-%-.*$', '')
+            for _, w in ipairs(WRITE) do
+                if code:find('%f[%w_]' .. w .. '%s*%(') then
+                    if open then inside = inside + 1 else stray[#stray + 1] = n end
+                    break
+                end
+            end
+        end
+        return stray, inside, seen
+    end
+
+    local stray, inside, seen = outside('br_core/client/debug.lua',
+        "^RegisterCommand%('brtc'", '^end, false%)')
+    ok(seen and #stray == 0 and inside >= 3,
+       'client/debug.lua writes the slot only inside brtc -- brfx stop no longer clears it',
+       ('stray at %s; %d inside'):format(table.concat(stray, ','), inside))
+
+    stray, inside, seen = outside('br_core/client/natives.lua',
+        '^function BR%.Native%.check%(', '^end')
+    ok(seen and #stray == 0 and inside >= 3,
+       'client/natives.lua writes the slot only inside BR.Native.check -- the probe',
+       ('stray at %s; %d inside'):format(table.concat(stray, ','), inside))
+
+    local fh = assert(io.open(RES .. 'br_core/client/natives.lua', 'r'))
+    local nat = fh:read('a')
+    fh:close()
+    ok(not nat:find('function BR%.Native%.setStormScreen'),
+       'and the dead second REDMIST writer, BR.Native.setStormScreen, is gone')
+    local cfh = assert(io.open(RES .. 'br_lib/config/storm.lua', 'r'))
+    local scfg = cfh:read('a')
+    cfh:close()
+    ok(not scfg:find('timecycleRampMs%s*='), 'with the unread fx.timecycleRampMs')
+
+    -- ── /brnativecheck PUTS BACK WHAT WAS IN THE SLOT ──
+    --
+    -- The probe set REDMIST and cleared it, wiping the storm's own grade or a
+    -- dev's vMenu TM. It now reads the slot, probes, and restores it -- and adds
+    -- the one line client/storm.lua's grade rests on: an empty slot reads -1.
+    -- Every other native the check calls is a no-op here: its rows are pcall'd
+    -- probes, and only the timecycle rows are this block's subject.
+    local function probeEnv(slotName, slotStrength, nameReadable)
+        local env = newSandbox()
+        local S = { name = slotName, strength = slotStrength, log = {} }
+        local ids, names = {}, {}
+        local function id(n)
+            if not ids[n] then names[#names + 1] = n; ids[n] = #names + 20 end
+            return ids[n]
+        end
+        setmetatable(env, { __index = function(_, k)
+            local v = SANDBOX_STD[k]
+            if v ~= nil then return v end
+            if type(k) == 'string' and k:match('^[A-Z][a-z]') then
+                return function() return 0 end
+            end
+            return nil
+        end })
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end, InvokeNative = function() end }
+        env.SetTimecycleModifier = function(n)
+            S.log[#S.log + 1] = 'set ' .. n
+            S.name, S.strength = n, 1.0
+        end
+        env.SetTimecycleModifierStrength = function(v)
+            S.log[#S.log + 1] = ('strength %.2f'):format(v)
+            S.strength = v
+        end
+        env.ClearTimecycleModifier = function()
+            S.log[#S.log + 1] = 'clear'
+            S.name, S.strength = nil, nil
+        end
+        env.GetTimecycleModifierIndex = function() return S.name and id(S.name) or -1 end
+        env.GetTimecycleModifierNameByIndex = function(i)
+            if nameReadable == false then return nil end
+            return names[i - 20]
+        end
+        env.GetTimecycleModifierStrength = function() return S.strength or 0.0 end
+        loadInto(env, { 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+                        'br_lib/config/match.lua', 'br_lib/config/storm.lua',
+                        'br_core/client/natives.lua' })
+        env.BR.State = { me = { src = 1, state = env.BR.PlayerState.LOBBY }, roster = {},
+                         match = { state = env.BR.MatchState.WAITING } }
+        local okc, rows = pcall(env.BR.Native.check)
+        local row = nil
+        for _, r in ipairs(okc and rows or {}) do
+            if r.name == 'GetTimecycleModifierIndex' then row = r end
+        end
+        return S, row, okc, rows
+    end
+
+    do
+        local S, row, okc, err = probeEnv('Kifflom', 0.5)
+        ok(okc, 'BR.Native.check runs to the end in the probe sandbox', not okc and tostring(err))
+        ok(row and row.ok and row.detail:find('REDMIST=%d+, after clear=%-1') ~= nil,
+           'the -1 line: REDMIST reads an index, and an emptied slot reads -1',
+           row and row.detail)
+        ok(row and row.detail:find('put back Kifflom at 0.50', 1, true) ~= nil,
+           'and it says what it put back', row and row.detail)
+        ok(S.name == 'Kifflom' and near(S.strength, 0.5, 1e-6),
+           'so the dev\'s Kifflom is on screen again, at 0.5, after the probe',
+           table.concat(S.log, ','))
+    end
+    do
+        local S, row = probeEnv(nil, nil)
+        ok(row and row.ok and not row.detail:find('put back', 1, true) and S.name == nil,
+           'an empty slot is probed and left empty', row and row.detail)
+    end
+    do
+        local S, row = probeEnv('mystery', 0.3, false)
+        ok(row and not row.ok and row.detail:find('not probed', 1, true)
+           and S.name == 'mystery' and #S.log == 0,
+           'a slot whose name cannot be read is not probed at all -- it could not be put back',
+           row and row.detail)
+    end
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 describe('audio.catalogue')
 -- ═══════════════════════════════════════════════════════════════════════════
