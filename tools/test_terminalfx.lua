@@ -53,6 +53,20 @@ local function readFile(path)
     return s
 end
 
+--- The function files br_core's manifest lists under `<side>/terminalfx/`
+--- (wave A on, one per function), in its order, as paths under ROOT -- so a
+--- file the manifest forgot is a function this suite finds unbuilt.
+--- @param side string  'server' | 'client'
+--- @return string[]
+local function fxFiles(side)
+    local out = {}
+    local text = readFile(ROOT .. 'br_core/fxmanifest.lua') or ''
+    for f in text:gmatch("'(" .. side .. "/terminalfx/[%w_]+%.lua)'") do
+        out[#out + 1] = 'br_core/' .. f
+    end
+    return out
+end
+
 -- ---------------------------------------------------------------- harness ---
 
 local pass, fail = 0, 0
@@ -139,6 +153,7 @@ local notices = {}       -- BR.Server.notify: { target, text, tone }
 local keys = {}          -- [src] = true while holding a Yubikey
 local airdropCalls = {}  -- BR.Airdrop.call: { m, x, y }
 local filled = {}        -- BR.Inv.fillAmmo: [src] = rounds it would add
+local granted = {}       -- BR.Inv.grantEffect: { src, effect } (Field medic)
 
 BR.Sched = { every = function(_, name, fn) jobs[name] = fn end }
 function RegisterNetEvent() end
@@ -239,6 +254,7 @@ loadAll({
     'br_core/server/terminal.lua',
     'br_core/server/terminalfx.lua',
 })
+loadAll(fxFiles('server'))
 
 local T = BR.Terminal
 
@@ -263,6 +279,13 @@ BR.Inv = {
         local n = filled[src] or 0
         filled[src] = 0
         return n
+    end,
+    -- Field medic's door (server/inventory.lua's; its ledger half is
+    -- tools/test_roster.lua's): recorded, and false for a player with no entry.
+    grantEffect = function(src, effect)
+        if not roster[src] then return false end
+        granted[#granted + 1] = { src = src, effect = effect }
+        return true
     end,
 }
 
@@ -346,6 +369,8 @@ local function player(src, m, squad, at, state)
         src = src, name = 'p' .. src, state = state or BR.PlayerState.ALIVE,
         matchId = m and m.id or nil, squadId = squad,
         pos = at and { x = at.x, y = at.y, z = at.z or 30.0 } or nil,
+        -- Full health and armor (display units), unless a block says otherwise.
+        hp = 100.0, armour = 100, kills = 0,
     }
 end
 
@@ -355,7 +380,7 @@ local function reset()
     market.hold = false
     for _, answer in ipairs(market.pending) do answer() end
     flush()
-    sent, notices, logs, airdropCalls, filled = {}, {}, {}, {}, {}
+    sent, notices, logs, airdropCalls, filled, granted = {}, {}, {}, {}, {}, {}
     roster, matches, keys = {}, {}, {}
     timers = {}
     market.wallet, market.charges, market.refunds, market.pending = {}, {}, {}, {}
@@ -1014,6 +1039,140 @@ do
 end
 
 -- =========================================================================
+-- PART G -- wave A (owner, 2026-10-06): the functions built one file each,
+-- under server/terminalfx/, loaded here from the manifest
+-- =========================================================================
+
+--- This player's card for `id` in the state the computer last opened with.
+local function listedAs(src, id)
+    local d = lastOf(BR.Net.TERMINAL_OPEN, src)
+    for _, x in ipairs(d and d.state.functions or {}) do
+        if x.id == id then return x end
+    end
+    return nil
+end
+
+--- The last toast this player was sent, as text.
+local function lastToast(src)
+    local mine = noticesTo(src)
+    return mine[#mine] and textOf(mine[#mine]) or nil
+end
+
+--- A `brterminal run` line typed by `src`; the answer on their F8.
+local function devRun(src, line)
+    local args = { 'run' }
+    for w in line:gmatch('%S+') do args[#args + 1] = w end
+    commands.brterminalsv(src, args, 'brterminalsv run ' .. line)
+    return lastOf(BR.Net.TERMINAL_DEV, src) or ''
+end
+
+describe('Field medic: everyone standing in the squad, to full health and full armor')
+do
+    local row = T.row('field_medic')
+    ok(row and row.implemented == true and T.FUNCTIONS.field_medic ~= nil, 'field_medic is built')
+    ok(row and (row.options == nil or #row.options == 0), 'and takes no options')
+    ok(row and (row.cost or 0) == 0, 'and costs no Volts')
+
+    reset()
+    local m = lobby()
+    roster[1].hp, roster[1].armour = 40.0, 0
+    roster[2].hp, roster[2].armour = 100.0, 30                    -- full health, armor short
+    player(6, m, 'A', { x = C0.x + 60.0, y = C0.y }, BR.PlayerState.DBNO)
+    roster[6].hp, roster[6].armour = 20.0, 0                      -- downed: not revived
+    player(7, m, 'A', { x = C0.x + 70.0, y = C0.y }, BR.PlayerState.GLIDE)
+    roster[7].hp, roster[7].armour = 50.0, 0                      -- in the air: not standing
+    player(8, m, 'A', { x = C0.x + 80.0, y = C0.y })              -- standing and full
+    roster[3].hp = 10.0                                           -- another squad
+    local r = runAt(1, 'field_medic')
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    local who = {}
+    for _, g in ipairs(granted) do who[#who + 1] = g.src end
+    eq(table.concat(who, ','), '1,2', 'the runner and the standing squadmate short of armor, and nobody else')
+    local fxv = granted[1] and granted[1].effect or {}
+    ok(fxv.health == 100.0 and fxv.healthCap == 100.0, 'to full health (the display bar\'s 100)')
+    ok(fxv.armour == BR.Config.Match.maxArmour and fxv.armourCap == BR.Config.Match.maxArmour,
+        'and full armor (BR.Config.Match.maxArmour)')
+    ok(keys[1] == false and T.squadUsed(1), 'the key and the squad\'s use are spent')
+    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'and the lobby is told')
+    eq(r and r.toast, COPY.field_medic_done, 'the runner reads the squad done line')
+end
+
+describe('Field medic: nothing to heal is refused, spending nothing')
+do
+    reset()
+    local m = lobby()
+    player(6, m, 'A', { x = C0.x + 60.0, y = C0.y }, BR.PlayerState.DBNO)
+    roster[6].hp = 15.0                       -- the only one hurt is downed
+    useAt(1)
+    local f = listedAs(1, 'field_medic')
+    ok(f and f.available == false and f.reason == 'health_full',
+        'every standing squadmate full: the card says health_full', f and tostring(f.reason))
+    local r = ask(1, 'field_medic')
+    ok(r and r.ok == false and r.code == 'health_full', 'and a run is refused health_full', r and r.code)
+    eq(r and r.toast, COPY.health_full, 'in the squad line')
+    ok(keys[1] == true and not T.squadUsed(1) and #granted == 0 and #timers == 0,
+        'the key and the use stay, nobody is touched, nothing loads')
+
+    -- THE END OF THE RUN: hurt when asked, full again when the loading is over.
+    reset()
+    lobby()
+    roster[1].hp = 55.0
+    useAt(1)
+    r = ask(1, 'field_medic')
+    ok(r and r.code == 'running', 'hurt: accepted', r and r.code)
+    roster[1].hp = 100.0                      -- healed meanwhile
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'health_full', 'full by the end of the load: health_full', r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1) and #granted == 0, 'and the key and the use are given back')
+    eq(noticeIndex('has redeemed their special power', 3), nil, 'the lobby is told nothing')
+
+    -- THE MATCH ENDING MID-LOAD.
+    reset()
+    m = lobby()
+    roster[1].hp = 55.0
+    useAt(1)
+    ask(1, 'field_medic')
+    m.state = BR.MatchState.ENDED
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'unavailable' and keys[1] == true and #granted == 0,
+        'a match that ended mid-load heals nobody and gives everything back', r and r.code)
+end
+
+describe('Field medic: a solo player hears no squad, and the dev command runs it')
+do
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    keys[1] = true
+    useAt(1)
+    local r = ask(1, 'field_medic')
+    eq(r and r.toast, COPY.health_full_solo, 'full and alone: the solo refusal')
+    roster[1].armour = 0
+    r = runAt(1, 'field_medic')
+    ok(r and r.code == 'done' and #granted == 1 and granted[1].src == 1, 'short of armor: healed')
+    eq(r and r.toast, COPY.field_medic_done_solo, 'and told in the solo line')
+    for _, x in ipairs(notices) do
+        ok(not (textOf(x) or ''):lower():find('squad', 1, true), ('no solo toast says squad: %s'):format(textOf(x)))
+    end
+
+    -- `brterminal run field_medic`: the effect, no key, nothing spent.
+    reset()
+    lobby()
+    roster[2].hp = 30.0
+    keys[1] = false
+    local said = devRun(1, 'field_medic')
+    ok(said:find('ok (done)', 1, true) ~= nil and #granted == 1 and granted[1].src == 2,
+        'the dev command heals the squad without a key', said)
+    ok(not T.squadUsed(1), 'and spends nothing')
+    roster[1].matchId = nil
+    said = devRun(1, 'field_medic')
+    ok(said:find('refused (unavailable)', 1, true) ~= nil, 'and outside a match it says unavailable', said)
+end
+
+-- =========================================================================
 -- PART D -- the client
 -- =========================================================================
 
@@ -1134,6 +1293,22 @@ do
     local fx = manifest:find("'server/terminalfx.lua'", 1, true)
     ok(t and fx and fx > t, 'server/terminalfx.lua loads after server/terminal.lua')
     ok(manifest:find("'client/terminalfx.lua'", 1, true) ~= nil, 'client/terminalfx.lua is loaded')
+    -- WAVE A: one file per function, each after the file whose helpers it reads.
+    local cfx = manifest:find("'client/terminalfx.lua'", 1, true)
+    for _, side in ipairs({ 'server', 'client' }) do
+        local base = side == 'server' and fx or cfx
+        for _, f in ipairs(fxFiles(side)) do
+            local at = manifest:find("'" .. f:sub(#'br_core/' + 1) .. "'", 1, true)
+            ok(at and base and at > base, ('%s loads after %s/terminalfx.lua'):format(f, side))
+            ok(readFile(ROOT .. f) ~= nil, ('%s exists'):format(f))
+        end
+    end
+    ok(#fxFiles('server') >= 1, 'the manifest lists the wave A function files')
+    local built = 0
+    for _, row in ipairs(CT.functions) do
+        if row.implemented then built = built + 1 end
+    end
+    eq(built, 4 + #fxFiles('server'), 'every built row past the first four is a function file')
 end
 
 realPrint(('%d passed, %d failed'):format(pass, fail))

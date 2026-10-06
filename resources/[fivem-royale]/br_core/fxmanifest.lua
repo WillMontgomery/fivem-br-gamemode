@@ -934,6 +934,12 @@ server_scripts {
     -- server/terminal.lua, which defines BR.Terminal.FUNCTIONS and the
     -- audiences this reads at load and at call time.
     'server/terminalfx.lua',
+    -- The functions built from wave A on (#396, 2026-10-06), one file each,
+    -- each registering its own BR.Terminal.FUNCTIONS entry. AFTER
+    -- server/terminalfx.lua, whose shared helpers (BR.Terminal.fxOf, marked,
+    -- namedLine, anchorOf) they read at call time. tools/test_terminal.lua and
+    -- tools/test_terminalfx.lua load exactly the files listed here.
+    'server/terminalfx/field_medic.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

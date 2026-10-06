@@ -13311,6 +13311,74 @@ do
     eq(BR.Inv.fillAmmo(1), 0, 'and nothing minted')
 end
 
+describe("inv.grantEffect -- a terminal's Field medic (#396, wave A)")
+do
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+    -- A RISE WITH NO ITEM BEHIND IT, AUTHORIZED LIKE A MED KIT'S LANDING: the
+    -- window and the ceiling per stat, and the INV_EFFECT. Driven through the
+    -- real sampler: the ped climbs to what the server said, and the ledger must
+    -- follow it there and stay -- not be refused and snapped back.
+    local function step(ms)
+        for _ = 1, math.floor(ms / 250) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+    local function hurt()
+        pedHealth[1001] = BR.ToEngineHp(35.0)
+        pedArmour[1001] = 0
+        step(250)
+    end
+    lootMatch()
+    hurt()
+    local e = BR.Roster.get(1)
+    ok(math.abs((e.hp or 0) - 35.0) < 1.0 and (e.armour or 0) == 0, 'hurt, on the books',
+        ('%s / %s'):format(tostring(e.hp), tostring(e.armour)))
+
+    -- THE CONTROL: the same climb with no grant is refused and snapped back.
+    pedHealth[1001] = BR.ToEngineHp(100.0)
+    pedArmour[1001] = 100
+    step(3000)
+    ok((e.hp or 0) < 40.0 and (e.armour or 0) < 5, 'a climb nobody granted is refused (the control)',
+        ('%s / %s'):format(tostring(e.hp), tostring(e.armour)))
+
+    hurt()
+    -- A CHANNEL RUNNING: ended first, its item left in the bag.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 1 })
+    local inv = BR.Inv.of(1)
+    inv.using = { slot = 1, item = 'bandage', endsAt = fakeTime + 4000 }
+    sent = {}
+    local full = BR.Config.Match.maxArmour
+    ok(BR.Inv.grantEffect(1, { health = 100.0, healthCap = 100.0, armour = full, armourCap = full }),
+        'granted')
+    eq(inv.using, nil, 'a channel that was running is ended')
+    ok(inv.slots[1] and inv.slots[1].count == 1, 'and its item stays in the bag')
+    local fx = eventsOf(BR.Net.INV_EFFECT)
+    ok(#fx == 1 and fx[1].target == 1 and fx[1].args[1].health == 100.0 and fx[1].args[1].armour == full,
+        'one INV_EFFECT, to that player, with both targets')
+    ok(e.healUntil and e.healUntil > fakeTime and e.grantHpTo == 100.0, 'health\'s window and ceiling')
+    ok(e.healArmorUntil and e.healArmorUntil > fakeTime and e.grantArmourTo == full,
+        'and armor\'s, each its own (#366)')
+
+    -- What a client does with it: become the target. The ledger follows.
+    pedHealth[1001] = BR.ToEngineHp(100.0)
+    pedArmour[1001] = full
+    step(250)
+    ok(math.abs((e.hp or 0) - 100.0) < 0.01 and e.armour == full, 'the ledger follows the ped to full',
+        ('%s / %s'):format(tostring(e.hp), tostring(e.armour)))
+    step(4000)
+    ok(math.abs((e.hp or 0) - 100.0) < 0.01 and e.armour == full,
+        'and is still there long after the window closed: nothing snapped back')
+
+    eq(BR.Inv.grantEffect(99, { health = 100.0 }), false, 'nobody on the roster: nothing granted')
+    -- The ped back to the harness's defaults for the blocks after this one.
+    pedHealth[1001], pedArmour[1001] = nil, nil
+    BR.Inv.reset(1)
+end
+
 describe('inv.ammo.remainder')
 do
     -- ═══ A BUNDLE CHARGED WHOLE AND DELIVERED CLAMPED ═══

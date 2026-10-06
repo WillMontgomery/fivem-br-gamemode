@@ -2180,6 +2180,36 @@ local function authorize(e, now, effect)
     end
 end
 
+--- A RISE THE SERVER GRANTS OUTRIGHT, WITH NO ITEM BEHIND IT: a terminal's
+--- Field medic (#396, wave A), full health and full armor for every squadmate
+--- still standing.
+---
+--- THE SAME TWO HALVES A MED KIT'S LANDING USES, and nothing else: `authorize`
+--- (one window and one ceiling per stat the effect moves, so server/roster.lua's
+--- ledger follows the ped up to exactly these targets) and the same INV_EFFECT
+--- the client applies upward only. Without the first half the ledger would
+--- refuse the rise and snap the bar back; without the second nothing moves.
+---
+--- A CHANNEL STILL RUNNING IS ENDED FIRST, silently. A med kit's or a shield's
+--- next slice would `authorize` its own, lower target 250 ms later and pull the
+--- ceiling under the bar this grant has just filled -- and its item stays in
+--- the bag, unspent, because a channel is only paid for when it completes.
+--- @param src integer
+--- @param effect table  `health`/`healthCap` and/or `armour`/`armourCap`, display units
+--- @return boolean  false for a player with no roster entry
+function BR.Inv.grantEffect(src, effect)
+    local e = BR.Roster.get(src)
+    if not e or type(effect) ~= 'table' then return false end
+    local inv = e.inv
+    if inv and inv.using then
+        inv.using = nil
+        BR.Inv.push(src)
+    end
+    authorize(e, GetGameTimer(), effect)
+    TriggerClientEvent(BR.Net.INV_EFFECT, src, effect)
+    return true
+end
+
 -- 250ms: fine enough that a cancelled use stops looking like it worked, and
 -- coarse enough to be free.
 --

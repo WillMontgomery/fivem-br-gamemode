@@ -362,6 +362,11 @@ BR.Config.Terminals = {
         ammo_full_solo = 'Your ammo is already full.',
         -- Supply drop: another airdrop is waiting for a player or falling.
         drop_busy = 'Another airdrop is already on its way.',
+        -- WRITTEN (2026-10-06, wave A). Field medic: everyone in the squad who
+        -- is standing is already at full health and armor (or nobody is
+        -- standing) -- refused, spending nothing.
+        health_full = 'Everyone in your squad who is standing is already at full health and armor.',
+        health_full_solo = "You're already at full health and armor.",
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -690,7 +695,7 @@ BR.Config.Terminals = {
         contract_done = 'The contract is out.',
         contract_description = 'Contract. The top player has a bounty.',
 
-        -- Field medic (new; offline)
+        -- Field medic (new; LIVE since wave A, 2026-10-06)
         field_medic_name = 'Field medic',
         field_medic_summary = 'Restores full health and armor to everyone in your squad.',
         field_medic_summary_solo = 'Restores your full health and armor.',
@@ -978,7 +983,7 @@ BR.Config.Terminals = {
         { id = 'lockdown',       category = 'disruption', risk = 'medium', implemented = false,
           options = { { id = 'duration', choices = { '180', '300' }, default = '180' } } },
         { id = 'contract',       category = 'disruption', risk = 'medium', implemented = false },
-        { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = false },
+        { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true },
     },
 
     -- The categories, in the order the side navigation lists them.

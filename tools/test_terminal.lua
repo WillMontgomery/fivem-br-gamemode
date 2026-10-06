@@ -41,6 +41,23 @@ local function loadAll(files)
     for _, f in ipairs(files) do loadFile(ROOT .. f) end
 end
 
+--- The function files br_core's manifest lists under `<side>/terminalfx/`
+--- (wave A on, one per function), in its order, as paths under ROOT. Loaded
+--- from the manifest so a function file the manifest forgot is a function the
+--- suite finds unbuilt.
+--- @param side string  'server' | 'client'
+--- @return string[]
+local function fxFiles(side)
+    local fh = io.open(ROOT .. 'br_core/fxmanifest.lua', 'rb')
+    local text = fh and fh:read('a') or ''
+    if fh then fh:close() end
+    local out = {}
+    for f in text:gmatch("'(" .. side .. "/terminalfx/[%w_]+%.lua)'") do
+        out[#out + 1] = 'br_core/' .. f
+    end
+    return out
+end
+
 -- ---------------------------------------------------------------- harness ---
 
 local pass, fail = 0, 0
@@ -130,6 +147,7 @@ local function bootServer(opts)
         S.notices[#S.notices + 1] = { target = target, text = text, tone = tone }
     end }
     loadAll({ 'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua' })
+    loadAll(fxFiles('server'))
 end
 
 local function fireAs(src, name, ...)
@@ -542,6 +560,8 @@ do
     for _, key in ipairs({
         'no_key', 'squad_used', 'offline', 'unavailable', 'fn_offline', 'bad_option',
         'no_storm', 'no_site', 'ammo_full',
+        -- Wave A's (2026-10-06).
+        'health_full',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
         'address_host', 'path_functions', 'path_howto', 'path_login',
         'status_available', 'status_used', 'status_not_here', 'status_offline',
@@ -956,9 +976,15 @@ do
     -- THE READERS: every Lua file that speaks the copy reads a line with a
     -- sibling, or a computed key, only through the picker.
     local real = BR.Config.Terminals.copy
-    for _, f in ipairs({ 'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua',
-                         'br_core/server/yubikey.lua', 'br_core/client/yubikey.lua',
-                         'br_core/client/terminal.lua', 'br_core/client/terminalfx.lua' }) do
+    local readers = { 'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua',
+                      'br_core/server/yubikey.lua', 'br_core/client/yubikey.lua',
+                      'br_core/client/terminal.lua', 'br_core/client/terminalfx.lua' }
+    -- And every function file the manifest lists, both sides (wave A on).
+    for _, side in ipairs({ 'server', 'client' }) do
+        for _, f in ipairs(fxFiles(side)) do readers[#readers + 1] = f end
+    end
+    ok(#fxFiles('server') >= 1, 'the manifest lists the wave A function files')
+    for _, f in ipairs(readers) do
         local src = (readFile(ROOT .. f) or ''):gsub('%-%-[^\n]*', '')
         ok(src ~= '', ('%s is read'):format(f))
         for key in src:gmatch('copy%(%)%.([%a_][%w_]*)') do
