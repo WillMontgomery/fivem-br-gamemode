@@ -368,7 +368,7 @@ colors, and the light/dark switch changes only the site.
 
 **The toolbar is the app's** (`Browser.tsx`): back, forward and reload over the
 app's own history, and a read-only address bar whose fictional URL follows the
-page (`https://terminal.blitz/functions/supply-drop`). It lives in the app
+page (`https://controltower.blitz/functions/supply-drop`). It lives in the app
 because the history and the address are the app's navigation; a copy in the
 desktop would be a second state kept in step over postMessage. Reload asks the
 desktop for everything again (`ready`) and remounts the page.

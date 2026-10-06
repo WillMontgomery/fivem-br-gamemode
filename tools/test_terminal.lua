@@ -597,7 +597,7 @@ do
         eq(copy[key], 'Control Tower', ('%s is the app\'s name, "Control Tower"'):format(key))
     end
     eq(copy.match_heading, 'Match stats', 'the match table says "Match stats"')
-    eq(copy.address_host, 'https://terminal.blitz', 'the address bar\'s fictional host is unchanged')
+    eq(copy.address_host, 'https://controltower.blitz', 'the address bar\'s fictional host is controltower.blitz (owner, 2026-10-05)')
     for k, v in pairs(copy) do
         ok(not v:find('Blitz Terminal', 1, true), ('copy.%s no longer names the app Blitz Terminal'):format(k))
         ok(not k:find('thunder', 1, true), ('copy.%s is not a thunderstorm line'):format(k))

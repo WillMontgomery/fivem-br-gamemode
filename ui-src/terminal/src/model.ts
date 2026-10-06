@@ -78,7 +78,7 @@ export function sameRoute(a: Route, b: Route): boolean {
 
 /**
  * The fictional address the browser's address bar shows for a page, e.g.
- * https://terminal.blitz/functions/storm-reveal. The host and each section's
+ * https://controltower.blitz/functions/storm-reveal. The host and each section's
  * segment are copy; a function's segment is its id, hyphenated as a URL is.
  */
 export function addressOf(route: Route, say: Say): string {

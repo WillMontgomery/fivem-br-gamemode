@@ -158,7 +158,7 @@ BR.Config.Terminals = {
         -- page's path segment. A function's own segment is its id. The host
         -- kept its name when the app became Control Tower (round 2): a
         -- question for the owner, not a change made for him.
-        address_host = 'https://terminal.blitz',
+        address_host = 'https://controltower.blitz',
         path_functions = 'functions',
         path_howto = 'how-to',
         path_login = 'login',
