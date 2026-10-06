@@ -416,8 +416,11 @@ writes both and `build:check` byte-compares both, each against its own committed
 build stamp. The app has its own gate, `scripts/check-terminal.mjs`: the
 Cloudscape-on-CEF-103 findings of #385, no words written in its JSX, every
 line read through one speaker (the squad words), Run's risk colors on tokens
-Cloudscape defines, and a browser chrome that takes no mode -- and its pure
-parts' tests, `scripts/test-terminal-model.mjs`.
+Cloudscape defines, and a browser chrome that takes no mode -- its pure
+parts' tests, `scripts/test-terminal-model.mjs`, and the computer's desktop
+(`cuchi_computer/nui/br.js`) driven in a node:vm page model,
+`scripts/test-terminal-desktop.mjs`: a run's last word is shown in the app or
+handed back for a toast, on every path.
 
 CI runs both package installs and bundle checks under Node 22 before
 `tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;

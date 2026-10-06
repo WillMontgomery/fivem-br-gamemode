@@ -237,6 +237,17 @@ paid run.** While the computer is open on the session that asked, the app
 gets the answer; once it has closed, the done line (and the new balance) or
 the reason arrives as a toast. A runner already out gets no bounty.
 
+**A run's last word never goes nowhere** (review of round 2). The server knows
+a computer has closed only when `TERMINAL_CLOSED` arrives, so every last word it
+sends -- every answer but `running` -- carries `toast`, the very line it would
+toast itself (through the solo picker). Whichever surface finds it cannot show
+the answer toasts that line, once: `br_core`'s client for an answer that lands
+after the computer went away (or on another terminal, or with no computer), and
+the desktop, through the shell, for an answer it held for an app that was not
+there to take it -- its window closed, still loading after its icon was
+clicked, or minimized and never shown again -- when the computer closes
+first.
+
 | id | Name | Category | Risk | Cost | Effect |
 |---|---|---|---|---|---|
 | `scan` | Scan | intel | high | 200 | **live** |
@@ -278,7 +289,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_INFO` | S→C | `{ terminalId, state }` | The open computer's state again, match panel included, every `infoPushMs` (1 s), to that player alone, only while open, never off Season 2. |
 | `BR.Net.TERMINAL_SCAN` | S→C | `{ matchId, list = { { s, x, y, down? } } }` | Scan: every opponent's position, to the scanning squad alone (dead and spectating members included), every `fx.scanPingMs` for the rest of the match. |
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position, to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. |
-| `BR.Net.TERMINAL_RESULT` | S→C | `{ terminalId, functionId, ok, code, state?, runMs?, cost?, balance? }` | To the runner alone. `code` is `running` when a run is accepted (with `runMs`), `done` when it is over (a paid one with the new `balance`), else a reason (`no_volts` with `cost` and `balance`). Once the computer has closed, the last word is a toast instead. |
+| `BR.Net.TERMINAL_RESULT` | S→C | `{ terminalId, functionId, ok, code, state?, runMs?, cost?, balance?, toast? }` | To the runner alone. `code` is `running` when a run is accepted (with `runMs`), `done` when it is over (a paid one with the new `balance`), else a reason (`no_volts` with `cost` and `balance`). Every answer but `running` carries `toast`, the line the server would toast for it; a client whose computer cannot show the answer toasts that. Once the server knows the computer has closed, the last word is its own toast instead. |
 | `BR.Net.TERMINAL_CLOSE` | S→C | `{ why }` | The session is over (death, storm, teardown). |
 | `BR.Net.TERMINAL_CLOSED` | C→S | `{ terminalId, why }` | The computer went away on the client; ends only the session it names. |
 | `BR.Net.TERMINAL_DEV` | S→C | `'<text>'` | A `brterminalsv` answer, printed on F8. |
@@ -295,7 +306,7 @@ fails a row missing a line, and a built row with no server entry.
 |---|---|
 | `Open(state, copy, catalog, desktop) -> ok, why` | Boots the desktop (the player opens the app from its icon), takes NUI focus (keyboard and cursor). Refuses with `page-not-ready` before the page has loaded, rather than take focus over nothing. Opening another terminal while one is open closes the first (`replaced`). `catalog` is `{ functions, categories, currency }`, the registry; `desktop` is `{ bootMinMs, bootMaxMs, clock = { h, m } }`. |
 | `Update(state)` | The new state, while open on that terminal: after a run, and once a second (TERMINAL_INFO). |
-| `Result(result)` | `{ functionId, ok, code, runMs?, cost?, balance? }`, while open. |
+| `Result(result) -> shown` | `{ functionId, ok, code, runMs?, cost?, balance?, toast? }`, while open; `false` when nothing is up to show it, and `br_core` toasts `toast` instead. |
 | `Clock(h, m)` | The game's hour and minute for the taskbar: `br_core` reads the clock (never writes it) while the computer is open and sends it on each new minute. |
 | `Close(why) -> ok` | Takes it down and releases focus. |
 | `IsOpen() -> boolean` | |
@@ -307,6 +318,7 @@ Local events it raises for `br_core`'s client (never net events):
 | `cuchi_computer:opened` | `terminalId` | Focus taken |
 | `cuchi_computer:request` | `terminalId, { action = 'run', functionId, options }` | The page asked; the terminal is the one `br_core` opened; `options` shape-checked |
 | `cuchi_computer:closed` | `terminalId, why` | Focus released: `escape`, `exit` (the power button), `page`, `replaced`, `opener-stopped`, `stopped`, or `br_core`'s own why |
+| `cuchi_computer:missed` | `toast, ok` | The page handed back a run's last word the app never showed (NUI callback `missed { toast }`); passed on only for a toast this shell relayed, once. `br_core` toasts it |
 
 **Focus.** The computer is its own resource's page, so it holds its own NUI
 focus: FiveM keeps one vote per resource. Every way out releases it, including
@@ -329,8 +341,13 @@ listening only to the other's window, every message carrying `brTerminal: 1`:
 boot, and ends on the desktop; a second open while it is up is a refresh. A
 generation counter keeps a closed session's boot timer out of a later one.
 **The app is loaded when the player opens it** from its desktop icon, and
-unloaded by its window's close and when the computer closes; a run's last word
-that arrives while it is not loaded is handed over when it opens again.
+unloaded by its window's close and when the computer closes. The desktop posts
+to the app only once the app has said `ready`; a run's last word that arrives
+before then (its window closed, or still loading) is held and handed over on
+`ready`, and one the app took while its window was minimized counts as unseen
+until the window is shown again. If the computer closes first, either goes back
+to the shell as `missed { toast }` for a toast. `ui-src/scripts/test-terminal-desktop.mjs`
+drives every one of those paths through the real `br.js`.
 Escape, on the desktop (the boot included) or inside the app, closes the
 computer -- unless a dialog or an open dropdown in the app takes it first (the
 app reads it in the capture phase). **The window** resizes from any edge or
@@ -368,7 +385,8 @@ function (details with its cost, what it does, its options as RadioGroups, its
 risks, Run in its risk badge's color behind a confirmation), the how-to page,
 and the login screen (the lock and `no_key`) when the computer opened without
 a key. A run the server accepts shows a determinate bar filling over its
-`runMs`, then the server's answer. Shadows give the cards, containers, bars,
+`runMs`, then the server's answer; a state saying nothing is loading takes the
+bar down (an answer that went to a toast never leaves one behind). Shadows give the cards, containers, bars,
 buttons and badges depth in both modes. The mode is applied on `<body>` only,
 light by default, and remembered per gamertag in the page's localStorage
 (`control-tower-mode:`). The header is fixed rather than sticky: focus moving
