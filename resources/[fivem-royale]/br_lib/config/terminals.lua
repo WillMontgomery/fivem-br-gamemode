@@ -370,6 +370,14 @@ BR.Config.Terminals = {
         -- WRITTEN (2026-10-06, wave A). Disarm: nobody still in the match
         -- carries a weapon -- refused, spending nothing (the Volts included).
         no_weapons = 'Nobody in the match is carrying a weapon.',
+        -- WRITTEN (2026-10-06, wave A). Key finder, nothing to mark: no
+        -- Yubikey anywhere (the card, before a choice is made), none on the
+        -- ground, or nobody outside the squad holding one -- refused,
+        -- spending nothing.
+        no_keys = 'There are no other Yubikeys to find right now.',
+        no_keys_ground = 'There are no Yubikeys on the ground right now.',
+        no_keys_held = 'Nobody outside your squad is holding a Yubikey right now.',
+        no_keys_held_solo = 'Nobody else is holding a Yubikey right now.',
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -621,7 +629,7 @@ BR.Config.Terminals = {
         emp_done = 'The EMP went off.',
         emp_description = 'EMP. Vehicles near their terminal have stalled.',
 
-        -- Key finder (suggested; offline)
+        -- Key finder (suggested; LIVE since wave A, 2026-10-06)
         key_finder_name = 'Key finder',
         key_finder_summary = 'Shows your squad where other Yubikeys are.',
         key_finder_summary_solo = 'Shows you where other Yubikeys are.',
@@ -633,12 +641,25 @@ BR.Config.Terminals = {
         key_finder_duration = 'The marks last 2 minutes',
         key_finder_affects = 'Your squad',
         key_finder_affects_solo = 'You',
-        key_finder_notified = 'Everyone in the match',
-        key_finder_risks = 'Key holders are warned that keys were located.',
+        -- WRITTEN (2026-10-06, wave A; was 'Everyone in the match'): the
+        -- holders it marks are told too.
+        key_finder_notified = 'Everyone in the match, and every key holder it marks',
+        -- WRITTEN (2026-10-06, wave A; was 'Key holders are warned that keys
+        -- were located.'): only the holders it marks are warned -- Keys on
+        -- the ground marks nobody to warn.
+        key_finder_risks = "Players holding a key are warned when they're marked.",
         key_finder_done = "The Yubikeys are on your squad's maps.",
         key_finder_done_solo = 'The Yubikeys are on your map.',
         key_finder_description = 'Key finder. Their squad sees where the Yubikeys are.',
         key_finder_description_solo = 'Key finder. They see where the Yubikeys are.',
+        -- WRITTEN (2026-10-06, wave A). A toast to each player holding a key
+        -- whom Key finder (Players holding a key) marked, after the lobby's
+        -- notice.
+        key_finder_warned = 'Key finder located your Yubikey. Another squad can see where you were standing for 2 minutes.',
+        key_finder_warned_solo = 'Key finder located your Yubikey. Another player can see where you were standing for 2 minutes.',
+        -- WRITTEN (2026-10-06, wave A). The marks' name in the pause map's
+        -- legend.
+        key_finder_blip = 'Yubikey',
 
         -- Storm delay (new; offline)
         storm_delay_name = 'Storm delay',
@@ -762,6 +783,10 @@ BR.Config.Terminals = {
         -- The bounty, the owner's numbers: blip 58 in colour 3 on everyone's
         -- map, and colour 69 on the bounty's own squad's.
         bounty = { sprite = 58, colour = 3, mateColour = 69, scale = 1.0 },
+        -- ── wave A (2026-10-06): PLACEHOLDERS the owner has not picked ──
+        -- Key finder: where each Yubikey was, on the squad's maps for 2
+        -- minutes. Sprite 1 is the plain dot (Scan's); colour 5 is yellow.
+        keyFinder = { sprite = 1, colour = 5, scale = 0.9 },
     },
 
     -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04) ═══
@@ -977,7 +1002,7 @@ BR.Config.Terminals = {
               { id = 'radius', choices = { '300', '600' }, default = '300' },
               { id = 'duration', choices = { '30', '60' }, default = '30' },
           } },
-        { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = false,
+        { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true,
           options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
         { id = 'storm_delay',    category = 'storm',      risk = 'low',    implemented = false,
           options = { { id = 'delay', choices = { '60', '120' }, default = '60' } } },
@@ -1014,6 +1039,11 @@ BR.Config.Terminals = {
         -- before the inventory update lands accuses nobody
         -- (BR.Inv.revoke). A few round trips, never a match.
         disarmGraceMs = 3000,
+        -- How often the server checks whether a timed effect has run out (Key
+        -- finder's marks; Ghost; Lockdown) and ends it: one pass a second.
+        endCheckMs = 1000,
+        -- Key finder: "they fade after 2 minutes".
+        keyFinderMs = 2 * 60 * 1000,
     },
 
     -- The server drops a second run request from one player sooner than this

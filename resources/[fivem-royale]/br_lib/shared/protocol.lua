@@ -1247,6 +1247,11 @@ BR.Net = {
     -- while one is live and once more, empty, when the last ends. The
     -- bounty's own squad reads it off the squad beacon's `bounty`.
     TERMINAL_BOUNTY = 'br:terminal:bounty',
+    -- S->C { matchId, list = { { x, y } }, leftMs }. Key finder (wave A): where
+    -- each Yubikey was when it ran, to the squad that ran it alone, once --
+    -- and once more, empty, when its two minutes are up or the match ends
+    -- (server/terminalfx/key_finder.lua). Again on br:ready while it lasts.
+    TERMINAL_KEYS   = 'br:terminal:keys',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
     -- player holds one, and whether their squad has spent its one use this

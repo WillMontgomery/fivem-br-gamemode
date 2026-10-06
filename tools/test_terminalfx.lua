@@ -1303,6 +1303,187 @@ do
     ok(#market.charges == 0 and not T.squadUsed(1), 'no Volts, no use')
 end
 
+--- Loose Yubikeys (and one crate, which is not one) in this match's loot.
+local function looseKeys(m, at)
+    m.loot = { items = {} }
+    for i, p in ipairs(at) do
+        m.loot.items[10 + i] = { id = 10 + i, kind = 'yubikey', x = p.x, y = p.y, z = 30.0 }
+    end
+    m.loot.items[99] = { id = 99, kind = 'chest', x = 5.0, y = 5.0, z = 30.0 }
+end
+
+describe('Key finder: loose keys on the squad\'s maps, where they were, for two minutes')
+do
+    local row = T.row('key_finder')
+    ok(row and row.implemented == true and T.FUNCTIONS.key_finder ~= nil, 'key_finder is built')
+    reset()
+    local m = lobby()
+    looseKeys(m, { { x = 300.0, y = 400.0 }, { x = 100.0, y = 200.0 } })
+    local r = runAt(1, 'key_finder', { target = 'ground' })
+    ok(r and r.ok == true and r.code == 'done', 'Keys on the ground: it runs', r and r.code)
+    local d = lastOf(BR.Net.TERMINAL_KEYS, 2)
+    ok(d and d.matchId == 1 and #d.list == 2, 'the squadmate is sent both loose keys, and not the crate')
+    ok(d and d.list[1].x == 100.0 and d.list[1].y == 200.0 and d.list[2].x == 300.0,
+        'at their positions, in a fixed order')
+    eq(d and d.leftMs, CT.fx.keyFinderMs, 'with the two minutes they have')
+    ok(lastOf(BR.Net.TERMINAL_KEYS, 1) ~= nil, 'the runner too')
+    eq(#eventsOf(BR.Net.TERMINAL_KEYS, 3) + #eventsOf(BR.Net.TERMINAL_KEYS, 5), 0, 'and nobody outside the squad')
+    eq(CT.fx.keyFinderMs, 120000, '"they fade after 2 minutes"')
+    eq(r and r.toast, COPY.key_finder_done, 'the squad done line')
+
+    -- STATIC: the keys are not followed. Nothing more until the end.
+    m.loot.items[11].x = 9999.0
+    local n = #eventsOf(BR.Net.TERMINAL_KEYS, 2)
+    gameMs = gameMs + CT.fx.keyFinderMs - 1000
+    jobs['terminal.keyfinder']()
+    eq(#eventsOf(BR.Net.TERMINAL_KEYS, 2), n, 'they do not move and are not re-sent')
+    gameMs = gameMs + 1000
+    jobs['terminal.keyfinder']()
+    d = lastOf(BR.Net.TERMINAL_KEYS, 2)
+    ok(d and #d.list == 0, 'two minutes on: one empty list takes them down')
+    ok(#lastOf(BR.Net.TERMINAL_KEYS, 1).list == 0, 'for the whole squad')
+    n = #eventsOf(BR.Net.TERMINAL_KEYS, nil)
+    gameMs = gameMs + 5000
+    jobs['terminal.keyfinder']()
+    eq(#eventsOf(BR.Net.TERMINAL_KEYS, nil), n, 'and then nothing')
+
+    -- THE MATCH ENDING ENDS THEM TOO.
+    reset()
+    m = lobby()
+    looseKeys(m, { { x = 1.0, y = 1.0 } })
+    runAt(1, 'key_finder')
+    m.state = BR.MatchState.ENDED
+    jobs['terminal.keyfinder']()
+    ok(#lastOf(BR.Net.TERMINAL_KEYS, 2).list == 0, 'a match that ended takes them down at once')
+end
+
+describe('Key finder: players holding a key, outside the squad, each warned')
+do
+    reset()
+    local m = lobby()
+    keys[2] = true                                -- the runner's own squadmate: not "other"
+    keys[3] = true                                -- an opponent, standing
+    keys[4] = true                                -- an opponent, downed
+    keys[5] = true                                -- the solo player
+    player(6, m, 'C', { x = 0.0, y = 0.0 }, BR.PlayerState.OUT)
+    keys[6] = true                                -- out of the fight
+    looseKeys(m, { { x = 1.0, y = 1.0 } })
+    local r = runAt(1, 'key_finder', { target = 'holders' })
+    ok(r and r.code == 'done', 'Players holding a key: it runs', r and r.code)
+    local d = lastOf(BR.Net.TERMINAL_KEYS, 1)
+    local at = {}
+    for _, p in ipairs(d and d.list or {}) do at[#at + 1] = ('%.0f,%.0f'):format(p.x, p.y) end
+    eq(table.concat(at, ' '), ('%.0f,%.0f %.0f,%.0f %.0f,%.0f'):format(
+        roster[3].pos.x, roster[3].pos.y, roster[4].pos.x, roster[4].pos.y, roster[5].pos.x, roster[5].pos.y),
+        'the three holders in the fight outside the squad, where they stand, and no loose key')
+    ok(d and d.list[1].s == nil, 'positions only: nobody is named on the wire')
+    for _, src in ipairs({ 3, 4, 5 }) do
+        local action = noticeIndex('has redeemed their special power', src)
+        local warn = noticeIndex('Key finder located your Yubikey', src)
+        ok(action and warn and action < warn, ('p%d is warned, after the lobby\'s notice'):format(src))
+    end
+    eq(lastToast(3), COPY.key_finder_warned, 'in the squad line, in a squad match')
+    for _, src in ipairs({ 1, 2, 6 }) do
+        eq(noticeIndex('Key finder located your Yubikey', src), nil, ('p%d is not warned'):format(src))
+    end
+
+    -- A SOLO MATCH'S HOLDER READS THE SOLO LINE.
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(3, m, nil, { x = 50.0, y = 60.0 })
+    keys[1], keys[3] = true, true
+    runAt(1, 'key_finder', { target = 'holders' })
+    eq(lastToast(3), COPY.key_finder_warned_solo, 'a solo match\'s holder reads the solo warning')
+end
+
+describe('Key finder: nothing to mark is refused, spending nothing')
+do
+    reset()
+    local m = lobby()
+    m.loot = { items = {} }
+    keys[2] = true                                -- only the squad's own holder
+    useAt(1)
+    local f = listedAs(1, 'key_finder')
+    ok(f and f.available == false and f.reason == 'no_keys', 'no key anywhere outside the squad: no_keys',
+        f and tostring(f.reason))
+    local r = ask(1, 'key_finder', { target = 'ground' })
+    ok(r and r.code == 'no_keys_ground', 'Keys on the ground: no_keys_ground', r and r.code)
+    eq(r and r.toast, COPY.no_keys_ground, 'in its line')
+    r = ask(1, 'key_finder', { target = 'holders' })
+    ok(r and r.code == 'no_keys_held', 'Players holding a key: no_keys_held', r and r.code)
+    eq(r and r.toast, COPY.no_keys_held, 'the squad line')
+    ok(keys[1] == true and not T.squadUsed(1) and #eventsOf(BR.Net.TERMINAL_KEYS, nil) == 0,
+        'nothing spent, nothing sent')
+    looseKeys(m, { { x = 1.0, y = 1.0 } })
+    useAt(1)
+    f = listedAs(1, 'key_finder')
+    ok(f and f.available == true, 'one loose key: the card is available (one choice can run)')
+    r = ask(1, 'key_finder', { target = 'holders' })
+    eq(r and r.code, 'no_keys_held', 'and the other choice is still refused')
+
+    -- THE END OF THE RUN: a key on the ground when asked, picked up meanwhile.
+    reset()
+    m = lobby()
+    looseKeys(m, { { x = 1.0, y = 1.0 } })
+    useAt(1)
+    r = ask(1, 'key_finder', { target = 'ground' })
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    m.loot.items[11] = nil
+    flush()
+    eq(lastOf(BR.Net.TERMINAL_KEYS, 1), nil, 'picked up during the load: no marks')
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'no_keys_ground' and keys[1] == true and not T.squadUsed(1),
+        'refused at the end, and the key and the use come back', r and r.code)
+
+    -- SOLO: the held refusal never says squad.
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    keys[1] = true
+    m.loot = { items = {} }
+    useAt(1)
+    r = ask(1, 'key_finder', { target = 'holders' })
+    eq(r and r.toast, COPY.no_keys_held_solo, 'alone: the solo refusal')
+end
+
+describe('Key finder: br:ready, the dev command, and Season 1')
+do
+    reset()
+    local m = lobby()
+    looseKeys(m, { { x = 7.0, y = 8.0 } })
+    runAt(1, 'key_finder')
+    gameMs = gameMs + 30000
+    local n = #eventsOf(BR.Net.TERMINAL_KEYS, 2)
+    fire(BR.Net.READY, 2)
+    local d = lastOf(BR.Net.TERMINAL_KEYS, 2)
+    ok(#eventsOf(BR.Net.TERMINAL_KEYS, 2) == n + 1 and #d.list == 1 and d.leftMs == CT.fx.keyFinderMs - 30000,
+        'a squadmate whose client restarts is sent the marks again, with the time left', d and d.leftMs)
+    fire(BR.Net.READY, 3)
+    eq(#eventsOf(BR.Net.TERMINAL_KEYS, 3), 0, 'an opponent is not')
+
+    reset()
+    m = lobby()
+    looseKeys(m, { { x = 7.0, y = 8.0 } })
+    keys[1] = false
+    keys[4] = true
+    local said = devRun(1, 'key_finder target=holders')
+    ok(said:find('ok (done)', 1, true) and #lastOf(BR.Net.TERMINAL_KEYS, 2).list == 1,
+        'brterminal run key_finder target=holders', said)
+    said = devRun(1, 'key_finder target=moon')
+    ok(said:find('does not take those options', 1, true) ~= nil, 'a choice it does not offer is refused', said)
+
+    -- SEASON 1: forgotten, nothing sent.
+    season(1)
+    n = #sent
+    jobs['terminal.keyfinder']()
+    eq(#sent, n, 'at Season 1 nothing is pushed')
+    ok(m.terminalFx.finds == nil, 'and the marks are forgotten')
+    season(2)
+end
+
 -- =========================================================================
 -- PART D -- the client
 -- =========================================================================
@@ -1400,6 +1581,107 @@ do
     eq(F.mateBountyGlyph(true), nil, 'and shows no mark')
 
     BR = serverBR
+end
+
+-- =========================================================================
+-- PART D2 -- the client halves of wave A (2026-10-06), loaded from the
+-- manifest after client/terminalfx.lua, over the same modeled blips
+-- =========================================================================
+
+--- A client world: BR swapped for a fresh client one, the blip natives
+--- modeled, client/terminalfx.lua and every wave A client file loaded.
+--- `W.done()` puts the server's BR back.
+local function clientWorld()
+    local W = { serverBR = BR, blips = {}, nextBlip = 0, handlers = {}, loops = {}, season = 2 }
+    BR = nil
+    function AddBlipForCoord(x, y, z)
+        W.nextBlip = W.nextBlip + 1
+        W.blips[W.nextBlip] = { x = x, y = y, z = z }
+        return W.nextBlip
+    end
+    function DoesBlipExist(b) return W.blips[b] ~= nil end
+    function RemoveBlip(b) W.blips[b] = nil end
+    function SetBlipSprite(b, v) W.blips[b].sprite = v; W.blips[b].colour = 0 end
+    function SetBlipColour(b, v) W.blips[b].colour = v end
+    function SetBlipScale(b, v) W.blips[b].scale = v end
+    function SetBlipDisplay(b, v) W.blips[b].display = v end
+    function SetBlipAsShortRange() end
+    function SetBlipCoords(b, x, y) W.blips[b].x, W.blips[b].y = x, y end
+    function RegisterNetEvent() end
+    function AddEventHandler(name, fn) W.handlers[name] = fn end
+    function IsDuplicityVersion() return false end
+    loadAll({
+        'br_lib/shared/enums.lua',
+        'br_lib/shared/protocol.lua',
+        'br_lib/config/terminals.lua',
+        'br_lib/shared/terminal_solve.lua',
+    })
+    BR.Season = { has = function(name) return name == 'terminals' and W.season == 2 end }
+    BR.NativeTruthy = function(v) return v == true or v == 1 end
+    BR.Native = { blipName = function(b, name) W.blips[b].name = name end }
+    BR.Loop = { SLOW = 'slow', register = function(_, name, fn) W.loops[name] = fn end }
+    BR.State = { me = { state = BR.PlayerState.ALIVE } }
+    W.order = {}
+    local register = BR.Loop.register
+    BR.Loop.register = function(band, name, fn)
+        if name ~= 'terminalfx.clear' then W.order[#W.order + 1] = name end
+        register(band, name, fn)
+    end
+    loadAll({ 'br_core/client/terminalfx.lua' })
+    loadAll(fxFiles('client'))
+    W.F, W.A, W.C = BR.TerminalFx, BR.Config.Terminals.art, BR.Config.Terminals.copy
+    function W.net(ev, d) W.handlers[ev](d) end
+    --- One SLOW pass, in registration order as BR.Loop runs it: client/
+    --- terminalfx.lua's (which refreshes the season) first.
+    function W.slow()
+        W.loops['terminalfx.clear']()
+        for _, name in ipairs(W.order) do W.loops[name]() end
+    end
+    function W.count(pred)
+        local n = 0
+        for _, b in pairs(W.blips) do if not pred or pred(b) then n = n + 1 end end
+        return n
+    end
+    function W.done() BR = W.serverBR end
+    return W
+end
+
+describe('client: Key finder\'s marks -- where each key was, until the server says')
+do
+    local W = clientWorld()
+    local F, A = W.F, W.A
+    W.net(BR.Net.TERMINAL_KEYS, { matchId = 1, leftMs = 120000,
+        list = { { x = 10.0, y = 20.0 }, { x = 30.0, y = 40.0 }, { x = 0 / 0, y = 1.0 } } })
+    eq(F.keyMarks(), 2, 'one mark per key (a position that is not a number is skipped)')
+    eq(W.count(), 4, 'on both maps')
+    eq(W.count(function(b) return b.sprite == A.keyFinder.sprite and b.colour == A.keyFinder.colour
+        and b.name == W.C.key_finder_blip end), 4, 'in the art block\'s look, named from the copy')
+    W.slow()
+    eq(F.keyMarks(), 2, 'a SLOW pass leaves them be')
+    gameMs = gameMs + 60000
+    W.slow()
+    eq(F.keyMarks(), 2, 'a minute on, still there: the server ends them, not this clock')
+    W.net(BR.Net.TERMINAL_KEYS, { matchId = 1, leftMs = 0, list = {} })
+    eq(F.keyMarks(), 0, 'the server\'s empty list takes them down')
+    eq(W.count(), 0, 'every blip with them')
+
+    -- A CLEAR THAT NEVER CAME, THE LOBBY, AND SEASON 1.
+    W.net(BR.Net.TERMINAL_KEYS, { matchId = 1, leftMs = 1000, list = { { x = 1.0, y = 1.0 } } })
+    gameMs = gameMs + 1000 + 5000 + 1
+    W.slow()
+    eq(F.keyMarks(), 0, 'past their time and then some, they go by themselves')
+    W.net(BR.Net.TERMINAL_KEYS, { matchId = 1, leftMs = 120000, list = { { x = 1.0, y = 1.0 } } })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    W.slow()
+    eq(F.keyMarks(), 0, 'back in the lobby, they go')
+    BR.State.me.state = BR.PlayerState.ALIVE
+    W.net(BR.Net.TERMINAL_KEYS, { matchId = 1, leftMs = 120000, list = { { x = 1.0, y = 1.0 } } })
+    W.season = 1
+    W.slow()
+    eq(F.keyMarks(), 0, 'off Season 2, they go')
+    W.net(BR.Net.TERMINAL_KEYS, { matchId = 1, leftMs = 120000, list = { { x = 1.0, y = 1.0 } } })
+    eq(W.count(), 0, 'and Season 1 draws none')
+    W.done()
 end
 
 -- =========================================================================
