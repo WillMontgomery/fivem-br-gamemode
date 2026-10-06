@@ -774,6 +774,81 @@ do
         'the done line, then the new balance in the owner\'s #239 sentence')
 end
 
+-- REVIEW OF ROUND 2: an answer can reach a computer that went away before the
+-- server heard (the close still on its way up, the app's window closed, the
+-- app still loading). So every LAST WORD the server sends carries `toast`, the
+-- very text it would toast itself, for whichever surface cannot show it.
+describe('review of round 2: every last word carries the server\'s own toast; running carries none')
+do
+    bootServer()
+    local copy = BR.Config.Terminals.copy
+    local TS = BR.TerminalSolve
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    local function ask(facts, d)
+        sv(1, 'open ' .. facts)
+        S.clock = S.clock + 1000
+        run(1, d)
+        return last(1, BR.Net.TERMINAL_RESULT)
+    end
+
+    -- THE REFUSALS ANSWERED AT ONCE (BR.Terminal.run's own answers).
+    local r = ask('nokey', { terminalId = 'dev', functionId = 'storm_reveal' })
+    ok(r and r.code == 'no_key' and r.toast == copy.no_key, 'no_key carries the owner\'s login line', r and r.toast)
+    r = ask('used', { terminalId = 'dev', functionId = 'storm_reveal' })
+    ok(r and r.code == 'squad_used' and r.toast == copy.squad_used_solo,
+        'squad_used carries its line, picked for this player: no squad outside a squad match', r and r.toast)
+    r = ask('', { terminalId = 'dev', functionId = 'time_weather', options = { weather = 'thunder' } })
+    ok(r and r.code == 'bad_option' and r.toast == copy.bad_option, 'bad_option carries its line', r and r.toast)
+    r = ask('', { terminalId = 'dev', functionId = 'no_such_function' })
+    ok(r and r.code == 'unavailable' and r.toast == copy.unavailable, 'unavailable carries its line', r and r.toast)
+    r = ask('volts=150', { terminalId = 'dev', functionId = 'scan' })
+    eq(r and r.toast, "You don't have enough Volts. This costs 200 Volts, and your balance is 150 Volts.",
+        'no_volts carries its line with the cost and the balance written in')
+
+    -- ACCEPTED, THEN DONE (deliver's answers).
+    r = ask('volts=300', { terminalId = 'dev', functionId = 'scan' })
+    ok(r and r.code == 'running' and r.toast == nil, '`running` is no last word: no toast')
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    eq(r and r.toast, TS.pick(copy, 'scan_done', false) .. ' Your new balance is: 100 Volts.',
+        'done carries the done line and the new balance -- what a closed computer is toasted, word for word')
+
+    -- AN EFFECT THAT COULD NOT HAPPEN, given back.
+    local C = BR.Config.Terminals
+    C.functions[#C.functions + 1] = { id = 'paid_test', category = 'intel', risk = 'low',
+                                     implemented = true, cost = 120 }
+    BR.Terminal.FUNCTIONS.paid_test = { run = function() return { ok = false, code = 'no_site' } end }
+    ask('volts=500', { terminalId = 'dev', functionId = 'paid_test' })
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.code == 'no_site' and r.toast == copy.no_site, 'a reason after the load carries its line', r and r.toast)
+    table.remove(C.functions)
+    BR.Terminal.FUNCTIONS.paid_test = nil
+
+    -- THE ONE PICKER, BOTH WAYS: in a squad match the line that says squad.
+    local real = BR.Terminal.squadMatch
+    BR.Terminal.squadMatch = function() return true end
+    r = ask('used', { terminalId = 'dev', functionId = 'storm_reveal' })
+    ok(r and r.toast == copy.squad_used and copy.squad_used:lower():find('squad', 1, true) ~= nil,
+        'in a squad match, squad_used carries the squad line', r and r.toast)
+    ask('', { terminalId = 'dev', functionId = 'storm_reveal' })
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.code == 'done' and r.toast == copy.storm_reveal_done and copy.storm_reveal_done_solo ~= nil
+            and r.toast ~= copy.storm_reveal_done_solo,
+        'and a done line picked by the runner\'s fact', r and r.toast)
+    BR.Terminal.squadMatch = real
+    ask('', { terminalId = 'dev', functionId = 'storm_reveal' })
+    flush()
+    eq(last(1, BR.Net.TERMINAL_RESULT).toast, copy.storm_reveal_done_solo, 'outside one, its solo sibling')
+
+    -- AND EVERY LAST WORD'S TOAST FITS WHAT THE SHELL WILL HAND BACK (its
+    -- TOAST_MAX, 1000): the longest done line or reason, with the balance.
+    local longest = 0
+    for _, v in pairs(copy) do longest = math.max(longest, #v) end
+    ok(longest + #copy.balance_new + 40 <= 1000, 'the longest possible toast fits the shell\'s 1000', longest)
+end
+
 describe('round 2: "squad" only in a squad match -- the copy')
 do
     bootServer()
@@ -1077,6 +1152,62 @@ do
     eq(#C.nui, n, 'nor does any time once it is closed')
 end
 
+describe('review of round 2: the shell says whether an answer was shown, and hands back only what it relayed')
+do
+    bootShell()
+    cb('NUIOk', nil)
+    local missedEvents = function() return eventsNamed('cuchi_computer:missed') end
+    eq(C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = 'Before' }), false,
+        'Result with nothing open answers false: br_core toasts it instead')
+    C.exports.Open(STATE, COPY)
+    eq(C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = 'Done line.' }), true,
+        'Result while open answers true')
+    local m = C.nui[#C.nui]
+    ok(m.type == 'br:result' and m.result.toast == 'Done line.', 'and the page gets the answer with its toast')
+
+    -- THE PAGE HANDS BACK A LAST WORD THE APP NEVER SHOWED.
+    local r = cb('missed', { toast = 'Something the server never said.' })
+    ok(r and r.ok == true and #missedEvents() == 0, 'a text this shell never relayed goes nowhere')
+    cb('missed', { toast = 'Before' })
+    eq(#missedEvents(), 0, 'nor one offered while it was closed')
+    cb('missed', { toast = 'Done line.' })
+    local ev = missedEvents()
+    ok(#ev == 1 and ev[1].args[1] == 'Done line.' and ev[1].args[2] == true,
+        'a relayed one reaches br_core, with the tone of the answer it came with')
+    cb('missed', { toast = 'Done line.' })
+    eq(#missedEvents(), 1, 'once: the same text again is not a second toast')
+    for _, bad in ipairs({ { toast = 7 }, { toast = { 'x' } }, {}, 'Done line.' }) do
+        cb('missed', bad)
+    end
+    C.callbacks.missed(nil, function() end)
+    eq(#missedEvents(), 1, 'nothing that is not a string')
+
+    -- AFTER br_core CLOSED IT: the page hands back as it closes, which is
+    -- after the shell has shut.
+    C.exports.Result({ functionId = 'scan', ok = false, code = 'no_site', toast = 'No spot.' })
+    C.exports.Close('storm')
+    eq(C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = 'Late.' }), false,
+        'a result after the close answers false')
+    cb('missed', { toast = 'No spot.' })
+    ev = missedEvents()
+    ok(#ev == 2 and ev[2].args[1] == 'No spot.' and ev[2].args[2] == false,
+        'a relayed answer handed back after the close still reaches br_core, as a refusal')
+    cb('missed', { toast = 'Late.' })
+    eq(#missedEvents(), 2, 'one never relayed (it arrived closed) does not')
+
+    -- A FEW AT MOST: the newest four.
+    C.exports.Open(STATE, COPY)
+    for i = 1, 5 do C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = 'r' .. i }) end
+    cb('missed', { toast = 'r1' })
+    eq(#missedEvents(), 2, 'the oldest of five is forgotten')
+    cb('missed', { toast = 'r5' })
+    eq(#missedEvents(), 3, 'the newest is handed back')
+    C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = ('x'):rep(1001) })
+    cb('missed', { toast = ('x'):rep(1001) })
+    eq(#missedEvents(), 3, 'and a text longer than any toast is never one')
+    C.exports.Close('done')
+end
+
 describe('a resource stopping never strands the vote')
 do
     bootShell()
@@ -1142,6 +1273,8 @@ local function bootClient(opts)
                 if B.computer.openResult == true then return true end
                 return false, 'page-not-ready'
             end
+            -- The shell's answer: shown, unless the model says it had closed.
+            if name == 'Result' then return B.computer.resultShown ~= false end
             return true
         end
     end
@@ -1158,6 +1291,9 @@ local function bootClient(opts)
     })
     BR.Keys = { setExternalScreen = function(name) B.screens[#B.screens + 1] = name or 'none' end }
     BR.Loop = { TICK = 'tick', register = function(_, name, fn) B.loops[name] = fn end }
+    -- client/state.lua's BR.Notify: the toasts this client raises itself.
+    B.toasts = {}
+    BR.Notify = function(text, tone) B.toasts[#B.toasts + 1] = { text = text, tone = tone } end
     loadAll({ 'br_core/client/terminal.lua' })
 end
 
@@ -1305,6 +1441,65 @@ do
     ok(type(B.computer.calls[1].args[3]) == 'table', 'the catalog is handed over')
 end
 
+describe('review of round 2: a last word no computer can show is toasted, in the server\'s words')
+do
+    bootClient()
+    local calls = function() return #B.computer.calls end
+    fireB(BR.Net.TERMINAL_OPEN, { state = STATE })
+    fireB('cuchi_computer:opened', 'dev')
+
+    -- SHOWN: the computer gets it, toast and all, and nothing is toasted.
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = true, code = 'done',
+                                    balance = 100, toast = 'Done. Your new balance is: 100 Volts.' })
+    local res = B.computer.calls[calls()]
+    ok(res.name == 'Result' and res.args[1].toast == 'Done. Your new balance is: 100 Volts.',
+        'the computer is handed the toast with the answer (the desktop may need to hand it back)')
+    eq(#B.toasts, 0, 'shown on the computer: no toast')
+
+    -- THE SHELL HAD JUST CLOSED (its closed event not yet here).
+    B.computer.resultShown = false
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = false, code = 'no_site',
+                                    toast = 'No spot.' })
+    ok(#B.toasts == 1 and B.toasts[1].text == 'No spot.' and B.toasts[1].tone == 'warn',
+        'a shell that answers it is not up: the server\'s text, toasted as a refusal')
+    B.computer.resultShown = nil
+
+    -- CLOSED HERE, NOT YET ON THE SERVER: the latency window.
+    fireB('cuchi_computer:closed', 'dev', 'escape')
+    local n = calls()
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = true, code = 'done',
+                                    toast = 'Late done.', state = { terminalId = 'dev', functions = {} } })
+    eq(calls(), n, 'a computer that has closed is handed nothing')
+    ok(#B.toasts == 2 and B.toasts[2].text == 'Late done.' and B.toasts[2].tone == 'success',
+        'the answer is toasted instead, as a success')
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = true, code = 'running', runMs = 4000 })
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = false, code = 'no_key', toast = '' })
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = false, code = 'no_key', toast = 7 })
+    eq(#B.toasts, 2, '`running` (no toast), an empty toast and a toast that is not text raise nothing')
+
+    -- ANOTHER TERMINAL ON SCREEN: the old one's answer is not drawn on it.
+    fireB('cuchi_computer:opened', 'lab')
+    n = calls()
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = true, code = 'done', toast = 'Old.' })
+    ok(calls() == n and B.toasts[3] and B.toasts[3].text == 'Old.', 'an answer for another terminal is toasted, not shown')
+
+    -- THE DESKTOP HANDS ONE BACK.
+    fireB('cuchi_computer:missed', 'Held done.', true)
+    ok(B.toasts[4] and B.toasts[4].text == 'Held done.' and B.toasts[4].tone == 'success',
+        'cuchi_computer:missed is toasted, with its tone')
+    fireB('cuchi_computer:missed', 'Held refusal.', false)
+    eq(B.toasts[5] and B.toasts[5].tone, 'warn', 'a refusal handed back is a warning')
+    fireB('cuchi_computer:missed', nil, true)
+    fireB('cuchi_computer:missed', '', true)
+    eq(#B.toasts, 5, 'and nothing, or nothing to say, is not toasted')
+
+    -- NO COMPUTER AT ALL.
+    bootClient({ computer = false })
+    fireB('cuchi_computer:opened', 'dev')
+    fireB(BR.Net.TERMINAL_RESULT, { terminalId = 'dev', functionId = 'scan', ok = true, code = 'done', toast = 'Gone.' })
+    ok(#B.toasts == 1 and B.toasts[1].text == 'Gone.', 'a box whose computer stopped toasts it too')
+end
+
 describe('brterminal types the server command')
 do
     bootClient({ devMode = false })
@@ -1330,99 +1525,187 @@ end
 -- PART D -- one round trip, all three halves
 -- =========================================================================
 
-describe('the dev command to the answer on the page, end to end')
-do
-    -- THE SERVER, with its client events delivered to the client below.
+--- PART B's client over PART C's real shell, wired to PART A's server.
+--- `toClient` and `toServer` move one direction's queued events alone, so a
+--- test can hold one back -- a close still on its way up while the server
+--- answers -- and `pump` moves both until they are quiet.
+local function wire()
+    local W = { inbox = {} }
+    -- THE SERVER, with its client events queued for the client below.
     bootServer()
-    local server = { handlers = S.handlers, commands = S.commands }
-    local serverBR = BR
-    local inbox = {}
-    S.onClient = function(name, target, data) inbox[#inbox + 1] = { name = name, target = target, data = data } end
+    W.server = { handlers = S.handlers, commands = S.commands }
+    W.serverBR = BR
+    S.onClient = function(name, target, data) W.inbox[#W.inbox + 1] = { name = name, target = target, data = data } end
 
     -- THE SHELL.
     bootShell()
     cb('NUIOk', nil)
-    local shell = { exports = C.exports, callbacks = C.callbacks }
+    W.shell = { exports = C.exports, callbacks = C.callbacks }
 
     -- BR_CORE'S CLIENT, over the real shell's exports.
     bootClient()
-    local clientBR = BR
+    W.clientBR = BR
     exports = setmetatable({}, { __index = function(_, res)
         if res ~= 'cuchi_computer' then return nil end
         return setmetatable({}, { __index = function(_, fn)
-            return function(_, ...) return shell.exports[fn](...) end
+            return function(_, ...) return W.shell.exports[fn](...) end
         end })
     end })
     -- The shell's local events reach br_core's client handlers.
     C.onEvent = function(name, ...) fireB(name, ...) end
 
-    local function pump()
-        -- Server -> client, then client -> server, until both are quiet.
+    function W.toClient()
+        local box = W.inbox
+        W.inbox = {}
+        for _, e in ipairs(box) do
+            BR = W.clientBR
+            fireB(e.name, e.data)
+        end
+        return #box > 0
+    end
+    function W.toServer()
+        local up = B.toServer
+        B.toServer = {}
+        for _, e in ipairs(up) do
+            BR = W.serverBR
+            local prev = source
+            source = 1
+            for _, fn in ipairs(W.server.handlers[e.name] or {}) do fn(e.data) end
+            source = prev
+        end
+        return #up > 0
+    end
+    -- Server -> client, then client -> server, until both are quiet.
+    function W.pump()
         for _ = 1, 10 do
-            local moved = false
-            local box = inbox
-            inbox = {}
-            for _, e in ipairs(box) do
-                BR = clientBR
-                fireB(e.name, e.data)
-                moved = true
-            end
-            local up = B.toServer
-            B.toServer = {}
-            for _, e in ipairs(up) do
-                BR = serverBR
-                local prev = source
-                source = 1
-                for _, fn in ipairs(server.handlers[e.name] or {}) do fn(e.data) end
-                source = prev
-                moved = true
-            end
-            if not moved then break end
+            local a = W.toClient()
+            local b = W.toServer()
+            if not a and not b then break end
         end
     end
+    -- `brterminal <words>` -> `brterminalsv open <words>`, as player 1.
+    function W.devOpen(words)
+        BR = W.clientBR
+        B.commands.brterminal(nil, words or {})
+        BR = W.serverBR
+        local args = {}
+        for w in B.executed[#B.executed]:gmatch('%S+') do args[#args + 1] = w end
+        table.remove(args, 1)
+        W.server.commands.brterminalsv.fn(1, args, '')
+        W.pump()
+    end
+    -- The page asks for a run.
+    function W.run(functionId)
+        S.clock = S.clock + 1000
+        BR = W.clientBR
+        W.shell.callbacks.run({ functionId = functionId }, function() end)
+        W.pump()
+    end
+    return W
+end
 
-    -- `brterminal` -> `brterminalsv open`, as player 1.
-    BR = clientBR
-    B.commands.brterminal(nil, {})
-    BR = serverBR
-    local args = {}
-    for w in B.executed[#B.executed]:gmatch('%S+') do args[#args + 1] = w end
-    table.remove(args, 1)
-    server.commands.brterminalsv.fn(1, args, '')
-    pump()
+describe('the dev command to the answer on the page, end to end')
+do
+    local W = wire()
+    W.devOpen({})
     ok(C.focus.held == true, 'the dev command opens the computer and the shell takes focus')
     local opened = C.nui[#C.nui]
     ok(opened and opened.type == 'br:open' and opened.state.terminalId == 'dev'
-            and opened.copy.storm_reveal_name == serverBR.Config.Terminals.copy.storm_reveal_name,
+            and opened.copy.storm_reveal_name == W.serverBR.Config.Terminals.copy.storm_reveal_name,
         'the page opens on the dev terminal, with the copy block')
     eq(B.screens[#B.screens], 'terminal', 'and br_core\'s key layer is told')
 
     -- The page asks.
-    S.clock = S.clock + 1000
-    BR = clientBR
-    shell.callbacks.run({ functionId = 'storm_reveal' }, function() end)
-    pump()
+    W.run('storm_reveal')
     local upd, res = C.nui[#C.nui - 1], C.nui[#C.nui]
     ok(upd and upd.type == 'br:update' and upd.state.squadUsed == true, 'the page gets the new state')
     ok(res and res.type == 'br:result' and res.result.ok == true and res.result.code == 'running'
             and type(res.result.runMs) == 'number',
         'and the answer: accepted, loading for runMs')
-    BR = serverBR
+    BR = W.serverBR
     flush()
-    pump()
+    W.pump()
     res = C.nui[#C.nui]
     ok(res and res.type == 'br:result' and res.result.ok == true and res.result.code == 'done'
             and res.result.functionId == 'storm_reveal',
         'then, when the server says, the answer: Storm reveal ran')
 
     -- Escape on the page.
-    BR = clientBR
-    shell.callbacks.close({ why = 'escape' }, function() end)
-    pump()
+    BR = W.clientBR
+    W.shell.callbacks.close({ why = 'escape' }, function() end)
+    W.pump()
     ok(C.focus.held == false, 'Escape releases focus')
     eq(B.screens[#B.screens], 'none', 'the key layer gets the keyboard back')
-    BR = serverBR
+    BR = W.serverBR
     ok(BR.Terminal.session(1) == nil, 'and the server session is over')
+    eq(#B.toasts, 0, 'and nothing was toasted: the page showed every answer')
+end
+
+-- REVIEW OF ROUND 2: the answer that lands as the computer goes away.
+describe('review of round 2: closed a moment before the answer landed -- toasted once, in the server\'s words')
+do
+    local W = wire()
+    W.devOpen({ 'volts=300' })
+    W.run('scan')
+    ok(C.nui[#C.nui].result.code == 'running', 'Scan is accepted and loading')
+
+    -- ESCAPE, and the close is still on its way up when the loading ends.
+    BR = W.clientBR
+    W.shell.callbacks.close({ why = 'escape' }, function() end)
+    BR = W.serverBR
+    flush()
+    ok(BR.Terminal.session(1) ~= nil, 'the server has not heard the close yet')
+    local pages = #C.nui
+    W.toClient()
+    eq(#C.nui, pages, 'the closed page is sent nothing')
+    local copy = W.serverBR.Config.Terminals.copy
+    local want = W.serverBR.TerminalSolve.pick(copy, 'scan_done', false) .. ' Your new balance is: 100 Volts.'
+    ok(#B.toasts == 1 and B.toasts[1].text == want and B.toasts[1].tone == 'success',
+        'the player is toasted the done line and the new balance', B.toasts[1] and B.toasts[1].text)
+    W.pump()
+    BR = W.serverBR
+    ok(BR.Terminal.session(1) == nil, 'then the server hears the close')
+    eq(#S.notices, 0, 'and toasts nothing itself: it had already answered')
+    eq(#B.toasts, 1, 'once')
+
+    -- THE OTHER ORDER: the server heard the close first, and toasts it.
+    W = wire()
+    W.devOpen({ 'volts=300' })
+    W.run('scan')
+    BR = W.clientBR
+    W.shell.callbacks.close({ why = 'escape' }, function() end)
+    W.toServer()
+    BR = W.serverBR
+    flush()
+    W.pump()
+    ok(#S.notices == 1 and S.notices[1].text == want and #B.toasts == 0,
+        'the same words, from the server, once', S.notices[1] and S.notices[1].text)
+end
+
+describe('review of round 2: an answer the page held, handed back as the computer closes')
+do
+    local W = wire()
+    W.devOpen({ 'volts=300' })
+    W.run('scan')
+    BR = W.serverBR
+    flush()
+    W.pump()
+    local held = C.nui[#C.nui]
+    ok(held.type == 'br:result' and held.result.code == 'done' and type(held.result.toast) == 'string',
+        'the done answer reaches the page with its toast')
+    -- The app was away (its window closed): br.js held it, and the computer
+    -- closes -- it hands the toast back, then says the close.
+    BR = W.clientBR
+    W.shell.callbacks.missed({ toast = held.result.toast }, function() end)
+    W.shell.callbacks.close({ why = 'escape' }, function() end)
+    W.pump()
+    local copy = W.serverBR.Config.Terminals.copy
+    ok(#B.toasts == 1 and B.toasts[1].text == W.serverBR.TerminalSolve.pick(copy, 'scan_done', false)
+            .. ' Your new balance is: 100 Volts.' and B.toasts[1].tone == 'success',
+        'the player is toasted the done line and the new balance', B.toasts[1] and B.toasts[1].text)
+    eq(#S.notices, 0, 'and the server toasts nothing: it answered the open session')
+    W.shell.callbacks.missed({ toast = held.result.toast }, function() end)
+    eq(#B.toasts, 1, 'handed back twice, toasted once')
 end
 
 print = realPrint

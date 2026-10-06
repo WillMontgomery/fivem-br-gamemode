@@ -27,7 +27,9 @@
 --       desktop = { bootMinMs, bootMaxMs, clock = { h, m } }: how long a boot
 --                 may take (the page picks in the range) and the game's time
 --   Update(state)                  the server's new view, while open
---   Result(result)                 the answer to a run, while open
+--   Result(result) -> shown        the answer to a run, while open; false when
+--                                  nothing is up to show it. A last word
+--                                  carries `toast`, the server's text for it
 --   Clock(h, m)                    the game's hour and minute, for the taskbar
 --   Close(why) -> ok               take it down (death, storm, teardown)
 --   IsOpen() -> boolean
@@ -37,6 +39,9 @@
 --   cuchi_computer:closed   (terminalId, why)       focus released
 --   cuchi_computer:request  (terminalId, request)   request = { action = 'run',
 --                                                   functionId, options }
+--   cuchi_computer:missed   (toast, ok)             a last word the app never
+--                                                   showed: the page held it and
+--                                                   the computer closed first
 --
 -- ═══ FOCUS IS THE DANGEROUS PART ═══
 --
@@ -171,10 +176,25 @@ local function update(state)
     SendNUIMessage({ type = 'br:update', state = state })
 end
 
+--- THE TOASTS OF THE LAST WORDS THIS SHELL HANDED THE PAGE, newest last, a
+--- few at most: the only texts the page may hand back (`missed`, below) for
+--- br_core to toast, each once. The page can only return what the server
+--- said, never make br_core say something of its own.
+local RELAYED_MAX = 4
+local TOAST_MAX = 1000
+local relayed = {}
+
 --- @param result table
+--- @return boolean  false when nothing is up to show it (br_core toasts it)
 local function result(result_)
-    if not isOpen or type(result_) ~= 'table' then return end
+    if not isOpen or type(result_) ~= 'table' then return false end
+    local toast = result_.toast
+    if type(toast) == 'string' and toast ~= '' and #toast <= TOAST_MAX then
+        relayed[#relayed + 1] = { text = toast, ok = result_.ok == true }
+        if #relayed > RELAYED_MAX then table.remove(relayed, 1) end
+    end
     SendNUIMessage({ type = 'br:result', result = result_ })
+    return true
 end
 
 --- The game's time, for the taskbar's clock: br_core sends it while the
@@ -202,6 +222,26 @@ end)
 -- the desktop and its windows exist.
 RegisterNUICallback('NUIOk', function(_, cb)
     pageReady = true
+    cb({ ok = true })
+end)
+
+-- A RUN'S LAST WORD THE APP NEVER SHOWED: the page held it while the app was
+-- not there to take it (its window closed, or still loading), and the computer
+-- closed first. Handed back with the toast it came with, and passed to
+-- br_core -- which toasts it -- only if this shell relayed that very text and
+-- has not passed it on already. Any time, open or not: the page posts it as
+-- it closes, which may be after br_core closed it.
+RegisterNUICallback('missed', function(data, cb)
+    local text = type(data) == 'table' and data.toast or nil
+    if type(text) == 'string' then
+        for i, r in ipairs(relayed) do
+            if r.text == text then
+                table.remove(relayed, i)
+                TriggerEvent('cuchi_computer:missed', r.text, r.ok)
+                break
+            end
+        end
+    end
     cb({ ok = true })
 end)
 

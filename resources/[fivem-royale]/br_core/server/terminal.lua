@@ -872,34 +872,54 @@ end
 -- BR.Terminal.startBounty). The player is never left without knowing: while
 -- the computer is still open on that session the app shows the answer; once
 -- it has closed, the done line -- and the new balance, for a run that cost
--- Volts -- or the reason it could not run arrive as a toast. Only leaving the
--- server, or the match ending, stops it, and both refund.
+-- Volts -- or the reason it could not run arrive as a toast. That toast is
+-- the same line wherever the answer finds the computer gone: here, for a
+-- session that has ended, and on the client, for an answer that landed as
+-- the computer went away (toastOf, below, says how). Only leaving the server,
+-- or the match ending, stops it, and both refund.
 
---- What a player is told about a run whose computer has closed: the line the
---- app would have shown, through the one picker.
---- @param rec table
+--- What a player is told about a run's last word when no app shows it: the
+--- line the app would have shown, through the one picker.
+---
+--- ═══ EVERY LAST WORD CARRIES IT (review of round 2) ═══
+---
+--- The server toasts it itself for a session that has closed. But "closed"
+--- is the server's view, and an answer can reach a computer that has gone
+--- away without the server knowing yet: the player shut it a moment before
+--- the answer landed (TERMINAL_CLOSED still on its way up), the app's own
+--- window was closed while the run loaded and then the computer, or the app
+--- was still loading after its icon was clicked. So every last word sent to
+--- the client -- every answer but `running` -- carries this text as `toast`,
+--- and whichever surface finds it can no longer show the answer toasts THIS
+--- line: client/terminal.lua for a computer that is not up, and the desktop
+--- (cuchi_computer's br.js, through client/shell.lua) for an answer it held
+--- and never handed the app. One text, written here, through the picker.
+--- @param id string  the function
+--- @param squadMatch boolean
+--- @param cost integer  the run's Volts
 --- @param a table  the answer
 --- @return string
-local function toastOf(rec, a)
+local function toastOf(id, squadMatch, cost, a)
     if a.ok then
-        local text = say(rec.id .. '_done', rec.squadMatch)
-        if rec.cost > 0 and a.balance ~= nil then
-            local b = fill(say('balance_new', rec.squadMatch), { volts = volts(a.balance) })
+        local text = say(id .. '_done', squadMatch)
+        if cost > 0 and a.balance ~= nil then
+            local b = fill(say('balance_new', squadMatch), { volts = volts(a.balance) })
             text = text ~= '' and (text .. ' ' .. b) or b
         end
         return text
     end
-    local line = say(a.code, rec.squadMatch)
-    if line == '' then line = say('unavailable', rec.squadMatch) end
+    local line = say(a.code, squadMatch)
+    if line == '' then line = say('unavailable', squadMatch) end
     if a.code == 'no_volts' then
-        line = fill(line, { cost = volts(a.cost or rec.cost), balance = volts(a.balance or 0) })
+        line = fill(line, { cost = volts(a.cost or cost), balance = volts(a.balance or 0) })
     end
     return line
 end
 
 --- Send the runner an answer about this run: to the app while the computer is
---- still open on the session that asked, and otherwise -- for the last word
---- only -- as a toast.
+--- still open on the session that asked -- a last word with its toast, for a
+--- computer that has gone away without the server knowing yet -- and
+--- otherwise, for the last word only, as a toast from here.
 --- @param rec table
 --- @param a table  { ok, code, ... }
 local function deliver(rec, a)
@@ -909,13 +929,15 @@ local function deliver(rec, a)
         a.cost = rec.cost
         a.balance = T.balance(src, session)
     end
+    local lastWord = a.code ~= 'running'
     if sessions[src] == session then
         a.state = T.state(src, session)
+        if lastWord then a.toast = toastOf(rec.id, rec.squadMatch, rec.cost, a) end
         TriggerClientEvent(BR.Net.TERMINAL_RESULT, src, a)
         return
     end
-    if a.code == 'running' or not GetPlayerName(src) then return end
-    local text = toastOf(rec, a)
+    if not lastWord or not GetPlayerName(src) then return end
+    local text = toastOf(rec.id, rec.squadMatch, rec.cost, a)
     if text ~= '' then BR.Server.notify(src, text, a.ok and 'success' or 'warn') end
 end
 
@@ -1053,25 +1075,28 @@ function T.run(src, d, now)
     if inflight[src] then return nil, 'in-flight' end
 
     local answer = { terminalId = session.terminalId, functionId = id }
-    local row = rowOf(id)
-    if not row then
-        answer.ok, answer.code = false, 'unavailable'
+    -- EVERY ANSWER GIVEN HERE IS THE RUN'S LAST WORD, so it carries its toast
+    -- like deliver's (see toastOf): a refusal can land on a computer the
+    -- player closed a moment after pressing Run.
+    local function refused(code)
+        answer.ok, answer.code = false, code
+        answer.toast = toastOf(id, T.squadMatch(src), 0, answer)
         return answer
     end
+    local row = rowOf(id)
+    if not row then return refused('unavailable') end
     -- THE OPTIONS FIRST, AND WHOLE. A request the registry does not allow is
     -- answered -- the app's button is waiting on it -- and nothing is asked
     -- or spent.
     local opts = T.options(row, d.options)
     if not opts then
-        answer.ok, answer.code = false, 'bad_option'
         answer.state = T.state(src, session)
-        return answer
+        return refused('bad_option')
     end
-    local refused = refusal(src, session, row, opts)
-    if refused then
-        answer.ok, answer.code = false, refused
+    local reason = refusal(src, session, row, opts)
+    if reason then
         answer.state = T.state(src, session)
-        return answer
+        return refused(reason)
     end
     -- THE VOLTS, AFTER EVERY OTHER REASON AND BEFORE ANYTHING IS SPENT. The
     -- key, the squad's use and the Volts all stay, and the answer carries the
@@ -1080,10 +1105,9 @@ function T.run(src, d, now)
     if cost > 0 then
         local balance = T.balance(src, session)
         if balance < cost then
-            answer.ok, answer.code = false, 'no_volts'
             answer.cost, answer.balance = cost, balance
             answer.state = T.state(src, session)
-            return answer
+            return refused('no_volts')
         end
     end
 

@@ -21,8 +21,11 @@
 //     { type: "br:close" }               br_core closed it (no answer is sent)
 //
 //   page -> Lua (NUI callbacks registered by client/shell.lua)
-//     run   { functionId, options? }     the app asked; the server decides
-//     close { why }                      Escape, or the taskbar's power button
+//     run    { functionId, options? }    the app asked; the server decides
+//     close  { why }                     Escape, or the taskbar's power button
+//     missed { toast }                   a run's last word the app never showed
+//                                        (below): its toast, for br_core to
+//                                        toast instead
 //
 //   page <-> app (postMessage with the iframe; every message carries
 //   brTerminal: 1, and each side only listens to the other's window)
@@ -93,10 +96,22 @@
     let state = null;
     let copy = {};
     let catalog = {};
-    // A run's last word that arrived while the app was not loaded (its window
-    // closed): handed over after the state when the app is opened again, so
-    // the player still sees how it ended. Forgotten with the session.
+    // A RUN'S LAST WORD NEVER GOES NOWHERE (review of round 2). One that
+    // arrives while the app cannot take it -- its window closed, or opened
+    // from the icon and still loading -- is HELD, and handed over after the
+    // state when the app says it is ready. One the app took while its window
+    // was minimized is UNSEEN until the window is shown again. If the computer
+    // closes first (Escape, the power button, or br_core closing it), either
+    // is handed back to client/shell.lua (`missed`), and br_core toasts the
+    // server's own text for it -- the toast every last word carries. One that
+    // reaches a desktop already closed goes the same way. A `running` answer
+    // is not a last word: the state carries the run.
     let held = null;
+    let unseen = null;
+    // Has the app in the frame said it is ready (its message listener is up)?
+    // Not "is its page set": an app still loading after its icon was clicked
+    // has no listener, and a message posted to it is lost.
+    let appReady = false;
     // The window's size and place before it was maximized, or null.
     let restoreRect = null;
 
@@ -120,10 +135,44 @@
         return !!f && f.getAttribute("src") === APP_URL;
     };
 
+    // Only to an app that has said it is ready; what it missed before then,
+    // its 'ready' is answered with (the state, and a held last word).
     const toApp = (msg) => {
         const f = frame();
-        if (f && f.contentWindow && appLoaded()) {
+        if (f && f.contentWindow && appReady && appLoaded()) {
             f.contentWindow.postMessage(Object.assign({ brTerminal: 1 }, msg), "*");
+        }
+    };
+
+    // A last word the app will not show, handed back for br_core to toast.
+    const miss = (r) => {
+        if (r && typeof r.toast === "string" && r.toast !== "") post("missed", { toast: r.toast });
+    };
+
+    // Held for the app; a second last word while one is held (the app is
+    // away, so it cannot have asked for another -- but never dropped) hands
+    // the first back rather than lose it.
+    const hold = (r) => {
+        if (held) miss(held);
+        held = r;
+    };
+
+    // Is the app's window on screen: open, and not minimized?
+    const winShown = () => {
+        const w = win();
+        return !!w && w.style.display !== "none" && w.style.visibility !== "hidden";
+    };
+
+    // A run's answer to the app, which is ready. A last word to a minimized
+    // window is the app's, but not yet the player's.
+    const give = (r) => {
+        toApp({ type: "result", result: r });
+        if (r.code === "running") return;
+        if (winShown()) {
+            unseen = null;
+        } else {
+            if (unseen) miss(unseen);
+            unseen = r;
         }
     };
 
@@ -280,13 +329,22 @@
     const launch = () => {
         if (!isOpen) return;
         const f = frame();
-        if (f && !appLoaded()) f.setAttribute("src", APP_URL);
+        if (f && !appLoaded()) {
+            appReady = false;
+            f.setAttribute("src", APP_URL);
+        }
         OpenApp(APP);
         center(win());
         if (f) f.focus();
     };
 
+    // An answer the unloaded app had but the player never saw is held again.
     const unload = () => {
+        appReady = false;
+        if (unseen) {
+            hold(unseen);
+            unseen = null;
+        }
         const f = frame();
         if (f) f.setAttribute("src", "about:blank");
     };
@@ -330,6 +388,7 @@
 
         isOpen = true;
         held = null;
+        unseen = null;
         const mine = ++session;
         document.body.style.display = "block";
         Load(true, line("shell_boot"), bootMs(d), () => {
@@ -363,8 +422,12 @@
         });
         forgetWindow();
 
+        // Unloading holds again what a minimized app had and the player never
+        // saw; the last word the player never saw goes back for a toast,
+        // before the close is said -- and whichever side closed it.
         unload();
         state = null;
+        miss(held);
         held = null;
 
         if (!fromLua) post("close", { why });
@@ -373,11 +436,13 @@
     const fromApp = (d) => {
         if (d.brTerminal !== 1) return;
         if (d.type === "ready") {
-            if (isOpen) {
+            if (isOpen && appLoaded()) {
+                appReady = true;
                 toApp({ type: "state", state, copy, catalog });
                 if (held) {
-                    toApp({ type: "result", result: held });
+                    const r = held;
                     held = null;
+                    give(r);
                 }
             }
         } else if (d.type === "run") {
@@ -416,14 +481,19 @@
                     toApp({ type: "state", state });
                 }
                 break;
-            case "br:result":
-                if (!isOpen) break;
-                if (appLoaded()) {
-                    toApp({ type: "result", result: d.result || null });
-                } else if (d.result && d.result.code !== "running") {
-                    held = d.result;
+            case "br:result": {
+                const r = d.result && typeof d.result === "object" ? d.result : null;
+                if (!r) break;
+                if (isOpen && appReady) {
+                    give(r);
+                } else if (r.code !== "running") {
+                    // Not the app's to take now: held while the desktop is
+                    // up, and handed straight back once it has closed.
+                    if (isOpen) hold(r);
+                    else miss(r);
                 }
                 break;
+            }
             case "br:clock":
                 if (isOpen) showClock(d.h, d.m);
                 break;
@@ -495,6 +565,14 @@
                 if (e.target && e.target.closest && e.target.closest("button")) return;
                 maximize();
             });
+        }
+        // The window shown again (the taskbar, or the icon): the player can
+        // see what the app took while it was minimized.
+        const w = win();
+        if (w && typeof MutationObserver === "function") {
+            new MutationObserver(() => {
+                if (unseen && winShown()) unseen = null;
+            }).observe(w, { attributes: true, attributeFilter: ["style"] });
         }
         // A maximized window follows the desktop when the screen changes size.
         window.addEventListener("resize", () => {

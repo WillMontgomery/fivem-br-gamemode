@@ -13,6 +13,8 @@
 --                                                    minute while it is open
 --   computer -> here -> server   cuchi_computer:request -> TERMINAL_RUN
 --                                cuchi_computer:closed  -> TERMINAL_CLOSED
+--   a run's last word that no computer can show -> a toast (its `toast`),
+--                                from TERMINAL_RESULT or cuchi_computer:missed
 --   computer -> here -> keys     cuchi_computer:opened/closed
 --                                -> BR.Keys.setExternalScreen
 --
@@ -130,17 +132,39 @@ AddEventHandler(BR.Net.TERMINAL_OPEN, function(d)
     end
 end)
 
+--- A RUN'S LAST WORD THAT NO COMPUTER CAN SHOW, toasted instead -- the
+--- server's own text for it (`toast`, server/terminal.lua's toastOf, through
+--- the solo picker), exactly as the server toasts it for a session it knows
+--- has closed. Reached when the answer lands after the computer went away but
+--- before the server heard (TERMINAL_CLOSED still on its way up), and when the
+--- desktop hands back an answer it held for an app that never took it
+--- (`cuchi_computer:missed`). `running` is no last word and carries none.
+--- @param text any
+--- @param ok boolean
+local function missed(text, ok)
+    if type(text) ~= 'string' or text == '' then return end
+    if BR.Notify then BR.Notify(text, ok and 'success' or 'warn') end
+end
+
 RegisterNetEvent(BR.Net.TERMINAL_RESULT)
 AddEventHandler(BR.Net.TERMINAL_RESULT, function(r)
-    if type(r) ~= 'table' or r.terminalId ~= shown then return end
-    local c = computer()
-    if not c then return end
-    if type(r.state) == 'table' then c:Update(r.state) end
-    -- The answer alone: `running` carries how long the server will take
-    -- (runMs), `no_volts` the cost and the balance, a paid `done` the new
-    -- balance -- numbers, or nothing.
-    c:Result({ functionId = r.functionId, ok = r.ok == true, code = r.code,
-               runMs = tonumber(r.runMs), cost = tonumber(r.cost), balance = tonumber(r.balance) })
+    if type(r) ~= 'table' then return end
+    local c = r.terminalId == shown and shown ~= nil and computer() or nil
+    if c then
+        if type(r.state) == 'table' then c:Update(r.state) end
+        -- The answer alone: `running` carries how long the server will take
+        -- (runMs), `no_volts` the cost and the balance, a paid `done` the new
+        -- balance -- numbers, or nothing -- and a last word its toast, which
+        -- the desktop hands back if the app never shows it.
+        local shownOk = c:Result({ functionId = r.functionId, ok = r.ok == true, code = r.code,
+                                   runMs = tonumber(r.runMs), cost = tonumber(r.cost),
+                                   balance = tonumber(r.balance),
+                                   toast = type(r.toast) == 'string' and r.toast or nil })
+        -- The shell answers false when it is no longer up (it closed itself
+        -- and the closed event has not reached here yet).
+        if shownOk == true then return end
+    end
+    missed(r.toast, r.ok == true)
 end)
 
 -- THE MATCH PANEL, REALTIME: the server's state again, once a second while
@@ -185,6 +209,13 @@ AddEventHandler('cuchi_computer:closed', function(terminalId, why)
     clockSent = nil
     setKeys(false)
     TriggerServerEvent(BR.Net.TERMINAL_CLOSED, { terminalId = terminalId, why = why })
+end)
+
+-- AN ANSWER THE APP NEVER SHOWED, handed back by the desktop: it arrived
+-- while the app's window was closed or still loading, and the computer closed
+-- before the app took it. The shell passes on only a toast it relayed itself.
+AddEventHandler('cuchi_computer:missed', function(text, ok)
+    missed(text, ok == true)
 end)
 
 AddEventHandler('cuchi_computer:request', function(terminalId, req)
