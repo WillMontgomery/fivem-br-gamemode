@@ -1349,11 +1349,18 @@ do
 
     -- Not while the computer is up, and not while downed.
     W.ped = { x = SITE.x + 1.0, y = SITE.y, z = SITE.z }
+    W.tick()
+    ok(W.B.Yubikey.prompting(), 'back in reach: the plate is up')
+    -- The computer opening between two ticks: the plate is still drawn, and a
+    -- press then must not ask the server to open it a second time.
     W.computer = true
+    W.now = W.now + CT.runMinIntervalMs
+    local before = #W.server
+    W.keys.listeners.interact(true)
+    eq(#W.server, before, 'a press as the computer comes up, before the plate goes, asks nothing')
     W.tick()
     eq(W.B.Yubikey.prompting(), false, 'no plate while the computer is open')
     W.now = W.now + CT.runMinIntervalMs
-    local before = #W.server
     W.keys.listeners.interact(true)
     eq(#W.server, before, 'and no press asks while it is')
     W.computer = false
@@ -1493,10 +1500,23 @@ do
     eq(h1.hash, hash, 'of the art block\'s terminalProp')
     eq(h1.flag, true, 'surviving a map reload: a laptop not streamed in yet is hidden when it is')
 
-    -- NOT PER FRAME: nothing more while the season stands.
+    -- NOT PER FRAME: nothing more while the season stands -- no native, and
+    -- not even the hides' own walk of the rows (the terminal list itself is
+    -- cached, so only a sync would read the config's rows again).
     W.natives = 0
+    local TSx = W.B.TerminalSolve
+    local realSites, rowReads = TSx.sites, 0
+    TSx.sites = function(...)
+        rowReads = rowReads + 1
+        return realSites(...)
+    end
     for _ = 1, 5 do W.slow() W.tick() W.frame() end
     eq(W.natives, 0, 'passes, ticks and frames on the same season call no native')
+    W.slow()
+    rowReads = 0
+    for _ = 1, 5 do W.slow() W.tick() W.frame() end
+    eq(rowReads, 0, 'and do no hide work at all: the rows are not walked again')
+    TSx.sites = realSites
     W.switch(1)
     eq(#W.hideCalls, 2, 'and a season "move" to the same season makes no second hide')
 
