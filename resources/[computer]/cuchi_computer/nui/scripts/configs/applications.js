@@ -13,8 +13,10 @@
 // is a React + Cloudscape page built separately (ui-src/terminal, output in
 // nui/apps/terminal/): Cloudscape's global styles would restyle this desktop
 // if they shared its document. br.js points the frame at the app when the
-// computer opens and back at nothing when it closes, and the title is written
-// there too, from br_core's copy -- nothing below is player-facing text.
+// player opens it from its desktop icon (round 2: the computer boots to the
+// desktop and stops there) and back at nothing when its window or the
+// computer closes, and the title is written there too, from br_core's copy --
+// nothing below is player-facing text.
 // 1440x880 is a browser window (owner, 2026-10-05: "I want the window/app to
 // look like a web browser"), up from the 960x630 upstream gave its own iframe
 // app one commit after v1.1.1 -- the Cloudscape app's side navigation and its
