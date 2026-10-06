@@ -247,9 +247,12 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   D.boot()
   D.icon()
   D.result(refused('No spot.'))
-  eq(D.page.app.length, 0, 'an app with no listener yet is posted nothing')
+  D.lua({ type: 'br:update', state: { terminalId: 'dev', volts: 1 } })
+  eq(D.page.app.length, 0, 'an app with no listener yet is posted nothing: not the answer, not the state')
   D.fromApp({ type: 'ready' })
-  eq(D.appResults().join(), 'no_site:No spot.', 'it gets the answer once it is ready')
+  eq(D.appTypes().join(), 'state,result', 'once it is ready: the latest state, then the answer')
+  eq(D.appResults().join(), 'no_site:No spot.', 'the answer it would have lost')
+  eq(D.page.app[0].state.volts, 1, 'and the state is the one the update brought')
 
   // And the computer closed by br_core before the app was ready.
   const E = desktop()
