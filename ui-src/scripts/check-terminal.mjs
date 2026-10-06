@@ -219,7 +219,10 @@ for (const f of sources) {
   const brCss = readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.css'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   for (const m of brCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    if (/(^|[;\s])animation(-name)?\s*:/.test(m[2]) && !m[1].includes('.br-loading')) {
+    // Every selector in the list must need the class, so a :not() is taken out
+    // first: `:not(.br-loading)` names the class and animates everything else.
+    const loading = m[1].split(',').every((s) => /\.br-loading(?![\w-])/.test(s.replace(/:not\([^()]*\)/g, ' ')))
+    if (/(^|[;\s])animation(-name)?\s*:/.test(m[2]) && !loading) {
       fail('T10 page loads', 'cuchi_computer/nui/br.css', `${m[1].trim()} animates outside .br-loading`)
     }
   }
