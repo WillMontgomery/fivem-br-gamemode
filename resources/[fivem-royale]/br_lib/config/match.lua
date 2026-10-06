@@ -1211,11 +1211,17 @@ BR.Config.Ambient = {
 -- from the anchor before it is set again. 60 game seconds is 5 real seconds at
 -- 5000, and a quarter of a degree of sun. It should almost never be reached:
 -- the engine advances the clock itself at the rate it was given.
+--
+-- festiveBlendSec (#399) is how long the sky takes to turn when the festive sky
+-- moves under it -- `brfestive`, a `brseason` switch, the first of December:
+-- every client, at once, as a blend rather than a snap. Ten seconds, the
+-- island's own clear-out when the doors open.
 BR.Config.World = {
     hour            = 12,
     minute          = 0,
     msPerGameMinute = 5000,
     driftSec        = 60,
+    festiveBlendSec = 10.0,
 }
 
 --- Resolve the minimum players to start, honouring dev mode.

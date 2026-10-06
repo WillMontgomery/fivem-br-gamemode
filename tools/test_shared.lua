@@ -22778,6 +22778,22 @@ do
     ok(W.isFestive() == false, 'and anything but true is off')
     W.applyPayload(nil)
 
+    -- THE ROLES, PURE. A claim names a role; resolveSky reads it for the fact.
+    ok(W.resolveSky({ storm = { name = 'base', blend = 5.0 } }, false) == 'EXTRASUNNY'
+       and W.resolveSky({ storm = { name = 'base', blend = 5.0 } }, true) == 'XMAS',
+       'base is EXTRASUNNY, and XMAS in the festive months')
+    ok(W.resolveSky({ island = { name = 'lobby' } }, false) == 'OVERCAST'
+       and W.resolveSky({ island = { name = 'lobby' } }, true) == 'XMAS',
+       'the lobby at rest is OVERCAST, and XMAS festive')
+    local cn, cb, csrc, crole = W.resolveSky({ island = { name = 'cover', blend = 5.0 } }, true)
+    ok(cn == 'OVERCAST' and cb == 5.0 and csrc == 'island' and crole == 'cover',
+       'the bus cover is OVERCAST either way, and says which claim and role won')
+    ok(W.resolveSky({ override = { name = 'RAIN' }, storm = { name = 'base' } }, true) == 'RAIN',
+       'and the console still outranks the festive sky')
+    for role in pairs(W.SKY_ROLE) do
+        ok(not W.WEATHER[role], ('no role is a weather brweather could name (%s)'):format(role))
+    end
+
     --- The real server/world.lua on a season, with the festive calendar.
     local function newSkyServer(seasonN, month)
         local env = newSandbox()
@@ -22859,6 +22875,364 @@ do
         ok(#f == 1 and f[1].target == -1 and f[1].on == true,
            'a br:ready before the first pass sends the festive sky to everyone, '
            .. 'the joiner included, and nothing twice', #f)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- #399: THE SKY, WALKED THROUGH A WHOLE SESSION
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The real client/world.lua and client/storm.lua in one client, the real
+-- br_environment/client/ipl.lua in its own Lua state as the game has it, and
+-- the island's claim carried between them by its client event. The walk is
+-- the session a player has: the lobby island, warmup, the bus and its swap, a
+-- match with a storm crossing out and back in, the drying schedule, the end
+-- and the trip home. Every write the sky, the rain, the timecycle slot and the
+-- ground pass receive is recorded, in order.
+--
+-- NOT FESTIVE, IT IS TODAY'S SKY, WRITE FOR WRITE. TODAY below is what this
+-- walk recorded on origin/dev before #399 (189e7669), and the not-festive walk
+-- must reproduce it exactly: festive snow is a December-and-January Season 2
+-- feature, and every other day on every other box nothing may move.
+describe('sky / a whole session, festive and not')
+do
+    local v3mt = {}
+    local function v3(x, y, z) return setmetatable({ x = x, y = y, z = z }, v3mt) end
+    v3mt.__sub = function(a, b) return v3(a.x - b.x, a.y - b.y, a.z - b.z) end
+    v3mt.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end
+
+    --- Any native nobody named: a no-op that answers 0. The sky, rain,
+    --- timecycle and ground natives are all named and recorded below.
+    local function permissive(env)
+        setmetatable(env, { __index = function(_, k)
+            local v = SANDBOX_STD[k]
+            if v ~= nil then return v end
+            if type(k) == 'string' and k:match('^[A-Z][a-z]') then
+                return function() return 0 end
+            end
+            return nil
+        end })
+        env._G = env
+    end
+
+    --- @param o table|nil { festive = boolean, flips = { [step] = boolean } }
+    --- @return table  every write, in order (runs of strength writes folded)
+    local function skyWalk(o)
+        o = o or {}
+        local L = {}
+        local function rec(s)
+            local last = L[#L]
+            if s:sub(1, 12) == 'tc strength ' and last and last:sub(1, 12) == 'tc strength ' then
+                local n = tonumber(last:match(' x(%d+)$') or '1') + 1
+                L[#L] = s .. ' x' .. n
+            else
+                L[#L + 1] = s
+            end
+        end
+
+        -- ── THE CLIENT: br_core ──
+        local now = 100000
+        local ped = { x = 0.0, y = 0.0, z = 30.0 }
+        local env = {}
+        permissive(env)
+        env.print = function() end
+        env.GetGameTimer = function() return now end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return #tostring(s) end
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand = function() end
+        env.TriggerEvent = function() end
+        env.TriggerServerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end,
+                        InvokeNative = function(h, a)
+                            rec(('invoke %X %s'):format(h, tostring(a)))
+                        end }
+        env.PlayerPedId = function() return 1 end
+        env.GetEntityCoords = function() return v3(ped.x, ped.y, ped.z) end
+        env.SetWeatherTypeNowPersist = function(w) rec('now ' .. w) end
+        env.SetWeatherTypeOvertimePersist = function(w, b) rec(('over %s %.1f'):format(w, b)) end
+        env.ClearWeatherTypePersist = function() rec('sky cleared') end
+        env.SetRainLevel = function(v) rec(('rain %.1f'):format(v)) end
+        local slot = nil
+        env.SetTimecycleModifier = function(n) slot = n; rec('tc set ' .. n) end
+        env.SetTimecycleModifierStrength = function(v) rec(('tc strength %.2f'):format(v)) end
+        env.ClearTimecycleModifier = function() slot = nil; rec('tc clear') end
+        env.GetTimecycleModifierIndex = function() return slot and 7 or -1 end
+        env.GetTimecycleModifierNameByIndex = function() return slot end
+        env.GetTimecycleModifierStrength = function() return 1.0 end
+        env.SetForceVehicleTrails = function(on) rec('trails ' .. tostring(on)) end
+        env.SetForcePedFootstepsTracks = function(on) rec('footsteps ' .. tostring(on)) end
+        env.RequestNamedPtfxAsset = function(a) rec('ptfx request ' .. a) end
+        env.RemoveNamedPtfxAsset = function(a) rec('ptfx remove ' .. a) end
+        env.ForceSnowPass = function(on) rec('cfx snow pass ' .. tostring(on)) end
+        env.DoesBlipExist = function() return false end
+
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.radiusBlip = function() return 1 end
+        env.BR.Native.blipName = function() end
+        env.BR.Sfx = { play = function() end }
+        loadInto(env, { 'br_core/client/world.lua', 'br_core/client/storm.lua' })
+        local BRc = env.BR
+
+        local function fire(n, ...)
+            for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+        end
+        local function festive(on) fire(BRc.Net.WORLD_SET, { festive = on or nil }) end
+        local function tick(ms)
+            for _ = 1, math.floor(ms / 100) do
+                now = now + 100
+                BRc.Loop.step(BRc.Loop.TICK)
+            end
+        end
+
+        -- ── THE ISLAND: br_environment, its own Lua state ──
+        local clock, threads, ih = 0, {}, {}
+        local iped, icam = v3(4840.6, -5174.4, 2.0), v3(4840.6, -5174.4, 2.0)
+        local dark = false
+        local ienv = {}
+        permissive(ienv)
+        ienv.print = function() end
+        ienv.vector3 = v3
+        ienv.CreateThread = function(fn)
+            threads[#threads + 1] = { co = coroutine.create(fn), wake = clock }
+        end
+        ienv.Wait = function(ms) coroutine.yield(tonumber(ms) or 0) end
+        ienv.Citizen = { InvokeNative = function() end }
+        ienv.AddEventHandler = function(n, fn)
+            ih[n] = ih[n] or {}
+            ih[n][#ih[n] + 1] = fn
+        end
+        ienv.RegisterNetEvent = function() end
+        -- THE CROSSING: client events reach every resource on the client.
+        ienv.TriggerEvent = function(n, ...)
+            if n == 'br:world:island' then fire(n, ...) end
+        end
+        ienv.PlayerPedId = function() return 1 end
+        ienv.GetEntityCoords = function() return iped end
+        ienv.GetFinalRenderedCamCoord = function() return icam end
+        ienv.IsScreenFadedOut = function() return dark end
+        loadInto(ienv, { 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+                         'br_environment/client/ipl.lua' })
+        local BRi = ienv.BR
+
+        local function run(ms)
+            local target = clock + ms
+            while clock < target do
+                clock = clock + 100
+                for _, th in ipairs(threads) do
+                    if coroutine.status(th.co) ~= 'dead' and th.wake <= clock then
+                        local okr, w = coroutine.resume(th.co)
+                        assert(okr, w)
+                        th.wake = clock + (tonumber(w) or 0)
+                    end
+                end
+            end
+        end
+        local function state(s)
+            for _, fn in ipairs(ih[BRi.Net.STATE] or {}) do fn({ state = s }) end
+        end
+        local function step(name, fn)
+            rec('-- ' .. name)
+            fn()
+            if o.flips and o.flips[name] ~= nil then
+                rec('-- brfestive ' .. (o.flips[name] and 'on' or 'off'))
+                festive(o.flips[name])
+            end
+        end
+
+        if o.festive then festive(true) end
+
+        step('lobby', function()
+            run(1200)
+            state(BRi.MatchState.WAITING)
+            run(1000)
+        end)
+        step('warmup', function()
+            state(BRi.MatchState.WARMUP)
+            run(2000)
+        end)
+        step('bus', function()
+            state(BRi.MatchState.BUS)
+            BRc.State.match.state = BRc.MatchState.BUS
+            run(8000)
+        end)
+        step('island swap', function()
+            for _, fn in ipairs(ih['br:env:releaseIsland'] or {}) do fn() end
+            iped, icam = v3(1616.8, 367.8, 400.0), v3(1616.8, 367.8, 400.0)
+            run(1100)
+        end)
+        step('match, inside', function()
+            state(BRi.MatchState.PLAYING)
+            BRc.State.match.state = BRc.MatchState.PLAYING
+            BRc.State.me.state = BRc.PlayerState.ALIVE
+            BRc.State.storm = {
+                phase = 2, cx0 = 0.0, cy0 = 0.0, r0 = 200.0,
+                cx1 = 0.0, cy1 = 0.0, r1 = 123.0,
+                tStart = 0, tWait = 600000, tShrink = 60000, dps = 4.0,
+            }
+            ped.x, ped.y = 0.0, 0.0
+            tick(3000)
+        end)
+        step('storm, caught', function()
+            ped.x, ped.y = 900.0, 0.0
+            tick(8000)
+        end)
+        step('storm, back inside', function()
+            ped.x, ped.y = 0.0, 0.0
+            tick(60000)
+        end)
+        step('end', function()
+            state(BRi.MatchState.ENDED)
+            BRc.State.match.state = BRc.MatchState.ENDED
+            tick(1000)
+            state(BRi.MatchState.CLEANUP)
+            BRc.State.match.state = BRc.MatchState.CLEANUP
+            tick(1000)
+            dark = true
+            iped, icam = v3(4840.6, -5174.4, 2.0), v3(4840.6, -5174.4, 2.0)
+            run(2000)
+            state(BRi.MatchState.WAITING)
+            BRc.State.match.state = BRc.MatchState.WAITING
+            dark = false
+            run(1000)
+            tick(1000)
+        end)
+        return L
+    end
+
+    -- TODAY: recorded by this walk on origin/dev 189e7669, before #399. Runs of
+    -- strength writes are folded (`x39` is 39 writes ending at that value).
+    local TODAY = {
+        '-- lobby',
+        'now OVERCAST',
+        '-- warmup',
+        '-- bus',
+        '-- island swap',
+        'over EXTRASUNNY 10.0',
+        '-- match, inside',
+        '-- storm, caught',
+        'tc set REDMIST',
+        'tc strength 0.15 x11',
+        'over THUNDER 5.0',
+        'rain -1.0',
+        'tc strength 0.70 x39',
+        '-- storm, back inside',
+        'tc strength 0.55 x11',
+        'over EXTRASUNNY 5.0',
+        'tc strength 0.00 x39',
+        'tc clear',
+        'now EXTRASUNNY',
+        'rain 0.0',
+        'rain -1.0',
+        '-- end',
+        'rain -1.0',
+        'now OVERCAST',
+    }
+    local FESTIVE = {
+        '-- lobby',
+        'now XMAS',
+        '-- warmup',
+        '-- bus',
+        'over OVERCAST 5.0',
+        '-- island swap',
+        'over XMAS 10.0',
+        '-- match, inside',
+        '-- storm, caught',
+        'tc set REDMIST',
+        'tc strength 0.15 x11',
+        'over THUNDER 5.0',
+        'rain -1.0',
+        'tc strength 0.70 x39',
+        '-- storm, back inside',
+        'tc strength 0.55 x11',
+        'over XMAS 5.0',
+        'tc strength 0.00 x39',
+        'tc clear',
+        'now XMAS',
+        'rain 0.0',
+        'rain -1.0',
+        '-- end',
+        'rain -1.0',
+    }
+
+    --- The first line two walks disagree on, for a failure message.
+    local function firstDiff(got, want)
+        for i = 1, math.max(#got, #want) do
+            if got[i] ~= want[i] then
+                return ('line %d: got %s, want %s'):format(i, tostring(got[i]), tostring(want[i]))
+            end
+        end
+        return nil
+    end
+    --- The lines a walk wrote between one step marker and the next.
+    local function during(L, marker)
+        local out, on = {}, false
+        for _, s in ipairs(L) do
+            if s == marker then on = true
+            elseif on and s:sub(1, 3) == '-- ' then break
+            elseif on then out[#out + 1] = s end
+        end
+        return out
+    end
+
+    -- ── NOT FESTIVE: TODAY'S SKY, WRITE FOR WRITE ──
+    do
+        local L = skyWalk({ festive = false })
+        local d = firstDiff(L, TODAY)
+        ok(d == nil,
+           'festive off: lobby, warmup, the bus and its swap, a storm out and back, the '
+           .. 'drying snap and the trip home write exactly what origin/dev wrote before #399',
+           d)
+    end
+
+    -- ── FESTIVE: SNOW EVERYWHERE, THE COVER KEPT, THE STORM STILL A STORM ──
+    do
+        local L = skyWalk({ festive = true })
+        local d = firstDiff(L, FESTIVE)
+        ok(d == nil, 'festive on: the whole session, as recorded below', d)
+        ok(during(L, '-- lobby')[1] == 'now XMAS',
+           'the lobby island is XMAS', table.concat(during(L, '-- lobby'), ','))
+        ok(during(L, '-- bus')[1] == 'over OVERCAST 5.0',
+           'the bus climb keeps its overcast cover for the island swap, blended in '
+           .. 'while the bus sits', table.concat(during(L, '-- bus'), ','))
+        ok(during(L, '-- island swap')[1] == 'over XMAS 10.0',
+           'the doors open on XMAS, over the same ten seconds EXTRASUNNY took')
+        local caught = table.concat(during(L, '-- storm, caught'), ',')
+        ok(caught:find('over THUNDER 5.0', 1, true) ~= nil,
+           'caught in the storm is THUNDER, as today', caught)
+        local back = during(L, '-- storm, back inside')
+        ok(back[2] == 'over XMAS 5.0',
+           'leaving the storm comes back to XMAS, not to a permanent EXTRASUNNY',
+           table.concat(back, ','))
+        local snap = table.concat(back, ',')
+        ok(snap:find('now XMAS,rain 0.0', 1, true) ~= nil,
+           'and the drying snap re-asserts the base sky, XMAS, as it dries the ground',
+           snap)
+        local home = table.concat(during(L, '-- end'), ',')
+        ok(home == 'rain -1.0',
+           'the trip home writes no sky at all: the island at rest is XMAS too', home)
+    end
+
+    -- ── `brfestive` MOVES THE SKY UNDER EVERY CLAIM, AS A BLEND ──
+    do
+        local L = skyWalk({ festive = false,
+                            flips = { ['lobby'] = true, ['storm, back inside'] = false } })
+        local on = table.concat(during(L, '-- brfestive on'), ',')
+        ok(on:find('^over XMAS 10.0') ~= nil,
+           'brfestive on in the lobby: OVERCAST to XMAS over festiveBlendSec, not a snap',
+           on)
+        local off = table.concat(during(L, '-- brfestive off'), ',')
+        ok(off:find('^over EXTRASUNNY 10.0') ~= nil,
+           'brfestive off after a storm exit: the storm\'s base sky goes back to '
+           .. 'EXTRASUNNY, blended', off)
     end
 end
 

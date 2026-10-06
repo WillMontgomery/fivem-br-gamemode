@@ -97,7 +97,7 @@ for _, name in ipairs(W.WEATHERS) do W.WEATHER[name] = true end
 ---   storm     the ring caught somebody outside it. It wins over the island
 ---             because it is a gameplay signal and the island's is scenery.
 ---   island    br_environment's lobby/mainland choreography: OVERCAST hides the
----             mid-flight world swap, EXTRASUNNY is what the doors open on.
+---             mid-flight world swap, the clear sky is what the doors open on.
 ---
 --- A source not on this list is not a claim; client/world.lua refuses it rather
 --- than storing an unranked key that would never win and never be noticed.
@@ -106,21 +106,68 @@ W.SKY_SOURCES = { 'override', 'storm', 'island' }
 W.SKY_SOURCE = {}
 for _, src in ipairs(W.SKY_SOURCES) do W.SKY_SOURCE[src] = true end
 
+--- The skies that are a ROLE rather than a weather (#399), and what each one is
+--- in the festive months and out of them.
+---
+---   "yes snow is meant to reach the players"         -- owner, 2026-10-05
+---
+--- December and January (on the festive crates' switch), everywhere: the lobby
+--- island, warmup and the match, "with the bus climb keeping its overcast cover
+--- for the island swap". So the storm and the island stopped naming the clear
+--- sky and name its ROLE, and client/world.lua reads the role as a weather when
+--- it writes -- which is what makes `brfestive` move the sky under every claim
+--- at once, and a storm exit come back to snow rather than to a summer sky:
+---
+---   base   the clear sky: the island's "doors open" sky after the swap, and the
+---          storm's all-clear (and its drying snap). EXTRASUNNY; XMAS festive.
+---   lobby  the island at rest -- the lobby and the warmup pad, and the trip
+---          home. OVERCAST, as always; XMAS festive.
+---   cover  the island while the bus climbs out, hiding the swap. OVERCAST
+---          either way -- and in the festive months the ground keeps its snow
+---          under it (`keepsSnow`), so the island does not turn green under the
+---          bus as it boards.
+---
+--- LOWER CASE, SO NO ROLE IS EVER A WEATHER: W.WEATHER is upper case, and
+--- `brweather` can only name a weather. Not festive, every role is exactly the
+--- weather that was written before #399.
+W.SKY_ROLE = {
+    base  = { plain = 'EXTRASUNNY', festive = 'XMAS' },
+    lobby = { plain = 'OVERCAST',   festive = 'XMAS' },
+    cover = { plain = 'OVERCAST',   festive = 'OVERCAST', keepsSnow = true },
+}
+
+--- The weather a claimed name means: a role's weather for the festive answer,
+--- or the name itself.
+--- @param name string|nil @param festive boolean|nil
+--- @return string|nil
+function W.skyWeather(name, festive)
+    local r = W.SKY_ROLE[name]
+    if not r then return name end
+    return festive and r.festive or r.plain
+end
+
 --- Which claim on the sky wins, and how fast it should be blended in.
 ---
 --- PURE OVER THE WHOLE TABLE, which is what makes the interesting case testable
 --- off-engine: an override lifting has to hand the sky back to whatever the game
 --- wanted underneath it, and "what the game wanted underneath it" is exactly the
 --- claim that was still sitting in this table the whole time.
+---
+--- THE NAME IS THE WEATHER TO WRITE: a role is read for `festive` here (#399),
+--- so the caller never sees one. The role and the winning source come back too.
 --- @param claims table  { override = { name, blend }, storm = ..., island = ... }
+--- @param festive boolean|nil  the festive sky (W.festive on a client)
 --- @return string|nil name
 --- @return number|nil blend  seconds; 0 means snap
-function W.resolveSky(claims)
+--- @return string|nil source  which claim won
+--- @return string|nil role    the role it claimed, if it claimed one
+function W.resolveSky(claims, festive)
     if type(claims) ~= 'table' then return nil, nil end
     for _, src in ipairs(W.SKY_SOURCES) do
         local c = claims[src]
         if type(c) == 'table' and c.name then
-            return c.name, tonumber(c.blend) or 0.0
+            local role = W.SKY_ROLE[c.name] and c.name or nil
+            return W.skyWeather(c.name, festive), tonumber(c.blend) or 0.0, src, role
         end
     end
     return nil, nil

@@ -246,6 +246,46 @@ local function wantSky(name, blend)
     TriggerEvent('br:world:island', name, blend)
 end
 
+-- ═══ THE ISLAND CLAIMS ROLES, NOT WEATHERS (#399) ═══
+--
+--   "yes snow is meant to reach the players"         -- owner, 2026-10-05
+--
+-- In the festive months the lobby island, warmup and the match are snowy, "with
+-- the bus climb keeping its overcast cover for the island swap". This file does
+-- not know whether it is festive -- br_core holds that fact -- so it claims what
+-- each moment IS, and br_core/client/world.lua reads the role as a weather
+-- (br_lib/shared/world.lua's SKY_ROLE):
+--
+--   lobby  the island at rest: the lobby, warmup, the trip home. OVERCAST, as
+--          it always was; XMAS in the festive months.
+--   cover  the island while the bus boards and climbs out (BUS, island still
+--          on): OVERCAST either way, the haze that hides the swap.
+--   base   the doors-open sky after the swap: EXTRASUNNY; XMAS festive.
+--
+-- Not festive, `lobby` and `cover` are both OVERCAST, so moving between them
+-- writes nothing and the sky is exactly the one it always was.
+
+--- How long the island takes to move between its resting sky and the cover
+--- while it is already the world (in the festive months, XMAS to OVERCAST as
+--- the bus boards). Five seconds: the bus sits five before it rolls, and the
+--- swap waits for wheels-up plus 5.5 s, so the haze is whole long before it is
+--- needed.
+local COVER_BLEND = 5.0
+
+--- The island's own sky while it is the world.
+--- @return string  a SKY_ROLE name
+local function restingSky()
+    if matchState == BR.MatchState.BUS then return 'cover' end
+    return 'lobby'
+end
+
+--- The match state moved while the island is the world: claim its sky for it.
+local function followState()
+    if not islandActive then return end
+    local want = restingSky()
+    if want ~= skyName then wantSky(want, COVER_BLEND) end
+end
+
 AddEventHandler('br:world:ask', function()
     if skyName then TriggerEvent('br:world:island', skyName, skyBlend) end
     -- The same answer for the same start-order reason, on the other announcement
@@ -313,13 +353,15 @@ local function applyIsland(on)
     -- under OVERCAST: a hazy horizon is what makes the mid-flight world
     -- swap invisible -- there is no crisp distant geometry to pop. When
     -- the island is released for the flight, the sky spends the next ten
-    -- seconds clearing to EXTRASUNNY, timed to be fully bright before the
-    -- doors open. Per-client weather, like the storm's: nothing syncs it --
-    -- and since 2026-08-31 nothing writes it from here either; see wantSky.
+    -- seconds clearing to the base sky (EXTRASUNNY; XMAS in the festive
+    -- months), timed to be fully bright before the doors open. Per-client
+    -- weather, like the storm's: nothing syncs it -- and since 2026-08-31
+    -- nothing writes it from here either; see wantSky. The names are roles
+    -- since #399; see restingSky.
     if on then
-        wantSky('OVERCAST', 0.0)
+        wantSky(restingSky(), 0.0)
     else
-        wantSky('EXTRASUNNY', 10.0)
+        wantSky('base', 10.0)
     end
 end
 
@@ -351,6 +393,7 @@ RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     matchState   = d.state
     islandWanted = wantIsland(d.state)
+    followState()
 end)
 
 RegisterNetEvent(BR.Net.SNAPSHOT)
@@ -358,6 +401,7 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     if payload and payload.match and payload.match.state then
         matchState   = payload.match.state
         islandWanted = wantIsland(payload.match.state)
+        followState()
     end
 end)
 

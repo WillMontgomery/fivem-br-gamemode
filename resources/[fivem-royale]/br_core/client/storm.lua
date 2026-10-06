@@ -3319,7 +3319,15 @@ local wxSince = 0         -- when it first wanted that
 local wxOwned = false     -- whether we have overridden the weather at all
 local wxDryAt = nil       -- when to force the ground dry after clearing
 local wxUndryAt = nil     -- when to hand rain control back to the engine
-local WX_NAME = { clear = 'EXTRASUNNY', thunder = 'THUNDER' }
+-- ═══ THE ALL-CLEAR IS THE BASE SKY, NOT A SUMMER ONE (#399) ═══
+--
+-- `base` is a ROLE (br_lib/shared/world.lua's SKY_ROLE): EXTRASUNNY, as it
+-- always was -- and XMAS in the festive months, so leaving the storm in
+-- December comes back to snow rather than to a permanent EXTRASUNNY. The claim
+-- is still held for the rest of the match, as before; what it MEANS follows the
+-- festive sky, and the drying snap re-asserts whatever that is. Caught in the
+-- storm is THUNDER either way.
+local WX_NAME = { clear = 'base', thunder = 'THUNDER' }
 
 --- Is the storm's claim the sky on screen? (client/world.lua resolves it.)
 --- @return boolean

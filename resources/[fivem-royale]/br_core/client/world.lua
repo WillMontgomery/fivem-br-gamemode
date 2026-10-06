@@ -42,6 +42,18 @@
 -- 'br:env:releaseIsland' into br_environment), so ipl.lua triggers
 -- 'br:world:island' into here. The handshake at the bottom of this file covers
 -- the start order in which its first announcement would otherwise be lost.
+--
+-- ═══ THE FESTIVE SKY (#399) ═══
+--
+--   "yes snow is meant to reach the players"         -- owner, 2026-10-05
+--
+-- December and January, on the festive crates' switch, everywhere. The storm's
+-- all-clear and the island's skies are ROLES now (`base`, `lobby`, `cover`;
+-- br_lib/shared/world.lua's SKY_ROLE), and this file reads each as a weather
+-- for the one fact the server sends, BR.World.festive: the clear sky is XMAS
+-- instead of EXTRASUNNY, the lobby XMAS instead of OVERCAST, and the bus climb
+-- keeps its OVERCAST cover. THUNDER is THUNDER and a console sky is the
+-- console's. Not festive, every role is the weather it always was.
 
 -- ---------------------------------------------------------------------- sky ---
 
@@ -57,9 +69,16 @@ local claims = { override = nil, storm = nil, island = nil }
 local wrote = nil
 
 --- Write whatever wins, if it is not what the engine already has.
+---
+--- A ROLE IS READ HERE, FOR THE FESTIVE SKY (#399). The island and the storm
+--- claim the clear sky as `base` and the lobby's as `lobby` (shared/world.lua's
+--- SKY_ROLE), and resolveSky reads each as a weather for BR.World.festive, the
+--- server's one fact this client holds. Not festive, every role is the weather
+--- it always was, so `wrote` sees the same names as before and writes the same.
 --- @param force boolean|nil  write even if the winner is unchanged
-local function push(force)
-    local name, blend = BR.World.resolveSky(claims)
+--- @param blendOver number|nil  blend over this many seconds instead of the claim's
+local function push(force, blendOver)
+    local name, blend = BR.World.resolveSky(claims, BR.World.isFestive())
 
     if name == nil then
         -- NOBODY WANTS THE SKY. Hand it back to the engine rather than picking
@@ -74,6 +93,7 @@ local function push(force)
 
     if name == wrote and not force then return end
     wrote = name
+    if blendOver then blend = blendOver end
 
     if blend and blend > 0.0 then
         SetWeatherTypeOvertimePersist(name, blend + 0.0)
@@ -118,19 +138,24 @@ end
 --- than as a second command here.
 --- @return string|nil name, string|nil source
 function BR.World.sky()
-    local name = BR.World.resolveSky(claims)
+    local name, _, src = BR.World.resolveSky(claims, BR.World.isFestive())
     if name == nil then return nil, nil end
-    for _, src in ipairs(BR.World.SKY_SOURCES) do
-        if claims[src] and claims[src].name == name then return name, src end
-    end
-    return name, nil
+    return name, src
 end
 
 -- ----------------------------------------------------------------- override ---
 
 --- Fold the override into the claim table and apply it.
-local function applyOverride()
+---
+--- AND THE FESTIVE SKY, WHICH RIDES THE SAME PAYLOAD (#399). When only it moved
+--- -- `brfestive`, a `brseason` switch, the first of December -- the sky under
+--- every claim changes at once, and it BLENDS (BR.Config.World.festiveBlendSec)
+--- rather than snapping: a whole server watching the island turn white. A
+--- console sky that changed in the same payload keeps its own snap.
+--- @param festiveMoved boolean|nil
+local function applyOverride(festiveMoved)
     local wx = BR.World.weatherName()
+    local overrideMoved = (claims.override and claims.override.name) ~= wx
     claims.override = wx and { name = wx, blend = 0.0 } or nil
 
     -- THE RAIN KNOB COMES BACK WITH THE SKY. client/storm.lua's drying schedule
@@ -146,7 +171,11 @@ local function applyOverride()
     -- of this file exists to avoid.
     if wx then SetRainLevel(-1.0) end
 
-    push()
+    if festiveMoved and not overrideMoved then
+        push(false, BR.Config.World.festiveBlendSec + 0.0)
+    else
+        push()
+    end
 end
 
 -- THE WHOLE OVERRIDE ARRIVES EVERY TIME, and a field that is not in it is the
@@ -154,8 +183,9 @@ end
 -- client on br:ready, which is what a late joiner gets.
 RegisterNetEvent(BR.Net.WORLD_SET)
 AddEventHandler(BR.Net.WORLD_SET, function(p)
+    local wasFestive = BR.World.isFestive()
     BR.World.applyPayload(p)
-    applyOverride()
+    applyOverride(BR.World.isFestive() ~= wasFestive)
 end)
 
 -- ------------------------------------------------------------- the island ---
