@@ -6041,9 +6041,11 @@ do
     end
     ok(ended == last, 'ENDED carries the last weather: the sky holds under the verdict')
     sent = {}
+    -- A hold that comes due while the verdict is up, then the rest of the way out.
+    m.sky.nextAt = fakeTime + 1000
     stepFor(400000)
-    ok(#eventsOf(BR.Net.WORLD_CYCLE) == 0, 'and nothing turns after it',
-       #eventsOf(BR.Net.WORLD_CYCLE))
+    ok(#eventsOf(BR.Net.WORLD_CYCLE) == 0, 'and nothing turns after it, even a hold that '
+       .. 'comes due under the verdict', #eventsOf(BR.Net.WORLD_CYCLE))
 
     -- brfestive OFF MID-MATCH: the plain sky to everyone, then the stop.
     m = form()
