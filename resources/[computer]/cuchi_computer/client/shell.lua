@@ -32,7 +32,9 @@
 --                                  nothing is up to show it. A last word
 --                                  carries `toast`, the server's text for it
 --   Clock(h, m)                    the game's hour and minute, for the taskbar
---   Close(why) -> ok               take it down (death, storm, teardown)
+--   Close(why) -> ok               take it down (death, storm, teardown); the
+--                                  storm's close ('offline') plays a blue
+--                                  screen and a power-off first (below)
 --   IsOpen() -> boolean
 --
 -- EVENTS (local, raised for br_core's client; never net events)
@@ -59,6 +61,13 @@
 --   * The resource that opened it is remembered. If it stops while the desktop
 --     is up, the desktop comes down: br_core restarting must never strand a
 --     player inside a computer nobody is driving any more.
+--   * THE STORM'S CLOSE KEEPS THE VOTE FOR ITS SCREEN, AND NO LONGER (round
+--     4, owner 2026-10-06: "If they're using it while the storm moves and
+--     they're now outside the storm, the computer should show a BSOD quickly
+--     followed by a CRT-style visual power off"). The page plays both (br.js,
+--     about 2.1 s) and says when the screen is dark (`off`); the vote goes
+--     then -- or at SHUTDOWN_MAX_MS whatever the page does, or at once if
+--     anything else needs the computer first (an Open, a resource stopping).
 --
 -- ═══ AND NOTHING HERE TRUSTS THE PAGE ═══
 --
@@ -100,20 +109,66 @@ local isOpen = false
 local terminalId = nil
 local opener = nil
 
+--- br_core's why when THE STORM took the terminal in use: the one online
+--- rule's own word (br_core/server/terminal.lua's session check closes with
+--- BR.TerminalSolve.offlineWhy's answer). Only this close plays out.
+local STORM = 'offline'
+--- The longest the storm's close may hold the vote: the page's blue screen
+--- and power-off take about 2.1 s (br.js BSOD_MS + CRT_MS), and this is
+--- the backstop for a page that never says its screen went dark.
+local SHUTDOWN_MAX_MS = 4000
+
+--- The storm's close while the page plays it: { id, why, n, opener }, or
+--- nil. `n` tells a backstop timer from a later close's.
+local closing = nil
+local closings = 0
+
+--- The vote released, and br_core told the computer is gone.
+local function release(id, why)
+    SetNuiFocus(false, false)
+    TriggerEvent('cuchi_computer:closed', id, why)
+end
+
+--- The storm's close is over -- its screen went dark, its backstop fired,
+--- or something needs the computer first. False when none was playing.
+--- @return boolean
+local function finishClosing()
+    local c = closing
+    if not c then return false end
+    closing = nil
+    release(c.id, c.why)
+    return true
+end
+
 --- Every way the desktop goes away. Releases the focus vote, tells br_core.
+--- THE STORM'S CLOSE (br_core's 'offline') tells the page to play its blue
+--- screen and power-off, and releases when the page says the screen is dark
+--- (`off`) or SHUTDOWN_MAX_MS has passed: until then the computer is no
+--- longer open (nothing is updated, run or shown on it -- an answer landing
+--- now is toasted, as for any closed computer) but the screen and the
+--- keyboard are still its. Every other close releases at once, as always.
 --- @param why string
 --- @param tellPage boolean  false when the page already closed itself
 --- @return boolean  false when it was not open
 local function shut(why, tellPage)
     if not isOpen then return false end
     isOpen = false
+    local id, by = terminalId, opener
+    terminalId, opener = nil, nil
+    if tellPage and why == STORM then
+        SendNUIMessage({ type = 'br:close', storm = true })
+        closings = closings + 1
+        local n = closings
+        closing = { id = id, why = why, n = n, opener = by }
+        Citizen.SetTimeout(SHUTDOWN_MAX_MS, function()
+            if closing and closing.n == n then finishClosing() end
+        end)
+        return true
+    end
     if tellPage then
         SendNUIMessage({ type = 'br:close' })
     end
-    SetNuiFocus(false, false)
-    local id = terminalId
-    terminalId, opener = nil, nil
-    TriggerEvent('cuchi_computer:closed', id, why)
+    release(id, why)
     return true
 end
 
@@ -150,6 +205,11 @@ local function open(state, copy, catalog, desktop)
     if not pageReady then
         return false, 'page-not-ready'
     end
+
+    -- A storm's close still on screen is over now: its terminal's close is
+    -- said, and the vote it held released, before this opening takes one.
+    -- The page drops the screen when the open reaches it.
+    finishClosing()
 
     -- Opened again while up: a refresh. The page treats it the same way.
     if isOpen and terminalId ~= state.terminalId then
@@ -246,6 +306,14 @@ RegisterNUICallback('missed', function(data, cb)
     cb({ ok = true })
 end)
 
+-- THE STORM'S CLOSE IS OVER ON SCREEN: br.js played the blue screen and the
+-- power-off, and the screen is dark. The vote goes now. Only a storm's close
+-- that is still playing is ended by it; at any other time it does nothing.
+RegisterNUICallback('off', function(_, cb)
+    finishClosing()
+    cb({ ok = true })
+end)
+
 -- Escape, or the taskbar's power button. The page has already hidden itself.
 RegisterNUICallback('close', function(data, cb)
     local why = type(data) == 'table' and data.why or nil
@@ -274,10 +342,15 @@ end)
 AddEventHandler('onResourceStop', function(res)
     if res == RES then
         -- The engine drops this resource's focus vote by itself when it stops
-        -- (ResourceUIScripting.cpp); br_core still has to hear it went.
-        shut('stopped', false)
+        -- (ResourceUIScripting.cpp); br_core still has to hear it went --
+        -- a storm's close still playing included.
+        if not shut('stopped', false) then finishClosing() end
     elseif opener ~= nil and res == opener then
         shut('opener-stopped', true)
+    elseif closing and closing.opener == res then
+        -- The resource that opened it stopped mid storm's close: nobody is
+        -- left to wait for, and the vote goes now.
+        finishClosing()
     end
 end)
 

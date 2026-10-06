@@ -154,6 +154,15 @@ BR.Config.Terminals = {
         -- Under the boot spinner, for the 7 to 10 seconds the desktop takes
         -- to start (bootMinMs .. bootMaxMs below, a new pick every boot).
         shell_boot = 'Starting up...',
+        -- WRITTEN (2026-10-06, round 4). THE STORM'S CLOSE: the blue screen
+        -- the whole computer shows for about 1.5 s when the storm takes the
+        -- terminal while it is in use, before it powers off (owner: "the
+        -- computer should show a BSOD quickly followed by a CRT-style visual
+        -- power off"). A parody of Windows 10's: its sad face, its one
+        -- sentence, and a stop code that names the storm, top to bottom.
+        bsod_face = ':(',
+        bsod_text = 'Your terminal ran into a problem and needs to shut down.',
+        bsod_code = 'Stop code: STORM_REACHED_TERMINAL',
         -- VERBATIM (owner, 2026-10-05, round 2: 'change the app name to
         -- "Control Tower"'). The app's name, in its three places: under its
         -- desktop icon...

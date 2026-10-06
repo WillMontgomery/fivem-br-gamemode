@@ -161,9 +161,9 @@
    place of the app's icon. br.js puts .br-loading on the tab for the length
    of the load and TAKES IT OFF when the page shows -- and the animation goes
    with the class, rather than being paused, because a running animation
-   repaints the NUI every frame (#385). This is the only animation in this
-   file, and it lives only under .br-loading (ui-src/scripts/check-terminal.mjs
-   holds both). */
+   repaints the NUI every frame (#385). It lives only under .br-loading; the
+   file's one other animation is the storm's close's, run once under .br-crt
+   (below, round 4). ui-src/scripts/check-terminal.mjs holds both. */
 #terminal-window-title.br-loading::before {
     box-sizing: border-box;
     background: none;
@@ -356,4 +356,98 @@ body.br-resizing-nw, body.br-resizing-se { cursor: nwse-resize; }
    date -- a battle royale's world has none to show. */
 #date {
     display: none;
+}
+
+/*
+ * THE STORM'S CLOSE (owner, 2026-10-06, round 4: "If they're using it while
+ * the storm moves and they're now outside the storm, the computer should show
+ * a BSOD quickly followed by a CRT-style visual power off").
+ *
+ * br.js adds #br-off over everything when br_core closes the computer for
+ * the storm: a black screen holding the PICTURE, #br-bsod -- a Windows 10
+ * style blue screen in the copy block's words (bsod_face, bsod_text,
+ * bsod_code), in the desktop's own face. After 1.5 s br.js adds .br-crt and
+ * the picture powers off as an old tube does: it squeezes to a bright
+ * horizontal line, the line shrinks to a dot, and the dot goes out, over
+ * 0.6 s (br.js CRT_MS). Then #br-off is REMOVED from the page, its animation
+ * with it -- the animation runs once, never repeats, and lives only under
+ * .br-crt (#385: nothing animates forever; ui-src/scripts/check-terminal.mjs
+ * holds both).
+ */
+#br-off {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 2147483000;
+    overflow: hidden;
+    background-color: #000000;
+    cursor: none;
+    user-select: none;
+}
+
+#br-bsod {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    box-sizing: border-box;
+    padding: 14vh 12vw 0;
+    background-color: #0078d7;
+    color: #ffffff;
+    font-family: 'Ubuntu', sans-serif;
+    font-weight: 300;
+    transform-origin: 50% 50%;
+}
+
+#br-bsod p {
+    margin: 0;
+}
+
+#br-bsod .br-bsod-face {
+    font-size: 15vh;
+    line-height: 1;
+    margin-bottom: 5vh;
+}
+
+#br-bsod .br-bsod-text {
+    max-width: 60vw;
+    font-size: 3.4vh;
+    line-height: 1.35;
+    margin-bottom: 5vh;
+}
+
+#br-bsod .br-bsod-code {
+    font-size: 1.9vh;
+}
+
+#br-off.br-crt > #br-bsod {
+    animation: br-crt-off 0.6s ease-in 1 forwards;
+}
+
+@keyframes br-crt-off {
+    0% {
+        transform: scale(1, 1);
+        background-color: #0078d7;
+        color: #ffffff;
+        opacity: 1;
+    }
+    40% {
+        transform: scale(1, 0.004);
+        background-color: #ffffff;
+        color: #ffffff;
+        opacity: 1;
+    }
+    75% {
+        transform: scale(0.004, 0.004);
+        background-color: #ffffff;
+        opacity: 1;
+    }
+    100% {
+        transform: scale(0, 0);
+        background-color: #ffffff;
+        opacity: 0;
+    }
 }

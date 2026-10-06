@@ -925,6 +925,10 @@ do
     eq(T.session(2), nil, 'walking away closes it')
     ok(T.session(3) ~= nil, 'a player still there keeps theirs')
     ok(lastOf(BR.Net.TERMINAL_CLOSE, 1) ~= nil, 'and the client is told')
+    -- ROUND 4: only the storm's close is the storm's. The client's computer
+    -- plays its blue screen and power-off for 'offline' alone.
+    eq(lastOf(BR.Net.TERMINAL_CLOSE, 1).why, 'state', 'going down closes with its own why')
+    eq(lastOf(BR.Net.TERMINAL_CLOSE, 2).why, 'walked', 'and walking away with its own')
 
     -- The wall closes past the terminal.
     m.storm = BR.BuildStormRecord(8, C0.x + 3000.0, C0.y, 50.0, C0.x + 3000.0, C0.y, 0.0,
@@ -933,9 +937,12 @@ do
     fire(BR.Net.TERMINAL_RUN, 4, { terminalId = 'tower', functionId = 'storm_reveal' })
     eq(#eventsOf(BR.Net.TERMINAL_RESULT, 4), 0, 'a run after the storm took the terminal is not answered')
     eq(T.session(4), nil, 'the computer is closed instead')
+    eq(lastOf(BR.Net.TERMINAL_CLOSE, 4).why, 'offline',
+        'with the storm\'s why, offline: the client plays its blue screen for that alone')
     eq(Y.holds(4), true, 'and the key is not spent')
     jobs['terminal.sessions'](500)
     eq(T.session(3), nil, 'the check closes the other one too')
+    eq(lastOf(BR.Net.TERMINAL_CLOSE, 3).why, 'offline', 'the session check closes it with the storm\'s why too')
 end
 
 describe('terminals: Storm reveal with nothing to reveal is refused no_storm, and spends nothing')

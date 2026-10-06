@@ -136,6 +136,7 @@ The table below is the lines outside the functions' own:
 | Key | Who reads it |
 |---|---|
 | `shell_boot` | At the terminal: under the boot spinner, for the 7-10 s boot |
+| `bsod_face`, `bsod_text`, `bsod_code` | At the terminal: the storm's close (round 4), the whole computer's blue screen for 1.5 s before it powers off -- a Windows 10 parody: its sad face, one sentence, and a stop code naming the storm |
 | `desktop_icon` | At the terminal: under the app's desktop icon |
 | `window_title` | At the terminal: the browser's one tab |
 | `app_title` | At the terminal: the top bar's title, and nowhere else in the app |
@@ -344,7 +345,7 @@ fails a row missing a line, and a built row with no server entry.
 | `Update(state)` | The new state, while open on that terminal: after a run, and once a second (TERMINAL_INFO). |
 | `Result(result) -> shown` | `{ functionId, ok, code, runMs?, cost?, balance?, toast? }`, while open; `false` when nothing is up to show it, and `br_core` toasts `toast` instead. |
 | `Clock(h, m)` | The game's hour and minute for the taskbar: `br_core` reads the clock (never writes it) while the computer is open and sends it on each new minute. |
-| `Close(why) -> ok` | Takes it down and releases focus. |
+| `Close(why) -> ok` | Takes it down and releases focus. **The storm's close** (`why` `'offline'`, round 4) plays out first: the page shows its blue screen and power-off (about 2.1 s) and the focus is released -- and `cuchi_computer:closed` raised -- when the page says the screen is dark (NUI callback `off`), at the latest 4 s on (`SHUTDOWN_MAX_MS`), or at once if an `Open` or a resource stopping needs the computer first. Meanwhile it is no longer open: nothing is updated, run or shown on it, so an answer landing then is toasted. Every other why releases at once. |
 | `IsOpen() -> boolean` | |
 
 Local events it raises for `br_core`'s client (never net events):
@@ -362,6 +363,23 @@ focus: FiveM keeps one vote per resource. Every way out releases it, including
 itself stopping. `br_core`'s client tells the key layer on `opened` and
 `closed` (`BR.Keys.setExternalScreen`), so no key action fires under the
 computer, and Escape is the computer's while it is up and for three frames after.
+
+**The storm's close** (round 4, owner 2026-10-06: "If they're using it while
+the storm moves and they're now outside the storm, the computer should show a
+BSOD quickly followed by a CRT-style visual power off"). The server's session
+check closes a session whose terminal the storm took with the one online rule's
+word, `offline` (a Lockdown's is `locked`; going down, walking away and the rest
+keep their own). The shell sends the page `{ type: 'br:close', storm: true }`
+for that why alone. `br.js` shuts the computer at once -- the app unloaded, a
+held last word handed back -- but keeps its page up for the screen: `#br-off`,
+a black screen over everything holding a Windows 10 style blue screen in the
+copy block's `bsod_*` words, for `BSOD_MS` (1.5 s); then `.br-crt` collapses the
+picture to a bright line, a dot and black over `CRT_MS` (0.6 s, br.css's
+`br-crt-off`, run once); then the screen is REMOVED from the page, the page
+hidden, and the shell told `off`, which releases the focus vote -- the keyboard
+goes back to the game. An opening that arrives first drops the screen at once.
+A run already loading still lands by the door's contract: its last word reaches
+a computer that is no longer open and is toasted.
 
 ## The page and the app
 

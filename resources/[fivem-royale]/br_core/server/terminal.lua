@@ -778,7 +778,11 @@ function T.session(src)
 end
 
 --- Is a real session's player still alive, in its match, at its terminal, and
---- is the terminal still live? Nil when so; otherwise why not.
+--- is the terminal still live? Nil when so; otherwise why not. A terminal
+--- that is not live answers the one rule's own word -- 'offline' (the storm)
+--- or 'locked' (a Lockdown) -- and the close carries it to the client, whose
+--- computer plays a blue screen and a power-off for the storm's alone (round
+--- 4, cuchi_computer's client/shell.lua).
 --- @return string|nil
 local function gone(src, session, now)
     if session.dev then return nil end
@@ -791,8 +795,7 @@ local function gone(src, session, now)
     local site = T.site(session.terminalId)
     if not site then return 'site' end
     if not inReach(e, site) then return 'walked' end
-    if not T.online(site, m, now) then return 'offline' end
-    return nil
+    return T.offlineWhy(site, m, now)
 end
 
 --- Close every real session whose player died, went down, left the match or

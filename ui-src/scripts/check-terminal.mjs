@@ -47,7 +47,11 @@
  *                  br.css only under .br-loading, never paused in place, and
  *                  terminal.css animates nothing -- T1's rule, that nothing
  *                  may animate forever, for the symbol that replaces a
- *                  Spinner. In App.tsx back and forward step the history at
+ *                  Spinner. The one other (round 4): the storm's close's
+ *                  CRT power-off, in br.css only under .br-crt, run once for
+ *                  br.js's CRT_MS, on the blue screen br.js removes from the
+ *                  page when it ends (and when an opening comes first).
+ *                  In App.tsx back and forward step the history at
  *                  once (model.ts `step`), reload loads (`nav`), and nothing
  *                  pushes a page but a load's end (`arrive`). br.js takes the
  *                  class off on every way out, and caps how long it stays.
@@ -234,18 +238,40 @@ for (const f of sources) {
   }
   const brCss = readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.css'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  const brJs = code(readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.js'), 'utf8'), false)
+  // Round 4 adds the one other thing allowed to move: the storm's close's CRT
+  // power-off, under .br-crt -- on the blue screen br.js REMOVES from the page
+  // when it ends -- run once, for br.js's CRT_MS.
+  const crtMs = Number(/const CRT_MS = (\d+);/.exec(brJs)?.[1])
   for (const m of brCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/(^|[;\s])animation(-name)?\s*:/.test(m[2])) continue
     // Every selector in the list must need the class, so a :not() is taken out
     // first: `:not(.br-loading)` names the class and animates everything else.
-    const loading = m[1].split(',').every((s) => /\.br-loading(?![\w-])/.test(s.replace(/:not\([^()]*\)/g, ' ')))
-    if (/(^|[;\s])animation(-name)?\s*:/.test(m[2]) && !loading) {
-      fail('T10 page loads', 'cuchi_computer/nui/br.css', `${m[1].trim()} animates outside .br-loading`)
+    const needs = (cls) => m[1].split(',')
+      .every((s) => new RegExp(`\\.${cls}(?![\\w-])`).test(s.replace(/:not\([^()]*\)/g, ' ')))
+    if (needs('br-crt')) {
+      const run = /animation\s*:([^;]*)/.exec(m[2])?.[1] ?? ''
+      const secs = Number(/(?:^|\s)(\d*\.?\d+)s(?:\s|$)/.exec(run)?.[1])
+      if (/infinite/.test(m[2]) || !/(?:^|\s)1(?:\s|$)/.test(run)) {
+        fail('T10 page loads', 'cuchi_computer/nui/br.css', `${m[1].trim()}: the CRT power-off must run once (iteration 1, never infinite)`)
+      }
+      if (!Number.isFinite(crtMs) || Math.round(secs * 1000) !== crtMs) {
+        fail('T10 page loads', 'cuchi_computer/nui/br.css', `${m[1].trim()} runs ${secs}s, not br.js CRT_MS (${crtMs} ms)`)
+      }
+    } else if (!needs('br-loading')) {
+      fail('T10 page loads', 'cuchi_computer/nui/br.css', `${m[1].trim()} animates outside .br-loading and .br-crt`)
     }
   }
   if (/animation-play-state/.test(brCss)) {
     fail('T10 page loads', 'cuchi_computer/nui/br.css', 'pauses an animation in place -- take its class off instead')
   }
-  const brJs = code(readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.js'), 'utf8'), false)
+  // The storm's blue screen: taken off the page when the CRT has run, and by
+  // an opening that arrives first -- its animation never outlives it.
+  const dropBlue = /const dropBlue = \(tell\) => \{([\s\S]*?)\n    \};/.exec(brJs)?.[1] ?? ''
+  if (!/removeChild\(blue\.el\)/.test(dropBlue) || !/setTimeout\(\(\) => dropBlue\(true\), CRT_MS\)/.test(brJs)
+      || !/const open = \(msg\) => \{[^}]*?dropBlue\(false\);/.test(brJs)) {
+    fail('T10 page loads', 'cuchi_computer/nui/br.js', 'the storm\'s blue screen is not removed from the page after CRT_MS and by an opening -- its animation would outlive it')
+  }
   const unload = /const unload = \(\) => \{([\s\S]*?)\n    \};/.exec(brJs)?.[1] ?? ''
   if (!/tabLoading\(null\)/.test(unload)) {
     fail('T10 page loads', 'cuchi_computer/nui/br.js', 'unloading the app (its window\'s close, the computer\'s) leaves the tab\'s symbol on')

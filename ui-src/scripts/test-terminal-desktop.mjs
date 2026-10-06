@@ -109,11 +109,33 @@ function desktop() {
     'app-terminal-title': title,
   }
 
+  // Elements br.js makes (the storm's blue screen, round 4): enough of the DOM
+  // to build one, put it on the page and take it off again.
+  const element = (tag) => {
+    const el = {
+      tag, id: '', className: '', textContent: '', children: [], parentNode: null, classList: classList(),
+      appendChild: (c) => {
+        c.parentNode = el
+        el.children.push(c)
+        return c
+      },
+      removeChild: (c) => {
+        el.children = el.children.filter((x) => x !== c)
+        c.parentNode = null
+        return c
+      },
+    }
+    el.style = styleFor(page, null)
+    return el
+  }
+  const body = element('body')
+  body.style.display = 'none'
   const document = {
     getElementById: (id) => els[id] || null,
     addEventListener: listen('document'),
     createTextNode: (t) => ({ t }),
-    body: { style: styleFor(page, null), classList: classList() },
+    createElement: element,
+    body,
   }
   const ctx = {
     document,
@@ -193,11 +215,15 @@ function desktop() {
     /** From the frame's window whatever it holds: br.js's own gate decides. */
     fromFrame: (msg) => message({ brTerminal: 1, ...msg }, appWindow),
     /** br:open, and the boot's timer run out. */
-    boot: () => {
-      D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
+    boot: (copy = {}, catalog = {}) => {
+      D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy, catalog, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
       const t = page.timers.splice(0)
       t.forEach((cb) => cb())
     },
+    /** The page's <body>: shown ('block') while the computer is up. */
+    shown: () => body.style.display,
+    /** The storm's blue screen on the page (round 4), or undefined. */
+    blue: () => body.children.find((c) => c.id === 'br-off'),
     icon: () => icon.onclick(),
     quit: () => buttons.quit.onclick(),
     minimize: () => {
@@ -493,15 +519,106 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   eq(G.tabLoading(), false, 'and after the computer closed, nobody\'s again')
 }
 
-// ── the stylesheet: the only animation is the tab's, and only while it loads ──
+// ── the storm's close (owner, 2026-10-06, round 4) ──
+const BSOD = { bsod_face: ':(', bsod_text: 'It ran into a problem.', bsod_code: 'Stop code: STORM' }
+{
+  // "the computer should show a BSOD quickly followed by a CRT-style visual
+  // power off": the blue screen for 1.5 s, the power-off for 0.6 s, then gone.
+  const D = desktop()
+  D.boot(BSOD)
+  D.icon()
+  D.fromApp({ type: 'ready' })
+  D.fromApp({ type: 'loading', on: true, ms: 2000 })
+  D.lua({ type: 'br:close', storm: true })
+  const el = D.blue()
+  ok(el !== undefined, 'the storm\'s close puts the blue screen on the page')
+  eq(D.shown(), 'block', 'and the page stays up to show it')
+  const pic = el && el.children[0]
+  eq(pic && pic.id, 'br-bsod', 'the picture inside the black screen')
+  eq(pic && pic.children.map((p) => `${p.className}=${p.textContent}`).join(' | '),
+    'br-bsod-face=:( | br-bsod-text=It ran into a problem. | br-bsod-code=Stop code: STORM',
+    'its words are the copy block\'s, face, sentence and stop code')
+  eq(D.frameSrc(), 'about:blank', 'the app is unloaded at once')
+  eq(D.tabLoading(), false, 'and its tab stops loading')
+  eq(D.posted().join(' | '), '', 'the shell is told nothing yet: no close (br_core closed it), no off')
+  D.escape()
+  eq(D.posted().join(' | '), '', 'Escape does nothing while the screen plays')
+  D.wait(1499)
+  eq(el.classList.contains('br-crt'), false, 'the blue screen stays for 1.5 s')
+  D.wait(1)
+  eq(el.classList.contains('br-crt'), true, 'then the CRT power-off starts (.br-crt, br.css\'s one run of it)')
+  D.wait(599)
+  ok(D.blue() !== undefined && D.posted().length === 0, 'and runs for 0.6 s')
+  D.wait(1)
+  eq(D.blue(), undefined, 'then the screen is REMOVED from the page, its animation with it (#385)')
+  eq(D.shown(), 'none', 'the page is hidden, as every close hides it')
+  eq(D.posted().join(' | '), 'off', 'and the shell hears the screen is dark: the keyboard goes back')
+  eq(D.pending(), 0, 'no timer is left behind')
+  D.wait(10000)
+  eq(D.posted().join(' | '), 'off', 'and nothing more happens')
+}
+{
+  // A last word the app never showed goes back for a toast at once, before
+  // the screen ends.
+  const D = desktop()
+  D.boot(BSOD)
+  D.icon()
+  D.fromApp({ type: 'ready' })
+  D.quit()
+  D.result(done('Held.'))
+  D.lua({ type: 'br:close', storm: true })
+  eq(D.posted().join(' | '), 'missed:Held.', 'the held answer is handed back as the storm closes it')
+  D.wait(2100)
+  eq(D.posted().join(' | '), 'missed:Held. | off', 'then the screen goes dark')
+  D.result(done('After.'))
+  eq(D.posted().join(' | '), 'missed:Held. | off | missed:After.', 'an answer after it is handed straight back')
+}
+{
+  // An opening while the screen plays drops it without a word -- the shell
+  // let go of it before it opened again.
+  const D = desktop()
+  D.boot(BSOD)
+  D.lua({ type: 'br:close', storm: true })
+  D.wait(700)
+  D.lua({ type: 'br:open', state: { terminalId: 'lab' }, copy: BSOD, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
+  eq(D.blue(), undefined, 'an opening takes the blue screen down at once')
+  eq(D.shown(), 'block', 'and the page is up for its boot')
+  D.wait(5000)
+  eq(D.posted().join(' | '), '', 'the old screen\'s timers are gone: no off, no close')
+  eq(D.page.timers.length, 1, 'and the new boot runs')
+}
+{
+  // The storm's close reaching a page that is not open: nothing to play.
+  const D = desktop()
+  D.lua({ type: 'br:close', storm: true })
+  eq(D.blue(), undefined, 'a closed page shows no blue screen')
+  eq(D.posted().join(' | '), 'off', 'and says off at once, so the shell does not wait')
+  // ...and every other close is as it was: at once, no screen.
+  const E = desktop()
+  E.boot(BSOD)
+  E.icon()
+  E.fromApp({ type: 'ready' })
+  E.lua({ type: 'br:close' })
+  ok(E.blue() === undefined && E.shown() === 'none', 'br_core\'s other closes: hidden at once, no blue screen')
+  eq(E.posted().join(' | '), '', 'and no off')
+  E.boot(BSOD)
+  E.escape()
+  ok(E.blue() === undefined && E.posted().join(' | ') === 'close:escape', 'nor Escape')
+}
+
+// ── the stylesheet: the tab's symbol while it loads, and the CRT's one run ──
 {
   const css = readFileSync(join(ROOT, '..', 'resources', '[computer]', 'cuchi_computer', 'nui', 'br.css'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   const animated = rules.filter((m) => /(^|;|\s)animation(-name)?\s*:/.test(m[2]))
-  eq(animated.length, 1, 'br.css animates one thing')
-  ok(animated.every((m) => m[1].includes('#terminal-window-title.br-loading')),
-    'the tab\'s icon, and only under .br-loading -- the class br.js takes off', animated.map((m) => m[1].trim()))
+  eq(animated.length, 2, 'br.css animates two things')
+  ok(animated.some((m) => m[1].includes('#terminal-window-title.br-loading')),
+    'the tab\'s icon, under .br-loading -- the class br.js takes off', animated.map((m) => m[1].trim()))
+  const crt = animated.find((m) => m[1].includes('#br-off.br-crt'))
+  ok(crt !== undefined, 'and the blue screen\'s power-off, under .br-crt -- on an element br.js removes')
+  ok(crt && !/infinite/.test(crt[2]) && /\b1\b/.test(crt[2]) && /0\.6s/.test(crt[2]),
+    'which runs once, for 0.6 s (br.js CRT_MS), and never repeats', crt && crt[2].trim())
   ok(!/animation-play-state/.test(css), 'never paused in place: removed with its class')
 }
 

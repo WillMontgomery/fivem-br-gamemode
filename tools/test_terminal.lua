@@ -1086,6 +1086,12 @@ local function bootShell(opts)
     C.focus = { held = false, cursor = false, calls = {} }
     C.nui, C.events, C.callbacks, C.exports, C.handlers = {}, {}, {}, {}, {}
     C.invoking = opts.invoking or 'br_core'
+    -- FiveM's Citizen.SetTimeout, held for the test to fire (the storm's
+    -- close's backstop, round 4). Not the global SetTimeout: PART D's server
+    -- shares this Lua state and times its runs with that one.
+    C.timers = {}
+    Citizen = Citizen or {}
+    Citizen.SetTimeout = function(ms, fn) C.timers[#C.timers + 1] = { ms = ms, fn = fn } end
 
     function GetCurrentResourceName() return 'cuchi_computer' end
     function GetInvokingResource() return C.invoking end
@@ -1189,6 +1195,100 @@ do
     ok(C.focus.held == true and eventsNamed('cuchi_computer:opened')[#eventsNamed('cuchi_computer:opened')].args[1] == 'lab',
         'and the second opens with the vote taken again')
     C.exports.Close('done')
+end
+
+-- ROUND 4 (owner, 2026-10-06): "If they're using it while the storm moves and
+-- they're now outside the storm, the computer should show a BSOD quickly
+-- followed by a CRT-style visual power off." br_core's close for the storm is
+-- the one rule's word, 'offline'.
+describe('round 4: the storm\'s close plays its screen, then gives the keyboard back')
+do
+    bootShell()
+    cb('NUIOk', nil)
+    C.exports.Open(STATE, COPY)
+    eq(C.exports.Close('offline'), true, 'br_core closes it for the storm')
+    local m = C.nui[#C.nui]
+    ok(m and m.type == 'br:close' and m.storm == true, 'the page is told: the storm\'s close, to play out')
+    eq(C.focus.held, true, 'the keyboard and the mouse stay the computer\'s while its screen plays')
+    eq(#eventsNamed('cuchi_computer:closed'), 0, 'and br_core is not told it closed yet')
+    eq(C.exports.IsOpen(), false, 'but it is no longer open')
+    eq(C.exports.Result({ functionId = 'scan', ok = true, code = 'done', toast = 'Done.' }), false,
+        'an answer landing now is not shown on it -- br_core toasts it, as for any closed computer')
+    local r = cb('run', { functionId = 'storm_reveal' })
+    ok(r and r.ok == false and #eventsNamed('cuchi_computer:request') == 0, 'and a run asks nothing')
+    local nuiBefore = #C.nui
+    C.exports.Update(STATE)
+    eq(#C.nui, nuiBefore, 'nor is the state pushed to it')
+    eq(C.exports.Close('offline'), false, 'a second close does nothing')
+    cb('off', {})
+    ok(C.focus.held == false and C.focus.cursor == false, 'the page says the screen is dark: focus released')
+    local cl = eventsNamed('cuchi_computer:closed')
+    ok(#cl == 1 and cl[1].args[1] == 'dev' and cl[1].args[2] == 'offline', 'and br_core hears it closed, for the storm')
+    cb('off', {})
+    eq(#eventsNamed('cuchi_computer:closed'), 1, '`off` when nothing plays does nothing')
+
+    -- THE BACKSTOP: a page that never says its screen went dark.
+    C.exports.Open(STATE, COPY)
+    C.exports.Close('offline')
+    local t = C.timers[#C.timers]
+    ok(t and t.ms == 4000, 'a backstop is set for 4 s', t and t.ms)
+    eq(C.focus.held, true, 'the screen plays')
+    t.fn()
+    ok(C.focus.held == false and #eventsNamed('cuchi_computer:closed') == 2, 'it fires: focus released, br_core told')
+    C.exports.Open(STATE, COPY)
+    C.exports.Close('offline')
+    local t2 = C.timers[#C.timers]
+    t.fn()
+    eq(C.focus.held, true, 'an earlier close\'s backstop does not end a later one')
+    t2.fn()
+    eq(C.focus.held, false, 'its own does')
+
+    -- AN OPENING WHILE THE SCREEN PLAYS: the storm's close is said first.
+    C.exports.Open(STATE, COPY)
+    C.exports.Close('offline')
+    local before = #eventsNamed('cuchi_computer:closed')
+    local other = { terminalId = 'lab', functions = {}, keyHeld = true, squadUsed = false }
+    eq(C.exports.Open(other, COPY), true, 'an opening while the screen plays opens')
+    local cl2 = eventsNamed('cuchi_computer:closed')
+    ok(#cl2 == before + 1 and cl2[#cl2].args[1] == 'dev' and cl2[#cl2].args[2] == 'offline',
+        'after br_core hears the storm\'s close')
+    local op = eventsNamed('cuchi_computer:opened')
+    ok(C.focus.held == true and op[#op].args[1] == 'lab', 'and the new one holds the vote')
+    C.timers[#C.timers].fn()
+    eq(C.focus.held, true, 'the old screen\'s backstop does not close the new opening')
+    cb('off', {})
+    eq(C.focus.held, true, 'nor does a late `off`')
+    C.exports.Close('done')
+
+    -- EVERY OTHER CLOSE IS AS IT WAS: at once, and no screen.
+    for _, why in ipairs({ 'locked', 'state', 'walked', 'season', 'dev', 'storm' }) do
+        C.exports.Open(STATE, COPY)
+        C.exports.Close(why)
+        local last = C.nui[#C.nui]
+        ok(last.type == 'br:close' and last.storm == nil and C.focus.held == false,
+            ('a close for %s: at once, and no blue screen'):format(why))
+    end
+    C.exports.Open(STATE, COPY)
+    cb('close', { why = 'escape' })
+    ok(C.focus.held == false and C.nui[#C.nui].type ~= 'br:close', 'Escape: at once, as ever')
+
+    -- THE RESOURCES STOPPING MID-SCREEN: br_core still hears it closed.
+    C.exports.Open(STATE, COPY)
+    C.exports.Close('offline')
+    local n = #eventsNamed('cuchi_computer:closed')
+    for _, fn in ipairs(C.handlers.onResourceStop or {}) do fn('cuchi_computer') end
+    local cl3 = eventsNamed('cuchi_computer:closed')
+    ok(C.focus.held == false and #cl3 == n + 1 and cl3[#cl3].args[2] == 'offline',
+        'this resource stopping mid-screen: released, and br_core told')
+    bootShell()
+    cb('NUIOk', nil)
+    C.exports.Open(STATE, COPY)
+    C.exports.Close('offline')
+    for _, fn in ipairs(C.handlers.onResourceStop or {}) do fn('br_core') end
+    ok(C.focus.held == false and #eventsNamed('cuchi_computer:closed') == 1,
+        'the resource that opened it stopping mid-screen: released at once')
+    for _, fn in ipairs(C.handlers.onResourceStop or {}) do fn('br_ui') end
+    eq(#eventsNamed('cuchi_computer:closed'), 1, 'and some other resource stopping is nothing')
 end
 
 describe('the page asks; the shell checks the shape and names the terminal')
@@ -1843,6 +1943,38 @@ do
     eq(#S.notices, 0, 'and the server toasts nothing: it answered the open session')
     W.shell.callbacks.missed({ toast = held.result.toast }, function() end)
     eq(#B.toasts, 1, 'handed back twice, toasted once')
+end
+
+describe('round 4: the storm closes the computer while a run loads -- the screen plays, the run still lands')
+do
+    -- The storm's close reaches the client (TERMINAL_CLOSE, 'offline') while
+    -- Scan loads. The computer plays its blue screen and keeps the keyboard;
+    -- the run completes as the door's contract says, and its last word, which
+    -- no computer can show now, is toasted once.
+    local W = wire()
+    W.devOpen({ 'volts=300' })
+    W.run('scan')
+    ok(C.nui[#C.nui].result.code == 'running', 'Scan is accepted and loading')
+    BR = W.clientBR
+    fireB(BR.Net.TERMINAL_CLOSE, { why = 'offline' })
+    local m = C.nui[#C.nui]
+    ok(m.type == 'br:close' and m.storm == true, 'the page plays the storm\'s close')
+    eq(C.focus.held, true, 'and the keyboard is still the computer\'s')
+    eq(B.screens[#B.screens], 'terminal', 'br_core\'s key layer still says the computer has it')
+    BR = W.serverBR
+    flush()
+    W.toClient()
+    local copy = W.serverBR.Config.Terminals.copy
+    local want = W.serverBR.TerminalSolve.pick(copy, 'scan_done', false) .. ' Your new balance is: 100 Volts.'
+    ok(#B.toasts == 1 and B.toasts[1].text == want, 'the run landed: its done line, toasted',
+        B.toasts[1] and B.toasts[1].text)
+    eq(C.nui[#C.nui].type, 'br:close', 'and nothing more was sent to the screen')
+    BR = W.clientBR
+    W.shell.callbacks.off({}, function() end)
+    eq(C.focus.held, false, 'the screen dark: focus released')
+    eq(B.screens[#B.screens], 'none', 'and the key layer has the keyboard back')
+    W.pump()
+    eq(#B.toasts, 1, 'toasted once')
 end
 
 print = realPrint

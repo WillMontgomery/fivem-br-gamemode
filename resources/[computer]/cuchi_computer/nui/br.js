@@ -19,6 +19,10 @@
 //     { type: "br:result", result }      the server's answer to a run
 //     { type: "br:clock", h, m }         the game's time, on each new minute
 //     { type: "br:close" }               br_core closed it (no answer is sent)
+//     { type: "br:close", storm: true }  THE STORM took the terminal in use
+//                                        (round 4): a blue screen, a CRT
+//                                        power-off, then closed -- and `off`
+//                                        is said when the screen is dark
 //
 //   page -> Lua (NUI callbacks registered by client/shell.lua)
 //     run    { functionId, options? }    the app asked; the server decides
@@ -26,6 +30,9 @@
 //     missed { toast }                   a run's last word the app never showed
 //                                        (below): its toast, for br_core to
 //                                        toast instead
+//     off    {}                          the storm's close has played and the
+//                                        screen is dark: the shell gives the
+//                                        keyboard back
 //
 //   page <-> app (postMessage with the iframe; every message carries
 //   brTerminal: 1, and each side only listens to the other's window)
@@ -69,6 +76,20 @@
 //     latest TAB_LOAD_SLACK_MS after the load was due to end -- so nothing
 //     here can spin forever, whatever the app does.
 //
+// ═══ ROUND 4 (owner, 2026-10-06) ═══
+//
+//   * "If they're using it while the storm moves and they're now outside the
+//     storm, the computer should show a BSOD quickly followed by a CRT-style
+//     visual power off." br_core's close for the storm (and only that close)
+//     arrives with `storm: true`: the computer shuts at once -- the app
+//     unloaded, nothing more run, updated or shown -- but its SCREEN stays:
+//     a Windows-style blue screen in the copy block's words (bsod_*) for
+//     BSOD_MS, then the picture collapses to a bright line, a dot, and black
+//     over CRT_MS (br.css's .br-crt, the animation's only run), then the
+//     screen is gone and the shell is told (`off`), which gives the keyboard
+//     back. THE SCREEN AND ITS ANIMATION ARE REMOVED from the page when it
+//     ends (#385), and an opening that arrives first drops them at once.
+//
 // NOTHING HERE DECIDES ANYTHING. A run is forwarded only while the desktop is
 // open and only with a well-formed id, and that is shape-checking, not
 // permission: the server checks the terminal, the key and the squad.
@@ -107,6 +128,12 @@
     const TAB_LOAD_SLACK_MS = 1000;
     const TAB_LOAD_MAX_MS = 15000;
     const TAB_LOADING = "br-loading";
+    // THE STORM'S CLOSE (round 4): the blue screen's time, then the CRT
+    // power-off's -- br.css's br-crt-off runs for exactly CRT_MS. The shell
+    // gives the keyboard back when it hears `off`, and by itself at 4 s.
+    const BSOD_MS = 1500;
+    const CRT_MS = 600;
+    const CRT_CLASS = "br-crt";
 
     let isOpen = false;
     // Bumped by every open and close, so a boot timer that outlives the close
@@ -137,6 +164,8 @@
     // The timer that takes the tab's loading symbol down if the app never
     // does, or null.
     let tabTimer = null;
+    // The storm's close on screen: { el, timer }, or null.
+    let blue = null;
 
     const post = (name, body) => fetch(`https://${RES}/${name}`, {
         method: "POST",
@@ -424,6 +453,9 @@
     };
 
     const open = (msg) => {
+        // A storm's close still on screen is over: the shell let go of it
+        // before this opening, so it goes without a word.
+        dropBlue(false);
         state = msg.state && typeof msg.state === "object" ? msg.state : null;
         copy = msg.copy && typeof msg.copy === "object" ? msg.copy : {};
         catalog = msg.catalog && typeof msg.catalog === "object" ? msg.catalog : {};
@@ -450,12 +482,13 @@
         });
     };
 
-    const close = (why, fromLua) => {
+    // `keep`: the page stays up, for the storm's close to play on it.
+    const close = (why, fromLua, keep) => {
         if (!isOpen) return;
         isOpen = false;
         session++;
 
-        document.body.style.display = "none";
+        if (!keep) document.body.style.display = "none";
         Load(false);
         endResize();
 
@@ -482,6 +515,56 @@
         held = null;
 
         if (!fromLua) post("close", { why });
+    };
+
+    // ── the storm's close (round 4) ─────────────────────────────────────
+
+    // The blue screen taken down: the element and its animation REMOVED from
+    // the page (#385: nothing is left that could animate), the page hidden as
+    // every close hides it, and -- `tell` -- the shell told the screen is
+    // dark, which gives the keyboard back. An opening that arrives first
+    // drops it without a word: the shell has already let go.
+    const dropBlue = (tell) => {
+        if (!blue) return;
+        clearTimeout(blue.timer);
+        if (blue.el.parentNode) blue.el.parentNode.removeChild(blue.el);
+        blue = null;
+        if (!isOpen) document.body.style.display = "none";
+        if (tell) post("off");
+    };
+
+    // THE STORM TOOK THE TERMINAL IN USE. The computer shuts as every one of
+    // br_core's closes shuts it -- the app unloaded, its windows forgotten,
+    // a held last word handed back -- but the page stays up for its screen:
+    // the blue screen (#br-off, over everything, the copy block's bsod_*
+    // lines) for BSOD_MS, then .br-crt collapses the picture to a line, a
+    // dot and black over CRT_MS, then it is gone. A storm's close reaching a
+    // page that is not open has nothing to show, and says so at once.
+    const stormClose = () => {
+        if (!isOpen) {
+            post("off");
+            return;
+        }
+        close("closed", true, true);
+        const el = document.createElement("div");
+        el.id = "br-off";
+        const pic = document.createElement("div");
+        pic.id = "br-bsod";
+        [["br-bsod-face", "bsod_face"], ["br-bsod-text", "bsod_text"], ["br-bsod-code", "bsod_code"]]
+            .forEach(([cls, key]) => {
+                const p = document.createElement("p");
+                p.className = cls;
+                p.textContent = line(key);
+                pic.appendChild(p);
+            });
+        el.appendChild(pic);
+        document.body.appendChild(el);
+        blue = { el, timer: null };
+        blue.timer = setTimeout(() => {
+            if (!blue || blue.el !== el) return;
+            el.classList.add(CRT_CLASS);
+            blue.timer = setTimeout(() => dropBlue(true), CRT_MS);
+        }, BSOD_MS);
     };
 
     const fromApp = (d) => {
@@ -554,7 +637,8 @@
                 if (isOpen) showClock(d.h, d.m);
                 break;
             case "br:close":
-                close("closed", true);
+                if (d.storm === true) stormClose();
+                else close("closed", true);
                 break;
         }
     });
