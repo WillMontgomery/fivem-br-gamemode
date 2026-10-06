@@ -19932,6 +19932,19 @@ do
             local rest = #D.tcLog
             run(D, 2000)
             ok(#D.tcLog == rest, 'and the torn-down grade calls nothing after that')
+
+            -- ...AND A SLOT THAT IS NOT OURS AT TEARDOWN IS LEFT ALONE.
+            local E = newStormClient()
+            E.pedAt = OUT
+            run(E, 7000)
+            E.foreign('blackNwhite', 0.8)
+            step(E, 100)
+            E.env.BR.State.match.state = E.env.BR.MatchState.CLEANUP
+            before = #E.tcWrites()
+            step(E, 100)
+            ok(#writes(E, before) == 0 and E.tc.name == 'blackNwhite',
+               'teardown does not clear a modifier the dev put over the red',
+               table.concat(writes(E, before), ','))
         end
 
         -- ── A MODIFIER WHOSE NAME CANNOT BE READ IS NEVER OVERWRITTEN ──
