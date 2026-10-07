@@ -93,11 +93,13 @@ export function FunctionPage(props: {
   const currency = props.currency
   const reason = !available && fn && fn.reason ? (say(fn.reason) || say('unavailable')) : ''
   // THE COST AND THE BOX SAY THE VOLTS IN THE VOLTS STYLE: {volts} is the
-  // run's cost, the figure and the word.
-  const volts = { volts: def.cost }
-  const cost = def.cost > 0 ? voltsLine(say('cost_line_volts'), currency, volts) : voltsLine(say('cost_line'), currency)
+  // run's cost, the figure and the word. The amounts are written inside the
+  // voltsLine call, where check-terminal T12 (e) can see where they go.
+  const cost = def.cost > 0
+    ? voltsLine(say('cost_line_volts'), currency, { volts: def.cost })
+    : voltsLine(say('cost_line'), currency)
   const body = def.cost > 0
-    ? voltsLine(say('confirm_body_volts'), currency, volts)
+    ? voltsLine(say('confirm_body_volts'), currency, { volts: def.cost })
     : voltsLine(say('confirm_body'), currency)
 
   const details = [

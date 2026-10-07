@@ -552,9 +552,17 @@ holds #385's findings over it, and that every line goes through the speaker.
   a word of it). The top bar's balance is a TopNavigation utility's string, so
   the bar is marked `terminal-topnav-volts` while the balance is its first
   utility and `terminal.css` dresses that one the same way.
-  `check-terminal.mjs` T12 fails a Volts amount drawn any other way, a Volts
-  token filled as text, a copy line that says Volts read without the style,
-  and a style or a face that is not the game's.
+  `check-terminal.mjs` T12 holds it: a Volts token filled as text, a copy
+  line that says Volts read without the style (or read only where T12 cannot
+  see, such as an option's label), a copy line its reader cannot read (one
+  not written `key = '...',`), and a style or a face that is not the game's
+  all fail; and outside `model.ts` and `Volts.tsx` the currency's
+  word and a Volts figure (`.cost`, `.volts`, `.balance`) may be read only
+  where its closed list allows -- handed to `VoltsAmount`, `voltsLine(s)` or
+  `voltsText`, passed down as `currency={currency}`, compared with 0 or null,
+  or parsed by `bridge.ts` -- so `${f.cost} ${currency}`, `{f.cost}` or a
+  formatted figure beside the word fails the build (the review of round 4
+  found both of the first two passing it).
 - **"Squads!"** (the owner's words, verbatim): on a `squadWide` function, in a
   squad match only, a blue dotted "Squads!" after the card's title and the
   function page's -- a Cloudscape popover's text trigger, as in the AWS

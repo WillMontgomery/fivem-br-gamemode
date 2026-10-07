@@ -73,6 +73,12 @@
  *                  control's is taken off by terminal.css's one
  *                  `box-shadow: none` rule, which names nothing else (the
  *                  preferences' toggle knobs kept a 1 px shade until this).
+ *   T12 volts      every Volts amount and every mention of the word in the
+ *                  game's Volts style (round 4), drawn by Volts.tsx and
+ *                  composed nowhere else: a closed list of the reads of the
+ *                  currency's word and a Volts figure (see T12 below).
+ *   T13 squads     "Squads!" only on a squadWide row and only in a squad
+ *                  match, by the state's own squadMatch (round 4).
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -129,6 +135,140 @@ function code(text, strings) {
       out += c
       i++
     }
+  }
+  return out
+}
+
+/**
+ * Comments and every string's text blanked, but a template's `${...}` kept as
+ * code -- `${f.cost} ${currency}` is two reads, which code(text, true) would
+ * blank with the rest of the template (T12 (e)).
+ */
+function codeOnly(text) {
+  let out = ''
+  const holes = [] // for each open `${`: the braces opened inside it
+  let inTemplate = false
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]
+    const n = text[i + 1]
+    if (inTemplate) {
+      if (c === '\\') {
+        out += text.slice(i, i + 2).replace(/[^\n]/g, ' ')
+        i += 2
+      } else if (c === '`') {
+        out += c
+        inTemplate = false
+        i++
+      } else if (c === '$' && n === '{') {
+        out += '${'
+        holes.push(0)
+        inTemplate = false
+        i += 2
+      } else {
+        out += c === '\n' ? '\n' : ' '
+        i++
+      }
+    } else if (c === '/' && n === '/') {
+      while (i < text.length && text[i] !== '\n') { out += ' '; i++ }
+    } else if (c === '/' && n === '*') {
+      const end = text.indexOf('*/', i + 2)
+      const stop = end < 0 ? text.length : end + 2
+      out += text.slice(i, stop).replace(/[^\n]/g, ' ')
+      i = stop
+    } else if (c === '"' || c === "'") {
+      let j = i + 1
+      while (j < text.length && text[j] !== c) j += text[j] === '\\' ? 2 : 1
+      out += c + text.slice(i + 1, j).replace(/[^\n]/g, ' ') + (j < text.length ? c : '')
+      i = j + 1
+    } else if (c === '`') {
+      out += c
+      inTemplate = true
+      i++
+    } else if (c === '{' && holes.length > 0) {
+      holes[holes.length - 1]++
+      out += c
+      i++
+    } else if (c === '}' && holes.length > 0) {
+      if (holes[holes.length - 1] === 0) {
+        holes.pop()
+        inTemplate = true
+      } else {
+        holes[holes.length - 1]--
+      }
+      out += c
+      i++
+    } else {
+      out += c
+      i++
+    }
+  }
+  return out
+}
+
+/** The innermost bracket open around `at`: { ch, at }, or null. */
+function opener(t, at) {
+  let depth = 0
+  for (let i = at - 1; i >= 0; i--) {
+    const c = t[i]
+    if (c === ')' || c === ']' || c === '}') depth++
+    else if (c === '(' || c === '[' || c === '{') {
+      if (depth === 0) return { ch: c, at: i }
+      depth--
+    }
+  }
+  return null
+}
+
+/** Where the bracket open at `at` closes, or -1. */
+function closer(t, at) {
+  let depth = 0
+  for (let i = at; i < t.length; i++) {
+    const c = t[i]
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/** The name called by the `(` at `at`, or ''. */
+function calleeAt(t, at) {
+  return /([\w$]+)\s*$/.exec(t.slice(Math.max(0, at - 80), at))?.[1] ?? ''
+}
+
+/** Every object pattern a name is bound by: `const { a, b } = x`, `({ a }: P)`, `({ a }) =>`. */
+function patterns(t) {
+  const out = []
+  for (const m of t.matchAll(/\{[^{}]*\}/g)) {
+    const before = t.slice(Math.max(0, m.index - 20), m.index)
+    const after = t.slice(m.index + m[0].length, m.index + m[0].length + 20)
+    const binding = /\b(const|let|var)\s*$/.test(before) && /^\s*(=(?![=>])|of\b|in\b)/.test(after)
+    const param = /[(,]\s*$/.test(before) && /^\s*(:|\)\s*=>|=(?![=>]))/.test(after)
+    if (binding || param) out.push({ at: m.index, text: m[0] })
+  }
+  return out
+}
+
+/** Is the name at `at` one bound by a plain pattern: `const { ..., name } = x` or `({ ..., name }: P)`? */
+function destructured(t, at) {
+  const o = opener(t, at)
+  if (!o || o.ch !== '{') return false
+  const close = closer(t, o.at)
+  if (close < 0 || !/^\{[\s\w$,]*\}$/.test(t.slice(o.at, close + 1))) return false
+  const before = t.slice(0, o.at)
+  const after = t.slice(close + 1)
+  return (/\b(const|let)\s*$/.test(before) && /^\s*=(?![=>])/.test(after)) || (/\(\s*$/.test(before) && /^\s*:/.test(after))
+}
+
+/** Every template `${...}`'s code: { at, text }. */
+function interpolations(t) {
+  const out = []
+  for (let i = t.indexOf('${'); i >= 0; i = t.indexOf('${', i + 2)) {
+    const close = closer(t, i + 1)
+    out.push({ at: i, text: t.slice(i + 2, close < 0 ? t.length : close) })
   }
   return out
 }
@@ -523,15 +663,31 @@ function subject(selector) {
 //       by App.tsx for the top bar's balance, a TopNavigation utility's string,
 //       which must be the bar's FIRST utility while App.tsx marks the bar
 //       `terminal-topnav-volts`
-//   (b) no fill() fills a Volts token ({volts}, {cost}, {balance}) as text
+//   (b) no fill() fills a Volts token ({volts}, {cost}, {balance}) or the
+//       currency's word as text
 //   (c) every line of the copy block that says Volts -- a Volts token, or the
 //       currency's word (config/market.lua) -- is read only as
 //       voltsLine(say(...)) or voltsLines(say(...)), by its key or, for a
-//       function's own `<id>_<part>` line, by the template that reads it
+//       function's own `<id>_<part>` line, by the template that reads it;
+//       every such line is one it SEES read so (a Volts option label, read
+//       by a template it cannot follow, fails); and the reader reads every
+//       line of the block (a line written any other way than `key = '...',`
+//       would be one it skips)
 //   (d) the style is the game's: `.terminal-volts` and the top bar's
 //       utility in Anton and `--terminal-volts-color`, which is br_ui's
 //       `--color-volts`, and Anton's face from the bundled woff2 (the build's
 //       half is in "The build", below)
+//   (e) NOTHING ELSE COMPOSES ONE (review of round 4: `${f.cost} ${currency}`
+//       and `<span>{f.cost.toLocaleString()} {currency}</span>` both got
+//       past (a)-(d)). Outside model.ts and Volts.tsx, the currency's word
+//       (`currency`, `.currency`) and a Volts figure (`.cost`, `.volts`,
+//       `.balance`) are read ONLY where listed below -- a closed list, so a
+//       new way to write one fails until it is one of these: handed to
+//       VoltsAmount, voltsLine(s) or voltsText, passed down as
+//       `currency={currency}`, compared with 0 or null, or parsed by
+//       bridge.ts. No destructuring or ['...'] reads of them, no template,
+//       `+`, String() or number formatting of them, and no string that
+//       writes the currency's word.
 const FONT_FILES = {
   'assets/anton-latin-400-normal.woff2': 'files/anton-latin-400-normal.woff2',
   'assets/LICENSE-OFL-1.1-anton.txt': 'LICENSE',
@@ -564,8 +720,8 @@ const FONT_FILES = {
           if (withStrings[i] === '(') depth++
           else if (withStrings[i] === ')') depth--
         }
-        if (/\b(volts|cost|balance)\s*[:,}]/.test(withStrings.slice(m.index, i))) {
-          fail(R, r, 'fills a Volts token with fill() -- voltsLine(text, currency, { volts }) draws it in the Volts style')
+        if (/\b(volts|cost|balance|currency)\s*[:,}]/.test(withStrings.slice(m.index, i))) {
+          fail(R, r, 'fills a Volts token or the currency\'s word with fill() -- voltsLine(text, currency, { volts }) draws it in the Volts style')
         }
       }
     }
@@ -576,14 +732,29 @@ const FONT_FILES = {
   const lua = readFileSync(join(cfgDir, 'terminals.lua'), 'utf8')
   const currency = /BR\.Config\.Market\.currency\s*=\s*'([^']+)'/.exec(readFileSync(join(cfgDir, 'market.lua'), 'utf8'))?.[1]
   if (!currency) fail(R, 'br_lib/config/market.lua', 'no currency name found -- cannot tell which lines say Volts')
-  const ids = [...lua.matchAll(/\{ id = '([a-z_]+)'/g)].map((m) => m[1])
+  const ids = [...lua.matchAll(/\{ id = '([a-z][a-z0-9_]*)'/g)].map((m) => m[1])
   const word = new RegExp(`\\b${currency ?? 'Volts'}\\b`)
+  const LINE = /^\s+([a-z][a-z0-9_]*) = (['"])(.*)\2,$/
   const voltsKeys = new Set()
-  for (const m of lua.matchAll(/^\s+([a-z_]+) = (['"])(.*)\2,$/gm)) {
+  for (const m of lua.matchAll(new RegExp(LINE.source, 'gm'))) {
     if (/\{(volts|cost|balance)\}/.test(m[3]) || word.test(m[3])) voltsKeys.add(m[1].replace(/_solo$/, ''))
   }
   if (!voltsKeys.has('no_volts') || !voltsKeys.has('balance_new')) {
     fail(R, 'br_lib/config/terminals.lua', 'the reader found no Volts lines -- it is broken, not the copy clean')
+  }
+  // THE READER READS EVERY LINE OF THE COPY BLOCK. A line written any other
+  // way is one it would skip, Volts or not: round 4's first build left
+  // `offline ='...'` (no space), and the reader read no key with a digit in
+  // it (the options' `_60`, `_120`) until the review.
+  const block = /^ {4}copy = \{\n([\s\S]*?)^ {4}\},$/m.exec(lua)?.[1]
+  if (!block || block.split('\n').length < 100) {
+    fail(R, 'br_lib/config/terminals.lua', 'no copy block found -- a reader that reads nothing passes everything')
+  }
+  for (const l of (block ?? '').split('\n')) {
+    if (l.trim() === '' || /^\s*--/.test(l)) continue
+    if (!LINE.test(l)) {
+      fail(R, 'br_lib/config/terminals.lua', `a copy line the reader cannot read, so would not see Volts in: "${l.trim().slice(0, 60)}" -- write it as key = '...', on one line`)
+    }
   }
   const tsx = sources.filter((f) => extname(f) === '.tsx').map((f) => [rel(f), code(readFileSync(f, 'utf8'), false)])
   const wrapped = (text, at) => /volts(Line|Lines)\(\s*$/.test(text.slice(Math.max(0, at - 40), at))
@@ -591,14 +762,23 @@ const FONT_FILES = {
     const id = ids.find((i) => key.startsWith(`${i}_`))
     const reads = [new RegExp(`say\\(\\s*'${key}'\\s*\\)`, 'g')]
     if (id) reads.push(new RegExp(`say\\(\\s*\`[^\`]*\\}${key.slice(id.length)}\`\\s*\\)`, 'g'))
+    let seen = 0
     for (const [r, text] of tsx) {
       for (const re of reads) {
         for (const m of text.matchAll(re)) {
           if (!wrapped(text, m.index)) {
             fail(R, r, `${m[0]} says Volts (${key}) but is not read as voltsLine(say(...)) -- its Volts would not be in the Volts style`)
+          } else {
+            seen++
           }
         }
       }
+    }
+    // A line that says Volts must be one this rule SEES read through
+    // voltsLine(s). One read some other way -- an option's label, by
+    // `${id}_opt_${o.id}_${c}` -- would be drawn as plain text, unseen.
+    if (seen === 0) {
+      fail(R, 'br_lib/config/terminals.lua', `${key} says Volts, but nothing reads it as voltsLine(say('${key}')) or by its function's \`\${id}_<part>\` -- its Volts would not be in the Volts style`)
     }
   }
 
@@ -627,6 +807,106 @@ const FONT_FILES = {
   if (!/@font-face\s*\{[^}]*font-family:\s*'Anton'[^}]*@fontsource\/anton\/files\/anton-latin-400-normal\.woff2/.test(css)) {
     fail(R, 'terminal/src/terminal.css', 'no @font-face for Anton from @fontsource/anton\'s latin woff2')
   }
+
+  // (e) Nothing else composes a Volts amount. Each read of the currency's
+  // word or a Volts figure, in every source but the two that draw them, is
+  // one of the reads listed here, or the build fails.
+  const DRAWS = new Set(['terminal/src/model.ts', 'terminal/src/Volts.tsx'])
+  const VOLTS_CALLS = new Set(['voltsLine', 'voltsLines', 'voltsText'])
+  for (const f of sources) {
+    const r = rel(f)
+    if (DRAWS.has(r)) continue
+    const raw = readFileSync(f, 'utf8')
+    const t = codeOnly(raw)
+    const bridge = r === 'terminal/src/bridge.ts'
+    const lineAt = (at) => t.slice(t.lastIndexOf('\n', at - 1) + 1, (t.indexOf('\n', at) + 1 || t.length + 1) - 1)
+    // bridge.ts's one read of the word: the catalog's currency, a string or ''.
+    const parsesWord = (at) => bridge && /^\s*functions, categories, currency: typeof v\.currency === ' +' \? v\.currency : '',$/.test(lineAt(at))
+    // Inside a voltsLine(s)( ... ) call's amounts: { volts: x.balance }.
+    const inAmounts = (at) => {
+      const brace = opener(t, at)
+      if (!brace || brace.ch !== '{') return false
+      const call = opener(t, brace.at)
+      return call !== null && call.ch === '(' && ['voltsLine', 'voltsLines'].includes(calleeAt(t, call.at))
+    }
+    const wholeArg = (s, e) => /[(,]\s*$/.test(t.slice(0, s)) && /^\s*[,)]/.test(t.slice(e))
+    const bad = (at, what) => {
+      const n = t.slice(0, at).split('\n').length
+      fail(R, `${r}:${n}`, `${what} -- a Volts amount is drawn by Volts.tsx (VoltsAmount, voltsLine) and composed nowhere else`)
+    }
+
+    // The word, bare: `currency`.
+    for (const m of t.matchAll(/(?<![\w$.])currency\b/g)) {
+      const s = m.index
+      const e = s + m[0].length
+      const before = t.slice(0, s)
+      const after = t.slice(e)
+      const call = opener(t, s)
+      const ok =
+        /^\??:\s*string\b/.test(after) // a type's member
+        || /^:\s*''/.test(after) // the empty catalog's
+        || /^=\{currency\}/.test(after) || (/\scurrency=\{$/.test(before) && /^\}/.test(after)) // passed down
+        || (call !== null && call.ch === '(' && VOLTS_CALLS.has(calleeAt(t, call.at)) && wholeArg(s, e)
+          && /,\s*$/.test(before)) // voltsLine(text, currency), voltsText(n, currency)
+        || (/\bconst $/.test(before) && /^ = (catalog|props)\.currency\n/.test(after)) // const currency = props.currency
+        || destructured(t, s) // const { ..., currency } = props, ({ say, currency }: ...)
+        || parsesWord(s)
+      if (!ok) bad(s, 'reads the currency\'s word here')
+    }
+    // A member: `.currency`, `.cost`, `.volts`, `.balance`.
+    for (const m of t.matchAll(/\??\.\s*(currency|cost|volts|balance)\b/g)) {
+      const s = m.index
+      const e = s + m[0].length
+      const before = t.slice(0, s)
+      const after = t.slice(e)
+      let ok
+      if (m[1] === 'currency') {
+        ok = /\bconst currency = (catalog|props)$/.test(before) && /^\n/.test(after) || parsesWord(s)
+      } else {
+        ok =
+          /^\s*(>|>=|<|<=|===|!==)\s*(0|null)\b/.test(after) // compared with 0 or null
+          || (/<VoltsAmount\s+n=\{\s*[\w$]+$/.test(before) && /^\s*\}/.test(after)) // <VoltsAmount n={f.cost}
+          || (/\bvoltsText\(\s*[\w$]+$/.test(before) && /^\s*,/.test(after)) // voltsText(state.volts, ...)
+          || (/[{,]\s*(volts|cost|balance):\s*[\w$]+$/.test(before) && /^(\s*\?\?\s*0)?\s*[,}]/.test(after)
+            && inAmounts(s)) // voltsLine(text, currency, { volts: flash.balance })
+          || (bridge && /\bnum\(\s*[\w$]+$/.test(before) && /^\s*\)/.test(after)) // bridge.ts: num(v.cost)
+          || (m[1] === 'cost' && /\bfilters$/.test(before)) // the Cost filter's free/paid, not a figure
+      }
+      if (!ok) bad(s, `reads ${m[1] === 'currency' ? 'the currency\'s word' : `a Volts figure (.${m[1]})`} here`)
+    }
+    // Ways around a member read: destructuring and ['...'].
+    for (const p of patterns(t)) {
+      if (/\b(cost|volts|balance)\b/.test(p.text)) bad(p.at, 'destructures a Volts figure')
+    }
+    const withStrings = code(raw, false)
+    for (const m of withStrings.matchAll(/\[\s*(['"`])(currency|cost|volts|balance)\1\s*\]/g)) {
+      bad(m.index, `reads ['${m[2]}']`)
+    }
+    // Composing one from a local (bridge.ts's `cost`, say): a template, `+`,
+    // String() or number formatting of a Volts name.
+    for (const x of interpolations(t)) {
+      if (/\b(currency|cost|volts|balance)\b/.test(x.text)) bad(x.at, 'writes a Volts name into a template')
+    }
+    const NAME = String.raw`[\w$.?]*\b(?:currency|cost|volts|balance)\b`
+    for (const re of [
+      new RegExp(String.raw`${NAME}\s*\+(?!\+)`, 'g'),
+      new RegExp(String.raw`(?<!\+)\+\s*${NAME}`, 'g'),
+      new RegExp(String.raw`${NAME}\s*\??\.\s*(toLocaleString|toString|toFixed|toPrecision|concat|padStart|padEnd)\b`, 'g'),
+      new RegExp(String.raw`\bString\(\s*${NAME}`, 'g'),
+      /\bIntl\s*\.\s*NumberFormat\b/g,
+    ]) {
+      for (const m of t.matchAll(re)) bad(m.index, `makes text of a Volts name: ${m[0].trim()}`)
+    }
+    // The word itself, written in a string (an import's path aside).
+    const bare = code(raw, true)
+    for (const m of withStrings.matchAll(new RegExp(`\\b${currency ?? 'Volts'}\\b`, 'g'))) {
+      if (bare[m.index] !== ' ' && bare[m.index] !== '\n') continue // code, not a string
+      const open = Math.max(withStrings.lastIndexOf("'", m.index), withStrings.lastIndexOf('"', m.index),
+        withStrings.lastIndexOf('`', m.index))
+      if (/\bfrom\s*$/.test(withStrings.slice(0, open))) continue
+      bad(m.index, `writes "${currency}" in a string -- the word is the catalog's currency, drawn by Volts.tsx`)
+    }
+  }
 }
 
 // T13: "SQUADS!" ONLY ON A SQUAD-WIDE ROW, AND ONLY IN A SQUAD MATCH (owner,
@@ -646,12 +926,24 @@ const FONT_FILES = {
     for (const m of text.matchAll(/<Squads\b/g)) {
       drawn++
       const line = text.slice(text.lastIndexOf('\n', m.index) + 1, m.index)
-      if (!/showsSquads\([^)]*\) \? $/.test(line)) {
-        fail(R, rel(f), '<Squads> is drawn without showsSquads(def, squadMatch) ? in front of it')
+      // The match's own answer, never a literal: `showsSquads(f, true)` would
+      // pass a looser pattern (the review of round 4).
+      if (!/showsSquads\((f|def), (state|props)\.squadMatch\) \? $/.test(line)) {
+        fail(R, rel(f), '<Squads> is drawn without showsSquads(def, state.squadMatch) ? in front of it')
       }
     }
   }
   if (drawn < 2) fail(R, 'terminal/src', `<Squads> is drawn ${drawn} time(s) -- a card's title and a function page's title each draw it`)
+  // And the squadMatch a page is handed is the state's, the speaker's own.
+  const app = code(readFileSync(join(SRC, 'src', 'App.tsx'), 'utf8'), false)
+  if (!/const squadMatch = state\?\.squadMatch === true\n/.test(app)) {
+    fail(R, 'terminal/src/App.tsx', 'squadMatch is not the state\'s own')
+  }
+  for (const f of sources.filter((s) => extname(s) === '.tsx')) {
+    for (const m of code(readFileSync(f, 'utf8'), false).matchAll(/\bsquadMatch=\{([^}]*)\}/g)) {
+      if (m[1] !== 'squadMatch') fail(R, rel(f), `hands a page squadMatch={${m[1]}} -- only the state's squadMatch`)
+    }
+  }
   const squads = code(readFileSync(join(SRC, 'src', 'Squads.tsx'), 'utf8'), false)
   if (!/say\('squads_link'\)/.test(squads) || !/say\('squads_popover'\)/.test(squads)
       || !/if \(link === '' \|\| body === ''\) return null/.test(squads)) {

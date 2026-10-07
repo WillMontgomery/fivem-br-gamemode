@@ -112,7 +112,7 @@ BR.Config.Terminals = {
         -- before the storm's close). NOT the world plate since round 4: a
         -- terminal outside the storm has no plate at all (owner, 2026-10-06:
         -- "no blip and no DUI - hence it's unusable").
-        offline ='This terminal is outside the storm and offline.',
+        offline = 'This terminal is outside the storm and offline.',
         -- WRITTEN (2026-10-06, wave A). A terminal a Lockdown has taken: the
         -- world plate's hint (nothing to press), a toast if the player presses
         -- anyway, and the app's reason.
