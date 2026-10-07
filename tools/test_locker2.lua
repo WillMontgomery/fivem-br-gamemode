@@ -162,11 +162,8 @@ do
     bad(function(a) a.c[3] = { 0, 0, 0 } end, 'a component with three numbers')
     local a = A.default('m')
     a.c[5][1] = 7
-    ok(A.validate(a), 'a bag is fine while the parachute-pack list is empty')
-    shared.BR.Config.Locker2.bagSkip.m = { 7 }
-    ok(not A.validate(a), 'and refused once the playtest lists it as a pack')
-    ok(A.validate(A.default('f')), 'the list is per sex')
-    shared.BR.Config.Locker2.bagSkip.m = {}
+    ok(A.validate(a), 'any bag drawable is fine: parachute packs are allowed (owner, 2026-10-07)')
+    eq(shared.BR.Config.Locker2.bagSkip, nil, 'and no list of packs is kept to refuse them')
 end
 
 describe('appearance.decode')
@@ -1159,10 +1156,12 @@ do
     local msg = W.nui(NUI.LOCKER2)
     eq(msg.tab, 'male', 'on its tab')
     ok(msg.edit and msg.edit.sex == 'm' and msg.edit.dirty == false, 'a clean draft, nothing to save')
-    eq(rowOf(msg, 'c5'), nil, 'the Bags row is hidden while no parachute pack is listed')
+    local bag = rowOf(msg, 'c5')
+    ok(bag and bag.n == 10, 'the Bags row lists every bag drawable, parachute packs included',
+        bag and bag.n)
     local hasBags = false
     for _, c in ipairs(msg.edit.cats) do if c == 'bags' then hasBags = true end end
-    ok(not hasBags, 'and so is its category')
+    ok(hasBags, 'and its category is in the anchor navigation')
     local top = rowOf(msg, 'c11')
     ok(top and top.kind == 'count' and top.v == 1 and top.n == 39, 'tops count 1/39: a gen9-only drawable skipped',
         top and (top.v .. '/' .. top.n))
@@ -1237,7 +1236,7 @@ do
     W.ui(NUICB.LOCKER2_SET, { k = 'sk', v = 46 })
     eq(W.ped().blend[2], 45, 'skin tone 46/46 is tone 45')
     W.ui(NUICB.LOCKER2_SET, { k = 'c5', v = 2 })
-    eq(W.ped().comps[5][1], 0, 'the hidden Bags row takes nothing')
+    eq(W.ped().comps[5][1], 1, 'the Bags row takes a bag')
     W.ui(NUICB.LOCKER2_SET, { k = 'zz', v = 1 })
 
     -- The camera.

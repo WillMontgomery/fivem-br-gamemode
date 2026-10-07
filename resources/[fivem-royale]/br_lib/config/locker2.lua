@@ -10,7 +10,9 @@
 -- part of the ped is being customized"; every item a row of `v/n` with
 -- previous, next (both wrapping) and reset to 1; "Next color" on an item with
 -- more than one color. Heritage is OUT, skin tone is IN; vests, bags, badges
--- and decals are IN; parachute packs are OUT. Everything is free.
+-- and decals are IN; parachute packs and helmets are IN too ("They're just
+-- cosmetic after all", owner, 2026-10-07), so every bag drawable is listed.
+-- Everything is free.
 --
 -- ═══ WHAT LIVES HERE AND WHAT DOES NOT ═══
 --
@@ -31,14 +33,6 @@ BR.Config.Locker2 = {
     shape = { m = 0, f = 21 },
     --- The undershirt that is no undershirt. "None" comes first in its row.
     undershirtNone = { m = 15, f = 14 },
-
-    --- Bag drawables (component 5) that are parachute packs, per sex. "No
-    --- parachute packs" (owner, 2026-10-07). SHIPS EMPTY: which drawables are
-    --- packs is a fact about the game build, found in the playtest with
-    --- `brlocker2 bags` (it logs the drawable GTA puts on mid-freefall). While a
-    --- sex's list is empty its Bags row is HIDDEN, so no pack can ship by
-    --- accident; the server refuses a listed drawable as `appearance`.
-    bagSkip = { m = {}, f = {} },
 
     --- Camera presets, by name: the bone the shot is built on, a z offset from
     --- it, the distance in front of the ped and the field of view. `behind`

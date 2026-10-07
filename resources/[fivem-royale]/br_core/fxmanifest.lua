@@ -193,7 +193,7 @@ shared_scripts {
     -- LOCKER V2 (#28, Season 2): its numbers and rows, and the appearance a
     -- custom ped is saved as. SHARED because the client builds an appearance
     -- and the server checks every one it stores; appearance.lua reads the
-    -- config's bagSkip and undershirt at call time, and the stock ids off
+    -- config's undershirt at call time, and the stock ids off
     -- config/peds.lua (above).
     '@br_lib/config/locker2.lua',
     '@br_lib/shared/appearance.lua',

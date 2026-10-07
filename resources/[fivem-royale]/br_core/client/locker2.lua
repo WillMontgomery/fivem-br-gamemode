@@ -386,16 +386,6 @@ end
 local CUSTOM = { male = 'm', female = 'f' }
 local TABS = { peds = true, stock = true, male = true, female = true }
 
---- Rows hidden for a sex: the Bags row while its parachute-pack list is
---- empty, so no pack can be picked before the playtest has listed them.
-local function hidden(k, sex)
-    if k == 'c5' then
-        local list = C().bagSkip[sex]
-        return type(list) ~= 'table' or #list == 0
-    end
-    return false
-end
-
 local function catOf(k)
     for _, cat in ipairs(C().categories) do
         for _, rk in ipairs(cat.rows) do
@@ -515,8 +505,7 @@ local function options(k, sex)
         local none = slot == 8 and C().undershirtNone[sex] or nil
         if none then list[1] = none end
         for d = 0, n - 1 do
-            if d ~= none and not gen9(ped, slot, d)
-               and not (slot == 5 and A.bagSkipped(sex, d)) then
+            if d ~= none and not gen9(ped, slot, d) then
                 list[#list + 1] = d
             end
         end
@@ -570,30 +559,28 @@ local function rowsFor(d)
     for _, cat in ipairs(C().categories) do
         local any = false
         for _, k in ipairs(cat.rows) do
-            if not hidden(k, d.sex) then
-                local kind, get = field(k)
-                if kind == 'slider' then
-                    local lo, hi, def = sliderRange(k)
-                    rows[#rows + 1] = { k = k, cat = cat.id, kind = 'slider', v = get(d.a),
-                                        min = lo, max = hi, def = def }
-                    any = true
-                elseif kind == 'count' then
-                    local list = options(k, d.sex)
-                    if list then
-                        local v = get(d.a)
-                        local pos = indexOf(list, v)
-                        if not pos then
-                            if not missingLogged[k .. '=' .. tostring(v)] then
-                                missingLogged[k .. '=' .. tostring(v)] = true
-                                print(('[br_core] locker2: %s %s is not on this build; shown as 1')
-                                    :format(k, tostring(v)))
-                            end
-                            pos = 1
+            local kind, get = field(k)
+            if kind == 'slider' then
+                local lo, hi, def = sliderRange(k)
+                rows[#rows + 1] = { k = k, cat = cat.id, kind = 'slider', v = get(d.a),
+                                    min = lo, max = hi, def = def }
+                any = true
+            elseif kind == 'count' then
+                local list = options(k, d.sex)
+                if list then
+                    local v = get(d.a)
+                    local pos = indexOf(list, v)
+                    if not pos then
+                        if not missingLogged[k .. '=' .. tostring(v)] then
+                            missingLogged[k .. '=' .. tostring(v)] = true
+                            print(('[br_core] locker2: %s %s is not on this build; shown as 1')
+                                :format(k, tostring(v)))
                         end
-                        rows[#rows + 1] = { k = k, cat = cat.id, kind = 'count', v = pos, n = #list,
-                                            colors = colorsOf(k, d.a, ped) }
-                        any = true
+                        pos = 1
                     end
+                    rows[#rows + 1] = { k = k, cat = cat.id, kind = 'count', v = pos, n = #list,
+                                        colors = colorsOf(k, d.a, ped) }
+                    any = true
                 end
             end
         end
@@ -820,7 +807,7 @@ end
 local function stepRow(k, delta)
     local d = S.draft
     local kind, get, set = field(k)
-    if kind ~= 'count' or hidden(k, d.sex) or not catOf(k) then return false end
+    if kind ~= 'count' or not catOf(k) then return false end
     local list = options(k, d.sex)
     if not list then return false end
     local pos = indexOf(list, get(d.a)) or 1
@@ -832,7 +819,7 @@ end
 local function setRow(k, v)
     local d = S.draft
     local kind, get, set = field(k)
-    if not kind or hidden(k, d.sex) or not catOf(k) then return false end
+    if not kind or not catOf(k) then return false end
     v = math.tointeger(tonumber(v))
     if v == nil then return false end
     if kind == 'slider' then
@@ -854,7 +841,7 @@ end
 
 local function nextColor(k)
     local d = S.draft
-    if not catOf(k) or hidden(k, d.sex) then return false end
+    if not catOf(k) then return false end
     local ped = PlayerPedId()
     local n = colorsOf(k, d.a, ped)
     if n <= 1 then return false end
@@ -1401,14 +1388,6 @@ end)
 -- ---------------------------------------------------------------------------
 
 RegisterCommand('brlocker2', function(_, args)
-    local ped = PlayerPedId()
-    if args[1] == 'bags' then
-        -- The parachute packs for bagSkip: run this mid-freefall.
-        print(('[br_core] locker2: bag drawable %d texture %d (model %s, parachute state %d)')
-            :format(GetPedDrawableVariation(ped, 5), GetPedTextureVariation(ped, 5),
-                    tostring(GetEntityModel(ped)), GetPedParachuteState(ped)))
-        return
-    end
     print('=== locker2 ===')
     print(('  on       %s'):format(tostring(claims())))
     print(('  first    %s'):format(S.first))
@@ -1416,7 +1395,6 @@ RegisterCommand('brlocker2', function(_, args)
     print(('  peds     %d'):format(#S.peds))
     print(('  tab      %s  draft %s'):format(tostring(S.tab), S.draft and (S.draft.dirty and 'dirty' or 'clean') or 'none'))
     print(('  applied  %s'):format(S.applied and (S.applied.a and 'custom' or 'stock') or 'none'))
-    print('  usage: brlocker2 [bags]')
 end, false)
 
 --- The state, for the suites.

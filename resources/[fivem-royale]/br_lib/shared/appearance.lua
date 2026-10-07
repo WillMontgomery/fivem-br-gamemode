@@ -22,8 +22,8 @@
 --        neck thickness; Lua ff[19], ff[20]) 0..100
 --   o    head overlays 0..12: [index 0..254 or 255 for none (never on the
 --        eyebrows, overlay 2), opacity 0..100, color 0..63]
---   c    components 1..11: [drawable 0..1023, texture 0..31]; a bag (5) that is
---        a parachute pack (BR.Config.Locker2.bagSkip) is refused
+--   c    components 1..11: [drawable 0..1023, texture 0..31]; any bag (5),
+--        parachute packs included (owner, 2026-10-07)
 --   p    props 0, 1, 2, 6, 7: [drawable -1..1023 (-1 is none, with texture 0),
 --        texture 0..31]
 --
@@ -117,20 +117,6 @@ end
 
 local TOP = { v = true, s = true, sk = true, e = true, h = true, ff = true, o = true, c = true, p = true }
 
---- Is a bag drawable a parachute pack for this sex?
---- @param s string
---- @param d integer
---- @return boolean
-function A.bagSkipped(s, d)
-    local cfg = BR.Config and BR.Config.Locker2
-    local list = cfg and cfg.bagSkip and cfg.bagSkip[s]
-    if type(list) ~= 'table' then return false end
-    for _, x in ipairs(list) do
-        if x == d then return true end
-    end
-    return false
-end
-
 --- Is this an appearance? Never clamps.
 --- @param a any
 --- @return boolean ok
@@ -167,7 +153,6 @@ function A.validate(a)
         if not isList(c, 2) or not isInt(c[1], 0, 1023) or not isInt(c[2], 0, 31) then
             return false, 'c' .. i
         end
-        if i == 5 and A.bagSkipped(a.s, c[1]) then return false, 'c5 is a parachute pack' end
     end
     if not isList(a.p, #A.PROPS) then return false, 'p' end
     for i = 1, #A.PROPS do
