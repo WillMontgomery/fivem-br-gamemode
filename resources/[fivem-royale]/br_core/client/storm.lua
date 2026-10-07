@@ -3322,11 +3322,12 @@ local wxUndryAt = nil     -- when to hand rain control back to the engine
 -- ═══ THE ALL-CLEAR IS THE BASE SKY, NOT A SUMMER ONE (#399) ═══
 --
 -- `base` is a ROLE (br_lib/shared/world.lua's SKY_ROLE): EXTRASUNNY, as it
--- always was -- and XMAS in the festive months, so leaving the storm in
--- December comes back to snow rather than to a permanent EXTRASUNNY. The claim
--- is still held for the rest of the match, as before; what it MEANS follows the
--- festive sky, and the drying snap re-asserts whatever that is. Caught in the
--- storm is THUNDER either way.
+-- always was -- and in the festive months the match's cycling snow weather, so
+-- leaving the storm in December comes back to snow rather than to a permanent
+-- EXTRASUNNY. The claim is still held for the rest of the match, as before;
+-- what it MEANS follows the festive sky and the cycle, and the drying snap
+-- re-asserts whatever that is once it has arrived. Caught in the storm is
+-- THUNDER either way.
 local WX_NAME = { clear = 'base', thunder = 'THUNDER' }
 
 --- Is the storm's claim the sky on screen? (client/world.lua resolves it.)
@@ -3348,6 +3349,19 @@ local function weatherWant(tier)
     -- so once the blend back to clear finishes, the world dries. Control
     -- is handed back (-1.0) a while later so the engine's own weather can
     -- rain again some day.
+    --
+    -- ═══ ONCE THE SKY HAS ARRIVED, WHOEVER BLENDED IT LAST (#399) ═══
+    --
+    -- This file's own blend is over by wxDryAt, but the clear sky can move
+    -- under it now: a turn of the festive match's cycle (thirty seconds) or a
+    -- `brfestive` blend (ten) that began in those five seconds is still
+    -- arriving, and the snap below would finish it in one frame. So the whole
+    -- schedule moves to the moment the writer says the sky arrives
+    -- (client/world.lua), and runs then exactly as it always has.
+    if wxDryAt and now >= wxDryAt then
+        local arrives = BR.World.arrivesAt()
+        if arrives then wxDryAt = arrives end
+    end
     if wxDryAt and now >= wxDryAt then
         wxDryAt = nil
         -- The blend has finished, so the snap is visually a no-op -- but it

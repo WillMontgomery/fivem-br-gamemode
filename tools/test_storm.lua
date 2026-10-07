@@ -1160,6 +1160,9 @@ local function newStormClient()
     -- Nobody's sky is on screen here, so the storm's rain writes (which wait
     -- for the storm to be the sky's winner, #399) are never made.
     env.BR.World.sky = function() return nil, nil end
+    -- And no blend is ever still arriving, so the drying schedule runs on its
+    -- own clock (it waits for the sky's, #399).
+    env.BR.World.arrivesAt = function() return nil end
     env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
 
     -- IN MANIFEST ORDER: client/mapoverlay.lua comes AFTER client/storm.lua in

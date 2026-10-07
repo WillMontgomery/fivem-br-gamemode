@@ -80,6 +80,19 @@ local claims = { override = nil, storm = nil, terminal = nil, island = nil }
 --- restarts it -- a sky that never finishes arriving.
 local wrote = nil
 
+--- When the blend this file last started finishes arriving (GetGameTimer
+--- milliseconds), or nil if the last write was a snap or a clear.
+---
+--- KEPT BECAUSE THE CLEAR SKY CAN MOVE NOW (#399). A forced write snaps, and
+--- the only one there is -- client/storm.lua's drying snap -- was timed to land
+--- as its own five-second blend ended, when the snap is a visual no-op. A turn
+--- of the festive match's cycle (thirty seconds) or a `brfestive` blend (ten)
+--- can start in that window, and the snap would jump the rest of the way in one
+--- frame. So no forced write is honored while a blend is still arriving
+--- (BR.World.want), and the drying schedule asks BR.World.arrivesAt() when the
+--- sky will have arrived before it resets the rain.
+local arriveAt = nil
+
 -- ═══ THE WHITE GROUND IS WRITTEN HERE TOO, BESIDE THE WEATHER (#399) ═══
 --
 -- A snow weather changes the sky, the wind and the particles; the snow ON THE
@@ -146,7 +159,7 @@ local function push(force, blendOver)
         -- a default: this is the state a match ends in and GTA's own weather is
         -- the right thing to be standing under between rounds.
         if wrote ~= nil then
-            wrote = nil
+            wrote, arriveAt = nil, nil
             ClearWeatherTypePersist()
         end
         return
@@ -161,8 +174,10 @@ local function push(force, blendOver)
 
         if blend and blend > 0.0 then
             SetWeatherTypeOvertimePersist(name, blend + 0.0)
+            arriveAt = GetGameTimer() + blend * 1000.0
         else
             SetWeatherTypeNowPersist(name)
+            arriveAt = nil
         end
     end
 
@@ -182,7 +197,8 @@ end)
 --- @param source string  a member of BR.World.SKY_SOURCES
 --- @param name string|nil  a weather name, or nil to release
 --- @param blend number|nil seconds to blend over; 0 or nil snaps
---- @param force boolean|nil  write even if the resolved winner is unchanged
+--- @param force boolean|nil  write even if the resolved winner is unchanged --
+---                           once no blend is still arriving
 function BR.World.want(source, name, blend, force)
     if not BR.World.SKY_SOURCE[source] then
         print(('[br_core] world: %s is not a sky source'):format(tostring(source)))
@@ -206,8 +222,23 @@ function BR.World.want(source, name, blend, force)
     -- re-assert somebody else's sky for a reason that has nothing to do with it,
     -- which is a small thing that makes "the storm writes nothing while an
     -- override holds" untrue.
+    --
+    -- AND NEVER OVER A SKY STILL ARRIVING (#399). The force snaps, and a snap
+    -- of the weather a blend is still carrying the sky to cuts the blend short
+    -- -- the rest of a cycle turn's thirty seconds in one frame. While a blend
+    -- is running the force is dropped and the claim is recorded as any other;
+    -- the drying snap waits for the blend (client/storm.lua).
     local _, winner = BR.World.sky()
-    push(force == true and winner == source)
+    push(force == true and winner == source and BR.World.arrivesAt() == nil)
+end
+
+--- When the sky on screen finishes arriving: the GetGameTimer millisecond its
+--- blend ends, or nil if it already has (or was snapped). Read by
+--- BR.World.want above and by client/storm.lua's drying schedule.
+--- @return number|nil
+function BR.World.arrivesAt()
+    if arriveAt ~= nil and GetGameTimer() < arriveAt then return arriveAt end
+    return nil
 end
 
 --- What the sky resolves to right now, and which claim is showing it.

@@ -22078,7 +22078,10 @@ do
     --- One client with the real client/world.lua and nothing else.
     local function newWorldClient()
         local env = newSandbox()
-        local C = { writes = {}, rain = {}, prints = {}, asks = 0 }
+        local C = { writes = {}, rain = {}, prints = {}, asks = 0, now = 0 }
+        -- The game clock a blend is timed on (#399: a forced write waits for one
+        -- still arriving). Moved by the blocks that need it.
+        env.GetGameTimer = function() return C.now end
 
         env.print = function(...)
             local parts = {}
@@ -23402,12 +23405,20 @@ do
     --- (WORLD_CYCLE; false for the stop) after a step. The state events reach
     --- br_core as the server sends them: `sky` from PLAYING until the match is
     --- gone, none before.
+    ---
+    --- `at` is one more of either, sent DURING a step rather than after it
+    --- (#399 review): `ms` milliseconds of br_core's clock into `step`, a turn
+    --- (`cycle`) and/or a brfestive flip (`flip`), in the server's order.
     --- @param o table|nil { festive = boolean, flips = { [step] = boolean },
-    ---                      sky = string|nil, cycle = { [step] = string|false } }
+    ---                      sky = string|nil, cycle = { [step] = string|false },
+    ---                      at = { step = string, ms = number,
+    ---                             cycle = string|false|nil, flip = boolean|nil } }
     --- @return table  every write, in order (runs of strength writes folded)
+    --- @return table  br_core's clock at each of those writes, by index
     local function skyWalk(o)
         o = o or {}
-        local L = {}
+        local L, T = {}, {}
+        local now = 100000
         local function rec(s)
             local last = L[#L]
             if s:sub(1, 12) == 'tc strength ' and last and last:sub(1, 12) == 'tc strength ' then
@@ -23416,10 +23427,10 @@ do
             else
                 L[#L + 1] = s
             end
+            T[#L] = now
         end
 
         -- ── THE CLIENT: br_core ──
-        local now = 100000
         local ped = { x = 0.0, y = 0.0, z = 30.0 }
         local env = {}
         permissive(env)
@@ -23474,9 +23485,12 @@ do
             for _, fn in ipairs(handlers[n] or {}) do fn(...) end
         end
         local function festive(on) fire(BRc.Net.WORLD_SET, { festive = on or nil }) end
+        -- `o.at`'s event, set once the server's sends are defined below.
+        local midStep = nil
         local function tick(ms)
             for _ = 1, math.floor(ms / 100) do
                 now = now + 100
+                if midStep then midStep() end
                 BRc.Loop.step(BRc.Loop.TICK)
             end
         end
@@ -23534,25 +23548,37 @@ do
                or s == BRi.MatchState.BUS then matchSky = nil end
             fire(BRc.Net.STATE, { state = s, sky = matchSky })
         end
-        local function cycle(name)
-            local w = o.cycle and o.cycle[name]
+        --- A turn (w: a weather, false for the stop, nil for none).
+        local function cycle(w)
             if w == nil then return end
             rec('-- cycle ' .. tostring(w or 'stop'))
             matchSky = w or nil
             fire(BRc.Net.WORLD_CYCLE, { weather = matchSky })
         end
-        local function step(name, fn)
-            rec('-- ' .. name)
-            fn()
-            -- The server's order (server/world.lua's refresh): coming on, the
-            -- match's weather before the festive fact; going off, after it.
-            local flip = o.flips and o.flips[name]
-            if flip == true then cycle(name) end
+        --- A flip and a turn together, in the server's order
+        --- (server/world.lua's refresh): coming on, the match's weather before
+        --- the festive fact; going off, after it.
+        local function send(flip, w)
+            if flip == true then cycle(w) end
             if flip ~= nil then
                 rec('-- brfestive ' .. (flip and 'on' or 'off'))
                 festive(flip)
             end
-            if flip ~= true then cycle(name) end
+            if flip ~= true then cycle(w) end
+        end
+        local current, began, sentAt = nil, 0, false
+        if o.at then
+            midStep = function()
+                if sentAt or current ~= o.at.step or now - began < o.at.ms then return end
+                sentAt = true
+                send(o.at.flip, o.at.cycle)
+            end
+        end
+        local function step(name, fn)
+            rec('-- ' .. name)
+            current, began = name, now
+            fn()
+            send(o.flips and o.flips[name], o.cycle and o.cycle[name])
         end
 
         if o.festive then festive(true) end
@@ -23612,7 +23638,7 @@ do
             run(1000)
             tick(1000)
         end)
-        return L
+        return L, T
     end
 
     -- TODAY: recorded by this walk on origin/dev 189e7669, before #399. Runs of
@@ -23958,6 +23984,157 @@ do
         ok(#bad == 0, 'a turn at every step of the session moves the sky only under the '
            .. 'clear sky -- never the lobby, the cover or THUNDER -- and the ground agrees',
            table.concat(bad, ' | '))
+    end
+
+    -- ═══ A TURN OR A FLIP IN THE SECONDS AFTER A STORM EXIT (#399 review) ═══
+    --
+    -- The real storm.lua's drying snap is a forced, zero-blend write of the
+    -- clear sky, timed to land as its own five-second all-clear ends: a visual
+    -- no-op while nothing else is blending the sky. A cycle turn (30 s) or a
+    -- brfestive flip (10 s) in that window is still arriving when it lands, and
+    -- the snap used to finish it in one frame. Each one, sent at every half
+    -- second of the first twelve of 'storm, back inside' -- before the exit,
+    -- inside the five seconds, after the snap: no write ever snaps the sky to
+    -- the weather a blend is still carrying it to, the drying schedule still
+    -- runs exactly once (the snap and the rain knob) on the weather that has
+    -- arrived, and the ground agrees with the sky throughout.
+    do
+        --- The first write that snaps the sky to the weather a blend is still
+        --- carrying it to, or nil.
+        local function cutShort(L, T)
+            local heading, due = nil, nil
+            for i, s in ipairs(L) do
+                local w, b = s:match('^over (%u+) ([%d%.]+)$')
+                if w then heading, due = w, T[i] + tonumber(b) * 1000 end
+                local n = s:match('^now (%u+)$')
+                if n then
+                    if n == heading and T[i] < due then
+                        return ('line %d, %s at %d: its blend arrives at %d')
+                            :format(i, s, T[i], math.floor(due))
+                    end
+                    heading, due = nil, nil
+                end
+                if s == 'sky cleared' then heading, due = nil, nil end
+            end
+            return nil
+        end
+        --- The drying snap between the storm exit and the end: the weather it
+        --- re-asserted, if it ran once, on the weather the sky was heading to.
+        local function dried(L)
+            local on, heading, snaps, weather = false, nil, 0, nil
+            for i, s in ipairs(L) do
+                if s == '-- storm, back inside' then on = true
+                elseif s == '-- end' then break
+                elseif on then
+                    heading = s:match('^over (%u+) ') or heading
+                    if s == 'rain 0.0' then
+                        snaps = snaps + 1
+                        local n = (L[i - 1] or ''):match('^now (%u+)$')
+                        weather = (n ~= nil and n == heading) and n or nil
+                    end
+                end
+            end
+            return snaps == 1 and weather or nil
+        end
+
+        local CASES = {
+            { why = 'a turn', base = { festive = true, sky = 'SNOW',
+                                       cycle = { ['storm, caught'] = 'SNOWLIGHT' } },
+              at = { cycle = 'BLIZZARD' }, final = 'BLIZZARD' },
+            { why = 'brfestive on', base = { festive = false },
+              at = { flip = true, cycle = 'BLIZZARD' }, final = 'BLIZZARD' },
+            { why = 'brfestive off', base = { festive = true, sky = 'SNOW' },
+              at = { flip = false, cycle = false }, final = 'EXTRASUNNY' },
+        }
+        local bad, inWindow = {}, 0
+        for _, case in ipairs(CASES) do
+            for ms = 0, 12000, 500 do
+                local o = {}
+                for k, v in pairs(case.base) do o[k] = v end
+                o.at = { step = 'storm, back inside', ms = ms,
+                         cycle = case.at.cycle, flip = case.at.flip }
+                local L, T = skyWalk(o)
+                local where = ('%s %.1f s in'):format(case.why, ms / 1000)
+                local cut = cutShort(L, T)
+                if cut then bad[#bad + 1] = where .. ': ' .. cut end
+                local d = dried(L)
+                if d == nil then
+                    bad[#bad + 1] = where .. ': the drying schedule did not run once on the '
+                        .. 'weather arriving'
+                end
+                local g = groundDisagrees(L)
+                if g then bad[#bad + 1] = where .. ': ' .. g end
+                -- The sky the step ends on is the turn's (or the plain one).
+                local last = nil
+                for _, s in ipairs(L) do
+                    if s == '-- end' then break end
+                    last = s:match('^now (%u+)$') or s:match('^over (%u+) ') or last
+                end
+                if last ~= case.final then
+                    bad[#bad + 1] = ('%s: the step ends on %s, not %s')
+                        :format(where, tostring(last), case.final)
+                end
+                if ms >= 1500 and ms <= 6000 then inWindow = inWindow + 1 end
+            end
+        end
+        ok(#bad == 0 and inWindow >= 27,
+           'a turn, brfestive on and brfestive off at every half second around a storm exit: '
+           .. 'nothing snaps a blend short, the drying snap and the rain knob run once on the '
+           .. 'weather that has arrived, and the ground agrees', table.concat(bad, ' | '))
+
+        -- THE REVIEW'S OWN CASE, pinned: a turn four seconds into the exit.
+        local L, T = skyWalk({ festive = true, sky = 'SNOW',
+                               cycle = { ['storm, caught'] = 'SNOWLIGHT' },
+                               at = { step = 'storm, back inside', ms = 4000,
+                                      cycle = 'BLIZZARD' } })
+        local after = {}
+        for _, s in ipairs(during(L, '-- cycle BLIZZARD')) do
+            if s:sub(1, 3) ~= 'tc ' then after[#after + 1] = s end
+        end
+        local turnAt, snapAt = nil, nil
+        for i, s in ipairs(L) do
+            if s == '-- cycle BLIZZARD' then turnAt = T[i] end
+            if s == 'now BLIZZARD' then snapAt = T[i] end
+        end
+        ok(table.concat(after, ',') == 'over BLIZZARD 30.0,now BLIZZARD,rain 0.0'
+           and turnAt ~= nil and snapAt == turnAt + 30000,
+           'a turn 4 s after walking out: BLIZZARD blends in over its 30 s, and the drying '
+           .. 'snap re-asserts it the moment it has arrived, not 3 s into it',
+           table.concat(after, ',') .. (' (turn at %s, snap at %s)')
+               :format(tostring(turnAt), tostring(snapAt)))
+    end
+
+    -- NOT FESTIVE, A TURN IN THAT WINDOW MOVES NOTHING EITHER.
+    do
+        local bad = {}
+        for ms = 0, 12000, 500 do
+            local L = skyWalk({ festive = false, sky = 'SNOW',
+                                at = { step = 'storm, back inside', ms = ms,
+                                       cycle = 'BLIZZARD' } })
+            -- The turn's marker out, and the run of strength writes it split
+            -- folded back into one, as the walk folds them.
+            local function runOf(s)
+                if s == nil or s:sub(1, 12) ~= 'tc strength ' then return nil end
+                return tonumber(s:match(' x(%d+)$') or '1')
+            end
+            local plain, split = {}, false
+            for _, line in ipairs(L) do
+                local a, b = runOf(plain[#plain]), runOf(line)
+                if line:sub(1, 9) == '-- cycle ' then
+                    split = true
+                elseif split and a and b then
+                    plain[#plain] = ('%s x%d'):format(line:match('^tc strength [%d%.]+'), a + b)
+                    split = false
+                else
+                    plain[#plain + 1] = line
+                    split = false
+                end
+            end
+            local d = firstDiff(plain, TODAY)
+            if d then bad[#bad + 1] = ('%.1f s: %s'):format(ms / 1000, d) end
+        end
+        ok(#bad == 0, 'festive off: a turn at any half second around a storm exit leaves every '
+           .. 'write exactly as origin/dev wrote it before #399', table.concat(bad, ' | '))
     end
 
     -- ═══ THE GROUND PASS: ON UNDER A RESOLVED SNOW SKY, OFF OTHERWISE, ON CHANGE ═══
@@ -24346,6 +24523,184 @@ do
                'four thousand random claims, festive flips and turns: a turn moves the sky '
                .. 'only while the clear sky of a festive match shows, to that weather over 30 s, '
                .. 'and writes nothing otherwise', bad or ('%d moved, %d held'):format(moved, held))
+        end
+    end
+
+    -- ═══ A FORCED WRITE NEVER CUTS A BLEND SHORT (#399 review) ═══
+    --
+    -- The storm's drying snap is a forced, zero-blend write of the clear sky,
+    -- timed to land as the storm's own five-second blend ends -- a visual no-op.
+    -- The clear sky can move under it now: a cycle turn (30 s) or a brfestive
+    -- blend (10 s) begun in those five seconds, and a snap of the weather that
+    -- blend is still carrying the sky to finishes it in one frame. The class,
+    -- client/world.lua alone: every road a blend of the clear sky starts on,
+    -- and a forced write of it at every half second from the blend's start --
+    -- nothing while it is still arriving, the snap from the moment it has.
+    do
+        --- @return table  a client with the real client/world.lua and a clock
+        local function newClient()
+            local K = { G = {}, now = 1000000, handlers = {} }
+            local env = {}
+            permissive(env)
+            env.print = function() end
+            env.GetGameTimer = function() return K.now end
+            env.AddEventHandler = function(n, fn)
+                K.handlers[n] = K.handlers[n] or {}
+                K.handlers[n][#K.handlers[n] + 1] = fn
+            end
+            env.RegisterNetEvent = function() end
+            env.TriggerEvent = function() end
+            env.GetCurrentResourceName = function() return 'br_core' end
+            env.Citizen = { InvokeNative = function() end }
+            env.SetWeatherTypeNowPersist = function(w) K.G[#K.G + 1] = 'now ' .. w end
+            env.SetWeatherTypeOvertimePersist = function(w, b)
+                K.G[#K.G + 1] = ('over %s %.1f'):format(w, b)
+            end
+            env.ClearWeatherTypePersist = function() K.G[#K.G + 1] = 'sky cleared' end
+            env.SetRainLevel = function() end
+            loadInto(env, SANDBOX_LIB)
+            loadInto(env, { 'br_lib/config/festive.lua', 'br_core/client/world.lua' })
+            K.W, K.Net, K.MS = env.BR.World, env.BR.Net, env.BR.MatchState
+            K.fire = function(n, p)
+                for _, fn in ipairs(K.handlers[n] or {}) do fn(p) end
+            end
+            K.since = function(n)
+                local out = {}
+                for i = n + 1, #K.G do out[#out + 1] = K.G[i] end
+                return table.concat(out, ',')
+            end
+            --- A festive match on SNOW, the storm's all-clear on screen and
+            --- arrived: where every road below starts from.
+            K.settledMatch = function(festive)
+                K.fire(K.Net.WORLD_SET, { festive = festive or nil })
+                K.W.want('island', 'base', 10.0)
+                K.fire(K.Net.STATE, { state = K.MS.PLAYING, sky = 'SNOW' })
+                K.W.want('storm', 'THUNDER', 5.0)
+                K.W.want('storm', 'base', 5.0)
+                K.now = K.now + 60000
+            end
+            return K
+        end
+
+        -- Each road: set it up, start the blend, and say what it writes.
+        local ROADS = {
+            { why = 'a turn of the cycle', blend = 30.0, weather = 'BLIZZARD',
+              go = function(K) K.fire(K.Net.WORLD_CYCLE, { weather = 'BLIZZARD' }) end },
+            { why = 'the cycle arriving with PLAYING', blend = 30.0, weather = 'SNOWLIGHT',
+              setup = function(K)
+                  K.fire(K.Net.WORLD_SET, { festive = true })
+                  K.W.want('island', 'base', 10.0)
+                  K.W.want('storm', 'base', 0.0)
+                  K.now = K.now + 60000
+              end,
+              go = function(K) K.fire(K.Net.STATE, { state = K.MS.PLAYING, sky = 'SNOWLIGHT' }) end },
+            { why = 'a snapshot mid-match', blend = 30.0, weather = 'XMAS',
+              go = function(K) K.fire(K.Net.SNAPSHOT, { match = { state = K.MS.PLAYING,
+                                                                   sky = 'XMAS' } }) end },
+            { why = 'the cycle stopping', blend = 30.0, weather = 'XMAS',
+              go = function(K) K.fire(K.Net.WORLD_CYCLE, {}) end },
+            { why = 'brfestive on', blend = 10.0, weather = 'SNOWLIGHT',
+              setup = function(K)
+                  K.settledMatch(false)
+                  K.fire(K.Net.WORLD_CYCLE, { weather = 'SNOWLIGHT' })
+                  K.now = K.now + 60000
+              end,
+              go = function(K) K.fire(K.Net.WORLD_SET, { festive = true }) end },
+            { why = 'brfestive off', blend = 10.0, weather = 'EXTRASUNNY',
+              go = function(K) K.fire(K.Net.WORLD_SET, {}) end },
+            { why = 'the storm\'s own all-clear', blend = 5.0, weather = 'SNOW',
+              setup = function(K)
+                  K.settledMatch(true)
+                  K.W.want('storm', 'THUNDER', 5.0)
+                  K.now = K.now + 60000
+              end,
+              go = function(K) K.W.want('storm', 'base', 5.0) end },
+            { why = 'Time & weather letting go', blend = 5.0, weather = 'SNOW',
+              setup = function(K)
+                  K.settledMatch(true)
+                  K.W.want('terminal', 'FOGGY', 5.0)
+                  K.now = K.now + 60000
+              end,
+              go = function(K) K.W.want('terminal', nil) end },
+            { why = 'brweather reset', blend = 5.0, weather = 'SNOW',
+              setup = function(K)
+                  K.settledMatch(true)
+                  K.fire(K.Net.WORLD_SET, { festive = true, weather = 'RAIN' })
+                  K.now = K.now + 60000
+              end,
+              go = function(K) K.fire(K.Net.WORLD_SET, { festive = true }) end },
+        }
+
+        local bad, checked = {}, 0
+        for _, road in ipairs(ROADS) do
+            local ms = math.floor(road.blend * 1000)
+            for at = 0, ms + 2000, 500 do
+                local K = newClient()
+                if road.setup then road.setup(K) else K.settledMatch(true) end
+                local n = #K.G
+                road.go(K)
+                local start = K.since(n)
+                local wantStart = ('over %s %.1f'):format(road.weather, road.blend)
+                if start ~= wantStart then
+                    bad[#bad + 1] = ('%s: started %q, not %q'):format(road.why, start, wantStart)
+                    break
+                end
+                K.now = K.now + at
+                n = #K.G
+                K.W.want('storm', 'base', 0.0, true)
+                local got = K.since(n)
+                local want = at < ms and '' or ('now ' .. road.weather)
+                if got ~= want then
+                    bad[#bad + 1] = ('%s, forced %.1f s in: wrote %q, want %q')
+                        :format(road.why, at / 1000, got, want)
+                end
+                checked = checked + 1
+            end
+        end
+        ok(#bad == 0 and checked > 100,
+           'a forced write of the clear sky lands nothing while any blend of it is still '
+           .. 'arriving -- a cycle turn, PLAYING\'s first weather, a snapshot, the stop, '
+           .. 'brfestive either way, the storm\'s all-clear, Time & weather or brweather '
+           .. 'letting go -- and snaps it from the moment it has',
+           table.concat(bad, ' | '))
+
+        -- THE FORCE IS DROPPED, NOT THE CLAIM, and a snap leaves nothing arriving.
+        do
+            local K = newClient()
+            K.settledMatch(true)
+            K.fire(K.Net.WORLD_CYCLE, { weather = 'BLIZZARD' })
+            K.now = K.now + 3000
+            K.W.want('storm', 'base', 0.0, true)
+            K.fire(K.Net.WORLD_SET, { festive = true, weather = 'RAIN' })
+            local n = #K.G
+            K.fire(K.Net.WORLD_SET, { festive = true })
+            ok(K.since(n) == 'now BLIZZARD',
+               'a dropped force still records the claim: brweather reset afterwards hands '
+               .. 'back the storm\'s zero-blend all-clear', K.since(n))
+            n = #K.G
+            K.W.want('storm', 'base', 0.0, true)
+            ok(K.since(n) == 'now BLIZZARD' and K.W.arrivesAt() == nil,
+               'and after a snap nothing is arriving: a force writes at once', K.since(n))
+        end
+        do
+            local K = newClient()
+            K.settledMatch(true)
+            local n = #K.G
+            K.fire(K.Net.WORLD_CYCLE, { weather = 'BLIZZARD' })
+            local t0 = K.now
+            ok(K.W.arrivesAt() == t0 + 30000,
+               'arrivesAt is the moment the blend this file wrote ends', K.since(n))
+            K.now = t0 + 30000
+            ok(K.W.arrivesAt() == nil, 'and nil from that moment on')
+        end
+        do
+            local K = newClient()
+            K.fire(K.Net.WORLD_SET, { festive = true })
+            K.W.want('island', 'base', 10.0)
+            ok(K.W.arrivesAt() ~= nil, 'the doors-open sky is arriving for ten seconds')
+            K.W.want('island', nil)
+            ok(K.G[#K.G] == 'sky cleared' and K.W.arrivesAt() == nil,
+               'and a sky handed back to the engine mid-blend is not arriving any more')
         end
     end
 end
