@@ -1232,8 +1232,35 @@ do
     gameMs = gameMs + 1000
     fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower2', functionId = 'storm_reveal' })
     eq(T.squadUsed(1), true, 'the squad has used its one')
+    flush()
+    eq(Y.holds(1), false, 'the run spent the key')
     sv(1, 'reset')
     eq(T.squadUsed(1), false, '`reset` hands the squad its use back for this match')
+    -- ROUND 6 (owner, 2026-10-07: "give me a way to reset the computers to
+    -- allow another use by the same player in the same match (dev only)").
+    eq(Y.holds(1), true, 'and the key back, restored by its account as a refund is')
+    ok((lastOf(BR.Net.TERMINAL_DEV, 1) or ''):find('their Yubikey is back', 1, true) ~= nil,
+        'and says so on their F8', lastOf(BR.Net.TERMINAL_DEV, 1))
+    -- THE SAME PLAYER USES A TERMINAL AGAIN, IN THE SAME MATCH.
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower2' })
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower2', functionId = 'storm_reveal' })
+    ok(T.squadUsed(1) and not Y.holds(1), 'the same player, the same match: a second use goes through')
+    flush()
+    -- HOLDING ONE ALREADY: the use back, and still one key.
+    Y.devSet(1, true)
+    sv(1, 'reset')
+    ok(not T.squadUsed(1) and Y.holds(1), 'holding a key already: the use back, one key')
+    ok((lastOf(BR.Net.TERMINAL_DEV, 1) or ''):find('already hold', 1, true) ~= nil, 'and it says so')
+    -- `reset <player id>`, in game and from the console.
+    Y.devSet(1, false)
+    player(2, m, 'B', { x = 0, y = 0 }, false, false)
+    sv(2, 'reset 1')
+    eq(Y.holds(1), true, '`reset 1` typed by another player gives player 1 their key')
+    Y.devSet(1, false)
+    sv(0, 'reset 1')
+    eq(Y.holds(1), true, 'and from the server console')
 
     sent = {}
     player(2, m, 'B', { x = 0, y = 0 }, false, false)

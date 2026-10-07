@@ -2534,6 +2534,24 @@ do
     eq(B.executed[4], 'brterminalsv close', 'and close closes')
     fireB(BR.Net.TERMINAL_DEV, 'opened terminal "dev"')
     ok(B.printed[#B.printed]:find('opened terminal', 1, true) ~= nil, 'the server\'s answer is printed on F8')
+
+    -- ROUND 6, THE REHEARSAL ("We need to rehearse that air strike"): a
+    -- function run at a spot, typed with no spot, lands 60 m in front of you.
+    function PlayerPedId() return 1 end
+    function GetEntityCoords() return { x = 100.0, y = 200.0, z = 30.0 } end
+    function GetEntityHeading() return 90.0 end      -- facing west: -x
+    B.executed = {}
+    cmd(nil, { 'run', 'airstrike' })
+    eq(B.executed[1], 'brterminalsv run airstrike x=40.0 y=200.0',
+        '`brterminal run airstrike`: the spot 60 m in front of you, typed for the server')
+    cmd(nil, { 'run', 'airstrike', 'x=5', 'y=6' })
+    eq(B.executed[2], 'brterminalsv run airstrike x=5 y=6', 'a spot typed is the spot')
+    cmd(nil, { 'run', 'scan' })
+    eq(B.executed[3], 'brterminalsv run scan', 'a function with no spot gets none')
+    cmd(nil, { 'reset' })
+    cmd(nil, { 'reset', '7' })
+    eq(B.executed[4], 'brterminalsv reset', '`brterminal reset`: your own squad and key')
+    eq(B.executed[5], 'brterminalsv reset 7', 'and `reset <player id>` names another')
 end
 
 describe('round 4: the map pick -- the computer hidden, the big map, the waypoint read, the computer back')

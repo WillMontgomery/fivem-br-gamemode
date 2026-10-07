@@ -1421,7 +1421,7 @@ end
 
 local USAGE = 'usage: brterminalsv open [nokey] [used] [offline] [volts=<n>] | close | key give|take|unseen'
     .. ' | key drop <x> <y> <z>'
-    .. ' | place <x> <y> <z> [h] [id] | remove <id> | list | online <id> [off] | reset'
+    .. ' | place <x> <y> <z> [h] [id] | remove <id> | list | online <id> [off] | reset [player id]'
     .. ' | run <function> [option=choice ...] [x=<n> y=<n>]  (from the server console, a verb about a player takes'
     .. ' the player id next: brterminalsv open <player id> [...])'
 
@@ -1620,6 +1620,15 @@ RegisterCommand('brterminalsv', function(source, args)
         end
 
     elseif verb == 'reset' then
+        -- ANOTHER USE BY THE SAME PLAYER IN THE SAME MATCH (round 6, owner
+        -- 2026-10-07: "give me a way to reset the computers to allow another
+        -- use by the same player in the same match (dev only)"): the squad's
+        -- one use unspent, the access notice armed again, and the key back --
+        -- restored by its account, as a refund restores it. Dev mode only,
+        -- like every verb here (devgate.lua's wrap). `reset <player id>`, from
+        -- the console or in game, does the same for that player.
+        local named = tonumber(words[1])
+        if src > 0 and named and GetPlayerName(named) then target = named end
         local m, _, key = whereIs(target)
         if not m then
             tell(src, ('%d is not in a match'):format(target))
@@ -1628,8 +1637,18 @@ RegisterCommand('brterminalsv', function(source, args)
         local s = matchState(m)
         s.used[key] = nil
         for _, mate in ipairs(squadOf(m, key)) do s.access[mate] = nil end
+        local keyLine
+        if not BR.Yubikey then
+            keyLine = 'no Yubikey module'
+        elseif BR.Yubikey.holds(target) then
+            keyLine = 'they already hold a Yubikey'
+        elseif BR.Yubikey.restore(BR.Yubikey.licenseOf(target), 'dev reset') then
+            keyLine = 'their Yubikey is back'
+        else
+            keyLine = 'their Yubikey could not be given back (profile not read yet)'
+        end
         pushKeys(squadOf(m, key))
-        tell(src, ('reset the terminal use of %d\'s squad (%s) for this match'):format(target, key))
+        tell(src, ('reset the terminal use of %d\'s squad (%s) for this match; %s'):format(target, key, keyLine))
 
     elseif verb == 'run' then
         -- A FUNCTION'S EFFECT, WITHOUT A KEY, A TERMINAL OR A NOTICE: nothing

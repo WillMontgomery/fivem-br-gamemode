@@ -419,6 +419,11 @@ end)
 --- walk up to.
 local PLACE_LOOK_M = 6.0
 
+--- Where `brterminal run <function>` puts a spot nobody typed (round 6's
+--- rehearsal): this far in front of the player. An Airstrike there is a 40 m
+--- circle whose edge is 20 m off, and whose blasts stop short of them.
+local REHEARSE_AHEAD_M = 60.0
+
 --- @return table { x, y, z, h }
 local function placeSpot()
     local ped = PlayerPedId()
@@ -462,13 +467,39 @@ end
 ---   brterminal remove <id>                take one out of play (this session)
 ---   brterminal list                       every terminal, online or not
 ---   brterminal online <id> [off]          force one online, or back to the storm
----   brterminal reset                      your squad's one use, unspent
----   brterminal run <function>             a function's effect, no key needed
+---   brterminal reset [player id]          (round 6) your squad's one use this
+---                                         match unspent, and your Yubikey back
+---   brterminal run <function>             a function's effect, no key needed;
+---                                         one run at a spot with no x= y=
+---                                         (round 6) lands REHEARSE_AHEAD_M in
+---                                         front of you
 RegisterCommand('brterminal', function(_, args)
     args = args or {}
     local first = args[1] and args[1]:lower() or 'open'
     local rest = {}
     for i = 2, #args do rest[#rest + 1] = args[i] end
+
+    -- A REHEARSAL (round 6, owner 2026-10-07: "We need to rehearse that air
+    -- strike"): `brterminal run airstrike` with no spot lands it in front of
+    -- you, far enough to watch the rockets fall onto the circle -- the real run,
+    -- its warning, rockets, blasts and damage, with nothing spent.
+    if first == 'run' and #rest >= 1 then
+        local id, given = rest[1]:lower(), false
+        for i = 2, #rest do
+            if rest[i]:match('^[xXyY]=') then given = true end
+        end
+        local row = nil
+        for _, r in ipairs(BR.Config.Terminals.functions or {}) do
+            if r.id == id then row = r end
+        end
+        if row and row.spot == true and not given then
+            local ped = PlayerPedId()
+            local pos = GetEntityCoords(ped)
+            local h = math.rad(GetEntityHeading(ped))
+            rest[#rest + 1] = ('x=%.1f'):format(pos.x - math.sin(h) * REHEARSE_AHEAD_M)
+            rest[#rest + 1] = ('y=%.1f'):format(pos.y + math.cos(h) * REHEARSE_AHEAD_M)
+        end
+    end
 
     if first == 'close' or first == 'list' or first == 'remove' or first == 'online'
        or first == 'reset' or first == 'run' then
