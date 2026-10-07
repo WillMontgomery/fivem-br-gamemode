@@ -152,7 +152,7 @@ NOTES=(
     "test_yubikey|Season 2 Yubikey: one per player, dropped on death or leaving, one use per squad, terminals live only inside the storm"
     "test_terminalworld|Season 2 terminal functions that change the match's world (storm, sky, clock, lights) spend nothing when they can't run"
     "test_terminalfx|Season 2 terminal functions: Scan shows the squad every opponent, the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
-    "frame budget|Per-frame game calls, draws and memory stay within budget, lobby to match, every scene"
+    "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
@@ -1067,14 +1067,23 @@ fi
 # tools/perf_client.lua loads every br_core client file under a modelled engine,
 # walks one player through a session (lobby, warmup, the plane's doors-open
 # cruise, the jump, a match, and the match played: scoped, pinging, driving,
-# reviving, talking, looting, outside the storm, emoting, downed, spectating)
-# and counts three things per frame, per phase: native calls, draw calls, and
-# kilobytes allocated. --check holds each phase to tools/perf_budget.lua, the
-# tree's own numbers written by --rebaseline, with a slack small enough that a
-# 3-call loop, one more draw or one more kilobyte a frame fails. Counts rather
-# than time: they are exact and the same on every run, and each regression this
-# exists to stop shows in one of them -- an ungated loop is calls, a quad that
-# came back is a draw, a geometry rebuild every frame is allocation and no call.
+# reviving, talking, looting, outside the storm, emoting, downed, spectating,
+# at a terminal) and counts four things per phase: native calls, draw calls and
+# kilobytes allocated per frame, and heavy calls (a world scan, a stream
+# request, an entity made, a sky, timecycle or model hide write) per second.
+# --check holds each phase to tools/perf_budget.lua, the tree's own numbers
+# written by --rebaseline, with a slack small enough that a 3-call loop, one
+# more draw or one more kilobyte a frame, or one more heavy call every SLOW
+# pass, fails. Counts rather than time: they are exact and the same on every
+# run, and each regression this exists to stop shows in one of them -- an
+# ungated loop is calls, a quad that came back is a draw, a geometry rebuild
+# every frame is allocation and no call, a model hide made every second is a
+# heavy call and almost nothing else.
+#
+# IN FOUR WORLDS (owner, 2026-10-06: br_core high "with season 1 on and
+# festive"): Season 1, Season 2, Season 2 under the festive sky, and Season 1
+# reached by a live `brseason 1` from Season 2 with `brfestive` on. One
+# process; each world is a fresh run of the file.
 #
 # WHAT IT CANNOT SEE is the engine's side of a call -- a DrawSpritePoly counts
 # one here and costs the render thread a triangle in the game -- and real native

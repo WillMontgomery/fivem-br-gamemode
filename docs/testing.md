@@ -76,7 +76,7 @@ cache (2026-10-05, one full run, 403 s); the stages that cost are units.
 | syntax | 7 s | **per file**: each `.lua` with `luac`'s binary, so one edited file is one `luac` |
 | br_ddb bundle over the wire | 5 s | declared: `dispatch.sh`, the manifest, the bundle, `node` |
 | duplicate console commands | 4 s | declared: `tree:resources/[fivem-royale]:.lua` |
-| frame budget | 3 s | traced Lua unit |
+| frame budget | 12 s | traced Lua unit: four worlds, each a fresh run of the file inside one process |
 | emote gate, season gates, player states, notice names, cue call sites, net events | 0.2–2.6 s | traced units; the `find` that builds their arguments is declared as `list:` |
 | secrets | 3 s | **always runs**, on purpose (below) |
 | console capability boundary (around `test_configreport`) | about 2.5 s | **always runs**: some forty greps over `dispatch.sh` and everything under `resources/` in six languages, some setting the result directly, with `test_configreport` — a unit — in the middle; it would have to be a unit inside a unit |
@@ -425,9 +425,11 @@ the vendored ScaleformUI that runs inside br_core, against a modelled engine: a
 60 fps clock, threads as coroutines, the three `BR.Loop` bands on their real
 threads, events, entities, blips, keys, aiming, cars and a camera. A stub server
 answers what the client asks for — loot cells, from `BR.BuildLootLayout` and
-`BR.BuildWarmupLayout`, the way `server/loot.lua` does — one frame later, and
-br_environment answers the island release. One squad player is walked through
-nineteen phases, with payloads built by the server's own shared builders:
+`BR.BuildWarmupLayout` plus the pad's four permanent crates, the way
+`server/loot.lua` and `server/warmupcrates.lua` do, Season 2's crates stamped
+with their look — one frame later, and br_environment claims the island's sky
+(`lobby`, `cover`, then `base` at the release). One squad player is walked
+through twenty phases, with payloads built by the server's own shared builders:
 
 | phase | what it is |
 |---|---|
@@ -439,10 +441,27 @@ nineteen phases, with payloads built by the server's own shared builders:
 | match aim, pings, drive, revive, ptt, loot | the same, with one thing done: a sniper scope at FOV 8, all four markers down, driving with boost held, interact held at the downed squadmate, push-to-talk held, a chest held open |
 | match sweep | phase 1's sweep, the wall moving |
 | match late, outside, emote, downed, spectate | a phase-3 hold; then 250 m outside the zone, Season 2's emote wheel open, knocked, and spectating a squadmate |
+| match terminal | back up with a Yubikey at a terminal, Power outage and Time & weather over it (Season 2; in Season 1 the late match standing still) |
+
+**In four worlds** (#393, after the owner's 2026-10-06 report of br_core high
+"with season 1 on and festive"). The session used to be played on a Season 1
+server only:
+
+| world | what it is | phases |
+|---|---|---|
+| `s1` | Season 1 from boot, the shipping world | bare names: `match` |
+| `s2` | Season 2 from boot: terminals, Yubikeys, the Season 2 crates, the emote wheel | `s2/match` |
+| `s2-festive` | Season 2 under the festive sky: XMAS, the white ground, the match sky's cycle | `s2-festive/match` |
+| `s1-live` | the owner's: Season 2 at boot, `brfestive on`, then `brseason 1` in the lobby, and Season 1 after | `s1-live/match` |
+
+Each world is a fresh run of the file, which the first run loads again in the
+same process (no `io.popen`, so the pass cache traces it as one unit).
 
 ```bash
-lua tools/perf_client.lua                  # the table, every phase
+lua tools/perf_client.lua                  # the table, every phase, Season 1
+lua tools/perf_client.lua --world s1-live  # another world, or --world all
 lua tools/perf_client.lua --top 15 --by 8  # more rows, more natives named per row
+lua tools/perf_client.lua --files          # per client file: natives, and heavy calls by name
 lua tools/perf_client.lua --phase match    # stop after one phase
 lua tools/perf_client.lua --digest --root <other checkout>/  # same draws as another tree?
 lua tools/perf_client.lua --check          # the verify.sh gate
@@ -451,7 +470,8 @@ lua tools/perf_client.lua --rebaseline     # rewrite tools/perf_budget.lua
 
 Each row is one loop callback (`frame storm.wall`), raw thread
 (`thread ScaleformUI.lua:18774`) or event handler (`net br:squad:pos`), with
-three counts per frame and the natives it called most:
+three counts per frame and the natives it called most, and each phase a fourth
+count, per second, with every heavy call named:
 
 - **natives** — every native call.
 - **draws** — the natives named `Draw*` (`DrawSpritePoly`, `DrawPoly`,
@@ -460,8 +480,15 @@ three counts per frame and the natives it called most:
 - **KB** — kilobytes allocated, with the collector stopped. Only the code's
   own: the harness's bookkeeping and the vector3 tables the native stubs hand
   back (values in CfxLua, not allocations) are left out.
+- **heavy** — the natives in `HEAVY` at the top of the file, counted again PER
+  SECOND: world scans (`GetGamePool`, `GetClosestObjectOfType`), stream
+  requests, entities and cameras made or deleted, and the writes that apply a
+  whole effect (model hides, weather, timecycle, the white ground's pass,
+  artificial lights, DUI). Each belongs on a change; one repeated on every SLOW
+  pass is 0.02 natives a frame, inside the native slack, and still a heavy
+  call a second.
 
-**All three are exact.** The clock is the model's, `math.random` is seeded and
+**All four are exact.** The clock is the model's, `math.random` is seeded and
 the stub server answers in a fixed order, so a run gives the same numbers as the
 last. The one wobble is up to 0.1 natives a frame in the plane phases:
 `client/main.lua` starts its band threads in `pairs()` order, which Lua seeds
@@ -474,14 +501,18 @@ nothing more. **What it cannot see** is the engine's side of a call: a
 in the game, and real native costs differ by orders of magnitude. resmon,
 `brbench <name>` and `brab <name>` are the in-game measure.
 
-**The gate.** `verify.sh`'s `frame budget` stage runs `--check`. It fails a
-phase that goes over what `tools/perf_budget.lua` recorded for it by more than
-**2.5 natives, 0.9 draws or 0.9 KB a frame** — so one more 3-call loop, one
-more draw every frame or one more kilobyte a frame fails, in any phase — and it
-fails if any callback errored under the model (a callback that throws stops
-being counted). The slack is a constant in `tools/perf_client.lua`; the budget
-file holds only measurements, so rebaselining cannot loosen it. A failure names
-the count that went over and its five biggest contributors.
+**The gate.** `verify.sh`'s `frame budget` stage runs `--check`, every world.
+It fails a phase that goes over what `tools/perf_budget.lua` recorded for it by
+more than **2.5 natives, 0.9 draws or 0.9 KB a frame, or 0.5 heavy calls a
+second** — so one more 3-call loop, one more draw every frame, one more
+kilobyte a frame or one more heavy call every SLOW pass fails, in any phase of
+any world — and it fails if any callback errored under the model (a callback
+that throws stops being counted). The slack is a constant in
+`tools/perf_client.lua`; the budget file holds only measurements, so
+rebaselining cannot loosen it. A failure names the count that went over and its
+five biggest contributors. **The heavy count proves itself** on every check: one
+more run, of Season 1's lobby with a model hide made and taken down on every
+SLOW pass, must fail it, or the check fails.
 
 **When it fails**, run the table for that phase and find the new row. If the
 cost is a mistake — a per-frame loop with no gate, a native read per frame
