@@ -1273,13 +1273,14 @@ do
         'nor a consumable')
 end
 
-describe('Disarm: every player still in the match loses their most powerful weapon, the runner\'s squad too')
+describe('Disarm: every player still in the match outside the runner\'s squad loses their most powerful weapon')
 do
     reset()
     local m = lobby()
     arm(1, 1, 'pistol')
-    arm(1, 2, 'assaultrifle')                       -- the runner's rare rifle
-    arm(2, 1, 'pumpshotgun')                        -- their squadmate
+    arm(1, 2, 'assaultrifle')                       -- the runner's rare rifle: kept
+    arm(2, 1, 'pumpshotgun')                        -- their squadmate's: kept
+    arm(3, 2, 'carbinerifle')                       -- the other squad, standing
     arm(4, 3, 'smg')                                -- a downed opponent
     arm(4, 1, 'microsmg')
     arm(5, 2, 'bat')                                -- the solo player's only weapon
@@ -1289,18 +1290,40 @@ do
     ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
     local took = {}
     for _, x in ipairs(revoked) do took[#took + 1] = ('%d:%d:%s'):format(x.src, x.slot, x.item) end
-    eq(table.concat(took, ' '), '1:2:assaultrifle 2:1:pumpshotgun 4:3:smg 5:2:bat',
-        'one weapon from each armed player still in the fight, the best of each')
-    ok(invs[1].slots[1] and invs[1].slots[1].item == 'pistol', 'the runner keeps their lesser pistol')
-    ok(invs[4].slots[1] and invs[4].slots[1].item == 'microsmg', 'and the downed player their micro SMG')
+    eq(table.concat(took, ' '), '3:2:carbinerifle 4:3:smg 5:2:bat',
+        'one weapon from each armed player outside the squad still in the fight, the best of each')
+    ok(invs[1].slots[2] and invs[1].slots[2].item == 'assaultrifle'
+        and invs[1].slots[1] and invs[1].slots[1].item == 'pistol', 'the runner keeps every weapon')
+    ok(invs[2].slots[1] and invs[2].slots[1].item == 'pumpshotgun', 'and so does their squadmate')
+    ok(invs[4].slots[1] and invs[4].slots[1].item == 'microsmg', 'the downed player keeps their micro SMG')
     ok(invs[6].slots[1] and invs[6].slots[1].item == 'militaryrifle', 'an eliminated player is not touched')
     eq(revoked[1] and revoked[1].grace, CT.fx.disarmGraceMs, 'through BR.Inv.revoke, with the configured grace')
     ok(market.charges[1] and market.charges[1].cost == 200 and market.wallet[1] == 800, '200 Volts spent')
     ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'and the lobby is told')
     eq(r and r.toast, COPY.disarm_done .. ' Your new balance is: 800 Volts.', 'the done line and the balance')
+    ok(not COPY.disarm_risks and not COPY.disarm_risks_solo,
+        'the page no longer says the squad loses its weapons (no disarm_risks)')
+    ok(COPY.disarm_what:find('outside your squad', 1, true) ~= nil
+        and COPY.disarm_affects:find('outside your squad', 1, true) ~= nil
+        and not COPY.disarm_affects:find('included', 1, true), 'its page says who is spared')
+
+    -- A SOLO RUNNER IS A SQUAD OF ONE: only they are spared.
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(2, m, nil, { x = C0.x + 40.0, y = C0.y })
+    keys[1], market.wallet[1] = true, 1000
+    arm(1, 1, 'revolver')
+    arm(2, 1, 'revolver')
+    r = runAt(1, 'disarm')
+    ok(r and r.code == 'done' and #revoked == 1 and revoked[1].src == 2, 'solo: the other player loses theirs',
+        r and r.code)
+    ok(invs[1].slots[1] and invs[1].slots[1].item == 'revolver', 'and the runner keeps their own')
+    eq(r and r.toast, COPY.disarm_done_solo .. ' Your new balance is: 800 Volts.', 'in the solo line')
 end
 
-describe('Disarm: nobody armed is refused, spending nothing -- the Volts included')
+describe('Disarm: nobody armed outside the squad is refused, spending nothing -- the Volts included')
 do
     reset()
     lobby()
@@ -1314,15 +1337,38 @@ do
     ok(#market.charges == 0 and market.wallet[1] == 1000 and keys[1] == true and not T.squadUsed(1),
         'the market is never asked; the key and the use stay')
 
+    -- ONLY THE SQUAD ARMED: nothing to take.
+    arm(1, 1, 'carbinerifle')
+    arm(2, 2, 'heavyshotgun')
+    useAt(1)
+    eq(listedAs(1, 'disarm').reason, 'no_weapons', 'only the runner\'s own squad armed: still no_weapons')
+    r = ask(1, 'disarm')
+    ok(r and r.code == 'no_weapons' and #revoked == 0 and #market.charges == 0,
+        'and a run is refused, spending nothing and taking nothing', r and r.code)
+
     -- A GRENADE IS NOT A WEAPON (it is a throwable): still nothing to take.
     arm(3, 1, 'grenade')
     useAt(1)
     eq(listedAs(1, 'disarm').reason, 'no_weapons', 'a bag of grenades does not make a target')
 
+    -- A SOLO PLAYER ALONE ARMED: the solo line.
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(2, m, nil, { x = C0.x + 40.0, y = C0.y })
+    keys[1], market.wallet[1] = true, 1000
+    arm(1, 1, 'revolver')
+    useAt(1)
+    r = ask(1, 'disarm')
+    ok(r and r.code == 'no_weapons', 'solo, only the runner armed: no_weapons', r and r.code)
+    eq(r and r.toast, COPY.no_weapons_solo, 'in the solo line')
+
     -- THE END OF THE RUN: armed when asked, nobody armed when the load is over.
     reset()
     lobby()
     arm(3, 1, 'carbinerifle')
+    arm(1, 1, 'carbinerifle')                   -- the runner's own: never a target
     useAt(1)
     r = ask(1, 'disarm')
     ok(r and r.code == 'running' and market.wallet[1] == 800, 'armed: accepted, 200 Volts charged', r and r.code)

@@ -1,15 +1,20 @@
 -- Season 2 terminals (#396), wave A: DISARM, the server half.
 --
 -- THE PAGE (br_lib/config/terminals.lua, `disarm_*`; the owner's "take away
--- everyone's most powerful weapon", 2026-10-04): "Every player still in the
--- match loses the most powerful weapon they carry, your squad included. Most
--- powerful means the highest rarity, then the most damage. The weapons are
--- gone. They aren't dropped." Instant; 200 Volts (the registry row's `cost`).
--- Refused, spending nothing, when nobody in the match carries a weapon.
+-- everyone's most powerful weapon", 2026-10-04, and ROUND 4, 2026-10-06: "The
+-- disarm tool should not apply to the user or their squad"): "Every player
+-- still in the match outside your squad loses the most powerful weapon they
+-- carry. Your squad keeps its weapons. Most powerful means the highest rarity,
+-- then the most damage. The weapons are gone. They aren't dropped." Instant;
+-- 200 Volts (the registry row's `cost`). Refused, spending nothing, when
+-- nobody outside the runner's squad carries a weapon.
 --
 --   STILL IN THE MATCH   still in the fight (BR.Server.isInMatch, the panel's
 --                        and the HUD's count): standing, downed, in the air.
---                        The runner and their squad too.
+--   NOT THE SQUAD        the runner and everyone in their squad
+--                        (BR.TerminalSolve.squadKey, the key the squad's one
+--                        use is spent under) keep every weapon they carry. A
+--                        solo player is a squad of one: only they are spared.
 --   A WEAPON             a slot of kind `weapon`: every gun and every melee
 --                        weapon. Throwables are their own kind and are not.
 --   THE MOST POWERFUL    the stack's rarity, then its weapon row's damage; a tie
@@ -30,6 +35,7 @@ BR = BR or {}
 BR.Terminal = BR.Terminal or {}
 
 local T = BR.Terminal
+local TS = BR.TerminalSolve
 
 local function fx() return BR.Config.Terminals.fx or {} end
 
@@ -72,14 +78,15 @@ local function inFight(state)
     return T.marked(state)
 end
 
---- Everyone in this match still in the fight, with the slot Disarm takes from
---- each who carries a weapon.
+--- Everyone in this match still in the fight OUTSIDE squad `key`, with the
+--- slot Disarm takes from each who carries a weapon.
 --- @param m table
+--- @param key string  the runner's squad, spared
 --- @return table[] { { src, slot } }
-local function targets(m)
+local function targets(m, key)
     local out = {}
     BR.Roster.each(function(e) return e.matchId == m.id end, function(src, e)
-        if inFight(e.state) then
+        if inFight(e.state) and TS.squadKey(e, src) ~= key then
             local inv = BR.Inv.of(src)
             local slot = inv and T.disarmPick(inv.slots) or nil
             if slot then out[#out + 1] = { src = src, slot = slot } end
@@ -89,18 +96,20 @@ local function targets(m)
 end
 
 T.FUNCTIONS.disarm = {
-    -- NOBODY ARMED IS REFUSED, SPENDING NOTHING -- the 200 Volts included,
-    -- since the door asks this before the price. Asked again when the loading
-    -- is over, so a match that dropped its last weapon meanwhile is refunded.
+    -- NOBODY ARMED OUTSIDE THE SQUAD IS REFUSED, SPENDING NOTHING -- the 200
+    -- Volts included, since the door asks this before the price. Asked again
+    -- when the loading is over, so a match that dropped its last weapon
+    -- meanwhile is refunded.
     refuse = function(src, session)
-        local m = T.whereIs(src)
+        local m, _, key = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
-        if #targets(m) == 0 then return 'no_weapons' end
+        if #targets(m, key) == 0 then return 'no_weapons' end
         return nil
     end,
-    -- EVERY PLAYER STILL IN THE MATCH LOSES THEIR MOST POWERFUL WEAPON.
+    -- EVERY PLAYER STILL IN THE MATCH OUTSIDE THE RUNNER'S SQUAD LOSES THEIR
+    -- MOST POWERFUL WEAPON.
     run = function(src, session)
-        local m = T.whereIs(src)
+        local m, _, key = T.whereIs(src)
         if not m then
             if session.dev then
                 print(('[br_core] brterminal (client %d): Disarm ran on the dev terminal '
@@ -111,13 +120,13 @@ T.FUNCTIONS.disarm = {
         end
         local grace = tonumber(fx().disarmGraceMs) or 10000
         local taken = {}
-        for _, t in ipairs(targets(m)) do
+        for _, t in ipairs(targets(m, key)) do
             local stack = BR.Inv.revoke(t.src, t.slot, grace)
             if stack then taken[#taken + 1] = ('%d:%s'):format(t.src, tostring(stack.item)) end
         end
         if #taken == 0 then return { ok = false, code = 'no_weapons' } end
-        print(('[br_core] terminals: Disarm in match %s took %d weapon(s): %s')
-            :format(tostring(m.id), #taken, table.concat(taken, ' ')))
+        print(('[br_core] terminals: Disarm by %s in match %s took %d weapon(s): %s')
+            :format(tostring(key), tostring(m.id), #taken, table.concat(taken, ' ')))
         return { ok = true, code = 'done' }
     end,
 }

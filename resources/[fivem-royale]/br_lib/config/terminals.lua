@@ -440,9 +440,11 @@ BR.Config.Terminals = {
         -- standing) -- refused, spending nothing.
         health_full = 'Everyone in your squad who is standing is already at full health and armor.',
         health_full_solo = "You're already at full health and armor.",
-        -- WRITTEN (2026-10-06, wave A). Disarm: nobody still in the match
+        -- WRITTEN (2026-10-06, round 4; was 'Nobody in the match is carrying
+        -- a weapon.'). Disarm: nobody still in the match outside the squad
         -- carries a weapon -- refused, spending nothing (the Volts included).
-        no_weapons = 'Nobody in the match is carrying a weapon.',
+        no_weapons = 'Nobody outside your squad is carrying a weapon.',
+        no_weapons_solo = 'Nobody else in the match is carrying a weapon.',
         -- WRITTEN (2026-10-06, wave A). Key finder, nothing to mark: no
         -- Yubikey anywhere (the card, before a choice is made), none on the
         -- ground, or nobody outside the squad holding one -- refused,
@@ -682,19 +684,35 @@ BR.Config.Terminals = {
         -- out.').
         power_outage_description = 'Power outage. The lights are out for every player in an area.',
 
-        -- Disarm (owner's; LIVE since wave A, 2026-10-06)
+        -- Disarm (owner's; LIVE since wave A, 2026-10-06; ROUND 4, the same
+        -- day: "The disarm tool should not apply to the user or their squad")
         disarm_name = 'Disarm',
-        disarm_summary = "Takes away every player's most powerful weapon.",
-        disarm_what = "Every player still in the match loses the most powerful weapon they carry, your squad included.\nMost powerful means the highest rarity, then the most damage.\nThe weapons are gone. They aren't dropped.",
-        disarm_what_solo = "Every player still in the match loses the most powerful weapon they carry, you included.\nMost powerful means the highest rarity, then the most damage.\nThe weapons are gone. They aren't dropped.",
+        -- WRITTEN (2026-10-06, round 4; was "Takes away every player's most
+        -- powerful weapon.").
+        disarm_summary = 'Takes away the most powerful weapon of every player outside your squad.',
+        disarm_summary_solo = "Takes away every other player's most powerful weapon.",
+        -- WRITTEN (2026-10-06, round 4; was "Every player still in the match
+        -- loses the most powerful weapon they carry, your squad included.
+        -- ...").
+        disarm_what = "Every player still in the match outside your squad loses the most powerful weapon they carry.\nYour squad keeps all of its weapons.\nMost powerful means the highest rarity, then the most damage.\nThe weapons are gone. They aren't dropped.",
+        disarm_what_solo = "Every other player still in the match loses the most powerful weapon they carry.\nYou keep all of yours.\nMost powerful means the highest rarity, then the most damage.\nThe weapons are gone. They aren't dropped.",
         disarm_duration = 'Instant',
-        disarm_affects = 'Every player still in the match, your squad included',
-        disarm_affects_solo = 'Every player still in the match, you included',
+        -- WRITTEN (2026-10-06, round 4; was 'Every player still in the match,
+        -- your squad included').
+        disarm_affects = 'Every player still in the match outside your squad',
+        disarm_affects_solo = 'Every other player still in the match',
         disarm_notified = 'Everyone in the match',
-        disarm_risks = 'Your squad loses its most powerful weapons too.',
-        disarm_risks_solo = 'You lose your most powerful weapon too.',
-        disarm_done = "Every player's most powerful weapon is gone.",
-        disarm_description = "Disarm. Every player's most powerful weapon is gone.",
+        -- No `disarm_risks` since round 4: the squad no longer loses anything,
+        -- so the two lines saying it did ("Your squad loses its most powerful
+        -- weapons too.") went, and risk_notice is the page's only risk.
+        -- WRITTEN (2026-10-06, round 4; was "Every player's most powerful
+        -- weapon is gone.").
+        disarm_done = 'The most powerful weapon of every player outside your squad is gone.',
+        disarm_done_solo = "Every other player's most powerful weapon is gone.",
+        -- WRITTEN (2026-10-06, round 4; was "Disarm. Every player's most
+        -- powerful weapon is gone.").
+        disarm_description = 'Disarm. Every player outside their squad lost their most powerful weapon.',
+        disarm_description_solo = 'Disarm. Every other player lost their most powerful weapon.',
 
         -- Supply drop (owner's; LIVE)
         supply_drop_name = 'Supply drop',
