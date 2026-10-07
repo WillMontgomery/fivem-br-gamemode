@@ -13,11 +13,10 @@
 -- player picked (`spot = true` on the row: BR.Terminal.spot checks its shape,
 -- and it arrives as `opts.at`). The storm's half is server/storm.lua's:
 -- BR.Storm.aim plans the rest of the match toward the spot and hands the match
--- the plan, so every circle the storm draws from now on closes toward it and
--- the last ends on it -- or, where the storm cannot get there, as near it as
--- it can (round 5, owner 2026-10-06: "the next phases should instead work
--- towards the location the player selected"). No spot is refused: one over
--- water or off the map is aimed as the nearest land to it.
+-- the plan, so every circle the storm draws from now on moves an equal share of
+-- the way toward it and the final circle is centered on it (owner, 2026-10-07:
+-- "I select a marker of where I want the storm to FINISH that match"). No spot
+-- is refused: one over water or off the map is aimed as the nearest land to it.
 --
 -- STORM REVEAL STAYS TRUE. A squad that ran Storm reveal earlier this match is
 -- sent where the storm now ends, the same way it was sent the first answer
@@ -28,7 +27,8 @@
 --   storm_aimed      a Storm control already picked this match's spot: one
 --                    spot a match (round 4's review), so the first runner's
 --                    storm closes on their spot for the rest of the match
---   no_circle        the final circle is already on the map
+--   no_circle        the final circle (BR.StormFinalPhase, circle 7) is
+--                    already on the map, and a circle on the map never moves
 -- and asked again when the load is over, so the final circle drawn in those 3
 -- to 5 seconds -- or another squad's Storm control landing first -- gives
 -- everything back.
@@ -63,7 +63,7 @@ T.FUNCTIONS.storm_control = {
         local rec = m.storm
         if not rec or not m.stormRng then return 'no_storm' end
         if BR.Storm.aimed(m) then return 'storm_aimed' end
-        if rec.phase >= #BR.Config.Storm.phases then return 'no_circle' end
+        if rec.phase >= BR.StormFinalPhase() then return 'no_circle' end
         return nil
     end,
     -- THE STORM CLOSES TOWARD THE SPOT: the match aimed at it, and every squad
