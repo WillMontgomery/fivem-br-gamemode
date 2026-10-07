@@ -2588,6 +2588,16 @@ do
     cmd(nil, { 'reset', '7' })
     eq(B.executed[4], 'brterminalsv reset', '`brterminal reset`: your own squad and key')
     eq(B.executed[5], 'brterminalsv reset 7', 'and `reset <player id>` names another')
+    -- A SPOT UNDER A CHOICE: Power outage's default area is the spot.
+    B.executed = {}
+    cmd(nil, { 'run', 'power_outage' })
+    eq(B.executed[1], 'brterminalsv run power_outage x=40.0 y=200.0',
+        '`brterminal run power_outage`: its default area is the spot, 60 m in front of you')
+    cmd(nil, { 'run', 'power_outage', 'area=spot', 'duration=240' })
+    eq(B.executed[2], 'brterminalsv run power_outage area=spot duration=240 x=40.0 y=200.0',
+        'and so is `area=spot` typed')
+    cmd(nil, { 'run', 'power_outage', 'area=county' })
+    eq(B.executed[3], 'brterminalsv run power_outage area=county', 'another area gets none')
 end
 
 describe('round 4: the map pick -- the computer hidden, the big map, the waypoint read, the computer back')

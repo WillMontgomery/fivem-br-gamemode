@@ -483,16 +483,24 @@ RegisterCommand('brterminal', function(_, args)
     -- strike"): `brterminal run airstrike` with no spot lands it in front of
     -- you, far enough to watch the rockets fall onto the circle -- the real run,
     -- its warning, rockets, blasts and damage, with nothing spent.
+    -- A row whose spot hangs on a choice (Power outage's default area 'spot')
+    -- is asked BR.TerminalSolve.spotWanted over the choices typed, its
+    -- defaults filled in, as the server's BR.Terminal.options fills them.
     if first == 'run' and #rest >= 1 then
-        local id, given = rest[1]:lower(), false
+        local id, given, typed = rest[1]:lower(), false, {}
         for i = 2, #rest do
             if rest[i]:match('^[xXyY]=') then given = true end
+            local k, v = rest[i]:match('^([%w_]+)=(%S+)$')
+            if k then typed[k] = v end
         end
         local row = nil
         for _, r in ipairs(BR.Config.Terminals.functions or {}) do
             if r.id == id then row = r end
         end
-        if row and row.spot == true and not given then
+        local opts = {}
+        for _, o in ipairs(row and row.options or {}) do opts[o.id] = o.default end
+        for k, v in pairs(typed) do opts[k] = v end
+        if row and BR.TerminalSolve.spotWanted(row, opts) and not given then
             local ped = PlayerPedId()
             local pos = GetEntityCoords(ped)
             local h = math.rad(GetEntityHeading(ped))
