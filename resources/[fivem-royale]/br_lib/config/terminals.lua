@@ -182,12 +182,6 @@ BR.Config.Terminals = {
         -- (not while their own squad is under Ghost).
         impact_scan = 'Scan: another squad can see where you are.',
         impact_scan_solo = 'Scan: another player can see where you are.',
-        -- Pulse: every player it found, for the 30 seconds it follows them.
-        impact_pulse = 'Pulse: another squad can see where you are.',
-        impact_pulse_solo = 'Pulse: another player can see where you are.',
-        -- Key finder: every key holder it marked, for its 2 minutes.
-        impact_key_finder = 'Key finder: another squad can see where you were.',
-        impact_key_finder_solo = 'Key finder: another player can see where you were.',
         -- Time & weather, for the rest of the match: everyone but the runner,
         -- one row for a time run and one for a weather run.
         impact_time = 'Time & weather: the time of day was changed.',
@@ -504,14 +498,6 @@ BR.Config.Terminals = {
         -- carries a weapon -- refused, spending nothing (the Volts included).
         no_weapons = 'Nobody outside your squad is carrying a weapon.',
         no_weapons_solo = 'Nobody else in the match is carrying a weapon.',
-        -- WRITTEN (2026-10-06, wave A). Key finder, nothing to mark: no
-        -- Yubikey anywhere (the card, before a choice is made), none on the
-        -- ground, or nobody outside the squad holding one -- refused,
-        -- spending nothing.
-        no_keys = 'There are no other Yubikeys to find right now.',
-        no_keys_ground = 'There are no Yubikeys on the ground right now.',
-        no_keys_held = 'Nobody outside your squad is holding a Yubikey right now.',
-        no_keys_held_solo = 'Nobody else is holding a Yubikey right now.',
         -- WRITTEN (2026-10-06, wave A). Contract: nobody outside the squad
         -- has an elimination yet -- refused, spending nothing.
         no_target = 'Nobody outside your squad has an elimination yet.',
@@ -853,12 +839,15 @@ BR.Config.Terminals = {
         -- (at the terminal: why not). Squad-only, like every Reboot line.
         reboot_none = "There's nobody in your squad to bring back.",
 
-        -- Ghost (suggested; LIVE since wave A, 2026-10-06)
+        -- Ghost (suggested; LIVE since wave A, 2026-10-06). WRITTEN (2026-10-06,
+        -- round 5): the summary and the page's first line no longer name a
+        -- function the owner cut in round 5, so they say what Ghost hides now:
+        -- the squad, from Scan and the bounty markers.
         ghost_name = 'Ghost',
-        ghost_summary = 'Hides your squad from Scan, Pulse and bounty markers for a while.',
-        ghost_summary_solo = 'Hides you from Scan, Pulse and bounty markers for a while.',
-        ghost_what = "Your squad doesn't show up on other squads' Scan or Pulse markers.\nIf one of you has a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
-        ghost_what_solo = "You don't show up on other players' Scan or Pulse markers.\nIf you have a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
+        ghost_summary = 'Hides your squad from Scan and bounty markers for a while.',
+        ghost_summary_solo = 'Hides you from Scan and bounty markers for a while.',
+        ghost_what = "Your squad doesn't show up on other squads' Scan markers.\nIf one of you has a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
+        ghost_what_solo = "You don't show up on other players' Scan markers.\nIf you have a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
         ghost_opt_duration = 'Duration',
         ghost_opt_duration_120 = '2 minutes',
         ghost_opt_duration_240 = '4 minutes',
@@ -905,66 +894,6 @@ BR.Config.Terminals = {
         -- terminal have stalled.').
         emp_description = 'EMP. Every vehicle stalls for 3 minutes, except the ones their squad drives.',
         emp_description_solo = 'EMP. Every vehicle stalls for 3 minutes, except the ones they drive.',
-
-        -- Key finder (suggested; LIVE since wave A, 2026-10-06)
-        key_finder_name = 'Key finder',
-        key_finder_summary = 'Shows your squad where other Yubikeys are.',
-        key_finder_summary_solo = 'Shows you where other Yubikeys are.',
-        key_finder_what = "Marks Yubikeys on your squad's maps.\nThe marks show where the keys were when it ran. They don't follow anyone, and they fade after 2 minutes.",
-        key_finder_what_solo = "Marks Yubikeys on your map.\nThe marks show where the keys were when it ran. They don't follow anyone, and they fade after 2 minutes.",
-        key_finder_opt_target = 'Find',
-        key_finder_opt_target_ground = 'Keys on the ground',
-        key_finder_opt_target_holders = 'Players holding a key',
-        key_finder_duration = 'The marks last 2 minutes',
-        key_finder_affects = 'Your squad',
-        key_finder_affects_solo = 'You',
-        -- WRITTEN (2026-10-06, wave A; was 'Everyone in the match'): the
-        -- holders it marks are told too.
-        key_finder_notified = 'Everyone in the match, and every key holder it marks',
-        -- WRITTEN (2026-10-06, wave A; was 'Key holders are warned that keys
-        -- were located.'): only the holders it marks are warned -- Keys on
-        -- the ground marks nobody to warn.
-        key_finder_risks = "Players holding a key are warned when they're marked.",
-        key_finder_done = "The Yubikeys are on your squad's maps.",
-        key_finder_done_solo = 'The Yubikeys are on your map.',
-        key_finder_description = 'Key finder. Their squad sees where the Yubikeys are.',
-        key_finder_description_solo = 'Key finder. They see where the Yubikeys are.',
-        -- WRITTEN (2026-10-06, wave A). A toast to each player holding a key
-        -- whom Key finder (Players holding a key) marked, after the lobby's
-        -- notice.
-        key_finder_warned = 'Key finder located your Yubikey. Another squad can see where you were standing for 2 minutes.',
-        key_finder_warned_solo = 'Key finder located your Yubikey. Another player can see where you were standing for 2 minutes.',
-        -- WRITTEN (2026-10-06, wave A). The marks' name in the pause map's
-        -- legend.
-        key_finder_blip = 'Yubikey',
-
-        -- Pulse (new; LIVE since wave A, 2026-10-06)
-        pulse_name = 'Pulse',
-        pulse_summary = 'Shows every player near this terminal for a short time.',
-        -- WRITTEN (2026-10-06, wave A; was "Every player within the radius
-        -- ..."): the runner's own squad is not marked, and not told it was
-        -- detected.
-        pulse_what = "Every player outside your squad within the radius you choose shows on your squad's maps.\nThe marks follow them for 30 seconds.\nA squad running Ghost isn't shown while it lasts.",
-        pulse_what_solo = "Every other player within the radius you choose shows on your map.\nThe marks follow them for 30 seconds.\nA player running Ghost isn't shown while it lasts.",
-        pulse_opt_radius = 'Radius',
-        pulse_opt_radius_250 = '250 meters',
-        pulse_opt_radius_500 = '500 meters',
-        pulse_duration = '30 seconds',
-        -- WRITTEN (2026-10-06, wave A; was 'Every player in the radius').
-        pulse_affects = 'Every player outside your squad in the radius',
-        pulse_affects_solo = 'Every other player in the radius',
-        pulse_notified = 'Everyone in the match, and every player it finds',
-        pulse_risks = "Every player the pulse finds is told they've been detected.",
-        pulse_done = "The pulse is on your squad's maps.",
-        pulse_done_solo = 'The pulse is on your map.',
-        pulse_description = 'Pulse. Players near their terminal are on their map.',
-        -- WRITTEN (2026-10-06, wave A). A toast to each player a Pulse found,
-        -- after the lobby's notice.
-        pulse_detected = "A pulse detected you. Another squad can see where you are for 30 seconds.",
-        pulse_detected_solo = "A pulse detected you. Another player can see where you are for 30 seconds.",
-        -- WRITTEN (2026-10-06, wave A). The marks' name in the pause map's
-        -- legend.
-        pulse_blip = 'Detected',
 
         -- Contract (new; LIVE since wave A, 2026-10-06; ROUND 4, the same day:
         -- "The contract bounty should last 10 minutes, and cannot land on a
@@ -1078,13 +1007,6 @@ BR.Config.Terminals = {
         -- The bounty, the owner's numbers: blip 58 in colour 3 on everyone's
         -- map, and colour 69 on the bounty's own squad's.
         bounty = { sprite = 58, colour = 3, mateColour = 69, scale = 1.0 },
-        -- ── wave A (2026-10-06): PLACEHOLDERS the owner has not picked ──
-        -- Key finder: where each Yubikey was, on the squad's maps for 2
-        -- minutes. Sprite 1 is the plain dot (Scan's); color 5 is yellow.
-        keyFinder = { sprite = 1, colour = 5, scale = 0.9 },
-        -- Pulse: each player it found, followed for 30 seconds. The plain dot
-        -- again; color 17 is orange.
-        pulse = { sprite = 1, colour = 17, scale = 0.8 },
     },
 
     -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04) ═══
@@ -1282,11 +1204,11 @@ BR.Config.Terminals = {
     -- br_core/server/terminal.lua: an optional `refuse` and a `run`.
     --
     -- WHERE EACH CAME FROM: the owner's list (2026-10-04) is the first nine;
-    -- Reboot, Ghost, EMP and Key finder were suggested on #396 and approved
-    -- for consideration; Pulse, Contract and Field medic are the app round's
-    -- proposals, for the owner to keep or cut. He cut two more of them on
-    -- 2026-10-06: Lockdown ("The player gains nothing from using that") and
-    -- Storm delay ("We have to keep the pace of the match").
+    -- Reboot, Ghost and EMP were suggested on #396 and approved for
+    -- consideration; Contract and Field medic are the app round's proposals,
+    -- for the owner to keep or cut. He cut four on 2026-10-06: Lockdown ("The
+    -- player gains nothing from using that"), Storm delay ("We have to keep
+    -- the pace of the match"), and two more in round 5.
     functions = {
         { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200,
           bounty = 'runner', squadWide = true },
@@ -1337,7 +1259,7 @@ BR.Config.Terminals = {
         { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = true, cost = 150,
           squadOnly = true, squadWide = true },
         -- DISRUPTION ON ITS OWN (round 2): alone, it still hides the player
-        -- from other players' Scan, Pulse and bounty markers -- what Comms
+        -- from other players' Scan and bounty markers -- what Comms
         -- blackout, filed under disruption, does to every other squad's
         -- teammate markers.
         { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = true,
@@ -1348,10 +1270,6 @@ BR.Config.Terminals = {
         -- drives it -- no options. server/terminalfx/emp.lua keeps the fact,
         -- and each client/terminalfx/emp.lua holds the car its player drives.
         { id = 'emp',            category = 'disruption', risk = 'medium', implemented = true },
-        { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true, squadWide = true,
-          options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
-        { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true, squadWide = true,
-          options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters
         { id = 'contract',       category = 'disruption', risk = 'medium', implemented = true, bounty = 'target' },
         -- ROUND 4 (owner, 2026-10-06): heals the squad, drains everyone else
         -- at 50 health or more by 20, and tells the lobby nothing (`quiet`).
@@ -1437,8 +1355,8 @@ BR.Config.Terminals = {
         bountyPingMs = 1000,
 
         -- ── wave A (2026-10-06). An option's choices are the registry row's
-        --    own numbers (Ghost's seconds, Pulse's meters),
-        --    read as numbers where they are used; everything else is here. ──
+        --    own numbers (Ghost's seconds), read as numbers where they are
+        --    used; everything else is here. ──
 
         -- Disarm: how long the server remembers a weapon it took, so a hit
         -- from it -- or the client's strip report of it -- accuses nobody
@@ -1452,14 +1370,10 @@ BR.Config.Terminals = {
         -- railgun is INSTANT_HIT. 10 s covers those and a slow round trip,
         -- with room for a lob off a roof. Seconds, never a match.
         disarmGraceMs = 10000,
-        -- How often the server checks whether a timed effect has run out (Key
-        -- finder's marks; Ghost) and ends it: one pass a second.
+        -- How often the server checks whether a timed effect has run out
+        -- (Ghost) and ends it, and pushes the persistent notices: one pass a
+        -- second.
         endCheckMs = 1000,
-        -- Key finder: "they fade after 2 minutes".
-        keyFinderMs = 2 * 60 * 1000,
-        -- Pulse: "The marks follow them for 30 seconds", moved this often.
-        pulseMs = 30 * 1000,
-        pulsePingMs = 1000,
         -- (Contract's bounty is bountyMs, the owner's ten, since round 4: "The
         -- contract bounty should last 10 minutes".)
         -- Field medic's drain (round 4, owner 2026-10-06: "remove 20 health

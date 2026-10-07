@@ -37,7 +37,7 @@
 -- Ghost hides a squad from OTHER squads' marks, a blackout hides a squad's
 -- members from EACH OTHER -- so neither changes the other: a squad under
 -- Ghost is blacked out like any other squad, a blacked-out squad's Ghost still
--- hides it from Scan, Pulse and the bounty marks, and the runner's own squad
+-- hides it from Scan and the bounty marks, and the runner's own squad
 -- is untouched either way. A bounty on a blacked-out squad's member leaves
 -- that squad's maps with the rest of their dots (its color 69 blip is the
 -- beacon's), keeps its mark in their panel, and stays on every other map

@@ -698,13 +698,10 @@ client_scripts {
     -- opponents and the bounty, from the server's pushes. Event-driven, plus
     -- a SLOW-band pass that clears them in the lobby; nothing per frame.
     'client/terminalfx.lua',
-    -- The wave A functions' client halves (#396, 2026-10-06), one file each:
-    -- their marks, drawn with client/terminalfx.lua's helpers (read at call
-    -- time), from the server's pushes. Event-driven, plus a check on
-    -- client/terminalfx.lua's one SLOW pass (BR.TerminalFx.onSlow) that
-    -- returns at once with nothing drawn.
-    'client/terminalfx/key_finder.lua',
-    'client/terminalfx/pulse.lua',
+    -- The functions' client halves (#396, 2026-10-06), one file each, hooked
+    -- on client/terminalfx.lua's one SLOW pass (BR.TerminalFx.onSlow) and
+    -- reading its helpers at call time.
+    --
     -- Wave C (#396, 2026-10-06; round 4): EMP holds the vehicle this player
     -- drives stalled while the server says their driving stalls -- on the
     -- fact's change (TERMINAL_EMP), on getting in, and on that one SLOW pass.
@@ -963,8 +960,6 @@ server_scripts {
     -- tools/test_terminalfx.lua load exactly the files listed here.
     'server/terminalfx/field_medic.lua',
     'server/terminalfx/disarm.lua',
-    'server/terminalfx/key_finder.lua',
-    'server/terminalfx/pulse.lua',
     'server/terminalfx/ghost.lua',
     'server/terminalfx/contract.lua',
     -- Wave C (#396, 2026-10-06), the same way.

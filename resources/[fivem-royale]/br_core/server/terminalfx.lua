@@ -51,7 +51,7 @@
 --
 -- AND NEITHER PUTS A SQUAD UNDER GHOST ON ANYBODY'S MAP (wave A): its members
 -- drop out of every Scan list and its bounty out of every bounty list until
--- Ghost ends -- `hidden` below, the one predicate Pulse asks too.
+-- Ghost ends -- `hidden` below.
 --
 -- SEASON 2 ONLY, by construction: nothing here runs until a terminal function
 -- has, and every job asks the season too.
@@ -140,7 +140,7 @@ end
 
 --- IS SQUAD `key` HIDDEN FROM OTHER SQUADS' MARKS RIGHT NOW? Ghost's
 --- predicate (server/terminalfx/ghost.lua, BR.Terminal.hidden), the ONE
---- question Scan's push, the bounty's push and Pulse all ask before they put
+--- question Scan's push and the bounty's push both ask before they put
 --- anybody on another squad's map. No squad is while Ghost is not loaded.
 --- @param m table
 --- @param key string

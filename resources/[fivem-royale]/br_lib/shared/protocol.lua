@@ -1269,16 +1269,6 @@ BR.Net = {
     -- while one is live and once more, empty, when the last ends. The
     -- bounty's own squad reads it off the squad beacon's `bounty`.
     TERMINAL_BOUNTY = 'br:terminal:bounty',
-    -- S->C { matchId, list = { { x, y } }, leftMs }. Key finder (wave A): where
-    -- each Yubikey was when it ran, to the squad that ran it alone, once --
-    -- and once more, empty, when its two minutes are up or the match ends
-    -- (server/terminalfx/key_finder.lua). Again on br:ready while it lasts.
-    TERMINAL_KEYS   = 'br:terminal:keys',
-    -- S->C { matchId, list = { { s, x, y } } }. Pulse (wave A): where each
-    -- player it found is now, to the squad that ran it alone, every
-    -- pulsePingMs for pulseMs -- and once more, empty, when it is over
-    -- (server/terminalfx/pulse.lua).
-    TERMINAL_PULSE  = 'br:terminal:pulse',
     -- S->C { matchId, leftMs?, liveMs? }. EMP (round 4): how long this
     -- player's driving stalls from now (`leftMs`, absent when every EMP in
     -- force spares their squad), and how long any EMP in this match lasts

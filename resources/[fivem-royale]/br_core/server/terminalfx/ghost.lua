@@ -1,24 +1,22 @@
 -- Season 2 terminals (#396), wave A: GHOST, the server half.
 --
 -- THE PAGE (br_lib/config/terminals.lua, `ghost_*`): "Your squad doesn't show
--- up on other squads' Scan or Pulse markers. If one of you has a bounty, the
--- bounty marker is hidden too. It doesn't hide you from anyone who can see
--- you." Option `duration`: 120 or 240 seconds (the row's choices, read as
--- seconds).
+-- up on other squads' Scan markers. If one of you has a bounty, the bounty
+-- marker is hidden too. It doesn't hide you from anyone who can see you."
+-- Option `duration`: 120 or 240 seconds (the row's choices, read as seconds).
 --
 -- ═══ ONE PREDICATE, EVERY MARK ASKS IT ═══
 --
 -- BR.Terminal.hidden(m, key, now) is the whole of Ghost's effect. Scan's push
--- and the bounty's push (server/terminalfx.lua) and Pulse
--- (server/terminalfx/pulse.lua) each ask it before they put a player on
--- another squad's map, so the three cannot disagree about who is hidden or
--- until when. Nothing is sent to anybody's client about Ghost itself: a
+-- and the bounty's push (server/terminalfx.lua) each ask it before they put a
+-- player on another squad's map, so the two cannot disagree about who is
+-- hidden or until when. Nothing is sent to anybody's client about Ghost itself: a
 -- hidden squad's marks simply stop arriving, and the next push after it ends
 -- brings them back. The squad's own view (its beacon, its own bounty mark,
 -- its own Scan) is untouched, and so is anything a player can see with their
 -- eyes -- this changes what the server SENDS, nothing in the world.
 --
--- It starts by pushing Scan, the bounty and Pulse at once, so the marks go
+-- It starts by pushing Scan and the bounty at once, so the marks go
 -- when the run finishes rather than up to a push later. It ends on its own
 -- clock, at the match's end (a new match is a new record), and off Season 2
 -- (the job below forgets it). No client half.
@@ -94,7 +92,6 @@ T.FUNCTIONS.ghost = {
         -- THE MARKS GO NOW, not a push later.
         T.pushScans(m)
         T.pushBounties(m, now)
-        if T.pushPulses then T.pushPulses(m, now) end
         print(('[br_core] terminals: Ghost for %s in match %s, %d s')
             :format(key, tostring(m.id), seconds))
         return { ok = true, code = 'done' }

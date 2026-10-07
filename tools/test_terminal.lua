@@ -682,8 +682,7 @@ do
         'no_key', 'squad_used', 'offline', 'unavailable', 'fn_offline', 'bad_option',
         'no_storm', 'no_site', 'ammo_full',
         -- Wave A's (2026-10-06).
-        'health_full', 'no_weapons', 'no_keys', 'no_keys_ground', 'no_keys_held', 'key_finder_warned',
-        'key_finder_blip', 'pulse_detected', 'pulse_blip', 'no_target',
+        'health_full', 'no_weapons', 'no_target',
         -- Round 4's (2026-10-06): the map pick's step, Storm control's spots,
         -- Power outage's night.
         'confirm_location', 'storm_spot_land', 'storm_spot_out', 'storm_spot_edge', 'no_night',
@@ -754,10 +753,9 @@ do
     -- "Any tool that can impact the whole squad": every row whose effect is
     -- the squad's -- its affects line starts "Your squad" (Field medic's
     -- goes on to the players it drains), or its marks show on the squad's
-    -- maps -- and none other. Reboot is squad-only, Pulse marks other players
-    -- on the squad's maps.
+    -- maps -- and none other. Reboot is squad-only.
     local want = { scan = true, storm_reveal = true, max_ammo = true, reboot = true, ghost = true,
-                   key_finder = true, pulse = true, field_medic = true }
+                   field_medic = true }
     for _, row in ipairs(C.functions) do
         local affects = copy[row.id .. '_affects'] or ''
         local what = copy[row.id .. '_what'] or ''
@@ -819,6 +817,86 @@ do
         'no storm, not forced: online, whatever else is passed')
 end
 
+describe('round 5: Key finder and Pulse are gone (owner, 2026-10-06)')
+do
+    -- "Yes cut key finder and pulse please." Nothing of either is left: no
+    -- row, no line (their own, their refusals, their persistent notices,
+    -- their marks' legend names), no art, no numbers, no server or client
+    -- half, no file, no wire, no manifest line -- and Ghost, which hid a
+    -- squad from Pulse too, no longer says it does.
+    bootServer()
+    local C = BR.Config.Terminals
+    for _, id in ipairs({ 'key_finder', 'pulse' }) do
+        eq(BR.Terminal.row(id), nil, id .. ': no registry row')
+        eq(BR.Terminal.FUNCTIONS[id], nil, id .. ': no server half')
+        local lines = {}
+        for k in pairs(C.copy) do
+            if k:sub(1, #id + 1) == id .. '_' or k == 'impact_' .. id or k == 'impact_' .. id .. '_solo' then
+                lines[#lines + 1] = k
+            end
+        end
+        table.sort(lines)
+        eq(#lines, 0, id .. ': no copy line ' .. table.concat(lines, ', '))
+        for _, side in ipairs({ 'server', 'client' }) do
+            ok(io.open(ROOT .. 'br_core/' .. side .. '/terminalfx/' .. id .. '.lua', 'rb') == nil,
+                ('%s: no %s file'):format(id, side))
+        end
+    end
+    for _, key in ipairs({ 'no_keys', 'no_keys_ground', 'no_keys_held', 'no_keys_held_solo' }) do
+        eq(C.copy[key], nil, ('copy.%s is gone with Key finder'):format(key))
+    end
+    eq(C.art.keyFinder, nil, 'no Key finder mark in the art block')
+    eq(C.art.pulse, nil, 'nor a Pulse mark')
+    for _, k in ipairs({ 'keyFinderMs', 'pulseMs', 'pulsePingMs' }) do
+        eq(C.fx[k], nil, ('no fx.%s'):format(k))
+    end
+    eq(BR.Net.TERMINAL_KEYS, nil, 'no TERMINAL_KEYS on the wire')
+    eq(BR.Net.TERMINAL_PULSE, nil, 'no TERMINAL_PULSE on the wire')
+    eq(BR.Terminal.pushPulses, nil, 'no Pulse push for Ghost to call')
+    eq(BR.Terminal.expireKeyFinds, nil, 'no Key finder clock')
+    local manifest = readFile(ROOT .. 'br_core/fxmanifest.lua') or ''
+    ok(not manifest:find('key_finder.lua', 1, true) and not manifest:find('pulse.lua', 1, true),
+        'and br_core manifest lists neither')
+    -- GHOST'S PAGE says what it hides now: Scan and the bounty markers.
+    for _, squad in ipairs({ true, false }) do
+        for _, part in ipairs({ 'summary', 'what' }) do
+            local l = BR.TerminalSolve.pick(C.copy, 'ghost_' .. part, squad)
+            ok(l ~= '' and not l:lower():find('pulse', 1, true),
+                ('ghost_%s (%s) names no Pulse'):format(part, squad and 'squad' or 'solo'), l)
+            ok(l:find('Scan', 1, true) ~= nil, ('ghost_%s (%s) still names Scan'):format(part, squad and 'squad' or 'solo'), l)
+        end
+    end
+    -- AND NO LUA FILE THE GAME LOADS, NO TEST OF THE BUILT FUNCTIONS AND NO
+    -- DOC SPEAKS OF EITHER: a grep, so a stray line is a failure here. Any
+    -- "pulse" in any case (a `pushPulses` too) but the boost's "impulse".
+    local function says(text)
+        if text:find('key_finder', 1, true) or text:find('key finder', 1, true)
+           or text:find('keyfinder', 1, true) then
+            return true
+        end
+        for at in text:gmatch('()pulse') do
+            if text:sub(at - 2, at - 1) ~= 'im' then return true end
+        end
+        return false
+    end
+    local files = { 'br_lib/config/terminals.lua', 'br_lib/shared/protocol.lua',
+                    'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua',
+                    'br_core/client/terminalfx.lua', 'br_core/client/terminal.lua' }
+    for _, side in ipairs({ 'server', 'client' }) do
+        for _, f in ipairs(fxFiles(side)) do files[#files + 1] = f end
+    end
+    for _, f in ipairs(files) do
+        local text = (readFile(ROOT .. f) or ''):lower()
+        ok(text ~= '', f .. ' is read')
+        ok(not says(text), f .. ' says neither')
+    end
+    for _, f in ipairs({ 'tools/test_terminalfx.lua', 'tools/test_terminalworld.lua', 'docs/terminals.md' }) do
+        local text = (readFile(f) or ''):lower()
+        ok(text ~= '', f .. ' is read')
+        ok(not says(text), f .. ' says neither')
+    end
+end
+
 describe("round 4's review: no line promises what another player's run can undo")
 do
     -- Each squad has its own use, so another squad's run can replace or undo
@@ -849,8 +927,8 @@ do
         ok(l:find('when it ends, unless another EMP is still going off.', 1, true) ~= nil,
             ('emp_what (%s): starting again is unless another EMP still goes off'):format(squad and 'squad' or 'solo'), l)
     end
-    -- Scan's and Pulse's marks, and a Contract's bounty: Ghost hides a squad.
-    for _, id in ipairs({ 'scan', 'pulse', 'contract' }) do
+    -- Scan's marks and a Contract's bounty: Ghost hides a squad.
+    for _, id in ipairs({ 'scan', 'contract' }) do
         for _, squad in ipairs({ true, false }) do
             local l = pick(copy, id .. '_what', squad)
             ok(l:find('Ghost', 1, true) ~= nil and l:find('while', 1, true) ~= nil,
