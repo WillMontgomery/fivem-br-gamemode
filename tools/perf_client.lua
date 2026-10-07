@@ -149,6 +149,17 @@ local clock = os.clock
 --               exactly as it did, so not one of their numbers moves for them.
 --               A scene with `world` set is played in that world alone.
 --
+-- AND ONE FOR A CUSTOM PED (#28 review, 2026-10-07):
+--
+--   s2-custom   Season 2 from boot, the player wearing a saved custom ped
+--               (Locker v2), as the server's record hands it back at the join.
+--               The watcher that keeps that look on (client/locker2.lua) reads
+--               the ped's components and props back every watchMs in every
+--               state the player has a ped in, a cost no stock-ped world pays.
+--               The engine here keeps what it is told -- the model, the
+--               components and props -- as the game does, so what is measured
+--               is the watch, not a re-dress on every pass.
+--
 -- A world's phases are budgeted as `<world>/<phase>`.
 local WORLDS = {
     { id = 's1',         season = '1' },
@@ -160,6 +171,7 @@ local WORLDS = {
     { id = 's1-noload',  season = '1', noLoad = true },
     { id = 's2-sky',     season = '2', upTo = 'match airstrike',
       measure = { ['match vehicle drop'] = true, ['match airstrike'] = true } },
+    { id = 's2-custom',  season = '2', custom = true },
 }
 local worldById = {}
 for _, w in ipairs(WORLDS) do worldById[w.id] = w end
@@ -921,6 +933,53 @@ IMPL.GetScaleformMovieMethodReturnValueString = function() return '' end
 IMPL.GetTimecycleModifierIndex = function() return W.tc or -1 end
 IMPL.SetTimecycleModifier = function() W.tc = 1 end
 IMPL.ClearTimecycleModifier = function() W.tc = nil end
+
+-- s2-custom (THE WORLDS): the player's ped keeps what it is dressed in. It
+-- starts as the default freemode ped, never model 0 -- which is what the
+-- entrance waits on while the first apply is still deciding, so a ped of model
+-- 0 walks at once and holds that apply for the whole lobby. A model swap
+-- changes the model and starts it bare; a component or a prop set is read back
+-- as set; a head blend has finished. Only in that world, so no other world's
+-- numbers move: everywhere else these stay the defaults they were.
+if WORLD.custom then
+    local function ent(h) return W.ents[h] end
+    W.ents[W.me].model = jenkins('mp_m_freemode_01')
+    IMPL.SetPlayerModel = function(_, hash)
+        local e = ent(W.me)
+        if e then e.model, e.comps, e.props = hash, {}, {} end
+    end
+    IMPL.SetPedDefaultComponentVariation = function(h) local e = ent(h) if e then e.comps = {} end end
+    IMPL.SetPedComponentVariation = function(h, slot, d, t)
+        local e = ent(h)
+        if e then e.comps = e.comps or {} e.comps[slot] = { d, t } end
+    end
+    IMPL.GetPedDrawableVariation = function(h, slot)
+        local e = ent(h)
+        local c = e and e.comps and e.comps[slot]
+        return c and c[1] or 0
+    end
+    IMPL.GetPedTextureVariation = function(h, slot)
+        local e = ent(h)
+        local c = e and e.comps and e.comps[slot]
+        return c and c[2] or 0
+    end
+    IMPL.SetPedPropIndex = function(h, slot, d, t)
+        local e = ent(h)
+        if e then e.props = e.props or {} e.props[slot] = { d, t } end
+    end
+    IMPL.ClearPedProp = function(h, slot) local e = ent(h) if e and e.props then e.props[slot] = nil end end
+    IMPL.GetPedPropIndex = function(h, slot)
+        local e = ent(h)
+        local q = e and e.props and e.props[slot]
+        return q and q[1] or -1
+    end
+    IMPL.GetPedPropTextureIndex = function(h, slot)
+        local e = ent(h)
+        local q = e and e.props and e.props[slot]
+        return q and q[2] or -1
+    end
+    IMPL.HasPedHeadBlendFinished = T
+end
 
 -- s1-noload (THE WORLDS): every streamed asset is asked for and never arrives.
 -- Answered before any file loads, because a stub is bound the first time its
@@ -1706,6 +1765,23 @@ SERVER[BR.Net.LOOT_CELL] = function(d)
     lootStats.adds, lootStats.gone = lootStats.adds + #adds, lootStats.gone + #gone
     if #gone > 0 then reply(BR.Net.LOOT_GONE, gone) end
     if #adds > 0 then reply(BR.Net.LOOT_ADD, adds) end
+end
+
+-- s2-custom (THE WORLDS): server/locker2.lua's answer for a player who left
+-- wearing a saved custom ped, which is what the client dresses from at the
+-- join -- and again after each switch back into Season 2.
+if WORLD.custom then
+    local look = BR.Appearance.default('f')
+    look.sk, look.e, look.h = 12, 4, { 5, 6 }
+    look.ff[1] = 40
+    look.o[5] = { 3, 80, 9 }
+    look.c[11], look.c[4], look.c[6] = { 6, 1 }, { 2, 0 }, { 3, 0 }
+    look.p[1] = { 4, 1 }
+    local a = assert(BR.Appearance.encode(look))
+    SERVER[BR.Net.LOCKER2_FETCH] = function()
+        reply(BR.Net.LOCKER2_STATE, { worn = { k = 'p', id = '0abcdefgh12', a = a }, store = true,
+            peds = { { id = '0abcdefgh12', name = 'Perf', a = a, up = 1 } } })
+    end
 end
 
 --- br_environment's claim on the sky (br_environment/client/ipl.lua's wantSky):
