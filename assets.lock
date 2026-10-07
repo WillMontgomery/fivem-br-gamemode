@@ -198,11 +198,11 @@
     {
       "name": "cfx-nteam-mapdata",
       "seasons": {
-        "1": "6cb49fccd8f43c977edb7774a54a3cb12eb9428fc26ef5038866b2d073cf8ebf"
+        "1": "e43ff3404dd3f25517c90fb42fb1d0cf709ec207268af8e31c9ac6ed96a122a2"
       },
       "versions": {
-        "6cb49fccd8f43c977edb7774a54a3cb12eb9428fc26ef5038866b2d073cf8ebf": {
-          "size": 3410392,
+        "e43ff3404dd3f25517c90fb42fb1d0cf709ec207268af8e31c9ac6ed96a122a2": {
+          "size": 3410149,
           "files": {
             ".fxap": 185,
             "LEGION SQUARE MAP DATA.txt": 0,
@@ -217,7 +217,6 @@
             "stream/lodlights/vw_distlodlights_small020.ymap": 6362,
             "stream/lodlights/vw_distlodlights_small022.ymap": 5013,
             "stream/lodlights/vw_distlodlights_small029.ymap": 8601,
-            "stream/lodlights/vw_distlodlights_small031.ymap": 711,
             "stream/lodlights/vw_distlodlights_small037.ymap": 2955,
             "stream/lodlights/vw_distlodlights_small038.ymap": 3411,
             "stream/lodlights/vw_distlodlights_small039.ymap": 2512,
@@ -232,7 +231,6 @@
             "stream/lodlights/vw_lodlights_small020.ymap": 756,
             "stream/lodlights/vw_lodlights_small022.ymap": 757,
             "stream/lodlights/vw_lodlights_small029.ymap": 757,
-            "stream/lodlights/vw_lodlights_small031.ymap": 756,
             "stream/lodlights/vw_lodlights_small037.ymap": 757,
             "stream/lodlights/vw_lodlights_small038.ymap": 757,
             "stream/lodlights/vw_lodlights_small039.ymap": 759,
