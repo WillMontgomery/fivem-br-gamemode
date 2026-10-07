@@ -154,27 +154,36 @@ export function FunctionCards(props: {
               {showsSquads(f, state.squadMatch) ? <Squads say={say} /> : null}
             </div>
           ),
+          // TWO COLUMNS (owner, 2026-10-06: "is it possible to make the bounty and
+          // status move to a 2nd column here?"). Cloudscape lays a card's sections
+          // out in order and wraps them by `width`, so at 50 each they pair up row
+          // by row: Category | Bounty, Risk | Status, then Cost -- the left column
+          // reads Category, Risk, Cost and the right Bounty, Status. A section the
+          // preferences hide just lets the rest close up.
           sections: [
             { id: 'summary', content: (f) => voltsLine(say(`${f.id}_summary`), currency) },
-            { id: 'category', header: say('card_category'), content: (f) => say(`category_${f.category}`) },
+            { id: 'category', width: 50, header: say('card_category'), content: (f) => say(`category_${f.category}`) },
+            { id: 'bounty', width: 50, header: say('card_bounty'), content: (f) => say(`bounty_${bountyOf(f)}`) },
             {
               id: 'risk',
+              width: 50,
               header: say('card_risk'),
               content: (f) => <Badge color={riskColor(f.risk)}>{say(`risk_${f.risk}`)}</Badge>,
             },
             {
-              id: 'cost',
-              header: say('card_cost'),
-              content: (f) => (f.cost > 0 ? <VoltsAmount n={f.cost} currency={currency} /> : say('cost_free')),
-            },
-            { id: 'bounty', header: say('card_bounty'), content: (f) => say(`bounty_${bountyOf(f)}`) },
-            {
               id: 'status',
+              width: 50,
               header: say('card_status'),
               content: (f) => {
                 const s = statusOf(byId.get(f.id), f)
                 return <StatusIndicator type={indicatorOf(s)}>{say(`status_${s}`)}</StatusIndicator>
               },
+            },
+            {
+              id: 'cost',
+              width: 50,
+              header: say('card_cost'),
+              content: (f) => (f.cost > 0 ? <VoltsAmount n={f.cost} currency={currency} /> : say('cost_free')),
             },
           ],
         }}
