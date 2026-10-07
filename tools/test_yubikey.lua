@@ -645,6 +645,62 @@ do
     eq(#groundKeys(m), 1, 'and drops it where they stood')
 end
 
+describe('round 6 review: a DOWNED holder who leaves drops the key, by every way out')
+do
+    -- "If they are killed, the Yubikey in their possession should drop on the
+    -- ground as a standard pickup." A downed player is one the fight has
+    -- already beaten; walking out or quitting there is not a way to keep the
+    -- key the attacker was about to take. Leave Match while downed reaches
+    -- eliminate('left') (server/match.lua sends DBNO there); a disconnect, a
+    -- crash and a console kick all reach BR.Roster.remove -> Y.leaving. The
+    -- state is still DBNO at both: combat.lua and roster.lua hand it over
+    -- before they change it (pinned in PART D).
+    reset()
+    eq(CT.leaveDrops, false, 'with the shipped switch')
+    local m = newMatch(1)
+    local at = { x = C0.x + 12.0, y = C0.y + 3.0, z = 31.0 }
+
+    -- Leave Match while downed.
+    player(1, m, nil, at, true, true)
+    roster[1].state = BR.PlayerState.DBNO
+    Y.onEliminated(m, 1, 'left')
+    eq(Y.holds(1), false, 'Leave Match while downed: the key is not kept')
+    eq(#groundKeys(m), 1, 'it drops where they lay')
+    ok(#writes == 1 and writes[1].held == false, 'and the profile row says no key')
+
+    -- A disconnect, a crash or a kick while downed: one path, playerDropped.
+    player(2, m, nil, at, true, true)
+    roster[2].state = BR.PlayerState.DBNO
+    Y.leaving('2', roster[2])
+    eq(Y.holds(2), false, 'a disconnect, crash or kick while downed: the key is not kept')
+    eq(#groundKeys(m), 2, 'it drops where they lay too')
+
+    -- Standing or in the air, a leaver still keeps it, by both paths.
+    local n = #groundKeys(m)
+    for i, st in ipairs({ BR.PlayerState.ALIVE, BR.PlayerState.BUS,
+                          BR.PlayerState.FREEFALL, BR.PlayerState.GLIDE }) do
+        local a, b = 10 + i * 2, 11 + i * 2
+        player(a, m, nil, at, true, true)
+        player(b, m, nil, at, true, true)
+        roster[a].state, roster[b].state = st, st
+        Y.onEliminated(m, a, 'left')
+        Y.leaving(b, roster[b])
+        ok(Y.holds(a) and Y.holds(b), ('%s: Leave Match and a disconnect both keep the key'):format(st))
+    end
+    eq(#groundKeys(m), n, 'and none of them dropped one')
+
+    -- Once the match is decided, nothing takes a key, downed or not.
+    local m2 = newMatch(2)
+    m2.state = BR.MatchState.ENDED
+    player(30, m2, nil, at, true, true)
+    player(31, m2, nil, at, true, true)
+    roster[30].state, roster[31].state = BR.PlayerState.DBNO, BR.PlayerState.DBNO
+    Y.onEliminated(m2, 30, 'left')
+    Y.leaving(31, roster[31])
+    ok(Y.holds(30) and Y.holds(31), 'ENDED: a downed leaver keeps it -- the match is decided')
+    eq(#groundKeys(m2), 0, 'and nothing is dropped there')
+end
+
 describe('the key: with leaveDrops on, leaving alive drops it, like a death')
 do
     reset()
@@ -2285,6 +2341,14 @@ do
     local drop = combat:find('BR.Yubikey.onEliminated(m, src, cause)', 1, true)
     ok(hold and box and drop and hold < box and box < drop,
         'combat.lua drops the key on the death box\'s edge, below the #144 hold')
+    -- Round 6 review: a downed leaver drops the key, which onEliminated reads
+    -- from the state -- so it must run while the state still says DBNO, and
+    -- Leave Match must send a downed player through eliminate('left').
+    local out = drop and combat:find('BR.Roster.setState(src, BR.PlayerState.OUT, cause)', drop, true)
+    ok(drop and out and drop < out, 'combat.lua asks about the key before the state becomes OUT')
+    local match = readFile(ROOT .. 'br_core/server/match.lua') or ''
+    ok(match:find("or entry.state == BR.PlayerState.DBNO then\n        BR.Combat.eliminate(src, 'left', nil)", 1, true) ~= nil,
+        'match.lua sends a downed player who leaves through eliminate(\'left\')')
 
     local roster = readFile(ROOT .. 'br_core/server/roster.lua') or ''
     local leave = roster:find('BR.Yubikey.leaving(src, entry)', 1, true)

@@ -385,8 +385,9 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- the Yubikey in their possession should drop on the ground as a standard
     -- pickup." Same moment, same reason -- their position is still true -- and
     -- below the #144 hold, so a death that will be undone drops nothing. A
-    -- leaver ('left') drops it while BR.Config.Terminals.leaveDrops says so;
-    -- BR.Yubikey.onEliminated decides. Nil-guarded.
+    -- leaver ('left') drops it while downed, or while BR.Config.Terminals.
+    -- leaveDrops says so; BR.Yubikey.onEliminated decides, from the state,
+    -- which is why this is above the setState to OUT. Nil-guarded.
     if m and BR.Yubikey and BR.Yubikey.onEliminated then
         BR.Yubikey.onEliminated(m, src, cause)
     end

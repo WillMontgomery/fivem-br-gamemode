@@ -1361,6 +1361,11 @@ BR.Config.Terminals = {
     -- death take a key now. True puts the drop back, for both walking out
     -- and disconnecting mid-match; quitting is then not a way to keep a key
     -- you were about to lose.
+    --
+    -- A DOWNED LEAVER DROPS IT EITHER WAY (round 6's review): Leave Match, a
+    -- disconnect, a crash or a kick while DBNO is the fight already lost, so
+    -- the key drops where they lay, as their death would drop it. This
+    -- switch is for a holder standing or in the air.
     leaveDrops = false,
 
     -- ═══ THE TERMINALS (owner, 2026-10-06) ═══

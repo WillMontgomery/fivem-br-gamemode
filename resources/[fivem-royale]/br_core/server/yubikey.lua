@@ -24,6 +24,11 @@
 --     ownership of an unused Yubikey doesn't actually persist between
 --     matches as it should"): BR.Config.Terminals.leaveDrops, default false.
 --     True drops it where they stood, like a death.
+--   * BUT NOT LEAVING DOWNED (round 6's review): a holder who is DBNO has
+--     already lost the fight, so Leave Match, a disconnect, a crash or a kick
+--     there drops the key like the death it is heading for, whatever
+--     leaveDrops says. Only a holder standing or in the air keeps it. See
+--     `keepsOnLeaving` below.
 --   * AND NOTHING TAKES A KEY ONCE ITS MATCH IS DECIDED (round 6): a death, a
 --     walk-out or a disconnect in the verdict's seconds -- the winners are
 --     still ALIVE until the sweep sends them home -- or at cleanup leaves the
@@ -85,6 +90,20 @@ Y.on = on
 --- @return boolean
 local function fighting(m)
     return m ~= nil and (m.state == BR.MatchState.BUS or m.state == BR.MatchState.PLAYING)
+end
+
+--- Does a holder leaving the match in this state keep the key? Standing or
+--- in the air (ALIVE, the bus, freefall, the chute) they do, while
+--- leaveDrops is false. DOWNED they never do: Leave Match or quitting while
+--- DBNO is not a way to keep the key the attacker was about to take (the
+--- owner's rule, "If they are killed, the Yubikey in their possession should
+--- drop"). Both ways out ask it -- eliminate('left') and a disconnect -- and
+--- both before the state changes, so `st` is still what they were doing.
+--- @param st string|nil  their roster state
+--- @return boolean
+local function keepsOnLeaving(st)
+    if st == BR.PlayerState.DBNO then return false end
+    return cfg().leaveDrops ~= true
 end
 
 --- license -> { held, seen, loaded }
@@ -368,22 +387,24 @@ local function dropFor(m, src, e, why)
         :format(e.name or '?', src, why, tostring(entry and entry.id)))
 end
 
---- Eliminated (server/combat.lua, on the same edge the death box is built):
---- the key drops. A leaver (`cause == 'left'`, walking out mid-match) drops it
---- only while BR.Config.Terminals.leaveDrops says so.
+--- Eliminated (server/combat.lua, on the same edge the death box is built,
+--- before the state becomes OUT): the key drops. A leaver (`cause == 'left'`,
+--- walking out mid-match) drops it only while downed, or while
+--- BR.Config.Terminals.leaveDrops says so (`keepsOnLeaving`).
 --- @param m table
 --- @param src integer
 --- @param cause string
 function Y.onEliminated(m, src, cause)
     if not on() or not Y.holds(src) then return end
-    if cause == 'left' and cfg().leaveDrops ~= true then return end
+    local e = BR.Roster.get(src)
+    if cause == 'left' and keepsOnLeaving(e and e.state) then return end
     if not fighting(m) then
         print(('[br_core] yubikey: %s (%d) keeps their key (%s with match %s already %s)')
             :format(GetPlayerName(src) or '?', src, tostring(cause), tostring(m and m.id),
                 tostring(m and m.state)))
         return
     end
-    dropFor(m, src, BR.Roster.get(src), cause == 'left' and 'left' or 'died')
+    dropFor(m, src, e, cause == 'left' and 'left' or 'died')
 end
 
 --- THE OTHER WAY OUT OF A MATCH: a disconnect. BR.Roster.remove calls this
@@ -393,7 +414,8 @@ end
 ---
 --- IN THE FIGHT ONLY: alive, downed, on the bus or in the air. Warmup is not
 --- the match (the pad is not where a key is lost), and a player already out
---- dropped theirs when they died.
+--- dropped theirs when they died. A crash and a console kick are disconnects
+--- too (playerDropped), so the downed rule (`keepsOnLeaving`) covers them.
 --- @param src integer
 --- @param e table  the roster entry, state not yet changed
 function Y.leaving(src, e)
@@ -407,7 +429,7 @@ function Y.leaving(src, e)
         or st == BR.PlayerState.BUS or st == BR.PlayerState.FREEFALL
         or st == BR.PlayerState.GLIDE
     if not inFight or not Y.holds(src) then return end
-    if cfg().leaveDrops ~= true then return end
+    if keepsOnLeaving(st) then return end
     local m = BR.Server.matchById and BR.Server.matchById(e.matchId) or nil
     -- The verdict's seconds: a winner still ALIVE quitting before the sweep.
     if not fighting(m) then return end

@@ -751,6 +751,12 @@ The owner's rules (#396, 2026-10-04), and where each lives:
     the way a dev box's match is left) or disconnecting -- keeps it while
     `leaveDrops` is false, the default since round 6 (it was true, dropping
     it like a death, while the owner had not ruled);
+  - **but not a holder who leaves DOWNED** (round 6's review): DBNO, the fight
+    is already lost, so Leave Match, a disconnect, a crash or a console kick
+    there drops the key where they lay, as the death it is heading for would,
+    whatever `leaveDrops` says. Only a holder standing or in the air (the
+    bus, freefall, the chute) keeps it. Both ways out ask before the state
+    changes (`keepsOnLeaving` in `server/yubikey.lua`);
   - **nothing takes a key once its match is decided**: the winners are ALIVE
     through the verdict until the sweep sends them home, so a walk-out, a
     disconnect or a late death report there used to drop the key into loot
@@ -762,7 +768,8 @@ The owner's rules (#396, 2026-10-04), and where each lives:
     the read's `extra` over, and a failed read keeps the account's entry.
 - **Dropped where its holder dies**, on the death box's edge
   (`server/combat.lua`), in a match still being fought (the bus or PLAYING),
-  and where a holder leaves mid-fight while `leaveDrops` is true.
+  and where a holder leaves mid-fight downed, or at all while `leaveDrops` is
+  true.
 - **Sources**: an EXTRA item rolled as a container opens, on its own stream, so
   the box's own contents do not move -- `airdropChance` (0.5) per airdrop and
   `crateChance` per crate, any tier (round 5, owner 2026-10-06: "We should

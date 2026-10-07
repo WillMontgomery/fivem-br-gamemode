@@ -155,7 +155,7 @@ NOTES=(
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
     "test_rarity|The five rarity colors are the owner's, and the same in the game, the page and the built page"
     "test_terminal|Season 2 terminals: a run only inside a session the server opened; the computer always gives the keyboard back"
-    "test_yubikey|Season 2 Yubikey: one per player, dropped only on death, kept on leaving and after the match, one use per squad, terminals live only inside the storm"
+    "test_yubikey|Season 2 Yubikey: one per player, dropped on death and on leaving downed, kept on leaving standing and after the match, one use per squad, terminals live only inside the storm"
     "test_terminalworld|Season 2 terminal functions that change the match's world (storm, sky, clock, lights) spend nothing when they can't run"
     "test_terminalfx|Season 2 terminal functions: Scan shows the squad every opponent, the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
     "test_terminalstrike|Season 2 tools from the sky: Vehicle drop lands an unarmed car near the right player, Airstrike's damage is the server's alone, and both spend nothing when they can't"
