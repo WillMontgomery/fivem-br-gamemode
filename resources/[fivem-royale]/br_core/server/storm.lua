@@ -172,10 +172,35 @@ end
 
 --- Where an aimed match's phase closes (Storm control, #396): the plan's center
 --- for it when the phase starts where the plan said it would, and otherwise -- a
---- dev path re-entering from where the wall stands (`brphase`, a thaw) -- a new
---- plan from there toward the same spot, kept for the phases after it.
+--- dev path jumping to another phase from where the wall stands (`brphase`) -- a
+--- new plan from there toward the same spot, kept for the phases after it.
+---
+--- ═══ A CIRCLE ON THE MAP NEVER MOVES (round 6, owner 2026-10-07) ═══
+---
+---   "Running the storm location selection before the first sweep moves the
+---    first sweep to that location. That shouldn't happen."
+---
+--- The aim applies from the first circle NOT YET DRAWN: BR.Storm.aim plans from
+--- the record's phase + 1, so the phase job never moves the circle the wall is
+--- closing on. But the phase the storm is IN can be entered again from where its
+--- wall stands -- `brstormfreeze off` (the thaw), `brphase` to the phase it is
+--- in -- and that re-entry planned again from the wall, moving the circle every
+--- player was looking at onto the spot: circle 1, before the first sweep,
+--- straight onto it. Now the phase the live record is in keeps its own circle,
+--- whatever re-enters it -- the one on the map when the storm was aimed, or the
+--- one the aim's walk drew -- and the walk after it carries on from that circle
+--- (planned again from it only if the walk was planned from another one).
 --- @return number, number  the center
 local function aimedCenter(m, aim, phase, cx0, cy0, r0, mo)
+    local live = m.storm
+    if live and live.phase == phase then
+        local kept = aim.path[phase]
+        if not (kept and kept.x == live.cx1 and kept.y == live.cy1 and kept.r == live.r1) then
+            aim.path[phase] = { x = live.cx1, y = live.cy1, r = live.r1 }
+            for p = phase + 1, #cfg.phases do aim.path[p] = nil end
+        end
+        return live.cx1, live.cy1
+    end
     local prev, here = aim.path[phase - 1], aim.path[phase]
     if here and prev and mo == nil and prev.x == cx0 and prev.y == cy0 and prev.r == r0 then
         return here.x, here.y
@@ -733,7 +758,10 @@ end
 -- the next circle already on the map -- and the seed every shape is derived
 -- from. The first circle the spot decides is the next one enterPhase draws,
 -- and the airdrop's re-site (#386), the map's morph (#350) and every client's
--- wall follow from that record as they do in any match.
+-- wall follow from that record as they do in any match. Nor does the circle on
+-- the map move when its phase is entered again (a thaw, a same-phase
+-- `brphase`; round 6, aimedCenter): it was announced, and the aim only ever
+-- applies from the next circle not yet drawn.
 --
 -- ONE SPOT A MATCH (round 4's review). Once a match carries `m.stormAim`, every
 -- later aim is refused (`storm_aimed`), checked first like the rest and asked

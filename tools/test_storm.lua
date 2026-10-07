@@ -10360,10 +10360,11 @@ describe('control.replan')
 do
     -- ═══ A DEV PATH OFF THE AIMED WALK PLANS AGAIN ═══
     --
-    -- `brphase` re-entering the phase the storm is in, mid-sweep, starts it from
-    -- the wall where it stands -- not the circle the plan started from -- so the
-    -- plan is made again from there, toward the same spot: every circle after it
-    -- nested, and Storm reveal answering where the new walk ends.
+    -- `brphase` jumping to ANOTHER phase, mid-sweep, starts it from the wall
+    -- where it stands -- not the circle the plan started from -- so the plan is
+    -- made again from there, toward the same spot: every circle after it
+    -- nested, and Storm reveal answering where the new walk ends. (Re-entering
+    -- the phase the storm is IN keeps its circle: control.announced.)
     local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
     local S = walkUntil(ANCHOR, function(rec, st) return rec.phase == 3 and st == 'shrinking' end)
     local env = S.env
@@ -10371,9 +10372,10 @@ do
     local a = env.BR.Storm.aim(S.match, rec.cx1 + 0.4 * rec.r1, rec.cy1)
     ok(a ~= nil, 'aimed at phase 3')
     S.now = S.now + 2000
-    S.cmds.brphase(nil, { '3' })
+    S.cmds.brphase(nil, { '4' })
     local re = S.match.storm
-    ok(re.phase == 3 and re.mo ~= nil, 're-entered phase 3 from the wall mid-morph')
+    ok(re.phase == 4 and re.mo == nil and re.cx0 ~= rec.cx1,
+        'jumped to phase 4 from the wall mid-sweep, off the aimed walk')
     local f = env.BR.Storm.finalCentre(S.match)
     local seen, nested, last = {}, true, #env.BR.Config.Storm.phases
     walkOn(S, function(r)
@@ -10389,6 +10391,116 @@ do
     local fin = S.match.storm
     ok(f and fin.cx1 == f.x and fin.cy1 == f.y, 'and Storm reveal, asked after the re-entry, answered the end',
         f and ('(%.2f, %.2f) vs (%.2f, %.2f)'):format(fin.cx1, fin.cy1, f.x, f.y))
+    ok(S.errored() == nil, 'clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('control.announced')
+do
+    -- ═══ A CIRCLE ON THE MAP NEVER MOVES, AT ANY PHASE BOUNDARY (round 6) ═══
+    --
+    --   "Running the storm location selection before the first sweep moves the
+    --    first sweep to that location. That shouldn't happen."
+    --                                                  -- owner, 2026-10-07
+    --
+    -- Storm control aims from the first circle not yet drawn. For each moment a
+    -- pick can land -- the first hold (his case), a later hold, mid-sweep, a
+    -- finished sweep the phase job has not advanced yet, and the first instant
+    -- of a new hold -- the match is aimed and then put through every way the
+    -- phase it is in can be entered again (`brstormfreeze` and its thaw,
+    -- `brphase` to the same phase), and walked on through the real phase job.
+    -- The circle each player was looking at must never move; every circle
+    -- after it must be the plan's; and the storm must end where the plan ends.
+    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
+    local last = nil
+    local cases = {
+        { label = 'phase 1 hold (the first sweep)', phase = 1, st = 'holding' },
+        { label = 'phase 3 hold', phase = 3, st = 'holding' },
+        { label = 'phase 4 mid-sweep', phase = 4, st = 'shrinking' },
+        { label = 'phase 2 finished, not advanced yet', phase = 2, st = 'finished' },
+    }
+    for _, c in ipairs(cases) do
+        for _, path in ipairs({ 'thaw', 'brphase', 'none' }) do
+            local tag = c.label .. ', ' .. path
+            -- A FINISHED SWEEP THE JOB HAS NOT ADVANCED: the clock moved past
+            -- the sweep's end with no scheduler step after it.
+            local want = c.st == 'finished' and 'shrinking' or c.st
+            local S = walkUntil(ANCHOR, function(rec, st) return rec.phase == c.phase and st == want end, 1000)
+            local env = S.env
+            env.BR.Server.devMode = true
+            last = last or #env.BR.Config.Storm.phases
+            local rec = S.match.storm
+            if c.st == 'finished' then S.now = rec.tStart + rec.tWait + rec.tShrink + 10 end
+            local _, _, _, st0 = env.BR.StormAt(rec, S.now)
+            ok(rec.phase == c.phase and st0 == c.st, tag .. ': walked to the moment', rec.phase .. ' ' .. st0)
+            local shown = { phase = rec.phase, x = rec.cx1, y = rec.cy1, r = rec.r1 }
+            -- FAR FROM THE CIRCLE ON THE MAP, so a circle moved toward it shows.
+            local a = env.BR.Storm.aim(S.match, rec.cx1 + 1.8 * rec.r1, rec.cy1 - 0.6 * rec.r1)
+            ok(a ~= nil and a.from == rec.phase + 1, tag .. ': aimed from the next circle not drawn',
+                a and a.from)
+            S.now = S.now + 1500
+            if path == 'thaw' then
+                S.cmds.brstormfreeze(0, {})
+                S.now = S.now + 20000
+                S.cmds.brstormfreeze(0, { 'off' })
+            elseif path == 'brphase' then
+                S.cmds.brphase(nil, { tostring(rec.phase) })
+            end
+            local now = S.match.storm
+            ok(now.phase == shown.phase and now.cx1 == shown.x and now.cy1 == shown.y and now.r1 == shown.r,
+                tag .. ': the circle on the map is where it was',
+                ('(%.2f, %.2f) vs (%.2f, %.2f)'):format(now.cx1, now.cy1, shown.x, shown.y))
+            local f = env.BR.Storm.finalCentre(S.match)
+            ok(f and f.x == a.ex and f.y == a.ey, tag .. ': Storm reveal answers the plan\'s end')
+            local wrong = {}
+            local seen = { [shown.phase] = true }
+            walkOn(S, function(r)
+                if not seen[r.phase] then
+                    seen[r.phase] = true
+                    local want = a.path[r.phase]
+                    if not (want and r.cx1 == want.x and r.cy1 == want.y) then
+                        wrong[#wrong + 1] = r.phase
+                    end
+                end
+                return r.phase == last
+            end, 30000)
+            ok(#wrong == 0, tag .. ': every later circle the plan\'s', table.concat(wrong, ', '))
+            local fin = S.match.storm
+            ok(fin.phase == last and fin.cx1 == a.ex and fin.cy1 == a.ey, tag .. ': the storm ends where the plan ends')
+            ok(S.errored() == nil, tag .. ': clean', S.errored())
+        end
+    end
+
+    -- AND AT THE FIRST INSTANT OF A NEW HOLD: the circle just drawn stays.
+    local S = walkUntil(ANCHOR, function(rec, st) return rec.phase == 2 and st == 'shrinking' end, 1000)
+    local env = S.env
+    local r2 = S.match.storm
+    S.now = math.max(r2.tStart + r2.tWait + r2.tShrink + 10, S.now + 1000)
+    env.BR.Sched.step(S.now)
+    local rec = S.match.storm
+    ok(rec.phase == 3 and rec.tStart == S.now, 'the job has just drawn circle 3')
+    local shown = { x = rec.cx1, y = rec.cy1 }
+    local a = env.BR.Storm.aim(S.match, rec.cx1 - 1.5 * rec.r1, rec.cy1)
+    ok(a and a.from == 4, 'aimed at its first instant: from circle 4')
+    S.cmds.brphase(nil, { '3' })
+    ok(S.match.storm.cx1 == shown.x and S.match.storm.cy1 == shown.y, 'and circle 3, just drawn, stays where it is')
+
+    -- AIMED EARLIER, RE-ENTERED LATER: a circle the aim's own walk drew stays too.
+    S = walkUntil(ANCHOR, function(r, st) return r.phase == 2 and st == 'holding' end, 1000)
+    env = S.env
+    env.BR.Server.devMode = true
+    rec = S.match.storm
+    a = env.BR.Storm.aim(S.match, rec.cx1 + 1.2 * rec.r1, rec.cy1)
+    walkOn(S, function(r, st) return r.phase == 5 and st == 'shrinking' end, 1000)
+    rec = S.match.storm
+    ok(rec.cx1 == a.path[5].x and rec.cy1 == a.path[5].y, 'phase 5 is the walk\'s circle')
+    S.cmds.brstormfreeze(0, {})
+    S.now = S.now + 5000
+    S.cmds.brstormfreeze(0, { 'off' })
+    ok(S.match.storm.cx1 == a.path[5].x and S.match.storm.cy1 == a.path[5].y,
+        'a thaw at phase 5 keeps the walk\'s own circle 5')
+    walkOn(S, function(r) return r.phase == last end, 30000)
+    ok(S.match.storm.cx1 == a.ex and S.match.storm.cy1 == a.ey, 'and the storm still ends where the plan ends')
     ok(S.errored() == nil, 'clean', S.errored())
 end
 
