@@ -601,6 +601,82 @@ local function boxAvailable(hash, name)
     return known
 end
 
+-- ═══ THE YUBIKEY'S BODY (#396, round 6) ═══
+--
+-- Owner, 2026-10-07: "the pickup works but it doesn't show the prop". The key
+-- was drawn as `prop_cs_usb_drive`, a name this game has no model for: the
+-- spawn pass asked IsModelValid, was told no, latched noProp, and a key -- which
+-- has no fallback marker -- showed its glow and nothing else. The claim never
+-- needed the prop, so the pickup worked.
+--
+-- NOW THE OWNER'S OWN PROP, `blitz_seckey`, when this client has it, and a
+-- stock stand-in every build has when it does not (BR.Config.Terminals.art):
+-- the box path's shape, one model and a fallback. A prop the CD image has but
+-- that will not stream is written off for the session (drain), and every key
+-- after it is the stand-in at once.
+
+--- [hash] = true once the owner's prop failed to stream here.
+local keyFailed = {}
+--- [hash] = true once the CD image and the model table said they have it. A
+--- no is asked again at the next key: two reads, at the rare moment a key
+--- comes into range, and a pack that streams in late is then drawn.
+local keyInCd = {}
+--- [hash] = true once the console has said the prop is missing.
+local keySaid = {}
+
+--- The art block, or nil on a box whose config has no terminals.
+local function keyArt()
+    return BR.Config.Terminals and BR.Config.Terminals.art or nil
+end
+
+--- The model a Yubikey on the ground is drawn as: the owner's prop when this
+--- client can build it, else the stock stand-in. nil with neither named.
+--- @return integer|nil hash
+local function keyModelOf()
+    local art = keyArt()
+    if not art then return nil end
+    local name = art.keyProp
+    if type(name) == 'string' and name ~= '' then
+        local h = GetHashKey(name)
+        if not keyFailed[h] then
+            if not keyInCd[h] and BR.NativeTruthy(IsModelInCdimage(h))
+               and BR.NativeTruthy(IsModelValid(h)) then
+                keyInCd[h] = true
+            end
+            if keyInCd[h] then return h end
+            if not keySaid[h] then
+                keySaid[h] = true
+                print(('[br_core] loot: the Yubikey prop %s is not in this build -- '
+                    .. 'drawing the stand-in %s'):format(name, tostring(art.keyFallbackProp)))
+            end
+        end
+    end
+    local fb = art.keyFallbackProp
+    if type(fb) == 'string' and fb ~= '' then return GetHashKey(fb) end
+    return nil
+end
+
+--- Write off the owner's prop for this session, when `model` is it and there
+--- is a stand-in to draw instead. Returns the stand-in's hash, or nil when
+--- `model` was not the owner's prop (the stand-in failing is a missing prop
+--- like any other).
+--- @param model integer
+--- @param why string  for the console line
+--- @return integer|nil
+local function keyWriteOff(model, why)
+    local art = keyArt()
+    if not (art and type(art.keyProp) == 'string' and type(art.keyFallbackProp) == 'string') then
+        return nil
+    end
+    if model ~= GetHashKey(art.keyProp) then return nil end
+    local fb = GetHashKey(art.keyFallbackProp)
+    if fb == model then return nil end
+    keyFailed[model] = true
+    print(('[br_core] loot: the Yubikey prop %s %s -- drawing the stand-in %s')
+        :format(art.keyProp, why, art.keyFallbackProp))
+    return fb
+end
+
 --- The box this entry should wear, or nil for the wooden crate.
 ---
 --- OPEN for a husk and for a crate that is opening, which is also what a client
@@ -795,17 +871,24 @@ local function airdropScale(item)
 end
 
 --- @param e table
+--- @param model integer|nil  the model the body was built as
 --- @return number|nil
-local function propScaleOf(e)
+local function propScaleOf(e, model)
     if e.kind == BR.ItemKind.CONSUMABLE then
         local c = BR.Config.ConsumableById[e.item]
         return c and c.propScale or nil
     end
-    -- A SEASON 2 YUBIKEY (#396): its placeholder prop is a USB stick a few
-    -- centimetres long, so it is drawn at the art block's keyScale.
+    -- A SEASON 2 YUBIKEY (#396): the owner's prop at keyScale, and the stock
+    -- stand-in -- a USB stick a few centimeters long -- at keyFallbackScale
+    -- (round 6). Which one by the model it was BUILT as, since keyModelOf and
+    -- the drain can each fall back to the stand-in.
     if e.kind == 'yubikey' then
-        local art = BR.Config.Terminals and BR.Config.Terminals.art
-        return art and art.keyScale or nil
+        local art = keyArt()
+        if not art then return nil end
+        if model ~= nil and type(art.keyProp) == 'string' and model ~= GetHashKey(art.keyProp) then
+            return art.keyFallbackScale
+        end
+        return art.keyScale
     end
     return airdropScale(e.item)
 end
@@ -844,6 +927,9 @@ local function modelOf(e)
         local w = BR.Config.WeaponById[e.item]
         return w and GetWeapontypeModel(w.hash) or nil
     end
+    -- A YUBIKEY ASKS THE ART BLOCK, NOT THE WIRE (round 6): the owner's prop
+    -- or the stand-in, by what this client can build -- see keyModelOf.
+    if e.kind == 'yubikey' then return keyModelOf() end
     if e.prop then return GetHashKey(e.prop) end
     if e.kind == BR.ItemKind.AMMO then
         local a = BR.Config.AmmoPickups[e.item]
@@ -1611,6 +1697,24 @@ local function drain()
                                 waited = waited + 50
                             end
                         end
+                        -- A YUBIKEY WHOSE OWN PROP WOULD NOT STREAM IS THE
+                        -- STAND-IN (round 6), the same way: the owner's prop is
+                        -- written off for the session and this key asks for
+                        -- the stock USB stick instead.
+                        if not boxed and e.kind == 'yubikey'
+                           and not isTrue(HasModelLoaded(model)) then
+                            local fb = keyWriteOff(model,
+                                ('did not stream in %dms'):format(waited))
+                            if fb then
+                                model = fb
+                                RequestModel(model)
+                                waited = 0
+                                while not isTrue(HasModelLoaded(model)) and waited < 3000 do
+                                    Citizen.Wait(50)
+                                    waited = waited + 50
+                                end
+                            end
+                        end
                         -- The entry can be claimed by someone else while its
                         -- model streams in; re-check before building it.
                         if HasModelLoaded(model) and entries[id] and not entries[id].obj then
@@ -1862,7 +1966,7 @@ local function drain()
                                 -- was silently thrown away. Cached on the
                                 -- entry so the hover does not re-read the
                                 -- config sixty times a second.
-                                e.propScale = propScaleOf(e)
+                                e.propScale = propScaleOf(e, model)
                                 applyPropScale(obj, e.propScale)
 
                                 -- ═══ AND THE ENTRY HAS TO STILL BE THE ENTRY

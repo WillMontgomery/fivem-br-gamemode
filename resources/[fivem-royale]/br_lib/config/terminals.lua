@@ -1211,17 +1211,36 @@ BR.Config.Terminals = {
     -- ═══ THE ART: EVERY PLACEHOLDER IN ONE SPOT ═══
     --
     -- The owner's Yubikey prop (`blitz_seckey`, in the Season 2 props resource)
-    -- and HUD icon replace the first two; until then they are a stock GTA prop
-    -- and a plain glyph. The blips are the owner's own numbers (#396,
-    -- 2026-10-04: "type 521, color 51 (draws as a laptop)", and the bounty's
-    -- "blip 58, color 3" for everyone and "blip 58, color 69" for teammates).
+    -- is the key on the ground since round 6, and his HUD icon since round 5;
+    -- the glyphs are still plain text. The blips are the owner's own numbers
+    -- (#396, 2026-10-04: "type 521, color 51 (draws as a laptop)", and the
+    -- bounty's "blip 58, color 3" for everyone and "blip 58, color 69" for
+    -- teammates).
     art = {
         -- The Yubikey lying on the ground: any loose key, from a crate, an
-        -- airdrop, a death or a leave. Drawn by client/loot.lua like any loot,
-        -- at keyScale times its authored size (a USB stick is a few
-        -- centimetres long).
-        keyProp = 'prop_cs_usb_drive',
-        keyScale = 4.0,
+        -- airdrop, a death or a leave. Drawn by client/loot.lua like any loot.
+        --
+        -- THE OWNER'S PROP (round 6, 2026-10-07: "the pickup works but it
+        -- doesn't show the prop"). `blitz_seckey`, streamed by br_stream_s2
+        -- with blitz_seckey.ytyp -- a Season 2 resource, as the key is. Its
+        -- drawable's bounds, read from the .ydr's header: 24 x 9.6 x 3.1 cm,
+        -- origin at its base. A pistol's length, the size of the small loot
+        -- around it, so it is drawn as authored (1.0 costs no matrix write).
+        keyProp = 'blitz_seckey',
+        keyScale = 1.0,
+        -- THE STOCK STAND-IN, for a client that cannot draw his: a Season 2
+        -- box without the pack, or a stream that never arrives. client/loot.lua
+        -- asks the CD image for keyProp and draws this instead when it is not
+        -- there (and from then on, once it fails to stream or build). A heist
+        -- USB stick a few centimeters long, at 4x -- about his prop's length.
+        --
+        -- IT IS A MODEL THIS GAME HAS, which the old stand-in was not: the
+        -- key was drawn as `prop_cs_usb_drive` until round 6, a name that is
+        -- in no object list for any build, so IsModelValid said no, the prop
+        -- was never built and a key on the ground showed its glow and
+        -- nothing else.
+        keyFallbackProp = 'hei_prop_hst_usb_drive',
+        keyFallbackScale = 4.0,
         -- The mark beside a holder's name in the squad panel, a string drawn as
         -- text; and on the HUD, whether the holder's own icon is drawn -- the
         -- icon itself is the owner's image since round 5 (br_ui's

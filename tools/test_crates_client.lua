@@ -322,6 +322,8 @@ loadAll({
     'br_lib/config/festive.lua', 'br_lib/shared/festive.lua',
     'br_lib/config/crates.lua', 'br_lib/shared/crates.lua',
     'br_lib/shared/loot_gen.lua',
+    -- The Yubikey's art block (#396): what a key on the ground is drawn as.
+    'br_lib/config/terminals.lua',
     'br_core/client/main.lua',
 })
 
@@ -335,8 +337,10 @@ BR.Keys = {
     labelFor = function() return 'E' end,
     rawActive = true, rawHolds = true,
 }
+--- The matrix scale each body was drawn at, by entity (BR.Native.propScale).
+local scaledTo = {}
 BR.Native = {
-    propScale = function() end,
+    propScale = function(obj, k) scaledTo[obj] = k end,
     aim = function() return false, nil, 0 end,
     keyLabelForCommand = function() return 'E', 'brinteract' end,
     pedReachable = function() return true, 'ok' end,
@@ -1360,6 +1364,109 @@ do
         'a season move that leaves crates2 where it was is not followed at all')
     BR.Season.has, GetConvar = realHas, realGet
     eq(boxBodies(), 0, 'and all five are wood')
+end
+
+-- =========================================================================
+-- THE YUBIKEY ON THE GROUND (#396, round 6)
+-- =========================================================================
+--
+-- Owner, 2026-10-07: "the pickup works but it doesn't show the prop". The key
+-- was drawn as `prop_cs_usb_drive`, which is in no object list for any build,
+-- so this harness's CD image -- which holds models the game has -- does not
+-- have it either: no body was ever built. `hei_prop_hst_usb_drive` is one the
+-- game has (checked against the GTA V object dump, 2026-10-07); `blitz_seckey`
+-- is the owner's, and only a client with br_stream_s2 has it.
+
+local KEY_STANDIN = 'hei_prop_hst_usb_drive'
+cd[KEY_STANDIN] = true
+
+local CT = BR.Config.Terminals
+local function keyWire(x)
+    nextId = nextId + 1
+    -- As server/yubikey.lua's Y.stack goes out through wireEntry.
+    return { id = nextId, kind = 'yubikey', item = 'yubikey', rarity = R.RARE,
+             count = 1, x = x or 2.0, y = 0.0, z = 30.0, prop = CT.art.keyProp }
+end
+
+describe('round 6: a Yubikey on a box without the owner\'s pack is the stock stand-in, not nothing')
+do
+    reset()
+    cd.blitz_seckey = nil
+    local w = keyWire()
+    add(w)
+    frames(10)
+    local h, name = bodyAt(w.x, w.y)
+    ok(h ~= nil, 'a key on the ground has a body')
+    eq(name, KEY_STANDIN, 'and it is the stock USB stick the game has')
+    eq(h and scaledTo[h], CT.art.keyFallbackScale, 'drawn at the stand-in\'s scale')
+    ok(said('the Yubikey prop blitz_seckey is not in this build'), 'and the console says why')
+    local lines = 0
+    for _, l in ipairs(logs) do
+        if l:find('is not in this build', 1, true) then lines = lines + 1 end
+    end
+    local w2 = keyWire(3.5)
+    add(w2)
+    frames(10)
+    local _, name2 = bodyAt(w2.x, w2.y)
+    eq(name2, KEY_STANDIN, 'a second key is the stand-in too')
+    local lines2 = 0
+    for _, l in ipairs(logs) do
+        if l:find('is not in this build', 1, true) then lines2 = lines2 + 1 end
+    end
+    eq(lines2, lines, 'and the console said it once')
+    eq(errored(), nil, 'and no loop errored')
+end
+
+describe('round 6: with the pack, a Yubikey is the owner\'s blitz_seckey, as authored')
+do
+    reset()
+    cd.blitz_seckey = true
+    requested = {}
+    local w = keyWire()
+    add(w)
+    frames(10)
+    local h, name = bodyAt(w.x, w.y)
+    eq(name, 'blitz_seckey', 'the owner\'s prop is built')
+    eq(h and scaledTo[h], CT.art.keyScale, 'at the art block\'s keyScale')
+    eq(CT.art.keyScale, 1.0, 'which is his own size: 24 cm long, a pistol\'s length')
+    local asked = false
+    for _, n in ipairs(requested) do if n == KEY_STANDIN then asked = true end end
+    eq(asked, false, 'and the stand-in is never streamed')
+end
+
+describe('round 6: the owner\'s prop that never streams is written off, and keys are the stand-in')
+do
+    reset()
+    cd.blitz_seckey = true
+    noStream.blitz_seckey = true
+    -- Not resident from the block before: this client never got it.
+    loaded[GetHashKey('blitz_seckey')] = nil
+    logs = {}
+    local w = keyWire()
+    add(w)
+    frames(260)
+    local h, name = bodyAt(w.x, w.y)
+    eq(name, KEY_STANDIN, 'a key whose prop would not stream is the stand-in')
+    eq(h and scaledTo[h], CT.art.keyFallbackScale, 'at the stand-in\'s scale')
+    ok(said('the Yubikey prop blitz_seckey did not stream'), 'and the console says so')
+    requested = {}
+    local w2 = keyWire(3.5)
+    add(w2)
+    frames(10)
+    local _, name2 = bodyAt(w2.x, w2.y)
+    eq(name2, KEY_STANDIN, 'the next key is the stand-in at once')
+    local again = false
+    for _, n in ipairs(requested) do if n == 'blitz_seckey' then again = true end end
+    eq(again, false, 'without asking for the written-off prop again')
+    noStream.blitz_seckey = nil
+    eq(errored(), nil, 'and no loop errored')
+end
+
+describe('round 6: the stand-in is a model the game has, and not the one that drew nothing')
+do
+    eq(CT.art.keyFallbackProp, KEY_STANDIN, 'the art block names the stock USB stick')
+    ok(CT.art.keyProp ~= 'prop_cs_usb_drive' and CT.art.keyFallbackProp ~= 'prop_cs_usb_drive',
+        'and prop_cs_usb_drive -- no model at all -- is gone from it')
 end
 
 -- ----------------------------------------------------------------- result ---

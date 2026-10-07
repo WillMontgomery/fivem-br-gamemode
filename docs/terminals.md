@@ -211,12 +211,16 @@ sentence); `{description}` as plain text. `BR.TerminalSolve.line` fills both.
 ## The art
 
 Every placeholder is in one block, `art` in `br_lib/config/terminals.lua`:
-`keyProp` and `keyScale` (a key on the ground), `hudGlyph` (the equipped icon
+`keyProp` and `keyScale` (a key on the ground: the owner's `blitz_seckey`,
+24 cm long, as authored) with `keyFallbackProp` and `keyFallbackScale` (the
+stock `hei_prop_hst_usb_drive` at 4x, drawn by a client without his pack or
+whose stream of it fails), `hudGlyph` (the equipped icon
 and the squad panel's holder mark), `terminalProp` (the model the owner's ymap
 stands at every site, which Season 1 hides) and `hideRadiusM`,
 `blipSprite`/`blipColour` (the owner's 521 and 51) and `blipScale`, and
 `reveal` (the final zone's `sprite`, `colour`, `scale`, `radiusM` and
-`alpha`). The owner's `blitz_seckey` prop and HUD icon replace the first two.
+`alpha`). Until round 6 the key was drawn as `prop_cs_usb_drive`, which is no
+model at all, so nothing was drawn but its glow.
 
 ## The functions
 
