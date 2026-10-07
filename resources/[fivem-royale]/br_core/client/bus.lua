@@ -43,6 +43,12 @@ local islandCut = false -- this flight has already released the lobby island
 -- whole view with it: the "world snaps and rotates back" report.
 local smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
 
+-- Where bus.fly last put the orbit camera, and where it put it the time before:
+-- the lens and the point it looks at. Read by client/storm.lua, which leaves out of
+-- the preview wall what is behind this camera (BR.Bus.camPose). `cam` is the camera
+-- these are for, so a pose can never be read against a different camera.
+local camPose = { cam = nil, n = 0, cur = {}, prev = {} }
+
 --- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
 --- THAN true. This file is the front half of the drop, and every model wait in
 --- it was read raw: `while not HasModelLoaded(m) do` is FALSE for the 0 that
@@ -83,6 +89,12 @@ end
 --- Take the rider off the plane: camera down, ped back in the world, flags
 --- reset. The plane itself is left exactly where it is.
 local function dismount()
+    -- FIRST, BEFORE THE CAMERA GOES: this frame's preview wall may already have been
+    -- drawn for the orbit camera, without what was behind it, and the frame is about
+    -- to be shown through the gameplay camera instead. storm.lua puts the rest back.
+    -- Nil-guarded at call time; storm.lua loads after this file.
+    if BR.Storm and BR.Storm.cameraCut then BR.Storm.cameraCut() end
+    camPose.cam = nil
     boardGen = boardGen + 1   -- abandon any boarding thread still streaming
     if cam then
         RenderScriptCams(false, false, 0, true, true)
@@ -569,6 +581,22 @@ function BR.Bus.camLocked()
     return BR.Clock.now() < (route.rotateAt or route.tStart)
 end
 
+--- The orbit camera and the last two poses bus.fly gave it, or nil.
+---
+--- TWO POSES, BECAUSE WHICH ONE A FRAME SHOWS IS THE ENGINE'S ORDER. bus.fly places
+--- the camera before client/storm.lua draws (this file is above it in fxmanifest),
+--- so the pose set this frame is the one rendered if the engine updates cameras
+--- after scripts -- and the pose before it is, if it updates them before. Nothing
+--- here has to know which: a reader that is safe against both is safe.
+---
+--- AND ONLY ONCE TWO EXIST FOR THIS CAMERA, so the first frame of a ride, which has
+--- no "before", is never culled against a pose that was not this camera's.
+--- @return number|nil cam, table cur, table prev   each { x, y, z, tx, ty, tz }
+function BR.Bus.camPose()
+    if not riding or not cam or camPose.cam ~= cam or camPose.n < 2 then return nil end
+    return cam, camPose.cur, camPose.prev
+end
+
 -- Fly the plane. Frame loop, active only while a bus exists AND the record it
 -- flies by has a clock stamped on it; everyone computes the same position from
 -- the same record and the same clock.
@@ -729,11 +757,21 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
         local yawRad   = math.rad((smoothHdg or 0.0) + 180.0 + camYaw)  -- 0 = behind
         local pitchRad = math.rad(camPitch)
         local horiz = dist * math.cos(pitchRad)
-        SetCamCoord(cam,
-            x - math.sin(yawRad) * horiz,
-            y + math.cos(yawRad) * horiz,
-            z + BR.Config.Bus.camHeight - dist * math.sin(pitchRad))
+        local camX = x - math.sin(yawRad) * horiz
+        local camY = y + math.cos(yawRad) * horiz
+        local camZ = z + BR.Config.Bus.camHeight - dist * math.sin(pitchRad)
+        SetCamCoord(cam, camX, camY, camZ)
         PointCamAtCoord(cam, x, y, z + 4.0)
+
+        -- THE POSE, AS SET: the same numbers the two calls above were handed, kept
+        -- with the one before them (BR.Bus.camPose says why both).
+        if camPose.cam ~= cam then camPose.cam, camPose.n = cam, 0 end
+        local cur, prev = camPose.cur, camPose.prev
+        prev.x, prev.y, prev.z = cur.x, cur.y, cur.z
+        prev.tx, prev.ty, prev.tz = cur.tx, cur.ty, cur.tz
+        cur.x, cur.y, cur.z = camX, camY, camZ
+        cur.tx, cur.ty, cur.tz = x, y, z + 4.0
+        camPose.n = camPose.n + 1
     end
 end)
 

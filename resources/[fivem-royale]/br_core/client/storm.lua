@@ -902,20 +902,153 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
     g.n = nq
 end
 
---- The strip a caller that keeps none is drawn from, and the per-frame band
---- samples. File-level so the frame allocates neither.
-local scratchStrip = { q = {}, want = {}, edge = { [0] = 0 }, n = 0 }
-local stripBands = { z0 = {}, z1 = {}, a = {} }
-
---- A strip for a caller to keep between frames; see buildStrip.
+--- A strip for a caller to keep between frames; see buildStrip. Besides the walk it
+--- carries THIS FRAME'S DRAW -- the numbers drawStrip settled on and the band samples
+--- -- so the frame's quads can be emitted again, later in the same frame, exactly as
+--- they would have been (see BR.Storm.cameraCut).
 local function newStrip()
-    return { q = {}, want = {}, edge = { [0] = 0 }, n = 0 }
+    return { q = {}, want = {}, edge = { [0] = 0 }, n = 0,
+             draw = {}, bz0 = {}, bz1 = {}, ba = {} }
 end
+
+--- The strip a caller that keeps none is drawn from. File-level so the frame
+--- allocates nothing.
+local scratchStrip = newStrip()
 
 --- What drawWall keeps for a caller between frames: the zone it was last handed,
 --- that zone's inset, and the inset's built strip.
 local function newWallMemo()
     return { zone = nil, inset = nil, shape = nil, strip = newStrip() }
+end
+
+-- ═══ A QUAD BEHIND A CAMERA WE ARE CERTAIN OF IS NOT SUBMITTED (#393) ═══
+--
+-- The draw loop below says why no cull is safe against the GAMEPLAY camera: its
+-- natives describe the frame before, and the engine moves it after this file has
+-- drawn. That stands, and storm.wall is untouched by this. The bus is the one place
+-- the camera is not the engine's -- bus.fly places the orbit camera itself, every
+-- frame, with SetCamCoord and PointCamAtCoord, before storm.previewWall runs
+-- (client/bus.lua is above this file in fxmanifest, so its callback is earlier in
+-- the FRAME band). So for the whole ride this file knows where the picture is taken
+-- from without asking the engine anything, and a quad wholly behind that camera
+-- cannot reach a pixel.
+--
+-- WHAT "WHOLLY BEHIND" HAS TO COVER, every one of which only ever keeps a quad:
+--
+--   * BOTH POSES, the one bus.fly set this frame and the one before it. Which of the
+--     two the engine renders this frame depends on whether it updates cameras before
+--     or after scripts, which no source here settles -- so a quad is skipped only
+--     when it is behind both, and the order stops mattering.
+--   * ANY FIELD OF VIEW AND ANY SCREEN. The test is the camera's own plane, not its
+--     frustum: nothing behind the plane through the lens is in front of it, at 65
+--     degrees on a 16:9 screen or across three monitors. What a frustum would add
+--     over this (about a tenth of the ring) is not worth an aspect-ratio read.
+--   * THE WATER. The engine's water reflection is the scene drawn from the camera
+--     mirrored in the water plane, so a quad behind the lens can be IN the picture,
+--     upside down in the sea. A quad is skipped only when its mirror image is behind
+--     too, for any water surface between WATER_LO and WATER_HI -- which is the wall's
+--     own span [zb, zt] widened to [2*WATER_LO - zt, 2*WATER_HI - zb].
+--   * VIEW_MARGIN meters more, so a corner near the lens is never decided by the
+--     last bits of a float.
+--
+-- AND A CAMERA CUT LATER IN THE SAME FRAME DRAWS THE REST. The ride ends -- the jump,
+-- the eject, a teardown, /brunstuck -- in a handler that can run after this
+-- callback, and the engine then renders the gameplay camera with what this frame
+-- submitted. Every such site calls BR.Storm.cameraCut() (client/bus.lua's dismount,
+-- client/spawn.lua's brunstuck), which emits exactly the quads that were skipped, on
+-- that same frame, so the frame holds the whole wall whichever camera shows it. The
+-- other cameras in br_core (ambheal, dbno, rescue, spectate, tutorial, lobbycam) are
+-- each gated on a state a rider is not in, and turn only their own cameras off.
+local VIEW_MARGIN = 10.0
+local WATER_LO, WATER_HI = -50.0, 450.0
+
+--- Is the quad (ax, ay)-(bx, by), spanning [zlo, zhi], wholly behind plane `p` by
+--- more than VIEW_MARGIN? `vmax` is the plane's vertical term for that span, worked
+--- out once a frame: a quad is vertical, so the largest signed distance of any of
+--- its corners is the larger end's horizontal part plus the larger z's vertical part.
+local function quadBehind(p, vmax, ax, ay, bx, by)
+    local ha = (ax - p.x) * p.fx + (ay - p.y) * p.fy
+    local hb = (bx - p.x) * p.fx + (by - p.y) * p.fy
+    if hb > ha then ha = hb end
+    return ha + vmax < -VIEW_MARGIN
+end
+
+--- Emit a built strip with the draw drawStrip settled for it this frame.
+---
+--- With no `view` this is the loop that was here, call for call: every quad, in walk
+--- order, with the same arguments. With one, a quad wholly behind both planes in it
+--- is skipped -- or, with `complement`, ONLY those are drawn, which is how a camera
+--- cut puts back what the frame left out.
+--- @param g table            a built strip, its `draw` filled this frame
+--- @param view table|nil     { n = 2, { x, y, z, fx, fy, fz }, {...} }: the two
+---                           camera planes, this frame's pose and the one before
+--- @param complement boolean draw exactly the quads `view` skips
+--- @return integer           quads skipped
+local function emitStrip(g, view, complement)
+    local d = g.draw
+    local gradient, gDict, gTex, gV0, gV1 = d.gradient, d.gDict, d.gTex, d.gV0, d.gV1
+    local bands, zb, zt = d.bands, d.zb, d.zt
+    local cr, cg, cb, av = d.cr, d.cg, d.cb, d.av
+    local vx, vy = d.vx, d.vy
+    local bandZ0, bandZ1, bandA = g.bz0, g.bz1, g.ba
+
+    local p1, p2, v1, v2
+    if view then
+        local zlo, zhi = zb, zt
+        if 2.0 * WATER_LO - zt < zlo then zlo = 2.0 * WATER_LO - zt end
+        if 2.0 * WATER_HI - zb > zhi then zhi = 2.0 * WATER_HI - zb end
+        p1, p2 = view[1], view[view.n]
+        v1 = (zlo - p1.z) * p1.fz
+        if (zhi - p1.z) * p1.fz > v1 then v1 = (zhi - p1.z) * p1.fz end
+        v2 = (zlo - p2.z) * p2.fz
+        if (zhi - p2.z) * p2.fz > v2 then v2 = (zhi - p2.z) * p2.fz end
+    end
+
+    local q = g.q
+    local skipped = 0
+    for i = 0, g.n - 1 do
+        local o = i * QUAD_STRIDE
+        local ax, ay, bx, by = q[o + 1], q[o + 2], q[o + 3], q[o + 4]
+        local draw = true
+        if view then
+            local behind = quadBehind(p1, v1, ax, ay, bx, by)
+                and quadBehind(p2, v2, ax, ay, bx, by)
+            draw = behind == complement
+            if not draw then skipped = skipped + 1 end
+        end
+        if draw then
+            local out = (vx - q[o + 5]) * q[o + 7] + (vy - q[o + 6]) * q[o + 8] >= 0.0
+            if gradient then
+                if out then
+                    DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
+                        cr, cg, cb, av, gDict, gTex,
+                        0.5, gV0, 1.0,  0.5, gV0, 1.0,  0.5, gV1, 1.0)
+                    DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
+                        cr, cg, cb, av, gDict, gTex,
+                        0.5, gV0, 1.0,  0.5, gV1, 1.0,  0.5, gV1, 1.0)
+                else
+                    DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
+                        cr, cg, cb, av, gDict, gTex,
+                        0.5, gV1, 1.0,  0.5, gV0, 1.0,  0.5, gV0, 1.0)
+                    DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
+                        cr, cg, cb, av, gDict, gTex,
+                        0.5, gV1, 1.0,  0.5, gV1, 1.0,  0.5, gV0, 1.0)
+                end
+            else
+                for b = 1, bands do
+                    local z0, z1, ab = bandZ0[b], bandZ1[b], bandA[b]
+                    if out then
+                        DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, ab)
+                        DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, ab)
+                    else
+                        DrawPoly(ax, ay, z1, bx, by, z0, ax, ay, z0, cr, cg, cb, ab)
+                        DrawPoly(ax, ay, z1, bx, by, z1, bx, by, z0, cr, cg, cb, ab)
+                    end
+                end
+            end
+        end
+    end
+    return skipped
 end
 
 --- @param shape table       an inset BR.StormShape
@@ -924,7 +1057,11 @@ end
 --- @param pool table|nil   set when `shape` was built into a pool: its table is
 ---                         the same one every frame with new numbers in it, so
 ---                         the strip is walked again whatever it is compared to
-local function drawStrip(shape, alphaScale, g, pool)
+--- @param view table|nil   camera planes a quad must be behind to be skipped; see
+---                         emitStrip. nil draws every quad, which is every caller
+---                         but the preview on the bus.
+--- @return integer         quads skipped
+local function drawStrip(shape, alphaScale, g, pool, view)
     local rr = cfg.render
     -- EVERY NUMBER BELOW HAS AN `or` DEFAULT AND THIS IS WHY. A config without a
     -- `strip` table is the one shape of failure that would be silent: the FRAME
@@ -1018,8 +1155,9 @@ local function drawStrip(shape, alphaScale, g, pool)
     --
     -- Sampled once a frame per band rather than once per band per quad: the value
     -- depends on the band and the frame's alpha and on nothing about the quad, so
-    -- every quad drew the same numbers.
-    local bandZ0, bandZ1, bandA = stripBands.z0, stripBands.z1, stripBands.a
+    -- every quad drew the same numbers. Kept on the strip, with the rest of the
+    -- frame's draw, so emitStrip can replay it.
+    local bandZ0, bandZ1, bandA = g.bz0, g.bz1, g.ba
     if not gradient then
         local h = (zt - zb) / bands
         local z0 = zb
@@ -1093,7 +1231,6 @@ local function drawStrip(shape, alphaScale, g, pool)
     -- ramp is already in the texture, so multiplying it in here as well would
     -- square it -- a wall that fades to nothing by about 300 m.
     local av = math.max(0, math.min(255, math.floor(alpha + 0.5)))
-    local q = g.q
 
     -- ═══ EVERY QUAD, EVERY FRAME: NO CAMERA CULL AND NO DISTANCE LOD (#393) ═══
     --
@@ -1106,7 +1243,9 @@ local function drawStrip(shape, alphaScale, g, pool)
     -- that frame it was not submitted. A 30-degree margin skipped half the ring
     -- of a phase-1 hold and dropped the whole far wall for the first frame of a
     -- 180-degree cut. No margin short of the whole circle is safe, so nothing is
-    -- culled.
+    -- culled against the engine's camera. The one exception is a camera this file
+    -- does not have to ask the engine about -- the bus's, which bus.fly places --
+    -- and the note above emitStrip is what makes that one safe.
     --
     -- A COARSER CHORD FAR AWAY WOULD MOVE THE WALL. The strip's chords already sag
     -- up to chordM (2 m) off the boundary, so merging two into one puts the merged
@@ -1121,39 +1260,14 @@ local function drawStrip(shape, alphaScale, g, pool)
     -- about 21 km at worst. So outside the last seconds of the final ring, a wall
     -- a few metres round, no quad is ever far enough to merge, and an LOD would
     -- buy nothing.
-    for i = 0, g.n - 1 do
-        local o = i * QUAD_STRIDE
-        local ax, ay, bx, by = q[o + 1], q[o + 2], q[o + 3], q[o + 4]
-        local out = (vx - q[o + 5]) * q[o + 7] + (vy - q[o + 6]) * q[o + 8] >= 0.0
-        if gradient then
-            if out then
-                DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
-                    cr, cg, cb, av, gDict, gTex,
-                    0.5, gV0, 1.0,  0.5, gV0, 1.0,  0.5, gV1, 1.0)
-                DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
-                    cr, cg, cb, av, gDict, gTex,
-                    0.5, gV0, 1.0,  0.5, gV1, 1.0,  0.5, gV1, 1.0)
-            else
-                DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
-                    cr, cg, cb, av, gDict, gTex,
-                    0.5, gV1, 1.0,  0.5, gV0, 1.0,  0.5, gV0, 1.0)
-                DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
-                    cr, cg, cb, av, gDict, gTex,
-                    0.5, gV1, 1.0,  0.5, gV1, 1.0,  0.5, gV0, 1.0)
-            end
-        else
-            for b = 1, bands do
-                local z0, z1, ab = bandZ0[b], bandZ1[b], bandA[b]
-                if out then
-                    DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, ab)
-                    DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, ab)
-                else
-                    DrawPoly(ax, ay, z1, bx, by, z0, ax, ay, z0, cr, cg, cb, ab)
-                    DrawPoly(ax, ay, z1, bx, by, z1, bx, by, z0, cr, cg, cb, ab)
-                end
-            end
-        end
-    end
+    -- THE FRAME'S DRAW, KEPT ON THE STRIP, and every number in it is one the loop
+    -- that used to be here read from a local. emitStrip is that loop.
+    local d = g.draw
+    d.gradient, d.gDict, d.gTex, d.gV0, d.gV1 = gradient, gDict, gTex, gV0, gV1
+    d.bands, d.zb, d.zt = bands, zb, zt
+    d.cr, d.cg, d.cb, d.av = cr, cg, cb, av
+    d.vx, d.vy = vx, vy
+    return emitStrip(g, view, false)
 end
 
 
@@ -1199,7 +1313,10 @@ end
 --- @param alphaScale number 0..1
 --- @param memo table|nil    newWallMemo(), kept by the caller between frames
 --- @param pool table|nil    the pool `zone` was built into, if it was
-local function drawWall(zone, alphaScale, memo, pool)
+--- @param view table|nil    camera planes for the strip; see emitStrip. The marker
+---                          styles are A/B baselines typed by hand, and ignore it.
+--- @return integer|nil      strip quads skipped; nil from the marker styles
+local function drawWall(zone, alphaScale, memo, pool, view)
     -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN. Both lessons below were learnt
     -- on the marker paths and are kept BECAUSE the marker paths are still the A/B
     -- baseline; the strip inherits both by construction and the second outright,
@@ -1277,8 +1394,7 @@ local function drawWall(zone, alphaScale, memo, pool)
     end
 
     if style == 'strip' then
-        drawStrip(shape, alphaScale, memo and memo.strip, pool)
-        return
+        return drawStrip(shape, alphaScale, memo and memo.strip, pool, view) or 0
     end
 
     if style == 'solid' then
@@ -2864,6 +2980,79 @@ local function previewBlob(pv)
     return k.blob
 end
 
+-- ═══ THE BUS'S CAMERA, AND WHAT A CUT OWES THE FRAME (#393) ═══
+--
+-- emitStrip's note has the argument. These are its two halves on this side: the
+-- planes, filled from the poses client/bus.lua says it set, and the record of what a
+-- frame skipped, so that a camera cut later in that frame can draw it.
+local busPlanes = { n = 2, {}, {} }
+local cutPending = { g = nil, view = nil, frame = nil }
+
+--- One camera plane from a pose: the lens and the unit vector toward what it looks at.
+--- @return boolean  false for a degenerate pose, which nothing may be culled against
+local function planeOf(p, pose)
+    local fx, fy, fz = pose.tx - pose.x, pose.ty - pose.y, pose.tz - pose.z
+    local len = math.sqrt(fx * fx + fy * fy + fz * fz)
+    if not (len > 1e-3) then return false end
+    p.x, p.y, p.z = pose.x, pose.y, pose.z
+    p.fx, p.fy, p.fz = fx / len, fy / len, fz / len
+    return true
+end
+
+--- The bus orbit camera's two planes, when it is provably the camera this frame's
+--- preview is seen through -- nil whenever anything about that is unknown, which
+--- draws every quad exactly as before.
+---
+--- ASKED OF client/bus.lua AT CALL TIME and nil-guarded, as BR.Spectate is: bus.lua
+--- loads first, but a load order is not a thing this file may depend on. And the
+--- engine is asked one thing, IsCamRendering, so a camera somebody destroyed or
+--- displaced under bus.lua's feet (DestroyAllCams leaves its handle stale) is never
+--- trusted.
+--- @return table|nil
+local function busView()
+    local B = BR.Bus
+    if not (B and B.camPose) then return nil end
+    if type(IsCamRendering) ~= 'function' or type(GetFrameCount) ~= 'function' then
+        return nil
+    end
+    local cam, cur, prev = B.camPose()
+    if not cam then return nil end
+    if not BR.NativeTruthy(IsCamRendering(cam)) then return nil end
+    if not planeOf(busPlanes[1], cur) or not planeOf(busPlanes[2], prev) then
+        return nil
+    end
+    return busPlanes
+end
+
+--- A camera cut is happening: put back, on this frame, the preview quads this
+--- frame's draw skipped for a camera that is no longer the one rendering.
+---
+--- THIS FRAME ONLY, AND ONCE. The record is dropped on the first call whatever it
+--- holds, and drawn only when GetFrameCount says it is the frame that made it -- a
+--- cut on a LATER frame finds storm.previewWall drawing every quad on that frame
+--- already (bus.lua has no pose for it), and putting an old frame's remainder on top
+--- would double the alpha where they overlap.
+---
+--- Called by every site in br_core that can take the bus camera off the screen:
+--- client/bus.lua's dismount (the jump, the eject, the teardowns) and
+--- client/spawn.lua's brunstuck.
+---
+--- WHAT A CUT FRAME DOES NOT GET BACK IS THE CALL ORDER. The quads come after
+--- whatever other script triangles were drawn between storm.previewWall and the cut,
+--- rather than before them. Wall over wall is one color at one alpha and cannot
+--- tell (the draw loop's note); a different translucent script triangle overlapping
+--- one of them on screen -- a world-space browser label -- composites the other way
+--- round, on that one frame.
+function BR.Storm.cameraCut()
+    local p = cutPending
+    local g, view, frame = p.g, p.view, p.frame
+    p.g, p.view, p.frame = nil, nil, nil
+    if not g or type(GetFrameCount) ~= 'function' or GetFrameCount() ~= frame then
+        return
+    end
+    emitStrip(g, view, true)
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- THE WORLD GATE IS FIRST NOW, BECAUSE IT IS WHAT ARMS THE ENTRY RAMP (#351).
     -- It was second, below the storm's own gate, and the two are pure predicates in
@@ -2944,7 +3133,20 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- hands back the same table while the circle and the phase-1 unit are the same,
     -- and drawWall's memo then reuses the rest: what is left each frame is the face
     -- test and the draws.
-    drawWall(previewBlob(pv), alphaScale * entry, previewMemo)
+    --
+    -- ═══ AND ON THE BUS, WHAT IS BEHIND THE CAMERA IS NOT SUBMITTED (#393) ═══
+    --
+    -- busView is nil off the bus and whenever the camera is in any doubt, and then
+    -- this is the call it always was. On the ride it skips the quads wholly behind
+    -- the orbit camera -- anything from none of circle 1 to all of it, by where it
+    -- lies; 23 of 48 triangles in the profiler's doors-open cruise -- and leaves the
+    -- frame a record of them, which a camera cut later in this frame draws.
+    local view = busView()
+    local skipped = drawWall(previewBlob(pv), alphaScale * entry, previewMemo, nil, view)
+    if view and (skipped or 0) > 0 then
+        cutPending.g, cutPending.view = previewMemo.strip, view
+        cutPending.frame = GetFrameCount()
+    end
 end)
 
 -- ----------------------------------------------------- blips, FX, envelope ---

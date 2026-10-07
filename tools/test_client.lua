@@ -7990,6 +7990,118 @@ do
     sent = {}
 end
 
+-- ------------------------------------------- the orbit camera's pose (#393) ---
+--
+-- client/storm.lua leaves out of the preview wall what is behind the bus's own
+-- camera, and it learns where that camera is from BR.Bus.camPose -- so the pose has
+-- to be the numbers bus.fly actually handed SetCamCoord and PointCamAtCoord, with
+-- the frame before kept beside them, and a ride's end has to tell storm.lua BEFORE
+-- the camera goes, so the frame it ends on can be given the rest of the wall.
+describe('the orbit camera says where it is, and every ride ending says so first -- #393')
+do
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    local realNormal, realCoord, realPoint, realRender =
+        GetControlNormal, SetCamCoord, PointCamAtCoord, RenderScriptCams
+    -- A hand on the mouse, so the orbit really turns from frame to frame.
+    GetControlNormal = function(_pad, control)
+        if control == 1 then return 0.25 end
+        return 0.0
+    end
+    local coord, point = nil, nil
+    SetCamCoord = function(c, x, y, z) coord = { c = c, x = x, y = y, z = z } end
+    PointCamAtCoord = function(c, x, y, z) point = { c = c, x = x, y = y, z = z } end
+    local seq = {}
+    RenderScriptCams = function(on) seq[#seq + 1] = on and 'render on' or 'render off' end
+    BR.Storm = BR.Storm or {}
+    local realCut = BR.Storm.cameraCut
+    BR.Storm.cameraCut = function() seq[#seq + 1] = 'cut' end
+
+    --- Aboard a plane that flies, wheels already up.
+    local function boardFlying()
+        local t = GetGameTimer()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, t = t + i * 4000 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = true, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            tStart = t, rotateAt = t,
+            jumpFrom = t, doorsClose = t + 20000, tEnd = t + 30000,
+        })
+        BR.State.match = { state = BR.MatchState.BUS }
+        BR.State.me.state = BR.PlayerState.BUS
+        local before = #threads
+        BR.Loop.step(BR.Loop.TICK)
+        for i = before + 1, #threads do threads[i]() end
+    end
+    local function same(p, c, q)
+        return p and c and q and p.x == c.x and p.y == c.y and p.z == c.z
+            and p.tx == q.x and p.ty == q.y and p.tz == q.z
+    end
+    local function index(what)
+        for i, s in ipairs(seq) do if s == what then return i end end
+        return nil
+    end
+
+    boardFlying()
+    ok(BR.Bus.camPose() == nil, 'aboard, before the camera has been placed, there is no pose')
+    frame(16)
+    ok(BR.Bus.camPose() == nil,
+        'and after one placing there is still none -- a pose needs the one before it',
+        tostring(BR.Bus.camPose()))
+    local was, wasAt = coord, point
+    frame(16)
+    local cam, cur, prev = BR.Bus.camPose()
+    ok(cam == 7 and same(cur, coord, point) and same(prev, was, wasAt),
+        'after two, it is the camera with exactly the numbers bus.fly handed '
+            .. 'SetCamCoord and PointCamAtCoord, this frame\'s and the last',
+        cur and ('cur %.3f,%.3f,%.3f'):format(cur.x, cur.y, cur.z) or 'no pose')
+    ok(prev and cur and (prev.x ~= cur.x or prev.y ~= cur.y),
+        'and the two are two frames: the orbit turned between them')
+    local held = true
+    for _ = 1, 20 do
+        was, wasAt = coord, point
+        frame(16)
+        cam, cur, prev = BR.Bus.camPose()
+        if not (same(cur, coord, point) and same(prev, was, wasAt)) then held = false end
+    end
+    ok(held, 'and stays so frame after frame')
+
+    -- THE JUMP: the cut is announced, and only then does the camera go.
+    seq = {}
+    fire(BR.Net.BUS_JUMP_OK, { x = 800.0, y = 0.0, z = 500.0, heading = 0.0 })
+    ok(index('cut') ~= nil and index('render off') ~= nil
+        and index('cut') < index('render off'),
+        'the jump tells storm.lua before it takes the camera down', table.concat(seq, ', '))
+    ok(BR.Bus.camPose() == nil, 'and leaves no pose behind')
+
+    -- A TEARDOWN: the state flips off BUS mid-ride.
+    boardFlying()
+    frames(3, 16)
+    ok(BR.Bus.camPose() ~= nil, 'precondition: aboard again, with a pose')
+    seq = {}
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.TICK)
+    ok(index('cut') ~= nil and index('render off') ~= nil
+        and index('cut') < index('render off'),
+        'a ride torn down mid-flight tells storm.lua first too', table.concat(seq, ', '))
+    ok(BR.Bus.camPose() == nil, 'and leaves no pose behind either')
+
+    -- Put the world back the way the blocks below expect to find it.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    ok(BR.Bus.camPose() == nil, 'a player who is not aboard has no pose')
+    GetControlNormal, SetCamCoord, PointCamAtCoord, RenderScriptCams =
+        realNormal, realCoord, realPoint, realRender
+    BR.Storm.cameraCut = realCut
+    sent = {}
+end
+
 -- ------------------------------------ the preview that landed on a flight ---
 --
 -- THE OWNER'S F8 LOG, WHICH IS THE WHOLE SPECIFICATION:

@@ -4060,6 +4060,302 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('wall.busview')
+do
+    -- ═══ ON THE BUS, A QUAD BEHIND THE CAMERA IS NOT SUBMITTED -- AND NOTHING IN
+    --     VIEW GOES MISSING (#393) ═══
+    --
+    -- `wall.whole` above pins that the ENGINE's camera changes nothing. This is the
+    -- one camera that is not the engine's: bus.fly places the orbit camera itself,
+    -- so client/storm.lua leaves out of circle 1's wall the quads wholly behind it.
+    -- What has to hold, over a thousand camera poses:
+    --
+    --   * NOTHING NEW. Every triangle drawn is one the uncut wall draws, with the same
+    --     arguments, in the same order.
+    --   * NOTHING IN VIEW IS LOST. Every triangle of the uncut wall that reaches the
+    --     screen -- clipped exactly against the frustum of either pose, at the bus
+    --     camera's 65 degrees and at 130 across three monitors, directly and in the
+    --     water's mirror at sea level and on a hill lake -- is drawn. The frustum
+    --     here is written from scratch rather than borrowed from the production test.
+    --   * A CUT LATER IN THE FRAME PUTS THE REST BACK: BR.Storm.cameraCut draws
+    --     exactly the skipped triangles, once, on that frame and no other.
+    --   * AND ANY DOUBT IS THE OLD WALL: no camera rendering, no pose, no frame
+    --     counter or a pose with no direction all draw every quad.
+    local CCX, CCY, CR = 500.0, 0.0, 1600.0
+    local CAM = 7
+
+    local function newBus(px, py, pz)
+        local C = newStormClient()
+        local env = C.env
+        local MS, PS = env.BR.MatchState, env.BR.PlayerState
+        env.BR.State.storm = nil
+        env.BR.State.match.state = MS.BUS
+        env.BR.State.me.state    = PS.BUS
+        env.BR.State.stormPreview = { cx = CCX, cy = CCY, r = CR }
+        C.fire('br:env:world', false)
+        C.pedAt = pt(px, py, pz)
+        C.fc, C.rendering, C.bus = 0, {}, nil
+        env.GetFrameCount  = function() return C.fc end
+        env.IsCamRendering = function(c) return C.rendering[c] == true end
+        env.BR.Bus = { camPose = function()
+            local b = C.bus
+            if not b then return nil end
+            return b.cam, b.cur, b.prev
+        end }
+        local step = C.frame
+        function C.frame() C.fc = C.fc + 1 step() end
+        C.settlePreview()
+        return C
+    end
+
+    --- bus.fly's orbit: camDistance behind and camHeight above the plane at
+    --- (px, py, pz), turned `yaw` degrees round it and pitched, looking at the plane
+    --- plus four meters.
+    local BUS = newStormClient().env.BR.Config.Bus
+    local function pose(px, py, pz, yaw, pitch)
+        local yr, pr = math.rad(yaw), math.rad(pitch)
+        local horiz = BUS.camDistance * math.cos(pr)
+        return { x = px - math.sin(yr) * horiz, y = py + math.cos(yr) * horiz,
+                 z = pz + BUS.camHeight - BUS.camDistance * math.sin(pr),
+                 tx = px, ty = py, tz = pz + 4.0 }
+    end
+
+    local function key(t)
+        local parts = {}
+        for v = 1, 3 do
+            local p = t[v]
+            parts[#parts + 1] = ('%a,%a,%a,%s,%s'):format(p.x, p.y, p.z,
+                tostring(p.u), tostring(p.v))
+        end
+        return table.concat(parts, ';')
+            .. ('|%s|%s'):format(tostring(t.a), tostring(t.tex))
+    end
+
+    --- Does the triangle reach the screen of a camera at `ps`, with vertical field
+    --- `vfov` and `aspect`? Sutherland-Hodgman against the near plane and the four
+    --- sides, in the camera's own frame: anything left over is on screen.
+    local function onScreen(tri, ps, vfov, aspect)
+        local fx, fy, fz = ps.tx - ps.x, ps.ty - ps.y, ps.tz - ps.z
+        local fl = math.sqrt(fx * fx + fy * fy + fz * fz)
+        fx, fy, fz = fx / fl, fy / fl, fz / fl
+        -- right = forward x world up; up = right x forward
+        local rx, ry = fy, -fx
+        local rl = math.sqrt(rx * rx + ry * ry)
+        rx, ry = rx / rl, ry / rl
+        local ux, uy, uz = ry * fz, -rx * fz, rx * fy - ry * fx
+        local ty = math.tan(math.rad(vfov) / 2.0)
+        local tx = ty * aspect
+        local poly = {}
+        for i = 1, 3 do
+            local dx, dy, dz = tri[i][1] - ps.x, tri[i][2] - ps.y, tri[i][3] - ps.z
+            poly[i] = { dx * rx + dy * ry, dx * ux + dy * uy + dz * uz,
+                        dx * fx + dy * fy + dz * fz }
+        end
+        local planes = {
+            function(p) return p[3] - 0.05 end,
+            function(p) return p[3] * tx - p[1] end,
+            function(p) return p[3] * tx + p[1] end,
+            function(p) return p[3] * ty - p[2] end,
+            function(p) return p[3] * ty + p[2] end,
+        }
+        for _, f in ipairs(planes) do
+            local out = {}
+            local n = #poly
+            for i = 1, n do
+                local a, b = poly[i], poly[i % n + 1]
+                local fa, fb = f(a), f(b)
+                if fa >= 0 then out[#out + 1] = a end
+                if (fa >= 0) ~= (fb >= 0) then
+                    local s = fa / (fa - fb)
+                    out[#out + 1] = { a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s,
+                                      a[3] + (b[3] - a[3]) * s }
+                end
+            end
+            poly = out
+            if #poly == 0 then return false end
+        end
+        return true
+    end
+
+    --- On screen from `ps` at all: directly, or mirrored in water at sea level or on
+    --- a lake 300 m up, at the bus camera's field or the widest screen.
+    local MIRRORS = { false, 0.0, 300.0 }
+    local FIELDS = { { 65.0, 16.0 / 9.0 }, { 130.0, 48.0 / 9.0 } }
+    local function inView(t, ps)
+        for _, w in ipairs(MIRRORS) do
+            local tri = {}
+            for v = 1, 3 do
+                local z = t[v].z
+                if w then z = 2.0 * w - z end
+                tri[v] = { t[v].x, t[v].y, z }
+            end
+            for _, fd in ipairs(FIELDS) do
+                if onScreen(tri, ps, fd[1], fd[2]) then return true end
+            end
+        end
+        return false
+    end
+
+    local function multiset(polys, from, to)
+        local m = {}
+        for i = from, to do
+            local k = key(polys[i])
+            m[k] = (m[k] or 0) + 1
+        end
+        return m
+    end
+
+    -- Where the plane is: over circle 1, at its rim, kilometers off, and low.
+    local spots = {
+        { label = 'over circle 1', x = 300.0, y = 200.0, z = 500.0 },
+        { label = 'at its rim', x = CCX + CR - 30.0, y = 0.0, z = 500.0 },
+        { label = 'three kilometers off', x = CCX - CR - 3000.0, y = 900.0, z = 500.0 },
+        { label = 'low over the ground', x = CCX + 200.0, y = -CR - 400.0, z = 60.0 },
+    }
+    local pitches = { -75.0, -40.0, -8.0, 0.0, 25.0 }
+    local poses, newBad, lostBad, cutBad, twiceBad = 0, nil, nil, nil, nil
+    local skippedInside, totalInside = 0, 0
+    local skippedLevel, totalLevel = 0, 0
+    local errs = nil
+    for _, s in ipairs(spots) do
+        local C = newBus(s.x, s.y, s.z)
+        C.frame()
+        local ref = C.polys
+        local refKeys = {}
+        for i, t in ipairs(ref) do refKeys[i] = key(t) end
+        local want = multiset(ref, 1, #ref)
+        for yaw = 0, 350, 10 do
+            for _, pitch in ipairs(pitches) do
+                poses = poses + 1
+                local cur = pose(s.x, s.y, s.z, yaw, pitch)
+                -- The frame before: the orbit seven degrees back, the plane a frame's
+                -- flight behind.
+                local prev = pose(s.x - 1.5, s.y, s.z, yaw - 7.0, pitch)
+                C.bus = { cam = CAM, cur = cur, prev = prev }
+                C.rendering[CAM] = true
+                C.frame()
+                local drawn = C.polys
+                local n0 = #drawn
+                local where = ('%s, yaw %d pitch %d'):format(s.label, yaw, pitch)
+
+                -- NOTHING NEW, IN ORDER: the drawn keys are a subsequence of the uncut.
+                local j = 1
+                for i = 1, n0 do
+                    local k = key(drawn[i])
+                    while j <= #refKeys and refKeys[j] ~= k do j = j + 1 end
+                    if j > #refKeys and not newBad then
+                        newBad = ('%s: triangle %d is not the uncut wall\'s, in its '
+                            .. 'order'):format(where, i)
+                    end
+                    j = j + 1
+                end
+
+                -- NOTHING IN VIEW IS LOST.
+                local have = multiset(drawn, 1, n0)
+                for i, t in ipairs(ref) do
+                    if not have[refKeys[i]] and not lostBad
+                        and (inView(t, cur) or inView(t, prev)) then
+                        lostBad = ('%s: triangle %d is on screen and was not drawn')
+                            :format(where, i)
+                    end
+                end
+                if s.label == 'over circle 1' then
+                    skippedInside = skippedInside + (#ref - n0)
+                    totalInside = totalInside + #ref
+                    if pitch == -8.0 then
+                        skippedLevel = skippedLevel + (#ref - n0)
+                        totalLevel = totalLevel + #ref
+                    end
+                end
+
+                -- THE CUT PUTS BACK EXACTLY THE REST, ONCE.
+                C.env.BR.Storm.cameraCut()
+                local all = multiset(C.polys, 1, #C.polys)
+                local same = #C.polys == #ref
+                for k, n in pairs(want) do if all[k] ~= n then same = false end end
+                if not same and not cutBad then
+                    cutBad = ('%s: %d drawn, %d after the cut, %d in the uncut wall')
+                        :format(where, n0, #C.polys, #ref)
+                end
+                local n1 = #C.polys
+                C.env.BR.Storm.cameraCut()
+                if #C.polys ~= n1 and not twiceBad then
+                    twiceBad = ('%s: a second cut drew %d more'):format(where, #C.polys - n1)
+                end
+            end
+        end
+        errs = errs or C.errored()
+    end
+    ok(errs == nil, 'the preview runs clean under every bus camera', errs)
+    ok(newBad == nil, 'under the bus camera every triangle drawn is the uncut wall\'s, '
+        .. 'with its arguments and in its order', newBad or ('%d poses'):format(poses))
+    ok(lostBad == nil, 'and every triangle that reaches the screen from either pose -- '
+        .. 'at 65 degrees or 130 across 48:9, directly or in the water -- is drawn',
+        lostBad or ('%d poses'):format(poses))
+    ok(cutBad == nil, 'a camera cut later in the frame draws exactly what was left out',
+        cutBad)
+    ok(twiceBad == nil, 'and a second cut in the same frame draws nothing more', twiceBad)
+    -- AND IT IS WORTH HAVING. At the pitch a ride starts at (bus.fly's -8, which looks
+    -- about twenty degrees down at the plane) a third of circle 1 is behind the camera
+    -- even after the water's mirror is allowed for; pitched at the ground almost none
+    -- is, because the skirt and its reflection are then in front of the lens.
+    ok(totalLevel > 0 and skippedLevel / totalLevel >= 0.3,
+        'and it is worth having: over circle 1, at the pitch a ride starts at, '
+            .. 'three tenths or more of the wall is not submitted, averaged round the orbit',
+        ('%d of %d'):format(skippedLevel, totalLevel))
+    ok(totalInside > 0 and skippedInside / totalInside >= 0.2,
+        'and a fifth or more at every pitch the orbit allows, from the ground to the sky',
+        ('%d of %d'):format(skippedInside, totalInside))
+
+    -- ─── any doubt is the whole wall ───
+    local C = newBus(300.0, 200.0, 500.0)
+    C.frame()
+    local ref = {}
+    for i, t in ipairs(C.polys) do ref[i] = key(t) end
+    local function whole(label)
+        C.frame()
+        local same = #C.polys == #ref
+        for i = 1, math.min(#ref, #C.polys) do
+            if key(C.polys[i]) ~= ref[i] then same = false end
+        end
+        ok(same, label, ('%d triangles against %d'):format(#C.polys, #ref))
+    end
+    local aimed = pose(300.0, 200.0, 500.0, 0.0, -8.0)
+    C.bus = { cam = CAM, cur = aimed, prev = aimed }
+    C.rendering[CAM] = false
+    whole('a bus camera the engine is not rendering culls nothing')
+    C.rendering[CAM] = true
+    C.bus = nil
+    whole('no pose from client/bus.lua culls nothing')
+    C.bus = { cam = CAM, cur = { x = 1.0, y = 2.0, z = 3.0, tx = 1.0, ty = 2.0, tz = 3.0 },
+              prev = aimed }
+    whole('a pose with no direction culls nothing')
+    C.bus = { cam = CAM, cur = aimed, prev = aimed }
+    local fc = C.env.GetFrameCount
+    C.env.GetFrameCount = nil
+    whole('a build without GetFrameCount culls nothing')
+    C.env.GetFrameCount = fc
+
+    -- ─── a cut on a later frame owes that frame nothing ───
+    C.frame()
+    ok(#C.polys < #ref, 'precondition: this pose leaves part of the wall out',
+        ('%d of %d'):format(#C.polys, #ref))
+    C.fc = C.fc + 1                -- the next frame, before the wall has drawn
+    local n0 = #C.polys
+    C.env.BR.Storm.cameraCut()
+    ok(#C.polys == n0, 'a cut on the frame after draws nothing of the frame before -- '
+        .. 'that frame draws its own wall whole, and the old remainder on top would '
+        .. 'double it', ('%d drawn'):format(#C.polys - n0))
+    C.bus = nil
+    C.frame()
+    n0 = #C.polys
+    C.env.BR.Storm.cameraCut()
+    ok(#C.polys == n0 and n0 == #ref,
+        'and a cut after a whole frame draws nothing more',
+        ('%d then %d'):format(n0, #C.polys))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.pool')
 do
     -- ═══ A MOVING WALL IS BUILT INTO LAST FRAME'S TABLES, AND IS THE SAME WALL (#393) ═══

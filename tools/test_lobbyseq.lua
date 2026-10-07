@@ -4575,6 +4575,39 @@ do
        'black and home: switched')
 end
 
+-- /brunstuck TAKES THE BUS'S CAMERA DOWN TOO, AND SAYS SO FIRST (#393).
+--
+-- client/storm.lua leaves out of the preview wall what is behind the bus's orbit
+-- camera. A frame whose camera is torn down after that draw is shown through the
+-- gameplay camera instead, so every site that can do it tells storm.lua first, and
+-- storm.lua puts the rest of the wall on that frame. This is the one outside
+-- client/bus.lua: RenderScriptCams off and DestroyAllCams, typed at any moment.
+do
+    -- The natives the command reaches that no block above has needed, for the
+    -- length of this one.
+    local missing = {}
+    for _, n in ipairs({ 'SetEntityCollision' }) do
+        if _G[n] == nil then missing[#missing + 1] = n _G[n] = function() end end
+    end
+    local realAll = DestroyAllCams
+    DestroyAllCams = function() note('allcams') end
+    BR.Storm = BR.Storm or {}
+    local realCut = BR.Storm.cameraCut
+    BR.Storm.cameraCut = function() note('cut') end
+    reset()
+    local ran, err = pcall(commands['brunstuck'], 0, {}, '')
+    ok(ran, '/brunstuck runs here: ' .. tostring(err))
+    local iCut = firstOf('cut')
+    local iOff = firstOf('render', function(e) return e.on == false end)
+    local iAll = firstOf('allcams')
+    ok(iCut ~= nil and iOff ~= nil and iAll ~= nil and iCut < iOff and iCut < iAll,
+       '/brunstuck tells storm.lua before it takes any camera down (#393)')
+    DestroyAllCams = realAll
+    BR.Storm.cameraCut = realCut
+    for _, n in ipairs(missing) do _G[n] = nil end
+    reset()
+end
+
 -- And the gather loop goes back on, so nothing added after this inherits a
 -- disabled subsystem from a block that only wanted it quiet for itself.
 ok(BR.Loop.setEnabled('spawn.gather', true), 'spawn.gather is left enabled')

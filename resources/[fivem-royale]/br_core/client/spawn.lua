@@ -1909,6 +1909,10 @@ RegisterCommand('brunstuck', function()
 
     -- Tear down any script camera: one left rendering shows whatever it points
     -- at, which after a failed placement is often nothing at all.
+    --
+    -- And if it is the bus's, this frame's storm preview may already be drawn
+    -- without what was behind it; storm.lua puts the rest back first (#393).
+    if BR.Storm and BR.Storm.cameraCut then BR.Storm.cameraCut() end
     RenderScriptCams(false, false, 0, true, true)
     DestroyAllCams(true)
     ClearFocus()
