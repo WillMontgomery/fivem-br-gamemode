@@ -153,7 +153,7 @@ guarantee removed — all fail it.
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
 | **Unit tests** | 49 suites, over 10,000 assertions, covering the pure shared modules, server model, client interaction layer, AWS-facing subsystems, and individual files where a rule lives. The run order stays explicit, but `verify.sh` compares it with every `tools/test_*.lua` file and fails if either side has an extra entry — a new suite cannot exist without running in CI. |
-| **Frame budget** | br_core's native calls, draw calls and kilobytes allocated per frame, phase by phase through a simulated session from the lobby to a match and the things a player does in one, stay within `tools/perf_budget.lua`. See [the frame profiler](#the-frame-profiler-and-its-budget). |
+| **Frame budget** | br_core's native calls, draw calls and kilobytes allocated per frame, and heavy calls a second, phase by phase through a simulated session from the lobby to a match and the things a player does in one, stay within `tools/perf_budget.lua` — and so does the one-time cost of each season, festive and match-end change. See [the frame profiler](#the-frame-profiler-and-its-budget). |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name, and requires every weapon and throwable to say explicitly whether a car seat accepts it — a missing `driveby` field reads as "no" and would silently drop a gun out of the drive-by hint. See [Vehicle data overrides](vehicle-data.md). |
 | **Vehicle table** | Re-derives every refused-vehicle hash from its name, signed and unsigned. The refusal list is what keeps aircraft and weaponised vehicles out, including out of the showroom catalogue, so a hash that stopped matching its name would silently stop refusing anything. |
@@ -443,9 +443,9 @@ through twenty phases, with payloads built by the server's own shared builders:
 | match late, outside, emote, downed, spectate | a phase-3 hold; then 250 m outside the zone, Season 2's emote wheel open, knocked, and spectating a squadmate |
 | match terminal | back up with a Yubikey at a terminal, Power outage and Time & weather over it (Season 2; in Season 1 the late match standing still) |
 
-**In four worlds** (#393, after the owner's 2026-10-06 report of br_core high
+**In seven worlds** (#393, after the owner's 2026-10-06 report of br_core high
 "with season 1 on and festive"). The session used to be played on a Season 1
-server only:
+server only, in a model where everything is found and everything loads:
 
 | world | what it is | phases |
 |---|---|---|
@@ -453,6 +453,8 @@ server only:
 | `s2` | Season 2 from boot: terminals, Yubikeys, the Season 2 crates, the emote wheel | `s2/match` |
 | `s2-festive` | Season 2 under the festive sky: XMAS, the white ground, the match sky's cycle | `s2-festive/match` |
 | `s1-live` | the owner's: Season 2 at boot, `brfestive on`, then `brseason 1` in the lobby, and Season 1 after | `s1-live/match` |
+| `s1-padoff`, `s2-padoff` | the warmup pad's four crates built a meter off their anchors, as a crate knocked over stands; lobby and warmup only | `s1-padoff/warmup` |
+| `s1-noload` | Season 1 with no streamed asset ever loading: every model, animation, effect, texture dictionary, movie and sound bank is asked for and never arrives | `s1-noload/match` |
 
 Each world is a fresh run of the file, which the first run loads again in the
 same process (no `io.popen`, so the pass cache traces it as one unit).
@@ -481,12 +483,29 @@ count, per second, with every heavy call named:
   own: the harness's bookkeeping and the vector3 tables the native stubs hand
   back (values in CfxLua, not allocations) are left out.
 - **heavy** — the natives in `HEAVY` at the top of the file, counted again PER
-  SECOND: world scans (`GetGamePool`, `GetClosestObjectOfType`), stream
-  requests, entities and cameras made or deleted, and the writes that apply a
-  whole effect (model hides, weather, timecycle, the white ground's pass,
-  artificial lights, DUI). Each belongs on a change; one repeated on every SLOW
-  pass is 0.02 natives a frame, inside the native slack, and still a heavy
-  call a second.
+  SECOND: world scans and synchronous probes (`GetGamePool`,
+  `GetClosestObjectOfType`, ground and water heights, shape tests), stream
+  requests, entities, cameras, blips, sounds and particle effects made or taken
+  down, the writes that apply a whole effect (model hides, weather, timecycle,
+  the white ground's pass, artificial lights), browsers and every message sent
+  to one (`SendDuiMessage`, `SendNUIMessage`), and a pose written to a prop.
+  Each belongs on a change; one repeated on every SLOW pass is 0.02 natives a
+  frame, inside the native slack, and still a heavy call a second. The few that
+  are per frame by design — a custom camera's collision ray, a falling crate's
+  pose — are budgeted as what they are.
+
+**And every change, on its own.** A phase is measured after its setup, so the
+work a change does once was never measured: the owner's `brfestive on` and
+`brseason 1` ran in the lobby's unmeasured setup. At the end of each whole
+session the harness makes each change the way the server does — its messages
+landing at the top of one frame, in the server's order — and measures that
+frame and the 180 after it: the total natives, heavy calls and KB, and the
+natives in the busiest frame. Season 2 to 1 and back (in the match with crates
+in reach, the pad's case; and in the lobby, the value first or half a second
+late), the festive sky on and off and its match cycle turning, the match
+ending, and the owner's own: back to the lobby with a staged `brseason 1`
+applying in the same frame. Each is a row of its own,
+`s2/lobby: back from the match, Season 2 to 1 applies`.
 
 **All four are exact.** The clock is the model's, `math.random` is seeded and
 the stub server answers in a fixed order, so a run gives the same numbers as the
@@ -510,9 +529,14 @@ any world — and it fails if any callback errored under the model (a callback
 that throws stops being counted). The slack is a constant in
 `tools/perf_client.lua`; the budget file holds only measurements, so
 rebaselining cannot loosen it. A failure names the count that went over and its
-five biggest contributors. **The heavy count proves itself** on every check: one
-more run, of Season 1's lobby with a model hide made and taken down on every
-SLOW pass, must fail it, or the check fails.
+five biggest contributors. A change fails over **25 natives, 2 heavy calls or
+10 KB in its window, or 25 natives in its busiest frame** — the fifteen laptop
+hides made twice fails. **The gate proves itself** on every check, with three
+more runs, each with a regression added that must fail what it is aimed at, or
+the check fails: a model hide made and taken down on every SLOW pass, and a
+browser message on every TICK pass (Season 1's lobby, heavy calls a second),
+and every laptop hidden fifty times over at a season switch (`s1-live`'s
+change budget).
 
 **When it fails**, run the table for that phase and find the new row. If the
 cost is a mistake — a per-frame loop with no gate, a native read per frame
@@ -548,6 +572,27 @@ was replicated, so a client's `GetConvar` saw neither — which means gating the
 F8 commands without that replication would have killed every one of them on a
 dev box too. See [running.md](running.md) for the gate itself, the three exempt
 verbs and the keybinds that deliberately go around it.
+
+**Reading a high resmon number for br_core.** resmon shows each resource's
+mean over its last 64 frames (citizen-devtools' `ResourceMonitor.cpp`), and the
+on-screen "is taking" warning appears above 6 ms. So br_core at 70 ms is about
+4.5 seconds of script time inside roughly a second of frames: a stall of
+seconds, or the game crawling, not a slightly hot loop. Note whether the game
+froze or crawled, in which phase, and what was typed just before. **Take the
+reading first, and on its own**, because some of the tools below change the
+number they are meant to explain:
+
+- `brbench` makes frames long on purpose (one callback run 128 to 256 times in
+  a frame, for several rounds), so br_core reads tens of ms while it runs.
+- `brab` holds a callback off for blocks of frames, so the reading swings
+  while it runs.
+- `brperf` (bare) runs a busy loop the first time it is used, up to about a
+  million iterations in one frame; `brperf reset` arms per-callback timing until
+  `brperf stop`.
+- `brnativecheck` probes every native once, making and deleting objects.
+- `profiler record` adds its own cost to every frame it records.
+
+`brclock` and resmon itself only read.
 
 | Command | What it answers |
 |---|---|
