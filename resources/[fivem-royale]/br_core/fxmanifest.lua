@@ -729,6 +729,12 @@ client_scripts {
     -- particles and the owner's write to a vehicle a rocket hit. A FRAME
     -- callback only while rockets fall.
     'client/terminalfx/airstrike.lua',
+    -- The bodyguard ownership probe's client half (#401): a DEV TEST, not the
+    -- feature. Whichever client owns the guard reports what survived the move
+    -- and applies its group and task again. AFTER client/natives.lua and
+    -- client/main.lua (BR.Native.groupFor at call time, BR.Loop.register at
+    -- load); one TICK callback that returns at once without a guard.
+    'client/guardprobe.lua',
 }
 
 -- sched.lua is server-only rather than shared, because the client has its own
@@ -1051,6 +1057,11 @@ server_scripts {
     -- `br:ringmaster:corroborate`, which those two raise, and it is declared
     -- below both so the order on the page is the order of the pipeline.
     'server/artifacts.lua',
+    -- The bodyguard ownership probe (#401): `brguardprobe`, a DEV TEST command
+    -- and not the feature -- dev mode by the devgate wrap, Season 2, and
+    -- nothing running until it is typed. Reads BR.Server.notify and
+    -- BR.Season at call time only.
+    'server/guardprobe.lua',
 }
 
 dependency 'br_lib'
