@@ -12,12 +12,13 @@
 -- engine: a clock that moves 1/60 s a frame, threads as coroutines woken by that
 -- clock, the three BR.Loop bands on their real threads, events and net events,
 -- entities, blips, keys and a camera, and a stub server that answers what the
--- client asks it (loot cells). The session is then walked through the phases a
--- player sees -- lobby, warmup, boarding, the plane's doors-open cruise over the
--- mainland, the jump, a match -- and the match through the things a player does
--- in it: aiming down a scope, pinging, driving with boost, reviving, talking,
--- standing outside the storm, the emote wheel, going down and spectating. Each
--- phase is measured for a few hundred frames.
+-- client asks it (loot cells, and br_environment's island sky). The session is
+-- then walked through the phases a player sees -- lobby, warmup, boarding, the
+-- plane's doors-open cruise over the mainland, the jump, a match -- and the
+-- match through the things a player does in it: aiming down a scope, pinging,
+-- driving with boost, reviving, talking, standing outside the storm, the emote
+-- wheel, going down and spectating. Each phase is measured for a few hundred
+-- frames.
 --
 -- WHAT IT COUNTS, three ways, each exact and the same on every run:
 --   natives  every native the code calls, through a stub that charges it to
@@ -502,7 +503,25 @@ IMPL.GetEntityAttachedTo = function() return 0 end
 IMPL.GetPedSourceOfDeath = function() return 0 end
 IMPL.GetShapeTestResult  = function() return 2, 0, vec3(0, 0, 0), vec3(0, 0, 1), 0 end
 IMPL.GetShapeTestResultIncludingMaterial = function() return 2, 0, vec3(0, 0, 0), vec3(0, 0, 1), 0, 0 end
-IMPL.GetClosestObjectOfType = function() return 0 end
+-- THE NEAREST OBJECT OF A MODEL IN REACH, as the engine answers it: a crate
+-- client/loot.lua built is found where it stands. It used to answer 0 always,
+-- so the warmup pad's markers never found their four crates and searched again
+-- on every tick of every warmup -- 136 searches a second no client pays.
+-- MEASURED ON THE MAP, NOT IN THE SPHERE: this model's ground is one flat 30 m
+-- plane (GetGroundZFor_3dCoord), so a prop stands at 30 m wherever the code
+-- asks at the surveyed height (the pad's anchors are at 4.5 m). The nearest
+-- wins, the lower handle on a tie, so the answer is the same on every run.
+IMPL.GetClosestObjectOfType = function(x, y, _, r, hash)
+    local best, bestD = 0, (r or 0.0) * (r or 0.0)
+    for h, e in pairs(W.ents) do
+        if e.kind == 'obj' and e.model == hash then
+            local dx, dy = e.x - x, e.y - y
+            local d = dx * dx + dy * dy
+            if d < bestD or (d == bestD and (best == 0 or h < best)) then best, bestD = h, d end
+        end
+    end
+    return best
+end
 IMPL.GetPedNearbyVehicles = function() return 0 end
 IMPL.GetPedNearbyPeds    = function() return 0 end
 IMPL.GetUserLanguage     = function() return 0 end
@@ -781,13 +800,19 @@ local function reply(name, payload, isLocal)
     inbox[#inbox + 1] = { name = name, payload = payload, isLocal = isLocal }
 end
 
+--- Queue something another resource does next frame, as a function.
+local function later(fn)
+    inbox[#inbox + 1] = { fn = fn }
+end
+
 local function deliver()
     if #inbox == 0 then return end
     local due = inbox
     inbox = {}
     for i = 1, #due do
         local m = due[i]
-        if m.isLocal then fire(m.name, 'event ' .. m.name, m.payload)
+        if m.fn then m.fn()
+        elseif m.isLocal then fire(m.name, 'event ' .. m.name, m.payload)
         else net(m.name, m.payload) end
     end
 end
@@ -1188,6 +1213,17 @@ local function lootLayout(zone)
     if byCell then return byCell end
     byCell = {}
     local entries = (zone == 'pad') and BR.BuildWarmupLayout(SEED) or BR.BuildLootLayout(SEED)
+    -- THE PAD'S FOUR PERMANENT CRATES, one on each surveyed anchor, as
+    -- server/warmupcrates.lua's place() stocks them. They used to be missing, so
+    -- client/warmupcrates.lua's markers never found a crate to pin and searched
+    -- again on every tick of every warmup.
+    if zone == 'pad' then
+        for i, a in ipairs(BR.Config.WarmupCrates.anchors or {}) do
+            local st = BR.WarmupCrateStack(BR.Rng(SEED + i), a)
+            st.id = 1000000 + i
+            entries[#entries + 1] = st
+        end
+    end
     for _, e in ipairs(entries) do
         local k = BR.LootCellKeyAt(e.x, e.y)
         local list = byCell[k]
@@ -1256,10 +1292,23 @@ SERVER[BR.Net.LOOT_CELL] = function(d)
     if #adds > 0 then reply(BR.Net.LOOT_ADD, adds) end
 end
 
+--- br_environment's claim on the sky (br_environment/client/ipl.lua's wantSky):
+--- a client event into br_core, where client/world.lua resolves it with the
+--- storm's and the console's and writes the winner. A ROLE since #399 --
+--- `lobby` while the island rests, `cover` while the bus boards and climbs,
+--- `base` once it is released -- which world.lua reads for the festive sky. The
+--- session used to make no claim at all, so world.lua never wrote a sky here,
+--- festive or not.
+local function island(name, blend)
+    fire('br:world:island', 'event br:world:island', name, blend)
+end
+
 -- br_environment: asked to release the lobby island once the plane is out over
--- the water, it swaps the world and says so.
+-- the water, it swaps the world and says so, and claims the base sky for the
+-- ten seconds to the doors (ipl.lua's applyIsland).
 SIBLING['br:env:releaseIsland'] = function()
     reply('br:env:world', false, true)
+    later(function() island('base', 10.0) end)
 end
 
 --- The densest spot of the match's loot near (x, y): the entry with the most
@@ -1509,6 +1558,7 @@ local PHASES = {
             alive = 0, squadsAlive = 0, seq = 0, serverNow = gameMs(),
         })
         matchState(BR.MatchState.WAITING)
+        island('lobby', 0.0)
     end },
     { id = 'warmup', settle = 240, setup = function()
         local P = BR.Config.Match.warmupPos
@@ -1522,6 +1572,8 @@ local PHASES = {
     end },
     { id = 'plane boarding', settle = 120, setup = function()
         matchState(BR.MatchState.BUS, 240000)
+        -- The island's haze for the swap (ipl.lua's followState).
+        island('cover', 5.0)
         setStates(function() return BR.PlayerState.BUS end)
         route = busRoute(gameMs())
         net(BR.Net.BUS_ROUTE, route)
