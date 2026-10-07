@@ -1626,9 +1626,17 @@ RegisterCommand('brterminalsv', function(source, args)
         -- one use unspent, the access notice armed again, and the key back --
         -- restored by its account, as a refund restores it. Dev mode only,
         -- like every verb here (devgate.lua's wrap). `reset <player id>`, from
-        -- the console or in game, does the same for that player.
-        local named = tonumber(words[1])
-        if src > 0 and named and GetPlayerName(named) then target = named end
+        -- the console or in game, does the same for that player. An id that
+        -- names nobody resets nobody (round 6's review: in game it quietly
+        -- reset whoever typed it instead).
+        if src > 0 and words[1] ~= nil then
+            local named = tonumber(words[1])
+            if not (named and named > 0 and GetPlayerName(named)) then
+                tell(src, ('no player %s -- `brterminal reset [player id]`'):format(tostring(words[1])))
+                return
+            end
+            target = named
+        end
         local m, _, key = whereIs(target)
         if not m then
             tell(src, ('%d is not in a match'):format(target))
@@ -1643,7 +1651,7 @@ RegisterCommand('brterminalsv', function(source, args)
         elseif BR.Yubikey.holds(target) then
             keyLine = 'they already hold a Yubikey'
         elseif BR.Yubikey.restore(BR.Yubikey.licenseOf(target), 'dev reset') then
-            keyLine = 'their Yubikey is back'
+            keyLine = 'they hold a Yubikey now'
         else
             keyLine = 'their Yubikey could not be given back (profile not read yet)'
         end

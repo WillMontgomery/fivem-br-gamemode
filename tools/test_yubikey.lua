@@ -1399,7 +1399,7 @@ do
     -- ROUND 6 (owner, 2026-10-07: "give me a way to reset the computers to
     -- allow another use by the same player in the same match (dev only)").
     eq(Y.holds(1), true, 'and the key back, restored by its account as a refund is')
-    ok((lastOf(BR.Net.TERMINAL_DEV, 1) or ''):find('their Yubikey is back', 1, true) ~= nil,
+    ok((lastOf(BR.Net.TERMINAL_DEV, 1) or ''):find('they hold a Yubikey now', 1, true) ~= nil,
         'and says so on their F8', lastOf(BR.Net.TERMINAL_DEV, 1))
     -- THE SAME PLAYER USES A TERMINAL AGAIN, IN THE SAME MATCH.
     gameMs = gameMs + 1000
@@ -1421,6 +1421,15 @@ do
     Y.devSet(1, false)
     sv(0, 'reset 1')
     eq(Y.holds(1), true, 'and from the server console')
+    -- AN ID THAT NAMES NOBODY RESETS NOBODY (round 6's review: in game it
+    -- quietly reset whoever typed it instead).
+    Y.devSet(2, false)
+    for _, line in ipairs({ 'reset 99', 'reset abc' }) do
+        sv(2, line)
+        eq(Y.holds(2), false, ('`%s` typed in game gives the typer no key'):format(line))
+        ok((lastOf(BR.Net.TERMINAL_DEV, 2) or ''):find('no player', 1, true) ~= nil,
+            ('`%s` says there is no such player'):format(line), lastOf(BR.Net.TERMINAL_DEV, 2))
+    end
 
     sent = {}
     player(2, m, 'B', { x = 0, y = 0 }, false, false)
