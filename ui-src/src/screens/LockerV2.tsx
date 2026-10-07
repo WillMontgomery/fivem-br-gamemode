@@ -10,11 +10,11 @@ import { useNuiEvent } from '../bridge/useNuiEvent'
 import { play } from '../audio/cues'
 import { LOCKED_TAB, TAB_LABEL } from './lockerv2/copy'
 import {
-  doneSteps, escapeAction, isCustom, openingTab, saveVariant, slideDir, slideEnds,
-  tabOptions, tabsShown, type Tab,
+  doneSteps, editFor, escapeAction, followTab, isCustom, openingTab, saveVariant, slideDir,
+  slideEnds, tabOptions, tabsShown, type Tab,
 } from './lockerv2/model'
 import { useCloudscapeScope, useIslandZoom, usePortalZoom } from './lockerv2/scope'
-import { takeShot } from './lockerv2/shots'
+import { keepShot, takeShot } from './lockerv2/shots'
 import { CustomTab, PedsTab, StockTab } from './lockerv2/Tabs'
 import { Footer } from './lockerv2/Footer'
 import { LockerModal, type ModalState } from './lockerv2/Modals'
@@ -46,11 +46,15 @@ import { LockerModal, type ModalState } from './lockerv2/Modals'
  *
  * LUA OWNS EVERYTHING DRAWN. Rows, the worn ped, the saved list: the page
  * asks (LOCKER2_* callbacks) and renders what comes back. The one thing it
- * holds itself is which tab it is showing, so the slide starts on the press,
- * and it tells Lua every move. The one move Lua makes on its own is Edit's --
- * to the Custom tab of the saved ped's sex, which only Lua knows -- so after
- * Edit the page follows Lua's next tab.
+ * moves ahead of Lua is the tab, so the slide starts on the press; each
+ * request is numbered, and once a push says Lua has seen the latest, the page
+ * shows Lua's tab (model.ts followTab) -- a refusal takes it back, and Edit's
+ * move to the saved ped's tab is followed the same way.
  */
+
+/** The page's LOCKER2_TAB requests, numbered across every opening, so a push
+ *  from an earlier opening can never pass for an answer to this one. */
+let tabRequests = 0
 
 /** The slide: transform and opacity only (contract section 5, check-ui R7). */
 const SLIDE: Variants = {
@@ -72,6 +76,8 @@ export default function LockerV2() {
   const [modalRoot, setModalRoot] = useState<HTMLDivElement | null>(null)
 
   const shownTab = useRef(tab)
+  /** This opening's latest LOCKER2_TAB; -1 until it has sent one. */
+  const sent = useRef(-1)
   const go = (t: Tab) => {
     const cur = shownTab.current
     if (cur === t) return
@@ -79,9 +85,14 @@ export default function LockerV2() {
     setDir(slideDir(cur, t))
     setTab(t)
   }
+  const request = (t: Tab) => {
+    tabRequests++
+    sent.current = tabRequests
+    void fetchNui(CB.LOCKER2_TAB, { tab: t, seq: tabRequests })
+  }
   const ask = (t: Tab) => {
     go(t)
-    void fetchNui(CB.LOCKER2_TAB, { tab: t })
+    request(t)
   }
 
   // OPEN: Lua pushes the state and cleans and dries the ped ("Physically clean
@@ -90,18 +101,15 @@ export default function LockerV2() {
   useEffect(() => {
     void (async () => {
       await fetchNui(CB.LOCKER2_OPEN)
-      void fetchNui(CB.LOCKER2_TAB, { tab: shownTab.current })
+      request(shownTab.current)
     })()
   }, [])
 
-  // EDIT: Lua opens the Custom tab of the ped's sex, and the page follows the
-  // next tab Lua names.
-  const followLua = useRef(false)
+  // LUA'S TAB, once it has seen this page's latest request: a refusal goes
+  // back, Edit goes to the saved ped's Custom tab.
   useEffect(() => {
-    if (!followLua.current || !isCustom(st.tab)) return
-    followLua.current = false
-    go(st.tab)
-  }, [st.tab, st.edit?.editing])
+    go(followTab(shownTab.current, st.tab, st.tabSeq ?? null, sent.current))
+  }, [st])
 
   // My peds went away under the player (the last one deleted, or the fetch
   // answered none): Stock, as the locker would have opened on.
@@ -110,10 +118,13 @@ export default function LockerV2() {
     if (!shown.includes(tab)) ask('stock')
   })
 
-  // A headshot is ready in Lua.
-  useNuiEvent('locker2shot', (d) => takeShot(d?.id, d?.txd))
+  // A headshot is ready in Lua: a texture to draw, or a stored picture.
+  useNuiEvent('locker2shot', (d) => {
+    if (d?.img !== undefined) keepShot(d.id, d.up, d.img)
+    else takeShot(d?.id, d?.txd)
+  })
 
-  const edit = isCustom(tab) ? st.edit ?? null : null
+  const edit = editFor(tab, st.edit)
   const dirty = edit?.dirty === true
   const busy = st.busy === true
   const blocked = st.locked === true || !!st.loading || busy
@@ -200,7 +211,7 @@ export default function LockerV2() {
         <PedsTab
           st={st}
           blocked={blocked}
-          onEdit={(p) => { followLua.current = true; void fetchNui(CB.LOCKER2_EDIT, { id: p.id }) }}
+          onEdit={(p) => { void fetchNui(CB.LOCKER2_EDIT, { id: p.id }) }}
           onCreate={() => ask('male')}
           onRename={(p) => setModal({ kind: 'rename', id: p.id, name: p.name })}
           onDelete={(p) => setModal({ kind: 'delete', id: p.id, name: p.name })}

@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { fetchNui } from '../../bridge/nui'
 import { CB } from '../../bridge/types'
 import { useUi } from '../../store'
-import { imgOk, shotKey, shotStorable } from './model'
+import { canvasImage, imgOk, shotKey, shotStorable } from './model'
 
 /**
  * THE HEADSHOTS ON MY PEDS (#28; contract section 6 with the skeptic's 6).
@@ -18,6 +18,11 @@ import { imgOk, shotKey, shotStorable } from './model'
  * NOT OVER-INVESTED IN, as asked: any failure -- no texture, a canvas that
  * will not encode, three seconds with no image -- leaves a plain card, and
  * nothing is asked for twice.
+ *
+ * A STORED PICTURE COMES THE SAME WAY, ONCE: Lua answers the ask with the
+ * server's webp (`img`, no texture), kept here under `id@up` like a new one.
+ * It never rides on the locker2 push, which goes out on every press (#28
+ * review).
  */
 
 const cache = new Map<string, string>()
@@ -53,6 +58,13 @@ export function markAsked(keys: string[]): void { for (const k of keys) asked.ad
 export function shotFor(p: { id: string; up: number; img?: unknown }, c: ReadonlyMap<string, string>) {
   if (imgOk(p.img)) return p.img
   return c.get(shotKey(p.id, p.up)) ?? null
+}
+
+/** A saved ped's stored picture, from Lua: kept for the session. */
+export function keepShot(id: unknown, up: unknown, img: unknown): void {
+  if (typeof id !== 'string' || typeof up !== 'number' || !imgOk(img)) return
+  cache.set(shotKey(id, up), img)
+  changed()
 }
 
 /** A texture is ready in Lua: draw it, keep it, send it to be stored. */
@@ -97,6 +109,7 @@ export function takeShot(id: unknown, txd: unknown): void {
   }
   // THE NONCE IS NOT DECORATION: Lua reuses headshot texture names, and CEF
   // caches nui-img by URL, so without it a new picture shows as the old one.
+  // canvasImage asks for it with CORS, or the canvas above could not be read.
   nonce++
-  img.src = `https://nui-img/${txd}/${txd}?v=${nonce}`
+  canvasImage(img, `https://nui-img/${txd}/${txd}?v=${nonce}`)
 }

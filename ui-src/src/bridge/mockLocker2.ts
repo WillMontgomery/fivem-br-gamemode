@@ -82,14 +82,25 @@ function defaultLook(): Look {
   return out
 }
 
+/** An overlay row at 1 is none (every overlay but the eyebrows, as in Lua):
+ *  no Next color, and its opacity slider is off. */
+const noneOverlay = (k: string, look: Look) => /^o\d+$/.test(k) && k !== 'o2' && (look[k]?.v ?? 1) === 1
+const opacityOff = (k: string, look: Look) => {
+  const m = /^(o\d+)op$/.exec(k)
+  return m !== null && noneOverlay(m[1] ?? '', look)
+}
+
 function rowsOf(sex: Sex, look: Look): Locker2Row[] {
   const i = sex === 'm' ? 0 : 1
   return DEFS.map((d): Locker2Row => {
     const cur = look[d.k] ?? { v: 1, t: 0 }
     if (d.kind === 'slider') {
-      return { k: d.k, cat: d.cat, kind: 'slider', v: cur.v, min: d.min, max: d.max, def: d.def }
+      return {
+        k: d.k, cat: d.cat, kind: 'slider', v: cur.v, min: d.min, max: d.max, def: d.def,
+        ...(opacityOff(d.k, look) ? { off: true } : {}),
+      }
     }
-    const colors = d.colors === 'tex' ? texOf(cur.v) : d.colors[i]
+    const colors = noneOverlay(d.k, look) ? 1 : d.colors === 'tex' ? texOf(cur.v) : d.colors[i]
     return { k: d.k, cat: d.cat, kind: 'count', v: cur.v, n: d.n[i], colors }
   })
 }
@@ -130,10 +141,12 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
   let seeding = false
   let worn: { k: 's' | 'p'; id: string } | null = { k: 's', id: stock[0]?.id ?? '' }
   let tab: Locker2Tab = 'stock'
+  /** The last `seq` of a tab request seen, echoed as Lua does. */
+  let tabSeq: number | null = null
   let loading: string | null = null
   let busy = false
   // The draft: what a Custom tab is showing.
-  let draft: { sex: Sex; editing: string | null; base: Look; look: Look; cat: string } | null = null
+  let draft: { sex: Sex; editing: string | null; base: Look; look: Look; cat: string | null } | null = null
 
   const seedSaved = () => {
     const mk = (name: string, sex: Sex, hue: number, tweak: Partial<Look>, shot = true): Saved => {
@@ -152,8 +165,10 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
   const state = (): Locker2Payload => ({
     on,
     tab,
+    tabSeq,
     stock,
-    peds: fetching ? [] : saved.map(({ id, name, up, img }) => ({ id, name, up, ...(img ? { img } : {}) })),
+    // No picture on the push, as in Lua: a stored one is sent when asked.
+    peds: fetching ? [] : saved.map(({ id, name, up }) => ({ id, name, up })),
     worn,
     loading,
     locked: false,
@@ -173,7 +188,8 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
 
   const startDraft = (sex: Sex, from: Saved | null) => {
     const base = from ? { ...from.look } : defaultLook()
-    draft = { sex, editing: from?.id ?? null, base, look: { ...base }, cat: 'face' }
+    // No category, the camera home, as Lua starts a draft.
+    draft = { sex, editing: from?.id ?? null, base, look: { ...base }, cat: null }
   }
 
   /** Answer one locker2 callback. Returns false for a name it does not own. */
@@ -181,6 +197,7 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
     const d = (data ?? {}) as Record<string, unknown>
     switch (name) {
       case 'br/locker2/open':
+        tabSeq = null
         // The fetch takes a moment, so the loading indicator is seen.
         if (fetching && !seeding) {
           seeding = true
@@ -195,7 +212,9 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         return true
       case 'br/locker2/tab': {
         const t = d.tab as Locker2Tab
-        if (draft && !same(draft.look, draft.base) && t !== tab) return true   // refused: dirty
+        if (typeof d.seq === 'number') tabSeq = d.seq
+        // Refused while dirty -- and, as in Lua, answered with the tab it keeps.
+        if (draft && !same(draft.look, draft.base) && t !== tab) { push(); return true }
         tab = t
         if (t === 'male' || t === 'female') startDraft(t === 'male' ? 'm' : 'f', null)
         else draft = null
@@ -226,18 +245,17 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         const i = draft.sex === 'm' ? 0 : 1
         if (name === 'br/locker2/step' && def.kind === 'count') {
           draft.look[k] = { v: wrapStep(cur.v, def.n[i], Number(d.d) || 1), t: 0 }
-        } else if (name === 'br/locker2/set') {
+        } else if (name === 'br/locker2/set' && !opacityOff(k, draft.look)) {
           draft.look[k] = { v: Number(d.v), t: def.kind === 'count' ? 0 : cur.t }
-        } else if (name === 'br/locker2/color' && def.kind === 'count') {
+        } else if (name === 'br/locker2/color' && def.kind === 'count' && !noneOverlay(k, draft.look)) {
           const colors = def.colors === 'tex' ? texOf(cur.v) : def.colors[i]
           draft.look[k] = { v: cur.v, t: (cur.t + 1) % Math.max(1, colors) }
         }
-        draft.cat = def.cat
         push()
         return true
       }
       case 'br/locker2/cat':
-        if (draft) { draft.cat = String(d.cat ?? 'face'); push() }
+        if (draft && typeof d.cat === 'string' && d.cat !== draft.cat) { draft.cat = d.cat; push() }
         return true
       case 'br/locker2/reset':
         if (draft) { draft.look = { ...draft.base }; push() }
@@ -293,11 +311,17 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         }
         return true
       }
-      case 'br/locker2/shots':
+      case 'br/locker2/shots': {
+        // A stored picture is sent once, on its own, as Lua does. No
+        // RegisterPedheadshot in a browser: a card with none stays plain.
+        const ids = Array.isArray(d.ids) ? d.ids : []
+        for (const s of saved) {
+          if (ids.includes(s.id) && s.img) emit({ k: 'locker2shot', d: { id: s.id, up: s.up, img: s.img } })
+        }
+        return true
+      }
       case 'br/locker2/shot':
       case 'br/locker2/shotdone':
-        // No RegisterPedheadshot in a browser: the cards asked about keep
-        // whatever they had.
         return true
       default:
         return false

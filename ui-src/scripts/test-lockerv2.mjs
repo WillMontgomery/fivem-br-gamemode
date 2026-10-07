@@ -19,6 +19,12 @@
  *   DONE      dirty asks first and does nothing else; then `close`, then
  *             LOCKER_FOCUS { open: false }, in that order. Escape closes an open
  *             dialog alone.
+ *   FOLLOW    the page moves its tab on the press, and shows Lua's once a push
+ *             has seen its latest request; it draws a draft only under the
+ *             tab of its sex; a slider shows Lua's value once untouched.
+ *   CAMERA    every category touch is sent; a new draft lights no anchor.
+ *   PICTURES  every image drawn to a canvas is asked for with CORS; a stored
+ *             picture arrives on its own and is kept, never on the push.
  *
  * And what a unit test cannot see, read from the source and the build:
  *
@@ -38,9 +44,10 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  categoriesOf, counterText, dataUrlBytes, doneSteps, escapeAction, filterName,
-  imgOk, nameOk, needShots, openingTab, parseLocker2, saveVariant, shotKey,
-  shotStorable, slideDir, slideEnds, tabOptions, tabsShown, wrapStep, zoomFor,
+  SLIDER_HOLD_MS, activeAnchor, anchorId, canvasImage, categoriesOf, counterText, dataUrlBytes,
+  doneSteps, editFor, escapeAction, filterName, followTab, imgOk, nameOk, needShots, openingTab,
+  parseLocker2, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds, tabOptions,
+  tabsShown, wrapStep, zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
   BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, rowLabel, updateLabel,
@@ -118,6 +125,49 @@ eq('tab labels are the owner\'s', TAB_LABEL,
   { peds: 'My peds', stock: 'Stock peds', male: 'Custom (male)', female: 'Custom (female)' })
 eq('the hover card', LOCKED_TAB, 'Save or reset your changes first.')
 
+// ── FOLLOWING LUA (#28 review) ───────────────────────────────────────────────
+// The page moved to Custom (female) on the press; Lua refused it (the male
+// model still streaming in) and the page stayed there, drawing the male rows.
+eq('follow: a push that has seen the latest press is the truth (a refusal goes back)',
+  followTab('female', 'male', 7, 7), 'male')
+eq('follow: a push older than the latest press is not (the slide is not undone mid-flight)',
+  followTab('female', 'male', 6, 7), 'female')
+eq('follow: Edit -- Lua moves to the saved ped\'s tab with no press -- is followed',
+  followTab('peds', 'female', 3, 3), 'female')
+eq('follow: before this opening has asked anything, nothing is followed',
+  [followTab('stock', 'peds', null, -1), followTab('stock', 'peds', 4, -1)], ['stock', 'stock'])
+{
+  const male = { sex: 'm', editing: null, dirty: false, cat: null, rows: [] }
+  eq('a draft is drawn only under the Custom tab of its sex',
+    [editFor('female', male), editFor('male', male) === male, editFor('stock', male), editFor('peds', male), editFor('male', null)],
+    [null, true, null, null, null])
+}
+eq('slider: its own value while touched, Lua\'s once the hold is over (a refused set goes back)',
+  [sliderShown(40, 100, 1000, 1000 + SLIDER_HOLD_MS - 1), sliderShown(40, 100, 1000, 1000 + SLIDER_HOLD_MS + 1)],
+  [40, 100])
+
+// ── THE CAMERA'S ANCHOR (#28 review) ─────────────────────────────────────────
+eq('anchor: Lua\'s category is the one lit', activeAnchor('face'), `#${anchorId('face')}`)
+check('anchor: with the camera home none is lit -- and never "", which Cloudscape reads as "track the window\'s scroll"',
+  activeAnchor(null) === '#' && activeAnchor(null) !== '' && !['face', 'shoes'].some((c) => activeAnchor(null) === `#${anchorId(c)}`))
+
+// ── PICTURES (#28 review) ────────────────────────────────────────────────────
+{
+  // An image as a browser loads one: the request goes out when `src` is set,
+  // with whatever `crossOrigin` was by then. Without it a canvas that draws
+  // the image is tainted and toDataURL throws -- every headshot was lost so.
+  class StubImage {
+    constructor() { this._co = null; this.corsAtRequest = undefined }
+    set crossOrigin(v) { this._co = v }
+    get crossOrigin() { return this._co }
+    set src(v) { this._src = v; this.corsAtRequest = this._co }
+    get src() { return this._src }
+  }
+  const img = canvasImage(new StubImage(), 'https://nui-img/pedmugshot_01/pedmugshot_01?v=1')
+  eq('a canvas image is requested WITH CORS: crossOrigin set before src',
+    [img.corsAtRequest, img.src], ['anonymous', 'https://nui-img/pedmugshot_01/pedmugshot_01?v=1'])
+}
+
 // ── NAMES ────────────────────────────────────────────────────────────────────
 eq('name: everything but A-Z, a-z and 0-9 is dropped as typed',
   filterName('Night Owl_2!-ö'), 'NightOwl2')
@@ -187,6 +237,15 @@ eq('a ped saved again needs a new picture', needShots([{ id: 'c', up: 9 }], new 
   eq('envelope: a picture that is not an image data URL is dropped',
     parseLocker2({ peds: [{ id: 'a', name: 'A', up: 1, img: 'https://x/y.png' }] }).peds, [{ id: 'a', name: 'A', up: 1 }])
   eq('envelope: nothing at all is Season 1', parseLocker2(undefined).on, false)
+  eq('envelope: a draft with no category is the camera home -- no anchor, never Face by default',
+    parseLocker2({ edit: { sex: 'm', rows: [] } }).edit.cat, null)
+  eq('envelope: tabSeq is Lua\'s echo, null when absent',
+    [parseLocker2({ tabSeq: 3 }).tabSeq, parseLocker2({}).tabSeq], [3, null])
+  eq('envelope: an opacity of none is `off`, the rest are not',
+    parseLocker2({ edit: { sex: 'm', rows: [
+      { k: 'o1op', cat: 'hair', kind: 'slider', v: 100, min: 0, max: 100, def: 100, off: true },
+      { k: 'o2op', cat: 'hair', kind: 'slider', v: 100, min: 0, max: 100, def: 100 },
+    ] } }).edit.rows.map((r) => r.off === true), [true, false])
 }
 
 eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(Number.NaN)], [2, 1, 1])
@@ -207,9 +266,44 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
     gate.includes('CB.LOCKER_FOCUS, { open: false }') && gate.includes('componentDidCatch') && gate.includes('LOAD_MS'))
 
   const v2 = read(join(SRC, 'screens', 'LockerV2.tsx'))
-  for (const fn of ['doneSteps(', 'escapeAction(', 'saveVariant(', 'slideDir(', 'tabOptions(', 'openingTab(', 'slideEnds(']) {
+  for (const fn of ['doneSteps(', 'escapeAction(', 'saveVariant(', 'slideDir(', 'tabOptions(', 'openingTab(', 'slideEnds(',
+    'followTab(', 'editFor(']) {
     check(`LockerV2.tsx asks model.ts's ${fn.slice(0, -1)}`, v2.includes(fn))
   }
+  check('every tab request is numbered', /fetchNui\(CB\.LOCKER2_TAB, \{ tab: t, seq: tabRequests \}\)/.test(v2)
+    && (v2.match(/CB\.LOCKER2_TAB/g) ?? []).length === 1)
+  check('the page follows Lua on every push', /useEffect\(\(\) => \{\s*go\(followTab\(shownTab\.current, st\.tab, st\.tabSeq \?\? null, sent\.current\)\)\s*\}, \[st\]\)/.test(v2))
+  check('no draft is drawn by the tab alone', !/isCustom\(tab\) \? st\.edit/.test(v2))
+
+  const tabs = read(join(SRC, 'screens', 'lockerv2', 'Tabs.tsx'))
+  const toCat = /const toCat = \(cat: string\) => \{([\s\S]*?)\n  \}/.exec(tabs)?.[1] ?? ''
+  check('every category touch is sent; Lua decides whether the camera moves',
+    toCat.includes('fetchNui(CB.LOCKER2_CAT, { cat })') && !/edit\.cat/.test(toCat))
+  check('the anchor lit is activeAnchor(edit.cat)', tabs.includes('activeHref={activeAnchor(edit.cat)}'))
+
+  const rows = read(join(SRC, 'screens', 'lockerv2', 'Rows.tsx'))
+  check('a slider draws sliderShown(...) and is off when Lua says so',
+    rows.includes('value={shown}') && rows.includes('sliderShown(local, row.v, lastTouch.current, Date.now())')
+    && rows.includes("row.off === true"))
+
+  // EVERY IMAGE DRAWN TO A CANVAS GOES THROUGH canvasImage: in any file that
+  // draws one, no image has its src set by hand.
+  const walkSrc = (d) => readdirSync(d, { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? walkSrc(join(d, e.name)) : [join(d, e.name)]))
+  const drawers = walkSrc(SRC).filter((f) => /\.(tsx?)$/.test(f)).filter((f) => read(f).includes('drawImage('))
+  const bare = drawers.filter((f) => {
+    const t = read(f)
+    return /\.src\s*=(?!=)/.test(t) || (t.includes('new Image(') && !t.includes('canvasImage('))
+  })
+  check(`every image drawn to a canvas is asked for with CORS (${drawers.length} file(s) draw one)`,
+    drawers.length > 0 && bare.length === 0, bare.join(', '))
+
+  // A stored picture comes as a locker2shot with `img`, once, and is kept;
+  // the push no longer carries one (it goes out on every press).
+  const shots = read(join(SRC, 'screens', 'lockerv2', 'shots.ts'))
+  check('a stored picture from Lua is kept for the session, and only an image data URL',
+    v2.includes('keepShot(d.id, d.up, d.img)')
+    && /export function keepShot\([\s\S]*?!imgOk\(img\)\) return\s*cache\.set\(shotKey\(id, up\), img\)/.test(shots))
   check('Done awaits `close` before it gives the focus back',
     /await fetchNui\(CB\.LOCKER2_CLOSE\)[\s\S]{0,120}await fetchNui\(CB\.LOCKER_FOCUS, \{ open: false \}\)/.test(v2))
   check('the locked tabs carry the hover card as disabledReason',

@@ -64,6 +64,38 @@ export function slideEnds(d: -1 | 0 | 1): { enter: number; exit: number } {
   return { enter: -d, exit: d }
 }
 
+/**
+ * THE TAB SHOWN, ONCE LUA HAS ANSWERED (#28 review). The page moves on the
+ * press so the slide starts at once, and numbers each LOCKER2_TAB it sends
+ * (`sent`, its latest). Lua echoes the last one it has seen in every push
+ * (`tabSeq`). Once that is the page's latest, Lua's `tab` is the truth -- a
+ * refusal the page could not foresee (the ped's model still streaming in)
+ * takes it back, and Edit's move to the saved ped's tab is followed. Until
+ * then a push is older than the press and the page keeps what it shows.
+ */
+export function followTab(shown: Tab, lua: Tab, luaSeq: number | null, sent: number): Tab {
+  return luaSeq !== null && luaSeq === sent ? lua : shown
+}
+
+/** The sex a Custom tab builds. */
+export const sexOfTab = (t: Tab): 'm' | 'f' | null => (t === 'male' ? 'm' : t === 'female' ? 'f' : null)
+
+/**
+ * The draft a tab may draw: only a Custom tab's, and only of that tab's sex.
+ * Between a press and Lua's answer the page is on the new tab while the push
+ * it holds is still the old one's draft; drawing it there would show (and
+ * save) the other sex's rows under this tab's name.
+ */
+export function editFor(tab: Tab, edit: Locker2Edit | null | undefined): Locker2Edit | null {
+  const sex = sexOfTab(tab)
+  return sex !== null && edit && edit.sex === sex ? edit : null
+}
+
+/** The anchor lit: Lua's category, or one no anchor has while the camera is
+ *  home. Never '' -- Cloudscape reads an empty activeHref as "track the
+ *  window's scroll", which would light whichever section fits on screen. */
+export const activeAnchor = (cat: string | null): string => (cat !== null ? `#${anchorId(cat)}` : '#')
+
 export interface TabOption {
   id: Tab
   disabled: boolean
@@ -162,6 +194,20 @@ export function escapeAction(modalOpen: boolean): 'modal' | 'done' {
   return modalOpen ? 'modal' : 'done'
 }
 
+/** How long after the last touch a slider shows its own value rather than
+ *  Lua's: long enough for a drag's echoes, short enough that a set Lua
+ *  refused shows Lua's value again. */
+export const SLIDER_HOLD_MS = 400
+
+/**
+ * A slider's value on screen. The page applies a drag on the handle before
+ * Lua answers it (#28 review's class: every action applied locally first), so
+ * it shows its own value while it is being touched and Lua's once it is not.
+ */
+export function sliderShown(local: number, lua: number, touchedAt: number, now: number): number {
+  return now - touchedAt > SLIDER_HOLD_MS ? lua : local
+}
+
 /** A counter's text: the 1-based position out of the total, as "12/39". */
 export function counterText(v: number, n: number): string {
   return `${v}/${n}`
@@ -199,6 +245,20 @@ export function categoriesOf(rows: { cat: string }[]): string[] {
 export const anchorId = (cat: string): string => `lk2-cat-${cat}`
 
 // ═══ HEADSHOTS (contract section 6, with the skeptic's correction 6) ═══
+
+/**
+ * AN IMAGE A CANVAS WILL READ BACK (#28 review). The headshot is
+ * https://nui-img/..., another origin than the page's, and a canvas that has
+ * drawn another origin's image WITHOUT CORS is tainted: toDataURL throws, and
+ * every card stays a name. `crossOrigin` must be set before `src`, or the
+ * request has already gone out without it. Every image drawn to a canvas is
+ * made through here (scripts/test-lockerv2.mjs holds the source to that).
+ */
+export function canvasImage<T extends { crossOrigin: string | null; src: string }>(img: T, url: string): T {
+  img.crossOrigin = 'anonymous'
+  img.src = url
+  return img
+}
 
 /** The session cache's key: a ped's image is good until it is saved again. */
 export const shotKey = (id: string, up: number): string => `${id}@${up}`
@@ -276,6 +336,7 @@ function row(v: unknown): Locker2Row | null {
     return {
       k: r.k, cat: r.cat, kind: 'slider', v: r.v, min: r.min, max: r.max,
       def: num(r.def) ? r.def : r.min,
+      ...(r.off === true ? { off: true } : {}),
     }
   }
   return null
@@ -288,7 +349,7 @@ function edit(v: unknown): Locker2Edit | null {
     sex: e.sex === 'f' ? 'f' : 'm',
     editing: str(e.editing) && e.editing !== '' ? e.editing : null,
     dirty: e.dirty === true,
-    cat: str(e.cat) ? e.cat : 'face',
+    cat: str(e.cat) ? e.cat : null,
     rows: list(e.rows).map(row).filter((r): r is Locker2Row => r !== null),
   }
 }
@@ -305,6 +366,7 @@ export function parseLocker2(raw: unknown): Locker2Payload {
   return {
     on: d.on === true,
     tab,
+    tabSeq: num(d.tabSeq) ? d.tabSeq : null,
     stock: list(d.stock).map(obj)
       .filter((p): p is Record<string, unknown> => p !== null && str(p.id) && str(p.name))
       .map((p) => ({ id: p.id as string, name: p.name as string })),

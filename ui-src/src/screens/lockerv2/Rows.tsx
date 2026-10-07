@@ -8,7 +8,7 @@ import { CB } from '../../bridge/types'
 import type { Locker2CountRow, Locker2SliderRow } from '../../bridge/types'
 import { play } from '../../audio/cues'
 import { BTN, rowLabel } from './copy'
-import { counterText } from './model'
+import { SLIDER_HOLD_MS, counterText, sliderShown } from './model'
 
 /**
  * ONE ROW OF THE CUSTOM TABS (#28).
@@ -85,8 +85,6 @@ export function CountRow({ row, disabled, onTouch }: {
 /** How often a dragged slider tells Lua, at most. A drag fires an input per
  *  frame; the ped does not need sixty appearance applies a second. */
 const SEND_MS = 60
-/** How long after the last touch the slider stops ignoring Lua's echo. */
-const HOLD_MS = 400
 
 export function SliderRow({ row, disabled, onTouch }: {
   row: Locker2SliderRow
@@ -98,22 +96,36 @@ export function SliderRow({ row, disabled, onTouch }: {
   const lastSent = useRef(0)
   const pending = useRef<number | null>(null)
   const timer = useRef<number | null>(null)
+  // Re-renders once a touch's hold is over, so what is drawn goes back to
+  // Lua's value even when Lua never sent a new one (a set it refused).
+  const [, settle] = useState(0)
+  const settleTimer = useRef<number | null>(null)
 
-  // Lua's value wins, except mid-drag, where its echo of a value the handle
-  // has already left would make the handle jump back.
-  useEffect(() => {
-    if (Date.now() - lastTouch.current > HOLD_MS) setLocal(row.v)
-  }, [row.v])
-  useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current) }, [])
+  // Lua's value wins, except while the handle is being touched, where its
+  // echo of a value the handle has already left would make it jump back.
+  const shown = sliderShown(local, row.v, lastTouch.current, Date.now())
+  useEffect(() => () => {
+    if (timer.current !== null) window.clearTimeout(timer.current)
+    if (settleTimer.current !== null) window.clearTimeout(settleTimer.current)
+  }, [])
 
   const send = (v: number) => {
     lastSent.current = Date.now()
     pending.current = null
     void fetchNui(CB.LOCKER2_SET, { k: row.k, v })
   }
-  const change = (v: number) => {
+  /** The handle is at `v` now: drawn there through the hold, then Lua's. */
+  const touch = (v: number) => {
     lastTouch.current = Date.now()
     setLocal(v)
+    if (settleTimer.current !== null) window.clearTimeout(settleTimer.current)
+    settleTimer.current = window.setTimeout(() => {
+      settleTimer.current = null
+      settle((n) => n + 1)
+    }, SLIDER_HOLD_MS + 20)
+  }
+  const change = (v: number) => {
+    touch(v)
     const wait = SEND_MS - (Date.now() - lastSent.current)
     if (wait <= 0) { send(v); return }
     pending.current = v
@@ -126,22 +138,23 @@ export function SliderRow({ row, disabled, onTouch }: {
   }
 
   const name = label(row.k)
+  // An opacity of an overlay that is none moves nothing on the ped.
+  const off = disabled || row.off === true
   return (
     <div onPointerDown={onTouch}>
       <SpaceBetween size="xxxs">
         {name !== null && <Box variant="awsui-key-label">{name}</Box>}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
           <div style={{ flex: '1 1 auto', minWidth: 0 }}>
-            <Slider value={local} min={row.min} max={row.max} step={1}
-              disabled={disabled} ariaLabel={name ?? undefined}
+            <Slider value={shown} min={row.min} max={row.max} step={1}
+              disabled={off} ariaLabel={name ?? undefined}
               onChange={({ detail }) => change(detail.value)} />
           </div>
           <Button variant="icon" iconName="undo" ariaLabel={BTN.reset}
-            disabled={disabled || local === row.def}
+            disabled={off || shown === row.def}
             onClick={() => {
               play('ui.select')
-              lastTouch.current = 0
-              setLocal(row.def)
+              touch(row.def)
               send(row.def)
             }} />
         </div>

@@ -1045,8 +1045,10 @@ export interface Locker2Ped {
   name: string
   /** Last saved, ms. The headshot cache is keyed `id@up`. */
   up: number
-  /** The stored headshot, a webp data URL, when there is one. The page draws
-   *  it only if it is a base64 image data URL (lockerv2/model.ts imgOk). */
+  /** A headshot, a webp data URL. Lua no longer sends it here (a push goes
+   *  out on every press): a stored picture comes once, as a `locker2shot`
+   *  with `img`. Still drawn if present, and only if it is a base64 image
+   *  data URL (lockerv2/model.ts imgOk). */
   img?: string
 }
 
@@ -1086,6 +1088,9 @@ export interface Locker2SliderRow {
   max: number
   /** What Reset sets it back to. */
   def: number
+  /** It moves nothing on the ped -- an opacity of an overlay that is none --
+   *  so it is drawn disabled, and Lua refuses a set of it. */
+  off?: boolean
 }
 export type Locker2Row = Locker2CountRow | Locker2SliderRow
 
@@ -1096,8 +1101,9 @@ export interface Locker2Edit {
   editing: string | null
   /** Unsaved changes: the other tabs lock, and Done asks first. */
   dirty: boolean
-  /** The category the camera is on. */
-  cat: string
+  /** The category the camera is on; null while it is home on the whole ped,
+   *  as every new draft starts. The anchor lit is always this one. */
+  cat: string | null
   rows: Locker2Row[]
 }
 
@@ -1105,6 +1111,9 @@ export interface Locker2Payload {
   on: boolean
   /** The tab Lua is showing the ped for. */
   tab: Locker2Tab
+  /** The `seq` of the page's last LOCKER2_TAB this push has seen, or null.
+   *  Once it is the page's latest, the page shows `tab`. */
+  tabSeq?: number | null
   /** The stock roster: Season 1's peds, by id and name. */
   stock: { id: string; name: string }[]
   /** The player's saved peds, oldest first. */
@@ -1123,8 +1132,9 @@ export interface Locker2Payload {
 }
 
 /** BR.Nui.LOCKER2_SHOT ('locker2shot'): a headshot is ready as a runtime
- *  texture, at https://nui-img/<txd>/<txd>. */
-export interface Locker2ShotPayload { id: string; txd: string }
+ *  texture, at https://nui-img/<txd>/<txd> -- or, with `img` and no `txd`,
+ *  the stored picture of the saved ped `id` as last saved at `up`. */
+export interface Locker2ShotPayload { id: string; up?: number; txd?: string; img?: string }
 
 /**
  * LEVEL AND XP.
@@ -1715,7 +1725,8 @@ export const CB = {
   LOCKER2_CLOSE:    'br/locker2/close',
   /** The Custom tab's Reset: the draft back to where it started. {} */
   LOCKER2_RESET:    'br/locker2/reset',
-  /** { tab }. Create is { tab: 'male' }. */
+  /** { tab, seq }. Create is { tab: 'male', seq }. `seq` counts the page's
+      requests; Lua echoes the last one it saw as the payload's `tabSeq`. */
   LOCKER2_TAB:      'br/locker2/tab',
   /** { k: 's' | 'p', id }: wear a stock or a saved ped. */
   LOCKER2_WEAR:     'br/locker2/wear',
@@ -1725,7 +1736,8 @@ export const CB = {
   LOCKER2_SET:      'br/locker2/set',
   /** { k }: "Next color". */
   LOCKER2_COLOR:    'br/locker2/color',
-  /** { cat }: the camera to that part of the ped. */
+  /** { cat }: the camera to that part of the ped. Sent on every anchor press
+      and row touched; Lua moves the camera only if it is not there. */
   LOCKER2_CAT:      'br/locker2/cat',
   /** { op: 'new' | 'update' | 'replace', id?, name? }. */
   LOCKER2_SAVE:     'br/locker2/save',

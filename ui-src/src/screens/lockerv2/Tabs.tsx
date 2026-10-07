@@ -11,7 +11,7 @@ import type { Locker2Edit, Locker2Payload, Locker2Ped } from '../../bridge/types
 import { play } from '../../audio/cues'
 import Ring from '../../hud/Ring'
 import { BTN, CAT_LABEL } from './copy'
-import { anchorId, categoriesOf, needShots, shotKey } from './model'
+import { activeAnchor, anchorId, categoriesOf, needShots, shotKey } from './model'
 import { askedKeys, cachedKeys, markAsked, shotFor, useShotCache } from './shots'
 import { CountRow, SliderRow } from './Rows'
 
@@ -140,8 +140,12 @@ export function PedsTab({ st, blocked, onEdit, onCreate, onRename, onDelete }: {
  * to focus on which part of the ped is being customized" (owner, #28). The rows
  * stack on the right and scroll inside the lobby's frame.
  *
- * The camera follows the anchor pressed AND any row pressed in another
- * category (contract section 5), so it is always on the part being changed.
+ * The camera follows the anchor pressed AND any row pressed (contract section
+ * 5), so it is always on the part being changed. Every press is sent, the same
+ * category or not: Lua knows where the camera is and moves it only if it is
+ * not there, where a check here against the page's copy of `cat` once kept
+ * Face from ever moving it (#28 review). A new draft lights no anchor, with
+ * the camera home on the whole ped.
  */
 export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undefined; disabled: boolean }) {
   const scroller = useRef<HTMLDivElement>(null)
@@ -149,7 +153,7 @@ export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undef
 
   const cats = categoriesOf(edit.rows)
   const toCat = (cat: string) => {
-    if (cat !== edit.cat) void fetchNui(CB.LOCKER2_CAT, { cat })
+    void fetchNui(CB.LOCKER2_CAT, { cat })
   }
   const scrollTo = (cat: string) => {
     const box = scroller.current
@@ -164,7 +168,7 @@ export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undef
       <div className="thin-scroll min-h-0 overflow-y-auto" style={{ flex: '0 0 30%' }}>
         <AnchorNavigation
           anchors={cats.map((c) => ({ text: CAT_LABEL[c] ?? '', href: `#${anchorId(c)}`, level: 1 }))}
-          activeHref={`#${anchorId(edit.cat)}`}
+          activeHref={activeAnchor(edit.cat)}
           onFollow={(e) => {
             e.preventDefault()
             const cat = cats.find((c) => `#${anchorId(c)}` === e.detail.href)
