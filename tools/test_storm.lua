@@ -4612,6 +4612,8 @@ do
         SetCamCoord = 'moves a camera; which one renders is unchanged, and the bus\'s '
             .. 'own is moved only by bus.fly, which keeps the pose it set',
         PointCamAtCoord = 'aims a camera; likewise',
+        ShakeGameplayCam = 'shakes the gameplay camera (an Airstrike rocket landing, #396); '
+            .. 'which camera renders is unchanged',
         SetGameplayCamRelativeHeading = 'turns the gameplay camera, which the cull '
             .. 'never trusts and which is not on screen while the bus camera is',
     }
