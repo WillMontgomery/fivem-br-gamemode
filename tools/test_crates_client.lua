@@ -288,6 +288,15 @@ function TriggerEvent(n, ...)
     for _, fn in ipairs(handlers[n] or {}) do fn(...) end
 end
 function TriggerServerEvent(n, d) toServer[#toServer + 1] = { name = n, d = d } end
+-- `brbox` runs the server's `brboxsv` (#384's way, owner 2026-10-06): the
+-- command line it sends, as words.
+local executed = {}
+function ExecuteCommand(line) executed[#executed + 1] = line end
+local function lastWords()
+    local out = {}
+    for w in tostring(executed[#executed] or ''):gmatch('%S+') do out[#out + 1] = w end
+    return out
+end
 function RegisterCommand(n, fn) commands[n] = fn end
 function RegisterKeyMapping() end
 
@@ -963,24 +972,28 @@ describe('brbox: asks the server for a test crate, and checks what it can before
 do
     reset()
     propsLanded()
-    toServer = {}
+    toServer, executed = {}, {}
     commands.brbox(0, { 'ship', '4', 'festive' })
-    local d = toServer[#toServer]
-    eq(d and d.name, BR.Net.LOOT_DEV, 'it asks through the dev-trusted LOOT_DEV')
-    ok(d and d.d.box and d.d.box.tier == 4 and d.d.box.festive == true,
-        'for a festive tier 4 shipping box')
+    local w = lastWords()
+    eq(w[1], 'brboxsv', 'it runs the server dev command, dev mode its only gate')
+    ok(w[2] == 'ship' and w[3] == '4' and w[4] == 'festive' and tonumber(w[5]) and tonumber(w[7]),
+        'for a festive tier 4 shipping box, two meters ahead', table.concat(w, ' '))
+    eq(#toServer, 0, 'and no net event at all')
     ok(said('xmas_4') and said('in this build'), 'and says which models this client will draw')
     commands.brbox(0, { 'gift', 'white' })
-    eq(toServer[#toServer].d.box.gift, 'white', 'a gift box by color')
+    w = lastWords()
+    ok(w[2] == 'gift' and w[3] == 'white' and w[4] == 'zone', 'a gift box by color, festive as the zone says')
+    commands.brbox(0, { 'ship', '2', 'plain' })
+    eq(lastWords()[4], 'plain', 'and plain when asked')
 
-    toServer = {}
+    executed = {}
     commands.brbox(0, { 'ship', '9' })
     commands.brbox(0, { 'gift', 'purple' })
     commands.brbox(0, { 'crate' })
-    eq(#toServer, 0, 'a bad tier, an unknown color or an unknown kind asks for nothing')
+    eq(#executed, 0, 'a bad tier, an unknown color or an unknown kind asks for nothing')
     convars.br_seasonServed = '1'
     commands.brbox(0, { 'ship', '2' })
-    eq(#toServer, 0, 'and on Season 1 it does not ask')
+    eq(#executed, 0, 'and on Season 1 it does not ask')
     ok(said('Season 2 crates are off'), 'saying why, in F8')
 end
 
