@@ -513,7 +513,11 @@ BR.Config.Terminals = {
 
         howto_title = 'How to use the terminal',
         howto_key_title = 'Getting a Yubikey',
-        howto_key_body = "Airdrops have a 50/50 chance of carrying a Yubikey, and legendary crates have a small chance.\nYou can hold one Yubikey at a time. It doesn't take an inventory slot, and its icon shows on your HUD.\nIf you're eliminated, your Yubikey drops where you fell, and anyone can pick it up.\nA Yubikey you don't use stays with you into your next match.",
+        -- WRITTEN (2026-10-06, round 5; the first line was "Airdrops have a
+        -- 50/50 chance of carrying a Yubikey, and legendary crates have a
+        -- small chance."): every crate can hold one now, at a rare item's
+        -- chance (sources.crateChance below).
+        howto_key_body = "Airdrops have a 50/50 chance of carrying a Yubikey. Any crate can hold one too, about as often as any one rare item.\nYou can hold one Yubikey at a time. It doesn't take an inventory slot, and its icon shows on your HUD.\nIf you're eliminated, your Yubikey drops where you fell, and anyone can pick it up.\nA Yubikey you don't use stays with you into your next match.",
         howto_terminal_title = 'Using a terminal',
         -- WRITTEN (2026-10-06, round 3: "hold interact" became "press
         -- interact", as the plate's press opens the computer now; round 5:
@@ -1009,15 +1013,30 @@ BR.Config.Terminals = {
         bounty = { sprite = 58, colour = 3, mateColour = 69, scale = 1.0 },
     },
 
-    -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04) ═══
+    -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04; crates 2026-10-06) ═══
     --
     -- Both are EXTRA items: rolled on their own stream when the container
     -- opens, after its contents were decided, so today's loot odds do not
-    -- move. "for now let's only make it a 50/50 chance in airdrops instead of
-    -- every single one", and "a small chance in legendary crates".
+    -- move -- and neither does the crate's displayed rarity, which was
+    -- decided from those contents (server/yubikey.lua's Y.extraFor). "for now
+    -- let's only make it a 50/50 chance in airdrops instead of every single
+    -- one".
+    --
+    -- THE CRATES, ROUND 5: "We should have the same chance of yubikeys in
+    -- crates as something rare", and "let's make the Yubikey rare then, not
+    -- legendary." So EVERY crate, every tier (never the warmup pad), rolls a
+    -- key at the chance the average RARE item is in a crate: each item a crate
+    -- can roll at rare (twelve on 2026-10-06: eleven guns and the grenade),
+    -- its share of crates holding it, weighted by how many crates of each tier
+    -- a match lays out, averaged. 3.08% then. tools/test_yubikey.lua measures
+    -- it with the real loot generator over the real map, every run, and fails
+    -- when this number is more than a tenth away from it -- so a loot change
+    -- that moves the rare items moves this test, not the owner's intent. It
+    -- was a small chance in legendary crates alone (legendaryCrateChance,
+    -- 0.05) until then.
     sources = {
         airdropChance = 0.5,
-        legendaryCrateChance = 0.05,
+        crateChance = 0.031,
     },
 
     -- ═══ LEAVING A MATCH ALIVE ═══

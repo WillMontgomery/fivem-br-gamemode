@@ -10,9 +10,10 @@
 --             the key: the profile read, the cap of one, the first-pickup line
 --             once ever, the death drop, the leave drop (and its switch), the
 --             carry into the next match, every profile write;
---             the sources: 50% per airdrop and the legendary crate's small
---             chance, at their odds, on a stream of their own -- an EXTRA item,
---             so nothing else in the box moves;
+--             the sources: 50% per airdrop and, since round 5, every crate
+--             at a rare item's chance -- measured here with the real loot
+--             generator -- at their odds, on a stream of their own: an EXTRA
+--             item, so nothing else in the box moves, nor the box's look;
 --             the terminals: online only inside the storm's current zone; a use
 --             only from a living player at a live terminal in a live match;
 --             access, then the run: the key spent, the squad's ONE use spent,
@@ -660,35 +661,48 @@ end
 
 -- ----------------------------------------------------------------- sources ---
 
-describe('sources: 50% per airdrop, a small chance per legendary crate, at their odds')
+describe('sources: 50% per airdrop, and every crate at its own chance (round 5), at their odds')
 do
     reset()
     local m = newMatch(1)
-    local N = 4000
-    local function rate(container)
+    local function rate(container, n)
         local hits = 0
-        for i = 1, N do
+        n = n or 4000
+        for i = 1, n do
             container.id = i
             if Y.extraFor(m, container) then hits = hits + 1 end
         end
-        return hits / N
+        return hits / n
     end
     local air = rate({ kind = 'chest', rarity = R.LEGENDARY, airdrop = 1 })
     ok(math.abs(air - CT.sources.airdropChance) < 0.03,
-        ('an airdrop holds a key about half the time (%.3f over %d)'):format(air, N), air)
-    local leg = rate({ kind = 'chest', rarity = R.LEGENDARY })
-    ok(math.abs(leg - CT.sources.legendaryCrateChance) < 0.015,
-        ('a legendary crate holds one about %.0f%% of the time (%.3f)'):format(
-            CT.sources.legendaryCrateChance * 100, leg), leg)
-    eq(rate({ kind = 'chest', rarity = R.EPIC }), 0, 'an epic crate never does')
-    eq(rate({ kind = 'chest', rarity = R.RARE }), 0, 'nor a rare one')
-    eq(rate({ kind = 'deathbox', rarity = R.LEGENDARY }), 0, 'nor a death box')
+        ('an airdrop holds a key about half the time (%.3f over 4000)'):format(air), air)
+    eq(CT.sources.airdropChance, 0.5, '"a 50/50 chance in airdrops", unchanged')
+    -- "let's make the Yubikey rare then, not legendary": EVERY crate, every
+    -- rarity it shows, rolls at crateChance -- 20,000 of each.
+    for _, r in ipairs({ R.COMMON, R.UNCOMMON, R.RARE, R.EPIC, R.LEGENDARY }) do
+        local got = rate({ kind = 'chest', rarity = r }, 20000)
+        ok(math.abs(got - CT.sources.crateChance) < 0.006,
+            ('a crate showing rarity %d holds one about %.1f%% of the time (%.4f)'):format(
+                r, CT.sources.crateChance * 100, got), got)
+    end
+    eq(CT.sources.legendaryCrateChance, nil, 'the legendary-crate-only chance is gone')
+    -- AND THE HOW-TO SAYS SO (WRITTEN, round 5): every crate, not legendary ones.
+    local how = CT.copy.howto_key_body or ''
+    ok(how:find('50/50', 1, true) ~= nil and how:find('Any crate can hold one', 1, true) ~= nil
+        and not how:lower():find('legendary', 1, true), 'the how-to says airdrops 50/50 and every crate', how)
+    eq(rate({ kind = 'deathbox', rarity = R.LEGENDARY }), 0, 'never a death box: a player\'s kit, not a crate')
     eq(rate({ kind = 'chest', rarity = R.LEGENDARY, warmup = true }), 0,
-        'nor anything on the warmup pad')
+        'nor a crate on the warmup pad')
+    m.warmup = true
+    eq(rate({ kind = 'chest', rarity = R.COMMON }), 0, 'nor any container in the pad\'s zone (its four permanent crates)')
+    m.warmup = nil
 
     -- Replayable: the same seed and the same container give the same answer.
     local c = { kind = 'chest', rarity = R.LEGENDARY, airdrop = 1, id = 17 }
     eq(Y.extraFor(m, c) ~= nil, Y.extraFor(m, c) ~= nil, 'the roll replays from the layout seed')
+    local plain = { kind = 'chest', rarity = R.COMMON, id = 23 }
+    eq(Y.extraFor(m, plain) ~= nil, Y.extraFor(m, plain) ~= nil, 'and a plain crate\'s too')
 
     -- The chances are config.
     CT.sources.airdropChance = 0
@@ -696,6 +710,123 @@ do
     CT.sources.airdropChance = 1
     eq(rate({ kind = 'chest', rarity = R.LEGENDARY, airdrop = 1 }), 1, 'and 1 is always')
     CT.sources.airdropChance = 0.5
+    local was = CT.sources.crateChance
+    CT.sources.crateChance = 0
+    eq(rate({ kind = 'chest', rarity = R.COMMON }), 0, 'crateChance 0 is never')
+    CT.sources.crateChance = 1
+    eq(rate({ kind = 'chest', rarity = R.COMMON }), 1, 'and 1 is always')
+    CT.sources.airdropChance = 0
+    eq(rate({ kind = 'chest', rarity = R.COMMON, airdrop = 2 }), 0,
+        'an airdrop rolls the airdrop\'s chance, never the crates\'')
+    CT.sources.airdropChance = 0.5
+    CT.sources.crateChance = was
+end
+
+describe('sources: the crate chance IS an average rare item\'s, measured with the real loot generator')
+do
+    -- THE OWNER'S NUMBER, DERIVED, NOT TYPED (2026-10-06: "We should have the
+    -- same chance of yubikeys in crates as something rare"). Every crate a
+    -- match lays out is BR.LootChestContents at its POI's tier, and a match
+    -- has chestsPerTier of them at every POI: so roll 20,000 crates of each
+    -- tier with the real generator, and for every item that comes out RARE
+    -- take its share of crates holding at least one, weighted by how many
+    -- crates of that tier a match has. Their average is "the same chance as
+    -- something rare", and the config holds within a tenth of it -- so a loot
+    -- change that moves the rare items fails here until crateChance follows.
+    local L = BR.Config.Loot
+    local crates, total = {}, 0
+    for _, poi in ipairs(BR.Config.Map.POIs) do
+        local n = L.chestsPerTier[poi.tier] or 0
+        crates[poi.tier] = (crates[poi.tier] or 0) + n
+        total = total + n
+    end
+    ok(total > 1000, ('a match lays out its crates (%d)'):format(total), total)
+    local N = 20000
+    local rng = BR.Rng(396)
+    local hits, rares, keyed = {}, {}, 0
+    for tier = 1, 4 do
+        hits[tier] = {}
+        for _ = 1, N do
+            local seen = {}
+            for _, st in ipairs(BR.LootChestContents(rng, tier)) do
+                if st.kind == 'yubikey' then keyed = keyed + 1 end
+                if st.rarity == R.RARE and not seen[st.item] then
+                    seen[st.item] = true
+                    rares[st.item] = true
+                    hits[tier][st.item] = (hits[tier][st.item] or 0) + 1
+                end
+            end
+        end
+    end
+    eq(keyed, 0, 'the generator never rolls a key itself: it is only ever the extra roll')
+    local ids = {}
+    for id in pairs(rares) do ids[#ids + 1] = id end
+    table.sort(ids)
+    ok(#ids >= 1,('crates roll rare items (%s)'):format(table.concat(ids, ', ')))
+    local sum = 0
+    for _, id in ipairs(ids) do
+        local share = 0
+        for tier = 1, 4 do
+            share = share + (crates[tier] or 0) / total * ((hits[tier][id] or 0) / N)
+        end
+        sum = sum + share
+        -- Every one of them is an item a crate can hold at RARE: a gun or a
+        -- throwable in the weapons config, or a consumable in the loot's.
+        local def = BR.Config.WeaponById[id] or BR.Config.ConsumableById[id]
+        ok(def ~= nil and def.rarity == R.RARE, ('%s is a rare item in the config'):format(id))
+    end
+    local avg = sum / math.max(1, #ids)
+    ok(math.abs(CT.sources.crateChance - avg) <= avg * 0.10,
+        ('crateChance %.4f is within a tenth of the average rare item\'s %.4f a crate (%d items, %d crates a match)')
+            :format(CT.sources.crateChance, avg, #ids, total), avg)
+    ok(avg > 0.02 and avg < 0.05, ('and that average is a rare item\'s few percent (%.4f)'):format(avg), avg)
+end
+
+describe('sources: a key never changes what the crate shows')
+do
+    -- "The key won't change the crate's displayed rarity, or the glow would
+    -- give it away" (2026-10-06). Its rarity -- the glow and the label -- was
+    -- decided from its contents when it was made; the key is rolled only as
+    -- it opens. A common crate certain to hold one shows common until it is
+    -- opened, and its husk remembers common.
+    reset()
+    local m = newMatch(1)
+    player(1, m, nil, C0, false, false)
+    CT.sources.crateChance = 1
+    local crate = BR.Loot.spawnStack(m, {
+        item = 'chest', kind = 'chest', rarity = R.COMMON, count = 1, prop = 'x',
+        contents = { { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = R.COMMON, count = 1, clip = 12 } },
+    }, C0.x + 0.5, C0.y, 30.0)
+    local shown = nil
+    for _, e in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, w in ipairs(e.payload) do
+            if w.id == crate.id then shown = w.rarity end
+        end
+    end
+    eq(shown, R.COMMON, 'announced as common')
+    eq(crate.rarity, R.COMMON, 'and common on the server as it waits')
+    for _, st in ipairs(crate.contents) do
+        ok(st.kind ~= 'yubikey', 'no key inside before it opens')
+    end
+    claim(1, crate.id)
+    CT.sources.crateChance = 0.031
+    eq(#groundKeys(m), 1, 'opened: the key bursts out with the rest')
+    eq(crate.sealedRarity, R.COMMON, 'and the husk remembers common, not the key\'s gold')
+
+    -- A WHOLE LAYOUT, AS A MATCH MAKES IT: no crate holds a key, and every
+    -- crate shows the best of its own contents.
+    local layout = BR.BuildLootLayout(4242)
+    local bad, keys = 0, 0
+    for _, e in ipairs(layout) do
+        if e.kind == 'chest' then
+            if e.rarity ~= BR.LootContentsRarity(e.contents) then bad = bad + 1 end
+            for _, st in ipairs(e.contents or {}) do
+                if st.kind == 'yubikey' then keys = keys + 1 end
+            end
+        end
+    end
+    eq(keys, 0, 'a generated layout holds no key in any crate')
+    eq(bad, 0, 'and every crate shows the best of its own contents')
 end
 
 describe('sources: an EXTRA item -- the box\'s own contents do not move')
@@ -721,10 +852,10 @@ do
         end
         return items
     end
-    CT.sources.legendaryCrateChance = 1
+    CT.sources.crateChance = 1
     local s1 = spill(1)
     local s2 = spill(2)
-    CT.sources.legendaryCrateChance = 0.05
+    CT.sources.crateChance = 0.031
     season(2)
     ok(#s1 > 0, 'the crate holds something', #s1)
     eq(#s2, #s1 + 1, 'Season 2 spills one item more')

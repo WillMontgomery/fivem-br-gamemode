@@ -11,7 +11,11 @@
 --   * "If they are killed, the Yubikey in their possession should drop on the
 --     ground as a standard pickup."
 --   * Sources: "a 50/50 chance in airdrops", and "a small chance in legendary
---     crates" -- both EXTRA items, so today's loot odds do not move.
+--     crates" -- both EXTRA items, so today's loot odds do not move. The
+--     crates' chance changed on 2026-10-06 (round 5): "We should have the
+--     same chance of yubikeys in crates as something rare" and "let's make
+--     the Yubikey rare then, not legendary" -- so EVERY crate rolls one, at
+--     the chance an average rare item is in a crate (below, Y.extraFor).
 --   * "When they pickup a Yubikey for the first time, we need to tell them what
 --     it can do and how to use it." -- since round 5 (2026-10-06) the owner's
 --     own words on a tutorial-style card the player dismisses with Enter
@@ -368,11 +372,21 @@ end
 --- decided and before they scatter. The roll is BR.TerminalSolve.extraRoll, on
 --- its own stream, so nothing else in the container changes.
 ---
----   the airdrop        sources.airdropChance (0.5)
----   a legendary crate  sources.legendaryCrateChance (small)
+---   the airdrop   sources.airdropChance (0.5)
+---   any crate     sources.crateChance: every tier, the chance an average rare
+---                 item is in a crate (owner, 2026-10-06, round 5: "let's make
+---                 the Yubikey rare then, not legendary"; tools/test_yubikey.lua
+---                 measures it with the real loot generator and holds the
+---                 config to it)
 ---
 --- NOT on the warmup pad: a key found there would walk into the match with
---- somebody who never fought for it.
+--- somebody who never fought for it. Not a death box: that is a player's kit,
+--- not a crate (its kind is 'deathbox').
+---
+--- THE CRATE STILL SHOWS WHAT IT SHOWED. Its rarity (the glow, the label) was
+--- decided from its contents when the layout was built, and this roll happens
+--- only as it opens, after that -- so a crate with a key in it looks exactly
+--- like one without, and the key's own glow appears only in the burst.
 --- @param m table
 --- @param container table  the loot entry being opened
 --- @return table|nil stack
@@ -385,8 +399,8 @@ function Y.extraFor(m, container)
     local chance, what = nil, nil
     if container.airdrop ~= nil then
         chance, what = odds.airdropChance, 'airdrop'
-    elseif container.kind == 'chest' and container.rarity == BR.Rarity.LEGENDARY then
-        chance, what = odds.legendaryCrateChance, 'legendary crate'
+    elseif container.kind == 'chest' then
+        chance, what = odds.crateChance, 'crate'
     end
     if not chance then return nil end
     if not BR.TerminalSolve.extraRoll(m.loot.seed, container.id, chance) then return nil end

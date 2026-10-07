@@ -664,7 +664,19 @@ The owner's rules (#396, 2026-10-04), and where each lives:
   default, as proposed on the issue.
 - **Sources**: an EXTRA item rolled as a container opens, on its own stream, so
   the box's own contents do not move -- `airdropChance` (0.5) per airdrop and
-  `legendaryCrateChance` (0.05) per legendary crate. Never on the warmup pad.
+  `crateChance` per crate, any tier (round 5, owner 2026-10-06: "We should
+  have the same chance of yubikeys in crates as something rare", "let's make
+  the Yubikey rare then, not legendary"). Never on the warmup pad, never a
+  death box. `crateChance` is the chance an average RARE item is in a crate:
+  each item a crate rolls at rare (twelve on 2026-10-06), its share of crates
+  holding one, weighted by the match's crates per tier, averaged -- 3.08%,
+  so 0.031. `tools/test_yubikey.lua` measures it with the real loot generator
+  on every run and fails a config more than a tenth away, so a loot change
+  that moves the rare items says so. The roll happens as the crate opens,
+  after its rarity was decided from its contents, so a crate with a key looks
+  exactly like one without; the key's own glow shows only in the burst. About
+  78 keys a match at the 2,512 crates a match lays out, if every crate is
+  opened.
 
 ## Terminals in the world
 
