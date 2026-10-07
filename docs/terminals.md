@@ -1573,10 +1573,8 @@ runner's squad included, never the runner, until the last rocket.
 within `fx.strikeRadiusM` (40 m), one after another, each at a random moment in
 its own tenth of `fx.strikeSpreadMs` (4 s) (`BR.TerminalSolve.strikePlan`).
 Unguided: nothing about where anybody is goes into the plan. Each client in
-range draws each as a LOCAL object (`art.rocket.models`, the RPG's rocket
-first) with the RPG's trail, falling on a slant from `fallM` (150 m) over
-`fallMs` (2.5 s; 1.2 s until round 6) onto the first surface under its point (a
-roof, or the street), and where it lands a fireball (`exp_grd_vehicle`) drawn
+range draws each as a LOCAL object (`art.rocket.models`), and where it lands
+a fireball (`exp_grd_vehicle`) drawn
 out to the damage's own reach -- `fx.strikeReachM / art.rocket.blastBaseM`
 times its size, 3x (round 6: "the explosions from them should be 3x as big,
 at least"; `blastBaseM`, the effect's own 5 m, is the estimate to tune) -- the
@@ -1586,14 +1584,37 @@ was asked for once and never waited on, so a rocket whose model had not
 arrived was skipped silently; and a weapon's drawable is culled past its own
 few meters, the airdrop crate's lesson, so a rocket 150 m up was not drawn
 until its last meters. Now the model is streamed and waited on before the
-first rocket falls (`IsModelInCdimage` and `IsModelValid` first, then the
-Homing Launcher's rocket and a vehicle missile as stand-ins; none at all is
-said once on the console), each rocket is drawn from `art.rocket.lodDist`
-(1000 m), and it falls slowly enough to be seen. **Never `AddExplosion` and never a projectile**: a
-scripted explosion is networked, hurts whatever it touches on that machine and
-is judged by `server/damage.lua`'s explosion checks; these hurt nothing, send
-nothing and flag nobody. A FRAME callback only from a moment before the first
-rocket falls to the last one landing.
+first rocket flies (`IsModelInCdimage` and `IsModelValid` first, then the
+stand-ins; none at all is said once on the console), each rocket is drawn from
+`art.rocket.lodDist` (1,500 m since round 7), and it flies slowly enough to be
+seen.
+
+**Homing missiles, to look at** (round 7, owner 2026-10-07: "Any chance we
+could use homing missiles targeted at the random coords we already have?").
+The server's points, schedule and damage are untouched. Each rocket is the
+Homing Launcher's own model (`w_lr_homing_rocket`, then the RPG's rocket and a
+vehicle missile as stand-ins) with the trail the Homing Launcher's ammo draws
+(`proj_rpg_trail`, weaponhominglauncher.meta's TrailFx), looped on it from
+launch to landing. It is launched `launchM` (320 m) off to the side and
+`launchUpM` (160 m) over its point, cruises in at that height veering
+`weaveM` (40 m) to one side, dives from `diveUpM` (90 m) and lands on the
+first surface under its point (a roof, or the street) at exactly its
+scheduled time, `flightMs` (3 s) after launch -- a cubic curve, its nose along
+it every frame (`rocketPath`). The launch bearing comes from the strike's id,
+fanned over `fanDeg` (50 degrees) by each rocket's place in the schedule, so
+every client draws the same flight. A real homing projectile
+(`ShootSingleBulletBetweenCoords` with the Homing Launcher) was weighed and
+refused: the native credits its `ownerPed` in the kill feed, and the
+launcher's ammo is `DestroyOnImpact ProcessImpacts` -- it explodes as itself,
+GTA's damage, networked, whatever the bullet's `damage` says. **Never
+`AddExplosion` and never a projectile**: a scripted explosion is networked,
+hurts whatever it touches on that machine and is judged by
+`server/damage.lua`'s explosion checks; these hurt nothing, send nothing and
+flag nobody. A FRAME callback only from a moment before the first rocket
+launches to the last one landing; each rocket in the air is moved and turned
+every frame (two natives a rocket, up to eight at once), so the strike's own
+frames cost more than round 6's straight slant -- `match airstrike` in
+`tools/perf_budget.lua` was rebaselined for that alone.
 
 **The damage is the server's.** Each rocket deals `fx.strikeDamage` (150) to
 every player standing or downed within `fx.strikeFullM` (5 m; 4 m until round

@@ -12,13 +12,52 @@
 --                a red flare at the spot (BR.Flare.fire, the airdrop's own:
 --                a flare whose relay the server already refuses) and the
 --                streams the rockets need, asked for at once.
---   THE ROCKETS  each a LOCAL object (the RPG's rocket model) with the RPG's
---                trail, falling on a slant onto its point over art.rocket's
---                fallMs, and where it lands a fireball and the game's cheap
---                explosion sound, and a camera shake for a player near it.
---                The fireball is drawn as big as the server's blast reaches
---                (fx.strikeReachM over art.rocket.blastBaseM): what a player
---                sees is what hurts them.
+--   THE ROCKETS  each a LOCAL object -- since round 7 a HOMING MISSILE to
+--                look at (below): the Homing Launcher's rocket with its trail,
+--                launched high and off to the side and curving onto its point
+--                over art.rocket's flightMs, landing at exactly the moment the
+--                server scheduled -- and where it lands a fireball and the
+--                game's cheap explosion sound, and a camera shake for a player
+--                near it. The fireball is drawn as big as the server's blast
+--                reaches (fx.strikeReachM over art.rocket.blastBaseM): what a
+--                player sees is what hurts them.
+--
+-- ═══ HOMING MISSILES, TO LOOK AT (round 7) ═══
+--
+-- "For the airstrike - that's more like it. Any chance we could use homing
+-- missiles targeted at the random coords we already have?"
+--                                                     -- owner, 2026-10-07
+--
+-- THE SERVER'S STRIKE IS UNTOUCHED: the same random points, the same
+-- schedule, the same damage through the health ledger. Only the flight a
+-- client draws changed. Two ways to draw one were weighed:
+--
+--   A REAL PROJECTILE  SHOOT_SINGLE_BULLET_BETWEEN_COORDS with the Homing
+--                Launcher (or a vehicle's missile) flies a real homing rocket
+--                -- and a real rocket explodes as itself. The Cfx.re native
+--                reference: its `ownerPed` is who the kill feed credits ("if
+--                the bullet kills someone the kill feed shows 'X was shot by
+--                ownerPed'"); the launcher's ammo (weaponhominglauncher.meta,
+--                AMMO_HOMINGLAUNCHER) is DestroyOnImpact ProcessImpacts, so
+--                its explosion -- GTA's damage, networked, an explosion event
+--                server/damage.lua judges -- comes whatever the bullet's own
+--                `damage` says. Nothing proves it hurts nobody, so it is not
+--                used: our damage is the server's, and only the server's.
+--   OUR OWN PROP  what this file does: a local object nothing can be hurt
+--                by, flown along a curve. The Homing Launcher's own rocket
+--                (w_lr_homing_rocket, the model its ammo wears) first in
+--                art.rocket.models, and the trail that ammo draws
+--                (TrailFx proj_rpg_trail in the same meta), looped on it from
+--                its launch to its landing.
+--
+-- THE FLIGHT (rocketPath): a cubic curve from art.rocket.launchM off to the
+-- side and launchUpM over its point, cruising in at that height, then turning
+-- down into a dive from diveUpM -- each rocket veering weaveM to one side or
+-- the other on the way, its nose along its path every frame -- onto its point
+-- at exactly its `at`. EVERY CLIENT DRAWS THE SAME FLIGHT: the launch bearing
+-- comes from the strike's id (as round 5's slant did), fanned over fanDeg by
+-- each rocket's place in the server's schedule, the veer alternating by that
+-- place too. Nothing random is drawn here.
 --
 -- ═══ WHY THE ROCKETS WERE NEVER SEEN (round 6, owner 2026-10-07: "missile
 --     props never actually spawn") ═══
@@ -38,8 +77,9 @@
 --   box was there and was not being DRAWN"). A rocket spends its whole fall
 --   50 to 150 m from anybody watching, so it was culled until its last meters,
 --   which it covered in a frame or two. Each rocket now gets SET_ENTITY_LOD_DIST
---   (art.rocket.lodDist, past the farthest client that draws one), and falls
---   over 2.5 s rather than 1.2, so it is on screen long enough to be seen.
+--   (art.rocket.lodDist, past the farthest client that draws one), and flies
+--   for 2.5 s or more rather than 1.2, so it is on screen long enough to be
+--   seen (3 s since round 7's homing flight).
 --                PARTICLES AND A SOUND, NEVER AddExplosion OR A PROJECTILE: a
 --                scripted explosion is networked, hurts whatever it touches on
 --                this machine and is judged by the server's explosion checks;
@@ -52,9 +92,13 @@
 -- ═══ WHAT IT COSTS ═══
 --
 -- Nothing per frame but the rockets: a FRAME callback registered a moment
--- before the first one starts falling within draw distance and unregistered
--- when the last has landed (about five seconds). The circles move on the
--- server's pushes; the SLOW hook returns at once with nothing up.
+-- before the first one launches within draw distance and unregistered when
+-- the last has landed (about seven seconds). Each rocket in the air is moved
+-- AND turned every frame since round 7 -- a curve's heading changes as it
+-- flies, where round 5's straight slant was turned once -- so a strike's
+-- frames cost two natives a rocket, up to eight rockets in the air at once.
+-- The circles move on the server's pushes; the SLOW hook returns at once with
+-- nothing up.
 
 BR = BR or {}
 BR.TerminalFx = BR.TerminalFx or {}
@@ -145,7 +189,9 @@ end)
 -- ---------------------------------------------------------- the strike ---
 
 --- The strikes this client knows: [id] = { id, x, y, r, startsAt, endsAt,
---- rockets = { { x, y, at, gz?, obj?, trail?, done? } }, ring, near, dir }.
+--- rockets = { { x, y, at, ux, uy, side, gz?, obj?, trail?, done? } }, ring,
+--- near }. (ux, uy) is the bearing from the rocket's point to its launch, and
+--- side the way it veers.
 local strikes = {}
 
 --- The FRAME callback while rockets fall, and a counter for its name.
@@ -235,13 +281,66 @@ function F.strikeCounts()
     return a, b
 end
 
---- Where a rocket is `t` (0..1) of the way down its slant.
-local function along(s, rk, t)
+local function flightMs() return tonumber(rocketArt().flightMs) or 3000 end
+
+--- Where a rocket is `t` (0..1) of the way along its flight, and which way it
+--- is heading: a cubic curve (the header's THE FLIGHT) from its launch, high
+--- and off to the side, to its point on the ground (rk.gz).
+--- @return number x, number y, number z, number dx, number dy, number dz
+local function rocketPath(rk, t)
     local R = rocketArt()
-    local fall, slant = tonumber(R.fallM) or 150.0, tonumber(R.slantM) or 25.0
-    local sx, sy = rk.x + s.dir.x * slant, rk.y + s.dir.y * slant
-    local sz = rk.gz + fall
-    return sx + (rk.x - sx) * t, sy + (rk.y - sy) * t, sz + (rk.gz - sz) * t
+    local L = tonumber(R.launchM) or 320.0
+    local H = tonumber(R.launchUpM) or 160.0
+    local D = tonumber(R.diveUpM) or 90.0
+    local Wv = (tonumber(R.weaveM) or 40.0) * rk.side
+    local ux, uy = rk.ux, rk.uy
+    local vx, vy = -uy, ux
+    local gx, gy, gz = rk.x, rk.y, rk.gz
+    -- The four points: the launch; level at launch height, 60% of the way
+    -- out and veering; over the point at diveUpM, a little short of it; the
+    -- point.
+    local p0x, p0y, p0z = gx + ux * L, gy + uy * L, gz + H
+    local p1x, p1y, p1z = gx + ux * L * 0.6 + vx * Wv, gy + uy * L * 0.6 + vy * Wv, gz + H
+    local p2x, p2y, p2z = gx + ux * L * 0.1 + vx * Wv * 0.3, gy + uy * L * 0.1 + vy * Wv * 0.3, gz + D
+    local a = 1.0 - t
+    local b0, b1, b2, b3 = a * a * a, 3.0 * a * a * t, 3.0 * a * t * t, t * t * t
+    local x = b0 * p0x + b1 * p1x + b2 * p2x + b3 * gx
+    local y = b0 * p0y + b1 * p1y + b2 * p2y + b3 * gy
+    local z = b0 * p0z + b1 * p1z + b2 * p2z + b3 * gz
+    local d0, d1, d2 = 3.0 * a * a, 6.0 * a * t, 3.0 * t * t
+    local dx = d0 * (p1x - p0x) + d1 * (p2x - p1x) + d2 * (gx - p2x)
+    local dy = d0 * (p1y - p0y) + d1 * (p2y - p1y) + d2 * (gy - p2y)
+    local dz = d0 * (p1z - p0z) + d1 * (p2z - p1z) + d2 * (gz - p2z)
+    return x, y, z, dx, dy, dz
+end
+
+--- How far along its flight a rocket is at `now`: 0 at launch, 1 at its `at`.
+local function flightT(rk, now)
+    local ms = flightMs()
+    local t = (now - (rk.at - ms)) / ms
+    if t < 0.0 then return 0.0 end
+    if t > 1.0 then return 1.0 end
+    return t
+end
+
+--- Where strike `id`'s rocket `i` (in the server's order) is at `now` on the
+--- server's clock, or nil before this client knows its ground. For the suites:
+--- every client works the same flight out of the same strike.
+--- @return number|nil x, number y, number z
+function F.rocketAt(id, i, now)
+    local s = strikes[id]
+    local rk = s and s.rockets[i]
+    if not rk or not rk.gz then return nil end
+    local x, y, z = rocketPath(rk, flightT(rk, now))
+    return x, y, z
+end
+
+--- A rocket's nose along (dx, dy, dz): GTA's forward is (-sin h, cos h), and
+--- its pitch the climb's.
+local function aim(obj, dx, dy, dz)
+    local flat = math.sqrt(dx * dx + dy * dy)
+    if flat < 1e-6 and math.abs(dz) < 1e-6 then return end
+    SetEntityRotation(obj, math.deg(math.atan(dz, flat)), 0.0, math.deg(math.atan(-dx, dy)), 2, true)
 end
 
 --- One rocket lands, as this client sees it: particles, a sound, a shake.
@@ -264,13 +363,11 @@ local function land(s, rk, view)
     end
 end
 
---- A rocket in the air: made on its first frame, moved on every one after.
+--- A rocket in the air: made on its first frame, moved and turned along its
+--- curve on every one after.
 local function fly(s, rk, now)
     local R = rocketArt()
-    local fallMs = tonumber(R.fallMs) or 2500
-    local t = (now - (rk.at - fallMs)) / fallMs
-    if t < 0.0 then t = 0.0 end
-    local x, y, z = along(s, rk, t)
+    local x, y, z, dx, dy, dz = rocketPath(rk, flightT(rk, now))
     if not rk.obj then
         -- THE MODEL prepare() STREAMED IN, or none would come (said once).
         if not s.model then return end
@@ -281,11 +378,6 @@ local function fly(s, rk, now)
         if SetEntityLodDist then pcall(SetEntityLodDist, obj, math.floor(tonumber(R.lodDist) or 1000)) end
         SetEntityCollision(obj, false, false)
         FreezeEntityPosition(obj, true)
-        -- NOSE DOWN ITS SLANT: GTA's forward is (-sin h, cos h), and the
-        -- rocket's pitch is the slant's.
-        local dx, dy = -s.dir.x, -s.dir.y
-        local pitch = -math.deg(math.atan(tonumber(R.fallM) or 150.0, tonumber(R.slantM) or 25.0))
-        SetEntityRotation(obj, pitch, 0.0, math.deg(math.atan(-dx, dy)), 2, true)
         rk.obj = obj
         if R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) then
             UseParticleFxAsset(R.trailAsset)
@@ -294,13 +386,14 @@ local function fly(s, rk, now)
         end
     end
     SetEntityCoords(rk.obj, x, y, z, false, false, false, false)
+    aim(rk.obj, dx, dy, dz)
 end
 
 local function stepRockets()
     local now = BR.Clock.now()
     local view = nil
     local pending = false
-    local fallMs = tonumber(rocketArt().fallMs) or 2500
+    local ms = flightMs()
     for _, s in pairs(strikes) do
         if s.near then
             for _, rk in ipairs(s.rockets) do
@@ -310,7 +403,7 @@ local function stepRockets()
                         land(s, rk, view)
                     else
                         pending = true
-                        if now >= rk.at - fallMs and rk.gz then fly(s, rk, now) end
+                        if now >= rk.at - ms and rk.gz then fly(s, rk, now) end
                     end
                 end
             end
@@ -371,7 +464,7 @@ local function prepare(s)
         end
         s.model = model
         local first = s.rockets[1] and s.rockets[1].at or s.startsAt
-        local wait = first - (tonumber(R.fallMs) or 2500) - 250 - BR.Clock.now()
+        local wait = first - flightMs() - 250 - BR.Clock.now()
         if wait > 0 then Citizen.Wait(math.floor(wait)) end
         if strikes[s.id] == s then ensureLoop() end
     end)
@@ -394,10 +487,18 @@ AddEventHandler(BR.Net.TERMINAL_STRIKE, function(d)
         end
     end
     table.sort(rockets, function(a, b) return a.at < b.at end)
-    -- THE SLANT: one direction per strike, the same on every client.
-    local a = (id * 2.399963) % (2.0 * math.pi)
+    -- THE LAUNCH BEARINGS (the header's THE FLIGHT): one per strike from its
+    -- id, fanned over fanDeg by each rocket's place in the schedule, and the
+    -- veer alternating by it -- the same on every client.
+    local base = (id * 2.399963) % (2.0 * math.pi)
+    local fan = math.rad(tonumber(rocketArt().fanDeg) or 50.0)
+    for i, rk in ipairs(rockets) do
+        local off = #rockets > 1 and ((i - 1) / (#rockets - 1) - 0.5) * fan or 0.0
+        rk.ux, rk.uy = math.cos(base + off), math.sin(base + off)
+        rk.side = (i % 2 == 0) and 1.0 or -1.0
+    end
     local s = { id = id, x = d.x + 0.0, y = d.y + 0.0, r = d.r + 0.0, startsAt = d.startsAt,
-                endsAt = d.endsAt, rockets = rockets, dir = { x = math.cos(a), y = math.sin(a) } }
+                endsAt = d.endsAt, rockets = rockets }
     strikes[id] = s
     s.ring = circle(s.x, s.y, s.r, art().strike or {}, copy().airstrike_blip)
     -- THE ROCKETS, THE FLARE AND THE BLASTS ONLY WITHIN SIGHT.

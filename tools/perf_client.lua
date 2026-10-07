@@ -2328,8 +2328,9 @@ local PHASES = {
     end },
     { id = 'match airstrike', world = 's2-sky', settle = 30, setup = function()
         -- An Airstrike 30 m off, its warning nearly over as the scene starts:
-        -- the circle and the flare, then its ten rockets falling and bursting
-        -- over the next four seconds -- the FRAME callback carrying them, gone
+        -- the circle and the flare, then its ten rockets flying in and bursting
+        -- over the next four seconds -- the FRAME callback carrying them, each
+        -- moved and turned along its homing curve every frame (round 7), gone
         -- with the last -- and the circle off the map two seconds after.
         if not serverHas('terminals') then return end
         local p = entPos(W.me)

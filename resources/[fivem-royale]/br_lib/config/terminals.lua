@@ -1330,9 +1330,8 @@ BR.Config.Terminals = {
         strike = { colour = 1, alpha = 110 },
         fuzz = { colour = 1, alpha = 60 },
         -- What each client draws of it, and nothing more: the rocket's model
-        -- (the RPG's, which GTA's own airstrike rocket wears) with the RPG's
-        -- trail from `core`, falling from fallM over the spot in fallMs at a
-        -- slant of slantM; where it lands, a fireball from `core`
+        -- with the rocket trail from `core`, flying in as a homing missile
+        -- (round 7, below); where it lands, a fireball from `core`
         -- ('exp_grd_vehicle', the ground explosion GTA draws for a car), the
         -- game's cheap explosion sound and a camera shake for a player within
         -- shakeM. NOT AddExplosion: a scripted explosion is networked, does its
@@ -1343,24 +1342,41 @@ BR.Config.Terminals = {
         -- ROUND 6 (owner, 2026-10-07: "missile props never actually spawn, and
         -- the explosions from them should be 3x as big, at least"):
         --   models    tried in order, the first that streams in within loadMs
-        --             drawn: the RPG's rocket, then the Homing Launcher's and a
-        --             vehicle missile as stand-ins if it will not come
-        --   lodDist   how far off each rocket is still drawn -- the airdrop's
-        --             propLodDist; a weapon's own is a few meters, so the
-        --             rockets were culled for their whole fall
-        --             (client/terminalfx/airstrike.lua's header)
-        --   fallMs    2.5 s, was 1.2: at 125 m/s a rocket crossed the screen in
-        --             a blink; at 60 it is seen falling
+        --             drawn: since round 7 the Homing Launcher's rocket, then
+        --             the RPG's and a vehicle missile as stand-ins if it will
+        --             not come
+        --   lodDist   how far off each rocket is still drawn -- a weapon's own
+        --             is a few meters, so the rockets were culled for their
+        --             whole fall (client/terminalfx/airstrike.lua's header).
+        --             1,500 m since round 7: past the farthest client that
+        --             draws one, fx.strikeDrawM beyond its point plus launchM
+        --             out and launchUpM up (about 1,130 m)
         --   blastBaseM  how far the fireball reaches at scale 1, in meters. The
         --             fireball is drawn at fx.strikeReachM / blastBaseM -- 3x
         --             (15 m over 5), was 1x -- so it covers exactly the ground
         --             the server's damage reaches. AN ESTIMATE of the effect's
         --             own size: if the fireball looks smaller or bigger than the
         --             blast that hurts, this is the one number to change.
-        rocket = { models = { 'w_lr_rpg_rocket', 'w_lr_homing_rocket', 'w_ex_vehiclemissile_3' },
-                   loadMs = 5000, lodDist = 1000,
+        --
+        -- ROUND 7 (owner, 2026-10-07: "Any chance we could use homing missiles
+        -- targeted at the random coords we already have?"): each rocket flies
+        -- in like one, onto the server's own point at the server's own time
+        -- (client/terminalfx/airstrike.lua's header) -- the trail is the one
+        -- the Homing Launcher's ammo draws (weaponhominglauncher.meta's
+        -- TrailFx). A look the owner tunes in game:
+        --   flightMs  how long each is in the air, launch to impact
+        --   launchM, launchUpM  where it is launched from: this far off to the
+        --             side of its point, and this high over it
+        --   diveUpM   the height over its point it dives from, the last leg
+        --   fanDeg    the arc a strike's launches spread over, one bearing
+        --             a rocket in the order the server lands them
+        --   weaveM    how far each veers off the straight line on the way in,
+        --             one side then the other
+        rocket = { models = { 'w_lr_homing_rocket', 'w_lr_rpg_rocket', 'w_ex_vehiclemissile_3' },
+                   loadMs = 5000, lodDist = 1500,
                    trailAsset = 'core', trail = 'proj_rpg_trail',
-                   fallM = 150.0, fallMs = 2500, slantM = 25.0,
+                   flightMs = 3000, launchM = 320.0, launchUpM = 160.0, diveUpM = 90.0,
+                   fanDeg = 50.0, weaveM = 40.0,
                    blastAsset = 'core', blast = 'exp_grd_vehicle', blastBaseM = 5.0,
                    sound = 'MAIN_EXPLOSION_CHEAP', shake = 'LARGE_EXPLOSION_SHAKE', shakeM = 60.0 },
     },

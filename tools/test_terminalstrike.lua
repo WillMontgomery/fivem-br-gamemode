@@ -1396,9 +1396,15 @@ do
             ('%s never says squad outside a squad match'):format(key))
     end
     local src = (readFile(ROOT .. 'br_core/client/terminalfx/airstrike.lua') or ''):gsub('%-%-[^\n]*', '')
-    for _, native in ipairs({ 'AddExplosion', 'AddOwnedExplosion', 'ShootSingleBulletBetweenCoords',
-                              'ShootSingleBulletBetweenCoordsIgnoreEntity', 'ApplyDamageToPed',
-                              'SetEntityHealth' }) do
+    -- ROUND 7's homing missiles are our own prop on a curve: still no
+    -- projectile (a real homing rocket explodes as itself, GTA's damage and
+    -- credit), no weapon handed to anybody to fire one, no explosion.
+    for _, native in ipairs({ 'AddExplosion', 'AddOwnedExplosion', 'AddExplosionWithUserVfx',
+                              'ShootSingleBulletBetweenCoords',
+                              'ShootSingleBulletBetweenCoordsIgnoreEntity',
+                              'ShootSingleBulletBetweenCoordsIgnoreEntityNew', 'ApplyDamageToPed',
+                              'SetEntityHealth', 'GiveWeaponToPed', 'RequestWeaponAsset',
+                              'SetPedShootsAtCoord', 'TaskShootAtCoord' }) do
         ok(not src:find(native .. '%s*%('), ('the client half never calls %s'):format(native))
     end
     local server = (readFile(ROOT .. 'br_core/server/terminalfx/airstrike.lua') or ''):gsub('%-%-[^\n]*', '')
@@ -1902,7 +1908,7 @@ end
 -- PART D -- Airstrike, the client
 -- =========================================================================
 
-local fxCalls = { nonLooped = {}, looped = {}, stopped = 0, sounds = {}, shakes = {}, explode = {},
+local fxCalls = { nonLooped = {}, looped = {}, stopped = 0, stoppedSet = {}, sounds = {}, shakes = {}, explode = {},
                   rotations = {}, requested = {}, forbidden = 0 }
 function HasNamedPtfxAssetLoaded() return true end
 function RequestNamedPtfxAsset(a) fxCalls.requested[#fxCalls.requested + 1] = a end
@@ -1932,10 +1938,13 @@ local loopedSeq = 0
 function StartParticleFxLoopedOnEntity(name, e)
     call('StartParticleFxLoopedOnEntity')
     loopedSeq = loopedSeq + 1
-    fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e }
+    fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e, h = loopedSeq }
     return loopedSeq
 end
-function StopParticleFxLooped() fxCalls.stopped = fxCalls.stopped + 1 end
+function StopParticleFxLooped(h)
+    fxCalls.stopped = fxCalls.stopped + 1
+    fxCalls.stoppedSet[h] = true
+end
 function PlaySoundFromCoord(_, name, x, y, z)
     call('PlaySoundFromCoord')
     fxCalls.sounds[#fxCalls.sounds + 1] = { name = name, x = x, y = y, z = z }
@@ -1954,6 +1963,9 @@ function SetVehicleBodyHealth(e, v) vehHealth[e] = vehHealth[e] or {}; vehHealth
 function AddExplosion() fxCalls.forbidden = fxCalls.forbidden + 1 end
 function AddOwnedExplosion() fxCalls.forbidden = fxCalls.forbidden + 1 end
 function ShootSingleBulletBetweenCoords() fxCalls.forbidden = fxCalls.forbidden + 1 end
+function ShootSingleBulletBetweenCoordsIgnoreEntity() fxCalls.forbidden = fxCalls.forbidden + 1 end
+function ShootSingleBulletBetweenCoordsIgnoreEntityNew() fxCalls.forbidden = fxCalls.forbidden + 1 end
+function AddExplosionWithUserVfx() fxCalls.forbidden = fxCalls.forbidden + 1 end
 local flares = {}
 BR.Flare = { fire = function(x, y, z) flares[#flares + 1] = { x = x, y = y, z = z } return true end }
 local pickingNow = false
@@ -2039,8 +2051,8 @@ do
     for _, a in ipairs(fxCalls.requested) do if a == RA.trailAsset then wantAssets = true end end
     ok(wantAssets, 'the particle streams asked for at once')
     eq(frameLoops(), 0, 'no FRAME callback during the warning')
-    advance(FX.strikeWarnMs - RA.fallMs - 400, 100)
-    eq(frameLoops(), 0, 'still none a moment before the first rocket falls')
+    advance(FX.strikeWarnMs - RA.flightMs - 400, 100)
+    eq(frameLoops(), 0, 'still none a moment before the first rocket launches')
     eq(fxCalls.forbidden, 0, 'and nothing forbidden')
 end
 
@@ -2048,7 +2060,7 @@ describe('client: Airstrike -- each rocket falls, and lands as particles and a s
 do
     -- (Continuing the strike above.)
     advance(300, 50)
-    eq(frameLoops(), 1, 'the FRAME callback, just before the first rocket falls')
+    eq(frameLoops(), 1, 'the FRAME callback, just before the first rocket launches')
     advance(400, 50)
     local _, falling = F.strikeCounts()
     eq(falling, 1, 'the first rocket is in the air')
@@ -2060,21 +2072,35 @@ do
     ok(e and e.net == false and e.collision == false, 'a local object, never networked, colliding with nothing')
     ok(e and e.z > 20.0 + 50.0, 'high over the ground', e and e.z)
     local z0 = e and e.z
-    advance(300, 50)
+    advance(250, 50)
+    local x1, y1 = e.x, e.y
+    advance(50, 50)
     ok(e and e.z < z0, 'coming down', e and e.z)
     ok(fxCalls.looped[1] and fxCalls.looped[1].name == RA.trail and fxCalls.looped[1].ent == rocket,
-        "with the RPG's trail")
-    ok(fxCalls.rotations[rocket] and fxCalls.rotations[rocket].p < -60.0, 'nose down', fxCalls.rotations[rocket] and fxCalls.rotations[rocket].p)
+        "with the homing rocket's trail")
+    -- ITS NOSE ALONG ITS PATH (round 7: a curve, turned every frame): heading
+    -- the way it just moved, and pointing down as it comes down.
+    local rot = fxCalls.rotations[rocket]
+    local moved = math.deg(math.atan(-(e.x - x1), e.y - y1))
+    local off = rot and math.abs(((rot.y - moved) + 180.0) % 360.0 - 180.0) or 999
+    ok(off < 10.0, ('heading the way it flies (%.1f degrees off)'):format(off))
+    ok(rot and rot.p < 0.0, 'nose below the horizon as it descends', rot and rot.p)
     -- ROUND 6: "missile props never actually spawn". DRAWN FROM AS FAR AS
-    -- ANYBODY SEES IT FALL: a weapon's drawable is culled past its own few
-    -- meters, and nobody watching stands that close to a rocket 150 m up.
-    local farthest = math.sqrt(FX.strikeDrawM ^ 2 + RA.fallM ^ 2)
+    -- ANYBODY SEES IT FLY: a weapon's drawable is culled past its own few
+    -- meters, and nobody watching stands that close to a rocket in the sky --
+    -- since round 7 launched launchM off to the side and launchUpM up.
+    local farthest = math.sqrt((FX.strikeDrawM + RA.launchM) ^ 2 + RA.launchUpM ^ 2)
     ok(e and e.lodDist and e.lodDist >= farthest,
         ('drawn from %d m, past the farthest client that draws it (%.0f m)'):format(e and e.lodDist or 0, farthest))
     -- IT LANDS: after falling long enough to be seen (2 s at least).
     local n0 = #fxCalls.nonLooped
-    advance(RA.fallMs - 450, 50)
+    advance(RA.flightMs - 600, 50)
+    ok(C.ents[rocket].alive, 'a moment before its time: still in the air')
+    rot = fxCalls.rotations[rocket]
+    ok(rot and rot.p < -60.0, 'diving onto its point, nose down', rot and rot.p)
+    advance(150, 50)
     ok(not C.ents[rocket].alive, 'landed: the rocket object is gone')
+    ok(fxCalls.stoppedSet[fxCalls.looped[1].h] == true, 'and its trail stopped with it')
     ok(#fxCalls.nonLooped > n0, 'a fireball where it lands')
     local blast = fxCalls.nonLooped[n0 + 1]
     ok(blast and blast.name == RA.blast and blast.x == -12.0 and blast.z == 20.0, 'at its point, on the ground', blast and blast.x)
@@ -2164,7 +2190,8 @@ do
         slow()
     end
     local rpg, second = joaat(RA.models[1]), joaat(RA.models[2])
-    ok(RA.models[1] == 'w_lr_rpg_rocket', 'the RPG\'s rocket first')
+    ok(RA.models[1] == 'w_lr_homing_rocket', "round 7: the Homing Launcher's rocket first")
+    ok(RA.models[2] == 'w_lr_rpg_rocket', "then the RPG's")
 
     -- ARRIVING LATE: three seconds after it is asked for, inside the warning.
     models.arrivesAfterMs[rpg] = 3000
@@ -2194,6 +2221,84 @@ do
     eq(said, 1, 'and the console says so, once')
     models.missing = {}
     ok(#released >= 1, 'a strike gone lets its model go')
+end
+
+describe('client: Airstrike -- homing missiles: launched high off to the side, curving onto the server\'s point at its time (round 7)')
+do
+    -- Owner, 2026-10-07: "Any chance we could use homing missiles targeted at
+    -- the random coords we already have?" The points, the schedule and the
+    -- damage are the server's, untouched; the flight is drawn.
+    resetWorld()
+    W.me = { x = 10.0, y = 0.0, z = 20.0 }
+    fxCalls.nonLooped, fxCalls.looped, fxCalls.stoppedSet = {}, {}, {}
+    for k in pairs(C.ents) do C.ents[k] = nil end
+    local msg = strikeMsg(31, 0.0, 0.0)
+    cfire(BR.Net.TERMINAL_STRIKE, msg)
+    runThreads()
+    local gz = 20.0
+    local bearings, launchOk, endOk, nearOk, curved = {}, 0, 0, 0, 0
+    for i, rk in ipairs(msg.rockets) do
+        local x0, y0, z0 = F.rocketAt(31, i, rk.at - RA.flightMs)
+        local hd = math.sqrt((x0 - rk.x) ^ 2 + (y0 - rk.y) ^ 2)
+        if math.abs(hd - RA.launchM) < 1e-6 and math.abs(z0 - (gz + RA.launchUpM)) < 1e-6 then
+            launchOk = launchOk + 1
+        end
+        local x1, y1, z1 = F.rocketAt(31, i, rk.at)
+        if x1 == rk.x and y1 == rk.y and z1 == gz then endOk = endOk + 1 end
+        local xa, ya, za = F.rocketAt(31, i, rk.at - 1)
+        if math.sqrt((xa - rk.x) ^ 2 + (ya - rk.y) ^ 2 + (za - gz) ^ 2) < 0.5 then nearOk = nearOk + 1 end
+        -- OFF THE STRAIGHT LINE from its launch to its point, halfway there.
+        local xm, ym, zm = F.rocketAt(31, i, rk.at - RA.flightMs / 2)
+        local lx, ly, lz = rk.x - x0, rk.y - y0, gz - z0
+        local len = math.sqrt(lx * lx + ly * ly + lz * lz)
+        local px, py, pz = xm - x0, ym - y0, zm - z0
+        local along = (px * lx + py * ly + pz * lz) / len
+        local away = math.sqrt(math.max(0.0, px * px + py * py + pz * pz - along * along))
+        if away > 10.0 then curved = curved + 1 end
+        bearings[i] = math.deg(math.atan(y0 - rk.y, x0 - rk.x))
+    end
+    eq(launchOk, 10, 'every rocket launched launchM off to the side of its point and launchUpM over it')
+    eq(endOk, 10, "every rocket exactly on the server's point at the server's time")
+    eq(nearOk, 10, 'and within half a meter of it a millisecond before')
+    eq(curved, 10, 'every one curving in: more than 10 m off the straight line halfway there')
+    local spread = 0.0
+    for i = 2, #bearings do
+        local d = math.abs(((bearings[i] - bearings[1]) + 180.0) % 360.0 - 180.0)
+        if d > spread then spread = d end
+        ok(bearings[i] ~= bearings[i - 1], ('rocket %d launches from a bearing of its own'):format(i))
+    end
+    ok(math.abs(spread - RA.fanDeg) < 1e-6, ('fanned over fanDeg (%.1f degrees)'):format(spread))
+
+    -- THE SAME FLIGHT ON EVERY CLIENT: the same strike, worked out afresh,
+    -- gives the same points.
+    local probe = msg.rockets[4].at - 1234
+    local before = { F.rocketAt(31, 4, probe) }
+    cfire(BR.Net.TERMINAL_STRIKE, msg)
+    runThreads()
+    local after = { F.rocketAt(31, 4, probe) }
+    ok(before[1] == after[1] and before[2] == after[2] and before[3] == after[3],
+        'the same strike, worked out again: the very same flight')
+
+    -- FLOWN AS WORKED OUT: the object on its path, frame by frame, its trail
+    -- on from launch to landing.
+    advance(msg.rockets[1].at - RA.flightMs + 1000 - clientMs, 50)
+    local obj = nil
+    for id, e in pairs(C.ents) do
+        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) then obj = obj or id end
+    end
+    local e = obj and C.ents[obj]
+    local wx, wy, wz = F.rocketAt(31, 1, clientMs)
+    ok(e and math.abs(e.x - wx) < 1e-6 and math.abs(e.y - wy) < 1e-6 and math.abs(e.z - wz) < 1e-6,
+        'the rocket in the air is where its path says, this frame')
+    advance(FX.strikeWarnMs + 5000, 50)
+    eq(#fxCalls.looped, 10, 'ten trails started, one on each rocket')
+    local stopped = 0
+    for _, l in ipairs(fxCalls.looped) do if fxCalls.stoppedSet[l.h] then stopped = stopped + 1 end end
+    eq(stopped, 10, 'and every one stopped as its rocket landed')
+    eq(#fxCalls.nonLooped, 10, 'ten blasts')
+    eq(fxCalls.forbidden, 0, 'and never an explosion that is real, nor a projectile')
+    advance(FX.strikeLingerMs + 100, 500)
+    slow()
 end
 
 describe('client: Airstrike -- the owner of a vehicle a rocket hit writes the server\'s figure')
