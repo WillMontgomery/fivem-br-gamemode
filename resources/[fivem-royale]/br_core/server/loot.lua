@@ -183,15 +183,24 @@ local function crates2On()
 end
 BR.Loot.crates2On = crates2On
 
+--- This zone's festive answer, as a crate's `bf`: a match's own (decided when
+--- its loot was laid out), or -- the warmup pad, which has none -- the
+--- calendar's now.
+--- @param loot table
+--- @return boolean|nil bf
+local function festiveFor(loot)
+    local festive = loot.festive
+    if festive == nil then festive = BR.Festive.now() end
+    return festive == true or nil
+end
+
 --- The look a crate of this rarity wears in this zone: its tier and festive.
 --- @param loot table
 --- @param rarity integer
 --- @return integer bt
 --- @return boolean|nil bf
 local function lookFor(loot, rarity)
-    local festive = loot.festive
-    if festive == nil then festive = BR.Festive.now() end
-    return BR.Crates.tierOf(rarity), festive == true or nil
+    return BR.Crates.tierOf(rarity), festiveFor(loot)
 end
 
 --- Stamp a crate's Season 2 look as it enters the registry (#395).
@@ -232,10 +241,15 @@ end
 --- So Season 1 after a switch is today's crates field for field -- no `bt`,
 --- `bf` or `bg` anywhere -- and Season 2 after a switch is what stampLook and
 --- toHusk would have made had it been Season 2 all along.
+---
+--- `refestive` (`brfestive`, round 5): the zone's festive answer has just
+--- moved, so a crate or husk that wears a look takes the zone's festive set
+--- anew -- its tape, its gift color and a `brbox` crate's asked-for look stay.
 --- @param loot table
 --- @param e table
+--- @param refestive boolean|nil
 --- @return boolean changed  whether the wire's look fields moved
-local function restampLook(loot, e)
+local function restampLook(loot, e, refestive)
     if e.kind ~= 'chest' and e.kind ~= 'husk' then return false end
     local bt, bf, bg = e.bt, e.bf, e.bg
     if not BR.Crates or not crates2On() then
@@ -248,6 +262,8 @@ local function restampLook(loot, e)
             if e.kind == 'husk' then rarity = e.sealedRarity end
             if rarity ~= nil then e.bt, e.bf = lookFor(loot, rarity) end
         end
+    elseif refestive and not e.asked then
+        e.bf = festiveFor(loot)
     end
     return e.bt ~= bt or e.bf ~= bf or e.bg ~= bg
 end
@@ -2420,15 +2436,20 @@ end
 --
 -- Nothing changes when crates2 says the same before and after (a switch
 -- between two seasons that both have it): no field moves, no message goes.
+--
+-- `refestive` IS `brfestive`'s (round 5): the same walk, the same one
+-- re-announce per player and zone, with every crate and husk taking its
+-- zone's new festive answer (BR.Loot.refestive, below).
+--- @param refestive boolean|nil
 --- @return table  { zones, stamped, cleared, burst, told }
-function BR.Loot.reseason()
+local function restyle(refestive)
     local on = crates2On()
     local r = { zones = 0, stamped = 0, cleared = 0, burst = 0, told = 0 }
     eachZone(function(m)
         r.zones = r.zones + 1
         local byCell, opening = {}, {}
         for _, e in pairs(m.loot.items) do
-            local changed = restampLook(m.loot, e)
+            local changed = restampLook(m.loot, e, refestive)
             if changed then
                 if e.bt ~= nil then r.stamped = r.stamped + 1 else r.cleared = r.cleared + 1 end
             end
@@ -2466,6 +2487,36 @@ function BR.Loot.reseason()
         end
     end)
     return r
+end
+
+--- Every crate still standing, restyled for the season in force (above).
+--- @return table  { zones, stamped, cleared, burst, told }
+function BR.Loot.reseason()
+    return restyle(false)
+end
+
+-- ═══ `brfestive` RESTYLES EVERY CRATE ON THE GROUND, AT ONCE (round 5) ═══
+--
+-- A match decides festive ONCE, when its loot is laid out (BR.Loot.begin), so
+-- that the calendar turning mid-match -- January 31 at 23:59 -- never restyles
+-- the crates players are running between. The dev switch is not the calendar:
+-- the owner typed `brfestive on` in a running match and its crates stayed
+-- plain. So the COMMAND, and nothing else, hands every zone the new answer --
+-- each match laid out so far takes it as its own (crates added later in it
+-- carry it too), the warmup pad asks the calendar as it always does -- and
+-- every crate and husk wears it now: the pad's generated crates, its respawns
+-- and its four permanent crates included, re-announced to each player once,
+-- through the walk a season switch uses. A `brbox` crate keeps the look it
+-- was asked for, and an airdrop still falling keeps the box it was sited with
+-- (it lands in the match's new answer). On Season 1, where crates wear no
+-- look, nothing moves.
+--- @return table  { zones, stamped, cleared, burst, told }
+function BR.Loot.refestive()
+    local now = BR.Festive.now()
+    eachZone(function(m)
+        if m.loot.festive ~= nil then m.loot.festive = now end
+    end)
+    return restyle(true)
 end
 
 -- Subscriptions belong to players, and players leave. Left behind they would
@@ -2764,10 +2815,13 @@ end)
 ---
 --- WHEN IT APPLIES IS THE WHOLE QUESTION, so it says so every time. The sky
 --- moves at once, for everyone (server/world.lua sends the one fact when it
---- moves, and each client blends to it). A match's crates decide once, when its
---- loot is laid out at warmup, so a match already laid out keeps its answer;
---- the next match's layout, every warmup-pad crate stocked from now on and
---- every `brbox` crate take the new one.
+--- moves, and each client blends to it). AND SO DO THE CRATES (round 5): every
+--- crate and husk already on the ground -- every running match's, and the
+--- warmup pad's, its four permanent crates included -- is restyled now and
+--- re-announced once (BR.Loot.refestive), and the next match's layout, every
+--- warmup-pad crate stocked from now on and every `brbox` crate take the new
+--- answer too. The real calendar turning still restyles nothing that is
+--- already laid out: only this command does.
 RegisterCommand('brfestive', function(_, args)
     if not BR.Festive then
         print('[br_core] brfestive: br_lib/shared/festive.lua is not loaded')
@@ -2810,9 +2864,14 @@ RegisterCommand('brfestive', function(_, args)
         end
     end
 
-    print('  crates: laid out from now on -- the next match\'s layout (at its')
-    print('  warmup), warmup-pad crates as they are stocked, and brbox crates.')
-    print('  A match already laid out keeps the answer it started with.')
+    -- THE CRATES, NOW (round 5): every one on the ground, once.
+    if a ~= '' then
+        local r = BR.Loot.refestive()
+        print(('  crates: every crate on the ground restyled now -- %d changed, %d player(s) told'):format(
+            r.stamped, r.told))
+    end
+    print('  and from now on: the next match\'s layout (at its warmup), warmup-pad')
+    print('  crates as they are stocked, and brbox crates.')
     if not crates2On() then
         print(('  (Season 2 crates are off on Season %s, so no crate carries it yet)')
             :format(tostring(BR.Season.current())))

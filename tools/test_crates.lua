@@ -15,7 +15,9 @@
 --   unchanged, the stamp, the opening and its ordering, every edge the owner's
 --   spec names (the opener dying or leaving, the match ending, two holds at
 --   once, the airdrop, the warmup pad's cycle), a client streaming the crate in
---   during the clip and after it, the dev crate and `brfestive`.
+--   during the clip and after it, the dev crate and `brfestive` -- which,
+--   since round 5, restyles every crate already on the ground at once, while
+--   the real calendar turning restyles nothing already laid out.
 --
 -- The client half -- the model it picks, the fallback, the clip, the swap, the
 -- prompt and the frame cost -- is tools/test_crates_client.lua.
@@ -1235,7 +1237,8 @@ do
     season(2)
     commands['brfestive'](0, { 'on' })
     eq(BR.Festive.override, true, 'on forces it on')
-    ok(said('ON') and said('next match'), 'and says it applies from the next match\'s layout')
+    ok(said('ON') and said('restyled now') and said('next match'),
+        'and says it restyles the crates on the ground now, and every crate laid out from now on')
     commands['brfestive'](0, { 'off' })
     eq(BR.Festive.override, false, 'off forces it off')
     commands['brfestive'](0, { 'auto' })
@@ -1283,6 +1286,199 @@ do
     eq(#skies(), 0, 'on Season 1 the sky never turns festive: snow is Season 2\'s')
     ok(said('Season 2\'s, and this is Season 1'), 'and it says why')
     commands['brfestive'](0, { 'auto' })
+end
+
+describe('round 5: brfestive restyles every crate already on the ground, at once, told once')
+do
+    -- The owner typed `brfestive on` in a running match and its crates stayed
+    -- plain: a match decided festive once, at layout. The DEV COMMAND now
+    -- restyles every crate and husk on the ground -- every match's and the
+    -- warmup pad's, its four permanent crates included -- through the walk a
+    -- season switch uses.
+    reset()
+    season(2)
+    realNames()
+    -- server/world.lua (loaded above) tells a PLAYING match its sky cycle.
+    BR.Broadcast = BR.Broadcast or { toMatch = function() end }
+    resources.br_crates = nil      -- instant opens: husks without a clip
+    commands['brfestive'](0, { 'off' })
+
+    -- A RUNNING MATCH, LAID OUT PLAIN.
+    local m = { id = 31, seq = 31, state = BR.MatchState.PLAYING }
+    matches[31] = m
+    BR.Loot.begin(m, 4242)
+    eq(m.loot.festive, false, 'the match was laid out plain')
+    -- A husk in it, and a `brbox` crate asked plain.
+    standAt(50, m)
+    local opened = crateAt(m, R.RARE)
+    claim(50, opened.id)
+    eq(opened.kind, 'husk', 'a crate in it opened into its husk')
+    roster[51] = { name = 'b', state = BR.PlayerState.ALIVE, matchId = 31,
+                   pos = { x = SPOT.x, y = SPOT.y, z = SPOT.z } }
+    commands['brboxsv'](51, { 'ship', '2', 'plain', tostring(SPOT.x + 2.0), tostring(SPOT.y), tostring(SPOT.z) })
+    local asked = nil
+    for _, it in pairs(m.loot.items) do
+        if it.asked and (not asked or it.id > asked.id) then asked = it end
+    end
+    ok(asked ~= nil and asked.bf == nil, 'a brbox crate asked plain stands in it')
+    -- A player watching every cell of the match.
+    local MW = 52
+    roster[MW] = { name = 'mw', state = BR.PlayerState.ALIVE, matchId = 31,
+                   pos = { x = SPOT.x, y = SPOT.y, z = SPOT.z } }
+    local cells = {}
+    for key in pairs(m.loot.cells) do cells[key] = true end
+    m.loot.subs[MW] = cells
+
+    -- THE PAD, ITS FOUR INCLUDED, AND ITS WATCHER.
+    local zone = BR.Loot.warmupZone()
+    jobs['warmupcrates.tick']()
+    local pad = BR.Config.Match.warmupPos
+    roster[WATCHER] = { name = 'w', state = BR.PlayerState.WARMUP, pos = { x = pad.x, y = pad.y, z = pad.z } }
+    local all = {}
+    for key in pairs(zone.loot.cells) do all[key] = true end
+    zone.loot.subs[WATCHER] = all
+
+    local function festiveCount(z, skipAsked)
+        local n, of = 0, 0
+        for _, it in ipairs(cratesIn(z)) do
+            if not (skipAsked and it.asked) then
+                of = of + 1
+                if it.bf == true then n = n + 1 end
+            end
+        end
+        return n, of
+    end
+    local n0 = festiveCount(m, true)
+    local p0 = festiveCount(zone, true)
+    eq(n0, 0, 'before: no crate in the match is festive')
+    eq(p0, 0, 'and none on the pad')
+
+    -- `brfestive on`.
+    sent, logs = {}, {}
+    commands['brfestive'](0, { 'on' })
+    local n1, of1 = festiveCount(m, true)
+    ok(of1 > 100 and n1 == of1, ('every crate and husk in the running match is festive now (%d of %d)'):format(n1, of1))
+    eq(opened.bf, true, 'its husk too')
+    eq(opened.bt, BR.Crates.tierOf(opened.sealedRarity), 'keeping its tape')
+    eq(asked.bf, nil, 'a brbox crate keeps the look it was asked for')
+    eq(m.loot.festive, true, 'and the match takes the new answer as its own')
+    local p1, pof = festiveCount(zone, true)
+    ok(pof > 200 and p1 == pof, ('every crate and husk on the warmup pad is festive now (%d of %d)'):format(p1, pof))
+    for i = 1, 4 do
+        local a = anchorEntry(zone, i)
+        ok(a and a.bf == true, ('the pad\'s permanent crate %d too'):format(i))
+    end
+    -- TOLD ONCE: one message per player per zone, every changed entry in it once.
+    local toM, toP = 0, 0
+    for _, ev in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        if ev.src == MW then toM = toM + 1 end
+        if ev.src == WATCHER then toP = toP + 1 end
+    end
+    eq(toM, 1, 'the match\'s watcher is sent ONE message')
+    eq(toP, 1, 'and so is the pad\'s')
+    local tm, onceM = toldIds(MW), true
+    for _, it in ipairs(cratesIn(m)) do
+        if not it.asked and tm[it.id] ~= 1 then onceM = false end
+    end
+    ok(onceM, 'carrying each of the match\'s restyled crates exactly once')
+    eq(tm[asked.id], nil, 'and not the brbox crate, which did not change')
+    local tp, onceP = toldIds(WATCHER), true
+    for _, it in ipairs(cratesIn(zone)) do
+        if not it.asked and tp[it.id] ~= 1 then onceP = false end
+    end
+    ok(onceP, 'and the pad\'s watcher each of the pad\'s exactly once')
+    local w = nil
+    for _, ev in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        if ev.src == MW then w = ev.payload[1] end
+    end
+    eq(w and w.bf, true, 'the wire carries the festive set')
+    ok(said('restyled now'), 'and the console says the crates on the ground were restyled')
+
+    -- A crate laid down in that match later carries the new answer.
+    local later = crateAt(m, R.EPIC)
+    eq(later.bf, true, 'a crate added to the match afterwards is festive too')
+
+    -- SAID AGAIN: nothing moves, nothing is sent.
+    sent = {}
+    commands['brfestive'](0, { 'on' })
+    eq(#eventsOf(BR.Net.LOOT_ADD), 0, '`brfestive on` again re-announces nothing')
+
+    -- AND BACK: `brfestive off` restyles them plain, at once.
+    commands['brfestive'](0, { 'off' })
+    eq((festiveCount(m, true)), 0, '`brfestive off`: every crate in the match is plain again')
+    eq((festiveCount(zone, true)), 0, 'and on the pad')
+    eq(m.loot.festive, false, 'the match\'s answer with it')
+
+    -- SEASON 1: crates wear no look, so nothing moves and nothing is sent.
+    season(1)
+    BR.Loot.reseason()
+    sent = {}
+    commands['brfestive'](0, { 'on' })
+    eq(#eventsOf(BR.Net.LOOT_ADD), 0, 'on Season 1 brfestive restyles nothing')
+    eq(lookCount(m), 0, 'and no crate wears a look')
+    season(2)
+    BR.Loot.reseason()
+    commands['brfestive'](0, { 'auto' })
+    roster[50], roster[51], roster[MW] = nil, nil, nil
+    shipped()
+end
+
+describe('round 5: the real calendar crossing a month boundary still restyles no crate already laid out')
+do
+    reset()
+    season(2)
+    BR.Festive.override = nil
+    local realDate = os.date
+    local month = 11
+    os.date = function(fmt, t)
+        if fmt == '*t' then
+            local d = realDate('*t')
+            d.month = month
+            return d
+        end
+        return realDate(fmt, t)
+    end
+    local ok2, err = pcall(function()
+        local m = { id = 41, seq = 41, state = BR.MatchState.PLAYING }
+        matches[41] = m
+        BR.Loot.begin(m, 4242)
+        eq(m.loot.festive, false, 'November 30: the match is laid out plain')
+        local zone = BR.Loot.warmupZone()
+        local snap = {}
+        for _, it in ipairs(cratesIn(m)) do snap[it.id] = { bf = it.bf } end
+        for _, it in ipairs(cratesIn(zone)) do snap[it.id] = { bf = it.bf } end
+
+        month = 12   -- December 1st, mid-match
+        eq(BR.Festive.now(), true, 'the calendar is festive now')
+        sent = {}
+        -- Every timed job there is, the calendar's own (the sky's) among them.
+        for _, name in ipairs({ 'world.festive', 'world.cycle', 'loot.sweep', 'loot.warmupRespawn', 'warmupcrates.tick' }) do
+            if jobs[name] then jobs[name]() end
+        end
+        local same = true
+        for _, it in ipairs(cratesIn(m)) do
+            if not snap[it.id] or snap[it.id].bf ~= it.bf then same = false end
+        end
+        ok(same, 'every crate in the running match keeps the look it was laid out with')
+        local padSame = true
+        for _, it in ipairs(cratesIn(zone)) do
+            if snap[it.id] and snap[it.id].bf ~= it.bf then padSame = false end
+        end
+        ok(padSame, 'and every crate already on the pad keeps its own')
+        local re = 0
+        for _, ev in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, wv in ipairs(ev.payload) do
+                if snap[wv.id] then re = re + 1 end
+            end
+        end
+        eq(re, 0, 'and no crate already laid out is re-announced')
+        eq(m.loot.festive, false, 'the match keeps its own answer')
+        standAt(60, m)
+        eq(crateAt(m, R.RARE).bf, nil, 'and a crate added to it later carries the match\'s answer, not the calendar\'s')
+        roster[60] = nil
+    end)
+    os.date = realDate
+    ok(ok2, 'the calendar block ran', err)
 end
 
 -- ----------------------------------------------------------------- result ---
