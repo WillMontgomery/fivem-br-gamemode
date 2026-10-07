@@ -12,10 +12,12 @@
 -- yes, and it costs 150 Volts (the registry row). The run carries the spot the
 -- player picked (`spot = true` on the row: BR.Terminal.spot checks its shape,
 -- and it arrives as `opts.at`). The storm's half is server/storm.lua's:
--- BR.Storm.aimCheck holds the spot to the planner's rules and BR.Storm.aim
--- hands the match it, so the storm ends EXACTLY there -- or, when it cannot,
--- the run is refused with the reason, before anything is spent (never moved
--- to a nearby spot: see server/storm.lua's STORM CONTROL block).
+-- BR.Storm.aim plans the rest of the match toward the spot and hands the match
+-- the plan, so every circle the storm draws from now on closes toward it and
+-- the last ends on it -- or, where the storm cannot get there, as near it as
+-- it can (round 5, owner 2026-10-06: "the next phases should instead work
+-- towards the location the player selected"). No spot is refused: one over
+-- water or off the map is aimed as the nearest land to it.
 --
 -- STORM REVEAL STAYS TRUE. A squad that ran Storm reveal earlier this match is
 -- sent where the storm now ends, the same way it was sent the first answer
@@ -25,14 +27,11 @@
 --   no_storm         the storm has not drawn its first circle
 --   storm_aimed      a Storm control already picked this match's spot: one
 --                    spot a match (round 4's review), so the first runner's
---                    "exactly on that spot" holds for the rest of the match
+--                    storm closes on their spot for the rest of the match
 --   no_circle        the final circle is already on the map
---   storm_spot_land  the spot is over water or outside the play area
---   storm_spot_out   the spot is outside the next circle on the map
---   storm_spot_edge  the spot is too near that circle's edge to end on
--- and asked again when the load is over, so a circle drawn in those 3 to 5
--- seconds that no longer holds the spot -- or another squad's Storm control
--- landing first -- gives everything back.
+-- and asked again when the load is over, so the final circle drawn in those 3
+-- to 5 seconds -- or another squad's Storm control landing first -- gives
+-- everything back.
 
 BR = BR or {}
 BR.Terminal = BR.Terminal or {}
@@ -54,23 +53,21 @@ local function reReveal(m)
 end
 
 T.FUNCTIONS.storm_control = {
-    -- Listed (no spot yet): the storm is not aimed yet, and there is a circle
-    -- left to draw, or not. With the spot: whether the storm can end exactly
-    -- on it. A dev terminal outside a match is never refused.
-    refuse = function(src, session, opts)
+    -- Listed or run: the storm is not aimed yet, and there is a circle left to
+    -- draw, or not. Wherever the spot is, the storm can close toward it, so the
+    -- spot itself is never a reason. A dev terminal outside a match is never
+    -- refused.
+    refuse = function(src, session)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
         local rec = m.storm
         if not rec or not m.stormRng then return 'no_storm' end
         if BR.Storm.aimed(m) then return 'storm_aimed' end
         if rec.phase >= #BR.Config.Storm.phases then return 'no_circle' end
-        local at = opts and opts.at
-        if not at then return nil end
-        local _, why = BR.Storm.aimCheck(m, at.x, at.y)
-        return why
+        return nil
     end,
-    -- THE STORM ENDS ON THE SPOT: the match aimed at it, and every squad that
-    -- ran Storm reveal told the new end.
+    -- THE STORM CLOSES TOWARD THE SPOT: the match aimed at it, and every squad
+    -- that ran Storm reveal told the new end.
     run = function(src, session, opts)
         local m = T.whereIs(src)
         if not m then
@@ -83,13 +80,13 @@ T.FUNCTIONS.storm_control = {
         end
         local at = opts and opts.at
         if not at then return { ok = false, code = 'bad_option' } end
-        local spot, why = BR.Storm.aim(m, at.x, at.y)
-        if not spot then return { ok = false, code = why } end
+        local plan, why = BR.Storm.aim(m, at.x, at.y)
+        if not plan then return { ok = false, code = why } end
         -- Who aimed the storm that stands, spared its persistent notice.
         T.fxOf(m).stormBy = src
         reReveal(m)
-        print(('[br_core] terminals: Storm control by %d in match %s: the storm ends at (%.1f, %.1f)')
-            :format(src, tostring(m.id), spot.x, spot.y))
+        print(('[br_core] terminals: Storm control by %d in match %s at (%.1f, %.1f): the storm ends at (%.1f, %.1f)')
+            :format(src, tostring(m.id), plan.x, plan.y, plan.ex, plan.ey))
         return { ok = true, code = 'done' }
     end,
 }

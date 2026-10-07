@@ -1637,8 +1637,8 @@ end
 
 --- Is (x, y) off the map a storm may close on: over water (BR.Config.Map's
 --- rectangles) or outside the surveyed boundary? BR.NextZoneCentre's "AND NOT
---- OFF THE MAP" test, which says why both halves run -- and the test Storm
---- control holds a picked spot to (#396). No map config is nothing off it.
+--- OFF THE MAP" test, which says why both halves run -- and the test every
+--- center Storm control places is held to (#396). No map config is nothing off it.
 --- @param x number
 --- @param y number
 --- @return boolean
@@ -1650,123 +1650,706 @@ function BR.StormOffMap(x, y)
     return false
 end
 
--- How many rounds Storm control's search for the next center may take, and the
--- directions it tries each round. FIXED COUNTS, so the walk Storm control checks
--- a spot with and the one enterPhase draws land on the same doubles.
-local AIM_ROUNDS = 48
-local AIM_DIRS = 8
+-- ═══ STORM CONTROL: EVERY LATER CIRCLE CLOSES TOWARD THE PICKED SPOT (#396) ═══
+--
+--   "this limitation should not exist. the next phases should instead work
+--    towards the location the player selected."           -- owner, 2026-10-06
+--
+-- Round 4 refused a spot outside the next circle, near its edge or over water.
+-- None of those is refused now: the storm goes as far toward ANY spot as the
+-- planner's own rules let it, and ends on it when it can get there.
+--
+-- THE RULES ARE THE PLANNER'S, LESS ITS DICE (BR.NextZoneCentre): every zone
+-- nested in the one before by its real shape (#344, the same NEST_CLEAR), its
+-- exact bounding box inside the map bounds, and its center on the map
+-- (BR.StormOffMap). No aimed phase breaks out or hugs the edge, and the city
+-- share (#381) is the anchor's -- circle 1's, drawn before any Storm control can
+-- run -- so it never applies here.
+--
+-- THE SPOT, ON LAND. A spot over water or off the surveyed map is aimed as the
+-- nearest point to it that is on the map (nearestLand) -- the shore it was
+-- picked beside.
+--
+-- WHERE THE STORM ENDS. Phase 8's point can end anywhere the chain of nested
+-- zones can carry it: the zone each phase may take, as offsets from the center
+-- of the zone before, is a convex region (the zone before eroded by the next
+-- one), so the ends the storm can reach are the next circle's center plus the
+-- MINKOWSKI SUM of those regions -- one convex polygon, R. The storm ends on the
+-- spot when the spot is in R, and otherwise on the point of R nearest it that is
+-- on the map. Exact for the polygons: each region is the zone before cut to
+-- chords (every chord inside it, at most AIM_SAG of its radius in) and eroded by
+-- the next zone's exact support, so every point of it truly nests.
+--
+-- TOWARD, PHASE BY PHASE. Each circle's center is the point NEAREST THE SPOT
+-- among the centers the rules allow it from the circle before AND from which the
+-- storm can still end where it will (the backward reach V, the end less the
+-- remaining regions) -- so the walk closes on the spot as fast as the rules
+-- permit, and every circle is as near it as any storm that still ends there
+-- could put it. A center that would be over water is the nearest one on the map
+-- instead, whenever one is in reach.
+--
+-- THE MAP BOUNDS, WHEREVER THEY CAN HOLD. The planner keeps a zone's box inside
+-- mapAABB unless the zone before already overhangs it; here a zone is held to the
+-- box whenever ANY reachable placement of it fits there, which is that rule for
+-- every chain this can choose (a zone concentric in a boxed one is boxed).
+--
+-- DETERMINISTIC AND BOUNDED: no draw from any stream, fixed chord counts, and
+-- every step linear or n log n in the polygons' corners -- a few milliseconds of
+-- server Lua, 30 at worst, once per Storm control (BR.Storm.aim keeps the plan
+-- on the match; enterPhase and Storm reveal read it).
 
---- WHERE THE NEXT ZONE GOES WHEN STORM CONTROL HAS PICKED WHERE THE STORM ENDS
---- (#396, round 4, owner 2026-10-06: "we should let them actually pick exactly
---- where they want it").
----
---- THE PLANNER'S RULES, LESS ITS DICE. The next zone is nested in this one by its
---- real shape (BR.NextZoneCentre's test, the same NEST_CLEAR), its exact bounding
---- box inside the map bounds (unless this zone already overhangs them -- the
---- phase's own room beats the bounds, as there), and its center on the map
---- (BR.StormOffMap). What it leaves out is what a pick replaces: the bearing and
---- the offset drawn off the stream, the edge hug and the breakout -- every aimed
---- phase is nested.
----
---- ON THE SPOT WHEN IT FITS THERE. When the next zone can stand centered on the
---- spot, it does -- and from then on every zone after it can too (each holds its
---- own center with room for the next, blobUnit's `fitClear`), so a zone of no
---- radius, phase 8's point, lands ON the spot: that is how the storm ends exactly
---- there.
----
---- OTHERWISE, AS DEEP AROUND THE SPOT AS THE ZONE ALLOWS. Zones are stretched
---- up to 3:1, so a center moved straight at the spot can lose it a phase later
---- through a narrow side (measured: about one spot in five, two thirds of the
---- way out). So the center is the placeable one that holds the spot DEEPEST --
---- the spot's signed distance into the next zone's hull, smallest -- found by a
---- pattern search from the better of this zone's own center and the furthest
---- placeable point toward the spot along the straight line: AIM_DIRS directions
---- a round, a step that halves whenever none of them is deeper, AIM_ROUNDS
---- rounds at most. Deterministic, so the same arguments give the same center
---- wherever they are asked. (A search that also looked one zone further ahead,
---- for a center the zone after could stand on the spot from, took no spot this
---- one refuses, over 360 spots in 60 matches, and was dropped.)
----
---- A HOST THAT CANNOT HOLD THE NEXT ZONE AT ITS OWN CENTER (a dev path: a frozen
---- outline thawed, a same-phase `brphase`) leaves the center where it is, as there.
---- @param host table       the zone being closed from, as a shape (BR.StormHost)
---- @param cx number        its center
---- @param cy number
---- @param r0 number        its radius
---- @param unit table|nil   the next zone's unit; nil for a point
---- @param r1 number        the next zone's radius
---- @param aabb table|nil   playable bounds
---- @param tx number        the spot
---- @param ty number
---- @return number, number  the next center
-function BR.NextZoneCenterToward(host, cx, cy, r0, unit, r1, aabb, tx, ty)
-    local SS = BR.StormShape
-    local hks = hostHull(host, cx, cy, r0)
-    local D0 = zoneDiscs(unit, r1)
+-- How far a region's chords may sit inside the zone they were cut from: this
+-- fraction of the zone's radius, and never under AIM_SAG_MIN meters. Every
+-- region is that much inside the truth at worst, which is how close to the
+-- planner's own rules the reach R is.
+local AIM_SAG = 1e-4
+local AIM_SAG_MIN = 0.01
+
+-- The clearance every aimed zone keeps inside the one before: the planner's, and
+-- five millimeters more, which absorbs the rounding of the polygons' corners and
+-- the slack below.
+local AIM_CLEAR = NEST_CLEAR + 5e-3
+
+-- How far inside the reach the end is held, and the slack each phase's backward
+-- reach is drawn in by -- halved every phase -- so no center balances on the
+-- edge of what still ends there: two centimeters, and ten and a hundred times
+-- that where a walk needs it (BR.StormAimPlan).
+local AIM_SLACK = 0.02
+
+-- How far the backward reach is grown when there is no slack to spare: a tenth
+-- of a millimeter, so a reach that only touches the room is still a sliver and
+-- not a rounding error.
+local AIM_TAU = 1e-4
+
+-- A point this close outside a polygon is in it.
+local AIM_IN = 1e-7
+
+-- How far off a coastline or a polygon's edge a candidate is tried: a centimeter.
+local AIM_NUDGE = 0.01
+
+-- How far outside a half-plane a corner must be to cut it.
+local AIM_HPI_EPS = 1e-9
+
+--- Twice the signed area of a polygon (positive counter-clockwise).
+local function polyArea2(xs, ys)
+    local n, s = #xs, 0.0
+    for i = 1, n do
+        local j = (i % n) + 1
+        s = s + xs[i] * ys[j] - xs[j] * ys[i]
+    end
+    return s
+end
+
+--- A polygon with its repeated corners dropped (and the last when it is the first).
+local function polyTidy(xs, ys)
+    local n = #xs
+    if n < 2 then return xs, ys end
+    local ox, oy, k = {}, {}, 0
+    for i = 1, n do
+        local x, y = xs[i], ys[i]
+        if k == 0 or math.abs(x - ox[k]) > 1e-7 or math.abs(y - oy[k]) > 1e-7 then
+            k = k + 1
+            ox[k], oy[k] = x, y
+        end
+    end
+    while k > 1 and math.abs(ox[k] - ox[1]) <= 1e-7 and math.abs(oy[k] - oy[1]) <= 1e-7 do
+        ox[k], oy[k] = nil, nil
+        k = k - 1
+    end
+    return ox, oy
+end
+
+--- The half-planes of a counter-clockwise convex polygon's edges, moved by
+--- (ox, oy) and pushed out by `grow`, appended to `out`: { nx, ny, b, angle },
+--- the points with nx * x + ny * y <= b.
+local function polyLines(xs, ys, ox, oy, grow, out)
+    local n = #xs
+    for i = 1, n do
+        local j = (i % n) + 1
+        local ex, ey = xs[j] - xs[i], ys[j] - ys[i]
+        local len = math.sqrt(ex * ex + ey * ey)
+        if len > 1e-9 then
+            local nx, ny = ey / len, -ex / len
+            out[#out + 1] = { nx, ny, nx * (xs[i] + ox) + ny * (ys[i] + oy) + grow, math.atan(ny, nx) }
+        end
+    end
+    return out
+end
+
+--- Where two lines meet; nil when they are parallel.
+local function lineCut(a, b)
+    local det = a[1] * b[2] - a[2] * b[1]
+    if math.abs(det) < 1e-12 then return nil end
+    return (a[3] * b[2] - b[3] * a[2]) / det, (a[1] * b[3] - b[1] * a[3]) / det
+end
+
+--- Do two lines face the same way, to within a nanoradian? Closer than that,
+--- where they meet is rounding, so the tighter of the two stands for both.
+local function lineSame(a, b)
+    return math.abs(a[1] * b[2] - a[2] * b[1]) < 1e-9 and a[1] * b[1] + a[2] * b[2] > 0.0
+end
+
+--- Is (x, y) outside line l's half-plane?
+local function lineOut(l, x, y)
+    return l[1] * x + l[2] * y - l[3] > AIM_HPI_EPS
+end
+
+--- THE INTERSECTION OF HALF-PLANES, as a counter-clockwise polygon, or empty.
+--- Sorted by angle and swept with a deque (the standard sort-and-sweep): n log n.
+--- Every list handed to it is bounded -- each holds a closed polygon's edges.
+local function polyHpi(L)
+    table.sort(L, function(a, b) return a[4] < b[4] end)
+    local dq, h, t = {}, 1, 0
+    for i = 1, #L do
+        local l = L[i]
+        while t - h >= 1 do
+            local x, y = lineCut(dq[t], dq[t - 1])
+            if x and lineOut(l, x, y) then t = t - 1 else break end
+        end
+        while t - h >= 1 do
+            local x, y = lineCut(dq[h], dq[h + 1])
+            if x and lineOut(l, x, y) then h = h + 1 else break end
+        end
+        local last = (t >= h) and dq[t] or nil
+        if last and lineSame(l, last) then
+            -- THE SAME DIRECTION: the tighter of the two.
+            if l[3] < last[3] then dq[t] = l end
+        else
+            t = t + 1
+            dq[t] = l
+        end
+    end
+    -- AND ACROSS THE WRAP: the last line and the first can be one direction too
+    -- (angles of pi and -pi).
+    while t - h >= 1 and lineSame(dq[t], dq[h]) do
+        if dq[t][3] < dq[h][3] then dq[h] = dq[t] end
+        t = t - 1
+    end
+    while t - h >= 2 do
+        local x, y = lineCut(dq[t], dq[t - 1])
+        if x and lineOut(dq[h], x, y) then t = t - 1 else break end
+    end
+    while t - h >= 2 do
+        local x, y = lineCut(dq[h], dq[h + 1])
+        if x and lineOut(dq[t], x, y) then h = h + 1 else break end
+    end
+    if t - h < 2 then return {}, {} end
+    local xs, ys = {}, {}
+    for i = h, t do
+        local x, y = lineCut(dq[i], dq[(i < t) and (i + 1) or h])
+        if x then xs[#xs + 1], ys[#ys + 1] = x, y end
+    end
+    xs, ys = polyTidy(xs, ys)
+    -- An empty intersection can leave lines that do not close counter-clockwise.
+    if #xs < 3 or polyArea2(xs, ys) <= 0.0 then return {}, {} end
+    return xs, ys
+end
+
+--- The corner a convex polygon starts its Minkowski walk at: the lowest, then
+--- the leftmost.
+local function polyLowest(xs, ys)
+    local k = 1
+    for i = 2, #xs do
+        if ys[i] < ys[k] or (ys[i] == ys[k] and xs[i] < xs[k]) then k = i end
+    end
+    return k
+end
+
+--- THE MINKOWSKI SUM of two counter-clockwise convex polygons (a point or a
+--- segment included): their edges merged by angle from the two lowest corners.
+local function polySum(axs, ays, bxs, bys)
+    local na, nb = #axs, #bxs
+    if na == 0 or nb == 0 then return {}, {} end
+    local ia, ib = polyLowest(axs, ays), polyLowest(bxs, bys)
+    local ox, oy = {}, {}
+    local i, j = 0, 0
+    -- Every pass advances at least one walk on a proper polygon; the cap is for
+    -- one rounding could stall.
+    for _ = 1, 2 * (na + nb) + 4 do
+        if i >= na and j >= nb then break end
+        local pa, pb = ((ia + i - 1) % na) + 1, ((ib + j - 1) % nb) + 1
+        ox[#ox + 1], oy[#oy + 1] = axs[pa] + bxs[pb], ays[pa] + bys[pb]
+        local qa, qb = (pa % na) + 1, (pb % nb) + 1
+        local cr = (axs[qa] - axs[pa]) * (bys[qb] - bys[pb]) - (ays[qa] - ays[pa]) * (bxs[qb] - bxs[pb])
+        local stepA = cr >= 0.0 and i < na
+        local stepB = cr <= 0.0 and j < nb
+        if not stepA and not stepB then
+            if i < na then stepA = true else stepB = true end
+        end
+        if stepA then i = i + 1 end
+        if stepB then j = j + 1 end
+    end
+    return polyTidy(ox, oy)
+end
+
+--- Is (x, y) in a counter-clockwise convex polygon, to `tol`?
+local function polyInside(xs, ys, x, y, tol)
+    local n = #xs
+    if n == 0 then return false end
+    if n == 1 then return (x - xs[1]) ^ 2 + (y - ys[1]) ^ 2 <= tol * tol end
+    for i = 1, n do
+        local j = (i % n) + 1
+        local ex, ey = xs[j] - xs[i], ys[j] - ys[i]
+        local len = math.sqrt(ex * ex + ey * ey)
+        if len > 0.0 and ex * (y - ys[i]) - ey * (x - xs[i]) < -tol * len then return false end
+    end
+    return true
+end
+
+--- The point of a convex polygon nearest (x, y): itself when inside.
+local function polyNearest(xs, ys, x, y)
+    local n = #xs
+    if n == 0 then return x, y end
+    if n >= 3 and polyInside(xs, ys, x, y, 0.0) then return x, y end
+    local bx, by, bd = xs[1], ys[1], math.huge
+    for i = 1, n do
+        local j = (i % n) + 1
+        local ax, ay = xs[i], ys[i]
+        local ex, ey = xs[j] - ax, ys[j] - ay
+        local L2 = ex * ex + ey * ey
+        local t = 0.0
+        if L2 > 0.0 then
+            t = math.max(0.0, math.min(1.0, ((x - ax) * ex + (y - ay) * ey) / L2))
+        end
+        local qx, qy = ax + ex * t, ay + ey * t
+        local d = (qx - x) ^ 2 + (qy - y) ^ 2
+        if d < bd then bx, by, bd = qx, qy, d end
+    end
+    return bx, by
+end
+
+--- The part of a segment inside a convex polygon (Cyrus-Beck), or nil.
+local function polyClipSeg(xs, ys, x0, y0, x1, y1)
+    local n = #xs
+    if n < 3 then return nil end
+    local t0, t1 = 0.0, 1.0
+    local dx, dy = x1 - x0, y1 - y0
+    for i = 1, n do
+        local j = (i % n) + 1
+        local ex, ey = xs[j] - xs[i], ys[j] - ys[i]
+        local nx, ny = ey, -ex
+        local num = nx * (xs[i] - x0) + ny * (ys[i] - y0)
+        local den = nx * dx + ny * dy
+        if den == 0.0 then
+            if num < 0.0 then return nil end
+        elseif den > 0.0 then
+            local t = num / den
+            if t < t1 then t1 = t end
+        else
+            local t = num / den
+            if t > t0 then t0 = t end
+        end
+        if t0 > t1 then return nil end
+    end
+    return x0 + dx * t0, y0 + dy * t0, x0 + dx * t1, y0 + dy * t1
+end
+
+--- The point of a segment nearest (x, y).
+local function segNearest(x0, y0, x1, y1, x, y)
+    local ex, ey = x1 - x0, y1 - y0
+    local L2 = ex * ex + ey * ey
+    if L2 <= 0.0 then return x0, y0 end
+    local t = math.max(0.0, math.min(1.0, ((x - x0) * ex + (y - y0) * ey) / L2))
+    return x0 + ex * t, y0 + ey * t
+end
+
+-- ═══ WHERE THE LAND ENDS ═══
+--
+-- The edges the map's off-map test changes across -- the surveyed boundary's and
+-- every water rectangle's -- and every point two of them cross at. Built from
+-- BR.Config.Map's own tables, and again whenever one of them is a new table.
+local landCache = { b = false, w = false, edges = nil, corners = nil }
+
+--- Where two segments cross, or nil.
+local function segCross(a, b)
+    local rx, ry = a[3] - a[1], a[4] - a[2]
+    local sx, sy = b[3] - b[1], b[4] - b[2]
+    local den = rx * sy - ry * sx
+    if math.abs(den) < 1e-12 then return nil end
+    local qx, qy = b[1] - a[1], b[2] - a[2]
+    local t = (qx * sy - qy * sx) / den
+    local u = (qx * ry - qy * rx) / den
+    if t < 0.0 or t > 1.0 or u < 0.0 or u > 1.0 then return nil end
+    return a[1] + rx * t, a[2] + ry * t
+end
+
+--- The off-map test's edges and their crossings.
+--- @return table edges { { x0, y0, x1, y1 }, ... }, table corners { { x, y }, ... }
+local function landParts()
+    local M = BR.Config and BR.Config.Map
+    local B = M and M.Boundary or nil
+    local W = M and M.Water or nil
+    if landCache.edges and landCache.b == B and landCache.w == W then
+        return landCache.edges, landCache.corners
+    end
+    local edges, corners = {}, {}
+    if type(B) == 'table' then
+        for i = 1, #B do
+            local a, b = B[i], B[(i % #B) + 1]
+            edges[#edges + 1] = { a.x, a.y, b.x, b.y }
+        end
+    end
+    if type(W) == 'table' then
+        for _, r in ipairs(W) do
+            edges[#edges + 1] = { r.minX, r.minY, r.maxX, r.minY }
+            edges[#edges + 1] = { r.maxX, r.minY, r.maxX, r.maxY }
+            edges[#edges + 1] = { r.maxX, r.maxY, r.minX, r.maxY }
+            edges[#edges + 1] = { r.minX, r.maxY, r.minX, r.minY }
+        end
+    end
+    for i = 1, #edges do
+        for j = i + 1, #edges do
+            local x, y = segCross(edges[i], edges[j])
+            if x then corners[#corners + 1] = { x, y } end
+        end
+    end
+    landCache.b, landCache.w, landCache.edges, landCache.corners = B, W, edges, corners
+    return edges, corners
+end
+
+-- The eight ways a candidate is nudged off the line it sits on.
+local NUDGES = {}
+for k = 0, 7 do NUDGES[k + 1] = { math.cos(k * math.pi / 4.0), math.sin(k * math.pi / 4.0) } end
+
+--- THE POINT NEAREST (tx, ty) THAT IS ON THE MAP: inside the convex polygon
+--- (xs, ys) when one is given, anywhere when not. The target itself when it is
+--- on the map (and inside), the polygon's nearest point when that is; otherwise
+--- the nearest of every place the answer can be -- a corner or an edge of the
+--- polygon, an edge or a crossing of the coastline and the water -- each tried a
+--- centimeter either way off its line. Nothing on the map inside the polygon
+--- answers its nearest point and false.
+--- @return number x, number y, boolean onMap
+local function nearestLand(xs, ys, tx, ty)
+    local offMap = BR.StormOffMap
+    local function within(x, y)
+        return xs == nil or polyInside(xs, ys, x, y, AIM_IN)
+    end
+    if within(tx, ty) and not offMap(tx, ty) then return tx, ty, true end
+    local qx, qy = tx, ty
+    if xs then
+        qx, qy = polyNearest(xs, ys, tx, ty)
+        if not offMap(qx, qy) then return qx, qy, true end
+    end
+    local C = {}
+    local function add(x, y)
+        C[#C + 1] = { x, y, (x - tx) ^ 2 + (y - ty) ^ 2 }
+    end
+    if xs then
+        local n = #xs
+        for i = 1, n do
+            local j = (i % n) + 1
+            add(xs[i], ys[i])
+            add(segNearest(xs[i], ys[i], xs[j], ys[j], tx, ty))
+        end
+    end
+    local edges, corners = landParts()
+    for k = 1, #edges do
+        local e = edges[k]
+        local x0, y0, x1, y1 = e[1], e[2], e[3], e[4]
+        if xs then x0, y0, x1, y1 = polyClipSeg(xs, ys, x0, y0, x1, y1) end
+        if x0 then
+            add(x0, y0)
+            add(x1, y1)
+            add(segNearest(x0, y0, x1, y1, tx, ty))
+        end
+    end
+    for k = 1, #corners do
+        local c = corners[k]
+        if within(c[1], c[2]) then add(c[1], c[2]) end
+    end
+    table.sort(C, function(a, b) return a[3] < b[3] end)
+    local bx, by, bd = nil, nil, math.huge
+    for k = 1, #C do
+        local c = C[k]
+        if bx and math.sqrt(c[3]) > bd + AIM_NUDGE then break end
+        for v = 0, #NUDGES do
+            local x, y = c[1], c[2]
+            if v > 0 then x, y = x + NUDGES[v][1] * AIM_NUDGE, y + NUDGES[v][2] * AIM_NUDGE end
+            if within(x, y) and not offMap(x, y) then
+                local d = math.sqrt((x - tx) ^ 2 + (y - ty) ^ 2)
+                if d < bd then bx, by, bd = x, y, d end
+            end
+        end
+    end
+    if bx then return bx, by, true end
+    return qx, qy, false
+end
+
+--- A corner list cut to chords: every corner of it a point ON the shape, so the
+--- polygon is inside it, at most `sag` in. Relative to (ox, oy), counter-clockwise.
+local function chordPoly(ks, sag, ox, oy)
+    local xs, ys = {}, {}
+    for i = 1, #ks do
+        local k = ks[i]
+        if k.rho > 0.0 then
+            local turn = k.a1 - k.a0
+            local step = 2.0 * math.acos(math.max(-1.0, 1.0 - sag / k.rho))
+            local m = math.max(1, math.ceil(turn / step))
+            for j = 0, m do
+                local th = k.a0 + turn * j / m
+                xs[#xs + 1] = k.x + k.rho * math.cos(th) - ox
+                ys[#ys + 1] = k.y + k.rho * math.sin(th) - oy
+            end
+        else
+            xs[#xs + 1], ys[#ys + 1] = k.x - ox, k.y - oy
+        end
+    end
+    return polyTidy(xs, ys)
+end
+
+--- THE ROOM A ZONE HAS IN THE ONE BEFORE: the offsets (from the host's center)
+--- its center may take with every one of its discs at least `clear` inside the
+--- host's chords -- the chord polygon eroded by the zone, edge by edge, by the
+--- zone's exact support in that edge's normal.
+local function roomOf(hx, hy, D, clear)
+    local L = polyLines(hx, hy, 0.0, 0.0, 0.0, {})
+    for i = 1, #L do
+        local l = L[i]
+        local hD = -math.huge
+        for k = 1, #D do
+            local d = D[k]
+            local v = l[1] * d.x + l[2] * d.y + d.r
+            if v > hD then hD = v end
+        end
+        l[3] = l[3] - hD - clear
+    end
+    return polyHpi(L)
+end
+
+--- The half-planes keeping a zone's exact bounding box inside `aabb`, or nil when
+--- it is wider than the box on an axis (or there is no box).
+local function boxLinesOf(D, aabb)
+    if not aabb then return nil end
     local west, east, south, north = 0.0, 0.0, 0.0, 0.0
-    for k = 1, #D0 do
-        local d = D0[k]
+    for k = 1, #D do
+        local d = D[k]
         west = math.max(west, -d.x + d.r)
         east = math.max(east, d.x + d.r)
         south = math.max(south, -d.y + d.r)
         north = math.max(north, d.y + d.r)
     end
-    local function boxed(x, y)
-        if not aabb then return true end
-        return x - west >= aabb.min.x and x + east <= aabb.max.x
-            and y - south >= aabb.min.y and y + north <= aabb.max.y
-    end
-    local useBox = boxed(cx, cy)
-    local function nests(x, y)
-        return SS.fit(hks, D0, x, y, 1.0) <= -NEST_CLEAR and (not useBox or boxed(x, y))
-    end
-    if not nests(cx, cy) then return cx, cy end
-    local function placeable(x, y) return nests(x, y) and not BR.StormOffMap(x, y) end
+    local x0, x1 = aabb.min.x + west, aabb.max.x - east
+    local y0, y1 = aabb.min.y + south, aabb.max.y - north
+    if x0 > x1 or y0 > y1 then return nil end
+    return {
+        { -1.0, 0.0, -x0, math.pi },
+        { 1.0, 0.0, x1, 0.0 },
+        { 0.0, -1.0, -y0, -0.5 * math.pi },
+        { 0.0, 1.0, y1, 0.5 * math.pi },
+    }
+end
 
-    if placeable(tx, ty) then return tx, ty end
-
-    -- How deep the spot stands in the next zone placed at (x, y): its signed
-    -- distance to the zone's hull about its own center, the spot taken relative
-    -- to (x, y). Negative inside.
-    local dks = SS.discHull(D0)
-    local function score(x, y) return SS.hullDistance(dks, tx - x, ty - y) end
-
-    -- THE START: this zone's own center, or the furthest point toward the spot
-    -- along the straight line, whichever is placeable and holds it deeper.
-    local px, py, best = nil, nil, nil
-    if placeable(cx, cy) then px, py, best = cx, cy, score(cx, cy) end
-    local lo, hi = 0.0, 1.0
-    for _ = 1, RAY_STEPS do
-        local mid = 0.5 * (lo + hi)
-        if nests(cx + (tx - cx) * mid, cy + (ty - cy) * mid) then lo = mid else hi = mid end
-    end
-    local gx, gy = cx + (tx - cx) * lo, cy + (ty - cy) * lo
-    if placeable(gx, gy) then
-        local v = score(gx, gy)
-        if best == nil or v < best then px, py, best = gx, gy, v end
-    end
-    if px == nil then return cx, cy end
-
-    -- THE SEARCH, from there.
-    local step = math.max((r0 or 0.0) - (r1 or 0.0), 1.0) * 0.5
-    for _ = 1, AIM_ROUNDS do
-        if step < 0.01 then break end
-        local bx, by, bs = nil, nil, best
-        for j = 0, AIM_DIRS - 1 do
-            local a = j * (2.0 * math.pi / AIM_DIRS)
-            local x, y = px + step * math.cos(a), py + step * math.sin(a)
-            if placeable(x, y) then
-                local v = score(x, y)
-                if v < bs - 1e-9 then bx, by, bs = x, y, v end
+--- A polygon cut to a box's half-planes; the empty polygon when they miss.
+local function polyBoxed(xs, ys, bl)
+    if #xs < 3 then
+        local ok = true
+        for k = 1, #xs do
+            for i = 1, 4 do
+                if lineOut(bl[i], xs[k], ys[k]) then ok = false end
             end
         end
-        if bx then
-            px, py, best = bx, by, bs
+        if ok then return xs, ys end
+        return {}, {}
+    end
+    local L = polyLines(xs, ys, 0.0, 0.0, 0.0, {})
+    for i = 1, 4 do L[#L + 1] = bl[i] end
+    return polyHpi(L)
+end
+
+--- WHERE STORM CONTROL'S STORM GOES (#396): every circle from phase `from` to the
+--- last, toward the spot (tx, ty), by the rules in the block above.
+---
+--- The host of phase `from` is the zone at (cx, cy, r) -- the next circle on the
+--- map, or the outline a dev path re-entered from (`mo`); every later host is the
+--- zone before at its own radius. Asks nothing of any stream.
+--- @param seed number    the match's storm seed
+--- @param from integer   the first phase to place
+--- @param cx number      the host's center and radius
+--- @param cy number
+--- @param r number
+--- @param mo table|nil   the host's outline, on a dev path
+--- @param tx number      the spot as picked
+--- @param ty number
+--- @return table plan  { x, y (as picked), sx, sy (as aimed: on the map),
+---                       ex, ey (where the storm ends), from,
+---                       path = { [from - 1 .. last] = { x, y, r } },
+---                       slack (how far inside the reach the end was held),
+---                       plain (true only when the plain walk stood in) }
+function BR.StormAimPlan(seed, from, cx, cy, r, mo, tx, ty)
+    local S = BR.Config and BR.Config.Storm
+    local phases = S and S.phases or {}
+    local N = #phases
+    local aabb = S and S.mapAABB or nil
+    local plan = { x = tx, y = ty, from = from, path = { [from - 1] = { x = cx, y = cy, r = r } } }
+    local sx, sy = nearestLand(nil, nil, tx, ty)
+    plan.sx, plan.sy = sx, sy
+    if from > N then
+        plan.ex, plan.ey = cx, cy
+        return plan
+    end
+
+    -- THE ROOM EACH PHASE HAS, as offsets from the center of the zone before.
+    local room, box, disc = {}, {}, {}
+    for p = from, N do
+        local host, ox, oy, hr
+        if p == from then
+            host, ox, oy, hr = BR.StormHost(seed, p, cx, cy, r, mo), cx, cy, r
         else
-            step = step * 0.5
+            hr = phases[p - 1].radius
+            host, ox, oy = BR.StormHost(seed, p, 0.0, 0.0, hr, nil), 0.0, 0.0
+        end
+        local hx, hy = chordPoly(hostHull(host, ox, oy, hr), math.max(AIM_SAG_MIN, AIM_SAG * hr), ox, oy)
+        local D = zoneDiscs(BR.StormUnit(seed, p), phases[p].radius)
+        local px, py = roomOf(hx, hy, D, AIM_CLEAR)
+        -- A HOST THAT CANNOT HOLD THE NEXT ZONE ANYWHERE (a dev path's outline)
+        -- leaves the center where it is, as the planner does.
+        if #px < 3 then px, py = { 0.0 }, { 0.0 } end
+        room[p] = { px, py }
+        box[p] = boxLinesOf(D, aabb)
+        disc[p] = D
+    end
+
+    -- THE REACH, forward from the host's center: each phase's room added on, and
+    -- cut to the map bounds at the first phase any of it fits them. Every zone
+    -- after that one is inside it, so inside the bounds too.
+    local Rx, Ry = { cx }, { cy }
+    local boxAt = nil
+    for p = from, N do
+        Rx, Ry = polySum(Rx, Ry, room[p][1], room[p][2])
+        if not boxAt and box[p] and #Rx >= 3 then
+            local bx, by = polyBoxed(Rx, Ry, box[p])
+            if #bx >= 3 and polyArea2(bx, by) > 2.0 then Rx, Ry, boxAt = bx, by, p end
         end
     end
-    return px, py
+
+    -- HELD TO THE PLANNER'S OWN TESTS, every center: nested by the real fit, and
+    -- inside the bounds whenever the planner would ask it (the zone before, at its
+    -- own center, fits them).
+    local function holds(pth)
+        for p = from, N do
+            local prev, c = pth[p - 1], pth[p]
+            local hr = (p == from) and r or phases[p - 1].radius
+            local host = BR.StormHost(seed, p, prev.x, prev.y, hr, (p == from) and mo or nil)
+            local hks = hostHull(host, prev.x, prev.y, hr)
+            if #room[p][1] >= 3 and BR.StormShape.fit(hks, disc[p], c.x, c.y, 1.0) > -NEST_CLEAR then
+                return false
+            end
+            local bl = box[p]
+            if bl then
+                local inPrev, inHere = true, true
+                for i = 1, 4 do
+                    if lineOut(bl[i], prev.x, prev.y) then inPrev = false end
+                    if lineOut(bl[i], c.x, c.y) then inHere = false end
+                end
+                if inPrev and not inHere then return false end
+            end
+        end
+        return true
+    end
+
+    --- The walk to an end held `slackE` inside the reach. The end: the spot when the
+    --- storm can reach it, else the nearest point it can reach on the map. Then the
+    --- backward reach -- where each phase's center may stand and still end there --
+    --- and TOWARD THE SPOT, a phase at a time: the center nearest it among those the
+    --- room allows and the backward reach still ends from, that reach drawn in by a
+    --- slack that halves every phase, so each center leaves the next one room.
+    local function walkTo(slackE)
+        local Ex, Ey = Rx, Ry
+        if #Rx >= 3 then
+            local bx, by = polyHpi(polyLines(Rx, Ry, 0.0, 0.0, -slackE, {}))
+            if #bx >= 3 then Ex, Ey = bx, by end
+        end
+        local ex, ey = nearestLand(Ex, Ey, sx, sy)
+        local V = { [N] = { { ex }, { ey } } }
+        for p = N - 1, from, -1 do
+            local ax, ay = room[p + 1][1], room[p + 1][2]
+            local nx, ny = {}, {}
+            for i = 1, #ax do nx[i], ny[i] = -ax[i], -ay[i] end
+            local vx, vy = polySum(V[p + 1][1], V[p + 1][2], nx, ny)
+            if p == boxAt then
+                local bx, by = polyBoxed(vx, vy, box[p])
+                if #bx >= 1 then vx, vy = bx, by end
+            end
+            V[p] = { vx, vy }
+        end
+        local path = { [from - 1] = plan.path[from - 1] }
+        local px, py = cx, cy
+        local slack = slackE
+        for p = from, N - 1 do
+            slack = slack * 0.5
+            local ax, ay = room[p][1], room[p][2]
+            local vx, vy = V[p][1], V[p][2]
+            local qx, qy
+            if #ax < 3 then
+                qx, qy = px, py
+            elseif #vx < 3 then
+                qx, qy = vx[1], vy[1]
+            else
+                local L = polyLines(ax, ay, px, py, 0.0, {})
+                polyLines(vx, vy, 0.0, 0.0, -slack, L)
+                local Qx, Qy = polyHpi(L)
+                if #Qx >= 3 then
+                    qx, qy = nearestLand(Qx, Qy, sx, sy)
+                else
+                    -- NO ROOM TO SPARE: the middle of what is left, or where the
+                    -- two only touch.
+                    L = polyLines(ax, ay, px, py, 0.0, {})
+                    polyLines(vx, vy, 0.0, 0.0, AIM_TAU, L)
+                    Qx, Qy = polyHpi(L)
+                    if #Qx >= 3 then
+                        qx, qy = 0.0, 0.0
+                        for i = 1, #Qx do qx, qy = qx + Qx[i], qy + Qy[i] end
+                        qx, qy = qx / #Qx, qy / #Qx
+                    else
+                        local gx, gy = polyNearest(vx, vy, px, py)
+                        local hx, hy = {}, {}
+                        for i = 1, #ax do hx[i], hy[i] = ax[i] + px, ay[i] + py end
+                        qx, qy = polyNearest(hx, hy, gx, gy)
+                    end
+                end
+            end
+            path[p] = { x = qx, y = qy, r = phases[p].radius }
+            px, py = qx, qy
+        end
+        path[N] = { x = ex, y = ey, r = phases[N].radius }
+        return path, ex, ey
+    end
+
+    -- THE WALK, held to the planner's tests. Where the bounds or a sharp corner of
+    -- the reach leave a walk too little room to end where it should, the end is
+    -- held further inside the reach -- twenty centimeters, then two meters -- and
+    -- `slack` says how far. A plan no slack saves -- never, over the fuzz in
+    -- tools/test_storm.lua -- is replaced by the plain walk (`plain`): each center
+    -- the nearest the spot its room allows, which ends wherever that walk does.
+    for _, slackE in ipairs({ AIM_SLACK, 10.0 * AIM_SLACK, 100.0 * AIM_SLACK }) do
+        local path, ex, ey = walkTo(slackE)
+        if holds(path) then
+            plan.path, plan.ex, plan.ey, plan.slack = path, ex, ey, slackE
+            return plan
+        end
+    end
+    plan.plain = true
+    local path = { [from - 1] = plan.path[from - 1] }
+    local px, py = cx, cy
+    for p = from, N do
+        local ax, ay = room[p][1], room[p][2]
+        local qx, qy = px, py
+        if #ax >= 3 then
+            local L = polyLines(ax, ay, px, py, 0.0, {})
+            local bl = box[p]
+            local inPrev = bl ~= nil
+            if bl then
+                for i = 1, 4 do if lineOut(bl[i], px, py) then inPrev = false end end
+            end
+            if inPrev then for i = 1, 4 do L[#L + 1] = bl[i] end end
+            local Qx, Qy = polyHpi(L)
+            if #Qx >= 3 then qx, qy = nearestLand(Qx, Qy, sx, sy) end
+        end
+        path[p] = { x = qx, y = qy, r = phases[p].radius }
+        px, py = qx, qy
+    end
+    plan.path, plan.ex, plan.ey = path, px, py
+    return plan
 end
 
 --- Choose where the next zone goes: its centre, by its REAL SHAPE.

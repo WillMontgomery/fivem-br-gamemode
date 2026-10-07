@@ -170,6 +170,24 @@ local function seedRng(m)
     m.stormRng = BR.Rng(m.stormSeed)
 end
 
+--- Where an aimed match's phase closes (Storm control, #396): the plan's center
+--- for it when the phase starts where the plan said it would, and otherwise -- a
+--- dev path re-entering from where the wall stands (`brphase`, a thaw) -- a new
+--- plan from there toward the same spot, kept for the phases after it.
+--- @return number, number  the center
+local function aimedCenter(m, aim, phase, cx0, cy0, r0, mo)
+    local prev, here = aim.path[phase - 1], aim.path[phase]
+    if here and prev and mo == nil and prev.x == cx0 and prev.y == cy0 and prev.r == r0 then
+        return here.x, here.y
+    end
+    local plan = BR.StormAimPlan(m.stormSeed, phase, cx0, cy0, r0, mo, aim.x, aim.y)
+    for p, v in pairs(plan.path) do aim.path[p] = v end
+    aim.sx, aim.sy, aim.ex, aim.ey = plan.sx, plan.sy, plan.ex, plan.ey
+    print(('[br_core] storm: match %s re-entered phase %d off the aimed walk -- planned again, it now ends at (%.1f, %.1f)')
+        :format(BR.MatchTag(m.id), phase, plan.ex, plan.ey))
+    return plan.path[phase].x, plan.path[phase].y
+end
+
 --- Draw the centre the given phase closes on, off this match's storm stream.
 ---
 --- ═══ ONE DRAW SITE, BECAUSE TWO WOULD HAVE TO AGREE FOREVER ═══
@@ -209,18 +227,15 @@ end
 --- @param rng table|nil  the stream to draw from; m.stormRng unless given. Only
 ---                       BR.Storm.finalCentre passes one -- a COPY of the live
 ---                       stream, so looking ahead never advances the real one.
---- @param aim table|nil  { x, y }: a spot to close on instead of a draw -- the
----                       match's own `m.stormAim` (Storm control, #396) unless
----                       given; BR.Storm.aimCheck passes the one it is asking
----                       about. Aimed, nothing is drawn off any stream and the
----                       placement never breaks out (BR.NextZoneCenterToward).
+---
+--- AIMED (Storm control, #396): once a match carries `m.stormAim`, nothing is
+--- drawn off any stream -- the center is the aimed plan's (aimedCenter,
+--- BR.StormAimPlan), and no aimed phase breaks out.
 --- @return number, number, boolean  centre, and whether it broke out
-local function drawCentre(m, phase, cx0, cy0, r0, mo, rng, aim)  -- spelling-ok: its old name
+local function drawCentre(m, phase, cx0, cy0, r0, mo, rng)  -- spelling-ok: its old name
     local p = cfg.phases[phase]
-    aim = aim or m.stormAim
-    if aim then
-        local x, y = BR.NextZoneCenterToward(BR.StormHost(m.stormSeed, phase, cx0, cy0, r0, mo),
-            cx0, cy0, r0, BR.StormUnit(m.stormSeed, phase), p.radius, cfg.mapAABB, aim.x, aim.y)
+    if m.stormAim then
+        local x, y = aimedCenter(m, m.stormAim, phase, cx0, cy0, r0, mo)
         return x, y, false
     end
     local hugM = nil
@@ -628,13 +643,11 @@ end
 
 --- Walk the phases after `phase` the way enterPhase will draw them -- the same
 --- function, the same arguments, each from the last target -- off `rng` (or
---- aimed at `aim`, a spot Storm control is asking about), and answer where the
---- last one ends. ONE SPELLING for Storm reveal's look ahead and Storm
---- control's check.
+--- along the aimed plan), and answer where the last one ends.
 --- @return number cx, number cy, number r
-local function walkToEnd(m, phase, cx, cy, r, rng, aim)
+local function walkToEnd(m, phase, cx, cy, r, rng)
     for p = phase + 1, #cfg.phases do
-        cx, cy = drawCentre(m, p, cx, cy, r, nil, rng, aim)
+        cx, cy = drawCentre(m, p, cx, cy, r, nil, rng)
         r = cfg.phases[p].radius
     end
     return cx, cy, r
@@ -687,29 +700,33 @@ function BR.Storm.finalCentre(m)
     return { x = cx, y = cy, r = r, phase = last }
 end
 
--- ═══ STORM CONTROL (#396, Control Tower; round 4, owner 2026-10-06) ═══
+-- ═══ STORM CONTROL (#396, Control Tower; round 4 and round 5, owner 2026-10-06) ═══
 --
 --   "Storm control: we should let them actually pick exactly where they want
 --    it."                                                  -- owner, 2026-10-06
+--   "this limitation should not exist. the next phases should instead work
+--    towards the location the player selected."           -- owner, the same day,
+--                         on round 4's "That spot is outside the next circle."
 --
--- THE STORM ENDS EXACTLY ON THE SPOT THE PLAYER PICKED, OR NOTHING CHANGES.
--- Every circle the storm has not drawn yet is drawn at its phase's entry
--- (enterPhase, through drawCentre); once a match carries `m.stormAim`, drawCentre
--- places each of them with BR.NextZoneCenterToward -- the planner's own rules
--- (nesting by real shape, the map bounds, the center on the map) aimed straight
--- at the spot instead of rolled -- and the last one, of no radius, lands on it.
--- Storm reveal walks the same drawCentre (finalCentre), so it answers the spot.
+-- EVERY CIRCLE THE STORM HAS NOT DRAWN YET CLOSES TOWARD THE SPOT, AND THE LAST
+-- ENDS ON IT WHEN THE STORM CAN GET THERE. Nothing about the spot is refused any
+-- more: BR.Storm.aim plans the rest of the match once (BR.StormAimPlan, the
+-- planner's own rules less its dice -- br_lib/shared/storm_solve.lua's STORM
+-- CONTROL block has them) and keeps the plan on the match as `m.stormAim`; from
+-- the next circle enterPhase draws, drawCentre reads each center off it.
 --
--- REFUSED, NEVER CLAMPED. A spot the storm cannot end on exactly is refused
--- before anything is spent, with its reason, and the player picks again: the
--- owner asked for "exactly where they want it", and a storm that ended
--- somewhere near the pick would be a different spot than the one shown. So the
--- spot is held to the rules up front (BR.Storm.aimCheck) -- on land and on the
--- map (BR.StormOffMap), inside the next circle on the map (BR.StormTarget, the
--- zone every later circle nests in), and ENDED ON: the remaining phases are
--- walked with the spot exactly as enterPhase will walk them, and a walk that
--- does not finish on it (a spot hard against that circle's edge, which a
--- stretched later zone cannot keep inside it) is refused too.
+--   THE SPOT, ON LAND: one over water or off the surveyed map is aimed as the
+--   nearest point to it on the map.
+--   THE END: that spot when the chain of nested circles can carry the last one
+--   there -- every circle still inside the one before it, so never outside the
+--   next circle on the map -- and otherwise the point it can carry it to that is
+--   nearest the spot, on land.
+--   EACH CIRCLE: the center nearest the spot among those the rules allow it that
+--   can still end there -- as far toward the spot as the storm may go, phase by
+--   phase, so the walk closes on it as fast as the rules permit.
+--
+-- Storm reveal walks the same drawCentre (finalCentre), so it answers the end,
+-- and the squads that ran it are sent the new end (terminalfx/storm_control.lua).
 --
 -- WHAT DOES NOT MOVE. The published record -- the zone the wall stands in and
 -- the next circle already on the map -- and the seed every shape is derived
@@ -719,9 +736,9 @@ end
 --
 -- ONE SPOT A MATCH (round 4's review). Once a match carries `m.stormAim`, every
 -- later aim is refused (`storm_aimed`), checked first like the rest and asked
--- again after the run's load: the player who paid for the storm to end on their
--- spot was told it ends "exactly on that spot" for "the rest of the match", and
--- another squad's run must not quietly make that false.
+-- again after the run's load: the storm the first player paid for to close on
+-- their spot for "the rest of the match" is not quietly replaced by another
+-- squad's run.
 
 --- Is this match's storm already aimed by a Storm control? One spot a match.
 --- @param m table|nil
@@ -730,20 +747,19 @@ function BR.Storm.aimed(m)
     return m ~= nil and m.stormAim ~= nil
 end
 
---- Can this match's storm end exactly on (x, y)? The spot as it will be kept, or
---- nil and why:
----   no_storm         no storm record or stream yet
----   storm_aimed      this match's storm is already aimed (one spot a match)
----   no_circle        the final circle is already on the map
----   storm_spot_land  over water, or outside the surveyed play area
----   storm_spot_out   outside the next circle on the map
----   storm_spot_edge  inside it, but the remaining circles cannot all hold it
----                    and still end on it -- too near that circle's edge
+--- Can this match's storm be aimed at (x, y)? The plan it would follow
+--- (BR.StormAimPlan: the spot as picked, `x`, `y`; as aimed, on land, `sx`, `sy`;
+--- where the storm ends, `ex`, `ey`; and every center from the next one drawn,
+--- `path`), or nil and why -- only what cannot be done at all:
+---   no_storm     no storm record or stream yet
+---   storm_aimed  this match's storm is already aimed (one spot a match)
+---   no_circle    the final circle is already on the map
+---   bad_option   not two finite numbers (the door's spot check refuses that first)
 --- Asks nothing of the live stream and changes nothing.
 --- @param m table
 --- @param x number
 --- @param y number
---- @return table|nil spot  { x, y }
+--- @return table|nil plan
 --- @return string|nil why
 function BR.Storm.aimCheck(m, x, y)
     local rec = m and m.storm
@@ -752,30 +768,26 @@ function BR.Storm.aimCheck(m, x, y)
     if rec.phase >= #cfg.phases then return nil, 'no_circle' end
     if type(x) ~= 'number' or type(y) ~= 'number' or x ~= x or y ~= y
         or x == math.huge or x == -math.huge or y == math.huge or y == -math.huge then
-        return nil, 'storm_spot_out'
+        return nil, 'bad_option'
     end
-    if BR.StormOffMap(x, y) then return nil, 'storm_spot_land' end
-    if BR.StormShape.distance(BR.StormTarget(rec), x, y) > 0.0 then return nil, 'storm_spot_out' end
-    local spot = { x = x + 0.0, y = y + 0.0 }
-    local ex, ey = walkToEnd(m, rec.phase, rec.cx1, rec.cy1, rec.r1, nil, spot)
-    if ex ~= spot.x or ey ~= spot.y then return nil, 'storm_spot_edge' end
-    return spot, nil
+    return BR.StormAimPlan(m.stormSeed, rec.phase + 1, rec.cx1, rec.cy1, rec.r1, nil, x + 0.0, y + 0.0), nil
 end
 
 --- Aim this match's storm at (x, y): from the next circle drawn on, every circle
---- closes toward it and the last ends on it. Refused as BR.Storm.aimCheck says,
---- with nothing changed -- a storm already aimed included.
+--- closes toward it, and the last ends on it or as near it as the storm can get.
+--- Refused as BR.Storm.aimCheck says, with nothing changed -- a storm already
+--- aimed included.
 --- @param m table
 --- @param x number
 --- @param y number
---- @return table|nil spot, string|nil why
+--- @return table|nil plan, string|nil why
 function BR.Storm.aim(m, x, y)
-    local spot, why = BR.Storm.aimCheck(m, x, y)
-    if not spot then return nil, why end
-    m.stormAim = spot
-    print(('[br_core] storm: match %s aimed from phase %d -- it now ends at (%.1f, %.1f) (Storm control)')
-        :format(BR.MatchTag(m.id), m.storm.phase, spot.x, spot.y))
-    return spot, nil
+    local plan, why = BR.Storm.aimCheck(m, x, y)
+    if not plan then return nil, why end
+    m.stormAim = plan
+    print(('[br_core] storm: match %s aimed from phase %d at (%.1f, %.1f) -- it now ends at (%.1f, %.1f) (Storm control)')
+        :format(BR.MatchTag(m.id), m.storm.phase, plan.x, plan.y, plan.ex, plan.ey))
+    return plan, nil
 end
 
 --- Start a match's storm. Called when it goes PLAYING: the clock starts when

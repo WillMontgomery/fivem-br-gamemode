@@ -472,8 +472,11 @@ end
 -- =========================================================================
 --
 -- ROUND 4 (owner, 2026-10-06): "we should let them actually pick exactly
--- where they want it". The run carries the spot set on the big map (`at`),
--- and the storm ends EXACTLY on it -- or the run is refused, nothing spent.
+-- where they want it". The run carries the spot set on the big map (`at`).
+-- ROUND 5 (the same day): "this limitation should not exist. the next phases
+-- should instead work towards the location the player selected." No spot is
+-- refused: the storm closes toward it and ends on it, or as near it as it can
+-- get (test_storm.lua's `control.*` blocks hold the planner's half).
 
 local function snapshot(rec)
     local out = {}
@@ -511,6 +514,11 @@ do
     eq(#stray, 0, 'no option lines are left for it or Supply drop ' .. table.concat(stray, ', '))
     eq(TS.threeEnds, nil, 'and the three possible ends are gone (no BR.TerminalSolve.threeEnds)')
     eq(CT.fx.stormControlFutures, nil, '(nor fx.stormControlFutures)')
+    local gone = {}
+    for k in pairs(COPY) do
+        if k:find('^storm_spot_') then gone[#gone + 1] = k end
+    end
+    eq(#gone, 0, "and round 4's refusals of the spot are gone, line and all " .. table.concat(gone, ', '))
 end
 
 for _, f in ipairs({ 0.0, 0.3 }) do
@@ -537,43 +545,48 @@ for _, f in ipairs({ 0.0, 0.3 }) do
     end
 end
 
-describe('Storm control: a spot the storm cannot end on is refused before anything is spent')
+describe('Storm control: a spot outside the next circle, over water or off the map is never refused')
 do
+    -- THE STORM CLOSES TOWARD IT, AND ENDS AS NEAR IT AS IT CAN: the run lands,
+    -- is paid for, and aims the storm, which ends on land, inside the next
+    -- circle on the map, and nearer the spot than that circle's center is.
     local cases = {
-        { label = 'outside the next circle', at = function(m) return spotIn(m, 1.4) end, why = 'storm_spot_out' },
-        { label = 'over water', at = function() return { x = -3700.0, y = 0.0 } end, why = 'storm_spot_land' },
-        { label = 'outside the play area', at = function() return { x = 7000.0, y = 9000.0 } end, why = 'storm_spot_land' },
+        { label = 'far outside the next circle', at = function(m) return spotIn(m, 2.5) end },
+        { label = 'over water', at = function() return { x = -3700.0, y = 0.0 } end },
+        { label = 'off the map entirely', at = function() return { x = 7000.0, y = 9000.0 } end },
     }
     for _, c in ipairs(cases) do
         reset()
         local m = lobby('squad', 3)
+        local rec = m.storm
+        local snap = snapshot(rec)
         fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
         local f = listed(1, 'storm_control')
-        ok(f and f.available == true, c.label .. ': the card is available before a spot is picked', f and f.reason)
-        local r = controlAt(1, c.at(m))
-        ok(r and r.ok == false and r.code == c.why, c.label .. ': refused ' .. c.why, r and r.code)
-        eq(r and r.toast, COPY[c.why], c.label .. ': in its own line')
-        nothingSpent(1, c.label)
-        eq(#market.charges, 0, c.label .. ': the market was never asked for the 150')
-        eq(m.stormAim, nil, c.label .. ': and the storm is not aimed')
+        ok(f and f.available == true, c.label .. ': the card is available', f and f.reason)
+        local at = c.at(m)
+        local r = controlAt(1, at)
+        ok(r and r.ok == true and r.code == 'done', c.label .. ': it runs', r and r.code)
+        eq(market.wallet[1], 1000 - 150, c.label .. ': 150 Volts were spent')
+        ok(r and r.toast and r.toast:find(COPY.storm_control_done, 1, true) == 1,
+            c.label .. ': the done line, then the new balance', r and r.toast)
+        ok(m.stormAim and m.stormAim.x == at.x and m.stormAim.y == at.y, c.label .. ': the match carries the spot')
+        local fin = BR.Storm.finalCentre(m)
+        local plan = m.stormAim or {}
+        ok(fin and fin.x == plan.ex and fin.y == plan.ey, c.label .. ': Storm reveal answers where it now ends')
+        ok(fin and not BR.StormOffMap(fin.x, fin.y), c.label .. ': on land')
+        ok(fin and BR.StormShape.distance(BR.StormTarget(rec), fin.x, fin.y) < 0.0,
+            c.label .. ': inside the next circle on the map')
+        local function to(x, y) return math.sqrt((x - plan.sx) ^ 2 + (y - plan.sy) ^ 2) end
+        ok(fin and to(fin.x, fin.y) < to(rec.cx1, rec.cy1), c.label .. ": nearer the spot than that circle's center")
+        ok(m.storm == rec and sameRecord(rec, snap), c.label .. ': the record on the map did not move')
     end
-    -- A SPOT THE CIRCLES CANNOT ALL HOLD (modeled: the placement stops short).
-    reset()
-    local m = lobby('squad', 3)
-    local real = BR.NextZoneCenterToward
-    BR.NextZoneCenterToward = function(_, cx, cy) return cx, cy end
-    local r = controlAt(1, spotIn(m, 0.3))
-    BR.NextZoneCenterToward = real
-    ok(r and r.code == 'storm_spot_edge', 'a spot the circles cannot close on: storm_spot_edge', r and r.code)
-    eq(r and r.toast, COPY.storm_spot_edge, 'in its own line')
-    nothingSpent(1, 'edge')
     -- NO SPOT, OR THE OLD OPTION: bad_option.
     reset()
     lobby('squad', 3)
-    r = controlAt(1, nil)
+    local r = controlAt(1, nil)
     ok(r and r.code == 'bad_option', 'no spot: bad_option', r and r.code)
     reset()
-    m = lobby('squad', 3)
+    local m = lobby('squad', 3)
     r = runAt(1, 'storm_control', { zone = 'far' }, nil, spotIn(m, 0.0))
     ok(r and r.code == 'bad_option', 'the old zone option: bad_option', r and r.code)
     nothingSpent(1, 'bad_option')
@@ -595,6 +608,17 @@ do
     end
     eq(lastOf(BR.Net.TERMINAL_REVEAL, 1), nil, 'and nobody who did not reveal it')
     ok(m.terminals.reveals['squad:B'].x == spot.x, 'the reveal a reconnect is re-sent is the new one too')
+    -- A SPOT THE STORM CANNOT REACH: the squad is sent where it will end, not the spot.
+    reset()
+    m = lobby('squad', 3)
+    T.reveal(m, 'squad:B', BR.Storm.finalCentre(m))
+    sent = {}
+    spot = spotIn(m, 3.0)
+    controlAt(1, spot)
+    local plan = m.stormAim
+    local p = lastOf(BR.Net.TERMINAL_REVEAL, 3)
+    ok(plan and p and p.x == plan.ex and p.y == plan.ey and (p.x ~= spot.x or p.y ~= spot.y),
+        'a spot it cannot reach: the squad that revealed it is sent where the storm now ends')
 end
 
 describe('Storm control: no storm, no circle left -- refused, nothing spent')
@@ -618,7 +642,7 @@ do
     ok(f2 and f2.reason == 'no_storm', 'with no storm yet the card says no_storm', f2 and f2.reason)
 end
 
-describe('Storm control: a circle drawn while it loads that no longer holds the spot gives everything back')
+describe('Storm control: a circle drawn while it loads -- the storm closes toward the spot from it')
 do
     reset()
     local m = lobby('squad', 3)
@@ -626,17 +650,20 @@ do
     local r = controlAt(1, spot, true)
     eq(r and r.code, 'running', 'accepted at phase 3')
     eq(market.wallet[1], 850, 'the 150 are spent as it is accepted')
-    -- The phase job draws the next circle in those seconds, far from the spot.
+    -- The phase job draws the next circle in those seconds, away from the spot.
     local P = BR.Config.Storm.phases
     m.storm = BR.BuildStormRecord(4, C0.x + 20.0, C0.y, P[3].radius, C0.x - 400.0, C0.y, P[4].radius,
         gameMs, 75000, 75000, P[4].dps, SEED)
     flush()
     r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.ok == false and r.code == 'storm_spot_out', 'over, it can no longer happen: storm_spot_out', r and r.code)
-    nothingSpent(1, 'given back')
-    eq(market.wallet[1], 1000, 'the 150 are back')
-    eq(m.stormAim, nil, 'and the storm is not aimed')
-    -- The same for the final circle drawn meanwhile.
+    ok(r and r.ok == true and r.code == 'done', 'over, it lands', r and r.code)
+    eq(market.wallet[1], 850, 'paid for')
+    local plan = m.stormAim
+    ok(plan and plan.from == 5 and plan.path[4].x == C0.x - 400.0 and plan.path[4].y == C0.y,
+        'and aimed from the circle on the map when it landed')
+    local fin = BR.Storm.finalCentre(m)
+    ok(fin and plan and fin.x == plan.ex and fin.y == plan.ey, 'Storm reveal answers where it now ends')
+    -- The final circle drawn meanwhile: nothing is left to aim.
     reset()
     m = lobby('squad', 7)
     r = controlAt(1, spotIn(m, 0.0), true)
@@ -651,8 +678,8 @@ end
 describe('Storm control: one spot a match -- a second run is refused, nothing spent, and the first spot holds')
 do
     -- ROUND 4'S REVIEW: each squad has its own use, so two squads can both run
-    -- it in one match. The first paid 150 Volts for a storm that ends "exactly
-    -- on that spot" for "the rest of the match"; a second run must not quietly
+    -- it in one match. The first paid 150 Volts for a storm that closes toward
+    -- their spot for "the rest of the match"; a second run must not quietly
     -- make that false. So once the storm is aimed, Storm control is refused
     -- (storm_aimed) -- on the card, at the run and after the load.
     reset()
@@ -710,8 +737,7 @@ end
 describe('Storm control: squad and solo lines')
 do
     for _, key in ipairs({ 'storm_control_done', 'storm_control_description', 'no_circle', 'storm_control_what',
-                           'storm_control_summary', 'storm_spot_land', 'storm_spot_out', 'storm_spot_edge',
-                           'storm_aimed', 'confirm_location' }) do
+                           'storm_control_summary', 'storm_aimed', 'confirm_location' }) do
         ok(TS.pick(COPY, key, false) ~= '', key .. ' has a line')
         ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
             ('%s never says squad outside a squad match'):format(key))
@@ -1649,7 +1675,7 @@ do
     local r = controlAt(1, spotIn(m, 0.0))
     ok(r and r.code == 'done', 'it runs', r and r.code)
     for _, src in ipairs({ 2, 3, 4, 5 }) do
-        eq(impactRows(src), 'impact_storm@end', ('p%d: the storm will end where another player chose'):format(src))
+        eq(impactRows(src), 'impact_storm@end', ('p%d: the storm is closing toward a spot another player picked'):format(src))
     end
     eq(hasRow(3, 'impact_storm').text, COPY.impact_storm, 'in its words')
     eq(impactRows(1), nil, 'not the player who aimed it')

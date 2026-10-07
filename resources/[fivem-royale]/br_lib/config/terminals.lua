@@ -187,7 +187,10 @@ BR.Config.Terminals = {
         impact_time = 'Time & weather: the time of day was changed.',
         impact_weather = 'Time & weather: the weather inside the circle was changed.',
         -- Storm control, for the rest of the match: everyone but the runner.
-        impact_storm = 'Storm control: the storm will end where another player chose.',
+        -- WRITTEN (2026-10-06, round 5; was "...the storm will end where
+        -- another player chose."): the storm closes toward the spot, and ends
+        -- short of it where it cannot get there.
+        impact_storm = 'Storm control: the storm is closing toward a spot another player picked.',
         -- WRITTEN (2026-10-06, round 5). Airstrike, from its warning to its last
         -- rocket: every player in the fight inside its reach (the circle and the
         -- blast's reach past it), the runner's squad included, but never the
@@ -616,44 +619,47 @@ BR.Config.Terminals = {
         -- it", on the big map -- `spot` on the registry row, and its zone
         -- option and three possible circles gone)
         storm_control_name = 'Storm control',
-        -- WRITTEN (2026-10-06, round 4; was 'Picks where the storm ends, from
-        -- three possible final circles.').
-        storm_control_summary = 'Picks the spot on the map where the storm ends.',
-        -- WRITTEN (2026-10-06, round 4; was "The server works out three
-        -- possible final circles.\nYou pick one, and ..."). The storm ends
-        -- EXACTLY on the spot or the run is refused, nothing spent: never
-        -- moved to a spot nearby (server/storm.lua's STORM CONTROL block).
-        -- ONE SPOT A MATCH (round 4's review): once the storm is aimed, every
-        -- later run is refused (storm_aimed), so "the rest of the match" and
-        -- "exactly on that spot" stay true for the player who paid for it.
-        storm_control_what = "You pick a spot on the map, and the storm closes toward it for the rest of the match. The last circle closes exactly on that spot.\nThe spot has to be on land and well inside the next circle.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
+        -- WRITTEN (2026-10-06, round 5; was 'Picks the spot on the map where
+        -- the storm ends.').
+        storm_control_summary = 'Picks a spot on the map for the storm to close toward.',
+        -- WRITTEN (2026-10-06, round 5; was "...The last circle closes exactly
+        -- on that spot.\nThe spot has to be on land and well inside the next
+        -- circle.\n..."). The owner, on round 4's refusal: "this limitation
+        -- should not exist. the next phases should instead work towards the
+        -- location the player selected." No spot is refused now: every circle
+        -- closes toward it, the last ends on it when the nested circles can
+        -- carry it there and as near it as they can otherwise -- never outside
+        -- the next circle on the map, which every later circle is inside -- and
+        -- a spot over water or off the map is aimed as the nearest land to it
+        -- (server/storm.lua's STORM CONTROL block). ONE SPOT A MATCH (round 4's
+        -- review): once the storm is aimed, every later run is refused
+        -- (storm_aimed), so "the rest of the match" stays true for the player
+        -- who paid for it.
+        storm_control_what = "You pick a spot on the map, and the storm closes toward it for the rest of the match. The last circle ends on that spot if the storm can reach it, or as close to it as the storm can get.\nEvery circle still has to fit inside the one before it, so the storm can't end outside the next circle. A spot in the water or off the map counts as the nearest land to it.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
         storm_control_duration = 'Rest of the match',
         storm_control_affects = 'Everyone in the match',
         storm_control_notified = 'Everyone in the match',
-        -- WRITTEN (2026-10-06, round 4; was "...reach the circle you pick.").
-        storm_control_risks = 'Your squad still has to reach the spot you pick.',
-        storm_control_risks_solo = 'You still have to reach the spot you pick.',
-        storm_control_done = 'The storm will end where you chose.',
-        storm_control_description = 'Storm control. They chose where the storm will end.',
+        -- WRITTEN (2026-10-06, round 5; was "Your squad still has to reach the
+        -- spot you pick."): the storm can end short of the spot.
+        storm_control_risks = 'The storm may end short of your spot. Your squad still has to reach the last circle.',
+        storm_control_risks_solo = 'The storm may end short of your spot. You still have to reach the last circle.',
+        -- WRITTEN (2026-10-06, round 5; was 'The storm will end where you chose.').
+        storm_control_done = 'The storm will end on your spot, or as close to it as it can.',
+        -- WRITTEN (2026-10-06, round 5; was 'Storm control. They chose where the
+        -- storm will end.').
+        storm_control_description = 'Storm control. They picked a spot for the storm to close toward.',
         -- WRITTEN (2026-10-06, wave B). Storm control's own reason: the final
         -- circle is already drawn, so no circle is left to change -- refused,
         -- spending nothing (at the terminal: why not).
         no_circle = 'The final circle is already on the map.',
-        -- WRITTEN (2026-10-06, round 4). Storm control's reasons for a spot
-        -- the storm cannot end on exactly -- refused, spending nothing, the
-        -- 150 Volts included (at the terminal: why not, and pick again):
-        -- over water or off the play area...
-        storm_spot_land = "The storm can't end in the water or off the map. Pick a spot on land.",
-        -- ...outside the next circle on the map...
-        storm_spot_out = 'That spot is outside the next circle. Pick a spot inside it.',
-        -- ...or inside it, but too close to its edge for every circle after it
-        -- to close on it.
-        storm_spot_edge = 'That spot is too close to the edge of the next circle. Pick a spot further inside it.',
-        -- WRITTEN (2026-10-06, round 4's review). Storm control once the
-        -- storm is already aimed this match: one spot a match, so a second
-        -- squad's run never replaces the first's -- refused, spending
-        -- nothing (at the terminal: why not).
-        storm_aimed = 'Someone has already picked where the storm ends this match.',
+        -- WRITTEN (2026-10-06, round 4's review; round 5, was 'Someone has
+        -- already picked where the storm ends this match.'). Storm control once
+        -- the storm is already aimed this match: one spot a match, so a second
+        -- squad's run never replaces the first's -- refused, spending nothing
+        -- (at the terminal: why not). Round 4's three refusals of the spot
+        -- itself (over water, outside the next circle, too near its edge) are
+        -- gone with the limits they stated.
+        storm_aimed = 'Someone has already picked a spot for the storm this match.',
 
         -- Comms blackout (owner's; LIVE since wave C, 2026-10-06)
         comms_blackout_name = 'Comms blackout',
