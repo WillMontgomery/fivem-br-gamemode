@@ -68,14 +68,15 @@ export function fill(text: string, vars: Record<string, string | number>): strin
 
 /**
  * EVERY MENTION OF VOLTS IN THE VOLTS STYLE (owner, 2026-10-06, round 4: "Any
- * mention of volts must use our proper font for that and the gold color").
+ * mention of volts must use our proper font for that and the gold color";
+ * round 5: the gold stays, in the page's own font).
  *
  * A line cut into its pieces, each saying whether it is Volts: a `{token}`
  * named in `amounts` -- {volts}, {cost}, {balance} -- becomes that figure and
  * the currency's word ("1,250 Volts"), and the currency's word wherever the
  * line itself writes it ("You don't have enough Volts.") is a Volts piece
  * too. Any other token is left as written (fill it first). Volts.tsx draws
- * the Volts pieces in the game's display face and gold; scripts/
+ * the Volts pieces in the Volts gold, in the page's font; scripts/
  * check-terminal.mjs T12 fails a Volts amount drawn any other way.
  */
 export interface Piece {

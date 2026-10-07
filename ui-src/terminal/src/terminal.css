@@ -354,34 +354,29 @@ body.awsui-dark-mode {
 }
 
 /*
- * ═══ VOLTS, IN THE GAME'S VOLTS STYLE (owner, 2026-10-06, round 4) ═══
+ * ═══ VOLTS IN THE VOLTS GOLD, IN THE PAGE'S OWN FONT ═══
  *
- * "Any mention of volts must use our proper font for that and the gold color."
- * The game's: br_ui's display face, Anton (ui-src/src's `font-display`), in the
- * gold the owner gave Volts, `--color-volts` #d9ae35 (ui-src/src/index.css) --
- * the same in both of the site's modes, as the currency's color is the
- * game's, not the site's. Anton is bundled here from @fontsource/anton, the
- * latin subset br_ui ships, under the SIL Open Font License 1.1 (its license
- * file is copied beside the font, public/assets/). It has one weight, 400,
- * so nothing here asks the browser to fake a bold one.
+ * Round 4 (owner, 2026-10-06): "Any mention of volts must use our proper font
+ * for that and the gold color." Round 5, the same day: "change the volts text
+ * once more, but this time back to the standard font for the browser instead
+ * of our volts font. The current font for it doesn't fit well with the rest of
+ * the page." So a Volts amount and the word are written in whatever the text
+ * around them is written in -- Cloudscape's font, Open Sans, at the
+ * surrounding weight -- and keep the gold the owner gave Volts,
+ * `--color-volts` #d9ae35 (ui-src/src/index.css), the same in both of the
+ * site's modes, as the currency's color is the game's, not the site's. NO
+ * FONT IS SET HERE AT ALL: the rule names only the color, so the font, its
+ * weight and its spacing are inherited. Anton (round 4's face) is no longer
+ * bundled into the app.
  *
  * Volts.tsx puts `.terminal-volts` on every Volts amount and every mention of
  * the word; the top bar's balance is a TopNavigation utility's string, so
  * App.tsx marks the top bar `.terminal-topnav-volts` while the balance is its
- * first utility, and the rule below dresses that utility the same way.
+ * first utility, and the rule below colors that utility the same way.
  * scripts/check-terminal.mjs T12 holds every reader to it.
  */
-@font-face {
-  font-family: 'Anton';
-  font-style: normal;
-  font-display: swap;
-  font-weight: 400;
-  src: url('../../node_modules/@fontsource/anton/files/anton-latin-400-normal.woff2') format('woff2');
-}
-
 body {
   --terminal-volts-color: #d9ae35;
-  --terminal-volts-font: 'Anton', 'Segoe UI', sans-serif;
 }
 
 .terminal-volts,
@@ -389,10 +384,6 @@ body {
 .terminal-topnav-volts [data-utility-index="0"] a,
 .terminal-topnav-volts [data-utility-index="0"] button *,
 .terminal-topnav-volts [data-utility-index="0"] a * {
-  font-family: var(--terminal-volts-font) !important;
-  font-weight: 400 !important;
-  font-style: normal;
-  letter-spacing: 0.02em;
   color: var(--terminal-volts-color) !important;
 }
 

@@ -74,9 +74,10 @@
  *                  `box-shadow: none` rule, which names nothing else (the
  *                  preferences' toggle knobs kept a 1 px shade until this).
  *   T12 volts      every Volts amount and every mention of the word in the
- *                  game's Volts style (round 4), drawn by Volts.tsx and
- *                  composed nowhere else: a closed list of the reads of the
- *                  currency's word and a Volts figure (see T12 below).
+ *                  Volts style -- the Volts gold (round 4), in the page's own
+ *                  font (round 5) -- drawn by Volts.tsx and composed nowhere
+ *                  else: a closed list of the reads of the currency's word
+ *                  and a Volts figure (see T12 below).
  *   T13 squads     "Squads!" only on a squadWide row and only in a squad
  *                  match, by the state's own squadMatch (round 4).
  *   T14 home       Home has the five filters and no text search of its own
@@ -661,7 +662,9 @@ function subject(selector) {
 }
 
 // T12: VOLTS IN THE VOLTS STYLE (owner, 2026-10-06, round 4: "Any mention of
-// volts must use our proper font for that and the gold color").
+// volts must use our proper font for that and the gold color"; round 5, the
+// same day: "change the volts text once more, but this time back to the
+// standard font for the browser instead of our volts font").
 //
 //   (a) a Volts amount is drawn by Volts.tsx (VoltsAmount, voltsLine,
 //       voltsLines) and nowhere else: voltsText() -- the figure and the word
@@ -679,10 +682,13 @@ function subject(selector) {
 //       by a template it cannot follow, fails); and the reader reads every
 //       line of the block (a line written any other way than `key = '...',`
 //       would be one it skips)
-//   (d) the style is the game's: `.terminal-volts` and the top bar's
-//       utility in Anton and `--terminal-volts-color`, which is br_ui's
-//       `--color-volts`, and Anton's face from the bundled woff2 (the build's
-//       half is in "The build", below)
+//   (d) the style is the Volts gold in the page's own font: `.terminal-volts`
+//       and the top bar's utility in `--terminal-volts-color`, which is
+//       br_ui's `--color-volts`, and NOTHING ELSE -- no font, weight, style
+//       or spacing of their own, so a Volts amount is written in the text
+//       around it -- and no face bundled for it: no @font-face in
+//       terminal.css, and none and no font file in the build (its half is in
+//       "The build", below)
 //   (e) NOTHING ELSE COMPOSES ONE (review of round 4: `${f.cost} ${currency}`
 //       and `<span>{f.cost.toLocaleString()} {currency}</span>` both got
 //       past (a)-(d)). Outside model.ts and Volts.tsx, the currency's word
@@ -694,10 +700,6 @@ function subject(selector) {
 //       bridge.ts. No destructuring or ['...'] reads of them, no template,
 //       `+`, String() or number formatting of them, and no string that
 //       writes the currency's word.
-const FONT_FILES = {
-  'assets/anton-latin-400-normal.woff2': 'files/anton-latin-400-normal.woff2',
-  'assets/LICENSE-OFL-1.1-anton.txt': 'LICENSE',
-}
 {
   const R = 'T12 volts'
   const OK_TEXT = new Set(['terminal/src/model.ts', 'terminal/src/Volts.tsx'])
@@ -798,20 +800,27 @@ const FONT_FILES = {
   if (!gold || !own || gold.toLowerCase() !== own.toLowerCase()) {
     fail(R, 'terminal/src/terminal.css', `--terminal-volts-color (${own}) is not br_ui's --color-volts (${gold})`)
   }
-  if (!/--terminal-volts-font:\s*'Anton'/.test(css)) {
-    fail(R, 'terminal/src/terminal.css', '--terminal-volts-font is not Anton, the game\'s display face')
-  }
-  const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find((m) => m[1].split(',').map((s) => s.trim()).includes('.terminal-volts'))
+  // THE PAGE'S FONT (round 5): no rule that styles a Volts amount -- the
+  // Volts rule, or any other naming .terminal-volts or the top bar's balance
+  // -- sets a font of its own, and no face is declared for one.
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  const rule = rules.find((m) => m[1].split(',').map((s) => s.trim()).includes('.terminal-volts'))
   const sels = rule ? rule[1].split(',').map((s) => s.trim()) : []
-  if (!rule || !/font-family:\s*var\(--terminal-volts-font\)\s*!important/.test(rule[2])
-      || !/color:\s*var\(--terminal-volts-color\)\s*!important/.test(rule[2])) {
-    fail(R, 'terminal/src/terminal.css', '.terminal-volts does not set the Volts face and gold')
+  if (!rule || !/(^|[;\s])color:\s*var\(--terminal-volts-color\)\s*!important/.test(rule[2])) {
+    fail(R, 'terminal/src/terminal.css', '.terminal-volts is not in the Volts gold (--terminal-volts-color)')
   } else if (!sels.includes('.terminal-topnav-volts [data-utility-index="0"] button')
       || !sels.includes('.terminal-topnav-volts [data-utility-index="0"] button *')) {
     fail(R, 'terminal/src/terminal.css', 'the top bar\'s balance (its first utility, under .terminal-topnav-volts) is not in the Volts rule')
   }
-  if (!/@font-face\s*\{[^}]*font-family:\s*'Anton'[^}]*@fontsource\/anton\/files\/anton-latin-400-normal\.woff2/.test(css)) {
-    fail(R, 'terminal/src/terminal.css', 'no @font-face for Anton from @fontsource/anton\'s latin woff2')
+  const FONT_PROP = /(^|[;\s])(font(-family|-weight|-style|-size|-stretch|-variant)?|letter-spacing)\s*:/
+  for (const m of rules) {
+    if (!/\.terminal-volts|\.terminal-topnav-volts/.test(m[1])) continue
+    if (FONT_PROP.test(m[2])) {
+      fail(R, 'terminal/src/terminal.css', `${m[1].trim().slice(0, 80)} sets a font of its own -- Volts is written in the page's font (owner, round 5), in the gold only`)
+    }
+  }
+  if (/@font-face|--terminal-volts-font|\banton\b/i.test(css)) {
+    fail(R, 'terminal/src/terminal.css', 'declares a face (or names Anton) for Volts -- the page\'s own font is the one (round 5)')
   }
 
   // (e) Nothing else composes a Volts amount. Each read of the currency's
@@ -984,26 +993,22 @@ if (!existsSync(OUT)) {
   const files = walk(OUT).map((f) => relative(OUT, f).replace(/\\/g, '/')).sort()
   const scripts = files.filter((f) => f.endsWith('.js'))
   const sheets = files.filter((f) => f.endsWith('.css'))
-  // THE VOLTS FACE (round 4, T12) is the one other thing the build ships:
-  // Anton's latin woff2 and its license, each byte for byte the package's.
-  const other = files.filter((f) => !f.endsWith('.js') && !f.endsWith('.css') && f !== 'index.html'
-    && !Object.hasOwn(FONT_FILES, f))
+  // NOTHING ELSE SHIPS: round 4's Volts face (Anton's woff2 and its license)
+  // went with round 5's page font (T12).
+  const other = files.filter((f) => !f.endsWith('.js') && !f.endsWith('.css') && f !== 'index.html')
   if (!files.includes('index.html')) fail('T5 one bundle', rel(OUT), 'no index.html')
   if (scripts.length !== 1) fail('T5 one bundle', rel(OUT), `${scripts.length} scripts: ${scripts.join(', ')}`)
   if (sheets.length !== 1) fail('T5 one bundle', rel(OUT), `${sheets.length} stylesheets: ${sheets.join(', ')}`)
   if (other.length > 0) fail('T5 one bundle', rel(OUT), `unexpected files: ${other.join(', ')}`)
-  for (const [f, from] of Object.entries(FONT_FILES)) {
-    const src = join(ROOT, 'node_modules', '@fontsource', 'anton', from)
-    if (!files.includes(f)) {
-      fail('T12 volts', rel(OUT), `${f} is not in the build -- the Volts face, or its license, does not ship`)
-    } else if (!existsSync(src) || !readFileSync(join(OUT, f)).equals(readFileSync(src))) {
-      fail('T12 volts', `${rel(OUT)}/${f}`, `is not @fontsource/anton's ${from}, byte for byte`)
+  for (const f of files) {
+    if (/\.(woff2?|ttf|otf)$|anton/i.test(f)) {
+      fail('T12 volts', `${rel(OUT)}/${f}`, 'a font file in the build -- Volts is in the page\'s own font since round 5')
     }
   }
   for (const s of sheets) {
     const css = readFileSync(join(OUT, s), 'utf8')
-    if (!/@font-face\{font-family:Anton;[^}]*src:url\(\.\/anton-latin-400-normal\.woff2\)/.test(css)) {
-      fail('T12 volts', `${rel(OUT)}/${s}`, 'no @font-face for Anton from the bundled woff2 -- the Volts face would fall back')
+    if (/font-family:\s*['"]?Anton\b/i.test(css)) {
+      fail('T12 volts', `${rel(OUT)}/${s}`, 'the built CSS still names Anton -- Volts is in the page\'s own font since round 5')
     }
   }
   // T8: every Cloudscape token the Run button borrows is one Cloudscape defines.

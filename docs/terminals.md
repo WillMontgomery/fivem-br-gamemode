@@ -553,13 +553,13 @@ holds #385's findings over it, and that every line goes through the speaker.
   entry, as typing does -- no load, no new entry -- and the address carries
   them (`/home?category=intel&risk=high&cost=paid&bounty=runner&status=available&q=scan`).
   "Clear filter" on an empty page clears them all. `model.ts` "the filters".
-- **Every mention of Volts in the game's Volts style** ("Any mention of volts
-  must use our proper font for that and the gold color"): br_ui's display
-  face, Anton, in its Volts gold, `#d9ae35` (`--color-volts`), the same in
-  both modes. Anton ships in the app's build (`assets/anton-latin-400-normal.woff2`
-  from `@fontsource/anton` 5.3.0, the file br_ui ships, under the SIL Open
-  Font License 1.1, whose text is copied beside it as
-  `assets/LICENSE-OFL-1.1-anton.txt`). `Volts.tsx` draws every Volts amount
+- **Every mention of Volts in the Volts style** ("Any mention of volts must
+  use our proper font for that and the gold color"; round 5: "back to the
+  standard font for the browser instead of our volts font"): the Volts gold,
+  `#d9ae35` (`--color-volts`), the same in both modes, in the page's own font
+  -- the text around it, Open Sans at its weight. The rule sets the color and
+  nothing else, and the app bundles no face (round 4's Anton and its license
+  are gone from the build). `Volts.tsx` draws every Volts amount
   and every mention of the word: a card's cost, a page's cost line, the
   confirmation, a run's answer (the new balance; `no_volts`'s word, cost and
   balance) and the privacy policy's "your Volts balance" (the style only, not
@@ -569,8 +569,8 @@ holds #385's findings over it, and that every line goes through the speaker.
   `check-terminal.mjs` T12 holds it: a Volts token filled as text, a copy
   line that says Volts read without the style (or read only where T12 cannot
   see, such as an option's label), a copy line its reader cannot read (one
-  not written `key = '...',`), and a style or a face that is not the game's
-  all fail; and outside `model.ts` and `Volts.tsx` the currency's
+  not written `key = '...',`), and a color that is not the Volts gold, a
+  font of its own, or a face bundled for it all fail; and outside `model.ts` and `Volts.tsx` the currency's
   word and a Volts figure (`.cost`, `.volts`, `.balance`) may be read only
   where its closed list allows -- handed to `VoltsAmount`, `voltsLine(s)` or
   `voltsText`, passed down as `currency={currency}`, compared with 0 or null,
