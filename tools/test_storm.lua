@@ -4769,6 +4769,13 @@ do
     --     worst edgeInset + chordM, 6 + 8 = 14 m, inside the true one.
     --   * AND THE PIECES ARE THE SIZE ASKED FOR: somewhere the offset reaches nine
     --     tenths of chordM, so the chord in force is the configured one.
+    --
+    -- THE BOUNDS ARE THE OWNER'S NUMBERS AND THE STATED ONES, NOT THE CONFIG'S. A
+    -- bound read from the config under test proves only that the code agrees with
+    -- itself -- the review ran chordM 9 through this block and it passed. So: chordM
+    -- at most the 8 m case the owner was shown, and the curtain between the 6 and the
+    -- 14 m inside the line that docs/terminology.md and config/storm.lua state.
+    local OWNER_CHORD, NEAREST, DEEPEST = 8.0, 6.0, 14.0
     local base = newStormClient()
     local CS = base.env.BR.Config.Storm
     local INSET, CHORD = CS.render.edgeInset, CS.render.strip.chordM
@@ -4886,16 +4893,20 @@ do
         'and they include blobs and breakouts that overlap',
         (function() local k = {} for n in pairs(kinds) do k[#k + 1] = n end
             table.sort(k) return table.concat(k, ', ') end)())
-    ok(worstSide <= -INSET + 1e-3,
+    ok(CHORD <= OWNER_CHORD and INSET == NEAREST and INSET + CHORD <= DEEPEST,
+        'the config is the owner\'s: chordM at most 8, edgeInset 6, so the curtain is '
+            .. 'stated to stand 6 to 14 m inside the line',
+        ('chordM %.2f, edgeInset %.2f'):format(CHORD, INSET))
+    ok(worstSide <= -NEAREST + 1e-3,
         'THE SIDE: no point of any piece is outside the line that damages, or nearer it '
-            .. 'than edgeInset -- the larger pieces lean into the safe zone, never out',
+            .. 'than 6 m -- the larger pieces lean into the safe zone, never out',
         ('nearest point %.3f m from the true line (inside is negative), at %s')
             :format(worstSide, tostring(sideAt)))
-    ok(worstOff <= CHORD + 1e-6,
-        'THE OFFSET: no point is more than chordM inside the line it was walked from, '
-            .. 'so edgeInset + chordM inside the true one at worst',
-        ('deepest %.3f m against chordM %.1f -- %.3f m inside the true line -- at %s')
-            :format(worstOff, CHORD, worstOff + INSET, tostring(offAt)))
+    ok(worstOff <= OWNER_CHORD + 1e-6 and worstOff + INSET <= DEEPEST + 1e-6,
+        'THE OFFSET: no point is more than 8 m inside the line it was walked from, so '
+            .. 'no more than 14 m inside the true one',
+        ('deepest %.3f m from the line it was walked from -- %.3f m inside the true '
+            .. 'line -- at %s'):format(worstOff, worstOff + INSET, tostring(offAt)))
     ok(worstOff >= 0.9 * CHORD,
         'AND THE PIECES ARE AS LARGE AS ASKED: the offset reaches nine tenths of '
             .. 'chordM somewhere, so the configured chord is the one in force',
@@ -5275,11 +5286,22 @@ do
     -- Phase 1's opening ring, 9.4 km of radius, seen from 5.2 km off its center: its
     -- near side inside 6.5 km, its far side past 14. Every claim is checked against a
     -- second client with no far fade -- the wall as it was drawn before, all of it.
+    --
+    -- WHAT IS DRAWN AND WHAT IS NOT IS HELD TO THE OWNER'S 8 km, NOT THE CONFIG'S endM:
+    -- a bound read from the config under test proves only that the code agrees with
+    -- itself, and the review drew the wall out to 8.5 km through this block unseen.
+    -- The band's start is held to the widest zone a player stands in from phase 3's
+    -- hold on, found below rather than sampled. The curve between the two is the
+    -- config's, and the pop test is what holds it to being gentle.
+    local OWNER_END = 8000.0
     local CFGS = newStormClient().env.BR.Config.Storm
     local SP, RR = CFGS.render.strip, CFGS.render
     local FF = SP.farFade
     local F0, F1 = FF.startM, FF.endM
     local BAND = F1 - F0
+    ok(F1 == OWNER_END and F0 < F1,
+        'the fade ends at the owner\'s 8 km: "fade the wall past 8km"',
+        ('startM %.0f, endM %.0f'):format(F0, F1))
     local RING = 9400.0
     local VIEW = pt(-5000.0, -1500.0, 30.0)
 
@@ -5348,7 +5370,7 @@ do
     -- ─── nothing past 8 km, nothing inside it lost, nothing new ───
     local want = {}
     for _, s in ipairs(refP) do
-        if nearest(s, VIEW) < F1 then want[#want + 1] = footKey(s) end
+        if nearest(s, VIEW) < OWNER_END then want[#want + 1] = footKey(s) end
     end
     local got = {}
     for _, s in ipairs(farP) do got[#got + 1] = footKey(s) end
@@ -5424,7 +5446,7 @@ do
             local a = texel(tex, s.ua + (s.ub - s.ua) * t)
             local full = tex.px[0][X0].a / 255.0
             alongN = alongN + 1
-            if d >= F1 and a ~= 0.0 then
+            if d >= OWNER_END and a ~= 0.0 then
                 alongBad = alongBad or ('%.4f drawn at %.0f m, past 8 km'):format(a, d)
             elseif d <= F0 and a < 0.995 * full then
                 alongBad = alongBad or ('%.4f of %.4f at %.0f m, inside 6.5'):format(a,
@@ -5495,14 +5517,14 @@ do
     local bandBad, bandN, bandSeen = nil, 0, 0
     local bWant = 0
     for _, s in ipairs(piecesOf(BR_)) do
-        if nearest(s, VIEW) < F1 then bWant = bWant + 1 end
+        if nearest(s, VIEW) < OWNER_END then bWant = bWant + 1 end
     end
     local bGot = piecesOf(BF)
     for _, s in ipairs(bGot) do
         local old = bOld[footKey(s)]
         local dn = nearest(s, VIEW)
         bandN = bandN + 1
-        if not old or dn >= F1 then
+        if not old or dn >= OWNER_END then
             bandBad = bandBad or 'a piece drawn that the wall has not, or past 8 km'
         else
             for b, band in ipairs(s.q.bands) do
@@ -5523,39 +5545,71 @@ do
             .. 'each whole one by its nearest point: unchanged inside 6.5 km',
         bandBad or ('%d pieces, %d bands faded'):format(bandN, bandSeen))
 
-    -- ─── from phase 3's hold on, a player inside a zone sees all of its shape ───
-    local p3Bad, p3N = nil, 0
+    -- ─── from phase 3's hold on, a player inside a zone sees all of it unfaded ───
+    --
+    -- From phase 3's hold on the zone a player stands in is phase 2's target or a
+    -- zone inside it, so the band may start no nearer than the widest phase-2 target
+    -- is long. It is FOUND, over a thousand seeds, not sampled: a zone is the hull of
+    -- its corner discs, so its length end to end is the longest of |c_i - c_j| +
+    -- rho_i + rho_j over its corners -- 6.40 km at the widest, 4.30 on average, and
+    -- over 6 km on four seeds in a thousand, which is why a dozen seeds never found it.
+    -- A player stood a meter inside one end of that zone must see every piece of its
+    -- wall unfaded, the far end included.
     local phases = CFGS.phases
-    for seed = 1, 12 do
-        local C = newStormClient()
-        local rec = C.record(3, 0.0, 0.0, phases[2].radius, 200.0, 100.0,
-            phases[3].radius, 600000, 60000, 1.7)
-        rec.seed = seed
-        rec.tStart = C.now - 60000
-        C.grown()
-        C.recordWallOnly()
-        local zone = zoneOf(C.env, rec)
-        local SS = C.env.BR.StormShape
-        local P = SS.perimeter(zone)
-        for k = 0, 3 do
-            local x, y = offBoundary(C.env, zone, P * k / 4, -1.0)
-            C.pedAt = pt(x, y, 30.0)
-            C.frame()
-            local ps = piecesOf(C)
-            p3N = p3N + #ps
-            local u0 = (X0 + 0.5) / C.rt.tex.w
-            for _, s in ipairs(ps) do
-                if s.ua ~= u0 or s.ub ~= u0 then
-                    p3Bad = p3Bad or ('seed %d: a piece faded from a meter inside'):format(seed)
-                end
+    local U = newStormClient().env
+    local r2 = phases[2].radius
+    local widest, wSeed, wi, wj = 0.0, nil, nil, nil
+    for seed = 1, 1000 do
+        local ks = U.BR.StormUnit(seed, 2).ks or {}
+        for i = 1, #ks do
+            for j = i, #ks do
+                local a, b = ks[i], ks[j]
+                local d = (math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) + a.rho + b.rho)
+                    * r2
+                if d > widest then widest, wSeed, wi, wj = d, seed, i, j end
             end
         end
     end
-    ok(p3Bad == nil and p3N > 0,
-        'from phase 3\'s hold on, a player anywhere inside a zone that holds its '
-            .. 'destination sees every piece of its wall unfaded -- phase 2\'s target is '
-            .. '6.4 km end to end at most',
-        p3Bad or ('%d pieces from 48 spots on 12 zones'):format(p3N))
+    local C = newStormClient()
+    local rec = C.record(3, 0.0, 0.0, r2, 0.0, 0.0, phases[3].radius, 600000, 60000, 1.7)
+    rec.seed = wSeed
+    rec.tStart = C.now - 60000
+    C.grown()
+    C.recordWallOnly()
+    -- One end of the zone: corner j's disc, on the far side from corner i's.
+    local ks = U.BR.StormUnit(wSeed, 2).ks
+    local ki, kj = ks[wi], ks[wj]
+    local ux, uy = ki.x - kj.x, ki.y - kj.y
+    local ul = math.sqrt(ux * ux + uy * uy)
+    if ul > 0.0 then ux, uy = ux / ul, uy / ul else ux, uy = 1.0, 0.0 end
+    local ex = (kj.x - ux * kj.rho) * r2 + ux
+    local ey = (kj.y - uy * kj.rho) * r2 + uy
+    C.pedAt = pt(ex, ey, 30.0)
+    C.frame()
+    local ps = piecesOf(C)
+    local u0 = (X0 + 0.5) / C.rt.tex.w
+    local wBad, farthest = nil, 0.0
+    for _, sg in ipairs(ps) do
+        for e = 0, 1 do
+            local d = ground(sg[1 + 2 * e], sg[2 + 2 * e], C.pedAt)
+            if d > farthest then farthest = d end
+        end
+        if sg.ua ~= u0 or sg.ub ~= u0 then
+            wBad = wBad or ('a piece faded, %.0f m away'):format(
+                math.max(ground(sg[1], sg[2], C.pedAt), ground(sg[3], sg[4], C.pedAt)))
+        end
+    end
+    local inside = C.env.BR.StormShape.distance(zoneOf(C.env, rec), ex, ey)
+    ok(F0 > widest and widest > 6300.0 and inside < 0.0 and farthest > 6300.0,
+        'the band starts past the widest zone a player stands in from phase 3\'s hold on: '
+            .. 'phase 2\'s widest target, over a thousand seeds',
+        ('widest %.1f m (seed %s) against a band from %.0f m; the player %.2f m inside, '
+            .. 'its far end %.1f m off'):format(widest, tostring(wSeed), F0, inside,
+            farthest))
+    ok(C.errored() == nil and #ps > 0 and wBad == nil,
+        'and from a meter inside one end of it, every piece of its wall is drawn unfaded, '
+            .. 'the far end 6.4 km off included',
+        wBad or ('%d pieces'):format(#ps))
 end
 
 -- ---------------------------------------------------------------------------
