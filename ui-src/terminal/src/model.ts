@@ -507,6 +507,17 @@ export function runChoices(def: FunctionDef, choice: Readonly<Record<string, str
   return out
 }
 
+/**
+ * A function's risks, in the order its page lists them: risk_notice first --
+ * the lobby is told who ran what -- then its own `<id>_risks` lines. A QUIET
+ * row (round 4: Field medic, "should not notify everyone") tells the lobby
+ * nothing, so its page does not say it does.
+ */
+export function risksOf(def: FunctionDef, say: Say): string[] {
+  return [...(def.quiet ? [] : [say('risk_notice')]), ...lines(say(`${def.id}_risks`))]
+    .filter((s) => s !== '')
+}
+
 /** The categories with something in them, in the registry's order. */
 export function shownCategories(catalog: Catalog, shown: FunctionDef[]): string[] {
   const used = new Set(shown.map((f) => f.category))

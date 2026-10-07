@@ -435,11 +435,13 @@ BR.Config.Terminals = {
         ammo_full_solo = 'Your ammo is already full.',
         -- Supply drop: another airdrop is waiting for a player or falling.
         drop_busy = 'Another airdrop is already on its way.',
-        -- WRITTEN (2026-10-06, wave A). Field medic: everyone in the squad who
-        -- is standing is already at full health and armor (or nobody is
-        -- standing) -- refused, spending nothing.
-        health_full = 'Everyone in your squad who is standing is already at full health and armor.',
-        health_full_solo = "You're already at full health and armor.",
+        -- WRITTEN (2026-10-06, round 4; was 'Everyone in your squad who is
+        -- standing is already at full health and armor.'). Field medic, with
+        -- nothing at all to change: everyone in the squad who is standing is
+        -- already full (or nobody is standing), and no other player standing
+        -- has 50 health or more to lose -- refused, spending nothing.
+        health_full = 'Everyone in your squad who is standing is already at full health and armor, and no other player has 50 health or more.',
+        health_full_solo = "You're already at full health and armor, and no other player has 50 health or more.",
         -- WRITTEN (2026-10-06, round 4; was 'Nobody in the match is carrying
         -- a weapon.'). Disarm: nobody still in the match outside the squad
         -- carries a weapon -- refused, spending nothing (the Volts included).
@@ -480,7 +482,9 @@ BR.Config.Terminals = {
         howto_rules_title_solo = 'One use per match',
         howto_rules_body_solo = "You get one terminal use per match.\nRunning a function uses your Yubikey and your terminal use. A Yubikey is gone after one use.\nA function that can't run uses nothing.",
         howto_notices_title = 'What everyone is told',
-        howto_notices_body = "When you open a terminal with a Yubikey, everyone in the match is told your name.\nWhen you run a function, everyone is told your name and what you ran.\nSome functions tell more. Each function's page lists who is told.",
+        -- WRITTEN (2026-10-06, round 4: the second line gained "unless its
+        -- page says otherwise", for Field medic, which tells nobody).
+        howto_notices_body = "When you open a terminal with a Yubikey, everyone in the match is told your name.\nWhen you run a function, everyone is told your name and what you ran, unless its page says otherwise.\nSome functions tell more. Each function's page lists who is told.",
         howto_tips_title = 'Tips',
         howto_tips_body = "Read a function's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nTalk to your squad before you run anything. You only get one use between you.\nIntel shows the most while many squads are left. Supply matters most when your squad is low on gear.\nStorm functions change where the last fight happens. Think about where your squad will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
         -- WRITTEN (2026-10-05, round 2). The tips outside a squad match.
@@ -910,21 +914,32 @@ BR.Config.Terminals = {
         contract_done = 'The contract is out.',
         contract_description = 'Contract. The top player has a bounty.',
 
-        -- Field medic (new; LIVE since wave A, 2026-10-06)
+        -- Field medic (new; LIVE since wave A, 2026-10-06; ROUND 4, the same
+        -- day: "Field medic should heal everyone on the squad to full, and
+        -- their shield, and remove 20 health from everyone else in the match
+        -- who has at least 50 health", and "Field medic should not notify
+        -- everyone" -- `quiet` on its row, so it has no `_description` and its
+        -- page no risk_notice)
         field_medic_name = 'Field medic',
-        field_medic_summary = 'Restores full health and armor to everyone in your squad.',
-        field_medic_summary_solo = 'Restores your full health and armor.',
-        field_medic_what = "Every player in your squad who is still standing gets full health and full armor.\nDowned players aren't revived.",
-        field_medic_what_solo = 'You get full health and full armor.',
+        -- WRITTEN (2026-10-06, round 4; was 'Restores full health and armor
+        -- to everyone in your squad.' / 'Restores your full health and armor.').
+        field_medic_summary = 'Restores full health and armor to everyone in your squad, and takes 20 health from other players.',
+        field_medic_summary_solo = 'Restores your full health and armor, and takes 20 health from other players.',
+        -- WRITTEN (2026-10-06, round 4: the last line is new). The 20 and the
+        -- 50 are fx.medicDrainHp and fx.medicDrainFromHp; the suite holds the
+        -- page to them.
+        field_medic_what = "Every player in your squad who is still standing gets full health and full armor.\nDowned players aren't revived.\nEvery other player in the match who is standing with at least 50 health loses 20 health. Their armor isn't touched.",
+        field_medic_what_solo = "You get full health and full armor.\nEvery other player in the match who is standing with at least 50 health loses 20 health. Their armor isn't touched.",
         field_medic_duration = 'Instant',
-        field_medic_affects = 'Your squad',
-        field_medic_affects_solo = 'You',
-        field_medic_notified = 'Everyone in the match',
+        -- WRITTEN (2026-10-06, round 4; was 'Your squad' / 'You').
+        field_medic_affects = 'Your squad, and every other player with at least 50 health',
+        field_medic_affects_solo = 'You, and every other player with at least 50 health',
+        -- WRITTEN (2026-10-06, round 4; was 'Everyone in the match'): the run
+        -- tells the lobby nothing (opening the terminal with a key still did).
+        field_medic_notified = 'Nobody',
         field_medic_risks = "Only players standing when it runs are healed.",
         field_medic_done = 'Your squad is patched up.',
         field_medic_done_solo = "You're patched up.",
-        field_medic_description = 'Field medic. Their squad is back to full health.',
-        field_medic_description_solo = 'Field medic. They are back to full health.',
     },
 
     -- ═══ THE ART: EVERY PLACEHOLDER IN ONE SPOT ═══
@@ -1157,7 +1172,7 @@ BR.Config.Terminals = {
     --                words, never the server's rule: each effect gives its
     --                own bounty.
     --   squadWide    true for a function whose effect reaches the runner's
-    --                whole squad (its `_affects` is "Your squad", or its
+    --                whole squad (its `_affects` starts "Your squad", or its
     --                marks show on the squad's maps): the app shows "Squads!"
     --                beside its title IN A SQUAD MATCH, whose popover says it
     --                applies to the whole squad (round 4). Presentation only.
@@ -1167,6 +1182,12 @@ BR.Config.Terminals = {
     --                "Set location" step (confirm_location), and the run
     --                carries the spot as `at = { x, y }` (BR.Terminal.spot;
     --                the function reads it as `opts.at`).
+    --   quiet        true for a function whose run the lobby is NOT told of
+    --                (round 4, owner 2026-10-06: "Field medic should not
+    --                notify everyone"): no notice_action, so no
+    --                `<id>_description`, and its page leaves out risk_notice.
+    --                Opening a terminal with a key still tells the lobby
+    --                (notice_access), whatever is run after.
     --
     -- The server half of a built function is BR.Terminal.FUNCTIONS[id] in
     -- br_core/server/terminal.lua: an optional `refuse` and a `run`.
@@ -1245,7 +1266,10 @@ BR.Config.Terminals = {
         { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true, squadWide = true,
           options = { { id = 'radius', choices = { '250', '500' }, default = '250' } } },  -- meters
         { id = 'contract',       category = 'disruption', risk = 'medium', implemented = true, bounty = 'target' },
-        { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true, squadWide = true },
+        -- ROUND 4 (owner, 2026-10-06): heals the squad, drains everyone else
+        -- at 50 health or more by 20, and tells the lobby nothing (`quiet`).
+        { id = 'field_medic',    category = 'supply',     risk = 'low',    implemented = true, squadWide = true,
+          quiet = true },
     },
 
     -- The categories, in the order the side navigation lists them.
@@ -1351,6 +1375,14 @@ BR.Config.Terminals = {
         pulsePingMs = 1000,
         -- (Contract's bounty is bountyMs, the owner's ten, since round 4: "The
         -- contract bounty should last 10 minutes".)
+        -- Field medic's drain (round 4, owner 2026-10-06: "remove 20 health
+        -- from everyone else in the match who has at least 50 health"): how
+        -- much it takes, and the least a standing player outside the squad
+        -- must have to lose it. Display units (the bar's 0..100); the page
+        -- says both (field_medic_what), and tools/test_terminalfx.lua holds
+        -- them together.
+        medicDrainHp = 20,
+        medicDrainFromHp = 50,
 
         -- ── wave C (2026-10-06). EMP's radius and duration are its row's own
         --    choices (meters, seconds), like wave A's. ──

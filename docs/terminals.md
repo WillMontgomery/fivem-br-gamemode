@@ -126,9 +126,11 @@ component that reads the copy without the speaker.
 
 Every function has, keyed by its id: `_name`, `_summary` (its card), `_what`,
 `_duration`, `_affects`, `_notified`, `_risks` (optional; `risk_notice` is
-always listed first), `_done`, `_description` (the lobby notice's
-`{description}`), and per option `_opt_<option>` and `_opt_<option>_<choice>`
-(with an optional `_desc`). `tools/test_terminal.lua` fails a row missing any.
+always listed first, but on a `quiet` row's page), `_done`, `_description`
+(the lobby notice's `{description}`; none on a `quiet` row, which the lobby is
+not told of), and per option `_opt_<option>` and `_opt_<option>_<choice>`
+(with an optional `_desc`). `tools/test_terminal.lua` fails a row missing any,
+and a quiet row that has a `_description`.
 
 The table below is the lines outside the functions' own:
 
@@ -217,10 +219,15 @@ filters and pages from it.
   `'target'` (Contract: another player does), absent for none. The app's
   words only; each effect gives its own bounty.
 - `squadWide` (round 4): the effect reaches the runner's whole squad (its
-  `_affects` is "Your squad", or its marks show on the squad's maps): Scan,
+  `_affects` starts "Your squad", or its marks show on the squad's maps): Scan,
   Storm reveal, Max ammo, Reboot, Ghost, Key finder, Pulse and Field medic.
   In a squad match the app draws "Squads!" beside its title. Presentation
   only; `test_terminal.lua` holds the set to the rows' own lines.
+- `quiet` (round 4, owner 2026-10-06: "Field medic should not notify
+  everyone"): the lobby is not told it ran -- no `notice_action`, no
+  `_description` -- and its page leaves out `risk_notice` (the app's
+  `risksOf`). Opening a terminal with a key still tells the lobby
+  (`notice_access`), the owner's own rule.
 - `options`: `{ { id, choices = { ... }, default } }`. `BR.Terminal.options`
   takes a run's choices only if every key is a declared option and every value
   one of its `choices` (strings, at most 8), fills the rest with defaults, and
@@ -239,7 +246,8 @@ Supply drop and Max ammo, and from wave A on a file of its own,
   answer for ANY choice, so a card says "Not available at this terminal" only
   when no choice could run. It is asked again when the loading is over.
 - `run(src, session, opts) -> { ok, code, after? }`, called when the loading
-  is over. On `ok` the server tells the lobby `notice_action`, then calls
+  is over. On `ok` the server tells the lobby `notice_action` (not for a
+  `quiet` row), then calls
   `after` -- so Scan's bounty toasts follow the redemption. Anything else
   gives everything back (see the run, below).
 
@@ -947,7 +955,7 @@ sibling through the picker. Nothing runs per frame.
 
 | Function | What it does | Refused, spending nothing |
 |---|---|---|
-| Field medic | Every squadmate **standing** (ALIVE: not downed, not in the air) short of either gets full health (the display bar's 100) and full armor (`BR.Config.Match.maxArmour`), through `BR.Inv.grantEffect`. Instant. | `health_full`: everyone standing is full |
+| Field medic | Every squadmate **standing** (ALIVE: not downed, not in the air) short of either gets full health (the display bar's 100) and full armor (`BR.Config.Match.maxArmour`), through `BR.Inv.grantEffect`. Round 4 (owner, 2026-10-06): and every player standing outside the squad with `fx.medicDrainFromHp` (50) health or more loses `fx.medicDrainHp` (20), through `BR.Damage.drain`; and the lobby is not told (`quiet`). Instant. | `health_full`: nothing at all would change -- everyone standing in the squad is full and nobody else standing has 50 |
 | Disarm | Every player still in the fight OUTSIDE the runner's squad (round 4, owner 2026-10-06: "should not apply to the user or their squad") loses ONE weapon: the highest rarity, then the most damage, then the lower slot (`BR.Terminal.disarmPick`; guns and melee, never throwables), through `BR.Inv.revoke`. Gone, not dropped. 200 Volts. | `no_weapons`: nobody outside the squad carries one |
 | Key finder | `target`: every loose Yubikey in the match's loot, or every player OUTSIDE the squad holding one (in the fight). One static position each, on the squad's maps (`TERMINAL_KEYS`) for `fx.keyFinderMs` (2 min). Each holder it marks is warned (`key_finder_warned`). | `no_keys` (the card: none either way), `no_keys_ground`, `no_keys_held` |
 | Pulse | `radius` 250 / 500 m around this terminal: every player outside the squad in the fight inside it, found once and followed wherever they go (`TERMINAL_PULSE`, every `fx.pulsePingMs`) for `fx.pulseMs` (30 s). Each one found is told (`pulse_detected`). | Never for finding nobody -- a refusal is free, so it would be free intel |
@@ -993,6 +1001,18 @@ authorization (a window and a ceiling per stat, `authorize`) and its
 INV_EFFECT, so `server/roster.lua`'s ledger follows the ped to full instead of
 snapping it back; a heal or shield channel still running is ended first (its
 item left unspent), or its next slice would pull the ceiling back down.
+**The drain** (round 4) is `BR.Damage.drain` (`server/damage.lua`), the
+storm's shape rather than a bullet's -- no dealer, no weapon, no armor, no
+credit: the ledger takes the whole engine points first (`BR.Roster.update`),
+a heal ceiling still standing comes down by the same, `noteHurt` records it,
+and `lastDrainAt` is stamped -- folded by `server/roster.lua`'s `healthCtx`
+beside `lastHitAt` and `lastStormAt`, so for the round trip while the ped still
+reads high the sampler holds the ledger and the health audit excuses it --
+then HIT_DAMAGE tells the ped to follow. Not `lastHitAt` (a shooter's assist
+window) and not `lastStormAt` (a death soon after would read as the storm's).
+It stops a point above empty whatever it is asked, so it can never knock
+anybody; Field medic only asks it of players at 50 or more. A heal running in
+an ambulance is not told (bullets are not either: #372 waits on the owner).
 
 ## Wave C (owner, 2026-10-06)
 

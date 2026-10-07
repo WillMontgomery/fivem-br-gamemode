@@ -1031,7 +1031,12 @@ end
 ---                (config/storm.lua's `damageArmourFirst` is false), so the two
 ---                armor calls put `lastHitAt` back to the hits alone -- a
 ---                storm stamp excusing armor would hold every armor lie told
----                outside the wall, uncounted and uncorrected
+---                outside the wall, uncounted and uncorrected. AND A DRAIN'S
+---                (`lastDrainAt`, #396 round 4: a terminal's Field medic,
+---                BR.Damage.drain), folded the same way for the same two
+---                reasons: it takes health off the ledger before the ped hears
+---                of it, has no dealer whose assist window it may stretch, and
+---                touches no armor
 ---   healUntil    HEALTH's heal window: server/inventory.lua and
 ---                server/ambheal.lua, on ISSUING an INV_EFFECT that moves
 ---                health -- paired with the ceiling the caller adds below.
@@ -1046,6 +1051,9 @@ local function healthCtx(entry, now)
     local hurtAt = entry.lastHitAt
     if entry.lastStormAt ~= nil and (hurtAt == nil or entry.lastStormAt > hurtAt) then
         hurtAt = entry.lastStormAt
+    end
+    if entry.lastDrainAt ~= nil and (hurtAt == nil or entry.lastDrainAt > hurtAt) then
+        hurtAt = entry.lastDrainAt
     end
     return {
         now         = now,

@@ -139,6 +139,11 @@ export interface FunctionDef {
    * drop): its confirm box has a "Set location" step, and Run waits for it.
    */
   spot: boolean
+  /**
+   * The lobby is not told when it runs (round 4, owner 2026-10-06: "Field
+   * medic should not notify everyone"), so its page leaves out risk_notice.
+   */
+  quiet: boolean
 }
 
 /** A spot on the map, in world meters. */
@@ -315,6 +320,7 @@ export function parseCatalog(v: unknown): Catalog | null {
       bounty: f.bounty === 'runner' || f.bounty === 'target' ? f.bounty : null,
       squadWide: f.squadWide === true,
       spot: f.spot === true,
+      quiet: f.quiet === true,
     })
   }
   const categories = list(v.categories).filter((c): c is string => typeof c === 'string' && ID.test(c))

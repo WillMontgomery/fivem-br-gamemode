@@ -624,8 +624,18 @@ do
         end
         -- THE CARD AND THE PAGE: every line the app draws for a function.
         for _, part in ipairs({ 'name', 'summary', 'what', 'duration', 'affects', 'notified',
-                                'done', 'description' }) do
+                                'done' }) do
             ok(has(id .. '_' .. part), ('%s has its _%s line'):format(id, part))
+        end
+        -- AND THE LOBBY'S {description} -- except for a QUIET row (round 4:
+        -- "Field medic should not notify everyone"), which tells the lobby
+        -- nothing and so has none, in either form.
+        ok(row.quiet == nil or row.quiet == true, ('%s: `quiet` is true or absent'):format(id))
+        if row.quiet == true then
+            ok(copy[id .. '_description'] == nil and copy[id .. '_description_solo'] == nil,
+                ('%s is quiet, and has no _description line'):format(id))
+        else
+            ok(has(id .. '_description'), ('%s has its _description line'):format(id))
         end
         for _, o in ipairs(row.options or {}) do
             ok(type(o.id) == 'string' and o.id:match('^[a-z][a-z0-9_]*$') ~= nil,
@@ -742,18 +752,20 @@ do
         .. (byId.contract and 'contract' or ''), 'and no other row gives a bounty')
 
     -- "Any tool that can impact the whole squad": every row whose effect is
-    -- the squad's -- its affects line is "Your squad", or its marks show on
-    -- the squad's maps -- and none other. Reboot is squad-only, Pulse marks
-    -- other players on the squad's maps.
+    -- the squad's -- its affects line starts "Your squad" (Field medic's
+    -- goes on to the players it drains), or its marks show on the squad's
+    -- maps -- and none other. Reboot is squad-only, Pulse marks other players
+    -- on the squad's maps.
     local want = { scan = true, storm_reveal = true, max_ammo = true, reboot = true, ghost = true,
                    key_finder = true, pulse = true, field_medic = true }
     for _, row in ipairs(C.functions) do
         local affects = copy[row.id .. '_affects'] or ''
         local what = copy[row.id .. '_what'] or ''
-        local squads = affects == 'Your squad' or what:find("your squad's maps", 1, true) ~= nil
+        local yours = affects:find('^Your squad') ~= nil
+        local squads = yours or what:find("your squad's maps", 1, true) ~= nil
         eq(row.squadWide == true, want[row.id] == true, ('%s: squadWide as its effect says'):format(row.id))
         if row.squadWide then ok(squads, ('%s: its own lines say the squad is affected'):format(row.id), affects) end
-        if affects == 'Your squad' then ok(row.squadWide == true, ('%s affects "Your squad", so it is squadWide'):format(row.id)) end
+        if yours then ok(row.squadWide == true, ('%s affects "Your squad", so it is squadWide'):format(row.id)) end
     end
 
     -- THE OWNER'S WORDS, verbatim, and never outside a squad match.

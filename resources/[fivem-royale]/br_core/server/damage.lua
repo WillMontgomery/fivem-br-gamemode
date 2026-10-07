@@ -1084,6 +1084,65 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     end
 end
 
+--- ═══ A DRAIN: HEALTH THE SERVER TAKES WITH NO DEALER (#396, round 4) ═══
+---
+--- A terminal's Field medic (owner, 2026-10-06): "remove 20 health from
+--- everyone else in the match who has at least 50 health". Nobody shot them
+--- and nothing burned them, so it is not a hit -- it is the server hurting a
+--- player, which is the storm's shape (server/storm.lua's `bill`), not
+--- applyHit's: no attacker, no weapon, no armor, no hitmarker, no credit.
+---
+--- SERVER FIRST, PED SECOND, AND NOTHING FOR THE ANTICHEAT TO FLAG:
+---   * the ledger takes it first, through BR.Roster.update (a bare write would
+---     leave the squad panels on the old number: the storm's reason);
+---   * a heal ceiling still standing comes down by the same (applyHit's and the
+---     storm's #366 rule), so no sample can grant the ledger back up past it;
+---   * the amount is noted for the sampler's spent-ceiling rule (noteHurt);
+---   * `lastDrainAt` is stamped, which server/roster.lua's healthCtx folds into
+---     the hurt window beside `lastHitAt` and `lastStormAt` -- so for the round
+---     trip while the ped still reads high, the sampler HOLDS the ledger and the
+---     health audit EXCUSES it (BR.HealthExcuse.HURT), instead of refusing a
+---     sample and counting a gain nobody made. Not `lastHitAt`: that is a
+---     shooter's assist window. Not `lastStormAt`: a death soon after would be
+---     labeled a storm death;
+---   * and only then the client is told to hurt its ped by exactly the same
+---     whole engine points (HIT_DAMAGE, the server's own split: no armor).
+--- The ledger is debited the WHOLE points sent, converted back -- the storm's
+--- rule -- so the ped and the ledger land on the same number.
+---
+--- NEVER A KNOCK OR A KILL. Field medic asks only of players at 50 or more,
+--- but this stops a whole point above empty whatever it is asked, so it can
+--- never be the thing that downs anybody. Only a STANDING player is drained: a
+--- downed one's health is a bleed clock, and one in the air is not sampled.
+--- @param src integer
+--- @param display number  display points to take (0..100 scale)
+--- @return number  the display points taken, 0 when nothing was
+function BR.Damage.drain(src, display)
+    local e = BR.Roster.get(src)
+    local want = tonumber(display) or 0.0
+    if not e or e.state ~= BR.PlayerState.ALIVE or not (want > 0.0) then return 0.0 end
+    local M = BR.Config.Match
+    local perPoint = 100.0 / (M.maxHealth - M.healthFloor)
+    local hp = e.hp or 100.0
+    local whole = math.floor(BR.ToEngineHpDelta(want) + 0.5)
+    -- A whole point above empty, at the least.
+    local room = math.floor((hp - perPoint) / perPoint + 1e-9)
+    if whole > room then whole = room end
+    if whole <= 0 then return 0.0 end
+    local took = whole * perPoint
+    local now = GetGameTimer()
+    e.lastDrainAt = now
+    if e.grantHpTo then e.grantHpTo = e.grantHpTo - took end
+    BR.Roster.update(src, { hp = hp - took })
+    if BR.Roster.noteHurt then BR.Roster.noteHurt(e, took, now) end
+    TriggerClientEvent(BR.Net.HIT_DAMAGE, src, {
+        amount      = whole,
+        armour      = 0,
+        armourFirst = false,
+    })
+    return took
+end
+
 -- --------------------------------------------------------------------------
 -- The handler
 -- --------------------------------------------------------------------------

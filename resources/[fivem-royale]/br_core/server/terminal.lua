@@ -1070,7 +1070,13 @@ function T.finish(rec)
     end
     settle(rec)
     if not session.dev and m and e then
-        tellLobby(m, TS.line(copy().notice_action, e.name, say(rec.id .. '_description', rec.squadMatch)))
+        -- A QUIET ROW TELLS NOBODY (round 4, owner 2026-10-06: "Field medic
+        -- should not notify everyone"): no notice_action, and no
+        -- `<id>_description` to carry. The access notice when the terminal
+        -- opened with a key still went out (BR.Terminal.use).
+        if rec.row.quiet ~= true then
+            tellLobby(m, TS.line(copy().notice_action, e.name, say(rec.id .. '_description', rec.squadMatch)))
+        end
         print(('[br_core] terminals: %s (%d) ran %s'):format(e.name or '?', src, rec.id))
     end
     -- WHAT FOLLOWS THE LOBBY'S NOTICE, in that order: "has redeemed their

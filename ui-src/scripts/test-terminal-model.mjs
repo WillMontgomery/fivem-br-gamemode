@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url'
 import {
   HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, costOf, current, filtersOf, hrefOf,
   indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, placeText,
-  progressAfter, rewrite, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions,
+  progressAfter, rewrite, risksOf, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions,
   shownOptions, speaker, startBrowsing, startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
 } from '../terminal/src/model.ts'
 import { parseCatalog, parsePicked, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
@@ -167,6 +167,33 @@ const eq = (got, want, name) => ok(got === want, name, { got, want })
   eq(placeText({ x: 120.5, y: -900.4 }, '  '), '121, -900', 'and with no name, its coordinates in digits')
 }
 
+// ── round 4: a quiet row (owner, 2026-10-06: "Field medic should not notify everyone") ─
+{
+  const cat = parseCatalog({
+    functions: [
+      { id: 'field_medic', category: 'supply', risk: 'low', implemented: true, quiet: true },
+      { id: 'scan', category: 'intel', risk: 'high', implemented: true, quiet: 'yes' },
+      { id: 'disarm', category: 'disruption', risk: 'high', implemented: true },
+    ],
+    categories: ['supply', 'intel', 'disruption'],
+  })
+  ok(cat.functions[0].quiet === true && cat.functions[1].quiet === false && cat.functions[2].quiet === false,
+    'a row is quiet only when it says so, true')
+  const say = speaker({
+    risk_notice: 'Everyone is told.',
+    field_medic_risks: 'Only the standing.',
+    scan_risks: 'A bounty.\nTen minutes.',
+  }, true)
+  const medic = risksOf(cat.functions[0], say)
+  ok(medic.length === 1 && medic[0] === 'Only the standing.',
+    'a quiet row\'s page never says everyone is told: its own risks alone', medic)
+  const scan = risksOf(cat.functions[1], say)
+  ok(scan.length === 3 && scan[0] === 'Everyone is told.' && scan[2] === 'Ten minutes.',
+    'any other row: risk_notice first, then its own lines', scan)
+  const disarm = risksOf(cat.functions[2], say)
+  ok(disarm.length === 1 && disarm[0] === 'Everyone is told.', 'a row with no risks of its own: risk_notice alone', disarm)
+}
+
 // ── Volts ───────────────────────────────────────────────────────────────────
 eq(voltsText(1250, 'Volts'), '1,250 Volts', 'grouped, then the currency word')
 eq(voltsText(200, 'Volts'), '200 Volts', 'a cost')
@@ -175,7 +202,7 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
 
 // ── the status words ────────────────────────────────────────────────────────
 {
-  const def = { id: 'x', category: 'intel', risk: 'low', implemented: true, options: [], cost: 0, squadOnly: false, soloCategory: null }
+  const def = { id: 'x', category: 'intel', risk: 'low', implemented: true, options: [], cost: 0, squadOnly: false, soloCategory: null, spot: false, quiet: false }
   eq(statusOf({ id: 'x', available: true, reason: null }, def), 'available', 'available')
   eq(statusOf({ id: 'x', available: false, reason: 'squad_used' }, def), 'used', 'used')
   eq(statusOf({ id: 'x', available: false, reason: 'offline' }, def), 'offline', 'a terminal outside the storm: Not available')

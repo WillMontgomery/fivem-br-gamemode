@@ -158,6 +158,7 @@ local keys = {}          -- [src] = true while holding a Yubikey
 local airdropCalls = {}  -- BR.Airdrop.call: { m, x, y }
 local filled = {}        -- BR.Inv.fillAmmo: [src] = rounds it would add
 local granted = {}       -- BR.Inv.grantEffect: { src, effect } (Field medic)
+local drained = {}       -- BR.Damage.drain: { src, amount, took } (Field medic, round 4)
 local invs = {}          -- BR.Inv.of: [src] = { slots = { [i] = stack|false } } (Disarm)
 local revoked = {}       -- BR.Inv.revoke: { src, slot, item, grace }
 
@@ -319,6 +320,22 @@ BR.Inv = {
     end,
 }
 
+-- Field medic's drain (round 4; server/damage.lua's BR.Damage.drain -- its
+-- ledger half, through the real sampler and the health audit, is
+-- tools/test_roster.lua's): modeled on its contract -- a standing player
+-- only, never emptied -- and recorded.
+BR.Damage = {
+    drain = function(src, amount)
+        local e = roster[src]
+        if not e or e.state ~= BR.PlayerState.ALIVE then return 0.0 end
+        local took = math.min(amount, (e.hp or 100.0) - 1.0)
+        if took <= 0 then return 0.0 end
+        e.hp = e.hp - took
+        drained[#drained + 1] = { src = src, amount = amount, took = took }
+        return took
+    end,
+}
+
 local function fire(name, src, ...)
     local prev = source
     source = src
@@ -410,7 +427,7 @@ local function reset()
     market.hold = false
     for _, answer in ipairs(market.pending) do answer() end
     flush()
-    sent, notices, logs, airdropCalls, filled, granted = {}, {}, {}, {}, {}, {}
+    sent, notices, logs, airdropCalls, filled, granted, drained = {}, {}, {}, {}, {}, {}, {}
     invs, revoked = {}, {}
     roster, matches, keys = {}, {}, {}
     timers = {}
@@ -1140,6 +1157,7 @@ do
     ok(row and row.implemented == true and T.FUNCTIONS.field_medic ~= nil, 'field_medic is built')
     ok(row and (row.options == nil or #row.options == 0), 'and takes no options')
     ok(row and (row.cost or 0) == 0, 'and costs no Volts')
+    ok(row and row.quiet == true, 'and is quiet (round 4: "should not notify everyone")')
 
     reset()
     local m = lobby()
@@ -1150,7 +1168,7 @@ do
     player(7, m, 'A', { x = C0.x + 70.0, y = C0.y }, BR.PlayerState.GLIDE)
     roster[7].hp, roster[7].armour = 50.0, 0                      -- in the air: not standing
     player(8, m, 'A', { x = C0.x + 80.0, y = C0.y })              -- standing and full
-    roster[3].hp = 10.0                                           -- another squad
+    roster[3].hp = 10.0                                           -- another squad, under 50
     local r = runAt(1, 'field_medic')
     ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
     local who = {}
@@ -1161,39 +1179,118 @@ do
     ok(fxv.armour == BR.Config.Match.maxArmour and fxv.armourCap == BR.Config.Match.maxArmour,
         'and full armor (BR.Config.Match.maxArmour)')
     ok(keys[1] == false and T.squadUsed(1), 'the key and the squad\'s use are spent')
-    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'and the lobby is told')
     eq(r and r.toast, COPY.field_medic_done, 'the runner reads the squad done line')
 end
 
-describe('Field medic: nothing to heal is refused, spending nothing')
+describe('Field medic: everyone else standing at 50 health or more loses 20 (round 4)')
+do
+    -- THE OWNER (2026-10-06): "remove 20 health from everyone else in the
+    -- match who has at least 50 health".
+    eq(CT.fx.medicDrainHp, 20, 'the drain is 20')
+    eq(CT.fx.medicDrainFromHp, 50, 'from 50 health up')
+    ok(COPY.field_medic_what:find(('at least %d health loses %d health'):format(
+        CT.fx.medicDrainFromHp, CT.fx.medicDrainHp), 1, true) ~= nil
+        and COPY.field_medic_what_solo:find(('at least %d health loses %d health'):format(
+        CT.fx.medicDrainFromHp, CT.fx.medicDrainHp), 1, true) ~= nil,
+        'and the page says the same two numbers the server uses')
+
+    reset()
+    local m = lobby()
+    roster[1].hp = 100.0                                          -- the runner, full
+    roster[2].hp = 60.0                                           -- a squadmate at 60: healed, never drained
+    roster[3].hp = 50.0                                           -- another squad, exactly 50
+    roster[4].hp = 90.0                                           -- downed (lobby): never drained
+    roster[5].hp = 49.0                                           -- solo, just under
+    player(6, m, 'C', { x = 0.0, y = 0.0 })                       -- a third squad, full
+    player(7, m, 'C', { x = 5.0, y = 0.0 }, BR.PlayerState.GLIDE) -- in the air
+    roster[7].hp = 100.0
+    player(8, m, 'C', { x = 9.0, y = 0.0 }, BR.PlayerState.OUT)   -- out
+    roster[8].hp = 100.0
+    local r = runAt(1, 'field_medic')
+    ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
+    local who = {}
+    for _, d in ipairs(drained) do who[#who + 1] = ('%d:%d'):format(d.src, d.amount) end
+    eq(table.concat(who, ' '), '3:20 6:20',
+        'everyone standing outside the squad at 50 or more loses 20: exactly 50 counts, 49 does not; '
+        .. 'nobody downed, in the air or out; never the squad')
+    eq(roster[3].hp, 30.0, '50 less 20 is 30: never a knock')
+    eq(granted[1] and granted[1].src, 2, 'the squadmate at 60 is healed')
+    eq(#granted, 1, 'and only them')
+
+    -- A SQUAD WITH NOTHING TO HEAL STILL RUNS, FOR THE DRAIN.
+    reset()
+    lobby()
+    roster[3].hp = 40.0
+    roster[5].hp = 80.0
+    local r2 = runAt(1, 'field_medic')
+    ok(r2 and r2.code == 'done' and #granted == 0 and #drained == 1 and drained[1].src == 5,
+        'everyone in the squad full: it still runs, and drains the others', r2 and r2.code)
+end
+
+describe('Field medic: the lobby is not told (round 4: "should not notify everyone")')
+do
+    reset()
+    local m = lobby()
+    roster[1].hp = 40.0
+    roster[3].hp = 100.0
+    local r = runAt(1, 'field_medic')
+    ok(r and r.code == 'done', 'it runs', r and r.code)
+    for src = 1, 5 do
+        eq(noticeIndex('has redeemed their special power', src), nil, ('p%d hears no notice_action'):format(src))
+    end
+    ok(noticeIndex('has gained access to a match terminal', 3) ~= nil,
+        'the access notice when the terminal opened still went out (the owner\'s own rule)')
+    ok(COPY.field_medic_description == nil and COPY.field_medic_description_solo == nil,
+        'and there is no description for a notice to carry')
+    eq(COPY.field_medic_notified, 'Nobody', 'its page says who is told: nobody')
+    -- ANOTHER FUNCTION STILL TELLS THE LOBBY: quiet is the row's, not the door's.
+    reset()
+    m = lobby()
+    filled = { [1] = 30 }
+    runAt(1, 'max_ammo')
+    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'Max ammo still tells the lobby')
+    local _ = m
+end
+
+describe('Field medic: nothing at all to change is refused, spending nothing')
 do
     reset()
     local m = lobby()
     player(6, m, 'A', { x = C0.x + 60.0, y = C0.y }, BR.PlayerState.DBNO)
     roster[6].hp = 15.0                       -- the only one hurt is downed
+    for _, s in ipairs({ 3, 5 }) do roster[s].hp = 49.0 end -- nobody else at 50 or more
+    roster[4].hp = 100.0                      -- downed (lobby): no drain
     useAt(1)
     local f = listedAs(1, 'field_medic')
     ok(f and f.available == false and f.reason == 'health_full',
-        'every standing squadmate full: the card says health_full', f and tostring(f.reason))
+        'every standing squadmate full and nobody else at 50: the card says health_full', f and tostring(f.reason))
     local r = ask(1, 'field_medic')
     ok(r and r.ok == false and r.code == 'health_full', 'and a run is refused health_full', r and r.code)
     eq(r and r.toast, COPY.health_full, 'in the squad line')
-    ok(keys[1] == true and not T.squadUsed(1) and #granted == 0 and #timers == 0,
+    ok(keys[1] == true and not T.squadUsed(1) and #granted == 0 and #drained == 0 and #timers == 0,
         'the key and the use stay, nobody is touched, nothing loads')
 
-    -- THE END OF THE RUN: hurt when asked, full again when the loading is over.
+    -- ONE OTHER PLAYER AT 50: available.
+    roster[5].hp = 50.0
+    useAt(1)
+    f = listedAs(1, 'field_medic')
+    ok(f and f.available == true, 'one other player at 50: available', f and tostring(f.reason))
+
+    -- THE END OF THE RUN: something to change when asked, nothing when the
+    -- loading is over.
     reset()
     lobby()
     roster[1].hp = 55.0
+    for _, s in ipairs({ 3, 5 }) do roster[s].hp = 30.0 end
     useAt(1)
     r = ask(1, 'field_medic')
     ok(r and r.code == 'running', 'hurt: accepted', r and r.code)
     roster[1].hp = 100.0                      -- healed meanwhile
     flush()
     r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.ok == false and r.code == 'health_full', 'full by the end of the load: health_full', r and r.code)
-    ok(keys[1] == true and not T.squadUsed(1) and #granted == 0, 'and the key and the use are given back')
-    eq(noticeIndex('has redeemed their special power', 3), nil, 'the lobby is told nothing')
+    ok(r and r.ok == false and r.code == 'health_full', 'nothing left by the end of the load: health_full', r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1) and #granted == 0 and #drained == 0,
+        'and the key and the use are given back')
 
     -- THE MATCH ENDING MID-LOAD.
     reset()
@@ -1204,8 +1301,8 @@ do
     m.state = BR.MatchState.ENDED
     flush()
     r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.code == 'unavailable' and keys[1] == true and #granted == 0,
-        'a match that ended mid-load heals nobody and gives everything back', r and r.code)
+    ok(r and r.code == 'unavailable' and keys[1] == true and #granted == 0 and #drained == 0,
+        'a match that ended mid-load heals and drains nobody and gives everything back', r and r.code)
 end
 
 describe('Field medic: a solo player hears no squad, and the dev command runs it')
@@ -1219,8 +1316,10 @@ do
     local r = ask(1, 'field_medic')
     eq(r and r.toast, COPY.health_full_solo, 'full and alone: the solo refusal')
     roster[1].armour = 0
+    player(2, m, nil, { x = 0.0, y = 0.0 })
     r = runAt(1, 'field_medic')
     ok(r and r.code == 'done' and #granted == 1 and granted[1].src == 1, 'short of armor: healed')
+    ok(#drained == 1 and drained[1].src == 2, 'and the other solo player drained')
     eq(r and r.toast, COPY.field_medic_done_solo, 'and told in the solo line')
     for _, x in ipairs(notices) do
         ok(not (textOf(x) or ''):lower():find('squad', 1, true), ('no solo toast says squad: %s'):format(textOf(x)))
@@ -1234,6 +1333,7 @@ do
     local said = devRun(1, 'field_medic')
     ok(said:find('ok (done)', 1, true) ~= nil and #granted == 1 and granted[1].src == 2,
         'the dev command heals the squad without a key', said)
+    ok(#drained == 2 and drained[1].src == 3 and drained[2].src == 5, 'and drains the others', #drained)
     ok(not T.squadUsed(1), 'and spends nothing')
     roster[1].matchId = nil
     said = devRun(1, 'field_medic')

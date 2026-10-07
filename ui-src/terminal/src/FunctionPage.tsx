@@ -13,7 +13,7 @@ import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import type { FunctionDef, FunctionState, PickResult, Spot } from './bridge'
 import {
-  fill, indicatorOf, placeText, riskColor, runChoices, showsSquads, shownOptions, statusOf, type Say,
+  fill, indicatorOf, placeText, riskColor, risksOf, runChoices, showsSquads, shownOptions, statusOf, type Say,
 } from './model'
 import { Squads } from './Squads'
 import { voltsLine, voltsLines } from './Volts'
@@ -152,7 +152,9 @@ export function FunctionPage(props: {
     { label: say('field_cost'), value: cost },
   ]
 
-  const risks = [...voltsLines(say('risk_notice'), currency), ...voltsLines(say(`${id}_risks`), currency)]
+  // risk_notice first (left out for a quiet row), then its own lines, each in
+  // the Volts style should it ever say Volts.
+  const risks = risksOf(def, say).map((r) => voltsLine(r, currency))
 
   const sections: ReactElement[] = [
     <div key="details" className="terminal-raised">

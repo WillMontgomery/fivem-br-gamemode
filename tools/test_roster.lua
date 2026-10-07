@@ -13739,6 +13739,98 @@ do
     BR.Inv.reset(1)
 end
 
+describe("damage.drain -- a terminal's Field medic, the other players (#396, round 4)")
+do
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+    local function near(a, b) return math.abs((a or -1) - b) < 0.01 end
+    -- "remove 20 health from everyone else in the match who has at least 50
+    -- health" (owner, 2026-10-06). SERVER FIRST, PED SECOND, like the storm:
+    -- the ledger takes it, the ped is told, and for the round trip the ped
+    -- reads high the sampler must HOLD the ledger and the audit must count
+    -- nothing -- driven here through the real sampler and the real audit.
+    local function step(ms)
+        for _ = 1, math.floor(ms / 250) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+    lootMatch()
+    pedHealth[1001] = BR.ToEngineHp(80.0)
+    pedArmour[1001] = 40
+    BR.Roster.update(1, { armour = 40 })
+    step(250)
+    local e = BR.Roster.get(1)
+    ok(near(e.hp, 80.0) and e.armour == 40, 'standing at 80 with 40 armor, on the books',
+        ('%s / %s'):format(tostring(e.hp), tostring(e.armour)))
+    local auditBefore = e.healthAudit and e.healthAudit.hp or 0.0
+
+    sent = {}
+    local took = BR.Damage.drain(1, 20)
+    eq(took, 20.0, 'twenty taken')
+    ok(near(e.hp, 60.0), 'off the ledger at once', tostring(e.hp))
+    eq(e.armour, 40, 'and never the armor')
+    local hits = eventsOf(BR.Net.HIT_DAMAGE)
+    ok(#hits == 1 and hits[1].target == 1 and hits[1].args[1].amount == BR.ToEngineHpDelta(20.0)
+        and hits[1].args[1].armour == 0, 'the ped is told: the same points, in engine units, no armor',
+        hits[1] and tostring(hits[1].args[1].amount))
+    ok(e.lastDrainAt == fakeTime and e.lastHitAt == nil and e.lastStormAt == nil,
+        "its own stamp: not a shooter's assist window, not the storm's label")
+
+    -- THE ROUND TRIP: the ped still reads 80 for a sample. Held, not refused,
+    -- and not counted.
+    step(250)
+    ok(near(e.hp, 60.0), 'the ledger holds while the ped catches up', tostring(e.hp))
+    eq(e.healthAudit and e.healthAudit.hp or 0.0, auditBefore, 'and the health audit counts nothing')
+    -- The ped lands.
+    pedHealth[1001] = BR.ToEngineHp(60.0)
+    step(250)
+    ok(near(e.hp, 60.0), 'the ped lands on the ledger', tostring(e.hp))
+
+    -- THE CONTROL: the same reading high, long after, with nothing behind it,
+    -- is refused and counted.
+    step(3000)
+    pedHealth[1001] = BR.ToEngineHp(80.0)
+    step(250)
+    ok(near(e.hp, 60.0) and (e.healthAudit and e.healthAudit.hp or 0.0) > auditBefore,
+        'a climb back nobody granted is refused and counted (the control)')
+    pedHealth[1001] = BR.ToEngineHp(60.0)
+    step(250)
+
+    -- A HEAL CEILING STILL STANDING COMES DOWN BY THE SAME.
+    e.grantHpTo, e.healUntil = 90.0, fakeTime + 2000
+    BR.Damage.drain(1, 20)
+    ok(near(e.grantHpTo, 70.0), 'a standing heal ceiling is lowered by the drain', tostring(e.grantHpTo))
+    e.grantHpTo, e.healUntil = nil, nil
+    ok(near(e.hp, 40.0), 'and the ledger took it', tostring(e.hp))
+
+    -- NEVER A KNOCK: a whole point above empty, whatever it is asked.
+    pedHealth[1001] = BR.ToEngineHp(40.0)
+    step(250)
+    BR.Roster.update(1, { hp = 5.0 })
+    took = BR.Damage.drain(1, 20)
+    ok(took > 0 and e.hp >= 1.0 - 1e-9 and e.state == BR.PlayerState.ALIVE,
+        'at 5 it stops a point above empty, still standing', ('%s took, %s left'):format(tostring(took), tostring(e.hp)))
+    BR.Roster.update(1, { hp = 1.0 })
+    eq(BR.Damage.drain(1, 20), 0.0, 'at 1 there is nothing to take')
+
+    -- ONLY A STANDING PLAYER.
+    BR.Roster.update(1, { hp = 80.0 })
+    e.state = BR.PlayerState.DBNO
+    eq(BR.Damage.drain(1, 20), 0.0, 'a downed player is never drained')
+    e.state = BR.PlayerState.ALIVE
+    eq(BR.Damage.drain(99, 20), 0.0, 'nobody on the roster: nothing')
+    eq(BR.Damage.drain(1, 0), 0.0, 'and nothing asked, nothing taken')
+
+    -- THE NEXT MATCH FORGETS THE STAMP.
+    e.lastDrainAt = fakeTime
+    BR.Match.resetPlayer(1, e)
+    eq(e.lastDrainAt, nil, 'a match reset clears it, with the storm\'s')
+    pedHealth[1001], pedArmour[1001] = nil, nil
+    BR.Inv.reset(1)
+end
+
 describe('inv.ammo.remainder')
 do
     -- ═══ A BUNDLE CHARGED WHOLE AND DELIVERED CLAMPED ═══
