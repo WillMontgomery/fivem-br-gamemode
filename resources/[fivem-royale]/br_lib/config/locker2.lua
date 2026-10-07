@@ -57,7 +57,7 @@ BR.Config.Locker2 = {
     --- The anchor navigation, in order. Each row key names what it edits:
     ---   sk, e       skin tone, eye color
     ---   ffN         face feature N (0-based), a slider
-    ---   h2          the hair highlight
+    ---   h1          the hair highlight, h[2] (0-based, as ffN and oN are)
     ---   oN          head overlay N (0-based); oNop is its opacity slider
     ---   cN          component N (1..11)
     ---   pN          prop N (0, 1, 2, 6, 7)
@@ -68,7 +68,7 @@ BR.Config.Locker2 = {
             'ff0', 'ff1', 'ff2', 'ff3', 'ff4', 'ff5', 'ff6', 'ff7', 'ff8', 'ff9',
             'ff10', 'ff11', 'ff12', 'ff13', 'ff14', 'ff15', 'ff16', 'ff17', 'ff18', 'ff19',
         } },
-        { id = 'hair', cam = 'head', rows = { 'c2', 'h2', 'o2', 'o2op', 'o1', 'o1op' } },
+        { id = 'hair', cam = 'head', rows = { 'c2', 'h1', 'o2', 'o2op', 'o1', 'o1op' } },
         { id = 'makeup', cam = 'head', rows = { 'o4', 'o4op', 'o5', 'o5op', 'o8', 'o8op' } },
         { id = 'skin', cam = 'head', rows = {
             'o0', 'o0op', 'o3', 'o3op', 'o6', 'o6op', 'o7', 'o7op', 'o9', 'o9op',

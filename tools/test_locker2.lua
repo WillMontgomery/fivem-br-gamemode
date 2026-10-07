@@ -1206,6 +1206,8 @@ do
     eq(W.ped().ovc[2][2], 1, 'eyebrow color, on the hair palette')
     W.ui(NUICB.LOCKER2_COLOR, { k = 'c2' })
     eq(W.ped().hair[1], 1, 'the Hair row\'s Next color is the hair color')
+    W.ui(NUICB.LOCKER2_STEP, { k = 'h1', d = 1 })
+    eq(W.ped().hair[2], 1, 'the Highlight row is `h1`, the name the page labels')
 
     -- Sliders.
     W.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 50 })
@@ -1647,6 +1649,28 @@ do
                          'LOCKER2_SHOT', 'LOCKER2_STATE', 'LOCKER2_RESULT' }) do
         eq(NET[k], 'br:locker2:' .. k:sub(9):lower(), 'net event ' .. k)
     end
+    -- Every row and category this side sends, the page has a label for
+    -- (ui-src/src/screens/lockerv2/copy.ts): a key it does not know draws
+    -- with no label at all. An opacity slider `oNop` is named from its `oN`.
+    local copy = readFile('ui-src/src/screens/lockerv2/copy.ts') or ''
+    local function block(name)
+        return copy:match('export const ' .. name .. '%s*:[^=]*=%s*(%b{})') or ''
+    end
+    local rowLabels, catLabels = block('ROW_LABEL'), block('CAT_LABEL')
+    local function labeled(src, k)
+        return src:find('\n%s*' .. k .. ':%s*\'') ~= nil
+    end
+    local unlabeled = {}
+    for _, cat in ipairs(shared.BR.Config.Locker2.categories) do
+        if not labeled(catLabels, cat.id) then unlabeled[#unlabeled + 1] = cat.id end
+        for _, k in ipairs(cat.rows) do
+            local base = k:match('^(o%d+)op$') or k
+            if not labeled(rowLabels, base) then unlabeled[#unlabeled + 1] = k end
+        end
+    end
+    ok(#rowLabels > 2 and #catLabels > 2, 'copy.ts has its ROW_LABEL and CAT_LABEL')
+    ok(#unlabeled == 0, 'the page has a label for every row and category Lua sends',
+       table.concat(unlabeled, ' '))
 end
 
 -- ------------------------------------------------------------------ done ---

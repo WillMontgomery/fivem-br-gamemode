@@ -418,7 +418,7 @@ local function field(k)
         return 'count', function(a) return a.sk end, function(a, v) a.sk = v end
     elseif k == 'e' then
         return 'count', function(a) return a.e end, function(a, v) a.e = v end
-    elseif k == 'h2' then
+    elseif k == 'h1' then
         return 'count', function(a) return a.h[2] end, function(a, v) a.h[2] = v end
     end
     local n = k:match('^ff(%d+)$')
@@ -499,7 +499,7 @@ local function options(k, sex)
         list = range(0, 45)
     elseif k == 'e' then
         list = range(0, 30)
-    elseif k == 'h2' then
+    elseif k == 'h1' then
         list = range(0, math.min(64, math.max(1, GetNumHairColors())) - 1)
     elseif k:match('^o%d+$') then
         local i = tonumber(k:sub(2))
@@ -794,7 +794,7 @@ local function applyKey(k)
         overlays(ped, d.a)
     elseif k == 'e' then
         SetPedEyeColor(ped, d.a.e)
-    elseif k == 'h2' or k == 'c2' then
+    elseif k == 'h1' or k == 'c2' then
         hair(ped, d.a)
     elseif k:match('^ff') then
         local i = tonumber(k:sub(3)) + 1
