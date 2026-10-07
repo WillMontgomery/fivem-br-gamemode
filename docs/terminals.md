@@ -157,16 +157,15 @@ The table below is the lines outside the functions' own:
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
 | `storm_spot_land`, `storm_spot_out`, `storm_spot_edge` | At the terminal: why not (Storm control's spot: over water or off the map, outside the next circle, too near its edge) -- round 4 |
 | `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target` | At the terminal: why not (wave A's functions) |
+| `no_night` | At the terminal: why not (Power outage, unless a Time & weather run has made it night) -- round 4 |
 | `reboot_none` | At the terminal: why not (Reboot: nobody in the squad eliminated and still in the match). Squad-only, so no `_solo` line |
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
 | `pulse_detected` | A toast to each player a Pulse found, after the lobby's notice |
-| `contract_protect` | A toast to a Contract target's squadmates (never the target): the owner's `bounty_protect` says ten minutes, Scan's; `{playername}` |
-| `contract_target` | A toast to a Contract's target |
 | `key_finder_blip`, `pulse_blip` | The legend names of Key finder's and Pulse's marks |
 | `no_key`, `squad_used` | At the terminal (why not; `no_key` is also the login screen), and in the world (the terminal's plate) |
 | `offline` | At the terminal (why not: the dev tool's `brterminal offline`, or the moment before the storm's close), and a toast to a player whose press reached the server a step behind the storm. Never a plate since round 4: a terminal outside the storm has none |
-| `bounty_new` | A toast to the lobby: Scan's bounty; `{playername}` |
-| `bounty_protect` | A toast to the bounty's squad, not the bounty; `{playername}` |
+| `bounty_new` | A toast to the lobby: Scan's or a Contract's bounty; `{playername}` |
+| `bounty_protect` | A toast to the bounty's squad, not the bounty (Scan's or a Contract's: both ten minutes since round 4); `{playername}` |
 | `scan_blip`, `bounty_blip` | The legend names of Scan's and the bounty's marks |
 | `<id>_description` | The lobby: the `{description}` in `notice_action` |
 | `first_pickup` | A toast to a player picking up their first Yubikey ever |
@@ -920,7 +919,7 @@ while it is only listed, asked of the next circle's center).
 **Max ammo** fills, for everyone in the squad still in the fight, every pool a
 carried gun draws on to its cap and loads an empty magazine
 (`BR.Inv.fillAmmo`: addAmmo's clamp and loadEmpty's move, one INV_SET each).
-Refused `ammo_full`, spending nothing, when nobody has room.
+Refused `ammo_full`, spending nothing, when nobody has room. The whole squad in a squad match, wherever they are (round 4, owner 2026-10-06: "should apply to the whole squad, when in squads" -- it always did; `test_terminalfx.lua` pins a squadmate across the map and one in the air).
 
 ## Wave A (owner, 2026-10-06)
 
@@ -953,7 +952,7 @@ sibling through the picker. Nothing runs per frame.
 | Key finder | `target`: every loose Yubikey in the match's loot, or every player OUTSIDE the squad holding one (in the fight). One static position each, on the squad's maps (`TERMINAL_KEYS`) for `fx.keyFinderMs` (2 min). Each holder it marks is warned (`key_finder_warned`). | `no_keys` (the card: none either way), `no_keys_ground`, `no_keys_held` |
 | Pulse | `radius` 250 / 500 m around this terminal: every player outside the squad in the fight inside it, found once and followed wherever they go (`TERMINAL_PULSE`, every `fx.pulsePingMs`) for `fx.pulseMs` (30 s). Each one found is told (`pulse_detected`). | Never for finding nobody -- a refusal is free, so it would be free intel |
 | Ghost | `duration` 120 / 240 s: the squad is left out of other squads' Scan and Pulse marks, and a bounty on one of them leaves every other map. It hides nobody from sight. | -- |
-| Contract | A bounty for `fx.contractMs` (5 min) on the player outside the squad with the most eliminations; a tie to whoever reached the count first (`killsAt`, stamped as a kill is credited), then the lower id (`BR.Terminal.contractPick`). | `no_target`: nobody outside the squad has one |
+| Contract | A bounty for `fx.bountyMs` (10 min, Scan's -- round 4, owner 2026-10-06: "The contract bounty should last 10 minutes") on the player outside the squad with the most eliminations, never one in the runner's squad; a tie to whoever reached the count first (`killsAt`, stamped as a kill is credited), then the lower id (`BR.Terminal.contractPick`). | `no_target`: nobody outside the squad has one |
 
 Each refusal is asked again when the load ends, so an effect that can no
 longer happen gives everything back (the door's rule). Every function runs
@@ -966,12 +965,15 @@ at once when it starts. Nothing is sent about Ghost itself; the squad's own
 view (its beacon, its own bounty mark, its own Scan) and the match panel's
 bounty list are untouched.
 
-**Contract is Scan's bounty in its own words.** `BR.Terminal.startBounty` takes
-a Contract's clock and lines: the owner's `bounty_new` to the lobby verbatim
-(it names no length), but never his `bounty_protect` -- "for the next 10
-minutes" is Scan's ten -- so the target's squad reads `contract_protect` and
-the target `contract_target`. Same blip 58 in his colors, same pushes and
-endings; a bounty already running keeps whichever clock is longer.
+**Contract is Scan's bounty, word for word** (round 4). `BR.Terminal.startBounty`
+is the one bounty: the owner's ten minutes, his `bounty_new` to the lobby and
+his `bounty_protect` to the target's squad -- "for the next 10 minutes" is true
+of a Contract now, so wave A's `contract_protect` (its five-minute line) and
+`contract_target` (a toast to the target) are gone. The target reads their own
+name in `bounty_new`, and their HUD's persistent notice says the bounty and its
+time left ([persistent notices](#persistent-notices-round-4)). Same blip 58 in
+his colors, same pushes and endings; a bounty already running restarts its ten
+and is never shortened.
 
 **Disarm and the anticheat.** The INV_SET takes a round trip; until it lands
 the ped still holds the weapon, so a hit from it is refused -- a gun NOT_HELD,

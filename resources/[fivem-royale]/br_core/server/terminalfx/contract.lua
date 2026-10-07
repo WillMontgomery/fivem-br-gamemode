@@ -1,29 +1,31 @@
 -- Season 2 terminals (#396), wave A: CONTRACT, the server half.
 --
 -- THE PAGE (br_lib/config/terminals.lua, `contract_*`): "The player outside
--- your squad with the most eliminations gets a bounty for 5 minutes. Their
+-- your squad with the most eliminations gets a bounty for 10 minutes. Their
 -- position shows on every player's map while it lasts. A tie goes to the
--- player who got there first." The target is told a contract is on them.
+-- player who got there first."
 --
 --   THE TARGET   BR.Terminal.contractPick, the one rule: every player in the
 --                match outside the runner's squad, still in the fight, with
 --                at least one elimination; the most eliminations; a tie to
 --                whoever REACHED that count first (`killsAt`, stamped by
 --                server/combat.lua as each kill is credited); a tie on that
---                too -- the same millisecond -- to the lower server id.
+--                too -- the same millisecond -- to the lower server id. NEVER
+--                THE RUNNER'S SQUAD (owner, round 4: "cannot land on a player
+--                in the same squad as the user"), however many it has.
 --   NOBODY       outside the squad has an elimination: refused, spending
 --                nothing (`no_target`). A contract on a player with none would
 --                be a bounty on a name picked at random, which is not what
 --                the page says.
---   THE BOUNTY   Scan's (BR.Terminal.startBounty), with its own clock,
---                fx.contractMs (5 min), and its own words: the owner's
---                `bounty_new` to the lobby, verbatim -- it names no length --
---                but `contract_protect` to the target's squad instead of his
---                `bounty_protect`, whose "for the next 10 minutes" is Scan's,
---                and `contract_target` to the target. The same blip 58 in his
---                colors, the same pushes, ended the same ways (elimination,
---                leaving, the match ending), hidden the same way by Ghost; a
---                bounty already on the target keeps whichever clock is longer.
+--   THE BOUNTY   Scan's (BR.Terminal.startBounty), word for word since round
+--                4 (owner, 2026-10-06: "The contract bounty should last 10
+--                minutes"): his ten minutes, his `bounty_new` to the lobby and
+--                his `bounty_protect` to the target's squad, the same blip 58
+--                in his colors, the same pushes, ended the same ways
+--                (elimination, leaving, the match ending), hidden the same way
+--                by Ghost; a bounty already on the target restarts its ten.
+--                The target reads their own name in `bounty_new`, and their
+--                HUD's persistent notice says the bounty and its time left.
 --
 -- After the lobby's notice, like Scan's bounty. No client half: the bounty's
 -- marks are client/terminalfx.lua's and client/squadmates.lua's.
@@ -33,8 +35,6 @@ BR.Terminal = BR.Terminal or {}
 
 local T = BR.Terminal
 local TS = BR.TerminalSolve
-
-local function fx() return BR.Config.Terminals.fx or {} end
 
 --- THE ONE RULE: who a Contract run by squad `key` puts the bounty on, or nil.
 --- @param m table
@@ -84,11 +84,7 @@ T.FUNCTIONS.contract = {
         -- THE BOUNTY AND ITS TOASTS AFTER "has redeemed their special power:
         -- Contract...", the order Scan's bounty keeps.
         return { ok = true, code = 'done', after = function()
-            T.startBounty(m, target, now, {
-                ms = tonumber(fx().contractMs) or 300000,
-                protect = 'contract_protect',
-                target = 'contract_target',
-            })
+            T.startBounty(m, target, now)
         end }
     end,
 }

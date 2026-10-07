@@ -673,10 +673,10 @@ do
         'no_storm', 'no_site', 'ammo_full',
         -- Wave A's (2026-10-06).
         'health_full', 'no_weapons', 'no_keys', 'no_keys_ground', 'no_keys_held', 'key_finder_warned',
-        'key_finder_blip', 'pulse_detected', 'pulse_blip', 'no_target', 'contract_protect',
-        'contract_target',
-        -- Round 4's (2026-10-06): the map pick's step, Storm control's spots.
-        'confirm_location', 'storm_spot_land', 'storm_spot_out', 'storm_spot_edge',
+        'key_finder_blip', 'pulse_detected', 'pulse_blip', 'no_target',
+        -- Round 4's (2026-10-06): the map pick's step, Storm control's spots,
+        -- Power outage's night.
+        'confirm_location', 'storm_spot_land', 'storm_spot_out', 'storm_spot_edge', 'no_night',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
         'address_host', 'path_home', 'path_functions', 'path_howto', 'path_privacy', 'path_login',
         'nav_home', 'nav_howto', 'nav_privacy', 'nav_categories', 'privacy_title', 'privacy_body',

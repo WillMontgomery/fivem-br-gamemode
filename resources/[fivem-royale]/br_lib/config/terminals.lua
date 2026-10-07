@@ -878,24 +878,37 @@ BR.Config.Terminals = {
         -- legend.
         pulse_blip = 'Detected',
 
-        -- Contract (new; LIVE since wave A, 2026-10-06)
+        -- Contract (new; LIVE since wave A, 2026-10-06; ROUND 4, the same day:
+        -- "The contract bounty should last 10 minutes, and cannot land on a
+        -- player in the same squad as the user"). Its bounty is Scan's word
+        -- for word since: the owner's bounty_new and bounty_protect (whose "for
+        -- the next 10 minutes" is now true of both) -- so wave A's
+        -- contract_protect (the five-minute line to the target's squad) and
+        -- contract_target (a toast to the target) are gone. The target reads
+        -- their own name in bounty_new, and their HUD's persistent notice
+        -- (impact_bounty) says the bounty and its time left.
         contract_name = 'Contract',
-        contract_summary = 'Puts a bounty on the player with the most eliminations.',
-        contract_what = "The player outside your squad with the most eliminations gets a bounty for 5 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
-        contract_what_solo = "The player with the most eliminations, other than you, gets a bounty for 5 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
-        contract_duration = '5 minutes',
+        -- WRITTEN (2026-10-06, round 4; was 'Puts a bounty on the player with
+        -- the most eliminations.'): never the runner's squad, so the card
+        -- says so.
+        contract_summary = 'Puts a bounty on the player outside your squad with the most eliminations.',
+        contract_summary_solo = 'Puts a bounty on the player with the most eliminations, other than you.',
+        -- WRITTEN (2026-10-06, round 4; "for 5 minutes" became 10).
+        contract_what = "The player outside your squad with the most eliminations gets a bounty for 10 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
+        contract_what_solo = "The player with the most eliminations, other than you, gets a bounty for 10 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
+        -- WRITTEN (2026-10-06, round 4; was '5 minutes').
+        contract_duration = '10 minutes',
         contract_affects = 'One player outside your squad',
         contract_affects_solo = 'One player other than you',
-        contract_notified = 'Everyone in the match, the target included',
-        contract_risks = "The target is told a contract is on them.",
+        -- WRITTEN (2026-10-06, round 4; was 'Everyone in the match, the target
+        -- included'): the target's squad is told to protect them.
+        contract_notified = "Everyone in the match, and the target's squad",
+        contract_notified_solo = 'Everyone in the match',
+        -- WRITTEN (2026-10-06, round 4; was 'The target is told a contract is
+        -- on them.').
+        contract_risks = 'The target is told they have a bounty, and for how long.',
         contract_done = 'The contract is out.',
         contract_description = 'Contract. The top player has a bounty.',
-        -- WRITTEN (2026-10-06, wave A). A toast to the target's squadmates
-        -- (never the target): the owner's bounty_protect says "the next 10
-        -- minutes", Scan's ten, so a Contract's five has its own line.
-        contract_protect = "Protect {playername}! There's a contract on them for the next 5 minutes.",
-        -- WRITTEN (2026-10-06, wave A). A toast to the target.
-        contract_target = "There's a contract on you. Every player can see where you are for the next 5 minutes.",
 
         -- Field medic (new; LIVE since wave A, 2026-10-06)
         field_medic_name = 'Field medic',
@@ -1336,9 +1349,8 @@ BR.Config.Terminals = {
         -- Pulse: "The marks follow them for 30 seconds", moved this often.
         pulseMs = 30 * 1000,
         pulsePingMs = 1000,
-        -- Contract: the bounty it puts out lasts "5 minutes" (Scan's is
-        -- bountyMs, the owner's ten).
-        contractMs = 5 * 60 * 1000,
+        -- (Contract's bounty is bountyMs, the owner's ten, since round 4: "The
+        -- contract bounty should last 10 minutes".)
 
         -- ── wave C (2026-10-06). EMP's radius and duration are its row's own
         --    choices (meters, seconds), like wave A's. ──
