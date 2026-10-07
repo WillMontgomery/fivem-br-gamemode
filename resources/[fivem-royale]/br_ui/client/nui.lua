@@ -614,6 +614,14 @@ for _, name in ipairs({
     -- The locker changes the PED, which is br_core's to own -- br_ui owns the
     -- page and the callbacks, br_core owns what they mean.
     BR.NuiCb.LOCKER_PICK, BR.NuiCb.LOCKER_SPIN,
+    -- Locker v2 (#28, Season 2), the same split: br_core checks every one
+    -- again and decides what it means.
+    BR.NuiCb.LOCKER2_OPEN, BR.NuiCb.LOCKER2_CLOSE, BR.NuiCb.LOCKER2_RESET,
+    BR.NuiCb.LOCKER2_TAB, BR.NuiCb.LOCKER2_WEAR, BR.NuiCb.LOCKER2_STEP,
+    BR.NuiCb.LOCKER2_SET, BR.NuiCb.LOCKER2_COLOR, BR.NuiCb.LOCKER2_CAT,
+    BR.NuiCb.LOCKER2_SAVE, BR.NuiCb.LOCKER2_RENAME, BR.NuiCb.LOCKER2_DELETE,
+    BR.NuiCb.LOCKER2_EDIT, BR.NuiCb.LOCKER2_SHOTS, BR.NuiCb.LOCKER2_SHOTDONE,
+    BR.NuiCb.LOCKER2_SHOT,
     -- Rebinding is br_core's: it owns the binding table and the raw-key
     -- reader, and the settings screen is only the page that shows them.
     BR.NuiCb.KEYBIND_SET,

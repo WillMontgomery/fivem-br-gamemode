@@ -117,7 +117,7 @@ local function lobbyPedPending()
     -- The locker is the only thing that decides WHICH character this is, so it
     -- is the only honest source for what we are waiting to see.
     if BR.Locker and BR.PedById then
-        local want = GetHashKey(BR.PedById(BR.Locker.chosen()).model)
+        local want = BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)
         if GetEntityModel(ped) ~= want then
             return 'the chosen character is not on the player yet'
         end

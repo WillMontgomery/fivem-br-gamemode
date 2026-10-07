@@ -364,6 +364,12 @@ client_scripts {
     'client/spawn.lua',
     'client/lobbycam.lua',  -- reads BR.Spawn.traveling; must follow spawn.lua
     'client/locker.lua',    -- the ped in that shot; needs BR.Native (natives.lua)
+    -- Locker v2 (#28, Season 2) and its headshots. AFTER locker.lua for a
+    -- reader: Season 1's locker asks BR.LockerV2 at call time (nil-guarded),
+    -- and v2 reads BR.Locker.chosen() at call time. Its ticks need the loop
+    -- registry (client/main.lua) and BR.Season (shared), both above.
+    'client/locker2.lua',
+    'client/locker2shot.lua',
     -- Whether that ped is a LOBBY ped -- hidden from every other lobby client
     -- -- and the walk-in that puts it in frame. AFTER lobbycam.lua and
     -- locker.lua, and that is a READER'S order in one direction and the

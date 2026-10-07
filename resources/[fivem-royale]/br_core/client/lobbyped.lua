@@ -1342,7 +1342,7 @@ local function run(mine)
     --    with the task lost in between.
     local want = nil
     if BR.PedById and BR.Locker and BR.Locker.chosen then
-        want = GetHashKey(BR.PedById(BR.Locker.chosen()).model)
+        want = BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)
     end
     if want then
         local deadline = GetGameTimer() + (C.modelWaitMs or 8000)

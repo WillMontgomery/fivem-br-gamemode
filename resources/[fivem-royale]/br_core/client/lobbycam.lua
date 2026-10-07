@@ -799,6 +799,91 @@ function BR.LobbyCam.glideHome(ms, ease)
     return true
 end
 
+-- ═══ LOCKER V2'S FOCUS (#28, Season 2) ═══
+--
+-- Owner, 2026-10-07: "when selected, the camera should move to focus on which
+-- part of the ped is being customized." A preset (BR.Config.Locker2.cams) names
+-- a bone, a height off it, a distance and a field of view; the camera sits on
+-- the ped's forward axis at that distance -- or behind the ped, for the back --
+-- and aims with PointCamAtCoord, the way the lobby frame does.
+--
+-- THE PED STAYS WHERE THE MENU LEFT ROOM FOR IT. The lobby frame slides its aim
+-- along the ped's right so the ped stands right of center, in the gap the menu
+-- leaves; a close-up aimed at the bone itself would put the face behind the
+-- menu. So the aim is slid by the same fraction of the screen: the home shot's
+-- offset over its distance, scaled by each field of view.
+--
+-- THE MOVES ARE glideTo's: a new static camera and an engine interpolation
+-- from the one rendering, with the retiring camera swept as every other move
+-- here sweeps it -- never SetCamCoord on a rendering camera. Eased, because a
+-- focus is one move with a beginning and an end. stop() forgets the focus.
+
+--- The preset the camera is focused on, or nil.
+local focused = nil
+
+--- Where a preset puts the camera and its aim, for the ped as it stands now.
+--- @param preset string  a key of BR.Config.Locker2.cams
+--- @param ped number|nil  PlayerPedId() by default
+--- @return number|nil cx, number cy, number cz, number ax, number ay, number az, number fov
+function BR.LobbyCam.focusFrame(preset, ped)
+    local L2 = BR.Config.Locker2
+    local P = L2 and L2.cams and L2.cams[preset]
+    if not P then return nil end
+    local C = BR.Config.Match.lobbyCam
+    ped = ped or PlayerPedId()
+    local b = GetPedBoneCoords(ped, P.bone, 0.0, 0.0, 0.0)
+    if not b then return nil end
+    local rad = math.rad(GetEntityHeading(ped) or 0.0)
+    local fx, fy = -math.sin(rad), math.cos(rad)
+    local rx, ry = math.cos(rad), math.sin(rad)
+    local side = P.behind and -1.0 or 1.0
+    local tx, ty, tz = b.x, b.y, b.z + (P.z or 0.0)
+    -- The home shot's screen position, carried to this distance and lens.
+    local frac = (C.offset / C.dist) / math.tan(math.rad(C.fov) / 2.0)
+    local off = P.dist * frac * math.tan(math.rad(P.fov) / 2.0)
+    return tx + fx * P.dist * side, ty + fy * P.dist * side, tz,
+           tx + rx * off * side, ty + ry * off * side, tz,
+           P.fov
+end
+
+--- Glide to a preset over BR.Config.Locker2.camMs, eased. Only while the lobby
+--- camera is up.
+--- @param preset string
+--- @return boolean
+function BR.LobbyCam.focus(preset)
+    sweepRetired()
+    if not (cam and isTrue(DoesCamExist(cam))) then return false end
+    local cx, cy, cz, ax, ay, az, fov = BR.LobbyCam.focusFrame(preset)
+    if not cx then return false end
+    local dest = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
+        cx + 0.0, cy + 0.0, cz + 0.0, 0.0, 0.0, 0.0, fov + 0.0, false, 0)
+    if not dest or dest == -1 then return false end
+    PointCamAtCoord(dest, ax + 0.0, ay + 0.0, az + 0.0)
+    dropRetiring()
+    retiring = cam
+    cam = dest
+    SetCamActiveWithInterp(cam, retiring, math.max(1, math.floor(BR.Config.Locker2.camMs or 600)), 1, 1)
+    RenderScriptCams(true, false, 0, true, true)
+    focused = preset
+    return true
+end
+
+--- Glide back to the lobby frame, if focused. Safe to call when not.
+--- @param ms number|nil  BR.Config.Locker2.camMs by default
+--- @return boolean
+function BR.LobbyCam.unfocus(ms)
+    if not focused then return false end
+    focused = nil
+    if not BR.LobbyCam.active() then return false end
+    local L2 = BR.Config.Locker2
+    return BR.LobbyCam.glideHome(ms or (L2 and L2.camMs) or 600, true)
+end
+
+--- @return string|nil
+function BR.LobbyCam.focused()
+    return focused
+end
+
 --- Hand the view back to the game. Safe to call when nothing is up.
 ---
 --- ALWAYS CALLED UNDER A FADE by the transition into warmup: releasing the
@@ -806,6 +891,8 @@ end
 --- gameplay shot in one frame, which reads as a glitch rather than as the
 --- match starting.
 function BR.LobbyCam.stop()
+    -- A focus does not outlive the camera it moved (#28).
+    focused = nil
     -- THE RETIRING CAMERA GOES EVEN IF THE MAIN ONE IS ALREADY GONE, which is
     -- why this is above the early return rather than beside the destroy below.
     -- A flight abandoned mid-move has two live cameras, and the one that is

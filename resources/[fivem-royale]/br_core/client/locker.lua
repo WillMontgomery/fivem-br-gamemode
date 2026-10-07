@@ -312,6 +312,7 @@ local appliedOnce = false
 BR.Loop.register(BR.Loop.TICK, 'locker.initial', function()
     if appliedOnce then return end
     if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
+    if BR.LockerV2 and BR.LockerV2.defer() then return end
     appliedOnce = true
 
     -- Only if it is not already what we want. A fresh session hands you a
