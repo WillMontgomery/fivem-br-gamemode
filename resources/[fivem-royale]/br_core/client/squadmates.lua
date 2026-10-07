@@ -119,11 +119,16 @@ local HEAD_BONE = 31086
 --- The head BONE is the one thing on a ped that moves with the animation, so
 --- it is what both labels hang off now. For a body on the floor it is a few
 --- centimetres of ground clearance; standing, it is where it always was.
+---
+--- THE ORIGIN IS READ ONLY WHEN IT IS THE ANSWER (#393). Every caller draws on
+--- every frame, and the bone answers on every build that has the native -- so
+--- the origin, which only the fallback below uses, was a native a frame spent
+--- for nothing. A caller that has already read it this frame hands it in as
+--- `at`: the same value, since nothing moves the ped between the two reads.
 --- @param ped integer
+--- @param at table|nil  GetEntityCoords(ped), if the caller already has it
 --- @return number x, number y, number z
-function BR.Squadmates.headAnchor(ped)
-    local c = GetEntityCoords(ped)
-
+function BR.Squadmates.headAnchor(ped, at)
     if GetPedBoneCoords then
         local b = GetPedBoneCoords(ped, HEAD_BONE, 0.0, 0.0, 0.0)
         -- A bone the model does not carry answers with the entity's own
@@ -139,6 +144,7 @@ function BR.Squadmates.headAnchor(ped)
     -- head that is standing and one that is on the floor. Wrong in both
     -- postures rather than right in one, which is the honest degrade -- there
     -- is nothing else on a ped that knows which way it is lying.
+    local c = at or GetEntityCoords(ped)
     return c.x, c.y, c.z + 0.6
 end
 
@@ -711,9 +717,10 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
             -- put the name at the world origin in the meantime.
             low[src] = nil
         else
-            local x, y, z = BR.Squadmates.headAnchor(e.ped)
+            local at = GetEntityCoords(e.ped)
+            local x, y, z = BR.Squadmates.headAnchor(e.ped, at)
             z = z + NAME_LIFT
-            local d = #(GetEntityCoords(e.ped) - me)
+            local d = #(at - me)
 
             -- BEHIND THE CAMERA IS NOT A PLACE TO DRAW. SetDrawOrigin projects
             -- whatever it is given, including points behind the viewer, which
@@ -767,22 +774,38 @@ end)
 --
 -- FRAME, not TICK: at 10Hz an automatic weapon lands several rounds between
 -- samples, and restoring to a health value that was already three bullets old
--- would leak damage. The per-mate scan only runs on a frame where health
--- actually dropped, so the ordinary cost is two native reads.
-local lastHp, lastArmour = nil, nil
+-- would leak damage.
+--
+-- ═══ AND THE MATES ARE ONLY LOOKED UP AFRESH ON A FRAME THAT HURT (#393) ═══
+--
+-- This used to say the per-mate scan only ran on a frame where health dropped.
+-- It ran on every frame, and it has to -- the sticky flag below is cleared
+-- every frame a mate's is set -- but only a frame where health or armor fell
+-- DECIDES anything. That frame still resolves every mate's ped fresh, exactly
+-- as before. Every other frame only clears, and asks of the ped squadmates.tags
+-- resolved at most a tenth of a second ago instead of resolving it again: one
+-- native per mate in place of three, sixty times a second.
+--
+-- WHAT THAT TENTH OF A SECOND IS. A cached ped differs from a fresh one only
+-- for a mate whose ped changed since the tick -- in a match, one just arrived
+-- in scope, about 424m out. Their mark would be cleared one tick later instead
+-- of on this frame, and only a hit they landed WITHOUT hurting you could leave
+-- one (a hit that hurt makes this a deciding frame). Nothing that leaves a mark
+-- without damage -- a bump, a shove -- reaches 424m.
+local lastHp, lastArmor = nil, nil
 
 BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
     local st = BR.State.me.state
     if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.WARMUP then
-        lastHp, lastArmour = nil, nil
+        lastHp, lastArmor = nil, nil
         return
     end
 
     local ped     = PlayerPedId()
     local hp      = GetEntityHealth(ped)
-    local armour  = GetPedArmour(ped)
-    local prevHp, prevArmour = lastHp, lastArmour
-    lastHp, lastArmour = hp, armour
+    local armor   = GetPedArmour(ped)
+    local prevHp, prevArmor = lastHp, lastArmor
+    lastHp, lastArmor = hp, armor
 
     if not prevHp then return end
 
@@ -798,10 +821,17 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
     -- inside the same frame. It is not zero, and it is the honest limit of
     -- doing this client-side -- M6's server-side validation replaces the
     -- whole approach with never applying the shot in the first place.
+    local hurt = hp < prevHp or armor < prevArmor
     local byMate = false
     for src in pairs(mates) do
-        local player = GetPlayerFromServerId(src) -- scope-ok: undoing damage needs the attacker's local ped; out of scope they cannot have shot us
-        local matePed = (player ~= -1) and GetPlayerPed(player) or 0 -- scope-ok: same
+        local matePed
+        if hurt then
+            local player = GetPlayerFromServerId(src) -- scope-ok: undoing damage needs the attacker's local ped; out of scope they cannot have shot us
+            matePed = (player ~= -1) and GetPlayerPed(player) or 0 -- scope-ok: same
+        else
+            -- Clearing only: the tick's answer. See the note above lastHp.
+            matePed = peds[src] or 0
+        end
         if matePed ~= 0 and HasEntityBeenDamagedByEntity(ped, matePed, true) then
             byMate = true
         end
@@ -809,11 +839,11 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
 
     if byMate then ClearEntityLastDamageEntity(ped) end
     if not byMate then return end
-    if hp >= prevHp and armour >= prevArmour then return end
+    if not hurt then return end
 
     if hp < prevHp then SetEntityHealth(ped, prevHp) end
-    if armour < prevArmour then SetPedArmour(ped, math.floor(prevArmour)) end
-    lastHp, lastArmour = prevHp, prevArmour
+    if armor < prevArmor then SetPedArmour(ped, math.floor(prevArmor)) end
+    lastHp, lastArmor = prevHp, prevArmor
 end)
 
 -- IN THE LOBBY YOU SEE EXACTLY ONE PERSON: YOURSELF.

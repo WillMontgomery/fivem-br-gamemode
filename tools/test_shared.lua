@@ -18931,6 +18931,216 @@ do
     P.tick()
     eq(P.drops(), 3, 'and pays on the first ALIVE pass after')
 end
+
+-- ---------------------------------------------------------------------------
+-- squadmates.noff: a hit that hurt resolves every mate afresh; every other
+-- frame only clears, off the tick's resolution (#393).
+--
+-- The friendly-fire backstop ran GetPlayerFromServerId and GetPlayerPed for
+-- every mate on every frame. Only a frame where health or armor fell decides
+-- anything; the rest exist to clear a sticky mark a mate left without hurting.
+-- What must not change: a mate's hit that hurt is undone, an enemy's is not, a
+-- mark left on a frame that did not hurt is cleared on that frame, and a
+-- deciding frame asks of the mate's ped as it is NOW, not as the tick saw it.
+-- ---------------------------------------------------------------------------
+
+describe('squadmates / the friendly-fire backstop resolves mates afresh only on a frame that hurt')
+do
+    local ME = 1
+
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+
+    local function newMateClient()
+        local env = newSandbox()
+        local W = {
+            now = 1000, hp = 200, armor = 50,
+            -- [src] = the ped that player has right now (nil: out of scope)
+            pedOfSrc = { [2] = 20, [3] = 30 },
+            marks = {},           -- [attacker ped] = true: the sticky record on me
+            lookups = 0, asked = 0, cleared = 0, restored = {},
+            coordsRead = 0, bone = nil,
+        }
+
+        env.GetGameTimer = function() return W.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return #tostring(s) end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+        local handlers = {}
+        env.AddEventHandler = function(name, fn)
+            handlers[name] = handlers[name] or {}
+            table.insert(handlers[name], fn)
+        end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand = function() end
+        env.TriggerServerEvent = function() end
+        env.TriggerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, SANDBOX_LIB)
+
+        local noop = function() end
+        env.PlayerPedId = function() return ME end
+        env.GetVehiclePedIsIn = function() return 0 end
+        env.DoesEntityExist = function(e)
+            if e == ME then return 1 end
+            for _, p in pairs(W.pedOfSrc) do if p == e then return 1 end end
+            return 0
+        end
+        env.GetEntityCoords = function()
+            W.coordsRead = W.coordsRead + 1
+            return { x = 1.0, y = 2.0, z = 3.0 }
+        end
+        env.GetPedBoneCoords = function()
+            return W.bone or { x = 1.0, y = 2.0, z = 3.5 }
+        end
+        env.AddBlipForCoord = function() return 5 end
+        for _, n in ipairs({ 'SetBlipSprite', 'SetBlipScale', 'SetBlipColour',
+            'SetBlipAsShortRange', 'BeginTextCommandSetBlipName',
+            'AddTextComponentSubstringPlayerName', 'EndTextCommandSetBlipName',
+            'SetBlipCoords', 'SetBlipAlpha', 'RemoveBlip', 'SetMpGamerTagVisibility',
+            'RemoveMpGamerTag' }) do
+            env[n] = noop
+        end
+        env.DoesBlipExist = function() return true end
+        env.CreateFakeMpGamerTag = function() return 7 end
+        env.GetPlayerFromServerId = function(src)
+            W.lookups = W.lookups + 1
+            return W.pedOfSrc[src] and src or -1
+        end
+        env.GetPlayerPed = function(player)
+            W.lookups = W.lookups + 1
+            return W.pedOfSrc[player] or 0
+        end
+        env.GetEntityHealth = function() return W.hp end
+        env.GetPedArmour    = function() return W.armor end
+        env.HasEntityBeenDamagedByEntity = function(victim, attacker)
+            W.asked = W.asked + 1
+            return victim == ME and W.marks[attacker] == true
+        end
+        env.ClearEntityLastDamageEntity = function()
+            W.cleared = W.cleared + 1
+            W.marks = {}
+        end
+        env.SetEntityHealth = function(_, hp)
+            W.hp = hp
+            W.restored[#W.restored + 1] = 'hp'
+        end
+        env.SetPedArmour = function(_, a)
+            W.armor = a
+            W.restored[#W.restored + 1] = 'armor'
+        end
+
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.State.me.state = env.BR.PlayerState.ALIVE
+        env.BR.State.me.src = 1
+        env.BR.State.roster = {
+            [2] = { src = 2, state = env.BR.PlayerState.ALIVE },
+            [3] = { src = 3, state = env.BR.PlayerState.ALIVE },
+        }
+        loadInto(env, { 'br_core/client/squadmates.lua' })
+
+        for _, fn in ipairs(handlers[env.BR.Net.SQUAD_POS] or {}) do
+            fn({ { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                   state = env.BR.PlayerState.ALIVE },
+                 { src = 3, name = 'Charlie', i = 3, x = 2.0, y = 0.0,
+                   state = env.BR.PlayerState.ALIVE } })
+        end
+
+        W.env = env
+        function W.frame()
+            W.now = W.now + 16
+            env.BR.Loop.step(env.BR.Loop.FRAME)
+        end
+        function W.tick() env.BR.Loop.step(env.BR.Loop.TICK) end
+        return W
+    end
+
+    local W = newMateClient()
+    W.tick()          -- the tick resolves both mates, as it does ten times a second
+    W.frame()         -- the first frame only records health
+
+    -- ═══ THE ORDINARY FRAME: NO LOOKUP, ONE QUESTION PER MATE ═══
+    local lookups, asked = W.lookups, W.asked
+    for _ = 1, 60 do W.frame() end
+    eq(W.lookups - lookups, 0,
+        'sixty frames that did not hurt resolve no mate: no GetPlayerFromServerId, no GetPlayerPed')
+    eq(W.asked - asked, 120, 'and still ask each mate\'s mark on every one of them')
+
+    -- ═══ A MATE'S HIT THAT HURT IS UNDONE ═══
+    W.hp, W.marks[20] = 170, true
+    lookups = W.lookups
+    W.frame()
+    ok(W.hp == 200 and W.restored[#W.restored] == 'hp',
+        'a squadmate\'s hit that hurt is put back', W.hp)
+    ok(W.lookups - lookups == 4, 'and that frame resolved both mates afresh',
+        W.lookups - lookups)
+    ok(next(W.marks) == nil, 'and the mark is cleared')
+
+    -- Armor is hurt too: a frame that only took armor decides as well.
+    W.armor, W.marks[30] = 20, true
+    W.frame()
+    ok(W.armor == 50 and W.restored[#W.restored] == 'armor',
+        'a squadmate\'s hit that only took armor is put back', W.armor)
+
+    -- ═══ AN ENEMY'S IS NOT ═══
+    local n = #W.restored
+    W.armor, W.marks[99] = 30, true
+    W.frame()
+    ok(W.armor == 30 and #W.restored == n, 'an enemy\'s hit stands')
+
+    -- ═══ A MARK LEFT WITHOUT HURT IS CLEARED ON ITS OWN FRAME ═══
+    W.marks = {}
+    W.frame()
+    local cleared = W.cleared
+    W.marks[30] = true            -- a mate's bump that did no damage
+    W.frame()
+    ok(W.cleared == cleared + 1 and next(W.marks) == nil,
+        'a mate\'s mark on a frame that did not hurt is cleared on that frame')
+    W.hp, W.marks[99] = 150, true -- and then an enemy hurts
+    n = #W.restored
+    W.frame()
+    ok(W.hp == 150 and #W.restored == n,
+        'so the enemy\'s hit on the next frame is not mistaken for the mate\'s')
+
+    -- ═══ A DECIDING FRAME ASKS OF THE PED AS IT IS NOW ═══
+    --
+    -- Charlie's ped changed since the tick (31, not 30). A frame that hurt must
+    -- find his mark on the ped he has NOW -- the tick's answer would miss it and
+    -- leave his damage standing.
+    W.marks = {}
+    W.frame()
+    W.pedOfSrc[3] = 31
+    W.hp, W.marks[31] = 120, true
+    W.frame()
+    eq(W.hp, 150, 'a mate whose ped changed since the tick is still caught on the frame he hurts')
+
+    -- ═══ A MATE OUT OF SCOPE IS NOT ASKED ABOUT ═══
+    W.tick()
+    W.pedOfSrc[2] = nil
+    W.tick()
+    asked = W.asked
+    W.frame()
+    eq(W.asked - asked, 1, 'a mate the tick saw leave scope is not asked about')
+
+    -- ═══ THE HEAD ANCHOR READS THE ORIGIN ONLY WHEN IT IS THE ANSWER ═══
+    local H = W.env.BR.Squadmates.headAnchor
+    local reads = W.coordsRead
+    local x, y, z = H(20)
+    ok(x == 1.0 and y == 2.0 and z == 3.5 and W.coordsRead == reads,
+        'with a head bone, the anchor is the bone and the origin is never read')
+    W.bone = { x = 0.0, y = 0.0, z = 0.0 }     -- out of scope: the world origin
+    x, y, z = H(20)
+    ok(x == 1.0 and y == 2.0 and z == 3.6 and W.coordsRead == reads + 1,
+        'without one, the origin plus 0.6, read once')
+    x, y, z = H(20, { x = 7.0, y = 8.0, z = 9.0 })
+    ok(x == 7.0 and y == 8.0 and z == 9.6 and W.coordsRead == reads + 1,
+        'or the origin the caller already read, without reading it again')
+end
 -- ---------------------------------------------------------------------------
 -- The storm: WHOSE BODY the client reads it from.
 --
