@@ -14,7 +14,7 @@ import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
   DeathPayload, SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
-  CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
+  CurtainKind, KeybindAction, LockerPayload, Locker2Payload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
   AdminPayload, CommunityPayload, VehiclePayload, YubikeyCardWords,
@@ -151,6 +151,10 @@ export interface UiState {
    *  button is hidden rather than showing an empty list, because a screen
    *  that opens onto nothing reads as broken. */
   locker: LockerPayload
+  /** Locker v2 (#28), from the `locker2` envelope. `on` false (the default,
+   *  and Season 1) means the locker is Season 1's and nothing else here is
+   *  read. */
+  locker2: Locker2Payload
 
   /** Level and XP, exactly as the server last reported them. NOTHING IN THE UI
    *  MAY WRITE A DERIVED VALUE HERE -- the verdict screen doing precisely that
@@ -499,6 +503,7 @@ export interface UiState {
   clearNoticeLog: () => void
   setSettings: (s: SettingsPayload) => void
   setLocker: (l: LockerPayload) => void
+  setLocker2: (l: Locker2Payload) => void
   setProgress: (p: ProgressPayload) => void
   awardXp: (a: XpAward) => void
   setEarned: (e: EarnedPayload | null) => void
@@ -858,6 +863,7 @@ export const useUi = create<UiState>((set, get) => {
   focus: 'none',
   settings: DEFAULT_SETTINGS,
   locker: { peds: [], chosen: '' },
+  locker2: { on: false, tab: 'stock', stock: [], peds: [], worn: null },
   progress: { level: 1, xp: 0, needed: 1000 },
   xpAward: null,
   earned: null,
@@ -1110,6 +1116,7 @@ export const useUi = create<UiState>((set, get) => {
     set({ settings })
   },
   setLocker: (locker) => set({ locker }),
+  setLocker2: (locker2) => set({ locker2 }),
   setProgress: (progress) => set({ progress }),
   awardXp: (xpAward) => set({ xpAward }),
   setEarned: (earned) => set({ earned, earnedStaged: false }),

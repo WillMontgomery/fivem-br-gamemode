@@ -1024,6 +1024,109 @@ export interface LockerPayload {
 }
 
 /**
+ * LOCKER V2 (#28): the Season 2 locker, BR.Nui.LOCKER2 ('locker2').
+ *
+ * Sent on br:ui:ready, when the season gate moves, and on every change while
+ * the screen is up. `on` is BR.Season.has('locker2'): while it is false the
+ * locker is Season 1's (screens/Locker.tsx, untouched) and nothing else here is
+ * read. Lua owns every field; the page renders them and asks through the
+ * LOCKER2_* callbacks below, each of which Lua revalidates.
+ *
+ * NO APPEARANCE CROSSES TO THE PAGE. A saved ped's appearance (`a`) stays in
+ * Lua (the skeptic's correction 8): the page needs a name, a picture and the
+ * time it was last saved, and the rows of the ped being edited.
+ */
+export type Locker2Tab = 'peds' | 'stock' | 'male' | 'female'
+
+export interface Locker2Ped {
+  /** The server's id for it: base36, `^[0-9a-z]+$`. */
+  id: string
+  /** The player's name for it: letters and digits, 1 to 24. */
+  name: string
+  /** Last saved, ms. The headshot cache is keyed `id@up`. */
+  up: number
+  /** The stored headshot, a webp data URL, when there is one. The page draws
+   *  it only if it is a base64 image data URL (lockerv2/model.ts imgOk). */
+  img?: string
+}
+
+/** The ped the player is wearing: a stock id (`s`) or a saved ped (`p`). */
+export interface Locker2Worn { k: 's' | 'p'; id: string }
+
+/**
+ * One row of the Custom tabs.
+ *
+ * `k` IS THE APPEARANCE JSON'S OWN NAME FOR THE THING (contract section 1):
+ * `c<slot>` a component (1-11), `p<slot>` a prop (0, 1, 2, 6, 7), `o<index>`
+ * a head overlay (0-12) with `o<index>op` its opacity and `o<index>col` its
+ * color, `ff<index>` a face feature (0-19), `sk` the skin tone, `e` the eyes,
+ * and `h0`/`h1` the hair's color and highlight. The page names each one from
+ * lockerv2/copy.ts.
+ *
+ * `cat` is the anchor it sits under: face, hair, makeup, skin, body, headwear,
+ * tops, vests, accessories, bags, legs, shoes.
+ */
+export interface Locker2CountRow {
+  k: string
+  cat: string
+  kind: 'count'
+  /** The 1-based position in the row's option list; drawn as `v/n`. */
+  v: number
+  n: number
+  /** How many colors the current option has. More than one draws "Next
+   *  color", which sends LOCKER2_COLOR. */
+  colors: number
+}
+export interface Locker2SliderRow {
+  k: string
+  cat: string
+  kind: 'slider'
+  v: number
+  min: number
+  max: number
+  /** What Reset sets it back to. */
+  def: number
+}
+export type Locker2Row = Locker2CountRow | Locker2SliderRow
+
+/** The ped being built on a Custom tab. Absent on My peds and Stock. */
+export interface Locker2Edit {
+  sex: 'm' | 'f'
+  /** The saved ped being edited, or null for a new one. */
+  editing: string | null
+  /** Unsaved changes: the other tabs lock, and Done asks first. */
+  dirty: boolean
+  /** The category the camera is on. */
+  cat: string
+  rows: Locker2Row[]
+}
+
+export interface Locker2Payload {
+  on: boolean
+  /** The tab Lua is showing the ped for. */
+  tab: Locker2Tab
+  /** The stock roster: Season 1's peds, by id and name. */
+  stock: { id: string; name: string }[]
+  /** The player's saved peds, oldest first. */
+  peds: Locker2Ped[]
+  worn: Locker2Worn | null
+  /** The stock id streaming in, as in Season 1. */
+  loading?: string | null
+  /** The entrance walk holds the ped: everything is refused. */
+  locked?: boolean
+  /** A save, rename or delete is waiting on the server. */
+  busy?: boolean
+  /** The saved peds are still being fetched: My peds shows the loading
+   *  indicator until the server's answer arrives (owner, 2026-10-07). */
+  fetching?: boolean
+  edit?: Locker2Edit | null
+}
+
+/** BR.Nui.LOCKER2_SHOT ('locker2shot'): a headshot is ready as a runtime
+ *  texture, at https://nui-img/<txd>/<txd>. */
+export interface Locker2ShotPayload { id: string; txd: string }
+
+/**
  * LEVEL AND XP.
  *
  * There is no XP system in this game yet -- no persistence, no server ledger.
@@ -1512,6 +1615,9 @@ export type Envelope =
   | { k: 'tutorialnav'; d: { dir: 'next' | 'back' | 'action'; seq: number } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
+  /** Locker v2 (#28): BR.Nui.LOCKER2 and BR.Nui.LOCKER2_SHOT. */
+  | { k: 'locker2';  d: Locker2Payload }
+  | { k: 'locker2shot'; d: Locker2ShotPayload }
   | { k: 'progress'; d: ProgressPayload }
   | { k: 'market';   d: MarketPayload }
   /** The emote gate (#215): BR.Nui.EMOTES, sent with every Market grid. */
@@ -1600,6 +1706,41 @@ export const CB = {
   LOCKER_SPIN:    'br/locker/spin',
   TUTORIAL_SET:   'br/tutorial/set',
   LOCKER_FOCUS:   'br/locker/focus',
+  /* LOCKER V2 (#28), Season 2 and later. Every one answers {} and is
+     revalidated in Lua, which refuses them all while the ped is locked,
+     loading or busy, and refuses `tab` while there are unsaved changes. */
+  /** The screen is up: push the state, clean and dry the ped. {} */
+  LOCKER2_OPEN:     'br/locker2/open',
+  /** Done: discard the draft, wear the worn ped again. {} */
+  LOCKER2_CLOSE:    'br/locker2/close',
+  /** The Custom tab's Reset: the draft back to where it started. {} */
+  LOCKER2_RESET:    'br/locker2/reset',
+  /** { tab }. Create is { tab: 'male' }. */
+  LOCKER2_TAB:      'br/locker2/tab',
+  /** { k: 's' | 'p', id }: wear a stock or a saved ped. */
+  LOCKER2_WEAR:     'br/locker2/wear',
+  /** { k, d }: a counter one step, d = 1 or -1, wrapping. */
+  LOCKER2_STEP:     'br/locker2/step',
+  /** { k, v }: a row set outright, in its own `v` (a counter's reset is 1). */
+  LOCKER2_SET:      'br/locker2/set',
+  /** { k }: "Next color". */
+  LOCKER2_COLOR:    'br/locker2/color',
+  /** { cat }: the camera to that part of the ped. */
+  LOCKER2_CAT:      'br/locker2/cat',
+  /** { op: 'new' | 'update' | 'replace', id?, name? }. */
+  LOCKER2_SAVE:     'br/locker2/save',
+  /** { id, name }. */
+  LOCKER2_RENAME:   'br/locker2/rename',
+  /** { id }. */
+  LOCKER2_DELETE:   'br/locker2/delete',
+  /** { id }: edit a saved ped on the Custom tab of its sex. */
+  LOCKER2_EDIT:     'br/locker2/edit',
+  /** { ids }: take headshots for the saved peds with no picture. */
+  LOCKER2_SHOTS:    'br/locker2/shots',
+  /** { id, img }: a headshot, a webp data URL of 8 KB at most, to store. */
+  LOCKER2_SHOT:     'br/locker2/shot',
+  /** { id, ok }: the page is done with that texture. */
+  LOCKER2_SHOTDONE: 'br/locker2/shotdone',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
   MARKET_EQUIP:   'br/market/equip',

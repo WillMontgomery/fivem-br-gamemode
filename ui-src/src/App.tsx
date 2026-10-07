@@ -17,6 +17,8 @@ import { parseImpacts } from './hud/impactRows'
 import RescueTimer from './hud/RescueTimer'
 import Settings from './screens/Settings'
 import Locker from './screens/Locker'
+import LockerV2Gate, { usePreloadLockerV2 } from './screens/lockerv2/Gate'
+import { parseLocker2 } from './screens/lockerv2/model'
 import Market from './screens/Market'
 import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
@@ -122,6 +124,10 @@ export default function App() {
   // Not drawn, but the warmup effect below reacts to it -- subscribed so the
   // effect re-runs on the edge that arms the in-game half.
   const tutorialGameArmed = useUi((s) => s.tutorialGameArmed)
+  // LOCKER V2 (#28): Season 2's locker in place of Season 1's, when Lua says
+  // the season has it. Its chunk is fetched the moment it does.
+  const locker2On        = useUi((s) => s.locker2.on)
+  usePreloadLockerV2(locker2On)
 
   useNuiEvent('snapshot', (d) => dispatch().hydrate(d))
   useNuiEvent('state',    (d) => {
@@ -212,6 +218,7 @@ export default function App() {
   // the player's interface would silently revert for the rest of the session.
   useNuiEvent('settings', (d) => dispatch().setSettings(d))
   useNuiEvent('locker',   (d) => dispatch().setLocker(d))
+  useNuiEvent('locker2',  (d) => dispatch().setLocker2(parseLocker2(d)))
   useNuiEvent('progress', (d) => dispatch().setProgress(d))
   useNuiEvent('market',   (d) => dispatch().setMarket(d))
   // THE EMOTE GATE (#215, "Scope v2"): sent with every grid. The Market's
@@ -667,7 +674,7 @@ export default function App() {
       {/* The locker is the lobby wearing a different panel: the camera and
           the ped are already there, so this screen is a list and a scrim.
           Same focus rule as everything else. */}
-      <Page name="locker" show={focus === 'locker'}><Locker /></Page>
+      <Page name="locker" show={focus === 'locker'}>{locker2On ? <LockerV2Gate /> : <Locker />}</Page>
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
       <Page name="market" show={focus === 'market'}><Market /></Page>
