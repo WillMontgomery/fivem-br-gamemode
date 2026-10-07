@@ -1414,6 +1414,19 @@ local function frames(n, ms)
     for _ = 1, n do frame(ms) end
 end
 
+--- THE `live` EVERY OBSERVER IN THIS FILE HANDS BR.Keys.on (#393).
+---
+--- keybinds.raw reads a key only while some listener of its action says a press
+--- could act -- and a listener that gives no `live` at all says so ALWAYS. This
+--- suite loads the real listeners and registers its own counting ones beside them,
+--- for the rest of the run: one counter with no `live` made `use` and `drop`
+--- always-read here, and a production check that killed either key outright passed
+--- every suite (#393's review, mutants K11b and K11c). An observer only listens.
+--- It answers no, so whether the key is read is the production checks' decision,
+--- and a block that needs a key read has to stand up the world in which the game
+--- reads it. tools/test_keylive.lua's `observers.listen` holds every suite to this.
+local NEVER = function() return false end
+
 --- Put the client on a simulated BUILD and restart the resource on it.
 ---
 --- The three `rawDown`/`rawPressed` cases are the three `via` lines /brloot
@@ -2097,7 +2110,7 @@ do
     }) do
         bootOn(mech.rawDown, mech.rawPressed)
         local n = 0
-        BR.Keys.on('interact', function(pressed) if pressed then n = n + 1 end end)
+        BR.Keys.on('interact', function(pressed) if pressed then n = n + 1 end end, NEVER)
         pressInteract()
         frame(16)
         releaseInteract()
@@ -2186,7 +2199,7 @@ describe('a tap fires once across a 60-frame hold -- ' .. shape.name)
 do
     bootOn(true, true, shape)
     local n = 0
-    BR.Keys.on('inventory', function(pressed) if pressed then n = n + 1 end end)
+    BR.Keys.on('inventory', function(pressed) if pressed then n = n + 1 end end, NEVER)
 
     tapKey(true)
     frames(60)
@@ -2226,8 +2239,8 @@ do
     local inv, players, invRelease = 0, 0, 0
     BR.Keys.on('inventory', function(pressed)
         if pressed then inv = inv + 1 else invRelease = invRelease + 1 end
-    end)
-    BR.Keys.on('players',   function(pressed) if pressed then players = players + 1 end end)
+    end, NEVER)
+    BR.Keys.on('players',   function(pressed) if pressed then players = players + 1 end end, NEVER)
 
     local TILDE_VK = 0xC0
     local function tilde(down)
@@ -2314,8 +2327,8 @@ do
     -- the player does not have. He asked for two keys to stop working, and the
     -- gate names exactly those two.
     local mapPress, pausePress = 0, 0
-    BR.Keys.on('map',   function(pressed) if pressed then mapPress = mapPress + 1 end end)
-    BR.Keys.on('pause', function(pressed) if pressed then pausePress = pausePress + 1 end end)
+    BR.Keys.on('map',   function(pressed) if pressed then mapPress = mapPress + 1 end end, NEVER)
+    BR.Keys.on('pause', function(pressed) if pressed then pausePress = pausePress + 1 end end, NEVER)
 
     pauseMenu.active, pauseMenu.restarting = true, false
     local MAP_VK, ESC_VK = 0x4D, 0x1B
@@ -6818,7 +6831,7 @@ do
     end
 
     local heard = 0
-    BR.Keys.on('trail', function(p) if p then heard = heard + 1 end end)
+    BR.Keys.on('trail', function(p) if p then heard = heard + 1 end end, NEVER)
 
     -- TURN IT ON FIRST, because a drop now starts with the trail OFF and this
     -- whole block was written when it started on. Everything below is about
@@ -6955,6 +6968,122 @@ do
     local gone = lastSend()
     ok(gone and gone.show == false, 'and the match ending takes the box down',
         gone and tostring(gone.show) or 'nothing was sent')
+
+    -- ═══ #393: SPACE AND B, READ BY skydive.lua'S OWN CHECK AND NOTHING ELSE ═══
+    --
+    -- descentKeys is what both listeners in client/skydive.lua hand BR.Keys.on: a
+    -- drop under way, or the BUS, FREEFALL and GLIDE states around one.
+    -- client/bus.lua is not loaded yet (the block below loads it) and every counter
+    -- in this suite answers NEVER, so whether Space and B are read here is
+    -- skydive.lua's call alone. Each half of it is put to a press through
+    -- keybinds.raw, and to what the press does:
+    --
+    --   * A DROP UNDER WAY, the roster not caught up (still ALIVE): Space opens the
+    --     canopy. (B toggling the trail mid-drop is proved above, in this state.)
+    --   * BUS, FREEFALL and GLIDE before the drop is armed: both keys are read, and
+    --     that is what makes a press on the frame the drop begins a press. A key
+    --     read for the first time on that frame is adopted, not pressed.
+    --   * ON FOOT WITH NO DROP: neither key is read at all.
+    do
+        local realRaw, realForce = IsRawKeyDown, ForcePedToOpenParachute
+        local reads = {}
+        IsRawKeyDown = function(vk)
+            reads[vk] = (reads[vk] or 0) + 1
+            return realRaw(vk)
+        end
+        local canopy = 0
+        ForcePedToOpenParachute = function() canopy = canopy + 1 end
+        bootOn(true, true)   -- the raw layer resolves its native at start
+        fire('br:ui:focusChanged', 'none')
+        frames(4)
+        local SPACE, B = 0x20, 0x42
+        local P = BR.PlayerState
+
+        --- The chute on the back and the ground far below: what Space opens.
+        local function aloft()
+            ped.hasChute, ped.ammo = true, 1
+            ped.state, ped.freefall, ped.falling = CS.ON_BACK, true, true
+            ped.onFoot, ped.agl, ped.inWater = false, 400.0, false
+            inVehicle = false
+        end
+        --- No drop: the match back to waiting, as the section above ends it.
+        local function noDrop(st)
+            fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+            BR.State.me.state = st
+            frames(2)
+        end
+        local function tap(vk)
+            keys[vk], edge[vk] = true, true
+            frame(16)
+            keys[vk] = nil
+            frame(16)
+        end
+
+        -- 1. A drop under way, in a state none of the clauses names.
+        noDrop(P.ALIVE)
+        equip('trail_ember')
+        jump()
+        BR.State.me.state = P.ALIVE
+        aloft()
+        frame(16)
+        canopy, reads = 0, {}
+        tap(SPACE)
+        ok((reads[SPACE] or 0) > 0 and canopy == 1,
+            'a drop under way keeps Space read, and Space opens the canopy (#393)',
+            ('%d reads, %d canopies'):format(reads[SPACE] or 0, canopy))
+
+        -- 2. Each state clause on its own.
+        local wrong = {}
+        for _, st in ipairs({ P.BUS, P.FREEFALL, P.GLIDE }) do
+            noDrop(st)
+            aloft()
+            reads = {}
+            frame(16)
+            if (reads[SPACE] or 0) == 0 or (reads[B] or 0) == 0 then
+                wrong[#wrong + 1] = ('%s: Space %d, B %d reads before the drop')
+                    :format(st, reads[SPACE] or 0, reads[B] or 0)
+            end
+            equip('trail_ember')
+            jump()
+            BR.State.me.state = st
+            aloft()
+            canopy = 0
+            tap(SPACE)
+            if canopy ~= 1 then
+                wrong[#wrong + 1] = ('%s: Space on the frame the drop began opened %d '
+                    .. 'canopies'):format(st, canopy)
+            end
+
+            noDrop(st)
+            aloft()
+            frame(16)
+            equip('trail_ember')
+            jump()
+            BR.State.me.state = st
+            local was = BR.Cosmetics.trailOn
+            tap(B)
+            if BR.Cosmetics.trailOn == was then
+                wrong[#wrong + 1] = ('%s: B on the frame the drop began toggled nothing')
+                    :format(st)
+            end
+        end
+        ok(#wrong == 0, 'BUS, FREEFALL and GLIDE each keep Space and B read before the '
+            .. 'drop, so a press on the frame it begins opens the canopy or toggles the '
+            .. 'trail (#393)', table.concat(wrong, '; '))
+
+        -- 3. On foot, no drop.
+        noDrop(P.ALIVE)
+        reads = {}
+        frame(16)
+        ok((reads[SPACE] or 0) == 0 and (reads[B] or 0) == 0,
+            'on foot with no drop, neither Space nor B is read (#393)',
+            ('Space %d, B %d'):format(reads[SPACE] or 0, reads[B] or 0))
+
+        IsRawKeyDown, ForcePedToOpenParachute = realRaw, realForce
+        bootOn(true, true)
+        noDrop(P.ALIVE)
+        ped.state, ped.onFoot, ped.agl, ped.falling = CS.NONE, true, 0.0, false
+    end
 end
 
 describe('nobody is offered a key for a trail they do not have')
@@ -7400,6 +7529,19 @@ do
     ok(jumps() == 1,
         'ONE PRESS SENDS EXACTLY ONE BUS_JUMP -- not one per reader (#174)',
         ('%d BUS_JUMP events left the client for one press of Space'):format(jumps()))
+
+    -- 6b. bus.lua'S OWN CHECK, ALONE (#393). Its listener jumps only while
+    --     `riding`, and it hands BR.Keys.on exactly that. skydive.lua's check also
+    --     answers for the BUS state, so it is put to the press where it alone can:
+    --     the frames between the server moving this rider off BUS and the TICK
+    --     that ends the ride -- riding, no drop, a state no descent clause names.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    sent = {}
+    press(0x20, 'SPACE')
+    ok(jumps() == 1,
+        'riding is enough on its own to keep Space read, and a press jumps (#393)',
+        ('%d BUS_JUMP events'):format(jumps()))
+    BR.State.me.state = BR.PlayerState.BUS
 
     -- 7. THE REBIND MOVES THE LABEL **AND** THE LISTENER, TOGETHER.
     --
@@ -10751,7 +10893,7 @@ do
         fired[action] = 0
         BR.Keys.on(action, function(pressed)
             if pressed then fired[action] = fired[action] + 1 end
-        end)
+        end, NEVER)
     end
     local function resetCount()
         for a in pairs(fired) do fired[a] = 0 end
@@ -10910,6 +11052,15 @@ do
     -- pessimistic model: the one where the engine does deliver. If that is ever
     -- true on a real client, the gate holds there too, and if it is not, this
     -- costs three assertions.
+    -- THE ONE MOMENT EVERY KEY IN THE NAME CAN ACT (#393): touching down, the
+    -- server still calling it GLIDE and the feet already on the ground. The key
+    -- layer reads a key only while its own listener could act on a press -- B
+    -- while descending, R, G, 1 and 2 while armed -- and the counters above only
+    -- listen (NEVER), so it is the world that puts all nine in play, as it would
+    -- have to in the game.
+    local stWas, landedWas = BR.State.me.state, BR.State.landed
+    BR.State.me.state, BR.State.landed = BR.PlayerState.GLIDE, true
+
     for _, mech in ipairs({
         { name = 'raw level sample', rawDown = true,  rawPressed = true  },
         { name = 'edge fallback',    rawDown = false, rawPressed = true  },
@@ -10966,6 +11117,7 @@ do
     end
 
     end  -- mechanisms
+    BR.State.me.state, BR.State.landed = stWas, landedWas
 
     describe('a screen that keeps input is untouched')
     do
@@ -11177,7 +11329,7 @@ do
             local releases = 0
             BR.Keys.on('interact', function(pressed)
                 if not pressed then releases = releases + 1 end
-            end)
+            end, NEVER)
 
             pressInteract()
             frames(10)
@@ -12401,7 +12553,7 @@ do
     local invPresses = 0
     BR.Keys.on('inventory', function(pressed)
         if pressed then invPresses = invPresses + 1 end
-    end)
+    end, NEVER)
 
     --- Put the inventory panel away, whichever state earlier blocks left it in.
     local function shutPanel()
@@ -16449,7 +16601,7 @@ do
     local escSeen = 0
     BR.Keys.on('pause', function(pressed)
         if pressed then escSeen = escSeen + 1 end
-    end)
+    end, NEVER)
 
     --- Nothing up, nothing asked, nothing in flight.
     local function reset()
@@ -23796,6 +23948,111 @@ do
        table.concat(wrong, '; '))
     IsRawKeyDown = realRaw
     BR.State.me.state = P.ALIVE
+    bootOn(true, true)
+end
+
+describe('#393 -- R, G, 1-5 and M, each pressed through keybinds.raw on its own check')
+do
+    -- WHAT #393'S REVIEW FOUND: with this suite's counters registered with no `live`,
+    -- `use` and `drop` were read in every state whatever inventory.lua's check said,
+    -- so a check that killed either key outright passed. The counters answer NEVER
+    -- now; here each production check is put to a press of its key through
+    -- keybinds.raw and to what the press does in the game -- and, outside the
+    -- states it names, to not being read at all.
+    local realRaw = IsRawKeyDown
+    local reads = {}
+    IsRawKeyDown = function(vk)
+        reads[vk] = (reads[vk] or 0) + 1
+        return realRaw(vk)
+    end
+    bootOn(true, true)
+    fire('br:ui:focusChanged', 'none')
+    frames(4)
+
+    local function tap(vk)
+        keys[vk], edge[vk] = true, true
+        frame(16)
+        keys[vk] = nil
+        frame(16)
+    end
+    local function out(name)
+        local got = {}
+        for _, e in ipairs(sent) do
+            if e.name == name then got[#got + 1] = e.args[1] or {} end
+        end
+        return got
+    end
+    -- ARMED, with a shield in the hand and a rifle beside it.
+    BR.State.me.state, BR.State.landed = BR.PlayerState.ALIVE, true
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'shield_small', kind = BR.ItemKind.CONSUMABLE, count = 1 },
+            { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, count = 1, clip = 30,
+              pool = 'medium' },
+        },
+        ammo = {}, active = 1,
+    })
+    frames(2)
+
+    local R, G, M = 0x52, 0x47, 0x4D
+    sent = {}
+    tap(R)
+    local used = out(BR.Net.INV_USE)
+    ok(#used == 1 and used[1].slot == 1,
+        'armed, R is read and uses what is in the hand: INV_USE for slot 1',
+        ('%d INV_USE, slot %s'):format(#used, tostring(used[1] and used[1].slot)))
+
+    sent = {}
+    tap(G)
+    local dropped = out(BR.Net.INV_DROP)
+    ok(#dropped == 1 and dropped[1].slot == 1,
+        'armed, G is read and drops it: INV_DROP for slot 1',
+        ('%d INV_DROP, slot %s'):format(#dropped, tostring(dropped[1] and dropped[1].slot)))
+
+    local wrongSlot = {}
+    for i = 1, 5 do
+        sent = {}
+        tap(0x30 + i)
+        local sel = out(BR.Net.INV_SELECT)
+        if #sel ~= 1 or sel[1].slot ~= i then
+            wrongSlot[#wrongSlot + 1] = ('%d: %d INV_SELECT, slot %s'):format(i, #sel,
+                tostring(sel[1] and sel[1].slot))
+        end
+    end
+    ok(#wrongSlot == 0, 'armed, each of 1 to 5 is read and selects its own slot',
+        table.concat(wrongSlot, '; '))
+
+    events = {}
+    tap(M)
+    local toggled = 0
+    for _, e in ipairs(events) do
+        if e.name == 'br:ui:mapToggle' then toggled = toggled + 1 end
+    end
+    ok(toggled == 1, 'in a match, M is read and opens the map',
+        ('%d br:ui:mapToggle'):format(toggled))
+
+    -- AND OUTSIDE: the lobby, not landed. Not one of the seven is read, and M neither.
+    BR.State.me.state, BR.State.landed = BR.PlayerState.LOBBY, false
+    frame(16)
+    local stillRead = {}
+    reads = {}
+    frame(16)
+    for _, vk in ipairs({ R, G, 0x31, 0x32, 0x33, 0x34, 0x35, M }) do
+        if (reads[vk] or 0) > 0 then
+            stillRead[#stillRead + 1] = ('0x%02X x%d'):format(vk, reads[vk])
+        end
+    end
+    ok(#stillRead == 0, 'in the lobby none of R, G, 1-5 or M is read at all',
+        table.concat(stillRead, ', '))
+    sent = {}
+    tap(R)
+    tap(G)
+    tap(0x31)
+    ok(#sent == 0, 'and pressing them there sends nothing', ('%d sent'):format(#sent))
+
+    BR.State.me.state, BR.State.landed = BR.PlayerState.ALIVE, true
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = 1 })
+    IsRawKeyDown = realRaw
     bootOn(true, true)
 end
 

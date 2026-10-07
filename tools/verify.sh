@@ -116,6 +116,7 @@ NOTES=(
     "test_client|Player controls: interact key, opening crates, picking up loot, keybinds, voice and sounds"
     "test_spectate|A spectator's own character can't move or shoot while watching, and gets it all back after"
     "test_keyread|A key is read only while pressing it could do something, and a key held across that change never fires"
+    "test_keylive|Every key that is read only some of the time still works whenever pressing it can do something"
     "test_emotes_client|Dance wheel: hold Left Alt to pick, on foot only; moving, aiming or going down ends it"
     "test_matchexit|Every way out of a match clears the match's screens, so nothing follows you to the lobby"
     "test_lobbyseq|Joining warmup moves your character before anyone can see it, and can be cut short cleanly"
@@ -963,6 +964,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_client.lua
         tools/test_spectate.lua
         tools/test_keyread.lua
+        tools/test_keylive.lua
         tools/test_emotes_client.lua
         tools/test_matchexit.lua
         tools/test_lobbyseq.lua

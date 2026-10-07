@@ -826,16 +826,18 @@ end
 -- listener. Nothing changes for that player. For the player who DID rebind, the
 -- key they chose is now the only one that works, which is what a rebinder is.
 --
--- READ FROM BOARDING ON, AND NOT BEFORE (#393). tryJump does nothing unless
--- `riding`, so this listener tells keybinds.raw it has no use for Space outside
--- the ride -- or outside the BUS state around it. The state half is for the
--- jump: the server clears `riding` and the roster moves BUS to FREEFALL on its
--- own schedule, skydive.lua's listener answers from FREEFALL on, and between
--- the two no frame of the descent leaves Space unread.
+-- READ WHILE RIDING, AND THAT IS ALL THIS LISTENER ASKS (#393). tryJump does
+-- nothing unless `riding`, so this listener tells keybinds.raw it has no use for
+-- Space off the plane. Space stays read around the ride by skydive.lua's own
+-- listener, which answers for the BUS, FREEFALL and GLIDE states and for a drop
+-- under way -- so between the two no frame from boarding to touchdown leaves it
+-- unread. This check used to answer for the BUS state as well, which made each
+-- of the two lean on the other where they overlapped and left neither testable on
+-- its own; tools/test_client.lua presses Space through each one alone.
 BR.Keys.on('deploy', function(pressed)
     if pressed then tryJump() end
 end, function()
-    return riding or BR.State.me.state == BR.PlayerState.BUS
+    return riding
 end)
 
 -- ------------------------------------------------------------- the prompt ---

@@ -22,8 +22,11 @@
 -- The differential allows that case and nothing else, and counts it.
 --
 -- WHAT THIS DOES NOT COVER: which states each listener's `live` names. Those
--- are each listener's own question -- tools/test_spectate.lua proves the arrow
--- keys' answer is ask()'s gate, and tools/test_client.lua the slots'.
+-- are each listener's own question, and every one is pressed through the real
+-- key layer against its real listener elsewhere -- R, G, 1-5, M, B and Space in
+-- tools/test_client.lua, the spectate arrows and the emote wheel in
+-- tools/test_keylive.lua, which also holds every suite's own counting listeners
+-- to answering no.
 
 local ROOT = 'resources/[fivem-royale]/'
 local realPrint = print
