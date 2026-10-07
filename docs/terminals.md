@@ -652,11 +652,15 @@ The owner's rules (#396, 2026-10-04), and where each lives:
   paused HUD or the verdict, where it waits for the next match. **Only Enter
   takes it down**, read in Lua as a control (INPUT_FRONTEND_RDOWN 191,
   INPUT_FRONTEND_ACCEPT 201 and INPUT_FRONTEND_ENDSCREEN_ACCEPT 215, disabled
-  for the frame and read disabled), and only while no br_ui screen, in-game
-  menu or computer holds the keyboard and GTA's pause menu is down; no timer,
-  nothing else. It takes no focus and no other control, so the player moves
-  and shoots as ever. A terminal's computer hides it while it is up; br_ui
-  restarting gets it again. No toast says it.
+  for the frame and read disabled), counted only when the keyboard made the
+  press (`isTrue(IsUsingKeyboard(0))` on that frame: all three are a gamepad's
+  A as well, and A on foot is sprint, so a controller player running off would
+  otherwise dismiss it unread -- the round 5 review; they press the keyboard's
+  Enter), and only while no br_ui screen, in-game menu or computer holds the
+  keyboard and GTA's pause menu is down; no timer, nothing else. It takes no
+  focus and no other control, so the player moves and shoots as ever. A
+  terminal's computer hides it while it is up; br_ui restarting gets it
+  again. No toast says it.
 - **On screen**: the owner's image of the key (round 5: br_ui's
   `items/yubikey.png`, his render of the blitz_seckey prop) by the inventory
   slots, 3rem square -- 25% over the 2.4rem plate it replaced -- with no

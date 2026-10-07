@@ -580,9 +580,17 @@ end)
 -- (BR.Keys.screenHoldsEscape) and GTA's own pause menu down, so a menu's own
 -- Enter still selects in it.
 --
+-- THE KEYBOARD'S ENTER, NOT A CONTROLLER'S A. Every control Enter is, is also
+-- a gamepad's A button -- and on foot A is sprint (INPUT_SPRINT 21) as well,
+-- so a controller player running off from the crate they looted it from would
+-- dismiss the card unread. A press counts only when IsUsingKeyboard says the
+-- keyboard made it, read on the frame of the press (the #396 round 5
+-- review). A controller player takes it down with the keyboard's Enter, the
+-- key the card shows.
+--
 -- WHAT IT COSTS: nothing while it is down. While it is up, a few table reads
 -- and seven natives a frame (IsPauseMenuActive, and three controls disabled
--- and read).
+-- and read), and an eighth, IsUsingKeyboard, on a frame one of them is pressed.
 
 --- Is the first-pickup card up? Lua owns it; br_ui mirrors it.
 local card = false
@@ -595,8 +603,17 @@ local cardSent = nil
 --- numpad's -- and INPUT_FRONTEND_ENDSCREEN_ACCEPT (215), Enter. None of them
 --- moves, aims, fires, jumps or enters a vehicle; INPUT_SKIP_CUTSCENE (18)
 --- and INPUT_CELLPHONE_SELECT (176) are left alone because they are the left
---- mouse button too, and a shot must never dismiss it.
+--- mouse button too, and a shot must never dismiss it. All three are a
+--- gamepad's A too, which is why a press is also asked `keyboardMade`.
 local ENTER = { 191, 201, 215 }
+
+--- Did the keyboard make this frame's press? IsUsingKeyboard answers for the
+--- last input on the pad the card reads (0), so on the frame A is pressed it
+--- is false. BOOL, so through isTrue: a 0 for "a gamepad" is truthy.
+--- @return boolean
+local function keyboardMade()
+    return isTrue(IsUsingKeyboard(0))
+end
 
 --- Is a terminal's computer up over the screen? (client/terminal.lua)
 --- @return boolean
@@ -642,6 +659,8 @@ BR.Loop.register(BR.Loop.FRAME, 'yubikey.card', function()
         if isTrue(IsDisabledControlJustPressed(0, ENTER[i])) then pressed = true end
     end
     if not pressed then return end
+    -- A controller's A (sprint, too) is not Enter: the card stays.
+    if not keyboardMade() then return end
     card = false
     sendCard()
 end)

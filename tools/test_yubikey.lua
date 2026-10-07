@@ -1189,7 +1189,17 @@ local function bootClient(opts)
     -- THE CONTROLS (round 5's first-pickup card): `W.pressed[id]` is a control
     -- pressed this frame; a disabled control is seen only by the Disabled
     -- reader, as the engine does. Every DisableControlAction is recorded.
+    -- `W.keyboard` is the device of the last input, as IsUsingKeyboard
+    -- answers it -- 1/0, the BOOL shape whose 0 is truthy -- and every ask of
+    -- it is counted in `W.kbAsks`.
     W.pressed, W.disabled, W.disabledEver, W.pause = {}, {}, {}, false
+    W.keyboard, W.kbAsks = true, 0
+    env.IsUsingKeyboard = function(pad)
+        n()
+        W.kbAsks = W.kbAsks + 1
+        W.kbPad = pad
+        return W.keyboard and 1 or 0
+    end
     env.DisableControlAction = function(_, id)
         n()
         W.disabled[id] = true
@@ -1259,11 +1269,14 @@ local function bootClient(opts)
     function W.slow() W.loops.slow['terminals.world']() end
     function W.tick() W.loops.tick['terminals.near']() end
     function W.frame() W.loops.frame['terminals.plate']() end
-    --- One frame of the first-pickup card's loop, with these controls pressed.
-    function W.cardFrame(pressed)
+    --- One frame of the first-pickup card's loop, with these controls pressed
+    --- -- by the keyboard and mouse, or (`pad`) by a gamepad.
+    function W.cardFrame(pressed, pad)
         W.pressed, W.disabled = {}, {}
         for _, id in ipairs(pressed or {}) do W.pressed[id] = true end
+        W.keyboard = pad ~= true
         W.loops.frame['yubikey.card']()
+        W.keyboard = true
     end
     --- The first-pickup card's messages to br_ui.
     function W.cards()
@@ -1729,6 +1742,35 @@ do
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false, first = true })
     W.cardFrame({ 191 })
     eq(W.B.Yubikey.cardUp(), false, 'INPUT_FRONTEND_RDOWN (Enter) takes it down too')
+
+    -- A CONTROLLER'S A IS NOT ENTER (the round 5 review). One press of A is
+    -- sprint (21) AND all three of Enter's controls at once -- the engine's
+    -- mappings -- and the player who just looted the key sprints off. It must
+    -- not take the card down; nor must X (jump, 22), B (45) or the triggers.
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false, first = true })
+    local sent = #W.cards()
+    W.kbAsks = 0
+    for _ = 1, 600 do
+        W.now = W.now + 500
+        W.cardFrame({ 21, 191, 201, 215 }, true)
+        W.cardFrame({ 22, 45, 24, 25 }, true)
+    end
+    eq(W.B.Yubikey.cardUp(), true, "five minutes of a gamepad's A (sprint, and Enter's 191/201/215): still up")
+    eq(#W.cards(), sent, 'and br_ui was told nothing')
+    eq(W.kbAsks, 600, 'IsUsingKeyboard is asked on the frame of an Enter press only, not every frame')
+    eq(W.kbPad, 0, 'and of the pad the card reads its controls on (0)')
+    -- Each of Enter's controls alone from the pad, too.
+    for _, id in ipairs({ 191, 201, 215 }) do
+        W.cardFrame({ id }, true)
+        eq(W.B.Yubikey.cardUp(), true, ('control %d from a gamepad does not take it down'):format(id))
+    end
+    -- Then the keyboard's Enter, the key the card shows: down.
+    W.cardFrame({ 201, 191, 215 })
+    eq(W.B.Yubikey.cardUp(), false, "and the keyboard's Enter, after all that, takes it down")
+    -- 215 alone from the keyboard counts as well (Enter's endscreen reading).
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false, first = true })
+    W.cardFrame({ 215 })
+    eq(W.B.Yubikey.cardUp(), false, 'INPUT_FRONTEND_ENDSCREEN_ACCEPT from the keyboard takes it down')
 
     -- NO NATIVE AT ALL WHILE IT IS DOWN.
     W.natives = 0
