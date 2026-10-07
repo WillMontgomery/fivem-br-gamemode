@@ -578,7 +578,10 @@ BR.Config.Terminals = {
         -- WRITTEN (2026-10-06, round 3: "hold interact" became "press
         -- interact", as the plate's press opens the computer now; round 5:
         -- "Pick a function" became "Pick a tool").
-        howto_terminal_body = "While you hold a Yubikey, terminals inside the storm show on your map as laptops.\nWalk up to one and press interact to open it.\nA terminal outside the storm is offline and won't open.\nPick a tool, read its page, choose its options and press Run.",
+        -- WRITTEN (round 6, proposal for the owner; the last line was "Pick a
+        -- tool, read its page, choose its options and press Run."): the
+        -- options are asked in the box Run opens now, not on the page.
+        howto_terminal_body = "While you hold a Yubikey, terminals inside the storm show on your map as laptops.\nWalk up to one and press interact to open it.\nA terminal outside the storm is offline and won't open.\nPick a tool, read its page and press Run. The box that opens asks for any choices the tool needs. Press Run there to run it.",
         howto_rules_title = 'One use per squad',
         -- WRITTEN (round 5 said tool for function in the rules, the notices
         -- and the tips, each way).
@@ -711,7 +714,11 @@ BR.Config.Terminals = {
         -- showed where a teammate is -- client/state.lua folds no position
         -- into its rows -- so there is nothing there to stop showing, and the
         -- line went.
-        comms_blackout_what = "Players in every other squad stop seeing their teammates on the map and the minimap.\nYour squad isn't affected. Voice chat isn't affected.",
+        -- WRITTEN (round 6, proposal for the owner; the last line is new):
+        -- the options are asked in the box Run opens (round 6), so the page
+        -- names them -- "We should explain what options exist in the
+        -- description". The same for every tool with options below.
+        comms_blackout_what = "Players in every other squad stop seeing their teammates on the map and the minimap.\nYour squad isn't affected. Voice chat isn't affected.\nWhen you press Run, you choose how long it lasts: 1 minute, 2 minutes or 3 minutes.",
         comms_blackout_opt_duration = 'Duration',
         comms_blackout_opt_duration_60 = '1 minute',
         comms_blackout_opt_duration_120 = '2 minutes',
@@ -741,7 +748,11 @@ BR.Config.Terminals = {
         -- weather chosen here holds only inside the circle, and the storm's
         -- own weather wins outside it. The clock runs on from the time chosen
         -- at the match's own rate (#394), so the second line says it runs.
-        time_weather_what = "Pick the time of day or the weather. One run changes one of them, not both.\nThe time of day changes for everyone in the match, and the clock runs on from there.\nThe weather changes only inside the circle. Outside it, the storm's own weather stays.\nIt lasts until the match ends, or until another run changes it.",
+        -- WRITTEN (round 6, proposal for the owner; the first three lines were
+        -- "Pick the time of day or the weather. ...", "The time of day
+        -- changes for everyone..." and "The weather changes only inside the
+        -- circle. ..."): the page names every choice the box offers.
+        time_weather_what = "When you press Run, you choose to change the time of day or the weather. One run changes one of them, not both.\nThe time of day can be day, dusk or night. It changes for everyone in the match, and the clock runs on from there.\nThe weather can be extra sunny, clear, cloudy, smog, overcast, fog, Christmas, light snow, snow or blizzard. It changes only inside the circle. Outside it, the storm's own weather stays.\nIt lasts until the match ends, or until another run changes it.",
         -- WRITTEN (2026-10-06, round 4). The first option: which of the two
         -- this run changes. Only the chosen one's own option is shown under it.
         time_weather_opt_change = 'What to change',
@@ -792,7 +803,10 @@ BR.Config.Terminals = {
         -- the whole map, not per district: a player in the area sees every
         -- light go dark, and a player outside it keeps every light, the area's
         -- included. The line says so.
-        power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.\nIt only works while it's night because someone ran Time & weather.",
+        -- WRITTEN (round 6, proposal for the owner; the second line is new):
+        -- the areas and the durations the box offers, which the page named
+        -- only as radio buttons before round 6.
+        power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nWhen you press Run, you choose the area: 1 km around a spot you pick on the map, the whole city of Los Santos, or everything outside the city in Blaine County. You also choose how long it lasts: 2 minutes or 4 minutes.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.\nIt only works while it's night because someone ran Time & weather.",
         power_outage_opt_area = 'Area',
         -- WRITTEN (round 6, proposal for the owner; was 'Around this
         -- terminal' / 'Everything within 1 km of this terminal.'): "Any use
@@ -930,8 +944,12 @@ BR.Config.Terminals = {
         -- player may carry (its carryMax), a weapon as one found in a crate
         -- does (a full magazine and one spare); nobody standing, or nobody
         -- with room, is refused before anything is spent.
-        gear_up_what = "Pick an item or weapon from the list. The Heavy Sniper and machine guns aren't on it.\nA consumable or a throwable comes as a full stack, up to what you can carry. A weapon comes loaded, with one spare magazine.\nIt goes to you or one teammate for free, or to everyone in your squad for Volts.\nOnly a player who is standing, with room in their inventory, can get it.",
-        gear_up_what_solo = "Pick an item or weapon from the list. The Heavy Sniper and machine guns aren't on it.\nA consumable or a throwable comes as a full stack, up to what you can carry. A weapon comes loaded, with one spare magazine.\nYou need room for it in your inventory.",
+        -- WRITTEN (round 6, proposal for the owner; the first line was "Pick
+        -- an item or weapon from the list. ...", and the third "It goes to
+        -- you or one teammate for free, ..."): the list is in the box Run
+        -- opens, not on the page.
+        gear_up_what = "When you press Run, you pick an item or weapon from a list. The Heavy Sniper and machine guns aren't on it.\nA consumable or a throwable comes as a full stack, up to what you can carry. A weapon comes loaded, with one spare magazine.\nYou also pick who gets it: you or one teammate for free, or everyone in your squad for Volts.\nOnly a player who is standing, with room in their inventory, can get it.",
+        gear_up_what_solo = "When you press Run, you pick an item or weapon from a list. The Heavy Sniper and machine guns aren't on it.\nA consumable or a throwable comes as a full stack, up to what you can carry. A weapon comes loaded, with one spare magazine.\nYou need room for it in your inventory.",
         -- The dropdown of items. Each item's own line, gear_up_opt_item_<id>,
         -- is the game's name for it (its `label` in the weapons and loot
         -- configs), written in below as the list is built: no words of ours.
@@ -995,7 +1013,9 @@ BR.Config.Terminals = {
         -- player it is for finds a road or open ground within 40 meters, the
         -- car comes down there, and the squad's blip goes when one of them
         -- gets in (or it is destroyed, or the match ends).
-        vehicle_drop_what = "An armored Kuruma comes down by parachute on a road or open ground within 40 meters of you, or of the teammate you pick.\nIt has no weapons.\nA blip marks it on your squad's maps until one of you gets in.\nPlayers nearby can see it come down, and anyone can take it.",
+        -- WRITTEN (round 6, proposal for the owner; was "...or of the
+        -- teammate you pick."): the teammate is picked in the box Run opens.
+        vehicle_drop_what = "An armored Kuruma comes down by parachute on a road or open ground within 40 meters of you, or of a teammate you pick when you press Run.\nIt has no weapons.\nA blip marks it on your squad's maps until one of you gets in.\nPlayers nearby can see it come down, and anyone can take it.",
         vehicle_drop_what_solo = "An armored Kuruma comes down by parachute on a road or open ground within 40 meters of you.\nIt has no weapons.\nA blip marks it on your map until you get in.\nPlayers nearby can see it come down, and anyone can take it.",
         -- Next to whom. Outside a squad match the whole choice is not shown
         -- (the empty `_solo` lines): it is always you.
@@ -1044,7 +1064,9 @@ BR.Config.Terminals = {
         -- this terminal.\n..."). A rebooted player comes back the way a
         -- revive key brings one back over an ambulance (server/revivekey.lua):
         -- dropped 150 meters over the player picked, with a parachute.
-        reboot_what = "Every eliminated player in your squad comes back with full health, by parachute over you or the teammate you pick.\nThey come back with an empty inventory.\nPlayers who left the match don't come back.",
+        -- And round 6's review ("...over you or the teammate you pick."):
+        -- the teammate is picked in the box Run opens.
+        reboot_what = "Every eliminated player in your squad comes back with full health, by parachute over you or a teammate you pick when you press Run.\nThey come back with an empty inventory.\nPlayers who left the match don't come back.",
         -- Over whom (round 6), Vehicle drop's two options. Squad-only, so no
         -- `_solo` lines. WRITTEN (round 6, proposal for the owner).
         reboot_opt_to = 'Bring them back over',
@@ -1088,8 +1110,10 @@ BR.Config.Terminals = {
         -- Scan markers.".
         ghost_summary = 'Hides your squad from Scan, Airstrike and bounty markers for a while.',
         ghost_summary_solo = 'Hides you from Scan, Airstrike and bounty markers for a while.',
-        ghost_what = "Your squad doesn't show up on other squads' Scan or Airstrike markers.\nIf one of you has a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
-        ghost_what_solo = "You don't show up on other players' Scan or Airstrike markers.\nIf you have a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
+        -- WRITTEN (round 6, proposal for the owner; the last line is new):
+        -- the duration the box offers.
+        ghost_what = "Your squad doesn't show up on other squads' Scan or Airstrike markers.\nIf one of you has a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.\nWhen you press Run, you choose how long it lasts: 2 minutes or 4 minutes.",
+        ghost_what_solo = "You don't show up on other players' Scan or Airstrike markers.\nIf you have a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.\nWhen you press Run, you choose how long it lasts: 2 minutes or 4 minutes.",
         ghost_opt_duration = 'Duration',
         ghost_opt_duration_120 = '2 minutes',
         ghost_opt_duration_240 = '4 minutes',

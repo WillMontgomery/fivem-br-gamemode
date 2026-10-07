@@ -887,6 +887,79 @@ do
     eq(table.concat(twice, ', '), '', 'no copy line is written twice')
 end
 
+describe('round 6 review: a tool\'s page names the choices its confirm box asks for')
+do
+    -- Owner, 2026-10-07: "We should explain what options exist in the
+    -- description, but much like we do location selection today that should
+    -- be in the confirm modal." The options left the page for the box, so the
+    -- page's `<id>_what` is the only place a player reads them before Run --
+    -- for each audience (a squad match's line, and the `_solo` line, or the
+    -- squad's when there is none), every option that audience is offered:
+    --   * a list of choices: every choice's own words, as the box shows them
+    --     (an article in front -- "A teammate" -- may read "the teammate");
+    --   * a dropdown or a server-listed option: the option's own word ("Item",
+    --     "Teammate");
+    --   * and that they are asked when Run is pressed, as they are now.
+    -- And the how-to's "choose its options and press Run" is the old order.
+    bootServer()
+    local C = BR.Config.Terminals
+    local copy = C.copy
+    local function words(label)
+        local l = (label or ''):lower()
+        l = l:gsub('^an? ', ''):gsub('^the ', '')
+        return l
+    end
+    local function lineFor(key, solo)
+        if solo then
+            local s = copy[key .. '_solo']
+            if s ~= nil then return s end
+        end
+        return copy[key]
+    end
+    local checked = 0
+    for _, row in ipairs(C.functions) do
+        if row.implemented and row.options and #row.options > 0 then
+            for _, solo in ipairs({ false, true }) do
+                if not (solo and row.squadOnly) then
+                    local who = solo and 'solo' or 'squad'
+                    local what = (lineFor(row.id .. '_what', solo) or ''):lower()
+                    local offered = 0
+                    for _, o in ipairs(row.options) do
+                        local optKey = row.id .. '_opt_' .. o.id
+                        local label = lineFor(optKey, solo)
+                        local shown = label ~= nil and label ~= '' and not (solo and o.source)
+                        if shown then
+                            offered = offered + 1
+                            if o.dropdown or o.source then
+                                ok(what:find(words(label), 1, true) ~= nil,
+                                    ('%s (%s): its page names the %s list'):format(row.id, who, label))
+                            else
+                                for _, ch in ipairs(o.choices or {}) do
+                                    local cl = lineFor(optKey .. '_' .. ch, solo)
+                                    if cl ~= nil and cl ~= '' then
+                                        checked = checked + 1
+                                        ok(what:find(words(cl), 1, true) ~= nil,
+                                            ('%s (%s): its page names %s\'s choice "%s"'):format(row.id, who, o.id, cl))
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    if offered > 0 then
+                        ok(what:find('press run', 1, true) ~= nil,
+                            ('%s (%s): its page says the choices are asked when Run is pressed'):format(row.id, who))
+                    end
+                end
+            end
+        end
+    end
+    ok(checked >= 25, 'the check read every listed choice', checked)
+    local howto = (copy.howto_terminal_body or ''):lower()
+    ok(not howto:find('choose its options and press run', 1, true),
+        'the how-to no longer has the options chosen before Run')
+    ok(howto:find('box', 1, true) ~= nil, 'and says the box Run opens asks for them')
+end
+
 describe('round 4: the cards\' cost and bounty, and Squads! on every squad-wide row')
 do
     bootServer()
