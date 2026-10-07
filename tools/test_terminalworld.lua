@@ -1412,15 +1412,11 @@ end
 
 --- POWER OUTAGE AROUND A SPOT PICKED ON THE MAP (round 6, owner 2026-10-07:
 --- "Any use of 'near this terminal' is like, not useful for this gamemode"),
---- straight through its effect with the run's `opts.at`. The door's half --
---- the row's `spot` choice and its conditional spot, asked in the confirm box
---- -- is the app round's, so this goes round the door for that one choice.
+--- run the real way: the request carries the spot as `at`, the door's
+--- conditional spot (`spot = { when = { area = 'spot' } }`) takes it, and the
+--- effect reads it as `opts.at`.
 local function outageAt(src, at, duration)
-    local r = T.FUNCTIONS.power_outage.run(src, { terminalId = 'tower', dev = false },
-        { area = 'spot', duration = duration or '120', at = at })
-    local m = T.whereIs(src)
-    if m and T.pushImpacts then T.pushImpacts(m, gameMs) end
-    return r
+    return runAt(src, 'power_outage', { area = 'spot', duration = duration or '120' }, nil, at)
 end
 
 describe('Power outage: around a spot picked on the map, to the whole match (round 6)')
@@ -1459,9 +1455,17 @@ do
         a and ('(%.1f, %.1f)'):format(a.x or 0, a.y or 0))
     ok(not TS.inOutage(a, SITE.x, SITE.y), 'and the terminal is not in it')
 
-    -- THE SPOT CHOICE WITH NO SPOT: refused, nothing started.
+    -- THE SPOT CHOICE WITH NO SPOT, OR A SPOT WITH ANOTHER AREA: the door
+    -- refuses the run, nothing spent and nothing started.
     reset()
     m = night(lobby('squad', 3))
+    r = runAt(1, 'power_outage', { area = 'spot', duration = '120' })
+    ok(r and r.ok == false and r.code == 'bad_option', 'a run of area spot with no spot: bad_option', r and r.code)
+    r = runAt(1, 'power_outage', { area = 'city', duration = '120' }, nil, { x = SITE.x, y = SITE.y })
+    ok(r and r.ok == false and r.code == 'bad_option', 'a spot sent with the city: bad_option', r and r.code)
+    nothingSpent(1, 'the spot missing or not asked for')
+    eq(m.terminalPower, nil, 'and no outage starts')
+    -- The effect itself, asked without one, refuses too.
     r = T.FUNCTIONS.power_outage.run(1, { terminalId = 'tower', dev = false }, { area = 'spot', duration = '120' })
     ok(r and r.ok == false and r.code == 'bad_option', 'area spot with no spot: bad_option', r and r.code)
     eq(m.terminalPower, nil, 'and no outage starts')
