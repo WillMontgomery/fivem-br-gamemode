@@ -51,6 +51,16 @@ export function voltsText(n: number, currency: string): string {
   return currency ? `${figure} ${currency}` : figure
 }
 
+/**
+ * The place a map pick found, as its confirm box shows it (round 4): the
+ * game's own name for it -- its street and area, no line of ours -- or, where
+ * the game has none, its map coordinates, whole meters, in digits.
+ */
+export function placeText(at: { x: number; y: number }, place: string): string {
+  if (place.trim() !== '') return place
+  return `${Math.round(at.x)}, ${Math.round(at.y)}`
+}
+
 /** A line with its `{token}`s filled. An unknown token is left as written. */
 export function fill(text: string, vars: Record<string, string | number>): string {
   return text.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m))

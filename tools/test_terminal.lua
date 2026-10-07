@@ -1534,6 +1534,79 @@ do
     eq(#C.nui, n, 'nothing reaches a closed page')
 end
 
+describe('round 4: the map pick -- the shell hides and shows, and a run carries its spot')
+do
+    bootShell()
+    cb('NUIOk', nil)
+    eq(C.exports.Hide(), false, 'nothing open: nothing to hide')
+    local r = cb('pick', { functionId = 'storm_control' })
+    ok(r and r.ok == false and #eventsNamed('cuchi_computer:pick') == 0, 'a pick with nothing open goes nowhere')
+
+    C.exports.Open(STATE, COPY)
+    for _, bad in ipairs({ 'Storm', ('x'):rep(33), 7 }) do
+        r = cb('pick', { functionId = bad })
+        ok(r and r.ok == false, ('a pick for a malformed id is refused: %s'):format(tostring(bad)))
+    end
+    r = cb('pick', { functionId = 'storm_control', terminalId = 'forged' })
+    local picks = eventsNamed('cuchi_computer:pick')
+    ok(r and r.ok == true and #picks == 1 and picks[1].args[1] == 'dev'
+            and picks[1].args[2].functionId == 'storm_control',
+        '"Set location" reaches br_core as (terminal br_core opened, { functionId })')
+
+    -- HIDE: the page told, the vote let go, still open.
+    eq(C.exports.Hide(), true, 'Hide hides')
+    ok(C.nui[#C.nui].type == 'br:hide' and C.focus.held == false and C.focus.cursor == false,
+        'the page is told, and the focus is let go so the map has the mouse')
+    eq(C.exports.IsOpen(), true, 'still open')
+    eq(#eventsNamed('cuchi_computer:closed'), 0, 'and br_core hears no close')
+    eq(C.exports.Hide(), false, 'hidden already: a second Hide does nothing')
+    r = cb('pick', { functionId = 'storm_control' })
+    ok(r and r.ok == false, 'no pick while hidden')
+    r = cb('run', { functionId = 'storm_control', at = { x = 1, y = 2 } })
+    ok(r and r.ok == false, 'no run while hidden')
+
+    -- SHOW: back, the vote taken again, what was picked handed over, shaped.
+    eq(C.exports.Show({ functionId = 'storm_control', at = { x = 120.5, y = -900 }, place = 'Elgin Ave' }), true,
+        'Show shows')
+    local m = C.nui[#C.nui]
+    ok(m.type == 'br:show' and m.picked.functionId == 'storm_control' and m.picked.at.x == 120.5
+            and m.picked.at.y == -900 and m.picked.place == 'Elgin Ave',
+        'the page gets what was picked')
+    ok(C.focus.held == true and C.focus.cursor == true, 'and the focus is taken again')
+    eq(C.exports.Show({ functionId = 'storm_control' }), false, 'shown already: a second Show does nothing')
+    C.exports.Hide()
+    C.exports.Show({ functionId = 'Bad Id', at = { x = 'n', y = 1 }, place = 'x' })
+    m = C.nui[#C.nui]
+    ok(m.picked.functionId == nil and m.picked.at == nil and m.picked.place == nil,
+        'a malformed answer is handed over as no spot, no place, no function')
+    C.exports.Hide()
+    C.exports.Show({ functionId = 'storm_control', at = { x = 1, y = 1 }, place = ('p'):rep(500) })
+    eq(#C.nui[#C.nui].picked.place, 120, 'a place name is cut to 120')
+
+    -- A RUN AT ITS SPOT, shape-checked like its options.
+    r = cb('run', { functionId = 'storm_control', at = { x = 120.5, y = -900 } })
+    local req = eventsNamed('cuchi_computer:request')
+    ok(r and r.ok == true and req[#req].args[2].at and req[#req].args[2].at.x == 120.5
+            and req[#req].args[2].at.y == -900,
+        'a run carries its spot to br_core')
+    local n = #eventsNamed('cuchi_computer:request')
+    for _, bad in ipairs({ 'here', { x = 1 }, { x = '1', y = 2 }, { x = 0 / 0, y = 0 }, { x = 1e9, y = 0 } }) do
+        r = cb('run', { functionId = 'storm_control', at = bad })
+        ok(r and r.ok == false, ('a spot that is not one refuses the whole run: %s'):format(
+            type(bad) == 'table' and ('{ x = %s, y = %s }'):format(tostring(bad.x), tostring(bad.y)) or tostring(bad)))
+    end
+    eq(#eventsNamed('cuchi_computer:request'), n, 'and none of them reached br_core')
+
+    -- CLOSED WHILE HIDDEN: an ordinary close, and nothing hidden left behind.
+    C.exports.Hide()
+    eq(C.exports.Close('state'), true, 'br_core closes a hidden computer as any other')
+    ok(C.focus.held == false and eventsNamed('cuchi_computer:closed')[1].args[2] == 'state', 'released, and said')
+    C.exports.Open(STATE, COPY)
+    eq(C.exports.Show({ functionId = 'storm_control' }), false, 'the next opening is not hidden')
+    ok(C.focus.held == true, 'and holds the focus')
+    C.exports.Close('done')
+end
+
 describe('round 2: the shell boots with the range and the game time, and relays the clock')
 do
     bootShell()
@@ -1689,8 +1762,40 @@ local function bootClient(opts)
     function GetClockHours() return B.clock.h end
     function GetClockMinutes() return B.clock.m end
     B.loops = {}
+    -- THE MAP PICK'S WORLD (round 4): the clock, the events raised, the
+    -- waypoint and the sprite-8 blips (squad pings, then the waypoint's), and
+    -- the game's names for a place. BOOL natives answer 1/0, as a FiveM one
+    -- may. `nativeCalls` counts every map native asked.
+    B.map = { events = {}, pings = {}, coords = {}, waypoint = nil, nativeCalls = 0 }
+    local Wm = B.map
+    local function eights()
+        local out = {}
+        for _, h in ipairs(Wm.pings) do out[#out + 1] = h end
+        if Wm.waypoint then out[#out + 1] = Wm.waypoint.handle end
+        return out
+    end
+    local function asked() Wm.nativeCalls = Wm.nativeCalls + 1 end
+    -- The clock is the server's (bootServer's GetGameTimer, S.clock): one
+    -- clock for all three halves when PART D wires them. Events are recorded,
+    -- and passed on to the shell's own recorder when one is booted.
+    local passOn = TriggerEvent
+    function TriggerEvent(name, ...)
+        Wm.events[#Wm.events + 1] = name
+        if passOn then return passOn(name, ...) end
+    end
+    function IsWaypointActive() asked() return Wm.waypoint ~= nil and 1 or 0 end
+    function SetWaypointOff() asked() Wm.waypoint = nil end
+    function GetFirstBlipInfoId() asked() Wm.it = 1 return eights()[1] or 0 end
+    function GetNextBlipInfoId() asked() Wm.it = Wm.it + 1 return eights()[Wm.it] or 0 end
+    function DoesBlipExist(b) asked() return (b ~= nil and b ~= 0) and 1 or 0 end
+    function GetBlipInfoIdCoord(b) asked() return Wm.coords[b] end
+    function GetGroundZFor_3dCoord() asked() return 1, 30.0 end
+    function GetStreetNameAtCoord() asked() return Wm.noNames and 0 or 4242, 0 end
+    function GetStreetNameFromHashKey(h) asked() return h == 4242 and 'Elgin Ave' or '' end
+    function GetNameOfZone() asked() return Wm.noNames and '' or 'DOWNT' end
+    function GetLabelText(z) asked() return z == 'DOWNT' and 'Downtown' or 'NULL' end
     local comp = {}
-    for _, name in ipairs({ 'Open', 'Update', 'Result', 'Close', 'Clock' }) do
+    for _, name in ipairs({ 'Open', 'Update', 'Result', 'Close', 'Clock', 'Hide', 'Show' }) do
         comp[name] = function(_, ...)
             B.computer.calls[#B.computer.calls + 1] = { name = name, args = { ... } }
             if name == 'Open' then
@@ -1699,6 +1804,7 @@ local function bootClient(opts)
             end
             -- The shell's answer: shown, unless the model says it had closed.
             if name == 'Result' then return B.computer.resultShown ~= false end
+            if name == 'Hide' then return B.computer.hideResult ~= false end
             return true
         end
     end
@@ -1712,7 +1818,11 @@ local function bootClient(opts)
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/config/terminals.lua',
+        'br_lib/shared/terminal_solve.lua',
     })
+    BR.NativeTruthy = function(v) return v == true or v == 1 end
+    -- br_ui's map, as client/natives.lua mirrors it (`br:map:frontend`).
+    BR.Native = { frontendMap = false }
     BR.Keys = { setExternalScreen = function(name) B.screens[#B.screens + 1] = name or 'none' end }
     BR.Loop = { TICK = 'tick', register = function(_, name, fn) B.loops[name] = fn end }
     -- client/state.lua's BR.Notify: the toasts this client raises itself.
@@ -1948,6 +2058,143 @@ do
     ok(B.printed[#B.printed]:find('opened terminal', 1, true) ~= nil, 'the server\'s answer is printed on F8')
 end
 
+describe('round 4: the map pick -- the computer hidden, the big map, the waypoint read, the computer back')
+do
+    -- Owner, 2026-10-06: "When they click confirm, we should open the big
+    -- map for them, wait for them to pick a location, then when they close the
+    -- big map we run it."
+    bootClient()
+    local W = B.map
+    local tick = B.loops['terminal.clock']
+    local function calls(name)
+        local out = {}
+        for _, c in ipairs(B.computer.calls) do if c.name == name then out[#out + 1] = c end end
+        return out
+    end
+    fireB('cuchi_computer:opened', 'dev')
+    -- A squadmate's ping on the map, and a waypoint of the player's own.
+    W.pings = { 501 }
+    W.coords[501] = { x = 10.0, y = 10.0, z = 0.0 }
+    W.waypoint = { handle = 700, x = -50.0, y = -50.0 }
+
+    fireB('cuchi_computer:pick', 'lab', { functionId = 'storm_control' })
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'Not An Id' })
+    eq(#calls('Hide'), 0, 'a pick for another terminal, or a malformed function, does nothing')
+
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'storm_control' })
+    eq(#calls('Hide'), 1, 'the computer is hidden')
+    eq(B.screens[#B.screens], 'none', 'the key layer lets go, so the game has the keyboard')
+    eq(W.events[#W.events], 'br:ui:mapToggle', 'the big map opens: br_ui\'s own, the map key\'s')
+    eq(W.waypoint, nil, 'the player\'s own waypoint is cleared first: it is not the pick')
+    eq(BR.Terminal.picking(), true, 'a pick is under way')
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'storm_control' })
+    eq(#calls('Hide'), 1, 'and a second one waits for it')
+
+    tick()
+    eq(#calls('Show'), 0, 'the map not up yet: it waits')
+    BR.Native.frontendMap = true
+    tick()
+    -- The player sets a waypoint on the map; the ping is listed first.
+    W.waypoint = { handle = 800, x = 120.5, y = -900.0 }
+    W.coords[800] = { x = 120.5, y = -900.0, z = 0.0 }
+    tick()
+    eq(#calls('Show'), 0, 'while the map is up, nothing comes back')
+    BR.Native.frontendMap = false
+    tick()
+    local show = calls('Show')[1]
+    local got = show and show.args[1]
+    ok(got and got.functionId == 'storm_control' and got.at and got.at.x == 120.5 and got.at.y == -900.0,
+        'the map closed: the computer is shown again with the waypoint set on it, past the squad ping')
+    eq(got and got.place, 'Elgin Ave, Downtown', 'and the game\'s own name for the place, its street and area')
+    eq(W.waypoint, nil, 'the waypoint is taken off the map')
+    eq(B.screens[#B.screens], 'terminal', 'the key layer is the computer\'s again')
+    eq(BR.Terminal.picking(), false, 'and the pick is over')
+
+    -- NO WAYPOINT SET: the box goes back to its first step.
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'supply_drop' })
+    BR.Native.frontendMap = true
+    tick()
+    BR.Native.frontendMap = false
+    tick()
+    got = calls('Show')[2] and calls('Show')[2].args[1]
+    ok(got and got.functionId == 'supply_drop' and got.at == nil and got.place == nil,
+        'no waypoint when the map closes: shown again with no spot')
+
+    -- A PLACE THE GAME HAS NO NAME FOR.
+    W.noNames = true
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'supply_drop' })
+    BR.Native.frontendMap = true
+    tick()
+    W.waypoint = { handle = 801, x = 5.0, y = 6.0 }
+    W.coords[801] = { x = 5.0, y = 6.0, z = 0.0 }
+    BR.Native.frontendMap = false
+    tick()
+    got = calls('Show')[3] and calls('Show')[3].args[1]
+    ok(got and got.at and got.at.x == 5.0 and got.place == '', 'no street or area: the spot, and an empty place', got and got.place)
+    W.noNames = false
+
+    -- THE MAP NEVER COMES UP: given up after PICK_RAISE_MS, no spot.
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'storm_control' })
+    S.clock = S.clock + 4999
+    tick()
+    eq(#calls('Show'), 3, 'four and a bit seconds with no map: still waiting')
+    S.clock = S.clock + 2
+    tick()
+    got = calls('Show')[4] and calls('Show')[4].args[1]
+    ok(got and got.at == nil, 'five seconds and no map: shown again, no spot')
+
+    -- CLOSED WHILE THE MAP IS UP (downed, the storm): nothing comes back, and
+    -- the waypoint set for the pick is still taken off.
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'storm_control' })
+    BR.Native.frontendMap = true
+    tick()
+    fireB('cuchi_computer:closed', 'dev', 'state')
+    W.waypoint = { handle = 802, x = 1.0, y = 1.0 }
+    W.coords[802] = { x = 1.0, y = 1.0, z = 0.0 }
+    BR.Native.frontendMap = false
+    tick()
+    eq(#calls('Show'), 4, 'the computer closed meanwhile: nothing is shown')
+    eq(W.waypoint, nil, 'and the waypoint is still taken off, not left for a squad ping')
+    eq(BR.Terminal.picking(), false, 'the pick is over')
+
+    -- A COMPUTER THAT WOULD NOT HIDE: no map, no pick.
+    fireB('cuchi_computer:opened', 'dev')
+    B.computer.hideResult = false
+    local toggles = 0
+    for _, e in ipairs(W.events) do if e == 'br:ui:mapToggle' then toggles = toggles + 1 end end
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'storm_control' })
+    local after = 0
+    for _, e in ipairs(W.events) do if e == 'br:ui:mapToggle' then after = after + 1 end end
+    ok(after == toggles and BR.Terminal.picking() == false, 'the shell would not hide: no map, no pick')
+    B.computer.hideResult = nil
+
+    -- A RUN CARRIES THE SPOT UP.
+    fireB('cuchi_computer:request', 'dev', { action = 'run', functionId = 'storm_control',
+                                            at = { x = 120.5, y = -900.0 } })
+    local up = toServer(BR.Net.TERMINAL_RUN)
+    ok(up[#up] and up[#up].at and up[#up].at.x == 120.5 and up[#up].at.y == -900.0,
+        'a run goes up with its spot')
+
+    -- NOTHING PER FRAME: with no pick, the TICK pass asks no map native.
+    local n = W.nativeCalls
+    for _ = 1, 50 do tick() end
+    eq(W.nativeCalls, n, 'fifty passes with no pick ask the map nothing')
+end
+
+describe('round 4: a squad ping never takes the waypoint set for a map pick')
+do
+    -- client/markers.lua consumes any fresh waypoint as a squad ping; while a
+    -- pick is under way it stands down, as it does for a rescue and a survey.
+    -- Pinned by text: the guard is in the placement pass, before the waypoint
+    -- is read.
+    local src = readFile(ROOT .. 'br_core/client/markers.lua') or ''
+    local body = src:match("BR%.Loop%.register%(BR%.Loop%.TICK, 'markers%.place'(.-)\nend%)")
+    ok(body ~= nil, 'the placement pass is found')
+    local guard = body and body:find('BR.Terminal.picking()', 1, true)
+    local read = body and body:find('GetFirstBlipInfoId(8)', 1, true)
+    ok(guard ~= nil and read ~= nil and guard < read, 'it stands down while BR.Terminal.picking(), before reading the waypoint')
+end
+
 -- =========================================================================
 -- PART D -- one round trip, all three halves
 -- =========================================================================
@@ -2066,6 +2313,47 @@ do
     BR = W.serverBR
     ok(BR.Terminal.session(1) == nil, 'and the server session is over')
     eq(#B.toasts, 0, 'and nothing was toasted: the page showed every answer')
+end
+
+describe('round 4: "Set location" to the storm aimed, end to end')
+do
+    local W = wire()
+    W.devOpen({ 'volts=500' })
+    ok(C.focus.held == true, 'the computer is open')
+    -- The page's "Set location".
+    BR = W.clientBR
+    W.shell.callbacks.pick({ functionId = 'storm_control' }, function() end)
+    ok(C.nui[#C.nui].type == 'br:hide' and C.focus.held == false, 'the page is hidden and the focus let go')
+    eq(B.screens[#B.screens], 'none', 'the key layer lets go')
+    eq(B.map.events[#B.map.events], 'br:ui:mapToggle', 'the big map is asked for')
+    -- The map comes up, a waypoint is set, the map closes.
+    BR.Native.frontendMap = true
+    B.loops['terminal.clock']()
+    B.map.waypoint = { handle = 900, x = 210.0, y = -640.0 }
+    B.map.coords[900] = { x = 210.0, y = -640.0, z = 0.0 }
+    BR.Native.frontendMap = false
+    B.loops['terminal.clock']()
+    local shown = C.nui[#C.nui]
+    ok(shown.type == 'br:show' and shown.picked.functionId == 'storm_control' and shown.picked.at.x == 210.0
+            and shown.picked.at.y == -640.0 and shown.picked.place == 'Elgin Ave, Downtown',
+        'the page is shown again with the spot and its place')
+    ok(C.focus.held == true and B.screens[#B.screens] == 'terminal', 'with the focus and the key layer back')
+    -- Run, at the spot: up through the shell, br_core's client and the server.
+    S.clock = S.clock + 1000
+    W.shell.callbacks.run({ functionId = 'storm_control', at = shown.picked.at }, function() end)
+    W.pump()
+    local res = C.nui[#C.nui]
+    ok(res and res.type == 'br:result' and res.result.ok == true and res.result.code == 'running',
+        'the run at the spot is accepted', res and res.result and res.result.code)
+    BR = W.serverBR
+    flush()
+    W.pump()
+    res = C.nui[#C.nui]
+    ok(res and res.type == 'br:result' and res.result.code == 'done' and res.result.balance == 350,
+        'and done, for 150 Volts', res and res.result and res.result.code)
+    BR = W.clientBR
+    C.exports.Close('done')
+    W.pump()
 end
 
 -- REVIEW OF ROUND 2: the answer that lands as the computer goes away.

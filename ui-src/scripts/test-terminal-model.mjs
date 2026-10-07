@@ -31,11 +31,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, costOf, current, filtersOf, hrefOf,
-  indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, progressAfter,
-  rewrite, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions, shownOptions, speaker,
-  startBrowsing, startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
+  indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, placeText,
+  progressAfter, rewrite, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions,
+  shownOptions, speaker, startBrowsing, startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
 } from '../terminal/src/model.ts'
-import { parseCatalog, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
+import { parseCatalog, parsePicked, parseResult, parseState, tellTab } from '../terminal/src/bridge.ts'
 
 let failed = 0
 let ran = 0
@@ -140,6 +140,31 @@ const eq = (got, want, name) => ok(got === want, name, { got, want })
   const defaults = runChoices(def, {})
   ok(defaults.change === 'time' && defaults.time === 'night' && !('weather' in defaults),
     'untouched, a run carries the defaults of what is offered', defaults)
+}
+
+// ── round 4: the map pick's answer, and a row run at a spot (owner, 2026-10-06) ─
+{
+  const cat = parseCatalog({
+    functions: [
+      { id: 'storm_control', category: 'storm', risk: 'medium', implemented: true, cost: 150, spot: true },
+      { id: 'scan', category: 'intel', risk: 'high', implemented: true, spot: 'yes' },
+    ],
+    categories: ['storm', 'intel'],
+  })
+  ok(cat.functions[0].spot === true && cat.functions[1].spot === false, 'a row is run at a spot only when it says so, true')
+  const good = parsePicked({ functionId: 'storm_control', at: { x: 120.5, y: -900 }, place: 'Elgin Ave, Downtown' })
+  ok(good && good.at.x === 120.5 && good.at.y === -900 && good.place === 'Elgin Ave, Downtown', 'a pick with a spot and its place', good)
+  const none = parsePicked({ functionId: 'storm_control', at: null, place: 'ignored' })
+  ok(none && none.at === null && none.place === '', 'a pick with no spot: none, and no place', none)
+  for (const at of [{ x: 'a', y: 1 }, { x: 1 }, { x: Infinity, y: 0 }, { x: 0, y: -1e9 }, 'here', [1, 2]]) {
+    const p = parsePicked({ functionId: 'storm_control', at, place: 'x' })
+    ok(p && p.at === null, 'a spot that is not one is none', at)
+  }
+  eq(parsePicked({ functionId: 'Not An Id', at: { x: 1, y: 1 } }), null, 'a pick for no well-formed function is nothing')
+  eq(parsePicked({ functionId: 'storm_control', at: { x: 1, y: 1 }, place: 'P'.repeat(300) }).place.length, 120,
+    'a place name is cut to 120')
+  eq(placeText({ x: 1, y: 2 }, 'Elgin Ave, Downtown'), 'Elgin Ave, Downtown', 'the place, by the game\'s name')
+  eq(placeText({ x: 120.5, y: -900.4 }, '  '), '121, -900', 'and with no name, its coordinates in digits')
 }
 
 // ── Volts ───────────────────────────────────────────────────────────────────

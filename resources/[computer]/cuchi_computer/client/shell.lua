@@ -36,12 +36,22 @@
 --                                  storm's close ('offline') plays a blue
 --                                  screen and a power-off first (below)
 --   IsOpen() -> boolean
+--   Hide() -> ok                   out of sight while the player picks a spot on
+--                                  the big map (round 4): the page hidden with
+--                                  the app and its box still in it, NUI focus
+--                                  released; still open. False when not open
+--                                  or already hidden
+--   Show(picked) -> ok             back, NUI focus taken again, the page told
+--                                  what was picked: { functionId, at = { x, y }
+--                                  or nil, place }. False when not hidden
 --
 -- EVENTS (local, raised for br_core's client; never net events)
 --   cuchi_computer:opened   (terminalId)            focus taken
 --   cuchi_computer:closed   (terminalId, why)       focus released
 --   cuchi_computer:request  (terminalId, request)   request = { action = 'run',
---                                                   functionId, options }
+--                                                   functionId, options, at }
+--   cuchi_computer:pick     (terminalId, request)   request = { functionId }:
+--                                                   the app's "Set location"
 --   cuchi_computer:missed   (toast, ok)             a last word the app never
 --                                                   showed: the page held it and
 --                                                   the computer closed first
@@ -85,6 +95,11 @@ local FUNCTION_ID_MAX = 32
 -- no registry row offers more than a few.
 local CHOICE = '^[a-z0-9_]+$'
 local OPTIONS_MAX = 8
+-- A spot picked on the map: two numbers no further from the map's middle than
+-- this, on either axis (the server holds it to 20 km; this is shape).
+local SPOT_MAX = 100000.0
+-- The longest place name the page is handed (the game's street and area).
+local PLACE_MAX = 120
 
 --- The page's choices for a run, shape-checked, or false when malformed.
 --- Nil stays nil: a function with no options sends none.
@@ -104,10 +119,26 @@ local function choices(o)
     return out
 end
 
+--- A spot, shape-checked, or false when malformed; nil stays nil.
+--- @param a any
+--- @return table|nil|false
+local function spotOf(a)
+    if a == nil then return nil end
+    if type(a) ~= 'table' then return false end
+    local x, y = a.x, a.y
+    if type(x) ~= 'number' or type(y) ~= 'number' or x ~= x or y ~= y
+        or math.abs(x) > SPOT_MAX or math.abs(y) > SPOT_MAX then
+        return false
+    end
+    return { x = x, y = y }
+end
+
 local pageReady = false
 local isOpen = false
 local terminalId = nil
 local opener = nil
+--- Out of sight for a map pick (Hide), still open.
+local hidden = false
 
 --- br_core's why when THE STORM took the terminal in use: the one online
 --- rule's own word (br_core/server/terminal.lua's session check closes with
@@ -153,9 +184,13 @@ end
 local function shut(why, tellPage)
     if not isOpen then return false end
     isOpen = false
+    -- Out of sight for a map pick, there is no screen to play the storm's
+    -- close on: it closes at once, as every other close does.
+    local wasHidden = hidden
+    hidden = false
     local id, by = terminalId, opener
     terminalId, opener = nil, nil
-    if tellPage and why == STORM then
+    if tellPage and why == STORM and not wasHidden then
         SendNUIMessage({ type = 'br:close', storm = true })
         closings = closings + 1
         local n = closings
@@ -266,10 +301,45 @@ local function clock(h, m)
     SendNUIMessage({ type = 'br:clock', h = t.h, m = t.m })
 end
 
+--- Out of sight while the player picks a spot on the big map (round 4): the
+--- page hides itself, app and box and all, and the vote is let go so the game
+--- has the keyboard and the map its mouse. Still open: br_core's Close still
+--- closes it.
+--- @return boolean
+local function hide()
+    if not isOpen or hidden then return false end
+    hidden = true
+    SendNUIMessage({ type = 'br:hide' })
+    SetNuiFocus(false, false)
+    return true
+end
+
+--- Back from the map: the vote taken again and the page told what was picked
+--- -- the spot, or none -- shape-checked, for the app's box.
+--- @param picked any  { functionId, at = { x, y } | nil, place }
+--- @return boolean
+local function show(picked)
+    if not isOpen or not hidden then return false end
+    hidden = false
+    local p = type(picked) == 'table' and picked or {}
+    local id = p.functionId
+    local at = spotOf(p.at)
+    local place = type(p.place) == 'string' and p.place:sub(1, PLACE_MAX) or ''
+    SendNUIMessage({ type = 'br:show', picked = {
+        functionId = (type(id) == 'string' and #id <= FUNCTION_ID_MAX and id:match(FUNCTION_ID)) and id or nil,
+        at = at or nil,
+        place = at and place or nil,
+    } })
+    SetNuiFocus(true, true)
+    return true
+end
+
 exports('Open', open)
 exports('Update', update)
 exports('Result', result)
 exports('Clock', clock)
+exports('Hide', hide)
+exports('Show', show)
 exports('Close', function(why)
     return shut(type(why) == 'string' and why or 'closed', true)
 end)
@@ -324,16 +394,33 @@ end)
 RegisterNUICallback('run', function(data, cb)
     local id = type(data) == 'table' and data.functionId or nil
     -- Two steps, not `and ... or false`: choices answers nil for a run with
-    -- no options, and an `or` would turn that nil into a refusal.
-    local opts = false
-    if type(data) == 'table' then opts = choices(data.options) end
-    if not isOpen or type(id) ~= 'string' or #id > FUNCTION_ID_MAX
-            or not id:match(FUNCTION_ID) or opts == false then
+    -- no options, and an `or` would turn that nil into a refusal. The spot
+    -- the same way.
+    local opts, at = false, false
+    if type(data) == 'table' then
+        opts = choices(data.options)
+        at = spotOf(data.at)
+    end
+    if not isOpen or hidden or type(id) ~= 'string' or #id > FUNCTION_ID_MAX
+            or not id:match(FUNCTION_ID) or opts == false or at == false then
         cb({ ok = false })
         return
     end
     TriggerEvent('cuchi_computer:request', terminalId,
-        { action = 'run', functionId = id, options = opts })
+        { action = 'run', functionId = id, options = opts, at = at })
+    cb({ ok = true })
+end)
+
+-- "Set location" (round 4): the app asks for a spot on the big map for the
+-- function its box is about. br_core does the rest (Hide, the map, Show).
+RegisterNUICallback('pick', function(data, cb)
+    local id = type(data) == 'table' and data.functionId or nil
+    if not isOpen or hidden or type(id) ~= 'string' or #id > FUNCTION_ID_MAX
+            or not id:match(FUNCTION_ID) then
+        cb({ ok = false })
+        return
+    end
+    TriggerEvent('cuchi_computer:pick', terminalId, { functionId = id })
     cb({ ok = true })
 end)
 

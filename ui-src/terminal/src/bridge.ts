@@ -7,7 +7,12 @@
  * br_core, which asks the server. docs/terminals.md is the whole contract.
  *
  *   app -> desktop   { brTerminal: 1, type: 'ready' }
- *                    { brTerminal: 1, type: 'run', functionId, options? }
+ *                    { brTerminal: 1, type: 'run', functionId, options?, at? }
+ *                      at: the spot picked on the big map, for a function
+ *                      run at one (round 4)
+ *                    { brTerminal: 1, type: 'pick', functionId }
+ *                      "Set location": the desktop hides, the big map opens,
+ *                      and a `picked` comes back when it closes
  *                    { brTerminal: 1, type: 'escape' }
  *                    { brTerminal: 1, type: 'loading', on: true, ms }
  *                    { brTerminal: 1, type: 'loading', on: false }
@@ -17,6 +22,8 @@
  *                      what a load is)
  *   desktop -> app   { brTerminal: 1, type: 'state', state, copy?, catalog? }
  *                    { brTerminal: 1, type: 'result', result }
+ *                    { brTerminal: 1, type: 'picked', picked }
+ *                      what the map pick found: { functionId, at, place }
  *
  * The light/dark mode is the app's alone since round 2 (owner, 2026-10-05:
  * "dark/light mode should not influence the browser's appearance, only the
@@ -127,6 +134,28 @@ export interface FunctionDef {
   bounty: 'runner' | 'target' | null
   /** Its effect reaches the runner's whole squad: "Squads!" in a squad match (round 4). */
   squadWide: boolean
+  /**
+   * Run at a spot picked on the big map (round 4: Storm control, Supply
+   * drop): its confirm box has a "Set location" step, and Run waits for it.
+   */
+  spot: boolean
+}
+
+/** A spot on the map, in world meters. */
+export interface Spot {
+  x: number
+  y: number
+}
+
+/**
+ * What the map pick found (round 4): the function it was for, the spot or
+ * none (no waypoint set when the map closed), and the game's own name for
+ * the place -- its street and area -- which is no line of ours.
+ */
+export interface PickResult {
+  functionId: string
+  at: Spot | null
+  place: string
 }
 
 /** The registry as the app reads it. */
@@ -285,6 +314,7 @@ export function parseCatalog(v: unknown): Catalog | null {
       soloCategory: code(f.soloCategory),
       bounty: f.bounty === 'runner' || f.bounty === 'target' ? f.bounty : null,
       squadWide: f.squadWide === true,
+      spot: f.spot === true,
     })
   }
   const categories = list(v.categories).filter((c): c is string => typeof c === 'string' && ID.test(c))
@@ -331,20 +361,56 @@ export function parseResult(v: unknown): RunResult | null {
   }
 }
 
+/** The longest place name taken from the desktop. */
+const PLACE_MAX = 120
+/** How far from the map's middle a spot may be, on either axis (shape only). */
+const SPOT_MAX = 100000
+
+/** A spot: two finite numbers within SPOT_MAX, or null. */
+function parseSpot(v: unknown): Spot | null {
+  if (!isObj(v)) return null
+  const x = num(v.x)
+  const y = num(v.y)
+  if (x === null || y === null || Math.abs(x) > SPOT_MAX || Math.abs(y) > SPOT_MAX) return null
+  return { x, y }
+}
+
+export function parsePicked(v: unknown): PickResult | null {
+  if (!isObj(v)) return null
+  const functionId = code(v.functionId)
+  if (functionId === null) return null
+  const at = parseSpot(v.at)
+  return { functionId, at, place: at && typeof v.place === 'string' ? v.place.slice(0, PLACE_MAX) : '' }
+}
+
 function post(msg: Record<string, unknown>): void {
   window.parent.postMessage({ brTerminal: 1, ...msg }, '*')
 }
 
-/** Ask to run a function with the player's choices. The server answers. */
-export function run(functionId: string, options: Record<string, string>): void {
+/**
+ * Ask to run a function with the player's choices -- and, for one run at a
+ * spot, the spot picked (round 4). The server answers.
+ */
+export function run(functionId: string, options: Record<string, string>, at?: Spot | null): void {
   if (!ID.test(functionId)) return
   const clean: Record<string, string> = {}
   for (const [k, v] of Object.entries(options)) {
     if (ID.test(k) && CHOICE.test(v)) clean[k] = v
   }
-  post(Object.keys(clean).length > 0
-    ? { type: 'run', functionId, options: clean }
-    : { type: 'run', functionId })
+  const msg: Record<string, unknown> = { type: 'run', functionId }
+  if (Object.keys(clean).length > 0) msg.options = clean
+  const spot = at ? parseSpot(at) : null
+  if (spot) msg.at = spot
+  post(msg)
+}
+
+/**
+ * "Set location" (round 4): ask for a spot on the big map for this function.
+ * The desktop is hidden while the map is up; the answer is a `picked`.
+ */
+export function pick(functionId: string): void {
+  if (!ID.test(functionId)) return
+  post({ type: 'pick', functionId })
 }
 
 /** Ask the desktop for everything again: the toolbar's reload. */
@@ -366,6 +432,8 @@ export function tellTab(note: TabNote): void {
 export interface Listeners {
   state(state: TerminalState, copy: Copy | null, catalog: Catalog | null): void
   result(result: RunResult): void
+  /** What a map pick found (round 4), as the desktop comes back. */
+  picked(picked: PickResult): void
   /**
    * Whether Escape should close the computer now. False while the app has a
    * use for it of its own -- a dialog closes first.
@@ -410,6 +478,9 @@ export function connect(on: Listeners): () => void {
     } else if (d.type === 'result') {
       const result = parseResult(d.result)
       if (result) on.result(result)
+    } else if (d.type === 'picked') {
+      const picked = parsePicked(d.picked)
+      if (picked) on.picked(picked)
     }
   }
   // IN THE CAPTURE PHASE, so the question is asked before any component has

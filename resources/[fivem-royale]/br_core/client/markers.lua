@@ -151,6 +151,11 @@ BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
     -- that wants the gesture says so, and this pass stands down while it does.
     if BR.Survey and BR.Survey.active and BR.Survey.active() then return end
 
+    -- NOR A TERMINAL'S MAP PICK'S (#396, round 4): the waypoint set on the big
+    -- map for Storm control's or Supply drop's spot is client/terminal.lua's
+    -- to read and clear when the map closes. The same shape of guard.
+    if BR.Terminal and BR.Terminal.picking and BR.Terminal.picking() then return end
+
     local st = BR.State.me.state
     if st == BR.PlayerState.LOBBY or st == BR.PlayerState.LEFT then return end
 

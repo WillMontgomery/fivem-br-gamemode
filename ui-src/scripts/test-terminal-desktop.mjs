@@ -19,6 +19,10 @@
  * below, and each must end with the answer shown in the app or handed back to
  * the shell (`missed`) for a toast -- exactly once.
  *
+ * AND THE MAP PICK (owner, 2026-10-06, round 4): "Set location" goes up as a
+ * pick, the page hides (not closes) while the big map is up and comes back
+ * with what was picked for the app, and a run carries its spot.
+ *
  * AND THE TAB'S LOADING SYMBOL (owner, 2026-10-06): the app's page loads put
  * br.css's loading symbol on the window's tab, and NOTHING MAY LEAVE IT
  * SPINNING (#385) -- the page showing, a load dropped, the app's window
@@ -229,6 +233,8 @@ function desktop() {
     /** The storm's blue screen on the page (round 4), or undefined. */
     blue: () => body.children.find((c) => c.id === 'br-off'),
     icon: () => icon.onclick(),
+    /** The page itself: 'block' on screen, 'none' out of sight. */
+    body: () => document.body.style.display,
     quit: () => buttons.quit.onclick(),
     minimize: () => {
       win.style.visibility = 'hidden'
@@ -655,6 +661,76 @@ const BSOD = { bsod_face: ':(', bsod_text: 'It ran into a problem.', bsod_code: 
   E.boot(BSOD)
   E.escape()
   ok(E.blue() === undefined && E.posted().join(' | ') === 'close:escape', 'nor Escape')
+}
+
+// ── the map pick (round 4, owner 2026-10-06): "Set location" ─────────────────
+{
+  const D = desktop()
+  D.boot()
+  D.icon()
+  D.fromApp({ type: 'ready' })
+  D.fromApp({ type: 'pick', functionId: 'storm_control' })
+  const p = D.page.posts[D.page.posts.length - 1]
+  ok(p && p.name === 'pick' && p.body.functionId === 'storm_control', 'the app\'s "Set location" goes to the shell as pick', p)
+  const n = D.page.posts.length
+  D.fromApp({ type: 'pick', functionId: 'Not An Id' })
+  D.fromApp({ type: 'pick' })
+  eq(D.page.posts.length, n, 'a pick with no well-formed function goes nowhere')
+
+  // HIDDEN, NOT CLOSED: the page out of sight, the app and its window kept.
+  D.lua({ type: 'br:hide' })
+  eq(D.body(), 'none', 'br:hide takes the page out of sight')
+  eq(D.frameSrc(), 'apps/terminal/index.html', 'with the app still loaded in its window')
+  D.escape()
+  eq(D.posted().filter((x) => x.startsWith('close')).length, 0, 'an Escape while hidden closes nothing (the map has the keyboard)')
+  D.fromApp({ type: 'pick', functionId: 'storm_control' })
+  D.fromApp({ type: 'run', functionId: 'storm_control', at: { x: 1, y: 2 } })
+  eq(D.page.posts.length, n, 'and while hidden, nothing the app asks goes up')
+
+  // BACK, WITH WHAT WAS PICKED.
+  D.lua({ type: 'br:show', picked: { functionId: 'storm_control', at: { x: 120.5, y: -900 }, place: 'Elgin Ave, Downtown' } })
+  eq(D.body(), 'block', 'br:show brings the page back')
+  const got = D.page.app.filter((m) => m.type === 'picked').pop()
+  ok(got && got.picked.functionId === 'storm_control' && got.picked.at.x === 120.5 && got.picked.at.y === -900
+    && got.picked.place === 'Elgin Ave, Downtown', 'and the app is handed what was picked', got)
+  D.lua({ type: 'br:show', picked: { functionId: 'storm_control', at: { x: 1, y: 1 } } })
+  eq(D.page.app.filter((m) => m.type === 'picked').length, 1, 'a second show without a hide hands nothing')
+  // NONE PICKED, and shapes that are not a spot.
+  D.lua({ type: 'br:hide' })
+  D.lua({ type: 'br:show', picked: { functionId: 'storm_control', at: { x: 'a', y: 1 }, place: 'x' } })
+  const none = D.page.app.filter((m) => m.type === 'picked').pop()
+  ok(none && none.picked.at === null && none.picked.place === '', 'a spot that is not one is none, and no place with it', none)
+  D.lua({ type: 'br:hide' })
+  D.lua({ type: 'br:show', picked: { functionId: 'storm_control', at: { x: 1, y: 1 }, place: 'P'.repeat(500) } })
+  eq(D.page.app.filter((m) => m.type === 'picked').pop().picked.place.length, 120, 'a place name is cut to 120')
+
+  // A RUN WITH ITS SPOT, and one whose spot is not one.
+  D.fromApp({ type: 'run', functionId: 'storm_control', at: { x: 120.5, y: -900 } })
+  const r = D.page.posts[D.page.posts.length - 1]
+  ok(r && r.name === 'run' && r.body.at && r.body.at.x === 120.5 && r.body.at.y === -900 && r.body.options === undefined,
+    'a run goes up with its spot', r)
+  const m = D.page.posts.length
+  D.fromApp({ type: 'run', functionId: 'storm_control', at: { x: Infinity, y: 0 } })
+  D.fromApp({ type: 'run', functionId: 'storm_control', at: 'here' })
+  D.fromApp({ type: 'run', functionId: 'storm_control', at: { x: 1e9, y: 0 } })
+  eq(D.page.posts.length, m, 'a run whose spot is not one goes nowhere')
+
+  // CLOSED WHILE HIDDEN: an ordinary close, and the next opening is shown.
+  D.lua({ type: 'br:hide' })
+  D.lua({ type: 'br:close' })
+  eq(D.body(), 'none', 'closed while hidden: down, as any close')
+  D.boot()
+  eq(D.body(), 'block', 'and the next opening is on screen')
+  D.icon()
+  D.fromApp({ type: 'ready' })
+  const k = D.page.posts.length
+  D.fromApp({ type: 'pick', functionId: 'supply_drop' })
+  eq(D.page.posts.length, k + 1, "the close left no hide behind: the next opening's app can pick")
+  const shown = D.page.app.filter((m2) => m2.type === 'picked').length
+  D.lua({ type: 'br:show', picked: { functionId: 'storm_control' } })
+  eq(D.page.app.filter((m2) => m2.type === 'picked').length, shown, 'and a show with no hide hands nothing')
+  D.escape()
+  eq(D.posted()[D.posted().length - 1], 'close:escape', 'and Escape closes it')
 }
 
 // ── the stylesheet: the tab's symbol while it loads, and the CRT's one run ──

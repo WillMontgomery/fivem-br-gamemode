@@ -11,8 +11,12 @@
 --                                TERMINAL_CLOSE   -> :Close
 --   the game -> computer         the game clock   -> :Clock(h, m), on each new
 --                                                    minute while it is open
---   computer -> here -> server   cuchi_computer:request -> TERMINAL_RUN
+--   computer -> here -> server   cuchi_computer:request -> TERMINAL_RUN (with
+--                                the spot picked, `at`, for a row run at one)
 --                                cuchi_computer:closed  -> TERMINAL_CLOSED
+--   computer -> here -> the map  cuchi_computer:pick -> :Hide, the big map,
+--                                and :Show with the spot picked (round 4's
+--                                map pick, below)
 --   a run's last word that no computer can show -> a toast (its `toast`),
 --                                from TERMINAL_RESULT or cuchi_computer:missed
 --   computer -> here -> keys     cuchi_computer:opened/closed
@@ -49,6 +53,12 @@ local shown = nil
 --- clock crosses to the page only when it changes: once a game minute at
 --- most, never per frame. Nil while it is closed.
 local clockSent = nil
+
+--- The map pick under way (round 4, below), or nil:
+--- { terminalId, functionId, known, up, deadline }. Its step runs on the TICK
+--- pass the clock does, so it is declared here and defined with the pick.
+local picking = nil
+local stepPick
 
 --- The computer's exports, or nil when the resource is not running -- a box
 --- without it has no computer to open, which is a terminal that does
@@ -194,9 +204,13 @@ end)
 
 -- THE TASKBAR'S CLOCK, while the computer is open and only then: the game's
 -- hour and minute, sent when the minute changes. Ten reads a second of two
--- natives that only read; nothing at all while it is closed.
+-- natives that only read; nothing at all while it is closed. AND THE MAP
+-- PICK'S WATCH (round 4), on the same pass rather than a callback of its own:
+-- one nil test while there is no pick, which is always but for the seconds
+-- the big map is open for one.
 if BR.Loop and BR.Loop.register then
     BR.Loop.register(BR.Loop.TICK, 'terminal.clock', function()
+        if picking ~= nil then stepPick(GetGameTimer()) end
         if shown == nil then return end
         local t = gameClock()
         local key = t.h * 60 + t.m
@@ -225,7 +239,141 @@ AddEventHandler('cuchi_computer:request', function(terminalId, req)
     if type(req) ~= 'table' or req.action ~= 'run' then return end
     if terminalId == nil or terminalId ~= shown then return end
     TriggerServerEvent(BR.Net.TERMINAL_RUN, { terminalId = terminalId, functionId = req.functionId,
-                                              options = req.options })
+                                              options = req.options, at = req.at })
+end)
+
+-- ---------------------------------------------------------------- the map pick ---
+--
+-- ═══ "SET LOCATION" (owner, 2026-10-06, round 4) ═══
+--
+--   "When they click confirm, we should open the big map for them, wait for
+--    them to pick a location, then when they close the big map we run it. This
+--    could be a multi-step flow on the popup box like where the confirm button
+--    is greyed out until they select a "set location" button"  (spelling-ok: his words)
+--
+-- A function run at a spot (`spot` on its registry row: Storm control, Supply
+-- drop) asks for one from its confirm box. The app's "Set location" reaches
+-- here as `cuchi_computer:pick`, and:
+--
+--   1. the computer is HIDDEN, not closed (cuchi_computer's Hide: its page out
+--      of sight with the app and the box still in it, NUI focus released),
+--      and the key layer let go, so the game has the keyboard;
+--   2. the player's own waypoint, if they had one, is cleared, and the sprite-8
+--      blips already on the map (squad pings wear the waypoint's sprite) noted,
+--      so the one they set now is the one read;
+--   3. the BIG MAP opens -- br_ui's own, the map key's (`br:ui:mapToggle`: the
+--      pause menu's frontend map) -- and this waits, on the TICK pass the
+--      taskbar clock already runs, while br_ui says its map is up
+--      (BR.Native.frontendMap, lowered when the frontend is genuinely down by
+--      any way out: Escape, the map key, right-click);
+--   4. when it closes, the waypoint they set is read and cleared -- it is the
+--      pick, never a squad ping (client/markers.lua stands down while
+--      BR.Terminal.picking()) -- and the computer is SHOWN again with it: the
+--      spot and the game's own name for the place (its street and area), or
+--      none when no waypoint was set, which puts the box back to its first
+--      step.
+--
+-- The server never hears of the pick: the spot rides the run request (`at`),
+-- and the server decides what it means. A session the server ends meanwhile
+-- (the player downed, the storm) closes the hidden computer as any other; the
+-- map is the player's to close, and the waypoint is still taken off it then. A
+-- map that never comes up (`PICK_RAISE_MS`) ends the pick with no spot.
+
+--- How long the big map may take to come up before a pick gives up, in ms --
+--- br_ui's own raise deadline.
+local PICK_RAISE_MS = 5000
+
+--- Is a map pick under way? Read by client/markers.lua, which would otherwise
+--- turn the waypoint set for it into a squad ping.
+--- @return boolean
+function BR.Terminal.picking()
+    return picking ~= nil
+end
+
+--- The sprite-8 blips on the map now: the waypoint's sprite, which squad pings
+--- wear too (client/markers.lua's note).
+--- @return table [blip] = true
+local function spriteEights()
+    local out = {}
+    local b = GetFirstBlipInfoId(8)
+    while BR.NativeTruthy(DoesBlipExist(b)) do
+        out[b] = true
+        b = GetNextBlipInfoId(8)
+    end
+    return out
+end
+
+--- The game's own name for a place: its street and its area, as the game
+--- labels them ("Elgin Ave, Downtown Vinewood"), either alone, or '' when it
+--- has neither. Not copy: the map's own words for where the player clicked.
+--- @param x number
+--- @param y number
+--- @return string
+local function placeOf(x, y)
+    local z = 0.0
+    local found, gz = GetGroundZFor_3dCoord(x, y, 1000.0, false)
+    if BR.NativeTruthy(found) and type(gz) == 'number' then z = gz end
+    local parts = {}
+    local street = GetStreetNameAtCoord(x, y, z)
+    local name = (street ~= nil and street ~= 0) and GetStreetNameFromHashKey(street) or nil
+    if type(name) == 'string' and name ~= '' then parts[#parts + 1] = name end
+    local zone = GetNameOfZone(x, y, z)
+    local label = (type(zone) == 'string' and zone ~= '') and GetLabelText(zone) or nil
+    if type(label) == 'string' and label ~= '' and label ~= 'NULL' then parts[#parts + 1] = label end
+    return table.concat(parts, ', ')
+end
+
+--- The map closed (or never came up): read the waypoint set for the pick,
+--- take it off the map, and show the computer again with what was picked.
+local function finishPick()
+    local p = picking
+    picking = nil
+    local at = nil
+    if BR.NativeTruthy(IsWaypointActive()) then
+        local b = GetFirstBlipInfoId(8)
+        while BR.NativeTruthy(DoesBlipExist(b)) and p.known[b] do b = GetNextBlipInfoId(8) end
+        if BR.NativeTruthy(DoesBlipExist(b)) then
+            local c = GetBlipInfoIdCoord(b)
+            if c and BR.TerminalSolve.finite(c.x) and BR.TerminalSolve.finite(c.y) then
+                at = { x = c.x + 0.0, y = c.y + 0.0 }
+            end
+        end
+        SetWaypointOff()
+    end
+    local c = (shown ~= nil and shown == p.terminalId) and computer() or nil
+    if not c then return end
+    setKeys(true)
+    c:Show({ functionId = p.functionId, at = at, place = at and placeOf(at.x, at.y) or nil })
+end
+
+--- One look at the pick, on the TICK pass: the map up, then down again.
+--- @param now number
+stepPick = function(now)
+    local p = picking
+    local up = BR.Native ~= nil and BR.Native.frontendMap == true
+    if not p.up then
+        if up then
+            p.up = true
+        elseif now >= p.deadline then
+            finishPick()
+        end
+        return
+    end
+    if not up then finishPick() end
+end
+
+AddEventHandler('cuchi_computer:pick', function(terminalId, req)
+    if picking ~= nil or terminalId == nil or terminalId ~= shown then return end
+    if type(req) ~= 'table' or not BR.TerminalSolve.validId(req.functionId) then return end
+    local c = computer()
+    if not c then return end
+    if BR.NativeTruthy(IsWaypointActive()) then SetWaypointOff() end
+    local p = { terminalId = terminalId, functionId = req.functionId, known = spriteEights(),
+                up = false, deadline = GetGameTimer() + PICK_RAISE_MS }
+    if c:Hide() ~= true then return end
+    picking = p
+    setKeys(false)
+    TriggerEvent('br:ui:mapToggle')
 end)
 
 -- -------------------------------------------------------------------- dev ---

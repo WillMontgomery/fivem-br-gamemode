@@ -357,13 +357,16 @@ fails a row missing a line, and a built row with no server entry.
 | `Clock(h, m)` | The game's hour and minute for the taskbar: `br_core` reads the clock (never writes it) while the computer is open and sends it on each new minute. |
 | `Close(why) -> ok` | Takes it down and releases focus. **The storm's close** (`why` `'offline'`, round 4) plays out first: the page shows its blue screen and power-off (about 2.1 s) and the focus is released -- and `cuchi_computer:closed` raised -- when the page says the screen is dark (NUI callback `off`), at the latest 4 s on (`SHUTDOWN_MAX_MS`), or at once if an `Open` or a resource stopping needs the computer first. Meanwhile it is no longer open: nothing is updated, run or shown on it, so an answer landing then is toasted. Every other why releases at once. |
 | `IsOpen() -> boolean` | |
+| `Hide() -> ok` | Round 4's map pick: the page out of sight -- the app and its box kept in it -- and NUI focus released, so the game has the keyboard and the big map the mouse. Still open. `false` when not open or already hidden. |
+| `Show(picked) -> ok` | Back from the map: focus taken again, and the page handed `picked = { functionId, at?, place? }`, shape-checked (a spot two finite numbers, a place cut to 120 characters). `false` when not hidden. |
 
 Local events it raises for `br_core`'s client (never net events):
 
 | Event | Args | When |
 |---|---|---|
 | `cuchi_computer:opened` | `terminalId` | Focus taken |
-| `cuchi_computer:request` | `terminalId, { action = 'run', functionId, options }` | The page asked; the terminal is the one `br_core` opened; `options` shape-checked |
+| `cuchi_computer:request` | `terminalId, { action = 'run', functionId, options, at }` | The page asked; the terminal is the one `br_core` opened; `options` and the spot `at` shape-checked (refused while hidden) |
+| `cuchi_computer:pick` | `terminalId, { functionId }` | "Set location" (round 4): the page asks for a spot on the big map (NUI callback `pick { functionId }`; refused while hidden) |
 | `cuchi_computer:closed` | `terminalId, why` | Focus released: `escape`, `exit` (the power button), `page`, `replaced`, `opener-stopped`, `stopped`, or `br_core`'s own why |
 | `cuchi_computer:missed` | `toast, ok` | The page handed back a run's last word the app never showed (NUI callback `missed { toast }`); passed on only for a toast this shell relayed, once. `br_core` toasts it |
 
@@ -398,8 +401,8 @@ listening only to the other's window, every message carrying `brTerminal: 1`:
 
 | Way | Message |
 |---|---|
-| app → desktop | `{ type: 'ready' }`, `{ type: 'run', functionId, options? }`, `{ type: 'escape' }`, `{ type: 'loading', on: true, ms }` / `{ type: 'loading', on: false }` (a page load started or ended: the tab's symbol) |
-| desktop → app | `{ type: 'state', state, copy?, catalog? }` (copy and catalog on ready; an update is the state alone), `{ type: 'result', result }` |
+| app → desktop | `{ type: 'ready' }`, `{ type: 'run', functionId, options?, at? }`, `{ type: 'pick', functionId }` ("Set location", round 4), `{ type: 'escape' }`, `{ type: 'loading', on: true, ms }` / `{ type: 'loading', on: false }` (a page load started or ended: the tab's symbol) |
+| desktop → app | `{ type: 'state', state, copy?, catalog? }` (copy and catalog on ready; an update is the state alone), `{ type: 'result', result }`, `{ type: 'picked', picked }` (what the map pick found: `{ functionId, at, place }`, round 4) |
 
 **The boot** lasts a uniform pick in `bootMinMs..bootMaxMs` (7-10 s), new every
 boot, and ends on the desktop; a second open while it is up is a refresh. A
@@ -693,6 +696,38 @@ of the map's middle -- for such a row, and none for any other: anything else is
 option is called `at`) and decides what it means (Storm control: the storm ends
 on it, or the reason; Supply drop: the airdrop spot nearest it). `brterminal run
 <id> x=<n> y=<n>` is the same spot from the console.
+
+**The confirm box has two steps** for such a row (the app's `FunctionPage`):
+the body, then **"Set location"** (`confirm_location`, the owner's words) with
+Run disabled. Pressed, it goes down as `pick` (app → `br.js` → the shell's
+`pick` callback → `cuchi_computer:pick`), and `br_core`'s client
+(`client/terminal.lua`):
+
+1. **hides the computer** (`Hide`: the page out of sight with the app and the
+   box still in it, NUI focus released) and lets the key layer go;
+2. clears the player's own waypoint, if any, and notes the sprite-8 blips
+   already on the map (squad pings wear the waypoint's sprite);
+3. **opens the big map** -- br_ui's own, the map key's (`br:ui:mapToggle`, the
+   pause menu's frontend map) -- and waits on the TICK pass the taskbar clock
+   already runs: for br_ui's `BR.Native.frontendMap` to rise (5 s at most,
+   br_ui's own raise deadline), then to fall, which it does when the
+   frontend is down by any way out (Escape, the map key, right-click);
+4. **reads the waypoint** set meanwhile (the first sprite-8 blip not noted
+   before), takes it off the map -- `client/markers.lua` stands down while
+   `BR.Terminal.picking()`, so it is never a squad ping -- names the place
+   with the game's own natives (`GetStreetNameAtCoord`, `GetNameOfZone` and
+   `GetLabelText`: "Elgin Ave, Downtown"), and **shows the computer again**
+   (`Show`) with `{ functionId, at, place }`.
+
+The box then shows the place beside "Set location" (its map coordinates in
+digits where the game has no name) and enables Run; pressing "Set location"
+again picks again, and a map closed with no waypoint puts the box back to its
+first step. The run carries the spot (`at`). The server never hears of the
+pick itself. A session the server ends meanwhile (the player downed, the
+storm) closes the hidden computer like any other; the map is the player's to
+close, and the waypoint is still taken off it then. No instruction is written
+on the map: the frontend's own buttons say how to set a waypoint. Nothing runs
+per frame: one nil test on the TICK pass while there is no pick.
 
 ## Storm reveal
 

@@ -11,8 +11,10 @@ import Modal from '@cloudscape-design/components/modal'
 import RadioGroup from '@cloudscape-design/components/radio-group'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
-import type { FunctionDef, FunctionState } from './bridge'
-import { fill, indicatorOf, riskColor, runChoices, showsSquads, shownOptions, statusOf, type Say } from './model'
+import type { FunctionDef, FunctionState, PickResult, Spot } from './bridge'
+import {
+  fill, indicatorOf, placeText, riskColor, runChoices, showsSquads, shownOptions, statusOf, type Say,
+} from './model'
 import { Squads } from './Squads'
 import { voltsLine, voltsLines } from './Volts'
 
@@ -35,6 +37,12 @@ import { voltsLine, voltsLines } from './Volts'
  * every option and the balance again. RUN IS PRESSABLE WHATEVER THE BALANCE:
  * a run the Volts cannot cover is refused by the server, which says the cost
  * and the balance (no_volts).
+ *
+ * A FUNCTION RUN AT A SPOT (round 4: Storm control, Supply drop) HAS TWO STEPS
+ * IN ITS BOX: "Set location" hides the computer and opens the big map (the
+ * desktop and br_core's client do that), and the box comes back showing the
+ * place picked with Run enabled; the run carries the spot, and the server
+ * decides what it means.
  *
  * RUN WEARS THE FUNCTION'S RISK (round 2: "the Run button - make it the risk
  * color instead"): the same color as its low, medium or high risk badge, in
@@ -65,8 +73,12 @@ export function FunctionPage(props: {
   currency: string
   squadMatch: boolean
   busy: boolean
-  onRun: (id: string, options: Record<string, string>) => void
+  onRun: (id: string, options: Record<string, string>, at: Spot | null) => void
   onConfirmChange: (open: boolean) => void
+  /** "Set location": ask for a spot on the big map (round 4). */
+  onPick: (id: string) => void
+  /** The last map pick's answer, numbered so each is taken once. */
+  picked: { seq: number; result: PickResult } | null
 }): ReactElement {
   const { def, fn, say } = props
   const id = def.id
@@ -75,10 +87,28 @@ export function FunctionPage(props: {
   const [choice, setChoice] = useState<Record<string, string>>(
     () => Object.fromEntries(def.options.map((o) => [o.id, o.default])))
   const [confirm, setConfirmState] = useState(false)
+  // THE SPOT PICKED ON THE BIG MAP (round 4, owner 2026-10-06: "the confirm
+  // button is greyed out until they select a "set location" button"; spelling-ok: his words): a
+  // function run at a spot (`spot` on its row) has a first step in its box,
+  // "Set location", and Run waits for a spot. Every opening of the box starts
+  // at that step; a pick that came back with no spot (no waypoint set when
+  // the map closed) goes back to it; "Set location" again picks again.
+  const [spot, setSpot] = useState<{ at: Spot; place: string } | null>(null)
   const setConfirm = (open: boolean) => {
+    if (open) setSpot(null)
     setConfirmState(open)
     props.onConfirmChange(open)
   }
+  // Only an answer that arrives after this page is up, and for this function.
+  const seenPick = useRef(props.picked ? props.picked.seq : 0)
+  useEffect(() => {
+    const p = props.picked
+    if (!p || p.seq === seenPick.current) return
+    seenPick.current = p.seq
+    if (p.result.functionId !== id) return
+    setSpot(p.result.at ? { at: p.result.at, place: p.result.place } : null)
+  }, [props.picked, id])
+  const needsSpot = def.spot && spot === null
   // THE BOX GOES WITH ITS PAGE. A page load started before the box opened
   // (owner, 2026-10-06: every navigation loads for 1-3 s, and the page stays
   // up meanwhile) can end with the box still up; App.tsx must then hear it
@@ -204,10 +234,12 @@ export function FunctionPage(props: {
             <SpaceBetween direction="horizontal" size="xs">
               {[
                 <Button key="no" variant="link" onClick={() => setConfirm(false)}>{say('confirm_no')}</Button>,
-                <Button key="yes" variant="primary" style={runStyle(def.risk)} disabled={!available || props.busy}
+                <Button key="yes" variant="primary" style={runStyle(def.risk)}
+                  disabled={!available || props.busy || needsSpot}
                   onClick={() => {
+                    const at = spot ? spot.at : null
                     setConfirm(false)
-                    props.onRun(id, runChoices(def, choice))
+                    props.onRun(id, runChoices(def, choice), at)
                   }}>
                   {say('confirm_yes')}
                 </Button>,
@@ -216,7 +248,25 @@ export function FunctionPage(props: {
           </Box>
         }
       >
-        {body}
+        {def.spot ? (
+          <SpaceBetween size="m">
+            {[
+              <Box key="body">{body}</Box>,
+              <SpaceBetween key="pick" direction="horizontal" size="s" alignItems="center">
+                {[
+                  <Button key="set" disabled={!available || props.busy}
+                    onClick={() => {
+                      setSpot(null)
+                      props.onPick(id)
+                    }}>
+                    {say('confirm_location')}
+                  </Button>,
+                  ...(spot ? [<Box key="place">{placeText(spot.at, spot.place)}</Box>] : []),
+                ]}
+              </SpaceBetween>,
+            ]}
+          </SpaceBetween>
+        ) : body}
       </Modal>
     </ContentLayout>
   )

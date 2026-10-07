@@ -8,8 +8,8 @@ import SideNavigation, { type SideNavigationProps } from '@cloudscape-design/com
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import TopNavigation, { type TopNavigationProps } from '@cloudscape-design/components/top-navigation'
 import {
-  connect, reload as askAgain, run, signOut, tellTab,
-  type Catalog, type Copy, type RunResult, type TerminalState,
+  connect, pick, reload as askAgain, run, signOut, tellTab,
+  type Catalog, type Copy, type PickResult, type RunResult, type TerminalState,
 } from './bridge'
 import { Browser } from './Browser'
 import { FunctionCards } from './FunctionCards'
@@ -118,6 +118,8 @@ export function App(): ReactElement {
   const [progress, setProgress] = useState<Progress | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [flash, setFlash] = useState<RunResult | null>(null)
+  // THE LAST MAP PICK'S ANSWER (round 4), numbered so the page takes each once.
+  const [picked, setPicked] = useState<{ seq: number; result: PickResult } | null>(null)
   const [mode, setMode] = useState<UiMode>('light')
   const [search, setSearch] = useState('')
   const [reloads, setReloads] = useState(0)
@@ -182,6 +184,9 @@ export function App(): ReactElement {
           setFlash(next)
           setPending(null)
           setProgress(null)
+        },
+        picked(result) {
+          setPicked((was) => ({ seq: (was ? was.seq : 0) + 1, result }))
         },
         canEscape: () => !confirmOpen.current,
       }),
@@ -468,11 +473,13 @@ export function App(): ReactElement {
           squadMatch={squadMatch}
           busy={pending !== null || progress !== null}
           onConfirmChange={(open) => { confirmOpen.current = open }}
-          onRun={(id, options) => {
+          onRun={(id, options, at) => {
             setPending(id)
             setFlash(null)
-            run(id, options)
+            run(id, options, at)
           }}
+          onPick={(id) => pick(id)}
+          picked={picked}
         />
       )
     }

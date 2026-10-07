@@ -23,9 +23,18 @@
 //                                        (round 4): a blue screen, a CRT
 //                                        power-off, then closed -- and `off`
 //                                        is said when the screen is dark
+//     { type: "br:hide" }                out of sight while the player picks a
+//                                        spot on the big map (round 4): still
+//                                        open, the app and its box kept
+//     { type: "br:show", picked }        back from the map: picked = {
+//                                        functionId, at?, place? }, handed to
+//                                        the app
 //
 //   page -> Lua (NUI callbacks registered by client/shell.lua)
-//     run    { functionId, options? }    the app asked; the server decides
+//     run    { functionId, options?, at? }
+//                                        the app asked; the server decides
+//     pick   { functionId }              "Set location" (round 4): a spot on
+//                                        the big map for this function
 //     close  { why }                     Escape, or the taskbar's power button
 //     missed { toast }                   a run's last word the app never showed
 //                                        (below): its toast, for br_core to
@@ -37,8 +46,10 @@
 //   page <-> app (postMessage with the iframe; every message carries
 //   brTerminal: 1, and each side only listens to the other's window)
 //     app -> page  { type: "ready" }               send me everything
-//                  { type: "run", functionId, options? }
-//                                                  the player pressed Run
+//                  { type: "run", functionId, options?, at? }
+//                                                  the player pressed Run (at:
+//                                                  the spot picked, round 4)
+//                  { type: "pick", functionId }    "Set location"
 //                  { type: "escape" }              Escape, or Sign out, in the app
 //                  { type: "loading", on, ms? }    a page load started (for ms)
 //                                                  or ended: the tab's icon
@@ -47,6 +58,7 @@
 //                                                  only on ready; an update is
 //                                                  the state alone)
 //                  { type: "result", result }      the answer to a run
+//                  { type: "picked", picked }      what the map pick found
 //
 // ═══ ROUND 2 (owner, 2026-10-05) ═══
 //
@@ -124,6 +136,11 @@
     const FUNCTION_ID = /^[a-z][a-z0-9_]{0,31}$/;
     const CHOICE = /^[a-z0-9_]{1,32}$/;
     const OPTIONS_MAX = 8;
+    // A spot picked on the map: two numbers within this of the map's middle
+    // (the server holds it to 20 km; this is shape), and the longest place
+    // name handed to the app.
+    const SPOT_MAX = 100000;
+    const PLACE_MAX = 120;
     // THE SMALLEST THE WINDOW GOES. The app's side navigation (240 px) beside
     // a column of cards, the top bar's search with the balance, the light/dark
     // switch and the gamertag in one row, and a card's page with its Run
@@ -143,6 +160,8 @@
     const CRT_CLASS = "br-crt";
 
     let isOpen = false;
+    // Out of sight for a map pick (round 4): still open.
+    let hidden = false;
     // Bumped by every open and close, so a boot timer that outlives the close
     // it raced does not put the desktop back up -- and never fires into a
     // later session.
@@ -457,6 +476,30 @@
         return out;
     };
 
+    // A spot, shape-checked: { x, y }, or false when malformed; undefined
+    // stays undefined.
+    const spot = (a) => {
+        if (a === undefined || a === null) return undefined;
+        if (typeof a !== "object" || Array.isArray(a)) return false;
+        const x = a.x;
+        const y = a.y;
+        if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)
+                || Math.abs(x) > SPOT_MAX || Math.abs(y) > SPOT_MAX) return false;
+        return { x, y };
+    };
+
+    // What the map pick found, for the app: the function, the spot or none,
+    // and the place's name with it.
+    const pickedOf = (p) => {
+        const d = p && typeof p === "object" ? p : {};
+        const at = spot(d.at);
+        return {
+            functionId: typeof d.functionId === "string" && FUNCTION_ID.test(d.functionId) ? d.functionId : null,
+            at: at || null,
+            place: at && typeof d.place === "string" ? d.place.slice(0, PLACE_MAX) : "",
+        };
+    };
+
     // A boot's length: a uniform pick in br_core's range, every boot anew.
     const bootMs = (d) => {
         const lo = d && Number(d.bootMinMs);
@@ -499,6 +542,7 @@
     const close = (why, fromLua, keep) => {
         if (!isOpen) return;
         isOpen = false;
+        hidden = false;
         session++;
 
         if (!keep) document.body.style.display = "none";
@@ -598,11 +642,19 @@
             }
         } else if (d.type === "run") {
             const options = choices(d.options);
-            if (isOpen && typeof d.functionId === "string" && FUNCTION_ID.test(d.functionId)
-                    && options !== false) {
-                post("run", options === undefined
-                    ? { functionId: d.functionId }
-                    : { functionId: d.functionId, options });
+            const at = spot(d.at);
+            if (isOpen && !hidden && typeof d.functionId === "string" && FUNCTION_ID.test(d.functionId)
+                    && options !== false && at !== false) {
+                const body = { functionId: d.functionId };
+                if (options !== undefined) body.options = options;
+                if (at !== undefined) body.at = at;
+                post("run", body);
+            }
+        } else if (d.type === "pick") {
+            // "SET LOCATION" (round 4): br_core hides this page, opens the big
+            // map, and shows the page again with what was picked.
+            if (isOpen && !hidden && typeof d.functionId === "string" && FUNCTION_ID.test(d.functionId)) {
+                post("pick", { functionId: d.functionId });
             }
         } else if (d.type === "escape") {
             close("escape");
@@ -651,6 +703,22 @@
             case "br:clock":
                 if (isOpen) showClock(d.h, d.m);
                 break;
+            case "br:hide":
+                // OUT OF SIGHT FOR THE MAP PICK, NOT CLOSED: the app, its box
+                // and its window stay as they are for when the page comes back.
+                if (isOpen && !hidden) {
+                    hidden = true;
+                    endResize();
+                    document.body.style.display = "none";
+                }
+                break;
+            case "br:show":
+                if (isOpen && hidden) {
+                    hidden = false;
+                    document.body.style.display = "block";
+                    toApp({ type: "picked", picked: pickedOf(d.picked) });
+                }
+                break;
             case "br:close":
                 if (d.storm === true) stormClose();
                 else close("closed", true);
@@ -663,7 +731,7 @@
     // reaches this document). client/shell.lua releases NUI focus when the
     // close lands, so the keyboard and the mouse are the game's at once.
     document.addEventListener("keydown", (e) => {
-        if (isOpen && e.key === "Escape") {
+        if (isOpen && !hidden && e.key === "Escape") {
             e.preventDefault();
             close("escape");
         }
