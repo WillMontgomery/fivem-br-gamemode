@@ -951,14 +951,20 @@ end
 --   * VIEW_MARGIN meters more, so a corner near the lens is never decided by the
 --     last bits of a float.
 --
--- AND A CAMERA CUT LATER IN THE SAME FRAME DRAWS THE REST. The ride ends -- the jump,
--- the eject, a teardown, /brunstuck -- in a handler that can run after this
--- callback, and the engine then renders the gameplay camera with what this frame
--- submitted. Every such site calls BR.Storm.cameraCut() (client/bus.lua's dismount,
--- client/spawn.lua's brunstuck), which emits exactly the quads that were skipped, on
--- that same frame, so the frame holds the whole wall whichever camera shows it. The
--- other cameras in br_core (ambheal, dbno, rescue, spectate, tutorial, lobbycam) are
--- each gated on a state a rider is not in, and turn only their own cameras off.
+-- AND A CAMERA SWITCH ANYWHERE IN br_core, AT ANY POINT IN THE FRAME, GIVES THE FRAME
+-- THE WHOLE WALL. The ride ends -- the jump, the eject, a teardown, /brunstuck -- in a
+-- handler that can run after this callback; an admin riding the bus can start a
+-- console spectate, whose camera client/spectate.lua makes active in a FRAME callback
+-- of its own, later in the band than this one (server/spectate.lua's adminStart does
+-- not ask the admin's state); and any other camera could be made to render by code
+-- not yet written. So nothing here depends on a list of such sites. Every native in
+-- br_core that changes which camera renders goes through a wrapper this file
+-- installs (CAMERA_SWITCHES, below busView), and each call is a cut: the quads this
+-- frame skipped are drawn on the spot, and the next draw culls nothing. An eased or
+-- interpolated switch, which shows a blend of two poses for its length, turns the
+-- cull off for the rest of that ride. tools/test_storm.lua's `camera.class` reads
+-- every client file in the manifest and fails on a camera native it has not been
+-- told about, or on one taken into a local where the wrapper cannot see it.
 local VIEW_MARGIN = 10.0
 local WATER_LO, WATER_HI = -50.0, 450.0
 
@@ -2988,6 +2994,14 @@ end
 local busPlanes = { n = 2, {}, {} }
 local cutPending = { g = nil, view = nil, frame = nil }
 
+--- What the camera wrappers below (CAMERA_SWITCHES) have said.
+---   frame  a camera switched since the preview last drew: its next draw culls
+---          nothing, whichever side of storm.previewWall the switch landed on
+---   ride   the bus camera an eased or long switch was made over, which is not
+---          culled against again; `true` when it was made with no ride's camera
+---          posed yet, which holds until a switch is made with no ride under way
+local camSwitch = { frame = false, ride = nil }
+
 --- One camera plane from a pose: the lens and the unit vector toward what it looks at.
 --- @return boolean  false for a degenerate pose, which nothing may be culled against
 local function planeOf(p, pose)
@@ -3007,7 +3021,7 @@ end
 --- loads first, but a load order is not a thing this file may depend on. And the
 --- engine is asked one thing, IsCamRendering, so a camera somebody destroyed or
 --- displaced under bus.lua's feet (DestroyAllCams leaves its handle stale) is never
---- trusted.
+--- trusted. Nor is one an eased switch was made over (camSwitch.ride).
 --- @return table|nil
 local function busView()
     local B = BR.Bus
@@ -3017,6 +3031,8 @@ local function busView()
     end
     local cam, cur, prev = B.camPose()
     if not cam then return nil end
+    local doubt = camSwitch.ride
+    if doubt ~= nil and (doubt == true or doubt == cam) then return nil end
     if not BR.NativeTruthy(IsCamRendering(cam)) then return nil end
     if not planeOf(busPlanes[1], cur) or not planeOf(busPlanes[2], prev) then
         return nil
@@ -3033,9 +3049,10 @@ end
 --- already (bus.lua has no pose for it), and putting an old frame's remainder on top
 --- would double the alpha where they overlap.
 ---
---- Called by every site in br_core that can take the bus camera off the screen:
---- client/bus.lua's dismount (the jump, the eject, the teardowns) and
---- client/spawn.lua's brunstuck.
+--- Called by every camera switch in br_core, through the wrappers below; and, by
+--- name and first, by client/bus.lua's dismount (the jump, the eject, the
+--- teardowns) and client/spawn.lua's brunstuck, whose own switches then find the
+--- record already dropped.
 ---
 --- WHAT A CUT FRAME DOES NOT GET BACK IS THE CALL ORDER. The quads come after
 --- whatever other script triangles were drawn between storm.previewWall and the cut,
@@ -3051,6 +3068,106 @@ function BR.Storm.cameraCut()
         return
     end
     emitStrip(g, view, true)
+end
+
+-- ═══ EVERY CAMERA SWITCH IN br_core COMES THROUGH HERE (#393) ═══
+--
+-- The cull is safe only while the bus's orbit camera is the one the frame is seen
+-- through, and #393's review found a camera that could take over mid-ride without
+-- telling this file: an admin's console spectate, started while riding, whose FRAME
+-- callback in client/spectate.lua -- later in the band than storm.previewWall --
+-- makes its camera active on a frame already culled for the bus's. A list of the
+-- sites that can do that is a list somebody has to keep right (ambheal, bus, dbno,
+-- lobbycam, rescue, spawn, spectate and tutorial switch cameras in thirty-odd places
+-- between them), so the natives are wrapped instead. Every client file of br_core
+-- shares this Lua state's globals and calls them by name, at call time, so the
+-- wrapper put on the global here is what every caller reaches, whatever the load
+-- order; tools/test_storm.lua's `camera.class` keeps that true.
+--
+-- WHAT A SWITCH DOES, all of it Lua and none of it a native:
+--   * BR.Storm.cameraCut(): the quads this frame skipped are drawn now, so the
+--     frame holds the whole wall whichever camera shows it.
+--   * camSwitch.frame: the next draw culls nothing. A switch EARLIER in the frame
+--     than storm.previewWall would otherwise be culled against by a draw that
+--     cannot know whether IsCamRendering has caught up with it; a frame later the
+--     engine has updated its cameras since the switch, in either order, and
+--     IsCamRendering answers for it.
+--   * camSwitch.ride: an EASED switch -- RenderScriptCams with an ease,
+--     SetCamActiveWithInterp, a player switch -- shows a blend of two poses for
+--     its length, which no plane here describes. Nothing is culled against that
+--     ride's camera again. A new ride is a new camera.
+--
+-- A camera CREATED inactive switches nothing, so the CreateCam family is a cut only
+-- when its `active` argument is set (no caller in br_core sets it today). A native
+-- this build lacks is left absent rather than wrapped, so a guard like spectate's
+-- `if not CreateCamWithParams then` keeps meaning what it says.
+local function cameraSwitched(eased)
+    camSwitch.frame = true
+    local B = BR.Bus
+    local cam = B and B.camPose and B.camPose() or nil
+    if eased then
+        camSwitch.ride = cam or true
+    elseif cam == nil then
+        camSwitch.ride = nil
+    end
+    BR.Storm.cameraCut()
+end
+
+--- A native's boolean argument, as a script might pass it: 0 is false here.
+local function argSet(v) return v ~= nil and v ~= false and v ~= 0 end
+
+--- [native] = which calls are a switch:
+---   'cut'    every call, at once
+---   'blend'  every call, over time
+---   'ease'   RenderScriptCams(render, ease, easeTime, ...): a blend when it eases
+---   n        a creation: a cut when argument n, `active`, is set
+--- KEYED IN BRACKETS ON PURPOSE: a line reading `SetCamActive = ...` is what a
+--- global assignment looks like, and tools/perf_client.lua takes any name a client
+--- file appears to assign for one the file defines, never a native to stand in for.
+local CAMERA_SWITCHES = {
+    ['RenderScriptCams']       = 'ease',
+    ['SetCamActive']           = 'cut',
+    ['SetCamActiveWithInterp'] = 'blend',
+    ['DestroyCam']             = 'cut',
+    ['DestroyAllCams']         = 'cut',
+    ['CreateCam']              = 2,
+    ['CreateCamera']           = 2,
+    ['CreateCamWithParams']    = 9,
+    ['CreateCameraWithParams'] = 9,
+    ['SwitchInPlayer']         = 'blend',
+}
+--- Read by tools/test_storm.lua, which holds every camera native br_core calls to
+--- this list or to its list of ones that switch nothing.
+BR.Storm.CAMERA_SWITCHES = CAMERA_SWITCHES
+
+for name, how in pairs(CAMERA_SWITCHES) do
+    local real = _G[name]
+    if type(real) == 'function' then
+        local wrapped
+        if how == 'cut' then
+            wrapped = function(...)
+                cameraSwitched(false)
+                return real(...)
+            end
+        elseif how == 'blend' then
+            wrapped = function(...)
+                cameraSwitched(true)
+                return real(...)
+            end
+        elseif how == 'ease' then
+            wrapped = function(render, ease, easeTime, ...)
+                cameraSwitched(argSet(ease) and (tonumber(easeTime) or 0) > 0)
+                return real(render, ease, easeTime, ...)
+            end
+        else
+            local at = how
+            wrapped = function(...)
+                if argSet((select(at, ...))) then cameraSwitched(false) end
+                return real(...)
+            end
+        end
+        _G[name] = wrapped
+    end
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
@@ -3140,8 +3257,14 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- this is the call it always was. On the ride it skips the quads wholly behind
     -- the orbit camera -- anything from none of circle 1 to all of it, by where it
     -- lies; 23 of 48 triangles in the profiler's doors-open cruise -- and leaves the
-    -- frame a record of them, which a camera cut later in this frame draws.
-    local view = busView()
+    -- frame a record of them, which a camera cut later in this frame draws. And the
+    -- first draw after any camera switch culls nothing (CAMERA_SWITCHES says why).
+    local view = nil
+    if camSwitch.frame then
+        camSwitch.frame = false
+    else
+        view = busView()
+    end
     local skipped = drawWall(previewBlob(pv), alphaScale * entry, previewMemo, nil, view)
     if view and (skipped or 0) > 0 then
         cutPending.g, cutPending.view = previewMemo.strip, view

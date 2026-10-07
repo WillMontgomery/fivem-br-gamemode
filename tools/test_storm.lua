@@ -652,6 +652,16 @@ end
 
 local function pt(x, y, z) return { x = x, y = y, z = z or 30.0 } end
 
+--- Every native that can change which camera renders, as `camera.class` sorts them
+--- (#393). client/storm.lua wraps each AS IT LOADS, so the harness has to define
+--- them first for the wrappers to exist here; they record their calls and nothing
+--- else, and no block but `camera.switch` calls one.
+local CAMERA_NATIVES = {
+    'RenderScriptCams', 'SetCamActive', 'SetCamActiveWithInterp', 'DestroyCam',
+    'DestroyAllCams', 'CreateCam', 'CreateCamera', 'CreateCamWithParams',
+    'CreateCameraWithParams', 'SwitchInPlayer',
+}
+
 --- @return table  { env, tick(n), frame(), last(), arrow(), markers, cmds }
 local function newStormClient()
     local env = newSandbox()
@@ -1164,6 +1174,16 @@ local function newStormClient()
     -- own clock (it waits for the sky's, #399).
     env.BR.World.arrivesAt = function() return nil end
     env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
+
+    C.camCalls, C.camNatives = {}, {}
+    for _, n in ipairs(CAMERA_NATIVES) do
+        local f = function()
+            C.camCalls[#C.camCalls + 1] = n
+            return 900 + #C.camCalls
+        end
+        C.camNatives[n] = f
+        env[n] = f
+    end
 
     -- IN MANIFEST ORDER: client/mapoverlay.lua comes AFTER client/storm.lua in
     -- br_core's fxmanifest, which is why storm.lua asks for BR.MapOverlay at runtime
@@ -4353,6 +4373,410 @@ do
     ok(#C.polys == n0 and n0 == #ref,
         'and a cut after a whole frame draws nothing more',
         ('%d then %d'):format(n0, #C.polys))
+
+    -- ═══ camera.switch: ANY CAMERA SWITCH, ANYWHERE IN THE FRAME, IS A CUT (#393) ═══
+    --
+    -- THE REVIEW'S CASE. An admin riding the bus starts a console spectate. The
+    -- session arrives by net event; client/spectate.lua's camera callback, which is
+    -- later in the FRAME band than storm.previewWall (fxmanifest: storm.lua at 382,
+    -- spectate.lua at 628), makes its camera and renders it on a frame the preview has
+    -- already culled for the bus's -- and nothing told storm.lua. So the cut is no
+    -- longer something a site has to remember: client/storm.lua wraps every native
+    -- that changes which camera renders, and `camera.class` below holds br_core to
+    -- calling them through the wrapper. What is proved here is what a call does:
+    --
+    --   * LATER IN THE FRAME than the draw (a callback registered after storm.lua's,
+    --     as spectate.camera is): the frame holds the whole wall, each quad once.
+    --   * EARLIER IN THE FRAME (a net event before the band): that frame's draw
+    --     culls nothing, even with IsCamRendering still saying the bus's camera.
+    --   * EASED (a blend of two poses for its length): nothing is culled against that
+    --     ride's camera again, and the next ride culls as before.
+    --   * A CAMERA CREATED INACTIVE switches nothing, and costs the cull nothing.
+    describe('camera.switch')
+    local SPOT = { x = 300.0, y = 200.0, z = 500.0 }
+    local AIM = pose(SPOT.x, SPOT.y, SPOT.z, 0.0, -8.0)
+    local OTHER = 55
+
+    --- A rider at SPOT whose bus camera is posed at AIM, with a FRAME callback after
+    --- client/storm.lua's that runs `C.later(env)` once when it is set.
+    local function rider()
+        local R = newBus(SPOT.x, SPOT.y, SPOT.z)
+        R.frame()
+        R.want, R.n = multiset(R.polys, 1, #R.polys), #R.polys
+        R.bus = { cam = CAM, cur = AIM, prev = AIM }
+        R.rendering[CAM] = true
+        R.later = nil
+        R.env.BR.Loop.register(R.env.BR.Loop.FRAME, 'test.laterCamera', function()
+            local f = R.later
+            R.later = nil
+            if f then f(R.env) end
+        end)
+        return R
+    end
+    local function wholeIn(R)
+        if #R.polys ~= R.n then return false end
+        local have = multiset(R.polys, 1, #R.polys)
+        for k, n in pairs(R.want) do if have[k] ~= n then return false end end
+        return true
+    end
+    local function said(R) return ('%d of %d drawn'):format(#R.polys, R.n) end
+
+    local CALLS = {
+        { 'SetCamActive', 'cut', function(e) e.SetCamActive(OTHER, true) end },
+        { 'SetCamActive', 'cut', function(e) e.SetCamActive(CAM, false) end, 'off' },
+        { 'DestroyCam', 'cut', function(e) e.DestroyCam(CAM, true) end },
+        { 'DestroyAllCams', 'cut', function(e) e.DestroyAllCams(true) end },
+        { 'RenderScriptCams', 'cut', function(e) e.RenderScriptCams(false, false, 0, true, true) end, 'at once' },
+        { 'RenderScriptCams', 'blend', function(e) e.RenderScriptCams(false, true, 1000, true, true) end, 'eased' },
+        { 'SetCamActiveWithInterp', 'blend', function(e) e.SetCamActiveWithInterp(OTHER, CAM, 800, 1, 1) end },
+        { 'SwitchInPlayer', 'blend', function(e) e.SwitchInPlayer(1) end },
+        { 'CreateCam', 'cut', function(e) e.CreateCam('DEFAULT_SCRIPTED_CAMERA', true) end, 'active' },
+        { 'CreateCam', 'none', function(e) e.CreateCam('DEFAULT_SCRIPTED_CAMERA', false) end, 'inactive' },
+        { 'CreateCamera', 'cut', function(e) e.CreateCamera(26379945, true) end, 'active' },
+        { 'CreateCamera', 'none', function(e) e.CreateCamera(26379945, false) end, 'inactive' },
+        { 'CreateCamWithParams', 'cut', function(e)
+            e.CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 60.0, true, 2)
+        end, 'active' },
+        { 'CreateCamWithParams', 'none', function(e)
+            e.CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 60.0, false, 2)
+        end, 'inactive' },
+        { 'CreateCameraWithParams', 'cut', function(e)
+            e.CreateCameraWithParams(26379945, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 60.0, true, 2)
+        end, 'active' },
+        { 'CreateCameraWithParams', 'none', function(e)
+            e.CreateCameraWithParams(26379945, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 60.0, false, 2)
+        end, 'inactive' },
+    }
+
+    -- Every native the wrapper list names is exercised here, and every one is wrapped.
+    local probe = rider()
+    local listed, covered = {}, {}
+    for name in pairs(probe.env.BR.Storm.CAMERA_SWITCHES) do listed[#listed + 1] = name end
+    table.sort(listed)
+    for _, c in ipairs(CALLS) do covered[c[1]] = true end
+    local missing, unwrapped = {}, {}
+    for _, name in ipairs(listed) do
+        if not covered[name] then missing[#missing + 1] = name end
+        if probe.env[name] == probe.camNatives[name] or type(probe.env[name]) ~= 'function' then
+            unwrapped[#unwrapped + 1] = name
+        end
+    end
+    ok(#listed == #CAMERA_NATIVES and #missing == 0,
+        'every native client/storm.lua wraps is one this block calls',
+        ('listed %s; not exercised: %s'):format(table.concat(listed, ', '),
+            table.concat(missing, ', ')))
+    ok(#unwrapped == 0, 'and each of them is wrapped, on the global every file calls',
+        table.concat(unwrapped, ', '))
+
+    local laterBad, earlierBad, nextBad, againBad, blendBad, fwdBad = {}, {}, {}, {}, {}, {}
+    for _, c in ipairs(CALLS) do
+        local name, kind, go = c[1], c[2], c[3]
+        local label = name .. (c[4] and (' (' .. c[4] .. ')') or '')
+
+        -- LATER IN THE FRAME: the spectate case.
+        local R = rider()
+        R.frame()
+        local culled = #R.polys < R.n
+        local before = #R.camCalls
+        R.later = go
+        R.frame()
+        if not culled then
+            laterBad[#laterBad + 1] = label .. ': precondition, the pose culls nothing'
+        elseif (kind == 'none') == wholeIn(R) then
+            laterBad[#laterBad + 1] = ('%s: %s'):format(label, said(R))
+        end
+        if #R.camCalls ~= before + 1 or R.camCalls[#R.camCalls] ~= name then
+            fwdBad[#fwdBad + 1] = label
+        end
+
+        -- THE FRAME AFTER: whole for a switch, IsCamRendering not consulted yet; a
+        -- cut culls again the frame after that, a blend never on this ride.
+        R.frame()
+        if (kind == 'none') == wholeIn(R) then
+            nextBad[#nextBad + 1] = ('%s: %s'):format(label, said(R))
+        end
+        R.frame()
+        R.frame()
+        if kind == 'blend' then
+            if not wholeIn(R) then blendBad[#blendBad + 1] = ('%s: %s'):format(label, said(R)) end
+            -- A NEW RIDE: a new camera, a pose for it, and the cull is back.
+            R.bus = { cam = CAM + 1, cur = AIM, prev = AIM }
+            R.rendering[CAM + 1] = true
+            R.frame()
+            if wholeIn(R) then
+                blendBad[#blendBad + 1] = ('%s: the next ride still culls nothing, %s')
+                    :format(label, said(R))
+            end
+        elseif wholeIn(R) then
+            againBad[#againBad + 1] = ('%s: %s'):format(label, said(R))
+        end
+
+        -- EARLIER IN THE FRAME: a net event, before the band runs.
+        local E = rider()
+        E.frame()
+        go(E.env)
+        E.frame()
+        if (kind == 'none') == wholeIn(E) then
+            earlierBad[#earlierBad + 1] = ('%s: %s'):format(label, said(E))
+        end
+    end
+    ok(#laterBad == 0, 'a camera switch LATER in the frame than the preview\'s draw -- '
+        .. 'where spectate.camera is -- gives that frame the whole wall, each quad once; '
+        .. 'a camera made inactive gives up nothing', table.concat(laterBad, '; '))
+    ok(#fwdBad == 0, 'and every wrapped call reaches the real native, once',
+        table.concat(fwdBad, '; '))
+    ok(#nextBad == 0, 'the draw after a switch culls nothing, before IsCamRendering '
+        .. 'can be trusted to have caught up', table.concat(nextBad, '; '))
+    ok(#againBad == 0, 'and a switch at once costs the cull that one frame and no more',
+        table.concat(againBad, '; '))
+    ok(#blendBad == 0, 'an eased switch turns the cull off for the rest of that ride, '
+        .. 'and the next ride culls again', table.concat(blendBad, '; '))
+    ok(#earlierBad == 0, 'a camera switch EARLIER in the frame than the draw -- a net '
+        .. 'event -- leaves that frame whole though IsCamRendering still says the bus',
+        table.concat(earlierBad, '; '))
+
+    -- ─── spectate.camera's own three calls, and the engine following them ───
+    do
+        local R = rider()
+        R.frame()
+        local culled = #R.polys < R.n
+        local made = nil
+        R.later = function(e)
+            made = e.CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', 10.0, 20.0, 31.5,
+                0.0, 0.0, 0.0, 50.0, false, 2)
+            e.SetCamActive(made, true)
+            e.RenderScriptCams(true, false, 0, true, true)
+        end
+        R.frame()
+        ok(culled and wholeIn(R),
+            'an admin\'s spectate camera made active mid-ride, by spectate.camera\'s own '
+                .. 'calls after the draw, leaves no hole in that frame\'s wall', said(R))
+        ok(made == 901, 'and the camera handle comes back through the wrapper',
+            tostring(made))
+        R.rendering[CAM] = false
+        R.frame()
+        R.frame()
+        ok(wholeIn(R), 'and while the spectate camera renders, nothing is culled', said(R))
+    end
+
+    -- ─── an eased switch with no ride posed yet holds until one is boarded ───
+    do
+        local R = rider()
+        R.bus = nil
+        R.env.RenderScriptCams(false, true, 1000, true, true)
+        R.frame()
+        R.bus = { cam = CAM, cur = AIM, prev = AIM }
+        R.frame()
+        R.frame()
+        ok(wholeIn(R), 'an eased switch made before a ride has a pose culls nothing on it',
+            said(R))
+        -- BOARDING: bus.lua makes its camera active before it has posed it.
+        R.bus = nil
+        R.env.SetCamActive(CAM, true)
+        R.frame()
+        R.bus = { cam = CAM, cur = AIM, prev = AIM }
+        R.frame()
+        ok(not wholeIn(R), 'and the camera boarding makes active clears it: the ride culls',
+            said(R))
+    end
+end
+
+-- ---------------------------------------------------------------------------
+describe('camera.class')
+do
+    -- ═══ EVERY CAMERA NATIVE br_core'S LUA STATE CALLS IS SORTED, AND NONE OF THE
+    --     SWITCHES CAN GET ROUND THE WRAPPER (#393) ═══
+    --
+    -- `camera.switch` proves what a call through client/storm.lua's wrapper does. This
+    -- proves every call IS one: each file the manifest loads into br_core's client
+    -- state -- br_core's own, br_lib's shared files, the vendored ScaleformUI -- is
+    -- read, and
+    --
+    --   * every global call to a native whose name says camera ("Cam") or player
+    --     switch ("Switch") is either a switch storm.lua wraps or one of NEUTRAL,
+    --     below, each with the reason it never changes which camera renders -- so a
+    --     camera native nobody has thought about fails here, by name and line;
+    --   * a switch is only ever CALLED, or asked whether it exists (`if not X then`,
+    --     `X and X(...)`, `type(X)`). Taken into a local, a table or an argument it
+    --     would be a call the wrapper never sees; assigned to, it would replace it.
+    --
+    -- This is the test that would have caught the review's finding: spectate.lua's
+    -- SetCamActive was a switch storm.lua was never told of.
+    local NEUTRAL = {
+        DoesCamExist = 'a read', GetCamCoord = 'a read', GetRenderingCam = 'a read',
+        GetFinalRenderedCamCoord = 'a read', GetFinalRenderedCamRot = 'a read',
+        GetGameplayCamCoord = 'a read', GetGameplayCamFov = 'a read',
+        GetGameplayCamRot = 'a read', GetGameplayCamRelativeHeading = 'a read',
+        IsCamInterpolating = 'a read', IsCamRendering = 'a read',
+        IsPlayerSwitchInProgress = 'a read', GetPlayerSwitchState = 'a read',
+        SetCamCoord = 'moves a camera; which one renders is unchanged, and the bus\'s '
+            .. 'own is moved only by bus.fly, which keeps the pose it set',
+        PointCamAtCoord = 'aims a camera; likewise',
+        SetGameplayCamRelativeHeading = 'turns the gameplay camera, which the cull '
+            .. 'never trusts and which is not on screen while the bus camera is',
+    }
+    local SWITCHES = newStormClient().env.BR.Storm.CAMERA_SWITCHES
+    ok(type(SWITCHES) == 'table' and next(SWITCHES) ~= nil,
+        'client/storm.lua publishes the natives it wraps')
+    SWITCHES = SWITCHES or {}
+
+    local function slurp(p)
+        local f = io.open(p, 'rb')
+        if not f then return nil end
+        local s = f:read('a')
+        f:close()
+        return s
+    end
+
+    --- The source with comments and string contents blanked, newlines kept, so a
+    --- name in a comment or a message is never read as a call and line numbers hold.
+    local function codeOnly(src)
+        local out, i, n = {}, 1, #src
+        local function blank(s) return (s:gsub('[^\n]', ' ')) end
+        while i <= n do
+            local c = src:sub(i, i)
+            if c == '-' and src:sub(i, i + 1) == '--' then
+                local eq = src:match('^%[(=*)%[', i + 2)
+                if eq then
+                    local close = ']' .. eq .. ']'
+                    local e = src:find(close, i + 4 + #eq, true) or n
+                    out[#out + 1] = blank(src:sub(i, e + #close - 1))
+                    i = e + #close
+                else
+                    local e = src:find('\n', i, true) or (n + 1)
+                    out[#out + 1] = blank(src:sub(i, e - 1))
+                    i = e
+                end
+            elseif c == '"' or c == "'" then
+                local j = i + 1
+                while j <= n do
+                    local d = src:sub(j, j)
+                    if d == '\\' then j = j + 2
+                    elseif d == c or d == '\n' then break
+                    else j = j + 1 end
+                end
+                out[#out + 1] = c .. blank(src:sub(i + 1, j - 1)) .. c
+                i = j + 1
+            elseif c == '[' and src:match('^%[=*%[', i) then
+                local eq = src:match('^%[(=*)%[', i)
+                local close = ']' .. eq .. ']'
+                local e = src:find(close, i + 2 + #eq, true) or n
+                out[#out + 1] = blank(src:sub(i, e + #close - 1))
+                i = e + #close
+            else
+                local j = src:find('[%-"\'%[]', i + 1) or (n + 1)
+                out[#out + 1] = src:sub(i, j - 1)
+                i = j
+            end
+        end
+        return table.concat(out)
+    end
+
+    --- Every camera-named global in `code`: calls to unsorted natives, and switches
+    --- used as something other than a call or an existence check.
+    --- @param skipFrom integer|nil  @param skipTo integer|nil  a span not read
+    local function scan(code, label, skipFrom, skipTo)
+        local unknown, escaped, calls = {}, {}, 0
+        for s, name, e in code:gmatch('()([%a_][%w_]*)()') do
+            if name:match('^%u') and not name:match('^[%u%d_]+$')
+                and (name:find('Cam', 1, true) or name:find('Switch', 1, true))
+                and not (skipFrom and s > skipFrom and s < skipTo) then
+                local before = code:sub(math.max(1, s - 40), s - 1)
+                local prevCh = before:match('(%S)%s*$')
+                if prevCh ~= '.' and prevCh ~= ':' then
+                    local line = select(2, code:sub(1, s):gsub('\n', '')) + 1
+                    local where = ('%s:%d %s'):format(label, line, name)
+                    local nextCh = code:match('^%s*(.)', e)
+                    if nextCh == '(' then
+                        calls = calls + 1
+                        if SWITCHES[name] == nil and NEUTRAL[name] == nil then
+                            unknown[#unknown + 1] = where
+                        end
+                    elseif SWITCHES[name] ~= nil then
+                        local after = code:match('^%s*([%w_=~]+)', e) or ''
+                        local prevWord = before:match('([%w_]+)%s*$')
+                        local guard = false
+                        if before:match('type%s*%(%s*$') and nextCh == ')' then
+                            guard = true
+                        elseif prevCh == '=' or prevCh == ',' or prevCh == '{'
+                            or prevCh == '(' or prevWord == 'return' then
+                            guard = false
+                        elseif after == 'then' or after == 'and' or after == 'or'
+                            or after:sub(1, 2) == '==' or after:sub(1, 2) == '~=' then
+                            guard = true
+                        end
+                        if not guard then escaped[#escaped + 1] = where end
+                    end
+                end
+            end
+        end
+        return unknown, escaped, calls
+    end
+
+    -- The manifest's client state, in its own order, resolved as perf_client does.
+    local man = slurp(RES .. 'br_core/fxmanifest.lua') or ''
+    local files, unresolved = {}, {}
+    for _, block in ipairs({ 'shared_scripts', 'client_scripts' }) do
+        local body = man:match(block .. '%s*(%b{})') or ''
+        for line in body:gmatch('[^\n]+') do
+            local entry = line:match("^%s*'([^']+)'")
+            if entry then
+                local res, path = entry:match('^@([^/]+)/(.+)$')
+                local found = nil
+                if not res then
+                    found = RES .. 'br_core/' .. entry
+                else
+                    for _, g in ipairs({ '[fivem-royale]', '[scaleformui]', '[voice]' }) do
+                        local p = 'resources/' .. g .. '/' .. res .. '/' .. path
+                        if slurp(p) then found = p break end
+                    end
+                end
+                if found and slurp(found) then files[#files + 1] = found
+                else unresolved[#unresolved + 1] = entry end
+            end
+        end
+    end
+    ok(#files > 60 and #unresolved == 0,
+        'every file the manifest loads into the client state is read',
+        ('%d read, unresolved: %s'):format(#files, table.concat(unresolved, ', ')))
+
+    local unknown, escaped, calls, sawStorm = {}, {}, 0, false
+    for _, f in ipairs(files) do
+        local code = codeOnly(slurp(f))
+        local label = f:match('([^/]+/[^/]+)$') or f
+        -- storm.lua's own table of the names is the one place they are keys.
+        local from, to = nil, nil
+        if f:find('br_core/client/storm.lua', 1, true) then
+            sawStorm = true
+            from = code:find('local CAMERA_SWITCHES = {', 1, true)
+            to = from and code:find('\n}', from, true)
+        end
+        local u, x, n = scan(code, label, from, to)
+        for _, w in ipairs(u) do unknown[#unknown + 1] = w end
+        for _, w in ipairs(x) do escaped[#escaped + 1] = w end
+        calls = calls + n
+    end
+    ok(sawStorm and calls > 50, 'the reading finds client/storm.lua and the camera calls',
+        ('%d camera calls'):format(calls))
+    ok(#unknown == 0, 'every camera native br_core calls is a switch client/storm.lua '
+        .. 'wraps or one that never changes which camera renders', table.concat(unknown, '; '))
+    ok(#escaped == 0, 'and no switch is taken where the wrapper cannot see it, or replaced',
+        table.concat(escaped, '; '))
+
+    -- AND THE READING CAN FAIL.
+    local _, x1 = scan(codeOnly('local activate = SetCamActive\nactivate(cam, true)\n'), 't')
+    ok(#x1 == 1, 'a switch taken into a local is caught', table.concat(x1, ', '))
+    local _, x2 = scan(codeOnly('RenderScriptCams = function() end\n'), 't')
+    ok(#x2 == 1, 'and so is one replaced', table.concat(x2, ', '))
+    local _, x3 = scan(codeOnly('BR.later(DestroyCam)\n'), 't')
+    ok(#x3 == 1, 'and one handed to something else to call', table.concat(x3, ', '))
+    local u4 = scan(codeOnly('StopRenderingScriptCamsUsingCatchUp(false, 0.0, 3)\n'), 't')
+    ok(#u4 == 1, 'and a camera native nobody has sorted', table.concat(u4, ', '))
+    local u5, x5 = scan(codeOnly('-- SetCamActive = nil\nlocal s = "RenderScriptCams = 1"\n'
+        .. 'if not CreateCamWithParams then return end\n'
+        .. 'if type(SetCamActive) ~= "function" then return end\n'), 't')
+    ok(#u5 == 0 and #x5 == 0, 'while a comment, a string or an existence check is not',
+        table.concat(u5, ', ') .. ' / ' .. table.concat(x5, ', '))
 end
 
 -- ---------------------------------------------------------------------------
