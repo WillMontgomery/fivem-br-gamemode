@@ -347,9 +347,12 @@ function BR.Market.load(src)
         -- THE YUBIKEY (#396, Season 2) rides this same read: two booleans on
         -- the profile row, handed to server/yubikey.lua rather than cached
         -- here, because nothing in the market sells, equips or shows one. A
-        -- failed read hands over nil, which is no key. Nil-guarded: test_volts
-        -- and test_tutorial load this file without it.
-        if BR.Yubikey and BR.Yubikey.loaded then BR.Yubikey.loaded(src, lic, i) end
+        -- FAILED READ GOES OVER AS ONE, with its `extra` (round 6): br_ddb
+        -- answers a read it could not make with the empty inventory, which
+        -- reads exactly like "no key", and a reconnect would lose the key this
+        -- session knew it held. Nil-guarded: test_volts and test_tutorial load
+        -- this file without it.
+        if BR.Yubikey and BR.Yubikey.loaded then BR.Yubikey.loaded(src, lic, i, extra) end
 
         -- ═══ AND THE OFFER, NOW THAT WE KNOW WHETHER TO MAKE IT (#261) ═══
         --

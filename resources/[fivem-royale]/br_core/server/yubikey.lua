@@ -20,8 +20,15 @@
 --     it can do and how to use it." -- since round 5 (2026-10-06) the owner's
 --     own words on a tutorial-style card the player dismisses with Enter
 --     (YUBIKEY_STATE's `first`; br_core/client/yubikey.lua shows it).
---   * Leaving a match alive is UNDECIDED: BR.Config.Terminals.leaveDrops,
---     default true -- it drops where they stood, like a death.
+--   * Leaving a match alive keeps the key since round 6 (2026-10-07: "the
+--     ownership of an unused Yubikey doesn't actually persist between
+--     matches as it should"): BR.Config.Terminals.leaveDrops, default false.
+--     True drops it where they stood, like a death.
+--   * AND NOTHING TAKES A KEY ONCE ITS MATCH IS DECIDED (round 6): a death, a
+--     walk-out or a disconnect in the verdict's seconds -- the winners are
+--     still ALIVE until the sweep sends them home -- or at cleanup leaves the
+--     key with its holder. Dropped there, it lay in loot the match was about
+--     to clear, where nobody could pick it up. See `fighting` below.
 --
 -- ═══ WHERE IT LIVES ═══
 --
@@ -68,6 +75,17 @@ local function on()
     return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('terminals') == true
 end
 Y.on = on
+
+--- Is this match still being fought -- the bus or the round itself? A key
+--- leaves its holder by a death or a leave ONLY in a match that is: from the
+--- verdict on (ENDED, CLEANUP) the ground it would drop on is loot about to be
+--- cleared, and the player keeps what they finished the match holding (round
+--- 6). Warmup is not the match either; its doors already say so.
+--- @param m table|nil
+--- @return boolean
+local function fighting(m)
+    return m ~= nil and (m.state == BR.MatchState.BUS or m.state == BR.MatchState.PLAYING)
+end
 
 --- license -> { held, seen, loaded }
 local keys = {}
@@ -172,15 +190,33 @@ function Y.push(src, first)
 end
 
 --- The profile arrived (BR.Market.load's one connect read).
+---
+--- A FAILED READ IS NOT AN EMPTY ROW (round 6). br_ddb answers a read it could
+--- not make with the empty inventory and an `error`, and the market a read
+--- that never came back (br_ddb down, the 6 s timeout) with nil -- and both
+--- used to replace this account's entry with "no key". On a reconnect that is
+--- the key this session already knew it held, gone for the session. A failed
+--- read now keeps what this session knows of the account; one it has never
+--- seen holds nothing, as before, so a pickup still works (and its write,
+--- refused by a row that does hold one, leaves both saying held).
 --- @param src integer
 --- @param lic string
 --- @param i table|nil  br_ddb's inventory answer, or nil when it failed
-function Y.loaded(src, lic, i)
+--- @param extra table|nil  the read's extra answer; `error` when it failed
+function Y.loaded(src, lic, i, extra)
     if type(lic) ~= 'string' or lic == '' then return end
     licenseOf[src] = lic
+    local failed = type(i) ~= 'table' or (type(extra) == 'table' and extra.error ~= nil)
+    if failed and keys[lic] and keys[lic].loaded then
+        print(("[br_core] yubikey: %s's profile read failed (%s) -- keeping this session's "
+            .. 'answer, %s'):format(lic, tostring(type(extra) == 'table' and extra.error or 'no answer'),
+            keys[lic].held and 'a key held' or 'no key'))
+        Y.push(src)
+        return
+    end
     keys[lic] = {
-        held = type(i) == 'table' and i.yubikey == true,
-        seen = type(i) == 'table' and i.yubikeySeen == true,
+        held = not failed and i.yubikey == true,
+        seen = not failed and i.yubikeySeen == true,
         loaded = true,
     }
     Y.push(src)
@@ -341,6 +377,12 @@ end
 function Y.onEliminated(m, src, cause)
     if not on() or not Y.holds(src) then return end
     if cause == 'left' and cfg().leaveDrops ~= true then return end
+    if not fighting(m) then
+        print(('[br_core] yubikey: %s (%d) keeps their key (%s with match %s already %s)')
+            :format(GetPlayerName(src) or '?', src, tostring(cause), tostring(m and m.id),
+                tostring(m and m.state)))
+        return
+    end
     dropFor(m, src, BR.Roster.get(src), cause == 'left' and 'left' or 'died')
 end
 
@@ -367,7 +409,8 @@ function Y.leaving(src, e)
     if not inFight or not Y.holds(src) then return end
     if cfg().leaveDrops ~= true then return end
     local m = BR.Server.matchById and BR.Server.matchById(e.matchId) or nil
-    if not m then return end
+    -- The verdict's seconds: a winner still ALIVE quitting before the sweep.
+    if not fighting(m) then return end
     dropFor(m, src, e, 'left')
 end
 

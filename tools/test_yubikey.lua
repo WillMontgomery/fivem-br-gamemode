@@ -138,6 +138,8 @@ loadAll({
 local R = BR.Rarity
 local CT = BR.Config.Terminals
 local COPY = CT.copy
+--- The shipped switch, put back by every reset: false since round 6.
+local SHIPPED_LEAVE_DROPS = CT.leaveDrops
 BR.Season.strict = true
 
 -- =========================================================================
@@ -402,7 +404,7 @@ local function reset()
     roster, matches = {}, {}
     gameMs = gameMs + 100000
     resources = { br_ddb = 'started' }
-    CT.leaveDrops = true
+    CT.leaveDrops = SHIPPED_LEAVE_DROPS
 end
 
 --- server/terminal.lua caches the config sites on first read; this suite sets
@@ -610,13 +612,47 @@ do
     eq(#groundKeys(m), before, 'a player with no key drops none')
 end
 
-describe('the key: leaving alive drops it too, while leaveDrops says so')
+describe('round 6: leaving alive KEEPS the key -- only a use or a death takes one')
 do
+    -- Owner, 2026-10-07: "Seems the ownership of an unused Yubikey doesn't
+    -- actually persist between matches as it should." A walk-out (Leave Match,
+    -- `brleave` -- the way a dev box's match is left) dropped it until round 6.
     reset()
+    eq(CT.leaveDrops, false, 'the shipped switch: a leaver keeps the key')
     local m = newMatch(1)
     player(1, m, nil, C0, true, true)
     Y.onEliminated(m, 1, 'left')
-    eq(#groundKeys(m), 1, 'walking out mid-match (eliminate \'left\') drops it, by default')
+    eq(#groundKeys(m), 0, 'walking out mid-match (eliminate \'left\') drops nothing')
+    eq(Y.holds(1), true, 'and the leaver still holds it')
+    eq(#writes, 0, 'and the profile row is not touched')
+
+    -- The disconnect: BR.Roster.remove hands the entry over before it goes.
+    player(2, m, nil, C0, true, true)
+    Y.leaving('2', roster[2])
+    eq(#groundKeys(m), 0, 'a disconnect mid-fight drops nothing')
+    eq(Y.holds(2), true, 'and the key is still theirs')
+
+    -- And into the next match with them.
+    local m2 = newMatch(2)
+    roster[1].matchId = m2.id
+    roster[1].state = BR.PlayerState.ALIVE
+    eq(Y.holds(1), true, 'the leaver walks into the next match holding it')
+
+    -- A death still drops it: the owner's rule.
+    player(3, m, nil, C0, true, true)
+    Y.onEliminated(m, 3, 'shot')
+    eq(Y.holds(3), false, 'a death still takes it')
+    eq(#groundKeys(m), 1, 'and drops it where they stood')
+end
+
+describe('the key: with leaveDrops on, leaving alive drops it, like a death')
+do
+    reset()
+    CT.leaveDrops = true
+    local m = newMatch(1)
+    player(1, m, nil, C0, true, true)
+    Y.onEliminated(m, 1, 'left')
+    eq(#groundKeys(m), 1, 'walking out mid-match (eliminate \'left\') drops it')
     eq(Y.holds(1), false, 'and the leaver does not keep it')
 
     -- The disconnect: BR.Roster.remove hands the entry over before it goes.
@@ -634,15 +670,83 @@ do
     Y.leaving(3, roster[3])
     eq(Y.holds(3), true, 'nor does a player already out drop anything on leaving')
 
-    -- THE SWITCH: false lets a leaver keep it.
+    -- And the switch is read where it is asked.
     CT.leaveDrops = false
     player(4, m, nil, C0, true, true)
     Y.onEliminated(m, 4, 'left')
     Y.leaving(4, roster[4])
-    eq(Y.holds(4), true, 'with leaveDrops = false, a leaver keeps the key')
+    eq(Y.holds(4), true, 'turned off again, a leaver keeps the key')
     Y.onEliminated(m, 4, 'shot')
     eq(Y.holds(4), false, 'but a death still drops it')
-    CT.leaveDrops = true
+end
+
+describe('round 6: nothing takes a key once the match is decided -- it is kept, not dropped into a finished match')
+do
+    -- The winners are ALIVE through the verdict until the sweep sends them
+    -- home (server/match.lua), so every way out ran there: Leave Match in the
+    -- verdict's seconds is eliminate('left'), quitting the game is a
+    -- disconnect, and a late death report still reaches eliminate. The key
+    -- landed in loot CLEANUP was about to clear.
+    for _, state in ipairs({ BR.MatchState.ENDED, BR.MatchState.CLEANUP }) do
+        reset()
+        CT.leaveDrops = true            -- even with leaving set to drop
+        local m = newMatch(1)
+        m.state = state
+        player(1, m, nil, C0, true, true)
+        player(2, m, nil, C0, true, true)
+        player(3, m, nil, C0, true, true)
+        Y.onEliminated(m, 1, 'left')
+        Y.leaving(2, roster[2])
+        Y.onEliminated(m, 3, 'shot')
+        eq(#groundKeys(m), 0, ('%s: no key is dropped'):format(state))
+        ok(Y.holds(1) and Y.holds(2) and Y.holds(3),
+            ('%s: a walk-out, a disconnect and a late death all keep theirs'):format(state))
+        eq(#writes, 0, ('%s: and no profile row is written'):format(state))
+        ok(said('keeps their key'), ('%s: the console says why'):format(state))
+    end
+    -- The same three in a match still being fought, for contrast.
+    for _, state in ipairs({ BR.MatchState.BUS, BR.MatchState.PLAYING }) do
+        reset()
+        CT.leaveDrops = true
+        local m = newMatch(1)
+        m.state = state
+        player(1, m, nil, C0, true, true)
+        Y.onEliminated(m, 1, 'shot')
+        eq(Y.holds(1), false, ('%s: a death drops it'):format(state))
+        eq(#groundKeys(m), 1, ('%s: on the ground'):format(state))
+    end
+end
+
+describe('round 6: a failed profile read keeps the key this session knows, on a reconnect')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, nil, C0, true, true)
+    eq(Y.holds(1), true, 'a holder')
+    fire('playerDropped', 1)
+    roster[1] = nil
+    -- br_ddb could not read the row: the empty inventory, and `error`.
+    local empty = { balance = 0, yubikey = false, yubikeySeen = false }
+    Y.loaded(5, LIC[1], empty, { error = 'ProvisionedThroughputExceeded' })
+    roster[5] = { src = 5, name = 'p5', state = BR.PlayerState.LOBBY }
+    eq(Y.holds(5), true, 'reconnecting through a failed read, they still hold it')
+    ok(said('profile read failed'), 'and the console says the read failed and what was kept')
+    -- And the market's own failure: no answer at all.
+    fire('playerDropped', 5)
+    Y.loaded(6, LIC[1], nil, { error = 'timed out' })
+    roster[6] = { src = 6, name = 'p6', state = BR.PlayerState.LOBBY }
+    eq(Y.holds(6), true, 'a read that never came back keeps it too')
+    -- A read that WORKED is the truth, whatever this session thought.
+    fire('playerDropped', 6)
+    Y.loaded(7, LIC[1], { yubikey = false, yubikeySeen = true }, {})
+    roster[7] = { src = 7, name = 'p7', state = BR.PlayerState.LOBBY }
+    eq(Y.holds(7), false, 'a read that worked replaces it (the row said no key)')
+    -- An account this session never saw holds nothing on a failed read.
+    Y.loaded(8, 'license:never', empty, { error = 'boom' })
+    roster[8] = { src = 8, name = 'p8', state = BR.PlayerState.LOBBY }
+    eq(Y.holds(8), false, 'a failed read for an account never seen holds nothing')
+    local ok8 = Y.give(8, 'pickup')
+    eq(ok8, true, 'and can still pick one up')
 end
 
 describe('the key: profile writes are a log line when they fail, never a refusal')
@@ -2170,8 +2274,8 @@ end
 describe('the hooks the rest of br_core makes')
 do
     local market = readFile(ROOT .. 'br_core/server/market.lua') or ''
-    ok(market:find('BR.Yubikey.loaded(src, lic, i)', 1, true) ~= nil,
-        'market.lua hands the connect read to BR.Yubikey.loaded')
+    ok(market:find('BR.Yubikey.loaded(src, lic, i, extra)', 1, true) ~= nil,
+        'market.lua hands the connect read to BR.Yubikey.loaded, a failed one marked as failed')
     ok(market:find('BR.Yubikey.adopt(src, lic)', 1, true) ~= nil,
         'and a cached reconnect to BR.Yubikey.adopt')
 

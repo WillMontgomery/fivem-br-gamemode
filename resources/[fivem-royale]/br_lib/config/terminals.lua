@@ -1362,12 +1362,17 @@ BR.Config.Terminals = {
 
     -- ═══ LEAVING A MATCH ALIVE ═══
     --
-    -- UNDECIDED (#396): the owner has not ruled. True -- the default, as
-    -- proposed on the issue -- drops a held key where the leaver stood, like
-    -- a death, so quitting is not a way to keep a key you were about to lose.
-    -- False lets a leaver keep it. Covers both walking out (Leave Match) and
-    -- disconnecting mid-match.
-    leaveDrops = true,
+    -- A LEAVER KEEPS THE KEY since round 6 (owner, 2026-10-07: "Seems the
+    -- ownership of an unused Yubikey doesn't actually persist between
+    -- matches as it should"). It was true from #396, as proposed on the
+    -- issue while the owner had not ruled: a held key dropped where the
+    -- leaver stood, like a death. But walking out is how a match is left on
+    -- a dev box (Leave Match, `brleave`), and it is not a use -- so his
+    -- unused key stayed behind in a match he had left. Only a use and a
+    -- death take a key now. True puts the drop back, for both walking out
+    -- and disconnecting mid-match; quitting is then not a way to keep a key
+    -- you were about to lose.
+    leaveDrops = false,
 
     -- ═══ THE TERMINALS (owner, 2026-10-06) ═══
     --

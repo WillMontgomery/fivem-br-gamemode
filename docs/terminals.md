@@ -744,11 +744,25 @@ The owner's rules (#396, 2026-10-04), and where each lives:
   plate behind it, while the HUD envelope's `yubikey` (the glyph) says one is
   held; the squad panel's mark (the glyph) beside every squadmate who holds
   one (several can).
-- **Carried into the next match** unused: the row still says so.
+- **Carried into the next match** unused: the row still says so. Only a use
+  and a death take one (round 6, owner 2026-10-07: "the ownership of an unused
+  Yubikey doesn't actually persist between matches as it should"):
+  - a holder who **leaves mid-fight** -- walking out (Leave Match, `brleave`,
+    the way a dev box's match is left) or disconnecting -- keeps it while
+    `leaveDrops` is false, the default since round 6 (it was true, dropping
+    it like a death, while the owner had not ruled);
+  - **nothing takes a key once its match is decided**: the winners are ALIVE
+    through the verdict until the sweep sends them home, so a walk-out, a
+    disconnect or a late death report there used to drop the key into loot
+    CLEANUP was about to clear. From ENDED on, the holder keeps it, whatever
+    `leaveDrops` says;
+  - **a failed profile read keeps what the session knows**: br_ddb answers a
+    read it could not make with the empty inventory, which reads as "no key",
+    so a reconnect through one lost the key for the session. The market hands
+    the read's `extra` over, and a failed read keeps the account's entry.
 - **Dropped where its holder dies**, on the death box's edge
-  (`server/combat.lua`), and where a holder **leaves mid-fight** -- walking out
-  or disconnecting -- while `leaveDrops` is true. That is UNDECIDED; true is the
-  default, as proposed on the issue.
+  (`server/combat.lua`), in a match still being fought (the bus or PLAYING),
+  and where a holder leaves mid-fight while `leaveDrops` is true.
 - **Sources**: an EXTRA item rolled as a container opens, on its own stream, so
   the box's own contents do not move -- `airdropChance` (0.5) per airdrop and
   `crateChance` per crate, any tier (round 5, owner 2026-10-06: "We should
