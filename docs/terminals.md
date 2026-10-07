@@ -847,9 +847,15 @@ stops; `tools/verify.sh` allows the two natives (by name and by hash) in
 blackout every second while it is on, which is why `server.cfg.example` keeps
 it off.
 
-**Daytime, mostly.** A match runs from noon at the slow clock's rate -- about
-17:00 by its end -- so an outage barely shows unless Time & weather has made
-it dusk or night.
+**Only on a terminal's night** (round 4, owner 2026-10-06: "The power outage
+tool should only work if someone else has set it to night time first"). A
+match runs from noon at the slow clock's rate -- about 17:00 by its end -- so
+its own clock never makes a night. Power outage is refused, spending nothing
+(`no_night`), unless the last Time & weather time run chose night and its
+anchor is still the match's clock (`BR.Terminal.terminalNight`): a weather run
+after it keeps the night, a later day or dusk run ends it, and so does the
+match's end. Asked again when the load ends, like every refusal. An outage
+already running is not ended by a later day.
 
 ## Dev
 

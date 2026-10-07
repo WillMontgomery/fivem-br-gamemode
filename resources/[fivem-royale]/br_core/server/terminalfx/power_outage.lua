@@ -20,6 +20,15 @@
 --   county  on it or above it
 -- Several outages can run at once; a player in any of them is in the dark.
 --
+-- ONLY ON A TERMINAL'S NIGHT (round 4, owner 2026-10-06): "The power outage
+-- tool should only work if someone else has set it to night time first". A
+-- match runs from noon, so its own clock never makes a night; refused, spending
+-- nothing (`no_night`), unless a Time & weather run has set night and its
+-- clock still stands (BR.Terminal.terminalNight). Asked again when the loading
+-- is over, so a day or dusk run landing meanwhile refunds it. An outage
+-- already running is not ended by a later day: it is a switch on the lights,
+-- not on the clock.
+--
 -- THE SERVER KEEPS THE CLOCK AND ENDS IT: TERMINAL_POWER sends the match the
 -- live areas when one starts and whenever one ends -- its time up, the match no
 -- longer PLAYING, or off Season 2 -- on a pass every fx.worldCheckMs, and to a
@@ -105,11 +114,12 @@ end
 
 T.FUNCTIONS.power_outage = {
     -- Every choice has an area wherever the session is (a terminal always has
-    -- a site), so only a match is asked for. A dev terminal outside a match is
-    -- never refused.
+    -- a site), so a match is asked for, and its night (above). A dev terminal
+    -- outside a match is never refused.
     refuse = function(src, session)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
+        if not (T.terminalNight and T.terminalNight(m)) then return 'no_night' end
         return nil
     end,
     run = function(src, session, opts)

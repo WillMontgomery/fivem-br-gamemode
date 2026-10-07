@@ -1228,10 +1228,97 @@ local function powerSends(src)
     return eventsOf(BR.Net.TERMINAL_POWER, src)
 end
 
+--- A night a Time & weather run set (round 4: Power outage works only on
+--- one): the match given a clock, then a time run's night. Returns the match.
+local function night(m)
+    stampClock(m)
+    T.startSky(m, { change = 'time', time = 'night' }, gameMs)
+    return m
+end
+
+describe('Power outage: only on a night a Time & weather run set (round 4)')
+do
+    -- THE OWNER (2026-10-06): "The power outage tool should only work if
+    -- someone else has set it to night time first".
+    reset()
+    local m = lobby('squad', 3)
+    stampClock(m)
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    local f = listed(1, 'power_outage')
+    ok(f and f.available == false and f.reason == 'no_night',
+        "the match's own clock: the card says no_night", f and tostring(f.reason))
+    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    ok(r and r.ok == false and r.code == 'no_night', 'and a run is refused no_night', r and r.code)
+    eq(r and r.toast, COPY.no_night, 'in its line')
+    nothingSpent(1, 'no night')
+    eq(m.terminalPower, nil, 'and no outage starts')
+
+    -- A WEATHER RUN IS NO NIGHT; NOR ARE DAY AND DUSK.
+    T.startSky(m, { change = 'weather', weather = 'fog' }, gameMs)
+    r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    eq(r and r.code, 'no_night', 'a weather run alone: still no_night')
+    for _, t in ipairs({ 'day', 'dusk' }) do
+        T.startSky(m, { change = 'time', time = t }, gameMs)
+        r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+        eq(r and r.code, 'no_night', t .. ': no_night')
+    end
+    nothingSpent(1, 'day and dusk')
+
+    -- NIGHT: it runs -- and a weather run after the night keeps it night.
+    T.startSky(m, { change = 'time', time = 'night' }, gameMs)
+    T.startSky(m, { change = 'weather', weather = 'clear' }, gameMs)
+    ok(T.terminalNight(m), 'a weather run after a night keeps the night')
+    r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    ok(r and r.ok == true and r.code == 'done', 'on the night: it runs', r and r.code)
+    eq(#T.outagesOf(m), 1, 'and the outage is live')
+    -- A LATER DAY DOES NOT END A RUNNING OUTAGE: it is a switch on the lights.
+    T.startSky(m, { change = 'time', time = 'day' }, gameMs)
+    ok(not T.terminalNight(m), 'a later day run ends the night')
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    eq(#T.outagesOf(m), 1, 'but not the outage already running')
+
+    -- THE NIGHT IS OVER WHEN THE MATCH IS: its own clock comes back.
+    reset()
+    m = night(lobby('squad', 3))
+    ok(T.terminalNight(m), 'night')
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    ok(not T.terminalNight(m), "the match's end puts its own clock back: no night")
+
+    -- AND A CLOCK SOMETHING ELSE STAMPED (a `brforce` back to warmup draws the
+    -- match a new one) is no terminal's night, whatever the record still says.
+    reset()
+    m = night(lobby('squad', 3))
+    stampClock(m, gameMs)
+    ok(m.terminalSky and m.terminalSky.time == 'night' and not T.terminalNight(m),
+        "the record says night, but the match's clock is not that run's: no night")
+
+    -- THE END OF THE LOAD: a day landing while it loads gives everything back.
+    reset()
+    m = night(lobby('squad', 3))
+    r = runAt(1, 'power_outage', { area = 'here', duration = '120' }, true)
+    eq(r and r.code, 'running', 'accepted on the night')
+    T.startSky(m, { change = 'time', time = 'dusk' }, gameMs)
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'no_night', 'a dusk run meanwhile: no_night at the end', r and r.code)
+    nothingSpent(1, 'refunded')
+    eq(m.terminalPower, nil, 'and no outage was started')
+
+    -- THE PAGE SAYS SO.
+    ok(COPY.power_outage_what:find('made it night with ' .. COPY.time_weather_name, 1, true) ~= nil,
+        'the page says it needs a night from ' .. COPY.time_weather_name)
+    ok(COPY.no_night:find(COPY.time_weather_name, 1, true) ~= nil, 'and so does the reason')
+    ok(COPY.power_outage_summary:find('at night', 1, true) ~= nil, 'and the card')
+end
+
 describe('Power outage: around this terminal, to the whole match')
 do
     reset()
-    local m = lobby('squad', 3)
+    local m = night(lobby('squad', 3))
     local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
     ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
     eq(r and r.toast, COPY.power_outage_done, 'and says the page\'s done line')
@@ -1252,7 +1339,7 @@ end
 describe('Power outage: around the terminal, not the player standing at it')
 do
     reset()
-    local m = lobby('squad', 3)
+    local m = night(lobby('squad', 3))
     roster[1].pos = { x = SITE.x + 2.0, y = SITE.y - 1.0, z = 30.0 }
     local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
     ok(r and r.ok == true, 'it runs from two meters off', r and r.code)
@@ -1266,7 +1353,7 @@ do
     eq(BR.StormCityLine(), BR.Config.Storm.anchorRegion.cityMaxY, 'the line is the anchor\'s own (#381)')
     for _, choice in ipairs({ 'city', 'county' }) do
         reset()
-        local m = lobby('squad', 3)
+        local m = night(lobby('squad', 3))
         runAt(1, 'power_outage', { area = choice, duration = '240' })
         local a = T.outagesOf(m)[1].area
         ok(a.kind == choice and a.line == BR.StormCityLine(), choice .. ': by the city line')
@@ -1353,7 +1440,7 @@ end
 describe('Power outage: it ends, one at a time, and with the match and the season')
 do
     reset()
-    local m = lobby('squad', 3)
+    local m = night(lobby('squad', 3))
     runAt(1, 'power_outage', { area = 'here', duration = '120' })
     roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
     keys[3] = true
@@ -1375,7 +1462,7 @@ do
     eq(#powerSends(4), n, 'then nothing more is sent')
 
     reset()
-    m = lobby('squad', 3)
+    m = night(lobby('squad', 3))
     runAt(1, 'power_outage', { area = 'city', duration = '240' })
     m.state = BR.MatchState.ENDED
     gameMs = gameMs + 1000
@@ -1384,7 +1471,7 @@ do
     eq(#powerSends(2)[#powerSends(2)].payload.list, 0, 'with the lights back for everyone')
 
     reset()
-    m = lobby('squad', 3)
+    m = night(lobby('squad', 3))
     runAt(1, 'power_outage', { area = 'city', duration = '240' })
     season(1)
     gameMs = gameMs + 1000
@@ -1396,7 +1483,7 @@ end
 describe('Power outage: a client that restarts is sent the live areas')
 do
     reset()
-    lobby('squad', 3)
+    night(lobby('squad', 3))
     runAt(1, 'power_outage', { area = 'here', duration = '120' })
     sent = {}
     fire(BR.Net.READY, 4)
@@ -1407,7 +1494,7 @@ end
 describe('Power outage: the match ending while it loads gives everything back; the dev path')
 do
     reset()
-    local m = lobby('squad', 3)
+    local m = night(lobby('squad', 3))
     local r = runAt(1, 'power_outage', { area = 'here', duration = '120' }, true)
     eq(r and r.code, 'running', 'accepted')
     m.state = BR.MatchState.ENDED
@@ -1418,7 +1505,7 @@ do
     eq(m.terminalPower, nil, 'and no outage was started')
 
     reset()
-    m = lobby('squad', 3)
+    m = night(lobby('squad', 3))
     keys[1] = false
     sv(1, 'run power_outage area=county duration=240')
     local a = T.outagesOf(m)[1]

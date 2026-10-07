@@ -83,6 +83,21 @@ function T.skyOf(m)
     return m and m.terminalSky or nil
 end
 
+--- IS IT A TERMINAL'S NIGHT IN THIS MATCH RIGHT NOW? Power outage's one
+--- question (round 4, owner 2026-10-06: "The power outage tool should only
+--- work if someone else has set it to night time first"): the last time run
+--- chose `night`, and its anchor is still the match's clock -- not taken back
+--- by the match's end, and not replaced by a later run's day or dusk. A
+--- weather run in between keeps it (it changes no time). The clock runs on
+--- from midnight at the match's own rate, so it is still night when the match
+--- ends (#394: an hour of game time every five minutes).
+--- @param m table|nil
+--- @return boolean
+function T.terminalNight(m)
+    local sky = m and m.terminalSky or nil
+    return sky ~= nil and sky.time == 'night' and sky.anchor ~= nil and m.clock == sky.anchor
+end
+
 --- Change the match's time of day or its weather, for the rest of the match:
 --- the one `opts.change` names, the other left as it stands.
 --- @param m table

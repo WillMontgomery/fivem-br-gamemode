@@ -457,6 +457,11 @@ BR.Config.Terminals = {
         -- has an elimination yet -- refused, spending nothing.
         no_target = 'Nobody outside your squad has an elimination yet.',
         no_target_solo = 'Nobody else has an elimination yet.',
+        -- WRITTEN (2026-10-06, round 4). Power outage, when the match is not
+        -- on a night a Time & weather run set (owner: "only work if someone
+        -- else has set it to night time first") -- refused, spending nothing
+        -- (at the terminal: why not).
+        no_night = 'This only works after someone has made it night with Time & weather.',
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -649,20 +654,23 @@ BR.Config.Terminals = {
         time_weather_done = 'Your change is made. It lasts until the match ends.',
         time_weather_description = 'Time & weather. The sky has changed.',
 
-        -- Power outage (owner's; LIVE since wave B, 2026-10-06)
+        -- Power outage (owner's; LIVE since wave B, 2026-10-06; ROUND 4, the
+        -- same day: "The power outage tool should only work if someone else
+        -- has set it to night time first")
         power_outage_name = 'Power outage',
-        -- WRITTEN (2026-10-06, wave B review; was 'Turns the lights off in an
-        -- area for a while.'). The lights go off for the players in the area,
-        -- not for the area itself (power_outage_what says why), so the card,
-        -- the done line and the lobby's notice say whose lights go out.
-        power_outage_summary = 'Turns the lights off for every player in an area for a while.',
-        -- WRITTEN (2026-10-06, wave B; was "Street lights, building lights and
-        -- signs go dark in the area you choose. / Vehicle headlights still
-        -- work. / The lights come back when it ends."). The game's blackout is
-        -- one switch per player for the whole map, not per district: a player
-        -- in the area sees every light go dark, and a player outside it keeps
-        -- every light, the area's included. The line says so.
-        power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.",
+        -- WRITTEN (2026-10-06, round 4; was 'Turns the lights off for every
+        -- player in an area for a while.'). The lights go off for the players
+        -- in the area, not for the area itself (power_outage_what says why),
+        -- so the card, the done line and the lobby's notice say whose lights
+        -- go out -- and, since round 4, that it is a night's.
+        power_outage_summary = 'Turns the lights off at night for every player in an area for a while.',
+        -- WRITTEN (2026-10-06, round 4: the last line is new; wave B's was
+        -- "Street lights, building lights and signs go dark in the area you
+        -- choose. / ..."). The game's blackout is one switch per player for
+        -- the whole map, not per district: a player in the area sees every
+        -- light go dark, and a player outside it keeps every light, the area's
+        -- included. The line says so.
+        power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.\nIt only works after someone has made it night with Time & weather.",
         power_outage_opt_area = 'Area',
         power_outage_opt_area_here = 'Around this terminal',
         power_outage_opt_area_here_desc = 'Everything within 1 km of this terminal.',
