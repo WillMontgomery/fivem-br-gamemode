@@ -988,9 +988,10 @@ do
     -- "Any tool that can impact the whole squad": every row whose effect is
     -- the squad's -- its affects line starts "Your squad" (Field medic's
     -- goes on to the players it drains), or its marks show on the squad's
-    -- maps -- and none other. Reboot is squad-only.
+    -- maps -- and none other. Reboot is squad-only. Storm control's spot is
+    -- marked on the squad's maps (2026-10-07).
     local want = { scan = true, storm_reveal = true, max_ammo = true, reboot = true, ghost = true,
-                   field_medic = true, vehicle_drop = true }
+                   field_medic = true, vehicle_drop = true, storm_control = true }
     for _, row in ipairs(C.functions) do
         local affects = copy[row.id .. '_affects'] or ''
         local what = copy[row.id .. '_what'] or ''

@@ -10,9 +10,10 @@
 -- every `server/terminalfx/` file the manifest lists, over a stubbed roster,
 -- key and market, and runs each function at a real terminal, the real way:
 --
---   PART A  Storm control: the storm steered to the near, far or center end
---           for 150 Volts, the record on the map untouched, a squad that ran
---           Storm reveal told the new end; refused `no_storm` / `no_circle`
+--   PART A  Storm control: the storm finishes on the spot picked for 150
+--           Volts, the record on the map untouched, the spot marked on the
+--           runner's squad's maps (and sent again on br:ready) and sent to a
+--           squad that ran Storm reveal; refused `no_storm` / `no_circle`
 --           with nothing spent (the Volts included); everything given back
 --           when the final circle is drawn while it loads; the dev path.
 --   PART B  Time & weather: the time through the match clock's own anchor
@@ -29,8 +30,9 @@
 --           out, and back on outside, at the end, in the lobby, off Season 2
 --           and when br_core stops -- on a change only.
 --
--- The storm's own half -- BR.Storm.futures and steer over many matches, every
--- later circle the planner's -- is tools/test_storm.lua's `control.*` blocks.
+-- The storm's own half -- the plan over many matches, every later circle the
+-- rule's, and how its breakouts are priced -- is tools/test_storm.lua's
+-- `control.*` blocks.
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_terminalworld.lua
 
@@ -476,8 +478,12 @@ end
 -- where they want it". The run carries the spot set on the big map (`at`).
 -- ROUND 5 (the same day): "this limitation should not exist. the next phases
 -- should instead work towards the location the player selected." No spot is
--- refused: the storm closes toward it and ends on it, or as near it as it can
--- get (test_storm.lua's `control.*` blocks hold the planner's half).
+-- refused. 2026-10-07: "I select a marker of where I want the storm to FINISH
+-- that match. Then, once that's applied, I have a persistent marker that I can
+-- see and my teammates can see". The final circle is centered on the spot (the
+-- nearest land, for one in the water), and the spot is Storm reveal's mark on
+-- the runner's squad's maps (test_storm.lua's `control.*` blocks hold the
+-- storm's half).
 
 local function snapshot(rec)
     local out = {}
@@ -523,7 +529,7 @@ do
 end
 
 for _, f in ipairs({ 0.0, 0.3 }) do
-    describe(('Storm control: the storm ends exactly on the spot picked (%.1f of the way out)'):format(f))
+    describe(('Storm control: the storm finishes exactly on the spot picked (%.1f of the way out)'):format(f))
     do
         reset()
         local m = lobby('squad', 3)
@@ -533,7 +539,7 @@ for _, f in ipairs({ 0.0, 0.3 }) do
         local r = controlAt(1, spot)
         ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
         local fin = BR.Storm.finalCentre(m)
-        ok(fin and fin.x == spot.x and fin.y == spot.y, 'the storm now ends exactly on the spot',
+        ok(fin and fin.x == spot.x and fin.y == spot.y, 'the storm now finishes exactly on the spot',
             fin and ('(%.3f, %.3f) vs (%.3f, %.3f)'):format(fin.x, fin.y, spot.x, spot.y))
         ok(m.stormAim and m.stormAim.x == spot.x and m.stormAim.y == spot.y, 'the match carries the spot')
         ok(m.storm == rec and sameRecord(rec, snap), 'the record on the map did not move')
@@ -548,11 +554,12 @@ end
 
 describe('Storm control: a spot outside the next circle, over water or off the map is never refused')
 do
-    -- THE STORM CLOSES TOWARD IT, AND ENDS AS NEAR IT AS IT CAN: the run lands,
-    -- is paid for, and aims the storm, which ends on land, inside the next
-    -- circle on the map, and nearer the spot than that circle's center is.
+    -- THE STORM FINISHES ON IT: the run lands, is paid for, and aims the
+    -- storm, whose final circle is centered on the spot -- the spot itself
+    -- outside the next circle, the nearest land to it in the water or off the
+    -- map.
     local cases = {
-        { label = 'far outside the next circle', at = function(m) return spotIn(m, 2.5) end },
+        { label = 'far outside the next circle', at = function(m) return spotIn(m, 2.5) end, land = true },
         { label = 'over water', at = function() return { x = -3700.0, y = 0.0 } end },
         { label = 'off the map entirely', at = function() return { x = 7000.0, y = 9000.0 } end },
     }
@@ -573,12 +580,14 @@ do
         ok(m.stormAim and m.stormAim.x == at.x and m.stormAim.y == at.y, c.label .. ': the match carries the spot')
         local fin = BR.Storm.finalCentre(m)
         local plan = m.stormAim or {}
-        ok(fin and fin.x == plan.ex and fin.y == plan.ey, c.label .. ': Storm reveal answers where it now ends')
+        ok(fin and plan.ex == plan.sx and plan.ey == plan.sy and fin.x == plan.sx and fin.y == plan.sy,
+            c.label .. ': the storm finishes on the spot as aimed, and Storm reveal answers it')
         ok(fin and not BR.StormOffMap(fin.x, fin.y), c.label .. ': on land')
-        ok(fin and BR.StormShape.distance(BR.StormTarget(rec), fin.x, fin.y) < 0.0,
-            c.label .. ': inside the next circle on the map')
-        local function to(x, y) return math.sqrt((x - plan.sx) ^ 2 + (y - plan.sy) ^ 2) end
-        ok(fin and to(fin.x, fin.y) < to(rec.cx1, rec.cy1), c.label .. ": nearer the spot than that circle's center")
+        if c.land then
+            ok(fin and fin.x == at.x and fin.y == at.y, c.label .. ': on the spot itself, 2.5 radii out')
+        else
+            ok(fin and (fin.x ~= at.x or fin.y ~= at.y), c.label .. ': on the land nearest it')
+        end
         ok(m.storm == rec and sameRecord(rec, snap), c.label .. ': the record on the map did not move')
     end
     -- NO SPOT, OR THE OLD OPTION: bad_option.
@@ -593,33 +602,77 @@ do
     nothingSpent(1, 'bad_option')
 end
 
-describe('Storm control: a squad that ran Storm reveal is told the new end')
+describe('Storm control: the spot is marked on the runner\'s squad\'s maps for the rest of the match')
+do
+    -- "a persistent marker that I can see and my teammates can see, which
+    -- shows us that location" (owner, 2026-10-07): Storm reveal's mark, to
+    -- every member of the runner's squad -- an eliminated one too -- and to
+    -- nobody else, sent again to a client that restarts.
+    reset()
+    local m = lobby('squad', 3)
+    roster[2].state = BR.PlayerState.OUT
+    local spot = spotIn(m, 2.0)
+    controlAt(1, spot)
+    for _, src in ipairs({ 1, 2 }) do
+        local p = lastOf(BR.Net.TERMINAL_REVEAL, src)
+        ok(p and p.x == spot.x and p.y == spot.y and p.r == 0.0 and p.matchId == m.id,
+            ('p%d, of the runner\'s squad, is sent the spot%s'):format(src, src == 2 and ' (eliminated)' or ''))
+        eq(#eventsOf(BR.Net.TERMINAL_REVEAL, src), 1, ('p%d: once'):format(src))
+    end
+    for _, src in ipairs({ 3, 4, 5 }) do
+        eq(#eventsOf(BR.Net.TERMINAL_REVEAL, src), 0, ('p%d, of another squad or none, is sent nothing'):format(src))
+    end
+    local kept = m.terminals and m.terminals.reveals['squad:A']
+    ok(kept and kept.x == spot.x and kept.y == spot.y, 'the match keeps it for the squad')
+    -- A CLIENT THAT RESTARTS: sent again, to the squad alone.
+    sent = {}
+    fire(BR.Net.READY, 2)
+    local again = lastOf(BR.Net.TERMINAL_REVEAL, 2)
+    ok(again and again.x == spot.x and again.y == spot.y, 'a squadmate whose client restarts is sent it again')
+    fire(BR.Net.READY, 3)
+    eq(#eventsOf(BR.Net.TERMINAL_REVEAL, 3), 0, 'another squad\'s restart is sent nothing')
+    ok(errored() == nil, 'clean', errored())
+    -- ALONE: the runner's own map only.
+    reset()
+    m = lobby('solo', 3)
+    local solo = spotIn(m, 0.4)
+    controlAt(1, solo)
+    local p = lastOf(BR.Net.TERMINAL_REVEAL, 1)
+    ok(p and p.x == solo.x and p.y == solo.y, 'a solo runner is sent the spot')
+    for _, src in ipairs({ 2, 3, 4, 5 }) do
+        eq(#eventsOf(BR.Net.TERMINAL_REVEAL, src), 0, ('p%d is sent nothing'):format(src))
+    end
+end
+
+describe('Storm control: a squad that ran Storm reveal is told the new end, once')
 do
     reset()
     local m = lobby('squad', 3)
     -- Squad B revealed the end earlier this match.
     T.reveal(m, 'squad:B', BR.Storm.finalCentre(m))
     sent = {}
-    local spot = spotIn(m, 0.25)
+    local spot = spotIn(m, 2.0)
     controlAt(1, spot)
     for _, src in ipairs({ 3, 4 }) do
         local p = lastOf(BR.Net.TERMINAL_REVEAL, src)
         ok(p and p.x == spot.x and p.y == spot.y and p.matchId == m.id,
-            ('p%d, of the squad that revealed it, is sent the spot'):format(src))
+            ('p%d, of the squad that revealed it, is sent the spot, two radii out'):format(src))
+        eq(#eventsOf(BR.Net.TERMINAL_REVEAL, src), 1, ('p%d: once'):format(src))
     end
-    eq(lastOf(BR.Net.TERMINAL_REVEAL, 1), nil, 'and nobody who did not reveal it')
+    eq(#eventsOf(BR.Net.TERMINAL_REVEAL, 5), 0, 'and nobody outside the two squads')
     ok(m.terminals.reveals['squad:B'].x == spot.x, 'the reveal a reconnect is re-sent is the new one too')
-    -- A SPOT THE STORM CANNOT REACH: the squad is sent where it will end, not the spot.
+    -- THE RUNNER'S OWN SQUAD HAD THE OLD END (a dev reset in between): sent the
+    -- spot once, not once as the runner's squad and again as a revealing one.
     reset()
     m = lobby('squad', 3)
-    T.reveal(m, 'squad:B', BR.Storm.finalCentre(m))
+    T.reveal(m, 'squad:A', BR.Storm.finalCentre(m))
     sent = {}
-    spot = spotIn(m, 3.0)
+    spot = spotIn(m, 0.5)
     controlAt(1, spot)
-    local plan = m.stormAim
-    local p = lastOf(BR.Net.TERMINAL_REVEAL, 3)
-    ok(plan and p and p.x == plan.ex and p.y == plan.ey and (p.x ~= spot.x or p.y ~= spot.y),
-        'a spot it cannot reach: the squad that revealed it is sent where the storm now ends')
+    for _, src in ipairs({ 1, 2 }) do
+        eq(#eventsOf(BR.Net.TERMINAL_REVEAL, src), 1, ('p%d is sent the spot once'):format(src))
+    end
+    ok(m.terminals.reveals['squad:A'].x == spot.x, 'and keeps the spot')
 end
 
 describe('Storm control: no storm, no circle left -- refused, nothing spent')
@@ -638,6 +691,16 @@ do
     eq(r and r.toast, COPY.no_circle, 'in its own line')
     nothingSpent(1, 'no_circle')
     eq(#market.charges, 0, 'the market was never asked for the 150')
+    -- THE FINAL CIRCLE IS CIRCLE 7: on the map, nothing is left to aim either.
+    reset()
+    m = lobby('squad', BR.StormFinalPhase())
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    local f7 = listed(1, 'storm_control')
+    ok(f7 and f7.available == false and f7.reason == 'no_circle', 'circle 7 on the map: the card says no_circle',
+        f7 and f7.reason)
+    r = controlAt(1, { x = C0.x, y = C0.y })
+    ok(r and r.code == 'no_circle', 'and a run is refused no_circle', r and r.code)
+    nothingSpent(1, 'no_circle at circle 7')
     m.storm = nil
     local f2 = listed(1, 'storm_control')
     ok(f2 and f2.reason == 'no_storm', 'with no storm yet the card says no_storm', f2 and f2.reason)
@@ -664,12 +727,12 @@ do
         'and aimed from the circle on the map when it landed')
     local fin = BR.Storm.finalCentre(m)
     ok(fin and plan and fin.x == plan.ex and fin.y == plan.ey, 'Storm reveal answers where it now ends')
-    -- The final circle drawn meanwhile: nothing is left to aim.
+    -- The final circle (circle 7) drawn meanwhile: nothing is left to aim.
     reset()
-    m = lobby('squad', 7)
+    m = lobby('squad', 6)
     r = controlAt(1, spotIn(m, 0.0), true)
-    eq(r and r.code, 'running', 'accepted at phase 7')
-    m.storm = BR.BuildStormRecord(#P, C0.x, C0.y, 40.0, C0.x, C0.y, 0.0, gameMs, 30000, 60000, 6.7, SEED)
+    eq(r and r.code, 'running', 'accepted at phase 6')
+    m.storm = BR.BuildStormRecord(7, C0.x, C0.y, P[6].radius, C0.x, C0.y, P[7].radius, gameMs, 40000, 40000, 5.0, SEED)
     flush()
     r = lastOf(BR.Net.TERMINAL_RESULT, 1)
     ok(r and r.ok == false and r.code == 'no_circle', 'the final circle drawn meanwhile: no_circle', r and r.code)
@@ -745,6 +808,8 @@ do
     end
     eq(TS.pick(COPY, 'storm_control_risks', false), COPY.storm_control_risks_solo,
         'the risks line has its solo sibling')
+    eq(TS.pick(COPY, 'storm_control_what', false), COPY.storm_control_what_solo,
+        'and so does the page, whose squad line marks the squad\'s maps')
     eq(COPY.confirm_location, 'Set location', 'the step\'s button is the owner\'s words, verbatim')
     reset()
     local m = lobby('solo', 3)
@@ -1706,25 +1771,38 @@ do
     ok(errored() == nil, 'clean', errored())
 end
 
-describe('the persistent notices: Storm control -- everyone but whoever aimed it, until the match ends')
+describe('the persistent notices: Storm control -- everyone but the squad that aimed it, until the match ends')
 do
+    -- "you and your squad see it on the map ... Everyone else only gets the
+    -- usual notice" (2026-10-07): the squad has the mark instead.
     reset()
     for s = 1, 8 do T.forgetImpacts(s) end
     local m = lobby('squad', 3)
     local r = controlAt(1, spotIn(m, 0.0))
     ok(r and r.code == 'done', 'it runs', r and r.code)
-    for _, src in ipairs({ 2, 3, 4, 5 }) do
+    for _, src in ipairs({ 3, 4, 5 }) do
         eq(impactRows(src), 'impact_storm@end', ('p%d: the storm is closing toward a spot another player picked'):format(src))
     end
     eq(hasRow(3, 'impact_storm').text, COPY.impact_storm, 'in its words')
     eq(impactRows(1), nil, 'not the player who aimed it')
+    eq(impactRows(2), nil, 'nor their squadmate, who has the mark')
     -- ONE SPOT A MATCH: another player's Storm control is refused, and the
     -- rows stay as they were.
     keys[3] = true
     roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
     r = controlAt(3, spotIn(m, 0.0))
     ok(r and r.code == 'storm_aimed', 'a second Storm control is refused', r and r.code)
-    ok(impactRows(1) == nil and impactRows(3) == 'impact_storm@end', 'and the row still spares only the first runner')
+    ok(impactRows(1) == nil and impactRows(2) == nil and impactRows(3) == 'impact_storm@end',
+        'and the row still spares only the first runner\'s squad')
+    -- ALONE: everyone but the runner.
+    reset()
+    for s = 1, 8 do T.forgetImpacts(s) end
+    m = lobby('solo', 3)
+    controlAt(1, spotIn(m, 0.0))
+    eq(impactRows(1), nil, 'solo: not the runner')
+    for _, src in ipairs({ 2, 3, 4, 5 }) do
+        eq(impactRows(src), 'impact_storm@end', ('solo: p%d has it'):format(src))
+    end
     ok(errored() == nil, 'clean', errored())
 end
 

@@ -201,10 +201,10 @@ BR.Config.Terminals = {
         -- one row for a time run and one for a weather run.
         impact_time = 'Time & weather: the time of day was changed.',
         impact_weather = 'Time & weather: the weather inside the circle was changed.',
-        -- Storm control, for the rest of the match: everyone but the runner.
-        -- WRITTEN (2026-10-06, round 5; was "...the storm will end where
-        -- another player chose."): the storm closes toward the spot, and ends
-        -- short of it where it cannot get there.
+        -- Storm control, for the rest of the match: everyone but the runner's
+        -- squad, which has the mark on its maps instead (2026-10-07: "Everyone
+        -- else only gets the usual notice"). WRITTEN (2026-10-06, round 5; was
+        -- "...the storm will end where another player chose.").
         impact_storm = 'Storm control: the storm is closing toward a spot another player picked.',
         -- WRITTEN (2026-10-06, round 5). Airstrike, from its warning to its last
         -- rocket: every player in the fight inside its reach (the circle and the
@@ -686,35 +686,39 @@ BR.Config.Terminals = {
         -- it", on the big map -- `spot` on the registry row, and its zone
         -- option and three possible circles gone)
         storm_control_name = 'Storm control',
-        -- WRITTEN (2026-10-06, round 5; was 'Picks the spot on the map where
-        -- the storm ends.').
-        storm_control_summary = 'Picks a spot on the map for the storm to close toward.',
-        -- WRITTEN (2026-10-06, round 5; was "...The last circle closes exactly
-        -- on that spot.\nThe spot has to be on land and well inside the next
-        -- circle.\n..."). The owner, on round 4's refusal: "this limitation
-        -- should not exist. the next phases should instead work towards the
-        -- location the player selected." No spot is refused now: every circle
-        -- closes toward it, the last ends on it when the nested circles can
-        -- carry it there and as near it as they can otherwise -- never outside
-        -- the next circle on the map, which every later circle is inside -- and
-        -- a spot over water or off the map is aimed as the nearest land to it
-        -- (server/storm.lua's STORM CONTROL block). ONE SPOT A MATCH (round 4's
-        -- review): once the storm is aimed, every later run is refused
-        -- (storm_aimed), so "the rest of the match" stays true for the player
-        -- who paid for it.
-        storm_control_what = "You pick a spot on the map, and the storm closes toward it for the rest of the match. The last circle ends on that spot if the storm can reach it, or as close to it as the storm can get.\nEvery circle still has to fit inside the one before it, so the storm can't end outside the next circle. A spot in the water or off the map counts as the nearest land to it.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
+        -- WRITTEN (storm control redesign, proposal for the owner; was 'Picks a
+        -- spot on the map for the storm to close toward.'). Owner, 2026-10-07:
+        -- "I select a marker of where I want the storm to FINISH that match."
+        storm_control_summary = 'Picks the spot on the map where the storm finishes.',
+        -- WRITTEN (storm control redesign, proposal for the owner; was round 5's
+        -- "...closes toward it ... The last circle ends on that spot if the
+        -- storm can reach it, or as close to it as the storm can get.\nEvery
+        -- circle still has to fit inside the one before it..."). The owner,
+        -- 2026-10-07, confirmed: the final circle is centered on the spot (the
+        -- nearest land, for one in the water); the spot is marked for the
+        -- runner and their squad for the rest of the match; each new circle
+        -- moves an equal share of the remaining way toward it, so circles may
+        -- break out past the one before (server/storm.lua's STORM CONTROL
+        -- block); a circle already on the map never moves (round 6). ONE SPOT A
+        -- MATCH (round 4's review): once the storm is aimed, every later run is
+        -- refused (storm_aimed).
+        storm_control_what = "You pick a spot on the map, and the storm finishes there. A spot in the water or off the map counts as the nearest land to it.\nEach new circle moves part of the way toward the spot, so a circle can land outside the one before it.\nThe final circle is marked on your squad's maps until the match ends.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
+        -- WRITTEN (storm control redesign, proposal for the owner).
+        storm_control_what_solo = "You pick a spot on the map, and the storm finishes there. A spot in the water or off the map counts as the nearest land to it.\nEach new circle moves part of the way toward the spot, so a circle can land outside the one before it.\nThe final circle is marked on your map until the match ends.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
         storm_control_duration = 'Rest of the match',
         storm_control_affects = 'Everyone in the match',
         storm_control_notified = 'Everyone in the match',
-        -- WRITTEN (2026-10-06, round 5; was "Your squad still has to reach the
-        -- spot you pick."): the storm can end short of the spot.
-        storm_control_risks = 'The storm may end short of your spot. Your squad still has to reach the last circle.',
-        storm_control_risks_solo = 'The storm may end short of your spot. You still have to reach the last circle.',
-        -- WRITTEN (2026-10-06, round 5; was 'The storm will end where you chose.').
-        storm_control_done = 'The storm will end on your spot, or as close to it as it can.',
-        -- WRITTEN (2026-10-06, round 5; was 'Storm control. They chose where the
-        -- storm will end.').
-        storm_control_description = 'Storm control. They picked a spot for the storm to close toward.',
+        -- WRITTEN (storm control redesign, proposal for the owner; was 'The
+        -- storm may end short of your spot. ...'): the storm no longer ends
+        -- short, and a far spot's circles break out.
+        storm_control_risks = 'A far spot makes the circles jump far. Your squad still has to reach the last circle.',
+        storm_control_risks_solo = 'A far spot makes the circles jump far. You still have to reach the last circle.',
+        -- WRITTEN (storm control redesign, proposal for the owner; was 'The
+        -- storm will end on your spot, or as close to it as it can.').
+        storm_control_done = 'The storm will finish on your spot.',
+        -- WRITTEN (storm control redesign, proposal for the owner; was 'Storm
+        -- control. They picked a spot for the storm to close toward.').
+        storm_control_description = 'Storm control. They picked where the storm finishes.',
         -- WRITTEN (2026-10-06, wave B). Storm control's own reason: the final
         -- circle is already drawn, so no circle is left to change -- refused,
         -- spending nothing (at the terminal: why not).
@@ -1669,8 +1673,9 @@ BR.Config.Terminals = {
           bounty = 'runner', squadWide = true },
         { id = 'storm_reveal',   category = 'intel',      risk = 'low',    implemented = true, squadWide = true },
         -- ROUND 4 (owner, 2026-10-06): run at a spot picked on the big map.
+        -- SQUAD-WIDE (2026-10-07): the spot is marked on the squad's maps.
         { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = true, cost = 150,
-          spot = true },
+          spot = true, squadWide = true },
         -- SQUAD-ONLY (round 2): it hides teammates' markers from every other
         -- squad, and outside a squad match nobody has a teammate to hide.
         -- LIVE SINCE WAVE C (2026-10-06): server/terminalfx/comms_blackout.lua,
