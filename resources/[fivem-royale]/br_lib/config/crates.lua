@@ -114,9 +114,13 @@ BR.Config.Crates = {
     -- is lying flat, reading from the box's back edge, like the wooden crate's lid
     -- label); `size` is the label's width in meters. One row for every shipping
     -- box, festive included, and one for the gift box.
+    --
+    -- THE OWNER'S OWN NUMBERS (2026-10-06, tuned live with `brboxprompt` on the
+    -- real props: "these look great"). The shipping box's label lies on its lid;
+    -- the gift box's stands up (rx 90) on its front, below the bow.
     prompt = {
-        shipping = { x = 0.0, y = 0.0, z = 0.45, rx = 0.0, ry = 0.0, rz = 0.0, size = 0.40 },
-        gift     = { x = 0.0, y = 0.0, z = 0.95, rx = 0.0, ry = 0.0, rz = 0.0, size = 0.55 },
+        shipping = { x = 0.000, y = 0.000, z = 0.810, rx = 0.0, ry = 0.0, rz = 0.0, size = 1.20 },
+        gift     = { x = 0.000, y = -0.930, z = 0.820, rx = 90.0, ry = 0.0, rz = 0.0, size = 1.75 },
     },
 
     -- THE FESTIVE MONTHS ARE br_lib/config/festive.lua's (#399): one calendar for

@@ -883,9 +883,15 @@ do
     local gbox = bodyAt(g.x, g.y)
     offsets = {}
     frame()
-    local gz = nil
-    for _, o in ipairs(offsets) do if o.h == gbox then gz = o.z end end
-    eq(gz, C.prompt.gift.z, 'the gift box\'s prompt sits at the gift row')
+    -- THE CENTER OF ITS FOUR CORNERS, since the owner's gift row stands the
+    -- label up (rx 90): its corners sit above and below the row's height.
+    local gn, gz, gy = 0, 0.0, 0.0
+    for _, o in ipairs(offsets) do
+        if o.h == gbox then gn, gz, gy = gn + 1, gz + o.z, gy + o.y end
+    end
+    eq(gn, 4, 'the gift box\'s label has four corners')
+    ok(gn == 4 and math.abs(gz / 4 - C.prompt.gift.z) < 1e-6 and math.abs(gy / 4 - C.prompt.gift.y) < 1e-6,
+        'centered on the gift row', gn == 4 and ('%.3f, %.3f'):format(gy / 4, gz / 4) or 'no corners')
 
     -- THE WOODEN CRATE KEEPS ITS LID LABEL, measured off its model.
     TriggerEvent(BR.Net.LOOT_GONE, { g.id })
