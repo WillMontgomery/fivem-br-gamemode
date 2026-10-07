@@ -189,6 +189,14 @@ for _, f in ipairs({
     -- it -- exactly as br_core's fxmanifest orders the pair.
     'br_lib/config/fuel.lua',
     'br_lib/shared/fuel_solve.lua',
+    -- THE STORM TEST THE STATION BLIPS SHARE WITH THE TERMINALS (#400): the
+    -- storm record, its zone's real shape, and BR.TerminalSolve's inside.
+    'br_lib/shared/rng.lua',
+    'br_lib/shared/polygon.lua',
+    'br_lib/config/map.lua',
+    'br_lib/shared/storm_solve.lua',
+    'br_lib/shared/storm_shape.lua',
+    'br_lib/shared/terminal_solve.lua',
 }) do load(f) end
 
 -- The roster fake. Four fields, and the header says why.
@@ -2132,6 +2140,114 @@ do
            'the driver seat is read from the engine on the tick, guarded, and '
                .. 'not held between ticks')
     end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('blips.storm')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-07 (#400): "please make fuel station blips only draw for only
+-- the fuel stations inside the storm. Be clear this is not just a season 2
+-- feature."
+--
+-- ON TOP OF blips.seat: that rule says whether this player sees station blips
+-- at all, and this one which stations. The storm test is the terminals' own
+-- (BR.TerminalSolve.zoneAt / .inside), so it is held equal to it here.
+do
+    local Z, IN = BR.FuelSolve.stormZone, BR.FuelSolve.stationsInStorm
+    ok(type(Z) == 'function' and type(IN) == 'function',
+       'BR.FuelSolve.stormZone and .stationsInStorm exist')
+    local TS = BR.TerminalSolve
+    local ST = BR.Config.Fuel.stations
+    local P = BR.MatchState.PLAYING
+
+    local function count(t)
+        local n = 0
+        for _ in pairs(t or {}) do n = n + 1 end
+        return n
+    end
+    local function dist(s, c) return math.sqrt((s.x - c.x) ^ 2 + (s.y - c.y) ^ 2) end
+
+    -- A storm holding on a 1,500 m zone round the city's gas19 for ten minutes,
+    -- then closing to 800 m over one.
+    local c = ST[19]
+    local t0 = 1000000
+    local rec = BR.BuildStormRecord(2, c.x, c.y, 1500.0, c.x, c.y, 800.0,
+        t0, 600000, 60000, 1.0, 4242)
+
+    -- ═══ NO STORM, EVERY STATION: today's map outside a match ═══
+    for _, st in ipairs({ BR.MatchState.WARMUP, BR.MatchState.BUS,
+                          BR.MatchState.ENDED, 'lobby' }) do
+        ok(Z(st, rec, t0 + 1000) == nil,
+           ('no zone in %s: there is no storm to be outside'):format(st))
+    end
+    ok(Z(nil, rec, t0 + 1000) == nil, 'nor before the match state has arrived')
+    ok(Z(P, nil, t0 + 1000) == nil, 'nor in PLAYING before the storm record has')
+    ok(count(IN(ST, nil)) == #ST and #ST == 29,
+       'no zone draws every one of the 29 stations, as before #400')
+
+    -- ═══ PLAYING: THE STATIONS INSIDE, AND ONLY THEM ═══
+    local hold = Z(P, rec, t0 + 1000)
+    ok(hold ~= nil, 'PLAYING with a storm has a zone')
+    local inHold = IN(ST, hold)
+    local near, far = 0, 0
+    for i, s in ipairs(ST) do
+        local d = dist(s, c)
+        if d < 1000.0 then
+            near = near + 1
+            ok(inHold[i] == true, ('%s, %.0f m from the center, is drawn'):format(s.id, d))
+        elseif d > 2500.0 then
+            far = far + 1
+            ok(inHold[i] == nil, ('%s, %.0f m out, is not'):format(s.id, d))
+        end
+        -- THE TERMINALS' ANSWER for a terminal standing on the forecourt.
+        ok((inHold[i] == true) == (TS.offlineWhy(s, hold, false) == nil),
+           ('%s: drawn exactly when a terminal there would be online'):format(s.id))
+    end
+    ok(near >= 5 and far >= 10, 'with stations on both sides of the wall to test', near .. '/' .. far)
+    ok(count(inHold) < #ST, 'so the map shows fewer than all of them')
+
+    -- ═══ AS THE CIRCLE CLOSES ═══
+    local closed = Z(P, rec, t0 + 600000 + 60000 + 1000)
+    local inClosed = IN(ST, closed)
+    local dropped = 0
+    for i, s in ipairs(ST) do
+        if inClosed[i] then
+            ok(inHold[i] == true, ('%s is still inside, and was'):format(s.id))
+        elseif inHold[i] then
+            dropped = dropped + 1
+        end
+        ok((inClosed[i] == true) == (TS.offlineWhy(s, closed, false) == nil),
+           ('%s: still the terminals\' answer at 800 m'):format(s.id))
+    end
+    ok(dropped >= 2, 'the closing wall takes stations off the map', dropped)
+    ok(count(inClosed) >= 1, 'and the ones still inside keep theirs')
+
+    -- ═══ EVERY SEASON, AND ASKED ONCE A SECOND ═══
+    --
+    -- client/fuel.lua cannot be loaded here (see `prompt.copy`), so this is
+    -- TEXT, comments stripped: the blip pass asks these two and nothing about
+    -- the season, and decides again on a clock rather than on every tick.
+    local function code(path)
+        local fh = io.open(ROOT .. path, 'r')
+        if not fh then return nil end
+        local src = fh:read('a'); fh:close()
+        return (src:gsub('%-%-%[%[.-%]%]', ' '):gsub('%-%-[^\n]*', ''))
+    end
+    local client = code('br_core/client/fuel.lua')
+    local solve = code('br_lib/shared/fuel_solve.lua')
+    ok(client ~= nil and solve ~= nil, 'client/fuel.lua and fuel_solve.lua are readable')
+    client, solve = client or '', solve or ''
+    ok(client:find('BR.FuelSolve.stormZone(', 1, true) ~= nil
+       and client:find('BR.FuelSolve.stationsInStorm(', 1, true) ~= nil,
+       'the blip pass asks the two, rather than carrying its own storm test')
+    ok(not client:find('Season', 1, true) and not solve:find('Season', 1, true),
+       'and neither file asks the season: station blips follow the storm in every season')
+    ok(client:find('now < stormAt then return end', 1, true) ~= nil,
+       'the stations are decided again once a pass, not on every tick')
+    ok(solve:find('BR.TerminalSolve.zoneAt(', 1, true) ~= nil
+       and solve:find('BR.TerminalSolve.inside(', 1, true) ~= nil,
+       'and the storm test is the terminals\' own')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

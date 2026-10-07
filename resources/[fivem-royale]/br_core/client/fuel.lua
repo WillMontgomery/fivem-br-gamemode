@@ -59,7 +59,8 @@ local known = {}
 --- asked about once rather than sixty times a second.
 local asked = {}
 
---- Station blips, while the player is in a vehicle. [index] = blip handle
+--- Station blips, while the player is in a vehicle: [index] = blip handle, for
+--- the stations inside the storm (#400).
 local blips = {}
 
 --- The station the player is currently parked at, and the pump prop we found
@@ -701,19 +702,59 @@ end
 --- nothing more. In br_lib it is executed, against every combination of seat,
 --- squad and roster, by a suite that already loads that module.
 ---
---- Put every station on the map.
-local function showBlips()
-    if #blips > 0 then return end
+--- ═══ AND ONLY THE STATIONS INSIDE THE STORM (#400) ═══
+---
+--- Owner, 2026-10-07: "please make fuel station blips only draw for only the
+--- fuel stations inside the storm. Be clear this is not just a season 2
+--- feature." BR.FuelSolve.stormZone and .stationsInStorm decide which, by the
+--- terminals' own storm test, in every season; outside PLAYING there is no
+--- storm and every station is drawn, as before.
+---
+--- ONCE A SECOND, NOT ON EVERY TICK. The zone is rebuilt and the stations
+--- re-read at most every STORM_PASS_MS, and only while blips are wanted; the
+--- ticks between compare nothing. A station is added or taken off only when
+--- its answer changes, so a closing circle costs one RemoveBlip per station
+--- it passes, once.
+
+--- [index] = true for the stations to draw, as last decided; nil = decide now.
+local inStorm = nil
+--- GetGameTimer() at which inStorm is decided again.
+local stormAt = 0
+--- How often, in ms: the terminal blips' own SLOW pass.
+local STORM_PASS_MS = 1000
+
+--- Put one station on the map.
+--- @param s table  a BR.Config.Fuel.stations row
+--- @return integer blip
+local function stationBlip(s)
     local b = F.blip or {}
+    local blip = AddBlipForCoord(s.x + 0.0, s.y + 0.0, (tonumber(s.z) or 0.0) + 0.0)
+    SetBlipSprite(blip, math.tointeger(tonumber(b.sprite)) or 1)
+    SetBlipColour(blip, math.tointeger(tonumber(b.colour)) or 0)
+    SetBlipScale(blip, (tonumber(b.scale) or 1.0) + 0.0)
+    SetBlipAsShortRange(blip, true)
+    BR.Native.blipName(blip, b.name or 'Gas Station')
+    return blip
+end
+
+--- Put every station inside the storm on the map, and take off any the storm
+--- has passed.
+local function showBlips()
+    local now = GetGameTimer()
+    if inStorm ~= nil and now < stormAt then return end
+    stormAt = now + STORM_PASS_MS
+    local S = BR.State
+    local zone = BR.FuelSolve.stormZone(S and S.match and S.match.state, S and S.storm,
+        BR.Clock and BR.Clock.now and BR.Clock.now() or now)
+    inStorm = BR.FuelSolve.stationsInStorm(F.stations, zone)
     for i = 1, #F.stations do
-        local s = F.stations[i]
-        local blip = AddBlipForCoord(s.x + 0.0, s.y + 0.0, (tonumber(s.z) or 0.0) + 0.0)
-        SetBlipSprite(blip, math.tointeger(tonumber(b.sprite)) or 1)
-        SetBlipColour(blip, math.tointeger(tonumber(b.colour)) or 0)
-        SetBlipScale(blip, (tonumber(b.scale) or 1.0) + 0.0)
-        SetBlipAsShortRange(blip, true)
-        BR.Native.blipName(blip, b.name or 'Gas Station')
-        blips[#blips + 1] = blip
+        local have = blips[i]
+        if inStorm[i] then
+            if not have then blips[i] = stationBlip(F.stations[i]) end
+        elseif have then
+            if didHit(DoesBlipExist(have)) then RemoveBlip(have) end
+            blips[i] = nil
+        end
     end
 end
 
@@ -722,12 +763,24 @@ end
 --- ENGINE BLIP HANDLES ARE RECYCLED, which client/storm.lua learned the
 --- expensive way ("another system removing a stale handle can delete ours").
 --- So every removal is guarded by DoesBlipExist and the table is emptied
---- whether or not the handles were still live.
+--- whether or not the handles were still live. And the next showBlips decides
+--- the stations afresh (#400). Free when there is nothing up, which is every
+--- tick on foot.
 local function hideBlips()
-    for i = 1, #blips do
-        if didHit(DoesBlipExist(blips[i])) then RemoveBlip(blips[i]) end
+    inStorm = nil
+    if next(blips) == nil then return end
+    for _, h in pairs(blips) do
+        if didHit(DoesBlipExist(h)) then RemoveBlip(h) end
     end
     blips = {}
+end
+
+--- How many station blips are up, for `/brfuel`.
+--- @return integer
+local function blipCount()
+    local n = 0
+    for _ in pairs(blips) do n = n + 1 end
+    return n
 end
 
 -- ---------------------------------------------------------------------------
@@ -1501,7 +1554,7 @@ RegisterCommand('brfuel', function()
     local ped = PlayerPedId()
     print(('[br_core] fuel: %s, tank %s m, %d station(s), %d blip(s)')
         :format(enabled() and 'on' or 'OFF', tostring(F and F.tankMetres),
-                F and #F.stations or 0, #blips))
+                F and #F.stations or 0, blipCount()))
     local veh = didHit(IsPedInAnyVehicle(ped, false))
         and GetVehiclePedIsIn(ped, false) or 0
     local nid = netOf(veh)

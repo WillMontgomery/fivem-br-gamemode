@@ -533,6 +533,53 @@ function BR.FuelSolve.blipsVisibleTo(driver, ped, me, roster, pedOf)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- ONLY THE STATIONS INSIDE THE STORM (#400)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-07: "please make fuel station blips only draw for only the
+-- fuel stations inside the storm. Be clear this is not just a season 2
+-- feature."
+--
+-- ON TOP OF THE SEAT RULE ABOVE, NEVER INSTEAD OF IT: blipsVisibleTo decides
+-- whether this player sees station blips at all, and these two decide which
+-- stations. And IN EVERY SEASON -- nothing here asks BR.Season.
+--
+-- THE TERMINALS' STORM TEST, NOT A SECOND ONE. "Inside the storm" is the
+-- storm's CURRENT safe zone by its real shape, as BR.TerminalSolve.zoneAt and
+-- .inside answer it for a terminal's blip and plate (br_lib/shared/
+-- terminal_solve.lua) -- so a station and a terminal standing side by side are
+-- inside or outside together, and the rule is spelled once.
+
+--- The storm's current zone as the station blips read it, or nil for no storm.
+---
+--- FROM PLAYING ONLY, the terminals' own gate (client/yubikey.lua): the lobby,
+--- warmup and the bus have no storm to be outside, so every station keeps its
+--- blip there -- which is how they all drew before #400 -- and a record left
+--- over from the last match, which a client holds until the new one arrives,
+--- decides nothing.
+--- @param state string|nil  the match state this client was told (BR.State.match.state)
+--- @param storm table|nil   the published storm record (BR.State.storm)
+--- @param now number        the server clock (BR.Clock.now())
+--- @return table|nil zone
+function BR.FuelSolve.stormZone(state, storm, now)
+    if state ~= BR.MatchState.PLAYING or type(storm) ~= 'table' then return nil end
+    return BR.TerminalSolve.zoneAt(storm, now)
+end
+
+--- Which stations draw a blip: [index] = true for each one inside `zone`, and
+--- every one when `zone` is nil.
+--- @param stations table[]  { x, y }, as BR.Config.Fuel.stations
+--- @param zone table|nil    BR.FuelSolve.stormZone's answer
+--- @return table
+function BR.FuelSolve.stationsInStorm(stations, zone)
+    local out = {}
+    for i, s in ipairs(stations or {}) do
+        if BR.TerminalSolve.inside(zone, s.x, s.y) then out[i] = true end
+    end
+    return out
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- WHAT THE VEHICLE STRIP IS TOLD, AND WHICH OF ITS BARS A PASSENGER IS NOT SENT
 -- ═══════════════════════════════════════════════════════════════════════════
 --
