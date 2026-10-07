@@ -63,6 +63,12 @@
 
 # Generated. Collapses diff noise on the built bundle, which changes wholesale
 # on every build and is never reviewed line by line.
-resources/[fivem-royale]/br_ui/ui/**  linguist-generated=true -diff
-resources/[computer]/cuchi_computer/nui/apps/**  linguist-generated=true -diff
+#
+# THE BRACKETS ARE ESCAPED, AND THEY HAVE TO BE. In a pattern `[fivem-royale]`
+# is a character class matching ONE character, so these two lines matched
+# nothing at all: the bundles diffed as text, and tools/check_spelling.sh, which
+# relies on this to read no lines from them, read every line of a new one --
+# Locker v2's chunk (#28) carries Cloudscape's `--color-...-grey` tokens.
+resources/\[fivem-royale\]/br_ui/ui/**  linguist-generated=true -diff
+resources/\[computer\]/cuchi_computer/nui/apps/**  linguist-generated=true -diff
 ui-src/package-lock.json              linguist-generated=true -diff
