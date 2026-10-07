@@ -21,8 +21,9 @@
 --             the session closed when its player dies or walks off or the
 --             storm takes the terminal; every dev tool.
 --   PART B  br_core/client/yubikey.lua over modelled natives: blips only while
---           holding a key, only for a terminal inside the storm, only in a
---           match; the plate's four readings; the press that asks the server;
+--           holding a key, only for a terminal inside the storm once there
+--           is one, from warmup on (round 5), one fuel-station-style blip
+--           each (round 5); the plate's four readings; the press that asks the server;
 --           Storm reveal on both maps until the lobby; and no native at all on
 --           a frame without a plate.
 --   PART C  Season 1: none of it, anywhere.
@@ -1104,9 +1105,9 @@ local function bootClient(opts)
     end
     env.SetBlipSprite = function(b, s) n() W.blips[b].sprite = s end
     env.SetBlipColour = function(b, c) n() if W.blips[b] then W.blips[b].colour = c end end
-    env.SetBlipScale = function() n() end
+    env.SetBlipScale = function(b, sc) n() if W.blips[b] then W.blips[b].scale = sc end end
     env.SetBlipDisplay = function(b, d) n() W.blips[b].display = d end
-    env.SetBlipAsShortRange = function() n() end
+    env.SetBlipAsShortRange = function(b, v) n() if W.blips[b] then W.blips[b].shortRange = v end end
     env.DoesBlipExist = function(b) n() return W.blips[b] ~= nil end
     env.RemoveBlip = function(b) n() W.blips[b] = nil end
     env.RegisterNetEvent = function() end
@@ -1239,17 +1240,23 @@ do
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
     W.slow()
-    eq(W.spriteBlips(521), 2, 'holding a key: the terminal is on both maps (one blip each)')
+    eq(W.spriteBlips(521), 1, 'holding a key: the terminal has ONE blip (round 5: a fuel station\'s kind)')
     local b = nil
     for _, x in pairs(W.blips) do if x.sprite == 521 then b = x end end
     eq(b and b.colour, 51, 'in the owner\'s colour 51')
+    eq(b and b.scale, CT.art.blipScale, 'at the art block\'s scale -- the blip TYPE did not change, only its display')
+    -- "change the computers SetBlipDisplay to the same type as fuel stations
+    -- - reason being, the blips are currently pinned on the minimap": the
+    -- default display and short-range, as client/fuel.lua's station blip.
+    eq(b and b.display, nil, 'no SetBlipDisplay at all: the default display, as a fuel station\'s')
+    eq(b and b.shortRange, true, 'and short-range: on the minimap only nearby, on the big map always')
 
     W.B.State.storm = stormAway(W.B, W.now)
     W.slow()
     eq(W.spriteBlips(521), 0, 'the storm moved past it: its blip goes')
     W.B.State.storm = stormAround(W.B, W.now)
     W.slow()
-    eq(W.spriteBlips(521), 2, 'inside again: back')
+    eq(W.spriteBlips(521), 1, 'inside again: back')
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = false, squadUsed = false })
     eq(W.spriteBlips(521), 0, 'the key spent or dropped: gone at once')
@@ -1262,7 +1269,59 @@ do
     W.B.State.match.state = W.B.MatchState.BUS
     W.B.State.me.state = W.B.PlayerState.BUS
     W.slow()
-    eq(W.spriteBlips(521), 2, 'from the bus on -- "from the start" -- it does')
+    eq(W.spriteBlips(521), 1, 'on the bus it does')
+end
+
+describe('client: round 5 -- one fuel-station blip per terminal, and blips in warmup with a key')
+do
+    -- Owner, 2026-10-06: "it's okay to show the computer system blips while in
+    -- warmup as long as the player has possession of a Yubikey."
+    local AWAY = { id = 'shack', x = SITE.x + 3000.0, y = SITE.y, z = 30.0, h = 0.0 }
+    local W = bootClient({ sites = { SITE, AWAY } })
+    W.B.State.match.state = W.B.MatchState.WARMUP
+    W.B.State.me.state = W.B.PlayerState.WARMUP
+    -- A record left over from the LAST match, whose circle holds SITE and not
+    -- AWAY: in warmup there is no storm yet, so it decides nothing.
+    W.B.State.storm = stormAround(W.B, W.now)
+    W.natives = 0
+    W.slow()
+    eq(W.spriteBlips(521), 0, 'warmup without a key: no terminal blip')
+    eq(W.natives, 0, 'and no native')
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
+    W.slow()
+    eq(W.spriteBlips(521), 2, 'warmup with a key: every terminal has its blip -- no storm exists yet')
+    local n = 0
+    for _, x in pairs(W.blips) do
+        if x.sprite == 521 then
+            n = n + 1
+            ok(x.display == nil and x.shortRange == true,
+                ('the blip at %.0f is a fuel station\'s kind: default display, short-range'):format(x.x))
+        end
+    end
+    eq(n, 2, 'one blip per terminal, not a pair')
+    W.B.State.match.state = W.B.MatchState.BUS
+    W.B.State.me.state = W.B.PlayerState.BUS
+    W.slow()
+    eq(W.spriteBlips(521), 2, 'the bus: still no storm, still every one')
+    W.B.State.match.state = W.B.MatchState.PLAYING
+    W.B.State.me.state = W.B.PlayerState.ALIVE
+    W.slow()
+    eq(W.spriteBlips(521), 1, 'once the storm exists (PLAYING), only the terminal inside it')
+    local inside = nil
+    for _, x in pairs(W.blips) do if x.sprite == 521 then inside = x end end
+    eq(inside and inside.x, SITE.x, 'and it is the one the storm holds')
+    W.net(W.B.Net.YUBIKEY_STATE, { held = false, squadUsed = false })
+    eq(W.spriteBlips(521), 0, 'the key gone: none, at once')
+    W.B.State.match.state = W.B.MatchState.WARMUP
+    W.B.State.me.state = W.B.PlayerState.WARMUP
+    W.slow()
+    eq(W.spriteBlips(521), 0, 'and never in warmup without one')
+    -- The plate stays a living player's: warmup shows the blip, not the plate.
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
+    W.ped = { x = SITE.x + 1.0, y = SITE.y, z = SITE.z }
+    W.slow()
+    W.tick()
+    eq(W.B.Yubikey.prompting(), false, 'in warmup a terminal in reach has no plate: only the blip is new')
 end
 
 describe('client: the plate says what the player needs, and a press asks the server')

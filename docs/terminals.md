@@ -669,7 +669,18 @@ boolean) for every use, every run, every session check, the panel's count and
   announce), and taken down when br_core stops; never per frame. The dev
   tool's changes do not touch the hides.
 - **Its blip** shows only while this player holds a key, only for an online
-  terminal, and only in a match (from the bus on).
+  terminal, and only in a match -- from its warmup on (round 5, owner
+  2026-10-06: "it's okay to show the computer system blips while in warmup as
+  long as the player has possession of a Yubikey"; it was from the bus on).
+  Before the storm exists (warmup and the bus) every terminal is online and
+  has its blip; from PLAYING only those inside the storm do. **One blip per
+  terminal, a fuel station's kind** (round 5: "change the computers
+  SetBlipDisplay to the same type as fuel stations - reason being, the blips
+  are currently pinned on the minimap and are always there"): the art block's
+  sprite 521, color 51 and scale, the default display and
+  `SetBlipAsShortRange(true)` exactly as `client/fuel.lua` makes a station's --
+  on the big map always, on the minimap only nearby. It was a display-3 and
+  display-5 pair, not short-range.
 - **Its plate** (the shared prompt browser) reads `terminal_label` ("Computer
   system") over one of three hints:
   - `terminal_use` ("press to open") with the player's interact key: a press

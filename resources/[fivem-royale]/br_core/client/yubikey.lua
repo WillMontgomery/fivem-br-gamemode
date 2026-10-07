@@ -7,10 +7,12 @@
 --                  draws the equipped icon. A key on the GROUND is ordinary
 --                  loot and client/loot.lua draws it.
 --   the terminals  the config's sites plus the dev tool's (TERMINAL_SITES):
---                  a blip each, only while this player holds a key and only
---                  for an online terminal -- inside the storm, the one rule
---                  the server reads
---                  (BR.TerminalSolve.offlineWhy); and the shared world plate
+--                  a blip each, only while this player holds a key, from
+--                  warmup on (round 5), and only for an online terminal --
+--                  inside the storm once there is one, the one rule the
+--                  server reads (BR.TerminalSolve.offlineWhy) -- drawn like a
+--                  fuel station's: short-range, so the minimap shows it only
+--                  nearby and the big map always; and the shared world plate
 --                  within reach -- the owner's "Computer system" / "press to
 --                  open" with the interact key (2026-10-06) -- whose PRESS
 --                  asks the server to open the computer (TERMINAL_USE). A
@@ -86,9 +88,9 @@ local dev = { placed = {}, removed = {}, forced = {} }
 --- The merged terminal list, rebuilt when the dev changes arrive.
 local list = nil
 
---- [id] = { online, why, big, mini } for every terminal: whether it is online,
+--- [id] = { online, why, blip } for every terminal: whether it is online,
 --- why not (BR.TerminalSolve.offlineWhy's answer: 'offline' or nil),
---- and its blip on each map
+--- and its one blip
 local world = {}
 
 --- Storm reveal: { x, y, r, matchId, radius, big, mini }, or nil.
@@ -264,6 +266,7 @@ end
 
 --- One sprite on each map: display 3 is the pause map, 5 the minimap --
 --- client/airdrop.lua's pair, which is what a playtest proved draws on both.
+--- Storm reveal's; a terminal's blip is one short-range blip (terminalBlip).
 --- @return integer big, integer mini
 local function blipPair(x, y, z, sprite, colour, scale, name)
     local out = {}
@@ -280,10 +283,32 @@ local function blipPair(x, y, z, sprite, colour, scale, name)
     return out[1], out[2]
 end
 
+--- ONE BLIP PER TERMINAL, A FUEL STATION'S KIND (owner, 2026-10-06, round 5:
+--- "change the computers SetBlipDisplay to the same type as fuel stations -
+--- reason being, the blips are currently pinned on the minimap and are always
+--- there" -- and "we're not changing the blip type right? Just the display?").
+--- So the sprite, the color and the scale are the art block's, as they were,
+--- and the display is client/fuel.lua's station blip exactly: no
+--- SetBlipDisplay at all (the default) and SetBlipAsShortRange(true) -- on the
+--- big map always, on the minimap only when the player is near it. It was a
+--- display-3 and display-5 PAIR that was not short-range, so the minimap one
+--- sat pinned to the edge from anywhere on the map.
+--- @param s table  the terminal
+--- @return integer blip
+local function terminalBlip(s)
+    local a = art()
+    local b = AddBlipForCoord(s.x, s.y, s.z)
+    SetBlipSprite(b, a.blipSprite or 521)
+    SetBlipColour(b, a.blipColour or 51)
+    SetBlipScale(b, a.blipScale or 0.9)
+    SetBlipAsShortRange(b, true)
+    BR.Native.blipName(b, copy().terminal_label)
+    return b
+end
+
 local function dropTerminalBlips(w)
-    removeBlip(w.big)
-    removeBlip(w.mini)
-    w.big, w.mini = nil, nil
+    removeBlip(w.blip)
+    w.blip = nil
 end
 
 local function clearReveal()
@@ -323,13 +348,16 @@ local function dropAll()
     near = nil
 end
 
---- Is the player in a live match, where terminals and their blips belong?
+--- Is the player where terminal blips belong: a match from its WARMUP on
+--- (owner, 2026-10-06, round 5: "it's okay to show the computer system blips
+--- while in warmup as long as the player has possession of a Yubikey"; it was
+--- the bus on), through the bus and the match being played?
 --- @return boolean
 local function inMatch()
     local S = BR.State
     if not S or not S.match or not S.me then return false end
     local st = S.match.state
-    return (st == BR.MatchState.BUS or st == BR.MatchState.PLAYING)
+    return (st == BR.MatchState.WARMUP or st == BR.MatchState.BUS or st == BR.MatchState.PLAYING)
         and S.me.state ~= BR.PlayerState.LOBBY
 end
 
@@ -362,8 +390,12 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
 
     local now = GetGameTimer()
     local live = inMatch()
+    -- THE STORM, ONCE THERE IS ONE: from PLAYING, as the server's own m.storm.
+    -- Before it (warmup and the bus) no terminal is outside anything, so every
+    -- one has its blip -- and a record left over from the last match, which
+    -- this client still holds until the new one arrives, decides nothing.
     local zone = nil
-    if live and S.storm then
+    if live and S.storm and S.match.state == BR.MatchState.PLAYING then
         zone = TS.zoneAt(S.storm, BR.Clock and BR.Clock.now() or now)
     end
     local blips = live and held
@@ -383,13 +415,11 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
         -- is equipped", and, the owner's own spec, only for a terminal
         -- INSIDE the storm.
         if blips and w.online then
-            if not (w.big and isTrue(DoesBlipExist(w.big))) then
+            if not (w.blip and isTrue(DoesBlipExist(w.blip))) then
                 dropTerminalBlips(w)
-                local a = art()
-                w.big, w.mini = blipPair(s.x, s.y, s.z, a.blipSprite or 521,
-                    a.blipColour or 51, a.blipScale or 0.9, copy().terminal_label)
+                w.blip = terminalBlip(s)
             end
-        elseif w.big or w.mini then
+        elseif w.blip then
             dropTerminalBlips(w)
         end
     end

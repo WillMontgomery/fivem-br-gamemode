@@ -1051,8 +1051,11 @@ BR.Config.Terminals = {
         -- (br_stream_s2 5ec1f721) since paleto_pd and calafia_way were moved
         -- the 1.7 m onto theirs (2026-10-06), so this is slack, not reach.
         hideRadiusM = 2.0,
-        -- A terminal's blip, drawn only while this player holds a key and only
-        -- for a terminal inside the storm.
+        -- A terminal's blip, drawn only while this player holds a key, from
+        -- warmup on, and only for a terminal inside the storm once there is
+        -- one (round 5). One short-range blip per terminal, a fuel station's
+        -- kind (client/yubikey.lua terminalBlip): the type is these three, the
+        -- display the game's default.
         blipSprite = 521,
         blipColour = 51,
         blipScale = 0.9,
