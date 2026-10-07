@@ -6047,6 +6047,20 @@ do
     ok(#eventsOf(BR.Net.WORLD_CYCLE) == 0, 'and nothing turns after it, even a hold that '
        .. 'comes due under the verdict', #eventsOf(BR.Net.WORLD_CYCLE))
 
+    -- `brforce bus` FROM PLAYING (#399 review: no test held this): the cycle is
+    -- dropped, so the bus's doors open on XMAS and the next PLAYING draws again.
+    m = form()
+    BR.Match.transition(m, BR.MatchState.PLAYING)
+    local before = m.sky and m.sky.seed
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.BUS)
+    ok(before ~= nil and m.sky == nil and skyKeys(BR.Net.STATE) == 0,
+       '`brforce bus` mid-match drops the cycle: the bus state event carries no sky')
+    fakeTime = fakeTime + 5000
+    BR.Match.transition(m, BR.MatchState.PLAYING)
+    ok(m.sky ~= nil and m.sky.turns == 1 and m.sky.seed ~= before,
+       'and PLAYING again starts a fresh cycle from a fresh seed')
+
     -- brfestive OFF MID-MATCH: the plain sky to everyone, then the stop.
     m = form()
     BR.Match.transition(m, BR.MatchState.PLAYING)

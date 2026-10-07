@@ -78,9 +78,9 @@ end
 --- client/world.lua turns that pass on, with tire and footprint tracks, while
 --- the sky it writes is one of these four (SNOW_WEATHER below) -- so `brweather
 --- XMAS` shows it too. AWAITING THE OWNER'S IN-GAME CHECK of all four names;
---- XMAS is the clear-sky snow and the one the festive months use. Listed
---- anyway: refusing a name the engine accepts would be this file inventing a
---- rule.
+--- XMAS is the clear-sky snow the festive lobby and warmup stand under, and a
+--- festive match cycles all four (W.CYCLE_ROLE below). Listed anyway: refusing
+--- a name the engine accepts would be this file inventing a rule.
 W.WEATHERS = {
     'EXTRASUNNY', 'CLEAR', 'CLEARING', 'NEUTRAL', 'CLOUDS', 'SMOG',
     'OVERCAST', 'FOGGY', 'RAIN', 'THUNDER',
@@ -489,6 +489,10 @@ function W.cycleNext(rng, prev)
     for _, w in ipairs(c.weathers) do
         if w ~= prev then pool[#pool + 1] = w end
     end
+    -- ONE WEATHER CONFIGURED (an overrides.lua cut to a single snow) has no
+    -- other to turn to, so it holds: drawing from the empty pool would answer
+    -- nil, and every other turn would stop the cycle.
+    if #pool == 0 then pool = c.weathers end
     local weather = rng:pick(pool)
     return weather, rng:int(c.holdMinSec, c.holdMaxSec) * 1000
 end

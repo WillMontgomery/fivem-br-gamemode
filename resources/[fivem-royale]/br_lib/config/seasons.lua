@@ -52,7 +52,8 @@ BR.Config.Seasons = {
         -- #399. Owner, 2026-10-05: "yes snow is meant to reach the players" --
         -- December and January, on the festive crates' switch (`brfestive`),
         -- everywhere. The festive sky: the clear sky is XMAS with snow on the
-        -- ground. Off, every sky is the one it has always been.
+        -- ground, and in a match it cycles SNOW, SNOWLIGHT, XMAS and BLIZZARD
+        -- (2026-10-06). Off, every sky is the one it has always been.
         snow = { from = 2 },
     },
 }

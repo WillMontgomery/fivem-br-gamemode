@@ -23023,6 +23023,20 @@ do
     end
     ok(sequence(4242, 40) == sequence(4242, 40), 'the same seed replays the same forty turns')
     ok(sequence(4242, 40) ~= sequence(4243, 40), 'and the next seed draws another sky')
+
+    -- ONE WEATHER CONFIGURED (#399 review): it holds, and never draws nil --
+    -- which the server would send as a stop every other turn.
+    local four = C.weathers
+    C.weathers = { 'XMAS' }
+    local r1, held1 = env.BR.Rng(7), true
+    local p1 = nil
+    for _ = 1, 50 do
+        local w, hold = W.cycleNext(r1, p1)
+        if w ~= 'XMAS' or hold < 180000 or hold > 300000 then held1 = false end
+        p1 = w
+    end
+    C.weathers = four
+    ok(held1, 'a cycle cut to one weather in overrides.lua holds that weather, turn after turn')
 end
 
 describe('world / the festive match sky: the roles it moves')

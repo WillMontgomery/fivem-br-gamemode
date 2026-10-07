@@ -131,7 +131,8 @@ end
 --- Start a match's cycle. Sends nothing: the caller knows who must hear.
 ---
 --- SEEDED PER MATCH, from its id and the moment it started, so two matches
---- never share a sequence and `brsky` can print the seed that replays one.
+--- never share a sequence and `brsky` can print the seed that replays one --
+--- up to the first `brsky <weather>`, which draws a turn and shows another.
 --- @param m table @param now number
 local function cycleBegin(m, now)
     local seed = (math.floor(tonumber(m.id) or 0) * 7919 + math.floor(now)) & 0x7FFFFFFF
