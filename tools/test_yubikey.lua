@@ -445,7 +445,7 @@ do
     eq(Y.holds(7), true, 'a reconnect on the same license is handed the cached key (BR.Yubikey.adopt)')
 end
 
-describe('the key: a pickup, the cap of one, and the first-pickup line once ever')
+describe('the key: a pickup, the cap of one, and the first-pickup card once ever')
 do
     reset()
     local m = newMatch(1)
@@ -469,26 +469,98 @@ do
     eq(Y.holds(1), true, 'and holds it')
     ok(#writes == 1 and writes[1].lic == LIC[1] and writes[1].held == true,
         'one profile write: yubikey = 1 for that license', #writes)
-    n = noticesTo(1)
-    eq(n[1] and noticeText(n[1]), COPY.first_pickup, 'the first key ever explains itself (first_pickup)')
+    -- THE FIRST KEY EVER EXPLAINS ITSELF ON A CARD (round 5): the push that
+    -- gave it says `first`, and the client puts up the owner's words. NOT a
+    -- toast any more -- the card is the message.
+    local firsts = 0
+    for _, d in ipairs(eventsOf(BR.Net.YUBIKEY_STATE, 1)) do
+        if d.payload.first == true then firsts = firsts + 1 end
+    end
+    eq(firsts, 1, 'the first key ever: one YUBIKEY_STATE says first')
+    ok(lastOf(BR.Net.YUBIKEY_STATE, 1).first == true and lastOf(BR.Net.YUBIKEY_STATE, 1).held == true,
+        'the push that gave it, holding')
+    eq(#noticesTo(1), 0, 'and no toast says it: the first-pickup card is the message')
     ok(#eventsOf(BR.Net.LOOT_PICKUP_CUE, 1) == 1, 'with the pickup sound every item makes')
     ok(lastOf(BR.Net.YUBIKEY_STATE, 1).held == true, 'and the HUD hears it holds one')
 
-    -- Spent, then a second one found: the line is not said again, ever.
+    -- Spent, then a second one found: never again.
     Y.take(1, 'used')
     notices = {}
     local e2 = Y.dropAt(m, C0.x + 0.5, C0.y, 30.0)
     claim(1, e2.id)
     eq(Y.holds(1), true, 'a later key is picked up')
-    eq(#noticesTo(1), 0, 'and the first-pickup line is not shown a second time')
+    firsts = 0
+    for _, d in ipairs(eventsOf(BR.Net.YUBIKEY_STATE, 1)) do
+        if d.payload.first == true then firsts = firsts + 1 end
+    end
+    eq(firsts, 1, 'and the first-pickup card is not asked for a second time')
+    eq(lastOf(BR.Net.YUBIKEY_STATE, 1).first, nil, 'every other push leaves `first` out')
+    eq(#noticesTo(1), 0, 'and no toast either')
 
-    -- And the flag came off the profile: a player whose row says seen is never told.
+    -- And the flag came off the profile: a player whose row says seen is never shown it.
     reset()
     local m3 = newMatch(3)
     player(5, m3, nil, C0, false, true)
     local e3 = Y.dropAt(m3, C0.x + 0.5, C0.y, 30.0)
     claim(5, e3.id)
-    eq(#noticesTo(5), 0, 'a profile whose yubikeySeen is set is not told on its first pickup this session')
+    eq(Y.holds(5), true, 'a profile whose yubikeySeen is set picks one up')
+    local any = false
+    for _, d in ipairs(eventsOf(BR.Net.YUBIKEY_STATE, 5)) do
+        if d.payload.first then any = true end
+    end
+    eq(any, false, 'and is not shown the first-pickup card on its first pickup this session')
+    eq(#noticesTo(5), 0, 'nor told anything')
+end
+
+describe('round 5: the dev verbs -- the first-pickup card again, and a key dropped in front of you')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, nil, C0, false, true)          -- has had a key before
+    -- `bryubikey give` -> `brterminalsv key give`: seen, so no card.
+    sv(1, 'key give')
+    local function firstsTo(src)
+        local c = 0
+        for _, d in ipairs(eventsOf(BR.Net.YUBIKEY_STATE, src)) do
+            if d.payload.first == true then c = c + 1 end
+        end
+        return c
+    end
+    eq(firstsTo(1), 0, 'a player who has had a key gets no card from `bryubikey give`')
+    -- `bryubikey unseen` -> `brterminalsv key unseen`: the next key shows it.
+    sv(1, 'key take')
+    sv(1, 'key unseen')
+    sv(1, 'key give')
+    eq(firstsTo(1), 1, '`bryubikey unseen`, then `bryubikey give`: the first-pickup card again')
+    sv(1, 'key take')
+    sv(1, 'key give')
+    eq(firstsTo(1), 1, 'once: the give after that is an ordinary one')
+    local w = writes[#writes]
+    ok(w and w.held == true, 'the profile write is the real one')
+
+    -- `bryubikey drop` -> `brterminalsv key drop x y z`: a real ground key.
+    sv(1, 'key take')
+    local before = #groundKeys(m)
+    sv(1, ('key drop %.1f %.1f 30.0'):format(C0.x + 1.5, C0.y))
+    local keys = groundKeys(m)
+    eq(#keys, before + 1, '`bryubikey drop` lays a Yubikey on the ground of the player\'s match')
+    local k = nil
+    for _, x in ipairs(keys) do if not k or x.id > k.id then k = x end end
+    ok(k and k.kind == 'yubikey' and math.abs(k.x - (C0.x + 1.5)) < 0.01, 'at the spot in front of them')
+    sv(1, 'key unseen')
+    claim(1, k.id)
+    eq(Y.holds(1), true, 'the real ground pickup takes it')
+    eq(firstsTo(1), 2, 'and, unseen again, shows the first-pickup card')
+    -- Refused: too far, not a spot, Season 1.
+    local n = #groundKeys(m)
+    sv(1, ('key drop %.1f %.1f 30.0'):format(C0.x + 500.0, C0.y))
+    sv(1, 'key drop here')
+    eq(#groundKeys(m), n, 'a spot far from the player, or no spot at all, drops nothing')
+    season(1)
+    sv(1, 'key drop ' .. C0.x .. ' ' .. C0.y .. ' 30')
+    sv(1, 'key unseen')
+    eq(#groundKeys(m), n, 'and on Season 1 nothing is dropped')
+    season(2)
 end
 
 describe('the key: a pickup before the profile is read waits, silently')
@@ -1114,6 +1186,22 @@ local function bootClient(opts)
     env.RegisterNetEvent = function() end
     env.AddEventHandler = function(name, fn) W.handlers[name] = fn end
     env.TriggerServerEvent = function(ev, d) W.server[#W.server + 1] = { ev = ev, d = d } end
+    -- THE CONTROLS (round 5's first-pickup card): `W.pressed[id]` is a control
+    -- pressed this frame; a disabled control is seen only by the Disabled
+    -- reader, as the engine does. Every DisableControlAction is recorded.
+    W.pressed, W.disabled, W.disabledEver, W.pause = {}, {}, {}, false
+    env.DisableControlAction = function(_, id)
+        n()
+        W.disabled[id] = true
+        W.disabledEver[id] = true
+    end
+    env.IsDisabledControlJustPressed = function(_, id) n() return (W.pressed[id] and W.disabled[id]) and 1 or 0 end
+    env.IsControlJustPressed = function(_, id) n() return (W.pressed[id] and not W.disabled[id]) and 1 or 0 end
+    env.IsPauseMenuActive = function() n() return W.pause and 1 or 0 end
+    W.ui = {}
+    env.TriggerEvent = function(name, kind, d)
+        if name == 'br:ui:sendLocal' then W.ui[#W.ui + 1] = { kind = kind, d = d } end
+    end
 
     env.BR = {}
     for _, f in ipairs({
@@ -1146,6 +1234,7 @@ local function bootClient(opts)
         uiScreen = nil,
         on = function(a, fn) W.keys.listeners[a] = fn end,
         isHeld = function(a) return W.keys.held[a] == true end,
+        screenHoldsEscape = function() return B.Keys.uiScreen ~= nil or W.screen == true end,
     }
     B.Dui = {
         page = function() return 'page' end,
@@ -1170,6 +1259,20 @@ local function bootClient(opts)
     function W.slow() W.loops.slow['terminals.world']() end
     function W.tick() W.loops.tick['terminals.near']() end
     function W.frame() W.loops.frame['terminals.plate']() end
+    --- One frame of the first-pickup card's loop, with these controls pressed.
+    function W.cardFrame(pressed)
+        W.pressed, W.disabled = {}, {}
+        for _, id in ipairs(pressed or {}) do W.pressed[id] = true end
+        W.loops.frame['yubikey.card']()
+    end
+    --- The first-pickup card's messages to br_ui.
+    function W.cards()
+        local out = {}
+        for _, m in ipairs(W.ui) do
+            if m.kind == W.B.Nui.YUBIKEY_CARD then out[#out + 1] = m.d end
+        end
+        return out
+    end
     function W.net(ev, d) W.handlers[ev](d) end
     function W.spriteBlips(sprite)
         local c = 0
@@ -1538,6 +1641,106 @@ do
     season(2)
 end
 
+describe('client: round 5 -- the first-pickup card, up until Enter and nothing else')
+do
+    -- Owner: "the tutorial-style card which tells them how to use it and
+    -- requires manual dismissal using the return key".
+    local W = bootClient({ sites = {} })
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
+    eq(#W.cards(), 0, 'an ordinary push puts up no card')
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false, first = true })
+    local c = W.cards()
+    ok(#c == 1 and c[1].show == true, 'the first key ever: the card goes up (BR.Nui.YUBIKEY_CARD)')
+    eq(c[1] and c[1].text, COPY.first_pickup, 'with the owner\'s words, first_pickup')
+    eq(W.B.Yubikey.cardUp(), true, 'and Lua holds it up')
+
+    -- NOTHING BUT ENTER. Movement, aim, attack, jump, sprint, interact (E,
+    -- 38), Escape (200, 322), Backspace (177), Space (22), the mouse button
+    -- (24, and 18/176, which are the mouse too), and the arrows the tutorial
+    -- reads -- frame after frame, for minutes.
+    local NOT_ENTER = { 30, 31, 32, 33, 34, 35, 21, 22, 23, 24, 25, 37, 38, 44, 45, 177, 200, 322, 18, 176, 172, 173, 174, 175, 245, 249 }
+    for _ = 1, 600 do
+        W.now = W.now + 500
+        W.cardFrame(NOT_ENTER)
+        W.slow()
+        W.tick()
+    end
+    eq(W.B.Yubikey.cardUp(), true, 'five minutes of every other key: still up -- no timer, no other key')
+    eq(#W.cards(), 1, 'and br_ui was told nothing more')
+    -- IT TRAPS NOTHING: the only controls it ever disables are Enter's.
+    local took = {}
+    for id in pairs(W.disabledEver) do took[#took + 1] = id end
+    table.sort(took)
+    eq(table.concat(took, ','), '191,201,215', 'the only controls it takes are Enter\'s (191, 201, 215)')
+
+    -- ENTER, but while something else holds the keyboard: not taken.
+    W.B.Keys.uiScreen = 'settings'
+    W.disabledEver = {}
+    W.cardFrame({ 201, 191 })
+    eq(W.B.Yubikey.cardUp(), true, 'Enter in a br_ui screen (its own Enter) does not take it down')
+    eq(next(W.disabledEver), nil, 'and nothing is disabled under the screen')
+    W.B.Keys.uiScreen = nil
+    W.screen = true      -- an in-game menu, or the frames after one (screenHoldsEscape)
+    W.cardFrame({ 201 })
+    eq(W.B.Yubikey.cardUp(), true, 'nor in an in-game menu')
+    W.screen = false
+    W.pause = true
+    W.cardFrame({ 201 })
+    eq(W.B.Yubikey.cardUp(), true, 'nor under GTA\'s pause menu, whose Enter selects')
+    W.pause = false
+    W.B.State.me.state = W.B.PlayerState.LOBBY
+    W.B.State.match.state = W.B.MatchState.WAITING
+    W.cardFrame({ 201 })
+    eq(W.B.Yubikey.cardUp(), true, 'nor in the lobby (br_ui keeps it off the lobby; it waits for the next match)')
+    W.B.State.me.state = W.B.PlayerState.WARMUP
+    W.B.State.match.state = W.B.MatchState.WARMUP
+
+    -- A computer over the screen hides it, and it comes back.
+    W.computer = true
+    W.cardFrame({ 201 })
+    local cs = W.cards()
+    ok(cs[#cs].show == false, 'a terminal\'s computer up: br_ui hides it')
+    eq(W.B.Yubikey.cardUp(), true, 'hidden, not dismissed: Enter on the computer is the computer\'s')
+    W.computer = false
+    W.cardFrame({})
+    cs = W.cards()
+    ok(cs[#cs].show == true and cs[#cs].text == COPY.first_pickup, 'the computer gone: the card is back')
+
+    -- br_ui restarting gets it again.
+    local before = #W.cards()
+    W.handlers['br:ui:ready']()
+    ok(#W.cards() == before + 1 and W.cards()[#W.cards()].show == true, 'br_ui restarting mid-card is sent it again')
+
+    -- ENTER, in a match, nothing over it: down.
+    W.cardFrame({ 201 })
+    eq(W.B.Yubikey.cardUp(), false, 'Enter takes it down')
+    cs = W.cards()
+    ok(cs[#cs].show == false and cs[#cs].text == nil, 'and br_ui is told, with no words')
+    local after = #W.cards()
+    for _ = 1, 30 do W.cardFrame({ 201, 191 }) end
+    eq(#W.cards(), after, 'gone, Enter is nobody\'s business of the card\'s again')
+    W.disabledEver = {}
+    W.cardFrame({ 201 })
+    eq(next(W.disabledEver), nil, 'and nothing is disabled once it is down')
+    W.handlers['br:ui:ready']()
+    eq(#W.cards(), after, 'nor sent again when br_ui restarts')
+
+    -- Enter's other reading (the numpad's / 191) does it too, once.
+    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false, first = true })
+    W.cardFrame({ 191 })
+    eq(W.B.Yubikey.cardUp(), false, 'INPUT_FRONTEND_RDOWN (Enter) takes it down too')
+
+    -- NO NATIVE AT ALL WHILE IT IS DOWN.
+    W.natives = 0
+    for _ = 1, 30 do W.cardFrame({ 201 }) end
+    eq(W.natives, 0, 'a frame with no card calls no native')
+
+    -- Season 1: never.
+    local V = bootClient({ sites = {}, season = 1 })
+    V.net(V.B.Net.YUBIKEY_STATE, { held = true, first = true })
+    eq(#V.cards(), 0, 'a Season 1 client puts up no card')
+end
+
 describe('client: Storm reveal on both maps until the lobby')
 do
     local W = bootClient({ sites = {} })
@@ -1838,6 +2041,30 @@ do
     -- The squad panel's mark is a different component, and unchanged.
     local panel = readFile(UI .. 'src/hud/SquadPanel.tsx') or ''
     ok(panel:find('<YubikeyMark glyph={m.yubikey} />', 1, true) ~= nil, 'the squad panel\'s holder mark is still the glyph')
+end
+
+describe('round 5: br_ui draws the first-pickup card as Lua says, and has no way of its own to take it down')
+do
+    local UI = 'ui-src/src/'
+    local proto = readFile(ROOT .. 'br_lib/shared/protocol.lua') or ''
+    ok(proto:find("YUBIKEY_CARD = 'yubikeycard'", 1, true) ~= nil, 'BR.Nui.YUBIKEY_CARD is the yubikeycard envelope')
+    local app = readFile(UI .. 'App.tsx') or ''
+    ok(app:find("useNuiEvent('yubikeycard'", 1, true) ~= nil
+        and app:find("d?.show === true && typeof d.text === 'string' && d.text !== '' ? d.text : null", 1, true) ~= nil,
+        'App.tsx mirrors it: the words while Lua says show, nothing otherwise')
+    ok(app:find("{yubikeyCard !== null && !showLobby && !hudPaused && !tearingDown && (\n        <YubikeyCard text={yubikeyCard} />", 1, true) ~= nil,
+        'and draws it over the match only -- where Lua takes Enter for it')
+    local card = (readFile(UI .. 'tutorial/YubikeyCard.tsx') or ''):gsub('/%*.-%*/', ''):gsub('//[^\n]*', '')
+    ok(card ~= '', 'tutorial/YubikeyCard.tsx is read')
+    ok(card:find('tut-card', 1, true) and card:find('tut-body', 1, true) and card:find('emphasize(text)', 1, true),
+        'the tutorial card\'s look, the owner\'s **bold** through AnnotationCard\'s emphasize')
+    ok(card:find('<KeyCap label="Enter"', 1, true) ~= nil, 'with the Enter key cap, as the cards draw their keys')
+    for _, banned in ipairs({ 'onClick', 'onPress', 'onKeyDown', 'addEventListener', 'Btn', 'interactive', 'fetchNui', 'setYubikeyCard' }) do
+        ok(not card:find(banned, 1, true), ('and nothing of its own takes it down: no %s'):format(banned))
+    end
+    local _, timers = card:gsub('setTimeout', '')
+    eq(timers, 1, 'its one timeout staggers the text in (setLanded), and removes nothing')
+    ok(card:find('setTimeout(() => setLanded(true), 180)', 1, true) ~= nil, 'that is all it does')
 end
 
 realPrint(('%d passed, %d failed'):format(pass, fail))

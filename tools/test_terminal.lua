@@ -983,6 +983,21 @@ do
     end
 end
 
+describe('round 5: the first-pickup card words are the owner\'s, and no placeholder is left')
+do
+    bootServer()
+    local copy = BR.Config.Terminals.copy
+    eq(copy.first_pickup, "You found a Yubikey! **Please read this entire message.** This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
+        'first_pickup is the owner\'s text, word for word, its bold as he wrote it')
+    eq(copy.key_label, 'Yubikey', 'key_label is written: the ground pickup is a "Yubikey"')
+    eq(copy.already_holding, 'You already have a Yubikey.', 'already_holding is written')
+    local left = {}
+    for key, line in pairs(copy) do
+        if type(line) == 'string' and line:find('[COPY', 1, true) then left[#left + 1] = key end
+    end
+    table.sort(left)
+    eq(table.concat(left, ', '), '', 'no line of the copy block is a [COPY: ...] placeholder any more')
+end
 
 describe('round 5 (owner, 2026-10-06): "Rename the "Functions" to "Tools""')
 do

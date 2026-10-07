@@ -1314,10 +1314,15 @@ end
 
 -- ---------------------------------------------------------------- dev ---
 
-local USAGE = 'usage: brterminalsv open [nokey] [used] [offline] [volts=<n>] | close | key give|take'
+local USAGE = 'usage: brterminalsv open [nokey] [used] [offline] [volts=<n>] | close | key give|take|unseen'
+    .. ' | key drop <x> <y> <z>'
     .. ' | place <x> <y> <z> [h] [id] | remove <id> | list | online <id> [off] | reset'
     .. ' | run <function> [option=choice ...] [x=<n> y=<n>]  (from the server console, a verb about a player takes'
     .. ' the player id next: brterminalsv open <player id> [...])'
+
+--- `brterminalsv key drop`'s reach: the spot it is given must be this close to
+--- the player it is for (round 5's dev drop, a key in front of them).
+local DEV_DROP_REACH_M = 10
 
 --- One line on the requester's F8 (or this console), and nowhere else.
 local function tell(src, text)
@@ -1464,6 +1469,36 @@ RegisterCommand('brterminalsv', function(source, args)
             tell(src, ('closed the computer for %d'):format(target))
         else
             tell(src, ('%d has no terminal open'):format(target))
+        end
+
+    elseif verb == 'key' and (words[1] or ''):lower() == 'unseen' then
+        -- THE FIRST-PICKUP CARD AGAIN (round 5): the next key this player
+        -- gets -- `bryubikey give` or a pickup -- shows it.
+        local ok, why = BR.Yubikey.devUnseen(target)
+        tell(src, ok and ('%d will see the first-pickup card with their next key'):format(target)
+            or ('%d: %s'):format(target, why == 'loading' and 'their profile has not been read yet' or tostring(why)))
+
+    elseif verb == 'key' and (words[1] or ''):lower() == 'drop' then
+        -- A KEY ON THE GROUND (round 5), at the spot `bryubikey drop` found in
+        -- front of the player: the real pickup, to test the claim and the card.
+        -- Near them only -- a dev convenience, not a way to seed the map.
+        local x, y, z = tonumber(words[2]), tonumber(words[3]), tonumber(words[4])
+        if not (TS.finite(x) and TS.finite(y) and TS.finite(z)) then
+            tell(src, 'key drop needs x y z -- `bryubikey drop` in game finds them for you')
+            return
+        end
+        local e = BR.Roster.get(target)
+        local p = e and e.pos
+        if p and ((p.x - x) ^ 2 + (p.y - y) ^ 2) > DEV_DROP_REACH_M * DEV_DROP_REACH_M then
+            tell(src, ('that spot is more than %d m from %d'):format(DEV_DROP_REACH_M, target))
+            return
+        end
+        local entry, why = BR.Yubikey.devDrop(target, x, y, z)
+        if entry then
+            tell(src, ('a Yubikey lies at (%.1f, %.1f, %.1f), entry %s'):format(x, y, z, tostring(entry.id)))
+        else
+            tell(src, ('%d: %s'):format(target, why == 'nowhere' and 'is not anywhere with loot in it (a match or the warmup pad)'
+                or tostring(why or 'the drop failed')))
         end
 
     elseif verb == 'key' then

@@ -107,9 +107,10 @@ round 2's `app_title`/`desktop_icon`/`window_title` "Control Tower",
 **written** for the 2026-10-05 app at his request and listed in that round's
 report for his review (the app's frame and pages, every function's lines, the
 how-to, round 2's lines, marked "WRITTEN (2026-10-05, round 2)", and round 3's
-one edit, `howto_terminal_body`'s "press interact"), and the remaining
-**placeholders** outside the app (`first_pickup`, `already_holding`,
-`key_label`). A line with a newline in it is
+one edit, `howto_terminal_body`'s "press interact"), and, since round 5, no
+**placeholder** at all: `first_pickup` is the owner's own text (the
+first-pickup card), and `already_holding` and `key_label` are written. A line
+with a newline in it is
 a list; `{name}`, `{value}`, `{count}`, `{stage}`/`{stages}`,
 `{online}`/`{total}` and `{volts}`/`{cost}`/`{balance}` (a figure and the
 currency word, "1,250 Volts") are filled by the app.
@@ -174,11 +175,11 @@ The table below is the lines outside the functions' own:
 | `bounty_protect` | A toast to the bounty's squad, not the bounty (Scan's or a Contract's: both ten minutes since round 4); `{playername}` |
 | `scan_blip`, `bounty_blip` | The legend names of Scan's and the bounty's marks |
 | `<id>_description` | The lobby: the `{description}` in `notice_action` |
-| `first_pickup` | A toast to a player picking up their first Yubikey ever |
-| `already_holding` | A toast to a holder whose claim on a second key is refused |
+| `first_pickup` | The player who gets their first Yubikey ever: the first-pickup card's words, verbatim (round 5) -- not a toast |
+| `already_holding` | A toast to a holder whose claim on a second key is refused ("You already have a Yubikey.") |
 | `notice_access` | A toast to the lobby (the whole match) when someone gains access; `{playername}` |
 | `notice_action` | A toast to the lobby when a function ran; `{playername}`, `{description}` |
-| `key_label` | Anyone near a key on the ground: its plate |
+| `key_label` | Anyone near a key on the ground: its plate ("Yubikey") |
 | `terminal_label` | Anyone near a terminal: its plate's title, and its blip's legend name |
 | `terminal_use` | A holder at a live terminal: the plate's hint, beside their interact key's cap |
 | `storm_reveal_blip` | The squad that ran Storm reveal: the legend name of the final zone |
@@ -615,9 +616,29 @@ The owner's rules (#396, 2026-10-04), and where each lives:
 - **A key on the ground is ordinary loot**, kind `yubikey`, drawn by
   `client/loot.lua` and claimed through `server/loot.lua`'s LOOT_CLAIM like a
   Volts pile. A holder's claim is refused (`already_holding`) and the key stays.
-- **The first key ever** shows `first_pickup` once (`yubikeySeen`).
-- **On screen**: the HUD envelope's `yubikey` (the glyph) while held; the squad
-  panel's mark beside every squadmate who holds one (several can).
+- **The first key ever** shows the **first-pickup card** once (`yubikeySeen`),
+  round 5 (owner: "the tutorial-style card which tells them how to use it and
+  requires manual dismissal using the return key"). `BR.Yubikey.give` pushes
+  YUBIKEY_STATE with `first = true` -- a real pickup or `bryubikey give` -- and
+  `client/yubikey.lua` sends br_ui `BR.Nui.YUBIKEY_CARD { show, text }` with
+  the owner's words (`first_pickup`). br_ui draws them on the tutorial's card
+  (`tutorial/YubikeyCard.tsx`: `tut-card`, his **bold** through
+  `emphasize`, an Enter key cap, no title, no count, no button) centered in
+  the upper part of the screen, over the match only -- not over the lobby, a
+  paused HUD or the verdict, where it waits for the next match. **Only Enter
+  takes it down**, read in Lua as a control (INPUT_FRONTEND_RDOWN 191,
+  INPUT_FRONTEND_ACCEPT 201 and INPUT_FRONTEND_ENDSCREEN_ACCEPT 215, disabled
+  for the frame and read disabled), and only while no br_ui screen, in-game
+  menu or computer holds the keyboard and GTA's pause menu is down; no timer,
+  nothing else. It takes no focus and no other control, so the player moves
+  and shoots as ever. A terminal's computer hides it while it is up; br_ui
+  restarting gets it again. No toast says it.
+- **On screen**: the owner's image of the key (round 5: br_ui's
+  `items/yubikey.png`, his render of the blitz_seckey prop) by the inventory
+  slots, 3rem square -- 25% over the 2.4rem plate it replaced -- with no
+  plate behind it, while the HUD envelope's `yubikey` (the glyph) says one is
+  held; the squad panel's mark (the glyph) beside every squadmate who holds
+  one (several can).
 - **Carried into the next match** unused: the row still says so.
 - **Dropped where its holder dies**, on the death box's edge
   (`server/combat.lua`), and where a holder **leaves mid-fight** -- walking out
@@ -920,7 +941,9 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 |---|---|
 | `brterminal [nokey] [used] [offline] [volts=<n>]` | The computer anywhere, on a dev terminal whose facts are those words -- the app alone. Its runs spend `volts` (or the real balance as it opened) in the session alone, never the row |
 | `brterminal close` | Close it |
-| `bryubikey [give or take]` | A key for yourself, or yours taken: the real profile write and messages |
+| `bryubikey [give or take]` | A key for yourself, or yours taken: the real profile write and messages, the first-pickup card included |
+| `bryubikey unseen` | Round 5: your next key -- `bryubikey give` or a pickup -- shows the first-pickup card again. This session's flag only (`BR.Yubikey.devUnseen`); the profile row's `yubikeySeen` is untouched and the next grant writes it true again |
+| `bryubikey drop` | Round 5: a Yubikey on the ground a meter and a half in front of you, in your match or on the warmup pad (`BR.Yubikey.devDrop`), to test the real ground pickup -- the claim, `already_holding` and the card. Within 10 m of you only |
 | `brterminal place [id]` | A terminal where you look (or on the ground ahead), facing you, for this session -- a plate and a blip, no laptop (the owner's ymap holds those); prints the config row |
 | `brterminal remove <id>` | Out of play for this session (a config row stays in the file) |
 | `brterminal list` | Every terminal, and whether your match has it online |

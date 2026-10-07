@@ -1878,6 +1878,34 @@ html, body, #root {
 
 .tut-acts { display: inline-flex; gap: 0.35rem; }
 
+/* ═══ THE FIRST-PICKUP CARD (#396, round 5) ═══
+
+   tutorial/YubikeyCard.tsx: the tutorial card's surface, standing on its own
+   over the match rather than beside a control -- centered, in the upper part
+   of the screen, clear of the crosshair. The slot is the position; the card
+   keeps .tut-card's arrival (its transform) and is laid out in the slot rather
+   than placed by a layer. Nothing in it is pressable, so no pointer events. */
+.yubikey-card-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 16%;
+  z-index: 55;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.yubikey-card {
+  position: relative;
+  width: 24rem;
+  max-width: 40vw;
+}
+
+.yubikey-card .tut-body { margin-top: 0; }
+
+.yubikey-card-foot { justify-content: flex-end; }
+
 /* The buttons are the project's own `Btn` (see AnnotationCard.tsx), so there
    are no button rules here. There were, and deleting them is the point: a
    second button vocabulary is exactly what made the first version read as a
@@ -1907,7 +1935,7 @@ html, body, #root {
 
 /* THE CURRENCY, IN THE CURRENCY'S COLOUR. Owner, 2026-09-06, on the reporting
    card: "the '250 Volts' text needs to be our signature volts color." Written
-   `~100 Volts~` in the card's prose; see AnnotationCard's `emphasise`. */
+   `~100 Volts~` in the card's prose; see AnnotationCard's `emphasize`. */
 .tut-volts {
   color: var(--color-volts);
   font-weight: var(--font-tutorial-head);

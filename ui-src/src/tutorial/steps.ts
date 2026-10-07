@@ -40,7 +40,7 @@
  * Owner, 2026-09-04: "we can make any key details italic or bold (700 weight)
  * if needed." `*word*` is italic and `**word**` is 700. A tiny grammar rather
  * than raw HTML because these strings are his and must never become a place
- * where a tag can be pasted; see `emphasise` in AnnotationCard.
+ * where a tag can be pasted; see `emphasize` in AnnotationCard.
  */
 
 import type { CallbackName } from '../bridge/types'

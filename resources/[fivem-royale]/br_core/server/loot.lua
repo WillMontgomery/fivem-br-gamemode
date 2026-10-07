@@ -748,6 +748,15 @@ end
 -- Streaming
 -- --------------------------------------------------------------------------
 
+--- The loot registry this player is looking at -- their match's, or the
+--- warmup pad's -- or nil (zoneFor's one answer, for another file: the
+--- Yubikey's dev drop, server/yubikey.lua).
+--- @param src integer
+--- @return table|nil zone
+function BR.Loot.zoneOf(src)
+    return zoneFor(src)
+end
+
 --- The entries a player should be holding right now, for the snapshot.
 --- @param src integer
 --- @return table|nil

@@ -361,6 +361,12 @@ export interface UiState {
   /** Is the "you are giving up the reward" card on screen? See DECLINE_STEPS. */
   tutorialDeclineCard: boolean
   /**
+   * THE FIRST-PICKUP CARD's text while it is up, else null (#396, round 5).
+   * Lua's to raise and to take down -- on Enter, and only then -- through the
+   * `yubikeycard` envelope; tutorial/YubikeyCard.tsx draws it.
+   */
+  yubikeyCard: string | null
+  /**
    * A chat line the WALKTHROUGH is staging, which the chat log shows alongside
    * the real ones.
    *
@@ -451,6 +457,7 @@ export interface UiState {
   setTutorialDone: (v: boolean) => void
   setTutorialGameOffered: (v: boolean) => void
   setTutorialDeclineCard: (v: boolean) => void
+  setYubikeyCard: (text: string | null) => void
   setTutorialChat: (m: ChatMessage | null) => void
   setTutorialChatSquad: (v: boolean) => void
   noteChatSent: () => void
@@ -886,6 +893,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialDone: false,
   tutorialGameOffered: false,
   tutorialDeclineCard: false,
+  yubikeyCard: null,
   tutorialChat: null,
   tutorialChatSquad: false,
   chatSent: 0,
@@ -953,6 +961,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialDone: (tutorialDone) => set({ tutorialDone }),
   setTutorialGameOffered: (tutorialGameOffered) => set({ tutorialGameOffered }),
   setTutorialDeclineCard: (tutorialDeclineCard) => set({ tutorialDeclineCard }),
+  setYubikeyCard: (yubikeyCard) => set({ yubikeyCard }),
   setTutorialChat: (tutorialChat) => set({ tutorialChat }),
   setTutorialChatSquad: (tutorialChatSquad) => set({ tutorialChatSquad }),
   noteChatSent: () => set((s) => ({ chatSent: s.chatSent + 1 })),

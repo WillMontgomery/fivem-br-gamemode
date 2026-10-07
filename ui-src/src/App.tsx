@@ -22,6 +22,7 @@ import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
 import TutorialLayer from './tutorial/TutorialLayer'
+import YubikeyCard from './tutorial/YubikeyCard'
 import { GAME_STEPS } from './tutorial/gameSteps'
 import { DECLINE_STEPS } from './tutorial/steps'
 import Admin from './screens/Admin'
@@ -117,6 +118,7 @@ export default function App() {
   const tutorialRun       = useUi((s) => s.tutorialRun)
   const tutorialGameRun   = useUi((s) => s.tutorialGameRun)
   const tutorialDeclineCard = useUi((s) => s.tutorialDeclineCard)
+  const yubikeyCard       = useUi((s) => s.yubikeyCard)
   // Not drawn, but the warmup effect below reacts to it -- subscribed so the
   // effect re-runs on the edge that arms the in-game half.
   const tutorialGameArmed = useUi((s) => s.tutorialGameArmed)
@@ -194,6 +196,12 @@ export default function App() {
   // the interface that travels as data.
   useNuiEvent('tutorialnav', (d) => {
     if (typeof d?.seq === 'number') dispatch().setTutorialNav({ dir: d.dir, seq: d.seq })
+  })
+  // THE FIRST-PICKUP CARD (#396, round 5). Lua owns it: up with the owner's
+  // words, down when Lua says so -- on Enter, which it reads itself, and only
+  // then. A payload without words is down.
+  useNuiEvent('yubikeycard', (d) => {
+    dispatch().setYubikeyCard(d?.show === true && typeof d.text === 'string' && d.text !== '' ? d.text : null)
   })
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
@@ -636,6 +644,12 @@ export default function App() {
           while it is open, new notices queue in the store and flush on
           unpause (dropped after 30s of waiting). */}
       {!showLobby && !hudPaused && <Notices barsVisible={hudUp} />}
+      {/* THE FIRST-PICKUP CARD (#396, round 5): over the match, where Lua
+          takes Enter for it -- not over the lobby, a paused HUD or the
+          verdict, where it waits (still up) for the next match. */}
+      {yubikeyCard !== null && !showLobby && !hudPaused && !tearingDown && (
+        <YubikeyCard text={yubikeyCard} />
+      )}
       {/* LAST, SO IT IS ON TOP OF EVERYTHING. Settings is opaque and full
           screen, and it opens from a keybind mid-match as well as from the
           lobby -- so it has to cover the HUD, not sit under it.

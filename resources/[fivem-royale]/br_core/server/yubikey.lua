@@ -13,7 +13,9 @@
 --   * Sources: "a 50/50 chance in airdrops", and "a small chance in legendary
 --     crates" -- both EXTRA items, so today's loot odds do not move.
 --   * "When they pickup a Yubikey for the first time, we need to tell them what
---     it can do and how to use it."
+--     it can do and how to use it." -- since round 5 (2026-10-06) the owner's
+--     own words on a tutorial-style card the player dismisses with Enter
+--     (YUBIKEY_STATE's `first`; br_core/client/yubikey.lua shows it).
 --   * Leaving a match alive is UNDECIDED: BR.Config.Terminals.leaveDrops,
 --     default true -- it drops where they stood, like a death.
 --
@@ -148,14 +150,20 @@ end
 --- whether they are in a squad match -- the fact the world's plate picks
 --- `squad_used` or its `_solo` line by (BR.TerminalSolve.pick; owner, round 2).
 --- Season 1 sends nothing at all.
+---
+--- `first`: this push gave them their FIRST KEY EVER (round 5), and their
+--- client puts up the first-pickup card. Only Y.give says so, once per
+--- account; every other push leaves it out.
 --- @param src integer
-function Y.push(src)
+--- @param first boolean|nil
+function Y.push(src, first)
     if not on() then return end
     TriggerClientEvent(BR.Net.YUBIKEY_STATE, src, {
         held = Y.holds(src),
         squadUsed = squadUsed(src),
         squadMatch = BR.Terminal ~= nil and BR.Terminal.squadMatch ~= nil
             and BR.Terminal.squadMatch(src) == true,
+        first = first == true or nil,
     })
 end
 
@@ -187,14 +195,12 @@ function Y.give(src, why)
     local first = not k.seen
     k.seen = true
     write(licenseOf[src], true, why)
-    Y.push(src)
-    if first then
-        -- ONCE PER PLAYER, EVER: the profile row's yubikeySeen, set by the
-        -- write above. Long, because it is the one message that explains the
-        -- item; the owner's own design for it is a card (#396), which is the
-        -- follow-up's.
-        BR.Server.notify(src, copy().first_pickup, 'info', { ms = 15000 })
-    end
+    -- ONCE PER PLAYER, EVER: the profile row's yubikeySeen, set by the write
+    -- above. THE FIRST-PICKUP CARD (round 5): the owner's words (copy
+    -- first_pickup) on br_ui's tutorial card, up until the player presses
+    -- Enter -- the push says `first`, and their client does the rest. No
+    -- toast: the card is the message.
+    Y.push(src, first)
     print(('[br_core] yubikey: %s (%d) now holds a key (%s%s)')
         :format(GetPlayerName(src) or '?', src, why, first and ', first ever' or ''))
     return true, nil
@@ -434,4 +440,34 @@ function Y.devSet(src, give)
     if give then return Y.give(src, 'dev') end
     if Y.take(src, 'dev') then return true, nil end
     return false, 'none'
+end
+
+--- `bryubikey unseen` (round 5): this player has never had a key, as far as
+--- the first-pickup card is concerned, so their next one -- `bryubikey give`
+--- or a real pickup -- shows it again. THIS SESSION'S FLAG ONLY: the profile
+--- row keeps its yubikeySeen, and the next grant writes it true again, so a
+--- reconnect reads the row's answer as before.
+--- @param src integer
+--- @return boolean ok, string|nil reason  'loading'
+function Y.devUnseen(src)
+    local k = entryOf(src)
+    if not k or not k.loaded then return false, 'loading' end
+    k.seen = false
+    print(('[br_core] yubikey: %s (%d) will see the first-pickup card again (dev)')
+        :format(GetPlayerName(src) or '?', src))
+    return true, nil
+end
+
+--- `bryubikey drop` (round 5): a key on the ground at this spot, in the loot
+--- this player is looking at (their match, or the warmup pad) -- the real
+--- ground pickup, so the claim, the cap of one and the first-pickup card can
+--- be tested the way a player meets them. Season 2 only, like every door.
+--- @param src integer
+--- @param x number @param y number @param z number
+--- @return table|nil entry, string|nil reason  'off' | 'nowhere'
+function Y.devDrop(src, x, y, z)
+    if not on() then return nil, 'off' end
+    local m = BR.Loot and BR.Loot.zoneOf and BR.Loot.zoneOf(src) or nil
+    if not m then return nil, 'nowhere' end
+    return Y.dropAt(m, x, y, z), nil
 end

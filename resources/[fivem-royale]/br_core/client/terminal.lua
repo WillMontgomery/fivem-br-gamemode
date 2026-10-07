@@ -471,9 +471,39 @@ RegisterCommand('brterminal', function(_, args)
     ExecuteCommand(('brterminalsv open %s'):format(table.concat(words, ' ')))
 end)
 
---- `bryubikey [give|take]`: a Yubikey for yourself, or yours taken away -- the real
---- profile write and the real messages, first pickup included (#396).
+--- Where `bryubikey drop` puts the key: on the ground a meter and a half in
+--- front of the player, clear of their own feet.
+local DROP_AHEAD_M = 1.5
+
+--- @return number x, number y, number z
+local function dropSpot()
+    local ped = PlayerPedId()
+    local pos = GetEntityCoords(ped)
+    local h = math.rad(GetEntityHeading(ped))
+    local x, y = pos.x - math.sin(h) * DROP_AHEAD_M, pos.y + math.cos(h) * DROP_AHEAD_M
+    local found, gz = GetGroundZFor_3dCoord(x, y, pos.z + 2.0, false)
+    if not BR.NativeTruthy(found) or type(gz) ~= 'number' then gz = pos.z - 1.0 end
+    return x, y, gz
+end
+
+--- `bryubikey [give|take|unseen|drop]` (#396), dev mode and Season 2 only, as
+--- `brterminalsv` is:
+---
+---   give     a Yubikey for yourself -- the real profile write and the real
+---            messages, the first-pickup card included
+---   take     yours taken away
+---   unseen   (round 5) the first-pickup card shows again with your next key:
+---            this session's flag, reset
+---   drop     (round 5) a Yubikey on the ground in front of you, to test the
+---            real ground pickup
 RegisterCommand('bryubikey', function(_, args)
     local verb = args and args[1] and args[1]:lower() or 'give'
-    ExecuteCommand(('brterminalsv key %s'):format(verb == 'take' and 'take' or 'give'))
+    if verb == 'unseen' then
+        ExecuteCommand('brterminalsv key unseen')
+    elseif verb == 'drop' then
+        local x, y, z = dropSpot()
+        ExecuteCommand(('brterminalsv key drop %.3f %.3f %.3f'):format(x, y, z))
+    else
+        ExecuteCommand(('brterminalsv key %s'):format(verb == 'take' and 'take' or 'give'))
+    end
 end)

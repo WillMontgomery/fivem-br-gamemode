@@ -60,7 +60,9 @@
 --              risks and how-to"), for him to review: every one is listed in
 --              that round's report. "WRITTEN (2026-10-05, round 2)" marks a
 --              line new or changed in the second round, listed in its report.
---   [COPY: ...] still a placeholder, outside the app's scope.
+--   [COPY: ...] still a placeholder. None is left since round 5
+--              (2026-10-06): first_pickup is the owner's, key_label and
+--              already_holding WRITTEN.
 --
 -- A LINE WITH '\n' IN IT IS A LIST: the app draws one paragraph or bullet per
 -- piece. `{name}`, `{value}`, `{count}`, `{stage}`, `{stages}`, `{online}`
@@ -98,10 +100,13 @@ BR.Config.Terminals = {
         -- travels as BR.Notice.who, never formatted into the string), and
         -- {description} is the function's `<id>_description` line.
 
-        -- [COPY] A toast to the player picking up a Yubikey for the first time
-        -- ever. The owner's verbatim text belongs to an Enter-dismissed card,
-        -- which is the follow-up's, not this app's.
-        first_pickup = '[COPY: first pickup -- what a Yubikey does and how to use it]',
+        -- VERBATIM (the owner's, for "the tutorial-style card which tells them
+        -- how to use it and requires manual dismissal using the return key";
+        -- built round 5, 2026-10-06). THE FIRST-PICKUP CARD: the player who
+        -- gets a Yubikey for the first time ever (a pickup, or `bryubikey
+        -- give`) reads it on br_ui's tutorial card until they press Enter. The
+        -- **...** is drawn bold, as he wrote it. Not a toast.
+        first_pickup = "You found a Yubikey! **Please read this entire message.** This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
         -- VERBATIM (owner, 2026-10-04, "No key"). Three readers: the terminal's
         -- world plate without a key, the app's login screen, and the reason a
         -- function cannot run for that cause.
@@ -113,8 +118,9 @@ BR.Config.Terminals = {
         -- terminal outside the storm has no plate at all (owner, 2026-10-06:
         -- "no blip and no DUI - hence it's unusable").
         offline = 'This terminal is outside the storm and offline.',
-        -- [COPY] A toast to a holder trying to pick up a second Yubikey.
-        already_holding = '[COPY: pickup refused -- you already hold a Yubikey]',
+        -- WRITTEN (round 5, 2026-10-06; was a placeholder). A toast to a holder
+        -- trying to pick up a second Yubikey: the key stays on the ground.
+        already_holding = 'You already have a Yubikey.',
         -- WRITTEN. A holder whose squad has already used its one key this
         -- match: the world plate's hint and the app's reason.
         squad_used = 'Your squad already used its terminal this match.',
@@ -132,8 +138,9 @@ BR.Config.Terminals = {
         bounty_new = 'A new bounty is among us: {playername}.',
         -- VERBATIM. ...and one to that player's squad.
         bounty_protect = "Protect {playername}! They've got a bounty for the next 10 minutes.",
-        -- [COPY] The Yubikey's name on the world plate over a key on the ground.
-        key_label = '[COPY: Yubikey -- its name on the ground pickup]',
+        -- WRITTEN (round 5, 2026-10-06; was a placeholder). The Yubikey's name
+        -- on the world plate over a key on the ground, to anyone near it.
+        key_label = 'Yubikey',
         -- VERBATIM (owner, 2026-10-06: 'When approaching one of these, a DUI
         -- should be shown: "Computer system" "press to open" with the
         -- interact key on it'). The title on every terminal's world plate,

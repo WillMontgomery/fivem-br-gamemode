@@ -237,7 +237,7 @@ export const GAME_STEPS: Step[] = [
     place: 'quarter',
     title: 'Everybody in the match',
     // {key:…} names the player's ACTUAL binding and is drawn as the project's
-    // own KeyCap -- see AnnotationCard's `emphasise`. The command reaches the
+    // own KeyCap -- see AnnotationCard's `emphasize`. The command reaches the
     // renderer rather than a substituted letter, so the cap follows a rebind.
     //
     // ═══ THE LOCATION SUFFIX CAME OUT ON 2026-09-08 ═══

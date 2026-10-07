@@ -95,8 +95,11 @@ function KeyHint(p: { cap: string; children: React.ReactNode }) {
  *
  * BOLD IS TESTED FIRST because `**` starts with `*`, and a single-mark rule
  * applied first would read `**x**` as an italic containing a literal asterisk.
+ *
+ * EXPORTED FOR THE FIRST-PICKUP CARD (#396, round 5, YubikeyCard.tsx), whose
+ * text is the owner's too and bolds a sentence the same way.
  */
-function emphasise(text: string): React.ReactNode[] {
+export function emphasize(text: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
   // FOUR MARKS, AND THE ORDER IS THE RULE. `**` is tested before `*` because a
   // single-mark rule applied first reads `**x**` as an italic containing a
@@ -151,11 +154,11 @@ function emphasise(text: string): React.ReactNode[] {
     if (m[1] !== undefined) {
       out.push(
         <b key={out.length} style={{ fontWeight: 'var(--font-tutorial-head)' }}>
-          {emphasise(m[1])}
+          {emphasize(m[1])}
         </b>,
       )
     } else if (m[2] !== undefined) {
-      out.push(<i key={out.length}>{emphasise(m[2])}</i>)
+      out.push(<i key={out.length}>{emphasize(m[2])}</i>)
     } else if (m[3] !== undefined) {
       out.push(<KeyCap key={out.length} command={m[3]} fs="0.9rem" />)
     } else if (m[4] !== undefined) {
@@ -288,7 +291,7 @@ export default function AnnotationCard(p: CardProps) {
           than asking the eye to follow a line. Two indicators for one fact was
           the mistake underneath the bug. */}
       <div className={`tut-title${landed ? ' tut-in' : ''}`}>{p.title}</div>
-      <p className={`tut-body${landed ? ' tut-in' : ''}`}>{emphasise(p.body)}</p>
+      <p className={`tut-body${landed ? ' tut-in' : ''}`}>{emphasize(p.body)}</p>
 
       <div className="tut-foot">
         {/* THE COUNT IS NOT DECORATION. "How much of this is left" is the first

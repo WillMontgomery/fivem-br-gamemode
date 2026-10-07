@@ -27,6 +27,10 @@
 --                  moves (below, "the laptops, Season 1").
 --   Storm reveal   where this match's storm ends, on both maps, from the
 --                  squad's TERMINAL_REVEAL to the trip back to the lobby.
+--   the first-pickup card  (round 5) the owner's words on br_ui's tutorial
+--                  card the first time this player ever gets a key
+--                  (YUBIKEY_STATE's `first`), up until they press Enter --
+--                  read here as a control, the one key it takes.
 --
 -- ═══ WHAT IT COSTS A FRAME ═══
 --
@@ -552,6 +556,101 @@ BR.Keys.on('interact', function(pressed)
     TriggerServerEvent(BR.Net.TERMINAL_USE, { terminalId = plate.id })
 end)
 
+-- ------------------------------------------------- the first-pickup card ---
+--
+-- ═══ THE FIRST-PICKUP CARD (owner, round 5, 2026-10-06) ═══
+--
+-- "I've still not seen the tutorial-style card which tells them how to use it
+-- and requires manual dismissal using the return key." The first time a player
+-- EVER gets a Yubikey -- a pickup or `bryubikey give`; the server says so with
+-- YUBIKEY_STATE's `first`, once per account -- br_ui shows the owner's words
+-- (copy first_pickup) on its tutorial card (BR.Nui.YUBIKEY_CARD), and it STAYS
+-- until the player presses ENTER. Nothing else takes it down and no timer
+-- does: not the match ending (br_ui keeps it off the lobby and the verdict and
+-- shows it again in the next match), not a death, not a terminal's computer
+-- (which hides it while it covers the screen).
+--
+-- IT MUST NOT TRAP THE PLAYER. It takes no NUI focus, so movement, aiming and
+-- shooting are the game's as ever; and so CEF never sees a key, and Enter is
+-- read HERE, as client/tutorial.lua reads its arrows: the controls Enter is,
+-- disabled for the frame so the press does nothing else, and read disabled.
+-- ONLY ENTER is taken, only while the card is up, and only while nothing else
+-- holds the keyboard -- in a match (WARMUP, the bus, PLAYING; the HUD the card
+-- is drawn over), with no br_ui screen, in-game menu or computer up
+-- (BR.Keys.screenHoldsEscape) and GTA's own pause menu down, so a menu's own
+-- Enter still selects in it.
+--
+-- WHAT IT COSTS: nothing while it is down. While it is up, a few table reads
+-- and seven natives a frame (IsPauseMenuActive, and three controls disabled
+-- and read).
+
+--- Is the first-pickup card up? Lua owns it; br_ui mirrors it.
+local card = false
+
+--- What br_ui was last told: shown (true), hidden (false), or nothing yet.
+local cardSent = nil
+
+--- THE CONTROLS ENTER IS, and the only ones the card takes:
+--- INPUT_FRONTEND_RDOWN (191) and INPUT_FRONTEND_ACCEPT (201) -- Enter and the
+--- numpad's -- and INPUT_FRONTEND_ENDSCREEN_ACCEPT (215), Enter. None of them
+--- moves, aims, fires, jumps or enters a vehicle; INPUT_SKIP_CUTSCENE (18)
+--- and INPUT_CELLPHONE_SELECT (176) are left alone because they are the left
+--- mouse button too, and a shot must never dismiss it.
+local ENTER = { 191, 201, 215 }
+
+--- Is a terminal's computer up over the screen? (client/terminal.lua)
+--- @return boolean
+local function computerUp()
+    return BR.Terminal ~= nil and BR.Terminal.computerOpen ~= nil and BR.Terminal.computerOpen() == true
+end
+
+--- Tell br_ui what it shows -- the card with the owner's words, or none --
+--- on a change only (or `force`, br_ui having come up afresh).
+--- @param force boolean|nil
+local function sendCard(force)
+    local show = card and not computerUp()
+    if not force and show == cardSent then return end
+    cardSent = show
+    TriggerEvent('br:ui:sendLocal', BR.Nui.YUBIKEY_CARD,
+                 { show = show, text = show and copy().first_pickup or nil })
+end
+
+--- May the card take Enter this frame?
+--- @return boolean
+local function enterFree()
+    if not inMatch() then return false end
+    if BR.Keys and BR.Keys.screenHoldsEscape and BR.Keys.screenHoldsEscape() then return false end
+    if isTrue(IsPauseMenuActive()) then return false end
+    return true
+end
+
+--- Is the first-pickup card up? (For the dev tools and the suites.)
+--- @return boolean
+function Y.cardUp()
+    return card
+end
+
+-- ENTER, EVERY FRAME THE CARD IS UP, AND NOTHING ELSE.
+BR.Loop.register(BR.Loop.FRAME, 'yubikey.card', function()
+    if not card then return end
+    -- A computer opening or closing over it hides or shows it again.
+    sendCard()
+    if computerUp() or not enterFree() then return end
+    for i = 1, #ENTER do DisableControlAction(0, ENTER[i], true) end
+    local pressed = false
+    for i = 1, #ENTER do
+        if isTrue(IsDisabledControlJustPressed(0, ENTER[i])) then pressed = true end
+    end
+    if not pressed then return end
+    card = false
+    sendCard()
+end)
+
+-- br_ui restarting mid-card gets it back.
+AddEventHandler('br:ui:ready', function()
+    if card then sendCard(true) end
+end)
+
 -- ------------------------------------------------------------- the wire ---
 
 RegisterNetEvent(BR.Net.YUBIKEY_STATE)
@@ -563,6 +662,11 @@ AddEventHandler(BR.Net.YUBIKEY_STATE, function(d)
     -- Blips follow on the next SLOW pass; a lost key takes them down now.
     if not held then
         for _, w in pairs(world) do dropTerminalBlips(w) end
+    end
+    -- THE FIRST KEY EVER (round 5): the card goes up, until Enter.
+    if d.first == true and on() then
+        card = true
+        sendCard()
     end
 end)
 

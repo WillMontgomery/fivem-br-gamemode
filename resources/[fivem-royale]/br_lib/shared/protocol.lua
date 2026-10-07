@@ -1296,11 +1296,13 @@ BR.Net = {
     -- client/terminalfx.lua hands it to br_ui as BR.Nui.IMPACTS.
     TERMINAL_IMPACTS = 'br:terminal:impacts',
 
-    -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
-    -- player holds one, and whether their squad has spent its one use this
-    -- match. To that player alone, whenever either changes and on br:ready.
-    -- Their squadmates learn who holds a key from the squad beacon
-    -- (SQUAD_POS's `yubikey`), never from this.
+    -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed, squadMatch,
+    -- first? }: whether this player holds one, and whether their squad has
+    -- spent its one use this match. To that player alone, whenever either
+    -- changes and on br:ready. Their squadmates learn who holds a key from the
+    -- squad beacon (SQUAD_POS's `yubikey`), never from this. `first` is true
+    -- on the ONE push that gave this player their first key ever (round 5):
+    -- the client puts up the first-pickup card (BR.Nui.YUBIKEY_CARD).
     YUBIKEY_STATE   = 'br:yubikey:state',
 }
 
@@ -1428,6 +1430,14 @@ BR.Nui = {
     -- press re-sent unless something changes between them. `seq` is that
     -- something, and the page acts on it changing rather than on `dir`.
     TUTORIAL_NAV = 'tutorialnav',
+    -- THE FIRST-PICKUP CARD (#396, round 5): { show, text? }. The owner's
+    -- words (copy first_pickup) on br_ui's tutorial card, the first time a
+    -- player ever gets a Yubikey, "and requires manual dismissal using the
+    -- return key". LUA OWNS IT, as it owns TUTORIAL: br_core's
+    -- client/yubikey.lua reads Enter as a control (the card takes no focus,
+    -- so CEF sees no key) and sends `show = false` when it is pressed --
+    -- nothing else takes it down, and no timer does.
+    YUBIKEY_CARD = 'yubikeycard',
     -- The player's own preferences, read back out of KVP on boot. Sent as a
     -- whole object rather than as deltas: there are a dozen of them, they
     -- change when a human drags a slider, and a merge protocol for that would

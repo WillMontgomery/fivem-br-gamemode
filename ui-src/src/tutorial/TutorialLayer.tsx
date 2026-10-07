@@ -162,7 +162,7 @@ const DEMO_FEED = [
  *
  * `{key:…}` STOPPED BEING SUBSTITUTED FIRST. It used to become the bound letter,
  * which made the key a word in a sentence. It is drawn as the project's own
- * KeyCap now -- see AnnotationCard's `emphasise` -- so the COMMAND has to
+ * KeyCap now -- see AnnotationCard's `emphasize` -- so the COMMAND has to
  * survive all the way to the renderer. That is not only cosmetic: KeyCap
  * subscribes to the binding, so a cap on screen follows a rebind (#209), where a
  * substituted letter is a photograph of the binding at the moment the

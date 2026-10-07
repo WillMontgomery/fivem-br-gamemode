@@ -1380,6 +1380,17 @@ export interface ImpactsPayload {
   list?: unknown
 }
 
+/**
+ * THE FIRST-PICKUP CARD (#396, round 5): BR.Nui.YUBIKEY_CARD. `show` with the
+ * owner's words (copy first_pickup) while it is up; `show: false` when the
+ * player pressed Enter (br_core reads the key -- the card takes no focus) or
+ * while a terminal's computer covers the screen. Lua owns it, the page mirrors.
+ */
+export interface YubikeyCardPayload {
+  show?: boolean
+  text?: string
+}
+
 // --- envelope ---------------------------------------------------------------
 
 export type Envelope =
@@ -1402,6 +1413,7 @@ export type Envelope =
   | { k: 'storm';    d: StormPayload }
   | { k: 'vehicle';  d: VehiclePayload }
   | { k: 'impacts';  d: ImpactsPayload }
+  | { k: 'yubikeycard'; d: YubikeyCardPayload }
   | { k: 'dbno';     d: DbnoPayload }
   | { k: 'spectate'; d: SpectatePayload }
   | { k: 'death';    d: DeathPayload }
