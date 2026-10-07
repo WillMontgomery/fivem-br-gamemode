@@ -128,6 +128,20 @@ do
     ok(A.decode(' ' .. enc .. ' ') ~= nil, 'whitespace around it is read')
 end
 
+describe('appearance.none')
+do
+    -- #28 review: an overlay of none shows no opacity or color, so neither is
+    -- part of the look -- or a press nobody can see makes a draft dirty.
+    local a = A.default('m')
+    a.o[2] = { 255, 40, 9 }
+    eq(A.encode(a), A.encode(A.default('m')), 'an overlay of none is written with opacity 100 and color 0')
+    ok(A.equal(a, A.default('m')), 'so two looks that differ only there are equal')
+    ok(A.validate(a), 'and the table itself is still an appearance')
+    a.o[2] = { 3, 40, 9 }
+    ok(not A.equal(a, A.default('m')), 'an overlay that is on keeps its own opacity and color')
+    ok(A.encode(a):find('[3,40,9]', 1, true) ~= nil, 'written as they are')
+end
+
 describe('appearance.validate')
 do
     local function bad(mut, label)
@@ -320,6 +334,7 @@ local function serverWorld(season, withDdb)
     loadInto(env, 'br_core/server/locker2.lua')
 
     function W.flush()
+        if W.held then return end
         local guard = 0
         while #W.replies > 0 and guard < 100 do
             guard = guard + 1
@@ -394,15 +409,71 @@ do
     eq(#W.ddbCalls, 1, 'one database read')
     W.advance(1000)
     W.net(NET.LOCKER2_FETCH, 1, {})
-    eq(#W.ddbCalls, 1, 'a second fetch inside 5 s is answered from the cache')
-    eq(#W.sent, 2, 'but answered')
-    W.advance(5000)
-    W.net(NET.LOCKER2_FETCH, 1, {})
-    eq(#W.ddbCalls, 2, 'after 5 s it reads again')
+    eq(#W.ddbCalls, 1, 'a second fetch inside 5 s reads nothing')
+    eq(#W.sent, 1, 'and is not answered yet: one answer per player per 5 s')
+    W.advance(4000)
+    eq(#W.sent, 2, 'it is answered once the 5 s are up')
+    eq(#W.ddbCalls, 2, 'with a fresh read')
+    -- The cache answers another player of the same license (a second session).
+    W.BR.Identity.ofPlayer = function() return { license = 'p1' } end
+    W.net(NET.LOCKER2_FETCH, 3, {})
+    eq(W.last(NET.LOCKER2_STATE).target, 3, 'another session of that license is answered at once')
+    eq(#W.ddbCalls, 2, 'from the cache')
 
     local W1 = serverWorld(1)
     W1.net(NET.LOCKER2_FETCH, 1, {})
     eq(#W1.sent + #W1.ddbCalls, 0, 'Season 1: a fetch reads nothing and answers nothing')
+end
+
+describe('server.fetch_rate')
+do
+    -- #28 review: every fetch was answered, each a latent copy of the whole
+    -- list with every headshot. 200 asks in 5 s queued 67.7 MB.
+    local W = serverWorld(2)
+    local img = 'data:image/webp;base64,' .. string.rep('A', 10000)
+    local rows = {}
+    for i = 1, 30 do
+        rows[('0abcdefgh%02d'):format(i)] = { n = 'P' .. i, a = A.encode(A.default('m')), cr = 1, up = 1, img = img }
+    end
+    W.ddb['license:p1'] = { profile = {}, peds = rows }
+    local function answers(src)
+        local n = 0
+        for _, x in ipairs(W.sent) do
+            if x.name == NET.LOCKER2_STATE and x.target == src then n = n + 1 end
+        end
+        return n
+    end
+    W.net(NET.LOCKER2_FETCH, 1, {})
+    for _ = 1, 99 do
+        W.advance(50)
+        W.net(NET.LOCKER2_FETCH, 1, {})
+    end
+    eq(answers(1), 1, 'a hundred asks inside 5 s: one answer so far')
+    W.advance(100)
+    eq(answers(1), 2, 'and one more when the 5 s are up, however many asked')
+    eq(#W.ddbCalls, 2, 'two reads')
+    W.advance(10000)
+    eq(answers(1), 2, 'nothing after that unasked')
+
+    -- Asking while a read is in flight waits on it once.
+    local R = serverWorld(2)
+    R.held = true
+    for _ = 1, 50 do R.net(NET.LOCKER2_FETCH, 1, {}) end
+    R.held = false
+    R.flush()
+    local n = 0
+    for _, x in ipairs(R.sent) do if x.name == NET.LOCKER2_STATE then n = n + 1 end end
+    eq(n, 1, 'fifty asks during one read: one answer')
+    eq(#R.ddbCalls, 1, 'and one read')
+
+    -- A player who drops is not answered later.
+    local D = serverWorld(2)
+    D.net(NET.LOCKER2_FETCH, 1, {})
+    D.advance(1000)
+    D.net(NET.LOCKER2_FETCH, 1, {})
+    D.net('playerDropped', 1)
+    D.advance(6000)
+    eq(#D.sent, 1, 'a held answer to a player who left is never sent')
 end
 
 describe('server.save')
@@ -789,8 +860,9 @@ local function clientWorld(opts)
         stop = function(why) W.stops[#W.stops + 1] = why; W.entering, W.locked, W.walking = false, false, false end,
     }
     BR.LobbyCam = {
-        focus = function(p) W.cams[#W.cams + 1] = 'focus:' .. p return true end,
-        unfocus = function() W.cams[#W.cams + 1] = 'unfocus' return true end,
+        focus = function(p) W.cams[#W.cams + 1] = 'focus:' .. p W.focusedCam = p return true end,
+        unfocus = function() W.cams[#W.cams + 1] = 'unfocus' W.focusedCam = nil return true end,
+        focused = function() return W.focusedCam end,
     }
     loadInto(env, 'br_core/client/locker.lua')
     if opts.v2 then
@@ -1107,7 +1179,23 @@ do
     local m2 = W2.nui(NUI.LOCKER2)
     eq(m2.tab, 'peds', 'with saved peds it opens on My peds')
     ok(m2.peds[1].name == 'Ann' and m2.peds[1].a == nil, 'the cards carry no appearance')
-    eq(m2.peds[1].img, 'data:image/webp;base64,AA', 'but do carry the stored headshot')
+    eq(m2.peds[1].img, nil, 'and no picture: that goes once, on its own (#28 review)')
+    W2.ui(NUICB.LOCKER2_SHOTS, { ids = { PID } })
+    local pic = W2.nui(NUI.LOCKER2_SHOT)
+    ok(pic and pic.id == PID and pic.up == 5 and pic.img == 'data:image/webp;base64,AA' and pic.txd == nil,
+        'the stored picture, when the page asks for the card')
+    -- EVERY PUSH IS PICTURE-FREE, whatever is pressed: a push goes out on every
+    -- press, up to one a slider's 60 ms, and saved peds have no limit.
+    W2.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    W2.pump(300)
+    for i = 1, 5 do W2.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = i * 10 }) end
+    local carried = 0
+    for _, e in ipairs(W2.events) do
+        if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2 then
+            for _, c in ipairs(e.args[2].peds or {}) do if c.img ~= nil then carried = carried + 1 end end
+        end
+    end
+    eq(carried, 0, 'no push carries a picture')
     eq(msg.fetching, false, 'once the server has answered, nothing is being fetched')
 
     -- THE LOADING ICON (owner, 2026-10-07): until the server answers, the
@@ -1304,7 +1392,7 @@ do
     W.ui(NUICB.LOCKER2_SHOT, { id = PID, img = img })
     eq(#W.sentTo(NET.LOCKER2_SHOT), 1, 'once')
     W.net(NET.LOCKER2_RESULT, { req = up.req, ok = true, id = PID, ped = { id = PID, name = 'Ann', a = s.a, up = 9, img = img } })
-    eq(W.nui(NUI.LOCKER2).peds[1].img, img, 'and the card keeps it')
+    eq(W.BR.LockerV2.state().peds[1].img, img, 'and kept for the next time the page asks for that card')
 
     -- Update, and a refusal.
     W.ui(NUICB.LOCKER2_STEP, { k = 'c6', d = 1 })
@@ -1429,6 +1517,208 @@ do
     W.BR.State.me.state = W.BR.PlayerState.LOBBY
     W.pump(300)
     eq(W.ped().model, hashOf(W.BR.PedById(STOCK1).model), 'the next lobby arrival puts the worn ped back')
+end
+
+describe('season2.camera')
+do
+    -- #28 review: a draft started on Face with the camera wherever the last
+    -- one left it, and the page sent no category it thought was current, so
+    -- pressing Face never moved the camera.
+    local W = joined()
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    W.pump(300)
+    eq(W.nui(NUI.LOCKER2).edit.cat, nil, 'a new draft lights no anchor')
+    eq(W.cams[#W.cams], 'unfocus', 'with the camera home on the whole ped')
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'face' })
+    eq(W.cams[#W.cams], 'focus:head', 'Face moves the camera to the head')
+    eq(W.nui(NUI.LOCKER2).edit.cat, 'face', 'and lights Face')
+    local moves, pushes = #W.cams, #W.events
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'face' })
+    eq(#W.cams, moves, 'Face again: the camera is there already')
+    eq(#W.events, pushes + 1, 'and nothing is pushed (the one event is the press itself)')
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'hair' })
+    eq(#W.cams, moves, 'Hair is the same shot of the head: no move')
+    eq(W.nui(NUI.LOCKER2).edit.cat, 'hair', 'but Hair is lit')
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'shoes' })
+    eq(W.cams[#W.cams], 'focus:feet', 'Shoes: the feet')
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'female', seq = 2 })
+    W.pump(300)
+    eq(W.nui(NUI.LOCKER2).edit.cat, nil, 'Custom (female) after Shoes lights no anchor')
+    eq(W.cams[#W.cams], 'unfocus', 'and brings the camera home from the feet')
+    -- Edit is a new draft too.
+    local P = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5 } })
+    P.ui(NUICB.LOCKER2_OPEN)
+    P.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    P.pump(300)
+    P.ui(NUICB.LOCKER2_CAT, { cat = 'legs' })
+    eq(P.focusedCam, 'legs', 'the camera on the legs')
+    P.ui(NUICB.LOCKER2_TAB, { tab = 'peds', seq = 2 })
+    P.pump(300)
+    P.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P.pump(300)
+    local m = P.nui(NUI.LOCKER2)
+    ok(m.tab == 'female' and m.edit.cat == nil, 'Edit: no anchor lit')
+    eq(P.focusedCam, nil, 'and the camera home')
+end
+
+describe('season2.absent')
+do
+    -- #28 review: Next color and the opacity sliders on an overlay of none
+    -- changed what nobody can see, and made the draft dirty -- the tabs locked
+    -- with nothing on screen to say why.
+    local W = joined()
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    W.pump(300)
+    local m = W.nui(NUI.LOCKER2)
+    for _, k in ipairs({ 'o1', 'o4', 'o5', 'o8', 'o10' }) do
+        eq(rowOf(m, k).colors, 1, k .. ' of none: no Next color')
+        eq(rowOf(m, k .. 'op').off, true, k .. ' of none: its opacity is off')
+    end
+    eq(rowOf(m, 'o2').colors, 64, 'the eyebrows are never none: they keep Next color')
+    eq(rowOf(m, 'o2op').off, nil, 'and their opacity')
+    eq(rowOf(m, 'p0').colors, 1, 'no hat, no Next color (as before)')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o1' })
+    W.ui(NUICB.LOCKER2_SET, { k = 'o1op', v = 40 })
+    m = W.nui(NUI.LOCKER2)
+    eq(m.edit.dirty, false, 'Next color and opacity on none are refused: nothing to save')
+    eq(W.ped().ov[1][2], 1.0, 'and nothing reaches the ped')
+
+    -- On, then back to none: what the player cannot see is not a change.
+    W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = 1 })
+    m = W.nui(NUI.LOCKER2)
+    ok(rowOf(m, 'o1').colors == 64 and rowOf(m, 'o1op').off == nil, 'facial hair on: Next color and opacity')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o1' })
+    W.ui(NUICB.LOCKER2_SET, { k = 'o1op', v = 40 })
+    eq(W.nui(NUI.LOCKER2).edit.dirty, true, 'a color and an opacity on it are changes')
+    W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = -1 })
+    eq(W.nui(NUI.LOCKER2).edit.dirty, false, 'stepped back to none: no change left to save')
+
+    -- A row's reset puts its Next color back too, as a component's always did.
+    W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = 1 })
+    eq(W.ped().ovc[1][2], 1, 'on again, with the color it had')
+    W.ui(NUICB.LOCKER2_SET, { k = 'o1', v = 1 })
+    W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = 1 })
+    eq(W.ped().ovc[1][2], 0, 'an overlay reset puts its color back')
+    W.ui(NUICB.LOCKER2_RESET)
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o2' })
+    eq(W.nui(NUI.LOCKER2).edit.dirty, true, 'eyebrow color is a change')
+    W.ui(NUICB.LOCKER2_SET, { k = 'o2', v = 1 })
+    eq(W.nui(NUI.LOCKER2).edit.dirty, false, 'and the Eyebrows reset takes it back')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c2' })
+    eq(W.nui(NUI.LOCKER2).edit.dirty, true, 'hair color is a change')
+    W.ui(NUICB.LOCKER2_SET, { k = 'c2', v = 1 })
+    eq(W.nui(NUI.LOCKER2).edit.dirty, false, 'and the Hair reset takes it back')
+    eq(W.ped().hair[1], 0, 'on the ped too')
+end
+
+describe('season2.tabseq')
+do
+    -- #28 review: the page moves its tab on the press. A press Lua refused
+    -- (the freemode model still streaming in) left the page on Custom (female)
+    -- with the male draft's rows -- and Save saved a male ped.
+    local W = joined()
+    W.ui(NUICB.LOCKER2_OPEN)
+    eq(W.nui(NUI.LOCKER2).tabSeq, nil, 'an opening has seen no press yet')
+    W.modelDelay = 300
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'female', seq = 2 })
+    local m = W.nui(NUI.LOCKER2)
+    eq(m.tab, 'male', 'Custom (female) while the male ped streams in is refused')
+    eq(m.tabSeq, 2, 'and the answer says which press it saw, so the page goes back')
+    W.pump(500)
+    m = W.nui(NUI.LOCKER2)
+    ok(m.tab == 'male' and m.edit.sex == 'm' and m.tabSeq == 2, 'the male draft, on its tab')
+    W.locked = true
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'stock', seq = 3 })
+    m = W.nui(NUI.LOCKER2)
+    ok(m.tab == 'male' and m.tabSeq == 3, 'every refusal says so, the locked ped too')
+    W.locked = false
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 4 })
+    eq(W.nui(NUI.LOCKER2).tabSeq, 4, 'and a press of the tab already shown')
+    W.ui(NUICB.LOCKER2_CLOSE)
+    W.ui(NUICB.LOCKER2_OPEN)
+    eq(W.nui(NUI.LOCKER2).tabSeq, nil, 'a new opening starts again')
+end
+
+describe('season2.lobbyonly')
+do
+    -- #28 review: a server answer that landed outside the lobby swapped the
+    -- model mid-match -- a new, unarmed, frozen ped.
+    local W = clientWorld({ season = 2, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
+    W.pump(4500)
+    eq(W.ped().model, hashOf(W.BR.PedById(STOCK2).model), 'no answer: this machine has its worn ped')
+    local function counts()
+        return { W.count('SetPlayerModel'), W.count('FreezeEntityPosition'), W.count('initHealthModel'),
+                 W.count('SetPedHeadBlendData') }
+    end
+    for _, st in ipairs({ 'WARMUP', 'ALIVE' }) do
+        W.BR.State.me.state = W.BR.PlayerState[st]
+        local before = counts()
+        W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+        W.pump(1000)
+        local after = counts()
+        ok(after[1] == before[1] and after[2] == before[2] and after[3] == before[3] and after[4] == before[4],
+            'a late answer in ' .. st .. ' swaps, freezes and dresses nothing')
+    end
+    W.BR.State.me.state = W.BR.PlayerState.LOBBY
+    W.pump(600)
+    eq(W.ped().model, FEMALE, 'it is worn at the next lobby')
+    eq(W.count('SetPlayerModel'), 2, 'in one swap')
+
+    -- A pick still streaming in when the match starts is not put on in it.
+    local X = joined()
+    X.ui(NUICB.LOCKER2_OPEN)
+    local swaps = X.count('SetPlayerModel')
+    X.modelDelay = 500
+    X.ui(NUICB.LOCKER2_WEAR, { k = 's', id = STOCK2 })
+    X.BR.State.me.state = X.BR.PlayerState.WARMUP
+    X.pump(1500)
+    eq(X.count('SetPlayerModel'), swaps, 'a pick that streams in after the lobby is left is not swapped in')
+    eq(#X.notify, 0, 'and nothing says it failed')
+    eq(X.BR.LockerV2.state().applying, false, 'nor is anything left in flight')
+    eq(A.decodeWorn(X.kvp['br:locker2:worn']).id, STOCK1, 'the worn ped is still the one on')
+    -- A Custom tab's draft likewise.
+    local Y = joined()
+    Y.ui(NUICB.LOCKER2_OPEN)
+    Y.modelDelay = 500
+    Y.ui(NUICB.LOCKER2_TAB, { tab = 'female', seq = 1 })
+    Y.BR.State.me.state = Y.BR.PlayerState.WARMUP
+    Y.pump(1500)
+    ok(Y.ped().model ~= FEMALE, 'nor is a Custom tab draft ped')
+end
+
+describe('season2.watchstates')
+do
+    -- #28 review: the warmup trip resurrects the player (a new ped), and the
+    -- watcher only ran in the lobby and alive, so a custom ped went bare
+    -- through warmup, the plane and the drop.
+    for _, st in ipairs({ 'WARMUP', 'BUS', 'FREEFALL', 'GLIDE', 'ALIVE', 'DBNO' }) do
+        local W = clientWorld({ season = 2, v2 = true })
+        W.pump(200)
+        W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+        W.pump(600)
+        W.BR.State.me.state = W.BR.PlayerState[st]
+        W.handle = W.handle + 1
+        W.peds[W.handle] = newPed(FEMALE)
+        W.pump(1000)
+        local p = W.ped()
+        ok(p.blend ~= nil and p.blend[2] == 12 and p.comps[11] ~= nil and p.comps[11][1] == 6,
+            'in ' .. st .. ' a new ped gets the look back')
+    end
+    for _, st in ipairs({ 'OUT', 'LEFT' }) do
+        local W = clientWorld({ season = 2, v2 = true })
+        W.pump(200)
+        W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+        W.pump(600)
+        W.BR.State.me.state = W.BR.PlayerState[st]
+        W.handle = W.handle + 1
+        W.peds[W.handle] = newPed(FEMALE)
+        W.log = {}
+        W.pump(2000)
+        eq(#W.log, 0, st .. ': nothing is watched')
+    end
 end
 
 describe('season2.watcher')

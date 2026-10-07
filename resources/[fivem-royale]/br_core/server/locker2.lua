@@ -20,6 +20,17 @@
 -- `store`: writing over rows this server could not read is how a player loses
 -- one.
 --
+-- ═══ ONE ANSWER PER PLAYER PER fetchMs ═══
+--
+-- An answer is the whole list, every headshot in it, and the owner set no
+-- limit on saved peds; the asking is a few bytes. So a source is answered at
+-- most once every fetchMs: asking again sooner is answered ONCE, when that
+-- time is up (never dropped, so a real client always hears back), and a source
+-- asking while a read is in flight waits on it once, however often it asks.
+-- (#28 review: 200 asks in 5 s queued 67.7 MB of answers.) The writes need no
+-- such rule: each is a token from the bucket below, and a refusal is a few
+-- bytes back for a few bytes in.
+--
 -- ═══ THE WORN PED ═══
 --
 -- What a player rejoins with: "we must recall the last selected ped when they
@@ -47,8 +58,9 @@ local function on()
     return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('locker2')
 end
 
---- license -> { loaded, failed, fetching, fetchAt, waiters, peds = {[id]=ped},
----              worn, wornDirty, wornAt, wornTimer, tokens, tokenAt }
+--- license -> { loaded, failed, fetching, fetchAt, waiters, waiting, sentAt,
+---              deferred, peds = {[id]=ped}, worn, wornDirty, wornAt, wornTimer,
+---              tokens, tokenAt }
 local cache = {}
 --- src -> license
 local licenseOf = {}
@@ -75,6 +87,9 @@ local function entryFor(lic)
     local e = cache[lic]
     if not e then
         e = { loaded = false, failed = false, fetching = false, fetchAt = nil, waiters = {},
+              -- src -> true while it waits on a read; src -> when it was last
+              -- answered; src -> true while an answer to it is held back.
+              waiting = {}, sentAt = {}, deferred = {},
               peds = {}, worn = nil, wornDirty = false, wornAt = nil, wornTimer = false,
               tokens = cfg().writeBucket, tokenAt = GetGameTimer() }
         cache[lic] = e
@@ -151,7 +166,15 @@ end
 local function sendState(src, e)
     local payload = { worn = wornOut(e.worn), store = not e.failed }
     if e.loaded then payload.peds = sortedPeds(e) end
+    e.sentAt[src] = GetGameTimer()
     TriggerLatentClientEvent(BR.Net.LOCKER2_STATE, src, 128000, payload)
+end
+
+--- Everyone waiting on a read, answered once each.
+local function answerWaiters(e)
+    local waiters = e.waiters
+    e.waiters, e.waiting = {}, {}
+    for _, w in ipairs(waiters) do sendState(w, e) end
 end
 
 local function result(src, req, ok, reason, extra)
@@ -231,7 +254,22 @@ function L.fetch(src, lic)
     local e = entryFor(lic)
     local now = GetGameTimer()
     if e.fetching then
-        e.waiters[#e.waiters + 1] = src
+        if not e.waiting[src] then
+            e.waiting[src] = true
+            e.waiters[#e.waiters + 1] = src
+        end
+        return
+    end
+    -- Answered inside fetchMs already: once more when it is up, and only once.
+    local last = e.sentAt[src]
+    if last and now - last < cfg().fetchMs then
+        if not e.deferred[src] then
+            e.deferred[src] = true
+            SetTimeout(last + cfg().fetchMs - now, function()
+                e.deferred[src] = nil
+                if cache[lic] == e and licenseOf[src] == lic then L.fetch(src, lic) end
+            end)
+        end
         return
     end
     if e.fetchAt and now - e.fetchAt < cfg().fetchMs then
@@ -240,11 +278,10 @@ function L.fetch(src, lic)
     end
     e.fetchAt = now
     e.fetching = true
-    e.waiters = { src }
+    e.waiters, e.waiting = { src }, { [src] = true }
     if not stored() then
         e.fetching, e.loaded, e.failed = false, true, false
-        for _, w in ipairs(e.waiters) do sendState(w, e) end
-        e.waiters = {}
+        answerWaiters(e)
         return
     end
     ask('lockerFetch', function(ok, extra)
@@ -272,9 +309,7 @@ function L.fetch(src, lic)
             print(('^3[br_core] locker2: saved peds could not be read for %s (%s) -- writes refused until a read works^7')
                 :format(lic, tostring(extra.error)))
         end
-        local waiters = e.waiters
-        e.waiters = {}
-        for _, w in ipairs(waiters) do sendState(w, e) end
+        answerWaiters(e)
     end, lic)
 end
 
@@ -465,6 +500,8 @@ AddEventHandler('playerDropped', function()
     local lic = licenseOf[src]
     licenseOf[src] = nil
     if not lic then return end
+    local e = cache[lic]
+    if e then e.sentAt[src], e.deferred[src] = nil, nil end
     flushWorn(lic)
     for _, other in pairs(licenseOf) do
         if other == lic then return end

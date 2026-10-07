@@ -151,6 +151,12 @@ local function locked()
     return BR.LobbyPed ~= nil and BR.LobbyPed.lockerLocked ~= nil and BR.LobbyPed.lockerLocked() == true
 end
 
+--- The only state a ped is ever put on in: a model swap anywhere else is a
+--- new, unarmed, frozen ped in the middle of a match.
+local function inLobby()
+    return BR.State.me.state == BR.PlayerState.LOBBY
+end
+
 --- Is the entrance actually walking the ped? A swap now would strand it.
 local function walkingNow()
     return BR.LobbyPed ~= nil and BR.LobbyPed.walking ~= nil and BR.LobbyPed.walking() == true
@@ -290,6 +296,16 @@ local function swap(hash, a, cb, keep)
             if cb then cb(false) end
             return
         end
+        -- THE LOBBY WAS LEFT WHILE THE MODEL STREAMED IN (up to 5 s): no swap
+        -- (see inLobby). The worn ped goes back on at the next lobby arrival;
+        -- `left` tells a caller this was no failure to load.
+        if not inLobby() then
+            SetModelAsNoLongerNeeded(hash)
+            S.applying = false
+            S.want = GetEntityModel(PlayerPedId())
+            if cb then cb(false, 'left') end
+            return
+        end
 
         local before = PlayerPedId()
         local pos = GetEntityCoords(before)
@@ -369,7 +385,11 @@ local function wear(rec, cb, early)
         if cb then cb(true) end
         return
     end
-    if (early and walkingNow()) or (not early and locked()) or S.applying then
+    -- OUTSIDE THE LOBBY NOTHING IS PUT ON (#28 review): a swap there hands the
+    -- player a new ped with no weapons, GTA's health model and frozen in place.
+    -- A server answer that lands mid-match is held, and only the lobby tick
+    -- drains what is held.
+    if (early and walkingNow()) or (not early and locked()) or S.applying or not inLobby() then
         S.pending = rec
         S.pendingEarly = early == true
         S.want = modelOf(rec)
@@ -530,12 +550,18 @@ local function indexOf(list, v)
 end
 
 --- How many colors a row's item has: its textures, or its palette.
+---
+--- AN ITEM THAT IS NOT ON THE PED HAS ONE: no prop, and an overlay of none.
+--- Its color shows on nothing, so it gets no Next color, and a press of one
+--- would only make the draft differ where nobody can see (#28 review).
+--- Appearance.encode writes a none overlay's color and opacity as their
+--- defaults for the same reason.
 local function colorsOf(k, a, ped)
     if k == 'c2' then return math.min(64, GetNumHairColors()) end
     local n = k:match('^o(%d+)$')
     if n then
         local pal = C().overlayPalette[tonumber(n)]
-        if not pal then return 1 end
+        if not pal or a.o[tonumber(n) + 1][1] == A.NONE then return 1 end
         return math.min(64, pal == 1 and GetNumHairColors() or GetNumMakeupColors())
     end
     n = k:match('^c(%d+)$')
@@ -552,6 +578,13 @@ local function colorsOf(k, a, ped)
     return 1
 end
 
+--- Is this slider an opacity of an overlay that is none? It moves nothing on
+--- the ped, so it is sent `off` and a set of it is refused (#28 review).
+local function sliderOff(k, a)
+    local n = k:match('^o(%d+)op$')
+    return n ~= nil and a.o[tonumber(n) + 1][1] == A.NONE
+end
+
 local function rowsFor(d)
     local rows, cats = {}, {}
     local ped = PlayerPedId()
@@ -563,7 +596,7 @@ local function rowsFor(d)
             if kind == 'slider' then
                 local lo, hi, def = sliderRange(k)
                 rows[#rows + 1] = { k = k, cat = cat.id, kind = 'slider', v = get(d.a),
-                                    min = lo, max = hi, def = def }
+                                    min = lo, max = hi, def = def, off = sliderOff(k, d.a) or nil }
                 any = true
             elseif kind == 'count' then
                 local list = options(k, d.sex)
@@ -620,9 +653,14 @@ function V.push()
         end
         stock = stockList
     end
+    -- NO PICTURE RIDES ON A PUSH (#28 review). This is sent on every press,
+    -- up to one a slider's 60 ms, and the owner set no limit on saved peds:
+    -- with every headshot in it, each push grew by a few KB a ped. A card's
+    -- picture goes to the page once, on its own (client/locker2shot.lua, when
+    -- the page asks for the cards it has none for), and the page keeps it.
     local peds = {}
     for _, p in ipairs(S.peds) do
-        peds[#peds + 1] = { id = p.id, name = p.name, up = p.up, img = p.img }
+        peds[#peds + 1] = { id = p.id, name = p.name, up = p.up }
     end
     local edit = nil
     if S.draft and CUSTOM[S.tab] then
@@ -633,6 +671,9 @@ function V.push()
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2, {
         on = true,
         tab = S.tab or defaultTab(),
+        -- The page's last `tab` request this answer has seen (see ACTIONS'
+        -- handler): the page follows `tab` once it is its own latest.
+        tabSeq = S.tabSeq,
         stock = stock,
         peds = peds,
         worn = S.worn and { k = S.worn.k, id = S.worn.id } or nil,
@@ -715,9 +756,9 @@ AddEventHandler(BR.Net.LOCKER2_RESULT, function(d)
         local id = shotReqs[req]
         shotReqs[req] = nil
         local p = pedById(id)
+        -- Kept for the next time the page asks; the page already has it.
         if d.ok == true and p and type(d.ped) == 'table' and type(d.ped.img) == 'string' then
             p.img = d.ped.img
-            V.push()
         end
         return
     end
@@ -759,9 +800,17 @@ end)
 -- The draft
 -- ---------------------------------------------------------------------------
 
+--- A new draft starts on NO category, with the camera home on the whole ped.
+---
+--- THE ANCHOR THE PAGE LIGHTS IS WHERE THE CAMERA IS (#28 review): `cat` is
+--- set only by LOCKER2_CAT, which moves the camera there, and a draft that
+--- starts -- a Custom tab, Create, Edit -- sends the camera home and clears it.
+--- A draft that began on Face with the camera wherever the last one left it
+--- lit Face over the feet, and pressing Face then moved nothing.
 local function startDraft(sex, a, editing)
     S.draft = { sex = sex, a = A.copy(a), base = A.copy(a), editing = editing, dirty = false,
-                cat = C().categories[1].id }
+                cat = nil }
+    if BR.LobbyCam and BR.LobbyCam.unfocus then BR.LobbyCam.unfocus() end
     dress(GetHashKey(C().models[sex]), A.copy(a), function() V.push() end)
 end
 
@@ -824,18 +873,24 @@ local function setRow(k, v)
     if v == nil then return false end
     if kind == 'slider' then
         local lo, hi = sliderRange(k)
-        if v < lo or v > hi then return false end
+        if v < lo or v > hi or sliderOff(k, d.a) then return false end
         set(d.a, v)
         return true
     end
     local list = options(k, d.sex)
     if not list or v < 1 or v > #list then return false end
     set(d.a, list[v])
-    -- A reset puts the item's color back too.
+    -- A RESET PUTS BACK EVERYTHING THE ROW'S BUTTONS CHANGE: the item and its
+    -- Next color -- a component's or a prop's texture, an overlay's color,
+    -- the Hair row's hair color. An opacity is a row of its own, with its own
+    -- reset.
     local c = k:match('^c(%d+)$')
     if c then d.a.c[tonumber(c)][2] = 0 end
+    if k == 'c2' then d.a.h[1] = 0 end
     local p = k:match('^p(%d+)$')
     if p then d.a.p[propIndex(tonumber(p))][2] = 0 end
+    local o = k:match('^o(%d+)$')
+    if o then d.a.o[tonumber(o) + 1][3] = 0 end
     return true
 end
 
@@ -901,6 +956,8 @@ local function open()
     S.open = true
     S.draft = nil
     S.tab = defaultTab()
+    -- No `tab` request of this opening has been seen yet.
+    S.tabSeq = nil
     V.push()
     cleanAndDry()
     fetch()
@@ -915,19 +972,20 @@ local function wearStock(id)
     S.loadingId = id
     V.push()
     local rec = { k = 's', id = id }
-    dress(modelOf(rec), nil, function(ok)
+    dress(modelOf(rec), nil, function(ok, why)
         S.loadingId = nil
         if ok then
             S.worn = rec
             remember(rec)
             sendWear(rec)
-        else
-            -- Season 1's words for the same failure.
+        elseif why ~= 'left' then
+            -- Season 1's words for the same failure. A match that started
+            -- while the model streamed in is not one: nothing changed.
             BR.Notify('That character could not be loaded.', 'warn')
         end
         local nextId = S.queued
         S.queued = nil
-        if nextId and nextId ~= id then wearStock(nextId) else V.push() end
+        if nextId and nextId ~= id and why ~= 'left' then wearStock(nextId) else V.push() end
     end)
 end
 
@@ -937,13 +995,13 @@ local function wearSaved(id)
     local rec = { k = 'p', id = id, a = A.copy(p.a) }
     S.loadingId = id
     V.push()
-    dress(modelOf(rec), A.copy(p.a), function(ok)
+    dress(modelOf(rec), A.copy(p.a), function(ok, why)
         S.loadingId = nil
         if ok then
             S.worn = rec
             remember(rec)
             sendWear(rec)
-        else
+        elseif why ~= 'left' then
             BR.Notify('That character could not be loaded.', 'warn')
         end
         V.push()
@@ -1041,12 +1099,20 @@ ACTIONS[BR.NuiCb.LOCKER2_COLOR] = function(data)
     end
 end
 
+--- The page sends this on every anchor press and every row touched, the same
+--- category or not: whether the camera has to move is decided here, off where
+--- the camera actually is, never off the page's copy of `cat`.
 ACTIONS[BR.NuiCb.LOCKER2_CAT] = function(data)
     if not S.draft then return end
     for _, cat in ipairs(C().categories) do
         if cat.id == data.cat then
+            local LC = BR.LobbyCam
+            local there = LC and LC.focused and LC.focused() == cat.cam
+            -- Nothing to move and nothing to draw: no push either, since every
+            -- row touched sends this.
+            if there and S.draft.cat == cat.id then return false end
             S.draft.cat = cat.id
-            if BR.LobbyCam and BR.LobbyCam.focus then BR.LobbyCam.focus(cat.cam) end
+            if LC and LC.focus and not there then LC.focus(cat.cam) end
             return
         end
     end
@@ -1119,6 +1185,14 @@ AddEventHandler('br:ui:action', function(name, data)
 
     local act = ACTIONS[name]
     if not act then return end
+    -- THE PAGE MOVES ITS TAB ON THE PRESS, BEFORE THIS ANSWERS (#28 review).
+    -- So every `tab` carries the page's own sequence number, and every push
+    -- after it -- the one this handler always makes, refused or not -- says
+    -- which request it has seen. Once that is the page's latest, the page shows
+    -- this file's tab, so a refusal it could not foresee (a model still
+    -- streaming in) takes it back rather than leaving it on a tab Lua never
+    -- switched to.
+    if name == BR.NuiCb.LOCKER2_TAB then S.tabSeq = math.tointeger(data.seq) end
     -- A STOCK PICK WHILE ONE IS LOADING IS REMEMBERED, NOT REFUSED: pressing
     -- four quickly ends on the fourth (Season 1's rule, locker.lua).
     if name == BR.NuiCb.LOCKER2_WEAR and data.k == 's' and S.open and not locked() and not S.busy
@@ -1127,12 +1201,13 @@ AddEventHandler('br:ui:action', function(name, data)
         V.push()
         return
     end
-    if not S.open or locked() or S.loadingId or S.applying or S.busy then
+    -- Not in the lobby is refused too: the page is up there alone, and the
+    -- lobby tick closes it within a tick of leaving.
+    if not S.open or not inLobby() or locked() or S.loadingId or S.applying or S.busy then
         V.push()
         return
     end
-    act(data)
-    V.push()
+    if act(data) ~= false then V.push() end
 end)
 
 -- Leaving the locker any other way -- a match starting pops it off the focus
@@ -1311,22 +1386,34 @@ end)
 -- ---------------------------------------------------------------------------
 --
 -- Resurrections, spawns, the parachute and a bike's helmet all touch the ped's
--- components and props. So every watchMs, in the lobby or alive, while a custom
--- look this file put on is on a ped of its model, the eleven components and
--- five props are compared with that look and the whole look re-applied on any
--- difference -- and re-applied outright when the ped handle itself is new.
--- The bag slot is the parachute's while one is held or in use, and the hat
--- slot a helmet's while one is worn; neither is compared then. The reference is
--- the last look applied, so an unsaved edit is kept, not undone.
+-- components and props. So every watchMs, while a custom look this file put on
+-- is on a ped of its model, the eleven components and five props are compared
+-- with that look and the whole look re-applied on any difference -- and
+-- re-applied outright when the ped handle itself is new. The bag slot is the
+-- parachute's while one is held or in use, and the hat slot a helmet's while
+-- one is worn; neither is compared then. The reference is the last look
+-- applied, so an unsaved edit is kept, not undone.
+--
+-- IN EVERY STATE THE PLAYER HAS A PED TO BE SEEN IN (#28 review): the lobby,
+-- the warmup pad, the plane, the drop, the match and downed. The warmup trip
+-- itself resurrects the player (client/spawn.lua's toWarmupPad, through
+-- BR.Spawn.respawn), so a watch that began only at ALIVE left a new ped bare
+-- through the showroom, the plane and the skydive. Not once out (a body, then
+-- a spectator) or gone.
 
 local PARACHUTE = nil
 local nextWatch = 0
 
+local WATCHED = {
+    [BR.PlayerState.LOBBY] = true, [BR.PlayerState.WARMUP] = true, [BR.PlayerState.BUS] = true,
+    [BR.PlayerState.FREEFALL] = true, [BR.PlayerState.GLIDE] = true,
+    [BR.PlayerState.ALIVE] = true, [BR.PlayerState.DBNO] = true,
+}
+
 BR.Loop.register(BR.Loop.TICK, 'locker2.watch', function()
     local ap = S.applied
     if not ap or not ap.a or S.applying then return end
-    local st = BR.State.me.state
-    if st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.ALIVE then return end
+    if not WATCHED[BR.State.me.state] then return end
     if not claims() then return end
     local now = GetGameTimer()
     if now < nextWatch then return end

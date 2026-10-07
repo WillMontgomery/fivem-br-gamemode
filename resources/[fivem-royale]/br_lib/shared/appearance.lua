@@ -33,6 +33,12 @@
 -- FIXED KEY ORDER, INTEGERS ONLY, AT MOST 2048 BYTES. Nothing is clamped: a
 -- value out of range is refused, so the server stores exactly what the player
 -- saw or nothing.
+--
+-- WHAT IS NOT ON THE PED IS NOT IN THE STRING. An overlay of none has no
+-- opacity or color anyone can see, so encode() writes it as [255,100,0]
+-- whatever the table holds. Two looks that show the same are then the same
+-- string: equal() agrees, a draft that only changed what nobody can see is not
+-- dirty, and what the server stores is what the player saw.
 
 BR = BR or {}
 BR.Appearance = {}
@@ -177,6 +183,16 @@ local function pairsOf(t)
     return '[' .. table.concat(out, ',') .. ']'
 end
 
+--- An overlay of none, as it is written: the opacity and color it has by
+--- default, since neither shows.
+local NONE_OVERLAY = '[255,100,0]'
+
+local function overlaysOf(o)
+    local out = {}
+    for i = 1, #o do out[i] = o[i][1] == A.NONE and NONE_OVERLAY or ints(o[i]) end
+    return '[' .. table.concat(out, ',') .. ']'
+end
+
 --- The canonical string, or nil and why when `a` is not an appearance.
 --- @param a table
 --- @return string|nil
@@ -185,7 +201,7 @@ function A.encode(a)
     local ok, why = A.validate(a)
     if not ok then return nil, why end
     return ('{"v":1,"s":"%s","sk":%d,"e":%d,"h":%s,"ff":%s,"o":%s,"c":%s,"p":%s}'):format(
-        a.s, a.sk, a.e, ints(a.h), ints(a.ff), pairsOf(a.o), pairsOf(a.c), pairsOf(a.p)), nil
+        a.s, a.sk, a.e, ints(a.h), ints(a.ff), overlaysOf(a.o), pairsOf(a.c), pairsOf(a.p)), nil
 end
 
 -- ═══ A STRICT JSON READER ═══
