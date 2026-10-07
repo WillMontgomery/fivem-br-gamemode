@@ -6310,18 +6310,36 @@ describe('client: the blip is re-asserted, not assumed')
 do
     -- The marker is the only thing telling the match where to run. If anything
     -- at all removes it while the drop is live -- another resource sweeping
-    -- blips, a handle gone bad -- it comes back on the next frame rather than
-    -- leaving the match's one airdrop unfindable.
+    -- blips, a handle gone bad -- it comes back within a tenth of a second
+    -- rather than leaving the match's one airdrop unfindable.
+    --
+    -- A TENTH, NOT THE NEXT FRAME, SINCE #393. The window is minutes long and
+    -- every frame of it used to ask DoesBlipExist of both handles; the handles
+    -- this file holds are now checked on a 100 ms cadence. One frame here is
+    -- 16 ms of the synced clock, so "back within a tenth" is: on the first frame
+    -- at least 100 ms after the last check -- the seventh, at the latest.
     clientReset()
     announce(260.0, 30000)
     render()
+
+    local function frame() gameMs = gameMs + 16; render() end
+    --- Frames until both blips are up again, giving up after a second.
+    local function framesUntilBoth()
+        for n = 1, 60 do
+            frame()
+            if blipCount() == 2 then return n end
+        end
+        return nil
+    end
 
     eq(blipCount(), 2, 'there are two blips')
     for h in pairs(blips) do RemoveBlip(h) end
     eq(oneBlip(), nil, 'something took them away')
 
-    render()
-    eq(blipCount(), 2, 'and the next frame puts both back')
+    local back = framesUntilBoth()
+    ok(back ~= nil and back <= 7,
+        'and both are back within a tenth of a second -- by the seventh 16 ms frame',
+        tostring(back))
 
     -- ═══ AND EACH SURFACE COMES BACK ON ITS OWN ═══
     --
@@ -6333,14 +6351,41 @@ do
     for h, b in pairs(blips) do if b == mini then RemoveBlip(h) end end
     eq(miniBlip(), nil, 'the minimap half alone is taken')
     ok(mapBlip() ~= nil, 'while the big map half survives')
-    render()
-    ok(miniBlip() ~= nil, 'and the minimap half comes back on its own')
+    back = framesUntilBoth()
+    ok(back ~= nil and back <= 7 and miniBlip() ~= nil,
+        'and the minimap half comes back on its own, within the same tenth',
+        tostring(back))
     eq(blipCount(), 2, 'without a second big-map blip appearing beside it')
 
     -- ONCE, THOUGH. Re-asserting has to be idempotent or a frame loop makes a
     -- blip per frame and the pause map fills with sixty copies a second.
-    render(); render(); render()
+    for _ = 1, 30 do frame() end
     eq(blipCount(), 2, 'and exactly two, however many frames pass')
+
+    -- ═══ WHAT THE CADENCE BUYS: A SECOND OF FRAMES, A TENTH OF THE ASKING ═══
+    --
+    -- Sixty frames used to be a hundred and twenty DoesBlipExist. A check every
+    -- 100 ms at 16 ms a frame lands every seventh frame, two handles each: about
+    -- eighteen. Pinned loosely, from both sides -- it has to have dropped, and
+    -- it has to still be asking, or a blip something took would never come back.
+    local realExists, asked = DoesBlipExist, 0
+    DoesBlipExist = function(b) asked = asked + 1 return realExists(b) end
+    for _ = 1, 60 do frame() end
+    DoesBlipExist = realExists
+    ok(asked > 0 and asked <= 20,
+        'a second of frames asks DoesBlipExist about eighteen times, not 120',
+        tostring(asked))
+
+    -- A SYNCED CLOCK THAT STEPS BACKWARDS DOES NOT PARK THE CHECK. BR.Clock's
+    -- estimate is corrected as samples arrive, and a correction can move `now`
+    -- behind the last check; waiting for it to catch up would leave a missing
+    -- blip missing for as long as the step was. 150 ms back puts `now` behind
+    -- the last check (at most 112 ms ago) and still inside the window.
+    for h in pairs(blips) do RemoveBlip(h) end
+    BR.Clock.offset = -150.0
+    render()
+    BR.Clock.offset = 0.0
+    eq(blipCount(), 2, 'a clock stepped back behind the last check re-checks on that frame')
 
     -- BUT NOT AFTER THE WINDOW CLOSES. A blip that reappeared forever would be
     -- worse than one that vanished early.

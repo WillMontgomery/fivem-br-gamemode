@@ -1486,6 +1486,10 @@ local function release(d)
     buildParts(d)
 end
 
+--- How often the render pass asks whether the blips it already holds still
+--- exist. See the note where it is read.
+local BLIP_CHECK_MS = 100
+
 BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
     if not next(drops) then return end
 
@@ -1519,8 +1523,22 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
             -- Re-asserted, not assumed. addBlip is idempotent and cheap, and
             -- this is what makes the marker survive anything that removes it
             -- while the drop is still live.
+            --
+            -- CHECKED TEN TIMES A SECOND, NOT SIXTY (#393). The window is
+            -- minutes long -- from the announcement to a minute after the crate
+            -- is opened, twice a match -- and every frame of it asked
+            -- DoesBlipExist of both handles. The record's arrival still puts
+            -- both up at once (and a re-send is a new record, checked on its
+            -- first frame); what waits is the check on handles already held, so
+            -- a marker something else took away is back within a tenth of a
+            -- second instead of a sixtieth. `now < d.blipAt` re-checks after the
+            -- synced clock steps backwards rather than waiting it out.
             if BR.AirdropBlipVisible(d.rec, now, A) then
-                addBlip(d)
+                if not d.blipAt or now < d.blipAt
+                   or now - d.blipAt >= BLIP_CHECK_MS then
+                    addBlip(d)
+                    d.blipAt = now
+                end
             end
 
             -- THE PLANE, WHICH LIVES ON ITS OWN CLOCK. It arrives with the ARM,
