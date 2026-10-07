@@ -1328,10 +1328,10 @@ BR.Net = {
     -- it.
     TERMINAL_STRIKE_VEH = 'br:terminal:strikeVeh',
 
-    -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed, squadMatch,
-    -- first? }: whether this player holds one, and whether their squad has
-    -- spent its one use this match. To that player alone, whenever either
-    -- changes and on br:ready. Their squadmates learn who holds a key from the
+    -- THE YUBIKEY (#396, Season 2). S->C { held, first? }: whether this
+    -- player holds one. To that player alone, whenever it changes and on
+    -- br:ready. (Their squad's spent use left it in round 7: the world plate
+    -- is one plate whatever it is.) Their squadmates learn who holds a key from the
     -- squad beacon (SQUAD_POS's `yubikey`), never from this. `first` is true
     -- on the ONE push that gave this player their first key ever (round 5):
     -- the client puts up the first-pickup card (BR.Nui.YUBIKEY_CARD).

@@ -1308,10 +1308,11 @@ do
     eq(table.concat(holds, ', '), '', 'no copy line says "hold interact"')
     ok(copy.howto_terminal_body:find('Walk up to one and press interact to open it.', 1, true) ~= nil,
         'the how-to says press')
-    -- The other plates keep their own lines.
+    -- The lines the plate used to show keep their other readers: the app's
+    -- login screen and reasons, and the server's toasts.
     eq(copy.no_key, 'You need a Yubikey to access this system. Search far and wide, and you just might find one.',
-        'the no-key plate keeps the owner\'s no_key line')
-    eq(copy.squad_used, 'Your squad already used its terminal this match.', 'the squad-used plate keeps its line')
+        "no_key keeps the owner's line (the app's login screen)")
+    eq(copy.squad_used, 'Your squad already used its terminal this match.', "squad_used keeps its line (the app's reason)")
     eq(copy.offline, 'This terminal is outside the storm and offline.',
         'offline keeps its line: the server\'s toast for a press a step behind the storm, and the app\'s reason')
     -- The press goes straight to the server's door, which keeps its interval.
@@ -1320,6 +1321,14 @@ do
     -- blip and no DUI"): the world plate no longer reads the offline line.
     ok(not src:find('copy().offline', 1, true) and not src:find("copy()['offline']", 1, true),
         'client/yubikey.lua reads no offline line: outside the storm there is no plate')
+    -- ROUND 7 (owner, 2026-10-07: 'The DUI reading "you already used your
+    -- terminal this match" should be the same DUI text as the rest, not unique
+    -- to that status.'): ONE PLATE. The client reads no status line at all.
+    for _, key in ipairs({ 'squad_used', 'no_key', 'unavailable' }) do
+        ok(not src:find("'" .. key .. "'", 1, true) and not src:find('copy().' .. key, 1, true),
+            ('client/yubikey.lua reads no %s line: the plate is one plate'):format(key))
+    end
+    ok(not src:find('squadUsed', 1, true), "nor the squad's use: nothing on the plate depends on it")
     ok(not src:find('holdMs', 1, true) and not src:find('%f[%w_]ring%f[^%w_]'),
         'client/yubikey.lua sends the plate no ring and no hold time')
     ok(src:find("BR.Keys.on('interact'", 1, true) ~= nil

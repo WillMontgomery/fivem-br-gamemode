@@ -2,7 +2,7 @@
 -- this player SEES. Everything it decides is presentation; every rule is the
 -- server's (server/yubikey.lua, server/terminal.lua).
 --
---   the key        held / squadUsed, as YUBIKEY_STATE says. client/state.lua
+--   the key        held, as YUBIKEY_STATE says. client/state.lua
 --                  reads BR.Yubikey.glyph() into the HUD envelope, where br_ui
 --                  draws the equipped icon. A key on the GROUND is ordinary
 --                  loot and client/loot.lua draws it.
@@ -88,10 +88,8 @@ end
 
 -- ------------------------------------------------------------- the state ---
 
---- What the server told this player (YUBIKEY_STATE). `squadMatch` picks the
---- squad_used line or its `_solo` sibling (owner, round 2: "squad" only in a
---- squad match).
-local held, squadUsed, squadMatch = false, false, false
+--- What the server told this player (YUBIKEY_STATE): whether they hold a key.
+local held = false
 
 --- The dev tools' changes (TERMINAL_SITES): placed sites, removed config ids,
 --- ids forced online.
@@ -387,11 +385,10 @@ BR.Loop.register(BR.Loop.SLOW, 'terminals.world', function()
         return
     end
 
-    -- Back in the lobby: the match's reveal and its squad's use are over.
+    -- Back in the lobby: the match's reveal is over.
     local S = BR.State
     if S and S.me and S.me.state == BR.PlayerState.LOBBY then
         clearReveal()
-        squadUsed = false
     end
 
     local all = sites()
@@ -483,20 +480,23 @@ end
 ---               A terminal the SLOW pass has not placed yet counts as
 ---               outside. The server still refuses a use there (its toast,
 ---               `offline`, answers a client a step behind the storm).
----   squad used  the squad_used line; the press opens it the same way
----   usable      terminal_use ("press to open") and the key cap
+---   online      THE ONE PLATE: terminal_use ("press to open") and the key
+---               cap, whoever walks up
 ---
---- THE KEY IS NOT ASKED (round 6, owner 2026-10-07: "if I approach a computer
---- with no Yubikey, the DUI should show the same as if I do have one. The
---- player will realize what's up when they go to open the app."). A player
---- without one sees exactly the plate a holder in their place would; the
---- press opens the computer all the same, and its app says what is missing
---- (every function no_key). The terminal's BLIP still needs a key.
+--- ONE PLATE, WHATEVER THE PLAYER'S STATUS. Round 6 took the key out of it
+--- (owner, 2026-10-07: "if I approach a computer with no Yubikey, the DUI
+--- should show the same as if I do have one. The player will realize what's
+--- up when they go to open the app."), and round 7 the squad's spent use
+--- (owner, the same day: 'The DUI reading "you already used your terminal
+--- this match" should be the same DUI text as the rest, not unique to that
+--- status.'). So a key or none, the squad's use spent or not, a run in
+--- flight: the same plate, and the press opens the computer all the same --
+--- its app says what stands in the way (no_key, squad_used, ...). The
+--- terminal's BLIP still needs a key.
 local function plateFor(s)
     local w = world[s.id]
     local online = (w and w.online) or dev.forced[s.id] == true
     if not online then return nil end
-    if squadUsed then return { hint = TS.pick(copy(), 'squad_used', squadMatch), press = true } end
     return { hint = copy().terminal_use, press = true }
 end
 
@@ -695,8 +695,6 @@ RegisterNetEvent(BR.Net.YUBIKEY_STATE)
 AddEventHandler(BR.Net.YUBIKEY_STATE, function(d)
     if type(d) ~= 'table' then return end
     held = d.held == true
-    squadUsed = d.squadUsed == true
-    squadMatch = d.squadMatch == true
     -- Blips follow on the next SLOW pass; a lost key takes them down now.
     if not held then
         for _, w in pairs(world) do dropTerminalBlips(w) end

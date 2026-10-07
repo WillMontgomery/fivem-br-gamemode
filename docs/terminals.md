@@ -132,8 +132,8 @@ currency word, "1,250 Volts") are filled by the app.
 
 **"Squad" only in a squad match** (owner, round 2). A line that says squad has
 a `<key>_solo` sibling that does not, and one picker per side chooses: the
-Lua side's `BR.TerminalSolve.pick` (the server's toasts, notices and reasons,
-and the world's plate) and the app's `speaker` (model.ts), both from
+Lua side's `BR.TerminalSolve.pick` (the server's toasts, notices and reasons)
+and the app's `speaker` (model.ts), both from
 `squadMatch`. An empty `_solo` line hides the row it labels (the match
 panel's squad rows, the mode in a squad match's warmup). A squad-only
 function's lines, and the Squad category's name, are only ever shown in a
@@ -190,7 +190,7 @@ The table below is the lines outside the functions' own:
 | `airstrike_blip`, `airstrike_fuzz_blip` | The legend names of an Airstrike's circle, on every player's map, and of the rough circles its runner sees while picking the spot |
 | `cost_free_or` | A card's cost when it depends on the choices and the cheapest is free (round 5): `{volts}` the most it can cost -- over the choices this player is offered, so a solo player's Gear Up card reads `cost_free` (round 5's review) |
 | `impact_*` (`impact_emp`, `impact_outage`, `impact_blackout`, `impact_bounty`, `impact_scan`, `impact_time`, `impact_weather`, `impact_storm`, `impact_airstrike`) and `impact_until_end` | On the HUD, to the player it is happening to: what another player's terminal run is doing to them, beside its clock -- or `impact_until_end` in its place for the rest of the match (round 4) |
-| `no_key`, `squad_used` | At the terminal (why not; `no_key` is also the login screen); `squad_used` in the world too (the terminal's plate -- never `no_key` since round 6: the plate does not ask for the key) |
+| `no_key`, `squad_used` | At the terminal (why not; `no_key` is also the login screen), and `squad_used` the toast for a run refused for it. Never the world's plate: not `no_key` since round 6, not `squad_used` since round 7 -- the plate is one plate whatever the player's status |
 | `offline` | At the terminal (why not: the dev tool's `brterminal offline`, or the moment before the storm's close), and a toast to a player whose press reached the server a step behind the storm. Never a plate since round 4: a terminal outside the storm has none |
 | `bounty_new` | A toast to the lobby: Scan's or a Contract's bounty; `{playername}` |
 | `bounty_protect` | A toast to the bounty's squad, not the bounty (Scan's or a Contract's: both ten minutes since round 4); `{playername}` |
@@ -204,7 +204,7 @@ The table below is the lines outside the functions' own:
 | `notice_action` | A toast to the lobby when a function ran; `{playername}`, `{description}` |
 | `key_label` | Anyone near a key on the ground: its plate ("Yubikey") |
 | `terminal_label` | Anyone near a terminal: its plate's title, and its blip's legend name |
-| `terminal_use` | Anyone at a live terminal whose squad has not used its one, key or no key (round 6): the plate's hint, beside their interact key's cap |
+| `terminal_use` | Anyone at a live terminal, key or no key (round 6), the squad's use spent or not (round 7): the plate's hint, beside their interact key's cap |
 | `storm_reveal_blip` | The squad that ran Storm reveal: the legend name of the final zone |
 
 `{playername}` travels as `BR.Notice.who` (drawn bold, never formatted into the
@@ -425,7 +425,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_REVEAL` | S→C | `{ x, y, r, matchId }` | Storm reveal, to the squad that ran it alone; again on `br:ready` while that match lasts, and again when Storm control moves the end. |
 | `BR.Net.TERMINAL_SKY` | S→C | `{ matchId, weather? }` | Time & weather: the chosen weather (an engine weather's name, never RAIN or THUNDER), to the whole match when a run sets the time or the weather and when the match ends (no `weather`), and on `br:ready` while one is set. Each client claims it only while its view is inside the circle. |
 | `BR.Net.TERMINAL_POWER` | S→C | `{ matchId, list = { { kind, x?, y?, r?, line? } } }` | Power outage: every live outage area, to the whole match when one starts or ends (an empty list: the lights back), and on `br:ready` while one lasts. |
-| `BR.Net.YUBIKEY_STATE` | S→C | `{ held, squadUsed, squadMatch }` | This player's key and their squad's use, to them alone, on every change and on `br:ready`; `squadMatch` picks the plate's `squad_used` line. Squadmates learn who holds a key from the squad beacon's `yubikey` bit. |
+| `BR.Net.YUBIKEY_STATE` | S→C | `{ held, first? }` | This player's key, to them alone, on every change and on `br:ready`; `first` on the push that gave them their first key ever (the first-pickup card). Round 7 took out `squadUsed` and `squadMatch`: the plate is one plate, so nothing read them. Squadmates learn who holds a key from the squad beacon's `yubikey` bit. |
 
 ## br_core and the computer
 
@@ -861,15 +861,16 @@ boolean) for every use, every run, every session check, the panel's count and
   `SetBlipAsShortRange(true)` exactly as `client/fuel.lua` makes a station's --
   on the big map always, on the minimap only nearby. It was a display-3 and
   display-5 pair, not short-range.
-- **Its plate** (the shared prompt browser) reads `terminal_label` ("Computer
-  system") over one of two hints, **whether or not the player holds a key**
-  (round 6, owner 2026-10-07: "if I approach a computer with no Yubikey, the
-  DUI should show the same as if I do have one. The player will realize
-  what's up when they go to open the app."):
-  - `terminal_use` ("press to open") with the player's interact key: a press
-    opens the computer -- without a key, on an app whose every function is
-    `no_key`;
-  - `squad_used`: the same;
+- **Its plate** (the shared prompt browser) is ONE PLATE: `terminal_label`
+  ("Computer system") over `terminal_use` ("press to open") with the player's
+  interact key, **whatever the player's status** -- a key or none (round 6,
+  owner 2026-10-07: "if I approach a computer with no Yubikey, the DUI should
+  show the same as if I do have one. The player will realize what's up when
+  they go to open the app."), the squad's use spent or not, a run in flight
+  (round 7, the same day: 'The DUI reading "you already used your terminal
+  this match" should be the same DUI text as the rest, not unique to that
+  status.'). A press opens the computer, whose app says what stands in the
+  way (`no_key`, `squad_used`, ...);
 - **At the laptop** (round 6: "please lower the DUIs to the elevation of the
   laptops"): every site's row is its laptop's origin, and the plate is drawn
   `art.plateLiftM` (0.15 m) over it, about the middle of an open laptop's

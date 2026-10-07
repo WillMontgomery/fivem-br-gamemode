@@ -435,7 +435,9 @@ do
     eq(Y.holds(1), true, 'a profile that says yubikey = 1 holds a key from the first second -- carried over')
     eq(Y.holds(2), false, 'and one that says 0 does not')
     local st = lastOf(BR.Net.YUBIKEY_STATE, 1)
-    ok(st and st.held == true and st.squadUsed == false, 'the holder is told, the moment the profile arrives')
+    ok(st and st.held == true, 'the holder is told, the moment the profile arrives')
+    -- ROUND 7: the plate is one plate, so the push says nothing of the squad.
+    ok(st and st.squadUsed == nil and st.squadMatch == nil, "and nothing of their squad's use or match")
     eq(Y.holds(99), false, 'a player whose profile never arrived holds nothing')
 
     -- A NEW MATCH IS NOT A NEW KEY: the same license in another match still holds it.
@@ -1100,6 +1102,7 @@ do
 
     gameMs = gameMs + 1000
     writes = {}
+    local pushedMate = #eventsOf(BR.Net.YUBIKEY_STATE, 2)
     fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'storm_reveal' })
     local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
     ok(r and r.ok == true and r.code == 'running', 'the run is accepted, and loads', r and r.code)
@@ -1128,9 +1131,9 @@ do
     eq(#eventsOf(BR.Net.TERMINAL_REVEAL, 3), 0, 'another squad in the same match is not')
     eq(#eventsOf(BR.Net.TERMINAL_REVEAL, 4), 0, 'nor anyone in another match')
 
-    -- The squad's members are told their use is gone (their plates change).
-    ok(lastOf(BR.Net.YUBIKEY_STATE, 2) and lastOf(BR.Net.YUBIKEY_STATE, 2).squadUsed == true,
-        'the squadmate hears the squad has used its one')
+    -- ROUND 7: NO PLATE CHANGES, so no squadmate is pushed anything: the
+    -- computer's own state says squad_used when it opens.
+    eq(#eventsOf(BR.Net.YUBIKEY_STATE, 2), pushedMate, 'the squadmate is pushed nothing: their plate is the same plate')
 
     -- br:ready sends the reveal again, to the squad alone.
     sent = {}
@@ -1209,19 +1212,15 @@ do
     roster[1] = nil
     ok(Y.restore('license:1', 'refund') == true, 'a player who left is given it back on the row')
 
-    -- The push says whether this is a squad match (the plate's line).
+    -- ROUND 7: the push no longer says whether this is a squad match: no
+    -- plate line depends on it.
     reset()
     m = newMatch(1)
     player(1, m, 'A', NEAR_SITE, true, true)
     Y.push(1)
-    eq(lastOf(BR.Net.YUBIKEY_STATE, 1).squadMatch, true, 'a squad match, playing: squadMatch')
-    m.mode = 'solo'
-    Y.push(1)
-    eq(lastOf(BR.Net.YUBIKEY_STATE, 1).squadMatch, false, 'a solo match: not')
-    m.mode = 'squad'
-    m.state = BR.MatchState.WARMUP
-    Y.push(1)
-    eq(lastOf(BR.Net.YUBIKEY_STATE, 1).squadMatch, false, 'in a squad match, at warmup: not yet')
+    local pushed = lastOf(BR.Net.YUBIKEY_STATE, 1)
+    ok(pushed and pushed.held == true and pushed.squadMatch == nil and pushed.squadUsed == nil,
+        'the push is the key alone')
 end
 
 describe('terminals: no key -- the computer opens and nothing can run')
@@ -1825,23 +1824,29 @@ do
     ok(CT.art.plateLiftM >= 0.0 and CT.art.plateLiftM <= 0.3,
         'at the laptop\'s own height: within the 0.3 m an open laptop stands', CT.art.plateLiftM)
 
-    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = true })
-    W.tick()
-    eq(W.lastPrompt().hint, COPY.squad_used, 'the squad has used its one: squad_used')
-    eq(W.lastPrompt().key, 'E', 'with the key cap: the press opens it the same way')
+    -- ROUND 7 (owner, 2026-10-07: 'The DUI reading "you already used your
+    -- terminal this match" should be the same DUI text as the rest, not
+    -- unique to that status.'): THE SQUAD'S USE SPENT IS THE SAME PLATE --
+    -- even from a server still sending the old fields, in a squad match or
+    -- not.
+    local sent = #W.dui
+    for _, d in ipairs({ { held = true, squadUsed = true, squadMatch = true },
+                         { held = true, squadUsed = true, squadMatch = false },
+                         { held = false, squadUsed = true, squadMatch = true } }) do
+        W.net(W.B.Net.YUBIKEY_STATE, d)
+        W.tick()
+        p = W.lastPrompt()
+        ok(p.label == noKey.label and p.hint == noKey.hint and p.key == noKey.key,
+            ('the squad\'s use spent (key %s, squad match %s): the very same plate'):format(tostring(d.held), tostring(d.squadMatch)))
+    end
+    eq(#W.dui, sent, 'not even resent: nothing on it changed')
+    for _, m in ipairs(W.dui) do
+        ok(m.hint ~= COPY.squad_used and m.hint ~= COPY.squad_used_solo, 'and no message ever carried a squad_used line')
+    end
     W.keys.listeners.interact(true)
-    eq(#W.server, 1, 'and asks the server')
+    eq(#W.server, 1, 'the press asks the server all the same (its app says squad_used)')
     W.server = {}
     W.now = W.now + CT.runMinIntervalMs
-    -- "SQUAD" ONLY IN A SQUAD MATCH (round 2): the plate picks its solo line.
-    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = false })
-    W.tick()
-    eq(W.lastPrompt().hint, COPY.squad_used_solo, 'outside a squad match: its solo line, without the word')
-    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true })
-    W.tick()
-    eq(W.lastPrompt().hint, COPY.squad_used_solo, 'and a state that does not say is not a squad match')
-    W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = true })
-    W.tick()
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
     W.B.State.storm = stormAway(W.B, W.now)

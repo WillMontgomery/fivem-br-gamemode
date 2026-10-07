@@ -118,9 +118,10 @@ BR.Config.Terminals = {
         first_pickup_subtitle = 'Please read this entire message.',
         first_pickup = "This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
         first_pickup_dismiss = 'to dismiss',
-        -- VERBATIM (owner, 2026-10-04, "No key"). Three readers: the terminal's
-        -- world plate without a key, the app's login screen, and the reason a
-        -- function cannot run for that cause.
+        -- VERBATIM (owner, 2026-10-04, "No key"). Two readers: the app's login
+        -- screen, and the reason a function cannot run for that cause. Not
+        -- the world plate since round 6: the plate is one plate whatever the
+        -- player's status (client/yubikey.lua's plateFor).
         no_key = 'You need a Yubikey to access this system. Search far and wide, and you just might find one.',
         -- WRITTEN. A terminal outside the storm: a toast if the server hears
         -- a press there anyway (a client a step behind the storm), and the
@@ -133,7 +134,10 @@ BR.Config.Terminals = {
         -- trying to pick up a second Yubikey: the key stays on the ground.
         already_holding = 'You already have a Yubikey.',
         -- WRITTEN. A holder whose squad has already used its one key this
-        -- match: the world plate's hint and the app's reason.
+        -- match: the app's reason, and the toast for a run refused for it.
+        -- Not the world plate since round 7 (owner, 2026-10-07: 'The DUI
+        -- reading "you already used your terminal this match" should be the
+        -- same DUI text as the rest, not unique to that status.').
         squad_used = 'Your squad already used its terminal this match.',
         -- WRITTEN (2026-10-05, round 2). The same, outside a squad match.
         squad_used_solo = 'You already used your terminal this match.',
@@ -157,9 +161,9 @@ BR.Config.Terminals = {
         -- interact key on it'). The title on every terminal's world plate,
         -- whatever its hint -- and its blip's name on the map.
         terminal_label = 'Computer system',
-        -- VERBATIM (the same words). The plate's hint when a press opens the
-        -- computer with this player's key, beside the interact key's cap.
-        -- The no_key and squad_used plates keep their own lines; a terminal
+        -- VERBATIM (the same words). The plate's hint, beside the interact
+        -- key's cap: THE ONE PLATE, whatever the player's status -- a key or
+        -- none (round 6), the squad's use spent or not (round 7). A terminal
         -- outside the storm has no plate.
         terminal_use = 'press to open',
 

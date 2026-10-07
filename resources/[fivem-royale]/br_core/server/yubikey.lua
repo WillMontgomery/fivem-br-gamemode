@@ -178,19 +178,13 @@ function Y.holds(src)
     return k ~= nil and k.loaded == true and k.held == true
 end
 
---- Has this player's squad spent its one use in the match they are in?
---- Answered by server/terminal.lua; false while that file is absent.
---- @param src integer
---- @return boolean
-local function squadUsed(src)
-    return BR.Terminal ~= nil and BR.Terminal.squadUsed ~= nil
-        and BR.Terminal.squadUsed(src) == true
-end
-
---- Tell one player where they stand: their key and their squad's use, and
---- whether they are in a squad match -- the fact the world's plate picks
---- `squad_used` or its `_solo` line by (BR.TerminalSolve.pick; owner, round 2).
---- Season 1 sends nothing at all.
+--- Tell one player whether they hold a key. Season 1 sends nothing at all.
+---
+--- NOT THEIR SQUAD'S USE, since round 7: the terminal's world plate is one
+--- plate whatever the player's status (owner, 2026-10-07: 'The DUI reading
+--- "you already used your terminal this match" should be the same DUI text as
+--- the rest, not unique to that status.'), so no client reads it -- the
+--- computer's own state says squad_used when it opens.
 ---
 --- `first`: this push gave them their FIRST KEY EVER (round 5), and their
 --- client puts up the first-pickup card. Only Y.give says so, once per
@@ -201,9 +195,6 @@ function Y.push(src, first)
     if not on() then return end
     TriggerClientEvent(BR.Net.YUBIKEY_STATE, src, {
         held = Y.holds(src),
-        squadUsed = squadUsed(src),
-        squadMatch = BR.Terminal ~= nil and BR.Terminal.squadMatch ~= nil
-            and BR.Terminal.squadMatch(src) == true,
         first = first == true or nil,
     })
 end

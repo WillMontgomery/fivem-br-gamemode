@@ -275,11 +275,6 @@ T.lobbyOf = lobbyOf
 T.squadOf = squadOf
 T.whereIs = whereIs
 
-local function pushKeys(list)
-    if not (BR.Yubikey and BR.Yubikey.push) then return end
-    for _, s in ipairs(list) do BR.Yubikey.push(s) end
-end
-
 --- "So they don't think the server's been hacked": the lobby's two notices.
 local function tellLobby(m, line)
     BR.Server.notify(lobbyOf(m), line, 'info', { ms = 8000 })
@@ -633,8 +628,6 @@ function T.consume(src, session, functionId)
         local mark = { by = src, fn = functionId, at = GetGameTimer() }
         matchState(m).used[key] = mark
         spent.m, spent.squad, spent.mark = m, key, mark
-        -- The squad's other holders: their plates turn to squad_used now.
-        pushKeys(squadOf(m, key))
     end
     return spent
 end
@@ -654,7 +647,6 @@ local function unconsume(session, spent)
     local m = spent.m
     if m and m.terminals and m.terminals.used[spent.squad] == spent.mark then
         m.terminals.used[spent.squad] = nil
-        pushKeys(squadOf(m, spent.squad))
     end
     if spent.key and BR.Yubikey and BR.Yubikey.restore then
         BR.Yubikey.restore(spent.keyLic, 'refund')
@@ -1655,7 +1647,6 @@ RegisterCommand('brterminalsv', function(source, args)
         else
             keyLine = 'their Yubikey could not be given back (profile not read yet)'
         end
-        pushKeys(squadOf(m, key))
         tell(src, ('reset the terminal use of %d\'s squad (%s) for this match; %s'):format(target, key, keyLine))
 
     elseif verb == 'run' then
