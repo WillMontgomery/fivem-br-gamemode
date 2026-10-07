@@ -908,56 +908,74 @@ last ends on it when the storm can get there and as near it as it can
 otherwise. `BR.Storm.aim` plans the rest of the match once
 (`BR.StormAimPlan`, `br_lib/shared/storm_solve.lua`) and keeps the plan as
 `m.stormAim`; from the next circle `enterPhase` draws, `drawCentre` reads each
-center off it. The plan holds the planner's own rules less its dice: every
-zone nested in the one before by its real shape (#344, `NEST_CLEAR`), its exact
-bounding box inside the map bounds wherever the planner would ask it, its
-center on the map; no aimed phase breaks out or hugs the edge, and the city
-share (#381) is circle 1's anchor's, drawn before any Storm control, so it never
-applies here.
+center off it. The plan holds the planner's own rules less its dice, for every
+circle: every zone nested in the one before by its real shape (#344,
+`NEST_CLEAR`), its exact bounding box inside the map bounds wherever the planner
+would ask it, and its center on the map -- the end's and every circle's between
+them alike (round 5's review found circles between centered in the Alamo Sea);
+no aimed phase breaks out or hugs the edge, and the city share (#381) is circle
+1's anchor's, drawn before any Storm control, so it never applies here.
 
+- **The land, in convex pieces.** On the map (`BR.StormOffMap`) is inside the
+  surveyed boundary and off every water rectangle -- not convex, so it is cut
+  once into convex pieces (`BR.StormLand`): the boundary ear-clipped into
+  triangles, flipped to the constrained Delaunay triangulation so no fan of
+  slivers meets at one corner, merged back into convex pieces wherever two make
+  one (Hertel-Mehlhorn), and every piece a water rectangle reaches into split
+  into its parts beside it. That is 30 pieces, kept a millimeter clear of the
+  water and of the coastline wherever a piece runs along it.
 - **The spot, on land.** A spot over water or off the surveyed map is aimed as
-  the nearest point to it that is on the map (`BR.StormOffMap`): the shore it
-  was picked beside, found exactly among the boundary's and the water
-  rectangles' edges and crossings.
+  the nearest point to it on the map: the nearest point of the nearest piece,
+  exactly -- the shore it was picked beside.
 - **The end.** Each phase may place its zone at offsets from the center before
-  that form a convex region (the zone before, cut to chords and eroded by the
-  next zone's exact support); the ends the storm can reach are the next circle's
-  center plus the Minkowski sum of those regions, one convex polygon. The storm
-  ends on the spot when it is in it -- exactly, bit for bit -- and otherwise on
-  the point of it nearest the spot that is on land. It is never outside the
-  next circle on the map, which every later circle is inside.
+  that form a convex room (the zone before, cut to chords and eroded by the next
+  zone's exact support). Along a route -- which convex set of land each phase's
+  center stands in -- the centers each phase can reach are convex, the last
+  phase's plus its room cut to the land, and so are the ends. A best-first
+  search over the routes finds the one whose ends come nearest the spot: no
+  route ends nearer it than the land inside its centers plus the rooms still to
+  come, so once none left can beat the best end found, nothing the rules allow
+  can. The storm ends on the spot when a chain of circles with every center on
+  land can get there, and otherwise on the nearest point to it such a chain can
+  reach. It is never outside the next circle on the map, which every later
+  circle is inside.
 - **Toward, phase by phase.** Each circle's center is the one nearest the spot
-  among the centers its rules allow from the circle before **and** from which
-  the storm can still end where it will (the backward reach), so the walk closes
-  on the spot as fast as the rules permit; and where that center would be over
-  water, the nearest one on land, whenever one is in reach. A circle between
-  can be centered over water only when its room has no center on land that
-  still ends there (measured: 8 of about 330 aimed phases in 84 walked matches;
-  the end itself is always on land).
+  among the centers on land its rules allow from the circle before **and** from
+  which the storm can still end there over land (the backward reach on land, a
+  union of convex sets), so the walk closes on the spot as fast as the rules
+  permit. A circle moves away from the spot only where the bounds or the land
+  leave no nearer center that still ends there.
 
-The end is held two centimeters inside the reach so no walk balances on its
-edge (twenty centimeters or two meters where the map bounds leave a walk too
-little room, which the fuzz never needed beyond one case in 1,140), and every
-center is checked against the real `BR.StormShape.fit` and the bounds before
-the plan is kept. Storm reveal walks the same `drawCentre`, so it answers the
-end, and a squad that ran it is sent the new end. A dev path that re-enters a
-phase from where the wall stands (`brphase`, a thaw) plans again from there
-toward the same spot. Nothing else moves: the record on the map and the circle
-already drawn stay, and the change reaches every client, the map's morph (#350)
-and the airdrop's re-site (#386) as any record does. **One spot a match**
-(round 4's review): once the storm is aimed, every later Storm control in that
-match is refused `storm_aimed` (`BR.Storm.aimed`) -- on its card, at the run
-and after the load, so of two loading at once the second to land gives
-everything back -- and its page says so ("Only one spot can be picked each
-match"). Refused too: `no_storm`, and `no_circle` once the final circle is on
-the map -- and nothing about the spot itself: the only shape the door refuses is
-the one the big map cannot produce (`bad_option`, see the map pick). A plan
-costs a few milliseconds of the server's Lua (0.2 ms aimed at phase 7, 3 ms at
-phase 1 on average), 30 ms at worst, once per Storm control.
-`tools/test_storm.lua`'s `control.*` blocks hold it: the brute-force bound on
-the end over 210 plans, a brute-force search of the first circle, 84 spots
-walked through the real phase job, the bounds from circles that overhang them,
-and the land.
+The walk is tried to the exact end first. Where the end sits on the very edge
+of what the storm can reach -- one chain reaches it, and that walk does not pass
+the planner's tests -- the end is held two centimeters in (the reach drawn in by
+two centimeters, or the nearest point pulled two centimeters toward the reach's
+middle, whichever is nearer the spot), and twenty centimeters or two meters
+where a walk needs more; a spot inside the reach is ended on exactly unless it
+is within those two centimeters of its edge. Every center is checked against
+the real `BR.StormShape.fit`, the bounds and the land before the plan is kept.
+Storm reveal walks the same `drawCentre`, so it answers the end, and a squad
+that ran it is sent the new end. A dev path that re-enters a phase from where
+the wall stands (`brphase`, a thaw) plans again from there toward the same
+spot. Nothing else moves: the record on the map and the circle already drawn
+stay, and the change reaches every client, the map's morph (#350) and the
+airdrop's re-site (#386) as any record does. **One spot a match** (round 4's
+review): once the storm is aimed, every later Storm control in that match is
+refused `storm_aimed` (`BR.Storm.aimed`) -- on its card, at the run and after
+the load, so of two loading at once the second to land gives everything back --
+and its page says so ("Only one spot can be picked each match"). Refused too:
+`no_storm`, and `no_circle` once the final circle is on the map -- and nothing
+about the spot itself: the only shape the door refuses is the one the big map
+cannot produce (`bad_option`, see the map pick). A plan costs about 16 ms of the
+server's Lua (28 ms at the 99th percentile and 40 ms at the most, over 4,000
+plans by the coast and the Alamo Sea), once per Storm control; the search
+opens at most 256 routes (the most any plan opened was 126) and the walk weighs
+at most 64 sets of centers a phase (the most was 24), which bound it. Building
+the land's pieces costs about 2 ms, once. `tools/test_storm.lua`'s `control.*`
+blocks hold it: a brute-force search over the land on the end of 343 plans,
+brute-force searches of every circle toward the spot, 84 spots walked through
+the real phase job, the bounds from circles that overhang them, the land's
+pieces against `BR.StormOffMap`, and round 5's review's cases by the Alamo Sea.
 
 **Time & weather** (`time_weather.lua`, both sides; options `change`, then
 `time` or `weather`). Round 4 (owner, 2026-10-06): "either time or weather to
