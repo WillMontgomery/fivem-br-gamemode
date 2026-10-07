@@ -977,6 +977,22 @@ end
 -- pinned in tools/test_shared.lua's storm.gap). So such a line is priced at what it
 -- can promise, the destination reached by the end of the sweep: its length.
 --
+-- ═══ STORM CONTROL'S BREAKOUTS ARE PRICED ON THE WALL ACROSS THE GAP TOO (#396) ═══
+--
+-- An aimed phase (`onWall`) can carry its zone kilometers past the one before
+-- it, and there the line's length is no promise: the wall sweeping across the gap
+-- catches a runner who keeps to that pace from behind -- 128 and 144 HP to the
+-- rear-most of 200 runners, at Paleto phases 5 and 6 aimed from Mirror Park. So on
+-- an aimed phase a line across the gap is read on the wall like any other -- where
+-- the wall HOLDS it: the moving wall itself crosses the line short of the
+-- destination at every instant the price reads. A line the wall leaves -- out
+-- through its side as it shrinks, or off an edge that retreats from under a
+-- player -- has no pace that keeps its runner inside, and lo(t) / t there only
+-- measures how soon it left (17.9 km a sweep for a player 2.6 m inside the edge,
+-- on a 40 s probe of phase 7), so it keeps its length. Measured on those walks,
+-- the wall asks 1.00 to 1.03 times the line. Ordinary breakouts keep the line's
+-- length, as they have since #344.
+--
 -- READ AT 62 INSTANTS -- 48 even steps and 14 more in toward the start, where the
 -- maximum sits whenever a corner sets off faster than the blend would -- with where
 -- each line meets the zone found exactly (BR.StormShape.lineEntry), and the two best
@@ -1145,8 +1161,31 @@ local function lineRun(e, pr, px, py, ux, uy, L, out, refine)
     return best
 end
 
+--- One line's price: run(P, Q) on the wall, or -- a line across open storm at the
+--- start of the sweep -- its length, unless `onWall` and the moving wall itself
+--- crosses the line short of the destination at every instant the price reads
+--- (see the section note).
+local function lineOf(e, pr, px, py, ux, uy, L, out, refine, onWall)
+    if not gappedAtStart(pr, px, py, ux, uy, L, out) then
+        return lineRun(e, pr, px, py, ux, uy, L, out, refine)
+    end
+    if not onWall then return L end
+    local SS = BR.StormShape
+    local ts = priceTimes()
+    for k = 1, #ts do
+        local ks = pr.ks[k]
+        if not ks then
+            ks = hullAt(e, ts[k])
+            pr.ks[k] = ks
+        end
+        local s = SS.lineEntry(ks, px, py, ux, uy, PRICE_TOL + (1.0 - ts[k]) * out)
+        if not s or s > L then return L end
+    end
+    return lineRun(e, pr, px, py, ux, uy, L, out, refine)
+end
+
 --- run(P): the better of the two lines. See the section note.
-local function runOf(rec, e, px, py, refine)
+local function runOf(rec, e, px, py, refine, onWall)
     local SS = BR.StormShape
     local pr = priceOf(rec, e)
     local r1 = rec.r1 or 0.0
@@ -1162,10 +1201,7 @@ local function runOf(rec, e, px, py, refine)
     local L = BR.Dist(px, py, nx, ny)
     if not (L > 0.0) then return d end
     local ux0, uy0 = (nx - px) / L, (ny - py) / L
-    local best = L
-    if not gappedAtStart(pr, px, py, ux0, uy0, L, out) then
-        best = lineRun(e, pr, px, py, ux0, uy0, L, out, refine)
-    end
+    local best = lineOf(e, pr, px, py, ux0, uy0, L, out, refine, onWall)
 
     -- AND STRAIGHT AT THE CENTRE, as far as the destination's edge.
     local C = BR.Dist(px, py, rec.cx1, rec.cy1)
@@ -1173,10 +1209,7 @@ local function runOf(rec, e, px, py, refine)
         local ux, uy = (rec.cx1 - px) / C, (rec.cy1 - py) / C
         local Lc = SS.lineEntry(pr.dks, px, py, ux, uy, 0.0)
         if Lc and Lc > 0.0 and Lc < best then
-            local v = Lc
-            if not gappedAtStart(pr, px, py, ux, uy, Lc, out) then
-                v = lineRun(e, pr, px, py, ux, uy, Lc, out, refine)
-            end
+            local v = lineOf(e, pr, px, py, ux, uy, Lc, out, refine, onWall)
             if v < best then best = v end
         end
     end
@@ -1190,15 +1223,17 @@ end
 --- @param rec table     a record for the phase being priced -- its tShrink is not read
 --- @param px number
 --- @param py number
+--- @param onWall boolean|nil  a Storm control phase: a line across a breakout's gap
+---                            read on the wall too (see the section note)
 --- @return number metres per sweep
-function BR.StormSweepRun(rec, px, py)
+function BR.StormSweepRun(rec, px, py, onWall)
     if not rec then return 0.0 end
     local e = infoOf(rec)
     if not e then
         -- THE PRE-#344 OFF SWITCH: two circles, and the blend's own answer.
         return math.max(0.0, BR.Dist(px, py, rec.cx1, rec.cy1) - (rec.r1 or 0.0))
     end
-    return runOf(rec, e, px, py, true)
+    return runOf(rec, e, px, py, true, onWall)
 end
 
 --- The furthest run in a lobby: the largest BR.StormSweepRun over `points`, which is
@@ -1210,22 +1245,23 @@ end
 --- answer sets the price.
 --- @param rec table
 --- @param points table   { { x, y }, ... }
+--- @param onWall boolean|nil  a Storm control phase (BR.StormSweepRun)
 --- @return number metres per sweep
-function BR.StormSweepPrice(rec, points)
+function BR.StormSweepPrice(rec, points, onWall)
     local best = 0.0
     if not rec then return best end
     local e = infoOf(rec)
     local rough, top = {}, 0.0
     for i = 1, #points do
         local p = points[i]
-        if e then rough[i] = runOf(rec, e, p.x, p.y, false)
+        if e then rough[i] = runOf(rec, e, p.x, p.y, false, onWall)
         else rough[i] = BR.StormSweepRun(rec, p.x, p.y) end
         if rough[i] > top then top = rough[i] end
     end
     for i = 1, #points do
         local v = rough[i]
         if e and v > 0.0 and v * PRICE_SLACK >= top then
-            v = runOf(rec, e, points[i].x, points[i].y, true)
+            v = runOf(rec, e, points[i].x, points[i].y, true, onWall)
         end
         if v > best then best = v end
     end
@@ -1251,14 +1287,15 @@ end
 --- @param pace number         metres per second
 --- @param minS number         the shortest sweep, seconds
 --- @param maxS number         the longest, seconds
+--- @param onWall boolean|nil  a Storm control phase (BR.StormSweepRun)
 --- @return number seconds, number metres per sweep
 local SWEEP_ROUNDS = 4
-function BR.StormSweepSeconds(probeFor, points, pace, minS, maxS)
+function BR.StormSweepSeconds(probeFor, points, pace, minS, maxS, onWall)
     local sec = minS
     if maxS < sec then sec = maxS end
     local run = 0.0
     for _ = 1, SWEEP_ROUNDS do
-        run = BR.StormSweepPrice(probeFor(sec), points)
+        run = BR.StormSweepPrice(probeFor(sec), points, onWall)
         local want = BR.Clamp(run / pace, minS, maxS)
         if want <= sec then return sec, run end
         sec = want

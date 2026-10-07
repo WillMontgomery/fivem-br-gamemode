@@ -255,7 +255,8 @@ end
 ---
 --- AIMED (Storm control, #396): once a match carries `m.stormAim`, nothing is
 --- drawn off any stream -- the center is the aimed plan's (aimedCenter,
---- BR.StormAimPlan), and no aimed phase breaks out.
+--- BR.StormAimPlan). Whether it broke out is not a roll then but where the plan
+--- put it, which enterPhase reads off the record it builds.
 --- @return number, number, boolean  centre, and whether it broke out
 local function drawCentre(m, phase, cx0, cy0, r0, mo, rng)  -- spelling-ok: its old name
     local p = cfg.phases[phase]
@@ -493,10 +494,19 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
     -- further, and BR.StormSweepCeiling lifts the ceiling by exactly how much
     -- further this phase's pair really does. It reads only the start and
     -- destination shapes, so any probe length will do.
-    local ceiling = BR.StormSweepCeiling(cfg, probeFor(cfg.shrinkPace.minSeconds),
-        brokeOut)
+    --
+    -- AND A STORM CONTROL PHASE BREAKS OUT WHEREVER ITS STEP CARRIES IT (#396):
+    -- not a roll, but the plan's circle outside the zone the wall starts as -- so
+    -- it is read off the record itself (BR.StormNested). Without the lift a far
+    -- step kept the authored ceiling: walls of 35 to 61 m/s across a 1.6 to 2.2 km
+    -- step, and 225 m/s across one of 8.9 km. Its runs across the gap are priced
+    -- on the wall as well (BR.StormSweepRun's `onWall`).
+    local aimed = m.stormAim ~= nil and not pre
+    local probe = probeFor(cfg.shrinkPace.minSeconds)
+    if aimed then brokeOut = not BR.StormNested(probe) end
+    local ceiling = BR.StormSweepCeiling(cfg, probe, brokeOut)
     local shrinkSec, furthest = BR.StormSweepSeconds(probeFor, stood,
-        cfg.shrinkPace.metersPerSec, cfg.shrinkPace.minSeconds, ceiling)
+        cfg.shrinkPace.metersPerSec, cfg.shrinkPace.minSeconds, ceiling, aimed)
 
     -- THE SEED RIDES ALONG, WHICH IS WHAT MAKES THE WALL A SHAPE (#344). It is the
     -- match's own storm seed, unchanged every phase -- the phase INDEX is the other

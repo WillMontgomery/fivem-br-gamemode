@@ -9937,6 +9937,228 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('control.breakout')
+do
+    -- ═══ A FAR SPOT'S BREAKOUTS ARE PRICED AS BREAKOUTS (#396) ═══
+    --
+    --   "breakouts will be much more common if the point is far away, and that
+    --    breaks our traditional rules."                     -- owner, 2026-10-07
+    --
+    -- Aimed matches walked through the REAL phase job, with 24 players standing
+    -- in each circle as the phase after it is entered -- so enterPhase prices
+    -- every sweep for a lobby, as it does in a match. Every aimed phase whose
+    -- circle broke out must:
+    --   * get a breakout's lifted ceiling, read off its own record: no wall over
+    --     20 m/s (an ordinary match's capped phases reach 21), where the authored
+    --     ceiling drew 35 to 225 m/s;
+    --   * from phase 5 on, never be capped by that ceiling (phases 2 to 4 can be,
+    --     as an ordinary breakout's are), and where it is not, keep the lobby's
+    --     rear-most player whole: run straight at the destination's nearest point
+    --     at 9 m/s from the moment the wall sets off, billed by the server's rule
+    --     (10 m margin, the zone 700 ms either side) -- nothing. Priced on the
+    --     line's length across the gap, the wall caught that runner for 394 HP
+    --     (LSIA from Sandy Shores, phase 5);
+    --   * and on a conjoined phase, grow into its destination (BR.StormShape.grown
+    --     builds every step of it, so BR.StormZone never falls back to the pop).
+    local CASES = {
+        { 'Paleto Bay from Mirror Park, picked in phase 2', { x = 1050.0, y = -650.0 }, 1015838, 2, -150.0, 6300.0 },
+        { 'Paleto Bay from Mirror Park, picked in phase 5', { x = 1050.0, y = -650.0 }, 1015838, 5, -150.0, 6300.0 },
+        { 'Paleto Bay from Mirror Park, picked in phase 6 (one 8.9 km step)', { x = 1050.0, y = -650.0 }, 1015838, 6,
+          -150.0, 6300.0 },
+        { 'LSIA from Sandy Shores, picked in phase 3', { x = 1850.0, y = 3700.0 }, 2002, 3, -1100.0, -2900.0 },
+    }
+    local bad, separate, conjoined, lifted, fastest, priced = {}, 0, 0, 0, 0.0, 0
+    for _, c in ipairs(CASES) do
+        local S = walkMapped(c[2], function(rec, st) return rec.phase == c[4] and st == 'holding' end, 5000, c[3])
+        local env = S.env
+        local SS = env.BR.StormShape
+        local cfg = env.BR.Config.Storm
+        local last = #cfg.phases
+        local rng = env.BR.Rng(77)
+        -- 24 players inside a record's destination: where they stand as the
+        -- phase after it is entered and priced.
+        local stood = {}
+        local function place(r)
+            local zone = env.BR.StormTarget(r)
+            for src = 2, 40 do S.roster[src] = nil end
+            stood = {}
+            local tries = 0
+            while #stood < 24 and tries < 20000 do
+                tries = tries + 1
+                local x = r.cx1 + (rng:float() * 2.0 - 1.0) * math.max(r.r1, 1.0) * 1.6
+                local y = r.cy1 + (rng:float() * 2.0 - 1.0) * math.max(r.r1, 1.0) * 1.6
+                if r.r1 <= 0.0 or SS.distance(zone, x, y) < 0.0 then
+                    stood[#stood + 1] = { x = x, y = y }
+                    S.roster[#stood + 1] = { matchId = 1, name = 'P', state = env.BR.PlayerState.ALIVE, hp = 100.0,
+                                             pos = { x = x, y = y, z = 30.0 } }
+                end
+            end
+        end
+        --- What the server bills a player who runs straight at the destination's
+        --- nearest point at `v` m/s from the moment the wall sets off.
+        local function billed(r, px, py, v)
+            local D = env.BR.StormTarget(r)
+            local tx, ty = SS.pointAtArc(D, SS.nearestArc(D, px, py))
+            local hp = 0.0
+            for s = 0, math.floor(r.tShrink / 1000) do
+                local now = r.tStart + r.tWait + s * 1000
+                local cx, cy, rr, _, _, _, t, g = env.BR.StormAt(r, now)
+                local out = SS.distance(env.BR.StormZone(r, cx, cy, rr, t, g), px, py)
+                for _, z in ipairs(env.BR.StormCushionZones(r, now, 700.0)) do
+                    out = math.min(out, SS.distance(z, px, py))
+                end
+                if out > 10.0 then hp = hp + r.dps end
+                local d = gap2(px, py, tx, ty)
+                if d > v then px, py = px + (tx - px) / d * v, py + (ty - py) / d * v else px, py = tx, ty end
+            end
+            return hp
+        end
+        local plan = env.BR.Storm.aim(S.match, c[5], c[6])
+        ok(plan ~= nil, c[1] .. ': aimed')
+        place(S.match.storm)
+        local seen = { [S.match.storm.phase] = true }
+        walkOn(S, function(r)
+            if not seen[r.phase] then
+                seen[r.phase] = true
+                if not env.BR.StormNested(r) then
+                    local over, reach = env.BR.StormOverlaps(r)
+                    if over then conjoined = conjoined + 1 else separate = separate + 1 end
+                    local ceil = env.BR.StormSweepCeiling(cfg, r, true)
+                    if r.tShrink > cfg.phases[r.phase].shrink * 1000.0 + 1.0 then lifted = lifted + 1 end
+                    if r.tShrink > ceil * 1000.0 + 1.0 then
+                        bad[#bad + 1] = ('%s: phase %d sweeps past its ceiling'):format(c[1], r.phase)
+                    end
+                    fastest = math.max(fastest, env.BR.StormWallSpeed(r))
+                    if r.phase >= 5 and r.tShrink >= ceil * 1000.0 - 1.0 then
+                        bad[#bad + 1] = ('%s: phase %d is capped at its ceiling (%.0f s)'):format(c[1], r.phase, ceil)
+                    end
+                    if r.tShrink < ceil * 1000.0 - 1.0 then
+                        priced = priced + 1
+                        local rear, far = nil, -1.0
+                        local D = env.BR.StormTarget(r)
+                        for _, q in ipairs(stood) do
+                            local d = SS.distance(D, q.x, q.y)
+                            if d > far then rear, far = q, d end
+                        end
+                        local hp = billed(r, rear.x, rear.y, cfg.shrinkPace.metersPerSec)
+                        if hp > 0.0 then
+                            bad[#bad + 1] = ('%s: phase %d bills the rear-most runner %.0f HP'):format(c[1], r.phase, hp)
+                        end
+                    end
+                    if over then
+                        local Z, Dt = env.BR.StormWall(r, 0.0), env.BR.StormTarget(r)
+                        for _, g in ipairs({ 0.25, 0.5, 0.75 }) do
+                            if SS.grown(Z, Dt, reach * g) == nil then
+                                bad[#bad + 1] = ('%s: phase %d\'s growth does not build at %.2f'):format(c[1], r.phase, g)
+                            end
+                        end
+                    end
+                end
+                place(r)
+            end
+            return r.phase == last
+        end, 5000)
+        if S.errored() then bad[#bad + 1] = S.errored() end
+    end
+    ok(#bad == 0, 'every aimed breakout within its lifted ceiling, its rear-most runner whole, its growth built',
+        table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
+    ok(separate >= 8 and conjoined >= 1 and priced >= 6,
+        'over separate and conjoined breakouts, most priced below the ceiling',
+        ('%d separate, %d conjoined, %d priced below it'):format(separate, conjoined, priced))
+    ok(lifted >= 8, 'their sweeps run past the authored ceiling: the lift is used', lifted)
+    ok(fastest < 20.0, ('no aimed wall faster than an ordinary capped phase (%.1f m/s)'):format(fastest), fastest)
+    print(('       control.breakout: %d separate and %d conjoined aimed breakouts, %d priced below the ceiling, '
+        .. 'fastest wall %.1f m/s'):format(separate, conjoined, priced, fastest))
+
+    -- ═══ EVERY CONJOINED PAIR A PLAN CAN MAKE GROWS ═══
+    --
+    -- The walks above meet few conjoined phases, so the plans over the map are
+    -- held to it too: every aimed phase whose destination overlaps the zone before
+    -- it builds its growth at every step.
+    local G = boundedServer()
+    local genv = G.env
+    local GS = genv.BR.StormShape
+    local P = genv.BR.Config.Storm.phases
+    local F = genv.BR.StormFinalPhase()
+    local hosts, spots = fuzzPlaces(genv)
+    local pairs_, broken = 0, {}
+    for _, seed in ipairs({ 11, 396, 4242 }) do
+        for from = 2, F do
+            for hi = 1, #hosts, 2 do
+                local h = hosts[hi]
+                for _, t in ipairs({ spots[1], spots[2], hosts[(hi * 7) % #hosts + 1], hosts[(hi * 13) % #hosts + 1] }) do
+                    local pl = genv.BR.StormAimPlan(seed, from, h.x, h.y, P[from - 1].radius, nil, t.x, t.y)
+                    for p = from, F do
+                        local a, b = pl.path[p - 1], pl.path[p]
+                        local r = genv.BR.BuildStormRecord(p, a.x, a.y, P[p - 1].radius, b.x, b.y, P[p].radius,
+                            0, 1, 1, 1.0, seed)
+                        local over, reach = genv.BR.StormOverlaps(r)
+                        if over then
+                            pairs_ = pairs_ + 1
+                            local Z, Dt = genv.BR.StormWall(r, 0.0), genv.BR.StormTarget(r)
+                            for _, g in ipairs({ 0.25, 0.5, 0.75 }) do
+                                if GS.grown(Z, Dt, reach * g) == nil then
+                                    broken[#broken + 1] = ('seed %d phase %d at %.2f'):format(seed, p, g)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    ok(#broken == 0 and pairs_ >= 20, ('%d conjoined aimed pairs: every one grows'):format(pairs_),
+        table.concat(broken, '\n       ', 1, math.min(#broken, 8)))
+    print(('       control.breakout: %d conjoined pairs from plans over the map'):format(pairs_))
+end
+
+-- ---------------------------------------------------------------------------
+describe('control.island')
+do
+    -- ═══ A FAR ISLAND ON A PLAYER'S SCREEN (#396) ═══
+    --
+    -- Picked in phase 6, a spot 7 km off puts the final circle 7 km from circle 6:
+    -- phase 7's destination is a 40 m island past a gap of open storm, and its
+    -- wall crosses the gap for 13 minutes. Nothing in an ordinary match goes that
+    -- far, so the real client is walked through it: the map's hold shows the zone
+    -- and the island, a player on the island reads inside from the first second
+    -- (safe on arrival) and one in the gap outside, and the wall is drawn, clean,
+    -- at every instant of the sweep with the viewer riding along with it.
+    local C = newStormClient()
+    local env = C.env
+    local P = env.BR.Config.Storm.phases
+    C.mm.handle = 7
+    C.pedAt = pt(0.0, 0.0)
+    local rec = C.record(7, 0.0, 0.0, P[6].radius, 7053.0, 0.0, P[7].radius, 600000, 790000, P[7].dps)
+    rec.seed = 4242
+    ok(not env.BR.StormNested(rec) and not (env.BR.StormOverlaps(rec)), 'phase 7, 7 km on: a separate island')
+    ok(C.overlayReady() and C.errored() == nil, 'the map reaches its gate')
+    C.tick(2)
+    ok(#C.zone() == 2 and #C.dest() == 1,
+        'while it holds, the map shows the zone as two islands and the destination under the far one',
+        ('%d zone, %d destination'):format(#C.zone(), #C.dest()))
+    C.pedAt = pt(7053.0, 0.0)
+    C.tick(2)
+    local onIsland = C.last() and C.last().edgeDistance
+    C.pedAt = pt(3500.0, 0.0)
+    C.tick(2)
+    local inGap = C.last() and C.last().edgeDistance
+    ok(onIsland and onIsland < 0.0 and inGap and inGap > 3000.0,
+        'a player on the island reads inside from the hold, one in the gap kilometers outside',
+        ('%s on the island, %s in the gap'):format(tostring(onIsland), tostring(inGap)))
+    local frames, drawn = 0, 0
+    for i = 0, 40 do
+        rec.tStart = C.now - rec.tWait - math.floor(rec.tShrink * i / 40)
+        C.pedAt = pt(7053.0 * i / 40 - 150.0, 0.0)
+        C.frame()
+        frames = frames + 1
+        if #C.polys > 0 then drawn = drawn + 1 end
+    end
+    ok(C.errored() == nil, 'the whole sweep across the gap draws clean', C.errored())
+    ok(drawn == frames, 'and the wall is drawn at every instant read', ('%d of %d'):format(drawn, frames))
+end
+
+-- ---------------------------------------------------------------------------
 describe('view.inside')
 do
     -- ═══ WHERE THE VIEW STANDS, AS THE STORM'S OWN TICK MEASURED IT (#396) ═══
