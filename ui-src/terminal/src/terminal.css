@@ -340,6 +340,19 @@ body.awsui-dark-mode {
   overflow-wrap: anywhere !important;
 }
 
+/*
+ * ═══ THE COST IN BOLD (owner, 2026-10-07, round 7: "Please bold the cost
+ * text inside the cards and details page.") ═══
+ *
+ * A card's Cost (Free, Free or the most it can cost, or its Volts), a tool's
+ * page's Cost line, and the Volts a run costs in the confirm box: bold, in
+ * the color they already had -- the Volts gold stays the Volts' (the weight
+ * is this span's, which Volts.tsx's text inherits, T12 (d)).
+ */
+.terminal-cost {
+  font-weight: 700;
+}
+
 /* The login screen: one card in the middle of the page. */
 .terminal-login {
   box-sizing: border-box;

@@ -92,6 +92,10 @@
  *                  break-all` in the built CSS (Cloudscape's StatusIndicator)
  *                  is taken off by terminal.css's one `word-break: normal
  *                  !important` rule, which names nothing else.
+ *   T16 cost       the cost in bold (round 7: "Please bold the cost text
+ *                  inside the cards and details page."): `.terminal-cost` is
+ *                  the weight alone, around a card's Cost, a tool's page's
+ *                  Cost line and the Volts the confirm box says a run costs.
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -1029,6 +1033,43 @@ const WRAPS = []
     } else {
       WRAPS.push(name)
     }
+  }
+}
+
+// T16: THE COST IN BOLD (owner, 2026-10-07, round 7: "Please bold the cost
+// text inside the cards and details page."). `.terminal-cost` sets the weight
+// and nothing else, so the cost keeps its color and the Volts their gold in
+// the page's font (T12 (d)); a card's Cost section returns only what it draws
+// inside one, a tool's page's Cost line is inside one, and the confirm box
+// asks voltsLine for `bold`, which puts each amount filled in -- not the word
+// alone -- inside one.
+{
+  const R = 'T16 cost'
+  const css = code(readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8'), false)
+  const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find((m) => m[1].trim() === '.terminal-cost')
+  const decls = rule ? rule[2].split(';').map((d) => d.trim()).filter((d) => d !== '') : []
+  if (decls.length !== 1 || !/^font-weight:\s*(700|bold)$/.test(decls[0] ?? '')) {
+    fail(R, 'terminal/src/terminal.css', '.terminal-cost is not the weight alone (font-weight: 700) -- the cost is bold in its own color and font')
+  }
+  const cards = code(readFileSync(join(SRC, 'src', 'FunctionCards.tsx'), 'utf8'), false)
+  const at = cards.indexOf("id: 'cost'")
+  const open = at < 0 ? null : opener(cards, at)
+  const section = open && open.ch === '{' ? cards.slice(open.at, closer(cards, open.at) + 1) : ''
+  const returns = [...section.matchAll(/\breturn\b([^\n]*)/g)].map((m) => m[1].trim())
+  if (returns.length !== 1 || returns[0] !== '<span className="terminal-cost">{cost}</span>') {
+    fail(R, 'terminal/src/FunctionCards.tsx', `a card's Cost returns ${JSON.stringify(returns)} -- all of it inside <span className="terminal-cost">`)
+  }
+  const page = code(readFileSync(join(SRC, 'src', 'FunctionPage.tsx'), 'utf8'), false)
+  if (!/\{ label: say\('field_cost'\), value: <span className="terminal-cost">\{cost\}<\/span> \}/.test(page)) {
+    fail(R, 'terminal/src/FunctionPage.tsx', 'the page\'s Cost line is not inside <span className="terminal-cost">')
+  }
+  const box = code(readFileSync(join(SRC, 'src', 'RunBox.tsx'), 'utf8'), false)
+  if (!/voltsLine\(say\('confirm_body_volts'\), currency, \{ volts: price \}, \{ bold: true \}\)/.test(box)) {
+    fail(R, 'terminal/src/RunBox.tsx', 'the confirm box does not ask voltsLine for the price in bold ({ bold: true })')
+  }
+  const volts = code(readFileSync(join(SRC, 'src', 'Volts.tsx'), 'utf8'), false)
+  if (!/if \(how\.bold === true && p\.amount\) \{\s*return <span key=\{i\} className="terminal-cost"><span className="terminal-volts">\{p\.text\}<\/span><\/span>/.test(volts)) {
+    fail(R, 'terminal/src/Volts.tsx', 'voltsLine\'s `bold` does not put each amount (model.ts Piece.amount) inside .terminal-cost')
   }
 }
 

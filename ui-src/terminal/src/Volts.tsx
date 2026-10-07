@@ -33,10 +33,21 @@ export function VoltsAmount(props: { n: number; currency: string }): ReactElemen
   return <span className="terminal-volts">{voltsText(props.n, props.currency)}</span>
 }
 
-/** A line with every Volts in it in the Volts style (model.ts `voltsParts`). */
-export function voltsLine(text: string, currency: string, amounts: Record<string, number> = {}): ReactNode[] {
-  return voltsParts(text, currency, amounts).map((p, i) =>
-    p.volts ? <span key={i} className="terminal-volts">{p.text}</span> : p.text)
+/**
+ * A line with every Volts in it in the Volts style (model.ts `voltsParts`).
+ * With `bold`, each amount filled in ({volts}, {cost}, {balance}) is also in
+ * bold (terminal.css `.terminal-cost`), the word alone is not: the cost the
+ * confirm box says (owner, round 7: "Please bold the cost text").
+ */
+export function voltsLine(text: string, currency: string, amounts: Record<string, number> = {},
+  how: { bold?: boolean } = {}): ReactNode[] {
+  return voltsParts(text, currency, amounts).map((p, i) => {
+    if (!p.volts) return p.text
+    if (how.bold === true && p.amount) {
+      return <span key={i} className="terminal-cost"><span className="terminal-volts">{p.text}</span></span>
+    }
+    return <span key={i} className="terminal-volts">{p.text}</span>
+  })
 }
 
 /** A '\n' list of lines, each with its Volts in the Volts style. */

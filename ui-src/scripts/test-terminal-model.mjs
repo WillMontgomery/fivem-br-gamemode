@@ -913,6 +913,18 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
     'br_core\'s client hands the app BR.RarityInfo\'s colors in the catalog')
 }
 
+// ── round 7 (owner, 2026-10-07): "Please bold the cost text" ─────────────────
+// The confirm box draws the Volts a run costs in bold and the word alone not:
+// voltsParts tells a filled amount from the currency's word.
+{
+  const pieces = voltsParts('This uses {volts}. You have no Volts left, {balance} in all.', 'Volts', { volts: 200, balance: 0 })
+  const shown = pieces.map((p) => (p.amount ? `<${p.text}>` : p.volts ? `[${p.text}]` : p.text)).join('')
+  eq(shown, 'This uses <200 Volts>. You have no [Volts] left, <0 Volts> in all.',
+    'each filled amount is an amount; the word alone is Volts, not an amount')
+  ok(pieces.every((p) => !p.amount || p.volts), 'every amount is in the Volts style too')
+  ok(voltsParts('No {volts} here', 'Volts').every((p) => !p.amount), 'a token not filled is no amount')
+}
+
 if (failed > 0) {
   console.error(`\ntest-terminal-model: ${failed} of ${ran} failed`)
   process.exit(1)

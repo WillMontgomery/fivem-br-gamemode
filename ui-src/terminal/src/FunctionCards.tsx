@@ -189,11 +189,16 @@ export function FunctionCards(props: {
               id: 'cost',
               width: 50,
               header: say('card_cost'),
+              // IN BOLD (round 7: "Please bold the cost text inside the cards"):
+              // Free, Free or the most, or the Volts -- in their own color.
               content: (f) => {
                 const r = costRange(f, say)
-                if (r.max <= 0) return say('cost_free')
-                if (r.min <= 0) return voltsLine(say('cost_free_or'), currency, { volts: r.max })
-                return <VoltsAmount n={r.max} currency={currency} />
+                const cost = r.max <= 0
+                  ? say('cost_free')
+                  : r.min <= 0
+                    ? voltsLine(say('cost_free_or'), currency, { volts: r.max })
+                    : <VoltsAmount n={r.max} currency={currency} />
+                return <span className="terminal-cost">{cost}</span>
               },
             },
           ],

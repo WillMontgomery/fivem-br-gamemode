@@ -712,6 +712,10 @@ holds #385's findings over it, and that every line goes through the speaker.
   word is cut only when it is wider than its whole column (a long gamertag);
   no `status_` line's is, at the window's smallest and at its default size.
   `check-terminal.mjs` T15 holds it.
+- **The cost in bold** ("Please bold the cost text inside the cards and
+  details page."): a card's Cost, a tool's page's Cost line and, for the
+  same reading, the Volts a run costs in the confirm box (the amount, not the
+  sentence) -- in their own color, the Volts still gold. T16.
 
 ## The Yubikey
 

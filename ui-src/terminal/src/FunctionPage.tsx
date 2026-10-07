@@ -144,7 +144,9 @@ export function FunctionPage(props: {
     { label: say('field_duration'), value: voltsLine(say(`${id}_duration`), currency) },
     { label: say('field_affects'), value: voltsLine(say(`${id}_affects`), currency) },
     { label: say('field_notified'), value: voltsLine(say(`${id}_notified`), currency) },
-    { label: say('field_cost'), value: cost },
+    // The cost line in bold (round 7: "Please bold the cost text inside the
+    // cards and details page"), its Volts still in the gold.
+    { label: say('field_cost'), value: <span className="terminal-cost">{cost}</span> },
   ]
 
   // risk_notice first (left out for a quiet row), then its own lines, each in

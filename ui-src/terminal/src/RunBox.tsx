@@ -103,10 +103,11 @@ export function RunBox(props: {
   const currency = props.currency
   const name = say(`${id}_name`)
   // THE PRICE OF THESE CHOICES, in the Volts style (check-terminal T12: the
-  // amounts written inside the voltsLine call).
+  // amounts written inside the voltsLine call) and, as on the cards and the
+  // page, in bold (round 7) -- the amount, not the sentence around it.
   const price = costFor(def, choice)
   const body = price > 0
-    ? voltsLine(say('confirm_body_volts'), currency, { volts: price })
+    ? voltsLine(say('confirm_body_volts'), currency, { volts: price }, { bold: true })
     : voltsLine(say('confirm_body'), currency)
   const atSpot = needsSpot(def, choice, mates)
   const ready = readyToRun(def, choice, say, mates, props.spot !== null)
