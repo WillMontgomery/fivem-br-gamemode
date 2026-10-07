@@ -702,6 +702,17 @@ holds #385's findings over it, and that every line goes through the speaker.
   storm's close"](#br_core-and-the-computer)), and so is the boot: Escape, the
   power button and the app's Escape do nothing until each ends.
 
+### Round 7 (owner, 2026-10-07)
+
+- **A status wraps between its words** ("can you wrap this text better?" --
+  a card's Status read "No armed opponent" and then "s"): Cloudscape's
+  StatusIndicator breaks at any letter (`word-break: break-all`), and
+  terminal.css takes that off for every status the app shows -- the cards',
+  a tool's page's, the match panel's -- with the lines beside the icon. A
+  word is cut only when it is wider than its whole column (a long gamertag);
+  no `status_` line's is, at the window's smallest and at its default size.
+  `check-terminal.mjs` T15 holds it.
+
 ## The Yubikey
 
 The owner's rules (#396, 2026-10-04), and where each lives:

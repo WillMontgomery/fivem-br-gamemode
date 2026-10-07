@@ -86,6 +86,12 @@
  *                  a search at the top anyway. Just the filters can remain."):
  *                  no TextFilter, the five Selects, and the top bar's search
  *                  still there and still finding a tool.
+ *   T15 wrap       a status wraps between its words (owner, 2026-10-07,
+ *                  round 7: "can you wrap this text better?" -- a card read
+ *                  "No armed opponent" then "s"): every `word-break:
+ *                  break-all` in the built CSS (Cloudscape's StatusIndicator)
+ *                  is taken off by terminal.css's one `word-break: normal
+ *                  !important` rule, which names nothing else.
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -986,6 +992,46 @@ function subject(selector) {
   }
 }
 
+// T15: A STATUS WRAPS BETWEEN ITS WORDS (owner, 2026-10-07, round 7: "can you
+// wrap this text better?"). Cloudscape's StatusIndicator is `word-break:
+// break-all`, which cuts a word at any letter -- a card's narrow Status column
+// read "No armed opponent" and then "s". terminal.css takes it off in ONE
+// rule, named by Cloudscape's classes, that sets `word-break: normal
+// !important`; the build's half (below) holds every `break-all` Cloudscape
+// draws to a name in it, and every name in it to a `break-all` still drawn.
+// terminal.css itself breaks no word at any letter.
+const WRAPS = []
+{
+  const R = 'T15 wrap'
+  const css = code(readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8'), false)
+  const wrapRules = []
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = m[1].split(',').map((s) => s.trim().replace(/\s+/g, ' ')).filter((s) => s !== '')
+    for (const d of m[2].split(';')) {
+      const colon = d.indexOf(':')
+      if (colon < 0) continue
+      const prop = d.slice(0, colon).trim().toLowerCase()
+      const value = d.slice(colon + 1).trim().toLowerCase()
+      if (prop === 'word-break' && /break-all/.test(value)) {
+        fail(R, 'terminal/src/terminal.css', `${selectors.join(', ')} breaks a word at any letter`)
+      } else if (prop === 'word-break' && /^normal\s*!important$/.test(value)) {
+        wrapRules.push(selectors)
+      }
+    }
+  }
+  if (wrapRules.length !== 1) {
+    fail(R, 'terminal/src/terminal.css', `${wrapRules.length} rules set word-break: normal !important -- the rule that keeps words whole is one`)
+  }
+  for (const s of wrapRules.flat()) {
+    const name = resetName(s.replace(/"/g, ''))
+    if (name === null || name.includes('::')) {
+      fail(R, 'terminal/src/terminal.css', `${s} keeps words whole but is not [class*="awsui_<class>_"] -- the rule names Cloudscape's classes`)
+    } else {
+      WRAPS.push(name)
+    }
+  }
+}
+
 // The build.
 if (!existsSync(OUT)) {
   fail('T5 one bundle', rel(OUT), 'no build output -- run the build first')
@@ -1093,6 +1139,28 @@ if (!existsSync(OUT)) {
       .map((m) => topSplit(m[1], ',').map((x) => resetName(x.replace(/"/g, ''))).sort().join(','))
     if (RESETS.length > 0 && !built.includes([...RESETS].sort().join(','))) {
       fail('T11 depth', `${rel(OUT)}/${s}`, `terminal.css's box-shadow: none rule (${RESETS.join(', ')}) is not in the built CSS as one rule`)
+    }
+    // T15: every `word-break: break-all` Cloudscape draws is on a class the
+    // words-whole rule names, and every name in it still breaks.
+    const breaking = new Set()
+    for (const m of rules) {
+      if (!/(?:^|;)\s*word-break\s*:\s*break-all/.test(m[2])) continue
+      for (const sel of topSplit(m[1], ',')) {
+        const stems = subject(sel).classes.map((c) => (owners.get(c) ?? `?/${c}`).split('/').pop())
+        for (const x of stems) breaking.add(x)
+        if (!stems.some((x) => WRAPS.includes(x))) {
+          fail('T15 wrap', 'terminal/src/terminal.css', `Cloudscape breaks words at any letter on ${sel.slice(0, 100)} -- add ${resetSelector(stems[stems.length - 1] ?? '?')} to the word-break: normal rule`)
+        }
+      }
+    }
+    for (const name of WRAPS) {
+      if (!breaking.has(name)) {
+        fail('T15 wrap', 'terminal/src/terminal.css', `${resetSelector(name)} keeps whole the words of what Cloudscape no longer breaks -- take it out of the rule`)
+      }
+    }
+    if (WRAPS.length > 0 && !rules.some((m) => /word-break:normal!important/.test(m[2])
+        && topSplit(m[1], ',').map((x) => resetName(x.replace(/"/g, ''))).sort().join(',') === [...WRAPS].sort().join(','))) {
+      fail('T15 wrap', `${rel(OUT)}/${s}`, `terminal.css's word-break: normal rule (${WRAPS.join(', ')}) is not in the built CSS`)
     }
   }
 }

@@ -317,6 +317,29 @@ body.awsui-dark-mode {
   white-space: normal !important;
 }
 
+/*
+ * ═══ A STATUS WRAPS BETWEEN ITS WORDS (owner, 2026-10-07, round 7: "can you
+ * wrap this text better?") ═══
+ *
+ * Cloudscape's StatusIndicator breaks its text at ANY letter -- its container
+ * is `word-break: break-all` -- so a card's narrow Status column read "No
+ * armed opponent" and then "s". Every status the app shows (a card's, a
+ * tool's page's, the match panel's) now wraps at its spaces, its lines side
+ * by side with the icon rather than under it. A word is only ever cut when it
+ * is wider than the whole column by itself -- a long gamertag on the match
+ * panel, never a status line: at the window's smallest (900 x 560) a card's
+ * Status column is 120 px, and the longest word of any status_ line
+ * ("elimination") is under 75 px beside the 20 px icon. check-terminal.mjs
+ * T15 fails the build on any `break-all` in the built CSS this rule does not
+ * take off, and on a name here that no longer breaks.
+ */
+[class*="awsui_display-inline-block_"] {
+  display: inline-flex !important;
+  align-items: baseline;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+}
+
 /* The login screen: one card in the middle of the page. */
 .terminal-login {
   box-sizing: border-box;
