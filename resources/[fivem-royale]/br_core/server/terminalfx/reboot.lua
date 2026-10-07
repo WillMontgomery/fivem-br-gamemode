@@ -1,12 +1,24 @@
 -- Season 2 terminals (#396), wave C: REBOOT, the server half.
 --
 -- THE PAGE (br_lib/config/terminals.lua, `reboot_*`): "Every eliminated player
--- in your squad comes back with full health, by parachute over this terminal.
--- They come back with an empty inventory. Players who left the match don't
--- come back." The
--- risks: "Rebooted players start with nothing. They come back here, where the
--- notice was just sent from." 150 Volts (its row). Squad-only: the door hides
+-- in your squad comes back with full health, by parachute over you or the
+-- teammate you pick. They come back with an empty inventory. Players who left
+-- the match don't come back." 150 Volts (its row). Squad-only: the door hides
 -- it and refuses it outside a squad match (round 2).
+--
+-- ═══ OVER THE RUNNER OR A TEAMMATE, NEVER "THIS TERMINAL" (round 6) ═══
+--
+--   "Any use of "near this terminal" is like, not useful for this gamemode."
+--                                                   -- owner, 2026-10-07
+--
+-- It came back over the terminal it was run at. Now option `to` says over
+-- whom, as Vehicle drop's does (server/terminalfx/vehicle_drop.lua, the same
+-- rule to the letter): 'self', the runner, who must be STANDING when it runs
+-- (`reboot_target` otherwise), or 'mate' with option `mate`, a standing
+-- teammate the state listed (BR.Terminal.mates) -- `drop_no_mate` when that
+-- teammate is no longer one as it runs, everything given back. Asked as the
+-- run is asked, as it is accepted and as the load ends; the point is where
+-- that player stands then, by the server's own 4 Hz sample.
 --
 -- ═══ THE GAMEMODE'S ONE WAY BACK INTO A MATCH ═══
 --
@@ -16,13 +28,15 @@
 -- camera comes down, and a fade later the player is resurrected 150 m over
 -- it with the parachute (client/revivekey.lua's REVIVEKEY_PLACE and
 -- skydive.lua's drop), at full health (the display bar's 100, this page's
--- promise, whatever the key's reviveHp says), ALIVE. "At this terminal" is
--- over it, as a key's is over its ambulance; the dev terminal is the player.
+-- promise, whatever the key's reviveHp says), ALIVE -- over the player picked,
+-- as a key's is over its ambulance.
 --
 --   WHO          every member of the runner's squad who is OUT, in this match
 --                and still connected, and not already on the way back (a key
 --                arrival that has committed lands on its own) -- the runner
---                too, if they were eliminated while it loaded. A player who
+--                too, if they were eliminated while it loaded and it comes
+--                back over a teammate (over themselves, they must be
+--                standing). A player who
 --                walked out or disconnected is no longer in the match's
 --                roster, so "players who left the match don't come back" holds
 --                by construction.
@@ -59,6 +73,7 @@ BR = BR or {}
 BR.Terminal = BR.Terminal or {}
 
 local T = BR.Terminal
+local TS = BR.TerminalSolve
 
 --- The display bar's top: health travels in display units (0..100).
 local FULL_HP = 100.0
@@ -100,28 +115,51 @@ local function refusal(m, key)
     return nil
 end
 
---- Where "this terminal" is, with its height: the session's site, or the
---- player at the dev terminal.
+--- Who the squad comes back over, or nil and why: Vehicle drop's rule
+--- (server/terminalfx/vehicle_drop.lua targetOf), to the letter -- the runner,
+--- standing, or the standing teammate picked, in a squad match.
+--- @param src integer  the runner
+--- @param opts table|nil
+--- @return integer|nil target, string|nil why
+local function targetOf(src, opts)
+    local to = opts and opts.to or 'self'
+    if to == 'self' then
+        local e = BR.Roster.get(src)
+        if not (e and e.state == BR.PlayerState.ALIVE) then return nil, 'reboot_target' end
+        return src, nil
+    end
+    if to ~= 'mate' or not T.squadMatch(src) then return nil, 'bad_option' end
+    local want = tonumber(opts.mate)
+    for _, row in ipairs(T.mates(src)) do
+        if tonumber(row.id) == want then return want, nil end
+    end
+    return nil, 'drop_no_mate'
+end
+T.rebootTargetOf = targetOf
+
+--- Where that player stands, with its height: the server's own sample.
 --- @return table|nil { x, y, z }
-local function point(src, session)
-    local x, y, site = T.anchorOf(src, session)
-    if not x then return nil end
-    if site then return { x = site.x, y = site.y, z = site.z } end
-    local e = BR.Roster.get(src)
-    local z = e and e.pos and tonumber(e.pos.z) or nil
-    if not z then return nil end
-    return { x = x, y = y, z = z }
+local function point(target)
+    local e = BR.Roster.get(target)
+    local p = e and e.pos
+    if not (p and TS.finite(p.x) and TS.finite(p.y) and TS.finite(p.z)) then return nil end
+    return { x = p.x + 0.0, y = p.y + 0.0, z = p.z + 0.0 }
 end
 
 T.FUNCTIONS.reboot = {
     -- NOBODY TO BRING BACK IS REFUSED, SPENDING NOTHING -- the 150 Volts
-    -- included -- and asked again when the loading is over.
-    refuse = function(src, session)
+    -- included -- and asked again when the loading is over; and so is
+    -- nobody standing to come back over (round 6). Listed, who it is over is
+    -- a choice the card has not made yet.
+    refuse = function(src, session, opts)
         local m, _, key = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
-        return refusal(m, key)
+        local why = refusal(m, key)
+        if why or opts == nil then return why end
+        local _, whyTarget = targetOf(src, opts)
+        return whyTarget
     end,
-    run = function(src, session)
+    run = function(src, session, opts)
         local m, _, key = T.whereIs(src)
         if not m then
             if session.dev then
@@ -133,15 +171,17 @@ T.FUNCTIONS.reboot = {
         end
         local why = refusal(m, key)
         if why then return { ok = false, code = why } end
-        local at = point(src, session)
+        local target, whyTarget = targetOf(src, opts or {})
+        if not target then return { ok = false, code = whyTarget } end
+        local at = point(target)
         if not at then return { ok = false, code = 'unavailable' } end
         local back = 0
         for _, s in ipairs(T.rebootable(m, key)) do
             if BR.ReviveKey.bringBackAt(s, at, FULL_HP) then back = back + 1 end
         end
         if back == 0 then return { ok = false, code = 'reboot_none' } end
-        print(('[br_core] terminals: Reboot for %s in match %s: %d player(s) coming back at (%.0f, %.0f)')
-            :format(key, tostring(m.id), back, at.x, at.y))
+        print(('[br_core] terminals: Reboot for %s in match %s: %d player(s) coming back over %d at (%.0f, %.0f)')
+            :format(key, tostring(m.id), back, target, at.x, at.y))
         return { ok = true, code = 'done' }
     end,
 }

@@ -2330,7 +2330,7 @@ do
     ok(type(BR.ReviveKey.bringBackAt) == 'function', 'through the revive key\'s own return')
 end
 
-describe('Reboot: every eliminated squadmate comes back over this terminal, by the revive key\'s return')
+describe('Reboot: every eliminated squadmate comes back over the runner, by the revive key\'s return')
 do
     reset()
     local m = rebootLobby()
@@ -2356,8 +2356,9 @@ do
     eq(r and r.toast, COPY.reboot_done .. ' ' .. 'Your new balance is: 850 Volts.', 'the done line, and the new balance')
     ok(noticeIndex('has redeemed their special power', 5) ~= nil, 'the lobby is told')
     local a2, a6 = arrivals(2)[1], arrivals(6)[1]
-    ok(a2 and a2.payload.x == SITE.x and a2.payload.y == SITE.y and a2.payload.z == SITE.z,
-        'p2 is promised the arrival: black, and the focus on this terminal')
+    local R1 = roster[1].pos
+    ok(a2 and a2.payload.x == R1.x and a2.payload.y == R1.y and a2.payload.z == R1.z,
+        'p2 is promised the arrival: black, and the focus on the runner -- never the terminal (round 6)')
     ok(a6 ~= nil, 'and so is p6')
     eq(#arrivals(7) + #arrivals(8), 0, 'not the player who left, nor the one no longer connected')
     ok(#spectateStops == 2 and spectateStops[1].why == 'in-the-fight', 'the spectate camera comes down for both')
@@ -2367,8 +2368,9 @@ do
     stepTimers()                                       -- a fade later
     eq(gameMs - promisedAt, RK.fadeMs + RK.focusMs, 'after the key\'s own wait: fadeMs + focusMs of black')
     local p2 = places(2)[1]
-    ok(p2 and p2.payload.x == SITE.x and p2.payload.y == SITE.y and p2.payload.z == SITE.z,
-        'REVIVEKEY_PLACE over this terminal: resurrected 150 m up, with the parachute (client/revivekey.lua)')
+    ok(p2 and p2.payload.x == R1.x and p2.payload.y == R1.y and p2.payload.z == R1.z,
+        'REVIVEKEY_PLACE over the runner: resurrected 150 m up, with the parachute (client/revivekey.lua)')
+    ok(not (p2 and p2.payload.x == SITE.x and p2.payload.y == SITE.y), 'and not over the terminal')
     ok(roster[2].state == BR.PlayerState.ALIVE and roster[6].state == BR.PlayerState.ALIVE, 'both ALIVE')
     ok(roster[2].hp == 100.0 and roster[2].armour == 0.0, 'at full health, no armor')
     local hs = lastOf(BR.Net.HEALTH_SYNC, 2)
@@ -2497,7 +2499,8 @@ do
     ok(#arrivals(1) + #arrivals(2) == 0 and roster[2].state == BR.PlayerState.OUT, 'and nobody comes back')
     eq(squadsAlive(m), squads, 'so the squads standing -- the end check -- are what the eliminations left')
 
-    -- A DOWNED SQUADMATE IS STILL IN THE FIGHT: the runner out, p6 down.
+    -- A SQUADMATE STILL IN THE FIGHT, the runner out: over the runner there is
+    -- nobody standing to come back over (round 6) -- everything given back.
     reset()
     m = rebootLobby()
     player(6, m, 'A', { x = C0.x + 90.0, y = C0.y }, BR.PlayerState.DBNO)
@@ -2506,10 +2509,100 @@ do
     roster[1].state = BR.PlayerState.OUT
     flush()
     r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.code == 'done', 'a downed squadmate still standing for the squad: it runs', r and r.code)
+    ok(r and r.ok == false and r.code == 'reboot_target', 'over the runner, out as it ends: reboot_target', r and r.code)
+    ok(market.wallet[1] == 1000 and keys[1] == true and not T.squadUsed(1), 'everything given back')
+    eq(roster[2].state, BR.PlayerState.OUT, 'and nobody comes back')
+
+    -- OVER A STANDING TEAMMATE, the runner out: the runner comes back with p2,
+    -- over p6.
+    reset()
+    m = rebootLobby()
+    player(6, m, 'A', { x = C0.x + 90.0, y = C0.y + 7.0, z = 31.0 })
+    useAt(1)
+    r = ask(1, 'reboot', { to = 'mate', mate = '6' })
+    ok(r and r.code == 'running', 'over p6: accepted', r and r.code)
+    roster[1].state = BR.PlayerState.OUT
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'done', 'a teammate still standing: it runs', r and r.code)
+    flush()
     ok(roster[1].state == BR.PlayerState.ALIVE and roster[2].state == BR.PlayerState.ALIVE,
         'the runner, eliminated while it loaded, comes back with p2')
-    eq(roster[6].state, BR.PlayerState.DBNO, 'and the downed one is not revived')
+    local p1 = places(1)[1]
+    ok(p1 and p1.payload.x == C0.x + 90.0 and p1.payload.y == C0.y + 7.0 and p1.payload.z == 31.0,
+        'over p6, where p6 stands')
+end
+
+describe('Reboot: over you or a standing teammate, Vehicle drop\'s two options (round 6)')
+do
+    -- "Any use of 'near this terminal' is like, not useful for this
+    -- gamemode" (owner, 2026-10-07).
+    local row = T.row('reboot')
+    local opt = {}
+    for _, o in ipairs(row.options or {}) do opt[o.id] = o end
+    local vd = {}
+    for _, o in ipairs(T.row('vehicle_drop').options or {}) do vd[o.id] = o end
+    ok(opt.to and opt.to.default == 'self' and #opt.to.choices == 2 and opt.to.choices[1] == 'self'
+        and opt.to.choices[2] == 'mate', 'option `to`: self (the default) or mate')
+    ok(opt.mate and opt.mate.source == 'mates' and opt.mate.dropdown == true and opt.mate.when
+        and opt.mate.when.to == 'mate', 'option `mate`: the standing teammates, in a dropdown, only for mate')
+    ok(vd.to and vd.mate and vd.mate.source == opt.mate.source and vd.to.default == opt.to.default,
+        'the same two as Vehicle drop')
+    for _, k in ipairs({ 'reboot_summary', 'reboot_what', 'reboot_risks' }) do
+        ok(COPY[k]:find('this terminal', 1, true) == nil and COPY[k]:find(' here', 1, true) == nil,
+            k .. ' no longer says "this terminal" or "here"')
+    end
+    ok(COPY.reboot_target ~= nil and COPY.drop_no_mate ~= nil, 'its two reasons have their lines')
+
+    -- OVER A STANDING TEAMMATE.
+    reset()
+    local m = rebootLobby()
+    player(6, m, 'A', { x = C0.x + 60.0, y = C0.y - 4.0, z = 33.0 })
+    local r = runAt(1, 'reboot', { to = 'mate', mate = '6' })
+    ok(r and r.code == 'done', 'over p6: it runs', r and r.code)
+    flush()
+    local p2 = places(2)[1]
+    ok(p2 and p2.payload.x == C0.x + 60.0 and p2.payload.y == C0.y - 4.0 and p2.payload.z == 33.0,
+        'p2 comes back over p6')
+
+    -- THE TEAMMATE DOWN AS IT RUNS: drop_no_mate, everything back.
+    reset()
+    m = rebootLobby()
+    player(6, m, 'A', { x = C0.x + 60.0, y = C0.y }, BR.PlayerState.ALIVE)
+    useAt(1)
+    r = ask(1, 'reboot', { to = 'mate', mate = '6' })
+    ok(r and r.code == 'running', 'accepted', r and r.code)
+    roster[6].state = BR.PlayerState.DBNO
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok == false and r.code == 'drop_no_mate' and r.toast == COPY.drop_no_mate,
+        'the teammate went down as it loaded: drop_no_mate, in its line', r and r.code)
+    ok(market.wallet[1] == 1000 and keys[1] == true and not T.squadUsed(1), 'the Volts, the key and the use given back')
+    eq(#arrivals(2), 0, 'and nobody is promised a return')
+
+    -- NOT A STANDING TEAMMATE AT ALL, AS ASKED: refused before anything is spent.
+    reset()
+    m = rebootLobby()
+    useAt(1)
+    for _, who in ipairs({ '2', '3', '99' }) do
+        r = ask(1, 'reboot', { to = 'mate', mate = who })
+        ok(r and r.code == 'drop_no_mate' and #market.charges == 0 and keys[1] == true,
+            ('mate %s (out, another squad, nobody): drop_no_mate, nothing spent'):format(who), r and r.code)
+    end
+    r = ask(1, 'reboot', { to = 'mate' })
+    ok(r and r.code == 'drop_no_mate', 'a teammate not named: drop_no_mate', r and r.code)
+
+    -- THE RUNNER DOWN AS IT RUNS, over themselves: reboot_target.
+    reset()
+    m = rebootLobby()
+    useAt(1)
+    ask(1, 'reboot')
+    roster[1].state = BR.PlayerState.DBNO
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'reboot_target' and r.toast == COPY.reboot_target and market.wallet[1] == 1000,
+        'the runner downed as it loaded: reboot_target, everything back', r and r.code)
+    local _ = m
 end
 
 describe('Reboot: refused, spending nothing')

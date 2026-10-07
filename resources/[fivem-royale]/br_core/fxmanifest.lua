@@ -968,7 +968,7 @@ server_scripts {
     -- The functions built from wave A on (#396, 2026-10-06), one file each,
     -- each registering its own BR.Terminal.FUNCTIONS entry. AFTER
     -- server/terminalfx.lua, whose shared helpers (BR.Terminal.fxOf, marked,
-    -- namedLine, anchorOf) they read at call time. tools/test_terminal.lua and
+    -- namedLine) they read at call time. tools/test_terminal.lua and
     -- tools/test_terminalfx.lua load exactly the files listed here.
     'server/terminalfx/field_medic.lua',
     'server/terminalfx/disarm.lua',

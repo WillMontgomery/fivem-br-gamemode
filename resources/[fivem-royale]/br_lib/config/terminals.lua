@@ -1048,22 +1048,31 @@ BR.Config.Terminals = {
 
         -- Reboot (suggested; LIVE since wave C, 2026-10-06)
         reboot_name = 'Reboot',
-        -- WRITTEN (2026-10-06, wave C review; was "...back at this terminal."):
-        -- the card says what the page says, by parachute over it.
-        reboot_summary = 'Brings eliminated squadmates back by parachute over this terminal.',
-        -- WRITTEN (2026-10-06, wave C; was "Every eliminated player in your
-        -- squad comes back at this terminal with full health.\n..."). A
-        -- rebooted player comes back the way a revive key brings one back
-        -- over an ambulance (server/revivekey.lua): dropped 150 meters over
-        -- the terminal with a parachute, not stood beside it.
-        reboot_what = "Every eliminated player in your squad comes back with full health, by parachute over this terminal.\nThey come back with an empty inventory.\nPlayers who left the match don't come back.",
+        -- WRITTEN (round 6, proposal for the owner; was "...by parachute over
+        -- this terminal."): over the runner or a teammate, never the terminal.
+        reboot_summary = 'Brings eliminated squadmates back by parachute over you or a teammate.',
+        -- WRITTEN (round 6, proposal for the owner; was "...by parachute over
+        -- this terminal.\n..."). A rebooted player comes back the way a
+        -- revive key brings one back over an ambulance (server/revivekey.lua):
+        -- dropped 150 meters over the player picked, with a parachute.
+        reboot_what = "Every eliminated player in your squad comes back with full health, by parachute over you or the teammate you pick.\nThey come back with an empty inventory.\nPlayers who left the match don't come back.",
+        -- Over whom (round 6), Vehicle drop's two options. Squad-only, so no
+        -- `_solo` lines. WRITTEN (round 6, proposal for the owner).
+        reboot_opt_to = 'Bring them back over',
+        reboot_opt_to_self = 'You',
+        reboot_opt_to_mate = 'A teammate',
+        -- The dropdown of standing teammates, shown when "A teammate" is
+        -- picked. Each choice is the teammate's name: no words of ours.
+        -- WRITTEN (round 6, proposal for the owner).
+        reboot_opt_mate = 'Teammate',
         reboot_duration = 'Instant',
         reboot_affects = 'Your squad',
         reboot_notified = 'Everyone in the match',
-        -- WRITTEN (2026-10-06, wave C; the third line is new). A revive key
+        -- WRITTEN (round 6, proposal for the owner; the second line was "They
+        -- come back here, where the notice was just sent from."). A revive key
         -- for a rebooted player is spent with the reboot -- they are back --
         -- even one the squad paid for at an ambulance.
-        reboot_risks = "Rebooted players start with nothing.\nThey come back here, where the notice was just sent from.\nA revive key for any of them is used up, even one your squad bought.",
+        reboot_risks = "Rebooted players start with nothing.\nPlayers nearby can see them come down.\nA revive key for any of them is used up, even one your squad bought.",
         reboot_done = 'Your squad is back.',
         reboot_description = 'Reboot. Their squad is back.',
         -- WRITTEN (2026-10-06, wave C). Reboot's own reason: nobody in the
@@ -1071,6 +1080,12 @@ BR.Config.Terminals = {
         -- cannot come back) -- refused, spending nothing, the Volts included
         -- (at the terminal: why not). Squad-only, like every Reboot line.
         reboot_none = "There's nobody in your squad to bring back.",
+        -- WRITTEN (round 6, proposal for the owner). Reboot's reason when it
+        -- comes back over the runner and the runner is not standing as it runs
+        -- (downed, out or in the air) -- refused, everything given back. A
+        -- teammate picked who is no longer standing is Vehicle drop's
+        -- drop_no_mate, the same line.
+        reboot_target = 'You have to be standing when your squad comes back over you.',
 
         -- Ghost (suggested; LIVE since wave A, 2026-10-06). WRITTEN (2026-10-06,
         -- round 5): the summary and the page's first line no longer name a
@@ -1645,8 +1660,16 @@ BR.Config.Terminals = {
         -- SQUAD-ONLY (round 2): it brings back squadmates. LIVE SINCE WAVE C
         -- (2026-10-06): server/terminalfx/reboot.lua, through the revive key's
         -- own return (BR.ReviveKey.bringBackAt).
+        -- ROUND 6 (owner, 2026-10-07: "Any use of 'near this terminal' is like,
+        -- not useful for this gamemode"): they come back by parachute over the
+        -- runner, or over a standing teammate picked from a dropdown -- Vehicle
+        -- drop's two options, to the letter. It was over this terminal.
         { id = 'reboot',         category = 'squad',      risk = 'medium', implemented = true, cost = 150,
-          squadOnly = true, squadWide = true },
+          squadOnly = true, squadWide = true,
+          options = {
+              { id = 'to', choices = { 'self', 'mate' }, default = 'self' },
+              { id = 'mate', when = { to = 'mate' }, source = 'mates', dropdown = true },
+          } },
         -- DISRUPTION ON ITS OWN (round 2): alone, it still hides the player
         -- from other players' Scan and bounty markers -- what Comms
         -- blackout, filed under disruption, does to every other squad's

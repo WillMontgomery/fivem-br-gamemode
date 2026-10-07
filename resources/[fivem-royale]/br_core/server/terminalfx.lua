@@ -103,7 +103,7 @@ end
 
 -- ═══ THE SHARED HELPERS (wave A, 2026-10-06) ═══
 --
--- Each function built after these four has its own file under
+-- Each function built after these three has its own file under
 -- server/terminalfx/ (one per function, beside each other); these are what
 -- they share with this file, so there is one spelling of each:
 --
@@ -114,28 +114,16 @@ end
 --                      downed or in the air (MARKED above)
 --   T.namedLine(key, name, squadMatch)
 --                      a toast line with {playername}, through the picker
---   T.anchorOf(src, session)
---                      where "this terminal" is: the session's terminal, or,
---                      for a terminal the server does not know (the dev
---                      terminal), the player -- Supply drop's rule
+--
+-- (T.anchorOf, "where this terminal is", went in round 6 with the last
+-- function centered on a terminal: "Any use of 'near this terminal' is like,
+-- not useful for this gamemode" -- owner, 2026-10-07.)
 T.fxOf = fxOf
 T.namedLine = named
 --- @param state string|nil
 --- @return boolean
 function T.marked(state)
     return MARKED[state] == true
-end
-
---- Where a function that works "around this terminal" is centered.
---- @param src integer
---- @param session table
---- @return number|nil x, number|nil y, table|nil site  the site, when it is one
-function T.anchorOf(src, session)
-    local t = T.site(session.terminalId)
-    if t then return t.x, t.y, t end
-    local e = BR.Roster and BR.Roster.get(src) or nil
-    if e and e.pos then return e.pos.x, e.pos.y, nil end
-    return nil, nil, nil
 end
 
 --- IS SQUAD `key` HIDDEN FROM OTHER SQUADS' MARKS RIGHT NOW? Ghost's
