@@ -602,8 +602,15 @@ local function rowsFor(d)
     return rows, cats
 end
 
+--- My peds while the saved peds are still being fetched, as the page opens:
+--- it holds the loading indicator there until the server answers (owner,
+--- 2026-10-07: "show a loading icon while we wait for the results").
+local function fetching()
+    return not S.serverSeen
+end
+
 local function defaultTab()
-    return #S.peds > 0 and 'peds' or 'stock'
+    return (#S.peds > 0 or fetching()) and 'peds' or 'stock'
 end
 
 --- The stock roster as the page gets it, built once.
@@ -645,6 +652,7 @@ function V.push()
         loading = S.loadingId,
         locked = locked(),
         busy = S.busy ~= nil,
+        fetching = fetching(),
         edit = edit,
     })
 end
@@ -992,7 +1000,7 @@ ACTIONS[BR.NuiCb.LOCKER2_TAB] = function(data)
     local tab = data.tab
     if not TABS[tab] or tab == S.tab then return end
     if S.draft and S.draft.dirty then return end
-    if tab == 'peds' and #S.peds == 0 then return end
+    if tab == 'peds' and #S.peds == 0 and not fetching() then return end
     local sex = CUSTOM[tab]
     if sex then
         S.tab = tab

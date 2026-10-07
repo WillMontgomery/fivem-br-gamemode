@@ -1111,6 +1111,22 @@ do
     eq(m2.tab, 'peds', 'with saved peds it opens on My peds')
     ok(m2.peds[1].name == 'Ann' and m2.peds[1].a == nil, 'the cards carry no appearance')
     eq(m2.peds[1].img, 'data:image/webp;base64,AA', 'but do carry the stored headshot')
+    eq(msg.fetching, false, 'once the server has answered, nothing is being fetched')
+
+    -- THE LOADING ICON (owner, 2026-10-07): until the server answers, the
+    -- page is told the saved peds are still coming, and opens on My peds.
+    local F = clientWorld({ season = 2, v2 = true })
+    F.pump(4500)
+    F.ui(NUICB.LOCKER2_OPEN)
+    local f1 = F.nui(NUI.LOCKER2)
+    eq(f1.fetching, true, 'before the server answers, the page shows the saved peds loading')
+    eq(f1.tab, 'peds', 'on My peds')
+    F.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
+    F.ui(NUICB.LOCKER2_TAB, { tab = 'peds' })
+    eq(F.nui(NUI.LOCKER2).tab, 'peds', 'and My peds can be pressed while it loads')
+    F.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK1 }, store = true, peds = {} })
+    local f2 = F.nui(NUI.LOCKER2)
+    ok(f2.fetching == false and f2.tab == 'stock', 'an answer of none: loaded, and Stock is the tab')
 end
 
 describe('season2.stock')
