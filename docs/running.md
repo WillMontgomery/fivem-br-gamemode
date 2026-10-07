@@ -476,6 +476,7 @@ non-zero on any failure:
 | `br_ddb bundle over the wire` | `status` reports the bundle actually deployed on a box, and every absence as null |
 | `duplicate console commands` | one name, one registration |
 | `American spelling` | the lines a branch adds since it left `origin/dev`, and its commit messages, spell color, license, armor and tire the American way; names the code keeps are skipped, names a line declares are read; the rules prove themselves on a scratch repo first (`--self-test`) |
+| `hook-safe scratch repos` | the checks that build practice git repos (the spelling self-test, `test_assets.py`) build them in a scratch folder even when a git hook runs the gate, and never touch the repo being committed |
 
 > **This table said 21 gates and "~3,900 assertions across 10 suites" on
 > 2026-08-27, and 17 gates and "~3,100 across 8" before that.** None of the six

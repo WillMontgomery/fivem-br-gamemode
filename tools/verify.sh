@@ -61,6 +61,10 @@
 #                 commit messages. Not the tree. The rules prove themselves
 #                 on a scratch repo first.
 #
+#   7c. HOOK-SAFE SCRATCH REPOS -- the checks that build practice repos build
+#                 them in a scratch folder even when a git hook runs this
+#                 file, never in the repo being committed.
+#
 # Exit code is non-zero if any check fails.
 
 set -uo pipefail
@@ -202,6 +206,7 @@ NOTES=(
     "br_ddb bundle over the wire|The server status report says truthfully whether the deployed database helper is current"
     "duplicate console commands|No two commands share a name (the later one would silently replace the earlier)"
     "American spelling|Lines and commit messages added since this branch left dev say color, license, armor and tire, not the British forms"
+    "hook-safe scratch repos|The checks that build practice git repos build them in a scratch folder, even run from a git hook, never in the real repo"
     "pass cache|Skipping unchanged suites never hides a change: anything a suite read changes, and it runs again"
     "test_vcache|Edited, added or branch-only inputs re-run a suite; failures and interrupted runs are never stored"
 )
@@ -3832,6 +3837,20 @@ fi   # vc_begin 'duplicate console commands'
 section 'American spelling'
 bash tools/check_spelling.sh --self-test || rc=1
 bash tools/check_spelling.sh || rc=1
+
+# --- 7c. scratch repos stay scratch inside a git hook --------------------------
+#
+# A cherry-pick --continue, a rebase --continue or a commit without --no-verify
+# runs the pre-commit hook, which runs this file with GIT_DIR and GIT_INDEX_FILE
+# pointed at the repo being committed. A check that builds a practice repo with
+# `git init` and `git config` then builds it IN THAT REPO: on 2026-10-07
+# check_spelling.sh's self-test left the real repo bare, its user "self-test",
+# and every checkout of it refusing to run git. tools/test_hook_env.sh runs the
+# checks that build practice repos with those variables pointed at a decoy repo
+# and fails if the decoy changes at all. Not a pass-cache unit: what it guards
+# is the environment a hook gives, not a file.
+section 'hook-safe scratch repos'
+bash tools/test_hook_env.sh || rc=1
 
 # --- 8. the pass cache itself ---------------------------------------------------
 #

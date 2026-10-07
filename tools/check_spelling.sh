@@ -53,6 +53,16 @@ RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; RST=$'\033[0m'
 scrub() { rm -rf "$1" 2>/dev/null || { sleep 1; rm -rf "$1" 2>/dev/null; } || true; }
 self_test() {
     local me tmp out rc got want h
+    # THE SCRATCH REPO MUST BE THE ONE IN $tmp. Inside a git hook (a cherry-pick
+    # or rebase --continue runs pre-commit, which runs verify.sh), git exports
+    # GIT_DIR and GIT_INDEX_FILE pointed at the REAL repo, and every git call
+    # below, -C or not, would init and configure that repo instead: on
+    # 2026-10-07 one set the real repo bare, as user self-test, and broke every
+    # checkout of it. So drop every repo-local variable git itself names before
+    # the first git call. --self-test exits straight after, so nothing later in
+    # this script needs them. tools/test_hook_env.sh proves it.
+    # shellcheck disable=SC2046
+    unset $(git rev-parse --local-env-vars)
     me="$(pwd)/tools/check_spelling.sh"
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/check_spelling.XXXXXX" 2>/dev/null) || {
         echo "${RED}FAIL${RST} check_spelling.sh --self-test: no scratch directory"

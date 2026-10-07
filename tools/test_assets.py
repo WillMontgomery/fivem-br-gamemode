@@ -48,9 +48,19 @@ import assets  # noqa: E402
 # their scratch repos then read and write the real repo's index. Run that way,
 # four tests failed and the repo's index was left holding the scratch repos'
 # entries (2026-10-06). Every git here works on its own temp tree, so none of
-# the repository-locating variables is ever wanted.
-for _var in ('GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY',
-             'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_PREFIX'):
+# the repository-locating variables is ever wanted. Git's own list of them
+# (`git rev-parse --local-env-vars`, what git uses when it moves between repos)
+# is added to the hand-written one, so a variable a newer git adds -- or
+# GIT_CONFIG_PARAMETERS, which a `git -c` around the hook passes down -- is
+# dropped too (2026-10-07: check_spelling.sh's self-test, which had no such
+# guard, set the real repo bare from inside a hook; tools/test_hook_env.sh).
+try:
+    _git_local = subprocess.run(['git', 'rev-parse', '--local-env-vars'], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True).stdout.split()
+except OSError:
+    _git_local = []
+for _var in {'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY',
+             'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_PREFIX', *_git_local}:
     os.environ.pop(_var, None)
 
 FAKE_AWS = r'''
