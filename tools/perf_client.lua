@@ -493,6 +493,10 @@ local W = {
     carried = {},
     veh = nil,
     handles = 100,
+    -- The scripted camera the engine is rendering, and the frame number.
+    activeCam = nil,
+    scriptRender = false,
+    frameNo = 0,
 }
 W.ents[W.me] = { x = 0.0, y = 0.0, z = 30.0, kind = 'ped', heading = 0.0 }
 
@@ -839,6 +843,23 @@ IMPL.CreateCam           = function() W.handles = W.handles + 1 return W.handles
 IMPL.CreateCamWithParams = IMPL.CreateCam
 IMPL.CreateCameraWithParams = IMPL.CreateCam
 IMPL.DoesCamExist        = function(c) return (c and c ~= 0) and true or false end
+-- WHICH SCRIPTED CAMERA IS RENDERING, modeled rather than left to the verb default
+-- (#393): client/storm.lua leaves out of the bus preview what is behind the bus's
+-- own camera, and asks IsCamRendering first -- a stub answering `false` for every
+-- camera would measure the ride as if that never happened. The last camera made
+-- active renders while RenderScriptCams is on, as in the engine.
+IMPL.SetCamActive        = function(c, on)
+    if on and on ~= 0 then W.activeCam = c elseif W.activeCam == c then W.activeCam = nil end
+end
+IMPL.RenderScriptCams    = function(on) W.scriptRender = (on and on ~= 0) and true or false end
+IMPL.SetCamActiveWithInterp = function(to) W.activeCam = to end
+IMPL.DestroyCam          = function(c) if W.activeCam == c then W.activeCam = nil end end
+IMPL.DestroyAllCams      = function() W.activeCam = nil end
+IMPL.IsCamRendering      = function(c)
+    return (W.scriptRender and c ~= nil and W.activeCam == c) and true or false
+end
+IMPL.GetRenderingCam     = function() return (W.scriptRender and W.activeCam) or -1 end
+IMPL.GetFrameCount       = function() return W.frameNo end
 IMPL.StartShapeTestRay   = function() return 1 end
 IMPL.StartShapeTestLosProbe = function() return 1 end
 IMPL.StartExpensiveSynchronousShapeTestLosProbe = function() return 1 end
@@ -1916,6 +1937,7 @@ end
 --- thread due wakes.
 local function frame()
     NOW = NOW + FRAME_MS
+    W.frameNo = W.frameNo + 1
     deliver()
     carry()
     followCam()
