@@ -1609,6 +1609,166 @@ local NEST_CLEAR = 1e-3
 -- -- at warmup and at the phase itself -- stop on the same double.
 local RAY_STEPS = 48
 
+--- The zone a placement closes from, as the corner list its nesting is tested
+--- against: the host's hull, or -- A CIRCLE HOST, a zone so small blob() made it
+--- one -- its one disc.
+local function hostHull(host, cx, cy, r0)
+    local hks = host and host.hull and host.hull.ks
+    if not hks then
+        local d = host and host.discs and host.discs[1]
+        hks = BR.StormShape.discHull({ { x = d and d.x or cx, y = d and d.y or cy, r = d and d.r or r0 } })
+    end
+    return hks
+end
+
+--- THE NEXT ZONE ABOUT ITS OWN CENTER, at its real size: its discs, or one point
+--- for a zone of no radius.
+local function zoneDiscs(unit, r1)
+    local D0 = {}
+    if unit and (r1 or 0.0) > 0.0 then
+        for k, d in ipairs(unit.discs) do
+            D0[k] = { x = d.x * r1, y = d.y * r1, r = d.r * r1 }
+        end
+    else
+        D0[1] = { x = 0.0, y = 0.0, r = 0.0 }
+    end
+    return D0
+end
+
+--- Is (x, y) off the map a storm may close on: over water (BR.Config.Map's
+--- rectangles) or outside the surveyed boundary? BR.NextZoneCentre's "AND NOT
+--- OFF THE MAP" test, which says why both halves run -- and the test Storm
+--- control holds a picked spot to (#396). No map config is nothing off it.
+--- @param x number
+--- @param y number
+--- @return boolean
+function BR.StormOffMap(x, y)
+    local M = BR.Config and BR.Config.Map
+    if not M then return false end
+    if M.IsWater and M.IsWater(x, y) then return true end
+    if M.InBounds and not M.InBounds(x, y) then return true end
+    return false
+end
+
+-- How many rounds Storm control's search for the next center may take, and the
+-- directions it tries each round. FIXED COUNTS, so the walk Storm control checks
+-- a spot with and the one enterPhase draws land on the same doubles.
+local AIM_ROUNDS = 48
+local AIM_DIRS = 8
+
+--- WHERE THE NEXT ZONE GOES WHEN STORM CONTROL HAS PICKED WHERE THE STORM ENDS
+--- (#396, round 4, owner 2026-10-06: "we should let them actually pick exactly
+--- where they want it").
+---
+--- THE PLANNER'S RULES, LESS ITS DICE. The next zone is nested in this one by its
+--- real shape (BR.NextZoneCentre's test, the same NEST_CLEAR), its exact bounding
+--- box inside the map bounds (unless this zone already overhangs them -- the
+--- phase's own room beats the bounds, as there), and its center on the map
+--- (BR.StormOffMap). What it leaves out is what a pick replaces: the bearing and
+--- the offset drawn off the stream, the edge hug and the breakout -- every aimed
+--- phase is nested.
+---
+--- ON THE SPOT WHEN IT FITS THERE. When the next zone can stand centered on the
+--- spot, it does -- and from then on every zone after it can too (each holds its
+--- own center with room for the next, blobUnit's `fitClear`), so a zone of no
+--- radius, phase 8's point, lands ON the spot: that is how the storm ends exactly
+--- there.
+---
+--- OTHERWISE, AS DEEP AROUND THE SPOT AS THE ZONE ALLOWS. Zones are stretched
+--- up to 3:1, so a center moved straight at the spot can lose it a phase later
+--- through a narrow side (measured: about one spot in five, two thirds of the
+--- way out). So the center is the placeable one that holds the spot DEEPEST --
+--- the spot's signed distance into the next zone's hull, smallest -- found by a
+--- pattern search from the better of this zone's own center and the furthest
+--- placeable point toward the spot along the straight line: AIM_DIRS directions
+--- a round, a step that halves whenever none of them is deeper, AIM_ROUNDS
+--- rounds at most. Deterministic, so the same arguments give the same center
+--- wherever they are asked. (A search that also looked one zone further ahead,
+--- for a center the zone after could stand on the spot from, took no spot this
+--- one refuses, over 360 spots in 60 matches, and was dropped.)
+---
+--- A HOST THAT CANNOT HOLD THE NEXT ZONE AT ITS OWN CENTER (a dev path: a frozen
+--- outline thawed, a same-phase `brphase`) leaves the center where it is, as there.
+--- @param host table       the zone being closed from, as a shape (BR.StormHost)
+--- @param cx number        its center
+--- @param cy number
+--- @param r0 number        its radius
+--- @param unit table|nil   the next zone's unit; nil for a point
+--- @param r1 number        the next zone's radius
+--- @param aabb table|nil   playable bounds
+--- @param tx number        the spot
+--- @param ty number
+--- @return number, number  the next center
+function BR.NextZoneCenterToward(host, cx, cy, r0, unit, r1, aabb, tx, ty)
+    local SS = BR.StormShape
+    local hks = hostHull(host, cx, cy, r0)
+    local D0 = zoneDiscs(unit, r1)
+    local west, east, south, north = 0.0, 0.0, 0.0, 0.0
+    for k = 1, #D0 do
+        local d = D0[k]
+        west = math.max(west, -d.x + d.r)
+        east = math.max(east, d.x + d.r)
+        south = math.max(south, -d.y + d.r)
+        north = math.max(north, d.y + d.r)
+    end
+    local function boxed(x, y)
+        if not aabb then return true end
+        return x - west >= aabb.min.x and x + east <= aabb.max.x
+            and y - south >= aabb.min.y and y + north <= aabb.max.y
+    end
+    local useBox = boxed(cx, cy)
+    local function nests(x, y)
+        return SS.fit(hks, D0, x, y, 1.0) <= -NEST_CLEAR and (not useBox or boxed(x, y))
+    end
+    if not nests(cx, cy) then return cx, cy end
+    local function placeable(x, y) return nests(x, y) and not BR.StormOffMap(x, y) end
+
+    if placeable(tx, ty) then return tx, ty end
+
+    -- How deep the spot stands in the next zone placed at (x, y): its signed
+    -- distance to the zone's hull about its own center, the spot taken relative
+    -- to (x, y). Negative inside.
+    local dks = SS.discHull(D0)
+    local function score(x, y) return SS.hullDistance(dks, tx - x, ty - y) end
+
+    -- THE START: this zone's own center, or the furthest point toward the spot
+    -- along the straight line, whichever is placeable and holds it deeper.
+    local px, py, best = nil, nil, nil
+    if placeable(cx, cy) then px, py, best = cx, cy, score(cx, cy) end
+    local lo, hi = 0.0, 1.0
+    for _ = 1, RAY_STEPS do
+        local mid = 0.5 * (lo + hi)
+        if nests(cx + (tx - cx) * mid, cy + (ty - cy) * mid) then lo = mid else hi = mid end
+    end
+    local gx, gy = cx + (tx - cx) * lo, cy + (ty - cy) * lo
+    if placeable(gx, gy) then
+        local v = score(gx, gy)
+        if best == nil or v < best then px, py, best = gx, gy, v end
+    end
+    if px == nil then return cx, cy end
+
+    -- THE SEARCH, from there.
+    local step = math.max((r0 or 0.0) - (r1 or 0.0), 1.0) * 0.5
+    for _ = 1, AIM_ROUNDS do
+        if step < 0.01 then break end
+        local bx, by, bs = nil, nil, best
+        for j = 0, AIM_DIRS - 1 do
+            local a = j * (2.0 * math.pi / AIM_DIRS)
+            local x, y = px + step * math.cos(a), py + step * math.sin(a)
+            if placeable(x, y) then
+                local v = score(x, y)
+                if v < bs - 1e-9 then bx, by, bs = x, y, v end
+            end
+        end
+        if bx then
+            px, py, best = bx, by, bs
+        else
+            step = step * 0.5
+        end
+    end
+    return px, py
+end
+
 --- Choose where the next zone goes: its centre, by its REAL SHAPE.
 ---
 ---   "the circles still overlap when they are different shapes."
@@ -1676,22 +1836,8 @@ local RAY_STEPS = 48
 --- @return number, number, boolean  the next centre, and whether it rolled a breakout
 function BR.NextZoneCentre(rng, host, cx, cy, r0, unit, r1, edgeBias, aabb, hugM, breakout)
     local SS = BR.StormShape
-    local hks = host and host.hull and host.hull.ks
-    if not hks then
-        -- A CIRCLE HOST -- a zone so small blob() made it one: its one disc.
-        local d = host and host.discs and host.discs[1]
-        hks = SS.discHull({ { x = d and d.x or cx, y = d and d.y or cy, r = d and d.r or r0 } })
-    end
-
-    -- THE NEXT ZONE ABOUT ITS OWN CENTRE, at its real size.
-    local D0 = {}
-    if unit and (r1 or 0.0) > 0.0 then
-        for k, d in ipairs(unit.discs) do
-            D0[k] = { x = d.x * r1, y = d.y * r1, r = d.r * r1 }
-        end
-    else
-        D0[1] = { x = 0.0, y = 0.0, r = 0.0 }
-    end
+    local hks = hostHull(host, cx, cy, r0)
+    local D0 = zoneDiscs(unit, r1)
 
     local broke = false
     if breakout and breakout.chance and breakout.chance > 0
@@ -1836,13 +1982,8 @@ function BR.NextZoneCentre(rng, host, cx, cy, r0, unit, r1, edgeBias, aabb, hugM
     -- cannot catch. The four ocean rectangles are wholly outside it and are now
     -- redundant here -- kept because they cost one comparison and because
     -- deleting a backstop to save a comparison is how backstops go missing.
-    local M = BR.Config and BR.Config.Map
-    local function offMap(x, y)
-        if not M then return false end
-        if M.IsWater and M.IsWater(x, y) then return true end
-        if M.InBounds and not M.InBounds(x, y) then return true end
-        return false
-    end
+    -- (BR.StormOffMap, the one spelling Storm control's spot is held to too.)
+    local offMap = BR.StormOffMap
 
     if offMap(nx, ny) then
         for attempt = 1, 8 do

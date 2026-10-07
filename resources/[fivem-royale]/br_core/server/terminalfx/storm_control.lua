@@ -1,67 +1,39 @@
 -- Season 2 terminals (#396), wave B: STORM CONTROL, the server half (it has
--- no client half: the circles it decides reach every client as the storm's own
--- records, phase by phase).
+-- no client half of its own: the circles it decides reach every client as the
+-- storm's own records, phase by phase; the spot is picked on the big map by
+-- the confirm box's "Set location" step, client/terminal.lua's picker).
 --
---   "The server works out three possible final circles.
---    You pick one, and the storm closes toward it for the rest of the match.
---    Circles already on the map don't move. The change starts with the next
---    circle the storm draws."                  -- its page, storm_control_what
+--   "Storm control: we should let them actually pick exactly where they want
+--    it. When they click confirm, we should open the big map for them, wait
+--    for them to pick a location, then when they close the big map we run
+--    it."                                                  -- owner, 2026-10-06
 --
 -- THE DOOR IS server/terminal.lua; this file is what happens once it has said
--- yes, and it costs 150 Volts (the registry row). The storm's half is
--- server/storm.lua's: BR.Storm.futures works out the possible ends -- the
--- storm's own planner run forward on streams of their own, so each one obeys
--- every rule a match's storm does -- and BR.Storm.steer hands the match the
--- chosen one's stream. The record on the map and the seed every shape comes
--- from are not touched.
---
--- THE THREE (BR.TerminalSolve.threeEnds over fx.stormControlFutures ends),
--- each measured from THIS terminal, so each is what its label says:
---   near    the end nearest it                 "Closest to this terminal"
---   far     of the others, the end farthest    "Farthest from this terminal"
---   center  of the rest, the end whose distance is nearest halfway between
---           near's and far's          "Middle distance from this terminal"
--- "This terminal" is the session's terminal, or the player at the dev
--- terminal (Supply drop's rule).
+-- yes, and it costs 150 Volts (the registry row). The run carries the spot the
+-- player picked (`spot = true` on the row: BR.Terminal.spot checks its shape,
+-- and it arrives as `opts.at`). The storm's half is server/storm.lua's:
+-- BR.Storm.aimCheck holds the spot to the planner's rules and BR.Storm.aim
+-- hands the match it, so the storm ends EXACTLY there -- or, when it cannot,
+-- the run is refused with the reason, before anything is spent (never moved
+-- to a nearby spot: see server/storm.lua's STORM CONTROL block).
 --
 -- STORM REVEAL STAYS TRUE. A squad that ran Storm reveal earlier this match is
 -- sent where the storm now ends, the same way it was sent the first answer
 -- (BR.Terminal.reveal), so its mark never shows a circle that will not come.
 --
 -- REFUSED, SPENDING NOTHING (the door's rule for a function's own reason):
---   no_storm   the storm has not drawn its first circle
---   no_circle  the final circle is already on the map: nothing is left to draw
--- and asked again when the load is over, so a final circle drawn in those 3
--- to 5 seconds gives everything back.
+--   no_storm         the storm has not drawn its first circle
+--   no_circle        the final circle is already on the map
+--   storm_spot_land  the spot is over water or outside the play area
+--   storm_spot_out   the spot is outside the next circle on the map
+--   storm_spot_edge  the spot is too near that circle's edge to end on
+-- and asked again when the load is over, so a circle drawn in those 3 to 5
+-- seconds that no longer holds the spot gives everything back.
 
 BR = BR or {}
 BR.Terminal = BR.Terminal or {}
 
 local T = BR.Terminal
-local TS = BR.TerminalSolve
-
-local function fx() return BR.Config.Terminals.fx or {} end
-
---- Where "this terminal" is: the session's terminal, or, for a terminal the
---- server does not know (the dev terminal), the player.
---- @return number|nil x, number|nil y
-local function anchorOf(src, session)
-    local t = T.site(session.terminalId)
-    if t then return t.x, t.y end
-    local e = BR.Roster.get(src)
-    if e and e.pos then return e.pos.x, e.pos.y end
-    return nil, nil
-end
-
---- Why Storm control cannot run in this match now, or nil.
---- @param m table
---- @return string|nil
-local function why(m)
-    local rec = m.storm
-    if not rec or not m.stormRng then return 'no_storm' end
-    if rec.phase >= #BR.Config.Storm.phases then return 'no_circle' end
-    return nil
-end
 
 --- Send every squad that ran Storm reveal in this match where the storm ends
 --- now. In squad order, so the sends replay.
@@ -78,16 +50,22 @@ local function reReveal(m)
 end
 
 T.FUNCTIONS.storm_control = {
-    -- The same answer for every choice: there is a circle left to draw or there
-    -- is not. A dev terminal outside a match is never refused for it.
-    refuse = function(src, session)
+    -- Listed (no spot yet): there is a circle left to draw or there is not.
+    -- With the spot: whether the storm can end exactly on it. A dev terminal
+    -- outside a match is never refused.
+    refuse = function(src, session, opts)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
-        return why(m)
+        local rec = m.storm
+        if not rec or not m.stormRng then return 'no_storm' end
+        if rec.phase >= #BR.Config.Storm.phases then return 'no_circle' end
+        local at = opts and opts.at
+        if not at then return nil end
+        local _, why = BR.Storm.aimCheck(m, at.x, at.y)
+        return why
     end,
-    -- THE STORM ENDS WHERE THE PLAYER CHOSE: the possible ends worked out now,
-    -- the chosen one's stream handed to the match, and every squad that ran
-    -- Storm reveal told the new end.
+    -- THE STORM ENDS ON THE SPOT: the match aimed at it, and every squad that
+    -- ran Storm reveal told the new end.
     run = function(src, session, opts)
         local m = T.whereIs(src)
         if not m then
@@ -98,20 +76,13 @@ T.FUNCTIONS.storm_control = {
             end
             return { ok = false, code = 'unavailable' }
         end
-        local no = why(m)
-        if no then return { ok = false, code = no } end
-        local ax, ay = anchorOf(src, session)
-        if not ax then return { ok = false, code = 'unavailable' } end
-        local now = GetGameTimer()
-        local ends, bad = BR.Storm.futures(m, fx().stormControlFutures or 8, now)
-        if not ends then return { ok = false, code = bad or 'no_storm' } end
-        local three = TS.threeEnds(ends, ax, ay)
-        local zone = opts and opts.zone or 'near'
-        local chosen = ends[three[zone] or three.near]
-        BR.Storm.steer(m, chosen)
+        local at = opts and opts.at
+        if not at then return { ok = false, code = 'bad_option' } end
+        local spot, why = BR.Storm.aim(m, at.x, at.y)
+        if not spot then return { ok = false, code = why } end
         reReveal(m)
-        print(('[br_core] terminals: Storm control (%s) by %d in match %s: the storm ends at (%.0f, %.0f)')
-            :format(zone, src, tostring(m.id), chosen.x, chosen.y))
+        print(('[br_core] terminals: Storm control by %d in match %s: the storm ends at (%.1f, %.1f)')
+            :format(src, tostring(m.id), spot.x, spot.y))
         return { ok = true, code = 'done' }
     end,
 }

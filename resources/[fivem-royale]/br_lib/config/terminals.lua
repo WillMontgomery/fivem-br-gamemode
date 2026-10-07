@@ -399,6 +399,16 @@ BR.Config.Terminals = {
         confirm_body_volts_solo = "This uses {volts}, your Yubikey and your terminal use for this match. It can't be undone.",
         confirm_yes = 'Run',
         confirm_no = 'Cancel',
+        -- VERBATIM (owner, 2026-10-06, round 4: 'This could be a multi-step
+        -- flow on the popup box like where the confirm button is greyed out (spelling-ok: his words)
+        -- until they select a "set location" button'). The confirm box's
+        -- first step for a function run at a spot (`spot` on its registry row:
+        -- Storm control, Supply drop): it hides the computer and opens the big
+        -- map, where the player sets a waypoint and closes the map. Run stays
+        -- disabled until a spot is set; pressed again, it picks again. The
+        -- place picked is then shown beside it by the game's own name for it
+        -- (its street and area), which is no line of ours.
+        confirm_location = 'Set location',
 
         -- ── why a function cannot run. WRITTEN, beside no_key, offline and
         --    squad_used above ──────────────────────────────────────────────────
@@ -529,32 +539,41 @@ BR.Config.Terminals = {
         -- The revealed final zone's name in the pause map's legend.
         storm_reveal_blip = 'Final circle',
 
-        -- Storm control (owner's; LIVE since wave B, 2026-10-06)
+        -- Storm control (owner's; LIVE since wave B, 2026-10-06; ROUND 4, the
+        -- same day: "we should let them actually pick exactly where they want
+        -- it", on the big map -- `spot` on the registry row, and its zone
+        -- option and three possible circles gone)
         storm_control_name = 'Storm control',
-        storm_control_summary = 'Picks where the storm ends, from three possible final circles.',
-        storm_control_what = "The server works out three possible final circles.\nYou pick one, and the storm closes toward it for the rest of the match.\nCircles already on the map don't move. The change starts with the next circle the storm draws.",
-        storm_control_opt_zone = 'Final circle',
-        storm_control_opt_zone_near = 'Closest to this terminal',
-        -- WRITTEN (2026-10-06, wave B review; was "Closest to the current
-        -- circle's center"). All three choices are measured from this
-        -- terminal, so each label is true of the circle it picks: the middle
-        -- one is picked from the ends near and far left, and "closest to" any
-        -- other point named a circle that was not, about one run in nine
-        -- (BR.TerminalSolve.threeEnds says why; tools/test_terminalworld.lua
-        -- holds every zone label to its claim).
-        storm_control_opt_zone_center = 'Middle distance from this terminal',
-        storm_control_opt_zone_far = 'Farthest from this terminal',
+        -- WRITTEN (2026-10-06, round 4; was 'Picks where the storm ends, from
+        -- three possible final circles.').
+        storm_control_summary = 'Picks the spot on the map where the storm ends.',
+        -- WRITTEN (2026-10-06, round 4; was "The server works out three
+        -- possible final circles.\nYou pick one, and ..."). The storm ends
+        -- EXACTLY on the spot or the run is refused, nothing spent: never
+        -- moved to a spot nearby (server/storm.lua's STORM CONTROL block).
+        storm_control_what = "You pick a spot on the map, and the storm closes toward it for the rest of the match. The last circle closes exactly on that spot.\nThe spot has to be on land and well inside the next circle.\nCircles already on the map don't move. The change starts with the next circle the storm draws.",
         storm_control_duration = 'Rest of the match',
         storm_control_affects = 'Everyone in the match',
         storm_control_notified = 'Everyone in the match',
-        storm_control_risks = 'Your squad still has to reach the circle you pick.',
-        storm_control_risks_solo = 'You still have to reach the circle you pick.',
+        -- WRITTEN (2026-10-06, round 4; was "...reach the circle you pick.").
+        storm_control_risks = 'Your squad still has to reach the spot you pick.',
+        storm_control_risks_solo = 'You still have to reach the spot you pick.',
         storm_control_done = 'The storm will end where you chose.',
         storm_control_description = 'Storm control. They chose where the storm will end.',
         -- WRITTEN (2026-10-06, wave B). Storm control's own reason: the final
         -- circle is already drawn, so no circle is left to change -- refused,
         -- spending nothing (at the terminal: why not).
         no_circle = 'The final circle is already on the map.',
+        -- WRITTEN (2026-10-06, round 4). Storm control's reasons for a spot
+        -- the storm cannot end on exactly -- refused, spending nothing, the
+        -- 150 Volts included (at the terminal: why not, and pick again):
+        -- over water or off the play area...
+        storm_spot_land = "The storm can't end in the water or off the map. Pick a spot on land.",
+        -- ...outside the next circle on the map...
+        storm_spot_out = 'That spot is outside the next circle. Pick a spot inside it.',
+        -- ...or inside it, but too close to its edge for every circle after it
+        -- to close on it.
+        storm_spot_edge = 'That spot is too close to the edge of the next circle. Pick a spot further inside it.',
 
         -- Comms blackout (owner's; LIVE since wave C, 2026-10-06)
         comms_blackout_name = 'Comms blackout',
@@ -680,12 +699,11 @@ BR.Config.Terminals = {
         -- Supply drop (owner's; LIVE)
         supply_drop_name = 'Supply drop',
         supply_drop_summary = 'Calls in an extra airdrop.',
-        supply_drop_what = "An extra airdrop is placed at the spot you choose and marked on every player's map.\nLike any airdrop, the aircraft comes once a player is within 200 meters, and the drop is called off if nobody comes in time.\nIt lands only inside the next circle, like any airdrop.",
-        supply_drop_opt_site = 'Drop spot',
-        supply_drop_opt_site_terminal = 'Near this terminal',
-        supply_drop_opt_site_terminal_desc = 'The airdrop spot closest to this terminal.',
-        supply_drop_opt_site_circle = 'Near the next circle',
-        supply_drop_opt_site_circle_desc = "The airdrop spot closest to the next circle's center.",
+        -- WRITTEN (2026-10-06, round 4; was "An extra airdrop is placed at
+        -- the spot you choose and ..."): the spot is picked on the big map, and
+        -- the drop goes to the airdrop spot nearest it, as any airdrop lands
+        -- only at one.
+        supply_drop_what = "You pick a place on the map. An extra airdrop is placed at the airdrop spot nearest it and marked on every player's map.\nLike any airdrop, the aircraft comes once a player is within 200 meters, and the drop is called off if nobody comes in time.\nIt lands only inside the next circle, like any airdrop.",
         supply_drop_duration = "Until it's opened or times out",
         supply_drop_affects = 'Everyone in the match',
         supply_drop_notified = 'Everyone in the match, with the airdrop notice',
@@ -1104,6 +1122,12 @@ BR.Config.Terminals = {
     --                marks show on the squad's maps): the app shows "Squads!"
     --                beside its title IN A SQUAD MATCH, whose popover says it
     --                applies to the whole squad (round 4). Presentation only.
+    --   spot         true for a function run at a place the player picks on
+    --                the big map (round 4, owner 2026-10-06: Storm control and
+    --                Supply drop, "pick exactly where"): the confirm box's
+    --                "Set location" step (confirm_location), and the run
+    --                carries the spot as `at = { x, y }` (BR.Terminal.spot;
+    --                the function reads it as `opts.at`).
     --
     -- The server half of a built function is BR.Terminal.FUNCTIONS[id] in
     -- br_core/server/terminal.lua: an optional `refuse` and a `run`.
@@ -1118,8 +1142,9 @@ BR.Config.Terminals = {
         { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200,
           bounty = 'runner', squadWide = true },
         { id = 'storm_reveal',   category = 'intel',      risk = 'low',    implemented = true, squadWide = true },
+        -- ROUND 4 (owner, 2026-10-06): run at a spot picked on the big map.
         { id = 'storm_control',  category = 'storm',      risk = 'medium', implemented = true, cost = 150,
-          options = { { id = 'zone', choices = { 'near', 'center', 'far' }, default = 'near' } } },
+          spot = true },
         -- SQUAD-ONLY (round 2): it hides teammates' markers from every other
         -- squad, and outside a squad match nobody has a teammate to hide.
         -- LIVE SINCE WAVE C (2026-10-06): server/terminalfx/comms_blackout.lua,
@@ -1155,7 +1180,7 @@ BR.Config.Terminals = {
           } },
         { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = true, cost = 200 },
         { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
-          options = { { id = 'site', choices = { 'terminal', 'circle' }, default = 'terminal' } } },
+          spot = true },
         { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true, squadWide = true },
         -- SQUAD-ONLY (round 2): it brings back squadmates. LIVE SINCE WAVE C
         -- (2026-10-06): server/terminalfx/reboot.lua, through the revive key's
@@ -1194,19 +1219,9 @@ BR.Config.Terminals = {
         --    (the durations), read as numbers where they are used;
         --    everything else is here. ──
 
-        -- Storm control: how many possible ends the server works out before
-        -- it names the three the page offers, all measured from this
-        -- terminal -- the one nearest it, of the others the one farthest from
-        -- it, and of the rest the one nearest halfway between those two
-        -- (BR.TerminalSolve.threeEnds). Each is the storm's own planner run
-        -- forward on a stream of its own (BR.Storm.futures), so every one
-        -- obeys every rule a match's storm does. More is a wider spread
-        -- between near and far, at a few milliseconds each, once a run.
-        stormControlFutures = 8,
-
-        -- How often the server checks whether a timed wave B effect has run
-        -- out, or its match has ended or left Season 2, and ends it (Time &
-        -- weather, Power outage): one pass a second.
+        -- How often the server checks whether a wave B effect has run out, or
+        -- its match has ended or left Season 2, and ends it (Time & weather,
+        -- Power outage): one pass a second.
         worldCheckMs = 1000,
 
         -- Time & weather: the time of day each choice sets, as hour and

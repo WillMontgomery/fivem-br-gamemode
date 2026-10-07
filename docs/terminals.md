@@ -67,7 +67,8 @@ What the computer opens with, and what the server sends again when it changes.
 `reason` is a code, and a code is a key into the copy: `fn_offline` (the
 effect is not built), `offline`, `squad_used`, `no_key`, `bad_option`, `unavailable` (a run of theirs or their
 squad's in flight, a squad-only function outside a squad match), or any key a
-function's own refusal adds (`no_storm`, `no_site`, `drop_busy`, `ammo_full`;
+function's own refusal adds (`no_storm`, `no_site`, `drop_busy`, `ammo_full`,
+Storm control's `storm_spot_land`, `storm_spot_out` and `storm_spot_edge`;
 wave A's `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`,
 `no_keys_held`, `no_target`; wave C's `reboot_none`). The app shows the line for the
 code, or `unavailable` when there is none, and maps it to the card's four
@@ -154,6 +155,7 @@ The table below is the lines outside the functions' own:
 | `privacy_*` | At the terminal: the Privacy page, the owner's approved policy (VERBATIM, "Perfect", 2026-10-06): its title and two paragraphs |
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
+| `storm_spot_land`, `storm_spot_out`, `storm_spot_edge` | At the terminal: why not (Storm control's spot: over water or off the map, outside the next circle, too near its edge) -- round 4 |
 | `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target` | At the terminal: why not (wave A's functions) |
 | `reboot_none` | At the terminal: why not (Reboot: nobody in the squad eliminated and still in the match). Squad-only, so no `_solo` line |
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
@@ -323,7 +325,7 @@ fails a row missing a line, and a built row with no server entry.
 | Event | Way | Payload | Rule |
 |---|---|---|---|
 | `BR.Net.TERMINAL_OPEN` | S→C | `{ state }` | Open the computer on this terminal. |
-| `BR.Net.TERMINAL_RUN` | C→S | `{ terminalId, functionId, options? }` | Dropped, unanswered, without an open session on that terminal, with a malformed id, or sooner than `runMinIntervalMs` after the last. Options the registry does not allow are answered `bad_option`. |
+| `BR.Net.TERMINAL_RUN` | C→S | `{ terminalId, functionId, options?, at? }` | Dropped, unanswered, without an open session on that terminal, with a malformed id, or sooner than `runMinIntervalMs` after the last. Options the registry does not allow are answered `bad_option`, and so is a spot (`at = { x, y }`, two finite numbers within 20 km of the map's middle) missing from a row run at one (`spot`) or sent with a row that takes none (`BR.Terminal.spot`). |
 | `BR.Net.TERMINAL_INFO` | S→C | `{ terminalId, state }` | The open computer's state again, match panel included, every `infoPushMs` (1 s), to that player alone, only while open, never off Season 2. |
 | `BR.Net.TERMINAL_SCAN` | S→C | `{ matchId, list = { { s, x, y, down? } } }` | Scan: every opponent's position, to the scanning squad alone (dead and spectating members included), every `fx.scanPingMs` for the rest of the match. A squad under Ghost is left out. |
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
@@ -674,6 +676,24 @@ boolean) for every use, every run, every session check, the panel's count and
    player goes down, dies, leaves, walks away or the storm takes the
    terminal: on a 500 ms check, and again inside every run.
 
+## The map pick (round 4)
+
+Owner, 2026-10-06: "Storm control: we should let them actually pick exactly
+where they want it. When they click confirm, we should open the big map for
+them, wait for them to pick a location, then when they close the big map we run
+it. This could be a multi-step flow on the popup box like where the confirm
+button is greyed out until they select a "set location" button", and "The supply <!-- spelling-ok: the owner's own words -->
+drop should also allow them to pick exactly where."
+
+A registry row with **`spot = true`** (Storm control, Supply drop) is run at a
+place picked on the big map. Its run request carries it as **`at = { x, y }`**,
+and `BR.Terminal.spot` takes only that shape -- two finite numbers within 20 km
+of the map's middle -- for such a row, and none for any other: anything else is
+`bad_option`, nothing spent. The function reads it as `opts.at` (no registry
+option is called `at`) and decides what it means (Storm control: the storm ends
+on it, or the reason; Supply drop: the airdrop spot nearest it). `brterminal run
+<id> x=<n> y=<n>` is the same spot from the console.
+
 ## Storm reveal
 
 `BR.Storm.finalCentre(m)` walks the phases the storm has not drawn yet, against a
@@ -692,31 +712,39 @@ Three functions change the world everybody in the match stands in (#396,
 ("We have to keep the pace of the match"). Each is built to its own page in `copy`, and where a line could
 not be true it was changed (the report of wave B lists every one).
 
-**Storm control** (`storm_control.lua`, 150 Volts, option `zone`): where the
-match ends is where its storm stream takes it, so a possible final circle is
-the storm's own planner -- `drawCentre`, the function and arguments
-`enterPhase` uses -- run forward on another stream (`BR.Storm.futures`):
-`fx.stormControlFutures` (8) of them, the storm's own plan first. Every one
-obeys the planner's rules: the play area and its water, the nesting and the
-breakout's gap, the edge hug, each zone's shape (#344, from the seed, which
-nothing here changes). `BR.TerminalSolve.threeEnds` names three different
-ones, all measured from this terminal so each label is true of the circle it
-picks: **near** (nearest it, "Closest to this terminal"), **far** (of the
-others, the farthest from it, "Farthest from this terminal") and **center**
-(of the rest, the one whose distance is nearest halfway between those two,
-"Middle distance from this terminal"); at the dev terminal "this terminal"
-is the player. A middle choice measured from anywhere else would be "of the
-rest", and its label false whenever near or far had taken the end it named.
-`tools/test_terminalworld.lua` holds each zone label to its claim over
-thousands of draws, and a label it has no claim for fails. `BR.Storm.steer`
-hands the match the chosen stream, and nothing else moves: the record on the
-map and the circle already drawn stay, and the change starts with the next
-circle `enterPhase` draws -- which reaches every client, the map's morph
-(#350) and the airdrop's re-site (#386) as any record does. A squad that ran
-Storm reveal is sent the new end. Refused `no_storm`, and `no_circle` once the
-final circle is on the map. `tools/test_storm.lua`'s `control.valid` steers
-24 matches to each of the three at every phase and checks every later circle
-against the planner's own geometry.
+**Storm control** (`storm_control.lua`, 150 Volts, run at a spot -- round 4,
+owner 2026-10-06: "we should let them actually pick exactly where they want
+it"). The run carries the spot set on the big map (`at`, see [the map
+pick](#the-map-pick-round-4)), and **the storm ends exactly on it, or the run
+is refused -- never moved to a spot nearby**, since a storm that ended
+somewhere near the pick would not be the spot the player was shown.
+`BR.Storm.aimCheck(m, x, y)` holds the spot to the planner's rules before
+anything is spent: on land and on the map (`BR.StormOffMap`, the planner's own
+water-and-boundary test: `storm_spot_land`), inside the next circle on the map
+(`BR.StormTarget`, which every later circle nests in: `storm_spot_out`), and
+ENDED ON -- the remaining phases are walked with the spot exactly as
+`enterPhase` will walk them, and a walk that does not finish on it is refused
+(`storm_spot_edge`: a spot too near that circle's edge for every stretched
+later zone to keep it). `BR.Storm.aim` then sets `m.stormAim`, and from the
+next circle `enterPhase` draws, `drawCentre` places each circle with
+`BR.NextZoneCenterToward` instead of a roll: nested in the one before by its
+real shape, its bounding box in the map bounds, its center on the map --
+centered on the spot whenever the zone fits there (from then on every zone can,
+`fitClear`, so phase 8's point lands on it), and otherwise the placeable center
+that holds the spot deepest, by a deterministic pattern search. No aimed phase
+breaks out or hugs the edge. Storm reveal walks the same `drawCentre`, so it
+answers the spot, and a squad that ran it is sent the new end. Nothing else
+moves: the record on the map and the circle already drawn stay, and the change
+reaches every client, the map's morph (#350) and the airdrop's re-site (#386)
+as any record does. A second Storm control re-aims from where the storm then
+stands. Refused too: `no_storm`, and `no_circle` once the final circle is on
+the map. Measured over 60 walked matches: every spot on land at the circle's
+center or up to two fifths of the way out to its radius is taken; of the spots
+inside it further out, about one in twenty at 0.55 of the way, one in six at
+0.7 and one in four at 0.8 is refused as too near the edge. An aimed walk
+costs about 9 ms (51 ms at worst) of the server's Lua, once per check.
+`tools/test_storm.lua`'s `control.*` blocks walk 24 matches aimed at every
+phase from 1 to 7 to their last circle.
 
 **Time & weather** (`time_weather.lua`, both sides; options `change`, then
 `time` or `weather`). Round 4 (owner, 2026-10-06): "either time or weather to
@@ -803,7 +831,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you. Wave B: `run storm_control zone=far`, `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you. Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
@@ -835,15 +863,18 @@ Scan, after the lobby has read `notice_action`:
 
 ## Supply drop and Max ammo
 
-**Supply drop** (option `site`: `terminal` or `circle`) hands this terminal's
-point, or the next circle's centre, to `BR.Airdrop.call`
-(`server/airdrop.lua`), which sites one extra drop at the nearest airdrop spot
-by the airdrop's own rules (the landing window, `insideBy`, placeable ground,
-no POI another drop is on) and announces it like any drop; from then on it is
-an ordinary drop (the 200 m gate, moves, abandonment, the loot path), holds the
-schedule like a manual one, and draws its heading and payout from a stream of
-its own. Refused, spending nothing: `no_storm`, `drop_busy` (another drop is
-waiting or falling -- the #355 rule), `no_site`.
+**Supply drop** (run at a spot -- round 4, owner 2026-10-06: "The supply
+drop should also allow them to pick exactly where") hands the spot set on the
+big map (`at`, see [the map pick](#the-map-pick-round-4)) to `BR.Airdrop.call`
+(`server/airdrop.lua`), which sites one extra drop at the airdrop spot nearest
+it by the airdrop's own rules (the landing window, `insideBy`, placeable
+ground, no POI another drop is on) -- an airdrop lands only at a spot -- and
+announces it like any drop; from then on it is an ordinary drop (the 200 m
+gate, moves, abandonment, the loot path), holds the schedule like a manual
+one, and draws its heading and payout from a stream of its own. Refused,
+spending nothing: `no_storm`, `drop_busy` (another drop is waiting or falling
+-- the #355 rule), `no_site` (no airdrop spot fits inside the next circle;
+while it is only listed, asked of the next circle's center).
 
 **Max ammo** fills, for everyone in the squad still in the fight, every pool a
 carried gun draws on to its cap and loads an empty magazine

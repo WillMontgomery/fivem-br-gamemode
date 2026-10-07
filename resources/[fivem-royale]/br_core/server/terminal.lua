@@ -20,7 +20,8 @@
 --                    Storm reveal end to end here and Scan, Supply drop and
 --                    Max ammo in server/terminalfx.lua
 --   the options      what the player chose before Run, taken only as the
---                    registry allows (BR.Terminal.options)
+--                    registry allows (BR.Terminal.options), and the spot set
+--                    on the big map for a row run at one (BR.Terminal.spot)
 --   the run          asked, accepted, loading, done (round 2): every refusal,
 --                    then the Volts a row costs (BR.Market.charge), then the
 --                    key and the squad's use, a 3-5 s load the server times,
@@ -439,6 +440,35 @@ function T.options(row, given)
         end
     end
     return out
+end
+
+--- How far from the map's middle a picked spot may be, in meters, on either
+--- axis. The whole island is inside 5 km of it; anything past this is not a
+--- spot the big map can set.
+local SPOT_MAX = 20000.0
+
+--- THE SPOT A RUN CARRIES (round 4, owner 2026-10-06: Storm control and Supply
+--- drop "pick exactly where"). A row with `spot = true` is run at a place the
+--- player set on the big map -- the confirm box's "Set location" step -- and
+--- its run request carries it as `at = { x, y }`; every other row's carries
+--- none. NEVER TRUSTS THE APP, as BR.Terminal.options does not: two finite
+--- numbers inside SPOT_MAX, or the whole request is malformed. What the spot
+--- means -- inside a circle, on land, near an airdrop site -- is the
+--- function's own refusal to say; this is shape. It reaches the function as
+--- `opts.at` (no registry option is called `at`; tools/test_terminal.lua holds
+--- that).
+--- @param row table
+--- @param at any  the request's `at`
+--- @return table|nil spot  { x, y }, for a row that takes one
+--- @return boolean bad  true when the request is malformed for this row
+function T.spot(row, at)
+    if row.spot ~= true then return nil, at ~= nil end
+    if type(at) ~= 'table' then return nil, true end
+    local x, y = at.x, at.y
+    if not (TS.finite(x) and TS.finite(y)) or math.abs(x) > SPOT_MAX or math.abs(y) > SPOT_MAX then
+        return nil, true
+    end
+    return { x = x + 0.0, y = y + 0.0 }, false
 end
 
 --- Show a squad where this match's storm ends, from now to the end of the match.
@@ -1124,14 +1154,16 @@ function T.run(src, d, now)
     end
     local row = rowOf(id)
     if not row then return refused('unavailable') end
-    -- THE OPTIONS FIRST, AND WHOLE. A request the registry does not allow is
-    -- answered -- the app's button is waiting on it -- and nothing is asked
-    -- or spent.
+    -- THE OPTIONS FIRST, AND WHOLE -- THE SPOT TOO (round 4). A request the
+    -- registry does not allow is answered -- the app's button is waiting on
+    -- it -- and nothing is asked or spent.
     local opts = T.options(row, d.options)
-    if not opts then
+    local spot, badSpot = T.spot(row, d.at)
+    if not opts or badSpot then
         answer.state = T.state(src, session)
         return refused('bad_option')
     end
+    opts.at = spot
     local reason = refusal(src, session, row, opts)
     if reason then
         answer.state = T.state(src, session)
@@ -1275,7 +1307,7 @@ end
 
 local USAGE = 'usage: brterminalsv open [nokey] [used] [offline] [volts=<n>] | close | key give|take'
     .. ' | place <x> <y> <z> [h] [id] | remove <id> | list | online <id> [off] | reset'
-    .. ' | run <function> [option=choice ...]  (from the server console, a verb about a player takes'
+    .. ' | run <function> [option=choice ...] [x=<n> y=<n>]  (from the server console, a verb about a player takes'
     .. ' the player id next: brterminalsv open <player id> [...])'
 
 --- One line on the requester's F8 (or this console), and nowhere else.
@@ -1458,7 +1490,9 @@ RegisterCommand('brterminalsv', function(source, args)
         -- not the door in front of it; `brvolts <id> <amount>` is how a
         -- balance is set up for testing the door's Volts.
         -- Options as option=choice words after the id, through the same
-        -- BR.Terminal.options the net event uses.
+        -- BR.Terminal.options the net event uses -- and, for a function run
+        -- at a picked spot (round 4: Storm control, Supply drop), the spot as
+        -- `x=<n> y=<n>`, through the same BR.Terminal.spot.
         local id = words[1] and words[1]:lower() or ''
         local row = rowOf(id)
         if not row then
@@ -1469,20 +1503,32 @@ RegisterCommand('brterminalsv', function(source, args)
             tell(src, ('%s is listed but its effect is not built (implemented = false)'):format(id))
             return
         end
-        local given = {}
+        local given, at = {}, nil
         for i = 2, #words do
-            local k, v = words[i]:match('^([%w_]+)=([%w_]+)$')
-            if not k then
-                tell(src, ('"%s" is not option=choice'):format(words[i]))
+            local k, v = words[i]:match('^([%w_]+)=(%S+)$')
+            local n = (k == 'x' or k == 'y') and tonumber(v) or nil
+            if n then
+                at = at or {}
+                at[k] = n
+            elseif k and v:match('^[%w_]+$') then
+                given[k] = v
+            else
+                tell(src, ('"%s" is not option=choice, x=<n> or y=<n>'):format(words[i]))
                 return
             end
-            given[k] = v
         end
         local opts = T.options(row, given)
         if not opts then
             tell(src, ('%s does not take those options'):format(id))
             return
         end
+        local spot, badSpot = T.spot(row, at)
+        if badSpot then
+            tell(src, row.spot == true and ('%s needs the spot: x=<n> y=<n>'):format(id)
+                or ('%s takes no spot'):format(id))
+            return
+        end
+        opts.at = spot
         local r = T.FUNCTIONS[id].run(target, { terminalId = 'dev', dev = false }, opts) or {}
         tell(src, ('ran %s for %d without a key: %s (%s)'):format(id, target,
             r.ok and 'ok' or 'refused', tostring(r.code)))

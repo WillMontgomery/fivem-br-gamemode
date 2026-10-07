@@ -426,6 +426,68 @@ do
     ok(r and r.ok == true, 'with an empty choice set it runs', r and r.code)
 end
 
+describe('round 4: the spot a run carries -- its shape, and only for a row run at one')
+do
+    -- Owner, 2026-10-06: Storm control and Supply drop "pick exactly where".
+    -- A row with `spot = true` runs at a place set on the big map, carried as
+    -- `at = { x, y }`; BR.Terminal.spot takes only that shape.
+    bootServer()
+    local T = BR.Terminal
+    local spotRow, plainRow = { id = 'a', spot = true }, { id = 'b' }
+    local s, bad = T.spot(spotRow, { x = 120, y = -45.5 })
+    ok(s and s.x == 120.0 and s.y == -45.5 and bad == false, 'two numbers: the spot')
+    s, bad = T.spot(plainRow, nil)
+    ok(s == nil and bad == false, 'a row run at no spot, and none sent: fine')
+    s, bad = T.spot(plainRow, { x = 1, y = 2 })
+    ok(s == nil and bad == true, 'a spot sent for a row that takes none: malformed')
+    for _, at in ipairs({
+        false, 'here', 7, {}, { x = 1 }, { y = 1 }, { x = '1', y = 2 }, { x = 0 / 0, y = 0 },
+        { x = math.huge, y = 0 }, { x = 0, y = -math.huge }, { x = 20001, y = 0 }, { x = 0, y = -20001 },
+    }) do
+        local s2, bad2 = T.spot(spotRow, at)
+        ok(s2 == nil and bad2 == true, ('malformed: %s'):format(type(at) == 'table'
+            and ('{ x = %s, y = %s }'):format(tostring(at.x), tostring(at.y)) or tostring(at)))
+    end
+    s, bad = T.spot(spotRow, nil)
+    ok(s == nil and bad == true, 'a row run at a spot, sent none: malformed')
+    -- EVERY ROW THAT TAKES A SPOT, AND NO OPTION CALLED `at` (the spot reaches
+    -- the function as opts.at).
+    local spots = {}
+    for _, row in ipairs(BR.Config.Terminals.functions) do
+        if row.spot == true then spots[#spots + 1] = row.id end
+        for _, o in ipairs(row.options or {}) do
+            ok(o.id ~= 'at', row.id .. ' declares no option called at')
+        end
+        ok(row.spot == nil or row.spot == true, row.id .. ': spot is true or absent')
+    end
+    eq(table.concat(spots, ','), 'storm_control,supply_drop', 'Storm control and Supply drop are run at a spot')
+
+    -- THROUGH THE NET EVENT, on a dev session: no spot, a bad one, a good one.
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    sv(1, 'open volts=500')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'storm_control' })
+    local r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == false and r.code == 'bad_option', 'Storm control with no spot: bad_option', r and r.code)
+    ok(r and r.state.keyHeld == true and r.state.volts == 500, 'and nothing is spent')
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'storm_control', at = { x = 'n', y = 1 } })
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.code == 'bad_option', 'a spot that is not one: bad_option', r and r.code)
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'storm_reveal', at = { x = 1, y = 1 } })
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.code == 'bad_option', 'a spot sent with Storm reveal: bad_option', r and r.code)
+    S.clock = S.clock + 1000
+    run(1, { terminalId = 'dev', functionId = 'storm_control', at = { x = 100.5, y = -20 } })
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == true and r.code == 'running', 'with a spot: accepted', r and r.code)
+    flush()
+    r = last(1, BR.Net.TERMINAL_RESULT)
+    ok(r and r.ok == true and r.code == 'done', 'and done', r and r.code)
+    eq(r and r.state.volts, 350, 'for its 150 Volts')
+end
+
 describe('the panel: pushed to each open computer, to its own player, only while open')
 do
     bootServer()
@@ -613,6 +675,8 @@ do
         'health_full', 'no_weapons', 'no_keys', 'no_keys_ground', 'no_keys_held', 'key_finder_warned',
         'key_finder_blip', 'pulse_detected', 'pulse_blip', 'no_target', 'contract_protect',
         'contract_target',
+        -- Round 4's (2026-10-06): the map pick's step, Storm control's spots.
+        'confirm_location', 'storm_spot_land', 'storm_spot_out', 'storm_spot_edge',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
         'address_host', 'path_home', 'path_functions', 'path_howto', 'path_privacy', 'path_login',
         'nav_home', 'nav_howto', 'nav_privacy', 'nav_categories', 'privacy_title', 'privacy_body',

@@ -258,11 +258,11 @@ BR.Market = {
 -- here too, since this suite loads every function file the manifest lists;
 -- its own suite, tools/test_terminalworld.lua, runs it over the real
 -- server/storm.lua. Here it only needs answers that keep it out of the way:
--- no futures to choose from.
+-- no spot it can end on.
 BR.Storm = {
     finalCentre = function(m) return m and m.finalStub or nil end,
-    futures = function() return nil, 'no_circle' end,
-    steer = function() end,
+    aimCheck = function() return nil, 'no_circle' end,
+    aim = function() return nil, 'no_circle' end,
 }
 
 loadAll({
@@ -421,12 +421,20 @@ end
 
 --- Open the terminal for `src` the real way and run `id`, to its last word:
 --- the loading is let run out (round 2).
-local function runAt(src, id, options)
+local function runAt(src, id, options, at)
     fire(BR.Net.TERMINAL_USE, src, { terminalId = 'tower' })
     gameMs = gameMs + 1000
-    fire(BR.Net.TERMINAL_RUN, src, { terminalId = 'tower', functionId = id, options = options })
+    fire(BR.Net.TERMINAL_RUN, src, { terminalId = 'tower', functionId = id, options = options, at = at })
     flush()
     return lastOf(BR.Net.TERMINAL_RESULT, src)
+end
+
+--- A `brterminal run` line typed by `src`; the answer on their F8.
+local function devRun(src, line)
+    local args = { 'run' }
+    for w in line:gmatch('%S+') do args[#args + 1] = w end
+    commands.brterminalsv(src, args, 'brterminalsv run ' .. line)
+    return lastOf(BR.Net.TERMINAL_DEV, src) or ''
 end
 
 --- Two squads and a solo player in one match: A = 1, 2; B = 3, 4; solo 5.
@@ -663,31 +671,49 @@ end
 -- PART C -- Supply drop and Max ammo
 -- =========================================================================
 
-describe('Supply drop: the drop spot the player chose, sited by the airdrop\'s own rules')
+describe('Supply drop: at the spot the player picked, sited by the airdrop\'s own rules')
 do
+    -- ROUND 4 (owner, 2026-10-06): "The supply drop should also allow them to
+    -- pick exactly where." The run carries the spot set on the big map, and
+    -- the airdrop's own siting finds the spot nearest it.
     local row = T.row('supply_drop')
     ok(row and row.implemented == true and T.FUNCTIONS.supply_drop ~= nil, 'supply_drop is built')
+    ok(row.spot == true and (row.options == nil or #row.options == 0), 'run at a picked spot, with no options')
+    local PICK = { x = C0.x - 700.0, y = C0.y + 350.0 }
     reset()
     local m = lobby()
-    local r = runAt(1, 'supply_drop', { site = 'terminal' })
-    ok(r and r.ok == true and r.code == 'done', 'near this terminal: it runs', r and r.code)
+    local r = runAt(1, 'supply_drop', nil, PICK)
+    ok(r and r.ok == true and r.code == 'done', 'at the spot picked: it runs', r and r.code)
     local call = airdropCalls[#airdropCalls]
-    ok(call and call.m == m and call.x == SITE.x and call.y == SITE.y,
-        'BR.Airdrop.call is asked for the spot nearest THE TERMINAL')
+    ok(call and call.m == m and call.x == PICK.x and call.y == PICK.y,
+        'BR.Airdrop.call is asked for the airdrop spot nearest THE SPOT PICKED')
     eq(keys[1], false, 'the key is spent')
 
+    -- WITHOUT A SPOT, OR WITH ONE THAT IS NOT ONE: bad_option, nothing asked.
+    for _, bad in ipairs({
+        { label = 'no spot', at = nil },
+        { label = 'a spot that is not a table', at = 'here' },
+        { label = 'a spot with no y', at = { x = 1.0 } },
+        { label = 'a spot that is not a number', at = { x = 'a', y = 1.0 } },
+        { label = 'a spot off any map', at = { x = 1e9, y = 0.0 } },
+        { label = 'a spot that is not finite', at = { x = 0 / 0, y = 0.0 } },
+    }) do
+        reset()
+        m = lobby()
+        r = runAt(1, 'supply_drop', nil, bad.at)
+        ok(r and r.code == 'bad_option' and #airdropCalls == 0 and keys[1] == true,
+            bad.label .. ': bad_option, nothing asked, nothing spent', r and r.code)
+    end
+    -- A FUNCTION RUN WITHOUT ONE NEVER TAKES ONE.
     reset()
     m = lobby()
-    r = runAt(1, 'supply_drop', { site = 'circle' })
-    call = airdropCalls[#airdropCalls]
-    ok(r and r.ok and call and call.x == m.storm.cx1 and call.y == m.storm.cy1,
-        'near the next circle: the spot nearest the next circle\'s centre')
-
+    r = runAt(1, 'max_ammo', nil, PICK)
+    ok(r and r.code == 'bad_option' and keys[1] == true, 'a spot sent with Max ammo: bad_option', r and r.code)
+    -- THE OLD SITE OPTION IS GONE.
     reset()
     m = lobby()
-    r = runAt(1, 'supply_drop', { site = 'moon' })
-    ok(r and r.code == 'bad_option' and #airdropCalls == 0 and keys[1] == true,
-        'a spot that is not offered: bad_option, nothing asked, nothing spent')
+    r = runAt(1, 'supply_drop', { site = 'terminal' }, PICK)
+    ok(r and r.code == 'bad_option' and keys[1] == true, 'the old `site` option: bad_option', r and r.code)
 
     reset()
     m = lobby()
@@ -699,7 +725,7 @@ do
     end
     ok(f and f.available == false and f.reason == 'no_site', 'with no spot inside the next circle it is listed no_site')
     gameMs = gameMs + 1000
-    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'supply_drop' })
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'supply_drop', at = PICK })
     r = lastOf(BR.Net.TERMINAL_RESULT, 1)
     ok(r and r.code == 'no_site' and keys[1] == true and not T.squadUsed(1),
         'and refused no_site, spending nothing', r and r.code)
@@ -707,15 +733,26 @@ do
     reset()
     m = lobby()
     m.storm = nil
-    r = runAt(1, 'supply_drop')
+    r = runAt(1, 'supply_drop', nil, PICK)
     ok(r and r.code == 'no_storm' and keys[1] == true, 'before the storm: no_storm, nothing spent', r and r.code)
 
     reset()
     m = lobby()
     m.dropBusy = true
-    r = runAt(1, 'supply_drop', { site = 'circle' })
+    r = runAt(1, 'supply_drop', nil, PICK)
     ok(r and r.code == 'drop_busy' and #airdropCalls == 0 and keys[1] == true,
         'another drop on its way: drop_busy, nothing spent', r and r.code)
+
+    -- THE DEV COMMAND TAKES THE SPOT AS x= y=.
+    reset()
+    m = lobby()
+    keys[1] = false
+    local said = devRun(1, ('supply_drop x=%.1f y=%.1f'):format(PICK.x, PICK.y))
+    call = airdropCalls[#airdropCalls]
+    ok(said:find('ok (done)', 1, true) ~= nil and call and call.x == PICK.x and call.y == PICK.y,
+        '`brterminal run supply_drop x=<n> y=<n>` drops at the spot', said)
+    said = devRun(1, 'supply_drop')
+    ok(said:find('needs the spot', 1, true) ~= nil, 'and without one says it needs the spot', said)
 end
 
 describe('Max ammo: every squadmate still in the fight is filled')
@@ -756,9 +793,9 @@ local function useAt(src)
     gameMs = gameMs + 1000
 end
 
-local function ask(src, id, options)
+local function ask(src, id, options, at)
     gameMs = gameMs + 1000
-    fire(BR.Net.TERMINAL_RUN, src, { terminalId = 'tower', functionId = id, options = options })
+    fire(BR.Net.TERMINAL_RUN, src, { terminalId = 'tower', functionId = id, options = options, at = at })
     return lastOf(BR.Net.TERMINAL_RESULT, src)
 end
 
@@ -835,7 +872,7 @@ do
     reset()
     m = lobby()
     useAt(1)
-    local r2 = ask(1, 'supply_drop', { site = 'terminal' })
+    local r2 = ask(1, 'supply_drop', nil, { x = SITE.x, y = SITE.y })
     ok(r2 and r2.code == 'running', 'Supply drop is accepted')
     m.dropBusy = true
     flush()
@@ -1087,14 +1124,6 @@ end
 local function lastToast(src)
     local mine = noticesTo(src)
     return mine[#mine] and textOf(mine[#mine]) or nil
-end
-
---- A `brterminal run` line typed by `src`; the answer on their F8.
-local function devRun(src, line)
-    local args = { 'run' }
-    for w in line:gmatch('%S+') do args[#args + 1] = w end
-    commands.brterminalsv(src, args, 'brterminalsv run ' .. line)
-    return lastOf(BR.Net.TERMINAL_DEV, src) or ''
 end
 
 describe('Field medic: everyone standing in the squad, to full health and full armor')

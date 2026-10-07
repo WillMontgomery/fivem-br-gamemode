@@ -9,8 +9,8 @@
 --   Scan          the scanning squad sees every opponent, for the rest of the
 --                 match, and the player who ran it gets a bounty
 --   the bounty    the owner's spec, below
---   Supply drop   one extra airdrop near this terminal or the next circle,
---                 by the airdrop's own rules (BR.Airdrop.call)
+--   Supply drop   one extra airdrop at the airdrop spot nearest the place picked
+--                 on the big map, by the airdrop's own rules (BR.Airdrop.call)
 --   Max ammo      every gun the squad carries filled to its cap
 --                 (BR.Inv.fillAmmo)
 --
@@ -344,43 +344,39 @@ T.FUNCTIONS.scan = {
 }
 
 -- ----------------------------------------------------------- Supply drop ---
+--
+-- ROUND 4 (owner, 2026-10-06): "The supply drop should also allow them to pick
+-- exactly where." The run carries the spot the player set on the big map
+-- (`spot = true` on the row, `opts.at`), and the drop lands at the airdrop
+-- spot nearest it that the airdrop's own siting rules allow
+-- (BR.Airdrop.candidate: the landing window, inside the next circle, a
+-- placeable spot no other drop is on) -- an airdrop lands only at a spot, never
+-- in open country.
 
---- Where a Supply drop aims for one choice of `site`: this terminal, or the
---- centre of the circle the storm is closing toward. A terminal the server
---- does not know (the dev terminal) aims at the player.
---- @return number|nil x, number|nil y
-local function dropAim(src, session, site, m)
-    if site == 'circle' then
-        local rec = m.storm
-        if not rec then return nil, nil end
-        return rec.cx1, rec.cy1
-    end
-    local x, y = T.anchorOf(src, session)
-    return x, y
-end
-
---- Why Supply drop cannot run for this choice (nil: any choice), or nil.
-local function dropRefusal(src, session, m, site)
-    if not m.storm then return 'no_storm' end
+--- Why Supply drop cannot run near `at` (nil: anywhere, while it is only being
+--- listed), or nil.
+local function dropRefusal(m, at)
+    local rec = m.storm
+    if not rec then return 'no_storm' end
     if BR.Airdrop.busy(m) then return 'drop_busy' end
-    for _, choice in ipairs(site and { site } or { 'terminal', 'circle' }) do
-        local x, y = dropAim(src, session, choice, m)
-        if x and BR.Airdrop.candidate(m, x, y) then return nil end
-    end
+    -- Listed, with no spot picked yet: is there any airdrop spot at all? The
+    -- nearest to the next circle's center is one whenever any is.
+    local x, y = rec.cx1, rec.cy1
+    if at then x, y = at.x, at.y end
+    if BR.Airdrop.candidate(m, x, y) then return nil end
     return 'no_site'
 end
 
 T.FUNCTIONS.supply_drop = {
     -- Refused, spending nothing, before the storm, while another drop is out,
-    -- and when no airdrop spot fits the next circle for the chosen site (any
-    -- site, while the terminal is only being listed).
+    -- and when no airdrop spot fits the next circle.
     refuse = function(src, session, opts)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
-        return dropRefusal(src, session, m, opts and opts.site or nil)
+        return dropRefusal(m, opts and opts.at or nil)
     end,
     -- ONE EXTRA AIRDROP, through BR.Airdrop.call: sited by the airdrop's own
-    -- rules near the chosen point, announced to the match like any drop, and
+    -- rules nearest the picked spot, announced to the match like any drop, and
     -- an ordinary drop from then on.
     run = function(src, session, opts)
         local m = T.whereIs(src)
@@ -393,9 +389,9 @@ T.FUNCTIONS.supply_drop = {
             return { ok = false, code = 'unavailable' }
         end
         if not m.storm then return { ok = false, code = 'no_storm' } end
-        local x, y = dropAim(src, session, opts.site, m)
-        if not x then return { ok = false, code = 'no_site' } end
-        local rec, why = BR.Airdrop.call(m, x, y)
+        local at = opts and opts.at
+        if not at then return { ok = false, code = 'bad_option' } end
+        local rec, why = BR.Airdrop.call(m, at.x, at.y)
         if not rec then
             return { ok = false, code = why == 'busy' and 'drop_busy' or 'no_site' }
         end
