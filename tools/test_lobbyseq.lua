@@ -1372,9 +1372,11 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- The lock refuses the interface and nothing server-side can change a model --
--- SetPlayerModel has one call site in the project. /brlocker is the remaining
--- road, and it is a deliberate manual override: it should leave a coherent
--- lobby behind rather than a ped on a hillside holding a task nobody owns.
+-- SetPlayerModel has two call sites in the project, the Season 1 locker's and
+-- Locker v2's (#28, client/locker2.lua, whose own suite is test_locker2.lua),
+-- both client-only. /brlocker is the remaining road, and it is a deliberate
+-- manual override: it should leave a coherent lobby behind rather than a ped
+-- on a hillside holding a task nobody owns.
 
 do
     reset()

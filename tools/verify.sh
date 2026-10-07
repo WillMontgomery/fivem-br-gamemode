@@ -160,6 +160,7 @@ NOTES=(
     "test_terminalfx|Season 2 terminal functions: Scan shows the squad every opponent, the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
     "test_terminalstrike|Season 2 tools from the sky: Vehicle drop lands an unarmed car near the right player, Airstrike's damage is the server's alone, and both spend nothing when they can't"
     "test_guardprobe|The bodyguard ownership probe is dev-only and Season 2, spawns and logs what it says, and costs nothing until typed"
+    "test_locker2|Season 2 Locker: saved peds checked and kept by the server, the ped you left with is the ped you rejoin with, and Season 1's locker unchanged"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -935,6 +936,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # that can no longer happen giving everything back. Their planner half is
     # test_storm.lua's `control.*` blocks.
     #
+    # test_locker2.lua is Locker v2 (#28, Season 2) on its real files, each in
+    # its own Lua environment: the appearance schema both sides share, the
+    # server's saved peds over a modeled br_ddb (every refusal, the rate, the
+    # worn ped coalesced and flushed on drop), the client over a modeled ped
+    # (the join, the tabs, the draft, the watcher, a live season switch), the
+    # camera's focus presets, and Season 1's locker played twice -- alone and
+    # beside v2 -- with identical native traces.
+    #
     # test_terminalstrike.lua is #396's round 5 tools that come down from the
     # sky (2026-10-06), on the real door and function files: Vehicle drop's car
     # (the armored Kuruma, through the one creation path the vehicle rules
@@ -1015,6 +1024,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_terminalfx.lua
         tools/test_terminalstrike.lua
         tools/test_guardprobe.lua
+        tools/test_locker2.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

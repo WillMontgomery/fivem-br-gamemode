@@ -2684,6 +2684,7 @@ console.log('\nlocker2: saved peds and the worn ped (#28)')
   check('a headshot sets img where the ped exists', [shot.UpdateExpression, shot.ConditionExpression],
     ['SET #img = :img', 'attribute_exists(pk)'])
   check('a png is not a headshot', pedShotInput(T, LIC, PID, 'data:image/png;base64,AAAA'), null)
+  check('nor anything but a webp data URL', pedShotInput(T, LIC, PID, 'data:image/AAAA'), null)
   check('nor one past 8 KB', pedShotInput(T, LIC, PID, IMG_PREFIX + 'A'.repeat(IMG_MAX)), null)
   check('nor one that is not base64', pedShotInput(T, LIC, PID, IMG_PREFIX + 'AA"A'), null)
   check('a delete is one DeleteRequest on the ped key', pedDeleteInput(T, LIC, PID),
