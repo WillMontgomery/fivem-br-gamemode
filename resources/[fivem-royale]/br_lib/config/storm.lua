@@ -756,7 +756,67 @@ BR.Config.Storm = {
             -- is still continuous. Sag goes as ds^2 / 8r, so the step is
             -- sqrt(8 * r * chordM) and a 2600m circle closes in about 80 quads at
             -- two metres of sag, which nobody can see from inside it.
-            chordM   = 2.0,
+            --
+            -- ═══ 8, NOT 2: THE OWNER'S TRADE FOR FRAME TIME (#393) ═══
+            --
+            --   "Let's fade the wall past 8km include large pieces"
+            --                                         -- the owner, 2026-10-07
+            --
+            -- A wall draw costs about 3.3 microseconds (the owner's resmon), and 2 m
+            -- of sag cost the opening ring 143 pieces where 8 m costs 72. The drawn
+            -- wall is never OUTSIDE the line that damages: every piece is a chord of
+            -- a convex arc of the inset shape, so it runs inside that arc, and the
+            -- inset shape is edgeInset inside the true one. So the curtain stands
+            -- between edgeInset and edgeInset + chordM -- 6 to 14 m -- inside the
+            -- edge, on the safe side; the HUD, the map and the damage all read the
+            -- true shape and none of them moved. tools/test_storm.lua's
+            -- `wall.chord` measures it on every phase and shape.
+            --
+            -- A MOVING WALL NO LONGER JUMPS BY IT. client/storm.lua steps each run
+            -- from its start (buildStrip), so a sweep grows a vertex at a run's end
+            -- instead of sliding every vertex along -- which at 8 m was a jump of up
+            -- to 7.8 m about every nine seconds of phase 1's sweep. What is left is
+            -- a wall held at the minSeg floor (phase 3 on, mostly) re-splitting when
+            -- its runs change, a few times a sweep, by up to the chord.
+            chordM   = 8.0,
+
+            -- ═══ THE LONGEST A PIECE MAY BE, FOR THE FAR FADE (#393) ═══
+            --
+            -- The fade below is carried by each piece's two ends, so a piece is cut
+            -- no longer than this: a phase-1 blob's straight run can be 9.6 km, its
+            -- middle beside the player while both ends are past 8 km. Pieces of one
+            -- straight run lie on one line, so this changes no picture. 1500 is the
+            -- fade band's own width, which is what lets farFade's texture hold the
+            -- far end of any piece the fade can still see (see farFade). MEASURED
+            -- over 200 seeds, a phase-1 blob draws 1.1 more pieces and phases 2 to
+            -- 5 none.
+            maxQuadM = 1500.0,
+
+            -- ═══ THE FAR WALL FADES OUT FROM 6.5 TO 8 km, AND IS NOT DRAWN PAST IT
+            --     (#393) ═══
+            --
+            -- Measured from the viewpoint the wall already faces by (the player, or
+            -- the player watched), on the ground, to every end of every piece. Any
+            -- piece with both ends inside startM is drawn with exactly the texels it
+            -- was drawn with before this existed; past endM a piece is not
+            -- submitted at all.
+            --
+            -- WHY 6.5 TO 8. 8 is the owner's. 6.5 is as close as the band can start
+            -- while, from phase 3's hold on, the shape a player stands in is never
+            -- faded: it is phase 2's target or smaller, and MEASURED over 1000 seeds a
+            -- 1600 m blob is at most 6.40 km end to end (4.29 on average). Phase 1's
+            -- ring and circle 1 (up to 10.4 km) are what fade, which is where the draws
+            -- are -- and a breakout's far shape, like any far wall. And 1.5 km is wide
+            -- enough that nothing pops: the fade is a smoothstep, flat at both ends,
+            -- carried along each piece by the texture rather than one alpha a piece
+            -- (one alpha a piece is a staircase -- the "three visible steps" the
+            -- owner played on the vertical fade), so a piece's alpha moves only as
+            -- the player does, and the steepest it gets is 1.5x the average: 1
+            -- percent of alpha per 10 m.
+            --
+            -- `cols` is the texture's columns per band: the fade curve is held at 17
+            -- points and the sampler blends between them.
+            farFade  = { startM = 6500.0, endM = 8000.0, cols = 16 },
 
             -- The floor on quads per closed loop, for the endgame circles where
             -- the sag rule would happily draw a 40m ring as an octagon.
@@ -927,10 +987,16 @@ BR.Config.Storm = {
                 -- dictionary, bakes rampH rows of alpha into the texture and commits
                 -- it once, then gates the gradient path on reading the width back.
                 --
-                -- 8 WIDE RATHER THAN 1 so the u axis is not degenerate -- the draw
-                -- samples u 0.5, which is the middle of eight identical columns, so
-                -- no edge filtering or clamp rule can enter into it. 256 TALL is one
-                -- row per alpha level, which is every level the format has.
+                -- THE u AXIS IS THE FAR FADE (#393). A band of columns holds the ramp
+                -- as it always was, the next band fades it out to nothing, and a third
+                -- holds nothing -- a full band either side, so the ends of the longest
+                -- piece the fade can see always land on the texture. The width is
+                -- 3 * cols + 1 = 49 and comes off strip.farFade rather than a number
+                -- here; client/storm.lua's farLayout says why each band is there.
+                -- Every u the draw passes is a column's center or between two, so no
+                -- edge filtering or clamp rule enters into it, as before. With no
+                -- farFade it is 8 identical columns, as it was. 256 TALL is one row
+                -- per alpha level, which is every level the format has.
                 --
                 -- THE v AXIS CARRIES INFORMATION AND SO CANNOT BE PINNED LIKE u, which
                 -- is why it took a defect to protect. The draw runs v from the centre
@@ -942,7 +1008,6 @@ BR.Config.Storm = {
                 -- client computes it from the height it actually built.
                 txd        = 'br_storm_ramp',
                 texture    = 'ramp',
-                rampW      = 8,
                 rampH      = 256,
 
                 -- ═══ HOW MANY NAMES THE RAMP MAY PROBE BEFORE IT GIVES UP ═══
@@ -963,7 +1028,7 @@ BR.Config.Storm = {
                 -- THE BOUND IS THE POINT OF THE NUMBER. A client whose
                 -- runtime-texture support is broken refuses every name, and an
                 -- unbounded probe would spin rather than fall back to bands. 32 costs
-                -- at most 256 KiB of stranded texture (8 x 256 x 4 bytes is 8 KiB a
+                -- at most 1568 KiB of stranded texture (49 x 256 x 4 bytes is 49 KiB a
                 -- restart) before the fallback, which is more restarts than any
                 -- playtest performs and still well clear of the client's own ceiling
                 -- on live runtime textures. Failed probes are nearly free -- the

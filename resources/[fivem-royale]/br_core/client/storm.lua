@@ -346,7 +346,59 @@ end
 -- `v0`/`v1` are the half-texel inset the draw maps the wall's bottom and top to; they
 -- are computed from the height the texture was ACTUALLY built at, so the quad cannot
 -- inset by a row count the texture does not have. buildRamp's tail argues them.
-local ramp = { tex = nil, txd = nil, name = nil, v0 = nil, v1 = nil }
+--
+-- AND THE COLUMNS, WHICH ARE THE FAR FADE'S (#393). `w` is the width built, `cols` the
+-- columns per band of strip.farFade (nil when the texture was built with none, which
+-- is eight identical columns as before), and `x0` the column at farFade.startM. Column
+-- x sits at (x - x0) / cols bands past startM, and its center is u (x + 0.5) / w.
+local ramp = { tex = nil, txd = nil, name = nil, v0 = nil, v1 = nil,
+               w = nil, cols = nil, x0 = nil }
+
+--- The far fade's multiplier `s` bands past strip.farFade.startM: 1 at the start, 0
+--- from one band on, a smoothstep between. FLAT AT BOTH ENDS, so neither edge of the
+--- band reads as a line on the wall, and steepest in the middle at 1.5 per band.
+--- @param s number
+--- @return number 0..1
+local function farMul(s)
+    if s <= 0.0 then return 1.0 end
+    if s >= 1.0 then return 0.0 end
+    return 1.0 - s * s * (3.0 - 2.0 * s)
+end
+
+--- The far fade's columns off the strip config: columns per band (nil for no far
+--- fade), the texture's width, and the column at the band's start.
+---
+--- ═══ THREE BANDS WIDE: A FULL ONE BEFORE THE FADE AND AN EMPTY ONE AFTER ═══
+---
+--- A piece's inside is the straight blend of its two ends' u, and distance along a
+--- straight piece is CONVEX: its middle is never farther than the blend of its ends.
+--- So the blend can only show a point as farther than it is, never nearer -- AS LONG
+--- AS NEITHER END'S u WAS CLAMPED. A clamp at either end of the band bends that
+--- straight blend:
+---
+---   * at the far end, it pulls the blend back toward the near end and leaves alpha
+---     past 8 km -- 13 percent of it at 8 km, on a 1.5 km piece running straight away
+---     from a viewer at 7;
+---   * at the near end, it pushes the band's ramp in past 6.5 km -- 16 percent off a
+---     point just inside 6.5, on a 1.5 km piece crossing it.
+---
+--- Any piece with a point in the band has both ends within maxQuadM of it, so a
+--- texture holding maxQuadM / band bands of full alpha before the fade and as many of
+--- nothing after it never clamps a piece that is drawn: one band each at the shipping
+--- 1500 m, 3 * cols + 1 = 49 columns. Then a point inside 6.5 km is shown at its
+--- distance or a few meters past it -- the convexity, 43 m at most on a 1.5 km piece --
+--- and a point past 8 km is shown past it, at zero.
+--- @param sp table  cfg.render.strip
+--- @return integer|nil cols, integer width, integer x0
+local function farLayout(sp)
+    local ff = sp.farFade
+    if not (ff and ff.startM and ff.endM and ff.endM > ff.startM) then return nil, 8, 0 end
+    local cols = math.max(1, math.floor(ff.cols or 16))
+    local band = ff.endM - ff.startM
+    local reach = math.min(sp.maxQuadM or band, 4.0 * band)
+    local x0 = math.ceil(reach / band * cols - 1e-9)
+    return cols, x0 + math.ceil((1.0 + reach / band) * cols - 1e-9) + 1, x0
+end
 
 --- The fade's alpha multiplier at height `z`, with the ramp pinned to GROUND LEVEL.
 ---
@@ -414,11 +466,20 @@ end
 --- v maps linearly to world z, so the ramp's kink at ground level has to be carried
 --- by the ROWS. That is the whole reason a baked texture beats a per-vertex alpha:
 --- the flat-then-falling curve is just what the rows say, at no cost.
+---
+--- ═══ AND THE FAR FADE GOES IN THE COLUMNS (#393) ═══
+---
+--- Column x is the ramp times farMul((x - x0) / cols): every column up to x0, the
+--- band's start, is the ramp exactly as it was baked before, to the byte, and the wall
+--- fades with distance ALONG u. One alpha a triangle could only fade a piece as a
+--- whole, which is a staircase along the wall; a u per end blends smoothly along it,
+--- for the same two triangles.
 --- @param fc table   cfg.render.strip.fade
 --- @param zb number  the geometry's bottom
 --- @param zt number  the geometry's top
+--- @param sp table   cfg.render.strip, for the far fade's columns
 --- @return boolean ok, string|nil why
-local function buildRamp(fc, zb, zt)
+local function buildRamp(fc, zb, zt, sp)
     if ramp.tex then return true end
 
     -- NAMED ONE AT A TIME so the rung can say WHICH native is missing. A build with
@@ -436,7 +497,7 @@ local function buildRamp(fc, zb, zt)
         end
     end
 
-    local w = math.max(1, math.floor(fc.rampW or 8))
+    local cols, w, x0 = farLayout(sp or {})
     local h = math.max(2, math.floor(fc.rampH or 256))
 
     --- One creation attempt under a name suffix.
@@ -484,18 +545,19 @@ local function buildRamp(fc, zb, zt)
     -- precisely why the name is taken and precisely why this counter exists -- the
     -- leak is the mechanism, not a side effect of it.
     --
-    -- WHAT IT COSTS IS 8 KiB A RESTART: 8 x 256 pixels at 4 bytes is 8192 bytes
-    -- exactly. That is what makes a counter affordable where a one-shot retry was
-    -- protecting nothing worth protecting. A FAILED attempt is cheaper still -- it
-    -- leaks only an empty TXD wrapper, because the refusal happens before any texture
-    -- is allocated -- so re-probing a dozen taken names costs nothing measurable.
+    -- WHAT IT COSTS IS 49 KiB A RESTART: 49 x 256 pixels at 4 bytes is 50176 bytes
+    -- (8 KiB before the far fade took the columns). That is what makes a counter
+    -- affordable where a one-shot retry was protecting nothing worth protecting. A
+    -- FAILED attempt is cheaper still -- it leaks only an empty TXD wrapper, because
+    -- the refusal happens before any texture is allocated -- so re-probing a dozen
+    -- taken names costs nothing measurable.
     --
     -- ═══ BOUNDED, SO A BROKEN CLIENT STILL REACHES THE FALLBACK ═══
     --
     -- The loop must not be "keep trying until one works": a client whose
     -- runtime-texture support is genuinely broken refuses EVERY name, and an unbounded
     -- probe would spin instead of banding. `nameTries` is the bound and it is a config
-    -- value so the number is visible. At 32 the arithmetic is 256 KiB of leaked
+    -- value so the number is visible. At 32 the arithmetic is 1568 KiB of leaked
     -- texture before the fallback, which is far more restarts than a playtest does and
     -- still well clear of the client's own runtime-texture ceiling.
     local tries = math.max(1, math.floor(fc.nameTries or 32))
@@ -537,13 +599,16 @@ local function buildRamp(fc, zb, zt)
         ramp.verified = false
     end
 
-    -- ROWS ARE THE RAMP. Every column is identical -- the width exists only so the
-    -- u axis is not degenerate -- so this is h distinct values written w times.
+    -- ROWS ARE THE RAMP AND COLUMNS ARE THE FAR FADE. The multiplier is 1.0 exactly
+    -- up to the band's start, so those columns are the old bake to the byte; with no
+    -- far fade every column is.
     for y = 0, h - 1 do
         local t = y / (h - 1)
-        local v = math.floor(rampAlpha(fc, zb, zt, zb + (zt - zb) * t) * 255.0 + 0.5)
-        if v < 0 then v = 0 elseif v > 255 then v = 255 end
+        local a = rampAlpha(fc, zb, zt, zb + (zt - zb) * t)
         for x = 0, w - 1 do
+            local m = cols and farMul((x - x0) / cols) or 1.0
+            local v = math.floor(a * m * 255.0 + 0.5)
+            if v < 0 then v = 0 elseif v > 255 then v = 255 end
             SetRuntimeTexturePixel(tex, x, y, v, v, v, v)
         end
     end
@@ -603,6 +668,7 @@ local function buildRamp(fc, zb, zt)
     -- mapping is compressed by 1/256 of the span, 3.9 m over 1000 -- and the endpoints
     -- still land on baseAlpha and topAlpha exactly, which is the property that matters.
     ramp.v0, ramp.v1 = 0.5 / h, (h - 0.5) / h
+    ramp.w, ramp.cols, ramp.x0 = w, cols, x0
 
     ramp.tex, ramp.txd, ramp.name = tex, txdName, texName
     return true
@@ -644,7 +710,7 @@ end
 --- @param fc table   cfg.render.strip.fade
 --- @param zb number  the geometry's bottom
 --- @param zt number  the geometry's top
-local function resolveFade(fc, zb, zt)
+local function resolveFade(fc, zb, zt, sp)
     if fade.path then return end
 
     if (fc.prefer or 'gradient') ~= 'gradient' then
@@ -656,7 +722,7 @@ local function resolveFade(fc, zb, zt)
         return
     end
 
-    local built, why = buildRamp(fc, zb, zt)
+    local built, why = buildRamp(fc, zb, zt, sp)
     if not built then
         fade.path, fade.rung = 'bands', why or 'the runtime ramp could not be built'
         return
@@ -665,11 +731,10 @@ local function resolveFade(fc, zb, zt)
     fade.path = 'gradient'
     -- THE ATTEMPT NUMBER IS IN THE LINE, and it is the one number here that says
     -- something about the SESSION rather than about the build: attempt 1 is a fresh
-    -- client, attempt 5 means br_core has started five times and four 8 KiB textures
+    -- client, attempt 5 means br_core has started five times and four 49 KiB textures
     -- are stranded behind it. That is how a leak gets noticed before it matters.
     fade.rung = ('runtime ramp %s:%s, %dx%d, no streamed asset, %s, attempt %d of %d')
-        :format(ramp.txd, ramp.name,
-            math.max(1, math.floor(fc.rampW or 8)),
+        :format(ramp.txd, ramp.name, ramp.w,
             math.max(2, math.floor(fc.rampH or 256)),
             ramp.verified and 'width read back'
                 or 'width read-back native absent, handle trusted',
@@ -707,7 +772,8 @@ local QUAD_STRIDE = 8
 --- @param maxPolys number
 --- @param quadPolys number polys one quad costs on the settled fade path
 --- @param pool table|nil   the moving wall's pool, for the run lists
-local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
+--- @param maxQuadM number  the longest a quad may be, in meters (math.huge: no cap)
+local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, maxQuadM)
     local SS = BR.StormShape
     local comps = SS.components(shape)
     local nComp = #comps
@@ -715,6 +781,7 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
     local nq = 0
     g.shape, g.chordM, g.minSeg, g.maxPolys, g.quadPolys = shape, chordM, minSeg,
         maxPolys, quadPolys
+    g.maxQuadM = maxQuadM
     g.n = 0
     if nComp == 0 then return end
 
@@ -820,14 +887,33 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
         -- above spelled in rounding. Summed, that total is the component's own count
         -- -- so n is derived from roundness instead of from the perimeter, and the
         -- split below then hands each run back exactly what it asked for.
+        --
+        -- ═══ AND NO QUAD IS LONGER THAN maxQuadM, WHICH THE FAR FADE NEEDS (#393) ═══
+        --
+        -- The fade is carried per VERTEX (emitStrip), and a quad's inside shows the
+        -- straight blend of its two ends. That is the true fade to meters on a quad
+        -- a kilometer or so long -- and wrong on the 9.6 km straight run a phase-1
+        -- blob can have, whose middle can stand next to the player while both ends
+        -- are past 8 km. So a straight run is cut into pieces no longer than
+        -- maxQuadM, and an arc's step is capped by it too. A straight run's pieces
+        -- lie on one line, so the picture does not change; MEASURED over 200 seeds
+        -- at 1500 m, a phase-1 blob draws 1.1 quads more on average and phases 2 to
+        -- 5 none (the minSeg floor already gives them more).
         local want, total = g.want, 0
+        local stepOf = g.step
         for i = 1, nRuns do
             local rn = runs[i]
-            local k = 1
+            local step = maxQuadM or math.huge
             if rn and rn.r and rn.r > 0.0 then
-                k = math.max(1, math.ceil(rn.len / math.sqrt(8.0 * rn.r * chordM)))
+                local s = math.sqrt(8.0 * rn.r * chordM)
+                if s < step then step = s end
+            end
+            local k = 1
+            if rn and step < math.huge then
+                k = math.max(1, math.ceil(rn.len / step))
             end
             want[i] = k
+            stepOf[i] = step
             total = total + k
         end
 
@@ -865,6 +951,22 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
             local t0 = runs[i] and runs[i].t0 or 0.0
             local rlen = runs[i] and runs[i].len or c.len
             local cnt = edge[i] - edge[i - 1]
+            -- ═══ A RUN HANDED WHAT IT ASKED FOR IS STEPPED FROM ITS START (#393) ═══
+            --
+            -- Its vertices stand one full step apart from the run's start, and the
+            -- last piece takes what is left. Spread evenly instead, every vertex
+            -- jumps the day a moving wall's run grows past a whole number of steps:
+            -- all of them slide from thirds to quarters in one frame, and the wall
+            -- jumps by up to chordM where a point stops being a vertex and becomes
+            -- the middle of a piece. MEASURED through this renderer over a phase-1
+            -- sweep: 26 jumps of up to 7.8 m at a chordM of 8, against 1.8 m at the
+            -- old 2. Stepped from the start, a run that grows by one step grows one
+            -- new vertex AT ITS END, on top of the end that is already there, and
+            -- nothing else moves. Every piece is still within chordM of its arc.
+            --
+            -- A run the minSeg floor or the poly budget has handed more or fewer
+            -- quads keeps the even spread: the floor's surplus has no step to keep.
+            local stepJ = (cnt == want[i]) and stepOf[i] or nil
             for j = 1, cnt do
                 local bx, by
                 if i == nRuns and j == cnt then
@@ -885,7 +987,9 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
                     -- 4.9e-13 metres (see the header), so which of them answers is
                     -- not a visible decision -- but it is a deterministic one, and
                     -- the vertex is ON the corner either way rather than past it.
-                    bx, by = SS.pointAtComponent(shape, c, t0 + rlen * j / cnt)
+                    local tj = t0 + rlen * j / cnt
+                    if stepJ and j < cnt then tj = t0 + stepJ * j end
+                    bx, by = SS.pointAtComponent(shape, c, tj)
                 end
                 -- The quad, stored rather than drawn: its corners, and the midpoint
                 -- and normal drawStrip's face test reads -- the same expressions
@@ -907,8 +1011,8 @@ end
 --- -- so the frame's quads can be emitted again, later in the same frame, exactly as
 --- they would have been (see BR.Storm.cameraCut).
 local function newStrip()
-    return { q = {}, want = {}, edge = { [0] = 0 }, n = 0,
-             draw = {}, bz0 = {}, bz1 = {}, ba = {} }
+    return { q = {}, want = {}, step = {}, edge = { [0] = 0 }, n = 0,
+             draw = {}, bz0 = {}, bz1 = {}, ba = {}, baf = {} }
 end
 
 --- The strip a caller that keeps none is drawn from. File-level so the frame
@@ -985,18 +1089,38 @@ end
 --- order, with the same arguments. With one, a quad wholly behind both planes in it
 --- is skipped -- or, with `complement`, ONLY those are drawn, which is how a camera
 --- cut puts back what the frame left out.
+---
+--- ═══ AND THE FAR WALL FADES, AND PAST endM IS NOT SUBMITTED (#393) ═══
+---
+---   "Let's fade the wall past 8km include large pieces"   -- the owner, 2026-10-07
+---
+--- Measured on the ground from (vx, vy) -- the viewpoint the face test already uses,
+--- the player or the player watched -- to each END of each quad, which carries its own
+--- u: the column at the band's start inside farFade.startM, and further along the far
+--- fade's columns past it. So a quad whose two ends are inside startM draws the texels
+--- it always drew, and one in the band blends smoothly from end to end instead of
+--- stepping a whole quad at a time. A quad whose NEAREST point is past endM is not
+--- drawn at all: every pixel of it would be zero. The banded fallback, which has no
+--- texture, fades each quad as a whole by its nearest point.
+---
+--- THE TWO PARTITIONS ARE INDEPENDENT. A quad past endM is out of the frame whichever
+--- side of the bus camera it is on, so the cull draws the near quads in front of it
+--- and a cut puts back the near quads behind it -- the two halves of the same wall a
+--- frame with no cull would draw. And neither is a cull behind the camera.
 --- @param g table            a built strip, its `draw` filled this frame
 --- @param view table|nil     { n = 2, { x, y, z, fx, fy, fz }, {...} }: the two
 ---                           camera planes, this frame's pose and the one before
 --- @param complement boolean draw exactly the quads `view` skips
---- @return integer           quads skipped
+--- @return integer           quads skipped by `view` (not those past endM)
 local function emitStrip(g, view, complement)
     local d = g.draw
     local gradient, gDict, gTex, gV0, gV1 = d.gradient, d.gDict, d.gTex, d.gV0, d.gV1
     local bands, zb, zt = d.bands, d.zb, d.zt
     local cr, cg, cb, av = d.cr, d.cg, d.cb, d.av
     local vx, vy = d.vx, d.vy
-    local bandZ0, bandZ1, bandA = g.bz0, g.bz1, g.ba
+    local bandZ0, bandZ1, bandA, bandAf = g.bz0, g.bz1, g.ba, g.baf
+    local far, f0, band, f0sq, f1sq = d.far, d.f0, d.band, d.f0sq, d.f1sq
+    local u0, uPerS, sBot, sTop = d.u0, d.uPerS, d.sBot, d.sTop
 
     local p1, p2, v1, v2
     if view then
@@ -1016,7 +1140,35 @@ local function emitStrip(g, view, complement)
         local o = i * QUAD_STRIDE
         local ax, ay, bx, by = q[o + 1], q[o + 2], q[o + 3], q[o + 4]
         local draw = true
-        if view then
+        -- The far fade: each end's u, and the whole quad's multiplier for the bands.
+        local ua, ub, fm = u0, u0, 1.0
+        if far then
+            local dax, day, dbx, dby = ax - vx, ay - vy, bx - vx, by - vy
+            local da2, db2 = dax * dax + day * day, dbx * dbx + dby * dby
+            if da2 > f0sq or db2 > f0sq then
+                -- The quad's nearest point to the viewpoint, on the ground.
+                local ex, ey = bx - ax, by - ay
+                local el = ex * ex + ey * ey
+                local t = 0.0
+                if el > 0.0 then
+                    t = -(dax * ex + day * ey) / el
+                    if t < 0.0 then t = 0.0 elseif t > 1.0 then t = 1.0 end
+                end
+                local nx, ny = dax + ex * t, day + ey * t
+                local dn2 = nx * nx + ny * ny
+                if dn2 >= f1sq then
+                    draw = false
+                else
+                    local sa = (math.sqrt(da2) - f0) / band
+                    local sb = (math.sqrt(db2) - f0) / band
+                    if sa < sBot then sa = sBot elseif sa > sTop then sa = sTop end
+                    if sb < sBot then sb = sBot elseif sb > sTop then sb = sTop end
+                    ua, ub = u0 + sa * uPerS, u0 + sb * uPerS
+                    if dn2 > f0sq then fm = farMul((math.sqrt(dn2) - f0) / band) end
+                end
+            end
+        end
+        if draw and view then
             local behind = quadBehind(p1, v1, ax, ay, bx, by)
                 and quadBehind(p2, v2, ax, ay, bx, by)
             draw = behind == complement
@@ -1028,21 +1180,25 @@ local function emitStrip(g, view, complement)
                 if out then
                     DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
                         cr, cg, cb, av, gDict, gTex,
-                        0.5, gV0, 1.0,  0.5, gV0, 1.0,  0.5, gV1, 1.0)
+                        ua, gV0, 1.0,  ub, gV0, 1.0,  ua, gV1, 1.0)
                     DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
                         cr, cg, cb, av, gDict, gTex,
-                        0.5, gV0, 1.0,  0.5, gV1, 1.0,  0.5, gV1, 1.0)
+                        ub, gV0, 1.0,  ub, gV1, 1.0,  ua, gV1, 1.0)
                 else
                     DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
                         cr, cg, cb, av, gDict, gTex,
-                        0.5, gV1, 1.0,  0.5, gV0, 1.0,  0.5, gV0, 1.0)
+                        ua, gV1, 1.0,  ub, gV0, 1.0,  ua, gV0, 1.0)
                     DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
                         cr, cg, cb, av, gDict, gTex,
-                        0.5, gV1, 1.0,  0.5, gV1, 1.0,  0.5, gV0, 1.0)
+                        ua, gV1, 1.0,  ub, gV1, 1.0,  ub, gV0, 1.0)
                 end
             else
                 for b = 1, bands do
                     local z0, z1, ab = bandZ0[b], bandZ1[b], bandA[b]
+                    if fm < 1.0 then
+                        ab = math.floor(bandAf[b] * fm + 0.5)
+                        if ab < 0 then ab = 0 elseif ab > 255 then ab = 255 end
+                    end
                     if out then
                         DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, ab)
                         DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, ab)
@@ -1113,7 +1269,7 @@ local function drawStrip(shape, alphaScale, g, pool, view)
     -- quad at two triangles would stop being a poly ceiling the moment the fade
     -- fell back. Dividing by the real cost is what keeps maxPolys meaning polys.
     local fc = sp.fade or {}
-    resolveFade(fc, zb, zt)
+    resolveFade(fc, zb, zt, sp)
     -- A GRADIENT QUAD IS ONE BAND, WHICH IS THE POINT OF IT: the ramp lives inside
     -- the texture the two triangles are drawn with, instead of being approximated by
     -- stacking more of them.
@@ -1131,10 +1287,12 @@ local function drawStrip(shape, alphaScale, g, pool, view)
     sayFade(bands, quadPolys)
 
     local minSeg, maxPolys = sp.minSeg or 24, sp.maxPolys or 1024
+    local maxQuadM = sp.maxQuadM or math.huge
     g = g or scratchStrip
     if pool or g.shape ~= shape or g.chordM ~= chordM or g.minSeg ~= minSeg
-        or g.maxPolys ~= maxPolys or g.quadPolys ~= quadPolys then
-        buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool)
+        or g.maxPolys ~= maxPolys or g.quadPolys ~= quadPolys
+        or g.maxQuadM ~= maxQuadM then
+        buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, maxQuadM)
     end
 
     local p = viewpoint()
@@ -1163,7 +1321,7 @@ local function drawStrip(shape, alphaScale, g, pool, view)
     -- depends on the band and the frame's alpha and on nothing about the quad, so
     -- every quad drew the same numbers. Kept on the strip, with the rest of the
     -- frame's draw, so emitStrip can replay it.
-    local bandZ0, bandZ1, bandA = g.bz0, g.bz1, g.ba
+    local bandZ0, bandZ1, bandA, bandAf = g.bz0, g.bz1, g.ba, g.baf
     if not gradient then
         local h = (zt - zb) / bands
         local z0 = zb
@@ -1172,9 +1330,11 @@ local function drawStrip(shape, alphaScale, g, pool, view)
             -- the wall is exactly the config's top and not a rounding of it -- the
             -- same reason the closing quad of a loop reuses the stored first point.
             local z1 = (i == bands) and zt or (z0 + h)
-            local v = math.floor(alpha * rampAlpha(fc, zb, zt, (z0 + z1) * 0.5) + 0.5)
+            local af = alpha * rampAlpha(fc, zb, zt, (z0 + z1) * 0.5)
+            local v = math.floor(af + 0.5)
             if v < 0 then v = 0 elseif v > 255 then v = 255 end
-            bandZ0[i], bandZ1[i], bandA[i] = z0, z1, v
+            -- And unrounded, for a quad the far fade thins (emitStrip).
+            bandZ0[i], bandZ1[i], bandA[i], bandAf[i] = z0, z1, v, af
             z0 = z1
         end
     end
@@ -1266,6 +1426,10 @@ local function drawStrip(shape, alphaScale, g, pool, view)
     -- about 21 km at worst. So outside the last seconds of the final ring, a wall
     -- a few metres round, no quad is ever far enough to merge, and an LOD would
     -- buy nothing.
+    --
+    -- (Written at a chordM of 2. The owner has since chosen larger pieces
+    -- everywhere -- 8 m, config/storm.lua -- and a far wall that fades out from 6.5
+    -- km and is not drawn past 8, which emitStrip carries.)
     -- THE FRAME'S DRAW, KEPT ON THE STRIP, and every number in it is one the loop
     -- that used to be here read from a local. emitStrip is that loop.
     local d = g.draw
@@ -1273,6 +1437,24 @@ local function drawStrip(shape, alphaScale, g, pool, view)
     d.bands, d.zb, d.zt = bands, zb, zt
     d.cr, d.cg, d.cb, d.av = cr, cg, cb, av
     d.vx, d.vy = vx, vy
+
+    -- THE FAR FADE (#393): off with no strip.farFade, and off on a gradient whose
+    -- texture was built without the fade's columns -- a skip with no fade before it
+    -- would pop. u0 is the center of the band's start column: the ramp as it always was.
+    local ff = sp.farFade
+    local far = (ff and ff.startM and ff.endM and ff.endM > ff.startM
+        and (not gradient or ramp.cols ~= nil)) and true or false
+    d.far = far
+    if far then
+        d.f0, d.band = ff.startM, ff.endM - ff.startM
+        d.f0sq, d.f1sq = ff.startM * ff.startM, ff.endM * ff.endM
+    end
+    if gradient and ramp.cols then
+        d.u0, d.uPerS = (ramp.x0 + 0.5) / ramp.w, ramp.cols / ramp.w
+        d.sBot, d.sTop = -ramp.x0 / ramp.cols, (ramp.w - 1 - ramp.x0) / ramp.cols
+    else
+        d.u0, d.uPerS, d.sBot, d.sTop = 0.5, 0.0, 0.0, 0.0
+    end
     return emitStrip(g, view, false)
 end
 

@@ -718,7 +718,10 @@ IMPL.GetDisplayNameFromVehicleModel = function() return 'CAR' end
 IMPL.GetCurrentFrontendMenuVersion = function() return 0 end
 IMPL.GetPlayerUnderwaterTimeRemaining = function() return 10.0 end
 IMPL.GetPlayerSprintStaminaRemaining = function() return 100.0 end
-IMPL.GetRuntimeTextureWidth = function() return 8 end
+-- THE WIDTH A RUNTIME TEXTURE WAS MADE AT (#393): the storm wall reads its ramp's
+-- width back before trusting it, and a stub answering one number would send any
+-- other width to the banded fallback -- another wall from the one that ships.
+IMPL.GetRuntimeTextureWidth = function(t) return W.rtWidth and W.rtWidth[t] or 8 end
 IMPL.GetInteriorFromEntity = function() return 0 end
 IMPL.GetInteriorAtCoords = function() return 0 end
 IMPL.GetRoomKeyFromEntity = function() return 0 end
@@ -834,7 +837,12 @@ IMPL.IsPedDeadOrDying    = IMPL.IsEntityDead
 IMPL.GetDuiHandle        = function(d) return 'dui' .. tostring(d) end
 IMPL.CreateDui           = function() W.handles = W.handles + 1 return W.handles end
 IMPL.CreateRuntimeTxd    = function() W.handles = W.handles + 1 return W.handles end
-IMPL.CreateRuntimeTexture = function() W.handles = W.handles + 1 return W.handles end
+IMPL.CreateRuntimeTexture = function(_, _, w)
+    W.handles = W.handles + 1
+    W.rtWidth = W.rtWidth or {}
+    W.rtWidth[W.handles] = w
+    return W.handles
+end
 IMPL.CreateRuntimeTextureFromDuiHandle = function() W.handles = W.handles + 1 return W.handles end
 IMPL.RequestScaleformMovie = function() W.handles = W.handles + 1 return W.handles end
 IMPL.RequestScaleformMovieInstance = IMPL.RequestScaleformMovie
