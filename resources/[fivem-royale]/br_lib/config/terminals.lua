@@ -506,7 +506,7 @@ BR.Config.Terminals = {
         -- on a night a Time & weather run set (owner: "only work if someone
         -- else has set it to night time first") -- refused, spending nothing
         -- (at the terminal: why not).
-        no_night = 'This only works after someone has made it night with Time & weather.',
+        no_night = "This only works while it's night because someone ran Time & weather.",
 
         -- ── the how-to page. WRITTEN. The one page allowed to talk strategy,
         --    in general terms; a function's own page never says how it helps ──
@@ -561,8 +561,8 @@ BR.Config.Terminals = {
         scan_name = 'Scan',
         scan_summary = "Shows every opponent on your squad's maps for the rest of the match.",
         scan_summary_solo = "Shows every opponent on your map for the rest of the match.",
-        scan_what = "Every opponent still in the match appears on the maps of everyone in your squad.\nThe marks update every 2 seconds until the match ends.\nThe player who runs it gets a bounty for 10 minutes.",
-        scan_what_solo = "Every opponent still in the match appears on your map.\nThe marks update every 2 seconds until the match ends.\nThe player who runs it gets a bounty for 10 minutes.",
+        scan_what = "Every opponent still in the match appears on the maps of everyone in your squad.\nThe marks update every 2 seconds until the match ends.\nA squad running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
+        scan_what_solo = "Every opponent still in the match appears on your map.\nThe marks update every 2 seconds until the match ends.\nA player running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
         scan_duration = 'Rest of the match. The bounty lasts 10 minutes.',
         scan_affects = 'Your squad',
         scan_affects_solo = 'You',
@@ -605,7 +605,10 @@ BR.Config.Terminals = {
         -- possible final circles.\nYou pick one, and ..."). The storm ends
         -- EXACTLY on the spot or the run is refused, nothing spent: never
         -- moved to a spot nearby (server/storm.lua's STORM CONTROL block).
-        storm_control_what = "You pick a spot on the map, and the storm closes toward it for the rest of the match. The last circle closes exactly on that spot.\nThe spot has to be on land and well inside the next circle.\nCircles already on the map don't move. The change starts with the next circle the storm draws.",
+        -- ONE SPOT A MATCH (round 4's review): once the storm is aimed, every
+        -- later run is refused (storm_aimed), so "the rest of the match" and
+        -- "exactly on that spot" stay true for the player who paid for it.
+        storm_control_what = "You pick a spot on the map, and the storm closes toward it for the rest of the match. The last circle closes exactly on that spot.\nThe spot has to be on land and well inside the next circle.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
         storm_control_duration = 'Rest of the match',
         storm_control_affects = 'Everyone in the match',
         storm_control_notified = 'Everyone in the match',
@@ -628,6 +631,11 @@ BR.Config.Terminals = {
         -- ...or inside it, but too close to its edge for every circle after it
         -- to close on it.
         storm_spot_edge = 'That spot is too close to the edge of the next circle. Pick a spot further inside it.',
+        -- WRITTEN (2026-10-06, round 4's review). Storm control once the
+        -- storm is already aimed this match: one spot a match, so a second
+        -- squad's run never replaces the first's -- refused, spending
+        -- nothing (at the terminal: why not).
+        storm_aimed = 'Someone has already picked where the storm ends this match.',
 
         -- Comms blackout (owner's; LIVE since wave C, 2026-10-06)
         comms_blackout_name = 'Comms blackout',
@@ -657,8 +665,9 @@ BR.Config.Terminals = {
         time_weather_name = 'Time & weather',
         -- WRITTEN (2026-10-06, round 4; was "Changes the match's time of day,
         -- and the weather inside the circle, for a while."). One or the other,
-        -- for the rest of the match.
-        time_weather_summary = "Changes the match's time of day, or the weather inside the circle, until the match ends.",
+        -- for the rest of the match, or until another run changes it (round
+        -- 4's review: another squad's run may, so no line promises more).
+        time_weather_summary = "Changes the match's time of day, or the weather inside the circle, until the match ends or another run changes it.",
         -- WRITTEN (2026-10-06, round 4; was "Sets the time of day for everyone
         -- in the match, and the weather inside the circle.\nOutside the circle,
         -- the storm's own weather stays.\nWhen it ends, the match's own time
@@ -691,14 +700,14 @@ BR.Config.Terminals = {
         time_weather_opt_weather_snow = 'Snow',
         time_weather_opt_weather_blizzard = 'Blizzard',
         -- WRITTEN (2026-10-06, round 4; was '3 or 5 minutes, as chosen').
-        time_weather_duration = 'Rest of the match',
+        time_weather_duration = 'Rest of the match, or until another run changes it',
         time_weather_affects = 'Everyone in the match',
         time_weather_notified = 'Everyone in the match',
         time_weather_risks = 'It changes what your squad can see too.',
         time_weather_risks_solo = 'It changes what you can see too.',
         -- WRITTEN (2026-10-06, round 4; was 'The time of day has changed, and
         -- so has the weather inside the circle.'). One line for either choice.
-        time_weather_done = 'Your change is made. It lasts until the match ends.',
+        time_weather_done = 'Your change is made. It lasts until the match ends, or until another run changes it.',
         time_weather_description = 'Time & weather. The sky has changed.',
 
         -- Power outage (owner's; LIVE since wave B, 2026-10-06; ROUND 4, the
@@ -717,7 +726,7 @@ BR.Config.Terminals = {
         -- the whole map, not per district: a player in the area sees every
         -- light go dark, and a player outside it keeps every light, the area's
         -- included. The line says so.
-        power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.\nIt only works after someone has made it night with Time & weather.",
+        power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.\nIt only works while it's night because someone ran Time & weather.",
         power_outage_opt_area = 'Area',
         power_outage_opt_area_here = 'Around this terminal',
         power_outage_opt_area_here_desc = 'Everything within 1 km of this terminal.',
@@ -861,8 +870,8 @@ BR.Config.Terminals = {
         -- goes off aren't affected.\nThey start again when it ends."). It is
         -- the DRIVER that decides (server/terminalfx/emp.lua): a car stalls
         -- while anybody but the squad drives it, wherever it is.
-        emp_what = "For 3 minutes, every vehicle in the match stalls and won't start while a player outside your squad is driving it.\nVehicles your squad drives keep working. If someone outside your squad takes the wheel, it stalls.\nVehicles start again when it ends.",
-        emp_what_solo = "For 3 minutes, every vehicle in the match stalls and won't start while another player is driving it.\nVehicles you drive keep working. If another player takes the wheel, it stalls.\nVehicles start again when it ends.",
+        emp_what = "For 3 minutes, every vehicle in the match stalls and won't start while a player outside your squad is driving it.\nVehicles your squad drives keep working, unless another squad's EMP is going off too. If someone outside your squad takes the wheel, it stalls.\nVehicles start again when it ends, unless another EMP is still going off.",
+        emp_what_solo = "For 3 minutes, every vehicle in the match stalls and won't start while another player is driving it.\nVehicles you drive keep working, unless another player's EMP is going off too. If another player takes the wheel, it stalls.\nVehicles start again when it ends, unless another EMP is still going off.",
         -- WRITTEN (2026-10-06, round 4; was '30 seconds or 1 minute, as
         -- chosen').
         emp_duration = '3 minutes',
@@ -918,8 +927,8 @@ BR.Config.Terminals = {
         -- WRITTEN (2026-10-06, wave A; was "Every player within the radius
         -- ..."): the runner's own squad is not marked, and not told it was
         -- detected.
-        pulse_what = "Every player outside your squad within the radius you choose shows on your squad's maps.\nThe marks follow them for 30 seconds.",
-        pulse_what_solo = "Every other player within the radius you choose shows on your map.\nThe marks follow them for 30 seconds.",
+        pulse_what = "Every player outside your squad within the radius you choose shows on your squad's maps.\nThe marks follow them for 30 seconds.\nA squad running Ghost isn't shown while it lasts.",
+        pulse_what_solo = "Every other player within the radius you choose shows on your map.\nThe marks follow them for 30 seconds.\nA player running Ghost isn't shown while it lasts.",
         pulse_opt_radius = 'Radius',
         pulse_opt_radius_250 = '250 meters',
         pulse_opt_radius_500 = '500 meters',
@@ -956,8 +965,8 @@ BR.Config.Terminals = {
         contract_summary = 'Puts a bounty on the player outside your squad with the most eliminations.',
         contract_summary_solo = 'Puts a bounty on the player with the most eliminations, other than you.',
         -- WRITTEN (2026-10-06, round 4; "for 5 minutes" became 10).
-        contract_what = "The player outside your squad with the most eliminations gets a bounty for 10 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
-        contract_what_solo = "The player with the most eliminations, other than you, gets a bounty for 10 minutes.\nTheir position shows on every player's map while it lasts.\nA tie goes to the player who got there first.",
+        contract_what = "The player outside your squad with the most eliminations gets a bounty for 10 minutes.\nTheir position shows on every player's map while it lasts. If their squad runs Ghost, it's hidden while Ghost lasts.\nA tie goes to the player who got there first.",
+        contract_what_solo = "The player with the most eliminations, other than you, gets a bounty for 10 minutes.\nTheir position shows on every player's map while it lasts. If they run Ghost, it's hidden while Ghost lasts.\nA tie goes to the player who got there first.",
         -- WRITTEN (2026-10-06, round 4; was '5 minutes').
         contract_duration = '10 minutes',
         contract_affects = 'One player outside your squad',

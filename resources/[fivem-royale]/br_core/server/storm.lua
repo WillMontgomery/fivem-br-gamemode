@@ -715,12 +715,25 @@ end
 -- the next circle already on the map -- and the seed every shape is derived
 -- from. The first circle the spot decides is the next one enterPhase draws,
 -- and the airdrop's re-site (#386), the map's morph (#350) and every client's
--- wall follow from that record as they do in any match. A second Storm control
--- in the same match re-aims from wherever the storm then stands.
+-- wall follow from that record as they do in any match.
+--
+-- ONE SPOT A MATCH (round 4's review). Once a match carries `m.stormAim`, every
+-- later aim is refused (`storm_aimed`), checked first like the rest and asked
+-- again after the run's load: the player who paid for the storm to end on their
+-- spot was told it ends "exactly on that spot" for "the rest of the match", and
+-- another squad's run must not quietly make that false.
+
+--- Is this match's storm already aimed by a Storm control? One spot a match.
+--- @param m table|nil
+--- @return boolean
+function BR.Storm.aimed(m)
+    return m ~= nil and m.stormAim ~= nil
+end
 
 --- Can this match's storm end exactly on (x, y)? The spot as it will be kept, or
 --- nil and why:
 ---   no_storm         no storm record or stream yet
+---   storm_aimed      this match's storm is already aimed (one spot a match)
 ---   no_circle        the final circle is already on the map
 ---   storm_spot_land  over water, or outside the surveyed play area
 ---   storm_spot_out   outside the next circle on the map
@@ -735,6 +748,7 @@ end
 function BR.Storm.aimCheck(m, x, y)
     local rec = m and m.storm
     if not rec or not m.stormRng then return nil, 'no_storm' end
+    if BR.Storm.aimed(m) then return nil, 'storm_aimed' end
     if rec.phase >= #cfg.phases then return nil, 'no_circle' end
     if type(x) ~= 'number' or type(y) ~= 'number' or x ~= x or y ~= y
         or x == math.huge or x == -math.huge or y == math.huge or y == -math.huge then
@@ -750,7 +764,7 @@ end
 
 --- Aim this match's storm at (x, y): from the next circle drawn on, every circle
 --- closes toward it and the last ends on it. Refused as BR.Storm.aimCheck says,
---- with nothing changed.
+--- with nothing changed -- a storm already aimed included.
 --- @param m table
 --- @param x number
 --- @param y number

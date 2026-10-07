@@ -69,7 +69,8 @@ What the computer opens with, and what the server sends again when it changes.
 effect is not built), `offline`, `squad_used`, `no_key`, `bad_option`, `unavailable` (a run of theirs or their
 squad's in flight, a squad-only function outside a squad match), or any key a
 function's own refusal adds (`no_storm`, `no_site`, `drop_busy`, `ammo_full`,
-Storm control's `storm_spot_land`, `storm_spot_out` and `storm_spot_edge`;
+Storm control's `storm_spot_land`, `storm_spot_out`, `storm_spot_edge` and
+`storm_aimed`;
 wave A's `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`,
 `no_keys_held`, `no_target`; wave C's `reboot_none`). The app shows the line for the
 code, or `unavailable` when there is none, and maps it to the card's four
@@ -159,8 +160,9 @@ The table below is the lines outside the functions' own:
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
 | `storm_spot_land`, `storm_spot_out`, `storm_spot_edge` | At the terminal: why not (Storm control's spot: over water or off the map, outside the next circle, too near its edge) -- round 4 |
+| `storm_aimed` | At the terminal: why not (Storm control, once a spot is picked this match: one spot a match) -- round 4's review |
 | `health_full`, `no_weapons`, `no_keys`, `no_keys_ground`, `no_keys_held`, `no_target` | At the terminal: why not (wave A's functions) |
-| `no_night` | At the terminal: why not (Power outage, unless a Time & weather run has made it night) -- round 4 |
+| `no_night` | At the terminal: why not (Power outage, unless it is night because of a Time & weather run) -- round 4 |
 | `reboot_none` | At the terminal: why not (Reboot: nobody in the squad eliminated and still in the match). Squad-only, so no `_solo` line |
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
 | `pulse_detected` | A toast to each player a Pulse found, after the lobby's notice |
@@ -781,8 +783,14 @@ breaks out or hugs the edge. Storm reveal walks the same `drawCentre`, so it
 answers the spot, and a squad that ran it is sent the new end. Nothing else
 moves: the record on the map and the circle already drawn stay, and the change
 reaches every client, the map's morph (#350) and the airdrop's re-site (#386)
-as any record does. A second Storm control re-aims from where the storm then
-stands. Refused too: `no_storm`, and `no_circle` once the final circle is on
+as any record does. **One spot a match** (round 4's review): once the storm
+is aimed, every later Storm control in that match is refused `storm_aimed`
+(`BR.Storm.aimed`) -- on its card, at the run and after the load, so of two
+loading at once the second to land gives everything back -- and its page
+says so ("Only one spot can be picked each match"). Each squad has its own
+use, and the first runner paid for a storm that ends "exactly on that spot"
+for "the rest of the match"; a second squad's run must not quietly make that
+false. Refused too: `no_storm`, and `no_circle` once the final circle is on
 the map. Measured over 60 walked matches: every spot on land at the circle's
 center or up to two fifths of the way out to its radius is taken; of the spots
 inside it further out, about one in twenty at 0.55 of the way, one in six at
@@ -835,7 +843,11 @@ should be the remainder of the match".
   neither. The festive months change nothing here: "clear" is CLEAR, and the
   ground follows the resolved weather as #399 shipped -- white under XMAS,
   SNOWLIGHT, SNOW and BLIZZARD, bare under the rest.
-- **It lasts the rest of the match.** It ends when the match stops PLAYING
+- **It lasts the rest of the match, or until another run changes it.**
+  Another squad's run of the same kind replaces it (a time run the time, a
+  weather run the weather), and every line that says how long it lasts says
+  so -- the card, the page, the duration and the done line (round 4's
+  review). It ends when the match stops PLAYING
   (the end screen included) or off Season 2, on a 1 s pass
   (`fx.worldCheckMs`): the match's own clock back (only if a time run moved
   it), the weather released on every client. A client lets go in the lobby
@@ -865,7 +877,9 @@ its own clock never makes a night. Power outage is refused, spending nothing
 anchor is still the match's clock (`BR.Terminal.terminalNight`): a weather run
 after it keeps the night, a later day or dusk run ends it, and so does the
 match's end. Asked again when the load ends, like every refusal. An outage
-already running is not ended by a later day.
+already running is not ended by a later day. The page and the reason say it
+works "while it's night because someone ran Time & weather", which stays true
+once a later day run has ended the night (round 4's review).
 
 ## Dev
 
@@ -1039,7 +1053,8 @@ server keeps one fact per EMP on `m.terminalFx.emps` (the squad it spares,
 who ran it, its end) and pushes every player in the match `TERMINAL_EMP`:
 how long THEIR driving stalls (`leftMs`, from `BR.Terminal.empFor`: the
 latest end among the EMPs that do not spare their squad, so two EMPs from two
-squads spare neither from the other) and how long any EMP lasts (`liveMs`) --
+squads spare neither from the other, as the page says: "unless another squad's
+EMP is going off too", round 4's review) and how long any EMP lasts (`liveMs`) --
 when one goes off, when one ends, and on `br:ready`. Each client applies it
 to the one vehicle its own player is in the driver's seat of -- the driver's
 client, which is where the vehicle's network ownership goes, so the write

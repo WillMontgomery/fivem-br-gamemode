@@ -23,12 +23,16 @@
 --
 -- REFUSED, SPENDING NOTHING (the door's rule for a function's own reason):
 --   no_storm         the storm has not drawn its first circle
+--   storm_aimed      a Storm control already picked this match's spot: one
+--                    spot a match (round 4's review), so the first runner's
+--                    "exactly on that spot" holds for the rest of the match
 --   no_circle        the final circle is already on the map
 --   storm_spot_land  the spot is over water or outside the play area
 --   storm_spot_out   the spot is outside the next circle on the map
 --   storm_spot_edge  the spot is too near that circle's edge to end on
 -- and asked again when the load is over, so a circle drawn in those 3 to 5
--- seconds that no longer holds the spot gives everything back.
+-- seconds that no longer holds the spot -- or another squad's Storm control
+-- landing first -- gives everything back.
 
 BR = BR or {}
 BR.Terminal = BR.Terminal or {}
@@ -50,14 +54,15 @@ local function reReveal(m)
 end
 
 T.FUNCTIONS.storm_control = {
-    -- Listed (no spot yet): there is a circle left to draw or there is not.
-    -- With the spot: whether the storm can end exactly on it. A dev terminal
-    -- outside a match is never refused.
+    -- Listed (no spot yet): the storm is not aimed yet, and there is a circle
+    -- left to draw, or not. With the spot: whether the storm can end exactly
+    -- on it. A dev terminal outside a match is never refused.
     refuse = function(src, session, opts)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
         local rec = m.storm
         if not rec or not m.stormRng then return 'no_storm' end
+        if BR.Storm.aimed(m) then return 'storm_aimed' end
         if rec.phase >= #BR.Config.Storm.phases then return 'no_circle' end
         local at = opts and opts.at
         if not at then return nil end
@@ -90,8 +95,8 @@ T.FUNCTIONS.storm_control = {
 }
 
 -- THE PERSISTENT NOTICE (round 4), for the rest of the match: everyone in the
--- fight but the player who aimed the storm that stands. A later Storm control
--- re-aims it, and the notice then spares that runner instead.
+-- fight but the player who aimed the storm. One spot a match, so it never
+-- changes hands.
 T.impactSource(function(m, now, add)
     local by = m.stormAim ~= nil and m.terminalFx and m.terminalFx.stormBy or nil
     if not by then return end

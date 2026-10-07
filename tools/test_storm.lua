@@ -7528,23 +7528,32 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('control.again')
+describe('control.once')
 do
-    -- ═══ A SECOND STORM CONTROL RE-AIMS FROM WHERE THE STORM THEN STANDS ═══
+    -- ═══ ONE SPOT A MATCH (round 4's review) ═══
+    --
+    -- The first aim holds for the rest of the match: a second one is refused
+    -- (`storm_aimed`) at every phase after it, a spot it would have accepted
+    -- included, and the storm ends on the first spot.
     local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
     local S = walkUntil(ANCHOR, function(rec, st) return rec.phase == 2 and st == 'holding' end)
     local env = S.env
     local rec = S.match.storm
+    eq(env.BR.Storm.aimed(S.match), false, 'not aimed yet')
     local a = env.BR.Storm.aim(S.match, rec.cx1, rec.cy1)
     ok(a ~= nil, 'aimed at the next circle\'s center')
+    eq(env.BR.Storm.aimed(S.match), true, 'aimed')
+    local spot, why = env.BR.Storm.aimCheck(S.match, rec.cx1, rec.cy1)
+    ok(spot == nil and why == 'storm_aimed', 'the same spot again: storm_aimed', why)
     walkOn(S, function(r) return r.phase == 5 end, 30000)
     local r5 = S.match.storm
-    local b = env.BR.Storm.aim(S.match, r5.cx1 + r5.r1 * 0.3, r5.cy1)
-    ok(b ~= nil, 'aimed again at phase 5, at a spot inside its next circle')
+    local b, whyB = env.BR.Storm.aim(S.match, r5.cx1 + r5.r1 * 0.3, r5.cy1)
+    ok(b == nil and whyB == 'storm_aimed', 'a second aim at phase 5, inside its next circle: storm_aimed', whyB)
+    ok(S.match.stormAim.x == a.x and S.match.stormAim.y == a.y, 'the first spot is still the match\'s')
     walkOn(S, function(r) return r.phase == #env.BR.Config.Storm.phases end, 30000)
     local fin = S.match.storm
-    ok(b and fin.cx1 == b.x and fin.cy1 == b.y, 'and the storm ends on the second spot',
-        b and ('(%.2f, %.2f) vs (%.2f, %.2f)'):format(fin.cx1, fin.cy1, b.x, b.y))
+    ok(fin.cx1 == a.x and fin.cy1 == a.y, 'and the storm ends on the first spot',
+        ('(%.2f, %.2f) vs (%.2f, %.2f)'):format(fin.cx1, fin.cy1, a.x, a.y))
     ok(S.errored() == nil, 'clean', S.errored())
 end
 

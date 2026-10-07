@@ -819,6 +819,51 @@ do
         'no storm, not forced: online, whatever else is passed')
 end
 
+describe("round 4's review: no line promises what another player's run can undo")
+do
+    -- Each squad has its own use, so another squad's run can replace or undo
+    -- what this one did. A line that says how long an effect lasts, or that
+    -- something keeps working, says what can end it -- or the second run is
+    -- refused, as Storm control's is (`storm_aimed`: one spot a match, so its
+    -- "rest of the match" and "exactly on that spot" stay true).
+    bootServer()
+    local copy = BR.Config.Terminals.copy
+    local pick = BR.TerminalSolve.pick
+    ok(type(copy.storm_aimed) == 'string' and copy.storm_aimed ~= '', 'Storm control has its storm_aimed line')
+    ok(not copy.storm_aimed:lower():find('squad', 1, true), 'which says no squad, so needs no solo twin')
+    ok(copy.storm_control_what:find('Only one spot can be picked each match.', 1, true) ~= nil,
+        "Storm control's page says one spot a match")
+    -- Time & weather: another run of it replaces it.
+    for _, part in ipairs({ 'summary', 'what', 'duration', 'done' }) do
+        local l = copy['time_weather_' .. part] or ''
+        ok(l:find('another run changes it', 1, true) ~= nil,
+            ('time_weather_%s says another run can change it'):format(part), l)
+    end
+    -- EMP: another squad's EMP going off at the same time stalls this one's
+    -- vehicles too, and a vehicle stays stalled while any EMP still holds it.
+    for _, squad in ipairs({ true, false }) do
+        local l = pick(copy, 'emp_what', squad)
+        local who = squad and "another squad's" or "another player's"
+        ok(l:find('keep working, unless ' .. who .. ' EMP is going off too.', 1, true) ~= nil,
+            ('emp_what (%s): keeping working is unless %s EMP'):format(squad and 'squad' or 'solo', who), l)
+        ok(l:find('when it ends, unless another EMP is still going off.', 1, true) ~= nil,
+            ('emp_what (%s): starting again is unless another EMP still goes off'):format(squad and 'squad' or 'solo'), l)
+    end
+    -- Scan's and Pulse's marks, and a Contract's bounty: Ghost hides a squad.
+    for _, id in ipairs({ 'scan', 'pulse', 'contract' }) do
+        for _, squad in ipairs({ true, false }) do
+            local l = pick(copy, id .. '_what', squad)
+            ok(l:find('Ghost', 1, true) ~= nil and l:find('while', 1, true) ~= nil,
+                ('%s_what (%s) says Ghost hides from it while it lasts'):format(id, squad and 'squad' or 'solo'), l)
+        end
+    end
+    -- Power outage: a night a later day run ended is no night.
+    for _, key in ipairs({ 'no_night', 'power_outage_what' }) do
+        ok(copy[key]:find("while it's night because someone ran Time & weather.", 1, true) ~= nil,
+            key .. " says it works while it's night because of a Time & weather run")
+    end
+end
+
 describe('round 2: the owner\'s words, verbatim, and no thunderstorm')
 do
     bootServer()

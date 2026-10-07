@@ -648,11 +648,64 @@ do
     nothingSpent(1, 'given back, no_circle')
 end
 
+describe('Storm control: one spot a match -- a second run is refused, nothing spent, and the first spot holds')
+do
+    -- ROUND 4'S REVIEW: each squad has its own use, so two squads can both run
+    -- it in one match. The first paid 150 Volts for a storm that ends "exactly
+    -- on that spot" for "the rest of the match"; a second run must not quietly
+    -- make that false. So once the storm is aimed, Storm control is refused
+    -- (storm_aimed) -- on the card, at the run and after the load.
+    reset()
+    local m = lobby('squad', 3)
+    local first = spotIn(m, 0.0)
+    local r = controlAt(1, first)
+    ok(r and r.code == 'done', 'squad A aims the storm', r and r.code)
+    keys[3] = true
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    fire(BR.Net.TERMINAL_USE, 3, { terminalId = 'tower' })
+    local f = listed(3, 'storm_control')
+    ok(f and f.available == false and f.reason == 'storm_aimed', "squad B's card: not available, storm_aimed",
+        f and f.reason)
+    local charges = #market.charges
+    r = controlAt(3, spotIn(m, 0.3))
+    ok(r and r.ok == false and r.code == 'storm_aimed', "squad B's run: refused storm_aimed", r and r.code)
+    eq(r and r.toast, COPY.storm_aimed, 'in its own line')
+    nothingSpent(3, 'storm_aimed')
+    eq(#market.charges, charges, 'the market was never asked for the 150')
+    local fin = BR.Storm.finalCentre(m)
+    ok(fin and fin.x == first.x and fin.y == first.y, 'the storm still ends exactly on the first spot')
+    ok(m.stormAim and m.stormAim.x == first.x and m.stormAim.y == first.y, 'and the match still carries it')
+    local again, why = BR.Storm.aim(m, first.x + 10.0, first.y)
+    ok(again == nil and why == 'storm_aimed', "and the storm's own door refuses a second aim: storm_aimed", why)
+    ok(m.stormAim.x == first.x, 'changing nothing')
+
+    -- TWO LOADING AT ONCE: the second to land is refused, everything given back.
+    reset()
+    m = lobby('squad', 3)
+    keys[3] = true
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    local a = spotIn(m, 0.0)
+    r = controlAt(1, a, true)
+    eq(r and r.code, 'running', 'squad A accepted')
+    r = controlAt(3, spotIn(m, 0.25), true)
+    eq(r and r.code, 'running', 'squad B accepted too, while A loads')
+    flush()
+    local ra, rb = lastOf(BR.Net.TERMINAL_RESULT, 1), lastOf(BR.Net.TERMINAL_RESULT, 3)
+    ok(ra and ra.code == 'done', 'the first to land aims it', ra and ra.code)
+    ok(rb and rb.ok == false and rb.code == 'storm_aimed', 'the second is refused at the end: storm_aimed',
+        rb and rb.code)
+    nothingSpent(3, 'the second, given back')
+    eq(market.wallet[3], 1000, 'its 150 are back')
+    fin = BR.Storm.finalCentre(m)
+    ok(fin and fin.x == a.x and fin.y == a.y, 'and the storm ends on the first spot')
+    ok(errored() == nil, 'clean', errored())
+end
+
 describe('Storm control: squad and solo lines')
 do
     for _, key in ipairs({ 'storm_control_done', 'storm_control_description', 'no_circle', 'storm_control_what',
                            'storm_control_summary', 'storm_spot_land', 'storm_spot_out', 'storm_spot_edge',
-                           'confirm_location' }) do
+                           'storm_aimed', 'confirm_location' }) do
         ok(TS.pick(COPY, key, false) ~= '', key .. ' has a line')
         ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
             ('%s never says squad outside a squad match'):format(key))
@@ -984,7 +1037,14 @@ do
             key .. ' promises no few minutes')
     end
     ok(COPY.time_weather_what:find('not both', 1, true) ~= nil, 'the page says one or the other, not both')
-    eq(COPY.time_weather_duration, 'Rest of the match', 'and the duration is the rest of the match')
+    -- ANOTHER RUN CAN CHANGE IT (round 4's review): another squad's run of the
+    -- same kind replaces this one, so every line that says how long it lasts
+    -- says so too -- the card, the page, the duration and the done line.
+    eq(COPY.time_weather_duration, 'Rest of the match, or until another run changes it',
+        'the duration is the rest of the match, or until another run changes it')
+    for _, key in ipairs({ 'time_weather_summary', 'time_weather_what', 'time_weather_duration', 'time_weather_done' }) do
+        ok(COPY[key]:find('another run changes it', 1, true) ~= nil, key .. ' says another run can change it')
+    end
     local durations = {}
     for k in pairs(COPY) do
         if k:find('^time_weather_opt_duration') then durations[#durations + 1] = k end
@@ -1309,9 +1369,12 @@ do
     eq(m.terminalPower, nil, 'and no outage was started')
 
     -- THE PAGE SAYS SO.
-    ok(COPY.power_outage_what:find('made it night with ' .. COPY.time_weather_name, 1, true) ~= nil,
-        'the page says it needs a night from ' .. COPY.time_weather_name)
-    ok(COPY.no_night:find(COPY.time_weather_name, 1, true) ~= nil, 'and so does the reason')
+    -- WHILE IT'S NIGHT (round 4's review): a night a later day run ended is
+    -- no night, so neither line says only that someone once made it night.
+    local rule = "while it's night because someone ran " .. COPY.time_weather_name
+    ok(COPY.power_outage_what:find(rule, 1, true) ~= nil, 'the page says it needs a night from '
+        .. COPY.time_weather_name .. ', still going')
+    ok(COPY.no_night:find(rule, 1, true) ~= nil, 'and so does the reason')
     ok(COPY.power_outage_summary:find('at night', 1, true) ~= nil, 'and the card')
 end
 
@@ -1584,12 +1647,13 @@ do
     end
     eq(hasRow(3, 'impact_storm').text, COPY.impact_storm, 'in its words')
     eq(impactRows(1), nil, 'not the player who aimed it')
-    -- RE-AIMED BY ANOTHER PLAYER: the first runner sees it now, the second not.
+    -- ONE SPOT A MATCH: another player's Storm control is refused, and the
+    -- rows stay as they were.
     keys[3] = true
     roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
     r = controlAt(3, spotIn(m, 0.0))
-    ok(r and r.code == 'done', 're-aimed', r and r.code)
-    ok(impactRows(1) == 'impact_storm@end' and impactRows(3) == '', 'the row now spares the second runner instead')
+    ok(r and r.code == 'storm_aimed', 'a second Storm control is refused', r and r.code)
+    ok(impactRows(1) == nil and impactRows(3) == 'impact_storm@end', 'and the row still spares only the first runner')
     ok(errored() == nil, 'clean', errored())
 end
 
