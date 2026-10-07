@@ -264,10 +264,10 @@ BR.Market = {
 -- here too, since this suite loads every function file the manifest lists;
 -- its own suite, tools/test_terminalworld.lua, runs it over the real
 -- server/storm.lua. Here it only needs answers that keep it out of the way:
--- no spot it can end on.
+-- an aim refused, the final circle already on the map. Only what the loaded
+-- files call: 'the storm stubs' below holds each of them to a caller.
 BR.Storm = {
     finalCentre = function(m) return m and m.finalStub or nil end,
-    aimCheck = function() return nil, 'no_circle' end,
     aim = function() return nil, 'no_circle' end,
 }
 
@@ -490,6 +490,26 @@ local function lobby()
     keys[1] = true
     for src = 1, 5 do market.wallet[src] = 1000 end
     return m
+end
+
+describe('the storm stubs: every one has a caller')
+do
+    -- Round 5's review: an aimCheck stub outlived the refusal that called it,
+    -- with a comment still promising "no spot it can end on" -- and was copied
+    -- into the next suite to load every function file. Each answer the storm
+    -- gives, in this suite's stub and in every other suite that loads the
+    -- function files, must be one a loaded server file still asks for.
+    local src = (readFile(ROOT .. 'br_core/server/terminal.lua') or '')
+        .. (readFile(ROOT .. 'br_core/server/terminalfx.lua') or '')
+    for _, f in ipairs(fxFiles('server')) do src = src .. (readFile(ROOT .. f) or '') end
+    for _, suite in ipairs({ 'tools/test_terminalfx.lua', 'tools/test_terminalstrike.lua' }) do
+        local body = (readFile(suite) or ''):match('\nBR%.Storm = (%b{})')
+        ok(body ~= nil, suite .. ' stubs the storm')
+        for name in (body or ''):gmatch('\n%s*([%w_]+)%s*=%s*function') do
+            ok(src:find('BR.Storm.' .. name .. '(', 1, true) ~= nil,
+                ('%s stubs BR.Storm.%s, and a loaded server file calls it'):format(suite, name))
+        end
+    end
 end
 
 -- =========================================================================

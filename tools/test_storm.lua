@@ -7971,10 +7971,14 @@ end
 -- No spot is refused any more. The blocks below hold the three promises the
 -- plan makes (br_lib/shared/storm_solve.lua's STORM CONTROL block) against the
 -- planner's own tests rather than the plan's polygons: every later circle is a
--- circle the planner's rules allow, the storm ends exactly on the spot when it
--- can get there and otherwise as near it as any storm the rules allow could
--- (a brute-force bound, `control.reach`), and each circle is as near the spot as
--- any center that still ends there (a brute-force search, `control.first`).
+-- circle the planner's rules allow -- nested, in bounds, and its center ON LAND,
+-- every one of them, not only the end; the storm ends on the spot when it can
+-- get there and otherwise as near it as any storm the rules allow could, every
+-- center on land (a brute-force search over the land, `control.reach` and
+-- `control.coast`); and each circle is as near the spot as any center that still
+-- ends there over land (brute-force searches, `control.first` and
+-- `control.toward`). `control.pieces` holds the land the searches walk to
+-- BR.StormOffMap itself.
 
 --- The zone `phase` closes from at (cx, cy, r), as the corner list the planner
 --- tests nesting against (BR.NextZoneCentre's hostHull, spelled again).
@@ -8017,68 +8021,362 @@ local function boxedAt(env, seed, phase, x, y)
 end
 
 --- An aimed chain held to the planner's own tests, phase by phase from `from`:
---- nested in the zone before by the real fit, with the planner's clearance; and
+--- nested in the zone before by the real fit, with the planner's clearance;
 --- inside the map bounds wherever the planner would ask it (the zone, at the
---- center before, fits them). How many centers are off the map rides along.
---- @return boolean ok, string why, integer wet
+--- center before, fits them); and its center ON THE MAP (BR.StormOffMap, the
+--- planner's "AND NOT OFF THE MAP") -- every circle's, not only the end's.
+--- @return boolean ok, string why
 local function aimedChainValid(env, seed, from, path)
     local SS = env.BR.StormShape
     local last = #env.BR.Config.Storm.phases
-    local wet = 0
     for p = from, last do
         local prev, c = path[p - 1], path[p]
         local fit = SS.fit(hostKsOf(env, seed, p, prev.x, prev.y, prev.r), discsAt(env, seed, p), c.x, c.y, 1.0)
         if fit > -1e-3 then
-            return false, ('phase %d is not nested: fit %.6f'):format(p, fit), wet
+            return false, ('phase %d is not nested: fit %.6f'):format(p, fit)
         end
         if boxedAt(env, seed, p, prev.x, prev.y) and not boxedAt(env, seed, p, c.x, c.y) then
-            return false, ('phase %d leaves the map bounds the zone before let it keep'):format(p), wet
+            return false, ('phase %d leaves the map bounds the zone before let it keep'):format(p)
         end
-        if p < last and env.BR.StormOffMap(c.x, c.y) then wet = wet + 1 end
+        if env.BR.StormOffMap(c.x, c.y) then
+            return false, ('phase %d\'s center (%.1f, %.1f) is off the map'):format(p, c.x, c.y)
+        end
     end
-    if env.BR.StormOffMap(path[last].x, path[last].y) then
-        return false, ('the end (%.1f, %.1f) is off the map'):format(path[last].x, path[last].y), wet
-    end
-    return true, '', wet
+    return true, ''
 end
 
---- THE ROOM'S SUPPORT, BY BRUTE FORCE: the furthest any center zone `phase` may
---- take inside the zone before (at the origin, radius hr) reaches along (ux, uy)
---- -- golden-section over the bearing a quarter turn either side, bisection out
---- along each bearing, every test the planner's real fit. The room is convex and
---- holds its center, so the reach along u is unimodal in the bearing.
-local function roomSupport(env, seed, phase, hr, ux, uy)
+-- ═══ THE BRUTE FORCE OVER THE LAND ═══
+--
+-- What the plan's end and each of its circles are held to, built apart from the
+-- plan's own geometry: each phase's room by bisection out along 360 bearings
+-- (and in between wherever the outline bends more than 5 mm), every test the
+-- planner's real fit; their sums by sorting every edge by angle; and an
+-- exhaustive search over which piece of land each center stands in, pruned only
+-- where a route's centers plus every room still to come cannot beat what it is
+-- asked to beat. The land is BR.StormLand()'s pieces -- `control.pieces` holds
+-- them to BR.StormOffMap.
+
+--- Zone `phase`'s room in the zone before (at the origin, radius hr): the centers
+--- it may take there, a counter-clockwise polygon inside the real fit's.
+local bfRoomCache = {}
+local function bfRoom(env, seed, phase, hr)
+    local key = seed .. ':' .. phase .. ':' .. hr
+    if bfRoomCache[key] then return bfRoomCache[key] end
     local SS = env.BR.StormShape
     local hks = hostKsOf(env, seed, phase, 0.0, 0.0, hr)
     local D = discsAt(env, seed, phase)
     local far = SS.reachOf(hks, 0.0, 0.0) + 1.0
-    local function rho(th)
-        local cx, cy = math.cos(th), math.sin(th)
+    local concentric = SS.fit(hks, D, 0.0, 0.0, 1.0) <= -1e-3
+    local function edge(th)
+        if not concentric then return 0.0, 0.0 end
+        local c, s = math.cos(th), math.sin(th)
         local lo, hi = 0.0, far
-        for _ = 1, 34 do
+        for _ = 1, 44 do
             local mid = 0.5 * (lo + hi)
-            if SS.fit(hks, D, cx * mid, cy * mid, 1.0) <= -1e-3 then lo = mid else hi = mid end
+            if SS.fit(hks, D, c * mid, s * mid, 1.0) <= -1e-3 then lo = mid else hi = mid end
         end
-        return lo
+        return c * lo, s * lo
     end
-    local th0 = math.atan(uy, ux)
-    local function f(th) return rho(th) * math.cos(th - th0) end
-    local g = (math.sqrt(5.0) - 1.0) * 0.5
-    local a, b = th0 - 0.5 * math.pi, th0 + 0.5 * math.pi
-    local x1, x2 = b - g * (b - a), a + g * (b - a)
-    local f1, f2 = f(x1), f(x2)
-    for _ = 1, 44 do
-        if f1 < f2 then
-            a, x1, f1 = x1, x2, f2
-            x2 = a + g * (b - a)
-            f2 = f(x2)
+    local pts = {}
+    local function refine(a0, x0, y0, a1, x1, y1, depth)
+        local am = 0.5 * (a0 + a1)
+        local xm, ym = edge(am)
+        local ex, ey = x1 - x0, y1 - y0
+        local L = math.sqrt(ex * ex + ey * ey)
+        local sag = (L > 0) and math.abs(ex * (ym - y0) - ey * (xm - x0)) / L or 0.0
+        if sag > 0.005 and depth < 30 then
+            refine(a0, x0, y0, am, xm, ym, depth + 1)
+            pts[#pts + 1] = { xm, ym }
+            refine(am, xm, ym, a1, x1, y1, depth + 1)
         else
-            b, x2, f2 = x2, x1, f1
-            x1 = b - g * (b - a)
-            f1 = f(x1)
+            pts[#pts + 1] = { xm, ym }
         end
     end
-    return math.max(f1, f2)
+    local base = {}
+    for i = 0, 360 do
+        local th = i * 2.0 * math.pi / 360
+        local x, y = edge(th)
+        base[#base + 1] = { th, x, y }
+    end
+    for i = 1, 360 do
+        local a, b = base[i], base[i + 1]
+        pts[#pts + 1] = { a[2], a[3] }
+        refine(a[1], a[2], a[3], b[1], b[2], b[3], 0)
+    end
+    -- THE HULL (monotone chain): every point is in the room, so is the hull.
+    table.sort(pts, function(a, b) return a[1] < b[1] or (a[1] == b[1] and a[2] < b[2]) end)
+    local function cross(o, a, b) return (a[1] - o[1]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[1] - o[1]) end
+    local H = {}
+    for i = 1, #pts do
+        while #H >= 2 and cross(H[#H - 1], H[#H], pts[i]) <= 0 do H[#H] = nil end
+        H[#H + 1] = pts[i]
+    end
+    local lower = #H + 1
+    for i = #pts - 1, 1, -1 do
+        while #H >= lower and cross(H[#H - 1], H[#H], pts[i]) <= 0 do H[#H] = nil end
+        H[#H + 1] = pts[i]
+    end
+    H[#H] = nil
+    local xs, ys = {}, {}
+    for i = 1, #H do xs[i], ys[i] = H[i][1], H[i][2] end
+    if #xs == 0 then xs, ys = { 0.0 }, { 0.0 } end
+    bfRoomCache[key] = { xs, ys }
+    return bfRoomCache[key]
+end
+
+--- The Minkowski sum of convex polygons, every edge sorted by angle.
+local function bfSum(polys)
+    local sx, sy = 0.0, 0.0
+    local edges = {}
+    for _, pl in ipairs(polys) do
+        local xs, ys = pl[1], pl[2]
+        local n, k = #xs, 1
+        for i = 2, n do
+            if ys[i] < ys[k] or (ys[i] == ys[k] and xs[i] < xs[k]) then k = i end
+        end
+        sx, sy = sx + xs[k], sy + ys[k]
+        for i = 1, n do
+            local j = (i % n) + 1
+            local ex, ey = xs[j] - xs[i], ys[j] - ys[i]
+            if ex ~= 0 or ey ~= 0 then
+                local a = math.atan(ey, ex)
+                if a < 0 then a = a + 2 * math.pi end
+                edges[#edges + 1] = { a, ex, ey }
+            end
+        end
+    end
+    table.sort(edges, function(a, b) return a[1] < b[1] end)
+    local xs, ys = { sx }, { sy }
+    local x, y = sx, sy
+    for i = 1, #edges - 1 do
+        x, y = x + edges[i][2], y + edges[i][3]
+        xs[#xs + 1], ys[#ys + 1] = x, y
+    end
+    return { xs, ys }
+end
+
+--- The point of a convex polygon nearest (x, y), and how far: itself inside.
+local function bfNearest(P, x, y)
+    local xs, ys = P[1], P[2]
+    local n = #xs
+    local inside = n >= 3
+    local bx, by, bd = xs[1], ys[1], math.huge
+    for i = 1, n do
+        local j = (i % n) + 1
+        local ex, ey = xs[j] - xs[i], ys[j] - ys[i]
+        if ex * (y - ys[i]) - ey * (x - xs[i]) < 0 then inside = false end
+        local L2 = ex * ex + ey * ey
+        local t = 0.0
+        if L2 > 0 then t = math.max(0.0, math.min(1.0, ((x - xs[i]) * ex + (y - ys[i]) * ey) / L2)) end
+        local qx, qy = xs[i] + ex * t, ys[i] + ey * t
+        local d = (qx - x) ^ 2 + (qy - y) ^ 2
+        if d < bd then bx, by, bd = qx, qy, d end
+    end
+    if inside then return x, y, 0.0 end
+    return bx, by, math.sqrt(bd)
+end
+
+--- The part of a convex polygon left of the line a -> b.
+local function bfKeepLeft(P, ax, ay, bx, by)
+    local xs, ys = P[1], P[2]
+    local ox, oy = {}, {}
+    local m = #xs
+    if m == 0 then return { ox, oy } end
+    local function side(x, y) return (bx - ax) * (y - ay) - (by - ay) * (x - ax) end
+    local px, py = xs[m], ys[m]
+    local pd = side(px, py)
+    for k = 1, m do
+        local x, y = xs[k], ys[k]
+        local d = side(x, y)
+        if d >= 0 then
+            if pd < 0 then
+                local t = pd / (pd - d)
+                ox[#ox + 1], oy[#oy + 1] = px + (x - px) * t, py + (y - py) * t
+            end
+            ox[#ox + 1], oy[#oy + 1] = x, y
+        elseif pd >= 0 then
+            local t = pd / (pd - d)
+            ox[#ox + 1], oy[#oy + 1] = px + (x - px) * t, py + (y - py) * t
+        end
+        px, py, pd = x, y, d
+    end
+    return { ox, oy }
+end
+
+--- A convex polygon cut to another (counter-clockwise).
+local function bfCut(P, C)
+    local n = #C[1]
+    for i = 1, n do
+        if #P[1] == 0 then break end
+        local j = (i % n) + 1
+        P = bfKeepLeft(P, C[1][i], C[2][i], C[1][j], C[2][j])
+    end
+    return P
+end
+
+local function bfArea2(P)
+    local xs, ys = P[1], P[2]
+    local s = 0.0
+    for i = 1, #xs do
+        local j = (i % #xs) + 1
+        s = s + xs[i] * ys[j] - xs[j] * ys[i]
+    end
+    return s
+end
+
+--- A convex polygon with every edge moved in by d.
+local bfShrunkCache = setmetatable({}, { __mode = 'k' })
+local function bfShrunk(P, d)
+    if d <= 0 or #P[1] < 3 then return P end
+    bfShrunkCache[P] = bfShrunkCache[P] or {}
+    if bfShrunkCache[P][d] then return bfShrunkCache[P][d] end
+    local xs, ys = P[1], P[2]
+    local n = #xs
+    local Q = P
+    for i = 1, n do
+        local j = (i % n) + 1
+        local ex, ey = xs[j] - xs[i], ys[j] - ys[i]
+        local L = math.sqrt(ex * ex + ey * ey)
+        if L > 0 then
+            local nx, ny = -ey / L * d, ex / L * d
+            Q = bfKeepLeft(Q, xs[i] + nx, ys[i] + ny, xs[j] + nx, ys[j] + ny)
+        end
+    end
+    bfShrunkCache[P][d] = Q
+    return Q
+end
+
+--- How far the plan's own rooms can sit inside the real fit's, at most, for a
+--- zone before of radius hr: its chords (storm_solve.lua's AIM_SAG of the radius,
+--- never under AIM_SAG_MIN) and its five millimeters of extra clearance -- and a
+--- tenth of a millimeter over. A brute force with its rooms shrunk by this finds
+--- only ends the plan's own rooms reach too.
+local function planRoomSlack(hr)
+    return math.max(0.01, 1e-4 * hr) + 0.0051
+end
+
+--- THE NEAREST END ON LAND, BY BRUTE FORCE: from the zone at (cx, cy, r), the
+--- phases from `from` on, every center on a piece of land, toward (tx, ty).
+--- Answers the nearest end it finds under `target` (nil when none), how near,
+--- and how many routes it walked. `shrink`: every room shrunk by planRoomSlack
+--- -- the rooms the plan itself can reach at worst. The map bounds are not
+--- walked: hold it only to hosts whose zone is inside them, where nesting keeps
+--- every later zone inside them too.
+local function landBeat(env, seed, from, cx, cy, r, tx, ty, target, shrink)
+    local P = env.BR.Config.Storm.phases
+    local N = #P
+    local land = env.BR.StormLand()
+    for _, pc in ipairs(land) do
+        pc.P = { pc.xs, pc.ys }
+        pc.x0, pc.y0, pc.x1, pc.y1 = math.huge, math.huge, -math.huge, -math.huge
+        for i = 1, #pc.xs do
+            pc.x0, pc.x1 = math.min(pc.x0, pc.xs[i]), math.max(pc.x1, pc.xs[i])
+            pc.y0, pc.y1 = math.min(pc.y0, pc.ys[i]), math.max(pc.y1, pc.ys[i])
+        end
+    end
+    local rooms = {}
+    for p = from, N do
+        local hr = (p == from) and r or P[p - 1].radius
+        rooms[p] = bfRoom(env, seed, p, hr)
+        if shrink then rooms[p] = bfShrunk(rooms[p], planRoomSlack(hr)) end
+    end
+    local after = { [N] = { { 0.0 }, { 0.0 } } }
+    for p = N - 1, from - 1, -1 do
+        local polys = {}
+        for q = p + 1, N do polys[#polys + 1] = rooms[q] end
+        after[p] = bfSum(polys)
+    end
+    local best, bx, by, walked = target, nil, nil, 0
+    local function walk(S, p)
+        walked = walked + 1
+        if p == N then
+            local qx, qy, d = bfNearest(S, tx, ty)
+            if d < best then best, bx, by = d, qx, qy end
+            return
+        end
+        local T = bfSum({ S, rooms[p + 1] })
+        local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+        for i = 1, #T[1] do
+            x0, x1 = math.min(x0, T[1][i]), math.max(x1, T[1][i])
+            y0, y1 = math.min(y0, T[2][i]), math.max(y1, T[2][i])
+        end
+        local kids = {}
+        for _, pc in ipairs(land) do
+            if pc.x0 <= x1 and pc.x1 >= x0 and pc.y0 <= y1 and pc.y1 >= y0 then
+                local C = bfCut(T, pc.P)
+                if #C[1] >= 3 and bfArea2(C) > 1e-6 then
+                    local _, _, lb = bfNearest((p + 1 == N) and C or bfSum({ C, after[p + 1] }), tx, ty)
+                    if lb < best then kids[#kids + 1] = { C, lb } end
+                end
+            end
+        end
+        table.sort(kids, function(a, b) return a[2] < b[2] end)
+        for _, kd in ipairs(kids) do
+            if kd[2] < best then walk(kd[1], p + 1) end
+        end
+    end
+    walk({ { cx }, { cy } }, from - 1)
+    return bx, by, best, walked
+end
+
+--- The nearest point on the map to (x, y), by brute force: every edge of the
+--- surveyed boundary and of every water rectangle walked a quarter meter at a
+--- time, each point tried on it and a few centimeters either way off it -- the
+--- stretch of each edge within `R` of the spot, R doubled until land is found.
+local bfLandMemo = {}
+local function bfLand(env, x, y)
+    if not env.BR.StormOffMap(x, y) then return x, y end
+    local key = x .. ',' .. y
+    if bfLandMemo[key] then return bfLandMemo[key][1], bfLandMemo[key][2] end
+    local M = env.BR.Config.Map
+    local edges = {}
+    local B = M.Boundary
+    for i = 1, #B do
+        local a, b = B[i], B[(i % #B) + 1]
+        edges[#edges + 1] = { a.x, a.y, b.x, b.y }
+    end
+    for _, w in ipairs(M.Water) do
+        edges[#edges + 1] = { w.minX, w.minY, w.maxX, w.minY }
+        edges[#edges + 1] = { w.maxX, w.minY, w.maxX, w.maxY }
+        edges[#edges + 1] = { w.maxX, w.maxY, w.minX, w.maxY }
+        edges[#edges + 1] = { w.minX, w.maxY, w.minX, w.minY }
+    end
+    local near = math.huge
+    for _, e in ipairs(edges) do
+        local dx, dy = e[3] - e[1], e[4] - e[2]
+        local t = math.max(0.0, math.min(1.0, ((x - e[1]) * dx + (y - e[2]) * dy) / (dx * dx + dy * dy)))
+        near = math.min(near, math.sqrt((e[1] + dx * t - x) ^ 2 + (e[2] + dy * t - y) ^ 2))
+    end
+    local R = near + 1.0
+    local best, bx, by = math.huge, nil, nil
+    while not bx do
+        for _, e in ipairs(edges) do
+            local dx, dy = e[3] - e[1], e[4] - e[2]
+            local L = math.sqrt(dx * dx + dy * dy)
+            local ux, uy = dx / L, dy / L
+            local s0 = (x - e[1]) * ux + (y - e[2]) * uy
+            local h = math.abs((x - e[1]) * uy - (y - e[2]) * ux)
+            if h <= R then
+                local half = math.sqrt(R * R - h * h)
+                local s1, s2 = math.max(0.0, s0 - half), math.min(L, s0 + half)
+                if s1 <= s2 then
+                    local steps = math.max(1, math.ceil((s2 - s1) / 0.25))
+                    for i = 0, steps do
+                        local sAt = s1 + (s2 - s1) * i / steps
+                        local px, py = e[1] + ux * sAt, e[2] + uy * sAt
+                        for _, o in ipairs({ 0.0, 0.03, -0.03 }) do
+                            local qx, qy = px - uy * o, py + ux * o
+                            local dq = math.sqrt((qx - x) ^ 2 + (qy - y) ^ 2)
+                            if dq < best and not env.BR.StormOffMap(qx, qy) then best, bx, by = dq, qx, qy end
+                        end
+                    end
+                end
+            end
+        end
+        R = R * 2.0
+    end
+    bfLandMemo[key] = { bx, by }
+    return bx, by
 end
 
 --- A server with the surveyed boundary loaded, so "on the map" is the game's.
@@ -8194,22 +8492,21 @@ end
 -- ---------------------------------------------------------------------------
 describe('control.reach')
 do
-    -- ═══ THE END IS THE NEAREST POINT THE RULES CAN REACH -- BY BRUTE FORCE ═══
+    -- ═══ THE END IS THE NEAREST POINT THE RULES CAN REACH ON LAND -- BY BRUTE FORCE ═══
     --
     -- Over many seeds, every phase from 1 to 7, and spots inside the next circle,
-    -- at its edge, outside it, far across the map, in the water and off the map:
+    -- at its edge, outside it, far across the map, by the Alamo Sea and the
+    -- coast, in the water and off the map:
     --
-    --   * every center the plan places passes the planner's own tests;
+    --   * every center the plan places passes the planner's own tests -- its
+    --     center on land among them, every circle's (aimedChainValid);
     --   * a spot over water or off the map is aimed at the nearest land to it, to
-    --     a brute-force walk of every coastline and water edge;
-    --   * when the storm ends ON the spot, there is nothing to beat;
-    --   * when it ends short, the direction from the end to the spot certifies a
-    --     lower bound on how near ANY storm the rules allow could end: every center
-    --     a phase may take reaches along it no further than its room's support,
-    --     found by brute force with the real fit (roomSupport), and the reach of
-    --     the whole chain is the sum. The end must sit within the plan's own
-    --     polygons' slack of that bound -- or ON a coastline, where the nearer
-    --     points are over water.
+    --     a brute-force walk of every coastline and water edge (bfLand);
+    --   * NO STORM THE PLAN'S OWN ROOMS ALLOW ENDS NEARER THE SPOT, coastlines
+    --     included: the brute force over the land (landBeat), its rooms shrunk to
+    --     the least the plan's can be, finds no end, with every center on land,
+    --     nearer than the plan's by more than the end may be held in by -- and
+    --     with the rooms at the real fit's full size, none nearer by a meter.
     --
     -- Hosts are on land with their zone inside the map bounds, so no bound is cut
     -- by the box (the box is held by the walked matches below and `control.box`).
@@ -8217,63 +8514,11 @@ do
     local env = S.env
     local P = env.BR.Config.Storm.phases
     local last = #P
-    local M = env.BR.Config.Map
+    local W5 = env.BR.Config.Map.Water[5]
     local rng = env.BR.Rng(5396)
-    local bad, exact, short, coast, worstGap, plans, snapped, widened = {}, 0, 0, 0, 0.0, 0, 0, 0
+    local bad, exact, short, plans, snapped, held, routes = {}, 0, 0, 0, 0, 0, 0
     local maxMs = 0.0
-    -- The nearest land to (x, y) by brute force: every edge of the surveyed
-    -- boundary and of every water rectangle walked a quarter meter at a time, each
-    -- point tried a few centimeters either way off it.
-    local landMemo = {}
-    local function bfLand(x, y)
-        if not env.BR.StormOffMap(x, y) then return x, y end
-        local key = x .. ',' .. y
-        if landMemo[key] then return landMemo[key][1], landMemo[key][2] end
-        local edges = {}
-        local B = M.Boundary
-        for i = 1, #B do
-            local a, b = B[i], B[(i % #B) + 1]
-            edges[#edges + 1] = { a.x, a.y, b.x, b.y }
-        end
-        for _, w in ipairs(M.Water) do
-            edges[#edges + 1] = { w.minX, w.minY, w.maxX, w.minY }
-            edges[#edges + 1] = { w.maxX, w.minY, w.maxX, w.maxY }
-            edges[#edges + 1] = { w.maxX, w.maxY, w.minX, w.maxY }
-            edges[#edges + 1] = { w.minX, w.maxY, w.minX, w.minY }
-        end
-        local best, bx, by = math.huge, nil, nil
-        for _, e in ipairs(edges) do
-            local dx, dy = e[3] - e[1], e[4] - e[2]
-            local L = math.sqrt(dx * dx + dy * dy)
-            local nx, ny = -dy / L, dx / L
-            local steps = math.ceil(L / 0.25)
-            for i = 0, steps do
-                local px, py = e[1] + dx * i / steps, e[2] + dy * i / steps
-                local d = math.sqrt((px - x) ^ 2 + (py - y) ^ 2)
-                if d < best + 0.05 then
-                    for _, o in ipairs({ 0.03, -0.03 }) do
-                        local qx, qy = px + nx * o, py + ny * o
-                        local dq = math.sqrt((qx - x) ^ 2 + (qy - y) ^ 2)
-                        if dq < best and not env.BR.StormOffMap(qx, qy) then best, bx, by = dq, qx, qy end
-                    end
-                end
-            end
-        end
-        landMemo[key] = { bx, by }
-        return bx, by
-    end
-    --- Is any point within `d` of (x, y) off the map? (Sampled.)
-    local function nearCoast(x, y, d)
-        for ring = 1, 8 do
-            local rr = d * ring / 8.0
-            for i = 0, 63 do
-                local a = i * math.pi / 32.0
-                if env.BR.StormOffMap(x + rr * math.cos(a), y + rr * math.sin(a)) then return true end
-            end
-        end
-        return false
-    end
-    local SEEDS = { 11, 77, 396, 4242, 90210 }
+    local SEEDS = { 11, 77, 396, 4242, 90210, 5037, 90255 }
     for _, seed in ipairs(SEEDS) do
         for k = 1, last - 1 do
             local r = P[k].radius
@@ -8282,7 +8527,8 @@ do
                 cx, cy = -2400.0 + rng:float() * 5600.0, -2800.0 + rng:float() * 9000.0
                 if not env.BR.StormOffMap(cx, cy) and boxedAt(env, seed, k, cx, cy) then break end
             end
-            if not boxedAt(env, seed, k, cx, cy) then
+            local boxed = boxedAt(env, seed, k, cx, cy) and not env.BR.StormOffMap(cx, cy)
+            if not boxed then
                 -- Circle 1 is wider than much of the map: the zone the walked matches draw.
                 cx, cy = 360.0, 1980.0
             end
@@ -8292,6 +8538,7 @@ do
                 { 'at the edge', cx + 0.95 * r * math.cos(th + 2.0), cy + 0.95 * r * math.sin(th + 2.0) },
                 { 'outside', cx + 1.4 * r * math.cos(th + 4.0), cy + 1.4 * r * math.sin(th + 4.0) },
                 { 'far across', cx + 3000.0 * math.cos(th + 1.0), cy + 3000.0 * math.sin(th + 1.0) },
+                { 'by the Alamo Sea', W5.minX - 50.0 + rng:float() * 800.0, W5.maxY + 20.0 - rng:float() * 800.0 },
                 { 'in the water', 950.0, 4100.0 },
                 { 'off the map', -6500.0, 2500.0 },
             }
@@ -8306,19 +8553,17 @@ do
                 local okc, whyc = aimedChainValid(env, seed, k + 1, plan.path)
                 if not okc then bad[#bad + 1] = tag .. ': ' .. whyc end
                 if plan.plain then bad[#bad + 1] = tag .. ': the plan failed its own check (the plain walk stood in)' end
-                if (plan.slack or 0.0) > 0.02 then widened = widened + 1 end
+                if (plan.slack or 0.0) > 0.02 then held = held + 1 end
                 if not (plan.path[last].x == plan.ex and plan.path[last].y == plan.ey) then
                     bad[#bad + 1] = tag .. ': the chain does not end where the plan says'
                 end
                 if env.BR.StormOffMap(tx, ty) then
                     snapped = snapped + 1
-                    local lx, ly = bfLand(tx, ty)
-                    local d = math.sqrt((plan.sx - lx) ^ 2 + (plan.sy - ly) ^ 2)
+                    local lx, ly = bfLand(env, tx, ty)
                     local mine = math.sqrt((plan.sx - tx) ^ 2 + (plan.sy - ty) ^ 2)
                     local theirs = math.sqrt((lx - tx) ^ 2 + (ly - ty) ^ 2)
-                    if mine > theirs + 0.05 or env.BR.StormOffMap(plan.sx, plan.sy) then
-                        bad[#bad + 1] = ('%s: aimed %.2f m from the spot, the nearest land is %.2f m (%.2f apart)')
-                            :format(tag, mine, theirs, d)
+                    if mine > theirs + 0.005 or env.BR.StormOffMap(plan.sx, plan.sy) then
+                        bad[#bad + 1] = ('%s: aimed %.3f m from the spot, the nearest land is %.3f m'):format(tag, mine, theirs)
                     end
                 elseif plan.sx ~= tx or plan.sy ~= ty then
                     bad[#bad + 1] = tag .. ': a spot on land was not aimed as picked'
@@ -8327,41 +8572,34 @@ do
                     exact = exact + 1
                 else
                     short = short + 1
-                    local dx, dy = plan.sx - plan.ex, plan.sy - plan.ey
-                    local dist = math.sqrt(dx * dx + dy * dy)
-                    local ux, uy = dx / dist, dy / dist
-                    local reach = ux * cx + uy * cy
-                    for p = k + 1, last do
-                        local hr = (p == k + 1) and r or P[p - 1].radius
-                        reach = reach + roomSupport(env, seed, p, hr, ux, uy)
-                    end
-                    local lower = ux * plan.sx + uy * plan.sy - reach
-                    local gap = dist - lower
-                    if gap > planSlack(env, k + 1, plan) + 0.05 then
-                        -- BY A COASTLINE: the nearer ends the bound counts are over
-                        -- water, and the end is the nearest on land.
-                        if nearCoast(plan.ex, plan.ey, math.min(gap + 1.0, 400.0)) then
-                            coast = coast + 1
-                        else
-                            bad[#bad + 1] = ('%s: ends %.3f m from the spot, %.3f m past the nearest the rules allow')
-                                :format(tag, dist, gap)
+                    local d = math.sqrt((plan.ex - plan.sx) ^ 2 + (plan.ey - plan.sy) ^ 2)
+                    if boxed then
+                        local tolE = 0.05 + 2.0 * (plan.slack or 0.0)
+                        local bx, by, best, n = landBeat(env, seed, k + 1, cx, cy, r, plan.sx, plan.sy, d - tolE, true)
+                        routes = routes + n
+                        if bx then
+                            bad[#bad + 1] = ('%s: ends %.3f m from the spot; a storm the plan\'s own rooms allow, every '
+                                .. 'center on land, ends %.3f m from it at (%.2f, %.2f)'):format(tag, d, best, bx, by)
                         end
-                    elseif gap > worstGap then
-                        worstGap = gap
+                        local fx, _, full = landBeat(env, seed, k + 1, cx, cy, r, plan.sx, plan.sy, d - 1.0, false)
+                        if fx then
+                            bad[#bad + 1] = ('%s: ends %.3f m from the spot, %.3f m past the nearest the real fit '
+                                .. 'reaches on land'):format(tag, d, d - full)
+                        end
                     end
                 end
             end
         end
     end
-    ok(#bad == 0, ('%d plans: every center passes the planner\'s tests, every spot off the map aimed at the '
-        .. 'nearest land, and every end the nearest the rules can reach'):format(plans),
+    ok(#bad == 0, ('%d plans: every center on land and passing the planner\'s tests, every spot off the map '
+        .. 'aimed at the nearest land, and every end the nearest any storm on land can reach'):format(plans),
         table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
     ok(exact >= plans // 8 and short >= plans // 4, 'spots both reached and not', exact .. ' / ' .. short)
-    ok(snapped >= #SEEDS * (last - 1), 'water and off-map spots among them', snapped)
-    ok(widened <= plans // 20, 'the end held further inside the reach only rarely', widened)
-    print(('       control.reach: %d plans, %d ended on the spot, %d short (%d on a coastline), '
-        .. 'worst gap to the brute-force bound %.3f m, %d with the end held further in, slowest plan %.1f ms')
-        :format(plans, exact, short, coast, worstGap, widened, maxMs))
+    ok(snapped >= #SEEDS * (last - 1) * 2, 'water and off-map spots among them', snapped)
+    ok(held <= plans // 20, 'the end held further inside the reach only rarely', held)
+    print(('       control.reach: %d plans, %d ended on the spot, %d short (%d routes walked by the brute '
+        .. 'force), %d with the end held further in, slowest plan %.1f ms')
+        :format(plans, exact, short, routes, held, maxMs))
     ok(S.errored() == nil, 'clean', S.errored())
 end
 
@@ -8457,7 +8695,7 @@ do
     local first = boundedServer()
     for _, poi in ipairs(first.env.BR.Config.Map.POIs) do POIS[#POIS + 1] = poi end
     local last = #first.env.BR.Config.Storm.phases
-    local bad, aimed, onSpot, phasesSeen, wet, boxedFrom = {}, 0, 0, 0, 0, 0
+    local bad, aimed, onSpot, phasesSeen, boxedFrom = {}, 0, 0, 0, 0
     for i = 1, MATCHES do
         local poi = POIS[(i * 7) % #POIS + 1]
         local anchor = { x = poi.x, y = poi.y, name = poi.name }
@@ -8535,7 +8773,9 @@ do
                             and not boxedAt(senv, r.seed, r.phase, r.cx1, r.cy1) then
                             bad[#bad + 1] = ('match %d spot %d: phase %d left the map bounds'):format(i, k, r.phase)
                         end
-                        if r.phase < last and senv.BR.StormOffMap(r.cx1, r.cy1) then wet = wet + 1 end
+                        if senv.BR.StormOffMap(r.cx1, r.cy1) then
+                            bad[#bad + 1] = ('match %d spot %d: phase %d is centered off the map'):format(i, k, r.phase)
+                        end
                         if S.lastSent(senv.BR.Net.STORM_SYNC) ~= r then
                             bad[#bad + 1] = ('match %d spot %d: phase %d was not published'):format(i, k, r.phase)
                         end
@@ -8559,14 +8799,13 @@ do
         end
     end
     ok(#bad == 0, ('%d aimed matches: never refused, the map stands still, every later circle the plan\'s, '
-        .. 'nested, in bounds and published, and the storm ends where the plan ends, on land'):format(aimed),
+        .. 'nested, in bounds, on land and published, and the storm ends where the plan ends'):format(aimed),
         table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
     ok(aimed == MATCHES * 6, 'every spot aimed', aimed)
     ok(onSpot >= MATCHES * 2 and onSpot < aimed, 'many ended exactly on the spot, and some could not', onSpot)
     ok(phasesSeen >= aimed, 'phases were really walked after the aim', phasesSeen)
-    ok(wet <= phasesSeen // 20, 'a center between over water only rarely', wet .. ' of ' .. phasesSeen)
-    print(('       control.aim: %d spots aimed, %d ended on the spot, %d centers between over water, '
-        .. '%d aimed from a circle that overhangs the bounds'):format(aimed, onSpot, wet, boxedFrom))
+    print(('       control.aim: %d spots aimed, %d ended on the spot, %d phases walked, '
+        .. '%d aimed from a circle that overhangs the bounds'):format(aimed, onSpot, phasesSeen, boxedFrom))
 end
 
 -- ---------------------------------------------------------------------------
@@ -8610,30 +8849,290 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('control.land')
+describe('control.pieces')
 do
-    -- ═══ A CIRCLE BETWEEN STAYS ON LAND WHEN ITS ROOM HAS LAND IN IT ═══
+    -- ═══ THE LAND THE PLAN SEARCHES IS THE MAP'S ═══
     --
-    -- Walks past the Alamo Sea and the coast where the nearest center to the spot
-    -- is over water but a center on land still ends the storm where it ends (a
-    -- search over 3,000 hosts and spots): every center between stays on the map.
+    -- BR.StormLand()'s convex pieces, held to BR.StormOffMap itself: every corner
+    -- and every point between a piece's middle and its corners is on the map;
+    -- every point on the map more than two centimeters from a coastline or the
+    -- water is in a piece; and a spot off the map, beside a boundary corner, a
+    -- water rectangle's corner or where the two cross -- the wedges a few nudged
+    -- candidates could miss -- is aimed at the nearest land to it, to a
+    -- brute-force walk of every edge.
+    local S = boundedServer()
+    local env = S.env
+    local M = env.BR.Config.Map
+    local land = env.BR.StormLand()
+    local bad, corners, inner = {}, 0, 0
+    local function inPiece(pc, x, y)
+        local n = #pc.xs
+        for i = 1, n do
+            local j = (i % n) + 1
+            if (pc.xs[j] - pc.xs[i]) * (y - pc.ys[i]) - (pc.ys[j] - pc.ys[i]) * (x - pc.xs[i]) < 0 then
+                return false
+            end
+        end
+        return true
+    end
+    for k, pc in ipairs(land) do
+        local mx, my = 0.0, 0.0
+        for i = 1, #pc.xs do mx, my = mx + pc.xs[i], my + pc.ys[i] end
+        mx, my = mx / #pc.xs, my / #pc.xs
+        for i = 1, #pc.xs do
+            corners = corners + 1
+            for _, f in ipairs({ 1.0, 0.999, 0.5 }) do
+                local x, y = mx + (pc.xs[i] - mx) * f, my + (pc.ys[i] - my) * f
+                if env.BR.StormOffMap(x, y) then
+                    bad[#bad + 1] = ('piece %d: (%.3f, %.3f) is off the map'):format(k, x, y)
+                end
+            end
+        end
+    end
+    -- THE MAP IS COVERED: on the map and clear of every coastline and the water.
+    local rng = env.BR.Rng(9396)
+    local function clear(x, y)
+        if M.BoundaryDistance(x, y) < 0.02 then return false end
+        for _, w in ipairs(M.Water) do
+            if x > w.minX - 0.02 and x < w.maxX + 0.02 and y > w.minY - 0.02 and y < w.maxY + 0.02 then
+                return false
+            end
+        end
+        return true
+    end
+    for _ = 1, 20000 do
+        local x, y = -3300.0 + rng:float() * 7300.0, -3600.0 + rng:float() * 10900.0
+        -- AND NEAR THE COAST AND THE ALAMO SEA, where the pieces' edges are.
+        if rng:float() < 0.5 then
+            local W = M.Water[5]
+            local b = M.Boundary[1 + math.floor(rng:float() * #M.Boundary)]
+            if rng:float() < 0.5 then
+                x, y = b.x + (rng:float() - 0.5) * 60.0, b.y + (rng:float() - 0.5) * 60.0
+            else
+                x = ((rng:float() < 0.5) and W.minX or W.maxX) + (rng:float() - 0.5) * 60.0
+                y = ((rng:float() < 0.5) and W.minY or W.maxY) + (rng:float() - 0.5) * 60.0
+            end
+        end
+        if not env.BR.StormOffMap(x, y) and clear(x, y) then
+            inner = inner + 1
+            local found = false
+            for _, pc in ipairs(land) do
+                if inPiece(pc, x, y) then
+                    found = true
+                    break
+                end
+            end
+            if not found then bad[#bad + 1] = ('(%.3f, %.3f) is on the map and in no piece'):format(x, y) end
+        end
+    end
+    ok(#bad == 0, ('%d pieces, %d corners: all of them on the map, and %d points on it all in a piece')
+        :format(#land, corners, inner), table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
+    ok(#land >= 10 and inner >= 5000, 'the land is in pieces, and the map was sampled', #land .. ' / ' .. inner)
+    -- THE SPOT, AT THE WEDGES: beside the boundary's corners, the Alamo Sea's,
+    -- and every point a water rectangle's edge crosses the boundary.
+    local P = env.BR.Config.Storm.phases
+    local hubs = {}
+    for _, b in ipairs(M.Boundary) do hubs[#hubs + 1] = { b.x, b.y } end
+    local W5 = M.Water[5]
+    for _, c in ipairs({ { W5.minX, W5.minY }, { W5.maxX, W5.minY }, { W5.maxX, W5.maxY }, { W5.minX, W5.maxY } }) do
+        hubs[#hubs + 1] = c
+    end
+    for i = 1, #M.Boundary do
+        local a, b = M.Boundary[i], M.Boundary[(i % #M.Boundary) + 1]
+        for _, w in ipairs(M.Water) do
+            for _, e in ipairs({ { w.minX, w.minY, w.maxX, w.minY }, { w.maxX, w.minY, w.maxX, w.maxY },
+                { w.maxX, w.maxY, w.minX, w.maxY }, { w.minX, w.maxY, w.minX, w.minY } }) do
+                local rx, ry, sx, sy = b.x - a.x, b.y - a.y, e[3] - e[1], e[4] - e[2]
+                local den = rx * sy - ry * sx
+                if den ~= 0.0 then
+                    local t = ((e[1] - a.x) * sy - (e[2] - a.y) * sx) / den
+                    local u = ((e[1] - a.x) * ry - (e[2] - a.y) * rx) / den
+                    if t >= 0.0 and t <= 1.0 and u >= 0.0 and u <= 1.0 then
+                        hubs[#hubs + 1] = { a.x + rx * t, a.y + ry * t }
+                    end
+                end
+            end
+        end
+    end
+    local snaps, worse = 0, {}
+    for i = 1, 300 do
+        local h = (i <= #hubs) and hubs[i] or hubs[1 + math.floor(rng:float() * #hubs)]
+        local x, y = h[1] + (rng:float() - 0.5) * 200.0, h[2] + (rng:float() - 0.5) * 200.0
+        if env.BR.StormOffMap(x, y) then
+            snaps = snaps + 1
+            local plan = env.BR.StormAimPlan(1, 8, 0.0, 0.0, P[7].radius, nil, x, y)
+            local lx, ly = bfLand(env, x, y)
+            local mine = math.sqrt((plan.sx - x) ^ 2 + (plan.sy - y) ^ 2)
+            local theirs = math.sqrt((lx - x) ^ 2 + (ly - y) ^ 2)
+            if env.BR.StormOffMap(plan.sx, plan.sy) or mine > theirs + 0.005 then
+                worse[#worse + 1] = ('(%.3f, %.3f): aimed %.4f m away, the nearest land is %.4f m'):format(x, y, mine, theirs)
+            end
+        end
+    end
+    ok(#worse == 0, ('%d spots off the map by its corners: each aimed at the nearest land to it'):format(snaps),
+        table.concat(worse, '\n       ', 1, math.min(#worse, 8)))
+    ok(snaps >= 100, 'and there were spots to aim', snaps)
+end
+
+-- ---------------------------------------------------------------------------
+describe('control.coast')
+do
+    -- ═══ BY THE ALAMO SEA AND THE COAST: EVERY CIRCLE ON LAND, AND THE END THE NEAREST ═══
+    --
+    -- Round 5's review: plans whose circles between were centered in the Alamo
+    -- Sea, runs of them -- the end chosen where only a chain through the water
+    -- reached -- and ends a few meters further from the spot than land the same
+    -- planner could end on exactly (round 5's nudged nearest-land candidates).
+    -- Each must now keep every center on land, end where no storm on land the
+    -- plan's own rooms allow ends nearer (landBeat), and end at least as near the
+    -- spot as every point the review found the planner ending on exactly.
     local S = boundedServer()
     local env = S.env
     local P = env.BR.Config.Storm.phases
-    local last = #P
     local CASES = {
+        -- the review's: circles 4, 5 and 6 in the Alamo Sea, then a turn away
+        { 90255, 3, 1445.8280287217349, 4700.8082319051027, -3820.4269675770774, -33.354176115244627 },
+        -- circles 4 to 7 in the Alamo Sea
+        { 5037, 1, -582.66039721202105, 5298.9908860996366, 1673.39, 3856.11 },
+        -- the end on the Alamo rectangle's corner, 7.6 m short of the land's best
+        { 5037, 2, 334.13358712568879, 3095.2531189657748, 967.93679266702384, 4135.0023344159126,
+            probes = { { 605.0, 4450.1 }, { 603.0, 4450.3 } } },
+        -- 2.24 m and 4.91 m short
+        { 5037, 1, -582.66039721202105, 5298.9908860996366, 2950.0, 2780.0, probes = { { 1300.1, 4030.0 } } },
+        { 5037, 1, -582.66039721202105, 5298.9908860996366, 2403.1894925077791, 2402.3893539485093,
+            probes = { { 1070.0, 3749.8 } } },
+        -- round 5's own walks past the Alamo Sea and the coast
         { 5190, 1, 535.7, 4786.1, 906.9, 3290.5 },
         { 5205, 1, 551.1, 5260.9, -344.8, 8560.7 },
         { 5275, 1, 2532.1, 3335.0, 3725.0, 5838.1 },
         { 5300, 1, 2554.8, 3207.8, 6906.7, 5853.9 },
     }
+    local bad, beaten = {}, 0
     for _, c in ipairs(CASES) do
-        local seed, k = c[1], c[2]
-        local plan = env.BR.StormAimPlan(seed, k + 1, c[3], c[4], P[k].radius, nil, c[5], c[6])
-        local okc, whyc, wet = aimedChainValid(env, seed, k + 1, plan.path)
-        ok(okc and not plan.plain, ('seed %d: every center passes the planner\'s tests'):format(seed), whyc)
-        eq(wet, 0, ('seed %d: no center between over water'):format(seed))
+        local seed, k, cx, cy, tx, ty = c[1], c[2], c[3], c[4], c[5], c[6]
+        local r = P[k].radius
+        local tag = ('seed %d phase %d'):format(seed, k)
+        local plan = env.BR.StormAimPlan(seed, k + 1, cx, cy, r, nil, tx, ty)
+        local okc, whyc = aimedChainValid(env, seed, k + 1, plan.path)
+        if not okc then bad[#bad + 1] = tag .. ': ' .. whyc end
+        if plan.plain then bad[#bad + 1] = tag .. ': the plan failed its own check' end
+        local d = math.sqrt((plan.ex - plan.sx) ^ 2 + (plan.ey - plan.sy) ^ 2)
+        -- The brute force walks no bounds: only from a host whose zone is in them.
+        if boxedAt(env, seed, k, cx, cy) then
+            beaten = beaten + 1
+            local bx, by, best = landBeat(env, seed, k + 1, cx, cy, r, plan.sx, plan.sy,
+                d - 0.05 - 2.0 * (plan.slack or 0.0), true)
+            if bx then
+                bad[#bad + 1] = ('%s: ends %.3f m from the spot; on land the plan\'s rooms reach %.3f m, at (%.2f, %.2f)')
+                    :format(tag, d, best, bx, by)
+            end
+        end
+        for _, q in ipairs(c.probes or {}) do
+            local pr = env.BR.StormAimPlan(seed, k + 1, cx, cy, r, nil, q[1], q[2])
+            local dq = math.sqrt((q[1] - plan.sx) ^ 2 + (q[2] - plan.sy) ^ 2)
+            if pr.ex == q[1] and pr.ey == q[2] and aimedChainValid(env, seed, k + 1, pr.path) and d > dq + 0.05 then
+                bad[#bad + 1] = ('%s: ends %.3f m from the spot, but the storm ends exactly on (%.1f, %.1f), %.3f m from it')
+                    :format(tag, d, q[1], q[2], dq)
+            end
+        end
     end
+    ok(#bad == 0, ('%d plans by the water: every circle on land, and every end the nearest on land'):format(#CASES),
+        table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
+    ok(beaten >= 6, 'the brute force held most of them', beaten)
+    -- A SPOT OFF THE COAST, AIMED AT A TIP OF LAND THE STORM CAN REACH: ended on
+    -- exactly. It is on the very edge of the land, and of what the storm can
+    -- reach there, and an end held in by the two centimeters a walk on an edge
+    -- needs would sit further short of a sharp tip (round 5's review fuzz, seed
+    -- 90148, two meters): the walk to the exact end is tried first.
+    local tip = env.BR.StormAimPlan(90148, 3, 501.17492987774312, 6110.9269202686846, P[2].radius, nil,
+        -2538.601714465216, 8710.880372257212)
+    local tipOk = aimedChainValid(env, 90148, 3, tip.path)
+    ok(tipOk and tip.ex == tip.sx and tip.ey == tip.sy and not env.BR.StormOffMap(tip.ex, tip.ey),
+        'a spot off the north tip: aimed at the tip, and the storm ends exactly on it',
+        ('aim (%.4f, %.4f) end (%.4f, %.4f)'):format(tip.sx, tip.sy, tip.ex, tip.ey))
+end
+
+-- ---------------------------------------------------------------------------
+describe('control.toward')
+do
+    -- ═══ EVERY CIRCLE AS FAR TOWARD THE SPOT AS THE RULES ALLOW, OVER LAND ═══
+    --
+    -- control.first holds the first circle; this holds every one of them, by the
+    -- coast and the Alamo Sea where the land decides most. For each circle a plan
+    -- places, a ring of challengers fills its room (centers that pass the
+    -- planner's real fit from the circle before, on land); any of them more than
+    -- half a meter nearer the spot from which the brute force over the land, with
+    -- the plan's own rooms at their least, still ends the storm where the plan
+    -- ends it, is a circle the plan could have put nearer -- and must not exist.
+    local S = boundedServer()
+    local env = S.env
+    local P = env.BR.Config.Storm.phases
+    local SS = env.BR.StormShape
+    local last = #P
+    local W5 = env.BR.Config.Map.Water[5]
+    local rng = env.BR.Rng(7396)
+    local bad, centers, challengers = {}, 0, 0
+    -- Round 5's walks that kept to one route of land, a circle 6 to 116 m short
+    -- of the nearest it could take; and plans from hosts by the Alamo Sea and the
+    -- coast, toward spots past the next circle.
+    local HOSTS = {
+        { 7082, 1, -299.27, 4937.63, -2648.25, 6991.08 },
+        { 7164, 1, 316.88, 3535.58, 217.62, 4831.78 },
+        { 7164, 4, -1245.55, 2468.23, -1266.84, 2727.36 },
+    }
+    local M = env.BR.Config.Map
+    for _, seed in ipairs({ 6141, 6182, 6223 }) do
+        for k = 1, last - 2 do
+            for _ = 1, 50 do
+                local x, y
+                if rng:float() < 0.5 then
+                    x, y = W5.minX - 400.0 + rng:float() * 1500.0, W5.minY - 400.0 + rng:float() * 1500.0
+                else
+                    local b = M.Boundary[1 + math.floor(rng:float() * #M.Boundary)]
+                    x, y = b.x + (rng:float() - 0.5) * 1200.0, b.y + (rng:float() - 0.5) * 1200.0
+                end
+                if not env.BR.StormOffMap(x, y) and boxedAt(env, seed, k, x, y) then
+                    local th = rng:float() * 2.0 * math.pi
+                    local f = 0.6 + rng:float() * 1.4
+                    HOSTS[#HOSTS + 1] = { seed, k, x, y, x + f * P[k].radius * math.cos(th),
+                        y + f * P[k].radius * math.sin(th) }
+                    break
+                end
+            end
+        end
+    end
+    for _, h in ipairs(HOSTS) do
+        local seed, k, cx, cy, tx, ty = h[1], h[2], h[3], h[4], h[5], h[6]
+        local plan = env.BR.StormAimPlan(seed, k + 1, cx, cy, P[k].radius, nil, tx, ty)
+        for p = k + 1, last - 1 do
+            local prev, mine = plan.path[p - 1], plan.path[p]
+            local dMine = math.sqrt((mine.x - plan.sx) ^ 2 + (mine.y - plan.sy) ^ 2)
+            local hr = (p == k + 1) and P[k].radius or P[p - 1].radius
+            local hks = hostKsOf(env, seed, p, prev.x, prev.y, hr)
+            local D = discsAt(env, seed, p)
+            local far = SS.reachOf(hks, prev.x, prev.y)
+            centers = centers + 1
+            for i = 0, 35 do
+                local a = i * math.pi / 18.0
+                for j = 1, 10 do
+                    local qx, qy = prev.x + math.cos(a) * far * j / 10.0, prev.y + math.sin(a) * far * j / 10.0
+                    local dq = math.sqrt((qx - plan.sx) ^ 2 + (qy - plan.sy) ^ 2)
+                    if dq < dMine - 0.5 and not env.BR.StormOffMap(qx, qy) and SS.fit(hks, D, qx, qy, 1.0) <= -1e-2 then
+                        challengers = challengers + 1
+                        if landBeat(env, seed, p + 1, qx, qy, P[p].radius, plan.ex, plan.ey, 1e-3, true) then
+                            bad[#bad + 1] = ('seed %d phase %d circle %d: (%.1f, %.1f) is %.2f m nearer the spot and still '
+                                .. 'ends the storm on land where it ends'):format(seed, k, p, qx, qy, dMine - dq)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    print(('       control.toward: %d circles from %d plans, %d nearer challengers'):format(centers, #HOSTS, challengers))
+    ok(#bad == 0, ('%d circles from %d plans, %d nearer challengers: none of them still ends where the storm does')
+        :format(centers, #HOSTS, challengers), table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
+    ok(challengers >= 10, 'and there were nearer centers to try', challengers)
 end
 
 -- ---------------------------------------------------------------------------

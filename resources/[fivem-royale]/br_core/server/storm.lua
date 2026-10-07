@@ -717,13 +717,14 @@ end
 --
 --   THE SPOT, ON LAND: one over water or off the surveyed map is aimed as the
 --   nearest point to it on the map.
---   THE END: that spot when the chain of nested circles can carry the last one
---   there -- every circle still inside the one before it, so never outside the
---   next circle on the map -- and otherwise the point it can carry it to that is
---   nearest the spot, on land.
---   EACH CIRCLE: the center nearest the spot among those the rules allow it that
---   can still end there -- as far toward the spot as the storm may go, phase by
---   phase, so the walk closes on it as fast as the rules permit.
+--   THE END: that spot when a chain of nested circles, every one of them
+--   centered on land, can carry the last one there -- every circle still inside
+--   the one before it, so never outside the next circle on the map -- and
+--   otherwise the point such a chain can carry it to that is nearest the spot.
+--   EACH CIRCLE: the center on land nearest the spot among those the rules allow
+--   it that can still end there over land -- as far toward the spot as the
+--   storm may go, phase by phase, so the walk closes on it as fast as the rules
+--   permit.
 --
 -- Storm reveal walks the same drawCentre (finalCentre), so it answers the end,
 -- and the squads that ran it are sent the new end (terminalfx/storm_control.lua).

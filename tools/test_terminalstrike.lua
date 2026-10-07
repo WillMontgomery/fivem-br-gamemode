@@ -269,7 +269,6 @@ BR.Market = {
 }
 BR.Storm = {
     finalCentre = function() return nil end,
-    aimCheck = function() return nil, 'no_circle' end,
     aim = function() return nil, 'no_circle' end,
 }
 

@@ -936,7 +936,7 @@ do
     -- what this one did. A line that says how long an effect lasts, or that
     -- something keeps working, says what can end it -- or the second run is
     -- refused, as Storm control's is (`storm_aimed`: one spot a match, so its
-    -- "rest of the match" and "exactly on that spot" stay true).
+    -- "for the rest of the match" stays true).
     bootServer()
     local copy = BR.Config.Terminals.copy
     local pick = BR.TerminalSolve.pick
