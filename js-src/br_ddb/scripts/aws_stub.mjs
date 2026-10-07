@@ -83,6 +83,7 @@ class Command {
 export class GetItemCommand extends Command {}
 export class PutItemCommand extends Command {}
 export class UpdateItemCommand extends Command {}
+export class QueryCommand extends Command {}
 export class BatchWriteItemCommand extends Command {}
 export class PutObjectCommand extends Command {}
 

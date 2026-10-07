@@ -288,13 +288,15 @@ Read the shape of that carefully, because it is the whole reason it was allowed:
 - **The IAM policy is unchanged.** This is `dynamodb:GetItem` on
   `ringmaster-bans`, which the box already had. Nothing widened; a verb learned
   a second argument.
-- **Still no `Query` and no `Scan` anywhere in `br_ddb`** — the property below,
-  which was the thing that could have been traded away here and was not.
+- **Still no `Scan` anywhere in `br_ddb`, and no `Query` on any `ringmaster-*`
+  table** — the property below, which was the thing that could have been traded
+  away here and was not. (The one `Query` in `br_ddb` is a player's own saved
+  peds in `br-players`; see [Saved peds](#saved-peds-the-one-query-in-br_ddb-28).)
 
 **The incidents read is narrower than the grant in three further ways, all of them
 enforced in code rather than promised.** It is a `GetItem` keyed on `incidentId` —
-there is no `Query` and no `Scan` anywhere in `br_ddb`, which is the property that
-stops a compromised box enumerating cases at all. Every id it is ever called with
+there is no `Scan` anywhere in `br_ddb` and no `Query` on any `ringmaster-*` table,
+which is the property that stops a compromised box enumerating cases at all. Every id it is ever called with
 came back from this box's own `PutItem`, so "read back cases whose ids it knows"
 means "read back its own". And it is a `ProjectionExpression`, not the row: four
 attributes — `incidentId`, `state`, `verdict`, `resolvedAt`. The evidence, the
@@ -312,6 +314,40 @@ attempts and nothing on either envelope says so, and an incident lost that way i
 unrecoverable because the evidence buffer behind it is discarded at match end. So
 the row is written by the game and the event carries only an id. What a
 compromised game box gains from this grant is the ability to file noise.
+
+## Saved peds: the one Query in br_ddb (#28)
+
+Locker v2 (Season 2) stores each saved custom ped as its own item in
+`br-players`, under the player's partition, as `sk = ped#<id>`; the ped a player
+wears is one string, `locker2`, on their profile row. Listing them is the first
+and only `Query` in `br_ddb` (`br:ddb:lockerFetch`). IAM already granted `Query`
+on `br-*` (DEPLOY.md); until now the code never used it.
+
+What keeps it narrow, in code:
+
+- **One partition, one prefix.** `pk = <license>` and `begins_with(sk, 'ped#')`,
+  both built in `js-src/br_ddb/src/locker2.js`. The license is the one
+  `br_core/server/locker2.lua` resolved for the connection itself; no verb takes
+  a license or a key from a client. It cannot reach another player's rows, the
+  profile, `purchases` or the match history.
+- **The ped key is built, never taken.** Every ped verb takes `(license, id)`,
+  checks the id is eleven base36 characters and builds `ped#<id>` itself, the
+  way `historyItem` asserts `match#`. So the delete — a `BatchWriteItem`
+  `DeleteRequest`, never `DeleteItem` — can only remove a `ped#` row: never the
+  profile, and never `purchases`, which is where bought items live.
+- **No `ringmaster-*` table is queried**, and there is still no `Scan` anywhere.
+- **The server checks every write before br_ddb sees it**: the season, a name of
+  letters and digits (1 to 24), the id's shape and that the player owns it, the
+  appearance's size before it is decoded and then its form, a headshot's type and
+  size (a webp data URL of 8 KB at most), and a rate (six writes, one more every
+  two seconds).
+
+**Who else reads these rows.** Ringmaster's player page queries
+`begins_with(sk, 'match#')` and its scoreboard and match ledger scan filtered to
+`sk = 'profile'` and `match#` rows, so neither shows a `ped#` row. The scans do
+read them before filtering, which costs read capacity: a ped is about 1 KB, plus
+a few KB with its headshot. blitz-bot reads the `profile` row by key and a
+player's matches with `begins_with(sk, 'match#')`, so it never sees one either.
 
 ## The second source: a weapon in a hand the gamemode never filled
 
@@ -637,8 +673,8 @@ for a case open against the killer in *any* match rather than only the current
 one, which is a larger set of cases and the same single bit about the same single
 player. The map it reads (`BR.Incident.openFor`) is license-keyed, lives entirely
 server-side, and is reached only by that resolver — there is no verb anywhere
-that accepts a license from a client, and br_ddb still has no Query or Scan, so
-nothing on the box can enumerate cases at all.
+that accepts a license from a client, and br_ddb still has no Scan and no Query on
+a `ringmaster-*` table, so nothing on the box can enumerate cases at all.
 
 **…but it did widen what the keypress spent, and that had to be split back
 apart.** Answering the prompt records itself in `usage.corroborated`, which is

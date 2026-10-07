@@ -8,6 +8,7 @@ import {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
+  QueryCommand,
   UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
@@ -18,6 +19,10 @@ import { effective } from './ban.js'
 import { buildIncidentClose } from './close.js'
 import { addableId, EMOTE_SLOTS, ownedAddUpdate, unequipUpdate } from './emotes.js'
 import { buildIncidentItem } from './incident.js'
+import {
+  pedDeleteInput, pedFromItem, pedPutInput, pedQueryInput, pedRenameInput, pedShotInput,
+  QUERY_PAGES, wornFrom, wornSetInput,
+} from './locker2.js'
 import { banner, resolvePrefixes } from './prefix.js'
 import { spendCost, spendUpdate } from './spend.js'
 import { buildStatsUpdate } from './stats.js'
@@ -38,7 +43,8 @@ import { yubikeyFields, yubikeyRefusal, yubikeyUpdate } from './yubikey.js'
  * connecting license, and the `discord:` identifier on the same connection,
  * because a ban can be filed under either. Two keys already in hand, asked
  * about together. See `br:ddb:banCheck`, and note that the sentence below about
- * there being no Query and no Scan in this file is still exactly true.
+ * there being no Scan in this file, and no Query on any ringmaster-* table, is
+ * still exactly true.
  *
  * IT EXPOSES A SHORT, NAMED LIST OF VERBS, and that is a security boundary
  * rather than a convenience. There is deliberately no generic "run this query"
@@ -83,8 +89,8 @@ import { yubikeyFields, yubikeyRefusal, yubikeyUpdate } from './yubikey.js'
  *
  * WHAT A COMPROMISED GAME BOX CAN DO WITH THIS: file noise, read the verdicts on
  * cases it filed, and write up to nine images per case it filed into a prefix it
- * cannot leave. What it still cannot do: enumerate open cases (there is no Query
- * or Scan in this file), read who is an admin, discover who is banned, alter a
+ * cannot leave. What it still cannot do: enumerate open cases (there is no Scan
+ * in this file, and its one Query reads a player's own saved peds), read who is an admin, discover who is banned, alter a
  * verdict, overwrite an existing incident -- the write is conditional on the id
  * being absent -- or read back, list or delete a single object in that bucket.
  *
@@ -183,11 +189,13 @@ function withTimeout(promise, ms) {
  * it minted itself, or (since #38) the `discord:` identifier FiveM handed over
  * with the same connection. On the `ringmaster-*` family the game box's IAM policy grants
  * GetItem (broadly, since 2026-08-17) and PutItem on `ringmaster-incidents`
- * alone. THERE IS STILL NO QUERY AND NO SCAN ANYWHERE IN THIS FILE, which is the
- * property that stops a compromised box enumerating anything, and it is worth
- * more than the table list now that the read grant is wider than the code. If
- * this ever needs a Query, that is a conversation about the policy, not a change
- * to this function.
+ * alone. THERE IS STILL NO SCAN ANYWHERE IN THIS FILE, AND NO QUERY ON ANY
+ * ringmaster-* TABLE, which is the property that stops a compromised box
+ * enumerating anything, and it is worth more than the table list now that the
+ * read grant is wider than the code. The one Query (#28, `br:ddb:lockerFetch`)
+ * lists ONE player's `ped#` rows in br-players, on a key and a prefix the game
+ * box supplies itself -- see src/locker2.js and docs/security.md. Any other
+ * Query is a conversation about the policy, not a change to this function.
  */
 async function getByKey(table, key, prefix) {
   const out = await withTimeout(
@@ -225,9 +233,9 @@ function getByLicense(table, license) {
  *
  * A SECOND `GetItem`, NOT A `Query`. The obvious shape for "find every ban that
  * could apply to this connection" is a query over the identifiers, and it is
- * not available here and is not going to be: "there is no Query and no Scan
- * anywhere in br_ddb" is the property that stops a compromised game box
- * enumerating who is banned, docs/security.md calls it load-bearing, and it is
+ * not available here and is not going to be: "there is no Scan anywhere in
+ * br_ddb, and no Query on a ringmaster-* table" is the property that stops a
+ * compromised game box enumerating who is banned, docs/security.md calls it load-bearing, and it is
  * worth more than the convenience. The gate holds both keys already -- FiveM
  * handed them over with the connection -- so two lookups on two keys it was
  * given is the same shape as one, twice. The IAM policy does not move: this is
@@ -1592,8 +1600,9 @@ on('br:ddb:incidentClose', (req, payload) => {
  * IT IS NARROWER THAN THE GRANT IN THREE MORE WAYS, all of them enforced here
  * rather than promised:
  *
- *   * GetItem, keyed on `incidentId`. There is still no Query and no Scan
- *     anywhere in this file, so a compromised game box cannot enumerate cases.
+ *   * GetItem, keyed on `incidentId`. There is still no Scan anywhere in this
+ *     file and no Query on a ringmaster-* table, so a compromised game box
+ *     cannot enumerate cases.
  *   * BY AN ID IT MINTED ITSELF. Every id this verb is ever called with came
  *     back from `putIncident` on this same box. It cannot discover an id it did
  *     not file, so "read back cases whose ids it knows" means "read back its own".
@@ -2005,8 +2014,8 @@ on('br:ddb:artifactPut', (req, incidentId, index, encoding, capturedAt) => {
  *         p_<incidentId>       SS   the licenses owed for that incident
  *         t_<incidentId>       N    when it was first claimed, for the age cap
  *
- * WHY NOT ONE ITEM PER INCIDENT: because finding them again would need a Query,
- * and there is no Query anywhere in this file. Keeping the queue in one item
+ * WHY NOT ONE ITEM PER INCIDENT: because finding them again would need a Query
+ * on a ringmaster-* table, and there is none in this file. Keeping the queue in one item
  * makes the sweep a single GetItem on a known key -- the same shape as every
  * other read here -- and the queue drains itself, so it does not grow.
  *
@@ -2246,6 +2255,198 @@ on('br:ddb:yubikeySet', (req, license, held) => {
     })
 })
 
+/**
+ * Locker v2 (#28, Season 2): one player's worn ped and saved peds, in one
+ * answer. A GetItem of the profile row (its `locker2` string), then the Query
+ * of their own `ped#` rows -- the one Query in this file; src/locker2.js says
+ * why it cannot reach anything else. Paged, QUERY_PAGES at most.
+ *
+ * Answers `(req, ok, { worn, peds })`: worn is the record's string or '', and
+ * peds the rows src/locker2.js recognizes, oldest first. A failure answers ok
+ * false with the error, and br_core then refuses every write to that player
+ * as `store` rather than writing over rows it could not read.
+ */
+on('br:ddb:lockerFetch', (req, license) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:lockerFetchResult', req, ok, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+
+  const table = `${TABLE_PREFIX_GAME}players`
+  const read = async () => {
+    const row = await getByKey('players', { pk: license, sk: 'profile' }, TABLE_PREFIX_GAME)
+    const peds = []
+    let startKey
+    let pages = 0
+    do {
+      const out = await withTimeout(
+        ddb().send(new QueryCommand(pedQueryInput(table, license, startKey))),
+        TIMEOUT_MS,
+      )
+      for (const item of out.Items ?? []) {
+        const p = pedFromItem(unmarshall(item))
+        if (p) peds.push(p)
+      }
+      startKey = out.LastEvaluatedKey
+      pages++
+    } while (startKey && pages < QUERY_PAGES)
+    if (startKey) console.log(`[br_ddb] locker: ${license} has more saved peds than ${QUERY_PAGES} pages`)
+    return { worn: wornFrom(row), peds }
+  }
+
+  read()
+    .then((r) => answer(true, r))
+    .catch((e) => {
+      console.log(`[br_ddb] locker read failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Write one saved ped whole (#28). `isNew` true only where no item is (a fresh
+ * id), false only where one is (an update or a replace of a ped that still
+ * exists). A refused condition answers `refused`: 'exists' or 'missing'.
+ */
+on('br:ddb:pedPut', (req, license, id, rec, isNew) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:pedPutResult', req, ok, extra ?? {})
+  }
+
+  const fresh = isNew === true
+  const input = pedPutInput(`${TABLE_PREFIX_GAME}players`, license, id, rec, fresh)
+  if (input === null) {
+    answer(false, { error: 'bad ped' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(new PutItemCommand({ ...input, Item: marshall(input.Item) })),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, { id }))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        answer(false, { refused: fresh ? 'exists' : 'missing' })
+        return
+      }
+      console.log(`[br_ddb] saved ped write failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/** Rename one saved ped (#28), where it still exists. */
+on('br:ddb:pedRename', (req, license, id, name, up) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:pedRenameResult', req, ok, extra ?? {})
+  }
+
+  const input = pedRenameInput(`${TABLE_PREFIX_GAME}players`, license, id, name, up)
+  if (input === null) {
+    answer(false, { error: 'bad ped' })
+    return
+  }
+
+  withTimeout(ddb().send(new UpdateItemCommand(input)), TIMEOUT_MS)
+    .then(() => answer(true, { id }))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        answer(false, { refused: 'missing' })
+        return
+      }
+      console.log(`[br_ddb] saved ped rename failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/** Give one saved ped its headshot (#28), where it still exists. */
+on('br:ddb:pedShot', (req, license, id, img) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:pedShotResult', req, ok, extra ?? {})
+  }
+
+  const input = pedShotInput(`${TABLE_PREFIX_GAME}players`, license, id, img)
+  if (input === null) {
+    answer(false, { error: 'bad ped' })
+    return
+  }
+
+  withTimeout(ddb().send(new UpdateItemCommand(input)), TIMEOUT_MS)
+    .then(() => answer(true, { id }))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        answer(false, { refused: 'missing' })
+        return
+      }
+      console.log(`[br_ddb] saved ped headshot failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Delete one saved ped (#28): a BatchWriteItem DeleteRequest on the key
+ * src/locker2.js builds, retried once if DynamoDB hands it back unprocessed.
+ * Deleting a row that is already gone succeeds, which is the outcome asked for.
+ */
+on('br:ddb:pedDelete', (req, license, id) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:pedDeleteResult', req, ok, extra ?? {})
+  }
+
+  const table = `${TABLE_PREFIX_GAME}players`
+  const input = pedDeleteInput(table, license, id)
+  if (input === null) {
+    answer(false, { error: 'bad ped' })
+    return
+  }
+
+  const run = async () => {
+    let pending = input.RequestItems[table]
+    for (let attempt = 0; attempt < 2 && pending.length > 0; attempt++) {
+      const out = await withTimeout(
+        ddb().send(new BatchWriteItemCommand({ RequestItems: { [table]: pending } })),
+        TIMEOUT_MS,
+      )
+      pending = out.UnprocessedItems?.[table] ?? []
+    }
+    return pending.length
+  }
+
+  run()
+    .then((left) => (left === 0 ? answer(true, { id }) : answer(false, { error: 'unprocessed' })))
+    .catch((e) => {
+      console.log(`[br_ddb] saved ped delete failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * The ped this player wears (#28), as the `locker2` string on the profile row.
+ * Not conditional: the last ped worn is the answer, and the row is created if
+ * it is not there yet (a first lobby, before any match has written it).
+ */
+on('br:ddb:wornSet', (req, license, worn) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:wornSetResult', req, ok, extra ?? {})
+  }
+
+  const input = wornSetInput(`${TABLE_PREFIX_GAME}players`, license, worn)
+  if (input === null) {
+    answer(false, { error: 'bad worn' })
+    return
+  }
+
+  withTimeout(ddb().send(new UpdateItemCommand(input)), TIMEOUT_MS)
+    .then(() => answer(true, {}))
+    .catch((e) => {
+      console.log(`[br_ddb] worn ped write failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
 on('br:ddb:awardPay', (req, license, incidentId, amount) => {
   const answer = (ok, extra) => {
     emit('br:ddb:awardPayResult', req, ok, extra ?? {})
@@ -2381,5 +2582,5 @@ for (const line of banner(PREFIXES)) console.log(line)
 console.log(
   `[br_ddb] ready -- region ${REGION}, ${TABLE_PREFIX}* read-only (bans, grants, maintenance)`
     + ` + append + verdict-read (incidents),`
-    + ` ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats, history, report awards)`,
+    + ` ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats, history, report awards, saved peds)`,
 )

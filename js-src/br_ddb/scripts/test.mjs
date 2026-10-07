@@ -5,6 +5,10 @@ import {
   addableId, EMOTE_ID, EMOTE_SLOTS, isEmoteSlot, ownedAddUpdate, unequipUpdate,
 } from '../src/emotes.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
+import {
+  IMG_MAX, IMG_PREFIX, isName, pedDeleteInput, pedFromItem, pedKey, pedPutInput, pedQueryInput,
+  pedRenameInput, pedShotInput, wornFrom, wornSetInput,
+} from '../src/locker2.js'
 import { banner, resolvePrefixes } from '../src/prefix.js'
 import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
 import { buildStatsUpdate, STATS_ADDS, STATS_SETS } from '../src/stats.js'
@@ -2641,6 +2645,160 @@ console.log('\nyubikey: one per account, on the profile row (#396)')
   check('and never seen', blank.yubikeySeen, false)
 }
 
+console.log('\nlocker2: saved peds and the worn ped (#28)')
+{
+  const PID = '0abcdefgh12'
+  const A = '{"v":1,"s":"m","sk":0}'
+  const IMG = IMG_PREFIX + 'AAAA'
+  const T = 'br-players'
+
+  // ═══ THE KEY IS BUILT, NEVER TAKEN ═══
+  check('a ped key is ped#<id> under the license', pedKey(LIC, PID), { pk: LIC, sk: 'ped#' + PID })
+  for (const bad of ['profile', 'purchases', 'ped#0abcdefgh1', '0ABCDEFGH12', '0abcdefgh1', '0abcdefgh123',
+    'match#1', '', null, 12345678901]) {
+    check(`${JSON.stringify(bad)} is no ped id`, pedKey(LIC, bad), null)
+  }
+  check('and no license is no key', pedKey('', PID), null)
+  check('names are letters and digits, 1 to 24', [isName('Bob1'), isName('a'.repeat(24)), isName(''),
+    isName('a'.repeat(25)), isName('Bob 1'), isName('Bób'), isName('a_b')],
+  [true, true, false, false, false, false, false])
+
+  // ═══ THE WRITES ═══
+  const put = pedPutInput(T, LIC, PID, { n: 'Bob', a: A, cr: 5, up: 6 }, true)
+  check('a new ped is written only where none is', put.ConditionExpression, 'attribute_not_exists(pk)')
+  check('as the whole item', put.Item, { pk: LIC, sk: 'ped#' + PID, n: 'Bob', a: A, cr: 5, up: 6 })
+  check('an update only where one is',
+    pedPutInput(T, LIC, PID, { n: 'Bob', a: A, cr: 5, up: 6 }, false).ConditionExpression, 'attribute_exists(pk)')
+  check('a bad name writes nothing', pedPutInput(T, LIC, PID, { n: 'B b', a: A, cr: 5, up: 6 }, true), null)
+  check('nor an appearance past 2048 bytes',
+    pedPutInput(T, LIC, PID, { n: 'Bob', a: A + ' '.repeat(2048), cr: 5, up: 6 }, true), null)
+  check('nor one that is not an appearance',
+    pedPutInput(T, LIC, PID, { n: 'Bob', a: '{"k":1}', cr: 5, up: 6 }, true), null)
+  check('nor a bad id', pedPutInput(T, LIC, 'profile', { n: 'Bob', a: A, cr: 5, up: 6 }, true), null)
+  const ren = pedRenameInput(T, LIC, PID, 'Ann', 9)
+  check('a rename sets the name and the time', ren.UpdateExpression, 'SET #n = :n, #up = :up')
+  check('only on a ped that exists', ren.ConditionExpression, 'attribute_exists(pk)')
+  check('on the ped key', ren.Key, { pk: { S: LIC }, sk: { S: 'ped#' + PID } })
+  check('a rename with a bad name is nothing', pedRenameInput(T, LIC, PID, 'A-n', 9), null)
+  const shot = pedShotInput(T, LIC, PID, IMG)
+  check('a headshot sets img where the ped exists', [shot.UpdateExpression, shot.ConditionExpression],
+    ['SET #img = :img', 'attribute_exists(pk)'])
+  check('a png is not a headshot', pedShotInput(T, LIC, PID, 'data:image/png;base64,AAAA'), null)
+  check('nor one past 8 KB', pedShotInput(T, LIC, PID, IMG_PREFIX + 'A'.repeat(IMG_MAX)), null)
+  check('nor one that is not base64', pedShotInput(T, LIC, PID, IMG_PREFIX + 'AA"A'), null)
+  check('a delete is one DeleteRequest on the ped key', pedDeleteInput(T, LIC, PID),
+    { RequestItems: { [T]: [{ DeleteRequest: { Key: { pk: { S: LIC }, sk: { S: 'ped#' + PID } } } }] } })
+  check('and can never name the profile row', pedDeleteInput(T, LIC, 'profile'), null)
+  const worn = wornSetInput(T, LIC, '{"k":"s","id":"hiker"}')
+  check('the worn ped is the profile row\'s locker2', [worn.Key, worn.ExpressionAttributeNames],
+    [{ pk: { S: LIC }, sk: { S: 'profile' } }, { '#w': 'locker2' }])
+  check('a worn string that is not one writes nothing', wornSetInput(T, LIC, 'x'), null)
+
+  // ═══ THE LISTING ═══
+  const q = pedQueryInput(T, LIC)
+  check('the listing is this partition\'s ped# rows', [q.KeyConditionExpression, q.ExpressionAttributeValues],
+    ['#pk = :pk AND begins_with(#sk, :p)', { ':pk': { S: LIC }, ':p': { S: 'ped#' } }])
+  check('oldest first', q.ScanIndexForward, true)
+  check('a page carries the key it starts after', pedQueryInput(T, LIC, { k: 1 }).ExclusiveStartKey, { k: 1 })
+  check('a row read back', pedFromItem({ pk: LIC, sk: 'ped#' + PID, n: 'Bob', a: A, cr: 1, up: 2, img: IMG }),
+    { id: PID, name: 'Bob', a: A, cr: 1, up: 2, img: IMG })
+  check('a row that is not a ped is dropped', pedFromItem({ pk: LIC, sk: 'profile', n: 'Bob', a: A }), null)
+  check('the worn record off the profile',
+    [wornFrom({ locker2: '{"k":"s","id":"x"}' }), wornFrom({}), wornFrom(null)],
+    ['{"k":"s","id":"x"}', '', ''])
+
+  // ═══ THE VERBS, THROUGH THE REAL src/index.js ═══
+  bridge.reset()
+  bridge.reply({ Item: marshall({ pk: LIC, sk: 'profile', locker2: '{"k":"s","id":"hiker"}' }) })
+  bridge.reply({
+    Items: [marshall({ pk: LIC, sk: 'ped#' + PID, n: 'Bob', a: A, cr: 1, up: 2 })],
+    LastEvaluatedKey: { pk: { S: LIC }, sk: { S: 'ped#' + PID } },
+  })
+  bridge.reply({
+    Items: [marshall({ pk: LIC, sk: 'ped#1abcdefgh12', n: 'Ann', a: A, cr: 3, up: 3 }),
+      marshall({ pk: LIC, sk: 'match#1#2', n: 'x', a: A })],
+  })
+  check('lockerFetch runs', why(bridge.call('br:ddb:lockerFetch', 100, LIC)), null)
+  for (let i = 0; i < 6; i++) await bridge.settle()
+  check('a GetItem of the profile, then a Query per page', bridge.calls.map((c) => c.kind),
+    ['GetItemCommand', 'QueryCommand', 'QueryCommand'])
+  check('and never a Scan', bridge.calls.some((c) => /Scan/.test(c.kind)), false)
+  check('the second page starts where the first stopped', sent(2).input.ExclusiveStartKey,
+    { pk: { S: LIC }, sk: { S: 'ped#' + PID } })
+  const got = answer('br:ddb:lockerFetchResult')
+  check('answers yes', got.ok, true)
+  check('with the worn record', got.extra.worn, '{"k":"s","id":"hiker"}')
+  check('and both pages\' peds, a stray row left out', got.extra.peds.map((p) => p.id), [PID, '1abcdefgh12'])
+
+  bridge.reset()
+  bridge.reply(new Error('boom'))
+  bridge.call('br:ddb:lockerFetch', 101, LIC)
+  for (let i = 0; i < 4; i++) await bridge.settle()
+  check('a failed read answers no, with the error',
+    [answer('br:ddb:lockerFetchResult').ok, answer('br:ddb:lockerFetchResult').extra.error], [false, 'boom'])
+
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:pedPut', 102, LIC, PID, { n: 'Bob', a: A, cr: 1, up: 1 }, true)
+  check('pedPut is a PutItem', sent(0).kind, 'PutItemCommand')
+  check('of the ped row, conditional on none',
+    [unmarshall(sent(0).input.Item).sk, sent(0).input.ConditionExpression], ['ped#' + PID, 'attribute_not_exists(pk)'])
+  await bridge.settle()
+  check('and answers yes', answer('br:ddb:pedPutResult').ok, true)
+
+  bridge.reset()
+  const gone = new Error('The conditional request failed')
+  gone.name = 'ConditionalCheckFailedException'
+  bridge.reply(gone)
+  bridge.call('br:ddb:pedPut', 103, LIC, PID, { n: 'Bob', a: A, cr: 1, up: 1 }, false)
+  await bridge.settle()
+  check('an update of a ped that is gone is refused missing', answer('br:ddb:pedPutResult').extra.refused, 'missing')
+
+  bridge.reset()
+  bridge.call('br:ddb:pedPut', 104, LIC, 'purchases', { n: 'Bob', a: A, cr: 1, up: 1 }, false)
+  check('a key that is not a ped id sends nothing', bridge.calls.length, 0)
+  await bridge.settle()
+  check('and says bad ped', answer('br:ddb:pedPutResult').extra.error, 'bad ped')
+
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:pedRename', 105, LIC, PID, 'Ann', 7)
+  await bridge.settle()
+  check('pedRename is an UpdateItem that answers yes',
+    [sent(0).kind, answer('br:ddb:pedRenameResult').ok], ['UpdateItemCommand', true])
+
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:pedShot', 106, LIC, PID, IMG)
+  await bridge.settle()
+  check('pedShot is an UpdateItem that answers yes',
+    [sent(0).kind, answer('br:ddb:pedShotResult').ok], ['UpdateItemCommand', true])
+
+  bridge.reset()
+  bridge.reply({ UnprocessedItems: { [T]: [{ DeleteRequest: { Key: { pk: { S: LIC }, sk: { S: 'ped#' + PID } } } }] } })
+  bridge.reply({})
+  bridge.call('br:ddb:pedDelete', 107, LIC, PID)
+  for (let i = 0; i < 4; i++) await bridge.settle()
+  check('pedDelete is a BatchWriteItem, retried once when handed back', bridge.calls.map((c) => c.kind),
+    ['BatchWriteItemCommand', 'BatchWriteItemCommand'])
+  check('never a DeleteItem', bridge.calls.some((c) => c.kind === 'DeleteItemCommand'), false)
+  check('and answers yes', answer('br:ddb:pedDeleteResult').ok, true)
+
+  bridge.reset()
+  bridge.call('br:ddb:pedDelete', 108, LIC, 'profile')
+  await bridge.settle()
+  check('a delete of the profile row sends nothing',
+    [bridge.calls.length, answer('br:ddb:pedDeleteResult').extra.error], [0, 'bad ped'])
+
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:wornSet', 109, LIC, '{"k":"s","id":"hiker"}')
+  await bridge.settle()
+  check('wornSet writes the profile row',
+    [sent(0).kind, unmarshall(sent(0).input.Key).sk, answer('br:ddb:wornSetResult').ok],
+    ['UpdateItemCommand', 'profile', true])
+}
+
 console.log('\ntutorial: where an account stands with the guided first run')
 {
   // ═══ THE READ, WHICH IS THE HALF EVERY CONNECT RUNS ═══
@@ -3110,6 +3268,13 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
     'br:ddb:ownedAdd': [24, LIC, 'emote_shuffle'],
     // The Yubikey on the profile row (#396).
     'br:ddb:yubikeySet': [25, LIC, true],
+    // Locker v2's saved peds and worn ped (#28).
+    'br:ddb:lockerFetch': [26, LIC],
+    'br:ddb:pedPut': [27, LIC, '0abcdefgh12', { n: 'Bob', a: '{"v":1,"s":"m"}', cr: 1, up: 1 }, true],
+    'br:ddb:pedRename': [28, LIC, '0abcdefgh12', 'Ann', 2],
+    'br:ddb:pedShot': [29, LIC, '0abcdefgh12', 'data:image/webp;base64,AAAA'],
+    'br:ddb:pedDelete': [30, LIC, '0abcdefgh12'],
+    'br:ddb:wornSet': [31, LIC, '{"k":"s","id":"hiker"}'],
   }
 
   check(

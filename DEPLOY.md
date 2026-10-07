@@ -278,7 +278,7 @@ Three tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 
 | Table | Partition key | Sort key | Holds |
 |---|---|---|---|
-| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played. |
+| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played.<br>`sk = ped#<id>` — one saved custom ped (Locker v2, Season 2, #28): name, appearance, headshot. The ped a player wears is `locker2` on the profile row. |
 | `br-matches` | `pk` (String) | *none* | One row per finished match, keyed on the seven-character hex tag. Written once at match end by `br_stats`, read by Ringmaster's match page. |
 
 **`br-matches` is a read model and the game only ever writes it**, so the grant is
@@ -308,8 +308,10 @@ possible but only affects items written *after* it is enabled — existing rows
 would need a backfill pass to be given the attribute.
 
 The game box needs `GetItem`, `PutItem`, `UpdateItem`, `BatchWriteItem` and
-`Query` on `br-*`. It keeps **read-only** access to `ringmaster-*`, which is the
-console's data.
+`Query` on `br-*`. `Query` is used once, to list a player's own saved peds
+(`begins_with(sk, 'ped#')`; see docs/security.md), and a saved ped is deleted
+with a `BatchWriteItem` `DeleteRequest`, so no `DeleteItem` grant is needed. It keeps
+**read-only** access to `ringmaster-*`, which is the console's data.
 
 ### A dev box uses `dev-` tables, and cannot reach these
 
