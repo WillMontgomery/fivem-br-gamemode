@@ -10,6 +10,8 @@
 --                     forcing
 --   squadKey          which squad a player's one use belongs to (a solo
 --                     player is a squad of one)
+--   spotRule /        a registry row's `spot`, checked, and whether a run
+--     spotWanted      with these options is run at a spot picked on the map
 --   sites             the terminal rows in a config, checked
 --   pick              a copy line, or its `_solo` sibling outside a squad match
 --   line              a copy line with its {playername} / {description}
@@ -115,6 +117,48 @@ function T.squadKey(entry, src)
         return 'squad:' .. tostring(entry.squadId)
     end
     return 'solo:' .. tostring(src)
+end
+
+-- ------------------------------------------------------------------- spot ---
+
+--- A registry row's `spot`, as the door and the suites read it: 'always' for
+--- `spot = true` (every run is at a place picked on the big map: Storm
+--- control, Airstrike, Supply drop), 'when' for `spot = { when = { <option> =
+--- <choice>, ... } }` (round 6: only a run whose options carry every listed
+--- choice -- Power outage's area 'spot'), and nil for a row with none. A `spot`
+--- of any other shape -- a `when` that is not a table of strings, or an empty
+--- one -- is nil too: never a spot, so a malformed row cannot make every run
+--- of it ask for one.
+--- @param row table|nil
+--- @return string|nil 'always' | 'when'
+function T.spotRule(row)
+    local s = type(row) == 'table' and row.spot or nil
+    if s == true then return 'always' end
+    if type(s) ~= 'table' or type(s.when) ~= 'table' or next(s.when) == nil then return nil end
+    for k, v in pairs(s.when) do
+        if type(k) ~= 'string' or type(v) ~= 'string' then return nil end
+    end
+    return 'when'
+end
+
+--- IS THIS RUN AT A SPOT? (round 6, owner 2026-10-07: "Any use of "near this
+--- terminal" is like, not useful for this gamemode" -- so Power outage's own
+--- area is a spot the player picks, and only that choice of area takes one.)
+--- `opts` is BR.Terminal.options' answer -- the defaults filled in and every
+--- option whose `when` does not hold left out -- so a conditional spot reads
+--- exactly the choices the run carries. The app asks the same question of the
+--- same choices (ui-src/terminal model.ts `needsSpot`) before it lets Run go.
+--- @param row table|nil
+--- @param opts table|nil
+--- @return boolean
+function T.spotWanted(row, opts)
+    local rule = T.spotRule(row)
+    if rule == 'always' then return true end
+    if rule ~= 'when' or type(opts) ~= 'table' then return false end
+    for k, v in pairs(row.spot.when) do
+        if opts[k] ~= v then return false end
+    end
+    return true
 end
 
 -- ------------------------------------------------------------------ sites ---

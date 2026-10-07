@@ -481,7 +481,9 @@ do
         for _, o in ipairs(row.options or {}) do
             ok(o.id ~= 'at', row.id .. ' declares no option called at')
         end
-        ok(row.spot == nil or row.spot == true, row.id .. ': spot is true or absent')
+        -- ROUND 6: or a spot only under a choice, `{ when = { ... } }`.
+        ok(row.spot == nil or BR.TerminalSolve.spotRule(row) ~= nil,
+            row.id .. ': spot is true, a well-formed `when`, or absent')
     end
     -- ROUND 5: and Airstrike ("uses round 4's "Set location" map pick").
     eq(table.concat(spots, ','), 'storm_control,airstrike,supply_drop',
@@ -511,6 +513,94 @@ do
     r = last(1, BR.Net.TERMINAL_RESULT)
     ok(r and r.ok == true and r.code == 'done', 'and done', r and r.code)
     eq(r and r.state.volts, 350, 'for its 150 Volts')
+end
+
+describe('round 6: a spot only under a choice -- Power outage\'s own area, picked on the map')
+do
+    -- Owner, 2026-10-07: 'Any use of "near this terminal" is like, not useful
+    -- for this gamemode'. Power outage's first area is 1 km around a spot the
+    -- player picks, so its row is run at a spot only while that area is
+    -- chosen: `spot = { when = { area = 'spot' } }`, one rule both sides read
+    -- (BR.TerminalSolve.spotWanted; the app's model.ts needsSpot).
+    bootServer()
+    local T, TS = BR.Terminal, BR.TerminalSolve
+    local row = { id = 'c', spot = { when = { area = 'spot' } },
+                  options = { { id = 'area', choices = { 'spot', 'city' }, default = 'spot' },
+                              { id = 'size', when = { area = 'city' }, choices = { 'a', 'b' }, default = 'a' } } }
+    eq(TS.spotRule(row), 'when', 'a `when` table is a spot only under a choice')
+    eq(TS.spotRule({ spot = true }), 'always', 'spot = true: every run')
+    eq(TS.spotRule({}), nil, 'absent: none')
+    for i, bad in ipairs({ { when = {} }, { when = 'x' }, { when = { area = 5 } }, { area = 'spot' }, 'yes', 1, false }) do
+        eq(TS.spotRule({ spot = bad }), nil, ('a spot of any other shape is none (%d)'):format(i))
+    end
+    ok(TS.spotWanted(row, T.options(row, nil)), 'untouched, the default area is the spot: it takes one')
+    ok(TS.spotWanted(row, T.options(row, { area = 'spot' })), 'the spot chosen: it takes one')
+    ok(not TS.spotWanted(row, T.options(row, { area = 'city' })), 'the city: none')
+    ok(not TS.spotWanted(row, nil), 'no options to read: none')
+    ok(TS.spotWanted({ spot = true }, nil), 'a row run at a spot always takes one, whatever is chosen')
+    local s, bad = T.spot(row, { x = 5, y = 6 }, T.options(row, { area = 'spot' }))
+    ok(s and s.x == 5.0 and s.y == 6.0 and bad == false, 'the spot chosen, a spot sent: the spot')
+    s, bad = T.spot(row, nil, T.options(row, { area = 'spot' }))
+    ok(s == nil and bad == true, 'the spot chosen, none sent: malformed')
+    s, bad = T.spot(row, { x = 5, y = 6 }, T.options(row, { area = 'city' }))
+    ok(s == nil and bad == true, 'a spot sent with the city: malformed')
+    s, bad = T.spot(row, nil, T.options(row, { area = 'city' }))
+    ok(s == nil and bad == false, 'the city and no spot: fine')
+    s, bad = T.spot(row, { x = 'n', y = 6 }, T.options(row, nil))
+    ok(s == nil and bad == true, 'a spot that is not one, where one is wanted: malformed')
+
+    -- POWER OUTAGE'S ROW, and every conditional spot names an option of its
+    -- own row and one of that option's choices.
+    local po = T.row('power_outage')
+    eq(TS.spotRule(po), 'when', 'Power outage is run at a spot only under a choice')
+    eq(po and po.spot.when.area, 'spot', 'its area being the spot')
+    local area = nil
+    for _, o in ipairs(po and po.options or {}) do if o.id == 'area' then area = o end end
+    eq(area and table.concat(area.choices, ','), 'spot,city,county',
+        'its areas: a spot you pick, the city, the county -- no "around this terminal"')
+    eq(area and area.default, 'spot', 'the spot first')
+    local conditional = 0
+    for _, r in ipairs(BR.Config.Terminals.functions) do
+        if TS.spotRule(r) == 'when' then
+            conditional = conditional + 1
+            for k, v in pairs(r.spot.when) do
+                local named = false
+                for _, o in ipairs(r.options or {}) do
+                    if o.id == k then
+                        for _, c in ipairs(o.choices or {}) do if c == v then named = true end end
+                    end
+                end
+                ok(named, ('%s: its spot\'s `when` names its own %s and one of its choices'):format(r.id, k))
+            end
+        end
+    end
+    eq(conditional, 1, 'one row is run at a spot under a choice: Power outage')
+
+    -- THROUGH THE NET EVENT: the door holds it before anything else is asked.
+    -- Each request is answered (a new result, never the last one again).
+    local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
+    sv(1, 'open volts=500')
+    local function try(d)
+        S.clock = S.clock + 1000
+        local before = #sentTo(1, BR.Net.TERMINAL_RESULT)
+        d.terminalId, d.functionId = 'dev', 'power_outage'
+        run(1, d)
+        local got = sentTo(1, BR.Net.TERMINAL_RESULT)[before + 1]
+        flush()
+        return got and got.data or nil
+    end
+    local r = try({ options = { area = 'spot', duration = '120' } })
+    ok(r and r.code == 'bad_option', 'its spot chosen and none sent: bad_option', r and r.code)
+    r = try({ options = {} })
+    ok(r and r.code == 'bad_option', 'untouched (the spot, by default) and none sent: bad_option', r and r.code)
+    r = try({ options = { area = 'city', duration = '120' }, at = { x = 1, y = 2 } })
+    ok(r and r.code == 'bad_option', 'Los Santos with a spot: bad_option', r and r.code)
+    r = try({ options = { area = 'here', duration = '120' } })
+    ok(r and r.code == 'bad_option', '"around this terminal" is no area any more: bad_option', r and r.code)
+    r = try({ options = { area = 'spot', duration = '120' }, at = { x = 100.5, y = -20 } })
+    ok(r and r.code ~= nil and r.code ~= 'bad_option', 'the spot chosen with a spot: past the door', r and r.code)
+    r = try({ options = { area = 'county', duration = '240' } })
+    ok(r and r.code ~= nil and r.code ~= 'bad_option', 'Blaine County with none: past the door', r and r.code)
 end
 
 describe('the panel: pushed to each open computer, to its own player, only while open')

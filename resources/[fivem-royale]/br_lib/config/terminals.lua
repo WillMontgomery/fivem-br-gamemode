@@ -796,6 +796,12 @@ BR.Config.Terminals = {
         power_outage_opt_area = 'Area',
         power_outage_opt_area_here = 'Around this terminal',
         power_outage_opt_area_here_desc = 'Everything within 1 km of this terminal.',
+        -- ROUND 6: the area's first choice is a spot the player picks on the
+        -- map in the confirm box (the row's `spot = { when = { area = 'spot'
+        -- } }`), which replaces "Around this terminal" (owner: 'Any use of
+        -- "near this terminal" is like, not useful for this gamemode').
+        -- WRITTEN (round 6, proposal for the owner)
+        power_outage_opt_area_spot = 'Around a spot you pick',
         power_outage_opt_area_city = 'Los Santos',
         power_outage_opt_area_city_desc = 'The whole city.',
         power_outage_opt_area_county = 'Blaine County',
@@ -1457,6 +1463,23 @@ BR.Config.Terminals = {
     --                "Set location" step (confirm_location), and the run
     --                carries the spot as `at = { x, y }` (BR.Terminal.spot;
     --                the function reads it as `opts.at`).
+    --                OR, ROUND 6 (owner, 2026-10-07: 'Any use of "near this
+    --                terminal" is like, not useful for this gamemode'),
+    --                `{ when = { <option> = <choice>, ... } }`: run at a spot
+    --                ONLY while the run's options carry every listed choice
+    --                (Power outage: `{ when = { area = 'spot' } }`). The
+    --                choices read are the ones the run carries -- defaults
+    --                filled in, an option whose own `when` does not hold left
+    --                out (BR.Terminal.options) -- and the rule is ONE function
+    --                both sides read, BR.TerminalSolve.spotWanted (the app's
+    --                model.ts `needsSpot` asks the same of the same choices).
+    --                The box shows "Set location" and Run waits for a spot only
+    --                then; the run carries `at` only then, and the door refuses
+    --                one sent with any other choice (bad_option) as it refuses
+    --                one sent to a row that never takes a spot. Each `when`
+    --                names an option of the row and one of its choices
+    --                (tools/test_terminal.lua); a `spot` of any other shape is
+    --                no spot at all (BR.TerminalSolve.spotRule).
     --   fuzz         true for a function run at a spot whose map pick shows
     --                the player's opponents as rough circles near where they
     --                are (round 5, Airstrike): the client says when the pick
@@ -1533,9 +1556,15 @@ BR.Config.Terminals = {
                 choices = { 'sunny', 'clear', 'clouds', 'smog', 'overcast', 'fog',
                             'xmas', 'snowlight', 'snow', 'blizzard' }, default = 'clear' },
           } },
+        -- ROUND 6 (owner, 2026-10-07): no "around this terminal" -- the area's
+        -- first choice is 1 km around a spot the player picks on the big map
+        -- in the confirm box, so the row is run at a spot only while that is
+        -- the area chosen (`spot.when`). server/terminalfx/power_outage.lua
+        -- reads it as opts.at.
         { id = 'power_outage',   category = 'disruption', risk = 'low',    implemented = true,
+          spot = { when = { area = 'spot' } },
           options = {
-              { id = 'area', choices = { 'here', 'city', 'county' }, default = 'here' },
+              { id = 'area', choices = { 'spot', 'city', 'county' }, default = 'spot' },
               { id = 'duration', choices = { '120', '240' }, default = '120' },
           } },
         { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = true, cost = 200 },

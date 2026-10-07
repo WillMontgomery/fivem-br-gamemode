@@ -510,12 +510,19 @@ local SPOT_MAX = 20000.0
 --- function's own refusal to say; this is shape. It reaches the function as
 --- `opts.at` (no registry option is called `at`; tools/test_terminal.lua holds
 --- that).
+---
+--- A SPOT ONLY UNDER A CHOICE (round 6: Power outage's area 'spot', `spot = {
+--- when = { area = 'spot' } }`): the run carries one exactly when its options
+--- -- `opts`, BR.Terminal.options' answer, the choices the run carries --
+--- hold the `when` (BR.TerminalSolve.spotWanted), and a spot sent with any
+--- other choice is as malformed as one sent to a row that never takes one.
 --- @param row table
 --- @param at any  the request's `at`
---- @return table|nil spot  { x, y }, for a row that takes one
+--- @param opts table|nil  BR.Terminal.options' answer for the same request
+--- @return table|nil spot  { x, y }, for a run that takes one
 --- @return boolean bad  true when the request is malformed for this row
-function T.spot(row, at)
-    if row.spot ~= true then return nil, at ~= nil end
+function T.spot(row, at, opts)
+    if not TS.spotWanted(row, opts) then return nil, at ~= nil end
     if type(at) ~= 'table' then return nil, true end
     local x, y = at.x, at.y
     if not (TS.finite(x) and TS.finite(y)) or math.abs(x) > SPOT_MAX or math.abs(y) > SPOT_MAX then
@@ -1263,7 +1270,7 @@ function T.run(src, d, now)
     -- registry does not allow is answered -- the app's button is waiting on
     -- it -- and nothing is asked or spent.
     local opts = T.options(row, d.options)
-    local spot, badSpot = T.spot(row, d.at)
+    local spot, badSpot = T.spot(row, d.at, opts)
     if not opts or badSpot then
         answer.state = T.state(src, session)
         return refused('bad_option')
@@ -1664,10 +1671,10 @@ RegisterCommand('brterminalsv', function(source, args)
             tell(src, ('%s does not take those options'):format(id))
             return
         end
-        local spot, badSpot = T.spot(row, at)
+        local spot, badSpot = T.spot(row, at, opts)
         if badSpot then
-            tell(src, row.spot == true and ('%s needs the spot: x=<n> y=<n>'):format(id)
-                or ('%s takes no spot'):format(id))
+            tell(src, TS.spotWanted(row, opts) and ('%s needs the spot: x=<n> y=<n>'):format(id)
+                or ('%s takes no spot with those options'):format(id))
             return
         end
         opts.at = spot
