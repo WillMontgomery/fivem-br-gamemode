@@ -160,6 +160,7 @@ local notices = {}       -- BR.Server.notify: { target, text, tone }
 local keys = {}          -- [src] = true while holding a Yubikey
 local airdropCalls = {}  -- BR.Airdrop.call: { m, x, y }
 local filled = {}        -- BR.Inv.fillAmmo: [src] = rounds it would add
+local unarmed = {}       -- BR.Inv.hasGuns: [src] = true while carrying no gun (Max ammo, round 7)
 local granted = {}       -- BR.Inv.grantEffect: { src, effect } (Field medic)
 local drained = {}       -- BR.Damage.drain: { src, amount, took } (Field medic, round 4)
 local invs = {}          -- BR.Inv.of: [src] = { slots = { [i] = stack|false } } (Disarm)
@@ -296,6 +297,7 @@ BR.Airdrop = {
 }
 BR.Inv = {
     ammoRoom = function(src) return filled[src] or 0 end,
+    hasGuns = function(src) return not unarmed[src] end,
     fillAmmo = function(src)
         local n = filled[src] or 0
         filled[src] = 0
@@ -450,7 +452,7 @@ local function reset()
     for _, answer in ipairs(market.pending) do answer() end
     flush()
     sent, notices, logs, airdropCalls, filled, granted, drained = {}, {}, {}, {}, {}, {}, {}
-    invs, revoked, rooms, gives = {}, {}, {}, {}
+    invs, revoked, rooms, gives, unarmed = {}, {}, {}, {}, {}
     roster, matches, keys = {}, {}, {}
     timers = {}
     market.wallet, market.charges, market.refunds, market.pending = {}, {}, {}, {}
@@ -851,6 +853,54 @@ do
     end
     ok(listed and listed.available == false and listed.reason == 'ammo_full',
         'and the card already said so: listed ammo_full', listed and tostring(listed.reason))
+
+    -- ROUND 7 (owner, 2026-10-07: '"ammo already full" shows when I've got no
+    -- weapons in-hand, so that's a bit confusing'): NOBODY CARRYING A GUN is
+    -- no_guns, not ammo_full -- the card, the refusal and its line.
+    reset()
+    lobby()
+    player(2, matches[1], 'A', { x = 0.0, y = 0.0 }, BR.PlayerState.OUT)
+    filled = { [1] = 0, [2] = 60 }
+    unarmed = { [1] = true }
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    listed = nil
+    for _, x in ipairs(lastOf(BR.Net.TERMINAL_OPEN, 1).state.functions) do
+        if x.id == 'max_ammo' then listed = x end
+    end
+    ok(listed and listed.available == false and listed.reason == 'no_guns',
+        'no gun among the living: the card says no_guns', listed and tostring(listed.reason))
+    r = runAt(1, 'max_ammo')
+    ok(r and r.code == 'no_guns' and keys[1] == true and not T.squadUsed(1),
+        'and a run is refused no_guns, nothing spent', r and r.code)
+    eq(r and r.toast, COPY.no_guns, "with the squad's no_guns line")
+    eq(COPY.status_no_guns, 'No guns to refill', "the card's short line")
+    -- A SQUADMATE'S FULL GUN IS A GUN: the squad's ammo is full.
+    reset()
+    lobby()
+    filled = { [1] = 0, [2] = 0 }
+    unarmed = { [1] = true }
+    r = runAt(1, 'max_ammo')
+    ok(r and r.code == 'ammo_full', "the runner unarmed, a squadmate's gun full: ammo_full", r and r.code)
+    -- A SQUADMATE WITH ROOM IS FILLED, the runner unarmed.
+    reset()
+    lobby()
+    filled = { [1] = 0, [2] = 30 }
+    unarmed = { [1] = true }
+    r = runAt(1, 'max_ammo')
+    ok(r and r.code == 'done' and filled[2] == 0, 'the runner unarmed, a squadmate with room: it runs', r and r.code)
+    -- THE GUNS GONE WHILE IT LOADED: no_guns at the end, everything back.
+    reset()
+    lobby()
+    filled = { [1] = 30 }
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'max_ammo' })
+    ok(keys[1] == false, 'accepted: the key is spent while it loads')
+    filled, unarmed = {}, { [1] = true, [2] = true }
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'no_guns' and keys[1] == true and not T.squadUsed(1),
+        'the guns dropped meanwhile: no_guns at the end, the key and the use given back', r and r.code)
 end
 
 -- =========================================================================
@@ -1158,6 +1208,16 @@ do
     flush()
     local mine = noticesTo(1)
     eq(mine[#mine] and textOf(mine[#mine]), COPY.ammo_full_solo, 'the toast is the solo line')
+    -- ROUND 7: and no gun at all, outside a squad match -- its solo line.
+    useAt(1)
+    filled = { [1] = 10 }
+    ask(1, 'max_ammo')
+    fire(BR.Net.TERMINAL_CLOSED, 1, { terminalId = 'tower' })
+    filled, unarmed = { [1] = 0 }, { [1] = true }
+    flush()
+    mine = noticesTo(1)
+    eq(mine[#mine] and textOf(mine[#mine]), COPY.no_guns_solo, 'no gun, solo: the no_guns solo line')
+    ok(not COPY.no_guns_solo:lower():find('squad', 1, true), 'which never says squad')
 end
 
 describe('round 2: bounty_protect is never sent to a player with no squadmates')

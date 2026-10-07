@@ -13665,10 +13665,23 @@ do
     if other then eq(inv.ammo[other], 7, 'a pool no carried gun draws on is untouched') end
     eq(BR.Inv.ammoRoom(1), 0, 'full now')
     eq(BR.Inv.fillAmmo(1), 0, 'and a second fill mints nothing')
+    -- ROUND 7: full is not unarmed -- the terminal tells them apart.
+    eq(BR.Inv.hasGuns(1), true, 'full guns are still guns (ammo_full, not no_guns)')
 
     BR.Inv.reset(1)
     eq(BR.Inv.ammoRoom(1), 0, 'no gun, no room')
     eq(BR.Inv.fillAmmo(1), 0, 'and nothing minted')
+    eq(BR.Inv.hasGuns(1), false, 'and no guns (no_guns)')
+    -- A MELEE WEAPON AND A GRENADE ARE NOTHING MAX AMMO FILLS: still no guns.
+    local nade = BR.Config.WeaponById['grenade']
+    BR.Inv.give(1, { item = 'machete', kind = BR.ItemKind.WEAPON, rarity = 3, count = 1 })
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE, rarity = nade.rarity, count = 2 })
+    local carried = 0
+    for _, s in pairs(BR.Inv.of(1).slots) do if s then carried = carried + 1 end end
+    eq(carried, 2, 'a machete and two grenades carried')
+    eq(BR.Inv.hasGuns(1), false, 'and still no guns: melee and throwables are not filled')
+    eq(BR.Inv.ammoRoom(1), 0, 'nor any room')
+    eq(BR.Inv.hasGuns(999), false, 'a player with no inventory has no guns')
 end
 
 describe("inv.roomFor -- a terminal's Gear Up, never displacing anything (#396, round 5)")

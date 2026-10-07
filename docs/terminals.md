@@ -76,6 +76,7 @@ who is still up.
 effect is not built), `offline`, `squad_used`, `no_key`, `bad_option`, `unavailable` (a run of theirs or their
 squad's in flight, a squad-only function outside a squad match), or any key a
 function's own refusal adds (`no_storm`, `no_site`, `drop_busy`, `ammo_full`,
+round 7's `no_guns`,
 Storm control's `storm_aimed`;
 wave A's `health_full`, `no_weapons`, `no_target`; wave C's
 `reboot_none`). The app shows the line for the
@@ -174,6 +175,7 @@ The table below is the lines outside the functions' own:
 | `privacy_*` | At the terminal: the Privacy page, the owner's approved policy (VERBATIM, "Perfect", 2026-10-06): its title and two paragraphs |
 | `unavailable` | At the terminal: why not, for a code with no line |
 | `fn_offline`, `bad_option`, `no_storm`, `no_site`, `drop_busy`, `ammo_full` | At the terminal: why not |
+| `no_guns`, `status_no_guns` (WRITTEN, round 7) | At the terminal: why not, and the card's status (Max ammo, when nobody it fills carries a gun) |
 | `storm_aimed` | At the terminal: why not (Storm control, once a spot is picked this match: one spot a match) -- round 4's review |
 | `health_full`, `no_weapons`, `no_target` | At the terminal: why not (wave A's functions) |
 | `no_night` | At the terminal: why not (Power outage, unless it is night because of a Time & weather run) -- round 4 |
@@ -1216,7 +1218,10 @@ while it is only listed, asked of the next circle's center).
 **Max ammo** fills, for everyone in the squad still in the fight, every pool a
 carried gun draws on to its cap and loads an empty magazine
 (`BR.Inv.fillAmmo`: addAmmo's clamp and loadEmpty's move, one INV_SET each).
-Refused `ammo_full`, spending nothing, when nobody has room. The whole squad in a squad match, wherever they are (round 4, owner 2026-10-06: "should apply to the whole squad, when in squads" -- it always did; `test_terminalfx.lua` pins a squadmate across the map and one in the air).
+Refused, spending nothing, when nobody has room: `no_guns` when nobody still in
+the fight carries a gun at all (`BR.Inv.hasGuns`: a gun with a magazine, never
+melee or a throwable; round 7, owner 2026-10-07: '"ammo already full" shows
+when I've got no weapons in-hand, so that's a bit confusing'), else `ammo_full`. The whole squad in a squad match, wherever they are (round 4, owner 2026-10-06: "should apply to the whole squad, when in squads" -- it always did; `test_terminalfx.lua` pins a squadmate across the map and one in the air).
 
 ## Wave A (owner, 2026-10-06)
 

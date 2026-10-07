@@ -809,6 +809,8 @@ do
         'health_full', 'no_weapons', 'no_target',
         -- Round 4's (2026-10-06): the map pick's step, Power outage's night.
         'confirm_location', 'no_night',
+        -- Round 7's (2026-10-07): Max ammo with no gun to fill.
+        'no_guns', 'status_no_guns',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
         'address_host', 'path_home', 'path_tools', 'path_howto', 'path_privacy', 'path_login',
         'nav_home', 'nav_howto', 'nav_privacy', 'nav_categories', 'privacy_title', 'privacy_body',

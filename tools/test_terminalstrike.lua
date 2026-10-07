@@ -306,6 +306,7 @@ BR.Vehicles = {
 BR.Inv = {
     of = function() return { slots = {} } end,
     ammoRoom = function() return 0 end,
+    hasGuns = function() return false end,
     roomFor = function(_, stack) return stack.count or 1, nil end,
     give = function() return true end,
 }

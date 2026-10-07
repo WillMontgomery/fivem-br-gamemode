@@ -396,16 +396,31 @@ local function fillable(m, key)
     return out
 end
 
+--- Why nobody in this squad has anything to fill: 'no_guns' when nobody still
+--- in the fight carries a gun at all (round 7, owner 2026-10-07: '"ammo
+--- already full" shows when I've got no weapons in-hand, so that's a bit
+--- confusing'), else 'ammo_full' -- every gun carried is full.
+--- @param members integer[]  fillable(m, key)
+--- @return string
+local function nothingToFill(members)
+    for _, s in ipairs(members) do
+        if BR.Inv.hasGuns(s) then return 'ammo_full' end
+    end
+    return 'no_guns'
+end
+
 T.FUNCTIONS.max_ammo = {
     -- Nothing to fill is refused, spending nothing: a key is not spent on a
-    -- squad whose every gun is already full (or who carry none).
+    -- squad whose every gun is already full (`ammo_full`), nor on one that
+    -- carries no gun (`no_guns`).
     refuse = function(src, session)
         local m, _, key = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
-        for _, s in ipairs(fillable(m, key)) do
+        local members = fillable(m, key)
+        for _, s in ipairs(members) do
             if BR.Inv.ammoRoom(s) > 0 then return nil end
         end
-        return 'ammo_full'
+        return nothingToFill(members)
     end,
     -- EVERY POOL A CARRIED GUN DRAWS ON, TO ITS CAP, for everyone in the squad
     -- still in the fight (BR.Inv.fillAmmo: through the inventory's own clamp
@@ -421,13 +436,14 @@ T.FUNCTIONS.max_ammo = {
             return { ok = false, code = 'unavailable' }
         end
         local rounds, players = 0, 0
-        for _, s in ipairs(fillable(m, key)) do
+        local members = fillable(m, key)
+        for _, s in ipairs(members) do
             local n = BR.Inv.fillAmmo(s)
             if n > 0 then
                 rounds, players = rounds + n, players + 1
             end
         end
-        if rounds <= 0 then return { ok = false, code = 'ammo_full' } end
+        if rounds <= 0 then return { ok = false, code = nothingToFill(members) } end
         print(('[br_core] terminals: Max ammo for %s: %d round(s) to %d player(s)')
             :format(key, rounds, players))
         return { ok = true, code = 'done' }

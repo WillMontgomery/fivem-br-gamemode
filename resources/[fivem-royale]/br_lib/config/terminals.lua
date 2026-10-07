@@ -454,6 +454,10 @@ BR.Config.Terminals = {
         status_no_night = 'Only at night',
         -- WRITTEN (round 6, proposal for the owner)
         status_ammo_full = 'Ammo already full',
+        -- WRITTEN (round 7, proposal for the owner). Max ammo when nobody it
+        -- fills carries a gun (owner, 2026-10-07: '"ammo already full" shows
+        -- when I've got no weapons in-hand, so that's a bit confusing').
+        status_no_guns = 'No guns to refill',
         -- WRITTEN (round 6, proposal for the owner)
         status_drop_busy = 'Airdrop already on its way',
         -- WRITTEN (round 6, proposal for the owner)
@@ -540,6 +544,12 @@ BR.Config.Terminals = {
         ammo_full = "Your squad's ammo is already full.",
         -- WRITTEN (2026-10-05, round 2). The same, outside a squad match.
         ammo_full_solo = 'Your ammo is already full.',
+        -- WRITTEN (round 7, proposal for the owner). Max ammo: nobody in the
+        -- squad still in the fight carries a gun -- refused, spending nothing.
+        no_guns = 'Nobody in your squad is carrying a gun.',
+        -- WRITTEN (round 7, proposal for the owner). The same, outside a
+        -- squad match.
+        no_guns_solo = "You're not carrying a gun.",
         -- Supply drop: another airdrop is waiting for a player or falling.
         drop_busy = 'Another airdrop is already on its way.',
         -- WRITTEN (2026-10-06, round 4; was 'Everyone in your squad who is

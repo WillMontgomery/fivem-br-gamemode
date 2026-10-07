@@ -294,7 +294,8 @@ BR.Airdrop = {
     candidate = function(_, x, y) return { id = 'poi', x = x, y = y } end,
     call = function() return nil, 'no_site' end,
 }
-BR.Inv = { ammoRoom = function() return 0 end, fillAmmo = function() return 0 end }
+BR.Inv = { ammoRoom = function() return 0 end, fillAmmo = function() return 0 end,
+           hasGuns = function() return false end }
 -- The storm's own jobs stand down: every block here sets up the record it
 -- means, and steps the phase job itself where it needs one.
 BR.Sched.setEnabled('storm.phase', false)

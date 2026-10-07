@@ -566,6 +566,17 @@ local function gunPools(inv)
     return pools
 end
 
+--- Does this player carry a gun Max ammo could fill (#396, round 7)? The guns
+--- gunPools counts -- a magazine on a pool, never melee -- so "no guns" and
+--- "already full" are told apart by the same rule ammoRoom adds up. Throwables
+--- are not guns here: Max ammo never refills them.
+--- @param src integer
+--- @return boolean
+function BR.Inv.hasGuns(src)
+    local inv = BR.Inv.of(src)
+    return inv ~= nil and next(gunPools(inv)) ~= nil
+end
+
 --- How many rounds a terminal's Max ammo would put into this inventory (#396):
 --- every pool a carried gun draws on, up to its cap, and a load for every empty
 --- magazine on those pools. Zero is "already full", which the terminal refuses
