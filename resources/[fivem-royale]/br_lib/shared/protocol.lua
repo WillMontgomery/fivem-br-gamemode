@@ -1336,6 +1336,39 @@ BR.Net = {
     -- on the ONE push that gave this player their first key ever (round 5):
     -- the client puts up the first-pickup card (BR.Nui.YUBIKEY_CARD).
     YUBIKEY_STATE   = 'br:yubikey:state',
+
+    -- LOCKER V2 (#28, Season 2): saved custom peds and the ped a player wears.
+    -- br_core/server/locker2.lua owns the records; every write is checked
+    -- there (the season, the name, the id's shape and owner, the appearance's
+    -- size and then its form, a rate) and refused with a reason: `season`,
+    -- `name`, `appearance`, `missing`, `rate`, `store` or `lobby`. An
+    -- appearance `a` travels as its canonical string (br_lib/shared/
+    -- appearance.lua).
+    --
+    -- C->S {}. Send me my peds and my worn ped. One database read per 5 s;
+    -- sooner is answered from the cache.
+    LOCKER2_FETCH   = 'br:locker2:fetch',
+    -- C->S { req, op, id?, name?, a }. op 'new' takes a name and no id;
+    -- 'update' and 'replace' take an existing id and keep its name. A saved
+    -- ped becomes the worn one.
+    LOCKER2_SAVE    = 'br:locker2:save',
+    -- C->S { req, id, name }.
+    LOCKER2_RENAME  = 'br:locker2:rename',
+    -- C->S { req, id }. The worn ped keeps its copy of the appearance.
+    LOCKER2_DELETE  = 'br:locker2:delete',
+    -- C->S { k = 's'|'p', id }. The ped this player now wears: a stock id or
+    -- a saved ped's. In the lobby only; written at most every 5 s and on drop.
+    LOCKER2_WEAR    = 'br:locker2:wear',
+    -- C->S { req, id, img }. A saved ped's headshot, a webp data URL of 8 KB
+    -- at most, taken as it was saved.
+    LOCKER2_SHOT    = 'br:locker2:shot',
+    -- S->C { worn?, peds?, store }, LATENT: the whole list, on a fetch.
+    -- worn = { k, id, a? }; peds = { { id, name, a, up, img? } } oldest first,
+    -- absent until a fetch has read them; store false when the read failed.
+    LOCKER2_STATE   = 'br:locker2:state',
+    -- S->C { req, ok, reason?, id?, ped?, gone?, worn? }. One write's answer,
+    -- carrying only the ped it changed (and the worn ped when that moved).
+    LOCKER2_RESULT  = 'br:locker2:result',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
@@ -1479,6 +1512,18 @@ BR.Nui = {
     -- every successful swap -- the page never assumes an apply worked, since
     -- a model that fails to stream leaves you wearing the old one.
     LOCKER    = 'locker',
+    -- Locker v2 (#28, Season 2): { on, tab, stock, peds, worn, loading,
+    -- locked, busy, edit }. Sent on ready, on a season change and on every
+    -- change. `peds` = { { id, name, up, img? } } with no appearance; `edit`
+    -- = { sex, editing, dirty, cat, cats, rows } on a Custom tab, where a row
+    -- is { k, cat, kind = 'count', v, n, colors } or { k, cat, kind =
+    -- 'slider', v, min, max, def }. See br_core/client/locker2.lua.
+    LOCKER2   = 'locker2',
+    -- { id, up?, txd?, url?, img?, save? }: one card's headshot. `txd` and
+    -- `url` (nui-img, with a cache-buster) for a shot taken now -- the page
+    -- answers br/locker2/shotdone, and br/locker2/shot with the image when
+    -- `save` is set; `img` for one the server already holds.
+    LOCKER2_SHOT = 'locker2shot',
     -- LEVEL AND XP. WHERE THE BAR IS, and the only envelope allowed to say so.
     -- Every value on it is evaluated by BR.Xp on the server -- from MARKET_STATE
     -- on connect and after a credit, and from MATCH_EARNED at the end of a
@@ -1632,6 +1677,27 @@ BR.NuiCb = {
     LOCKER_PICK  = 'br/locker/pick',
     LOCKER_SPIN  = 'br/locker/spin',
     LOCKER_FOCUS = 'br/locker/focus',
+    -- Locker v2 (#28, Season 2). All forwarded to br_core, which revalidates
+    -- each one and refuses them while the locker is locked, a ped is loading
+    -- or a write is in flight (`tab` also while there are unsaved changes).
+    -- The page still opens and closes focus with LOCKER_FOCUS, and spins the
+    -- ped with LOCKER_SPIN.
+    LOCKER2_OPEN     = 'br/locker2/open',      -- {}
+    LOCKER2_CLOSE    = 'br/locker2/close',     -- {}
+    LOCKER2_RESET    = 'br/locker2/reset',     -- {}: the draft back to where it began
+    LOCKER2_TAB      = 'br/locker2/tab',       -- { tab = 'peds'|'stock'|'male'|'female' }
+    LOCKER2_WEAR     = 'br/locker2/wear',      -- { k = 's'|'p', id }
+    LOCKER2_STEP     = 'br/locker2/step',      -- { k, d = 1|-1 }
+    LOCKER2_SET      = 'br/locker2/set',       -- { k, v }: a count's position, or a slider's value
+    LOCKER2_COLOR    = 'br/locker2/color',     -- { k }: Next color
+    LOCKER2_CAT      = 'br/locker2/cat',       -- { cat }
+    LOCKER2_SAVE     = 'br/locker2/save',      -- { op, id?, name? }
+    LOCKER2_RENAME   = 'br/locker2/rename',    -- { id, name }
+    LOCKER2_DELETE   = 'br/locker2/delete',    -- { id }
+    LOCKER2_EDIT     = 'br/locker2/edit',      -- { id }
+    LOCKER2_SHOTS    = 'br/locker2/shots',     -- { ids }: cards with no image
+    LOCKER2_SHOTDONE = 'br/locker2/shotdone',  -- { id, ok }
+    LOCKER2_SHOT     = 'br/locker2/shot',      -- { id, img }: a saved ped's webp
     -- The guided first run (#261). { run = boolean } for the lobby half,
     -- { game = boolean } for the in-game one, and `done = true` alongside
     -- `game = false` when the last card was DISMISSED rather than abandoned --

@@ -190,6 +190,13 @@ shared_scripts {
     -- server/main.lua calls BR.Season.boot() at resource start.
     '@br_lib/shared/season.lua',
     '@br_lib/config/seasons.lua',
+    -- LOCKER V2 (#28, Season 2): its numbers and rows, and the appearance a
+    -- custom ped is saved as. SHARED because the client builds an appearance
+    -- and the server checks every one it stores; appearance.lua reads the
+    -- config's bagSkip and undershirt at call time, and the stock ids off
+    -- config/peds.lua (above).
+    '@br_lib/config/locker2.lua',
+    '@br_lib/shared/appearance.lua',
     -- THE FESTIVE CALENDAR (#395, #399): December and January, and the
     -- `brfestive` switch. One answer, BR.Festive.now(), for the Season 2 crates'
     -- festive set and the festive sky; neither owns it. Only the server asks (a
@@ -903,6 +910,9 @@ server_scripts {
     -- It reads BR.Server.matches and BR.Roster at call time and listens for
     -- `br:match:destroyed`, which server/match.lua raises.
     'server/season.lua',
+    -- Locker v2's saved peds and worn ped (#28, Season 2), through br_ddb. It
+    -- reads BR.Season, BR.Identity, BR.Roster and BR.Appearance at call time.
+    'server/locker2.lua',
     -- The warmup vehicle shop (#224). AFTER market.lua, and that is a REAL
     -- order rather than a reader's in one direction and a reader's in the
     -- other:

@@ -55,5 +55,11 @@ BR.Config.Seasons = {
         -- ground, and in a match it cycles SNOW, SNOWLIGHT, XMAS and BLIZZARD
         -- (2026-10-06). Off, every sky is the one it has always been.
         snow = { from = 2 },
+        -- #28. Owner, 2026-10-07: "The new Locker is available starting at
+        -- Season 2 ... The existing Locker experience is our finished Season 1
+        -- product - make sure that stays in and remains untouched." On: the
+        -- ped picker (stock, custom freemode peds, saved peds). Off: today's
+        -- locker, exactly as it was.
+        locker2 = { from = 2 },
     },
 }
