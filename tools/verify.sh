@@ -152,6 +152,7 @@ NOTES=(
     "test_yubikey|Season 2 Yubikey: one per player, dropped on death or leaving, one use per squad, terminals live only inside the storm"
     "test_terminalworld|Season 2 terminal functions that change the match's world (storm, sky, clock, lights) spend nothing when they can't run"
     "test_terminalfx|Season 2 terminal functions: Scan shows the squad every opponent, the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
+    "test_terminalstrike|Season 2 tools from the sky: Vehicle drop lands an unarmed car near the right player, and spends nothing when it can't"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -926,6 +927,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # that can no longer happen giving everything back. Their planner half is
     # test_storm.lua's `control.*` blocks.
     #
+    # test_terminalstrike.lua is #396's round 5 tools that come down from the
+    # sky (2026-10-06), on the real door and function files: Vehicle drop's car
+    # (the armored Kuruma, through the one creation path the vehicle rules
+    # guard), the spot the client of the player it is for finds and the server
+    # checks itself, the descent and the blip, each refusal spending nothing,
+    # and its client half over modeled natives -- nothing per frame once the
+    # car has landed.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -986,6 +995,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_yubikey.lua
         tools/test_terminalworld.lua
         tools/test_terminalfx.lua
+        tools/test_terminalstrike.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

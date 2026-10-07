@@ -17,6 +17,11 @@
 --   extraRoll         the Yubikey's extra-item roll for one container
 --   outageArea /      Power outage's area for a choice, and whether a point
 --     inOutage        is in it
+--   dropCheck         whether a Vehicle drop may land on a spot a client found
+--   blastDamage /     Airstrike's falloff, and where its rockets land and when
+--     strikePlan
+--   fuzzOffset        where an Airstrike pick's rough circle sits off an
+--                     opponent
 --
 -- Nothing here reads a native or sends anything.
 
@@ -272,4 +277,52 @@ function T.inOutage(area, x, y)
         return finite(area.line) and y >= area.line
     end
     return false
+end
+
+-- ------------------------------------------------ round 5: from the sky ---
+
+--- MAY A VEHICLE DROP LAND HERE? (round 5, owner 2026-10-06: "have it drop
+--- within 40m of them".) The spot is what the client of the player it is for
+--- found -- a road node or flat open ground under open sky, out of the water
+--- (client/terminalfx/vehicle_drop.lua) -- and a client's word, so the server
+--- holds it to what it can check itself, and to nothing a client could make
+--- true by saying so:
+---
+---   'shape'   not four finite numbers
+---   'far'     more than dropRadiusM + dropSlackM from the server's own 4 Hz
+---             sample of the player it is for (the slack is the sample's
+---             age), or more than dropRiseM above or below them
+---   'crowd'   within dropClearM of any player in the match, by the same
+---             samples: never on a player
+---   'bounds'  outside the play area (`inBounds`, BR.Config.Map.InBounds)
+---
+--- Nil when it may. Distances are on the ground (x, y); the height is checked
+--- on its own.
+--- @param spot table|nil  { x, y, z, h }
+--- @param target table  { x, y, z } -- the server's sample of the player it is for
+--- @param others table[]  { { x, y } } -- every player in the match, the target included
+--- @param cfg table  BR.Config.Terminals.fx
+--- @param inBounds function|nil  (x, y) -> boolean
+--- @return string|nil why
+function T.dropCheck(spot, target, others, cfg, inBounds)
+    if type(spot) ~= 'table' or not (finite(spot.x) and finite(spot.y) and finite(spot.z)
+                                     and finite(spot.h)) then
+        return 'shape'
+    end
+    if type(target) ~= 'table' or not (finite(target.x) and finite(target.y)) then return 'far' end
+    local reach = (tonumber(cfg.dropRadiusM) or 40.0) + (tonumber(cfg.dropSlackM) or 0.0)
+    local dx, dy = spot.x - target.x, spot.y - target.y
+    if dx * dx + dy * dy > reach * reach then return 'far' end
+    if finite(target.z) and math.abs(spot.z - target.z) > (tonumber(cfg.dropRiseM) or 25.0) then
+        return 'far'
+    end
+    local clear = tonumber(cfg.dropClearM) or 4.0
+    for _, p in ipairs(others or {}) do
+        if finite(p.x) and finite(p.y) then
+            local ox, oy = spot.x - p.x, spot.y - p.y
+            if ox * ox + oy * oy < clear * clear then return 'crowd' end
+        end
+    end
+    if inBounds and not inBounds(spot.x, spot.y) then return 'bounds' end
+    return nil
 end

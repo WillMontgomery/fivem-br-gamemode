@@ -787,7 +787,7 @@ do
     -- goes on to the players it drains), or its marks show on the squad's
     -- maps -- and none other. Reboot is squad-only.
     local want = { scan = true, storm_reveal = true, max_ammo = true, reboot = true, ghost = true,
-                   field_medic = true }
+                   field_medic = true, vehicle_drop = true }
     for _, row in ipairs(C.functions) do
         local affects = copy[row.id .. '_affects'] or ''
         local what = copy[row.id .. '_what'] or ''
@@ -1192,7 +1192,9 @@ do
         ok(c == nil or (type(c) == 'number' and c == math.floor(c) and c >= 0 and c <= 200),
             ('%s costs 0..200 Volts ("no more than 200"): %s'):format(row.id, tostring(c)))
     end
-    local want = { scan = 200, disarm = 200, storm_control = 150, reboot = 150 }
+    -- Round 5's two (PROPOSED, with every cost under the owner's review):
+    -- Vehicle drop 100.
+    local want = { scan = 200, disarm = 200, storm_control = 150, reboot = 150, vehicle_drop = 100 }
     for _, row in ipairs(C.functions) do
         eq(BR.Terminal.costOf(row), want[row.id] or 0, ('%s costs %d'):format(row.id, want[row.id] or 0))
     end

@@ -680,7 +680,12 @@ do
     ok(m.stormAim.x == first.x, 'changing nothing')
 
     -- TWO LOADING AT ONCE: the second to land is refused, everything given back.
+    -- THE LOADS ARE PINNED TO ONE LENGTH for this block, so A, accepted first,
+    -- lands first: each run's length is a fresh pick in runMinMs..runMaxMs, and
+    -- a short pick for B used to land it first about one run in five.
     reset()
+    local runMin, runMax = CT.runMinMs, CT.runMaxMs
+    CT.runMinMs, CT.runMaxMs = 4000, 4000
     m = lobby('squad', 3)
     keys[3] = true
     roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
@@ -690,6 +695,7 @@ do
     r = controlAt(3, spotIn(m, 0.25), true)
     eq(r and r.code, 'running', 'squad B accepted too, while A loads')
     flush()
+    CT.runMinMs, CT.runMaxMs = runMin, runMax
     local ra, rb = lastOf(BR.Net.TERMINAL_RESULT, 1), lastOf(BR.Net.TERMINAL_RESULT, 3)
     ok(ra and ra.code == 'done', 'the first to land aims it', ra and ra.code)
     ok(rb and rb.ok == false and rb.code == 'storm_aimed', 'the second is refused at the end: storm_aimed',

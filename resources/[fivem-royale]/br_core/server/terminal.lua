@@ -351,6 +351,18 @@ end
 ---                                              `after`, when given, is called
 ---                                              once the lobby has heard
 ---                                              notice_action
+---   prepare(src, session, opts)                optional (round 5, Vehicle
+---                                              drop): called as the run is
+---                                              accepted, before the load, for
+---                                              an effect that needs to ASK
+---                                              the world something first --
+---                                              the load is the time the
+---                                              answer has to come back in.
+---                                              `run` decides on whatever came
+---   abandon(src, session, opts)                optional: a prepared run that
+---                                              will not run (refused or
+---                                              failed as the load ends) lets
+---                                              go of what `prepare` started
 ---
 --- `opts` is what BR.Terminal.options made of the player's choices: every
 --- option the row declares, each a listed choice, defaults filled.
@@ -674,6 +686,16 @@ local function refusal(src, session, row, opts, self)
     local fn = T.FUNCTIONS[row.id]
     if fn.refuse then return fn.refuse(src, session, opts) end
     return nil
+end
+
+--- The door's answer for this row, as a listing asks it (round 5: Airstrike's
+--- map pick shows its rough circles only to a player who could run it).
+--- @param src integer
+--- @param session table
+--- @param row table
+--- @return string|nil
+function T.refusalOf(src, session, row)
+    return refusal(src, session, row, nil)
 end
 
 -- ------------------------------------------------------------- the panel ---
@@ -1130,6 +1152,9 @@ function T.finish(rec)
     if why then
         refund(rec)
         settle(rec)
+        -- WHAT `prepare` STARTED IS LET GO (round 5, Vehicle drop: the search
+        -- the player it was for is running).
+        if fn.abandon then fn.abandon(src, session, rec.opts) end
         print(('[br_core] terminals: %d\'s %s could not happen (%s) -- everything given back')
             :format(src, rec.id, why))
         deliver(rec, { ok = false, code = why })
@@ -1172,6 +1197,10 @@ local function accept(rec)
         return
     end
     rec.spent = T.consume(src, session, rec.id)
+    -- AN EFFECT THAT ASKS THE WORLD FIRST asks now (round 5: Vehicle drop's
+    -- landing spot), so the answer is in by the time the load is over.
+    local fn = T.FUNCTIONS[rec.id]
+    if fn and fn.prepare then fn.prepare(src, session, rec.opts) end
     local lo = math.floor(tonumber(cfg().runMinMs) or 3000)
     local hi = math.floor(tonumber(cfg().runMaxMs) or lo)
     if hi < lo then hi = lo end
@@ -1642,10 +1671,25 @@ RegisterCommand('brterminalsv', function(source, args)
             return
         end
         opts.at = spot
-        local r = T.FUNCTIONS[id].run(target, { terminalId = 'dev', dev = false }, opts) or {}
-        tell(src, ('ran %s for %d without a key: %s (%s)'):format(id, target,
-            r.ok and 'ok' or 'refused', tostring(r.code)))
-        if r.ok and r.after then r.after() end
+        local fn = T.FUNCTIONS[id]
+        local devSession = { terminalId = 'dev', dev = false }
+        local function go()
+            local r = fn.run(target, devSession, opts) or {}
+            tell(src, ('ran %s for %d without a key: %s (%s)'):format(id, target,
+                r.ok and 'ok' or 'refused', tostring(r.code)))
+            if r.ok and r.after then r.after() end
+            if not r.ok and fn.abandon then fn.abandon(target, devSession, opts) end
+        end
+        -- A FUNCTION THAT ASKS THE WORLD FIRST (round 5, Vehicle drop) asks
+        -- here too, and runs once the shortest load a real run gets is over:
+        -- the time its answer has at a terminal.
+        if fn.prepare then
+            fn.prepare(target, devSession, opts)
+            tell(src, ('%s is asking first -- it runs in %d ms'):format(id, math.floor(tonumber(cfg().runMinMs) or 3000)))
+            SetTimeout(math.floor(tonumber(cfg().runMinMs) or 3000), go)
+        else
+            go()
+        end
 
     else
         tell(src, USAGE)

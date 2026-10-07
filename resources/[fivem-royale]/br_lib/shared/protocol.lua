@@ -1285,6 +1285,25 @@ BR.Net = {
     -- it changes (server/terminalfx.lua); an empty list clears it.
     -- client/terminalfx.lua hands it to br_ui as BR.Nui.IMPACTS.
     TERMINAL_IMPACTS = 'br:terminal:impacts',
+    -- S->C { nonce, r, minM, everyMs, forMs } or { nonce, stop = true }.
+    -- Vehicle drop (round 5): "find the car somewhere to land", to the ONE
+    -- player it is for, while the run loads. Their client answers
+    -- TERMINAL_DROP_SPOT every `everyMs` until `stop` or `forMs` is up
+    -- (client/terminalfx/vehicle_drop.lua).
+    TERMINAL_DROP_FIND = 'br:terminal:dropFind',
+    -- C->S { nonce, x, y, z, h } or { nonce, none = true }. The best road or
+    -- open ground that client found within `r` of itself. Taken only from the
+    -- player it was asked of, for the nonce it was asked with, and only within
+    -- fx.dropRadiusM + fx.dropSlackM of the server's own sample of them; the
+    -- server decides again when the car drops
+    -- (server/terminalfx/vehicle_drop.lua).
+    TERMINAL_DROP_SPOT = 'br:terminal:dropSpot',
+    -- S->C { matchId, id, netId, x, y, z, h, tRelease, tLand, alt, blip? } /
+    -- { matchId, id, x, y } / { matchId, id, off = true }. A Vehicle drop: its
+    -- descent, to the whole match when it drops (`blip` true for the squad it
+    -- is for); its blip moved, and taken off, to that squad alone; the squad's
+    -- again on br:ready while it lasts.
+    TERMINAL_DROP   = 'br:terminal:drop',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed, squadMatch,
     -- first? }: whether this player holds one, and whether their squad has

@@ -118,6 +118,7 @@ return {
         { id = "s1-noload/match downed", natives = 196.307, draws = 52.000, kb = 0.557, heavy = 82.100 },
         { id = "s1-noload/match spectate", natives = 186.680, draws = 52.000, kb = 0.850, heavy = 82.000 },
         { id = "s1-noload/match terminal", natives = 184.420, draws = 53.000, kb = 0.553, heavy = 22.400 },
+        { id = "s2-sky/match vehicle drop", natives = 202.040, draws = 53.000, kb = 1.061, heavy = 145.900 },
     },
     changeFrames = 180,
     changes = {

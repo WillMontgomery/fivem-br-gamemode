@@ -717,6 +717,13 @@ client_scripts {
     -- per frame.
     'client/terminalfx/time_weather.lua',
     'client/terminalfx/power_outage.lua',
+    -- Round 5 (#396, 2026-10-06): Vehicle drop's look for somewhere to land,
+    -- its descent and its blip. AFTER client/airdrop.lua and
+    -- client/natives.lua, whose fall curve (BR.AirdropCrateZ, shared) and
+    -- BR.Native.propScale it reads at call time, and hooked on
+    -- client/terminalfx.lua's SLOW pass like the rest. A FRAME callback only
+    -- while a copy of the car comes down.
+    'client/terminalfx/vehicle_drop.lua',
 }
 
 -- sched.lua is server-only rather than shared, because the client has its own
@@ -970,6 +977,10 @@ server_scripts {
     -- inventory's own BR.Inv.roomFor and BR.Inv.give (server/inventory.lua,
     -- read at call time).
     'server/terminalfx/gear_up.lua',
+    -- Round 5's Vehicle drop, the same way: the car through
+    -- BR.Vehicles.spawnOwned (server/vehicles.lua) and the blip's seat walk
+    -- through BR.Vehicles.ridingIn, both read at call time.
+    'server/terminalfx/vehicle_drop.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

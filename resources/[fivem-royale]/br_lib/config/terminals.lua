@@ -889,6 +889,60 @@ BR.Config.Terminals = {
         gear_no_room_squad = "Someone in your squad doesn't have room in their inventory for it.",
         gear_no_room_squad_solo = '',
 
+        -- Vehicle drop (owner's, approved 2026-10-06: "Kuruma is good!", and
+        -- "let's not have them pick a location for the vehicle drop, but
+        -- instead have it drop within 40m of them, with a blip until they get
+        -- into the vehicle, OR when in squads they can pick from a dropdown of
+        -- alive teammates to drop it next to."). ALL WRITTEN (2026-10-06,
+        -- round 5) for his review. The 40 is fx.dropRadiusM, and
+        -- tools/test_terminalstrike.lua holds the page to it.
+        vehicle_drop_name = 'Vehicle drop',
+        vehicle_drop_summary = 'Drops an armored Kuruma by parachute next to you or a teammate.',
+        vehicle_drop_summary_solo = 'Drops an armored Kuruma by parachute next to you.',
+        -- What the server does (server/terminalfx/vehicle_drop.lua): the
+        -- player it is for finds a road or open ground within 40 meters, the
+        -- car comes down there, and the squad's blip goes when one of them
+        -- gets in (or it is destroyed, or the match ends).
+        vehicle_drop_what = "An armored Kuruma comes down by parachute on a road or open ground within 40 meters of you, or of the teammate you pick.\nIt has no weapons.\nA blip marks it on your squad's maps until one of you gets in.\nPlayers nearby can see it come down, and anyone can take it.",
+        vehicle_drop_what_solo = "An armored Kuruma comes down by parachute on a road or open ground within 40 meters of you.\nIt has no weapons.\nA blip marks it on your map until you get in.\nPlayers nearby can see it come down, and anyone can take it.",
+        -- Next to whom. Outside a squad match the whole choice is not shown
+        -- (the empty `_solo` lines): it is always you.
+        vehicle_drop_opt_to = 'Drop it next to',
+        vehicle_drop_opt_to_solo = '',
+        vehicle_drop_opt_to_self = 'You',
+        vehicle_drop_opt_to_mate = 'A teammate',
+        vehicle_drop_opt_to_mate_solo = '',
+        -- The dropdown of standing teammates, shown when "A teammate" is
+        -- picked. Each choice is the teammate's name: no words of ours.
+        vehicle_drop_opt_mate = 'Teammate',
+        vehicle_drop_duration = 'It lands in about 10 seconds and stays. The blip lasts until one of your squad gets in.',
+        vehicle_drop_duration_solo = 'It lands in about 10 seconds and stays. The blip lasts until you get in.',
+        vehicle_drop_affects = 'Your squad',
+        vehicle_drop_affects_solo = 'You',
+        vehicle_drop_notified = 'Everyone in the match, and the teammate it lands next to',
+        vehicle_drop_notified_solo = 'Everyone in the match',
+        vehicle_drop_risks = "Players nearby can see it come down.\nAnyone can take it, and it can be destroyed like any vehicle.",
+        vehicle_drop_done = 'Your vehicle is on its way down.',
+        vehicle_drop_description = 'Vehicle drop. An armored car is coming down by parachute.',
+        -- A toast to the teammate it lands next to (never the runner), after
+        -- the lobby's notice: {playername} is the runner. Only in a squad
+        -- match, where a teammate can be picked; it says no squad.
+        vehicle_drop_received = '{playername} used Vehicle drop. An armored car is coming down next to you.',
+        -- Its blip's name in the pause map's legend, on the squad's maps.
+        vehicle_drop_blip = 'Vehicle drop',
+        -- Why it cannot run, at the terminal -- refused, spending nothing, the
+        -- Volts included. The teammate picked is not one who can get it (no
+        -- longer standing, or no longer a teammate)...
+        drop_no_mate = "That teammate isn't standing. Pick a teammate who is.",
+        -- ...the player it is for is not standing now (it is asked again as
+        -- the load ends)...
+        drop_target = 'The player it was for has to be standing when it drops.',
+        -- ...or no road or open ground was found within 40 meters of them:
+        -- water, a building or a crowd all around, or a client that did not
+        -- answer.
+        drop_ground = "There's no road or open ground within 40 meters for the vehicle. Try again somewhere more open.",
+        drop_ground_mate = "There's no road or open ground within 40 meters of your teammate for the vehicle.",
+
         -- Reboot (suggested; LIVE since wave C, 2026-10-06)
         reboot_name = 'Reboot',
         -- WRITTEN (2026-10-06, wave C review; was "...back at this terminal."):
@@ -1083,6 +1137,13 @@ BR.Config.Terminals = {
         -- The bounty, the owner's numbers: blip 58 in colour 3 on everyone's
         -- map, and colour 69 on the bounty's own squad's.
         bounty = { sprite = 58, colour = 3, mateColour = 69, scale = 1.0 },
+        -- Vehicle drop (round 5): its blip on the squad's maps until one of
+        -- them gets in (sprite 225 is the game's car; color 2 green -- a
+        -- placeholder like Scan's), and the canopy the car hangs from on the
+        -- way down: the airdrop's own cargo chute (BR.Config.Airdrop's
+        -- chuteModel and its deploy anim), `chuteScale` times its authored
+        -- size, `chuteRiseM` over the car's origin.
+        drop = { sprite = 225, colour = 2, scale = 1.0, chuteScale = 3.0, chuteRiseM = 1.2 },
     },
 
     -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04; crates 2026-10-06) ═══
@@ -1377,6 +1438,18 @@ BR.Config.Terminals = {
               { id = 'who', choices = { 'self', 'mate', 'squad' }, default = 'self' },
               { id = 'mate', when = { who = 'mate' }, source = 'mates', dropdown = true },
           } },
+        -- ROUND 5 (owner, 2026-10-06: "Kuruma is good!"): an armored Kuruma,
+        -- never an armed vehicle, by parachute within 40 m of the runner -- or,
+        -- in a squad match, of a standing teammate picked from a dropdown --
+        -- with a blip for the squad until one of them gets in. No map pick.
+        -- 100 Volts: PROPOSED, with the rest of the costs under the owner's
+        -- review. server/terminalfx/vehicle_drop.lua.
+        { id = 'vehicle_drop',   category = 'supply',     risk = 'medium', implemented = true, cost = 100,
+          squadWide = true,
+          options = {
+              { id = 'to', choices = { 'self', 'mate' }, default = 'self' },
+              { id = 'mate', when = { to = 'mate' }, source = 'mates', dropdown = true },
+          } },
         -- SQUAD-ONLY (round 2): it brings back squadmates. LIVE SINCE WAVE C
         -- (2026-10-06): server/terminalfx/reboot.lua, through the revive key's
         -- own return (BR.ReviveKey.bringBackAt).
@@ -1516,6 +1589,39 @@ BR.Config.Terminals = {
         -- The page says it (emp_what, emp_duration), and
         -- tools/test_terminalfx.lua holds the two together.
         empMs = 3 * 60 * 1000,
+
+        -- ── round 5 (2026-10-06): Vehicle drop ──
+        --
+        -- The car: an armored Kuruma ("Kuruma is good!"), built by
+        -- BR.Vehicles.spawnOwned, so the vehicle rules' own ruling admits it
+        -- (config/vehicles.lua refuses every armed model) and the fuel ledger
+        -- takes it the moment somebody in the match sits in it.
+        dropModel = 'kuruma2',
+        -- "within 40m of them": the page says it (vehicle_drop_what), and
+        -- tools/test_terminalstrike.lua holds the two together. The client of
+        -- the player it is for looks for a road node, then flat open ground,
+        -- inside this -- never nearer than dropMinM to them -- and the server
+        -- takes its answer only within dropRadiusM + dropSlackM of its own
+        -- 4 Hz sample of them (the sample may be a step behind), within
+        -- dropRiseM of their height, at least dropClearM from every player in
+        -- the match, and inside the play area.
+        dropRadiusM = 40.0,
+        dropMinM = 6.0,
+        dropSlackM = 6.0,
+        dropRiseM = 25.0,
+        dropClearM = 4.0,
+        -- How often that client sends the best spot it has while the run
+        -- loads (the server keeps the last good one), and for how long at
+        -- most.
+        dropAskMs = 1000,
+        dropAskForMs = 8000,
+        -- The descent: from dropAltM over the spot to the ground in
+        -- dropFallMs, on the airdrop's own fall curve (BR.AirdropFallen,
+        -- with BR.Config.Airdrop's flare at the bottom), drawn by every
+        -- client within dropDrawM of it.
+        dropAltM = 120.0,
+        dropFallMs = 9000,
+        dropDrawM = 600.0,
     },
 
     -- ═══ GEAR UP'S LIST (round 5, owner 2026-10-06) ═══

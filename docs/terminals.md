@@ -26,8 +26,8 @@ Around them, the Gameplay half:
 | **The world** | `br_core/client/yubikey.lua` | Each terminal's blip and plate (the laptops are the owner's ymap's, hidden where terminals are off); the press that asks to open one; the key's HUD glyph; Storm reveal on the maps. Decides nothing. |
 | **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against the storm (`offlineWhy`), the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
 | **The effects** | `br_core/server/terminalfx.lua` | What the first built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen; and the helpers the files below share. |
-| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Ghost, Contract -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); and wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06). Every row is built. |
-| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents and the bounty on this player's maps, and an EMP held on the vehicle this player drives, from the server's pushes. Decides nothing. |
+| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Ghost, Contract -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06); and round 5's Gear Up and Vehicle drop -- see [Gear Up](#gear-up-round-5-owner-2026-10-06) and [Vehicle drop](#vehicle-drop-round-5-owner-2026-10-06). Every row is built. |
+| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents and the bounty on this player's maps, an EMP held on the vehicle this player drives, and a Vehicle drop's look for somewhere to land, its descent and its blip, from the server's pushes. Decides nothing. |
 | **The persistent notices** | `br_core/server/terminalfx.lua` (and each function file's source), `br_core/client/terminalfx.lua`, `ui-src/src/hud/Impacts.tsx` | Round 4: what another player's terminal run is doing to each player, with its clock, at the foot of the HUD's notice stack -- see [the persistent notices](#persistent-notices-round-4). |
 
 **The server decides everything.** The computer and the app only ask. A run is
@@ -230,7 +230,8 @@ filters and pages from it.
   words only; each effect gives its own bounty.
 - `squadWide` (round 4): the effect reaches the runner's whole squad (its
   `_affects` starts "Your squad", or its marks show on the squad's maps): Scan,
-  Storm reveal, Max ammo, Reboot, Ghost and Field medic.
+  Storm reveal, Max ammo, Reboot, Ghost, Field medic and Vehicle drop (its
+  blip is on the squad's maps).
   In a squad match the app draws "Squads!" beside its title. Presentation
   only; `test_terminal.lua` holds the set to the rows' own lines.
 - `quiet` (round 4, owner 2026-10-06: "Field medic should not notify
@@ -273,6 +274,13 @@ Supply drop and Max ammo, and from wave A on a file of its own,
   `quiet` row), then calls
   `after` -- so Scan's bounty toasts follow the redemption. Anything else
   gives everything back (see the run, below).
+- `prepare(src, session, opts)` (optional, round 5): called as the run is
+  accepted, before the load, for an effect that has to ASK the world first --
+  Vehicle drop's landing spot, which only a client can see. The load is the
+  time the answer has to come back in; `run` decides on whatever came.
+  `abandon(src, session, opts)` (optional) lets go of what `prepare` started
+  when the run is refused or fails as the load ends. The dev command's `run`
+  calls `prepare` too, and runs `runMinMs` later.
 
 ### The run: asked, accepted, loading, done (owner, 2026-10-05, round 2)
 
@@ -360,6 +368,9 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
 | `BR.Net.TERMINAL_IMPACTS` | S→C | `{ list = { { key, text, endsAt?, tail? } } }` | The persistent notices (round 4): this player's whole list, to them alone, when it changes -- a row came or went or its end moved -- on a 1 s pass (`fx.endCheckMs`) and at once after a run's effect. `text` is picked for them (squad or solo); `endsAt` is the server's clock, or `tail` (`impact_until_end`) stands in for it. `client/terminalfx.lua` hands it to br_ui as `BR.Nui.IMPACTS`. |
 | `BR.Net.TERMINAL_EMP` | S→C | `{ matchId, leftMs?, liveMs? }` | EMP (round 4): how long this player's driving stalls from now (absent when every EMP in force spares their squad) and how long any EMP in the match lasts (absent with none). To the whole match when one goes off and when one ends (its time, the match's end, Season 1), and on `br:ready` while one lasts. `client/terminalfx/emp.lua` applies it to the vehicle its own player drives. |
+| `BR.Net.TERMINAL_DROP_FIND` | S→C | `{ nonce, r, minM, everyMs, forMs }` / `{ nonce, stop }` | Vehicle drop (round 5): to the ONE player the car is for, as the run is accepted -- look for somewhere to land it within `r`, at least `minM` from yourself, and answer every `everyMs` until `stop` or `forMs`. |
+| `BR.Net.TERMINAL_DROP_SPOT` | C→S | `{ nonce, x, y, z, h }` / `{ nonce, none }` | That client's best road or open ground. Taken only from the player asked, for the nonce asked, at most twenty a search, and only if `BR.TerminalSolve.dropCheck` passes against the server's own samples; the last good one stands, `none` changes nothing, and it is checked again when the car drops. |
+| `BR.Net.TERMINAL_DROP` | S→C | `{ matchId, id, netId, x, y, z, h, tRelease, tLand, alt, blip? }` / `{ matchId, id, x, y }` / `{ matchId, id, off }` | A Vehicle drop: its descent to the whole match as it drops (`blip` for the squad it is for); the blip moved, and taken off, to that squad alone; again to a squadmate on `br:ready` while it lasts. |
 | `BR.Net.SQUAD_POS` (`server/party.lua`) | S→C | the squad beacon's rows | Comms blackout: while one another squad ran is in force, every row sent to a blacked-out squad leaves `x` and `y` off, and nothing else (`BR.Terminal.beaconDark`). |
 | `BR.Net.REVIVEKEY_ARRIVE`, `BR.Net.REVIVEKEY_PLACE` | S→C | `{ x, y, z }` / `{ cancelled }` | Reboot: the revive key's own return (`BR.ReviveKey.bringBackAt`), over this terminal. |
 | `BR.Net.TERMINAL_RESULT` | S→C | `{ terminalId, functionId, ok, code, state?, runMs?, cost?, balance?, toast? }` | To the runner alone. `code` is `running` when a run is accepted (with `runMs`), `done` when it is over (a paid one with the new `balance`), else a reason (`no_volts` with `cost` and `balance`). Every answer but `running` carries `toast`, the line the server would toast for it; a client whose computer cannot show the answer toasts that. Once the server knows the computer has closed, the last word is its own toast instead. |
@@ -1004,7 +1015,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Round 5: `run gear_up item=medkit`, `run gear_up item=assaultrifle who=mate mate=<server id>`, `run gear_up item=grenade who=squad` (no Volts from the dev command). Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Round 5: `run gear_up item=medkit`, `run gear_up item=assaultrifle who=mate mate=<server id>`, `run gear_up item=grenade who=squad` (no Volts from the dev command); `run vehicle_drop` or `run vehicle_drop to=mate mate=<server id>` -- it asks that player's client for a spot first and drops the car `runMinMs` (3 s) later. Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
@@ -1270,6 +1281,72 @@ who got it from somebody else's run is told who and what
 (`gear_up_received`). Instant: no persistent notice. The card is available in
 any match -- whether an item fits is a question about choices not made yet.
 
+## Vehicle drop (round 5, owner 2026-10-06)
+
+> "Kuruma is good!", and "let's not have them pick a location for the vehicle
+> drop, but instead have it drop within 40m of them, with a blip until they get
+> into the vehicle, OR when in squads they can pick from a dropdown of alive
+> teammates to drop it next to."
+
+`server/terminalfx/vehicle_drop.lua` and `client/terminalfx/vehicle_drop.lua`;
+the row (100 Volts, proposed), the copy and `fx.drop*` in
+`br_lib/config/terminals.lua`.
+
+**The car** is an armored Kuruma (`fx.dropModel`, `kuruma2`), never an armed
+vehicle, built by `BR.Vehicles.spawnOwned` -- the one creation path, in
+`server/vehicles.lua` beside the allowlist -- so the vehicle rules' own ruling
+admits it, it goes into the match's routing bucket, and the fuel ledger takes
+it the moment somebody in the match sits in it.
+
+**Next to whom** (`to`): `self`, or `mate` (`mate`, a dropdown of the state's
+`mates`) -- the second in a squad match alone, `bad_option` outside one, where
+the page hides the choice. No map pick.
+
+**Where**: within `fx.dropRadiusM` (40 m) of that player, on a road or flat open
+ground under open sky -- never on a player, in the water or inside a building.
+Only a client can see roads and roofs, so as the run is accepted (`prepare`)
+the client of the player it is for is asked to look (`TERMINAL_DROP_FIND`): the
+nearest road node at least `fx.dropMinM` (6 m) away and inside the reach, no
+more than 10 m above or below them, then flat open ground on rings around them
+(within 6 m of their height), each spot out of the water (sea level, and
+`GetWaterHeight` for the lakes), flat (a ground normal of 0.94 or more), with 60
+m of open sky over it (one synchronous ray: no roof, bridge or tree) and nobody
+and nothing on it (`IsPositionOccupied`, 3.5 m). It answers every second while
+the run loads. The server keeps the last answer that passes ITS OWN checks
+(`BR.TerminalSolve.dropCheck`: within `dropRadiusM` + `dropSlackM` of its 4 Hz
+sample of them, within `dropRiseM` of their height, `dropClearM` from every
+player in the match, inside the play area), and checks it again when the load
+is over. No spot is `drop_ground` (`drop_ground_mate`) and everything comes
+back.
+
+**The descent**: the real car is built AT ONCE where it lands, a meter over the
+ground, frozen and locked -- so a car the engine will not build is a refund,
+not a promise -- and every client within `fx.dropDrawM` (600 m) draws a local
+copy of it coming down from `fx.dropAltM` (120 m) under the airdrop's own
+cargo chute (`BR.Config.Airdrop`'s `chuteModel` and its deploy anim, at
+`art.drop.chuteScale`), on the airdrop's own fall curve (`BR.AirdropCrateZ`,
+the flare at the bottom included), over `fx.dropFallMs` (9 s), hiding the real
+one (`SetEntityLocallyInvisible`) until the copy touches down. Then the server
+unfreezes and unlocks it. A FRAME callback only while a copy comes down.
+
+**The blip** (`art.drop`) is on the squad's maps, moved if the car is, until
+somebody in that squad gets in (the seat walk, `BR.Vehicles.ridingIn`, after it
+has landed), the car is wrecked (engine at -4000) or gone, the match stops being
+played, or Season 2 ends; again to a squadmate on `br:ready`. Nothing deletes
+the car at the match's end, as nothing deletes a car bought in warmup: its
+bucket is never used again.
+
+| Refused, spending nothing (the Volts included) | When |
+|---|---|
+| `drop_target` | the runner is not standing (asked again as the load ends) |
+| `drop_no_mate` | the teammate is not a standing teammate now, or none was named |
+| `drop_ground`, `drop_ground_mate` | no spot the server will take, or the client never answered |
+| `unavailable` | no match, the vehicle rules refuse the model (on the card too), or the engine would not build it |
+
+The lobby hears `notice_action` with `vehicle_drop_description`; the teammate
+it lands next to is told who sent it (`vehicle_drop_received`). It does
+nothing timed to anybody else, so it has no persistent notice.
+
 ## Persistent notices (round 4)
 
 The owner, 2026-10-06: "Anything that a player is being impacted by, which
@@ -1301,8 +1378,8 @@ restarted client's list whole.
 | Time & weather (`impact_time`, `impact_weather`) | everyone in the fight but the runner of the time (while its clock is the match's) and of the weather, one row each | the match ends |
 | Storm control (`impact_storm`) | everyone in the fight but whoever aimed the storm that stands | the match ends |
 
-**None:** Disarm, Field medic's drain, Max ammo, Reboot and Supply drop are
-instant (nothing to count down); Ghost and Storm reveal put nothing on anybody
+**None:** Disarm, Field medic's drain, Max ammo, Reboot, Supply drop, Gear Up
+and Vehicle drop are instant or touch nobody else (nothing to count down); Ghost and Storm reveal put nothing on anybody
 else. The runner never has a row for their own run, but for a Scan's bounty;
 their squadmates do (it is another player's run).
 

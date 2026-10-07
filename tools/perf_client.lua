@@ -140,6 +140,15 @@ local clock = os.clock
 --               effects, texture dictionaries, movies and sound banks are each
 --               requested and never arrive, the whole session long.
 --
+-- AND ONE FOR THE TOOLS THAT COME DOWN FROM THE SKY (#396 round 5, 2026-10-06):
+--
+--   s2-sky      Season 2 from boot, the whole session, then at the terminal a
+--               Vehicle drop and an Airstrike, each a scene of its own. Only
+--               those scenes are budgeted here (`measure`), and it ends there
+--               (`upTo`), with no changes: every other world plays its session
+--               exactly as it did, so not one of their numbers moves for them.
+--               A scene with `world` set is played in that world alone.
+--
 -- A world's phases are budgeted as `<world>/<phase>`.
 local WORLDS = {
     { id = 's1',         season = '1' },
@@ -149,6 +158,8 @@ local WORLDS = {
     { id = 's1-padoff',  season = '1', padOff = true, upTo = 'warmup' },
     { id = 's2-padoff',  season = '2', padOff = true, upTo = 'warmup' },
     { id = 's1-noload',  season = '1', noLoad = true },
+    { id = 's2-sky',     season = '2', upTo = 'match airstrike',
+      measure = { ['match vehicle drop'] = true, ['match airstrike'] = true } },
 }
 local worldById = {}
 for _, w in ipairs(WORLDS) do worldById[w.id] = w end
@@ -2184,6 +2195,24 @@ local PHASES = {
             net(BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'RAIN' })
         end
     end },
+    -- ROUND 5'S TOOLS FROM THE SKY (#396, 2026-10-06), at the same terminal,
+    -- in their own world (s2-sky, THE WORLDS above) and no other: each is over
+    -- inside its own window and takes itself down.
+    { id = 'match vehicle drop', world = 's2-sky', settle = 30, setup = function()
+        -- A Vehicle drop for this player: their client asked to look for
+        -- somewhere to land the car (the search, once a second, for 8 s), and
+        -- the car coming down 20 m off under the cargo chute, its blip on both
+        -- maps -- the descent's FRAME callback carrying the copy for nine of
+        -- the ten measured seconds, then gone.
+        if not serverHas('terminals') then return end
+        local p = entPos(W.me)
+        net(BR.Net.TERMINAL_DROP_FIND, { nonce = 1, r = 40.0, minM = 6.0, everyMs = 1000, forMs = 8000 })
+        local t0 = gameMs()
+        net(BR.Net.TERMINAL_DROP, { matchId = 1, id = 1, netId = 777, x = p.x + 20.0, y = p.y,
+            z = p.z, h = 0.0, tRelease = t0, tLand = t0 + 9000, alt = 120.0, blip = true })
+    end, after = function()
+        if serverHas('terminals') then net(BR.Net.TERMINAL_DROP, { matchId = 1, id = 1, off = true }) end
+    end },
 }
 
 local function snapshot()
@@ -2294,6 +2323,8 @@ fire('onClientResourceStart', 'net onClientResourceStart', 'br_core')
 
 local results = {}
 for _, ph in ipairs(PHASES) do
+  -- A SCENE OF ONE WORLD'S (`world`) is not played in any other.
+  if ph.world == nil or ph.world == WORLD.id then
     enter('net setup ' .. ph.id)
     local ok, err = pcall(ph.setup)
     leave()
@@ -2309,10 +2340,14 @@ for _, ph in ipairs(PHASES) do
     for _ = 1, MEASURE_FRAMES do frame() gcMaybe() end
     local wall = (clock() - c0) * 1000.0 / MEASURE_FRAMES
     local rows, tot = diff(before, snapshot(), MEASURE_FRAMES)
-    results[#results + 1] = { id = phaseId(WORLD, ph.id), rows = rows, tot = tot, wall = wall,
-                              digest = ('%016x/%d'):format(digest.h, digest.n),
-                              files = FILES and fileDiff(fileBefore, fileSnapshot(),
-                                  MEASURE_FRAMES) or nil }
+    -- A WORLD THAT BUDGETS ONLY SOME SCENES (`measure`) plays the rest, so its
+    -- match is the one they are written against, and records only those.
+    if WORLD.measure == nil or WORLD.measure[ph.id] then
+        results[#results + 1] = { id = phaseId(WORLD, ph.id), rows = rows, tot = tot, wall = wall,
+                                  digest = ('%016x/%d'):format(digest.h, digest.n),
+                                  files = FILES and fileDiff(fileBefore, fileSnapshot(),
+                                      MEASURE_FRAMES) or nil }
+    end
     if (ARGS.phase and ph.id == ARGS.phase) or ph.id == WORLD.upTo then break end
     -- A scene's `after` puts back what it changed, unmeasured, so the next one
     -- starts from the match it was written against.
@@ -2326,6 +2361,7 @@ for _, ph in ipairs(PHASES) do
             os.exit(2)
         end
     end
+  end
 end
 
 -- ----------------------------------------------------------------- changes ---
