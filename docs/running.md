@@ -419,12 +419,16 @@ Cloudscape-on-CEF-103 findings of #385, no words written in its JSX, every
 line read through one speaker (the squad words), Run's risk colors on tokens
 Cloudscape defines, a browser chrome that takes no mode, and the page loads
 (T10: back and forward never load, and the tab's loading symbol is the one
-animation, only while a page loads) -- its pure parts' tests,
+animation, only while a page loads; T12 Volts in the gold, in the page's own
+font since round 5; T14 Home's five filters and no text search of its own,
+round 5) -- its pure parts' tests,
 `scripts/test-terminal-model.mjs` (the page loads' rules among them), and the
 computer's desktop (`cuchi_computer/nui/br.js`) driven in a node:vm page model,
 `scripts/test-terminal-desktop.mjs`: a run's last word is shown in the app or
-handed back for a toast, on every path, and the tab's loading symbol comes off
-on every way out.
+handed back for a toast, on every path, the tab's loading symbol comes off
+on every way out, and (round 5) the boot, the blue screen and the power-off
+are waited out -- Escape, the power button and the app's Escape close nothing
+-- with the power-off playing over a see-through page.
 
 CI runs both package installs and bundle checks under Node 22 before
 `tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;

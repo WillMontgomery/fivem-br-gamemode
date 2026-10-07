@@ -152,7 +152,7 @@ The table below is the lines outside the functions' own:
 | `<key>_solo` | The same reader as `<key>`, outside a squad match |
 | `search_*`, `mode_*`, `menu_*`, `nav_*` | At the terminal: the search, the light/dark switch, the user menu, the side navigation |
 | `match_heading`, `field_*` and their values | At the terminal: the "Match stats" panel, collapsed when the app opens |
-| `functions_heading`, `filter_*`, `card_*`, `pref_*`, `status_*`, `risk_*`, `category_*` | At the terminal: the cards |
+| `tools_heading`, `filter_*`, `card_*`, `pref_*`, `status_*`, `risk_*`, `category_*` | At the terminal: the cards (round 5: the heading "Tools", was `functions_heading` "Functions") |
 | `card_cost`, `card_bounty`, `cost_free`, `cost_paid`, `bounty_none`, `bounty_runner`, `bounty_target`, `filter_any` | At the terminal (round 4): a card's Cost and Bounty sections (and their names in the preferences' Card content), and Home's filters -- each labeled with a `card_*` line, `filter_any` its no-filter choice, the cards' own words its others (`cost_paid` the Cost filter's choice for every priced function) |
 | `squads_link`, `squads_popover` (VERBATIM) | At the terminal, in a squad match only (their `_solo` lines are empty): "Squads!" beside the title of a `squadWide` function's card and page, and the box it opens |
 | `details_heading` .. `cost_line`, `risk_notice`, `run`, `confirm_*` | At the terminal: a function's page and its confirmation |
@@ -462,8 +462,8 @@ colors, and the light/dark switch changes only the site.
 
 **The toolbar is the app's** (`Browser.tsx`): back, forward and reload over the
 app's own history, and a read-only address bar whose fictional URL follows the
-page (`https://controltower.blitz/home`, `.../functions/supply-drop`,
-`.../privacy`). It lives in the app
+page (`https://controltower.blitz/home`, `.../tools/supply-drop` -- round 5,
+was `/functions/` -- `.../privacy`). It lives in the app
 because the history and the address are the app's navigation; a copy in the
 desktop would be a second state kept in step over postMessage. Reload asks the
 desktop for everything again (`ready`) and remounts the page.
@@ -518,14 +518,14 @@ wiring and the stylesheet.
 
 **The site** (Cloudscape, like the cards and details examples): a fixed
 TopNavigation with the app's name -- the one place in the app it is written --
-a search across every function (pick one to open it, or search the cards), the
+a search across every tool (pick one to open it, or search the cards), the
 player's Volts, the light/dark switch, and the gamertag as the signed-in user
 (its menu: How to, Sign out); AppLayout with SideNavigation (Home, How to,
 Privacy, each category with something in it; no header) and a BreadcrumbGroup
-on every page but the login screen; Home, the functions page ("Match stats",
-collapsed, over the cards, with a text filter, pagination and preferences;
+on every page but the login screen; Home, the tools page ("Match stats",
+collapsed, over the cards, with the five filters, pagination and preferences;
 "Home" in its address, its link and the trail's first crumb, owner 2026-10-06,
-while its heading still counts the Functions), a page per function (its trail
+while its heading counts the Tools), a page per tool (its trail
 Home, its category, its name; details with its cost, what it does, its options
 as RadioGroups, its risks, Run in its risk badge's color behind a
 confirmation), the how-to page, the Privacy page (the owner's approved
@@ -559,10 +559,11 @@ holds #385's findings over it, and that every line goes through the speaker.
   is its row's `bounty` in words. The preferences' Card content lists both.
 - **Home's filters** ("the "Functions" search should have filters available
   for category, risk, Volts cost (free/paid), bounty, and availability
-  status"): five Selects beside the text search, each labeled inside its own
-  trigger and "Any" until set. The category is the page's own (the side
-  navigation's); the other four ride in the route. All of them and the text
-  search narrow the cards together, pagination runs over what is left, and
+  status"): five Selects, each labeled inside its own trigger and "Any" until
+  set (round 5 took the text search beside them away -- the top bar's is the
+  one). The category is the page's own (the side navigation's); the other four
+  ride in the route. All of them and the top bar's search text, when a search
+  brought the player here, narrow the cards together, pagination runs over what is left, and
   the heading counts what is left of what there is ("(4/18)") while anything
   but the category narrows them. A change rewrites the page's own history
   entry, as typing does -- no load, no new entry -- and the address carries
@@ -604,6 +605,29 @@ holds #385's findings over it, and that every line goes through the speaker.
   public demos): it does not -- both are Open Sans, 400 for the body and 700
   for headings and labels, at 14 px; the cards' titles are 20 px at the
   owner's own request (round 2).
+
+### Round 5 (owner, 2026-10-06)
+
+- **A new wallpaper**: "Please use this graphic as the new wallpaper for the
+  computers." His daytime Vinewood screenshot, 2000x1125
+  (`nui/assets/images/wallpaper.webp`; VENDOR.json has its size and sha256).
+- **"Functions" is "Tools"** ('Rename the "Functions" to "Tools"'): every line
+  the player reads says tool -- the cards' heading (`tools_heading`), the top
+  bar's search and its empty row, the cards-per-page choice, the empty filter
+  line, `fn_offline`, `unavailable`, the how-to -- and a tool's page is under
+  `/tools/<id>` (`path_tools`). The owner's VERBATIM lines stay as he wrote
+  them ("This function will apply to your entire squad."). The registry and
+  the code still say function. `test_terminal.lua` fails any other copy line
+  that says function.
+- **No text search on Home** ("please remove the search bar within the
+  Functions (soon to be "Tools") section - we have a search at the top anyway.
+  Just the filters can remain."): the five filters stay; the top bar's search
+  still opens a tool, or narrows the cards to what was typed.
+  `check-terminal.mjs` T14 holds it.
+- **Volts in the page's font, in the gold** (above, "Every mention of Volts").
+- **The storm's close plays over the game, and is waited out** (["The
+  storm's close"](#br_core-and-the-computer)), and so is the boot: Escape, the
+  power button and the app's Escape do nothing until each ends.
 
 ## The Yubikey
 

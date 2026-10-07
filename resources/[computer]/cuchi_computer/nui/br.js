@@ -574,7 +574,6 @@
         if (!isOpen) return;
         isOpen = false;
         hidden = false;
-        booting = false;
         session++;
 
         if (!keep) document.body.style.display = "none";
