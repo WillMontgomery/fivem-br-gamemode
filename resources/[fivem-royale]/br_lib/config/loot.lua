@@ -334,12 +334,16 @@ BR.Config.Consumables = {
         -- able to afford it.
         --
         -- HOW OFTEN ONE IS FOUND, so the number is arguable rather than asserted:
-        -- consumables are 21% of crate items (KindWeights), LEGENDARY is 1/2/5%
-        -- of a roll by POI tier, and this is the only item in that bucket. So a
-        -- crate holds one about 0.6% of the time in the countryside and 3% of the
-        -- time in a named town -- roughly one player in four finds one in a match
-        -- they loot hard. A prize, not a staple, which is what a free full repair
-        -- should be.
+        -- it is the only item in the consumables' LEGENDARY bucket, and since
+        -- 2026-09-11 LEGENDARY is rolled at TIER 4 POIS ONLY (RarityWeights
+        -- below: 0 at tiers 1 to 3). Measured with the real generator
+        -- (BR.LootChestContents, 300,000 crates a tier, and whole layouts from
+        -- BR.BuildLootLayout): about 6% of Tier 4 crates hold one (6.2%, and
+        -- 6.1% on a second seed), about 9 a match across the map, and a crate
+        -- anywhere else never does. A prize at the golden sites, not a staple,
+        -- which is what a free full repair should be. (Before 2026-09-11 it was
+        -- about 0.6% of countryside crates and 3% in a named town; that is gone
+        -- with the legendary roll outside Tier 4.)
         id = 'repairkit', label = 'Repair Kit', plural = 'Repair Kits',
         -- STILL LEGENDARY, AND THE REQUEST TO MAKE IT RARE IS BACKED OUT FOR
         -- THE REASON ON THE MED KIT ABOVE (2026-09-21). LEGENDARY is the one
