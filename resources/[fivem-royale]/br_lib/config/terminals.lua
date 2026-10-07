@@ -217,16 +217,17 @@ BR.Config.Terminals = {
         -- screen's heading no longer say it). VERBATIM, as above.
         app_title = 'Control Tower',
         -- The address bar: the fictional site the pages live on, and each
-        -- page's path segment. A function's own segment is its id. The host
+        -- page's path segment. A tool's own segment is its id. The host
         -- kept its name when the app became Control Tower (round 2): a
         -- question for the owner, not a change made for him.
         address_host = 'https://controltower.blitz',
         -- VERBATIM (owner, 2026-10-06: "the functions page should be called
         -- Home in the URL, sidebar, and breadcrumbs"), lower case as a path
-        -- is: the cards page. A function's page is still under
-        -- path_functions.
+        -- is: the cards page. A tool's page is under path_tools.
         path_home = 'home',
-        path_functions = 'functions',
+        -- WRITTEN (2026-10-06, round 5: 'Rename the "Functions" to "Tools"';
+        -- was path_functions, 'functions'). A tool's page: /tools/<id>.
+        path_tools = 'tools',
         path_howto = 'how-to',
         -- WRITTEN (2026-10-06). The Privacy page.
         path_privacy = 'privacy',
@@ -239,10 +240,12 @@ BR.Config.Terminals = {
         -- The close button on the confirmation box and on a run's answer.
         aria_close = 'Close',
         -- The search box in the top bar, its "use what I typed" row and the
-        -- row it shows when nothing matches.
-        search_placeholder = 'Search functions',
+        -- row it shows when nothing matches. WRITTEN (2026-10-06, round 5:
+        -- 'Rename the "Functions" to "Tools"'; were 'Search functions' and
+        -- 'No matching functions').
+        search_placeholder = 'Search tools',
         search_use = 'Search for "{value}"',
-        search_empty = 'No matching functions',
+        search_empty = 'No matching tools',
         -- The light/dark switch in the top bar.
         mode_dark = 'Dark mode',
         mode_light = 'Light mode',
@@ -266,8 +269,8 @@ BR.Config.Terminals = {
         -- ── the side navigation and the breadcrumbs. WRITTEN ─────────────────
 
         -- VERBATIM (owner, 2026-10-06, as path_home): the cards page's link
-        -- and its first breadcrumb, which every function's trail starts
-        -- with. The page's heading stays functions_heading.
+        -- and its first breadcrumb, which every tool's trail starts with.
+        -- The page's heading is tools_heading.
         nav_home = 'Home',
         nav_howto = 'How to',
         -- WRITTEN (2026-10-06). The Privacy page's link, after How to, and
@@ -333,10 +336,11 @@ BR.Config.Terminals = {
 
         -- ── the functions page: the cards. WRITTEN ───────────────────────────
 
-        functions_heading = 'Functions',
-        filter_placeholder = 'Find functions',
-        filter_matches = '{count} matches',
-        filter_empty = 'No functions match.',
+        -- WRITTEN (2026-10-06, round 5: 'Rename the "Functions" to "Tools"';
+        -- were functions_heading 'Functions' and 'No functions match.'). The
+        -- cards' heading, and the line when the filters leave none.
+        tools_heading = 'Tools',
+        filter_empty = 'No tools match.',
         filter_clear = 'Clear filter',
         card_category = 'Category',
         card_risk = 'Risk',
@@ -381,7 +385,8 @@ BR.Config.Terminals = {
         pref_confirm = 'Confirm',
         pref_cancel = 'Cancel',
         pref_page_size = 'Cards per page',
-        pref_page_option = '{count} functions',
+        -- WRITTEN (round 5; was '{count} functions').
+        pref_page_option = '{count} tools',
         pref_visible = 'Card content',
         pref_visible_group = 'Show on each card',
         -- What a card says about a function right now.
@@ -456,16 +461,18 @@ BR.Config.Terminals = {
         -- ── why a function cannot run. WRITTEN, beside no_key, offline and
         --    squad_used above ──────────────────────────────────────────────────
 
-        -- WRITTEN (2026-10-05, round 2; was 'This function is offline.'). A
-        -- function whose effect is not built yet: listed, described, never
-        -- run. Beside the "Not available" badge, so it does not say offline.
-        fn_offline = 'This function is not available.',
+        -- WRITTEN (2026-10-05, round 2; was 'This function is offline.'; round
+        -- 5 said tool for function). A tool whose effect is not built yet:
+        -- listed, described, never run. Beside the "Not available" badge, so
+        -- it does not say offline.
+        fn_offline = 'This tool is not available.',
         -- WRITTEN (2026-10-05, round 2). A run whose cost the player's Volts
         -- cannot cover: refused by the server after every other reason, with
         -- nothing spent. {cost} and {balance} are the figure and the word.
         no_volts = "You don't have enough Volts. This costs {cost}, and your balance is {balance}.",
-        -- A reason with no line of its own.
-        unavailable = "This function can't run right now.",
+        -- A reason with no line of its own. WRITTEN (round 5; was "This
+        -- function can't run right now.").
+        unavailable = "This tool can't run right now.",
         -- Options the server would not take (the app only offers valid ones).
         bad_option = "Those options aren't available.",
         -- The storm has not drawn its first circle.
@@ -516,22 +523,25 @@ BR.Config.Terminals = {
         howto_key_body = "Airdrops have a 50/50 chance of carrying a Yubikey, and legendary crates have a small chance.\nYou can hold one Yubikey at a time. It doesn't take an inventory slot, and its icon shows on your HUD.\nIf you're eliminated, your Yubikey drops where you fell, and anyone can pick it up.\nA Yubikey you don't use stays with you into your next match.",
         howto_terminal_title = 'Using a terminal',
         -- WRITTEN (2026-10-06, round 3: "hold interact" became "press
-        -- interact", as the plate's press opens the computer now).
-        howto_terminal_body = "While you hold a Yubikey, terminals inside the storm show on your map as laptops.\nWalk up to one and press interact to open it.\nA terminal outside the storm is offline and won't open.\nPick a function, read its page, choose its options and press Run.",
+        -- interact", as the plate's press opens the computer now; round 5:
+        -- "Pick a function" became "Pick a tool").
+        howto_terminal_body = "While you hold a Yubikey, terminals inside the storm show on your map as laptops.\nWalk up to one and press interact to open it.\nA terminal outside the storm is offline and won't open.\nPick a tool, read its page, choose its options and press Run.",
         howto_rules_title = 'One use per squad',
-        howto_rules_body = "Each squad gets one terminal use per match. A solo player is a squad of one.\nRunning a function uses your Yubikey and your squad's use. A Yubikey is gone after one use.\nIf a squadmate already ran a function this match, your Yubikey stays with you for a later match.\nA function that can't run uses nothing.",
+        -- WRITTEN (round 5 said tool for function in the rules, the notices
+        -- and the tips, each way).
+        howto_rules_body = "Each squad gets one terminal use per match. A solo player is a squad of one.\nRunning a tool uses your Yubikey and your squad's use. A Yubikey is gone after one use.\nIf a squadmate already ran a tool this match, your Yubikey stays with you for a later match.\nA tool that can't run uses nothing.",
         -- WRITTEN (2026-10-05, round 2). The same section outside a squad
         -- match.
         howto_rules_title_solo = 'One use per match',
-        howto_rules_body_solo = "You get one terminal use per match.\nRunning a function uses your Yubikey and your terminal use. A Yubikey is gone after one use.\nA function that can't run uses nothing.",
+        howto_rules_body_solo = "You get one terminal use per match.\nRunning a tool uses your Yubikey and your terminal use. A Yubikey is gone after one use.\nA tool that can't run uses nothing.",
         howto_notices_title = 'What everyone is told',
         -- WRITTEN (2026-10-06, round 4: the second line gained "unless its
         -- page says otherwise", for Field medic, which tells nobody).
-        howto_notices_body = "When you open a terminal with a Yubikey, everyone in the match is told your name.\nWhen you run a function, everyone is told your name and what you ran, unless its page says otherwise.\nSome functions tell more. Each function's page lists who is told.",
+        howto_notices_body = "When you open a terminal with a Yubikey, everyone in the match is told your name.\nWhen you run a tool, everyone is told your name and what you ran, unless its page says otherwise.\nSome tools tell more. Each tool's page lists who is told.",
         howto_tips_title = 'Tips',
-        howto_tips_body = "Read a function's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nTalk to your squad before you run anything. You only get one use between you.\nIntel shows the most while many squads are left. Supply matters most when your squad is low on gear.\nStorm functions change where the last fight happens. Think about where your squad will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
+        howto_tips_body = "Read a tool's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nTalk to your squad before you run anything. You only get one use between you.\nIntel shows the most while many squads are left. Supply matters most when your squad is low on gear.\nStorm tools change where the last fight happens. Think about where your squad will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
         -- WRITTEN (2026-10-05, round 2). The tips outside a squad match.
-        howto_tips_body_solo = "Read a function's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nIntel shows the most while many players are left. Supply matters most when you're low on gear.\nStorm functions change where the last fight happens. Think about where you will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
+        howto_tips_body_solo = "Read a tool's risks before you run it.\nOpening a terminal announces you to the whole match. Clear the area first.\nA terminal near the storm's edge can go offline while you read. Pick one well inside the circle.\nIntel shows the most while many players are left. Supply matters most when you're low on gear.\nStorm tools change where the last fight happens. Think about where you will be.\nA bounty puts you on every map for 10 minutes. Have a plan to survive it first.",
 
         -- ── the privacy page (owner, 2026-10-06: "a Privacy page in the
         --    sidebar", a made-up policy sponsored by Lifeinvader) ─────────────

@@ -127,9 +127,9 @@ export function lines(text: string): string[] {
  * HOME (owner, 2026-10-06: "the functions page should be called Home in the
  * URL, sidebar, and breadcrumbs"): the cards page, `functions` here, is Home
  * at /home, in the side navigation and at the head of every trail it starts;
- * its heading still counts the functions. A function's own page stays under
- * /functions. PRIVACY (the same day): the made-up policy, in the side
- * navigation after How to.
+ * its heading, Tools, counts them. A tool's own page is under /tools (round
+ * 5). PRIVACY (the same day): the made-up policy, in the side navigation
+ * after How to.
  */
 export type Route =
   | { page: 'functions'; category: string | null; query: string; filters?: CardFilters }
@@ -146,9 +146,9 @@ export function sameRoute(a: Route, b: Route): boolean {
 
 /**
  * The fictional address the browser's address bar shows for a page, e.g.
- * https://controltower.blitz/home, or .../functions/storm-reveal. The host and
- * each section's segment are copy; a function's segment is its id, hyphenated
- * as a URL is.
+ * https://controltower.blitz/home, or .../tools/storm-reveal (round 5: 'Rename
+ * the "Functions" to "Tools"'). The host and each section's segment are copy;
+ * a tool's segment is its id, hyphenated as a URL is.
  */
 export function addressOf(route: Route, say: Say): string {
   const host = say('address_host')
@@ -165,7 +165,7 @@ export function addressOf(route: Route, say: Say): string {
       return `${host}/${say('path_home')}${params.length > 0 ? '?' + params.join('&') : ''}`
     }
     case 'function':
-      return `${host}/${say('path_functions')}/${route.id.replace(/_/g, '-')}`
+      return `${host}/${say('path_tools')}/${route.id.replace(/_/g, '-')}`
     case 'howto':
       return `${host}/${say('path_howto')}`
     case 'privacy':
@@ -286,7 +286,7 @@ export function push(h: History, route: Route): History {
   return { stack, index: stack.length - 1 }
 }
 
-/** Replace where the player is without a new entry (a filter typed in place). */
+/** Replace where the player is without a new entry (a filter set in place). */
 export function replace(h: History, route: Route): History {
   const stack = h.stack.slice()
   stack[h.index] = route
@@ -333,8 +333,8 @@ export function forward(h: History): History {
  *                  last (`TabNote`, which the app hands the desktop): on when
  *                  a load starts, off when its page shows or it is dropped
  *
- * NOT NAVIGATIONS, so never a load: typing in the cards' filter (it rewrites
- * the page's own entry, `rewrite`), Match stats opening and closing, the
+ * NOT NAVIGATIONS, so never a load: setting one of the cards' filters (it
+ * rewrites the page's own entry, `rewrite`), Match stats opening and closing, the
  * light/dark switch, Run and its bar, and the cards' pagination and
  * preferences (state inside the page, with no address of its own).
  */
@@ -420,7 +420,7 @@ export function step(b: Browsing, dir: 'back' | 'forward'): BrowseStep {
   return { browsing: { ...b, history, load: null }, tab: b.load !== null ? { on: false } : null }
 }
 
-/** The page's own entry rewritten in place (a filter typed): no load, no history entry. */
+/** The page's own entry rewritten in place (a filter set): no load, no history entry. */
 export function rewrite(b: Browsing, route: Route): Browsing {
   return { ...b, history: replace(b.history, route) }
 }
@@ -597,9 +597,10 @@ export function matches(def: FunctionDef, say: Say, query: string): boolean {
 /**
  * HOME'S FILTERS (owner, 2026-10-06, round 4: "the "Functions" search should
  * have filters available for category, risk, Volts cost (free/paid), bounty,
- * and availability status"). Beside the text search, each narrows the cards
- * to one value or, null, filters nothing; all of them and the text search
- * together, and pagination over what is left. The CATEGORY filter is the
+ * and availability status"). Each narrows the cards to one value or, null,
+ * filters nothing; all of them together with the top bar's search text (the
+ * route's `query`, when a search brought the player here -- Home has no text
+ * search of its own since round 5), and pagination over what is left. The CATEGORY filter is the
  * page's own category -- the side navigation's -- so it lives in the route's
  * `category`; the other four ride in the route's `filters`. Changing any of
  * them rewrites the page's own history entry, as typing does: no load, no new
@@ -648,7 +649,7 @@ export function withFilters(route: Extract<Route, { page: 'functions' }>, f: Car
   return FILTER_KEYS.some((k) => f[k] !== null) ? { ...rest, filters: { ...f } } : rest
 }
 
-/** Is the cards page narrowed by anything: a category, a filter or the text search? */
+/** Is the cards page narrowed by anything: a category, a filter or the top bar's search text? */
 export function narrowed(route: Route): boolean {
   if (route.page !== 'functions') return false
   const f = filtersOf(route)

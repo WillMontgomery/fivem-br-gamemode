@@ -688,7 +688,7 @@ do
         -- Power outage's night.
         'confirm_location', 'storm_spot_land', 'storm_spot_out', 'storm_spot_edge', 'no_night',
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
-        'address_host', 'path_home', 'path_functions', 'path_howto', 'path_privacy', 'path_login',
+        'address_host', 'path_home', 'path_tools', 'path_howto', 'path_privacy', 'path_login',
         'nav_home', 'nav_howto', 'nav_privacy', 'nav_categories', 'privacy_title', 'privacy_body',
         'status_available', 'status_used', 'status_not_here', 'status_offline',
         'risk_low', 'risk_medium', 'risk_high', 'risk_notice', 'cost_line',
@@ -871,7 +871,7 @@ do
     local copy = C.copy
     eq(copy.status_offline, 'Not available', '"offline" is "Not available" (owner\'s words)')
     eq(copy.status_not_here, 'Not available at this terminal', '"Not here" is "Not available at this terminal"')
-    eq(copy.fn_offline, 'This function is not available.', 'an unbuilt function\'s page line says it too')
+    eq(copy.fn_offline, 'This tool is not available.', 'an unbuilt tool\'s page line says it too (round 5: tool)')
     ok(not copy.fn_offline:lower():find('offline', 1, true), 'and never says offline beside that badge')
     eq(copy.offline, 'This terminal is outside the storm and offline.',
         'a TERMINAL outside the storm keeps its wording (a question for the owner)')
@@ -963,8 +963,10 @@ do
     eq(copy.nav_home, 'Home', 'the side navigation and the first breadcrumb say Home')
     eq(copy.path_home, 'home', 'and the address says /home')
     eq(copy.nav_functions, nil, 'no line still calls that page Functions')
-    eq(copy.functions_heading, 'Functions', 'the cards\' heading stays "Functions"')
-    eq(copy.path_functions, 'functions', 'a function\'s own page is still under /functions')
+    -- Round 5 ('Rename the "Functions" to "Tools"'): the heading and the
+    -- path say tools (the round-5 block below holds every line to it).
+    eq(copy.tools_heading, 'Tools', 'the cards\' heading says "Tools"')
+    eq(copy.path_tools, 'tools', 'a tool\'s own page is under /tools')
     -- The Privacy page's link, breadcrumb and path: WRITTEN, listed for him.
     eq(copy.nav_privacy, 'Privacy', 'the Privacy link and breadcrumb')
     eq(copy.path_privacy, 'privacy', 'and its path')
@@ -981,6 +983,49 @@ do
     end
 end
 
+
+describe('round 5 (owner, 2026-10-06): "Rename the "Functions" to "Tools""')
+do
+    bootServer()
+    local copy = BR.Config.Terminals.copy
+    -- EVERY LINE THE PLAYER READS SAYS TOOL. The owner's VERBATIM lines stay
+    -- exactly as he wrote them, and squads_popover is the one of those that
+    -- says function ("This function will apply to your entire squad.").
+    local VERBATIM = { squads_popover = 'This function will apply to your entire squad.' }
+    local said = {}
+    for key, line in pairs(copy) do
+        if type(line) == 'string' and line:lower():find('function', 1, true) and not VERBATIM[key] then
+            said[#said + 1] = key
+        end
+    end
+    table.sort(said)
+    eq(table.concat(said, ', '), '', 'no line but the owner\'s verbatim ones says function')
+    for key, line in pairs(VERBATIM) do
+        eq(copy[key], line, ('%s is still his, word for word'):format(key))
+    end
+    -- THE LINES IT CHANGED, as listed for him.
+    local WANT = {
+        tools_heading = 'Tools',
+        path_tools = 'tools',
+        search_placeholder = 'Search tools',
+        search_empty = 'No matching tools',
+        filter_empty = 'No tools match.',
+        pref_page_option = '{count} tools',
+        fn_offline = 'This tool is not available.',
+        unavailable = "This tool can't run right now.",
+    }
+    for key, line in pairs(WANT) do eq(copy[key], line, ('%s says tools'):format(key)) end
+    for _, key in ipairs({ 'howto_terminal_body', 'howto_rules_body', 'howto_rules_body_solo',
+                           'howto_notices_body', 'howto_tips_body', 'howto_tips_body_solo' }) do
+        ok((copy[key] or ''):find('tool', 1, true) ~= nil, ('%s talks about tools'):format(key))
+    end
+    eq(copy.functions_heading, nil, 'the old heading line is gone, not left beside the new one')
+    eq(copy.path_functions, nil, 'and so is the old path')
+    -- "please remove the search bar within the Functions (soon to be
+    -- "Tools") section": its two lines went with it.
+    eq(copy.filter_placeholder, nil, 'the cards\' own search box has no placeholder line')
+    eq(copy.filter_matches, nil, 'nor a count line')
+end
 describe('round 2: the boot and the run, each a range in the registry')
 do
     bootServer()

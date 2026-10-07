@@ -434,21 +434,16 @@ body {
 /*
  * ═══ HOME'S FILTERS (owner, 2026-10-06, round 4) ═══
  *
- * The text search, then the five filters -- category, risk, cost, bounty,
- * status -- in one row that wraps on a narrow window: the search takes what
- * is left, each Select at least wide enough for its label and its longest
- * choice's start.
+ * The five filters -- category, risk, cost, bounty, status -- in one row that
+ * wraps on a narrow window, each Select at least wide enough for its label
+ * and its longest choice's start. No text search beside them since round 5
+ * (the top bar's is the one).
  */
 .terminal-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px 12px;
-}
-
-.terminal-filter-text {
-  flex: 1 1 200px;
-  min-width: 180px;
 }
 
 .terminal-filter-select {

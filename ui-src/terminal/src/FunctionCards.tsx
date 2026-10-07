@@ -9,7 +9,6 @@ import Pagination from '@cloudscape-design/components/pagination'
 import Select, { type SelectProps } from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
-import TextFilter from '@cloudscape-design/components/text-filter'
 import type { FunctionDef, TerminalState } from './bridge'
 import {
   BOUNTIES, COSTS, NO_FILTERS, RISKS, STATUSES, bountyOf, cardsFor, fill, filtersOf, indicatorOf, narrowed,
@@ -19,8 +18,10 @@ import { Squads } from './Squads'
 import { VoltsAmount, voltsLine } from './Volts'
 
 /**
- * ONE CARD PER FUNCTION, as in Cloudscape's cards example: a text filter,
- * pagination and preferences (cards per page, what each card shows).
+ * ONE CARD PER TOOL, as in Cloudscape's cards example: the filters,
+ * pagination and preferences (cards per page, what each card shows). The
+ * player calls them tools (owner, 2026-10-06, round 5: 'Rename the
+ * "Functions" to "Tools"'); the registry and this code still say function.
  *
  * Owner, 2026-10-05: "each card should be an action that the terminal can
  * perform, so the user can pick between them, navigate between them,
@@ -45,11 +46,18 @@ import { VoltsAmount, voltsLine } from './Volts'
  *
  * THE FILTERS (round 4: "the "Functions" search should have filters available
  * for category, risk, Volts cost (free/paid), bounty, and availability
- * status"): five Selects beside the text search, each labeled inside its
- * own trigger, each "Any" until set (model.ts "the filters"). They work
- * together with the search and with pagination; while anything but the
- * category narrows the cards, the heading counts what is left of what there
- * is. The category is the page's own, the side navigation's.
+ * status"): five Selects, each labeled inside its own trigger, each "Any"
+ * until set (model.ts "the filters"). They work together with pagination,
+ * and with the top bar's search when it brought the player here (its text
+ * rides in the route's `query`); while anything but the category narrows the
+ * cards, the heading counts what is left of what there is. The category is
+ * the page's own, the side navigation's.
+ *
+ * NO TEXT SEARCH OF ITS OWN (owner, 2026-10-06, round 5: "please remove the
+ * search bar within the Functions (soon to be "Tools") section - we have a
+ * search at the top anyway. Just the filters can remain."). The top bar's
+ * search finds a tool (its page) or, with what was typed, the cards that
+ * match it here.
  *
  * PREFERENCES ARE THIS OPENING'S ONLY. They live in React state and go with
  * the document when the app closes; the one thing remembered across openings
@@ -84,7 +92,7 @@ export function FunctionCards(props: {
   const current = Math.min(page, pages)
   const shown = items.slice((current - 1) * pageSize, current * pageSize)
 
-  const heading = route.category ? say(`category_${route.category}`) : say('functions_heading')
+  const heading = route.category ? say(`category_${route.category}`) : say('tools_heading')
   // WHAT IS LEFT OF WHAT THERE IS, while the search or a filter narrows the
   // cards beyond their category: "(3/18)", as Cloudscape's filtered
   // collections count.
@@ -113,15 +121,6 @@ export function FunctionCards(props: {
   const filterRow = (
     <div className="terminal-filters">
       {[
-        <div key="text" className="terminal-filter-text">
-          <TextFilter
-            filteringText={route.query}
-            filteringPlaceholder={say('filter_placeholder')}
-            filteringAriaLabel={say('filter_placeholder')}
-            countText={fill(say('filter_matches'), { count: items.length })}
-            onChange={({ detail }) => props.onRoute({ ...route, query: detail.filteringText })}
-          />
-        </div>,
         select('category', say('card_category'), route.category,
           props.categories.map((c) => ({ value: c, label: say(`category_${c}`) })),
           (v) => props.onRoute({ ...route, category: v === '' ? null : v })),

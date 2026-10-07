@@ -79,6 +79,12 @@
  *                  currency's word and a Volts figure (see T12 below).
  *   T13 squads     "Squads!" only on a squadWide row and only in a squad
  *                  match, by the state's own squadMatch (round 4).
+ *   T14 home       Home has the five filters and no text search of its own
+ *                  (owner, 2026-10-06, round 5: "please remove the search bar
+ *                  within the Functions (soon to be "Tools") section - we have
+ *                  a search at the top anyway. Just the filters can remain."):
+ *                  no TextFilter, the five Selects, and the top bar's search
+ *                  still there and still finding a tool.
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -948,6 +954,26 @@ const FONT_FILES = {
   if (!/say\('squads_link'\)/.test(squads) || !/say\('squads_popover'\)/.test(squads)
       || !/if \(link === '' \|\| body === ''\) return null/.test(squads)) {
     fail(R, 'terminal/src/Squads.tsx', 'Squads does not draw the owner\'s squads_link and squads_popover, or draws them when the speaker gives none')
+  }
+}
+
+// T14: HOME'S FILTERS, AND NO TEXT SEARCH OF ITS OWN (owner, 2026-10-06,
+// round 5). The top bar's search is the one: it opens a tool's page, or, with
+// what was typed, the cards that match it.
+{
+  const R = 'T14 home'
+  const cards = code(readFileSync(join(SRC, 'src', 'FunctionCards.tsx'), 'utf8'), false)
+  if (/@cloudscape-design\/components\/text-filter|<TextFilter\b|<Input\b|<Autosuggest\b/.test(cards)) {
+    fail(R, 'terminal/src/FunctionCards.tsx', 'Home draws a text search of its own -- the owner asked for it gone (the top bar\'s is the one)')
+  }
+  const selects = [...cards.matchAll(/\bselect\('([a-z]+)',/g)].map((m) => m[1]).join(',')
+  if (selects !== 'category,risk,cost,bounty,status') {
+    fail(R, 'terminal/src/FunctionCards.tsx', `Home's filters are ${selects || 'none'} -- the five (category, risk, cost, bounty, status) remain`)
+  }
+  const app = code(readFileSync(join(SRC, 'src', 'App.tsx'), 'utf8'), false)
+  if (!/<Autosuggest\b/.test(app) || !/search=\{searchBox\}/.test(app)
+      || !/go\(\{ page: 'function', id: detail\.value \}\)/.test(app)) {
+    fail(R, 'terminal/src/App.tsx', 'the top bar\'s search is gone, or no longer opens the tool it finds')
   }
 }
 

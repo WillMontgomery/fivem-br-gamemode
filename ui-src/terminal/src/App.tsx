@@ -39,8 +39,9 @@ import { voltsLine } from './Volts'
  *                 the first page, as a white page under the toolbar (round
  *                 4; model.ts's "the first load")
  *   the top bar   TopNavigation: the app's name (the one place in the app it
- *                 is written), a search across every function (pick one to
- *                 open its page; or search the cards), the player's Volts, the
+ *                 is written), a search across every tool (pick one to open
+ *                 its page; or search the cards -- Home has no text search of
+ *                 its own since round 5), the player's Volts, the
  *                 light/dark switch, and the player's gamertag as the
  *                 signed-in user (its menu: the how-to, or sign out, which
  *                 closes the computer)
@@ -48,9 +49,10 @@ import { voltsLine } from './Volts'
  *                 category with something in it) and a BreadcrumbGroup on
  *                 every page but the login screen; a run's progress and its
  *                 answer are Flashbar notifications
- *   the pages     Home, the functions ("Match stats" over FunctionCards; Home
- *                 in its address, link and trail, owner 2026-10-06), a
- *                 function (FunctionPage), the how-to (HowTo), the privacy
+ *   the pages     Home, the tools ("Match stats" over FunctionCards; Home in
+ *                 its address, link and trail, owner 2026-10-06; the player
+ *                 calls them tools since round 5, the code still says
+ *                 function), a tool (FunctionPage), the how-to (HowTo), the privacy
  *                 policy (Privacy), and the login screen (Login) when the
  *                 computer opened without a Yubikey
  *
