@@ -1616,20 +1616,45 @@ do
     W.tick()
     local p = W.lastPrompt()
     ok(p and p.show == true and p.label == COPY.terminal_label, 'in reach, the plate is up with the terminal_label title')
-    eq(p and p.hint, COPY.no_key, 'without a key it says no_key -- what they need to get access')
+    -- ROUND 6 (owner, 2026-10-07): "if I approach a computer with no Yubikey,
+    -- the DUI should show the same as if I do have one. The player will
+    -- realize what's up when they go to open the app."
+    eq(p and p.hint, COPY.terminal_use, 'without a key it says what it says with one: "press to open"')
     eq(p and p.key, 'E', 'with the interact key on it: a press still opens the computer, to its login screen')
     eq(W.B.Yubikey.prompting(), true, 'and the loot prompt is told to stand down')
+    local noKey = { label = p and p.label, hint = p and p.hint, key = p and p.key }
     W.keys.listeners.interact(true)
     ok(#W.server == 1 and W.server[1].ev == W.B.Net.TERMINAL_USE and W.server[1].d.terminalId == 'tower',
         'no key: a press asks the server all the same (the app opens on no_key)')
     W.keys.listeners.interact(false)
     W.server = {}
     W.now = W.now + CT.runMinIntervalMs
+    for _, m in ipairs(W.dui) do
+        ok(m.hint ~= COPY.no_key, 'and no message ever carried the no_key line')
+    end
+    eq(W.spriteBlips(521), 0, 'no key: still no blip')
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = false })
     W.tick()
     p = W.lastPrompt()
     ok(p.hint == COPY.terminal_use and p.key == 'E', 'with a key: terminal_use and the player\'s own key cap')
+    ok(p.label == noKey.label and p.hint == noKey.hint and p.key == noKey.key,
+        'the very plate the player without a key saw')
+    W.slow()
+    eq(W.spriteBlips(521), 1, 'the blip, though, is the key holder\'s alone (unchanged)')
+
+    -- THE PLATE AT THE LAPTOP (round 6, "please lower the DUIs to the
+    -- elevation of the laptops"): every site's row is its laptop's origin,
+    -- and the plate is drawn plateLiftM over it -- not 0.9 m over it.
+    local drawnZ = nil
+    local realDraw = W.B.Dui.drawWorld
+    W.B.Dui.drawWorld = function(_, _, _, z) drawnZ = z end
+    W.frame()
+    W.B.Dui.drawWorld = realDraw
+    ok(drawnZ ~= nil and math.abs(drawnZ - (SITE.z + CT.art.plateLiftM)) < 1e-9,
+        ('drawn %.2f m over the laptop\'s origin, the config\'s plateLiftM'):format((drawnZ or 0) - SITE.z))
+    ok(CT.art.plateLiftM >= 0.0 and CT.art.plateLiftM <= 0.3,
+        'at the laptop\'s own height: within the 0.3 m an open laptop stands', CT.art.plateLiftM)
 
     W.net(W.B.Net.YUBIKEY_STATE, { held = true, squadUsed = true, squadMatch = true })
     W.tick()

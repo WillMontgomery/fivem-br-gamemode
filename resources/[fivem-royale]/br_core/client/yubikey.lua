@@ -72,11 +72,19 @@ local function on()
     return seasonOn
 end
 
---- The plate's size and height over the terminal's origin. PLATE_SCALE is the
---- other world plates' number (client/revivekey.lua's PROMPT_SCALE), so the
---- seventh consumer of the one prompt browser draws like the other six.
+--- The plate's size. PLATE_SCALE is the other world plates' number
+--- (client/revivekey.lua's PROMPT_SCALE), so the seventh consumer of the one
+--- prompt browser draws like the other six. Its height is art.plateLiftM over
+--- the terminal's row, which is the laptop's own origin (round 6: at the
+--- laptop, not over it).
 local PLATE_SCALE = 1.6
-local PLATE_LIFT = 0.9
+
+--- How far over a terminal's row (the laptop's origin, on its desk) the plate
+--- is centered, in meters.
+--- @return number
+local function plateLift()
+    return tonumber(art().plateLiftM) or 0.15
+end
 
 -- ------------------------------------------------------------- the state ---
 
@@ -475,16 +483,19 @@ end
 ---               A terminal the SLOW pass has not placed yet counts as
 ---               outside. The server still refuses a use there (its toast,
 ---               `offline`, answers a client a step behind the storm).
----   no key      the no_key line ("what they need to do to gain access"); the
----               press still opens the computer, which lists every function
----               unavailable for the same reason
 ---   squad used  the squad_used line; the press opens it the same way
 ---   usable      terminal_use ("press to open") and the key cap
+---
+--- THE KEY IS NOT ASKED (round 6, owner 2026-10-07: "if I approach a computer
+--- with no Yubikey, the DUI should show the same as if I do have one. The
+--- player will realize what's up when they go to open the app."). A player
+--- without one sees exactly the plate a holder in their place would; the
+--- press opens the computer all the same, and its app says what is missing
+--- (every function no_key). The terminal's BLIP still needs a key.
 local function plateFor(s)
     local w = world[s.id]
     local online = (w and w.online) or dev.forced[s.id] == true
     if not online then return nil end
-    if not held then return { hint = copy().no_key, press = true } end
     if squadUsed then return { hint = TS.pick(copy(), 'squad_used', squadMatch), press = true } end
     return { hint = copy().terminal_use, press = true }
 end
@@ -535,7 +546,7 @@ end)
 -- THE PLATE, EVERY FRAME IT IS UP, AND NOTHING ELSE.
 BR.Loop.register(BR.Loop.FRAME, 'terminals.plate', function()
     if not plate then return end
-    BR.Dui.drawWorld(promptPage(), plate.x, plate.y, plate.z + PLATE_LIFT, PLATE_SCALE)
+    BR.Dui.drawWorld(promptPage(), plate.x, plate.y, plate.z + plateLift(), PLATE_SCALE)
 end)
 
 -- THE PRESS OPENS IT (owner, 2026-10-06: "press to open"; it was an 800 ms

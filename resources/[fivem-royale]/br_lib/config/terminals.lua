@@ -1218,6 +1218,13 @@ BR.Config.Terminals = {
         -- (br_stream_s2 5ec1f721) since paleto_pd and calafia_way were moved
         -- the 1.7 m onto theirs (2026-10-06), so this is slack, not reach.
         hideRadiusM = 2.0,
+        -- THE PLATE AT THE LAPTOP (round 6, owner 2026-10-07: "please lower
+        -- the DUIs to the elevation of the laptops"): how far over a row's z
+        -- -- the laptop's own origin, where it sits on its desk, at every site
+        -- -- the plate is centered, in meters. About the middle of an open
+        -- laptop's screen. It was 0.9 m: about head height over a laptop
+        -- on a desk. client/yubikey.lua reads it for every site.
+        plateLiftM = 0.15,
         -- A terminal's blip, drawn only while this player holds a key, from
         -- warmup on, and only for a terminal inside the storm once there is
         -- one (round 5). One short-range blip per terminal, a fuel station's
