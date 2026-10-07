@@ -773,7 +773,10 @@ local QUAD_STRIDE = 8
 --- @param quadPolys number polys one quad costs on the settled fade path
 --- @param pool table|nil   the moving wall's pool, for the run lists
 --- @param maxQuadM number  the longest a quad may be, in meters (math.huge: no cap)
-local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, maxQuadM)
+--- @param split number     0..1, how far each arc piece is split at its middle
+---                         (a wall in motion; see the walk)
+local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, maxQuadM,
+                          split)
     local SS = BR.StormShape
     local comps = SS.components(shape)
     local nComp = #comps
@@ -781,9 +784,15 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
     local nq = 0
     g.shape, g.chordM, g.minSeg, g.maxPolys, g.quadPolys = shape, chordM, minSeg,
         maxPolys, quadPolys
-    g.maxQuadM = maxQuadM
+    g.maxQuadM, g.split = maxQuadM, split
     g.n = 0
     if nComp == 0 then return end
+    -- A shape that is not in a pool -- a hold's -- walks its run lists into the
+    -- strip's own, so the rebuilds while it eases a split in or out allocate nothing.
+    if not pool then
+        g.runPool = g.runPool or SS.newPool()
+        SS.resetPool(g.runPool)
+    end
 
     -- THE BUDGET IS DIVIDED BEFORE ROUNDNESS IS CONSULTED, so no shape can talk
     -- its way past it: two loops of a disjoint phase-2 breakout would each like
@@ -791,11 +800,12 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
     -- on a frame. The share is a ceiling, not a target -- a loop that is round
     -- enough with fewer takes fewer.
     --
-    -- THE FLOOR OF 3 IS THE ONE PLACE THE CEILING IS NOT ABSOLUTE, said here so
-    -- nobody has to work it out: a triangle is the least a closed loop can be, so
-    -- past 42 loops the floor wins and the total creeps over maxPolys. union2 makes
-    -- one loop or two and nothing else in the game builds a shape, so that is a
-    -- note for whoever adds the third constructor rather than a live hole.
+    -- THE FLOOR OF 3 IS ONE PLACE THE CEILING IS NOT ABSOLUTE, said here so nobody
+    -- has to work it out: a triangle is the least a closed loop can be, so past 42
+    -- loops the floor wins and the total creeps over maxPolys. The other is one
+    -- piece a run, which every run takes however the budget stretches its step
+    -- (the walk below). union2 makes one loop or two and blobs a few dozen runs, so
+    -- that is a note for whoever adds the third constructor rather than a live hole.
     local per = math.max(3,
         math.floor(math.floor(maxPolys / quadPolys) / nComp))
 
@@ -860,35 +870,56 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
         -- counts, identical budget, a wall inside the boundary. #344 then replaced
         -- that split as well; the block below is why, and what it costs is fewer
         -- quads rather than more.
-        local runs = SS.runs(shape, ci, pool)
+        local runs = SS.runs(shape, ci, pool or g.runPool)
         local nRuns = math.max(1, #runs)
 
         -- ═══ AND EACH RUN IS PRICED OFF ITS OWN CURVATURE, WHICH IS THE OTHER HALF
         --     OF #339's FIRST LANDMINE ═══
         --
         -- There used to be ONE step for the whole component, priced off
-        -- `shape.discs`, and the budget was then split between the runs BY LENGTH.
-        -- Both halves of that were wrong the moment the storm stopped being round:
+        -- `shape.discs`. That was wrong the moment the storm stopped being round: a
+        -- shape with no disc list left the step at infinity and every loop sagged
+        -- tens of meters inside the boundary that damages, and a blob -- short,
+        -- sharply curved corners joined by long flat runs -- needs its points on the
+        -- corners. A straight run needs one piece however long it is (a chord of a
+        -- straight line cuts nothing off it), and an arc of radius r needs a step
+        -- of sqrt(8 * r * chordM). So each run is priced off its own radius.
         --
-        --   * a shape with no disc list left the step at infinity, so every loop
-        --     fell back to the minSeg floor of 24 quads and sagged tens of metres
-        --     inside the boundary that damages;
-        --   * and splitting by length starves exactly the runs that need the points.
-        --     A blob is nine short, sharply curved corner arcs joined by nine long
-        --     flat runs. A straight run needs ONE quad however long it is -- a chord
-        --     of a straight line cuts nothing off it -- and by length it was taking
-        --     three fifths of the budget. MEASURED: a phase-5 zone, r 260 with a 98 m
-        --     corner radius, drew 4.99 m of sag against a chordM of 2.0, because each
-        --     corner got one quad where the sag rule wanted two.
+        -- ═══ AND STEPPED FROM ITS OWN START, AT A STEP THAT MOVES ONLY AS THE
+        --     SHAPE DOES -- SO A MOVING WALL SLIDES AND NEVER RE-SPLITS (#393) ═══
         --
-        -- So `want` is what each run actually asks for, and it is a CEILING taken
-        -- per run rather than once at the end: a run that asks for 2.4 quads and is
-        -- handed 2 sags 44 percent over the bound, which is precisely the failure
-        -- above spelled in rounding. Summed, that total is the component's own count
-        -- -- so n is derived from roundness instead of from the perimeter, and the
-        -- split below then hands each run back exactly what it asked for.
+        -- A run's vertices stand one step apart from the run's start, and its last
+        -- piece takes what is left. When a moving run grows past a whole number of
+        -- steps it grows one vertex AT ITS END, on top of the end that was already
+        -- there, and nothing else moves; when it shrinks, its last vertex meets its
+        -- end and goes. Every step below is a continuous function of the shape --
+        -- the run's own radius, and the loop's own length for the floor -- so a wall
+        -- that moves a little is laid out a little differently, never all at once.
         --
-        -- ═══ AND NO QUAD IS LONGER THAN maxQuadM, WHICH THE FAR FADE NEEDS (#393) ═══
+        -- This replaced a split by COUNT: the loop's total was floored at minSeg and
+        -- the surplus shared out between the runs in proportion to what each asked
+        -- for, then each run's share spread evenly along it. Every one of those was
+        -- a whole number that changed in one frame -- a share changing hands, a run
+        -- flipping between its own count and the floor's, the budget's cut -- and
+        -- each re-spread every vertex of a run at once. At a chordM of 2 that moved
+        -- the wall under 2 m; at the owner's 8 it was a jump of up to 7.9 m, many
+        -- times a sweep, from phase 2 to phase 6 (tools/test_storm.lua's
+        -- wall.sweepjump).
+        --
+        -- ═══ THE FLOOR IS A CHORD NOW, NOT A COUNT ═══
+        --
+        -- minSeg exists for the endgame circles, where the sag rule would draw a
+        -- 40 m ring as a pentagon. So the loop's chord is capped at the one that
+        -- closes A CIRCLE AS LONG AS THIS LOOP in exactly minSeg pieces:
+        --
+        --     step = 2 pi R / minSeg = sqrt(8 R c)   so   c = pi^2 R / (2 minSeg^2)
+        --
+        -- with R the loop's length over 2 pi. A circle at the floor is minSeg pieces
+        -- exactly, as it was; a blob's corners are tighter than its R, so they take
+        -- fewer, and its straights one each. It only bites below about 950 m: the
+        -- opening ring's floor chord is 80 m, a 1600 m zone's 13.6, a 520 m zone's 4.4.
+        --
+        -- ═══ AND NO PIECE IS LONGER THAN maxQuadM, WHICH THE FAR FADE NEEDS (#393) ═══
         --
         -- The fade is carried per VERTEX (emitStrip), and a quad's inside shows the
         -- straight blend of its two ends. That is the true fade to meters on a quad
@@ -896,88 +927,94 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
         -- blob can have, whose middle can stand next to the player while both ends
         -- are past 8 km. So a straight run is cut into pieces no longer than
         -- maxQuadM, and an arc's step is capped by it too. A straight run's pieces
-        -- lie on one line, so the picture does not change; MEASURED over 200 seeds
-        -- at 1500 m, a phase-1 blob draws 1.1 quads more on average and phases 2 to
-        -- 5 none (the minSeg floor already gives them more).
-        local want, total = g.want, 0
+        -- lie on one line, so the picture does not change.
+        local cRun = chordM
+        if minSeg > 0 then
+            local R = c.len / (2.0 * math.pi)
+            local cFloor = math.pi * math.pi * R / (2.0 * minSeg * minSeg)
+            if cFloor < cRun then cRun = cFloor end
+        end
         local stepOf = g.step
+        local need, room = 0.0, per
         for i = 1, nRuns do
             local rn = runs[i]
             local step = maxQuadM or math.huge
+            local mult = 1
             if rn and rn.r and rn.r > 0.0 then
-                local s = math.sqrt(8.0 * rn.r * chordM)
+                local s = math.sqrt(8.0 * rn.r * cRun)
                 if s < step then step = s end
+                mult = 2
             end
-            local k = 1
-            if rn and step < math.huge then
-                k = math.max(1, math.ceil(rn.len / step))
-            end
-            want[i] = k
             stepOf[i] = step
-            total = total + k
+            if step < math.huge then
+                local x = (rn and rn.len or c.len) / step
+                need = need + x * mult
+                -- A straight's rounding is set aside in proportion to its length,
+                -- an arc's in proportion to what it asks for up to a piece.
+                room = room - ((mult == 2) and 2.0 * math.min(1.0, x) or x)
+            else
+                room = room - mult
+            end
         end
 
-        local n = math.max(nRuns, math.max(3,
-            math.min(per, math.max(minSeg, total))))
-
-        -- WHERE EACH RUN ENDS, AS A POINT INDEX, and it is CUMULATIVE rather than
-        -- a share handed to each run separately. Rounding each run's own share
-        -- independently does not have to sum to n -- so the budget above, which is
-        -- a hard ceiling, would be decided by rounding. Rounding the running total
-        -- instead and then clamping it monotone (at least one quad per run, and
-        -- enough left for the runs after it) makes the total exactly n by
-        -- construction.
+        -- ═══ THE BUDGET STRETCHES EVERY STEP BY ONE FACTOR, WHICH IS CONTINUOUS ═══
         --
-        -- WEIGHTED BY `want`, NOT BY LENGTH, which is what makes the paragraph above
-        -- true: when n equals the sum of `want` every cumulative total is already an
-        -- integer, so each run is handed back precisely the count it asked for. The
-        -- minSeg floor spreads the surplus proportionally and the poly budget takes
-        -- its share back the same way.
-        local edge = g.edge
-        edge[0] = 0
-        local cum = 0
-        for i = 1, nRuns do
-            cum = cum + want[i]
-            local k = math.floor(n * cum / total + 0.5)
-            local lo, hi = edge[i - 1] + 1, n - (nRuns - i)
-            if k < lo then k = lo end
-            if k > hi then k = hi end
-            edge[i] = k
-        end
+        -- `per` is a ceiling: a loop asking for more pieces than its share gets
+        -- longer ones, by the one factor that fits -- each run's own rounding up
+        -- set aside first -- rather than a count cut and re-shared by rounding,
+        -- which re-split the wall in one frame. Everything it reads moves only as
+        -- the shape does: the pieces each run asks for, and its rounding set aside
+        -- in proportion -- an arc's up to a piece, a straight's to its length, so
+        -- that a disc joining the hull mid-straight, or leaving it, splits or joins
+        -- a straight's share without moving the sum. Where that proportion falls
+        -- short of the rounding the ceiling bends, by under a piece for each
+        -- straight shorter than maxQuadM and each arc asking for less than one. It
+        -- is priced as if every arc were split (wallSplit), so easing a split in or
+        -- out never moves it.
+        --
+        -- Off the gradient path a quad is `bands` quads, which is what could bring
+        -- this into play; at chordM 8 the shipping geometry never reaches it.
+        if room < 1.0 then room = 1.0 end
+        local stretch = 1.0
+        if need > room then stretch = need / room end
 
         local fx, fy = SS.pointAtComponent(shape, c, 0.0)
         local ax, ay = fx, fy
         for i = 1, nRuns do
-            local t0 = runs[i] and runs[i].t0 or 0.0
-            local rlen = runs[i] and runs[i].len or c.len
-            local cnt = edge[i] - edge[i - 1]
-            -- ═══ A RUN HANDED WHAT IT ASKED FOR IS STEPPED FROM ITS START (#393) ═══
+            local rn = runs[i]
+            local t0 = rn and rn.t0 or 0.0
+            local rlen = rn and rn.len or c.len
+            local step = stepOf[i] * stretch
+            local cnt = 1
+            if step < math.huge then
+                cnt = math.max(1, math.ceil(rlen / step - 1e-9))
+            end
+            -- ═══ A WALL IN MOTION IS SPLIT AGAIN, HALF A STEP AT A TIME (#393) ═══
             --
-            -- Its vertices stand one full step apart from the run's start, and the
-            -- last piece takes what is left. Spread evenly instead, every vertex
-            -- jumps the day a moving wall's run grows past a whole number of steps:
-            -- all of them slide from thirds to quarters in one frame, and the wall
-            -- jumps by up to chordM where a point stops being a vertex and becomes
-            -- the middle of a piece. MEASURED through this renderer over a phase-1
-            -- sweep: 26 jumps of up to 7.8 m at a chordM of 8, against 1.8 m at the
-            -- old 2. Stepped from the start, a run that grows by one step grows one
-            -- new vertex AT ITS END, on top of the end that is already there, and
-            -- nothing else moves. Every piece is still within chordM of its arc.
-            --
-            -- A run the minSeg floor or the poly budget has handed more or fewer
-            -- quads keeps the even spread: the floor's surplus has no step to keep.
-            local stepJ = (cnt == want[i]) and stepOf[i] or nil
+            -- `split` is 0 for a wall standing still and 1 around the moments a
+            -- moving wall's shape changes what it is made of (the caller has the
+            -- schedule, wallSplit): each piece of an arc gets one more vertex, ON
+            -- the arc, `split` of the way from the piece's start to its middle. At
+            -- 1 it is the middle: half the step is a quarter of the sag, so every
+            -- piece is within chordM / 4 of its line -- 2 m at the owner's 8, the
+            -- base's level -- and whatever the shape does in that frame, the wall
+            -- cannot move further than that. In between it is a vertex sliding
+            -- along the arc, so the curtain eases in and out, and every corner of
+            -- every piece stays on the line as it always has.
+            local sub = split > 0.0 and rn and rn.r and rn.r > 0.0
+            local tPrev = t0
             for j = 1, cnt do
+                local tj = (j < cnt) and (t0 + step * j) or (t0 + rlen)
                 local bx, by
                 if i == nRuns and j == cnt then
-                    -- THE CLOSING QUAD TAKES THE STORED FIRST POINT. `n * cds` is
-                    -- not always `c.len` in doubles, and pointAtComponent's wrap
-                    -- then lands a hair before or after the start rather than on
-                    -- it: measured, 11 percent of whole-metre radii between 20 and
-                    -- 2600, worst 3.5e-12 metres. That is picometres and invisible
-                    -- -- the reason to reuse the point is that the shared edge is
-                    -- then the same numbers by construction instead of two
-                    -- expressions that happen to agree. See the header.
+                    -- THE CLOSING QUAD TAKES THE STORED FIRST POINT. `t0 + rlen` of
+                    -- the last run is not always `c.len` in doubles, and
+                    -- pointAtComponent's wrap then lands a hair before or after the
+                    -- start rather than on it: measured, 11 percent of whole-meter
+                    -- radii between 20 and 2600, worst 3.5e-12 meters. That is
+                    -- picometres and invisible -- the reason to reuse the point is
+                    -- that the shared edge is then the same numbers by construction
+                    -- instead of two expressions that happen to agree.
                     bx, by = fx, fy
                 else
                     -- AT j == cnt THIS IS THE RUN BOUNDARY ITSELF, which is the
@@ -987,9 +1024,17 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
                     -- 4.9e-13 metres (see the header), so which of them answers is
                     -- not a visible decision -- but it is a deterministic one, and
                     -- the vertex is ON the corner either way rather than past it.
-                    local tj = t0 + rlen * j / cnt
-                    if stepJ and j < cnt then tj = t0 + stepJ * j end
                     bx, by = SS.pointAtComponent(shape, c, tj)
+                end
+                if sub then
+                    local mx, my = SS.pointAtComponent(shape, c,
+                        tPrev + (tj - tPrev) * 0.5 * split)
+                    local o = nq * QUAD_STRIDE
+                    q[o + 1], q[o + 2], q[o + 3], q[o + 4] = ax, ay, mx, my
+                    q[o + 5], q[o + 6] = (ax + mx) * 0.5, (ay + my) * 0.5
+                    q[o + 7], q[o + 8] = my - ay, -(mx - ax)
+                    nq = nq + 1
+                    ax, ay = mx, my
                 end
                 -- The quad, stored rather than drawn: its corners, and the midpoint
                 -- and normal drawStrip's face test reads -- the same expressions
@@ -1000,6 +1045,7 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
                 q[o + 7], q[o + 8] = by - ay, -(bx - ax)
                 nq = nq + 1
                 ax, ay = bx, by
+                tPrev = tj
             end
         end
     end
@@ -1011,7 +1057,7 @@ end
 --- -- so the frame's quads can be emitted again, later in the same frame, exactly as
 --- they would have been (see BR.Storm.cameraCut).
 local function newStrip()
-    return { q = {}, want = {}, step = {}, edge = { [0] = 0 }, n = 0,
+    return { q = {}, step = {}, n = 0,
              draw = {}, bz0 = {}, bz1 = {}, ba = {}, baf = {} }
 end
 
@@ -1222,8 +1268,10 @@ end
 --- @param view table|nil   camera planes a quad must be behind to be skipped; see
 ---                         emitStrip. nil draws every quad, which is every caller
 ---                         but the preview on the bus.
+--- @param split number|nil 0..1, how far a moving wall's arc pieces are split at
+---                         their middles (wallSplit); nil is 0, a wall standing still
 --- @return integer         quads skipped
-local function drawStrip(shape, alphaScale, g, pool, view)
+local function drawStrip(shape, alphaScale, g, pool, view, split)
     local rr = cfg.render
     -- EVERY NUMBER BELOW HAS AN `or` DEFAULT AND THIS IS WHY. A config without a
     -- `strip` table is the one shape of failure that would be silent: the FRAME
@@ -1288,11 +1336,12 @@ local function drawStrip(shape, alphaScale, g, pool, view)
 
     local minSeg, maxPolys = sp.minSeg or 24, sp.maxPolys or 1024
     local maxQuadM = sp.maxQuadM or math.huge
+    split = split or 0.0
     g = g or scratchStrip
     if pool or g.shape ~= shape or g.chordM ~= chordM or g.minSeg ~= minSeg
         or g.maxPolys ~= maxPolys or g.quadPolys ~= quadPolys
-        or g.maxQuadM ~= maxQuadM then
-        buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, maxQuadM)
+        or g.maxQuadM ~= maxQuadM or g.split ~= split then
+        buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, maxQuadM, split)
     end
 
     local p = viewpoint()
@@ -1503,8 +1552,9 @@ end
 --- @param pool table|nil    the pool `zone` was built into, if it was
 --- @param view table|nil    camera planes for the strip; see emitStrip. The marker
 ---                          styles are A/B baselines typed by hand, and ignore it.
+--- @param split number|nil  the strip's split at its pieces' middles; see drawStrip
 --- @return integer|nil      strip quads skipped; nil from the marker styles
-local function drawWall(zone, alphaScale, memo, pool, view)
+local function drawWall(zone, alphaScale, memo, pool, view, split)
     -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN. Both lessons below were learnt
     -- on the marker paths and are kept BECAUSE the marker paths are still the A/B
     -- baseline; the strip inherits both by construction and the second outright,
@@ -1582,7 +1632,7 @@ local function drawWall(zone, alphaScale, memo, pool, view)
     end
 
     if style == 'strip' then
-        return drawStrip(shape, alphaScale, memo and memo.strip, pool, view) or 0
+        return drawStrip(shape, alphaScale, memo and memo.strip, pool, view, split) or 0
     end
 
     if style == 'solid' then
@@ -1842,6 +1892,88 @@ local function wallRamp(rec, st, msLeft)
     return held / fadeMs
 end
 
+-- ═══ A WALL IN MOTION IS DRAWN IN HALF-SIZE PIECES WHERE ITS SHAPE CAN CHANGE (#393) ═══
+--
+-- The owner's larger pieces (chordM 8) put the curtain up to 8 m inside its line
+-- mid-piece. A wall standing still keeps them for good; a moving wall slides with
+-- its shape (buildStrip steps every run from its start, at steps that move only as
+-- the shape does). What a layout cannot slide through is the shape itself changing
+-- WHAT IT IS MADE OF in one frame -- and the storm does that at known moments:
+--
+--   * a sweep's first instant, where the hold's zone becomes the hull of its discs
+--     on their way, and several of them still on top of each other;
+--   * its knee and its end, where discs heading for the same destination disc meet
+--     and the hull loses the arcs between them;
+--   * and the whole of a breakout's motion -- its growth and its sweep -- where two
+--     zones stitched together gain and lose the corners where they cross.
+--
+-- In any of those a piece of the wall can stop being a vertex and become the middle
+-- of a piece, which moves the curtain by that piece's sag: up to 7.9 m at chordM 8,
+-- and under 2 at the old chordM 2 (tools/test_storm.lua's wall.sweepjump). So around
+-- each such moment every arc piece gets a vertex at its middle, eased in over
+-- splitRampSec while nothing has changed yet and eased back out after. Half the step
+-- is a quarter of the sag -- 2 m at the owner's 8, the base's level -- so the wall
+-- cannot move further than that in a frame, and the larger pieces stand everywhere
+-- else: through the holds, and through the long middle of every nested sweep.
+--
+-- The schedule is the record's own clock, so every screen splits the same frames.
+-- A record's FIRST instant counts as a change too: it is the previous record's
+-- last, which that record's own schedule had split, and the next record may grow
+-- from it at once.
+
+--- smoothstep on 0..1, flat at both ends.
+--- @param x number
+--- @return number
+local function easeSplit(x)
+    if x <= 0.0 then return 0.0 end
+    if x >= 1.0 then return 1.0 end
+    return x * x * (3.0 - 2.0 * x)
+end
+
+--- 1 inside [a, b], easing to 0 over `ramp` ms either side of it, at `now`.
+--- @return number 0..1
+local function splitAround(now, a, b, ramp)
+    if now < a then return easeSplit(1.0 - (a - now) / ramp) end
+    if now > b then return easeSplit(1.0 - (now - b) / ramp) end
+    return 1.0
+end
+
+--- How far the live wall's arc pieces are split at their middles at `now`: 1 around
+--- the moments its shape can change what it is made of, 0 elsewhere, and eased
+--- between over strip.splitRampSec. See the section note.
+--- @param rec table   the storm record
+--- @param now number  BR.Clock.now()
+--- @return number     0..1
+local function wallSplit(rec, now)
+    local sp = cfg.render.strip or {}
+    local rampMs = (sp.splitRampSec or 0.0) * 1000.0
+    if rampMs <= 0.0 then return 0.0 end
+    local t0 = rec.tStart or 0.0
+    local ts = t0 + (rec.tWait or 0.0)
+    local te = ts + (rec.tShrink or 0.0)
+
+    local w = math.max(splitAround(now, t0, t0, rampMs), splitAround(now, ts, ts, rampMs),
+        splitAround(now, te, te, rampMs))
+    if w >= 1.0 then return 1.0 end
+    if BR.StormNested(rec) then
+        local k = BR.StormKnee(rec)
+        if k then
+            local tk = ts + k * (rec.tShrink or 0.0)
+            w = math.max(w, splitAround(now, tk, tk, rampMs))
+        end
+        return w
+    end
+    -- A BREAKOUT moves as two zones stitched together for the whole of its sweep,
+    -- and for its growth when it has one.
+    w = math.max(w, splitAround(now, ts, te, rampMs))
+    if BR.StormOverlaps(rec) then
+        local grow = cfg.grow and cfg.grow.seconds or 0.0
+        w = math.max(w, splitAround(now, t0,
+            t0 + math.min(grow * 1000.0, rec.tWait or 0.0), rampMs))
+    end
+    return w
+end
+
 -- A DEV-ONLY RUNTIME BISECT FOR #350. `normal` is the shipping path; the other
 -- values remove exactly one recent client-side storm path while leaving the
 -- authoritative server storm, damage and phase clocks untouched. The command
@@ -1902,7 +2034,9 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rec = activeRecord()
     if not rec then return end
 
-    local cx, cy, r, stt, msLeft, _, t, g = solveNow(rec)
+    -- solveNow, spelled out so the split below reads the same instant (#393).
+    local now = BR.Clock.now()
+    local cx, cy, r, stt, msLeft, _, t, g = BR.StormAt(rec, now)
     -- A COLLAPSED ZONE HAS NO WALL TO DRAW, and the zone is two circles now, so
     -- both of them have to be gone. In the shipping case that is the same test
     -- it always was: the final phase closes on a zero-radius target, so r and
@@ -1950,13 +2084,14 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- sweep). It is built into sweepPool, which the next frame's build takes back,
     -- and inset and walked in the same pool. The numbers are the unpooled build's
     -- to the bit; storm_shape.lua's "a pool" says why, and the suite checks it.
+    local split = wallSplit(rec, now)
     if t and t > 0.0 and t < 1.0 then
         BR.StormShape.resetPool(sweepPool)
         drawWall(BR.StormZone(rec, cx, cy, r, t, g, sweepPool), alphaScale, wallMemo,
-            sweepPool)
+            sweepPool, nil, split)
         return
     end
-    drawWall(zoneFor(rec, cx, cy, r, t, g), alphaScale, wallMemo)
+    drawWall(zoneFor(rec, cx, cy, r, t, g), alphaScale, wallMemo, nil, nil, split)
 end)
 
 -- Which renderer draws the wall, and /brwallstyle overrides it live.

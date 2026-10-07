@@ -772,12 +772,15 @@ BR.Config.Storm = {
             -- true shape and none of them moved. tools/test_storm.lua's
             -- `wall.chord` measures it on every phase and shape.
             --
-            -- A MOVING WALL NO LONGER JUMPS BY IT. client/storm.lua steps each run
-            -- from its start (buildStrip), so a sweep grows a vertex at a run's end
-            -- instead of sliding every vertex along -- which at 8 m was a jump of up
-            -- to 7.8 m about every nine seconds of phase 1's sweep. What is left is
-            -- a wall held at the minSeg floor (phase 3 on, mostly) re-splitting when
-            -- its runs change, a few times a sweep, by up to the chord.
+            -- A MOVING WALL DOES NOT JUMP BY IT. client/storm.lua steps each run
+            -- from its start at a step that moves only as the shape does
+            -- (buildStrip), so a sweep slides the wall and grows a vertex at a run's
+            -- end; and where the shape itself changes what it is made of -- a
+            -- sweep's start, knee and end, a breakout's whole motion -- the pieces
+            -- are split to a quarter of this sag, 2 m (splitRampSec below). Before
+            -- both, a moving wall at 8 m jumped by up to 7.9 m, many times a sweep;
+            -- now no more than the 2 m it moved at the old chord of 2
+            -- (tools/test_storm.lua's wall.sweepjump).
             chordM   = 8.0,
 
             -- ═══ THE LONGEST A PIECE MAY BE, FOR THE FAR FADE (#393) ═══
@@ -788,9 +791,19 @@ BR.Config.Storm = {
             -- straight run lie on one line, so this changes no picture. 1500 is the
             -- fade band's own width, which is what lets farFade's texture hold the
             -- far end of any piece the fade can still see (see farFade). MEASURED
-            -- over 200 seeds, a phase-1 blob draws 1.1 more pieces and phases 2 to
-            -- 5 none.
+            -- over 200 seeds, it costs a 2600 m zone 5.1 pieces on average, phase 1's
+            -- sweep half way 6.4, a 1600 m zone 1.9, a 950 m zone 0.5 and smaller
+            -- zones none (the straights are shorter than it).
             maxQuadM = 1500.0,
+
+            -- ═══ A WALL IN MOTION IS SPLIT AT ITS PIECES' MIDDLES AROUND THE MOMENTS
+            --     ITS SHAPE CHANGES WHAT IT IS MADE OF (#393) ═══
+            --
+            -- A sweep's start, its knee and its end, and a breakout's whole motion:
+            -- there the wall is drawn at a quarter of chordM's sag (2 m), so it
+            -- cannot jump further than that, and this is how long the split takes
+            -- to ease in before and out after (client/storm.lua's wallSplit).
+            splitRampSec = 2.0,
 
             -- ═══ THE FAR WALL FADES OUT FROM 6.5 TO 8 km, AND IS NOT DRAWN PAST IT
             --     (#393) ═══
@@ -818,8 +831,14 @@ BR.Config.Storm = {
             -- points and the sampler blends between them.
             farFade  = { startM = 6500.0, endM = 8000.0, cols = 16 },
 
-            -- The floor on quads per closed loop, for the endgame circles where
-            -- the sag rule would happily draw a 40m ring as an octagon.
+            -- THE FLOOR ON ROUNDNESS, for the endgame circles where the sag rule
+            -- would happily draw a 40m ring as a pentagon: a loop is drawn at no more
+            -- than the chord that closes A CIRCLE AS LONG AS IT in this many pieces
+            -- (#393). A circle at the floor is exactly minSeg pieces; a blob's
+            -- straights take one each and its tighter corners fewer. It is a chord
+            -- rather than a count so that it moves only as the shape does: the count
+            -- it was before was shared out between a loop's runs and re-shared in
+            -- one frame as they changed, which made the moving wall jump.
             minSeg   = 24,
 
             -- THE CEILING ON POLYS PER FRAME, ALL LOOPS TOGETHER, and it is a hard

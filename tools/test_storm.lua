@@ -3982,15 +3982,55 @@ do
         ('%d polys at %s, ceiling %d'):format(worstPolys, tostring(worstWhere),
             sp.maxPolys))
     -- AND THE ENDGAME STILL HAS A WALL. Phase 8 closes on a zero-radius target and
-    -- union2 refuses a disc with no radius at all, so the shape is the wall circle
-    -- alone -- 34 metres of it after the inset, where the sag rule would draw an
-    -- octagon and minSeg is what stops it.
-    local endPolys = budget('phase 8 point', 8, 40.0, 55.0, 0.0)
-    ok(endPolys == sp.minSeg * quadPolys,
-        'and the endgame circle is drawn at the minSeg floor rather than as the '
-            .. 'octagon roundness alone would settle for',
-        ('%d polys, %d quads against a floor of %d'):format(endPolys,
-            endPolys / quadPolys, sp.minSeg))
+    -- union2 refuses a disc with no radius at all, so the shape is the wall alone --
+    -- 34 meters of it after the inset, where the sag rule would draw a pentagon and
+    -- minSeg is what stops it.
+    --
+    -- THE FLOOR IS A CHORD (#393): the one that closes a circle as long as the loop in
+    -- minSeg pieces, pi^2 R / (2 minSeg^2) with R its length over 2 pi. So a CIRCLE at
+    -- the floor is minSeg pieces exactly, as it always was; and a blob -- the endgame
+    -- zone is one since #344 -- is drawn to that chord, its straights one piece each.
+    -- It was a count, shared out between the runs and re-shared in a frame as they
+    -- changed, which made the moving wall jump (wall.sweepjump).
+    local CS = base.env.BR.Config.Storm
+    local circleSeed = nil
+    for seed = 1, 400 do
+        local u = base.env.BR.StormUnit(seed, #CS.phases - 1)
+        if u and u.kind == 'circle' then circleSeed = seed break end
+    end
+    local E = newStormClient()
+    local erec = E.record(#CS.phases, 0.0, 0.0, 40.0, 55.0, 0.0, 0.0, 600000, 60000, 2.0)
+    erec.seed = circleSeed
+    erec.tStart = E.now - 60000
+    E.pedAt = pt(0.0, 0.0, 30.0)
+    E.frame()
+    local circlePolys = #E.polys
+    ok(circleSeed ~= nil and circlePolys == sp.minSeg * quadPolys,
+        'and an endgame circle is drawn at the minSeg floor -- minSeg pieces -- rather '
+            .. 'than as the pentagon roundness alone would settle for',
+        ('seed %s: %d polys, %d quads against a floor of %d'):format(tostring(circleSeed),
+            circlePolys, circlePolys / quadPolys, sp.minSeg))
+
+    local B = newStormClient()
+    local brec = B.record(#CS.phases, 0.0, 0.0, 40.0, 55.0, 0.0, 0.0, 600000, 60000, 2.0)
+    brec.tStart = B.now - 60000
+    B.pedAt = pt(0.0, 0.0, 30.0)
+    B.frame()
+    local bShape = B.env.BR.StormShape.inset(zoneOf(B.env, brec), rr.edgeInset)
+    local R = B.env.BR.StormShape.perimeter(bShape) / (2.0 * math.pi)
+    local cFloor = math.pi * math.pi * R / (2.0 * sp.minSeg * sp.minSeg)
+    local bSag, bQuads = 0.0, 0
+    for _, qd in ipairs(quadsOf(B)) do
+        bQuads = bQuads + 1
+        local sag = sagOf(B.env, bShape, qd)
+        if sag > bSag then bSag = sag end
+    end
+    ok(bShape.kind ~= 'circle' and bQuads >= 6 and bSag <= cFloor + 1e-6
+        and cFloor < 0.05 * sp.chordM,
+        'and the endgame blob is drawn to the floor\'s chord, far rounder than chordM: '
+            .. 'no piece sags further than it from its arc',
+        ('%s, %d quads, worst sag %.3f m against a floor chord of %.3f (chordM %.1f)')
+            :format(tostring(bShape.kind), bQuads, bSag, cFloor, sp.chordM))
 end
 
 -- ---------------------------------------------------------------------------
@@ -4872,79 +4912,357 @@ describe('wall.sweepjump')
 do
     -- ═══ A MOVING WALL MOVES; IT DOES NOT JUMP (#393) ═══
     --
-    -- A run's pieces used to be spread evenly along it, so the frame a moving run
-    -- grew past a whole number of steps every vertex on it slid -- thirds to quarters
-    -- -- and the wall jumped by up to a piece's offset where a vertex became the
-    -- middle of a piece. At chordM 2 that was under 2 m; at the owner's 8 it was 7.8 m,
-    -- about every nine seconds of phase 1's sweep. A run handed its own count is now
-    -- stepped from its start, and grows a vertex at its END instead.
+    -- The review of the larger pieces measured the moving wall jumping by up to 7.9 m,
+    -- many times a sweep, from phase 2 to phase 6 -- against at most 2.0 m at the old
+    -- chordM of 2. Each jump was a whole number changing in one frame: the minSeg
+    -- floor's share changing hands, a run flipping between its own count and the
+    -- floor's, the budget's cut, the hull losing the arcs between discs that meet at
+    -- a sweep's knee or end (16 runs to 1 on a circle target), two breakout zones
+    -- gaining or losing a crossing. Any of them moves the curtain by the sag of the
+    -- piece it re-splits, which at chordM 8 is up to 8 m.
     --
-    -- MEASURED HERE FRAME BY FRAME, a tenth of a second apart, over a minute of phase
-    -- 1's sweep: how far any vertex or piece middle of the drawn wall is from last
-    -- frame's drawn wall, against how far the eroded line itself moved.
-    local function jumps(phase, cx0, cy0, r0, cx1, cy1, r1, shrinkMs, seed, fromMs, n,
-                         stepMs)
+    -- MEASURED AS A JUMP, NOT A SPEED. Frames a quarter of a second apart, and
+    -- anywhere the drawn wall moved more than a meter further than its own line did,
+    -- that quarter second is halved eight times -- following the half that moved
+    -- more -- down to under a millisecond, where a wall that slides has stopped
+    -- moving and a wall that jumped has not. What is left is the jump. The line's own
+    -- motion is taken out where it happened: how far the eroded line moved at that
+    -- point, or how far its nearest corner moved, since a crossing of two nearly
+    -- parallel edges slides along them far faster than either edge moves.
+    --
+    -- THE BOUND IS THE BASE'S: 2 m, the most the old chordM of 2 could move a wall in
+    -- a frame, and a quarter of the owner's 8 -- what a moving wall's pieces are split
+    -- to wherever its shape changes what it is made of. Over the nested sweeps of
+    -- phases 1 to 6 on several seeds, two circle targets, breakouts that overlap and
+    -- that do not, a conjoined growth, and a record handing over to the next. The far
+    -- fade is off: a piece crossing 8 km comes and goes at zero alpha.
+    local JUMP = 2.0
+    local CAP, CELL = 12.0, 64.0
+    local CFG = newStormClient().env.BR.Config.Storm
+    local R = { 9400.0 }
+    local SH = {}
+    for p, ph in ipairs(CFG.phases) do
+        R[p + 1] = ph.radius
+        SH[p] = math.floor((ph.shrink or 60) * 1000)
+    end
+
+    local function hashOf(segs)
+        local H = {}
+        for _, s in ipairs(segs) do
+            local x0 = math.floor((math.min(s[1], s[3]) - CAP) / CELL)
+            local x1 = math.floor((math.max(s[1], s[3]) + CAP) / CELL)
+            local y0 = math.floor((math.min(s[2], s[4]) - CAP) / CELL)
+            local y1 = math.floor((math.max(s[2], s[4]) + CAP) / CELL)
+            for gx = x0, x1 do
+                for gy = y0, y1 do
+                    local k = gx * 1000003 + gy
+                    local b = H[k]
+                    if not b then b = {} H[k] = b end
+                    b[#b + 1] = s
+                end
+            end
+        end
+        return H
+    end
+    --- Distance from (x, y) to the nearest drawn piece, or CAP when none is that near.
+    local function near(H, x, y)
+        local b = H[math.floor(x / CELL) * 1000003 + math.floor(y / CELL)]
+        if not b then return CAP end
+        local best = CAP
+        for _, s in ipairs(b) do
+            local d = segDist(x, y, s)
+            if d < best then best = d end
+        end
+        return best
+    end
+    local function cornersOf(SS, Z)
+        local out = {}
+        local comps = SS.components(Z)
+        for ci = 1, #comps do
+            for _, rn in ipairs(SS.runs(Z, ci)) do
+                local x, y = SS.pointAtComponent(Z, comps[ci], rn.t0)
+                out[#out + 1] = { x, y }
+            end
+        end
+        return out
+    end
+    --- How far the line's own corner nearest (x, y) -- within 12 m -- moved.
+    local function cornerMove(KA, KB, x, y)
+        local best, bx, by = 144.0, nil, nil
+        for _, k in ipairs(KA) do
+            local d = (k[1] - x) ^ 2 + (k[2] - y) ^ 2
+            if d < best then best, bx, by = d, k[1], k[2] end
+        end
+        if not bx then return 0.0 end
+        local m = math.huge
+        for _, k in ipairs(KB) do
+            local d = (k[1] - bx) ^ 2 + (k[2] - by) ^ 2
+            if d < m then m = d end
+        end
+        return math.sqrt(m)
+    end
+    --- The most any point of frame A's pieces is from frame B's, beyond how far the
+    --- line moved there. With `KA`/`KB`, its corners' motion is taken out too.
+    local function oneWay(SS, A, HB, zA, zB, KA, KB)
+        local worst, wx, wy = 0.0, nil, nil
+        for _, s in ipairs(A) do
+            for _, f in ipairs({ 0.0, 0.25, 0.5, 0.75 }) do
+                local x, y = s[1] + (s[3] - s[1]) * f, s[2] + (s[4] - s[2]) * f
+                local d = near(HB, x, y)
+                if d > 1.0 and d > worst then
+                    local m = math.abs(SS.distance(zA, x, y) - SS.distance(zB, x, y))
+                    if KA and d - m > 1.0 then
+                        local cm = cornerMove(KA, KB, x, y)
+                        if cm > m then m = cm end
+                    end
+                    if d - m > worst then worst, wx, wy = d - m, x, y end
+                end
+            end
+        end
+        return worst, wx, wy
+    end
+
+    --- A client drawing `recs` -- each { rec, from } in time order, the record in
+    --- force from `from` ms on -- and a sampler of its wall at any time.
+    local function sampler(recs, view, maxPolys)
         local C = newStormClient()
         local env = C.env
+        env.BR.Config.Storm.render.strip.farFade = nil
+        if maxPolys then env.BR.Config.Storm.render.strip.maxPolys = maxPolys end
+        C.recordWallOnly()
+        C.pedAt = view
         local SS = env.BR.StormShape
         local INSET = env.BR.Config.Storm.render.edgeInset
-        local rec = C.record(phase, cx0, cy0, r0, cx1, cy1, r1, 1000, shrinkMs, 0.5)
-        rec.seed = seed
-        C.recordWallOnly()
-        C.pedAt = pt(cx1, cy1, 30.0)
-        rec.tStart = C.now - rec.tWait - fromMs
-        local prev, prevIn = nil, nil
-        local worst, worstAt, frames = 0.0, nil, 0
-        for i = 1, n do
-            C.now = C.now + stepMs - 16
+        -- The records' times are from the client's clock as it stands now.
+        local base = C.now
+        for _, r in ipairs(recs) do
+            r.rec.tStart, r.from = r.rec.tStart + base, r.from + base
+        end
+        local function at(ms)
+            local rec = recs[1].rec
+            for _, r in ipairs(recs) do if base + ms >= r.from then rec = r.rec end end
+            env.BR.State.storm = rec
+            C.now = base + ms - 16
             C.frame()
             local cx, cy, r, _, _, _, t, g = env.BR.StormAt(rec, env.BR.Clock.now())
             local zin = SS.inset(env.BR.StormZone(rec, cx, cy, r, t, g), INSET)
-            local segs = piecesOf(C)
-            if prev then
-                frames = frames + 1
-                local moved, drawn = 0.0, 0.0
-                for _, s in ipairs(segs) do
-                    local d = math.abs(SS.distance(prevIn, s[1], s[2]))
-                    if d > moved then moved = d end
-                    for _, f in ipairs({ 0.0, 0.5 }) do
-                        local px, py = s[1] + (s[3] - s[1]) * f, s[2] + (s[4] - s[2]) * f
-                        local best = math.huge
-                        for j = 1, #prev do
-                            local e = segDist(px, py, prev[j])
-                            if e < best then best = e end
-                        end
-                        if best > drawn then drawn = best end
-                    end
-                end
-                if drawn - moved > worst then
-                    worst, worstAt = drawn - moved, ('frame %d'):format(i)
-                end
+            local segs = {}
+            for _, q in ipairs(quadsOf(C)) do
+                segs[#segs + 1] = { q.a.x, q.a.y, q.b.x, q.b.y }
             end
-            prev, prevIn = segs, zin
+            local n = 0
+            for ci = 1, #SS.components(zin) do n = n + #SS.runs(zin, ci) end
+            return { segs = segs, H = hashOf(segs), zin = zin, ms = ms, t = t, runs = n,
+                     kind = zin.kind, polys = #C.polys }
         end
-        return worst, worstAt, frames, C.errored()
+        local function moved(A, B, corners)
+            if #A.segs == 0 or #B.segs == 0 then return 0.0 end
+            local KA, KB
+            if corners then KA, KB = cornersOf(SS, A.zin), cornersOf(SS, B.zin) end
+            local j1, x1, y1 = oneWay(SS, B.segs, A.H, B.zin, A.zin, KB, KA)
+            local j2, x2, y2 = oneWay(SS, A.segs, B.H, A.zin, B.zin, KA, KB)
+            if j2 > j1 then return j2, x2, y2 end
+            return j1, x1, y1
+        end
+        return C, at, moved
     end
 
-    local CHORD = newStormClient().env.BR.Config.Storm.render.strip.chordM
-    local w1, at1, n1, e1 = jumps(1, 0.0, 0.0, 5200.0, 900.0, 1400.0, 2600.0, 240000,
-        393, 60000, 600, 100)
-    ok(e1 == nil and n1 == 599, 'a minute of phase 1\'s sweep draws clean', e1)
-    ok(w1 <= 0.5,
-        'through a minute of phase 1\'s sweep the drawn wall never moves more than '
-            .. 'half a meter beyond what the line itself moved, frame to frame -- at '
-            .. 'chordM 8 the evenly spread pieces jumped 7.8 m',
-        ('worst %.3f m beyond the line\'s own move, at %s'):format(w1, tostring(at1)))
+    -- Every scenario folds into its group's tally -- the worst jump and where --
+    -- and into the whole run's: what was seen.
+    local worst, worstAt = {}, {}
+    local scen, frames, flagged, changes, errs, mostPolys = 0, 0, 0, 0, nil, 0
+    local kinds, changesIn = {}, {}
+    local group = nil
+    local function walk(label, recs, t0, t1, view, maxPolys)
+        local C, at, moved = sampler(recs, view, maxPolys)
+        scen = scen + 1
+        worst[group] = worst[group] or 0.0
+        local prev = nil
+        for ms = t0, t1, 250 do
+            local S = at(ms)
+            frames = frames + 1
+            if maxPolys and S.polys > mostPolys then mostPolys = S.polys end
+            kinds[S.kind or '?'] = true
+            if prev then
+                if S.runs ~= prev.runs then
+                    changes = changes + 1
+                    changesIn[group] = (changesIn[group] or 0) + 1
+                end
+                if moved(prev, S) > 1.5 then
+                    flagged = flagged + 1
+                    local A, B = prev, S
+                    for _ = 1, 8 do
+                        local M = at((A.ms + B.ms) * 0.5)
+                        if moved(A, M) >= moved(M, B) then B = M else A = M end
+                    end
+                    local j, x, y = moved(A, B, true)
+                    if j > worst[group] then
+                        worst[group] = j
+                        worstAt[group] = ('%s, t %.4f, at %.0f, %.0f'):format(label,
+                            B.t or -1, x or 0, y or 0)
+                    end
+                    S = at(ms)
+                end
+            end
+            prev = S
+        end
+        errs = errs or C.errored()
+    end
 
-    -- WHAT IS LEFT: a zone held at the minSeg floor -- phase 3 on, at chordM 8 --
-    -- shares its surplus pieces out by count, and re-shares them as its runs change.
-    -- Bounded by the chord; MEASURED 6.8 m at worst on this phase-3 sweep.
-    local w3, at3, n3, e3 = jumps(3, 1300.0, 900.0, 1600.0, 1100.0, 700.0, 950.0, 90000,
-        395, 0, 450, 200)
-    ok(e3 == nil and n3 == 449 and w3 <= CHORD + 0.5,
-        'and a phase-3 sweep, held at the minSeg floor, moves no more than chordM '
-            .. 'beyond its line when its pieces are shared out again',
-        ('worst %.3f m against chordM %.1f, at %s'):format(w3, CHORD, tostring(at3)))
+    --- One record: phase `p` from (0, 0, R[p]) toward (cx1, cy1, R[p + 1]), its sweep
+    --- starting at 1000 ms. `hold` walks the hold's first seconds instead.
+    local function one(p, cx1, cy1, seed, hold)
+        local rec = {
+            phase = p, cx0 = 0.0, cy0 = 0.0, r0 = R[p], cx1 = cx1, cy1 = cy1,
+            r1 = R[p + 1], tStart = 0, tWait = hold and 600000 or 1000,
+            tShrink = SH[p], dps = 0.5, seed = seed,
+        }
+        return rec
+    end
+    local function sweep(label, p, cx1, cy1, seed)
+        local rec = one(p, cx1, cy1, seed)
+        walk(label, { { rec = rec, from = 0 } }, 500, 1000 + SH[p] + 1500,
+            pt(cx1, cy1, 30.0))
+    end
+
+    -- NESTED SWEEPS, phases 1 to 6: the review's own placements and seeds.
+    group = 'nested'
+    sweep('phase 1, seed 393', 1, 900.0, 1400.0, 393)
+    for p = 2, 6 do
+        for k = 1, 2 do
+            local off = (R[p] - R[p + 1]) * 0.4
+            sweep(('phase %d nested, seed %d'):format(p, 500 + k), p,
+                math.cos(k * 1.7) * off, math.sin(k * 1.7) * off, 500 + k)
+        end
+    end
+    local nestedFrames = frames
+
+    -- CIRCLE TARGETS: the hull of discs meeting on one circle at the knee and the
+    -- end, the review's 16 runs to 1.
+    group = 'circle'
+    local circles = 0
+    local U = newStormClient().env
+    for _, p in ipairs({ 2, 3 }) do
+        for seed = 1, 400 do
+            local u = U.BR.StormUnit(seed, p)
+            if u and u.kind == 'circle' then
+                circles = circles + 1
+                local off = (R[p] - R[p + 1]) * 0.3
+                sweep(('phase %d onto a circle, seed %d'):format(p, seed), p,
+                    math.cos(seed * 0.9) * off, math.sin(seed * 0.9) * off, seed)
+                break
+            end
+        end
+    end
+
+    -- BREAKOUTS, overlapping and apart: two zones stitched, gaining and losing the
+    -- crossings between them as the wall comes over.
+    group = 'breakout'
+    for _, v in ipairs({ { 2, 0.2, 601 }, { 3, 1.6, 602 }, { 4, 0.2, 603 },
+                         { 5, 1.6, 604 } }) do
+        local p, off = v[1], R[v[1]] + R[v[1] + 1] * v[2]
+        local a = v[3] * 2.3
+        sweep(('phase %d breakout %s, seed %d'):format(p, v[2] < 1 and 'overlapping'
+            or 'apart', v[3]), p, math.cos(a) * off, math.sin(a) * off, v[3])
+    end
+
+    -- CONJOINED HOLDS, growing into their destinations from their first instant to
+    -- the end of grow.seconds, where the grown zone hands over to the union it grew to.
+    group = 'growth'
+    local conjoined = 0
+    for _, p in ipairs({ 3, 4, 5 }) do
+        local off = R[p] + R[p + 1] * 0.2
+        local rec = one(p, math.cos(4.6) * off, math.sin(4.6) * off, 602, true)
+        if U.BR.StormOverlaps(rec) then conjoined = conjoined + 1 end
+        walk(('phase %d growing, seed 602'):format(p), { { rec = rec, from = 0 } },
+            0, 25000, pt(rec.cx1, rec.cy1, 30.0))
+    end
+
+    -- AND A RECORD HANDING OVER TO THE NEXT at the end of its sweep: into a nested
+    -- hold, and into a conjoined one that starts growing at once.
+    group = 'handover'
+    local handed = 0
+    for _, conj in ipairs({ false, true }) do
+        local p = 3
+        local off = (R[p] - R[p + 1]) * 0.3
+        local a = one(p, off, 0.0, 802)
+        local te = a.tStart + a.tWait + a.tShrink
+        local nx = conj and (off + R[p + 1] + R[p + 2] * 0.2) or off
+        local b = {
+            phase = p + 1, cx0 = a.cx1, cy0 = a.cy1, r0 = a.r1, cx1 = nx, cy1 = 0.0,
+            r1 = R[p + 2], tStart = te, tWait = 60000, tShrink = SH[p + 1], dps = 0.5,
+            seed = 802,
+        }
+        -- A NESTED SWEEP HANDING OVER, whose own split is the only one there at its
+        -- end: a breakout's is up for the whole of its sweep anyway.
+        if U.BR.StormNested(a) and (U.BR.StormOverlaps(b) == conj) then
+            handed = handed + 1
+        end
+        walk(('phase %d into phase %d, %s'):format(p, p + 1, conj and 'conjoined'
+            or 'nested'), { { rec = a, from = 0 }, { rec = b, from = te } },
+            te - 4000, te + 6000, pt(b.cx0, b.cy0, 30.0))
+    end
+
+    -- AND WITH THE BUDGET BINDING, through the middle of two sweeps where nothing
+    -- splits and discs leave and join the hull: maxPolys cut to 64, so the moving
+    -- wall is drawn in fewer pieces than it asks for. The cut is one stretch of every
+    -- step, moving only as the shape does; it was a count re-shared between the runs
+    -- in a frame, and a run joining or leaving changed it.
+    group = 'budget'
+    local BUDGET, cut = 64, 0
+    for _, v in ipairs({ { 3, 502, 2 }, { 2, 503, 3 } }) do
+        local p, seed, k = v[1], v[2], v[3]
+        local off = (R[p] - R[p + 1]) * 0.4
+        local cx1, cy1 = math.cos(k * 1.7) * off, math.sin(k * 1.7) * off
+        local _, full = sampler({ { rec = one(p, cx1, cy1, seed), from = 0 } },
+            pt(cx1, cy1, 30.0))
+        local _, budgeted = sampler({ { rec = one(p, cx1, cy1, seed), from = 0 } },
+            pt(cx1, cy1, 30.0), BUDGET)
+        local below = true
+        for _, f in ipairs({ 0.15, 0.3, 0.45 }) do
+            local ms = 1000 + f * SH[p]
+            if budgeted(ms).polys >= full(ms).polys then below = false end
+        end
+        if below then cut = cut + 1 end
+        walk(('phase %d budgeted, seed %d'):format(p, seed),
+            { { rec = one(p, cx1, cy1, seed), from = 0 } },
+            1000 + 0.1 * SH[p], 1000 + 0.55 * SH[p], pt(cx1, cy1, 30.0), BUDGET)
+    end
+
+    ok(errs == nil and scen == 24 and nestedFrames > 2500 and circles == 2
+        and conjoined == 3 and handed == 2,
+        'precondition: every scenario drew clean -- 24 of them, two onto circle targets, '
+            .. 'three conjoined growths, and two nested sweeps handing over',
+        errs or ('%d scenarios, %d frames, %d circle targets, %d conjoined, %d handed')
+            :format(scen, frames, circles, conjoined, handed))
+    ok(flagged > 20 and changes > 50 and kinds.blobUnion,
+        'precondition: the shapes really changed what they are made of, frame to frame, '
+            .. 'and the measure really bisected the frames that moved most',
+        ('%d run-list changes, %d frames bisected'):format(changes, flagged))
+    -- THE BOUND, A GROUP AT A TIME, so a failure names the kind of motion. The 0.02 m
+    -- is the line's own motion over the last millisecond of a bisection.
+    local function bound(g, what)
+        ok((worst[g] or math.huge) <= JUMP + 0.02,
+            'no moving wall jumps more than 2 m beyond its line between two frames -- '
+                .. 'the base\'s level at chordM 2, and a quarter of the owner\'s 8 -- '
+                .. what,
+            ('worst %.3f m, at %s'):format(worst[g] or -1, tostring(worstAt[g])))
+    end
+    bound('nested', 'through the nested sweeps of phases 1 to 6, two seeds each from '
+        .. 'phase 2 (at chordM 8 before this, up to 7.9 m)')
+    bound('circle', 'onto a circle target, where the hull of discs meeting on it '
+        .. 'collapses to one arc (6.6 m before)')
+    bound('breakout', 'through breakouts that overlap and that do not')
+    bound('growth', 'through a conjoined hold growing into its destination')
+    bound('handover', 'across a record handing over to the next, nested and conjoined')
+    ok(mostPolys > 0 and mostPolys <= BUDGET and cut == 2
+        and (changesIn.budget or 0) >= 4 and (worst.budget or math.huge) <= 0.05,
+        'and with the poly budget binding as discs leave and join the hull, the ceiling '
+            .. 'holds and the moving wall does not jump at all: the cut stretches every '
+            .. 'step continuously',
+        ('%d polys at most against %d, cut on %d of 2, %d run-list changes; worst jump '
+            .. '%.3f m at %s'):format(mostPolys, BUDGET, cut, changesIn.budget or 0,
+            worst.budget or -1, tostring(worstAt.budget)))
 end
 
 -- ---------------------------------------------------------------------------
