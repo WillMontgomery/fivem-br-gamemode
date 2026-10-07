@@ -401,6 +401,45 @@
           }
         }
       }
+    },
+    {
+      "name": "cfx-nteam-halloween",
+      "seasons": {
+        "1": "6aa992fd56606e05b17d51f45bec350cc08912996c52a0d01d6dfa52a707911c",
+        "2": null
+      },
+      "versions": {
+        "6aa992fd56606e05b17d51f45bec350cc08912996c52a0d01d6dfa52a707911c": {
+          "size": 7389529,
+          "files": {
+            ".fxap": 178,
+            "README.txt": 857,
+            "fxmanifest.lua": 101,
+            "stream/_manifestnteamhalloween.ymf": 856,
+            "stream/nteamhalloween.ytyp": 1204,
+            "stream/ydr/nteambigsign.ydr": 740220,
+            "stream/ydr/nteambigsign1.ydr": 268279,
+            "stream/ydr/nteamcofske.ydr": 237601,
+            "stream/ydr/nteamghost1.ydr": 560220,
+            "stream/ydr/nteamghost2.ydr": 394902,
+            "stream/ydr/nteamgravestone.ydr": 226557,
+            "stream/ydr/nteamhalloween1.ydr": 190346,
+            "stream/ydr/nteamhalloween2.ydr": 216681,
+            "stream/ydr/nteamhalloween3.ydr": 227890,
+            "stream/ydr/nteamhalloween4.ydr": 442852,
+            "stream/ydr/nteamhalloween5.ydr": 296141,
+            "stream/ydr/nteampum.ydr": 970761,
+            "stream/ydr/nteamtikva1.ydr": 635059,
+            "stream/ydr/nteamtree.ydr": 1955379,
+            "stream/ymap/nteamhalloweenccaffe.ymap": 2642,
+            "stream/ymap/nteamhalloweencity.ymap": 2890,
+            "stream/ymap/nteamhalloweenlegion.ymap": 4799,
+            "stream/ymap/nteamhalloweenlegionV2.ymap": 4482,
+            "stream/ymap/nteamhalloweenmilehigh.ymap": 2790,
+            "stream/ymap/nteamhalloweenparkcolor.ymap": 2642
+          }
+        }
+      }
     }
   ]
 }
