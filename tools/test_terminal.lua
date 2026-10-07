@@ -725,7 +725,8 @@ do
         'status_available', 'status_used', 'status_not_here', 'status_offline',
         'risk_low', 'risk_medium', 'risk_high', 'risk_notice', 'cost_line',
         'howto_title', 'howto_tips_body', 'match_heading',
-        'first_pickup', 'already_holding', 'notice_access', 'notice_action',
+        'first_pickup', 'first_pickup_title', 'first_pickup_subtitle', 'first_pickup_dismiss',
+        'already_holding', 'notice_access', 'notice_action',
         'bounty_new', 'bounty_protect', 'scan_blip', 'bounty_blip',
         'key_label', 'terminal_label', 'terminal_use', 'storm_reveal_blip',
     }) do
@@ -1151,8 +1152,17 @@ describe('round 5: the first-pickup card words are the owner\'s, and no placehol
 do
     bootServer()
     local copy = BR.Config.Terminals.copy
-    eq(copy.first_pickup, "You found a Yubikey! **Please read this entire message.** This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
-        'first_pickup is the owner\'s text, word for word, its bold as he wrote it')
+    -- ROUND 6 (owner, 2026-10-07): his first sentence the card's H1, his
+    -- second (the bold one) its H3, the rest its body -- every word as he
+    -- wrote it, in his order -- and "to dismiss" after the Enter cap.
+    eq(copy.first_pickup_title, 'You found a Yubikey!', 'first_pickup_title is his H1, word for word')
+    eq(copy.first_pickup_subtitle, 'Please read this entire message.', 'first_pickup_subtitle is his H3, word for word')
+    eq(copy.first_pickup, "This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
+        'first_pickup is the rest of the owner\'s text, word for word')
+    eq(copy.first_pickup_dismiss, 'to dismiss', 'first_pickup_dismiss is his, beside the Enter cap')
+    eq(('%s **%s** %s'):format(copy.first_pickup_title, copy.first_pickup_subtitle, copy.first_pickup),
+        "You found a Yubikey! **Please read this entire message.** This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
+        'and the three together are round 5\'s text exactly: nothing added, nothing lost')
     eq(copy.key_label, 'Yubikey', 'key_label is written: the ground pickup is a "Yubikey"')
     eq(copy.already_holding, 'You already have a Yubikey.', 'already_holding is written')
     local left = {}

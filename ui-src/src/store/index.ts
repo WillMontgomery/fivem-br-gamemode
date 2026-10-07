@@ -17,7 +17,7 @@ import type {
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
-  AdminPayload, CommunityPayload, VehiclePayload,
+  AdminPayload, CommunityPayload, VehiclePayload, YubikeyCardWords,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 import { chatAfterState } from './chatClear'
@@ -361,11 +361,12 @@ export interface UiState {
   /** Is the "you are giving up the reward" card on screen? See DECLINE_STEPS. */
   tutorialDeclineCard: boolean
   /**
-   * THE FIRST-PICKUP CARD's text while it is up, else null (#396, round 5).
-   * Lua's to raise and to take down -- on Enter, and only then -- through the
-   * `yubikeycard` envelope; tutorial/YubikeyCard.tsx draws it.
+   * THE FIRST-PICKUP CARD's words while it is up, else null (#396, round 5;
+   * four lines since round 6: its H1, its H3, its body and what follows the
+   * Enter cap). Lua's to raise and to take down -- on Enter, and only then --
+   * through the `yubikeycard` envelope; tutorial/YubikeyCard.tsx draws it.
    */
-  yubikeyCard: string | null
+  yubikeyCard: YubikeyCardWords | null
   /**
    * A chat line the WALKTHROUGH is staging, which the chat log shows alongside
    * the real ones.
@@ -457,7 +458,7 @@ export interface UiState {
   setTutorialDone: (v: boolean) => void
   setTutorialGameOffered: (v: boolean) => void
   setTutorialDeclineCard: (v: boolean) => void
-  setYubikeyCard: (text: string | null) => void
+  setYubikeyCard: (card: YubikeyCardWords | null) => void
   setTutorialChat: (m: ChatMessage | null) => void
   setTutorialChatSquad: (v: boolean) => void
   noteChatSent: () => void

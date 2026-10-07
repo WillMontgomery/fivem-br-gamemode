@@ -2226,6 +2226,71 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R28  The first-pickup card is the owner's round 6 card (#396).
+//
+// Owner, 2026-10-07: 'make "You found a Yubikey!" H1 please, and "Please read
+// this entire message." H3. Also move the card to the lower 1/4 as we've done
+// with other tutorial cards. Where it has the Enter gylph, please append "to (spelling-ok: his words)
+// dismiss" next to that.'
+//
+// Fails when tutorial/YubikeyCard.tsx stops doing any of the three:
+//   THE HEADINGS -- the title in an <h1> and the subtitle in an <h3>, real
+//     heading elements, not a styled div;
+//   THE LOWER QUARTER, THE WALKTHROUGH'S WAY -- placed by cardPlacement.ts's
+//     `centred` at BAND.quarter (what a `place: 'quarter'` step gets) from the
+//     card's MEASURED box (offsetWidth/offsetHeight in a useLayoutEffect keyed
+//     on the words, both sliders and the viewport), never a CSS band of its own:
+//     the round 5 slot's `top: 16%` is the shape this replaced;
+//   "TO DISMISS" BESIDE THE KEY -- the dismiss words right after the Enter
+//     KeyCap inside the one `.tut-key` row, as the walkthrough's key hints are.
+//
+// IT CAN FAIL. Put `top: 16%` back on .yubikey-card-slot, change BAND.quarter
+// to BAND.half, or turn the <h1> back into a div.
+// ---------------------------------------------------------------------------
+{
+  const Y = join(SRC, 'tutorial', 'YubikeyCard.tsx')
+  if (!existsSync(Y)) {
+    fail('R28 yubikey-card', 'src/tutorial/YubikeyCard.tsx', 'the first-pickup card is missing (#396).')
+  } else {
+    const card = stripComments(read(Y))
+    if (!/<h1\b[^>]*>\{card\.title\}<\/h1>/.test(card)) {
+      fail('R28 yubikey-card', 'src/tutorial/YubikeyCard.tsx',
+        'the title (first_pickup_title, "You found a Yubikey!") is not an <h1>. The owner asked for an H1.')
+    }
+    if (!/<h3\b[^>]*>\{card\.subtitle\}<\/h3>/.test(card)) {
+      fail('R28 yubikey-card', 'src/tutorial/YubikeyCard.tsx',
+        'the subtitle (first_pickup_subtitle, "Please read this entire message.") is not an <h3>.'
+        + ' The owner asked for an H3.')
+    }
+    if (!/from '\.\/cardPlacement'/.test(card)
+        || !/centred\(\s*box\s*,\s*window\.innerWidth\s*,\s*window\.innerHeight\s*,\s*BAND\.quarter\s*\)/.test(card)) { // spelling-ok: cardPlacement.ts's own name
+      fail('R28 yubikey-card', 'src/tutorial/YubikeyCard.tsx',
+        'the card is not placed by cardPlacement.ts\'s `centred` at BAND.quarter from its measured box.'
+        + ' "the lower 1/4 as we\'ve done with other tutorial cards" is the walkthrough\'s'
+        + ' `place: \'quarter\'`, and it has one definition.')
+    }
+    if (!/offsetWidth/.test(card) || !/offsetHeight/.test(card)
+        || !/useLayoutEffect\([\s\S]*?\},\s*\[\s*card\s*,\s*uiScale\s*,\s*textScale\s*,\s*viewportTick\s*\]\s*\)/.test(card)) {
+      fail('R28 yubikey-card', 'src/tutorial/YubikeyCard.tsx',
+        'the card\'s box is not measured (offsetWidth/offsetHeight, before paint) on'
+        + ' [card, uiScale, textScale, viewportTick] -- R22\'s rule, for this card.')
+    }
+    if (!/<span className="tut-key">\s*<KeyCap label="Enter"[^>]*\/>\s*\{card\.dismiss\}\s*<\/span>/.test(card)) {
+      fail('R28 yubikey-card', 'src/tutorial/YubikeyCard.tsx',
+        'the dismiss words (first_pickup_dismiss, "to dismiss") are not right after the Enter cap in its'
+        + ' `.tut-key` row. The owner asked for them next to the glyph.')
+    }
+    const css = read(join(SRC, 'index.css'))
+    const slot = /\.yubikey-card-slot\s*\{([^}]*)\}/.exec(css)?.[1] ?? ''
+    if (!/\binset\s*:\s*0\s*;/.test(slot) || /\btop\s*:/.test(slot)) {
+      fail('R28 yubikey-card', 'src/index.css',
+        '.yubikey-card-slot is not the bare viewport (inset: 0, no band of its own). The card\'s'
+        + ' place is `centred`\'s, measured against the viewport.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

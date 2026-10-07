@@ -199,9 +199,13 @@ export default function App() {
   })
   // THE FIRST-PICKUP CARD (#396, round 5). Lua owns it: up with the owner's
   // words, down when Lua says so -- on Enter, which it reads itself, and only
-  // then. A payload without words is down.
+  // then. A payload without its body is down; a heading or the words after the
+  // Enter cap that did not come are simply not drawn (round 6: four lines).
   useNuiEvent('yubikeycard', (d) => {
-    dispatch().setYubikeyCard(d?.show === true && typeof d.text === 'string' && d.text !== '' ? d.text : null)
+    const line = (v: unknown): string => (typeof v === 'string' ? v : '')
+    dispatch().setYubikeyCard(d?.show === true && typeof d.text === 'string' && d.text !== ''
+      ? { title: line(d.title), subtitle: line(d.subtitle), text: d.text, dismiss: line(d.dismiss) }
+      : null)
   })
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
@@ -648,7 +652,7 @@ export default function App() {
           takes Enter for it -- not over the lobby, a paused HUD or the
           verdict, where it waits (still up) for the next match. */}
       {yubikeyCard !== null && !showLobby && !hudPaused && !tearingDown && (
-        <YubikeyCard text={yubikeyCard} />
+        <YubikeyCard card={yubikeyCard} />
       )}
       {/* LAST, SO IT IS ON TOP OF EVERYTHING. Settings is opaque and full
           screen, and it opens from a keybind mid-match as well as from the

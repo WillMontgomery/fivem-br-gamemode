@@ -104,9 +104,20 @@ BR.Config.Terminals = {
         -- how to use it and requires manual dismissal using the return key";
         -- built round 5, 2026-10-06). THE FIRST-PICKUP CARD: the player who
         -- gets a Yubikey for the first time ever (a pickup, or `bryubikey
-        -- give`) reads it on br_ui's tutorial card until they press Enter. The
-        -- **...** is drawn bold, as he wrote it. Not a toast.
-        first_pickup = "You found a Yubikey! **Please read this entire message.** This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
+        -- give`) reads it on br_ui's tutorial card until they press Enter. Not
+        -- a toast.
+        --
+        -- ROUND 6 (owner, 2026-10-07): 'make "You found a Yubikey!" H1 please,
+        -- and "Please read this entire message." H3', and 'Where it has the
+        -- Enter gylph, please append "to dismiss" next to that.' (spelling-ok:
+        -- his words) So his text is four lines now, word for word as he wrote
+        -- them: the card's H1 (_title), its H3 (_subtitle, which was the
+        -- **bold** sentence), the rest of it as the body (first_pickup), and the
+        -- words after the Enter cap (_dismiss).
+        first_pickup_title = 'You found a Yubikey!',
+        first_pickup_subtitle = 'Please read this entire message.',
+        first_pickup = "This is a very powerful item and can do a variety of things - that choice is yours. The Yubikey stays with you between matches, and you can only have one at a time. After one use - it's gone. To find out what it can do, find a computer marked on your map.",
+        first_pickup_dismiss = 'to dismiss',
         -- VERBATIM (owner, 2026-10-04, "No key"). Three readers: the terminal's
         -- world plate without a key, the app's login screen, and the reason a
         -- function cannot run for that cause.

@@ -1804,6 +1804,10 @@ do
     local c = W.cards()
     ok(#c == 1 and c[1].show == true, 'the first key ever: the card goes up (BR.Nui.YUBIKEY_CARD)')
     eq(c[1] and c[1].text, COPY.first_pickup, 'with the owner\'s words, first_pickup')
+    -- ROUND 6: his H1, his H3 and the words after the Enter cap ride with it.
+    eq(c[1] and c[1].title, COPY.first_pickup_title, 'its H1, first_pickup_title')
+    eq(c[1] and c[1].subtitle, COPY.first_pickup_subtitle, 'its H3, first_pickup_subtitle')
+    eq(c[1] and c[1].dismiss, COPY.first_pickup_dismiss, 'and the words beside Enter, first_pickup_dismiss')
     eq(W.B.Yubikey.cardUp(), true, 'and Lua holds it up')
 
     -- NOTHING BUT ENTER. Movement, aim, attack, jump, sprint, interact (E,
@@ -2231,18 +2235,24 @@ do
     ok(proto:find("YUBIKEY_CARD = 'yubikeycard'", 1, true) ~= nil, 'BR.Nui.YUBIKEY_CARD is the yubikeycard envelope')
     local app = readFile(UI .. 'App.tsx') or ''
     ok(app:find("useNuiEvent('yubikeycard'", 1, true) ~= nil
-        and app:find("d?.show === true && typeof d.text === 'string' && d.text !== '' ? d.text : null", 1, true) ~= nil,
-        'App.tsx mirrors it: the words while Lua says show, nothing otherwise')
-    ok(app:find("{yubikeyCard !== null && !showLobby && !hudPaused && !tearingDown && (\n        <YubikeyCard text={yubikeyCard} />", 1, true) ~= nil,
+        and app:find("d?.show === true && typeof d.text === 'string' && d.text !== ''\n      ? { title: line(d.title), subtitle: line(d.subtitle), text: d.text, dismiss: line(d.dismiss) }\n      : null", 1, true) ~= nil,
+        'App.tsx mirrors it: the words while Lua says show (round 6: its four lines), nothing otherwise')
+    ok(app:find("{yubikeyCard !== null && !showLobby && !hudPaused && !tearingDown && (\n        <YubikeyCard card={yubikeyCard} />", 1, true) ~= nil,
         'and draws it over the match only -- where Lua takes Enter for it')
     local card = (readFile(UI .. 'tutorial/YubikeyCard.tsx') or ''):gsub('/%*.-%*/', ''):gsub('//[^\n]*', '')
     ok(card ~= '', 'tutorial/YubikeyCard.tsx is read')
-    ok(card:find('tut-card', 1, true) and card:find('tut-body', 1, true) and card:find('emphasize(text)', 1, true),
+    ok(card:find('tut-card', 1, true) and card:find('tut-body', 1, true) and card:find('emphasize(card.text)', 1, true),
         'the tutorial card\'s look, the owner\'s **bold** through AnnotationCard\'s emphasize')
     ok(card:find('<KeyCap label="Enter"', 1, true) ~= nil, 'with the Enter key cap, as the cards draw their keys')
-    for _, banned in ipairs({ 'onClick', 'onPress', 'onKeyDown', 'addEventListener', 'Btn', 'interactive', 'fetchNui', 'setYubikeyCard' }) do
+    for _, banned in ipairs({ 'onClick', 'onPress', 'onKeyDown', "'keydown'", "'keyup'", "'keypress'", 'Btn',
+                              'interactive', 'fetchNui', 'setYubikeyCard' }) do
         ok(not card:find(banned, 1, true), ('and nothing of its own takes it down: no %s'):format(banned))
     end
+    -- ROUND 6: its one listener is the window's resize, which measures it again
+    -- for the lower quarter (cardPlacement.ts's `centred`), and nothing else.
+    local _, listeners = card:gsub('addEventListener%(', '')
+    eq(listeners, 1, 'one listener of its own')
+    ok(card:find("window.addEventListener('resize', bump)", 1, true) ~= nil, 'the resize, which only measures again')
     local _, timers = card:gsub('setTimeout', '')
     eq(timers, 1, 'its one timeout staggers the text in (setLanded), and removes nothing')
     ok(card:find('setTimeout(() => setLanded(true), 180)', 1, true) ~= nil, 'that is all it does')

@@ -622,14 +622,22 @@ local function computerUp()
 end
 
 --- Tell br_ui what it shows -- the card with the owner's words, or none --
---- on a change only (or `force`, br_ui having come up afresh).
+--- on a change only (or `force`, br_ui having come up afresh). His words are
+--- four lines since round 6: the card's H1 and H3, its body, and what follows
+--- the Enter cap.
 --- @param force boolean|nil
 local function sendCard(force)
     local show = card and not computerUp()
     if not force and show == cardSent then return end
     cardSent = show
-    TriggerEvent('br:ui:sendLocal', BR.Nui.YUBIKEY_CARD,
-                 { show = show, text = show and copy().first_pickup or nil })
+    local c = copy()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.YUBIKEY_CARD, {
+        show = show,
+        title = show and c.first_pickup_title or nil,
+        subtitle = show and c.first_pickup_subtitle or nil,
+        text = show and c.first_pickup or nil,
+        dismiss = show and c.first_pickup_dismiss or nil,
+    })
 end
 
 --- May the card take Enter this frame?

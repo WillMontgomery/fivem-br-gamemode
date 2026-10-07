@@ -1382,13 +1382,29 @@ export interface ImpactsPayload {
 
 /**
  * THE FIRST-PICKUP CARD (#396, round 5): BR.Nui.YUBIKEY_CARD. `show` with the
- * owner's words (copy first_pickup) while it is up; `show: false` when the
- * player pressed Enter (br_core reads the key -- the card takes no focus) or
- * while a terminal's computer covers the screen. Lua owns it, the page mirrors.
+ * owner's words while it is up; `show: false` when the player pressed Enter
+ * (br_core reads the key -- the card takes no focus) or while a terminal's
+ * computer covers the screen. Lua owns it, the page mirrors.
+ *
+ * HIS WORDS ARE FOUR LINES SINCE ROUND 6 (owner, 2026-10-07: the first
+ * sentence an H1, the second an H3, and "to dismiss" beside the Enter cap):
+ * `title` (copy first_pickup_title), `subtitle` (first_pickup_subtitle), `text`
+ * (first_pickup, the body) and `dismiss` (first_pickup_dismiss).
  */
 export interface YubikeyCardPayload {
   show?: boolean
+  title?: string
+  subtitle?: string
   text?: string
+  dismiss?: string
+}
+
+/** The first-pickup card's words while it is up: the payload's four, each a string. */
+export interface YubikeyCardWords {
+  title: string
+  subtitle: string
+  text: string
+  dismiss: string
 }
 
 // --- envelope ---------------------------------------------------------------

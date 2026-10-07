@@ -1881,28 +1881,41 @@ html, body, #root {
 /* ═══ THE FIRST-PICKUP CARD (#396, round 5) ═══
 
    tutorial/YubikeyCard.tsx: the tutorial card's surface, standing on its own
-   over the match rather than beside a control -- centered, in the upper part
-   of the screen, clear of the crosshair. The slot is the position; the card
-   keeps .tut-card's arrival (its transform) and is laid out in the slot rather
-   than placed by a layer. Nothing in it is pressable, so no pointer events. */
+   over the match rather than beside a control. ROUND 6 (owner, 2026-10-07:
+   "move the card to the lower 1/4 as we've done with other tutorial cards"):
+   placed as the walkthrough's `place: 'quarter'` cards are, by
+   cardPlacement.ts's `centred` at BAND.quarter, from its measured box -- so
+   the slot is only the viewport the card's left/top are measured in, and the
+   card keeps .tut-card's absolute position and its arrival (its transform).
+   Nothing in it is pressable, so no pointer events. */
 .yubikey-card-slot {
   position: absolute;
-  left: 0;
-  right: 0;
-  top: 16%;
+  inset: 0;
   z-index: 55;
-  display: flex;
-  justify-content: center;
   pointer-events: none;
 }
 
 .yubikey-card {
-  position: relative;
   width: 24rem;
   max-width: 40vw;
 }
 
-.yubikey-card .tut-body { margin-top: 0; }
+/* HIS H1 AND H3 (round 6: 'make "You found a Yubikey!" H1 please, and "Please
+   read this entire message." H3'): the card title's weight, color and arrival
+   (.tut-title), at a heading's two sizes. The body follows them. */
+.yubikey-card-h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.15;
+}
+
+.yubikey-card-h3 {
+  margin: 0.3rem 0 0;
+  font-size: 1.05rem;
+  line-height: 1.25;
+}
+
+.yubikey-card .tut-body { margin-top: 0.55rem; }
 
 .yubikey-card-foot { justify-content: flex-end; }
 
