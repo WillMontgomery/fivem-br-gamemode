@@ -36,6 +36,8 @@
 //     pick   { functionId }              "Set location" (round 4): a spot on
 //                                        the big map for this function
 //     close  { why }                     Escape, or the taskbar's power button
+//                                        (never during the boot, the blue
+//                                        screen or the power-off, round 5)
 //     missed { toast }                   a run's last word the app never showed
 //                                        (below): its toast, for br_core to
 //                                        toast instead
@@ -109,6 +111,26 @@
 //     app's document loading included -- until the app says that page
 //     showed (and at most TAB_LOAD_MAX_MS).
 //
+// ═══ ROUND 5 (owner, 2026-10-06) ═══
+//
+//   * "on the CRT-style power off, the screen has a black background. I'd like
+//     it to be transparent so the player can get back to worrying about the
+//     storm": the storm's close plays over the GAME. The blue screen is still
+//     a blue screen; behind it the page is see-through (br.css's
+//     .br-shutdown on <body>, and #br-off has no color of its own), so as the
+//     picture collapses the game shows around it.
+//   * "when in BSOD and CRT-style power off, the ESC key must not close the
+//     UI - they have to wait it out. The same should be true for the starting
+//     up screen." Escape -- and every other close the player has: the
+//     taskbar's power button, the app's own Escape forwarded here -- does
+//     nothing while the desktop boots, while the blue screen shows and while
+//     the picture powers off (`waiting()`). The keyboard stays the computer's
+//     until each ends: the boot on the desktop, the storm's close with `off`.
+//     br_core's own closes (death, the storm, walking away, a resource
+//     stopping) still close it at any time, and client/shell.lua's backstop
+//     still lets go of a storm's close that never says `off`. This reverses
+//     round 2's Escape during the boot.
+//
 // NOTHING HERE DECIDES ANYTHING. A run is forwarded only while the desktop is
 // open and only with a well-formed id, and that is shape-checking, not
 // permission: the server checks the terminal, the key and the squad.
@@ -158,10 +180,16 @@
     const BSOD_MS = 1500;
     const CRT_MS = 600;
     const CRT_CLASS = "br-crt";
+    // The storm's close on <body> (round 5): the page see-through and the
+    // desktop hidden, so the power-off plays over the game (br.css).
+    const SHUTDOWN_CLASS = "br-shutdown";
 
     let isOpen = false;
     // Out of sight for a map pick (round 4): still open.
     let hidden = false;
+    // THE BOOT IS UNDER WAY (round 5): from an opening until its desktop
+    // shows. Nothing the player does closes the computer meanwhile.
+    let booting = false;
     // Bumped by every open and close, so a boot timer that outlives the close
     // it raced does not put the desktop back up -- and never fires into a
     // later session.
@@ -530,9 +558,12 @@
         unseen = null;
         const mine = ++session;
         document.body.style.display = "block";
+        booting = true;
         Load(true, line("shell_boot"), bootMs(d), () => {
             if (!isOpen || mine !== session) return;
-            // THE BOOT ENDS ON THE DESKTOP. The app's icon is how it opens.
+            // THE BOOT ENDS ON THE DESKTOP. The app's icon is how it opens --
+            // and from here Escape and the power button close it.
+            booting = false;
             document.getElementById("container").style.display = "block";
             Load(false);
         });
@@ -543,6 +574,7 @@
         if (!isOpen) return;
         isOpen = false;
         hidden = false;
+        booting = false;
         session++;
 
         if (!keep) document.body.style.display = "none";
@@ -586,23 +618,33 @@
         clearTimeout(blue.timer);
         if (blue.el.parentNode) blue.el.parentNode.removeChild(blue.el);
         blue = null;
+        document.body.classList.remove(SHUTDOWN_CLASS);
         if (!isOpen) document.body.style.display = "none";
         if (tell) post("off");
     };
+
+    // WAITED OUT, NOT CLOSED (round 5): the boot, the blue screen and the
+    // power-off. While any plays, nothing the player does closes the
+    // computer -- Escape, the power button, the app's Escape.
+    const waiting = () => booting || blue !== null;
 
     // THE STORM TOOK THE TERMINAL IN USE. The computer shuts as every one of
     // br_core's closes shuts it -- the app unloaded, its windows forgotten,
     // a held last word handed back -- but the page stays up for its screen:
     // the blue screen (#br-off, over everything, the copy block's bsod_*
     // lines) for BSOD_MS, then .br-crt collapses the picture to a line, a
-    // dot and black over CRT_MS, then it is gone. A storm's close reaching a
-    // page that is not open has nothing to show, and says so at once.
+    // dot and nothing over CRT_MS, then it is gone. BEHIND IT THE PAGE IS
+    // SEE-THROUGH (round 5, .br-shutdown): the desktop hidden and no color
+    // of the page's own, so the picture collapses over the game. A storm's
+    // close reaching a page that is not open has nothing to show, and says
+    // so at once.
     const stormClose = () => {
         if (!isOpen) {
             post("off");
             return;
         }
         close("closed", true, true);
+        document.body.classList.add(SHUTDOWN_CLASS);
         const el = document.createElement("div");
         el.id = "br-off";
         const pic = document.createElement("div");
@@ -657,7 +699,9 @@
                 post("pick", { functionId: d.functionId });
             }
         } else if (d.type === "escape") {
-            close("escape");
+            // Not while the boot or the storm's close plays (round 5) -- the
+            // app is not even loaded then, but the rule is the page's.
+            if (!waiting()) close("escape");
         } else if (d.type === "loading") {
             // Only for the app that is up, and only while the computer is.
             if (isOpen && appLoaded()) tabLoading(d.on === true ? d.ms : null);
@@ -732,12 +776,19 @@
         }
     });
 
-    // ESCAPE SHUTS THE COMPUTER, the boot included. Here for a key pressed on
-    // the desktop; the app forwards its own (a keydown inside the iframe never
-    // reaches this document). client/shell.lua releases NUI focus when the
-    // close lands, so the keyboard and the mouse are the game's at once.
+    // ESCAPE SHUTS THE COMPUTER -- BUT NOT WHILE IT BOOTS, AND NOT WHILE THE
+    // STORM'S CLOSE PLAYS (round 5: "they have to wait it out"; round 2 let it
+    // cut the boot short). Here for a key pressed on the desktop; the app
+    // forwards its own (a keydown inside the iframe never reaches this
+    // document). client/shell.lua releases NUI focus when the close lands, so
+    // the keyboard and the mouse are the game's at once.
     document.addEventListener("keydown", (e) => {
-        if (isOpen && !hidden && e.key === "Escape") {
+        if (e.key !== "Escape") return;
+        if (waiting()) {
+            e.preventDefault();
+            return;
+        }
+        if (isOpen && !hidden) {
             e.preventDefault();
             close("escape");
         }
@@ -813,5 +864,12 @@
         });
     });
 
-    window.BRShell = { close: (why) => close(why || "exit") };
+    // The taskbar's power button (script.js, BR-PATCH 8): waited out like
+    // Escape while the boot or the storm's close plays (round 5).
+    window.BRShell = {
+        close: (why) => {
+            if (waiting()) return;
+            close(why || "exit");
+        },
+    };
 })();

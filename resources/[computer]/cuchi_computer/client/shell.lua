@@ -71,6 +71,12 @@
 --   * The resource that opened it is remembered. If it stops while the desktop
 --     is up, the desktop comes down: br_core restarting must never strand a
 --     player inside a computer nobody is driving any more.
+--   * THE PLAYER WAITS OUT THE BOOT AND THE STORM'S CLOSE (round 5, owner
+--     2026-10-06: "they have to wait it out"). The page sends no `close` --
+--     not for Escape, the power button or the app's Escape -- while the
+--     desktop boots or the blue screen and power-off play (br.js `waiting`),
+--     so the vote stands until they end. br_core's Close, the resources
+--     stopping and the backstop below still end either.
 --   * THE STORM'S CLOSE KEEPS THE VOTE FOR ITS SCREEN, AND NO LONGER (round
 --     4, owner 2026-10-06: "If they're using it while the storm moves and
 --     they're now outside the storm, the computer should show a BSOD quickly
@@ -385,6 +391,7 @@ RegisterNUICallback('off', function(_, cb)
 end)
 
 -- Escape, or the taskbar's power button. The page has already hidden itself.
+-- Never sent while the desktop boots or the storm's close plays (round 5).
 RegisterNUICallback('close', function(data, cb)
     local why = type(data) == 'table' and data.why or nil
     shut((why == 'escape' or why == 'exit') and why or 'page', false)

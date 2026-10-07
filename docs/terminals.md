@@ -397,12 +397,18 @@ word, `offline` (a Lockdown's is `locked`; going down, walking away and the rest
 keep their own). The shell sends the page `{ type: 'br:close', storm: true }`
 for that why alone. `br.js` shuts the computer at once -- the app unloaded, a
 held last word handed back -- but keeps its page up for the screen: `#br-off`,
-a black screen over everything holding a Windows 10 style blue screen in the
-copy block's `bsod_*` words, for `BSOD_MS` (1.5 s); then `.br-crt` collapses the
-picture to a bright line, a dot and black over `CRT_MS` (0.6 s, br.css's
-`br-crt-off`, run once); then the screen is REMOVED from the page, the page
-hidden, and the shell told `off`, which releases the focus vote -- the keyboard
-goes back to the game. An opening that arrives first drops the screen at once.
+over everything, holding a Windows 10 style blue screen in the copy block's
+`bsod_*` words, for `BSOD_MS` (1.5 s); then `.br-crt` collapses the picture to
+a bright line, a dot and nothing over `CRT_MS` (0.6 s, br.css's `br-crt-off`,
+run once); then the screen is REMOVED from the page, the page hidden, and the
+shell told `off`, which releases the focus vote -- the keyboard goes back to
+the game. An opening that arrives first drops the screen at once. **It plays
+over the game** (round 5, owner 2026-10-06: "I'd like it to be transparent so
+the player can get back to worrying about the storm"): `#br-off` has no color
+of its own and `body.br-shutdown` takes the page's color away and hides the
+desktop, so only the blue picture is opaque, and as it collapses the game
+shows around it. **And it is waited out**: Escape, the power button and the
+app's Escape do nothing while it plays (below).
 A run already loading still lands by the door's contract: its last word reaches
 a computer that is no longer open and is toasted.
 
@@ -427,9 +433,17 @@ before then (its window closed, or still loading) is held and handed over on
 until the window is shown again. If the computer closes first, either goes back
 to the shell as `missed { toast }` for a toast. `ui-src/scripts/test-terminal-desktop.mjs`
 drives every one of those paths through the real `br.js`.
-Escape, on the desktop (the boot included) or inside the app, closes the
-computer -- unless a dialog or an open dropdown in the app takes it first (the
-app reads it in the capture phase). **The window** resizes from any edge or
+Escape, on the desktop or inside the app, closes the computer -- unless a
+dialog or an open dropdown in the app takes it first (the app reads it in the
+capture phase). **Not during the boot, the blue screen or the power-off**
+(owner, 2026-10-06, round 5: "the ESC key must not close the UI - they have to
+wait it out. The same should be true for the starting up screen"; this
+reverses round 2's Escape during the boot): while any of them plays, Escape,
+the taskbar's power button and the app's forwarded Escape do nothing, and the
+computer keeps the keyboard until it ends -- the boot on the desktop, the
+storm's close with `off`. `br_core`'s own closes still close it at any time,
+and the shell's 4 s backstop still lets go of a storm's close that never says
+`off`. **The window** resizes from any edge or
 corner (900x560 at least, kept inside the desktop) and maximizes to the
 desktop -- its button, or a double-click on the title bar -- and back to its
 old size and place. **The taskbar's clock** is the game's hour and minute, and

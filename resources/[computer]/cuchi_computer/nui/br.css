@@ -364,8 +364,8 @@ body.br-resizing-nw, body.br-resizing-se { cursor: nwse-resize; }
  * a BSOD quickly followed by a CRT-style visual power off").
  *
  * br.js adds #br-off over everything when br_core closes the computer for
- * the storm: a black screen holding the PICTURE, #br-bsod -- a Windows 10
- * style blue screen in the copy block's words (bsod_face, bsod_text,
+ * the storm: a see-through layer holding the PICTURE, #br-bsod -- a Windows
+ * 10 style blue screen in the copy block's words (bsod_face, bsod_text,
  * bsod_code), in the desktop's own face. After 1.5 s br.js adds .br-crt and
  * the picture powers off as an old tube does: it squeezes to a bright
  * horizontal line, the line shrinks to a dot, and the dot goes out, over
@@ -373,6 +373,16 @@ body.br-resizing-nw, body.br-resizing-se { cursor: nwse-resize; }
  * with it -- the animation runs once, never repeats, and lives only under
  * .br-crt (#385: nothing animates forever; ui-src/scripts/check-terminal.mjs
  * holds both).
+ *
+ * OVER THE GAME, NOT OVER BLACK (owner, 2026-10-06, round 5: "on the
+ * CRT-style power off, the screen has a black background. I'd like it to be
+ * transparent so the player can get back to worrying about the storm"). The
+ * blue screen fills the screen as it always did; behind it NOTHING is opaque:
+ * #br-off has no color of its own, and while the storm's close plays br.js
+ * puts .br-shutdown on <body>, which takes style.css's page color away (and
+ * its color transition, so it is gone at once) and hides the desktop and the
+ * boot screen under the picture. So as the picture collapses, the game shows
+ * around it. br.js takes the class off with the screen.
  */
 #br-off {
     position: fixed;
@@ -382,9 +392,19 @@ body.br-resizing-nw, body.br-resizing-se { cursor: nwse-resize; }
     left: 0;
     z-index: 2147483000;
     overflow: hidden;
-    background-color: #000000;
+    background-color: transparent;
     cursor: none;
     user-select: none;
+}
+
+body.br-shutdown {
+    background-color: transparent !important;
+    transition: none !important;
+}
+
+body.br-shutdown > #container,
+body.br-shutdown > #loader-container {
+    display: none !important;
 }
 
 #br-bsod {

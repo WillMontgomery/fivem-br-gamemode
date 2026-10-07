@@ -31,7 +31,10 @@
  * own document loading included) until the app says it showed.
  *
  * AND THE STORM'S CLOSE (round 4): a blue screen, then a CRT power-off, then
- * gone -- removed from the page -- and `off` said.
+ * gone -- removed from the page -- and `off` said. Round 5: it plays over the
+ * game (the page see-through behind the picture), and the player WAITS IT
+ * OUT -- Escape, the power button and the app's Escape do nothing during it,
+ * or during the boot (owner, 2026-10-06: "they have to wait it out").
  *
  * What a browser has to show (the boot screen, the windows, the colors) was
  * checked in a browser for #396's reports, not here.
@@ -245,8 +248,14 @@ function desktop() {
       win.style.visibility = 'visible'
     },
     escape: () => {
-      for (const fn of page.listeners.document.keydown || []) fn({ key: 'Escape', preventDefault: () => {} })
+      let stopped = false
+      for (const fn of page.listeners.document.keydown || []) fn({ key: 'Escape', preventDefault: () => { stopped = true } })
+      return stopped
     },
+    /** The taskbar's power button: script.js calls BRShell.close("exit"). */
+    power: () => ctx.window.BRShell.close('exit'),
+    /** Is the page see-through for the storm's close (round 5)? */
+    shutdownClass: () => body.classList.contains('br-shutdown'),
     result: (r) => D.lua({ type: 'br:result', result: r }),
     posted: () => page.posts.map((p) => `${p.name}${p.body.toast ? ':' + p.body.toast : ''}${p.body.why ? ':' + p.body.why : ''}`),
     appResults: () => page.app.filter((m) => m.type === 'result').map((m) => m.result.code + (m.result.toast ? ':' + m.result.toast : '')),
@@ -435,7 +444,8 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   const D = desktop()
   D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
   const first = D.page.timers.splice(0)
-  D.escape()
+  // br_core's close (round 5: the player can no longer cut a boot short).
+  D.lua({ type: 'br:close' })
   D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
   first.forEach((cb) => cb())
   eq(D.page.timers.length, 1, 'the second opening boots anew')
@@ -444,6 +454,38 @@ const refused = (toast) => ({ functionId: 'scan', ok: false, code: 'no_site', to
   eq(D.desk(), 'block', 'its own does: the desktop')
   D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
   eq(D.page.timers.length, 0, 'a second open while up is a refresh, not a reboot')
+}
+
+// ── the boot is waited out (owner, 2026-10-06, round 5) ──
+{
+  // "when in BSOD and CRT-style power off, the ESC key must not close the UI
+  // - they have to wait it out. The same should be true for the starting up
+  // screen." This reverses round 2's Escape during the boot.
+  const D = desktop()
+  D.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
+  eq(D.desk(), 'none', 'the boot screen is up')
+  eq(D.escape(), true, 'Escape during the boot is taken (preventDefault) ...')
+  D.power()
+  D.fromFrame({ type: 'escape' })
+  eq(D.posted().join(' | '), '', '... and neither it, the power button nor an app\'s Escape closes anything')
+  eq(D.shown(), 'block', 'the page stays up: the shell keeps the keyboard')
+  D.page.timers.splice(0).forEach((cb) => cb())
+  eq(D.desk(), 'block', 'the boot ends on the desktop, as it always did')
+  D.escape()
+  eq(D.posted().join(' | '), 'close:escape', 'and from the desktop on, Escape closes it again')
+  // The power button after the boot.
+  const E = desktop()
+  E.boot()
+  E.power()
+  eq(E.posted().join(' | '), 'close:exit', 'the power button closes the desktop once it is up')
+  // br_core's own close is never waited for: it closes a boot at once.
+  const F = desktop()
+  F.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
+  F.lua({ type: 'br:close' })
+  eq(F.shown(), 'none', 'br_core\'s close takes a boot down at once')
+  F.lua({ type: 'br:open', state: { terminalId: 'dev' }, copy: {}, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
+  F.escape()
+  eq(F.posted().join(' | '), '', 'and the next opening\'s boot is waited out the same way')
 }
 
 // ── the tab's loading symbol (owner, 2026-10-06) ──
@@ -600,16 +642,25 @@ const BSOD = { bsod_face: ':(', bsod_text: 'It ran into a problem.', bsod_code: 
   eq(D.frameSrc(), 'about:blank', 'the app is unloaded at once')
   eq(D.tabLoading(), false, 'and its tab stops loading')
   eq(D.posted().join(' | '), '', 'the shell is told nothing yet: no close (br_core closed it), no off')
-  D.escape()
-  eq(D.posted().join(' | '), '', 'Escape does nothing while the screen plays')
+  eq(D.shutdownClass(), true, 'the page goes see-through behind the picture (round 5: over the game, not black)')
+  // WAITED OUT (round 5): nothing the player does ends it.
+  eq(D.escape(), true, 'Escape on the blue screen is taken ...')
+  D.power()
+  D.fromFrame({ type: 'escape' })
+  eq(D.posted().join(' | '), '', '... and neither it, the power button nor an app\'s Escape does anything while the screen plays')
   D.wait(1499)
   eq(el.classList.contains('br-crt'), false, 'the blue screen stays for 1.5 s')
   D.wait(1)
   eq(el.classList.contains('br-crt'), true, 'then the CRT power-off starts (.br-crt, br.css\'s one run of it)')
+  eq(D.escape(), true, 'Escape during the power-off is taken too')
+  D.power()
+  eq(D.posted().join(' | '), '', 'and closes nothing: the player waits it out')
+  eq(D.shutdownClass(), true, 'the picture collapses over the game')
   D.wait(599)
   ok(D.blue() !== undefined && D.posted().length === 0, 'and runs for 0.6 s')
   D.wait(1)
   eq(D.blue(), undefined, 'then the screen is REMOVED from the page, its animation with it (#385)')
+  eq(D.shutdownClass(), false, 'the page\'s see-through class goes with it')
   eq(D.shown(), 'none', 'the page is hidden, as every close hides it')
   eq(D.posted().join(' | '), 'off', 'and the shell hears the screen is dark: the keyboard goes back')
   eq(D.pending(), 0, 'no timer is left behind')
@@ -641,6 +692,7 @@ const BSOD = { bsod_face: ':(', bsod_text: 'It ran into a problem.', bsod_code: 
   D.wait(700)
   D.lua({ type: 'br:open', state: { terminalId: 'lab' }, copy: BSOD, catalog: {}, desktop: { bootMinMs: 7000, bootMaxMs: 10000 } })
   eq(D.blue(), undefined, 'an opening takes the blue screen down at once')
+  eq(D.shutdownClass(), false, 'and the page is itself again')
   eq(D.shown(), 'block', 'and the page is up for its boot')
   D.wait(5000)
   eq(D.posted().join(' | '), '', 'the old screen\'s timers are gone: no off, no close')
@@ -752,6 +804,19 @@ const BSOD = { bsod_face: ':(', bsod_text: 'It ran into a problem.', bsod_code: 
   ok(crt && !/infinite/.test(crt[2]) && /\b1\b/.test(crt[2]) && /0\.6s/.test(crt[2]),
     'which runs once, for 0.6 s (br.js CRT_MS), and never repeats', crt && crt[2].trim())
   ok(!/animation-play-state/.test(css), 'never paused in place: removed with its class')
+  // OVER THE GAME (round 5): nothing opaque behind the picture.
+  const ruleOf = (sel) => rules.find((m) => m[1].split(',').map((x) => x.trim()).includes(sel))
+  const off = ruleOf('#br-off')
+  ok(off && /background-color:\s*transparent/.test(off[2]) && !/background-color:\s*#/.test(off[2]),
+    '#br-off has no color of its own: the CRT collapses over the game', off && off[2].trim())
+  const shut = ruleOf('body.br-shutdown')
+  ok(shut && /background-color:\s*transparent\s*!important/.test(shut[2]) && /transition:\s*none/.test(shut[2]),
+    'and .br-shutdown takes the page\'s own color away at once', shut && shut[2].trim())
+  const hid = ruleOf('body.br-shutdown > #container')
+  ok(hid && hid[1].includes('body.br-shutdown > #loader-container') && /display:\s*none\s*!important/.test(hid[2]),
+    'and hides the desktop and the boot screen under the picture')
+  const bsod = ruleOf('#br-bsod')
+  ok(bsod && /background-color:\s*#0078d7/.test(bsod[2]), 'the blue screen itself is still blue')
 }
 
 if (failed > 0) {
