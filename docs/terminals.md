@@ -659,7 +659,9 @@ Lockdown keeps is still the storm's.
   2026-10-06: "A terminal outside the storm should have no blip and no DUI -
   hence it's unusable"): nothing is sent to the prompt browser, nothing is
   drawn, the loot prompt keeps the floor, and there is nothing to press. A
-  terminal the SLOW pass has not placed yet counts as outside. The server
+  terminal the SLOW pass has not placed yet counts as outside, and so does a
+  locked one: the online rule answers `locked` before it asks the storm, so
+  the plate asks the storm first (`w.outside`). The server
   still refuses a use there, aloud (`offline`), for a client a step behind
   the storm.
 - **A press of interact** sends TERMINAL_USE (it was an 800 ms hold until

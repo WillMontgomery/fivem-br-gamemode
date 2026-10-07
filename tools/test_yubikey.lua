@@ -1513,6 +1513,31 @@ do
     W.tick()
     eq(W.lastPrompt().hint, COPY.terminal_use, 'at the tower it is business as usual')
 
+    -- Locked AND outside the storm: no plate at all, not the locked one (round
+    -- 4: "A terminal outside the storm should have no blip and no DUI"). The
+    -- online rule answers 'locked' before it asks the storm; the plate asks
+    -- the storm first.
+    W.ped = { x = HUT.x + 1.0, y = HUT.y, z = HUT.z }
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.locked, 'back at the hut, inside the storm: locked')
+    W.B.State.storm = stormAway(W.B, W.now)
+    W.slow()
+    W.tick()
+    eq(W.lastPrompt().show, false, 'the storm leaves the locked hut: its plate comes down, locked or not')
+    eq(W.B.Yubikey.prompting(), false, 'and nothing is up for the loot prompt to give way to')
+    W.net(W.B.Net.TERMINAL_SITES, { placed = {}, removed = {}, forced = { 'hut' } })
+    W.slow()
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.locked, 'forced online by the dev tool, the storm does not have it: locked, as inside')
+    W.net(W.B.Net.TERMINAL_SITES, { placed = {}, removed = {}, forced = {} })
+    W.slow()
+    W.tick()
+    eq(W.lastPrompt().show, false, 'unforced, outside again: no plate')
+    W.B.State.storm = stormAround(W.B, W.now)
+    W.slow()
+    W.tick()
+    eq(W.lastPrompt().hint, COPY.locked, 'the storm back over it: locked again')
+
     lock = nil
     W.slow()
     eq(W.spriteBlips(BR.Config.Terminals.art.blipSprite), 4, 'the Lockdown over: both again')
