@@ -3564,6 +3564,7 @@ local function clientWorld()
     loadAll({
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
+        'br_lib/config/map.lua',
         'br_lib/config/terminals.lua',
         'br_lib/shared/terminal_solve.lua',
     })
@@ -3713,6 +3714,27 @@ GetVehiclePedIsIn = counted(function() return VW.inVeh end)
 GetCurrentResourceName = GetCurrentResourceName or function() return 'br_core' end
 Citizen = Citizen or {}
 Citizen.SetTimeout = function(ms, fn) VW.timers[#VW.timers + 1] = { ms = ms, fn = fn } end
+-- ROUND 7: the road speed zones NPC traffic obeys. [handle] = { x, y, z, r,
+-- speed, mission }; `added` and `removed` count every call, a removal of a
+-- handle not laid included.
+VW.zones, VW.added, VW.removed, VW.zoneSeq = {}, 0, 0, 0
+function AddRoadNodeSpeedZone(x, y, z, r, speed, mission)
+    VW.added = VW.added + 1
+    VW.zoneSeq = VW.zoneSeq + 1
+    VW.zones[VW.zoneSeq] = { x = x, y = y, z = z, r = r, speed = speed, mission = mission }
+    return VW.zoneSeq
+end
+function RemoveRoadNodeSpeedZone(h)
+    VW.removed = VW.removed + 1
+    local was = VW.zones[h] ~= nil
+    VW.zones[h] = nil
+    return was
+end
+local function vzones()
+    local n = 0
+    for _ in pairs(VW.zones) do n = n + 1 end
+    return n
+end
 
 --- A vehicle this client knows: net id = handle + 1000.
 local function vnew(h, o)
@@ -3917,6 +3939,127 @@ do
     W.slow()
     eq(select(2, F.empState()), 0, 'a held car gone from scope: forgotten, nothing to write')
     W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
+    W.done()
+end
+
+describe('client: EMP -- NPC traffic stops: speed zones at 0 over the whole map while any EMP lasts (round 7)')
+do
+    -- Owner, 2026-10-07: "The EMP doesn't work for NPC vehicles. We should
+    -- probably use speed zones for this and set it to 0."
+    vreset()
+    VW.zones, VW.added, VW.removed = {}, 0, 0
+    local W = clientWorld()
+    local F = W.F
+    local T = BR.Config.Terminals.fx.empTraffic
+
+    -- NEVER WHILE NO EMP LASTS: getting in, SLOW passes, an empty fact.
+    vnew(11, { engine = true })
+    vgetIn(W, 11)
+    for _ = 1, 3 do W.slow() end
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
+    vgetOut(11)
+    W.slow()
+    eq(VW.added, 0, 'no EMP: no speed zone is ever laid')
+
+    -- AN EMP GOES OFF -- spared or not, every client in the match lays them.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, liveMs = 180000 })
+    local n = vzones()
+    ok(n > 0 and n == F.empTraffic() and VW.added == n, 'spared, an EMP lasting: the zones are laid at once', n)
+    local allStop, noMission = true, true
+    for _, z in pairs(VW.zones) do
+        if z.speed ~= 0.0 then allStop = false end
+        if z.mission ~= false then noMission = false end
+    end
+    ok(allStop, 'every one at speed 0: NPC traffic stops where it is')
+    ok(noMission, 'and none reaches a script vehicle (allowAffectMissionVehs false)')
+    ok(n <= 40, 'a handful of zones, not hundreds', n)
+    -- THE WHOLE MAP: every point of the surveyed boundary's box, at every
+    -- height a road reaches, inside a zone -- measured as a sphere, which is
+    -- the stricter of the two the game could mean.
+    local B = BR.Config.Map.Boundary
+    local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+    for _, p in ipairs(B) do
+        minX, maxX = math.min(minX, p.x), math.max(maxX, p.x)
+        minY, maxY = math.min(minY, p.y), math.max(maxY, p.y)
+    end
+    local function covered(x, y, z)
+        for _, c in pairs(VW.zones) do
+            local dx, dy, dz = x - c.x, y - c.y, z - c.z
+            if dx * dx + dy * dy + dz * dz <= c.r * c.r then return true end
+        end
+        return false
+    end
+    local missed, probes = 0, 0
+    local step = 125.0
+    for x = minX - T.marginM, maxX + T.marginM, step do
+        for y = minY - T.marginM, maxY + T.marginM, step do
+            for _, z in ipairs({ -100.0, 0.0, 400.0, 800.0 }) do
+                probes = probes + 1
+                if not covered(x, y, z) then missed = missed + 1 end
+            end
+        end
+    end
+    for _, p in ipairs(B) do
+        probes = probes + 1
+        if not covered(p.x, p.y, 800.0) then missed = missed + 1 end
+    end
+    eq(missed, 0, ('every one of %d points over the play area, -100 m to 800 m up, is inside a zone'):format(probes))
+
+    -- A SECOND EMP, AND THE SLOW PASSES WHILE THEY LAST: nothing laid twice.
+    local added = VW.added
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 60000, liveMs = 240000 })
+    for _ = 1, 3 do W.slow() end
+    ok(VW.added == added and VW.removed == 0 and vzones() == n, 'another EMP and three SLOW passes: laid once, kept')
+
+    -- THE END FROM THE SERVER -- its EMPs over, or the match ending, which
+    -- the server says the same way (no liveMs): every zone lifted, once.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
+    ok(vzones() == 0 and VW.removed == n and F.empTraffic() == 0, 'the server\'s end: every zone lifted, each once')
+    W.slow()
+    eq(VW.removed, n, 'and nothing lifted twice')
+
+    -- ITS OWN CLOCK, with no end from the server.
+    local t0 = gameMs
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, liveMs = 1000 })
+    eq(vzones(), n, 'a short one: laid')
+    gameMs = t0 + 999
+    W.slow()
+    eq(vzones(), n, 'at 0.999 s still laid')
+    gameMs = t0 + 1000
+    W.slow()
+    eq(vzones(), 0, 'at 1 s, on the client\'s own clock: lifted')
+
+    -- THE LOBBY.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, liveMs = 180000 })
+    eq(vzones(), n, 'laid')
+    BR.State.me.state = BR.PlayerState.LOBBY
+    W.slow()
+    eq(vzones(), 0, 'back in the lobby: lifted')
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    -- SEASON 2 SWITCHED OFF, and a fact arriving there.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, liveMs = 180000 })
+    W.season = 1
+    W.slow()
+    eq(vzones(), 0, 'off Season 2: lifted')
+    added = VW.added
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, liveMs = 180000 })
+    eq(VW.added, added, 'and a fact arriving there lays none')
+    W.season = 2
+    W.slow()
+
+    -- BR_CORE STOPPING.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, liveMs = 180000 })
+    W.handlers.onResourceStop('another_resource')
+    eq(vzones(), n, 'another resource stopping: kept')
+    W.handlers.onResourceStop('br_core')
+    eq(vzones(), 0, 'br_core stopping: lifted')
+    eq(VW.added, VW.removed, 'every zone ever laid was lifted')
+
+    -- THE PAGE SAYS IT.
+    for _, key in ipairs({ 'emp_what', 'emp_what_solo' }) do
+        ok(W.C[key]:find('\nNPC traffic stops too.\n', 1, true) ~= nil, key .. ' says NPC traffic stops too')
+    end
     W.done()
 end
 

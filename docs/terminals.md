@@ -406,7 +406,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_SCAN` | S→C | `{ matchId, list = { { s, x, y, down? } } }` | Scan: every opponent's position, to the scanning squad alone (dead and spectating members included), every `fx.scanPingMs` for the rest of the match. A squad under Ghost is left out. |
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
 | `BR.Net.TERMINAL_IMPACTS` | S→C | `{ list = { { key, text, endsAt?, tail? } } }` | The persistent notices (round 4): this player's whole list, to them alone, when it changes -- a row came or went or its end moved -- on a 1 s pass (`fx.endCheckMs`) and at once after a run's effect. `text` is picked for them (squad or solo); `endsAt` is the server's clock, or `tail` (`impact_until_end`) stands in for it. `client/terminalfx.lua` hands it to br_ui as `BR.Nui.IMPACTS`. |
-| `BR.Net.TERMINAL_EMP` | S→C | `{ matchId, leftMs?, liveMs? }` | EMP (round 4): how long this player's driving stalls from now (absent when every EMP in force spares their squad) and how long any EMP in the match lasts (absent with none). To the whole match when one goes off and when one ends (its time, the match's end, Season 1), and on `br:ready` while one lasts. `client/terminalfx/emp.lua` applies it to the vehicle its own player drives. |
+| `BR.Net.TERMINAL_EMP` | S→C | `{ matchId, leftMs?, liveMs? }` | EMP (round 4): how long this player's driving stalls from now (absent when every EMP in force spares their squad) and how long any EMP in the match lasts (absent with none). To the whole match when one goes off and when one ends (its time, the match's end, Season 1), and on `br:ready` while one lasts. `client/terminalfx/emp.lua` applies it to the vehicle its own player drives, and (round 7) lays the road speed zones that stop NPC traffic while `liveMs` lasts. |
 | `BR.Net.TERMINAL_DROP_FIND` | S→C | `{ nonce, r, minM, everyMs, forMs }` / `{ nonce, stop }` | Vehicle drop (round 5): to the ONE player the car is for, as the run is accepted -- look for somewhere to land it within `r`, at least `minM` from yourself, and answer every `everyMs` until `stop` or `forMs`. |
 | `BR.Net.TERMINAL_DROP_SPOT` | C→S | `{ nonce, x, y, z, h }` / `{ nonce, none }` | That client's best road or open ground. Taken only from the player asked, for the nonce asked, at most twenty a search, and only if `BR.TerminalSolve.dropCheck` passes against the server's own samples; the last good one stands, `none` changes nothing, and it is checked again when the car drops. |
 | `BR.Net.TERMINAL_DROP` | S→C | `{ matchId, id, netId, x, y, z, h, tRelease, tLand, alt, blip? }` / `{ matchId, id, x, y }` / `{ matchId, id, off }` | A Vehicle drop: its descent to the whole match as it drops (`blip` for the squad it is for); the blip moved, and taken off, to that squad alone; again to a squadmate on `br:ready` while it lasts. |
@@ -1352,6 +1352,25 @@ match, and off Season 2. Nothing per frame; with no EMP and nothing written
 the SLOW hook calls no native. Nothing is created, deleted, moved or marked:
 `server/vehicles.lua`'s creation rule, the fuel ledger and
 `sv_entityLockdown` are untouched.
+
+**NPC traffic stops too** (round 7, owner 2026-10-07: "The EMP doesn't work
+for NPC vehicles. We should probably use speed zones for this and set it to
+0."). While any EMP lasts (`liveMs` -- every player in the match is sent it,
+the runner's squad included), every client lays road speed zones at 0
+(`AddRoadNodeSpeedZone`, p5 false) over the play area, and lifts each one
+(`RemoveRoadNodeSpeedZone`) when none lasts: the server's end push (its time,
+the match ending), its own clock, the lobby, Season 2 switched off, br_core
+stopping. No server state was added. The research, in
+`client/terminalfx/emp.lua`'s header: speed is in m/s and 0 holds the cars
+where they are (forum.cfx.re/t/162682, /t/4871954); Rockstar's own comment on
+the native says only cars running a cruise task obey it, so no player's own car
+slows; a zone is local to the machine that lays it (/t/846551), so each client
+lays its own for the AI cars it drives. Nothing found documents a cap on the
+radius or the number of zones, so it is a grid (`fx.empTraffic`: cells of at
+most 2,500 m over the boundary's box plus 500 m, a 2,000 m zone each at
+z 300 -- 20 zones), which covers every road whether the game measures a
+sphere or a circle. Whether the game holds all 20 is only checkable in game.
+`emp_what` says "NPC traffic stops too." (WRITTEN, round 7).
 
 **Comms blackout is one predicate.** `BR.Terminal.blackedOut(m, key, now)`: a
 blackout run by another squad, in force, in a match being played, on Season

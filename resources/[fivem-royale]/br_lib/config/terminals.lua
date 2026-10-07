@@ -1155,9 +1155,13 @@ BR.Config.Terminals = {
         -- you choose stalls and won't start.\nVehicles that drive in after it
         -- goes off aren't affected.\nThey start again when it ends."). It is
         -- the DRIVER that decides (server/terminalfx/emp.lua): a car stalls
-        -- while anybody but the squad drives it, wherever it is.
-        emp_what = "For 3 minutes, every vehicle in the match stalls and won't start while a player outside your squad is driving it.\nVehicles your squad drives keep working, unless another squad's EMP is going off too. If someone outside your squad takes the wheel, it stalls.\nVehicles start again when it ends, unless another EMP is still going off.",
-        emp_what_solo = "For 3 minutes, every vehicle in the match stalls and won't start while another player is driving it.\nVehicles you drive keep working, unless another player's EMP is going off too. If another player takes the wheel, it stalls.\nVehicles start again when it ends, unless another EMP is still going off.",
+        -- while anybody but the squad drives it, wherever it is. WRITTEN
+        -- (round 7, proposal for the owner): the second line, "NPC traffic
+        -- stops too." (owner, 2026-10-07: "The EMP doesn't work for NPC
+        -- vehicles. We should probably use speed zones for this and set it
+        -- to 0." -- client/terminalfx/emp.lua).
+        emp_what = "For 3 minutes, every vehicle in the match stalls and won't start while a player outside your squad is driving it.\nNPC traffic stops too.\nVehicles your squad drives keep working, unless another squad's EMP is going off too. If someone outside your squad takes the wheel, it stalls.\nVehicles start again when it ends, unless another EMP is still going off.",
+        emp_what_solo = "For 3 minutes, every vehicle in the match stalls and won't start while another player is driving it.\nNPC traffic stops too.\nVehicles you drive keep working, unless another player's EMP is going off too. If another player takes the wheel, it stalls.\nVehicles start again when it ends, unless another EMP is still going off.",
         -- WRITTEN (2026-10-06, round 4; was '30 seconds or 1 minute, as
         -- chosen').
         emp_duration = '3 minutes',
@@ -1861,6 +1865,18 @@ BR.Config.Terminals = {
         -- The page says it (emp_what, emp_duration), and
         -- tools/test_terminalfx.lua holds the two together.
         empMs = 3 * 60 * 1000,
+        -- AND NPC TRAFFIC STOPS (round 7, owner: "We should probably use speed
+        -- zones for this and set it to 0."): while any EMP lasts, every
+        -- client in the match lays road speed zones at 0 over the play area
+        -- (client/terminalfx/emp.lua's header has the research). A grid over
+        -- the surveyed boundary's box widened by marginM, in cells of at most
+        -- cellM, one zone of radiusM per cell, centered at height z: the
+        -- farthest point of a cell is half its diagonal away (1,768 m at
+        -- 2,500), and a road 500 m above or below z still sits inside 2,000 m
+        -- -- so every road is covered whether the game measures the zone as a
+        -- sphere or a circle. 20 zones on the 2026-10 boundary.
+        -- tools/test_terminalfx.lua holds the cover to every point.
+        empTraffic = { cellM = 2500.0, radiusM = 2000.0, z = 300.0, marginM = 500.0 },
 
         -- ── round 5 (2026-10-06): Vehicle drop ──
         --
