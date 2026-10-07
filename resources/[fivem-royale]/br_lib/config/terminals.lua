@@ -800,17 +800,6 @@ BR.Config.Terminals = {
         -- the area is 1 km around a spot picked on the map in the confirm box.
         power_outage_opt_area_spot = 'Around a spot you pick',
         power_outage_opt_area_spot_desc = 'Everything within 1 km of the spot you pick on the map.',
-        -- GOING: the old choice's lines, kept only while the registry row
-        -- below still lists `here` -- the row's change to `spot` (the app's
-        -- half of round 6) takes these two out with it. Nothing runs `here`.
-        power_outage_opt_area_here = 'Around this terminal',
-        power_outage_opt_area_here_desc = 'Everything within 1 km of this terminal.',
-        -- ROUND 6: the area's first choice is a spot the player picks on the
-        -- map in the confirm box (the row's `spot = { when = { area = 'spot'
-        -- } }`), which replaces "Around this terminal" (owner: 'Any use of
-        -- "near this terminal" is like, not useful for this gamemode').
-        -- WRITTEN (round 6, proposal for the owner)
-        power_outage_opt_area_spot = 'Around a spot you pick',
         power_outage_opt_area_city = 'Los Santos',
         power_outage_opt_area_city_desc = 'The whole city.',
         power_outage_opt_area_county = 'Blaine County',

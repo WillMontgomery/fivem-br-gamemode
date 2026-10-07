@@ -851,6 +851,42 @@ local function readFile(path)
     return text
 end
 
+describe('round 6: every option line names its option and a choice, and no copy line is written twice')
+do
+    -- Merging round 6 left Power outage's "Around this terminal" lines behind
+    -- a row that no longer offered `here`, and "Around a spot you pick" written
+    -- twice in the copy table -- neither an error Lua raises.
+    bootServer()
+    local C = BR.Config.Terminals
+    for _, row in ipairs(C.functions) do
+        local prefix = row.id .. '_opt_'
+        for key in pairs(C.copy) do
+            if key:sub(1, #prefix) == prefix then
+                local rest, known = key:sub(#prefix + 1), false
+                for _, o in ipairs(row.options or {}) do
+                    if rest == o.id or rest == o.id .. '_solo' then known = true end
+                    for _, ch in ipairs(o.choices or {}) do
+                        for _, tail in ipairs({ '', '_desc', '_solo' }) do
+                            if rest == o.id .. '_' .. ch .. tail then known = true end
+                        end
+                    end
+                end
+                ok(known, ('%s names an option of %s and one of its choices'):format(key, row.id))
+            end
+        end
+    end
+    local text = readFile(ROOT .. 'br_lib/config/terminals.lua') or ''
+    local s = text:find('\n    copy = {', 1, true)
+    local e = s and text:find('\n    },', s, true)
+    ok(s ~= nil and e ~= nil, 'the copy table is found in config/terminals.lua')
+    local seen, twice = {}, {}
+    for key in (s and e and text:sub(s, e) or ''):gmatch('\n        ([%w_]+) = ') do
+        if seen[key] then twice[#twice + 1] = key end
+        seen[key] = true
+    end
+    eq(table.concat(twice, ', '), '', 'no copy line is written twice')
+end
+
 describe('round 4: the cards\' cost and bounty, and Squads! on every squad-wide row')
 do
     bootServer()
