@@ -482,6 +482,7 @@ export function App(): ReactElement {
           }}
           onPick={(id) => pick(id)}
           picked={picked}
+          mates={state.mates}
         />
       )
     }

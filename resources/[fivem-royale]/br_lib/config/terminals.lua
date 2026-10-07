@@ -358,6 +358,12 @@ BR.Config.Terminals = {
         -- WRITTEN (round 4). The Cost filter's choice for every function that
         -- costs Volts.
         cost_paid = 'Paid',
+        -- WRITTEN (2026-10-06, round 5). A card's cost when it depends on the
+        -- options chosen and the cheapest choice is free (Gear Up: free for
+        -- you or a teammate, Volts for the whole squad -- the registry row's
+        -- `costBy`). {volts} is the most it can cost, in the Volts style. The
+        -- Cost filter lists such a card under both Free and Paid.
+        cost_free_or = 'Free, or {volts}',
         -- WRITTEN (round 4). A card's bounty, from its registry row's
         -- `bounty`: none, the runner gets one (Scan), another player gets
         -- one (Contract). The Bounty filter's choices too.
@@ -817,6 +823,72 @@ BR.Config.Terminals = {
         max_ammo_description = "Max ammo. Their squad's ammo is full.",
         max_ammo_description_solo = 'Max ammo. Their ammo is full.',
 
+        -- Gear Up (owner's, round 5, 2026-10-06; he named it). Its name is his
+        -- word, VERBATIM; every other line is WRITTEN for his review. "give
+        -- something to themselves - anything of their choice - any inventory
+        -- item or weapon which is not a heavy sniper or machine gun ... the
+        -- item they choose can also be given to a teammate, or for a charge of
+        -- 200 volts the whole team can get them. If they choose a consumable,
+        -- they are given the maxCarry quantity of that item."
+        gear_up_name = 'Gear Up',
+        gear_up_summary = 'Gives you, a teammate or your whole squad an item or weapon you choose.',
+        gear_up_summary_solo = 'Gives you an item or weapon you choose.',
+        -- The 'mg' class and the Heavy Sniper are left out (gearUp, below); a
+        -- consumable or throwable comes at a full stack clamped to what the
+        -- player may carry (its carryMax), a weapon as one found in a crate
+        -- does (a full magazine and one spare); nobody standing, or nobody
+        -- with room, is refused before anything is spent.
+        gear_up_what = "Pick an item or weapon from the list. The Heavy Sniper and machine guns aren't on it.\nA consumable or a throwable comes as a full stack, up to what you can carry. A weapon comes loaded, with one spare magazine.\nIt goes to you or one teammate for free, or to everyone in your squad for Volts.\nOnly a player who is standing, with room in their inventory, can get it.",
+        gear_up_what_solo = "Pick an item or weapon from the list. The Heavy Sniper and machine guns aren't on it.\nA consumable or a throwable comes as a full stack, up to what you can carry. A weapon comes loaded, with one spare magazine.\nYou need room for it in your inventory.",
+        -- The dropdown of items. Each item's own line, gear_up_opt_item_<id>,
+        -- is the game's name for it (its `label` in the weapons and loot
+        -- configs), written in below as the list is built: no words of ours.
+        gear_up_opt_item = 'Item',
+        -- Who gets it. Outside a squad match the whole choice is not shown
+        -- (the empty `_solo` lines): it is always you.
+        gear_up_opt_who = 'Who gets it',
+        gear_up_opt_who_solo = '',
+        gear_up_opt_who_self = 'You',
+        gear_up_opt_who_mate = 'One teammate',
+        gear_up_opt_who_mate_solo = '',
+        gear_up_opt_who_squad = 'Everyone in your squad',
+        gear_up_opt_who_squad_solo = '',
+        -- The dropdown of standing teammates, shown when "One teammate" is
+        -- picked. Each choice is the teammate's name, as the squad panel and
+        -- the match panel write it: no words of ours.
+        gear_up_opt_mate = 'Teammate',
+        gear_up_duration = 'Instant',
+        gear_up_affects = 'You, one teammate or your whole squad, as chosen',
+        gear_up_affects_solo = 'You',
+        gear_up_notified = 'Everyone in the match, and any teammate who gets it',
+        gear_up_notified_solo = 'Everyone in the match',
+        -- One line for every choice: the runner's own inventory, a teammate's
+        -- or the squad's.
+        gear_up_done = 'The gear is handed out.',
+        gear_up_description = 'Gear Up. They handed out gear of their choice.',
+        -- A toast to each teammate who got it from someone else's run (never
+        -- the runner), after the lobby's notice: {playername} is the runner,
+        -- {description} what they got ("Assault Rifle", "3 Med Kits"). Only
+        -- in a squad match, where a teammate can be picked; it says no squad.
+        gear_up_received = '{playername} used Gear Up to give you: {description}.',
+        -- Why it cannot run, at the terminal -- refused, spending nothing, the
+        -- Volts included. The player it would go to is not standing (downed,
+        -- in the air, out, or gone)...
+        gear_standing = 'Only a player who is standing can get it.',
+        -- ...the teammate picked is not one who can (no longer standing, or
+        -- no longer a teammate)...
+        gear_no_mate = "That teammate can't get it. Pick a teammate who is standing.",
+        -- ...already carrying as many as they may (its carryMax)...
+        gear_full = "You're already carrying as many of those as you can.",
+        gear_full_mate = 'Your teammate is already carrying as many of those as they can.',
+        gear_full_squad = 'Everyone in your squad who is standing is already carrying as many of those as they can.',
+        gear_full_squad_solo = '',
+        -- ...or with no free slot for it (and no stack of it to top up).
+        gear_no_room = "You don't have room in your inventory for it.",
+        gear_no_room_mate = "Your teammate doesn't have room in their inventory for it.",
+        gear_no_room_squad = "Someone in your squad doesn't have room in their inventory for it.",
+        gear_no_room_squad_solo = '',
+
         -- Reboot (suggested; LIVE since wave C, 2026-10-06)
         reboot_name = 'Reboot',
         -- WRITTEN (2026-10-06, wave C review; was "...back at this terminal."):
@@ -1218,6 +1290,25 @@ BR.Config.Terminals = {
     --                `<id>_description`, and its page leaves out risk_notice.
     --                Opening a terminal with a key still tells the lobby
     --                (notice_access), whatever is run after.
+    --   costBy       a price that depends on the options (round 5, Gear Up:
+    --                "for a charge of 200 volts the whole team can get them"):
+    --                { option = <option id>, choices = { [<choice>] = Volts } }.
+    --                A run whose option has a listed choice costs that, any
+    --                other `cost` (BR.Terminal.costOf). The figures are held
+    --                to 0..200 like `cost`; the app shows the run's own price
+    --                on the page and in the confirm box, and the card says
+    --                cost_free_or.
+    --
+    -- AN OPTION MAY ALSO HAVE (round 5):
+    --
+    --   source       its choices are listed by the server at the moment, not
+    --                here: 'mates', this player's standing teammates in a squad
+    --                match (the state's `mates`, each a server id as a string
+    --                and a name). The door takes any well-formed id for it and
+    --                the function says whether it is still one (Gear Up's
+    --                gear_no_mate). No `choices`, no default.
+    --   dropdown     true to draw it as a dropdown, not radio buttons: a long
+    --                list (Gear Up's items) or a list of names.
     --
     -- The server half of a built function is BR.Terminal.FUNCTIONS[id] in
     -- br_core/server/terminal.lua: an optional `refuse` and a `run`.
@@ -1272,6 +1363,20 @@ BR.Config.Terminals = {
         { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
           spot = true },
         { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true, squadWide = true },
+        -- ROUND 5 (owner, 2026-10-06, his name for it): any item or weapon
+        -- but a heavy sniper or a machine gun, from a dropdown, to the runner,
+        -- one standing teammate, or -- for 200 Volts -- the whole squad. The
+        -- item's choices are filled in below from the weapons and loot
+        -- configs (`gearUp`); the teammate's are listed by the server
+        -- (`source`). A consumable or throwable comes at a full stack up to
+        -- its carryMax. server/terminalfx/gear_up.lua.
+        { id = 'gear_up',        category = 'supply',     risk = 'low',    implemented = true,
+          costBy = { option = 'who', choices = { squad = 200 } },
+          options = {
+              { id = 'item', choices = {}, default = 'pistol', dropdown = true },
+              { id = 'who', choices = { 'self', 'mate', 'squad' }, default = 'self' },
+              { id = 'mate', when = { who = 'mate' }, source = 'mates', dropdown = true },
+          } },
         -- SQUAD-ONLY (round 2): it brings back squadmates. LIVE SINCE WAVE C
         -- (2026-10-06): server/terminalfx/reboot.lua, through the revive key's
         -- own return (BR.ReviveKey.bringBackAt).
@@ -1413,8 +1518,80 @@ BR.Config.Terminals = {
         empMs = 3 * 60 * 1000,
     },
 
+    -- ═══ GEAR UP'S LIST (round 5, owner 2026-10-06) ═══
+    --
+    -- "any inventory item or weapon which is not a heavy sniper or machine
+    -- gun." THE LIST IS EVERY ITEM THE WEAPONS AND LOOT CONFIGS DEFINE, built
+    -- below as this file loads (after config/weapons.lua and config/loot.lua,
+    -- as br_core's manifest has it), in their order: the guns
+    -- (BR.Config.Weapons), the airdrop shelf (AirdropWeapons), melee,
+    -- throwables, then the consumables and the CPR kit. LEFT OUT:
+    --
+    --   excludeClasses  every gun of these `class`es (config/weapons.lua):
+    --                   'mg', the machine guns -- the MG, the Gusenberg
+    --                   Sweeper, the Combat MG and its Mk II -- and the
+    --                   minigun, which is filed and fed with them
+    --   excludeWeapons  these ids: the Heavy Sniper, by its own name. The
+    --                   other three scoped rifles (Marksman Rifle, Sniper
+    --                   Rifle, Marksman Mk II) are on the list
+    --
+    -- AND NEVER ON IT, BY CONSTRUCTION (nothing below reads them): ammo (a
+    -- pool, not a slot -- a weapon brings its spare magazine, and Max ammo is
+    -- its own tool), the Yubikey and the revive key (owned, never carried),
+    -- fists, and the shop's car tokens (config/shop.lua's, not the loot's).
+    gearUp = {
+        excludeClasses = { 'mg' },
+        excludeWeapons = { 'heavysniper' },
+    },
+
     -- The server drops a second run request from one player sooner than this
     -- after the last. A run is one click and the button disables itself while
     -- it waits, so anything faster is not a person.
     runMinIntervalMs = 500,
 }
+
+-- ═══ GEAR UP'S ITEMS, RESOLVED AS THIS FILE LOADS ═══
+--
+-- The `item` option's choices and each one's line, gear_up_opt_item_<id> --
+-- the item's own `label`, the name the inventory and the ground already show
+-- -- from the configs `gearUp` names. A config that is not loaded adds
+-- nothing (a harness that loads this file alone has an empty list, and the
+-- door refuses every item). The default stays the row's when it is listed,
+-- or becomes the first item.
+do
+    local C = BR.Config.Terminals
+    local G = C.gearUp or {}
+    local skipClass, skipId = {}, {}
+    for _, c in ipairs(G.excludeClasses or {}) do skipClass[c] = true end
+    for _, id in ipairs(G.excludeWeapons or {}) do skipId[id] = true end
+    local row = nil
+    for _, r in ipairs(C.functions) do
+        if r.id == 'gear_up' then row = r end
+    end
+    local itemOpt = nil
+    for _, o in ipairs(row and row.options or {}) do
+        if o.id == 'item' then itemOpt = o end
+    end
+    if itemOpt then
+        local items, seen = {}, {}
+        local function add(def)
+            if type(def) ~= 'table' or type(def.id) ~= 'string' or seen[def.id] then return end
+            if skipId[def.id] or (def.class ~= nil and skipClass[def.class]) then return end
+            if type(def.label) ~= 'string' or def.label == '' then return end
+            seen[def.id] = true
+            items[#items + 1] = def.id
+            C.copy['gear_up_opt_item_' .. def.id] = def.label
+        end
+        local K = BR.Config
+        for _, list in ipairs({ K.Weapons, K.AirdropWeapons, K.Melee, K.Throwables, K.Consumables }) do
+            for _, def in ipairs(list or {}) do add(def) end
+        end
+        add(K.CprKit)
+        itemOpt.choices = items
+        local listed = false
+        for _, id in ipairs(items) do
+            if id == itemOpt.default then listed = true end
+        end
+        if not listed then itemOpt.default = items[1] end
+    end
+end

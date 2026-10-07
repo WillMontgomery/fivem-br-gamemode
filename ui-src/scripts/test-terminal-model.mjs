@@ -30,7 +30,8 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, costOf, current, filtersOf, hrefOf,
+  HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, choicesOf, costFor, costOf,
+  costRange, costsOf, current, filtersOf, hrefOf, valueOf,
   indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, placeText,
   progressAfter, rewrite, risksOf, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions,
   shownOptions, speaker, startBrowsing, startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
@@ -611,6 +612,104 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   const back = step(there, 'back').browsing
   eq(filtersOf(current(back.history)).status, 'available', 'back from a function: the filters are as they were')
   ok(passes(fn.scan, states.get('scan'), NO_FILTERS), 'Any passes everything')
+}
+
+// ── round 5 (owner, 2026-10-06): Gear Up's dropdowns, its teammates, its price ──
+{
+  // "a selection from a dropdown list within the tool, and the item they
+  // choose can also be given to a teammate, or for a charge of 200 volts the
+  // whole team can get them."
+  const cat = parseCatalog({
+    functions: [
+      { id: 'gear_up', category: 'supply', risk: 'low', implemented: true,
+        costBy: { option: 'who', choices: { squad: 200 } },
+        options: [
+          { id: 'item', choices: ['pistol', 'medkit', 'grenade'], default: 'pistol', dropdown: true },
+          { id: 'who', choices: ['self', 'mate', 'squad'], default: 'self' },
+          { id: 'mate', when: { who: 'mate' }, source: 'mates', dropdown: true },
+        ] },
+      { id: 'scan', category: 'intel', risk: 'high', implemented: true, cost: 200 },
+      { id: 'storm_reveal', category: 'intel', risk: 'low', implemented: true },
+      { id: 'odd', category: 'intel', risk: 'low', implemented: true,
+        costBy: { option: 'who', choices: { squad: 900 } } },
+    ],
+    categories: ['intel', 'supply'],
+  })
+  const fn = Object.fromEntries(cat.functions.map((f) => [f.id, f]))
+  const g = fn.gear_up
+  const [item, who, mate] = g.options
+  ok(item.dropdown === true && item.source === null, 'the item: a dropdown of its own list')
+  ok(who.dropdown === false && who.source === null, 'who gets it: radio buttons')
+  ok(mate.source === 'mates' && mate.dropdown === true && mate.choices.length === 0 && mate.default === '',
+    'the teammate: a dropdown of the state\'s teammates, no list or default of its own')
+  eq(JSON.stringify(g.costBy), '{"option":"who","choices":{"squad":200}}', 'the price by who gets it, parsed')
+  eq(fn.odd.costBy, null, 'a figure past 200 is no price: dropped')
+  eq(fn.scan.costBy, null, 'a row with none has none')
+
+  // THE PRICE OF THESE CHOICES.
+  eq(costFor(g, {}), 0, 'nothing chosen: yourself, free')
+  eq(costFor(g, { who: 'mate' }), 0, 'one teammate: free')
+  eq(costFor(g, { who: 'squad' }), 200, 'the whole squad: 200')
+  eq(costFor(fn.scan, {}), 200, 'a row with one price: that price')
+  eq(JSON.stringify(costRange(g)), '{"min":0,"max":200}', 'Gear Up costs 0 to 200')
+  eq(JSON.stringify(costRange(fn.scan)), '{"min":200,"max":200}', 'Scan, 200 whatever')
+  eq(costsOf(g).join(','), 'free,paid', 'the Cost filter finds it under both')
+  eq(costsOf(fn.scan).join(','), 'paid', 'Scan only under Paid')
+  eq(costsOf(fn.storm_reveal).join(','), 'free', 'Storm reveal only under Free')
+  eq(costOf(g), 'free', 'its cheapest choice is free')
+  ok(passes(g, undefined, { ...NO_FILTERS, cost: 'free' }) && passes(g, undefined, { ...NO_FILTERS, cost: 'paid' }),
+    'and it passes either Cost filter')
+  ok(!passes(fn.scan, undefined, { ...NO_FILTERS, cost: 'free' }), 'Scan does not pass Free')
+
+  // THE TEAMMATES, FROM THE STATE.
+  const st = parseState({ terminalId: 't', functions: [], mates: [
+    { id: '12', name: 'Bravo' }, { id: '7', name: 'Charlie' }, { id: 'x y', name: 'bad' }, { id: '9' }, 'nope',
+  ] })
+  eq(st.mates.map((m) => `${m.id}=${m.name}`).join(','), '12=Bravo,7=Charlie', 'well-formed teammates kept, the rest dropped')
+  eq(parseState({ terminalId: 't', functions: [] }).mates.length, 0, 'none sent: none')
+  const mates = st.mates
+  eq(valueOf(mate, {}, mates), '12', 'nobody picked: the first teammate listed')
+  eq(valueOf(mate, { mate: '7' }, mates), '7', 'a teammate picked: that one')
+  eq(valueOf(mate, { mate: '3' }, mates), '12', 'a teammate no longer listed (down): the first one listed')
+  eq(valueOf(mate, { mate: '7' }, []), '', 'nobody standing: none')
+  eq(valueOf(item, {}, mates), 'pistol', 'an ordinary option: its default')
+  eq(JSON.stringify(runChoices(g, { item: 'medkit', who: 'mate' }, mates)), '{"item":"medkit","who":"mate","mate":"12"}',
+    'a run to one teammate carries the teammate')
+  eq(JSON.stringify(runChoices(g, { item: 'medkit', who: 'mate' }, [])), '{"item":"medkit","who":"mate"}',
+    'with nobody listed it carries none, and the server says why')
+  eq(JSON.stringify(runChoices(g, { item: 'grenade', who: 'squad', mate: '7' }, mates)), '{"item":"grenade","who":"squad"}',
+    'the whole squad: no teammate, whatever was picked before')
+
+  // THE CHOICES' WORDS: a choice with no line for this player is not offered.
+  const copy = {
+    gear_up_opt_who_self: 'You', gear_up_opt_who_mate: 'One teammate', gear_up_opt_who_mate_solo: '',
+    gear_up_opt_who_squad: 'Everyone in your squad', gear_up_opt_who_squad_solo: '',
+    gear_up_opt_item_pistol: 'Pistol', gear_up_opt_item_medkit: 'Med Kit', gear_up_opt_item_grenade: 'Grenade',
+  }
+  const squadSay = speaker(copy, true)
+  const soloSay = speaker(copy, false)
+  eq(choicesOf(g, who, squadSay).map((c) => c.value).join(','), 'self,mate,squad', 'in a squad match: all three')
+  eq(choicesOf(g, who, soloSay).map((c) => c.value).join(','), 'self', 'outside one: yourself alone')
+  eq(choicesOf(g, item, soloSay).map((c) => c.label).join(','), 'Pistol,Med Kit,Grenade', 'the items by their names')
+  eq(choicesOf(g, mate, squadSay, mates).map((c) => c.label).join(','), 'Bravo,Charlie', 'the teammates by theirs')
+
+  // AND THE COMPONENTS USE THEM, pinned by text: the page prices the run by
+  // its choices and sends the teammate, offers each option's own choices,
+  // and hides one with no words; the card's cost is the range's; the state's
+  // teammates reach the page.
+  const src = join(dirname(fileURLToPath(import.meta.url)), '..', 'terminal', 'src')
+  const page = readFileSync(join(src, 'FunctionPage.tsx'), 'utf8')
+  ok(page.includes('costFor(def, choice)'), 'the page prices the run by its choices')
+  ok(!/def\.cost\b/.test(page), "and never by the row's base cost")
+  ok(page.includes('runChoices(def, choice, mates)'), 'a run carries the teammate')
+  ok(page.includes('choicesOf(def, o, say, mates)') && page.includes('valueOf(o, choice, mates)'),
+    'each option offers its own choices, the teammates included')
+  ok(/shownOptions\(def, choice\)\.filter\(\(o\) => say\(`\$\{id\}_opt_\$\{o\.id\}`\) !== ''\)/.test(page),
+    'an option with no words for this player is not shown')
+  const cards = readFileSync(join(src, 'FunctionCards.tsx'), 'utf8')
+  ok(cards.includes('costRange(f)') && cards.includes("say('cost_free_or')"), 'the card says a price by choice')
+  const app = readFileSync(join(src, 'App.tsx'), 'utf8')
+  ok(app.includes('mates={state.mates}'), "the page is handed the state's teammates")
 }
 
 if (failed > 0) {

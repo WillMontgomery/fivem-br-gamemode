@@ -21,7 +21,10 @@
 --                    Max ammo in server/terminalfx.lua
 --   the options      what the player chose before Run, taken only as the
 --                    registry allows (BR.Terminal.options), and the spot set
---                    on the big map for a row run at one (BR.Terminal.spot)
+--                    on the big map for a row run at one (BR.Terminal.spot);
+--                    an option whose choices are this player's standing
+--                    teammates (`source = 'mates'`, round 5), listed in the
+--                    state as `mates` (BR.Terminal.mates)
 --   the run          asked, accepted, loading, done (round 2): every refusal,
 --                    then the Volts a row costs (BR.Market.charge), then the
 --                    key and the squad's use, a 3-5 s load the server times,
@@ -103,6 +106,9 @@ local inflightSquad = {}
 --- The most options one run may carry. The registry's longest list is three;
 --- anything past this is not the app.
 local OPTIONS_MAX = 8
+
+--- The longest choice an option with a `source` takes: a server id, in digits.
+local SOURCE_CHOICE_MAX = 10
 
 -- ------------------------------------------------------------ the sites ---
 
@@ -374,16 +380,40 @@ local function built(row)
     return row.implemented == true and T.FUNCTIONS[row.id] ~= nil
 end
 
---- What a run of this row costs, in Volts: its `cost`, or nothing.
---- tools/test_terminal.lua holds every row to 0..200 (owner, round 2: "the max
---- being no more than 200").
+--- What a run of this row costs, in Volts: its `cost`, or nothing -- or, for
+--- a row whose price depends on its options (`costBy`, round 5: Gear Up's
+--- "for a charge of 200 volts the whole team can get them"), the price of
+--- the choice this run made for that option, when it lists one.
+--- tools/test_terminal.lua holds every figure to 0..200 (owner, round 2: "the
+--- max being no more than 200").
 --- @param row table
+--- @param opts table|nil  BR.Terminal.options' answer; nil asks the base cost
 --- @return integer
-local function costOf(row)
-    local c = math.floor(tonumber(row.cost) or 0)
+local function costOf(row, opts)
+    local c = tonumber(row.cost) or 0
+    local by = type(row.costBy) == 'table' and row.costBy or nil
+    if by and opts and type(by.choices) == 'table' then
+        local v = tonumber(by.choices[opts[by.option]])
+        if v ~= nil then c = v end
+    end
+    c = math.floor(c)
     return c > 0 and c or 0
 end
 T.costOf = costOf
+
+--- The most a run of this row can cost, whatever is chosen: for the suites,
+--- which hold it to 0..200.
+--- @param row table
+--- @return integer
+function T.costMax(row)
+    local most = costOf(row)
+    local by = type(row.costBy) == 'table' and row.costBy or nil
+    for _, v in pairs(by and type(by.choices) == 'table' and by.choices or {}) do
+        local c = math.floor(tonumber(v) or 0)
+        if c > most then most = c end
+    end
+    return most
+end
 
 --- The player's choices for a run, as the registry allows them, or nil.
 ---
@@ -400,6 +430,13 @@ T.costOf = costOf
 --- `when` does not hold is left out of the answer -- its default dropped --
 --- and a choice the request made for it refuses the whole request: a run that
 --- asks for the weather and a time at once is not one the page can make.
+---
+--- AN OPTION WITH `source` (round 5: Gear Up's teammate) has no list here:
+--- its choices are who this player's standing teammates are at the moment
+--- (BR.Terminal.mates). The door takes the SHAPE of one -- a server id, as
+--- digits -- and the function says whether it still names one, refusing
+--- with its own line when not. It has no default: a run that leaves it out
+--- leaves it nil.
 --- @param row table
 --- @param given any  the request's `options`: nil, or a table of strings
 --- @return table|nil opts
@@ -418,10 +455,14 @@ function T.options(row, given)
         local o = type(k) == 'string' and declared[k] or nil
         if not o or type(v) ~= 'string' then return nil end
         local listed = false
-        for _, c in ipairs(o.choices or {}) do
-            if c == v then
-                listed = true
-                break
+        if o.source ~= nil then
+            listed = #v <= SOURCE_CHOICE_MAX and v:match('^%d+$') ~= nil
+        else
+            for _, c in ipairs(o.choices or {}) do
+                if c == v then
+                    listed = true
+                    break
+                end
             end
         end
         if not listed then return nil end
@@ -644,6 +685,27 @@ local function inFight(state)
     return state == BR.PlayerState.ALIVE or state == BR.PlayerState.DBNO
 end
 
+--- THIS PLAYER'S STANDING TEAMMATES (round 5): the choices of an option with
+--- `source = 'mates'` (Gear Up's "given to a teammate"), as the state carries
+--- them -- each a server id as a string and the roster's display name, the
+--- squad panel's own facts. Standing only (ALIVE: not downed, not in the air,
+--- not out), never the player, in a squad match alone; in server id order.
+--- @param src integer
+--- @return table[] { { id, name } }
+function T.mates(src)
+    local out = {}
+    if not T.squadMatch(src) then return out end
+    local m, _, key = whereIs(src)
+    if not m then return out end
+    for _, s in ipairs(squadOf(m, key)) do
+        local e = BR.Roster.get(s)
+        if s ~= src and e and e.state == BR.PlayerState.ALIVE then
+            out[#out + 1] = { id = tostring(s), name = e.name or GetPlayerName(s) or tostring(s) }
+        end
+    end
+    return out
+end
+
 --- A squadmate's line on the panel: 'alive', 'downed' or 'out'.
 local function mateState(state)
     if state == BR.PlayerState.DBNO then return 'downed' end
@@ -726,7 +788,8 @@ end
 --- its run is refused there; `squadMatch` is the fact the app picks every
 --- line that says squad by.
 --- @return table { terminalId, functions = { { id, available, reason } },
----                 keyHeld, squadUsed, squadMatch, volts, running?, player, match }
+---                 keyHeld, squadUsed, squadMatch, volts, running?, player, match,
+---                 mates }
 function T.state(src, session)
     local f = T.facts(src, session)
     local squad = T.squadMatch(src)
@@ -762,6 +825,10 @@ function T.state(src, session)
         -- name, which is what every toast and the kill feed already call them.
         player = (e and e.name) or GetPlayerName(src) or nil,
         match = T.matchInfo(src, GetGameTimer()),
+        -- THE TEAMMATES AN OPTION MAY NAME (round 5, `source = 'mates'`):
+        -- standing, never this player, a squad match's alone -- live with
+        -- every push, so the app's dropdown follows who is still up.
+        mates = T.mates(src),
     }
 end
 
@@ -1181,7 +1248,9 @@ function T.run(src, d, now)
     -- THE VOLTS, AFTER EVERY OTHER REASON AND BEFORE ANYTHING IS SPENT. The
     -- key, the squad's use and the Volts all stay, and the answer carries the
     -- cost and the balance the app says them with.
-    local cost = costOf(row)
+    -- THE PRICE OF THESE CHOICES (round 5: Gear Up's whole squad costs what
+    -- giving it to one player does not).
+    local cost = costOf(row, opts)
     if cost > 0 then
         local balance = T.balance(src, session)
         if balance < cost then

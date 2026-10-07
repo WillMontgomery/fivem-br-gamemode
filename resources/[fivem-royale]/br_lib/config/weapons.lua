@@ -131,42 +131,52 @@ BR.Config = BR.Config or {}
 
 local R = BR.Rarity
 
+-- `class` -- WHICH KIND OF GUN, AS THIS FILE'S OWN SECTIONS GROUP THEM (#396,
+-- round 5): 'pistol', 'smg', 'rifle', 'shotgun', 'sniper', 'mg' (the machine
+-- guns, and the minigun with them -- it draws their pool and is filed with
+-- them below) and 'launcher' (the airdrop shelf's three explosives). DATA, not
+-- only a heading, because a terminal's Gear Up reads it: the owner's "not a
+-- heavy sniper or machine gun" leaves out every 'mg' by class
+-- (br_lib/config/terminals.lua's `gearUp`), so a machine gun added here later
+-- is left out too. Every firearm in this table and on the airdrop shelf has
+-- one; tools/test_terminalfx.lua fails one without. Melee and throwables are
+-- tables of their own and have none.
 BR.Config.Weapons = {
     -- Pistols ---------------------------------------------------------------
-    { id = 'pistol',        name = 'WEAPON_PISTOL',           hash = 0x1B06D571, label = 'Pistol',            rarity = R.COMMON,    ammo = BR.AmmoType.LIGHT,  damage = 26, maxRange = 120.0, minInterval = 140, clip = 12, driveby = true },
-    { id = 'snspistol',     name = 'WEAPON_SNSPISTOL',        hash = 0xBFD21232, label = 'SNS Pistol',        rarity = R.COMMON,    ammo = BR.AmmoType.LIGHT,  damage = 25, maxRange = 100.0, minInterval = 140, clip =  6, driveby = true },
-    { id = 'combatpistol',  name = 'WEAPON_COMBATPISTOL',     hash = 0x5EF9FEC4, label = 'Combat Pistol',     rarity = R.UNCOMMON,  ammo = BR.AmmoType.LIGHT,  damage = 27, maxRange = 130.0, minInterval = 130, clip = 12, driveby = true },
-    { id = 'pistolmk2',     name = 'WEAPON_PISTOL_MK2',       hash = 0xBFE256D4, label = 'Pistol Mk II',      rarity = R.UNCOMMON,  ammo = BR.AmmoType.LIGHT,  damage = 28, maxRange = 140.0, minInterval = 130, clip = 12, driveby = true },
-    { id = 'heavypistol',   name = 'WEAPON_HEAVYPISTOL',      hash = 0xD205520E, label = 'Heavy Pistol',      rarity = R.RARE,      ammo = BR.AmmoType.LIGHT,  damage = 40, maxRange = 150.0, minInterval = 160, clip = 18, driveby = true },
-    { id = 'revolver',      name = 'WEAPON_REVOLVER',         hash = 0xC1B3C3D1, label = 'Heavy Revolver',    rarity = R.RARE,      ammo = BR.AmmoType.LIGHT,  damage = 97, maxRange = 160.0, minInterval = 400, clip =  6, driveby = true },
-    { id = 'revolvermk2',   name = 'WEAPON_REVOLVER_MK2',     hash = 0xCB96392F, label = 'Revolver Mk II',    rarity = R.EPIC,      ammo = BR.AmmoType.LIGHT,  damage = 99, maxRange = 180.0, minInterval = 380, clip =  6, driveby = true },
+    { id = 'pistol',        name = 'WEAPON_PISTOL',           hash = 0x1B06D571, label = 'Pistol',            rarity = R.COMMON,    ammo = BR.AmmoType.LIGHT,  damage = 26, maxRange = 120.0, minInterval = 140, clip = 12, driveby = true, class = 'pistol' },
+    { id = 'snspistol',     name = 'WEAPON_SNSPISTOL',        hash = 0xBFD21232, label = 'SNS Pistol',        rarity = R.COMMON,    ammo = BR.AmmoType.LIGHT,  damage = 25, maxRange = 100.0, minInterval = 140, clip =  6, driveby = true, class = 'pistol' },
+    { id = 'combatpistol',  name = 'WEAPON_COMBATPISTOL',     hash = 0x5EF9FEC4, label = 'Combat Pistol',     rarity = R.UNCOMMON,  ammo = BR.AmmoType.LIGHT,  damage = 27, maxRange = 130.0, minInterval = 130, clip = 12, driveby = true, class = 'pistol' },
+    { id = 'pistolmk2',     name = 'WEAPON_PISTOL_MK2',       hash = 0xBFE256D4, label = 'Pistol Mk II',      rarity = R.UNCOMMON,  ammo = BR.AmmoType.LIGHT,  damage = 28, maxRange = 140.0, minInterval = 130, clip = 12, driveby = true, class = 'pistol' },
+    { id = 'heavypistol',   name = 'WEAPON_HEAVYPISTOL',      hash = 0xD205520E, label = 'Heavy Pistol',      rarity = R.RARE,      ammo = BR.AmmoType.LIGHT,  damage = 40, maxRange = 150.0, minInterval = 160, clip = 18, driveby = true, class = 'pistol' },
+    { id = 'revolver',      name = 'WEAPON_REVOLVER',         hash = 0xC1B3C3D1, label = 'Heavy Revolver',    rarity = R.RARE,      ammo = BR.AmmoType.LIGHT,  damage = 97, maxRange = 160.0, minInterval = 400, clip =  6, driveby = true, class = 'pistol' },
+    { id = 'revolvermk2',   name = 'WEAPON_REVOLVER_MK2',     hash = 0xCB96392F, label = 'Revolver Mk II',    rarity = R.EPIC,      ammo = BR.AmmoType.LIGHT,  damage = 99, maxRange = 180.0, minInterval = 380, clip =  6, driveby = true, class = 'pistol' },
 
     -- SMGs ------------------------------------------------------------------
-    { id = 'microsmg',      name = 'WEAPON_MICROSMG',         hash = 0x13532244, label = 'Micro SMG',         rarity = R.COMMON,    ammo = BR.AmmoType.SMG,    damage = 22, maxRange = 110.0, minInterval =  70, clip = 16, driveby = true },
-    { id = 'machinepistol', name = 'WEAPON_MACHINEPISTOL',    hash = 0xDB1AA450, label = 'Machine Pistol',    rarity = R.COMMON,    ammo = BR.AmmoType.SMG,    damage = 21, maxRange = 100.0, minInterval =  65, clip = 12, driveby = true },
-    { id = 'minismg',       name = 'WEAPON_MINISMG',          hash = 0xBD248B55, label = 'Mini SMG',          rarity = R.UNCOMMON,  ammo = BR.AmmoType.SMG,    damage = 23, maxRange = 120.0, minInterval =  70, clip = 20, driveby = true },
-    { id = 'smg',           name = 'WEAPON_SMG',              hash = 0x2BE6766B, label = 'SMG',               rarity = R.UNCOMMON,  ammo = BR.AmmoType.SMG,    damage = 24, maxRange = 150.0, minInterval =  80, clip = 30, driveby = false },
-    { id = 'smgmk2',        name = 'WEAPON_SMG_MK2',          hash = 0x78A97CD0, label = 'SMG Mk II',         rarity = R.RARE,      ammo = BR.AmmoType.SMG,    damage = 26, maxRange = 160.0, minInterval =  80, clip = 30, driveby = false },
-    { id = 'assaultsmg',    name = 'WEAPON_ASSAULTSMG',       hash = 0xEFE7E2DF, label = 'Assault SMG',       rarity = R.RARE,      ammo = BR.AmmoType.SMG,    damage = 27, maxRange = 170.0, minInterval =  75, clip = 30, driveby = false },
-    { id = 'combatpdw',     name = 'WEAPON_COMBATPDW',        hash = 0x0A3D4D34, label = 'Combat PDW',        rarity = R.RARE,      ammo = BR.AmmoType.SMG,    damage = 28, maxRange = 180.0, minInterval =  75, clip = 30, driveby = false },
+    { id = 'microsmg',      name = 'WEAPON_MICROSMG',         hash = 0x13532244, label = 'Micro SMG',         rarity = R.COMMON,    ammo = BR.AmmoType.SMG,    damage = 22, maxRange = 110.0, minInterval =  70, clip = 16, driveby = true, class = 'smg' },
+    { id = 'machinepistol', name = 'WEAPON_MACHINEPISTOL',    hash = 0xDB1AA450, label = 'Machine Pistol',    rarity = R.COMMON,    ammo = BR.AmmoType.SMG,    damage = 21, maxRange = 100.0, minInterval =  65, clip = 12, driveby = true, class = 'smg' },
+    { id = 'minismg',       name = 'WEAPON_MINISMG',          hash = 0xBD248B55, label = 'Mini SMG',          rarity = R.UNCOMMON,  ammo = BR.AmmoType.SMG,    damage = 23, maxRange = 120.0, minInterval =  70, clip = 20, driveby = true, class = 'smg' },
+    { id = 'smg',           name = 'WEAPON_SMG',              hash = 0x2BE6766B, label = 'SMG',               rarity = R.UNCOMMON,  ammo = BR.AmmoType.SMG,    damage = 24, maxRange = 150.0, minInterval =  80, clip = 30, driveby = false, class = 'smg' },
+    { id = 'smgmk2',        name = 'WEAPON_SMG_MK2',          hash = 0x78A97CD0, label = 'SMG Mk II',         rarity = R.RARE,      ammo = BR.AmmoType.SMG,    damage = 26, maxRange = 160.0, minInterval =  80, clip = 30, driveby = false, class = 'smg' },
+    { id = 'assaultsmg',    name = 'WEAPON_ASSAULTSMG',       hash = 0xEFE7E2DF, label = 'Assault SMG',       rarity = R.RARE,      ammo = BR.AmmoType.SMG,    damage = 27, maxRange = 170.0, minInterval =  75, clip = 30, driveby = false, class = 'smg' },
+    { id = 'combatpdw',     name = 'WEAPON_COMBATPDW',        hash = 0x0A3D4D34, label = 'Combat PDW',        rarity = R.RARE,      ammo = BR.AmmoType.SMG,    damage = 28, maxRange = 180.0, minInterval =  75, clip = 30, driveby = false, class = 'smg' },
 
     -- Assault rifles --------------------------------------------------------
-    { id = 'bullpuprifle',  name = 'WEAPON_BULLPUPRIFLE',     hash = 0x7F229F94, label = 'Bullpup Rifle',     rarity = R.UNCOMMON,  ammo = BR.AmmoType.MEDIUM, damage = 30, maxRange = 220.0, minInterval =  90, clip = 30, driveby = false },
-    { id = 'assaultrifle',  name = 'WEAPON_ASSAULTRIFLE',     hash = 0xBFEFFF6D, label = 'Assault Rifle',     rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 33, maxRange = 240.0, minInterval =  95, clip = 30, driveby = false },
-    { id = 'carbinerifle',  name = 'WEAPON_CARBINERIFLE',     hash = 0x83BF0278, label = 'Carbine Rifle',     rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 260.0, minInterval =  95, clip = 30, driveby = false },
-    { id = 'advancedrifle', name = 'WEAPON_ADVANCEDRIFLE',    hash = 0xAF113F99, label = 'Advanced Rifle',    rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 34, maxRange = 250.0, minInterval =  90, clip = 30, driveby = false },
-    { id = 'carbinemk2',    name = 'WEAPON_CARBINERIFLE_MK2', hash = 0xFAD1F1C9, label = 'Carbine Mk II',     rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 36, maxRange = 280.0, minInterval =  95, clip = 30, driveby = false },
-    { id = 'assaultmk2',    name = 'WEAPON_ASSAULTRIFLE_MK2', hash = 0x394F415C, label = 'Assault Rifle Mk II', rarity = R.EPIC,    ammo = BR.AmmoType.MEDIUM, damage = 37, maxRange = 270.0, minInterval =  95, clip = 30, driveby = false },
-    { id = 'specialcarbine',name = 'WEAPON_SPECIALCARBINE',   hash = 0xC0A3098D, label = 'Special Carbine',   rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 38, maxRange = 290.0, minInterval =  95, clip = 30, driveby = false },
-    { id = 'militaryrifle', name = 'WEAPON_MILITARYRIFLE',    hash = 0x9D1F17E6, label = 'Military Rifle',    rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage = 42, maxRange = 320.0, minInterval =  90, clip = 30, driveby = false },
+    { id = 'bullpuprifle',  name = 'WEAPON_BULLPUPRIFLE',     hash = 0x7F229F94, label = 'Bullpup Rifle',     rarity = R.UNCOMMON,  ammo = BR.AmmoType.MEDIUM, damage = 30, maxRange = 220.0, minInterval =  90, clip = 30, driveby = false, class = 'rifle' },
+    { id = 'assaultrifle',  name = 'WEAPON_ASSAULTRIFLE',     hash = 0xBFEFFF6D, label = 'Assault Rifle',     rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 33, maxRange = 240.0, minInterval =  95, clip = 30, driveby = false, class = 'rifle' },
+    { id = 'carbinerifle',  name = 'WEAPON_CARBINERIFLE',     hash = 0x83BF0278, label = 'Carbine Rifle',     rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 260.0, minInterval =  95, clip = 30, driveby = false, class = 'rifle' },
+    { id = 'advancedrifle', name = 'WEAPON_ADVANCEDRIFLE',    hash = 0xAF113F99, label = 'Advanced Rifle',    rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 34, maxRange = 250.0, minInterval =  90, clip = 30, driveby = false, class = 'rifle' },
+    { id = 'carbinemk2',    name = 'WEAPON_CARBINERIFLE_MK2', hash = 0xFAD1F1C9, label = 'Carbine Mk II',     rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 36, maxRange = 280.0, minInterval =  95, clip = 30, driveby = false, class = 'rifle' },
+    { id = 'assaultmk2',    name = 'WEAPON_ASSAULTRIFLE_MK2', hash = 0x394F415C, label = 'Assault Rifle Mk II', rarity = R.EPIC,    ammo = BR.AmmoType.MEDIUM, damage = 37, maxRange = 270.0, minInterval =  95, clip = 30, driveby = false, class = 'rifle' },
+    { id = 'specialcarbine',name = 'WEAPON_SPECIALCARBINE',   hash = 0xC0A3098D, label = 'Special Carbine',   rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 38, maxRange = 290.0, minInterval =  95, clip = 30, driveby = false, class = 'rifle' },
+    { id = 'militaryrifle', name = 'WEAPON_MILITARYRIFLE',    hash = 0x9D1F17E6, label = 'Military Rifle',    rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage = 42, maxRange = 320.0, minInterval =  90, clip = 30, driveby = false, class = 'rifle' },
 
     -- Shotguns --------------------------------------------------------------
-    { id = 'sawnoff',       name = 'WEAPON_SAWNOFFSHOTGUN',   hash = 0x7846A318, label = 'Sawed-Off Shotgun', rarity = R.COMMON,    ammo = BR.AmmoType.SHELLS, damage = 70, maxRange =  25.0, minInterval = 450, clip =  8, driveby = false },
-    { id = 'pumpshotgun',   name = 'WEAPON_PUMPSHOTGUN',      hash = 0x1D073A89, label = 'Pump Shotgun',      rarity = R.UNCOMMON,  ammo = BR.AmmoType.SHELLS, damage = 85, maxRange =  35.0, minInterval = 900, clip =  8, driveby = false },
-    { id = 'assaultshotgun',name = 'WEAPON_ASSAULTSHOTGUN',   hash = 0xE284C527, label = 'Assault Shotgun',   rarity = R.RARE,      ammo = BR.AmmoType.SHELLS, damage = 72, maxRange =  40.0, minInterval = 300, clip =  8, driveby = false },
-    { id = 'pumpshotgunmk2',name = 'WEAPON_PUMPSHOTGUN_MK2',  hash = 0x555AF99A, label = 'Pump Shotgun Mk II',rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 92, maxRange =  45.0, minInterval = 850, clip =  8, driveby = false },
-    { id = 'heavyshotgun',  name = 'WEAPON_HEAVYSHOTGUN',     hash = 0x3AABBBAA, label = 'Heavy Shotgun',     rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 88, maxRange =  42.0, minInterval = 400, clip =  6, driveby = false },
-    { id = 'combatshotgun', name = 'WEAPON_COMBATSHOTGUN',    hash = 0x05A96BA4, label = 'Combat Shotgun',    rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 80, maxRange =  48.0, minInterval = 320, clip =  6, driveby = false },
+    { id = 'sawnoff',       name = 'WEAPON_SAWNOFFSHOTGUN',   hash = 0x7846A318, label = 'Sawed-Off Shotgun', rarity = R.COMMON,    ammo = BR.AmmoType.SHELLS, damage = 70, maxRange =  25.0, minInterval = 450, clip =  8, driveby = false, class = 'shotgun' },
+    { id = 'pumpshotgun',   name = 'WEAPON_PUMPSHOTGUN',      hash = 0x1D073A89, label = 'Pump Shotgun',      rarity = R.UNCOMMON,  ammo = BR.AmmoType.SHELLS, damage = 85, maxRange =  35.0, minInterval = 900, clip =  8, driveby = false, class = 'shotgun' },
+    { id = 'assaultshotgun',name = 'WEAPON_ASSAULTSHOTGUN',   hash = 0xE284C527, label = 'Assault Shotgun',   rarity = R.RARE,      ammo = BR.AmmoType.SHELLS, damage = 72, maxRange =  40.0, minInterval = 300, clip =  8, driveby = false, class = 'shotgun' },
+    { id = 'pumpshotgunmk2',name = 'WEAPON_PUMPSHOTGUN_MK2',  hash = 0x555AF99A, label = 'Pump Shotgun Mk II',rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 92, maxRange =  45.0, minInterval = 850, clip =  8, driveby = false, class = 'shotgun' },
+    { id = 'heavyshotgun',  name = 'WEAPON_HEAVYSHOTGUN',     hash = 0x3AABBBAA, label = 'Heavy Shotgun',     rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 88, maxRange =  42.0, minInterval = 400, clip =  6, driveby = false, class = 'shotgun' },
+    { id = 'combatshotgun', name = 'WEAPON_COMBATSHOTGUN',    hash = 0x05A96BA4, label = 'Combat Shotgun',    rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 80, maxRange =  48.0, minInterval = 320, clip =  6, driveby = false, class = 'shotgun' },
 
     -- Marksman and sniper ---------------------------------------------------
     -- Deliberately few and high-rarity: the render ceiling makes true long-range
@@ -179,10 +189,10 @@ BR.Config.Weapons = {
     -- IT AND IT IS SMALL: heavy is 24, not the 60 these four had yesterday. See
     -- the block above BR.Config.AmmoCaps -- 24 is the owner's own number, set
     -- when heavy meant rockets, and it is his to revisit now that it does not.
-    { id = 'marksmanrifle', name = 'WEAPON_MARKSMANRIFLE',    hash = 0xC734385A, label = 'Marksman Rifle',    rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 65, maxRange = 340.0, minInterval = 450, clip = 8, scoped = true, driveby = false },
-    { id = 'sniperrifle',   name = 'WEAPON_SNIPERRIFLE',      hash = 0x05FC3C11, label = 'Sniper Rifle',      rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 101,maxRange = 400.0, minInterval = 1400,clip =10, scoped = true, driveby = false },
-    { id = 'marksmanmk2',   name = 'WEAPON_MARKSMANRIFLE_MK2',hash = 0x6A6C02E0, label = 'Marksman Mk II',    rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 70, maxRange = 380.0, minInterval = 430, clip = 8, scoped = true, driveby = false },
-    { id = 'heavysniper',   name = 'WEAPON_HEAVYSNIPER',      hash = 0x0C472FE2, label = 'Heavy Sniper',      rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 216,maxRange = 420.0, minInterval = 1800,clip = 6, scoped = true, driveby = false },
+    { id = 'marksmanrifle', name = 'WEAPON_MARKSMANRIFLE',    hash = 0xC734385A, label = 'Marksman Rifle',    rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 65, maxRange = 340.0, minInterval = 450, clip = 8, scoped = true, driveby = false, class = 'sniper' },
+    { id = 'sniperrifle',   name = 'WEAPON_SNIPERRIFLE',      hash = 0x05FC3C11, label = 'Sniper Rifle',      rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 101,maxRange = 400.0, minInterval = 1400,clip =10, scoped = true, driveby = false, class = 'sniper' },
+    { id = 'marksmanmk2',   name = 'WEAPON_MARKSMANRIFLE_MK2',hash = 0x6A6C02E0, label = 'Marksman Mk II',    rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 70, maxRange = 380.0, minInterval = 430, clip = 8, scoped = true, driveby = false, class = 'sniper' },
+    { id = 'heavysniper',   name = 'WEAPON_HEAVYSNIPER',      hash = 0x0C472FE2, label = 'Heavy Sniper',      rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 216,maxRange = 420.0, minInterval = 1800,clip = 6, scoped = true, driveby = false, class = 'sniper' },
 
     -- Machine guns ----------------------------------------------------------
     -- THEY DRAW MEDIUM, WITH THE ASSAULT RIFLES. They had a pool of their own
@@ -192,10 +202,10 @@ BR.Config.Weapons = {
     -- merge it, he picked the room: "let's put MGs in medium then". The pool it
     -- left capped at 60, which could never fill the 100-round magazines two of
     -- these four carry; medium is 350. See BR.Config.AmmoCaps.
-    { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false },
-    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 200.0, minInterval =  80, clip = 30, driveby = false },
-    { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 38, maxRange = 250.0, minInterval =  85, clip = 100, driveby = false },
-    { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage = 40, maxRange = 270.0, minInterval =  85, clip = 100, driveby = false },
+    { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false, class = 'mg' },
+    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 200.0, minInterval =  80, clip = 30, driveby = false, class = 'mg' },
+    { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 38, maxRange = 250.0, minInterval =  85, clip = 100, driveby = false, class = 'mg' },
+    { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage = 40, maxRange = 270.0, minInterval =  85, clip = 100, driveby = false, class = 'mg' },
 }
 
 --- THE AIRDROP SHELF. Ordinary weapons in every respect but one: they are in no
@@ -263,9 +273,9 @@ BR.Config.Weapons = {
 --- given a rifle's 85ms would refuse an honest player's every round as TOO_FAST
 --- and open a case on them. 18ms is GTA's own belt speed with headroom.
 BR.Config.AirdropWeapons = {
-    { id = 'rpg',             name = 'WEAPON_RPG',             hash = 0xB1CA77B1, label = 'RPG',              rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 120, maxRange = 300.0, minInterval = 1000, clip =  1, explosive = true, blastRadius = 12.0 },
-    { id = 'grenadelauncher', name = 'WEAPON_GRENADELAUNCHER', hash = 0xA284510B, label = 'Grenade Launcher', rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage =  85, maxRange = 180.0, minInterval =  600, clip = 10, explosive = true, blastRadius = 10.0 },
-    { id = 'railgun',         name = 'WEAPON_RAILGUN',         hash = 0x6D544C99, label = 'Railgun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 110, maxRange = 350.0, minInterval = 1200, clip =  1, explosive = true, blastRadius =  5.0 },
+    { id = 'rpg',             name = 'WEAPON_RPG',             hash = 0xB1CA77B1, label = 'RPG',              rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 120, maxRange = 300.0, minInterval = 1000, clip =  1, explosive = true, blastRadius = 12.0, class = 'launcher' },
+    { id = 'grenadelauncher', name = 'WEAPON_GRENADELAUNCHER', hash = 0xA284510B, label = 'Grenade Launcher', rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage =  85, maxRange = 180.0, minInterval =  600, clip = 10, explosive = true, blastRadius = 10.0, class = 'launcher' },
+    { id = 'railgun',         name = 'WEAPON_RAILGUN',         hash = 0x6D544C99, label = 'Railgun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 110, maxRange = 350.0, minInterval = 1200, clip =  1, explosive = true, blastRadius =  5.0, class = 'launcher' },
     -- 13 a round at 18ms is ~700 display points a second against the Combat MG
     -- Mk II's ~470 -- the fastest kill in the game, on the loudest, slowest,
     -- most visible thing a player can be holding, once per match if at all.
@@ -282,7 +292,7 @@ BR.Config.AirdropWeapons = {
     -- arrive with the whole medium cap rather than 150 rounds, and BR.Inv.reload
     -- would move the entire pool into the magazine in one press. 150 is a burst
     -- and it is the number the paragraph above is about.
-    { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage =  13, maxRange = 200.0, minInterval =   18, clip = 150 },
+    { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage =  13, maxRange = 200.0, minInterval =   18, clip = 150, class = 'mg' },
 }
 
 --- Throwables. Smoke is not filler: it is the only tool that makes a contested

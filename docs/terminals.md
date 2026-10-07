@@ -62,8 +62,15 @@ What the computer opens with, and what the server sends again when it changes.
     terminals = { online, total },
     bounties = { { name, leftMs } },
   },
+  mates      = { { id = '12', name = 'Bravo' } },  -- round 5: BR.Terminal.mates
 }
 ```
+
+`mates` (round 5) is this player's standing teammates -- ALIVE, never the
+player, in a squad match alone, in server id order -- each a server id as a
+string and the roster's name: the choices of an option with `source =
+'mates'` (Gear Up's teammate). Live with every push, so the dropdown follows
+who is still up.
 
 `reason` is a code, and a code is a key into the copy: `fn_offline` (the
 effect is not built), `offline`, `squad_used`, `no_key`, `bad_option`, `unavailable` (a run of theirs or their
@@ -165,6 +172,10 @@ The table below is the lines outside the functions' own:
 | `health_full`, `no_weapons`, `no_target` | At the terminal: why not (wave A's functions) |
 | `no_night` | At the terminal: why not (Power outage, unless it is night because of a Time & weather run) -- round 4 |
 | `reboot_none` | At the terminal: why not (Reboot: nobody in the squad eliminated and still in the match). Squad-only, so no `_solo` line |
+| `gear_standing`, `gear_no_mate`, `gear_full`, `gear_full_mate`, `gear_full_squad`, `gear_no_room`, `gear_no_room_mate`, `gear_no_room_squad` | At the terminal: why not (Gear Up, round 5: nobody standing to get it, a teammate who no longer can, already carrying the most, no room). The `_squad` two have empty `_solo` lines: the squad is no choice outside a squad match |
+| `gear_up_received` | A toast to each teammate who got Gear Up's item from somebody else's run, after the lobby's notice: `{playername}` the runner, `{description}` what they got ("3 Med Kits") |
+| `gear_up_opt_item_<id>` | Gear Up's dropdown: each item's own `label` from the weapons and loot configs, written into the copy as `terminals.lua` loads -- no words of ours |
+| `cost_free_or` | A card's cost when it depends on the choices and the cheapest is free (round 5): `{volts}` the most it can cost |
 | `impact_*` (`impact_emp`, `impact_outage`, `impact_blackout`, `impact_bounty`, `impact_scan`, `impact_time`, `impact_weather`, `impact_storm`) and `impact_until_end` | On the HUD, to the player it is happening to: what another player's terminal run is doing to them, beside its clock -- or `impact_until_end` in its place for the rest of the match (round 4) |
 | `no_key`, `squad_used` | At the terminal (why not; `no_key` is also the login screen), and in the world (the terminal's plate) |
 | `offline` | At the terminal (why not: the dev tool's `brterminal offline`, or the moment before the storm's close), and a toast to a player whose press reached the server a step behind the storm. Never a plate since round 4: a terminal outside the storm has none |
@@ -231,7 +242,20 @@ filters and pages from it.
   takes a run's choices only if every key is a declared option and every value
   one of its `choices` (strings, at most 8), fills the rest with defaults, and
   refuses anything else whole (`bad_option`, nothing spent). The shell and the
-  desktop shape-check them on the way too.
+  desktop shape-check them on the way too. Round 5: an option with `source =
+  'mates'` has no `choices` or `default` -- its choices are the state's
+  `mates`, and the door takes the shape of one (a server id, digits, at most
+  ten) and leaves whether it is still a standing teammate to the function --
+  and `dropdown = true` draws an option as a dropdown rather than radio
+  buttons. An option whose label, or a choice whose line, is empty for this
+  player is not shown (Gear Up's "Who gets it" outside a squad match).
+- `costBy` (round 5): a price by choice, `{ option, choices = { [choice] =
+  Volts } }` -- Gear Up's `{ option = 'who', choices = { squad = 200 } }`. A
+  run whose option has a listed choice costs that, any other the row's `cost`
+  (`BR.Terminal.costOf(row, opts)`). Every figure 0..200 like `cost`. The page's
+  cost line and the confirm box say the run's own price; the card says
+  `cost_free_or` with the most it can cost, and the Cost filter finds it under
+  Free and Paid.
 
 The server half of a built function is `BR.Terminal.FUNCTIONS[id]`
 (`server/terminal.lua` for Storm reveal, `server/terminalfx.lua` for Scan,
@@ -301,6 +325,7 @@ first.
 | `reboot` | Reboot | squad (squad-only) | medium | 150 | **live** (wave C) |
 | `ghost` | Ghost | squad (disruption alone) | low | | **live** (wave A) |
 | `emp` | EMP | disruption | medium | | **live** (wave C) |
+| `gear_up` | Gear Up | supply | low | 200 for the whole squad (`costBy`), else free | **live** (round 5) |
 | `contract` | Contract | disruption | medium | | **live** (wave A) |
 | `field_medic` | Field medic | supply | low | | **live** (wave A) |
 
@@ -979,7 +1004,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Round 5: `run gear_up item=medkit`, `run gear_up item=assaultrifle who=mate mate=<server id>`, `run gear_up item=grenade who=squad` (no Volts from the dev command). Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
@@ -1185,6 +1210,65 @@ with somebody still in the fight is rebooted, so `BR.Server.squadsAlive` and
 the match's end check (`<= 1`) are exactly what the eliminations left; the
 players-left count grows. The match ending in the black withdraws the
 promise.
+
+## Gear Up (round 5, owner 2026-10-06)
+
+> "add a new one which allows the user to give something to themselves -
+> anything of their choice - any inventory item or weapon which is not a heavy
+> sniper or machine gun. This should be a selection from a dropdown list
+> within the tool, and the item they choose can also be given to a teammate,
+> or for a charge of 200 volts the whole team can get them. If they choose a
+> consumable, they are given the maxCarry quantity of that item." He named it
+> Gear Up.
+
+`server/terminalfx/gear_up.lua`; the row and its list in
+`br_lib/config/terminals.lua`.
+
+**The list** is built as `terminals.lua` loads (after `config/weapons.lua`
+and `config/loot.lua`, as br_core's manifest has it): the guns, the airdrop
+shelf, melee, throwables, the consumables and the CPR kit, in the configs'
+order, each line its own `label` -- 55 items on 2026-10-06. **Left out**
+(`gearUp`): every gun whose `class` is `'mg'` (the MG, the Gusenberg
+Sweeper, the Combat MG and its Mk II, and the minigun, filed and fed with
+them), and the Heavy Sniper by id. `class` is new on every firearm in
+`config/weapons.lua` (`pistol`, `smg`, `rifle`, `shotgun`, `sniper`, `mg`,
+`launcher`), so a machine gun added later is left out too. **Never on it**,
+by construction: ammo (a pool, not a slot), the Yubikey and the revive key
+(owned, never carried), fists, and the shop's car tokens (`config/shop.lua`'s).
+The other three scoped rifles, the RPG, grenade launcher and railgun, and the
+CPR kit are on it.
+
+**Who gets it** (`who`): `self` (free), `mate` (free; `mate`, a dropdown of
+the state's `mates`) or `squad` (200 Volts, `costBy`) -- the last two in a
+squad match alone, `bad_option` outside one, where the page hides the choice.
+Only a player who is STANDING gets it.
+
+**How much**: a weapon as a crate's (a full magazine, and the found-gun spare
+through `BR.Inv.give`); a consumable at its `carryMax` (the config's name for
+"maxCarry"), or for one with no carry ceiling -- the two shields -- a full
+stack (`maxStack`); a throwable at its stack; each clamped to what the player
+may still carry and has room for.
+
+**Through the inventory's own door**: `BR.Inv.roomFor(src, stack)` (new, a
+read: how many go in without displacing anything -- a free slot for a gun,
+top-ups and free slots for a stack, never the hand mid-channel -- or 0 and
+`carrymax`/`noroom`) and `BR.Inv.give`. A granted gun is the server's own slot
+from the moment it exists, which is what the shot validator's held check and
+the weapon strip's `ourWeapon` read, so neither flags it; nothing is handed to
+a ped, and nothing a player carries is ever thrown on the floor to make room.
+
+| Choice | Refused, spending nothing (the Volts included) |
+|---|---|
+| `self` | `gear_standing` (not standing), `gear_full` (carrying the most), `gear_no_room` |
+| `mate` | `gear_no_mate` (not a standing teammate now, or none picked), `gear_full_mate`, `gear_no_room_mate` |
+| `squad` | a member at the ceiling is skipped (they have it); any member with no room refuses the run (`gear_no_room_squad`), so 200 Volts never leave a teammate out; everyone at the ceiling `gear_full_squad`; nobody standing `gear_standing` |
+
+The refusal is asked again as the load ends, so a teammate who went down or
+filled their bag meanwhile gives everything back. The lobby hears
+`notice_action` with `gear_up_description`, which names no item; each teammate
+who got it from somebody else's run is told who and what
+(`gear_up_received`). Instant: no persistent notice. The card is available in
+any match -- whether an item fits is a question about choices not made yet.
 
 ## Persistent notices (round 4)
 

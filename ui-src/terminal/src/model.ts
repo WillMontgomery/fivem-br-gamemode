@@ -19,7 +19,7 @@
  * scripts/check-terminal.mjs fails a component that reads the copy another way.
  */
 
-import type { Catalog, Copy, FunctionDef, FunctionState, OptionDef, RunningInfo, TabNote } from './bridge'
+import type { Catalog, Copy, FunctionDef, FunctionState, Mate, OptionDef, RunningInfo, TabNote } from './bridge'
 
 /** Every word the app says: a key in, the line (or nothing) out. */
 export type Say = (key: string | null | undefined) => string
@@ -498,14 +498,75 @@ export function shownOptions(def: FunctionDef, choice: Readonly<Record<string, s
 }
 
 /**
+ * The value an option has now: the player's own choice or its default -- and,
+ * for one whose choices are the standing teammates (round 5, `source`), the
+ * teammate picked while they are still listed, else the first listed, else
+ * none ('').
+ */
+export function valueOf(o: OptionDef, choice: Readonly<Record<string, string>>, mates: readonly Mate[] = []): string {
+  if (o.source === 'mates') {
+    const c = choice[o.id]
+    if (c !== undefined && mates.some((m) => m.id === c)) return c
+    return mates[0]?.id ?? ''
+  }
+  return choice[o.id] ?? o.default
+}
+
+/**
+ * The choices an option offers now, each with its words: its own list and
+ * each one's `<id>_opt_<option>_<choice>` line -- a choice whose line is
+ * empty here is not offered (round 5: Gear Up's "One teammate" and
+ * "Everyone in your squad" outside a squad match) -- or, for one whose
+ * choices are the standing teammates, each teammate by name.
+ */
+export function choicesOf(def: FunctionDef, o: OptionDef, say: Say, mates: readonly Mate[] = []):
+  { value: string; label: string }[] {
+  if (o.source === 'mates') return mates.map((m) => ({ value: m.id, label: m.name }))
+  return o.choices
+    .map((c) => ({ value: c, label: say(`${def.id}_opt_${o.id}_${c}`) }))
+    .filter((c) => c.label !== '')
+}
+
+/**
  * What a run sends: the choice of every option offered, the player's own or
  * its default, and nothing for an option that is not offered -- a choice for
- * one the server would refuse the whole run over.
+ * one the server would refuse the whole run over. An option of standing
+ * teammates with nobody listed sends nothing, and the server says why.
  */
-export function runChoices(def: FunctionDef, choice: Readonly<Record<string, string>>): Record<string, string> {
+export function runChoices(def: FunctionDef, choice: Readonly<Record<string, string>>,
+  mates: readonly Mate[] = []): Record<string, string> {
   const out: Record<string, string> = {}
-  for (const o of shownOptions(def, choice)) out[o.id] = choice[o.id] ?? o.default
+  for (const o of shownOptions(def, choice)) {
+    const v = valueOf(o, choice, mates)
+    if (v !== '') out[o.id] = v
+  }
   return out
+}
+
+/**
+ * WHAT A RUN WITH THESE CHOICES COSTS (round 5: Gear Up's whole squad costs
+ * Volts, yourself or a teammate does not): the price of the choice made for
+ * the row's `costBy` option, when it lists one, else the row's `cost`. The
+ * page's cost line and the confirm box say this one; the server charges it.
+ */
+export function costFor(def: FunctionDef, choice: Readonly<Record<string, string>>): number {
+  const by = def.costBy
+  if (by) {
+    const o = def.options.find((x) => x.id === by.option)
+    const v = by.choices[choice[by.option] ?? o?.default ?? '']
+    if (v !== undefined) return v
+  }
+  return def.cost
+}
+
+/** The least and the most a run of this function can cost, whatever is chosen. */
+export function costRange(def: FunctionDef): { min: number; max: number } {
+  const all = [def.cost, ...Object.values(def.costBy?.choices ?? {})]
+  const o = def.costBy ? def.options.find((x) => x.id === def.costBy?.option) : undefined
+  // A choice with no figure of its own costs the row's `cost`.
+  const priced = o ? o.choices.every((c) => def.costBy?.choices[c] !== undefined) : false
+  const figures = priced ? all.slice(1) : all
+  return { min: Math.min(...figures), max: Math.max(...figures) }
 }
 
 /**
@@ -628,7 +689,18 @@ export const BOUNTIES: readonly Bounty[] = ['none', 'runner', 'target']
 export const STATUSES: readonly Status[] = ['available', 'used', 'not_here', 'offline']
 
 export function costOf(def: FunctionDef): Cost {
-  return def.cost > 0 ? 'paid' : 'free'
+  return costRange(def).min > 0 ? 'paid' : 'free'
+}
+
+/**
+ * The Cost filter's choices a function answers to: free, paid, or -- for one
+ * whose price depends on what is chosen and can be either (round 5, Gear Up)
+ * -- both.
+ */
+export function costsOf(def: FunctionDef): Cost[] {
+  const r = costRange(def)
+  if (r.max <= 0) return ['free']
+  return r.min > 0 ? ['paid'] : ['free', 'paid']
 }
 
 export function bountyOf(def: FunctionDef): Bounty {
@@ -660,7 +732,7 @@ export function narrowed(route: Route): boolean {
 /** Does a function pass the four filters, its status as the server says it now? */
 export function passes(def: FunctionDef, fn: FunctionState | undefined, f: CardFilters): boolean {
   if (f.risk !== null && def.risk !== f.risk) return false
-  if (f.cost !== null && costOf(def) !== f.cost) return false
+  if (f.cost !== null && !costsOf(def).includes(f.cost)) return false
   if (f.bounty !== null && bountyOf(def) !== f.bounty) return false
   if (f.status !== null && statusOf(fn, def) !== f.status) return false
   return true

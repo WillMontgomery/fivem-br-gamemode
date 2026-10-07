@@ -13671,6 +13671,102 @@ do
     eq(BR.Inv.fillAmmo(1), 0, 'and nothing minted')
 end
 
+describe("inv.roomFor -- a terminal's Gear Up, never displacing anything (#396, round 5)")
+do
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+    local W = BR.ItemKind.WEAPON
+    local C = BR.ItemKind.CONSUMABLE
+    local medkit = BR.Config.ConsumableById['medkit']
+    local small = BR.Config.ConsumableById['minishield']
+    local nade = BR.Config.WeaponById['grenade']
+    local rifle = BR.Config.WeaponById['assaultrifle']
+    local function stack(id, kind, count, clip)
+        local def = BR.Config.WeaponById[id] or BR.Config.ConsumableById[id]
+        return { item = id, kind = kind, rarity = def.rarity, count = count, clip = clip }
+    end
+    lootMatch()
+    BR.Inv.reset(1)
+    local inv = BR.Inv.of(1)
+
+    -- AN EMPTY BAG: a gun, one; a Med Kit, its carry ceiling; a Small Shield
+    -- (no ceiling), what the five slots hold; a grenade, its stack.
+    eq(BR.Inv.roomFor(1, stack('assaultrifle', W, 1, rifle.clip)), 1, 'an empty bag takes a gun')
+    eq(BR.Inv.roomFor(1, stack('medkit', C, medkit.carryMax)), medkit.carryMax, 'a Med Kit, to its ceiling')
+    eq(BR.Inv.roomFor(1, stack('medkit', C, 99)), medkit.carryMax, 'and never past it, however many are asked')
+    eq(BR.Inv.roomFor(1, stack('minishield', C, small.maxStack)), small.maxStack, 'a full stack of Small Shields')
+    eq(BR.Inv.roomFor(1, stack('grenade', BR.ItemKind.THROWABLE, nade.maxStack)), nade.maxStack, 'three grenades')
+    eq(inv.slots[1], false, 'and it put nothing anywhere: a read')
+
+    -- HOLDING ONE MED KIT OF THREE: two more, and give() takes exactly them.
+    BR.Inv.give(1, stack('medkit', C, 1))
+    local n = BR.Inv.roomFor(1, stack('medkit', C, medkit.carryMax))
+    eq(n, medkit.carryMax - 1, 'two more Med Kits fit')
+    local okGive, back = BR.Inv.give(1, stack('medkit', C, n))
+    ok(okGive and back == nil, 'give() takes all of them, handing nothing back')
+    eq(inv.slots[1].count, medkit.carryMax, 'one stack of three')
+    local m2, why = BR.Inv.roomFor(1, stack('medkit', C, medkit.carryMax))
+    ok(m2 == 0 and why == 'carrymax', 'at the ceiling: 0, carrymax', tostring(why))
+
+    -- A FULL BAG: no gun fits, and nothing is swapped to make room.
+    BR.Inv.reset(1)
+    inv = BR.Inv.of(1)
+    for _, id in ipairs({ 'pistol', 'smg', 'pumpshotgun', 'carbinerifle', 'sniperrifle' }) do
+        local w = BR.Config.WeaponById[id]
+        BR.Inv.give(1, stack(id, W, 1, w.clip))
+    end
+    inv.active = 2
+    local g, gwhy = BR.Inv.roomFor(1, stack('assaultrifle', W, 1, rifle.clip))
+    ok(g == 0 and gwhy == 'noroom', 'five guns: no room for a sixth', tostring(gwhy))
+    g, gwhy = BR.Inv.roomFor(1, stack('medkit', C, medkit.carryMax))
+    ok(g == 0 and gwhy == 'noroom', 'nor for a Med Kit with no stack of them to top up', tostring(gwhy))
+    -- A STACK TO TOP UP IN A FULL BAG: what it still holds.
+    BR.Inv.reset(1)
+    inv = BR.Inv.of(1)
+    BR.Inv.give(1, stack('minishield', C, 2))
+    for _, id in ipairs({ 'pistol', 'smg', 'pumpshotgun', 'carbinerifle' }) do
+        BR.Inv.give(1, stack(id, W, 1, BR.Config.WeaponById[id].clip))
+    end
+    eq(BR.Inv.roomFor(1, stack('minishield', C, small.maxStack)), small.maxStack - 2,
+        'a full bag tops up the Small Shields it holds')
+
+    -- A CHANNEL RUNNING: never into the hand (#271), as give() would not.
+    BR.Inv.reset(1)
+    inv = BR.Inv.of(1)
+    for _, id in ipairs({ 'pistol', 'smg', 'pumpshotgun', 'carbinerifle', 'sniperrifle' }) do
+        BR.Inv.give(1, stack(id, W, 1, BR.Config.WeaponById[id].clip))
+    end
+    inv.slots[2] = false
+    inv.active = 2
+    inv.using = { slot = 1, endsAt = fakeTime + 4000, ms = 5000 }
+    g = BR.Inv.roomFor(1, stack('assaultrifle', W, 1, rifle.clip))
+    eq(g, 0, 'the only free slot is the hand, mid-channel: no room')
+    g = BR.Inv.roomFor(1, stack('medkit', C, medkit.carryMax))
+    eq(g, 0, 'nor for a Med Kit: a stackable never lands in the hand mid-channel either')
+    inv.using = nil
+    eq(BR.Inv.roomFor(1, stack('assaultrifle', W, 1, rifle.clip)), 1, 'with no channel, the hand\'s empty slot takes it')
+
+    -- A GUN HANDED OVER THIS WAY IS THE SERVER'S OWN SLOT, loaded, with the
+    -- found gun's spare -- what the shot validator and the strip read.
+    BR.Inv.reset(1)
+    inv = BR.Inv.of(1)
+    local st = stack('assaultrifle', W, 1, rifle.clip)
+    eq(BR.Inv.roomFor(1, st), 1, 'room for the rifle')
+    local okR, disp = BR.Inv.give(1, st)
+    ok(okR and disp == nil, 'given, displacing nothing')
+    ok(inv.slots[1] and inv.slots[1].item == 'assaultrifle' and inv.slots[1].clip == rifle.clip,
+        'in a slot, loaded')
+    eq(inv.ammo[rifle.ammo], math.min(BR.Config.AmmoCaps[rifle.ammo],
+        rifle.clip * (BR.Config.Loot.weaponReserveClips or 1)), 'with one spare magazine, as a crate\'s')
+
+    -- NOT ITS QUESTION: ammo (a pool) and nothing at all.
+    local a, awhy = BR.Inv.roomFor(1, { item = rifle.ammo, kind = BR.ItemKind.AMMO, count = 10 })
+    ok(a == 0 and awhy == 'noinv', 'ammo is no slot item: 0', tostring(awhy))
+    a, awhy = BR.Inv.roomFor(999, st)
+    ok(a == 0 and awhy == 'noinv', 'nobody: 0', tostring(awhy))
+end
+
 describe("inv.grantEffect -- a terminal's Field medic (#396, wave A)")
 do
     local function eq(got, want, name)

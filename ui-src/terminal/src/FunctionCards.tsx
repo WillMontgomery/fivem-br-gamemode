@@ -11,8 +11,8 @@ import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import type { FunctionDef, TerminalState } from './bridge'
 import {
-  BOUNTIES, COSTS, NO_FILTERS, RISKS, STATUSES, bountyOf, cardsFor, fill, filtersOf, indicatorOf, narrowed,
-  riskColor, showsSquads, statusOf, withFilters, type CardFilters, type Route, type Say,
+  BOUNTIES, COSTS, NO_FILTERS, RISKS, STATUSES, bountyOf, cardsFor, costRange, fill, filtersOf, indicatorOf,
+  narrowed, riskColor, showsSquads, statusOf, withFilters, type CardFilters, type Route, type Say,
 } from './model'
 import { Squads } from './Squads'
 import { VoltsAmount, voltsLine } from './Volts'
@@ -41,7 +41,9 @@ import { VoltsAmount, voltsLine } from './Volts'
  * card rather than running past it. "SQUADS!" FOLLOWS IT on a function whose
  * effect reaches the whole squad, in a squad match (Squads.tsx).
  *
- * A CARD'S COST is its Volts in the Volts style (Volts.tsx), or cost_free;
+ * A CARD'S COST is its Volts in the Volts style (Volts.tsx), or cost_free --
+ * or, for one whose price depends on what is chosen and can be nothing
+ * (round 5, Gear Up), cost_free_or with the most it can cost;
  * its BOUNTY is its row's `bounty` in words (bounty_none / _runner / _target).
  *
  * THE FILTERS (round 4: "the "Functions" search should have filters available
@@ -183,7 +185,12 @@ export function FunctionCards(props: {
               id: 'cost',
               width: 50,
               header: say('card_cost'),
-              content: (f) => (f.cost > 0 ? <VoltsAmount n={f.cost} currency={currency} /> : say('cost_free')),
+              content: (f) => {
+                const r = costRange(f)
+                if (r.max <= 0) return say('cost_free')
+                if (r.min <= 0) return voltsLine(say('cost_free_or'), currency, { volts: r.max })
+                return <VoltsAmount n={r.max} currency={currency} />
+              },
             },
           ],
         }}

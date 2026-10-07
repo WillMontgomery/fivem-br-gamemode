@@ -123,6 +123,9 @@ loadAll({
     'br_lib/config/weapons.lua',
     -- The vehicles the gamemode refuses: EMP never stalls one (wave C).
     'br_lib/config/vehicles.lua',
+    -- The consumables (round 5): Gear Up's list is built from this and
+    -- config/weapons.lua as terminals.lua loads.
+    'br_lib/config/loot.lua',
     'br_lib/shared/season.lua',
     'br_lib/config/seasons.lua',
     'br_lib/config/terminals.lua',
@@ -161,6 +164,8 @@ local granted = {}       -- BR.Inv.grantEffect: { src, effect } (Field medic)
 local drained = {}       -- BR.Damage.drain: { src, amount, took } (Field medic, round 4)
 local invs = {}          -- BR.Inv.of: [src] = { slots = { [i] = stack|false } } (Disarm)
 local revoked = {}       -- BR.Inv.revoke: { src, slot, item, grace }
+local rooms = {}         -- BR.Inv.roomFor: [src] = { n, why } (Gear Up, round 5); none is room for all of it
+local gives = {}         -- BR.Inv.give: { src, stack } (Gear Up)
 
 BR.Sched = { every = function(_, name, fn) jobs[name] = fn end }
 function RegisterNetEvent() end
@@ -318,6 +323,23 @@ BR.Inv = {
         revoked[#revoked + 1] = { src = src, slot = slot, item = s.item, grace = grace }
         return s
     end,
+    -- Gear Up's door (round 5; server/inventory.lua's -- the real roomFor over
+    -- real slots and ceilings, and give taking exactly what it said, is
+    -- tools/test_roster.lua's): how much would fit, as a block sets it, and
+    -- the grant recorded.
+    roomFor = function(src, stack)
+        if not roster[src] then return 0, 'noinv' end
+        local r = rooms[src]
+        if r then return math.min(r.n, stack.count or 1), r.n <= 0 and r.why or nil end
+        return stack.count or 1, nil
+    end,
+    give = function(src, stack)
+        if not roster[src] then return false, nil, 'noinv' end
+        local copy = {}
+        for k, v in pairs(stack) do copy[k] = v end
+        gives[#gives + 1] = { src = src, stack = copy }
+        return true, nil, nil
+    end,
 }
 
 -- Field medic's drain (round 4; server/damage.lua's BR.Damage.drain -- its
@@ -428,7 +450,7 @@ local function reset()
     for _, answer in ipairs(market.pending) do answer() end
     flush()
     sent, notices, logs, airdropCalls, filled, granted, drained = {}, {}, {}, {}, {}, {}, {}
-    invs, revoked = {}, {}
+    invs, revoked, rooms, gives = {}, {}, {}, {}
     roster, matches, keys = {}, {}, {}
     timers = {}
     market.wallet, market.charges, market.refunds, market.pending = {}, {}, {}, {}
@@ -2875,6 +2897,363 @@ do
     runAt(5, 'scan')
     eq(rowsOf(3), ('impact_emp@%d|impact_scan@end'):format(first), 'the clock first, then the rest of the match')
     local _ = m
+end
+
+-- =========================================================================
+-- PART J -- round 5 (owner, 2026-10-06): Gear Up -- "any inventory item or
+-- weapon which is not a heavy sniper or machine gun", to yourself, a
+-- teammate, or for 200 Volts the whole squad; a consumable at its maxCarry
+-- =========================================================================
+
+--- What Gear Up handed over, one line per grant: "src:item x count".
+local function given()
+    local out = {}
+    for _, g in ipairs(gives) do
+        out[#out + 1] = ('%d:%s x%d'):format(g.src, g.stack.item, g.stack.count or 0)
+    end
+    return table.concat(out, ',')
+end
+
+--- The Gear Up choices a state lists as teammates: "id=name,...".
+local function matesOf(state)
+    local out = {}
+    for _, m in ipairs(state and state.mates or {}) do out[#out + 1] = m.id .. '=' .. m.name end
+    return table.concat(out, ',')
+end
+
+describe('Gear Up: registered, built, and its list -- every item but the machine guns and the Heavy Sniper')
+do
+    local row = T.row('gear_up')
+    ok(row and row.implemented == true and T.FUNCTIONS.gear_up ~= nil, 'gear_up is built')
+    eq(COPY.gear_up_name, 'Gear Up', 'the owner\'s name for it, verbatim')
+    local item, who, mate = row.options[1], row.options[2], row.options[3]
+    ok(item.id == 'item' and item.dropdown == true, 'the item, a dropdown')
+    ok(who.id == 'who' and table.concat(who.choices, ',') == 'self,mate,squad' and who.default == 'self',
+        'who gets it: you, one teammate, the whole squad -- you by default')
+    ok(mate.id == 'mate' and mate.source == 'mates' and mate.dropdown == true and mate.when.who == 'mate',
+        'the teammate, a dropdown of standing teammates, only for one teammate')
+    eq(row.costBy.option, 'who', 'its price is by who gets it')
+    eq(row.costBy.choices.squad, 200, '"for a charge of 200 volts the whole team can get them"')
+    eq(row.costBy.choices.self, nil, 'yourself: free')
+    eq(row.costBy.choices.mate, nil, 'a teammate: free')
+
+    -- THE CLASS, ON EVERY GUN (config/weapons.lua), so "machine gun" is a
+    -- field and not a list of names: a machine gun added later is left out.
+    local CLASSES = { pistol = true, smg = true, rifle = true, shotgun = true, sniper = true, mg = true, launcher = true }
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            ok(CLASSES[w.class] == true, ('%s has a class (%s)'):format(w.id, tostring(w.class)))
+        end
+    end
+    local mgs = {}
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do if w.class == 'mg' then mgs[#mgs + 1] = w.id end end
+    end
+    table.sort(mgs)
+    eq(table.concat(mgs, ','), 'combatmg,combatmgmk2,gusenberg,mg,minigun',
+        'the machine guns: the MG, the Gusenberg, both Combat MGs, and the minigun filed with them')
+
+    -- THE LIST, BY ITS RULE: the weapons config's guns, its airdrop shelf,
+    -- melee and throwables, then the loot config's consumables and the CPR
+    -- kit, in their order -- but every 'mg' and the Heavy Sniper.
+    local want = {}
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons, BR.Config.Melee,
+                            BR.Config.Throwables, BR.Config.Consumables }) do
+        for _, d in ipairs(list) do
+            if d.class ~= 'mg' and d.id ~= 'heavysniper' then want[#want + 1] = d.id end
+        end
+    end
+    want[#want + 1] = 'cprkit'
+    eq(table.concat(item.choices, ','), table.concat(want, ','), 'the list is every item but those, in the configs\' order')
+    eq(#item.choices, 55, 'fifty-five items on 2026-10-06')
+    eq(item.default, item.choices[1], 'and the first is the default')
+    local offered = {}
+    for _, id in ipairs(item.choices) do offered[id] = true end
+    for _, id in ipairs({ 'heavysniper', 'mg', 'gusenberg', 'combatmg', 'combatmgmk2', 'minigun' }) do
+        eq(offered[id], nil, ('%s is not offered'):format(id))
+    end
+    for _, id in ipairs({ 'marksmanrifle', 'sniperrifle', 'marksmanmk2', 'rpg', 'grenadelauncher', 'railgun',
+                          'knife', 'grenade', 'smoke', 'minishield', 'medkit', 'repairkit', 'cprkit' }) do
+        eq(offered[id], true, ('%s is offered'):format(id))
+    end
+    -- NEVER: what is no slot item, or no loot config's.
+    -- No ammo: a pool, not a slot. (The SMG's id is also the SMG pool's
+    -- name; what it hands over is the gun.)
+    for _, id in ipairs(item.choices) do
+        local st = T.gearStack(id)
+        ok(st ~= nil and st.kind ~= BR.ItemKind.AMMO, ('%s hands over an item, never ammo'):format(id))
+    end
+    eq(T.gearStack('smg').kind, BR.ItemKind.WEAPON, 'smg is the SMG')
+    for _, id in ipairs({ 'yubikey', 'fists', 'revivekey', 'chest', 'volts' }) do
+        eq(offered[id], nil, ('never %s'):format(id))
+    end
+    -- EVERY ITEM'S LINE IS THE GAME'S OWN NAME FOR IT.
+    for _, id in ipairs(item.choices) do
+        local def = BR.Config.WeaponById[id] or BR.Config.ConsumableById[id]
+        eq(COPY['gear_up_opt_item_' .. id], def and def.label, ('%s reads as its own label'):format(id))
+    end
+end
+
+describe('Gear Up: yourself -- free, through the inventory\'s own door, a full stack')
+do
+    reset()
+    lobby()
+    local r = runAt(1, 'gear_up', { item = 'assaultrifle' })
+    ok(r and r.ok and r.code == 'done', 'it runs', r and r.code)
+    eq(given(), '1:assaultrifle x1', 'the rifle, to the runner, through BR.Inv.give')
+    local g = gives[1] and gives[1].stack or {}
+    ok(g.kind == BR.ItemKind.WEAPON and g.clip == BR.Config.WeaponById.assaultrifle.clip
+        and g.rarity == BR.Config.WeaponById.assaultrifle.rarity,
+        'loaded, at its own rarity, as a crate\'s is (its spare is the found-gun rule\'s)')
+    ok(#market.charges == 0 and market.wallet[1] == 1000, 'free: no Volts asked')
+    ok(keys[1] == false and T.squadUsed(1), 'the key and the squad\'s use, spent')
+    ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'the lobby is told')
+    ok(noticeIndex(COPY.gear_up_description, 3) ~= nil, 'what it was, naming no item')
+    eq(noticeIndex('used Gear Up to give you', 1), nil, 'and the runner is not told what they chose')
+    eq(r and r.toast, COPY.gear_up_done, 'the done line')
+
+    -- A CONSUMABLE AT ITS maxCarry (config: carryMax), A THROWABLE AT ITS
+    -- STACK, A SHIELD (no carry ceiling) AT A FULL STACK, MELEE WITH NO
+    -- MAGAZINE.
+    for _, c in ipairs({
+        { 'medkit', BR.ItemKind.CONSUMABLE, BR.Config.ConsumableById.medkit.carryMax },
+        { 'bandage', BR.ItemKind.CONSUMABLE, BR.Config.ConsumableById.bandage.carryMax },
+        { 'repairkit', BR.ItemKind.CONSUMABLE, 1 },
+        { 'cprkit', BR.ItemKind.CONSUMABLE, 1 },
+        { 'minishield', BR.ItemKind.CONSUMABLE, BR.Config.ConsumableById.minishield.maxStack },
+        { 'grenade', BR.ItemKind.THROWABLE, BR.Config.WeaponById.grenade.maxStack },
+        { 'bat', BR.ItemKind.WEAPON, 1 },
+    }) do
+        reset()
+        lobby()
+        runAt(1, 'gear_up', { item = c[1] })
+        local st = gives[1] and gives[1].stack or {}
+        ok(st.item == c[1] and st.kind == c[2] and st.count == c[3],
+            ('%s: %s x%d'):format(c[1], c[2], c[3]), given())
+    end
+    eq(BR.Config.ConsumableById.medkit.carryMax, 3, 'a Med Kit comes as 3')
+    eq(gives[1].stack.clip, nil, 'a bat carries no magazine')
+
+    -- CLAMPED TO WHAT FITS: holding one Med Kit of three, two come.
+    reset()
+    lobby()
+    rooms[1] = { n = 2 }
+    runAt(1, 'gear_up', { item = 'medkit' })
+    eq(given(), '1:medkit x2', 'two of three, when one is already carried')
+end
+
+describe('Gear Up: yourself -- carrying the most you may, or no room, is refused, spending nothing')
+do
+    for _, c in ipairs({ { 'carrymax', 'gear_full' }, { 'noroom', 'gear_no_room' } }) do
+        reset()
+        lobby()
+        rooms[1] = { n = 0, why = c[1] }
+        local r = runAt(1, 'gear_up', { item = 'medkit' })
+        ok(r and r.ok == false and r.code == c[2], ('%s: %s'):format(c[1], c[2]), r and r.code)
+        eq(r and r.toast, COPY[c[2]], 'in its own words')
+        ok(keys[1] == true and not T.squadUsed(1) and #gives == 0, 'the key, the use and the inventory untouched')
+    end
+    -- THE CARD NEVER SAYS SO: a choice not made yet is no reason.
+    reset()
+    lobby()
+    rooms[1] = { n = 0, why = 'noroom' }
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    local f = listedAs(1, 'gear_up')
+    ok(f and f.available == true, 'listed: available, whatever the bag holds')
+end
+
+describe('Gear Up: one standing teammate, from a dropdown -- free, and they are told')
+do
+    reset()
+    lobby()
+    player(6, matches[1], 'A', { x = C0.x + 60.0, y = C0.y }, BR.PlayerState.DBNO)
+    player(7, matches[1], 'A', { x = C0.x + 70.0, y = C0.y })
+    -- THE DROPDOWN: the standing teammates, never the runner, the downed or
+    -- another squad -- in the state, every push.
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    local st = lastOf(BR.Net.TERMINAL_OPEN, 1).state
+    eq(matesOf(st), '2=p2,7=p7', 'p2 and p7: standing; p6 is downed, p3 is B')
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'gear_up',
+                                   options = { item = 'medkit', who = 'mate', mate = '2' } })
+    flush()
+    local r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.ok and r.code == 'done', 'it runs', r and r.code)
+    eq(given(), '2:medkit x3', 'three Med Kits, to p2 alone')
+    ok(#market.charges == 0, 'free')
+    local i = noticeIndex('used Gear Up to give you', 2)
+    ok(i ~= nil, 'p2 is told', lastToast(2))
+    local n = noticesTo(2)[i]
+    ok(n and type(n.text) == 'table', 'with the runner\'s name as a name, not in the sentence (BR.Notice.who)')
+    ok((textOf(n) or ''):find('3 Med Kits', 1, true) ~= nil, 'and what: "3 Med Kits"', textOf(n))
+    ok(noticeIndex('has redeemed their special power', 2) < i, 'after the lobby\'s notice')
+    eq(noticeIndex('used Gear Up to give you', 1), nil, 'the runner is not')
+    eq(noticeIndex('used Gear Up to give you', 7), nil, 'nor a teammate who got nothing')
+
+    -- NOT A STANDING TEAMMATE: downed, another squad's, the runner, nobody.
+    for _, bad in ipairs({ '6', '3', '1', '99' }) do
+        reset()
+        lobby()
+        player(6, matches[1], 'A', { x = C0.x + 60.0, y = C0.y }, BR.PlayerState.DBNO)
+        local rr = runAt(1, 'gear_up', { item = 'medkit', who = 'mate', mate = bad })
+        ok(rr and rr.code == 'gear_no_mate', ('mate=%s: gear_no_mate'):format(bad), rr and rr.code)
+        ok(keys[1] == true and #gives == 0, 'spending nothing')
+    end
+    reset()
+    lobby()
+    local rr = runAt(1, 'gear_up', { item = 'medkit', who = 'mate' })
+    eq(rr and rr.code, 'gear_no_mate', 'no teammate picked: gear_no_mate')
+    -- THEIRS, IN THEIR OWN WORDS.
+    for _, c in ipairs({ { 'carrymax', 'gear_full_mate' }, { 'noroom', 'gear_no_room_mate' } }) do
+        reset()
+        lobby()
+        rooms[2] = { n = 0, why = c[1] }
+        rr = runAt(1, 'gear_up', { item = 'medkit', who = 'mate', mate = '2' })
+        ok(rr and rr.code == c[2] and rr.toast == COPY[c[2]], ('the teammate\'s %s: %s'):format(c[1], c[2]), rr and rr.code)
+        ok(keys[1] == true and #gives == 0, 'spending nothing')
+    end
+end
+
+describe('Gear Up: the whole squad, for 200 Volts -- everyone standing, or nothing is spent')
+do
+    reset()
+    lobby()
+    player(6, matches[1], 'A', { x = C0.x + 60.0, y = C0.y }, BR.PlayerState.DBNO)
+    player(7, matches[1], 'A', { x = C0.x + 70.0, y = C0.y })
+    local r = runAt(1, 'gear_up', { item = 'grenade', who = 'squad' })
+    ok(r and r.ok and r.code == 'done', 'it runs', r and r.code)
+    eq(given(), '1:grenade x3,2:grenade x3,7:grenade x3', 'everyone in the squad standing, the runner included; not p6, downed')
+    ok(#market.charges == 1 and market.charges[1].cost == 200 and market.wallet[1] == 800, '200 Volts, once')
+    ok(r and r.balance == 800, 'and the new balance is said')
+    ok(noticeIndex('used Gear Up to give you', 2) and noticeIndex('used Gear Up to give you', 7), 'p2 and p7 are told')
+    eq(noticeIndex('used Gear Up to give you', 1), nil, 'the runner is not')
+    eq(noticeIndex('used Gear Up to give you', 3), nil, 'nor another squad')
+
+    -- ONE ALREADY CARRYING THE MOST THEY MAY HAS IT: skipped, the rest get it.
+    reset()
+    lobby()
+    rooms[2] = { n = 0, why = 'carrymax' }
+    r = runAt(1, 'gear_up', { item = 'medkit', who = 'squad' })
+    ok(r and r.ok, 'a mate at the ceiling does not stop it', r and r.code)
+    eq(given(), '1:medkit x3', 'the runner gets it; p2 already carries three')
+    -- EVERYONE THERE: refused, nothing spent.
+    reset()
+    lobby()
+    rooms[1], rooms[2] = { n = 0, why = 'carrymax' }, { n = 0, why = 'carrymax' }
+    r = runAt(1, 'gear_up', { item = 'medkit', who = 'squad' })
+    ok(r and r.code == 'gear_full_squad' and r.toast == COPY.gear_full_squad, 'everyone carrying the most: gear_full_squad', r and r.code)
+    ok(#market.charges == 0 and keys[1] == true and #gives == 0, 'no Volts asked, nothing spent')
+    -- ANYONE WITH NO ROOM: the whole run, so 200 Volts never leave a teammate out.
+    reset()
+    lobby()
+    rooms[2] = { n = 0, why = 'noroom' }
+    r = runAt(1, 'gear_up', { item = 'assaultrifle', who = 'squad' })
+    ok(r and r.code == 'gear_no_room_squad' and r.toast == COPY.gear_no_room_squad, 'a mate with no room: gear_no_room_squad', r and r.code)
+    ok(#market.charges == 0 and keys[1] == true and #gives == 0, 'no Volts asked, nothing spent')
+    -- SHORT OF 200: no_volts, with the figures.
+    reset()
+    lobby()
+    market.wallet[1] = 150
+    r = runAt(1, 'gear_up', { item = 'medkit', who = 'squad' })
+    ok(r and r.code == 'no_volts' and r.cost == 200 and r.balance == 150, 'short: no_volts, 200 against 150', r and r.code)
+    ok(#gives == 0 and keys[1] == true, 'nothing spent')
+    -- FOR YOURSELF THE SAME BALANCE IS PLENTY: it is free.
+    r = runAt(1, 'gear_up', { item = 'medkit', who = 'self' })
+    ok(r and r.ok and market.wallet[1] == 150, 'yourself, with 150: free', r and r.code)
+end
+
+describe('Gear Up: squad choices only in a squad match; the end of the load; the dev command')
+do
+    -- A SOLO MATCH: the teammate and the squad are no choices -- the page
+    -- does not show them, and the door refuses them.
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    keys[1] = true
+    market.wallet[1] = 1000
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    eq(matesOf(lastOf(BR.Net.TERMINAL_OPEN, 1).state), '', 'no teammates listed')
+    for _, who in ipairs({ 'mate', 'squad' }) do
+        local r = runAt(1, 'gear_up', { item = 'medkit', who = who, mate = who == 'mate' and '2' or nil })
+        ok(r and r.code == 'bad_option', ('who=%s outside a squad match: bad_option'):format(who), r and r.code)
+    end
+    ok(#gives == 0 and #market.charges == 0 and keys[1] == true, 'nothing spent')
+    local r = runAt(1, 'gear_up', { item = 'medkit' })
+    ok(r and r.ok and given() == '1:medkit x3', 'yourself: it runs', r and r.code)
+    eq(COPY.gear_up_opt_who_solo, '', 'and the page hides "Who gets it" there')
+    eq(BR.TerminalSolve.pick(COPY, 'gear_up_summary', false), COPY.gear_up_summary_solo, 'with the solo summary')
+
+    -- THE RUNNER WENT DOWN WHILE IT LOADED: nobody standing to get it, and
+    -- everything back.
+    reset()
+    lobby()
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'gear_up', options = { item = 'medkit' } })
+    roster[1].state = BR.PlayerState.DBNO
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'gear_standing' and r.toast == COPY.gear_standing, 'yourself, downed: gear_standing at the end', r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1) and #gives == 0, 'the key and the use given back, nothing given')
+
+    -- THE TEAMMATE WENT DOWN WHILE IT LOADED: everything back.
+    reset()
+    lobby()
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'gear_up',
+                                   options = { item = 'medkit', who = 'mate', mate = '2' } })
+    ok(keys[1] == false, 'accepted: the key is spent while it loads')
+    roster[2].state = BR.PlayerState.DBNO
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'gear_no_mate', 'the mate went down: gear_no_mate at the end', r and r.code)
+    ok(keys[1] == true and not T.squadUsed(1) and #gives == 0, 'the key and the use given back, nothing given')
+    -- AND A SQUAD RUN'S 200 VOLTS COME BACK TOO.
+    reset()
+    lobby()
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    fire(BR.Net.TERMINAL_RUN, 1, { terminalId = 'tower', functionId = 'gear_up',
+                                   options = { item = 'medkit', who = 'squad' } })
+    ok(market.wallet[1] == 800, 'accepted: 200 Volts spent')
+    rooms[2] = { n = 0, why = 'noroom' }
+    flush()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    ok(r and r.code == 'gear_no_room_squad', 'a mate\'s bag filled meanwhile: refused at the end', r and r.code)
+    ok(market.wallet[1] == 1000 and keys[1] == true and #gives == 0, 'the 200 Volts, the key and the use given back')
+
+    -- `brterminal run gear_up [item=] [who=] [mate=]`: no key, no Volts.
+    reset()
+    lobby()
+    local said = devRun(1, 'gear_up item=medkit')
+    ok(said:find('ok (done)', 1, true) ~= nil and given() == '1:medkit x3', 'brterminal run gear_up item=medkit', said)
+    said = devRun(1, 'gear_up item=railgun who=mate mate=2')
+    ok(said:find('ok (done)', 1, true) ~= nil and given() == '1:medkit x3,2:railgun x1',
+        'brterminal run gear_up item=railgun who=mate mate=2', said)
+    said = devRun(1, 'gear_up item=grenade who=squad')
+    ok(said:find('ok (done)', 1, true) ~= nil and #market.charges == 0, 'who=squad charges nothing from the dev command', said)
+    said = devRun(1, 'gear_up item=minigun')
+    ok(said:find('does not take those options', 1, true) ~= nil, 'a machine gun is no choice', said)
+    said = devRun(1, 'gear_up item=heavysniper')
+    ok(said:find('does not take those options', 1, true) ~= nil, 'nor the Heavy Sniper', said)
+    said = devRun(1, 'gear_up item=medkit who=mate mate=4')
+    ok(said:find('refused (gear_no_mate)', 1, true) ~= nil, 'a downed player of another squad: refused', said)
+end
+
+describe('Gear Up: every grant through the inventory, pinned by text')
+do
+    -- A GRANTED GUN IS THE SERVER'S OWN SLOT FROM THE START, so the shot
+    -- validator's held check and the strip's `ourWeapon` -- both read the
+    -- slot -- never flag it: the file asks BR.Inv.roomFor and hands over with
+    -- BR.Inv.give, and nothing else touches an inventory or a ped.
+    local src = (readFile(ROOT .. 'br_core/server/terminalfx/gear_up.lua') or ''):gsub('%-%-[^\n]*', '')
+    ok(src:find('BR.Inv.give(', 1, true) ~= nil and src:find('BR.Inv.roomFor(', 1, true) ~= nil,
+        'through BR.Inv.roomFor and BR.Inv.give')
+    for _, bad in ipairs({ 'GiveWeaponToPed', 'TriggerClientEvent', '.slots', 'INV_SET', 'BR.Inv.push', 'dropForPlayer' }) do
+        ok(not src:find(bad, 1, true), ('and never %s'):format(bad))
+    end
 end
 
 -- =========================================================================

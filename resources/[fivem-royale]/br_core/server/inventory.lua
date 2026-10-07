@@ -1016,6 +1016,52 @@ function BR.Inv.give(src, stack, opts)
     return true, released(displaced), nil
 end
 
+--- HOW MUCH OF THIS STACK WOULD GO IN WITHOUT DISPLACING ANYTHING (#396, round
+--- 5: a terminal's Gear Up, which hands a player an item they chose and must
+--- never throw what they carry on the floor to make room). A READ: it changes
+--- nothing and sends nothing, and give() with `count` at most this answer
+--- takes all of it -- no swap, no remainder handed back.
+---
+---   a weapon      1 when a free slot would take it (freeSlot: never the hand
+---                 while a channel runs, #271), else 0
+---   a consumable  what the stacks of it already held can still take, plus a
+---   or throwable  full stack per free slot -- clamped to its carry ceiling
+---                 (carryRoom, #171)
+---
+--- WHY 0: 'carrymax' (at its ceiling: the one answer allowed to speak of a
+--- maximum, as in give()), 'noroom' (no free slot and nothing to top up), or
+--- 'noinv' (no player, no stack, or ammo, which takes no slot and is not a
+--- thing this asks about).
+--- @param src integer
+--- @param stack table  { item, kind, count }
+--- @return integer n, string|nil why
+function BR.Inv.roomFor(src, stack)
+    local inv = BR.Inv.of(src)
+    if not inv or type(stack) ~= 'table' or stack.kind == BR.ItemKind.AMMO then return 0, 'noinv' end
+    local want = math.max(0, math.floor(tonumber(stack.count) or 1))
+    local room = carryRoom(inv, stack)
+    if room and room <= 0 then return 0, 'carrymax' end
+    if room then want = math.min(want, room) end
+    if stack.kind == BR.ItemKind.CONSUMABLE or stack.kind == BR.ItemKind.THROWABLE then
+        local max = maxStackOf(stack)
+        local busy = channelled(inv)  -- spelling-ok: the inventory's own name for it
+        local space = 0
+        for i = 1, SLOTS do
+            local s = inv.slots[i]
+            if s and s.item == stack.item and s.count < max then
+                space = space + (max - s.count)
+            elseif not s and not (busy and i == inv.active) then
+                space = space + max
+            end
+        end
+        local n = math.min(want, space)
+        if n <= 0 then return 0, 'noroom' end
+        return n, nil
+    end
+    if want > 0 and freeSlot(inv) then return 1, nil end
+    return 0, 'noroom'
+end
+
 --- Take a whole slot out. Used by drops and by death.
 --- @param src integer
 --- @param slot integer

@@ -9,11 +9,13 @@ import Header from '@cloudscape-design/components/header'
 import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
 import Modal from '@cloudscape-design/components/modal'
 import RadioGroup from '@cloudscape-design/components/radio-group'
+import Select from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
-import type { FunctionDef, FunctionState, PickResult, Spot } from './bridge'
+import type { FunctionDef, FunctionState, Mate, PickResult, Spot } from './bridge'
 import {
-  fill, indicatorOf, placeText, riskColor, risksOf, runChoices, showsSquads, shownOptions, statusOf, type Say,
+  choicesOf, costFor, fill, indicatorOf, placeText, riskColor, risksOf, runChoices, showsSquads, shownOptions,
+  statusOf, valueOf, type Say,
 } from './model'
 import { Squads } from './Squads'
 import { voltsLine, voltsLines } from './Volts'
@@ -43,6 +45,12 @@ import { voltsLine, voltsLines } from './Volts'
  * desktop and br_core's client do that), and the box comes back showing the
  * place picked with Run enabled; the run carries the spot, and the server
  * decides what it means.
+ *
+ * AN OPTION MAY BE A DROPDOWN (round 5, Gear Up): its item list and its
+ * standing teammates, the latter from the state (`mates`), live. An option or
+ * a choice whose words are empty for this player is not shown (Gear Up's
+ * "Who gets it" outside a squad match). THE PRICE IS THE CHOICES' (`costBy`):
+ * the cost line and the confirm box say what this run would cost.
  *
  * RUN WEARS THE FUNCTION'S RISK (round 2: "the Run button - make it the risk
  * color instead"): the same color as its low, medium or high risk badge, in
@@ -79,6 +87,8 @@ export function FunctionPage(props: {
   onPick: (id: string) => void
   /** The last map pick's answer, numbered so each is taken once. */
   picked: { seq: number; result: PickResult } | null
+  /** The standing teammates an option may name (round 5). */
+  mates: Mate[]
 }): ReactElement {
   const { def, fn, say } = props
   const id = def.id
@@ -123,13 +133,15 @@ export function FunctionPage(props: {
   const currency = props.currency
   const reason = !available && fn && fn.reason ? (say(fn.reason) || say('unavailable')) : ''
   // THE COST AND THE BOX SAY THE VOLTS IN THE VOLTS STYLE: {volts} is the
-  // run's cost, the figure and the word. The amounts are written inside the
-  // voltsLine call, where check-terminal T12 (e) can see where they go.
-  const cost = def.cost > 0
-    ? voltsLine(say('cost_line_volts'), currency, { volts: def.cost })
+  // run's cost, the figure and the word -- THIS run's, by the choices made
+  // (round 5: costBy). The amounts are written inside the voltsLine call,
+  // where check-terminal T12 (e) can see where they go.
+  const price = costFor(def, choice)
+  const cost = price > 0
+    ? voltsLine(say('cost_line_volts'), currency, { volts: price })
     : voltsLine(say('cost_line'), currency)
-  const body = def.cost > 0
-    ? voltsLine(say('confirm_body_volts'), currency, { volts: def.cost })
+  const body = price > 0
+    ? voltsLine(say('confirm_body_volts'), currency, { volts: price })
     : voltsLine(say('confirm_body'), currency)
 
   const details = [
@@ -171,8 +183,38 @@ export function FunctionPage(props: {
     </div>,
   ]
   // ONLY THE OPTIONS OFFERED UNDER THE CHOICES MADE (round 4: Time &
-  // weather's time OR weather), and a run carries only theirs.
-  const offered = shownOptions(def, choice)
+  // weather's time OR weather), and a run carries only theirs -- shown only
+  // when they have words for this player (round 5).
+  const mates = props.mates
+  const offered = shownOptions(def, choice).filter((o) => say(`${id}_opt_${o.id}`) !== '')
+  const control = (o: (typeof offered)[number]): ReactElement => {
+    const items = choicesOf(def, o, say, mates)
+    const value = valueOf(o, choice, mates)
+    if (o.dropdown) {
+      const options = items.map((c) => ({ value: c.value, label: c.label }))
+      return (
+        <Select
+          selectedOption={options.find((c) => c.value === value) ?? null}
+          options={options}
+          disabled={!available}
+          expandToViewport
+          onChange={({ detail }) => setChoice({ ...choice, [o.id]: detail.selectedOption.value ?? '' })}
+        />
+      )
+    }
+    return (
+      <RadioGroup
+        value={value}
+        onChange={({ detail }) => setChoice({ ...choice, [o.id]: detail.value })}
+        items={items.map((c) => ({
+          value: c.value,
+          label: c.label,
+          description: say(`${id}_opt_${o.id}_${c.value}_desc`) || undefined,
+          disabled: !available,
+        }))}
+      />
+    )
+  }
   if (offered.length > 0) {
     sections.push(
       <div key="options" className="terminal-raised">
@@ -180,16 +222,7 @@ export function FunctionPage(props: {
           <SpaceBetween size="l">
             {offered.map((o) => (
               <FormField key={o.id} label={say(`${id}_opt_${o.id}`)}>
-                <RadioGroup
-                  value={choice[o.id] ?? o.default}
-                  onChange={({ detail }) => setChoice({ ...choice, [o.id]: detail.value })}
-                  items={o.choices.map((c) => ({
-                    value: c,
-                    label: say(`${id}_opt_${o.id}_${c}`),
-                    description: say(`${id}_opt_${o.id}_${c}_desc`) || undefined,
-                    disabled: !available,
-                  }))}
-                />
+                {control(o)}
               </FormField>
             ))}
           </SpaceBetween>
@@ -241,7 +274,7 @@ export function FunctionPage(props: {
                   onClick={() => {
                     const at = spot ? spot.at : null
                     setConfirm(false)
-                    props.onRun(id, runChoices(def, choice), at)
+                    props.onRun(id, runChoices(def, choice, mates), at)
                   }}>
                   {say('confirm_yes')}
                 </Button>,

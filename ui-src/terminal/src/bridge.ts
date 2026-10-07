@@ -46,6 +46,16 @@ export interface FunctionState {
   reason: string | null
 }
 
+/**
+ * A standing teammate an option can name (round 5: Gear Up's "given to a
+ * teammate"): the server id it is chosen by, as a string, and the name the
+ * squad panel shows. Only in a squad match; never the player.
+ */
+export interface Mate {
+  id: string
+  name: string
+}
+
 /** A squadmate on the match panel. */
 export interface MateInfo {
   name: string
@@ -100,18 +110,38 @@ export interface TerminalState {
   /** The player's gamertag, the app's signed-in username. */
   player: string | null
   match: MatchInfo | null
+  /**
+   * The standing teammates an option with `source: 'mates'` offers (round 5),
+   * live with every push; empty outside a squad match.
+   */
+  mates: Mate[]
 }
 
 /**
  * One option a function takes: its id, its choices, and the default -- and,
  * for one offered only under another option's choice (round 4: Time &
- * weather's time OR weather), `when`: { otherOptionId: choice }.
+ * weather's time OR weather), `when`: { otherOptionId: choice }. Round 5:
+ * `source` 'mates' for one whose choices are the state's standing teammates
+ * (no choices or default of its own), and `dropdown` to draw it as a
+ * dropdown rather than radio buttons.
  */
 export interface OptionDef {
   id: string
   choices: string[]
   default: string
   when: Record<string, string> | null
+  source: 'mates' | null
+  dropdown: boolean
+}
+
+/**
+ * A price by choice (round 5: Gear Up's "for a charge of 200 volts the whole
+ * team can get them"): the option it depends on, and the Volts each listed
+ * choice costs; any other choice costs the row's `cost`.
+ */
+export interface CostBy {
+  option: string
+  choices: Record<string, number>
 }
 
 /** One registry row (br_lib/config/terminals.lua). */
@@ -123,6 +153,8 @@ export interface FunctionDef {
   options: OptionDef[]
   /** Volts a run costs; 0 is free. */
   cost: number
+  /** A price that depends on an option's choice (round 5), or null. */
+  costBy: CostBy | null
   /** Only listed in a squad match. */
   squadOnly: boolean
   /** The category it is listed under outside a squad match, or null. */
@@ -204,6 +236,10 @@ export type Copy = Readonly<Record<string, string>>
 
 const ID = /^[a-z][a-z0-9_]{0,31}$/
 const CHOICE = /^[a-z0-9_]{1,32}$/
+/** The longest teammate name taken from the state. */
+const NAME_MAX = 64
+/** The most Volts a price may be (owner, round 2: "no more than 200"). */
+const COST_MAX = 200
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -281,7 +317,32 @@ export function parseState(v: unknown): TerminalState | null {
     running,
     player: str(v.player),
     match: parseMatch(v.match),
+    mates: parseMates(v.mates),
   }
+}
+
+/** The standing teammates: each a well-formed choice and a name; anything else dropped. */
+function parseMates(v: unknown): Mate[] {
+  const out: Mate[] = []
+  for (const m of list(v)) {
+    if (!isObj(m) || typeof m.id !== 'string' || !CHOICE.test(m.id) || typeof m.name !== 'string') continue
+    out.push({ id: m.id, name: m.name.slice(0, NAME_MAX) })
+  }
+  return out
+}
+
+/** A price by choice, or null when it is not one: an option id and figures 0..200. */
+function parseCostBy(v: unknown): CostBy | null {
+  if (!isObj(v) || typeof v.option !== 'string' || !ID.test(v.option) || !isObj(v.choices)) return null
+  const choices: Record<string, number> = {}
+  let n = 0
+  for (const [k, c] of Object.entries(v.choices)) {
+    const figure = num(c)
+    if (!CHOICE.test(k) || figure === null || figure < 0 || figure > COST_MAX) return null
+    choices[k] = Math.floor(figure)
+    n++
+  }
+  return n > 0 ? { option: v.option, choices } : null
 }
 
 export function parseCopy(v: unknown): Copy {
@@ -306,15 +367,23 @@ export function parseCatalog(v: unknown): Catalog | null {
     for (const o of list(f.options)) {
       if (!isObj(o)) continue
       const oid = code(o.id)
+      if (oid === null) continue
+      const dropdown = o.dropdown === true
+      if (o.source === 'mates') {
+        // ROUND 5: ITS CHOICES ARE THE STATE'S STANDING TEAMMATES, no list here.
+        options.push({ id: oid, choices: [], default: '', when: parseWhen(o.when), source: 'mates', dropdown })
+        continue
+      }
       const choices = list(o.choices).filter((c): c is string => typeof c === 'string' && CHOICE.test(c))
-      if (oid === null || choices.length === 0) continue
+      if (choices.length === 0) continue
       const def = typeof o.default === 'string' && choices.includes(o.default) ? o.default : (choices[0] ?? '')
-      options.push({ id: oid, choices, default: def, when: parseWhen(o.when) })
+      options.push({ id: oid, choices, default: def, when: parseWhen(o.when), source: null, dropdown })
     }
     const cost = num(f.cost)
     functions.push({
       id, category, risk, implemented: f.implemented === true, options,
       cost: cost !== null && cost > 0 ? Math.floor(cost) : 0,
+      costBy: parseCostBy(f.costBy),
       squadOnly: f.squadOnly === true,
       soloCategory: code(f.soloCategory),
       bounty: f.bounty === 'runner' || f.bounty === 'target' ? f.bounty : null,

@@ -131,8 +131,13 @@ local function bootServer(opts)
         'br_lib/shared/protocol.lua',
         'br_lib/shared/notice.lua',
         'br_lib/shared/rng.lua',
+        'br_lib/shared/geo.lua',
         'br_lib/shared/season.lua',
         'br_lib/config/seasons.lua',
+        -- Round 5: Gear Up's item list is built from these two as
+        -- terminals.lua loads, so they come first, as in br_core's manifest.
+        'br_lib/config/weapons.lua',
+        'br_lib/config/loot.lua',
         'br_lib/config/terminals.lua',
         'br_lib/shared/terminal_solve.lua',
         'br_lib/shared/shop_solve.lua',
@@ -411,6 +416,24 @@ do
         'a choice for the option that does not apply refuses the whole request')
     eq(T.options(either, { weather = 'snow' }), nil, 'and so does a weather under the default change, time')
 
+    -- ROUND 5: AN OPTION WHOSE CHOICES THE SERVER LISTS (`source`, Gear Up's
+    -- teammate). The door takes the shape of a server id -- digits, at most
+    -- ten -- and the function says whether it is still a teammate.
+    local mated = { id = 'g', options = {
+        { id = 'who', choices = { 'self', 'mate' }, default = 'self' },
+        { id = 'mate', when = { who = 'mate' }, source = 'mates' },
+    } }
+    o = T.options(mated, nil)
+    ok(o and o.who == 'self' and o.mate == nil, 'nothing chosen: self, and no teammate')
+    o = T.options(mated, { who = 'mate', mate = '12' })
+    ok(o and o.who == 'mate' and o.mate == '12', 'a teammate by server id')
+    o = T.options(mated, { who = 'mate' })
+    ok(o and o.who == 'mate' and o.mate == nil, 'a teammate left out is nil: no default to fill')
+    for _, bad in ipairs({ 'abc', '1x', '', '12345678901', '-3' }) do
+        eq(T.options(mated, { who = 'mate', mate = bad }), nil, ('refused whole: mate=%q'):format(bad))
+    end
+    eq(T.options(mated, { who = 'self', mate = '12' }), nil, 'a teammate named while it goes to yourself: refused')
+
     -- Through the net event: a bad choice is ANSWERED (the button waits on
     -- it) as bad_option, and nothing is spent.
     local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
@@ -640,16 +663,25 @@ do
         for _, o in ipairs(row.options or {}) do
             ok(type(o.id) == 'string' and o.id:match('^[a-z][a-z0-9_]*$') ~= nil,
                 ('%s: option %s is a well-formed id'):format(id, tostring(o.id)))
-            ok(type(o.choices) == 'table' and #o.choices >= 2, ('%s.%s offers a choice'):format(id, o.id))
-            local listed = false
-            for _, ch in ipairs(o.choices or {}) do
-                ok(type(ch) == 'string' and ch:match('^[a-z0-9_]+$') ~= nil,
-                    ('%s.%s: choice %s is a well-formed string'):format(id, o.id, tostring(ch)))
-                ok(has(('%s_opt_%s_%s'):format(id, o.id, ch)),
-                    ('%s.%s: choice %s has its line'):format(id, o.id, tostring(ch)))
-                if ch == o.default then listed = true end
+            ok(o.dropdown == nil or o.dropdown == true, ('%s.%s: `dropdown` is true or absent'):format(id, o.id))
+            if o.source ~= nil then
+                -- ROUND 5: CHOICES THE SERVER LISTS (a standing teammate). No
+                -- list, no default, and a source the door knows.
+                eq(o.source, 'mates', ('%s.%s: its source is the standing teammates'):format(id, o.id))
+                ok(o.choices == nil and o.default == nil,
+                    ('%s.%s: no choices or default of its own'):format(id, o.id))
+            else
+                ok(type(o.choices) == 'table' and #o.choices >= 2, ('%s.%s offers a choice'):format(id, o.id))
+                local listed = false
+                for _, ch in ipairs(o.choices or {}) do
+                    ok(type(ch) == 'string' and ch:match('^[a-z0-9_]+$') ~= nil and #ch <= 32,
+                        ('%s.%s: choice %s is a well-formed string'):format(id, o.id, tostring(ch)))
+                    ok(has(('%s_opt_%s_%s'):format(id, o.id, ch)),
+                        ('%s.%s: choice %s has its line'):format(id, o.id, tostring(ch)))
+                    if ch == o.default then listed = true end
+                end
+                ok(listed, ('%s.%s: its default is one of its choices'):format(id, o.id))
             end
-            ok(listed, ('%s.%s: its default is one of its choices'):format(id, o.id))
             ok(has(('%s_opt_%s'):format(id, o.id)), ('%s.%s has its label'):format(id, o.id))
             -- `when` (round 4) names another option of this row and one of
             -- its choices, or the option could never be offered.
@@ -1163,6 +1195,36 @@ do
     local want = { scan = 200, disarm = 200, storm_control = 150, reboot = 150 }
     for _, row in ipairs(C.functions) do
         eq(BR.Terminal.costOf(row), want[row.id] or 0, ('%s costs %d'):format(row.id, want[row.id] or 0))
+    end
+    -- ROUND 5: A PRICE BY CHOICE (`costBy`). Every figure 0..200, for an
+    -- option the row has and choices it offers.
+    for _, row in ipairs(C.functions) do
+        local most = BR.Terminal.costMax(row)
+        ok(most >= 0 and most <= 200, ('%s costs at most 0..200 Volts: %d'):format(row.id, most))
+        local by = row.costBy
+        if by ~= nil then
+            local opt = nil
+            for _, o in ipairs(row.options or {}) do if o.id == by.option then opt = o end end
+            ok(opt ~= nil, ('%s.costBy names its own option %s'):format(row.id, tostring(by.option)))
+            for ch, v in pairs(by.choices or {}) do
+                local listed = false
+                for _, c in ipairs(opt and opt.choices or {}) do if c == ch then listed = true end end
+                ok(listed, ('%s.costBy: %s is one of %s\'s choices'):format(row.id, tostring(ch), tostring(by.option)))
+                ok(type(v) == 'number' and v == math.floor(v) and v >= 0 and v <= 200,
+                    ('%s.costBy.%s is 0..200 Volts: %s'):format(row.id, tostring(ch), tostring(v)))
+            end
+        end
+    end
+    local gear = BR.Terminal.row('gear_up')
+    ok(gear ~= nil, 'Gear Up is listed')
+    if gear then
+        local T = BR.Terminal
+        eq(T.costOf(gear, T.options(gear, { who = 'squad' })), 200,
+            '"for a charge of 200 volts the whole team can get them"')
+        eq(T.costOf(gear, T.options(gear, { who = 'self' })), 0, 'for yourself: free')
+        eq(T.costOf(gear, T.options(gear, { who = 'mate', mate = '2' })), 0, 'for one teammate: free')
+        eq(T.costOf(gear, nil), 0, 'and the base, before a choice, is free')
+        eq(T.costMax(gear), 200, 'so at most 200')
     end
 end
 
