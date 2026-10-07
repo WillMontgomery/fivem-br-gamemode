@@ -42,6 +42,17 @@ TOOL = os.path.join(TOOLS, 'assets.py')
 sys.path.insert(0, TOOLS)
 import assets  # noqa: E402
 
+# A COMMIT'S GIT IS NOT THESE TESTS' GIT. The pre-commit hook runs verify.sh
+# with GIT_INDEX_FILE (and, from some front ends, GIT_DIR and friends) pointing
+# at the repo being committed, and every git these tests start inherits them:
+# their scratch repos then read and write the real repo's index. Run that way,
+# four tests failed and the repo's index was left holding the scratch repos'
+# entries (2026-10-06). Every git here works on its own temp tree, so none of
+# the repository-locating variables is ever wanted.
+for _var in ('GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY',
+             'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_PREFIX'):
+    os.environ.pop(_var, None)
+
 FAKE_AWS = r'''
 import json, os, shutil, sys
 root = os.environ.get('FAKE_AWS_ROOT')
@@ -1421,17 +1432,21 @@ class Publish(Box):
         landing = os.path.join(self.drop, 'Season 2', '[maps]', 'legion')
         write(os.path.join(landing, 'data', 'carcols.meta'), b'<c/>')
         write(os.path.join(landing, 'fxmanifest.lua'), MANIFEST)
+        # Publish's clock stops the moment the pack landed: a loaded machine
+        # taking longer than the settle window to get to Publish must not
+        # settle it.
+        landed = time.time()
         self.reset_calls()
-        with self.clock_at(None):
+        with self.clock_at(landed):
             _, text = self.publish('y\n', expect=1)
-        # (Everything this test made is seconds old: Season 1 is named too.)
+        # (Everything this test made is seconds old: Season 1 may be named too.)
         self.assertIn('nothing was uploaded or changed:\n', text)
-        self.assertIn('\n  Season 2/[maps]/legion changed less than a minute ago: is it still copying? wait a minute '
+        self.assertIn('\n  Season 2/[maps]/legion changed in the last 10 seconds: is it still copying? wait 10 seconds '
                       'and run Publish again; nothing was published\n', text)
         for above in ('Season 2', 'Season 2/[maps]'):
             self.assertNotIn('  %s changed' % above, text, 'the pack is named, not every folder above it')
-        self.assert_refused_untouched(text, {'legion': {'1': v1}}, 'is it still copying? wait a minute')
-        # Its stream/ lands; a minute on, the whole pack is published.
+        self.assert_refused_untouched(text, {'legion': {'1': v1}}, 'is it still copying? wait 10 seconds')
+        # Its stream/ lands; once it has settled, the whole pack is published.
         write(os.path.join(landing, 'stream', 'b.ymap'), b'two' * 50)
         v2 = self.sha_of(landing)
         with self.clock_at(time.time() + 2 * assets.SETTLE_SECONDS):
@@ -1447,6 +1462,7 @@ class Publish(Box):
         # this second can say it was last written three years ago. Its
         # creation time (on Linux, its inode change time) says it just landed.
         legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        landed = time.time()
         old = time.time() - 3 * 365 * 86400
         for d, dirs, files in os.walk(self.drop, topdown=False):
             for n in dirs + files:
@@ -1454,10 +1470,10 @@ class Publish(Box):
         for st in self.stamps(os.path.join(self.drop, 'Season 1')):
             self.assertLess(st.st_mtime, old + 1)
             self.assertGreater(assets.entry_stamps(st)[1], time.time() - 60)
-        with self.clock_at(None):
+        with self.clock_at(landed):
             _, text = self.publish('y\n', expect=1)
-        self.assertIn('Season 1/legion changed less than a minute ago: is it still copying?', text)
-        self.assert_refused_untouched(text, {}, 'wait a minute and run Publish again; nothing was published')
+        self.assertIn('Season 1/legion changed in the last 10 seconds: is it still copying?', text)
+        self.assert_refused_untouched(text, {}, 'wait 10 seconds and run Publish again; nothing was published')
         now = time.time() + 2 * assets.SETTLE_SECONDS
         with self.clock_at(now):
             self.publish('y\n')
@@ -1483,9 +1499,9 @@ class Publish(Box):
         self.reset_calls()
         with self.clock_at(now):
             _, text = self.publish('y\n', expect=1)
-        self.assertIn('  Season 1 changed less than a minute ago: is it still copying? wait a minute', text)
+        self.assertIn('  Season 1 changed in the last 10 seconds: is it still copying? wait 10 seconds', text)
         self.assertNotIn('retired', text)
-        self.assert_refused_untouched(text, pins, 'wait a minute and run Publish again; nothing was published')
+        self.assert_refused_untouched(text, pins, 'wait 10 seconds and run Publish again; nothing was published')
         with self.clock_at(now + 2 * assets.SETTLE_SECONDS):
             _, text = self.publish('y\n')
         self.assertIn('- docks: retired', text)
@@ -1539,7 +1555,7 @@ class Publish(Box):
         with mock.patch.object(assets, 'ask', ask), mock.patch.object(assets, 'wall_clock', clock):
             _, text = self.publish(expect=1)
         self.assertIn(assets.FOLDERS_CHANGED + ':\n', text)
-        self.assertIn('\n  Season 1/legion changed less than a minute ago: is it still copying? wait a minute and '
+        self.assertIn('\n  Season 1/legion changed in the last 10 seconds: is it still copying? wait 10 seconds and '
                       'run Publish again; nothing was published\n', text)
         self.assertEqual(self.pins(), {'legion': {'1': v1, '2': v2}})
 

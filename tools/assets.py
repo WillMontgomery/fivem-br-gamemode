@@ -37,7 +37,7 @@ Explorer and double-clicks Publish.cmd, which runs `publish`: the folders ARE
 the lock's contents, so a pack moved, replaced or deleted there is published as
 exactly that, and an EMPTY folder with a pack's name in a later season is a
 null pin there. A folder with files but no fxmanifest.lua, anything that
-cannot be read, and anything made or written in the last minute is most
+cannot be read, and anything made or written in the last ten seconds is most
 likely a copy still running, and Publish refuses (find_resources, unsettled);
 so does a link. After the owner's y the folders are read again, and anything
 that differs from the plan he answered refuses the commit (cmd_publish).
@@ -129,8 +129,12 @@ DROP_SEASONS = (1, 2)
 SEASON_DIR_RE = re.compile(r'season[ \t]+([0-9]+)\Z', re.I)
 PUBLISH_BRANCH = 'dev'
 # Publish plans only from Season folders nothing has been made in or written
-# to for this long, the Season folder itself included (unsettled()).
-SETTLE_SECONDS = 60
+# to for this long, the Season folder itself included (unsettled()). A copy
+# still landing writes something every second or two; one that stalls longer
+# (a "Replace or Skip" prompt) is caught by hash_folder and the second read
+# before the commit. It was 60, and every Publish straight after a copy had to
+# wait out the minute (owner, 2026-10-06).
+SETTLE_SECONDS = 10
 
 # Publish's own clone of the repo (cmd_publish): made on first use, fetched on
 # every Publish, and never a work tree an agent or the owner works in. The
@@ -2126,7 +2130,8 @@ def entry_stamps(st: os.stat_result) -> tuple[float, float]:
 
 
 def settling(text: str) -> str:
-    return text + ': is it still copying? wait a minute and run Publish again; nothing was published'
+    return text + (': is it still copying? wait %d seconds and run Publish again; nothing was published'
+                   % SETTLE_SECONDS)
 
 
 def unsettled(folder: str, label: str) -> list[str]:
@@ -2172,7 +2177,7 @@ def unsettled(folder: str, label: str) -> list[str]:
         for name in dirnames + sorted(f for f in filenames if f.lower() not in JUNK_FILES):
             check(os.path.join(dirpath, name))
     # A pack landing moves the folders above it too; name the pack alone.
-    return [settling('%s changed less than a minute ago' % u) for u in units
+    return [settling('%s changed in the last %d seconds' % (u, SETTLE_SECONDS)) for u in units
             if not any(v.startswith(u + '/') for v in units)]
 
 
@@ -2695,7 +2700,7 @@ def cmd_publish(args) -> int:
          resource names, never a local file;
       2. scan the Season folders, refusing anything that looks like a copy
          still running -- files with no fxmanifest.lua, anything unreadable,
-         anything made or written in the last minute -- and any link;
+         anything made or written in the last ten seconds -- and any link;
       3. hash every pack, and compute the lock the folders make on top of
          dev's lock; show the plan;
       4. upload what the bucket lacks;
