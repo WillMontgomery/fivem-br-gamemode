@@ -1,6 +1,7 @@
-import { useUi, selNotices, selScreen } from '../store'
+import { useUi, selImpacts, selNotices, selScreen } from '../store'
 import type { NoticePart, ToastPayload } from '../bridge/types'
 import NoticeRow from './NoticeRow'
+import ImpactRows from './Impacts'
 import { KeyText } from '../ui/KeyCap'
 
 /**
@@ -85,8 +86,9 @@ export function NoticeText({ text, parts, fs }: {
 
 export default function Notices({ barsVisible = true }: { barsVisible?: boolean }) {
   const notices = useUi(selNotices)
+  const impacts = useUi(selImpacts)
   const screen = useUi(selScreen)
-  if (notices.length === 0) return null
+  if (notices.length === 0 && impacts.length === 0) return null
 
   const radarOn = screen?.radarOn ?? true
 
@@ -124,6 +126,12 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
         maxWidth: '22rem',
       }}
     >
+      {/* THE PERSISTENT NOTICES (#396, round 4) FIRST, so they sit at the
+          stack's foot, nearest the map, with the passing notices stacking up
+          above them: a row that stays put under lines that come and go, not
+          one that jumps every time a toast arrives. flex-col-reverse draws
+          them bottom up, so the server's first row is the lowest. */}
+      {impacts.length > 0 && <ImpactRows rows={impacts} tone={TONE_COLOUR.warn} />}
       {[...notices].reverse().map((n) => (
         <NoticeRow
           // n.id, NOT n.key. A keyed notice updating in place must keep the

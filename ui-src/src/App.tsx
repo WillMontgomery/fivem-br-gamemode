@@ -13,6 +13,7 @@ import DeathVerdict from './hud/DeathVerdict'
 import LeaveScreen from './screens/LeaveScreen'
 import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
+import { parseImpacts } from './hud/impactRows'
 import RescueTimer from './hud/RescueTimer'
 import Settings from './screens/Settings'
 import Locker from './screens/Locker'
@@ -132,6 +133,9 @@ export default function App() {
     // payload crosses the bridge as {}, which once rendered as a ghost
     // "PHASE UNDEFINED" card during warmup).
     if (d.state !== 'playing') s.setStorm(null)
+    // The persistent notices (#396, round 4) are a match's too: the server
+    // sends an empty list as one leaves play, and the page does not wait for it.
+    if (d.state !== 'playing') s.clearImpacts()
   })
   useNuiEvent('hud',      (d) => dispatch().setHud(d))
   useNuiEvent('squad',    (d) => dispatch().setSquad(d))
@@ -143,6 +147,9 @@ export default function App() {
   // leaving one -- on foot, pulled out, dead, or the vehicle destroyed -- so
   // there is nothing to clear off a state transition the way the storm is.
   useNuiEvent('vehicle',  (d) => dispatch().setVehicle(d))
+  // What another player's terminal run is doing to this player (#396, round
+  // 4): the server's whole list, shape-checked, replacing the last.
+  useNuiEvent('impacts',  (d) => dispatch().setImpacts(parseImpacts(d)))
   useNuiEvent('dbno',     (d) => dispatch().setDbno(d))
   useNuiEvent('spectate', (d) => dispatch().setSpectate(d))
   // Your own death, mid-match. Lua owns how long it stays -- it sends `show`

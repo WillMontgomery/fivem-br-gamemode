@@ -143,7 +143,12 @@ T.FUNCTIONS.key_finder = {
         local now = GetGameTimer()
         local st = T.fxOf(m)
         st.finds = st.finds or {}
-        st.finds[key] = { list = list, untilAt = now + ms }
+        -- The holders it marked, for their persistent notice (round 4).
+        local marked = {}
+        if target == 'holders' then
+            for _, p in ipairs(found) do marked[#marked + 1] = p.s end
+        end
+        st.finds[key] = { list = list, untilAt = now + ms, holders = marked }
         push(m, key, list, ms)
         print(('[br_core] terminals: Key finder (%s) for %s: %d key(s) marked for %.0f s')
             :format(target, key, #list, ms / 1000))
@@ -185,5 +190,18 @@ AddEventHandler(BR.Net.READY, function()
     local left = f and (f.untilAt - GetGameTimer()) or 0
     if f and left > 0 and m.state == BR.MatchState.PLAYING then
         TriggerClientEvent(BR.Net.TERMINAL_KEYS, src, { matchId = m.id, list = f.list, leftMs = left })
+    end
+end)
+
+-- THE PERSISTENT NOTICE (round 4): every holder Key finder marked, for the
+-- two minutes another squad can see where they were standing. Keys on the
+-- ground mark nobody.
+T.impactSource(function(m, now, add)
+    local finds = m.terminalFx and m.terminalFx.finds or nil
+    if not finds then return end
+    for _, f in pairs(finds) do
+        if now < f.untilAt then
+            for _, s in ipairs(f.holders or {}) do add(s, 'impact_key_finder', f.untilAt) end
+        end
     end
 end)

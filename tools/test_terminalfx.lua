@@ -433,6 +433,9 @@ local function reset()
     timers = {}
     market.wallet, market.charges, market.refunds, market.pending = {}, {}, {}, {}
     market.hold, market.broken = false, false
+    -- What the persistent notices last sent each player (round 4), forgotten
+    -- with the roster: a new block's players are new players.
+    for s = 1, 32 do T.forgetImpacts(s) end
     gameMs = gameMs + 100000
 end
 
@@ -2966,6 +2969,282 @@ do
 end
 
 -- =========================================================================
+-- PART I -- round 4 (owner, 2026-10-06): the persistent notices -- "Anything
+-- that a player is being impacted by, which happened as a result of another
+-- player's actions at a terminal, should show a persistent notification with
+-- a timer explaining what the impact is and when it will be over."
+-- =========================================================================
+
+--- The rows `src` was last sent ("key@endsAt|..."), '' for an empty list,
+--- nil when they were never sent one.
+local function rowsOf(src)
+    local d = lastOf(BR.Net.TERMINAL_IMPACTS, src)
+    if not d then return nil end
+    local out = {}
+    for _, r in ipairs(d.list or {}) do
+        out[#out + 1] = ('%s@%s'):format(r.key, r.endsAt and tostring(r.endsAt) or 'end')
+    end
+    return table.concat(out, '|')
+end
+
+--- The last row `src` was sent with this key, or nil.
+local function rowFor(src, key)
+    local d = lastOf(BR.Net.TERMINAL_IMPACTS, src)
+    for _, r in ipairs(d and d.list or {}) do
+        if r.key == key then return r end
+    end
+    return nil
+end
+
+local function impactsPass()
+    jobs['terminal.impacts']()
+end
+
+describe('the persistent notices: EMP -- everyone it stalls, with its clock, and nobody it spares')
+do
+    reset()
+    local m = lobby()
+    local r = runAt(1, 'emp')
+    ok(r and r.code == 'done', 'EMP runs', r and r.code)
+    local ends = gameMs + CT.fx.empMs
+    for _, src in ipairs({ 3, 4, 5 }) do
+        eq(rowsOf(src), 'impact_emp@' .. ends, ('p%d is sent the row at once, ending with the EMP'):format(src))
+        eq(rowFor(src, 'impact_emp').text, COPY.impact_emp, 'in its words')
+        eq(rowFor(src, 'impact_emp').tail, nil, 'a timed row carries no tail')
+    end
+    eq(rowsOf(1), nil, 'the runner is sent nothing')
+    eq(rowsOf(2), nil, 'nor their squad, which it spares')
+
+    -- ON CHANGE ONLY: passes with nothing new send nothing.
+    local n = #eventsOf(BR.Net.TERMINAL_IMPACTS)
+    gameMs = gameMs + 1000
+    impactsPass()
+    gameMs = gameMs + 1000
+    impactsPass()
+    eq(#eventsOf(BR.Net.TERMINAL_IMPACTS), n, 'two more passes, nothing changed: nothing sent')
+
+    -- IT ENDS: an empty list, once.
+    gameMs = ends
+    jobs['terminal.emp']()
+    impactsPass()
+    for _, src in ipairs({ 3, 4, 5 }) do eq(rowsOf(src), '', ('p%d: an empty list at its end'):format(src)) end
+    n = #eventsOf(BR.Net.TERMINAL_IMPACTS)
+    gameMs = gameMs + 1000
+    impactsPass()
+    eq(#eventsOf(BR.Net.TERMINAL_IMPACTS), n, 'and then nothing')
+    local _ = m
+end
+
+describe('the persistent notices: Scan -- every opponent for the rest of the match; its bounty on the runner')
+do
+    reset()
+    local m = lobby()
+    local r = runAt(1, 'scan')
+    ok(r and r.code == 'done', 'Scan runs', r and r.code)
+    local ends = gameMs + CT.fx.bountyMs
+    eq(rowsOf(1), 'impact_bounty@' .. ends, 'the runner carries its bounty, with the bounty\'s clock')
+    eq(rowFor(1, 'impact_bounty').text, COPY.impact_bounty, 'in its words')
+    for _, src in ipairs({ 3, 4, 5 }) do
+        eq(rowsOf(src), 'impact_scan@end', ('p%d: another squad sees them, until the match ends'):format(src))
+        eq(rowFor(src, 'impact_scan').tail, COPY.impact_until_end, 'its tail stands in for a clock')
+        eq(rowFor(src, 'impact_scan').endsAt, nil, 'and it has none')
+        eq(rowFor(src, 'impact_scan').text, COPY.impact_scan, 'the squad line, in a squad match')
+    end
+    eq(rowsOf(2), nil, 'the runner\'s squadmate: nothing (Scan shows them nothing, and the bounty is not theirs)')
+
+    -- GHOST: a hidden squad's rows go while it lasts, and come back.
+    devRun(3, 'ghost duration=120')
+    impactsPass()
+    ok(rowsOf(3) == '' and rowsOf(4) == '', 'B under Ghost: no map shows them, so no row says one does')
+    eq(rowsOf(5), 'impact_scan@end', 'the solo player is still seen')
+    devRun(1, 'ghost duration=120')
+    impactsPass()
+    eq(rowsOf(1), '', 'and the bounty on a runner whose squad went under Ghost goes too')
+    gameMs = gameMs + 121000
+    jobs['terminal.ghost']()
+    impactsPass()
+    ok(rowsOf(3) == 'impact_scan@end' and rowsOf(1) == 'impact_bounty@' .. ends,
+        'Ghost over: both come back, the bounty\'s clock unchanged')
+
+    -- ELIMINATED: the rows go with the fight.
+    roster[3].state = BR.PlayerState.OUT
+    impactsPass()
+    eq(rowsOf(3), '', 'a player out of the fight has no rows')
+
+    -- THE MATCH ENDING: everyone's go.
+    m.state = BR.MatchState.ENDED
+    impactsPass()
+    ok(rowsOf(1) == '' and rowsOf(4) == '' and rowsOf(5) == '', 'the match over: every list empty')
+end
+
+describe('the persistent notices: a Contract on its target; Pulse; Key finder; Comms blackout')
+do
+    -- CONTRACT: the target, for its ten minutes.
+    reset()
+    local m = lobby()
+    killsOf(3, 2, 100)
+    runAt(1, 'contract')
+    eq(rowsOf(3), 'impact_bounty@' .. (gameMs + CT.fx.bountyMs), 'the Contract\'s target carries the bounty row')
+    eq(rowsOf(4), nil, 'their squadmate does not (they were told to protect them)')
+    eq(rowsOf(1), nil, 'nor the runner')
+
+    -- PULSE: the found, for its 30 seconds.
+    reset()
+    m = lobby()
+    pulseField(m)
+    runAt(1, 'pulse', { radius = '250' })
+    local ends = gameMs + CT.fx.pulseMs
+    eq(rowsOf(3), 'impact_pulse@' .. ends, 'the player it found, for its 30 seconds')
+    eq(rowFor(3, 'impact_pulse').text, COPY.impact_pulse, 'the squad line')
+    ok(rowsOf(4) == nil and rowsOf(5) == nil and rowsOf(2) == nil, 'and nobody it did not find')
+    gameMs = ends
+    jobs['terminal.pulse']()
+    impactsPass()
+    eq(rowsOf(3), '', 'gone when it ends')
+
+    -- KEY FINDER: the holders it marked, for its two minutes; keys on the
+    -- ground mark nobody.
+    reset()
+    m = lobby()
+    keys[3], keys[5] = true, true
+    runAt(1, 'key_finder', { target = 'holders' })
+    ends = gameMs + CT.fx.keyFinderMs
+    ok(rowsOf(3) == 'impact_key_finder@' .. ends and rowsOf(5) == 'impact_key_finder@' .. ends,
+        'each holder it marked, for its two minutes')
+    eq(rowsOf(4), nil, 'not a player holding no key')
+    reset()
+    m = lobby()
+    keys[3] = true
+    looseKeys(m, { { x = 1.0, y = 1.0 } })
+    runAt(1, 'key_finder', { target = 'ground' })
+    eq(rowsOf(3), nil, 'keys on the ground: no holder marked, no row')
+
+    -- COMMS BLACKOUT: every other squad's members with a teammate.
+    reset()
+    m = lobby()
+    runAt(1, 'comms_blackout', { duration = '120' })
+    ends = gameMs + 120000
+    ok(rowsOf(3) == 'impact_blackout@' .. ends and rowsOf(4) == 'impact_blackout@' .. ends,
+        'the other squad, both of them, for its two minutes')
+    eq(rowFor(3, 'impact_blackout').text, COPY.impact_blackout, 'in its words')
+    eq(rowsOf(5), nil, 'not a player with no teammate: no dot to lose')
+    ok(rowsOf(1) == nil and rowsOf(2) == nil, 'not the runner\'s squad')
+    local _ = m
+end
+
+describe('the persistent notices: instant effects have none; a solo match\'s words; br:ready; Season 1')
+do
+    -- DISARM, FIELD MEDIC, MAX AMMO: nothing to count down.
+    reset()
+    lobby()
+    arm(3, 1, 'carbinerifle')
+    runAt(1, 'disarm')
+    roster[1].hp = 40.0
+    keys[1] = true
+    devRun(1, 'field_medic')
+    impactsPass()
+    eq(#eventsOf(BR.Net.TERMINAL_IMPACTS), 0, 'Disarm and Field medic\'s drain send no row to anybody')
+
+    -- A SOLO MATCH: the solo line.
+    reset()
+    local m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(2, m, nil, { x = SITE.x + 100.0, y = SITE.y })
+    keys[1] = true
+    runAt(1, 'pulse', { radius = '250' })
+    eq(rowFor(2, 'impact_pulse').text, COPY.impact_pulse_solo, 'outside a squad match: the solo line')
+    ok(not rowFor(2, 'impact_pulse').text:lower():find('squad', 1, true), 'which says no squad')
+
+    -- BR:READY: what a restarted client was sent is forgotten, so the next
+    -- pass sends its list whole.
+    reset()
+    lobby()
+    runAt(1, 'emp')
+    local n = #eventsOf(BR.Net.TERMINAL_IMPACTS, 3)
+    fire(BR.Net.READY, 3)
+    impactsPass()
+    eq(#eventsOf(BR.Net.TERMINAL_IMPACTS, 3), n + 1, 'br:ready: its list again on the next pass')
+    eq(#eventsOf(BR.Net.TERMINAL_IMPACTS, 4), 1, 'and nobody else\'s')
+
+    -- THE LOBBY: a player whose match is gone is sent an empty list once.
+    roster[3].matchId = nil
+    impactsPass()
+    eq(rowsOf(3), '', 'in no match any more: an empty list')
+
+    -- SEASON 1: every list empty -- Scan's too, whose record outlives it.
+    reset()
+    lobby()
+    runAt(1, 'scan')
+    eq(rowsOf(3), 'impact_scan@end', 'a Scan row')
+    season(1)
+    impactsPass()
+    season(2)
+    ok(rowsOf(3) == '' and rowsOf(1) == '', 'off Season 2: emptied')
+
+    -- A PLAYER WHO LEFT IS FORGOTTEN: nothing is sent to an empty seat.
+    reset()
+    lobby()
+    runAt(1, 'emp')
+    fire('playerDropped', 4)
+    roster[4] = nil
+    n = #eventsOf(BR.Net.TERMINAL_IMPACTS)
+    impactsPass()
+    eq(#eventsOf(BR.Net.TERMINAL_IMPACTS), n, 'a player who left: nothing sent after them')
+end
+
+describe('the persistent notices: one row per key, at the later end; the rest of the match outlasts any clock')
+do
+    -- A SOURCE OF THIS SUITE'S OWN, switched on here alone: the merge rule is
+    -- the pass's, whatever source asks it twice for one key.
+    local probe = nil
+    T.impactSource(function(m, now, add)
+        if not probe then return end
+        for _, a in ipairs(probe) do add(a[1], a[2], a[3] and (now + a[3]) or nil) end
+    end)
+    reset()
+    local m = lobby()
+    local now = gameMs
+    probe = {
+        { 3, 'impact_emp', 60000 }, { 3, 'impact_emp', 90000 }, { 3, 'impact_emp', 30000 },
+        { 4, 'impact_storm', 60000 }, { 4, 'impact_storm', nil }, { 4, 'impact_storm', 120000 },
+        { 5, 'impact_emp', -1000 },
+        { 6, 'impact_emp', 60000 },
+    }
+    player(6, m, 'C', { x = 0.0, y = 0.0 }, BR.PlayerState.OUT)
+    impactsPass()
+    eq(rowsOf(3), 'impact_emp@' .. (now + 90000), 'three of one key: one row, at the latest end')
+    eq(rowsOf(4), 'impact_storm@end', 'the rest of the match outlasts a clock, before it or after it')
+    eq(rowsOf(5), nil, 'an end already past is no row')
+    eq(rowsOf(6), nil, 'and a player out of the fight has none')
+    probe = nil
+    impactsPass()
+    ok(rowsOf(3) == '' and rowsOf(4) == '', 'the source quiet: the rows go')
+end
+
+describe('the persistent notices: two of a kind are one row, at the later end; the order is the soonest first')
+do
+    reset()
+    local m = lobby()
+    runAt(1, 'emp')
+    local first = gameMs + CT.fx.empMs
+    gameMs = gameMs + 30000
+    keys[3] = true
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    runAt(3, 'emp')
+    local second = gameMs + CT.fx.empMs
+    eq(rowsOf(5), 'impact_emp@' .. second, 'stalled by both: one row, ending with the later')
+    eq(rowsOf(1), 'impact_emp@' .. second, 'A, stalled by B\'s alone')
+    eq(rowsOf(3), 'impact_emp@' .. first, 'B, by A\'s alone')
+    -- THE ORDER: a timed row before one for the rest of the match.
+    keys[5] = true
+    roster[5].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    runAt(5, 'scan')
+    eq(rowsOf(3), ('impact_emp@%d|impact_scan@end'):format(first), 'the clock first, then the rest of the match')
+    local _ = m
+end
+
+-- =========================================================================
 -- PART D -- the client
 -- =========================================================================
 
@@ -3127,6 +3406,77 @@ local function clientWorld()
     end
     function W.done() BR = W.serverBR end
     return W
+end
+
+describe('client: the persistent notices -- the server\'s list to the HUD, and down in the lobby (round 4)')
+do
+    local W = clientWorld()
+    local F = W.F
+    local ui = {}
+    function TriggerEvent(name, kind, data)
+        if name == 'br:ui:sendLocal' and kind == BR.Nui.IMPACTS then ui[#ui + 1] = data end
+    end
+    local function last() return ui[#ui] end
+    eq(BR.Nui.IMPACTS, 'impacts', 'the envelope kind is `impacts`')
+
+    W.net(BR.Net.TERMINAL_IMPACTS, { list = {
+        { key = 'impact_emp', text = 'EMP: any vehicle you drive stalls.', endsAt = 123456 },
+        { key = 'impact_scan', text = 'Scan: another squad can see where you are.', tail = 'Until the match ends' },
+        { key = 'bad', text = '' },
+        { key = 'worse', endsAt = 5 },
+        'not a row',
+        { key = 'nan', text = 'A clock that is not one.', endsAt = 0 / 0, tail = 'Until the match ends' },
+    } })
+    local d = last()
+    ok(d and #d.list == 3, 'handed over, the rows with no text dropped', d and #d.list)
+    ok(d.list[1].endsAt == 123456 and d.list[1].tail == nil, 'a timed row: its end, no tail')
+    ok(d.list[2].endsAt == nil and d.list[2].tail == 'Until the match ends', 'a row for the rest of the match: its tail')
+    ok(d.list[3].endsAt == nil and d.list[3].tail == 'Until the match ends', 'an end that is not a number: the tail instead')
+    eq(F.impactCount(), 3, 'three up')
+
+    -- A BR_UI RESTART: the list again.
+    local n = #ui
+    W.handlers['br:ui:ready']()
+    ok(#ui == n + 1 and #last().list == 3, 'br:ui:ready: handed over again')
+
+    -- THE SLOW PASS COSTS NOTHING WHILE IN A MATCH, and takes them down in the
+    -- lobby.
+    n = #ui
+    W.slow()
+    eq(#ui, n, 'a SLOW pass in a match sends nothing')
+    BR.State.me.state = BR.PlayerState.LOBBY
+    W.slow()
+    ok(#ui == n + 1 and #last().list == 0 and F.impactCount() == 0, 'the lobby: an empty list')
+    W.slow()
+    eq(#ui, n + 1, 'and nothing more after')
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    -- AN EMPTY LIST FROM THE SERVER, WITH NOTHING UP: nothing to send.
+    n = #ui
+    W.net(BR.Net.TERMINAL_IMPACTS, { list = {} })
+    eq(#ui, n, 'nothing up and nothing sent: no envelope')
+    W.handlers['br:ui:ready']()
+    eq(#ui, n, 'and a br_ui restart with nothing up sends none')
+
+    -- SEASON 1: down, and nothing taken on.
+    W.net(BR.Net.TERMINAL_IMPACTS, { list = { { key = 'k', text = 'Up.', endsAt = 9 } } })
+    eq(F.impactCount(), 1, 'one up')
+    W.season = 1
+    W.slow()
+    ok(F.impactCount() == 0 and #last().list == 0, 'off Season 2: down')
+    W.net(BR.Net.TERMINAL_IMPACTS, { list = { { key = 'k', text = 'Up.', endsAt = 9 } } })
+    eq(F.impactCount(), 0, 'and a list arriving there is not shown')
+    W.season = 2
+    W.slow()
+
+    -- BR_CORE STOPPING: down with it.
+    W.net(BR.Net.TERMINAL_IMPACTS, { list = { { key = 'k', text = 'Up.', endsAt = 9 } } })
+    W.handlers.onResourceStop('another_resource')
+    eq(F.impactCount(), 1, 'another resource stopping: still up')
+    W.handlers.onResourceStop('br_core')
+    ok(F.impactCount() == 0 and #last().list == 0, 'br_core stopping: an empty list')
+    TriggerEvent = nil
+    W.done()
 end
 
 describe('client: Key finder\'s marks -- where each key was, until the server says')

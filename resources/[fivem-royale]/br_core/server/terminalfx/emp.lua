@@ -193,3 +193,14 @@ AddEventHandler(BR.Net.READY, function()
     local m = T.whereIs(src)
     if m and #inForce(m, GetGameTimer()) > 0 then T.pushEmp(m, GetGameTimer(), src) end
 end)
+
+-- THE PERSISTENT NOTICE (round 4): every player whose driving an EMP stalls,
+-- until the last such EMP ends. The runner's squad is spared, so the runner
+-- never gets one for their own.
+T.impactSource(function(m, now, add)
+    if not (m.terminalFx and m.terminalFx.emps) then return end
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(src)
+        local emp = T.empOn(m, src, now)
+        if emp then add(src, 'impact_emp', emp.untilAt) end
+    end)
+end)

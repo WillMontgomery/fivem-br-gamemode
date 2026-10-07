@@ -154,3 +154,16 @@ if BR.Sched and BR.Sched.every then
         end)
     end)
 end
+
+-- THE PERSISTENT NOTICE (round 4): every player a Pulse found, for as long as
+-- their mark follows them -- not while their squad is under Ghost, which takes
+-- the mark off (marks, above, asks the same).
+T.impactSource(function(m, now, add)
+    local all = m.terminalFx and m.terminalFx.pulses or nil
+    if not all then return end
+    for _, p in pairs(all) do
+        if now < p.untilAt then
+            for _, mark in ipairs(marks(m, p, now)) do add(mark.s, 'impact_pulse', p.untilAt) end
+        end
+    end
+end)

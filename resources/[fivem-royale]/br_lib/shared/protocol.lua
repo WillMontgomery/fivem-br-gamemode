@@ -1287,6 +1287,14 @@ BR.Net = {
     -- (server/terminalfx/emp.lua); client/terminalfx/emp.lua applies it to
     -- the vehicle its own player drives.
     TERMINAL_EMP    = 'br:terminal:emp',
+    -- S->C { list = { { key, text, endsAt?, tail? } } }. The persistent
+    -- notices (round 4): every timed or ongoing effect another player's
+    -- terminal run has on this player -- the line saying what it is, and when
+    -- it ends on the server's clock (`endsAt`), or `tail` (impact_until_end)
+    -- for the rest of the match. This player's whole list, to them alone, when
+    -- it changes (server/terminalfx.lua); an empty list clears it.
+    -- client/terminalfx.lua hands it to br_ui as BR.Nui.IMPACTS.
+    TERMINAL_IMPACTS = 'br:terminal:impacts',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
     -- player holds one, and whether their squad has spent its one use this
@@ -1492,6 +1500,13 @@ BR.Nui = {
     -- distance falloff; the page multiplies by the player's music volume, and
     -- stops everything on its own after a second with no message.
     EMOTE_AUDIO = 'emoteaudio',
+    -- { list = { { key, text, endsAt?, tail? } } }. The persistent notices
+    -- (#396, round 4): what another player's terminal run is doing to this
+    -- player, each with its end on the server's clock (`endsAt`, counted down
+    -- with the clock offset) or `tail` for the rest of the match. The whole
+    -- list, on change only (BR.Net.TERMINAL_IMPACTS, through
+    -- client/terminalfx.lua), and an empty one in the lobby.
+    IMPACTS     = 'impacts',
 }
 
 --- A HOLE IN A SENTENCE WHERE A KEY BELONGS.

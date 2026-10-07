@@ -1082,6 +1082,9 @@ function T.finish(rec)
     -- WHAT FOLLOWS THE LOBBY'S NOTICE, in that order: "has redeemed their
     -- special power: Scan..." is read before "A new bounty is among us".
     if r.after then r.after() end
+    -- AND EVERY PLAYER IT NOW AFFECTS SEES ITS PERSISTENT NOTICE AT ONCE,
+    -- rather than on the next pass (server/terminalfx.lua).
+    if m and T.pushImpacts then T.pushImpacts(m, GetGameTimer()) end
     deliver(rec, { ok = true, code = 'done',
                    balance = rec.cost > 0 and T.balance(src, session) or nil })
 end

@@ -8,12 +8,18 @@
 --               owner's blip 58 in colour 3. The bounty's own squad draws it
 --               off the squad beacon instead (client/squadmates.lua, colour
 --               69), and its panel mark is client/state.lua's.
+--   the persistent notices (round 4)
+--               TERMINAL_IMPACTS, to each player alone, on change: what another
+--               player's terminal run is doing to them, handed to br_ui as
+--               BR.Nui.IMPACTS -- again when br_ui restarts, and an empty list
+--               in the lobby, off Season 2 and as br_core stops. The HUD counts
+--               each row down itself (ui-src/src/hud/Impacts.tsx).
 --
 -- ═══ WHAT IT COSTS A FRAME ═══
 --
 -- Nothing. The marks move when a push arrives (every 2 s and 1 s), and the
 -- SLOW band clears them in the lobby or when the pushes stop. No FRAME or TICK
--- work at all.
+-- work at all. The notices cross to br_ui only when the server's list changes.
 
 BR = BR or {}
 BR.TerminalFx = BR.TerminalFx or {}
@@ -176,6 +182,73 @@ local slowHooks = {}
 function F.onSlow(fn)
     slowHooks[#slowHooks + 1] = fn
 end
+
+-- --------------------------------------------- the persistent notices ---
+--
+-- THE SERVER'S LIST, HANDED TO THE HUD (round 4, owner 2026-10-06: "Anything
+-- that a player is being impacted by, which happened as a result of another
+-- player's actions at a terminal, should show a persistent notification with a
+-- timer"). Nothing is decided or counted here: the server sends this player's
+-- whole list when it changes (server/terminalfx.lua), and br_ui draws it and
+-- counts each row down against the server's clock (Impacts.tsx). This keeps
+-- the last list so a restarted br_ui is given it again, and takes it down in
+-- the lobby, off Season 2 and as br_core stops.
+
+--- The rows last handed to br_ui: { { key, text, endsAt?, tail? } }.
+local impacts = {}
+
+local function showImpacts(list)
+    impacts = list
+    TriggerEvent('br:ui:sendLocal', BR.Nui.IMPACTS, { list = list })
+end
+
+--- How many persistent notices are up. For the suites.
+--- @return integer
+function F.impactCount()
+    return #impacts
+end
+
+--- A row as the server sent it, shape-checked: a line of text, and either a
+--- finite end on the server's clock or the tail that stands in for one.
+local function rowOf(r)
+    if type(r) ~= 'table' or type(r.text) ~= 'string' or r.text == '' then return nil end
+    local endsAt = BR.TerminalSolve.finite(r.endsAt) and math.floor(r.endsAt) or nil
+    local tail = (endsAt == nil and type(r.tail) == 'string') and r.tail or nil
+    return { key = type(r.key) == 'string' and r.key or '', text = r.text, endsAt = endsAt, tail = tail }
+end
+
+RegisterNetEvent(BR.Net.TERMINAL_IMPACTS)
+AddEventHandler(BR.Net.TERMINAL_IMPACTS, function(d)
+    if type(d) ~= 'table' then return end
+    local list = {}
+    if on() then
+        for _, r in ipairs(type(d.list) == 'table' and d.list or {}) do
+            local row = rowOf(r)
+            if row then list[#list + 1] = row end
+        end
+    end
+    if #list == 0 and #impacts == 0 then return end
+    showImpacts(list)
+end)
+
+-- A br_ui restart: the list again, so the rows come back with the page.
+AddEventHandler('br:ui:ready', function()
+    if #impacts > 0 then showImpacts(impacts) end
+end)
+
+-- ONCE A SECOND, and nothing with no row up: in the lobby or off Season 2,
+-- the rows go (the server's own empty list is on its way too).
+F.onSlow(function()
+    if #impacts == 0 then return end
+    local S = BR.State
+    local lobby = S and S.me and S.me.state == BR.PlayerState.LOBBY
+    if lobby or not on() then showImpacts({}) end
+end)
+
+AddEventHandler('onResourceStop', function(name)
+    if name ~= GetCurrentResourceName() then return end
+    if #impacts > 0 then showImpacts({}) end
+end)
 
 -- ONCE A SECOND: in the lobby, off Season 2, or when the pushes have stopped
 -- for three of their own periods (a match torn down between pushes, a

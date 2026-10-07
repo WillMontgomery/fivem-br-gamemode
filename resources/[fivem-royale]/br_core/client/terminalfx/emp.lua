@@ -151,6 +151,7 @@ end
 --- resource stopping.
 local function letGo()
     stallUntil, liveUntil = nil, nil
+    if next(wrote) == nil then return end
     local veh, mine = driven()
     for netId in pairs(wrote) do undo(netId, veh ~= 0 and netId == mine) end
 end

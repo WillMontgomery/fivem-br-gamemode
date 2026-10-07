@@ -145,6 +145,49 @@ BR.Config.Terminals = {
         -- outside the storm has no plate.
         terminal_use = 'press to open',
 
+        -- ── the persistent notices, on the HUD. WRITTEN (2026-10-06, round 4)
+        --
+        -- The owner: "Anything that a player is being impacted by, which
+        -- happened as a result of another player's actions at a terminal,
+        -- should show a persistent notification with a timer explaining what
+        -- the impact is and when it will be over." Read by THE PLAYER IT IS
+        -- HAPPENING TO, in a stack of rows beside the minimap, each with a
+        -- countdown to its end (m:ss) -- or, for one that lasts the rest of the
+        -- match, impact_until_end in its place. Each row is up only while it is
+        -- true (server/terminalfx.lua's impact sources say who gets which).
+        -- They name the function first, so the lobby's notice and the row read
+        -- as the same thing.
+
+        -- In place of a countdown, for a row that lasts the rest of the match.
+        impact_until_end = 'Until the match ends',
+        -- EMP: every player whose driving it stalls (everyone outside the
+        -- runner's squad).
+        impact_emp = 'EMP: any vehicle you drive stalls.',
+        -- Power outage: every player standing in its area (not the runner).
+        impact_outage = 'Power outage: the lights are out where you are.',
+        -- Comms blackout: every player in a squad it blacked out. Squad-only,
+        -- like the function, so it has no `_solo` sibling.
+        impact_blackout = 'Comms blackout: your teammates are off your map.',
+        -- A bounty (Scan's, on the player who ran it, or a Contract's, on its
+        -- target): the player who carries it.
+        impact_bounty = 'Bounty: every player can see where you are.',
+        -- Scan: every opponent of a scanning squad, for the rest of the match
+        -- (not while their own squad is under Ghost).
+        impact_scan = 'Scan: another squad can see where you are.',
+        impact_scan_solo = 'Scan: another player can see where you are.',
+        -- Pulse: every player it found, for the 30 seconds it follows them.
+        impact_pulse = 'Pulse: another squad can see where you are.',
+        impact_pulse_solo = 'Pulse: another player can see where you are.',
+        -- Key finder: every key holder it marked, for its 2 minutes.
+        impact_key_finder = 'Key finder: another squad can see where you were.',
+        impact_key_finder_solo = 'Key finder: another player can see where you were.',
+        -- Time & weather, for the rest of the match: everyone but the runner,
+        -- one row for a time run and one for a weather run.
+        impact_time = 'Time & weather: the time of day was changed.',
+        impact_weather = 'Time & weather: the weather inside the circle was changed.',
+        -- Storm control, for the rest of the match: everyone but the runner.
+        impact_storm = 'Storm control: the storm will end where another player chose.',
+
         -- ── the desktop (cuchi_computer) -- at the terminal. WRITTEN ─────────
 
         -- Under the boot spinner, for the 7 to 10 seconds the desktop takes

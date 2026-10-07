@@ -80,9 +80,22 @@ T.FUNCTIONS.storm_control = {
         if not at then return { ok = false, code = 'bad_option' } end
         local spot, why = BR.Storm.aim(m, at.x, at.y)
         if not spot then return { ok = false, code = why } end
+        -- Who aimed the storm that stands, spared its persistent notice.
+        T.fxOf(m).stormBy = src
         reReveal(m)
         print(('[br_core] terminals: Storm control by %d in match %s: the storm ends at (%.1f, %.1f)')
             :format(src, tostring(m.id), spot.x, spot.y))
         return { ok = true, code = 'done' }
     end,
 }
+
+-- THE PERSISTENT NOTICE (round 4), for the rest of the match: everyone in the
+-- fight but the player who aimed the storm that stands. A later Storm control
+-- re-aims it, and the notice then spares that runner instead.
+T.impactSource(function(m, now, add)
+    local by = m.stormAim ~= nil and m.terminalFx and m.terminalFx.stormBy or nil
+    if not by then return end
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(src)
+        if src ~= by then add(src, 'impact_storm', nil) end
+    end)
+end)

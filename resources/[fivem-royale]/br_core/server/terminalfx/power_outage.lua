@@ -82,13 +82,14 @@ end
 --- @param area table  BR.TerminalSolve.outageArea's
 --- @param ms number
 --- @param now number
-function T.startOutage(m, area, ms, now)
+--- @param by integer|nil  who ran it: spared its persistent notice
+function T.startOutage(m, area, ms, now, by)
     local st = m.terminalPower
     if not st then
         st = { list = {} }
         m.terminalPower = st
     end
-    st.list[#st.list + 1] = { area = area, untilAt = now + ms }
+    st.list[#st.list + 1] = { area = area, untilAt = now + ms, by = by }
     send(m)
     print(('[br_core] terminals: Power outage in match %s -- %s for %.0fs')
         :format(tostring(m.id), area.kind, ms / 1000))
@@ -137,7 +138,7 @@ T.FUNCTIONS.power_outage = {
         local area = TS.outageArea(opts.area, x, y, fx().outageRadiusM or 1000.0)
         local ms = math.floor((tonumber(opts.duration) or 0) * 1000)
         if not area or ms <= 0 then return { ok = false, code = 'unavailable' } end
-        T.startOutage(m, area, ms, GetGameTimer())
+        T.startOutage(m, area, ms, GetGameTimer(), src)
         return { ok = true, code = 'done' }
     end,
 }
@@ -160,4 +161,23 @@ AddEventHandler(BR.Net.READY, function()
     if m and m.terminalPower then
         TriggerClientEvent(BR.Net.TERMINAL_POWER, src, payloadOf(m))
     end
+end)
+
+-- THE PERSISTENT NOTICE (round 4): every player in the fight standing in a
+-- live outage's area -- by the server's own position sample, once a second,
+-- so it comes and goes as they walk in and out -- until that outage ends. Not
+-- the player who ran it (their squadmates in the area are in the dark too, and
+-- told so). A client darkens by its VIEW (the shot, for a spectator); a player
+-- in the fight stands where their view is.
+T.impactSource(function(m, now, add)
+    local st = m.terminalPower
+    if not st then return end
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(src, e)
+        if not e.pos then return end
+        for _, o in ipairs(st.list) do
+            if now < o.untilAt and o.by ~= src and TS.inOutage(o.area, e.pos.x, e.pos.y) then
+                add(src, 'impact_outage', o.untilAt)
+            end
+        end
+    end)
 end)

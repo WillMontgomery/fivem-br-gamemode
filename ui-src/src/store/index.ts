@@ -21,6 +21,7 @@ import type {
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 import { chatAfterState } from './chatClear'
+import type { ImpactRow } from '../hud/impactRows'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
 const FEED_MAX = 8
@@ -81,6 +82,14 @@ export interface UiState {
   /** The on-screen notice stack: party events, action results, match alerts.
    *  Newest last; each expires on its own timer. `ms` is that timer, kept on
    *  the notice so the fly-in/fade-out animation can match it exactly. */
+  /**
+   * THE PERSISTENT NOTICES (#396, round 4): what another player's terminal run
+   * is doing to this player, each with its end on the server's clock or the
+   * words standing in for one. The server's whole list, replaced on every
+   * `impacts` envelope (hud/impactRows.ts parses it); drawn at the foot of the
+   * notice stack (hud/Impacts.tsx), never timed out here.
+   */
+  impacts: ImpactRow[]
   notices: (ToastPayload & {
     id: number
     ms: number
@@ -452,6 +461,10 @@ export interface UiState {
   setInv: (i: WireInvPayload) => void
   setStorm: (s: StormPayload | null) => void
   setVehicle: (v: VehiclePayload) => void
+  setImpacts: (rows: ImpactRow[]) => void
+  /** Every persistent notice gone -- a no-op when there are none, so the 2 Hz
+   *  state digest that calls it outside a match re-renders nothing. */
+  clearImpacts: () => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
   setDeath: (d: DeathPayload | null) => void
@@ -824,6 +837,7 @@ export const useUi = create<UiState>((set, get) => {
   inv: emptyInv,
   storm: null,
   vehicle: null,
+  impacts: [],
   dbno: emptyDbno,
   spectate: null,
   death: null,
@@ -970,6 +984,8 @@ export const useUi = create<UiState>((set, get) => {
   // arrives as {} -- reads as "no vehicle" rather than as a car with undefined
   // health, which would render two empty bars over the inventory.
   setVehicle:  (v) => set({ vehicle: (v && v.show) ? v : null }),
+  setImpacts:  (rows) => set({ impacts: rows }),
+  clearImpacts: () => { if (get().impacts.length > 0) set({ impacts: [] }) },
   setDbno:     (dbno) => set({ dbno }),
   setSpectate: (spectate) => set({ spectate }),
   setDeath:    (death) => set({ death }),
@@ -1123,6 +1139,7 @@ export const useUi = create<UiState>((set, get) => {
 export const selHud      = (s: UiState) => s.hud
 export const selStorm    = (s: UiState) => s.storm
 export const selVehicle  = (s: UiState) => s.vehicle
+export const selImpacts  = (s: UiState) => s.impacts
 export const selMatch    = (s: UiState) => s.match
 export const selSquad    = (s: UiState) => s.squad
 /**

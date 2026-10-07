@@ -28,6 +28,7 @@ Around them, the Gameplay half:
 | **The effects** | `br_core/server/terminalfx.lua` | What the first built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen; and the helpers the files below share. |
 | **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Key finder, Pulse, Ghost, Contract -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); and wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06). Every row is built. |
 | **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents, the bounty, Key finder's keys and Pulse's finds on this player's maps, and an EMP held on the vehicle this player drives, from the server's pushes. Decides nothing. |
+| **The persistent notices** | `br_core/server/terminalfx.lua` (and each function file's source), `br_core/client/terminalfx.lua`, `ui-src/src/hud/Impacts.tsx` | Round 4: what another player's terminal run is doing to each player, with its clock, at the foot of the HUD's notice stack -- see [the persistent notices](#persistent-notices-round-4). |
 
 **The server decides everything.** The computer and the app only ask. A run is
 taken only from a player with an open session on that terminal, which only the
@@ -164,6 +165,7 @@ The table below is the lines outside the functions' own:
 | `key_finder_warned` | A toast to each key holder Key finder marked, after the lobby's notice |
 | `pulse_detected` | A toast to each player a Pulse found, after the lobby's notice |
 | `key_finder_blip`, `pulse_blip` | The legend names of Key finder's and Pulse's marks |
+| `impact_*` (`impact_emp`, `impact_outage`, `impact_blackout`, `impact_bounty`, `impact_scan`, `impact_pulse`, `impact_key_finder`, `impact_time`, `impact_weather`, `impact_storm`) and `impact_until_end` | On the HUD, to the player it is happening to: what another player's terminal run is doing to them, beside its clock -- or `impact_until_end` in its place for the rest of the match (round 4) |
 | `no_key`, `squad_used` | At the terminal (why not; `no_key` is also the login screen), and in the world (the terminal's plate) |
 | `offline` | At the terminal (why not: the dev tool's `brterminal offline`, or the moment before the storm's close), and a toast to a player whose press reached the server a step behind the storm. Never a plate since round 4: a terminal outside the storm has none |
 | `bounty_new` | A toast to the lobby: Scan's or a Contract's bounty; `{playername}` |
@@ -338,6 +340,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
 | `BR.Net.TERMINAL_KEYS` | S→C | `{ matchId, list = { { x, y } }, leftMs }` | Key finder: where each Yubikey was when it ran, to the squad that ran it alone; once more, empty, when its `fx.keyFinderMs` is up or the match ends; again on `br:ready` while it lasts. |
 | `BR.Net.TERMINAL_PULSE` | S→C | `{ matchId, list = { { s, x, y } } }` | Pulse: where each player it found is now, to the squad that ran it alone, every `fx.pulsePingMs` for `fx.pulseMs`, and once more, empty, when it is over. |
+| `BR.Net.TERMINAL_IMPACTS` | S→C | `{ list = { { key, text, endsAt?, tail? } } }` | The persistent notices (round 4): this player's whole list, to them alone, when it changes -- a row came or went or its end moved -- on a 1 s pass (`fx.endCheckMs`) and at once after a run's effect. `text` is picked for them (squad or solo); `endsAt` is the server's clock, or `tail` (`impact_until_end`) stands in for it. `client/terminalfx.lua` hands it to br_ui as `BR.Nui.IMPACTS`. |
 | `BR.Net.TERMINAL_EMP` | S→C | `{ matchId, leftMs?, liveMs? }` | EMP (round 4): how long this player's driving stalls from now (absent when every EMP in force spares their squad) and how long any EMP in the match lasts (absent with none). To the whole match when one goes off and when one ends (its time, the match's end, Season 1), and on `br:ready` while one lasts. `client/terminalfx/emp.lua` applies it to the vehicle its own player drives. |
 | `BR.Net.SQUAD_POS` (`server/party.lua`) | S→C | the squad beacon's rows | Comms blackout: while one another squad ran is in force, every row sent to a blacked-out squad leaves `x` and `y` off, and nothing else (`BR.Terminal.beaconDark`). |
 | `BR.Net.REVIVEKEY_ARRIVE`, `BR.Net.REVIVEKEY_PLACE` | S→C | `{ x, y, z }` / `{ cancelled }` | Reboot: the revive key's own return (`BR.ReviveKey.bringBackAt`), over this terminal. |
@@ -1086,3 +1089,52 @@ with somebody still in the fight is rebooted, so `BR.Server.squadsAlive` and
 the match's end check (`<= 1`) are exactly what the eliminations left; the
 players-left count grows. The match ending in the black withdraws the
 promise.
+
+## Persistent notices (round 4)
+
+The owner, 2026-10-06: "Anything that a player is being impacted by, which
+happened as a result of another player's actions at a terminal, should show a
+persistent notification with a timer explaining what the impact is and when it
+will be over."
+
+**The server builds each player's list.** Every function file that puts a
+timed or ongoing effect on other players registers a source
+(`BR.Terminal.impactSource(fn)`, `fn(m, now, add)`), which calls
+`add(src, key, untilAt)` for every player its effect is on right now: `key` the
+`impact_*` line, `untilAt` its end on the server's clock or nil for the rest of
+the match. Two of a kind on one player are one row at the later end; a row for
+the rest of the match outlasts any clock. Only a player still in the fight has
+rows -- out, spectating, the lobby, a match not being played and Season 1 have
+none. `BR.Terminal.impactsOf(m, now)` sorts them, the soonest end first, then
+the rest of the match, then by key. A 1 s pass (`terminal.impacts`) and the
+door after a run's effect send each player `TERMINAL_IMPACTS` only when their
+list changed, the text picked for them; `br:ready` makes the next pass send a
+restarted client's list whole.
+
+| Effect | Who has the row | Until |
+|---|---|---|
+| EMP (`impact_emp`) | every player whose driving it stalls -- everyone outside the runner's squad | the last such EMP ends |
+| Power outage (`impact_outage`) | every player standing in a live area by the server's own position sample, as they walk in and out -- not the runner | it ends |
+| Comms blackout (`impact_blackout`) | every player with a teammate in a squad another squad blacked out | it ends |
+| A bounty (`impact_bounty`) | the player who carries it: a Contract's target, and a Scan's runner (the coordinator's spec named both) -- not while their squad is under Ghost, when no map shows them | its ten minutes |
+| Scan (`impact_scan`) | every opponent of a scanning squad, but a squad under Ghost while it lasts | the match ends |
+| Pulse (`impact_pulse`) | every player it found, while their mark follows them | its 30 seconds |
+| Key finder (`impact_key_finder`) | every key holder it marked (keys on the ground mark nobody) | its 2 minutes |
+| Time & weather (`impact_time`, `impact_weather`) | everyone in the fight but the runner of the time (while its clock is the match's) and of the weather, one row each | the match ends |
+| Storm control (`impact_storm`) | everyone in the fight but whoever aimed the storm that stands | the match ends |
+
+**None:** Disarm, Field medic's drain, Max ammo, Reboot and Supply drop are
+instant (nothing to count down); Ghost and Storm reveal put nothing on anybody
+else. The runner never has a row for their own run, but for a Scan's bounty;
+their squadmates do (it is another player's run).
+
+**The HUD** (`ui-src/src/hud/Impacts.tsx`): the rows sit at the foot of the
+notice stack, nearest the minimap, with the passing notices above them --
+NoticeRow's plate, in the warning tone, the sentence through KeyText -- and
+each counts down with the shared drift-corrected clock (`useCountdownText`,
+`formatClock`: `2:59`, `0:07`) against the store's `clockOffset`: one timer to
+the next second, written into the node, no re-render and nothing per frame. A
+row for the rest of the match shows its tail there instead. `hud/impactRows.ts`
+shape-checks the envelope (`scripts/test-impacts.mjs`). The page clears them as
+the match leaves play, and br_core's client sends an empty list in the lobby,
+off Season 2 and as br_core stops, and the list again when br_ui restarts.

@@ -79,6 +79,18 @@ export function formatCountdown(totalSeconds: number): string {
 }
 
 /**
+ * Format a whole-second count as a clock, minutes always shown: `0:07`,
+ * `2:59`, `10:00`. The persistent notices (#396, round 4: "a persistent
+ * notification with a timer") read as a clock beside a line of text, where a
+ * bare `7` would read as a count of something; StormBar and WarmupTimer keep
+ * formatCountdown. Negative input is clamped to zero, as there.
+ */
+export function formatClock(totalSeconds: number): string {
+  const s = totalSeconds > 0 ? Math.floor(totalSeconds) : 0
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+/**
  * Milliseconds until the displayed second next changes, given ms remaining.
  *
  * The display shows `d = ceil(msLeft / 1000)` and steps to `d - 1` when `msLeft`
@@ -112,10 +124,15 @@ export interface CountdownStep {
  * text and the next delay together for any `(endsAt, now, offset)` without a
  * timer in sight.
  */
-export function countdownStep(endsAt: number, now: number, offset: number): CountdownStep {
+export function countdownStep(
+  endsAt: number,
+  now: number,
+  offset: number,
+  format: (totalSeconds: number) => string = formatCountdown,
+): CountdownStep {
   const left = msRemaining(endsAt, now, offset)
   return {
-    text: formatCountdown(displayedSeconds(left)),
+    text: format(displayedSeconds(left)),
     done: left <= 0,
     delayMs: msToNextBoundary(left),
   }
@@ -149,12 +166,13 @@ export function startCountdown<H>(
   now: () => number,
   setTimer: (cb: () => void, ms: number) => H,
   clearTimer: (handle: H) => void,
+  format: (totalSeconds: number) => string = formatCountdown,
 ): () => void {
   let handle: H | undefined
   let disposed = false
 
   const run = (): void => {
-    const { text, done, delayMs } = countdownStep(endsAt, now(), offset)
+    const { text, done, delayMs } = countdownStep(endsAt, now(), offset, format)
     write(text)
     if (done || disposed) return
     handle = setTimer(run, delayMs)

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import type { RefObject } from 'react'
-import { startCountdown } from './countdown'
+import { formatCountdown, startCountdown } from './countdown'
 
 /**
  * WRITE A DRIFT-CORRECTED TEXT COUNTDOWN INTO A DOM NODE (#319).
@@ -39,6 +39,10 @@ export function useCountdownText<T extends HTMLElement>(
   endsAt: number,
   offset: number,
   enabled = true,
+  // How the seconds are written: the two top-center clocks' bare-seconds rule
+  // unless a caller says otherwise (the persistent notices' formatClock). A
+  // module-level function, so it is the same value on every render.
+  format: (totalSeconds: number) => string = formatCountdown,
 ): void {
   useEffect(() => {
     if (!enabled || !endsAt) return
@@ -54,6 +58,7 @@ export function useCountdownText<T extends HTMLElement>(
       Date.now,
       (cb, ms) => setTimeout(cb, ms),
       (handle) => clearTimeout(handle),
+      format,
     )
-  }, [ref, endsAt, offset, enabled])
+  }, [ref, endsAt, offset, enabled, format])
 }

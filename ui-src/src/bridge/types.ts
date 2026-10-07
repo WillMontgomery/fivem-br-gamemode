@@ -1369,6 +1369,17 @@ export interface SnapshotPayload {
   chat: ChatMessage[]
 }
 
+/**
+ * THE PERSISTENT NOTICES (#396, round 4), as they cross the bridge: this
+ * player's whole list, each row `{ key, text, endsAt?, tail? }` -- `endsAt` on
+ * the server's clock, `tail` in its place for the rest of the match. Typed
+ * loosely ON PURPOSE: it is shape-checked once, by hud/impactRows.ts's
+ * parseImpacts, and Lua's empty list may arrive as `{}`.
+ */
+export interface ImpactsPayload {
+  list?: unknown
+}
+
 // --- envelope ---------------------------------------------------------------
 
 export type Envelope =
@@ -1390,6 +1401,7 @@ export type Envelope =
   | { k: 'hit';      d: HitPayload }
   | { k: 'storm';    d: StormPayload }
   | { k: 'vehicle';  d: VehiclePayload }
+  | { k: 'impacts';  d: ImpactsPayload }
   | { k: 'dbno';     d: DbnoPayload }
   | { k: 'spectate'; d: SpectatePayload }
   | { k: 'death';    d: DeathPayload }

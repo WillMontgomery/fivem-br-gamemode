@@ -13,6 +13,10 @@
 --                 on the big map, by the airdrop's own rules (BR.Airdrop.call)
 --   Max ammo      every gun the squad carries filled to its cap
 --                 (BR.Inv.fillAmmo)
+--   the persistent notices (round 4)
+--                 what another player's terminal run is doing to each player,
+--                 with its clock, on their HUD (BR.Terminal.impactSource and
+--                 its pass, near the end of this file)
 --
 -- Storm reveal is the door's own (it predates this file).
 --
@@ -442,6 +446,180 @@ T.FUNCTIONS.max_ammo = {
     end,
 }
 
+-- -------------------------------------------------- the persistent notices ---
+--
+-- ═══ WHAT ANOTHER PLAYER'S TERMINAL RUN IS DOING TO YOU (round 4) ═══
+--
+--   "Anything that a player is being impacted by, which happened as a result of
+--    another player's actions at a terminal, should show a persistent
+--    notification with a timer explaining what the impact is and when it will
+--    be over."                                        -- owner, 2026-10-06
+--
+-- ONE LIST PER PLAYER, BUILT HERE AND SENT ON CHANGE. Each function file that
+-- puts a timed or ongoing effect on other players registers a source
+-- (BR.Terminal.impactSource): a function of (m, now, add) that calls
+-- `add(src, key, untilAt)` for every player its effect is on right now -- `key`
+-- the copy line that says what it is (`impact_*`), `untilAt` when it ends on
+-- the server's clock, or nil for the rest of the match. A player in two of the
+-- same (two EMPs, two outages) gets one row, ending at the later end; a row
+-- for the rest of the match outlasts any clock. Only a player still in the
+-- fight (standing, downed or in the air) has rows: a player who is out, a
+-- spectator, the lobby, a match no longer being played and Season 1 have none.
+--
+-- WHO GETS ONE, AND WHO DOES NOT: each source's own comment says. The runner
+-- themself never gets one for their own run ("another player's actions") --
+-- but a squadmate does, the run being another player's -- with one exception
+-- the coordinator's spec asked for: a bounty on the runner of a Scan (they
+-- carry it, and its clock, for ten minutes). Instant effects (Disarm, Field
+-- medic's drain, Max ammo, Reboot, Supply drop) have nothing to count down,
+-- and Ghost and Storm reveal put nothing on anybody else.
+--
+-- TERMINAL_IMPACTS { list = { { key, text, endsAt? , tail? } } } goes to a
+-- player only when their list changed (a row came, went, or its end moved),
+-- once a second at most (fx.endCheckMs) and at once after a run's effect. The
+-- text is picked for THEM (BR.TerminalSolve.pick: "squad" only in a squad
+-- match). `endsAt` is the server's clock -- the HUD counts down against it with
+-- the clock offset every countdown uses, once a second, nothing per frame --
+-- and a row with none carries `tail`, impact_until_end, in its place. Sorted:
+-- the soonest end first, then the rest of the match, then by key.
+
+--- The registered sources, in the order the function files load.
+local impactSources = {}
+
+--- What each player was last sent: [src] = signature. A player with none was
+--- last sent an empty list (or nothing).
+local impactsSent = {}
+
+--- Register a source of persistent notices (see above).
+--- @param fn fun(m: table, now: number, add: fun(src: integer, key: string, untilAt: number|nil))
+function T.impactSource(fn)
+    impactSources[#impactSources + 1] = fn
+end
+
+--- Every row every player in this match has right now:
+--- [src] = { { key, untilAt|nil } }, sorted. Public so the suites can read it.
+--- @param m table
+--- @param now number
+--- @return table
+function T.impactsOf(m, now)
+    local rows = {}
+    if not on() or m.state ~= BR.MatchState.PLAYING then return {} end
+    local function add(src, key, untilAt)
+        local e = BR.Roster.get(src)
+        if not (e and e.matchId == m.id and MARKED[e.state]) then return end
+        if untilAt ~= nil and now >= untilAt then return end
+        local mine = rows[src] or {}
+        rows[src] = mine
+        -- false is "the rest of the match", which outlasts any clock.
+        local was = mine[key]
+        if was == nil then
+            mine[key] = untilAt or false
+        elseif was ~= false then
+            if untilAt == nil then
+                mine[key] = false
+            elseif untilAt > was then
+                mine[key] = untilAt
+            end
+        end
+    end
+    for _, fn in ipairs(impactSources) do fn(m, now, add) end
+    local out = {}
+    for src, byKey in pairs(rows) do
+        local list = {}
+        for key, untilAt in pairs(byKey) do
+            list[#list + 1] = { key = key, untilAt = untilAt ~= false and untilAt or nil }
+        end
+        table.sort(list, function(a, b)
+            local ea, eb = a.untilAt or math.huge, b.untilAt or math.huge
+            if ea ~= eb then return ea < eb end
+            return a.key < b.key
+        end)
+        out[src] = list
+    end
+    return out
+end
+
+--- What TERMINAL_IMPACTS carries to `src` for these rows, and its signature.
+local function impactPayload(src, rows)
+    local squadMatch = T.squadMatch ~= nil and T.squadMatch(src) == true
+    local list, sig = {}, {}
+    for _, r in ipairs(rows) do
+        local row = { key = r.key, text = TS.pick(copy(), r.key, squadMatch) }
+        if r.untilAt then
+            row.endsAt = math.floor(r.untilAt)
+        else
+            row.tail = TS.pick(copy(), 'impact_until_end', squadMatch)
+        end
+        list[#list + 1] = row
+        sig[#sig + 1] = ('%s=%s@%s'):format(row.key, row.text, tostring(row.endsAt))
+    end
+    return { list = list }, table.concat(sig, '|')
+end
+
+local function sendImpacts(src, rows)
+    local payload, sig = impactPayload(src, rows)
+    if (impactsSent[src] or '') == sig then return end
+    impactsSent[src] = sig ~= '' and sig or nil
+    TriggerClientEvent(BR.Net.TERMINAL_IMPACTS, src, payload)
+end
+
+--- Send every player in this match their list, if it changed. Public so the
+--- suites can step it, and called by the door after a run's effect.
+--- @param m table
+--- @param now number
+--- @param seen table|nil  [src] = true, filled with everyone visited
+function T.pushImpacts(m, now, seen)
+    local all = T.impactsOf(m, now)
+    for _, src in ipairs(T.lobbyOf(m)) do
+        if seen then seen[src] = true end
+        sendImpacts(src, all[src] or {})
+    end
+end
+
+--- Every match's lists, and an empty one to anybody who had rows and is in
+--- none of them now (the lobby, a match torn down). Public so the suites can
+--- step it.
+--- @param now number
+function T.pushAllImpacts(now)
+    local seen = {}
+    BR.Server.eachMatch(function(m) T.pushImpacts(m, now, seen) end)
+    for src in pairs(impactsSent) do
+        if not seen[src] then sendImpacts(src, {}) end
+    end
+end
+
+--- Forget what a player was sent, so the next pass sends their list whole: a
+--- client that restarted, or a player who left.
+--- @param src integer
+function T.forgetImpacts(src)
+    impactsSent[src] = nil
+end
+
+-- THE BOUNTY: on the player who carries it -- a Contract's target, and a
+-- Scan's runner (the coordinator's spec: "Contract and Scan bounties on
+-- someone (the target)") -- until it ends, and not while their squad is under
+-- Ghost (no map shows them then, so the line would not be true).
+-- AND SCAN: every opponent of a scanning squad, for the rest of the match, but
+-- a squad under Ghost while it lasts.
+T.impactSource(function(m, now, add)
+    local st = m.terminalFx
+    if not st then return end
+    for _, b in ipairs(T.bountiesOf(m, now)) do
+        if not hidden(m, b.squad, now) then add(b.src, 'impact_bounty', now + b.leftMs) end
+    end
+    if next(st.scans) == nil then return end
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(src, e)
+        local theirs = TS.squadKey(e, src)
+        if hidden(m, theirs, now) then return end
+        for key in pairs(st.scans) do
+            if key ~= theirs then
+                add(src, 'impact_scan', nil)
+                return
+            end
+        end
+    end)
+end)
+
 -- --------------------------------------------------------------- the jobs ---
 
 if BR.Sched and BR.Sched.every then
@@ -458,7 +636,23 @@ if BR.Sched and BR.Sched.every then
             if m.terminalFx then T.pushBounties(m, now) end
         end)
     end)
+    -- THE PERSISTENT NOTICES, once a second: each player's list, sent only
+    -- when it changed. Off Season 2 every list is empty, so anybody who had
+    -- rows is sent an empty one once, and then nothing.
+    BR.Sched.every(fx().endCheckMs or 1000, 'terminal.impacts', function()
+        T.pushAllImpacts(GetGameTimer())
+    end)
 end
 
 -- A client that restarts mid-match is sent the scan and the bounty again by
--- the next push; nothing to replay on br:ready.
+-- the next push -- and its persistent notices whole, on the next pass, by
+-- forgetting what it was sent.
+AddEventHandler(BR.Net.READY, function()
+    local src = tonumber(source)
+    if src then T.forgetImpacts(src) end
+end)
+
+AddEventHandler('playerDropped', function()
+    local src = tonumber(source)
+    if src then T.forgetImpacts(src) end
+end)

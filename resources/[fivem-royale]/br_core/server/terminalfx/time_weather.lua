@@ -77,6 +77,8 @@ end
 ---   anchor   the anchor a time run set, now m.clock (nil: no time run)
 ---   time     that run's choice, a key of fx.skyTime ('day', 'dusk', 'night')
 ---   weather  an engine weather from fx.skyWeather (nil: no weather run)
+---   timeBy, weatherBy   who ran the time and the weather that stand, spared
+---            their own persistent notice (round 4)
 --- @param m table
 --- @return table|nil
 function T.skyOf(m)
@@ -103,21 +105,23 @@ end
 --- @param m table
 --- @param opts table  { change = 'time', time } | { change = 'weather', weather }
 --- @param now number
+--- @param by integer|nil  who ran it
 --- @return boolean ok
-function T.startSky(m, opts, now)
+function T.startSky(m, opts, now, by)
     local cur = m.terminalSky or {}
     local base = cur.base or m.clock
-    local nextSky = { base = base, anchor = cur.anchor, time = cur.time, weather = cur.weather }
+    local nextSky = { base = base, anchor = cur.anchor, time = cur.time, weather = cur.weather,
+                      timeBy = cur.timeBy, weatherBy = cur.weatherBy }
     if opts.change == 'time' then
         local sec = secOf(opts.time)
         if not (BR.World.validAnchor(base) and sec) then return false end
         nextSky.anchor = { at = now, startSec = sec, msPerMin = base.msPerMin }
-        nextSky.time = opts.time
+        nextSky.time, nextSky.timeBy = opts.time, by
         m.clock = nextSky.anchor
     elseif opts.change == 'weather' then
         local weather = weatherOf(opts.weather)
         if not weather then return false end
-        nextSky.weather = weather
+        nextSky.weather, nextSky.weatherBy = weather, by
     else
         return false
     end
@@ -165,7 +169,7 @@ T.FUNCTIONS.time_weather = {
             end
             return { ok = false, code = 'unavailable' }
         end
-        if not T.startSky(m, opts or {}, GetGameTimer()) then
+        if not T.startSky(m, opts or {}, GetGameTimer(), src) then
             return { ok = false, code = 'unavailable' }
         end
         return { ok = true, code = 'done' }
@@ -192,4 +196,18 @@ AddEventHandler(BR.Net.READY, function()
     if m and m.terminalSky and m.terminalSky.weather then
         TriggerClientEvent(BR.Net.TERMINAL_SKY, src, payloadOf(m))
     end
+end)
+
+-- THE PERSISTENT NOTICES (round 4), for the rest of the match: everyone in
+-- the fight whose time of day a time run changed -- while that run's clock is
+-- still the match's -- and everyone whose weather inside the circle a weather
+-- run changed. Not the player who ran each.
+T.impactSource(function(m, now, add)
+    local sky = m.terminalSky
+    if not sky then return end
+    local timed = sky.anchor ~= nil and m.clock == sky.anchor
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(src)
+        if timed and src ~= sky.timeBy then add(src, 'impact_time', nil) end
+        if sky.weather and src ~= sky.weatherBy then add(src, 'impact_weather', nil) end
+    end)
 end)

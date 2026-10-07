@@ -30,6 +30,7 @@ import {
   msRemaining,
   displayedSeconds,
   formatCountdown,
+  formatClock,
   msToNextBoundary,
   countdownStep,
   startCountdown,
@@ -266,6 +267,38 @@ eq('boundary below zero is zero', msToNextBoundary(-50), 0)
   eq('throttle: re-armed to the next real boundary', c.pendingAt(), 7_300 + 700) // 2700 -> +700 to 2000
   c.advanceTo(8_000) // left = 2000 -> "2"
   eq('throttle: resumes cleanly after catch-up', r.writes.join(','), '10,3,2')
+  dispose()
+}
+
+// ── formatClock: the persistent notices' clock, minutes always shown (#396) ─
+eq('clock zero', formatClock(0), '0:00')
+eq('clock 7s', formatClock(7), '0:07')
+eq('clock 59s', formatClock(59), '0:59')
+eq('clock 60s', formatClock(60), '1:00')
+eq('clock 179s', formatClock(179), '2:59')
+eq('clock 600s', formatClock(600), '10:00')
+eq('clock negative clamps to 0:00', formatClock(-3), '0:00')
+eq('clock a fraction is floored', formatClock(61.9), '1:01')
+
+// ── a format handed in: the same schedule, the caller's words ───────────────
+{
+  const s = countdownStep(3_200, 0, 0, formatClock)
+  eq('step with formatClock', s.text, '0:04')
+  eq('and the same delay', s.delayMs, 200)
+  eq('no format: the bare-seconds rule as ever', countdownStep(3_200, 0, 0).text, '4')
+}
+{
+  const c = fakeClock(0)
+  const r = recorder()
+  const dispose = startCountdown(180_000, 0, r.write, c.now, c.setTimer, c.clearTimer, formatClock)
+  c.advanceTo(1_000)
+  c.advanceTo(2_000)
+  c.advanceTo(120_000)
+  eq('a three-minute clock, once a second', r.writes.slice(0, 3).join(','), '3:00,2:59,2:58')
+  eq('woken late, it lands on the right second', r.writes[r.writes.length - 1], '1:00')
+  c.advanceTo(180_000)
+  eq('and ends on 0:00', r.writes[r.writes.length - 1], '0:00')
+  ok('with no timer left', c.hasPending() === false)
   dispose()
 }
 

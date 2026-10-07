@@ -1520,6 +1520,115 @@ do
 end
 
 -- =========================================================================
+-- THE PERSISTENT NOTICES (round 4) for wave B's three -- each player's rows
+-- as the real pass sends them (server/terminalfx.lua's 'terminal.impacts')
+-- =========================================================================
+
+--- `src`'s last list as "key@end|...", '' empty, nil never sent.
+local function impactRows(src)
+    local d = lastOf(BR.Net.TERMINAL_IMPACTS, src)
+    if not d then return nil end
+    local out = {}
+    for _, r in ipairs(d.list or {}) do
+        out[#out + 1] = ('%s@%s'):format(r.key, r.endsAt and tostring(r.endsAt) or 'end')
+    end
+    return table.concat(out, '|')
+end
+local function hasRow(src, key)
+    local d = lastOf(BR.Net.TERMINAL_IMPACTS, src)
+    for _, r in ipairs(d and d.list or {}) do if r.key == key then return r end end
+    return nil
+end
+
+describe('the persistent notices: Time & weather -- everyone but its runner, until the match ends')
+do
+    reset()
+    for s = 1, 8 do T.forgetImpacts(s) end
+    local m = lobby('squad', 3)
+    stampClock(m)
+    runAt(1, 'time_weather', { change = 'time', time = 'night' })
+    for _, src in ipairs({ 2, 3, 4, 5 }) do
+        eq(impactRows(src), 'impact_time@end', ('p%d: the time of day was changed, for the rest of the match'):format(src))
+    end
+    local r = hasRow(2, 'impact_time')
+    ok(r and r.text == COPY.impact_time and r.tail == COPY.impact_until_end and r.endsAt == nil,
+        'in its words, with the tail in place of a clock')
+    eq(impactRows(1), nil, 'not the player who ran it')
+
+    -- ANOTHER PLAYER'S WEATHER RUN: its own row, sparing that runner.
+    keys[3] = true
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    runAt(3, 'time_weather', { change = 'weather', weather = 'fog' })
+    eq(impactRows(1), 'impact_weather@end', 'the time\'s runner now sees the weather\'s row')
+    eq(impactRows(3), 'impact_time@end', 'the weather\'s runner, the time\'s row only')
+    eq(impactRows(4), 'impact_time@end|impact_weather@end', 'everyone else, both, in key order')
+    eq(hasRow(4, 'impact_weather').text, COPY.impact_weather, 'in its words')
+
+    -- THE MATCH ENDING: gone with the sky.
+    m.state = BR.MatchState.ENDED
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    ok(impactRows(4) == '' and impactRows(1) == '' and impactRows(3) == '', 'the match over: every list empty')
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('the persistent notices: Storm control -- everyone but whoever aimed it, until the match ends')
+do
+    reset()
+    for s = 1, 8 do T.forgetImpacts(s) end
+    local m = lobby('squad', 3)
+    local r = controlAt(1, spotIn(m, 0.0))
+    ok(r and r.code == 'done', 'it runs', r and r.code)
+    for _, src in ipairs({ 2, 3, 4, 5 }) do
+        eq(impactRows(src), 'impact_storm@end', ('p%d: the storm will end where another player chose'):format(src))
+    end
+    eq(hasRow(3, 'impact_storm').text, COPY.impact_storm, 'in its words')
+    eq(impactRows(1), nil, 'not the player who aimed it')
+    -- RE-AIMED BY ANOTHER PLAYER: the first runner sees it now, the second not.
+    keys[3] = true
+    roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
+    r = controlAt(3, spotIn(m, 0.0))
+    ok(r and r.code == 'done', 're-aimed', r and r.code)
+    ok(impactRows(1) == 'impact_storm@end' and impactRows(3) == '', 'the row now spares the second runner instead')
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('the persistent notices: Power outage -- whoever stands in its area, as they walk in and out')
+do
+    reset()
+    for s = 1, 8 do T.forgetImpacts(s) end
+    local m = night(lobby('squad', 3))
+    roster[5].pos = { x = SITE.x + 5000.0, y = SITE.y, z = 30.0 }    -- far outside the 1 km
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    local ends = T.outagesOf(m)[1].untilAt
+    for _, src in ipairs({ 2, 3, 4 }) do
+        local r = hasRow(src, 'impact_outage')
+        ok(r and r.endsAt == ends and r.text == COPY.impact_outage,
+            ('p%d, in the area: the lights are out where they are, until it ends'):format(src))
+    end
+    eq(hasRow(5, 'impact_outage'), nil, 'a player outside the area has no such row')
+    eq(hasRow(1, 'impact_outage'), nil, 'nor the player who ran it, though they stand in it')
+    -- WALKING OUT, AND BACK IN.
+    roster[3].pos = { x = SITE.x + 5000.0, y = SITE.y, z = 30.0 }
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    eq(hasRow(3, 'impact_outage'), nil, 'walked out: the row goes on the next pass')
+    roster[5].pos = { x = SITE.x + 10.0, y = SITE.y, z = 30.0 }
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    ok(hasRow(5, 'impact_outage') ~= nil, 'walked in: it comes')
+    -- IT ENDS.
+    gameMs = ends
+    BR.Sched.step(gameMs)
+    gameMs = gameMs + 1000
+    BR.Sched.step(gameMs)
+    ok(hasRow(2, 'impact_outage') == nil and hasRow(5, 'impact_outage') == nil, 'over: gone for everyone')
+    ok(errored() == nil, 'clean', errored())
+end
+
+-- =========================================================================
 -- PART C, THE CLIENT -- the one writer of the lights
 -- =========================================================================
 

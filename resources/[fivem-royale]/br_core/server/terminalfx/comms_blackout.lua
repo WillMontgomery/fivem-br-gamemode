@@ -148,3 +148,27 @@ if BR.Sched and BR.Sched.every then
         end)
     end)
 end
+
+-- THE PERSISTENT NOTICE (round 4): every player with a teammate in a squad
+-- another squad has blacked out, until the last such blackout ends -- a player
+-- with no teammate has no dot to lose. Squad-only, like the function.
+T.impactSource(function(m, now, add)
+    local all = m.terminalFx and m.terminalFx.blackouts or nil
+    if not all then return end
+    local size = {}
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(src, e)
+        local key = TS.squadKey(e, src)
+        size[key] = (size[key] or 0) + 1
+    end)
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(src, e)
+        local key = TS.squadKey(e, src)
+        if size[key] < 2 then return end
+        local untilAt = nil
+        for by, b in pairs(all) do
+            if by ~= key and now < b.untilAt and (untilAt == nil or b.untilAt > untilAt) then
+                untilAt = b.untilAt
+            end
+        end
+        if untilAt then add(src, 'impact_blackout', untilAt) end
+    end)
+end)
