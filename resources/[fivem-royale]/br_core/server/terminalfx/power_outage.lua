@@ -14,8 +14,12 @@
 -- district going dark for the whole lobby.
 --
 -- THE AREAS (BR.TerminalSolve.outageArea, one spelling for both sides):
---   here    within fx.outageRadiusM of this terminal (the player, at the dev
---           terminal: Supply drop's rule)
+--   spot    within fx.outageRadiusM of the spot the player picked on the big
+--           map, carried as `opts.at` (round 6, owner 2026-10-07: "Any use of
+--           'near this terminal' is like, not useful for this gamemode" -- it
+--           was `here`, around this terminal). The confirm box asks for the
+--           spot only for this choice (the row's `spot`, with its `when`), and
+--           a run of it without one is `bad_option`, nothing spent.
 --   city    below the storm's city line (#381, BR.StormCityLine)
 --   county  on it or above it
 -- Several outages can run at once; a player in any of them is in the dark.
@@ -44,17 +48,6 @@ local function fx() return BR.Config.Terminals.fx or {} end
 
 local function on()
     return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('terminals') == true
-end
-
---- Where "this terminal" is: the session's terminal, or, for a terminal the
---- server does not know (the dev terminal), the player.
---- @return number|nil x, number|nil y
-local function anchorOf(src, session)
-    local t = T.site(session.terminalId)
-    if t then return t.x, t.y end
-    local e = BR.Roster.get(src)
-    if e and e.pos then return e.pos.x, e.pos.y end
-    return nil, nil
 end
 
 --- What TERMINAL_POWER carries for this match: every live area.
@@ -114,9 +107,9 @@ function T.endOutages(m, now, live)
 end
 
 T.FUNCTIONS.power_outage = {
-    -- Every choice has an area wherever the session is (a terminal always has
-    -- a site), so a match is asked for, and its night (above). A dev terminal
-    -- outside a match is never refused.
+    -- Every choice has an area (the spot is the run's own), so a match is
+    -- asked for, and its night (above). A dev terminal outside a match is never
+    -- refused.
     refuse = function(src, session)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
@@ -134,7 +127,11 @@ T.FUNCTIONS.power_outage = {
             return { ok = false, code = 'unavailable' }
         end
         opts = opts or {}
-        local x, y = anchorOf(src, session)
+        local x, y = nil, nil
+        if opts.area == 'spot' then
+            if not opts.at then return { ok = false, code = 'bad_option' } end
+            x, y = opts.at.x, opts.at.y
+        end
         local area = TS.outageArea(opts.area, x, y, fx().outageRadiusM or 1000.0)
         local ms = math.floor((tonumber(opts.duration) or 0) * 1000)
         if not area or ms <= 0 then return { ok = false, code = 'unavailable' } end

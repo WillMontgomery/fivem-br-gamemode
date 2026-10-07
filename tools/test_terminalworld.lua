@@ -1340,7 +1340,7 @@ do
     local f = listed(1, 'power_outage')
     ok(f and f.available == false and f.reason == 'no_night',
         "the match's own clock: the card says no_night", f and tostring(f.reason))
-    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    local r = runAt(1, 'power_outage', { area = 'city', duration = '120' })
     ok(r and r.ok == false and r.code == 'no_night', 'and a run is refused no_night', r and r.code)
     eq(r and r.toast, COPY.no_night, 'in its line')
     nothingSpent(1, 'no night')
@@ -1348,11 +1348,11 @@ do
 
     -- A WEATHER RUN IS NO NIGHT; NOR ARE DAY AND DUSK.
     T.startSky(m, { change = 'weather', weather = 'fog' }, gameMs)
-    r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    r = runAt(1, 'power_outage', { area = 'city', duration = '120' })
     eq(r and r.code, 'no_night', 'a weather run alone: still no_night')
     for _, t in ipairs({ 'day', 'dusk' }) do
         T.startSky(m, { change = 'time', time = t }, gameMs)
-        r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+        r = runAt(1, 'power_outage', { area = 'city', duration = '120' })
         eq(r and r.code, 'no_night', t .. ': no_night')
     end
     nothingSpent(1, 'day and dusk')
@@ -1361,7 +1361,7 @@ do
     T.startSky(m, { change = 'time', time = 'night' }, gameMs)
     T.startSky(m, { change = 'weather', weather = 'clear' }, gameMs)
     ok(T.terminalNight(m), 'a weather run after a night keeps the night')
-    r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    r = runAt(1, 'power_outage', { area = 'city', duration = '120' })
     ok(r and r.ok == true and r.code == 'done', 'on the night: it runs', r and r.code)
     eq(#T.outagesOf(m), 1, 'and the outage is live')
     -- A LATER DAY DOES NOT END A RUNNING OUTAGE: it is a switch on the lights.
@@ -1391,7 +1391,7 @@ do
     -- THE END OF THE LOAD: a day landing while it loads gives everything back.
     reset()
     m = night(lobby('squad', 3))
-    r = runAt(1, 'power_outage', { area = 'here', duration = '120' }, true)
+    r = runAt(1, 'power_outage', { area = 'city', duration = '120' }, true)
     eq(r and r.code, 'running', 'accepted on the night')
     T.startSky(m, { change = 'time', time = 'dusk' }, gameMs)
     flush()
@@ -1410,18 +1410,33 @@ do
     ok(COPY.power_outage_summary:find('at night', 1, true) ~= nil, 'and the card')
 end
 
-describe('Power outage: around this terminal, to the whole match')
+--- POWER OUTAGE AROUND A SPOT PICKED ON THE MAP (round 6, owner 2026-10-07:
+--- "Any use of 'near this terminal' is like, not useful for this gamemode"),
+--- straight through its effect with the run's `opts.at`. The door's half --
+--- the row's `spot` choice and its conditional spot, asked in the confirm box
+--- -- is the app round's, so this goes round the door for that one choice.
+local function outageAt(src, at, duration)
+    local r = T.FUNCTIONS.power_outage.run(src, { terminalId = 'tower', dev = false },
+        { area = 'spot', duration = duration or '120', at = at })
+    local m = T.whereIs(src)
+    if m and T.pushImpacts then T.pushImpacts(m, gameMs) end
+    return r
+end
+
+describe('Power outage: around a spot picked on the map, to the whole match (round 6)')
 do
     reset()
     local m = night(lobby('squad', 3))
-    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    local spot = { x = SITE.x + 600.0, y = SITE.y - 250.0 }
+    local r = outageAt(1, spot)
     ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
-    eq(r and r.toast, COPY.power_outage_done, 'and says the page\'s done line')
     local list = T.outagesOf(m)
     eq(#list, 1, 'one outage is live')
     local a = list[1] and list[1].area
-    ok(a and a.kind == 'radius' and a.x == SITE.x and a.y == SITE.y and a.r == CT.fx.outageRadiusM,
-        ('a %.0f m radius around this terminal'):format(CT.fx.outageRadiusM))
+    ok(a and a.kind == 'radius' and a.x == spot.x and a.y == spot.y and a.r == CT.fx.outageRadiusM,
+        ('a %.0f m radius around the spot picked'):format(CT.fx.outageRadiusM),
+        a and ('(%.1f, %.1f) r %.0f'):format(a.x or 0, a.y or 0, a.r or 0))
+    ok(not (a and a.x == SITE.x and a.y == SITE.y), 'never around the terminal')
     eq(list[1].untilAt, gameMs + 120000, 'for two minutes')
     for src = 1, 5 do
         local p = powerSends(src)[1]
@@ -1431,16 +1446,34 @@ do
     ok(errored() == nil, 'clean', errored())
 end
 
-describe('Power outage: around the terminal, not the player standing at it')
+describe('Power outage: around the spot, not the terminal nor the player at it; no spot, no run')
 do
     reset()
     local m = night(lobby('squad', 3))
     roster[1].pos = { x = SITE.x + 2.0, y = SITE.y - 1.0, z = 30.0 }
-    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' })
-    ok(r and r.ok == true, 'it runs from two meters off', r and r.code)
+    local far = { x = SITE.x - 3000.0, y = SITE.y + 1200.0 }
+    local r = outageAt(1, far)
+    ok(r and r.ok == true, 'it runs from the terminal, at a spot 3 km off', r and r.code)
     local a = T.outagesOf(m)[1] and T.outagesOf(m)[1].area
-    ok(a and a.x == SITE.x and a.y == SITE.y, 'the area is centered on the terminal itself',
+    ok(a and a.x == far.x and a.y == far.y, 'the area is centered on the spot itself',
         a and ('(%.1f, %.1f)'):format(a.x or 0, a.y or 0))
+    ok(not TS.inOutage(a, SITE.x, SITE.y), 'and the terminal is not in it')
+
+    -- THE SPOT CHOICE WITH NO SPOT: refused, nothing started.
+    reset()
+    m = night(lobby('squad', 3))
+    r = T.FUNCTIONS.power_outage.run(1, { terminalId = 'tower', dev = false }, { area = 'spot', duration = '120' })
+    ok(r and r.ok == false and r.code == 'bad_option', 'area spot with no spot: bad_option', r and r.code)
+    eq(m.terminalPower, nil, 'and no outage starts')
+    -- AND "AROUND THIS TERMINAL" IS NO AREA ANY MORE.
+    r = T.FUNCTIONS.power_outage.run(1, { terminalId = 'tower', dev = false }, { area = 'here', duration = '120' })
+    ok(r and r.ok == false, 'the old `here` starts nothing', r and r.code)
+    eq(m.terminalPower, nil, 'nothing at all')
+    ok(COPY.power_outage_opt_area_spot ~= nil and COPY.power_outage_opt_area_spot_desc ~= nil,
+        'the spot choice has its lines')
+    ok(COPY.power_outage_opt_area_spot:find('terminal', 1, true) == nil
+        and COPY.power_outage_opt_area_spot_desc:find('terminal', 1, true) == nil,
+        'and they say nothing about this terminal')
 end
 
 describe('Power outage: Los Santos and Blaine County are the storm\'s city line')
@@ -1461,20 +1494,21 @@ do
         'a point below the line is the city, one on it is not')
     ok(TS.inOutage(county, 0.0, line) and not TS.inOutage(county, 0.0, line - 1.0),
         'and one on it or above it is the county, as the anchor\'s draw has it')
-    local here = TS.outageArea('here', 100.0, 200.0, 1000.0)
-    ok(TS.inOutage(here, 1100.0, 200.0) and not TS.inOutage(here, 1100.5, 200.0),
-        'here: within the radius, and not a half meter past it')
-    ok(TS.outageArea('here', nil, 200.0, 1000.0) == nil and TS.outageArea('moon', 1, 2, 3) == nil,
+    local spot = TS.outageArea('spot', 100.0, 200.0, 1000.0)
+    ok(TS.inOutage(spot, 1100.0, 200.0) and not TS.inOutage(spot, 1100.5, 200.0),
+        'spot: within the radius, and not a half meter past it')
+    ok(TS.outageArea('spot', nil, 200.0, 1000.0) == nil and TS.outageArea('moon', 1, 2, 3) == nil,
         'no area with no point to center on, or for a choice that is not one')
+    eq(TS.outageArea('here', 100.0, 200.0, 1000.0), nil, '`here`, around this terminal, is no choice any more')
     ok(not TS.inOutage({ kind = 'radius', x = 'a' }, 0, 0) and not TS.inOutage(nil, 0, 0),
         'and a malformed area holds nobody')
 end
 
 describe('Power outage: the page\'s 1 km is the config\'s radius')
 do
-    local km = tonumber(COPY.power_outage_opt_area_here_desc:match('within ([%d%.]+) km'))
+    local km = tonumber(COPY.power_outage_opt_area_spot_desc:match('within ([%d%.]+) km'))
     ok(km ~= nil and km * 1000 == CT.fx.outageRadiusM, 'the page says the radius the server uses',
-        COPY.power_outage_opt_area_here_desc)
+        COPY.power_outage_opt_area_spot_desc)
     ok(COPY.power_outage_what:find('for every player inside the area', 1, true) ~= nil
         and COPY.power_outage_what:find('Players outside the area keep their lights.', 1, true) ~= nil,
         'and says who goes dark: the players inside the area, not the district for everyone')
@@ -1536,7 +1570,7 @@ describe('Power outage: it ends, one at a time, and with the match and the seaso
 do
     reset()
     local m = night(lobby('squad', 3))
-    runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    runAt(1, 'power_outage', { area = 'city', duration = '120' })
     roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
     keys[3] = true
     runAt(3, 'power_outage', { area = 'county', duration = '240' })
@@ -1579,7 +1613,7 @@ describe('Power outage: a client that restarts is sent the live areas')
 do
     reset()
     night(lobby('squad', 3))
-    runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    runAt(1, 'power_outage', { area = 'city', duration = '120' })
     sent = {}
     fire(BR.Net.READY, 4)
     local p = powerSends(4)[1]
@@ -1590,7 +1624,7 @@ describe('Power outage: the match ending while it loads gives everything back; t
 do
     reset()
     local m = night(lobby('squad', 3))
-    local r = runAt(1, 'power_outage', { area = 'here', duration = '120' }, true)
+    local r = runAt(1, 'power_outage', { area = 'city', duration = '120' }, true)
     eq(r and r.code, 'running', 'accepted')
     m.state = BR.MatchState.ENDED
     flush()
@@ -1697,7 +1731,7 @@ do
     roster[5].pos = { x = SITE.x + 5000.0, y = SITE.y, z = 30.0 }    -- far outside the 1 km
     gameMs = gameMs + 1000
     BR.Sched.step(gameMs)
-    runAt(1, 'power_outage', { area = 'here', duration = '120' })
+    outageAt(1, { x = SITE.x, y = SITE.y })
     local ends = T.outagesOf(m)[1].untilAt
     for _, src in ipairs({ 2, 3, 4 }) do
         local r = hasRow(src, 'impact_outage')

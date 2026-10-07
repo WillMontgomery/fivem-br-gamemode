@@ -794,6 +794,15 @@ BR.Config.Terminals = {
         -- included. The line says so.
         power_outage_what = "Street lights, building lights and signs go dark for every player inside the area you choose.\nPlayers outside the area keep their lights.\nVehicle headlights still work.\nThe lights come back when it ends.\nIt only works while it's night because someone ran Time & weather.",
         power_outage_opt_area = 'Area',
+        -- WRITTEN (round 6, proposal for the owner; was 'Around this
+        -- terminal' / 'Everything within 1 km of this terminal.'): "Any use
+        -- of 'near this terminal' is like, not useful for this gamemode" --
+        -- the area is 1 km around a spot picked on the map in the confirm box.
+        power_outage_opt_area_spot = 'Around a spot you pick',
+        power_outage_opt_area_spot_desc = 'Everything within 1 km of the spot you pick on the map.',
+        -- GOING: the old choice's lines, kept only while the registry row
+        -- below still lists `here` -- the row's change to `spot` (the app's
+        -- half of round 6) takes these two out with it. Nothing runs `here`.
         power_outage_opt_area_here = 'Around this terminal',
         power_outage_opt_area_here_desc = 'Everything within 1 km of this terminal.',
         -- ROUND 6: the area's first choice is a spot the player picks on the
@@ -1717,8 +1726,9 @@ BR.Config.Terminals = {
         -- weather.blendSec), so walking in looks like a storm exit does.
         skyBlendSec = 5.0,
 
-        -- Power outage: how far "Around this terminal" reaches, in meters. The
-        -- page says it (power_outage_opt_area_here_desc, "within 1 km"), and
+        -- Power outage: how far "Around a spot you pick" reaches from the
+        -- spot, in meters (round 6; it was around this terminal). The page
+        -- says it (power_outage_opt_area_spot_desc, "within 1 km"), and
         -- tools/test_terminalworld.lua holds the two together. "Los Santos" and
         -- "Blaine County" are the storm's own city line (#381).
         outageRadiusM = 1000.0,

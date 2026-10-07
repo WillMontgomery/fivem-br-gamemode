@@ -281,21 +281,23 @@ end
 --- Power outage's area for one `area` choice (#396, wave B), as the server
 --- sends it and every client tests it: one spelling for both sides.
 ---
----   here    { kind = 'radius', x, y, r }: within `radius` meters of (x, y),
----           this terminal
+---   spot    { kind = 'radius', x, y, r }: within `radius` meters of (x, y),
+---           the spot the player picked on the big map (round 6, owner
+---           2026-10-07: "Any use of 'near this terminal' is like, not useful
+---           for this gamemode" -- it was `here`, around this terminal)
 ---   city    { kind = 'city', line }: below the city line
 ---   county  { kind = 'county', line }: on it or above it
 ---
 --- THE CITY LINE IS THE STORM'S (#381, BR.StormCityLine): the same line that
 --- decides whether a match opens in the city or the county decides which side
---- goes dark. Nil for a choice that is not one of these, or a `here` with no
+--- goes dark. Nil for a choice that is not one of these, or a `spot` with no
 --- point to center on.
 --- @param choice string
---- @param x number|nil @param y number|nil  this terminal
---- @param radius number  meters, for `here`
+--- @param x number|nil @param y number|nil  the spot picked
+--- @param radius number  meters, for `spot`
 --- @return table|nil area
 function T.outageArea(choice, x, y, radius)
-    if choice == 'here' then
+    if choice == 'spot' then
         if not (finite(x) and finite(y) and finite(radius) and radius > 0) then return nil end
         return { kind = 'radius', x = x + 0.0, y = y + 0.0, r = radius + 0.0 }
     elseif choice == 'city' or choice == 'county' then
