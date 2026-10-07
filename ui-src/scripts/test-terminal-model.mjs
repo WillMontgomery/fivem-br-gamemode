@@ -31,7 +31,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, choicesOf, costFor, costOf,
-  costRange, costsOf, current, filtersOf, hrefOf, valueOf,
+  costRange, costsOf, current, filtersOf, hrefOf, offeredValues, valueOf,
   indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, placeText,
   progressAfter, rewrite, risksOf, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions,
   shownOptions, speaker, startBrowsing, startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
@@ -530,8 +530,8 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   ok(fn.scan.squadWide && fn.storm_reveal.squadWide && fn.max_ammo.squadWide && !fn.disarm.squadWide, 'squadWide')
 
   // "The cards should show cost in volts and bounty".
-  eq(costOf(fn.scan), 'paid', 'Scan costs Volts')
-  eq(costOf(fn.storm_reveal), 'free', 'Storm reveal is free')
+  eq(costOf(fn.scan, squad), 'paid', 'Scan costs Volts')
+  eq(costOf(fn.storm_reveal, squad), 'free', 'Storm reveal is free')
   eq(squad(`bounty_${bountyOf(fn.scan)}`), 'You get one', 'Scan\'s card: you get the bounty')
   eq(squad(`bounty_${bountyOf(fn.contract)}`), 'Another player gets one', 'Contract\'s card: another player does')
   eq(squad(`bounty_${bountyOf(fn.storm_reveal)}`), 'None', 'every other card: none')
@@ -611,7 +611,7 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   const there = arrive(r.browsing, r.browsing.load.seq).browsing
   const back = step(there, 'back').browsing
   eq(filtersOf(current(back.history)).status, 'available', 'back from a function: the filters are as they were')
-  ok(passes(fn.scan, states.get('scan'), NO_FILTERS), 'Any passes everything')
+  ok(passes(fn.scan, states.get('scan'), NO_FILTERS, squad), 'Any passes everything')
 }
 
 // ── round 5 (owner, 2026-10-06): Gear Up's dropdowns, its teammates, its price ──
@@ -632,6 +632,17 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
       { id: 'storm_reveal', category: 'intel', risk: 'low', implemented: true },
       { id: 'odd', category: 'intel', risk: 'low', implemented: true,
         costBy: { option: 'who', choices: { squad: 900 } } },
+      // A price on an option offered only under another's choice (`when`).
+      { id: 'sized', category: 'supply', risk: 'low', implemented: true, cost: 10,
+        costBy: { option: 'size', choices: { small: 20, big: 150 } },
+        options: [
+          { id: 'mode', choices: ['a', 'b'], default: 'a' },
+          { id: 'size', choices: ['small', 'big'], default: 'small', when: { mode: 'b' } },
+        ] },
+      // A priced DEFAULT on an option a solo player is not shown.
+      { id: 'tiered', category: 'supply', risk: 'low', implemented: true,
+        costBy: { option: 'tier', choices: { gold: 120 } },
+        options: [{ id: 'tier', choices: ['gold', 'plain'], default: 'gold' }] },
     ],
     categories: ['intel', 'supply'],
   })
@@ -646,20 +657,85 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   eq(fn.odd.costBy, null, 'a figure past 200 is no price: dropped')
   eq(fn.scan.costBy, null, 'a row with none has none')
 
+  // THE CHOICES' WORDS: a choice with no line for this player is not offered,
+  // nor an option with no words of its own (the page shows neither).
+  const copy = {
+    gear_up_opt_item: 'Item', gear_up_opt_who: 'Who gets it', gear_up_opt_who_solo: '',
+    gear_up_opt_who_self: 'You', gear_up_opt_who_mate: 'One teammate', gear_up_opt_who_mate_solo: '',
+    gear_up_opt_who_squad: 'Everyone in your squad', gear_up_opt_who_squad_solo: '',
+    gear_up_opt_item_pistol: 'Pistol', gear_up_opt_item_medkit: 'Med Kit', gear_up_opt_item_grenade: 'Grenade',
+    sized_opt_mode: 'Mode', sized_opt_mode_a: 'A', sized_opt_mode_b: 'B',
+    sized_opt_size: 'Size', sized_opt_size_small: 'Small', sized_opt_size_big: 'Big',
+    tiered_opt_tier: 'Tier', tiered_opt_tier_solo: '', tiered_opt_tier_gold: 'Gold', tiered_opt_tier_plain: 'Plain',
+  }
+  const squadSay = speaker(copy, true)
+  const soloSay = speaker(copy, false)
+
   // THE PRICE OF THESE CHOICES.
   eq(costFor(g, {}), 0, 'nothing chosen: yourself, free')
   eq(costFor(g, { who: 'mate' }), 0, 'one teammate: free')
   eq(costFor(g, { who: 'squad' }), 200, 'the whole squad: 200')
   eq(costFor(fn.scan, {}), 200, 'a row with one price: that price')
-  eq(JSON.stringify(costRange(g)), '{"min":0,"max":200}', 'Gear Up costs 0 to 200')
-  eq(JSON.stringify(costRange(fn.scan)), '{"min":200,"max":200}', 'Scan, 200 whatever')
-  eq(costsOf(g).join(','), 'free,paid', 'the Cost filter finds it under both')
-  eq(costsOf(fn.scan).join(','), 'paid', 'Scan only under Paid')
-  eq(costsOf(fn.storm_reveal).join(','), 'free', 'Storm reveal only under Free')
-  eq(costOf(g), 'free', 'its cheapest choice is free')
-  ok(passes(g, undefined, { ...NO_FILTERS, cost: 'free' }) && passes(g, undefined, { ...NO_FILTERS, cost: 'paid' }),
-    'and it passes either Cost filter')
-  ok(!passes(fn.scan, undefined, { ...NO_FILTERS, cost: 'free' }), 'Scan does not pass Free')
+  eq(costFor(fn.sized, { mode: 'b', size: 'big' }), 150, 'a priced option the run carries: its price')
+  eq(costFor(fn.sized, { mode: 'a', size: 'big' }), 10,
+    'one its `when` leaves out of the run: the row\'s cost, as the server charges (whatever was picked before)')
+  eq(JSON.stringify(costRange(g, squadSay)), '{"min":0,"max":200}', 'Gear Up costs 0 to 200 in a squad match')
+  eq(JSON.stringify(costRange(fn.scan, squadSay)), '{"min":200,"max":200}', 'Scan, 200 whatever')
+  eq(costsOf(g, squadSay).join(','), 'free,paid', 'the Cost filter finds it under both')
+  eq(costsOf(fn.scan, squadSay).join(','), 'paid', 'Scan only under Paid')
+  eq(costsOf(fn.storm_reveal, squadSay).join(','), 'free', 'Storm reveal only under Free')
+  eq(costOf(g, squadSay), 'free', 'its cheapest choice is free')
+  ok(passes(g, undefined, { ...NO_FILTERS, cost: 'free' }, squadSay)
+    && passes(g, undefined, { ...NO_FILTERS, cost: 'paid' }, squadSay), 'and it passes either Cost filter')
+  ok(!passes(fn.scan, undefined, { ...NO_FILTERS, cost: 'free' }, squadSay), 'Scan does not pass Free')
+  eq(JSON.stringify(costRange(fn.sized, squadSay)), '{"min":10,"max":150}',
+    'a price behind a `when`: the row\'s cost too, which a run without the option pays')
+
+  // ROUND 5'S REVIEW: A SOLO PLAYER IS NEVER OFFERED THE WHOLE SQUAD, so
+  // nothing about the row may price it for him -- every summary of a row's
+  // choices is worked out over the ones he is offered.
+  eq(offeredValues(g, who, squadSay).join(','), 'self,mate,squad', 'in a squad match: all three can be carried')
+  eq(offeredValues(g, who, soloSay).join(','), 'self', 'outside one the page hides the option: its default alone')
+  eq(JSON.stringify(costRange(g, soloSay)), '{"min":0,"max":0}', 'a solo player\'s Gear Up costs nothing, whatever he picks')
+  eq(costsOf(g, soloSay).join(','), 'free', 'the Cost filter finds it under Free alone')
+  ok(passes(g, undefined, { ...NO_FILTERS, cost: 'free' }, soloSay)
+    && !passes(g, undefined, { ...NO_FILTERS, cost: 'paid' }, soloSay), 'it passes Free and not Paid')
+  eq(costOf(g, soloSay), 'free', 'and reads free')
+  // The option shown (words of its own) but the squad's choices not: the
+  // choices' own lines decide, the same way.
+  const shownSolo = speaker({ ...copy, gear_up_opt_who_solo: undefined }, false)
+  ok(shownSolo('gear_up_opt_who') === 'Who gets it', '(a solo speaker that shows the option)')
+  eq(offeredValues(g, who, shownSolo).join(','), 'self', 'its offered choices alone')
+  eq(JSON.stringify(costRange(g, shownSolo)), '{"min":0,"max":0}', 'still nothing')
+  // The option hidden (no words of its own) though its choices have words:
+  // the page shows none of them, so a run carries the default alone.
+  const hiddenOpt = speaker({ ...copy, gear_up_opt_who_mate_solo: undefined, gear_up_opt_who_squad_solo: undefined }, false)
+  ok(hiddenOpt('gear_up_opt_who') === '' && hiddenOpt('gear_up_opt_who_squad') !== '', '(a solo speaker that hides the option only)')
+  eq(offeredValues(g, who, hiddenOpt).join(','), 'self', 'a hidden option carries its default alone')
+  eq(JSON.stringify(costRange(g, hiddenOpt)), '{"min":0,"max":0}', 'so a solo player still pays nothing')
+  // And a hidden option's default is what he pays when it is priced.
+  eq(offeredValues(fn.tiered, fn.tiered.options[0], soloSay).join(','), 'gold', 'a hidden priced option: its default')
+  eq(JSON.stringify(costRange(fn.tiered, soloSay)), '{"min":120,"max":120}', 'its price, and nothing else')
+  eq(costsOf(fn.tiered, soloSay).join(','), 'paid', 'Paid alone')
+  eq(JSON.stringify(costRange(fn.tiered, squadSay)), '{"min":0,"max":120}', 'shown: either of its choices')
+  // With the REAL copy block: Gear Up's solo lines hide the whole squad, on
+  // the card and under the Cost filter.
+  {
+    const lua = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'resources', '[fivem-royale]',
+      'br_lib', 'config', 'terminals.lua'), 'utf8')
+    const real = {}
+    for (const m of lua.matchAll(/^\s+([a-z_]+) = (['"])(.*)\2,$/gm)) real[m[1]] = m[3].replace(/\\n/g, '\n')
+    const rSquad = speaker(real, true)
+    const rSolo = speaker(real, false)
+    eq(JSON.stringify(costRange(g, rSquad)), '{"min":0,"max":200}', 'the real copy, a squad match: 0 to 200')
+    eq(JSON.stringify(costRange(g, rSolo)), '{"min":0,"max":0}', 'the real copy, solo: nothing')
+    const st0 = new Map([['gear_up', { id: 'gear_up', available: true, reason: null }]])
+    const paid = withFilters(HOME, { ...NO_FILTERS, cost: 'paid' })
+    const free = withFilters(HOME, { ...NO_FILTERS, cost: 'free' })
+    const on = (route, say) => cardsFor(route, [g], st0, say).items.length === 1
+    ok(on(paid, rSquad) && on(free, rSquad), 'Home in a squad match: Gear Up under Paid and under Free')
+    ok(!on(paid, rSolo) && on(free, rSolo), 'Home in a solo match: under Free, never under Paid')
+  }
 
   // THE TEAMMATES, FROM THE STATE.
   const st = parseState({ terminalId: 't', functions: [], mates: [
@@ -680,14 +756,7 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   eq(JSON.stringify(runChoices(g, { item: 'grenade', who: 'squad', mate: '7' }, mates)), '{"item":"grenade","who":"squad"}',
     'the whole squad: no teammate, whatever was picked before')
 
-  // THE CHOICES' WORDS: a choice with no line for this player is not offered.
-  const copy = {
-    gear_up_opt_who_self: 'You', gear_up_opt_who_mate: 'One teammate', gear_up_opt_who_mate_solo: '',
-    gear_up_opt_who_squad: 'Everyone in your squad', gear_up_opt_who_squad_solo: '',
-    gear_up_opt_item_pistol: 'Pistol', gear_up_opt_item_medkit: 'Med Kit', gear_up_opt_item_grenade: 'Grenade',
-  }
-  const squadSay = speaker(copy, true)
-  const soloSay = speaker(copy, false)
+  // Each choice by its words.
   eq(choicesOf(g, who, squadSay).map((c) => c.value).join(','), 'self,mate,squad', 'in a squad match: all three')
   eq(choicesOf(g, who, soloSay).map((c) => c.value).join(','), 'self', 'outside one: yourself alone')
   eq(choicesOf(g, item, soloSay).map((c) => c.label).join(','), 'Pistol,Med Kit,Grenade', 'the items by their names')
@@ -707,7 +776,9 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   ok(/shownOptions\(def, choice\)\.filter\(\(o\) => say\(`\$\{id\}_opt_\$\{o\.id\}`\) !== ''\)/.test(page),
     'an option with no words for this player is not shown')
   const cards = readFileSync(join(src, 'FunctionCards.tsx'), 'utf8')
-  ok(cards.includes('costRange(f)') && cards.includes("say('cost_free_or')"), 'the card says a price by choice')
+  ok(cards.includes('costRange(f, say)') && cards.includes("say('cost_free_or')"),
+    'the card says a price by choice -- the choices this player is offered')
+  ok(!/costRange\(f\)/.test(cards), 'never over every choice the registry lists')
   const app = readFileSync(join(src, 'App.tsx'), 'utf8')
   ok(app.includes('mates={state.mates}'), "the page is handed the state's teammates")
 }

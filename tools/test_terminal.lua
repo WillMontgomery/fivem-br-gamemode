@@ -961,12 +961,65 @@ do
         ok(l:find('when it ends, unless another EMP is still going off.', 1, true) ~= nil,
             ('emp_what (%s): starting again is unless another EMP still goes off'):format(squad and 'squad' or 'solo'), l)
     end
-    -- Scan's marks and a Contract's bounty: Ghost hides a squad.
-    for _, id in ipairs({ 'scan', 'contract' }) do
+    -- EVERY ROW WHOSE MARKS ASK GHOST says Ghost hides a squad from them while
+    -- it lasts, on its squad page and its solo page -- and Ghost's own page
+    -- names it. Round 5's review: Airstrike's rough circles asked Ghost and
+    -- its page did not say so. THE ROWS ARE DERIVED FROM THE CODE: every
+    -- terminal server file that asks the predicate (BR.Terminal.hidden, or
+    -- terminalfx.lua's local `hidden`) is named here with the rows whose
+    -- marks it draws, and a file that starts asking it unnamed fails, so the
+    -- next mark Ghost hides brings its row's page with it.
+    local rows = BR.Config.Terminals.functions
+    local askers = {
+        -- Scan's push, and the bounty's: Scan, and every row that puts a
+        -- bounty on someone (Scan's runner, Contract's target).
+        ['br_core/server/terminalfx.lua'] = function()
+            local ids = { 'scan' }
+            for _, row in ipairs(rows) do
+                if row.bounty ~= nil and row.id ~= 'scan' then ids[#ids + 1] = row.id end
+            end
+            return ids
+        end,
+        -- The rough circles while an Airstrike's spot is picked.
+        ['br_core/server/terminalfx/airstrike.lua'] = function() return { 'airstrike' } end,
+    }
+    local function asksGhost(text)
+        for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+            local code = line:gsub('%-%-.*$', '')
+            if code:find('hidden%s*%(') and not code:find('function%s+[%w%.]*hidden%s*%(') then return true end
+        end
+        return false
+    end
+    local files = { 'br_core/server/terminal.lua', 'br_core/server/terminalfx.lua' }
+    for _, f in ipairs(fxFiles('server')) do files[#files + 1] = f end
+    local asked, named = {}, 0
+    for _, f in ipairs(files) do
+        local text = readFile(ROOT .. f) or ''
+        ok(text ~= '', f .. ' is read')
+        if asksGhost(text) then
+            ok(askers[f] ~= nil, f .. " asks Ghost's predicate, so it is named here with the rows whose marks it draws")
+            for _, id in ipairs(askers[f] and askers[f]() or {}) do asked[#asked + 1] = id end
+            named = named + 1
+        end
+    end
+    local n = 0
+    for _ in pairs(askers) do n = n + 1 end
+    eq(named, n, 'every file named here still asks it')
+    ok(#asked >= 3, 'Scan, Contract and Airstrike at least', table.concat(asked, ','))
+    for _, id in ipairs(asked) do
+        local row = BR.Terminal.row(id)
+        ok(row ~= nil, id .. ' is a row')
         for _, squad in ipairs({ true, false }) do
+            local which = squad and 'squad' or 'solo'
             local l = pick(copy, id .. '_what', squad)
-            ok(l:find('Ghost', 1, true) ~= nil and l:find('while', 1, true) ~= nil,
-                ('%s_what (%s) says Ghost hides from it while it lasts'):format(id, squad and 'squad' or 'solo'), l)
+            -- Ghost and "while" in one sentence (Airstrike's own "While you
+            -- pick" does not count).
+            ok(l:find('Ghost[^%.\n]*while') ~= nil,
+                ('%s_what (%s) says Ghost hides from it while it lasts'):format(id, which), l)
+            local g = pick(copy, 'ghost_what', squad)
+            local word = (row and row.bounty ~= nil and id ~= 'scan') and 'bounty' or pick(copy, id .. '_name', squad)
+            ok(word ~= '' and g:find(word, 1, true) ~= nil,
+                ('ghost_what (%s) names what it hides of %s: %s'):format(which, id, word), g)
         end
     end
     -- Power outage: a night a later day run ended is no night.
@@ -1230,6 +1283,34 @@ do
         eq(T.costOf(gear, T.options(gear, { who = 'mate', mate = '2' })), 0, 'for one teammate: free')
         eq(T.costOf(gear, nil), 0, 'and the base, before a choice, is free')
         eq(T.costMax(gear), 200, 'so at most 200')
+    end
+    -- ROUND 5'S REVIEW: WHAT A SOLO PLAYER IS OFFERED. The app works out every
+    -- summary of a row's choices -- the card's cost, the Cost filter -- over
+    -- the choices this player has words for, and takes an option the page
+    -- hides from him (no words of its own: Gear Up's "Who gets it") as
+    -- carrying its default (model.ts offeredValues). So on every row a solo
+    -- player is shown, each option's default is a choice he has words for:
+    -- else his run would carry a choice the server refuses, and his card
+    -- would price it.
+    local pick = BR.TerminalSolve.pick
+    for _, row in ipairs(C.functions) do
+        for _, o in ipairs(row.options or {}) do
+            if not row.squadOnly and o.source == nil then
+                local key = ('%s_opt_%s_%s'):format(row.id, o.id, tostring(o.default))
+                local l = pick(C.copy, key, false)
+                ok(type(l) == 'string' and l ~= '',
+                    ('%s.%s: its default %s is offered to a solo player (%s)'):format(row.id, o.id,
+                        tostring(o.default), key))
+            end
+        end
+    end
+    if gear then
+        local who = nil
+        for _, o in ipairs(gear.options or {}) do if o.id == 'who' then who = o end end
+        eq(pick(C.copy, 'gear_up_opt_who', false), '', 'Gear Up\'s "Who gets it" has no words for a solo player')
+        eq(who and who.default, 'self', 'so a solo run carries yourself')
+        eq(BR.Terminal.costOf(gear, BR.Terminal.options(gear, { who = who and who.default })), 0,
+            'which is free: the most a solo player can pay for Gear Up is nothing')
     end
 end
 

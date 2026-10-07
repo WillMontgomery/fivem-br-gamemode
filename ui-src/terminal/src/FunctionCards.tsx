@@ -43,7 +43,9 @@ import { VoltsAmount, voltsLine } from './Volts'
  *
  * A CARD'S COST is its Volts in the Volts style (Volts.tsx), or cost_free --
  * or, for one whose price depends on what is chosen and can be nothing
- * (round 5, Gear Up), cost_free_or with the most it can cost;
+ * (round 5, Gear Up), cost_free_or with the most it can cost -- over the
+ * choices THIS player is offered (model.ts costRange), so a solo player, who
+ * is never offered Gear Up's whole squad, reads Free, as the Cost filter does;
  * its BOUNTY is its row's `bounty` in words (bounty_none / _runner / _target).
  *
  * THE FILTERS (round 4: "the "Functions" search should have filters available
@@ -186,7 +188,7 @@ export function FunctionCards(props: {
               width: 50,
               header: say('card_cost'),
               content: (f) => {
-                const r = costRange(f)
+                const r = costRange(f, say)
                 if (r.max <= 0) return say('cost_free')
                 if (r.min <= 0) return voltsLine(say('cost_free_or'), currency, { volts: r.max })
                 return <VoltsAmount n={r.max} currency={currency} />

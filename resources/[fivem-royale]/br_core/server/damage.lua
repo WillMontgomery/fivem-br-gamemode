@@ -901,9 +901,11 @@ end
 --- runner's own squad (the server decides the blast; owner, 2026-10-06), which
 --- is somebody's run and nobody's kill. Everything below happens -- armor
 --- first, the knock decided before the health is written, the heal ceilings
---- lowered, the channel interrupted, the victim told, a defeat -- with three
---- things left out: no hitmarker (there is nobody to send it to), no credit,
---- and no assist window. An earlier shooter's `lastHitBy` stands, and the hurt
+--- lowered, the victim told, a defeat -- with four things left out: no
+--- hitmarker (there is nobody to send it to), no credit, no assist window,
+--- and no channel interrupted (BR.Inv.struck stops a med kit for a hit BY
+--- somebody, #366's taking fire, and a hit by nobody is not one -- as fire,
+--- a car or a fall are not). An earlier shooter's `lastHitBy` stands, and the hurt
 --- window the sampler and the health audit read is the drain's own stamp
 --- (`lastDrainAt`, BR.Damage.drain's), so the round trip while the ped still
 --- reads high is held and excused, not counted.

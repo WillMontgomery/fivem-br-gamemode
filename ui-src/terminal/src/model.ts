@@ -545,27 +545,48 @@ export function runChoices(def: FunctionDef, choice: Readonly<Record<string, str
 
 /**
  * WHAT A RUN WITH THESE CHOICES COSTS (round 5: Gear Up's whole squad costs
- * Volts, yourself or a teammate does not): the price of the choice made for
- * the row's `costBy` option, when it lists one, else the row's `cost`. The
- * page's cost line and the confirm box say this one; the server charges it.
+ * Volts, yourself or a teammate does not): the price of what the run CARRIES
+ * for the row's `costBy` option (runChoices -- the server's own `when` rule),
+ * when it lists one, else the row's `cost`. The page's cost line and the
+ * confirm box say this one; the server charges it (BR.Terminal.costOf).
  */
 export function costFor(def: FunctionDef, choice: Readonly<Record<string, string>>): number {
   const by = def.costBy
   if (by) {
-    const o = def.options.find((x) => x.id === by.option)
-    const v = by.choices[choice[by.option] ?? o?.default ?? '']
+    const v = by.choices[runChoices(def, choice)[by.option] ?? '']
     if (v !== undefined) return v
   }
   return def.cost
 }
 
-/** The least and the most a run of this function can cost, whatever is chosen. */
-export function costRange(def: FunctionDef): { min: number; max: number } {
-  const all = [def.cost, ...Object.values(def.costBy?.choices ?? {})]
-  const o = def.costBy ? def.options.find((x) => x.id === def.costBy?.option) : undefined
-  // A choice with no figure of its own costs the row's `cost`.
-  const priced = o ? o.choices.every((c) => def.costBy?.choices[c] !== undefined) : false
-  const figures = priced ? all.slice(1) : all
+/**
+ * THE VALUES AN OPTION CAN CARRY FOR THIS PLAYER (round 5's review: a solo
+ * player's Gear Up card said "Free, or 200 Volts", the price of a choice he
+ * is never offered). Exactly what the page lets him pick: each choice with
+ * words for him (choicesOf) -- or, for an option the page does not show him
+ * at all (no words of its own: Gear Up's "Who gets it" outside a squad
+ * match), the default a run carries for it. EVERY SUMMARY OF A ROW'S CHOICES
+ * -- the card's cost, the Cost filter's free and paid -- is worked out over
+ * these, never over the registry's whole list.
+ */
+export function offeredValues(def: FunctionDef, o: OptionDef, say: Say, mates: readonly Mate[] = []): string[] {
+  if (say(`${def.id}_opt_${o.id}`) === '') return o.default === '' ? [] : [o.default]
+  return choicesOf(def, o, say, mates).map((c) => c.value)
+}
+
+/**
+ * The least and the most a run of this function can cost THIS player,
+ * whatever he chooses: over the `costBy` option's offered values
+ * (offeredValues), each at its own figure or the row's `cost` -- and the
+ * row's `cost` too when that option is offered only under another's choice
+ * (`when`), since a run without it pays that.
+ */
+export function costRange(def: FunctionDef, say: Say): { min: number; max: number } {
+  const by = def.costBy
+  const o = by ? def.options.find((x) => x.id === by.option) : undefined
+  if (!by || !o) return { min: def.cost, max: def.cost }
+  const figures = offeredValues(def, o, say).map((v) => by.choices[v] ?? def.cost)
+  if (o.when || figures.length === 0) figures.push(def.cost)
   return { min: Math.min(...figures), max: Math.max(...figures) }
 }
 
@@ -688,17 +709,19 @@ export const COSTS: readonly Cost[] = ['free', 'paid']
 export const BOUNTIES: readonly Bounty[] = ['none', 'runner', 'target']
 export const STATUSES: readonly Status[] = ['available', 'used', 'not_here', 'offline']
 
-export function costOf(def: FunctionDef): Cost {
-  return costRange(def).min > 0 ? 'paid' : 'free'
+/** A function's cost for this player, as the round-4 Cost filter read it: paid only if he can't run it free. */
+export function costOf(def: FunctionDef, say: Say): Cost {
+  return costRange(def, say).min > 0 ? 'paid' : 'free'
 }
 
 /**
- * The Cost filter's choices a function answers to: free, paid, or -- for one
- * whose price depends on what is chosen and can be either (round 5, Gear Up)
- * -- both.
+ * The Cost filter's choices a function answers to FOR THIS PLAYER: free,
+ * paid, or -- for one whose price depends on what he chooses and can be
+ * either (round 5, Gear Up in a squad match) -- both. Over the choices he is
+ * offered (costRange), so a solo player's Gear Up is Free alone.
  */
-export function costsOf(def: FunctionDef): Cost[] {
-  const r = costRange(def)
+export function costsOf(def: FunctionDef, say: Say): Cost[] {
+  const r = costRange(def, say)
   if (r.max <= 0) return ['free']
   return r.min > 0 ? ['paid'] : ['free', 'paid']
 }
@@ -729,10 +752,13 @@ export function narrowed(route: Route): boolean {
   return route.category !== null || route.query.trim() !== '' || FILTER_KEYS.some((k) => f[k] !== null)
 }
 
-/** Does a function pass the four filters, its status as the server says it now? */
-export function passes(def: FunctionDef, fn: FunctionState | undefined, f: CardFilters): boolean {
+/**
+ * Does a function pass the four filters, its status as the server says it
+ * now and its cost over the choices this player is offered (`say`)?
+ */
+export function passes(def: FunctionDef, fn: FunctionState | undefined, f: CardFilters, say: Say): boolean {
   if (f.risk !== null && def.risk !== f.risk) return false
-  if (f.cost !== null && !costsOf(def).includes(f.cost)) return false
+  if (f.cost !== null && !costsOf(def, say).includes(f.cost)) return false
   if (f.bounty !== null && bountyOf(def) !== f.bounty) return false
   if (f.status !== null && statusOf(fn, def) !== f.status) return false
   return true
@@ -747,7 +773,7 @@ export function cardsFor(route: Extract<Route, { page: 'functions' }>, functions
   states: Map<string, FunctionState>, say: Say): { items: FunctionDef[]; all: number } {
   const inCategory = functions.filter((f) => route.category === null || f.category === route.category)
   const f = filtersOf(route)
-  const items = inCategory.filter((d) => matches(d, say, route.query) && passes(d, states.get(d.id), f))
+  const items = inCategory.filter((d) => matches(d, say, route.query) && passes(d, states.get(d.id), f, say))
   return { items, all: inCategory.length }
 }
 

@@ -175,8 +175,13 @@ The table below is the lines outside the functions' own:
 | `gear_standing`, `gear_no_mate`, `gear_full`, `gear_full_mate`, `gear_full_squad`, `gear_no_room`, `gear_no_room_mate`, `gear_no_room_squad` | At the terminal: why not (Gear Up, round 5: nobody standing to get it, a teammate who no longer can, already carrying the most, no room). The `_squad` two have empty `_solo` lines: the squad is no choice outside a squad match |
 | `gear_up_received` | A toast to each teammate who got Gear Up's item from somebody else's run, after the lobby's notice: `{playername}` the runner, `{description}` what they got ("3 Med Kits") |
 | `gear_up_opt_item_<id>` | Gear Up's dropdown: each item's own `label` from the weapons and loot configs, written into the copy as `terminals.lua` loads -- no words of ours |
-| `cost_free_or` | A card's cost when it depends on the choices and the cheapest is free (round 5): `{volts}` the most it can cost |
-| `impact_*` (`impact_emp`, `impact_outage`, `impact_blackout`, `impact_bounty`, `impact_scan`, `impact_time`, `impact_weather`, `impact_storm`) and `impact_until_end` | On the HUD, to the player it is happening to: what another player's terminal run is doing to them, beside its clock -- or `impact_until_end` in its place for the rest of the match (round 4) |
+| `drop_no_mate`, `drop_target`, `drop_ground`, `drop_ground_mate` | At the terminal: why not (Vehicle drop, round 5: the teammate is not standing, the player it was for is not standing when it drops, no road or open ground within 40 m of the runner or of the teammate). Squad and solo alike |
+| `vehicle_drop_received` | A toast to the teammate a Vehicle drop lands next to, from somebody else's run; `{playername}` the runner |
+| `vehicle_drop_blip` | The runner's squad: the legend name of the dropped car's blip, until one of them gets in |
+| `strike_spot` | At the terminal: why not (Airstrike, round 5: the spot picked is outside the play area) |
+| `airstrike_blip`, `airstrike_fuzz_blip` | The legend names of an Airstrike's circle, on every player's map, and of the rough circles its runner sees while picking the spot |
+| `cost_free_or` | A card's cost when it depends on the choices and the cheapest is free (round 5): `{volts}` the most it can cost -- over the choices this player is offered, so a solo player's Gear Up card reads `cost_free` (round 5's review) |
+| `impact_*` (`impact_emp`, `impact_outage`, `impact_blackout`, `impact_bounty`, `impact_scan`, `impact_time`, `impact_weather`, `impact_storm`, `impact_airstrike`) and `impact_until_end` | On the HUD, to the player it is happening to: what another player's terminal run is doing to them, beside its clock -- or `impact_until_end` in its place for the rest of the match (round 4) |
 | `no_key`, `squad_used` | At the terminal (why not; `no_key` is also the login screen), and in the world (the terminal's plate) |
 | `offline` | At the terminal (why not: the dev tool's `brterminal offline`, or the moment before the storm's close), and a toast to a player whose press reached the server a step behind the storm. Never a plate since round 4: a terminal outside the storm has none |
 | `bounty_new` | A toast to the lobby: Scan's or a Contract's bounty; `{playername}` |
@@ -260,7 +265,12 @@ filters and pages from it.
   (`BR.Terminal.costOf(row, opts)`). Every figure 0..200 like `cost`. The page's
   cost line and the confirm box say the run's own price; the card says
   `cost_free_or` with the most it can cost, and the Cost filter finds it under
-  Free and Paid.
+  Free and Paid. Round 5's review: the card and the filter work this out over
+  the choices THIS player is offered (`model.ts` `offeredValues`: each choice
+  with words for him, or, for an option the page hides from him, its default),
+  so a solo player, never offered the whole squad, reads Free and finds Gear Up
+  under Free alone; and every option's default is a choice a solo player has
+  (`tools/test_terminal.lua`).
 
 The server half of a built function is `BR.Terminal.FUNCTIONS[id]`
 (`server/terminal.lua` for Storm reveal, `server/terminalfx.lua` for Scan,
@@ -1386,7 +1396,10 @@ with them every `fx.fuzzPingMs` (2 s) while the pick lasts, `fx.fuzzMaxMs` (2
 min) at most. Never a teammate, never a squad under Ghost
 (`BR.Terminal.hidden`, the one question every mark on another squad's map
 asks), and none at all while the runner's squad has Scan running -- the exact
-dots are already there. Only inside the session on that terminal, from a
+dots are already there. The page says Ghost hides a squad from the circles
+while it lasts, as Scan's and Contract's say it of their marks (round 5's
+review: `tools/test_terminal.lua` finds every row whose marks ask Ghost from
+the code and holds its squad and solo page to it). Only inside the session on that terminal, from a
 player the door would let run it and who can afford it. The client clears
 them the moment its pick ends (`BR.Terminal.picking`), and the server's empty
 list follows.

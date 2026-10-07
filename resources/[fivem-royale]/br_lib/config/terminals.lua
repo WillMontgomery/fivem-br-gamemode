@@ -808,9 +808,13 @@ BR.Config.Terminals = {
         -- then unguided rockets whose damage the server works out. The
         -- runner's squad is hit too (the coordinator's proposal: it is their
         -- call where to aim). A player taken out by one counts as the
-        -- runner's elimination, but never a teammate.
-        airstrike_what = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless your squad already sees them with Scan.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, your squad and you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
-        airstrike_what_solo = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless you already see them with Scan.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
+        -- runner's elimination, but never a teammate. The rough circles ask
+        -- Ghost like every mark on another squad's map (BR.Terminal.hidden),
+        -- so the page says Ghost hides a squad from them, as Scan's and
+        -- Contract's do (round 5's review; tools/test_terminal.lua derives the
+        -- rows whose marks ask Ghost from the code and holds each one's page).
+        airstrike_what = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless your squad already sees them with Scan. A squad running Ghost is hidden from the circles while it lasts.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, your squad and you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
+        airstrike_what_solo = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless you already see them with Scan. A player running Ghost is hidden from the circles while it lasts.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
         airstrike_duration = 'About 15 seconds: a 10-second warning, then the rockets',
         airstrike_affects = 'Everyone near the spot, your squad included',
         airstrike_affects_solo = 'Everyone near the spot, you included',
