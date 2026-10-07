@@ -22,6 +22,9 @@ local L        = BR.Config.Loot
 local SLOTS    = L.slots or 5
 local UNARMED  = BR.Config.Gadgets.UNARMED
 
+--- A BOOL native's answer as a Lua boolean (br_lib/shared/enums.lua).
+local isTrue = BR.NativeBool
+
 -- SLOT ZERO IS FISTS, and nothing can ever be put in it (user call,
 -- 2026-08-05). It sits left of slot 1 on the bar and cycles with the rest.
 -- Having a deliberate empty hand matters: you cannot open a crate or vault
@@ -2367,8 +2370,8 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     --
     -- The standing rule exists for exactly this and I broke it: a probe for
     -- every native a subsystem leans on, BEFORE the in-game test. Aiming is
-    -- all this actually needs to know.
-    local scoped = IsPlayerFreeAiming(PlayerId())
+    -- all this actually needs to know. (Asked in the scroll test below, and
+    -- only on a frame that scrolled -- #393.)
 
     -- ...AND NOT WHILE THE GUN SHOP MENU IS UP (#274).
     --
@@ -2404,8 +2407,20 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
 
     -- MOUSE WHEEL UP CYCLES DOWNWARD THROUGH THE RING, wrapping past the fist
     -- slot at the bottom to slot 5 at the top.
-    if not IsPauseMenuActive() and not scoped and not shopMenu
-       and IsDisabledControlJustPressed(0, WHEEL_UP) then
+    --
+    -- ═══ THE SCROLL IS ASKED FIRST, AND THE REST ONLY WHEN THERE IS ONE (#393)
+    --     ═══
+    --
+    -- Four reads used to be paid on every frame -- the pause menu, the player id,
+    -- the aim, the scroll -- and on almost every one of them the answer was "no
+    -- scroll". All four are reads with no side effect, so the order they are
+    -- asked in cannot change the answer: the scroll first, then the shop (no
+    -- native), then the pause menu and the aim, each only once the one before
+    -- has said this is a scroll the wheel could take. One read a frame, and four
+    -- on the frame the wheel turns.
+    if not shopMenu and isTrue(IsDisabledControlJustPressed(0, WHEEL_UP))
+       and not isTrue(IsPauseMenuActive())
+       and not isTrue(IsPlayerFreeAiming(PlayerId())) then
         local want = inv.active - 1
         if want < MELEE_SLOT then want = SLOTS end
         TriggerServerEvent(BR.Net.INV_SELECT, { slot = want })
@@ -2480,16 +2495,19 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- select the FIST slot and try the radio wheel. Fists make `canSwing` true,
     -- which is the one path that never disabled 141 even before this change --
     -- so a wheel that opens on fists and not on a rifle is this bug exactly.
-    if not inVehicle() then
-        local w = held and BR.Config.WeaponById[held.id] or nil
-        local canSwing = (inv.active == MELEE_SLOT) or (w and w.melee) or false
-        if not canSwing then
-            DisableControlAction(0, 140, true)  -- MELEE_ATTACK_LIGHT
-            DisableControlAction(0, 141, true)  -- MELEE_ATTACK_HEAVY
-            DisableControlAction(0, 142, true)  -- MELEE_ATTACK_ALTERNATE
-            DisableControlAction(0, 263, true)  -- MELEE_ATTACK1
-            DisableControlAction(0, 264, true)  -- MELEE_ATTACK2
-        end
+    --
+    -- THE HAND IS ASKED BEFORE THE SEAT (#393). Both are pure reads and the
+    -- block runs only when neither says no, so the order cannot change what is
+    -- disabled -- but the hand is a table lookup and the seat is two natives,
+    -- and with fists or a melee weapon up the seat no longer needs asking.
+    local w = held and BR.Config.WeaponById[held.id] or nil
+    local canSwing = (inv.active == MELEE_SLOT) or (w and w.melee) or false
+    if not canSwing and not inVehicle() then
+        DisableControlAction(0, 140, true)  -- MELEE_ATTACK_LIGHT
+        DisableControlAction(0, 141, true)  -- MELEE_ATTACK_HEAVY
+        DisableControlAction(0, 142, true)  -- MELEE_ATTACK_ALTERNATE
+        DisableControlAction(0, 263, true)  -- MELEE_ATTACK1
+        DisableControlAction(0, 264, true)  -- MELEE_ATTACK2
     end
 
     -- A HEAL HOLDS THE ARMS FOR AS LONG AS IT RUNS (#11). See HEAL_HELD for

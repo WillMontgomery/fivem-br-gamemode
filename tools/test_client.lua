@@ -23563,6 +23563,147 @@ do
     BR.Storm = prevStorm
 end
 
+-- ======================================================================== --
+-- #393. inv.controls: THE SAME DISABLES AND THE SAME WHEEL, FEWER QUESTIONS
+-- ======================================================================== --
+--
+-- The scroll test used to ask the pause menu, the player id and the aim on every
+-- frame before it asked whether there was a scroll at all; the melee block asked
+-- the seat before the hand. Both are reads with no side effect, so the order
+-- they are asked in cannot change an answer -- and these blocks hold it to
+-- that: the whole truth table, every BOOL shape, and the natives each frame
+-- costs, counted at the file.
+
+describe('#393 -- inv.controls asks for a scroll before anything about it')
+do
+    local NAMES = { 'IsDisabledControlJustPressed', 'IsPauseMenuActive',
+                    'IsPlayerFreeAiming', 'PlayerId', 'IsPedInAnyVehicle', 'PlayerPedId' }
+    local saved, calls = {}, {}
+    for _, n in ipairs(NAMES) do saved[n] = _G[n] end
+
+    local scroll, pause, aim, shop = false, false, false, false
+    local SHAPES393 = {
+        { name = 'booleans', yes = true, no = false },
+        { name = '1/0',      yes = 1,    no = 0 },
+    }
+    local shape = SHAPES393[1]
+    local function says(v) return v and shape.yes or shape.no end
+    local answer = {
+        IsDisabledControlJustPressed = function(_, c) return says(c == 15 and scroll) end,
+        IsPauseMenuActive = function() return says(pause) end,
+        IsPlayerFreeAiming = function() return says(aim) end,
+    }
+    -- Every one counted when client/inventory.lua is the caller, and only then.
+    for _, n in ipairs(NAMES) do
+        local real = answer[n] or saved[n]
+        _G[n] = function(...)
+            local info = debug.getinfo(2, 'S')
+            if info and info.source:find('client/inventory.lua', 1, true) then
+                calls[n] = (calls[n] or 0) + 1
+            end
+            return real(...)
+        end
+    end
+    local realGunshop, realSpectate = BR.Gunshop, BR.Spectate
+    BR.Gunshop = { menuUp = function() return shop end }
+    BR.Spectate = { active = function() return false end }
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle = false
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    local function selects()
+        local n = 0
+        for _, s in ipairs(sent) do if s.name == BR.Net.INV_SELECT then n = n + 1 end end
+        return n
+    end
+
+    local wrong, costly = {}, {}
+    for _, sh in ipairs(SHAPES393) do
+        shape = sh
+        for mask = 0, 15 do
+            scroll = mask & 1 ~= 0
+            pause  = mask & 2 ~= 0
+            aim    = mask & 4 ~= 0
+            shop   = mask & 8 ~= 0
+            sent, calls = {}, {}
+            BR.Loop.step(BR.Loop.FRAME)
+            local want = scroll and not pause and not aim and not shop
+            if (selects() == 1) ~= want then
+                wrong[#wrong + 1] = ('%s scroll=%s pause=%s aim=%s shop=%s: %d selects')
+                    :format(sh.name, tostring(scroll), tostring(pause), tostring(aim),
+                            tostring(shop), selects())
+            end
+            -- Off a scroll frame, the wheel costs the scroll read and nothing
+            -- else -- and not even that under the shop menu.
+            if not scroll then
+                local extra = (calls.IsPauseMenuActive or 0) + (calls.IsPlayerFreeAiming or 0)
+                    + (calls.PlayerId or 0)
+                local reads = calls.IsDisabledControlJustPressed or 0
+                if extra ~= 0 or reads ~= (shop and 0 or 1) then
+                    costly[#costly + 1] = ('%s pause=%s aim=%s shop=%s: %d scroll reads, %d others')
+                        :format(sh.name, tostring(pause), tostring(aim), tostring(shop), reads, extra)
+                end
+            end
+        end
+    end
+    ok(#wrong == 0, 'the wheel turns the ring in exactly the cases it always did, in '
+       .. 'both BOOL shapes: a scroll, with no pause menu, no scope and no shop',
+       table.concat(wrong, '; '))
+    ok(#costly == 0, 'and a frame without a scroll asks one native for it -- not the '
+       .. 'pause menu, the player or the aim', table.concat(costly, '; '))
+
+    -- THE MELEE BLOCK. The same five controls, held in the same cases; the seat
+    -- asked only for a hand that cannot swing.
+    shape = SHAPES393[1]
+    scroll, pause, aim, shop = false, false, false, false
+    local MELEE = { 140, 141, 142, 263, 264 }
+    local MELEE_SLOT393 = BR.Config.Loot.meleeSlot or 0
+    local HANDS = {
+        { name = 'fists',   swing = true, set = { slots = {}, ammo = {}, active = MELEE_SLOT393 } },
+        { name = 'machete', swing = true, set = { slots = {
+            { id = 'machete', kind = BR.ItemKind.WEAPON, clip = 1 } }, ammo = {}, active = 1 } },
+        { name = 'carbine', swing = false, set = { slots = {
+            { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } }, ammo = {}, active = 1 } },
+        { name = 'shield',  swing = false, set = { slots = {
+            { id = 'shield_small', kind = BR.ItemKind.CONSUMABLE, count = 1 } }, ammo = {}, active = 1 } },
+    }
+    local held, seatCost = {}, {}
+    for _, h in ipairs(HANDS) do
+        fire(BR.Net.INV_SET, h.set)
+        for _, seated in ipairs({ false, true }) do
+            inVehicle = seated
+            calls = {}
+            frame(16)
+            local all, none = true, true
+            for _, c in ipairs(MELEE) do
+                if disabled[c] == true then none = false else all = false end
+            end
+            local want = not h.swing and not seated
+            if not ((want and all) or (not want and none)) then
+                held[#held + 1] = ('%s %s'):format(h.name, seated and 'seated' or 'on foot')
+            end
+            local asked = calls.IsPedInAnyVehicle or 0
+            if (asked > 0) == h.swing then
+                seatCost[#seatCost + 1] = ('%s %s: seat asked %d times'):format(
+                    h.name, seated and 'seated' or 'on foot', asked)
+            end
+        end
+    end
+    ok(#held == 0, 'the melee keys are held in exactly the cases they were: a hand that '
+       .. 'cannot swing, on foot', table.concat(held, '; '))
+    ok(#seatCost == 0, 'and the seat is asked only when the hand cannot swing',
+       table.concat(seatCost, '; '))
+
+    for _, n in ipairs(NAMES) do _G[n] = saved[n] end
+    inVehicle = false
+    BR.Gunshop, BR.Spectate = realGunshop, realSpectate
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
