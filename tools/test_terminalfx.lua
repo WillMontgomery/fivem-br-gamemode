@@ -2141,287 +2141,187 @@ end
 -- file each under server/terminalfx/, loaded here from the manifest
 -- =========================================================================
 
--- ── EMP's world: the server's vehicles, modeled on the OneSync natives ──
---
--- [handle] = { x, y, z, bucket, vtype, model, ride, gone, bag = { [key] = value } }.
--- DoesEntityExist answers 1/0, as a BOOL native may (0 for a `gone` handle
--- GetAllVehicles still lists); Entity(h).state:set throws on a handle that
--- is gone, as the platform's does.
-local cars = {}
-local BAG = CT.fx.empBag
-function GetAllVehicles()
-    local out = {}
-    for h in pairs(cars) do out[#out + 1] = h end
-    table.sort(out)
-    return out
-end
-function DoesEntityExist(h) return (cars[h] ~= nil and not cars[h].gone) and 1 or 0 end
-function GetEntityRoutingBucket(h) return cars[h] and cars[h].bucket or 0 end
-function GetEntityCoords(h)
-    local c = cars[h]
-    if not c then error('Tried to access invalid entity') end
-    return { x = c.x, y = c.y, z = c.z or 30.0 }
-end
-function GetVehicleType(h) return cars[h] and cars[h].vtype or nil end
-function GetEntityModel(h) return cars[h] and cars[h].model or 0 end
-function Entity(h)
-    local st = {}
-    function st.set(_, k, v, replicated)
-        local c = cars[h]
-        if not c then error('Tried to access invalid entity') end
-        c.bag[k] = v
-        c.replicated = replicated
-    end
-    return { state = st }
-end
-BR.Rescue = { vehicleBusy = function(h) return cars[h] ~= nil and cars[h].ride == true end }
+-- ── EMP (round 4): a match-wide fact about drivers, pushed to every player ──
 
-local BUZZARD = 0x2F03547B   -- config/vehicles.lua refuses it: it flies
-local MATCH_BUCKET = 101
+--- The last TERMINAL_EMP `src` was sent, or nil.
+local function empTo(src) return lastOf(BR.Net.TERMINAL_EMP, src) end
 
---- A vehicle `d` meters east of the tower, in the match's bucket unless told.
-local function car(h, d, o)
-    o = o or {}
-    cars[h] = { x = SITE.x + d, y = SITE.y, z = 30.0, bucket = o.bucket or MATCH_BUCKET,
-                vtype = o.vtype or 'automobile', model = o.model or 0x4CE68AC, ride = o.ride, gone = o.gone,
-                bag = {} }
-end
-
---- The handles carrying the EMP's bag, as "h,h,...".
-local function stalled()
-    local out = {}
-    for h, c in pairs(cars) do
-        if c.bag[BAG] ~= nil then out[#out + 1] = h end
-    end
-    table.sort(out)
-    return table.concat(out, ',')
-end
-
-local function empLobby()
-    cars = {}
-    local m = lobby()
-    m.bucket = MATCH_BUCKET
-    car(11, 100.0)                              -- in 300 m
-    car(12, 250.0, { vtype = 'bike' })          -- in 300 m: a motorbike (a bicycle is the client's call)
-    car(13, 450.0)                              -- outside 300 m, inside 600 m
-    car(14, 50.0, { bucket = 202 })             -- another match's bucket
-    car(15, 60.0, { vtype = 'heli', model = BUZZARD })  -- an aircraft
-    car(16, 70.0, { vtype = 'trailer' })        -- no engine
-    car(17, 80.0, { ride = true })              -- the CPR ride carrying a downed player
-    car(18, 900.0)                              -- far away
-    car(19, 90.0, { gone = true })              -- a stale handle: listed, no longer there
-    return m
-end
-
-describe('EMP: registered, built, its two options')
+describe('EMP: registered, built, no options, three minutes (round 4)')
 do
     local row = T.row('emp')
     ok(row and row.implemented == true and T.FUNCTIONS.emp ~= nil, 'emp is built')
     ok(row and (row.cost or 0) == 0, 'and costs no Volts')
-    local o = {}
-    for _, opt in ipairs(row and row.options or {}) do o[opt.id] = table.concat(opt.choices, ',') end
-    eq(o.radius, '300,600', 'radius: 300 or 600 meters')
-    eq(o.duration, '30,60', 'duration: 30 or 60 seconds')
-    ok(type(BAG) == 'string' and BAG ~= '', 'the bag key is config (fx.empBag)')
+    ok(row and (row.options == nil or #row.options == 0), 'and takes no options (the radius and duration are gone)')
+    eq(CT.fx.empMs, 180000, '"This should last for 3 minutes"')
+    ok(COPY.emp_duration == '3 minutes' and COPY.emp_what:find('For 3 minutes', 1, true) == 1
+        and COPY.emp_what_solo:find('For 3 minutes', 1, true) == 1, 'and its page says three')
+    ok(CT.fx.empBag == nil and COPY.emp_opt_radius == nil and COPY.emp_opt_duration == nil
+        and COPY.emp_risks == nil and COPY.emp_risks_solo == nil,
+        'nothing of wave C\'s radius left: no bag, no option lines, no risks saying the squad stalls too')
+    for k, v in pairs(COPY) do
+        if k:sub(1, 4) == 'emp_' then
+            ok(not v:lower():find('radius', 1, true) and not v:find('terminal', 1, true),
+                ('%s says nothing of a radius or a terminal'):format(k))
+        end
+    end
 end
 
-describe('EMP: every vehicle a player may use in the radius, in this match, as it goes off')
+describe('EMP: every player outside the runner\'s squad stalls whatever they drive, for 3 minutes')
 do
     reset()
-    local m = empLobby()
-    local r = runAt(1, 'emp', { radius = '300', duration = '30' })
+    local m = lobby()
+    local r = runAt(1, 'emp')
     ok(r and r.ok == true and r.code == 'done', 'it runs', r and r.code)
-    eq(stalled(), '11,12', 'the car and the bike within 300 m of the tower, and nothing else')
-    ok(cars[13].bag[BAG] == nil, 'not one 450 m off')
-    ok(cars[14].bag[BAG] == nil, 'not one in another match\'s routing bucket, however close')
-    ok(cars[15].bag[BAG] == nil, 'not an aircraft: the gamemode refuses it, and a stalled one falls')
-    ok(cars[16].bag[BAG] == nil, 'not a trailer: no engine to stall')
-    ok(cars[17].bag[BAG] == nil, 'not the CPR ride carrying a downed player')
-    ok(cars[19].bag[BAG] == nil, 'not a handle that no longer exists (DoesEntityExist said 0)')
-    eq(cars[11].bag[BAG], 30000, 'the bag holds the 30 s it has left')
-    eq(cars[11].replicated, true, 'and is replicated to the clients')
-    ok(T.empStalled(m, 11, gameMs) and not T.empStalled(m, 13, gameMs), 'the predicate agrees')
+    eq(r and r.toast, COPY.emp_done, 'the done line')
     ok(keys[1] == false and T.squadUsed(1), 'the key and the squad\'s use are spent')
     ok(noticeIndex('has redeemed their special power', 3) ~= nil, 'the lobby is told')
-    eq(r and r.toast, COPY.emp_done, 'the done line')
+    for _, src in ipairs({ 3, 4, 5 }) do
+        local d = empTo(src)
+        ok(d and d.matchId == m.id and d.leftMs == CT.fx.empMs and d.liveMs == CT.fx.empMs,
+            ('p%d (another squad, solo, downed alike) is told their driving stalls for three minutes'):format(src), d)
+        eq(T.empFor(m, src, gameMs), CT.fx.empMs, ('and the predicate agrees for p%d'):format(src))
+    end
+    for _, src in ipairs({ 1, 2 }) do
+        local d = empTo(src)
+        ok(d and d.leftMs == nil and d.liveMs == CT.fx.empMs,
+            ('p%d (the runner\'s squad) is told an EMP lasts, and that their driving does not stall'):format(src), d)
+        eq(T.empFor(m, src, gameMs), nil, ('the predicate spares p%d'):format(src))
+    end
 
-    -- A VEHICLE THAT DRIVES IN AFTERWARDS IS NOT AFFECTED: nothing picks again.
+    -- THE END: three minutes, then everyone is told it is over.
     local t0 = gameMs
-    cars[13].x = SITE.x + 10.0
+    gameMs = t0 + CT.fx.empMs - 1
+    local n = #eventsOf(BR.Net.TERMINAL_EMP, 3)
+    jobs['terminal.emp']()
+    eq(#eventsOf(BR.Net.TERMINAL_EMP, 3), n, 'nothing is pushed while it lasts (on change only)')
+    ok(T.empFor(m, 3, gameMs) == 1, 'a millisecond left at 2:59.999')
+    gameMs = t0 + CT.fx.empMs
+    jobs['terminal.emp']()
+    for _, src in ipairs({ 1, 2, 3, 4, 5 }) do
+        local d = empTo(src)
+        ok(d and d.leftMs == nil and d.liveMs == nil, ('at 3:00 p%d is told it is over'):format(src), d)
+    end
+    ok(m.terminalFx.emps == nil and T.empFor(m, 3, gameMs) == nil, 'and the record is gone')
+    n = #eventsOf(BR.Net.TERMINAL_EMP, 3)
     gameMs = gameMs + 1000
     jobs['terminal.emp']()
-    ok(cars[13].bag[BAG] == nil, 'a car that drove in after it went off carries no bag')
-
-    -- THIRTY SECONDS, THEN EVERY BAG IS CLEARED.
-    gameMs = t0 + 29999
-    jobs['terminal.emp']()
-    eq(stalled(), '11,12', 'still stalled at 29.999 s')
-    gameMs = t0 + 30000
-    jobs['terminal.emp']()
-    eq(stalled(), '', 'and at 30 s every bag is cleared')
-    ok(m.terminalFx.emp == nil, 'the record is gone')
-    ok(not T.empStalled(m, 11, gameMs), 'nothing is stalled')
+    eq(#eventsOf(BR.Net.TERMINAL_EMP, 3), n, 'then nothing more is sent')
 end
 
-describe('EMP: 600 m and a minute; a second EMP keeps the later end')
+describe('EMP: two EMPs from two squads spare neither from the other')
 do
     reset()
-    local m = empLobby()
-    local r = runAt(1, 'emp', { radius = '600', duration = '60' })
-    ok(r and r.code == 'done', 'it runs', r and r.code)
-    eq(stalled(), '11,12,13', '600 m reaches the car 450 m off')
-    eq(cars[13].bag[BAG], 60000, 'for a minute')
-
-    -- B's EMP over the same cars, 30 s, ten seconds later: A's minute stands.
+    local m = lobby()
+    runAt(1, 'emp')
     local t0 = gameMs
-    gameMs = gameMs + 10000
+    gameMs = gameMs + 60000
+    keys[3] = true
     roster[3].pos = { x = SITE.x, y = SITE.y, z = 30.0 }
-    devRun(3, 'emp radius=300 duration=30')
-    eq(cars[11].bag[BAG], 50000, 'the later end is kept: the 50 s A\'s still had')
-    gameMs = t0 + 59999
+    runAt(3, 'emp')
+    local t1 = gameMs
+    eq(T.empFor(m, 1, gameMs), CT.fx.empMs, 'A is stalled by B\'s, for B\'s three minutes')
+    eq(T.empFor(m, 3, gameMs), t0 + CT.fx.empMs - gameMs, 'B by A\'s, for what A\'s has left')
+    eq(T.empFor(m, 5, gameMs), CT.fx.empMs, 'and the solo player until the later of the two ends')
+    eq(empTo(5).liveMs, CT.fx.empMs, 'an EMP lasts until the later end')
+    gameMs = t0 + CT.fx.empMs
     jobs['terminal.emp']()
-    eq(stalled(), '11,12,13', 'all three still stalled at 59.999 s')
-    gameMs = t0 + 60000
+    eq(T.empFor(m, 3, gameMs), nil, 'A\'s ends: B drives again')
+    ok(empTo(3).leftMs == nil and empTo(3).liveMs == t1 + CT.fx.empMs - gameMs, 'and is told so, B\'s still lasting')
+    eq(empTo(1).leftMs, t1 + CT.fx.empMs - gameMs, 'A is still stalled by B\'s')
+    gameMs = t1 + CT.fx.empMs
     jobs['terminal.emp']()
-    eq(stalled(), '', 'and released at the minute')
-    local _ = m
+    ok(m.terminalFx.emps == nil and empTo(1).leftMs == nil, 'then B\'s ends too')
 end
 
-describe('EMP: refused only outside a match -- never for finding no vehicle')
+describe('EMP: the match ending, Season 1, br:ready, and a solo match')
 do
-    -- AN EMPTY EMP IS AN EMP (Pulse's rule: a refusal is free intel).
     reset()
-    empLobby()
-    cars = {}
+    local m = lobby()
+    runAt(1, 'emp')
+    m.state = BR.MatchState.ENDED
+    eq(T.empFor(m, 3, gameMs), nil, 'nothing stalls once the match is over')
+    jobs['terminal.emp']()
+    ok(m.terminalFx.emps == nil and empTo(3).leftMs == nil and empTo(3).liveMs == nil,
+        'the match over: the next pass ends it and tells everyone')
+
+    reset()
+    m = lobby()
+    runAt(1, 'emp')
+    season(1)
+    eq(T.empFor(m, 3, gameMs), nil, 'off Season 2, nothing stalls')
+    jobs['terminal.emp']()
+    season(2)
+    ok(m.terminalFx.emps == nil and empTo(3).leftMs == nil, 'and it is ended and said, so Season 2 coming back brings none back')
+
+    -- A CLIENT THAT RESTARTS MID-EMP is told again; one with none is sent nothing.
+    reset()
+    m = lobby()
+    runAt(1, 'emp')
+    sent = {}
+    gameMs = gameMs + 10000
+    fire(BR.Net.READY, 4)
+    local d = empTo(4)
+    ok(d and d.leftMs == CT.fx.empMs - 10000, 'br:ready: told again, with what is left', d)
+    eq(empTo(2), nil, 'and nobody else is sent anything')
+    reset()
+    lobby()
+    fire(BR.Net.READY, 4)
+    eq(empTo(4), nil, 'with no EMP, br:ready sends nothing')
+
+    -- SOLO: only the runner is spared.
+    reset()
+    m = newMatch(1)
+    m.mode = 'solo'
+    player(1, m, nil, SITE)
+    player(2, m, nil, { x = 0.0, y = 0.0 })
+    keys[1] = true
+    local r = runAt(1, 'emp')
+    eq(r and r.toast, COPY.emp_done, 'a solo player reads the done line (it names no squad)')
+    ok(empTo(1).leftMs == nil and empTo(2).leftMs == CT.fx.empMs, 'only the runner drives; the other player stalls')
+end
+
+describe('EMP: refused only outside a match; the end of the load; the dev command')
+do
+    reset()
+    lobby()
     useAt(1)
     local f = listedAs(1, 'emp')
-    ok(f and f.available == true, 'listed as available with no vehicle anywhere', f and tostring(f.reason))
-    local r = ask(1, 'emp')
-    flush()
-    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
-    ok(r and r.code == 'done' and keys[1] == false, 'and it runs, spending the key', r and r.code)
-
-    -- NO VEHICLE NATIVES ON THIS BUILD: nothing to stall with.
-    reset()
-    empLobby()
-    local real = GetAllVehicles
-    GetAllVehicles = nil
-    useAt(1)
-    f = listedAs(1, 'emp')
-    ok(f and f.available == false and f.reason == 'unavailable', 'no GetAllVehicles: the card says unavailable')
-    r = ask(1, 'emp')
-    ok(r and r.code == 'unavailable' and keys[1] == true and not T.squadUsed(1), 'and a run spends nothing',
-        r and r.code)
-    GetAllVehicles = real
-
-    -- OUTSIDE A MATCH, a real session is refused.
-    reset()
+    ok(f and f.available == true, 'listed as available in a match', f and tostring(f.reason))
+    ok(T.FUNCTIONS.emp.refuse(1, { dev = false }) == nil, 'and never refused in one')
+    roster[1].matchId = nil
     ok(T.FUNCTIONS.emp.refuse(1, { dev = false }) == 'unavailable', 'outside a match: unavailable')
     ok(T.FUNCTIONS.emp.refuse(1, { dev = true }) == nil, 'a dev session is never refused for it')
 
-    -- THE END OF THE LOAD: the match over before it goes off. Everything back,
-    -- no bag set.
+    -- THE END OF THE LOAD: the match over before it goes off.
     reset()
-    local m = empLobby()
+    local m = lobby()
     useAt(1)
-    r = ask(1, 'emp', { radius = '600' })
+    local r = ask(1, 'emp')
     ok(r and r.code == 'running', 'accepted', r and r.code)
     m.state = BR.MatchState.ENDED
     flush()
     r = lastOf(BR.Net.TERMINAL_RESULT, 1)
     ok(r and r.ok == false and keys[1] == true and not T.squadUsed(1),
         'the match ended during the load: the key and the use given back', r and r.code)
-    eq(stalled(), '', 'and nothing was stalled')
+    eq(empTo(3), nil, 'and nobody was told of an EMP')
 
-    -- AND bad_option, before anything is asked.
+    -- AN OPTION IT NO LONGER TAKES: bad_option, before anything is asked.
     reset()
-    empLobby()
+    lobby()
     useAt(1)
-    r = ask(1, 'emp', { radius = '900' })
-    ok(r and r.code == 'bad_option' and keys[1] == true, 'a radius the row does not offer: bad_option, nothing spent')
-end
+    r = ask(1, 'emp', { radius = '300' })
+    ok(r and r.code == 'bad_option' and keys[1] == true, 'wave C\'s radius: bad_option, nothing spent', r and r.code)
 
-describe('EMP: the match ending, a match torn down, Season 1 -- every bag cleared')
-do
+    -- `brterminal run emp`: the squad of whoever typed it is spared.
     reset()
-    local m = empLobby()
-    runAt(1, 'emp')
-    eq(stalled(), '11,12', 'stalled')
-    m.state = BR.MatchState.ENDED
-    ok(not T.empStalled(m, 11, gameMs), 'not stalled once the match is over')
-    jobs['terminal.emp']()
-    eq(stalled(), '', 'the match over: the next pass clears every bag')
-
-    -- TORN DOWN BETWEEN TWO PASSES: out of BR.Server.matches before the job
-    -- could see it ended.
-    reset()
-    m = empLobby()
-    runAt(1, 'emp')
-    matches[m.id] = nil
-    fire('br:match:destroyed', 0, { matchId = m.id })
-    eq(stalled(), '', 'br:match:destroyed clears them from the index')
-
-    -- A VEHICLE GONE MEANWHILE: its clear throws, and the rest still clear.
-    reset()
-    m = empLobby()
-    runAt(1, 'emp')
-    cars[11] = nil
-    gameMs = gameMs + 30000
-    jobs['terminal.emp']()
-    eq(stalled(), '', 'a vehicle deleted mid-EMP does not stop the others clearing')
-    ok(m.terminalFx.emp == nil, 'and the record is gone')
-
-    reset()
-    m = empLobby()
-    runAt(1, 'emp')
-    season(1)
-    ok(not T.empStalled(m, 11, gameMs), 'off Season 2, nothing is stalled')
-    jobs['terminal.emp']()
-    eq(stalled(), '', 'and the bags are CLEARED, not just forgotten: they are on entities')
-    season(2)
-    ok(m.terminalFx.emp == nil, 'so Season 2 coming back brings none back')
-
-    -- BR_CORE STOPPING MID-EMP, two matches' EMPs at once: every bag cleared
-    -- on the way out (a restart would otherwise leave them on the cars).
-    reset()
-    m = empLobby()
-    runAt(1, 'emp')
-    local other = newMatch(2)
-    other.bucket = 202
-    player(6, other, 'C', SITE)
-    keys[6], market.wallet[6] = true, 1000
-    runAt(6, 'emp')
-    eq(stalled(), '11,12,14', 'an EMP in each match: the cars in its own bucket')
-    fire('br:match:destroyed', 0, { matchId = 'no such match' })
-    eq(stalled(), '11,12,14', 'a teardown of a match with no EMP clears none of them')
-    fire('onResourceStop', 0, 'another_resource')
-    eq(stalled(), '11,12,14', 'another resource stopping: nothing')
-    fire('onResourceStop', 0, 'br_core')
-    eq(stalled(), '', 'br_core stopping: every bag, in both matches, cleared')
-end
-
-describe('EMP: a solo player, and the dev command centered on the player')
-do
-    reset()
-    cars = {}
-    local m = newMatch(1)
-    m.mode, m.bucket = 'solo', MATCH_BUCKET
-    player(1, m, nil, SITE)
-    keys[1] = true
-    car(11, 100.0)
-    local r = runAt(1, 'emp')
-    eq(r and r.toast, COPY.emp_done, 'a solo player reads the done line (it names no squad)')
-    eq(stalled(), '11', 'and their own vehicles stall like anyone\'s')
-
-    reset()
-    m = empLobby()
+    m = lobby()
     keys[1] = false
-    roster[1].pos = { x = SITE.x + 900.0, y = SITE.y, z = 30.0 }      -- beside car 18
-    local said = devRun(1, 'emp radius=300 duration=30')
-    ok(said:find('ok (done)', 1, true) ~= nil, 'brterminal run emp radius=300 duration=30', said)
-    eq(stalled(), '18', 'the dev terminal is nowhere: it goes off around the player')
+    local said = devRun(1, 'emp')
+    ok(said:find('ok (done)', 1, true) ~= nil, 'brterminal run emp', said)
+    ok(T.empFor(m, 3, gameMs) == CT.fx.empMs and T.empFor(m, 2, gameMs) == nil, 'it goes off, sparing their squad')
     ok(keys[1] == false and not T.squadUsed(1), 'and spends nothing')
-    local _ = m
+    said = devRun(1, 'emp radius=600')
+    ok(said:find('does not take those options', 1, true) ~= nil, 'and takes no options', said)
 end
 
 -- ── Comms blackout's world: the REAL squad beacon (server/party.lua), loaded
@@ -3302,15 +3202,16 @@ do
 end
 
 -- =========================================================================
--- PART H2 -- the client halves of wave C (2026-10-06)
+-- PART H2 -- the client halves of wave C (2026-10-06), EMP's as round 4
+-- rebuilt it
 -- =========================================================================
 
 -- ── EMP's client world: the vehicles this client knows, modeled ──
 --
--- [handle] = { net, mine (this client owns it), class, engine, noAutoStart,
--- undriveable, driver, bag }. BOOL natives answer 1/0, as they may in game.
--- The state bag's change handler and the entering event are captured, and
--- every vehicle native counted, so "nothing per frame" is a number.
+-- [handle] = { net, class, engine, noAutoStart, undriveable, driver }. The
+-- player's ped is VW.me; VW.inVeh is the vehicle it is in. BOOL natives answer
+-- 1/0, as they may in game. Every vehicle native is counted, so "nothing per
+-- frame" is a number.
 local VW = { cars = {}, me = 4242, inVeh = 0, timers = {}, calls = 0 }
 local function vcar(h) return VW.cars[h] end
 local function counted(fn)
@@ -3319,7 +3220,6 @@ local function counted(fn)
         return fn(...)
     end
 end
-AddStateBagChangeHandler = function(key, _, fn) VW.bagKey, VW.bagFn = key, fn end
 NetworkDoesNetworkIdExist = counted(function(net)
     for _, c in pairs(VW.cars) do if c.net == net then return 1 end end
     return 0
@@ -3329,7 +3229,7 @@ NetworkGetEntityFromNetworkId = counted(function(net)
     return 0
 end)
 NetworkGetNetworkIdFromEntity = counted(function(h) return vcar(h) and vcar(h).net or 0 end)
-NetworkHasControlOfEntity = counted(function(h) return (vcar(h) and vcar(h).mine) and 1 or 0 end)
+DoesEntityExist = counted(function(h) return vcar(h) and 1 or 0 end)
 GetVehicleClass = counted(function(h) return vcar(h) and vcar(h).class or 0 end)
 GetIsVehicleEngineRunning = counted(function(h) return (vcar(h) and vcar(h).engine) and 1 or 0 end)
 SetVehicleEngineOn = counted(function(h, on, _, noAuto)
@@ -3340,39 +3240,42 @@ SetVehicleUndriveable = counted(function(h, v)
     local c = vcar(h)
     if c then c.undriveable = v end
 end)
-GetPedInVehicleSeat = counted(function(h) return vcar(h) and vcar(h).driver or 0 end)
+GetPedInVehicleSeat = counted(function(h, seat)
+    local c = vcar(h)
+    if seat ~= -1 or not c then return 0 end
+    return c.driver or 0
+end)
 PlayerPedId = function() return VW.me end
 GetVehiclePedIsIn = counted(function() return VW.inVeh end)
 GetCurrentResourceName = GetCurrentResourceName or function() return 'br_core' end
 Citizen = Citizen or {}
 Citizen.SetTimeout = function(ms, fn) VW.timers[#VW.timers + 1] = { ms = ms, fn = fn } end
 
---- The entity's own state bag, as the client reads it (Entity(h).state).
---- Shared with the server's model of Entity above: a table with `state`.
-local serverEntity, serverExists = Entity, DoesEntityExist
-local clientExists = counted(function(h) return vcar(h) and 1 or 0 end)
-local function clientEntity(h)
-    local c = vcar(h)
-    return { state = setmetatable({}, { __index = function(_, k) return c and c.bag[k] or nil end }) }
-end
-
 --- A vehicle this client knows: net id = handle + 1000.
 local function vnew(h, o)
     o = o or {}
-    VW.cars[h] = { net = h + 1000, mine = o.mine ~= false, class = o.class or 1, engine = o.engine == true,
-                   driver = o.driver or 0, bag = {} }
+    VW.cars[h] = { net = h + 1000, class = o.class or 1, engine = o.engine == true, driver = 0 }
 end
 
---- The server sets (ms) or clears (nil) one vehicle's bag: the entity's own
---- copy, and the change handler as the platform raises it.
-local function vbag(h, ms)
-    VW.cars[h].bag[VW.bagKey] = ms
-    VW.bagFn('entity:' .. tostring(VW.cars[h].net), VW.bagKey, ms, 0, false)
+--- This player takes the wheel of `h` (or a passenger seat, `seat` ~= -1),
+--- and, with `event`, the game raises the entering event.
+local function vgetIn(W, h, seat, event)
+    VW.inVeh = h
+    if (seat or -1) == -1 then VW.cars[h].driver = VW.me end
+    if event ~= false then W.handlers.gameEventTriggered('CEventNetworkPlayerEnteredVehicle', { 128, h }) end
+end
+local function vgetOut(h)
+    VW.inVeh = 0
+    if VW.cars[h] and VW.cars[h].driver == VW.me then VW.cars[h].driver = 0 end
 end
 
 local function vstalled(h)
     local c = VW.cars[h]
     return c.engine == false and c.noAutoStart == true and c.undriveable == true
+end
+local function vfree(h)
+    local c = VW.cars[h]
+    return c.undriveable == false and c.noAutoStart == false
 end
 
 local function vtimers()
@@ -3382,315 +3285,201 @@ local function vtimers()
     for _, t in ipairs(due) do t.fn() end
 end
 
-describe('client: EMP -- the owner stalls a marked vehicle, on the bag\'s change')
+local function vreset()
+    VW.cars, VW.timers, VW.inVeh, VW.calls = {}, {}, 0, 0
+end
+
+describe('client: EMP -- this player\'s driving stalls on the fact\'s change, whatever they drive')
 do
-    VW.cars, VW.timers, VW.inVeh = {}, {}, 0
-    Entity, DoesEntityExist = clientEntity, clientExists
+    vreset()
     local W = clientWorld()
     local F = W.F
-    eq(VW.bagKey, CT.fx.empBag, 'the change handler is registered on the config\'s bag key')
-    vnew(1, { engine = true })                -- mine, running
-    vnew(2, { mine = false, engine = true })  -- another client's
-    vnew(3, { class = 13 })                   -- a bicycle, mine
-    vbag(1, 30000)
-    vbag(2, 30000)
-    vbag(3, 30000)
-    ok(vstalled(1), 'mine: engine off at once, no auto-start, undriveable')
-    ok(VW.cars[2].engine == true and VW.cars[2].undriveable == nil, 'another client\'s: nothing written here')
-    ok(VW.cars[3].undriveable == nil, 'a bicycle has no engine: never held')
-    local n, held = F.empMarks()
-    ok(n == 3 and held == 1, 'all three known, one held', ('%d %d'):format(n, held))
+    vnew(1, { engine = true })
+    vgetIn(W, 1)                                -- driving, no EMP
+    eq(VW.cars[1].undriveable, nil, 'no EMP: getting in writes nothing')
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    ok(vstalled(1), 'the fact lands while driving: engine off at once, no auto-start, undriveable')
+    local stalling, n = F.empState()
+    ok(stalling and n == 1, 'stalling, one hold written', ('%s %d'):format(tostring(stalling), n))
 
-    -- OWNERSHIP MIGRATES: the next SLOW pass holds it.
-    VW.cars[2].mine = true
-    W.slow()
-    ok(vstalled(2), 'ownership moved here: the SLOW pass stalls it')
-
-    -- SOMEBODY STARTS AN ENGINE (a refuel's ignition, a revive hold's siren):
-    -- the SLOW pass stalls it again.
+    -- SOMEBODY STARTS AN ENGINE UNDER IT (a refuel's ignition, a revive
+    -- hold's siren): the SLOW pass stalls it again.
     VW.cars[1].engine = true
     W.slow()
     ok(vstalled(1), 'an engine started under it is stopped again on the SLOW pass')
 
-    -- OWNERSHIP LEAVES: nothing is written to a car another client runs.
-    VW.cars[1].mine = false
-    VW.cars[1].engine = true
+    -- OUT OF IT: the hold is undone on this copy, the engine left as it is.
+    vgetOut(1)
     W.slow()
-    eq(VW.cars[1].engine, true, 'a car this client no longer owns is left to its owner')
+    ok(vfree(1) and VW.cars[1].engine == false, 'getting out: driveable, free to start, still off')
+    eq(select(2, F.empState()), 0, 'nothing written left')
 
-    -- IT ENDS: the server clears the bag. Mine with a driver starts again;
-    -- mine parked is left off but free to start.
-    VW.cars[1].mine = true
-    VW.cars[2].driver = 77
-    vbag(2, nil)
-    ok(VW.cars[2].undriveable == false and VW.cars[2].engine == true and VW.cars[2].noAutoStart == false,
-        'cleared with a driver in the seat: driveable, and the engine starts again')
-    vbag(1, nil)
-    ok(VW.cars[1].undriveable == false and VW.cars[1].engine == false and VW.cars[1].noAutoStart == false,
-        'cleared while parked: driveable, off, free to start for whoever gets in')
-    n = F.empMarks()
-    eq(n, 1, 'only the bicycle is still known')
-    vbag(3, nil)
-    eq((F.empMarks()), 0, 'and then none')
+    -- ANOTHER CAR, ANYWHERE: stalled as they get in, and as ownership arrives.
+    vnew(2, { engine = true })
+    vgetIn(W, 2)
+    ok(vstalled(2), 'getting into another car mid-EMP: stalled at once')
+    VW.cars[2].engine = true                    -- the old owner's sync, before ownership moved
+    vtimers()
+    ok(vstalled(2), 'and held again as ownership reaches the driver')
+    vgetOut(2)
+    W.slow()
+
+    -- A PASSENGER IS NOT THE DRIVER; A SHUFFLE INTO THE SEAT IS.
+    vnew(3, { engine = true })
+    vgetIn(W, 3, 0)
+    eq(VW.cars[3].undriveable, nil, 'a passenger: nothing written (the driver decides)')
+    VW.cars[3].driver = VW.me                   -- shuffled over, no entering event
+    W.slow()
+    ok(vstalled(3), 'shuffled into the driver\'s seat: the SLOW pass stalls it')
+
+    -- THE END, FROM THE SERVER: freed and started for the driver.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
+    ok(vfree(3) and VW.cars[3].engine == true, 'it ends while driving: driveable, and the engine starts again')
+    ok(not F.empState() and select(2, F.empState()) == 0, 'not stalling, nothing written')
+    vgetOut(3)
     W.done()
-    Entity, DoesEntityExist = serverEntity, serverExists
 end
 
-describe('client: EMP -- a driver getting in mid-EMP, a car that drove in after, the ends behind the server\'s')
+describe('client: EMP -- spared, a car somebody else stalled works; never an aircraft or a bicycle')
 do
-    VW.cars, VW.timers, VW.inVeh = {}, {}, 0
-    Entity, DoesEntityExist = clientEntity, clientExists
+    vreset()
     local W = clientWorld()
     local F = W.F
-    local enterEv = W.handlers.gameEventTriggered
-    ok(type(enterEv) == 'function', 'the entering event is handled')
-
-    -- MARKED, OWNED BY THE CLIENT THAT WAS NEAREST; THIS PLAYER GETS IN AND
-    -- THE ENGINE STARTS AS THEY TAKE THE SEAT. Ownership arrives a moment later.
-    vnew(5, { mine = false })
-    vbag(5, 60000)
-    VW.inVeh = 5
-    VW.cars[5].engine = true
-    enterEv('CEventNetworkPlayerEnteredVehicle', { 128, 5 })
-    eq(VW.cars[5].undriveable, nil, 'in the seat but not the owner yet: nothing it could write would stick')
-    VW.cars[5].mine = true
+    -- THE RUNNER'S SQUAD: told an EMP lasts, not that their driving stalls.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, liveMs = 180000 })
+    eq((F.empState()), false, 'spared: not stalling')
+    vnew(4, { engine = false })
+    VW.cars[4].undriveable, VW.cars[4].noAutoStart = true, true   -- another driver's stall on this copy
+    vgetIn(W, 4)
+    ok(vfree(4) and VW.cars[4].engine == true, 'getting into a car another driver stalled: freed and started')
     vtimers()
-    ok(vstalled(5), 'ownership arrives: held again a moment later, without waiting for the SLOW pass')
+    VW.cars[4].engine = false                   -- the driver switches it off themselves
+    for _ = 1, 3 do W.slow() end
+    eq(VW.cars[4].engine, false, 'and afterwards the SLOW pass leaves their engine alone')
+    eq(select(2, F.empState()), 0, 'a spared driver writes no hold')
+    vgetOut(4)
 
-    -- A CHANGE THIS CLIENT MISSED: the entity's own bag says so on entering.
-    VW.cars[6] = nil
-    vnew(6, { engine = true })
-    VW.cars[6].bag[VW.bagKey] = 20000          -- set while this client never heard
-    VW.inVeh = 6
-    enterEv('CEventNetworkPlayerEnteredVehicle', { 128, 6 })
-    ok(vstalled(6), 'getting into a marked car read off the entity itself: stalled')
+    -- NO EMP AT ALL: getting in frees nothing (it touches no vehicle).
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
+    vnew(5)
+    VW.cars[5].undriveable = true
+    vgetIn(W, 5)
+    eq(VW.cars[5].undriveable, true, 'with no EMP in the match, getting in writes nothing')
+    vgetOut(5)
 
-    -- A CAR THAT DROVE IN AFTER IT WENT OFF CARRIES NO BAG.
-    vnew(7, { engine = true })
-    VW.inVeh = 7
-    enterEv('CEventNetworkPlayerEnteredVehicle', { 128, 7 })
-    ok(VW.cars[7].engine == true and VW.cars[7].undriveable == nil, 'an unmarked car: untouched')
-    -- Another game event, or another player's entry, is none of this file's:
-    -- car 9 carries a bag this client missed, and somebody else got in.
-    vnew(9, { engine = true })
-    VW.cars[9].bag[VW.bagKey] = 20000
-    VW.inVeh = 0
-    enterEv('CEventNetworkPlayerEnteredVehicle', { 3, 9 })
-    enterEv('CEventNetworkEntityDamage', { 9 })
-    local n = F.empMarks()
-    eq(n, 2, 'still the two marked cars: another player\'s entry marks nothing here')
-    eq(VW.cars[9].engine, true, 'and stalls nothing')
-    VW.cars[9] = nil
-
-    -- THE CLEAR THIS CLIENT WAS NOT IN SCOPE FOR: the entity says no bag.
-    VW.cars[6].bag[VW.bagKey] = nil
-    W.slow()
-    ok(VW.cars[6].undriveable == false, 'a car this client owns whose bag is gone: released on the SLOW pass')
-    eq((F.empMarks()), 1, 'and forgotten')
-
-    -- LATE: the server never cleared it. LATE_MS past its time, it ends here.
-    gameMs = gameMs + 60000 + 5000 + 1
-    W.slow()
-    eq((F.empMarks()), 0, 'past its time and then some: forgotten')
-    ok(VW.cars[5].undriveable == false, 'and released')
-
-    -- THE LOBBY AND SEASON 1.
-    vbag(5, 30000)
-    BR.State.me.state = BR.PlayerState.LOBBY
-    W.slow()
-    eq((F.empMarks()), 0, 'back in the lobby: none')
-    BR.State.me.state = BR.PlayerState.ALIVE
-    vbag(5, 30000)
-    W.season = 1
-    W.slow()
-    eq((F.empMarks()), 0, 'off Season 2: none')
-    vbag(5, 30000)
-    eq((F.empMarks()), 0, 'and none taken on')
-    W.season = 2
-    W.slow()
-
-    -- NOTHING MARKED: the SLOW pass calls no native at all.
-    VW.calls = 0
-    for _ = 1, 5 do W.slow() end
-    eq(VW.calls, 0, 'with nothing marked, five SLOW passes call no vehicle native')
+    -- AN AIRCRAFT AND A BICYCLE ARE NEVER HELD.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    vnew(6, { class = 15, engine = true })
+    vgetIn(W, 6)
+    ok(VW.cars[6].engine == true and VW.cars[6].undriveable == nil, 'a helicopter: never stalled (it would fall)')
+    vgetOut(6)
+    vnew(7, { class = 13 })
+    vgetIn(W, 7)
+    eq(VW.cars[7].undriveable, nil, 'a bicycle: no engine, never held')
+    vgetOut(7)
     W.done()
-    Entity, DoesEntityExist = serverEntity, serverExists
 end
 
-describe('client: EMP -- the bag\'s own time is the backstop\'s, not five seconds from now')
+describe('client: EMP -- it ends on its own clock, in the lobby, off Season 2 and as br_core stops')
 do
-    VW.cars, VW.timers, VW.inVeh = {}, {}, 0
-    Entity, DoesEntityExist = clientEntity, clientExists
+    vreset()
     local W = clientWorld()
     local F = W.F
     local t0 = gameMs
-    vnew(31, { engine = true })
-    vbag(31, 60000)
-    ok(vstalled(31), 'a minute\'s EMP: stalled')
-    -- NO CLEAR HAS COME, AND THE MINUTE IS NOT UP: still held, ten seconds in
-    -- and fifty seconds in, an engine started under it stopped again.
-    gameMs = t0 + 10000
+    vnew(8, { engine = true })
+    vgetIn(W, 8)
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    ok(vstalled(8), 'stalled')
+    -- NO END HAS COME FROM THE SERVER: its own deadline ends it.
+    gameMs = t0 + 179999
+    VW.cars[8].engine = true
     W.slow()
-    local n, held = F.empMarks()
-    ok(n == 1 and held == 1 and vstalled(31), 'ten seconds into a minute: still marked and held',
-        ('%d %d'):format(n, held))
-    gameMs = t0 + 50000
-    VW.cars[31].engine = true
+    ok(vstalled(8), 'at 2:59.999 still held')
+    gameMs = t0 + 180000
     W.slow()
-    ok(vstalled(31), 'fifty seconds in, an engine started under it is stopped again')
-    -- THE BAG'S MINUTE AND THE FIVE SECONDS BEHIND IT: only then does the
-    -- client end it on its own.
-    gameMs = t0 + 60000 + 5000
-    W.slow()
-    eq((F.empMarks()), 1, 'at the minute and five seconds exactly: still marked')
-    gameMs = t0 + 60000 + 5000 + 1
-    W.slow()
-    eq((F.empMarks()), 0, 'past it: forgotten')
-    ok(VW.cars[31].undriveable == false and VW.cars[31].noAutoStart == false, 'and released')
+    ok(vfree(8) and VW.cars[8].engine == true, 'at 3:00, on the client\'s own clock: freed and started')
 
-    -- THE SAME HORIZON FOR A MARK FIRST READ ON GETTING IN: the bag's time
-    -- from that moment, not five seconds.
-    local enterEv = W.handlers.gameEventTriggered
-    t0 = gameMs
-    vnew(32, { engine = true })
-    VW.cars[32].bag[VW.bagKey] = 30000
-    VW.inVeh = 32
-    enterEv('CEventNetworkPlayerEnteredVehicle', { 128, 32 })
-    vtimers()
-    gameMs = t0 + 20000
-    VW.cars[32].engine = true
-    W.slow()
-    ok(vstalled(32), 'twenty seconds into the thirty it said on getting in: still held')
-    gameMs = t0 + 30000 + 5000 + 1
-    W.slow()
-    eq((F.empMarks()), 0, 'past its time and the five seconds: forgotten')
-    VW.inVeh = 0
-    W.done()
-    Entity, DoesEntityExist = serverEntity, serverExists
-end
-
-describe('client: EMP -- whoever stalled a vehicle undoes it, owner or not, on every way it ends')
-do
-    VW.cars, VW.timers, VW.inVeh = {}, {}, 0
-    Entity, DoesEntityExist = clientEntity, clientExists
-    local W = clientWorld()
-    local F = W.F
-    local enterEv = W.handlers.gameEventTriggered
-
-    --- This client's copy of `h` comes out free: driveable and free to
-    --- start, its engine whatever the owner runs.
-    local function free(h)
-        local c = VW.cars[h]
-        return c.undriveable == false and c.noAutoStart == false
-    end
-    --- Stalled here as its owner, then lost to another client.
-    local function stalledThenLost(h)
-        vnew(h, { engine = true })
-        vbag(h, 30000)
-        ok(vstalled(h), ('%d: stalled here as its owner'):format(h))
-        VW.cars[h].mine = false
-        W.slow()
-    end
-
-    -- THE CLEAR, WHILE ANOTHER CLIENT OWNS IT (the review's case): this copy is
-    -- freed at once, and the engine is left to its owner.
-    stalledThenLost(21)
-    VW.cars[21].engine = true                 -- the owner's sync: running
-    vbag(21, nil)
-    ok(free(21), 'cleared while another client owns it: this copy is driveable and free to start')
-    eq(VW.cars[21].engine, true, 'and the engine is left as the owner runs it')
-    local n, _, w = F.empMarks()
-    ok(n == 0 and w == 1, 'forgotten as marked, still remembered as written here', ('%d %d'):format(n, w))
-    -- IT COMES BACK TO THIS CLIENT: the driver gets in, ownership arrives a
-    -- moment later, and it is released in full.
-    VW.cars[21].engine = false
-    VW.cars[21].noAutoStart = true            -- whatever was left on this copy
-    VW.cars[21].undriveable = true
-    VW.inVeh, VW.cars[21].driver = 21, VW.me
-    enterEv('CEventNetworkPlayerEnteredVehicle', { 128, 21 })
-    ok(free(21), 'getting in with no bag, before owning it: this copy freed again')
-    VW.cars[21].mine = true
-    vtimers()
-    ok(free(21) and VW.cars[21].engine == true, 'ownership arrives: released in full, the engine on for the driver')
-    n, _, w = F.empMarks()
-    eq(w, 0, 'and nothing of this client\'s is left on it')
-    -- And afterwards it is an ordinary car: three SLOW passes write nothing.
-    VW.cars[21].engine = false
-    for _ = 1, 3 do W.slow() end
-    eq(VW.cars[21].engine, false, 'an ordinary car afterwards: the SLOW pass leaves its engine alone')
-    VW.inVeh, VW.cars[21].driver = 0, 0
-
-    -- THE BACKSTOP, LATE_MS PAST ITS TIME, WHILE ANOTHER CLIENT OWNS IT.
-    stalledThenLost(22)
-    gameMs = gameMs + 30000 + 5000 + 1
-    W.slow()
-    ok(free(22), 'the backstop, not the owner: this copy freed')
-
-    -- THE LOBBY, NOT THE OWNER: first with nothing marked any more, only a
-    -- write left from an earlier clear; then a car still marked.
-    stalledThenLost(24)
-    vbag(24, nil)                              -- cleared, not owned: written
-    VW.cars[24].undriveable = true             -- pretend the owner synced it back
-    eq((F.empMarks()), 0, 'nothing marked, one write left')
-    BR.State.me.state = BR.PlayerState.LOBBY
-    W.slow()
-    ok(free(24), 'the lobby with nothing marked: a write that outlived its clear, freed')
-    BR.State.me.state = BR.PlayerState.ALIVE
-    stalledThenLost(23)
-    BR.State.me.state = BR.PlayerState.LOBBY
-    W.slow()
-    ok(free(23), 'the lobby, not the owner: a marked car\'s copy freed')
-    n, _, w = F.empMarks()
-    ok(n == 0 and w == 0, 'nothing marked or written after the lobby', ('%d %d'):format(n, w))
-    BR.State.me.state = BR.PlayerState.ALIVE
-
-    -- SEASON 1, NOT THE OWNER.
-    stalledThenLost(25)
-    W.season = 1
-    W.slow()
-    ok(free(25), 'off Season 2, not the owner: this copy freed')
-    eq(select(3, F.empMarks()), 0, 'and nothing written left')
-    W.season = 2
-    W.slow()                                   -- the season, read once a second
-
-    -- THE RESOURCE STOPPING, NOT THE OWNER -- every file's handler runs.
-    stalledThenLost(26)
-    W.handlers.onResourceStop('another_resource')
-    ok(VW.cars[26].undriveable == true, 'another resource stopping: nothing')
-    W.handlers.onResourceStop('br_core')
-    ok(free(26), 'br_core stopping, not the owner: this copy freed')
-    eq(select(3, F.empMarks()), 0, 'and nothing written left')
-
-    -- OUT OF SCOPE AT THE CLEAR: no copy here to undo, and the one it comes
-    -- back with is fresh; getting into it as its owner leaves it free.
-    stalledThenLost(27)
-    VW.cars[27] = nil
-    VW.bagFn('entity:1027', VW.bagKey, nil, 0, false)
-    vnew(27, { engine = false })
-    VW.inVeh, VW.cars[27].driver = 27, VW.me
-    enterEv('CEventNetworkPlayerEnteredVehicle', { 128, 27 })
-    vtimers()
-    ok(free(27) and VW.cars[27].engine == true, 'back in scope, got into: driveable, started for the driver')
-    eq(select(3, F.empMarks()), 0, 'and nothing written left')
-    VW.inVeh = 0
-
-    -- A CAR THIS CLIENT NEVER STALLED (another client owned it throughout):
-    -- the clear writes nothing to it here.
-    vnew(28, { mine = false, engine = true })
-    vbag(28, 30000)
-    vbag(28, nil)
-    ok(VW.cars[28].undriveable == nil and VW.cars[28].noAutoStart == nil,
-        'never stalled here: the clear writes nothing to another client\'s car')
-
-    -- A WRITE LEFT ON A CAR NO LONGER MARKED COSTS THE SLOW PASS NO NATIVE.
-    stalledThenLost(29)
-    vbag(29, nil)
-    eq(select(3, F.empMarks()), 1, 'one write left on a car no longer marked')
+    -- AND FORGOTTEN WITH IT: the SLOW pass goes back to costing nothing.
     VW.calls = 0
     for _ = 1, 5 do W.slow() end
-    eq(VW.calls, 0, 'five SLOW passes with only a write left: no vehicle native')
+    eq(VW.calls, 0, 'over on its own clock: five SLOW passes call no vehicle native')
+
+    -- OVER ON ITS OWN CLOCK BEFORE ANY SLOW PASS SAW IT, and straight into
+    -- another car: the old hold is undone, and the new car is not touched --
+    -- no EMP lasts, so there is nothing to free it from.
+    t0 = gameMs
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 1000, liveMs = 1000 })
+    ok(vstalled(8), 'a short one: stalled')
+    gameMs = t0 + 1000
+    vgetOut(8)
+    vnew(10, { engine = false })
+    VW.cars[10].undriveable = true             -- somebody else's write, on this copy
+    vgetIn(W, 10)
+    ok(vfree(8), 'the car it held is freed')
+    eq(VW.cars[10].undriveable, true, 'and the car got into is left as it was: no EMP lasts')
+    vgetOut(10)
+    vgetIn(W, 8, -1, false)
+
+    -- THE LOBBY.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    ok(vstalled(8), 'stalled again')
+    BR.State.me.state = BR.PlayerState.LOBBY
+    W.slow()
+    ok(vfree(8), 'the lobby: freed')
+    ok(not F.empState() and select(2, F.empState()) == 0, 'and the fact forgotten')
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    -- SEASON 1.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    W.season = 1
+    W.slow()
+    ok(vfree(8) and not F.empState(), 'off Season 2: freed, forgotten')
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    eq((F.empState()), false, 'and a fact arriving there is not taken on')
+    W.season = 2
+    W.slow()
+
+    -- BR_CORE STOPPING -- every file's handler runs.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    ok(vstalled(8), 'stalled')
+    W.handlers.onResourceStop('another_resource')
+    ok(vstalled(8), 'another resource stopping: nothing')
+    W.handlers.onResourceStop('br_core')
+    ok(vfree(8), 'br_core stopping: freed')
+
+    -- A CAR OUT OF SCOPE WHEN IT ENDS: no copy here to undo.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    vgetOut(8)
+    VW.cars[8] = nil
+    W.slow()
+    eq(select(2, F.empState()), 0, 'a held car gone from scope: forgotten, nothing to write')
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
     W.done()
-    Entity, DoesEntityExist = serverEntity, serverExists
+end
+
+describe('client: EMP -- nothing per frame, and nothing at all with nothing to do')
+do
+    vreset()
+    local W = clientWorld()
+    VW.calls = 0
+    for _ = 1, 5 do W.slow() end
+    eq(VW.calls, 0, 'no EMP and nothing written: five SLOW passes call no vehicle native')
+    vnew(9, { engine = true })
+    VW.inVeh = 9
+    VW.cars[9].driver = VW.me
+    VW.calls = 0
+    W.handlers.gameEventTriggered('CEventNetworkPlayerEnteredVehicle', { 128, 9 })
+    eq(VW.calls, 0, 'and getting into a car with no EMP calls none either')
+    W.handlers.gameEventTriggered('CEventNetworkEntityDamage', { 9 })
+    eq(VW.calls, 0, 'nor does another game event')
+    -- WHILE ONE LASTS: a handful a second.
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+    VW.calls = 0
+    W.slow()
+    ok(VW.calls > 0 and VW.calls <= 10, 'while it lasts: a few natives on the SLOW pass', VW.calls)
+    W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
+    VW.inVeh = 0
+    W.done()
 end
 
 -- =========================================================================

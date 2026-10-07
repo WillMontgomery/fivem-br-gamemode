@@ -27,7 +27,7 @@ Around them, the Gameplay half:
 | **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against the storm (`offlineWhy`), the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
 | **The effects** | `br_core/server/terminalfx.lua` | What the first built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen; and the helpers the files below share. |
 | **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Key finder, Pulse, Ghost, Contract -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); and wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06). Every row is built. |
-| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents, the bounty, Key finder's keys and Pulse's finds on this player's maps, and an EMP's stalled vehicles held on the client that owns them, from the server's pushes and state bags. Decides nothing. |
+| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents, the bounty, Key finder's keys and Pulse's finds on this player's maps, and an EMP held on the vehicle this player drives, from the server's pushes. Decides nothing. |
 
 **The server decides everything.** The computer and the app only ask. A run is
 taken only from a player with an open session on that terminal, which only the
@@ -338,7 +338,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
 | `BR.Net.TERMINAL_KEYS` | S→C | `{ matchId, list = { { x, y } }, leftMs }` | Key finder: where each Yubikey was when it ran, to the squad that ran it alone; once more, empty, when its `fx.keyFinderMs` is up or the match ends; again on `br:ready` while it lasts. |
 | `BR.Net.TERMINAL_PULSE` | S→C | `{ matchId, list = { { s, x, y } } }` | Pulse: where each player it found is now, to the squad that ran it alone, every `fx.pulsePingMs` for `fx.pulseMs`, and once more, empty, when it is over. |
-| `fx.empBag` (`brEmp`), an entity state bag | S→C | the milliseconds an EMP has left, on each vehicle it stalled | EMP: set by the server alone (`server/terminalfx/emp.lua`) as it goes off, replicated to every client the vehicle is relevant to (and to one it becomes relevant to later), cleared when it ends, when its match ends or is torn down, and off Season 2. `client/terminalfx/emp.lua` reads it. |
+| `BR.Net.TERMINAL_EMP` | S→C | `{ matchId, leftMs?, liveMs? }` | EMP (round 4): how long this player's driving stalls from now (absent when every EMP in force spares their squad) and how long any EMP in the match lasts (absent with none). To the whole match when one goes off and when one ends (its time, the match's end, Season 1), and on `br:ready` while one lasts. `client/terminalfx/emp.lua` applies it to the vehicle its own player drives. |
 | `BR.Net.SQUAD_POS` (`server/party.lua`) | S→C | the squad beacon's rows | Comms blackout: while one another squad ran is in force, every row sent to a blacked-out squad leaves `x` and `y` off, and nothing else (`BR.Terminal.beaconDark`). |
 | `BR.Net.REVIVEKEY_ARRIVE`, `BR.Net.REVIVEKEY_PLACE` | S→C | `{ x, y, z }` / `{ cancelled }` | Reboot: the revive key's own return (`BR.ReviveKey.bringBackAt`), over this terminal. |
 | `BR.Net.TERMINAL_RESULT` | S→C | `{ terminalId, functionId, ok, code, state?, runMs?, cost?, balance?, toast? }` | To the runner alone. `code` is `running` when a run is accepted (with `runMs`), `done` when it is over (a paid one with the new `balance`), else a reason (`no_volts` with `cost` and `balance`). Every answer but `running` carries `toast`, the line the server would toast for it; a client whose computer cannot show the answer toasts that. Once the server knows the computer has closed, the last word is its own toast instead. |
@@ -879,7 +879,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`). "This terminal" is the dev terminal, which is nowhere: Pulse, EMP and Reboot are centered on you. Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp radius=600 duration=60`, `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run pulse radius=500`). "This terminal" is the dev terminal, which is nowhere: Pulse and Reboot are centered on you. Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
@@ -1024,39 +1024,39 @@ off Season 2, each through `brterminal run <id> [option=choice]`.
 
 | Function | What it does | Refused, spending nothing |
 |---|---|---|
-| EMP | `radius` 300 / 600 m around this terminal, `duration` 30 / 60 s. As it goes off the server picks every vehicle in the match's routing bucket inside the radius (on the ground) that a player may use here (`BR.Terminal.empPick`), and marks each with the `fx.empBag` state bag. The client that owns a marked vehicle holds it stalled -- engine off, no auto-start, undriveable -- and lets it go when the bag clears: started again with a driver in the seat, else free to start. A vehicle that drives in later was never picked. | Outside a match, or on a build with no server vehicle natives. Never for finding no vehicle (Pulse's rule: a refusal is free intel) |
+| EMP | Round 4 (owner, 2026-10-06: "kill all cars in the entire match, except the ones that the user or their squad get into ... for 3 minutes"): no options; `fx.empMs` (3 min). Every player outside the runner's squad stalls whatever vehicle they drive, wherever it is; the squad drives as ever. A fact about drivers, not a mark on cars: see below. | Outside a match. Never for finding no vehicle |
 | Comms blackout | `duration` 60 / 120 / 180 s; squad-only. Every OTHER squad's beacon rows leave the server without `x`/`y`, so their teammates' dots leave both maps -- a downed mate's, one left where a mate fell, and a bounty mate's blip 58 color 69 included -- and come back when it ends. Names, states, the bleed clock, levels, the voice bit and the Yubikey, bounty and revive key marks still travel: the beacon is the client's membership model. | Outside a squad match (the door), outside a match |
 | Reboot | 150 Volts; squad-only. Every member of the squad who is OUT, in this match, still connected and not already on the way back comes back over this terminal at full health with an empty inventory, through the revive key's own return (`BR.ReviveKey.bringBackAt`): black, the focus on the terminal, the spectate camera down, then a fade later resurrected 150 m over it with the parachute. | `reboot_none`: nobody to bring back (asked again at the end of the load). `unavailable`: nobody in the squad left in the fight |
 
-**EMP, who stalls it.** A vehicle's engine is its network owner's to run, so
-every client keeps the marked vehicles it hears of (the bag's change handler,
-which also fires as a vehicle comes into scope) and the one that owns each
-holds it: on the bag's change, on `CEventNetworkPlayerEnteredVehicle` (read off
-the entity itself, held again 250 ms and 1 s later as ownership reaches the
-new driver), and on `client/terminalfx.lua`'s one SLOW pass for ownership that
-moved or an engine somebody started (a refuel's ignition, a revive hold's
-siren). Behind the server's clear: a vehicle this client owns whose bag is
-gone, the lobby, Season 1, the resource stopping, and 5 s past the time the
-bag gave. **Whoever stalled a vehicle undoes it, owner or not** (the wave C
-review): a stall writes the undriveable and no-auto-start flags to that
-client's own copy, and nothing promises the owner's sync writes them back, so
-every client keeps the vehicles it wrote to and every way an EMP ends undoes
-them -- the owner releases in full, any other client clears both flags on its
-copy and leaves the engine to the owner -- and getting into a vehicle with no
-bag that this client marked or stalled undoes it again as ownership arrives.
-Nothing per frame; with nothing marked and nothing left to undo the SLOW hook
-calls no native. **Not picked:** anything `BR.Config.VehicleRefusalFor`
-refuses -- **aircraft** above all: nobody may fly one here (#215 ejects them,
-#211 files a case), the bus and the airdrop's plane are local and never
-networked, and a stalled helicopter in the air falls on whoever is under it,
-which the page does not say -- and the tanks; a trailer or a train (no
-engine), and the CPR ride while it carries a downed player. An armed
-model-table vehicle is NOT refused since #322 (its weapons are switched off),
-so it is picked and stalls like any car. A bicycle is marked and never held:
-it has no engine. Nothing is created, deleted or moved (`server/vehicles.lua`'s
-creation rule, the fuel ledger and `sv_entityLockdown` are untouched); the
-only write is the server's own state bag, cleared with its end, its match,
-Season 1 and br_core stopping.
+**EMP, a fact about drivers** (round 4). Wave C stalled the vehicles inside a
+radius by a state bag on each; the owner's round-4 rule is about who is
+DRIVING, and it holds for a car parked a mile off, one that drives in later
+and one that changes hands mid-EMP -- so nothing is picked or marked. The
+server keeps one fact per EMP on `m.terminalFx.emps` (the squad it spares,
+who ran it, its end) and pushes every player in the match `TERMINAL_EMP`:
+how long THEIR driving stalls (`leftMs`, from `BR.Terminal.empFor`: the
+latest end among the EMPs that do not spare their squad, so two EMPs from two
+squads spare neither from the other) and how long any EMP lasts (`liveMs`) --
+when one goes off, when one ends, and on `br:ready`. Each client applies it
+to the one vehicle its own player is in the driver's seat of -- the driver's
+client, which is where the vehicle's network ownership goes, so the write
+sticks: on the fact's change, on `CEventNetworkPlayerEnteredVehicle` (held
+again 250 ms and 1 s later as ownership arrives), and on
+`client/terminalfx.lua`'s one SLOW pass (a shuffle into the driver's seat, an
+engine somebody started under it, getting out, the end). Engine off, no
+auto-start, undriveable; a car moving when it lands coasts to a stop.
+**Spared, in a car somebody else stalled:** getting in while any EMP lasts
+frees it -- driveable, started -- so a car the squad gets into works whoever
+drove it before. **Whoever wrote the hold undoes it** (wave C's review: the
+flags are that machine's copy): when its player stops driving it, when the
+stall ends (started again for a driver still in the seat), in the lobby, off
+Season 2 and as br_core stops. Never an aircraft (nobody may fly here, and a
+stalled one would fall) or a bicycle (no engine) or a train. It ends at
+`fx.empMs` on the server's 1 s pass and on the client's own clock, with the
+match, and off Season 2. Nothing per frame; with no EMP and nothing written
+the SLOW hook calls no native. Nothing is created, deleted, moved or marked:
+`server/vehicles.lua`'s creation rule, the fuel ledger and
+`sv_entityLockdown` are untouched.
 
 **Comms blackout is one predicate.** `BR.Terminal.blackedOut(m, key, now)`: a
 blackout run by another squad, in force, in a match being played, on Season

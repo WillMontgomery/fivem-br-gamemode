@@ -705,9 +705,10 @@ client_scripts {
     -- returns at once with nothing drawn.
     'client/terminalfx/key_finder.lua',
     'client/terminalfx/pulse.lua',
-    -- Wave C (#396, 2026-10-06): EMP holds a vehicle the server marked
-    -- stalled on the client that owns it -- on the state bag's change, on
-    -- getting in, and on that one SLOW pass. Nothing per frame.
+    -- Wave C (#396, 2026-10-06; round 4): EMP holds the vehicle this player
+    -- drives stalled while the server says their driving stalls -- on the
+    -- fact's change (TERMINAL_EMP), on getting in, and on that one SLOW pass.
+    -- Nothing per frame.
     'client/terminalfx/emp.lua',
     'client/debug.lua',
     -- The wave B terminal functions' client halves (#396, 2026-10-06), one

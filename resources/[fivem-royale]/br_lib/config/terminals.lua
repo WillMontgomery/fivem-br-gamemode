@@ -804,23 +804,38 @@ BR.Config.Terminals = {
         ghost_description = 'Ghost. Their squad is hidden from scans.',
         ghost_description_solo = 'Ghost. They are hidden from scans.',
 
-        -- EMP (suggested; LIVE since wave C, 2026-10-06)
+        -- EMP (suggested; LIVE since wave C, 2026-10-06; ROUND 4, the same day:
+        -- "The EMP tool should kill all cars in the entire match, except the
+        -- ones that the user or their squad get into. This should last for 3
+        -- minutes." -- so its radius and duration options are gone)
         emp_name = 'EMP',
-        emp_summary = 'Stalls every vehicle in an area for a short time.',
-        emp_what = "Every vehicle within the radius you choose stalls and won't start.\nVehicles that drive in after it goes off aren't affected.\nThey start again when it ends.",
-        emp_opt_radius = 'Radius',
-        emp_opt_radius_300 = '300 meters around this terminal',
-        emp_opt_radius_600 = '600 meters around this terminal',
-        emp_opt_duration = 'Duration',
-        emp_opt_duration_30 = '30 seconds',
-        emp_opt_duration_60 = '1 minute',
-        emp_duration = '30 seconds or 1 minute, as chosen',
-        emp_affects = 'Every vehicle in the radius, yours included',
+        -- WRITTEN (2026-10-06, round 4; was 'Stalls every vehicle in an area
+        -- for a short time.').
+        emp_summary = 'Stalls every vehicle in the match for 3 minutes, except the ones your squad drives.',
+        emp_summary_solo = 'Stalls every vehicle in the match for 3 minutes, except the ones you drive.',
+        -- WRITTEN (2026-10-06, round 4; was "Every vehicle within the radius
+        -- you choose stalls and won't start.\nVehicles that drive in after it
+        -- goes off aren't affected.\nThey start again when it ends."). It is
+        -- the DRIVER that decides (server/terminalfx/emp.lua): a car stalls
+        -- while anybody but the squad drives it, wherever it is.
+        emp_what = "For 3 minutes, every vehicle in the match stalls and won't start while a player outside your squad is driving it.\nVehicles your squad drives keep working. If someone outside your squad takes the wheel, it stalls.\nVehicles start again when it ends.",
+        emp_what_solo = "For 3 minutes, every vehicle in the match stalls and won't start while another player is driving it.\nVehicles you drive keep working. If another player takes the wheel, it stalls.\nVehicles start again when it ends.",
+        -- WRITTEN (2026-10-06, round 4; was '30 seconds or 1 minute, as
+        -- chosen').
+        emp_duration = '3 minutes',
+        -- WRITTEN (2026-10-06, round 4; was 'Every vehicle in the radius,
+        -- yours included').
+        emp_affects = 'Every vehicle in the match driven by a player outside your squad',
+        emp_affects_solo = 'Every vehicle in the match driven by another player',
         emp_notified = 'Everyone in the match',
-        emp_risks = "Your squad's vehicles in the radius stall too.",
-        emp_risks_solo = 'Your own vehicles in the radius stall too.',
+        -- No `emp_risks` since round 4: the squad's own vehicles no longer
+        -- stall, so the lines saying they did ("Your squad's vehicles in the
+        -- radius stall too.") went, and risk_notice is the page's only risk.
         emp_done = 'The EMP went off.',
-        emp_description = 'EMP. Vehicles near their terminal have stalled.',
+        -- WRITTEN (2026-10-06, round 4; was 'EMP. Vehicles near their
+        -- terminal have stalled.').
+        emp_description = 'EMP. Every vehicle stalls for 3 minutes, except the ones their squad drives.',
+        emp_description_solo = 'EMP. Every vehicle stalls for 3 minutes, except the ones they drive.',
 
         -- Key finder (suggested; LIVE since wave A, 2026-10-06)
         key_finder_name = 'Key finder',
@@ -1254,13 +1269,11 @@ BR.Config.Terminals = {
         { id = 'ghost',          category = 'squad',      risk = 'low',    implemented = true,
           soloCategory = 'disruption', squadWide = true,
           options = { { id = 'duration', choices = { '120', '240' }, default = '120' } } },  -- seconds
-        -- LIVE SINCE WAVE C (2026-10-06): server/terminalfx/emp.lua picks the
-        -- vehicles as it goes off, client/terminalfx/emp.lua stalls them.
-        { id = 'emp',            category = 'disruption', risk = 'medium', implemented = true,
-          options = {
-              { id = 'radius', choices = { '300', '600' }, default = '300' },   -- meters
-              { id = 'duration', choices = { '30', '60' }, default = '30' },    -- seconds
-          } },
+        -- LIVE SINCE WAVE C (2026-10-06); ROUND 4 (the same day): every
+        -- vehicle in the match, for 3 minutes, except while the runner's squad
+        -- drives it -- no options. server/terminalfx/emp.lua keeps the fact,
+        -- and each client/terminalfx/emp.lua holds the car its player drives.
+        { id = 'emp',            category = 'disruption', risk = 'medium', implemented = true },
         { id = 'key_finder',     category = 'intel',      risk = 'low',    implemented = true, squadWide = true,
           options = { { id = 'target', choices = { 'ground', 'holders' }, default = 'ground' } } },
         { id = 'pulse',          category = 'intel',      risk = 'medium', implemented = true, squadWide = true,
@@ -1384,13 +1397,13 @@ BR.Config.Terminals = {
         medicDrainHp = 20,
         medicDrainFromHp = 50,
 
-        -- ── wave C (2026-10-06). EMP's radius and duration are its row's own
-        --    choices (meters, seconds), like wave A's. ──
+        -- ── wave C (2026-10-06), and round 4 the same day ──
 
-        -- EMP: the entity state bag a stalled vehicle carries while it lasts
-        -- -- the milliseconds left as it was set -- set and cleared by
-        -- server/terminalfx/emp.lua alone, read by client/terminalfx/emp.lua.
-        empBag = 'brEmp',
+        -- EMP (round 4, owner: "This should last for 3 minutes"): how long
+        -- every driver outside the runner's squad stalls whatever they drive.
+        -- The page says it (emp_what, emp_duration), and
+        -- tools/test_terminalfx.lua holds the two together.
+        empMs = 3 * 60 * 1000,
     },
 
     -- The server drops a second run request from one player sooner than this

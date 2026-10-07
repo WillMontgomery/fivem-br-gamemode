@@ -1279,6 +1279,14 @@ BR.Net = {
     -- pulsePingMs for pulseMs -- and once more, empty, when it is over
     -- (server/terminalfx/pulse.lua).
     TERMINAL_PULSE  = 'br:terminal:pulse',
+    -- S->C { matchId, leftMs?, liveMs? }. EMP (round 4): how long this
+    -- player's driving stalls from now (`leftMs`, absent when every EMP in
+    -- force spares their squad), and how long any EMP in this match lasts
+    -- (`liveMs`, absent with none). To the whole match when one goes off and
+    -- when one ends, and on br:ready while one lasts
+    -- (server/terminalfx/emp.lua); client/terminalfx/emp.lua applies it to
+    -- the vehicle its own player drives.
+    TERMINAL_EMP    = 'br:terminal:emp',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed }: whether this
     -- player holds one, and whether their squad has spent its one use this

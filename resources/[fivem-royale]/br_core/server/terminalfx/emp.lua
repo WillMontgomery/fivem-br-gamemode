@@ -1,62 +1,51 @@
 -- Season 2 terminals (#396), wave C: EMP, the server half.
 --
--- THE PAGE (br_lib/config/terminals.lua, `emp_*`): "Every vehicle within the
--- radius you choose stalls and won't start. Vehicles that drive in after it
--- goes off aren't affected. They start again when it ends." Options `radius`
--- (300 or 600 meters around this terminal) and `duration` (30 or 60 seconds),
--- the row's choices, read as numbers.
+-- ROUND 4 (owner, 2026-10-06): "The EMP tool should kill all cars in the
+-- entire match, except the ones that the user or their squad get into. This
+-- should last for 3 minutes."
 --
---   WHICH VEHICLES   picked HERE, once, at the moment it goes off
---                    (BR.Terminal.empPick): every vehicle in this match's
---                    routing bucket (`m.bucket`) within the radius of this
---                    terminal on the ground -- BR.Terminal.anchorOf, so the dev
---                    terminal is the player -- that a player may use in this
---                    gamemode. A vehicle that drives in afterwards was never
---                    picked, so it is never stalled.
---   NOT PICKED       anything BR.Config.VehicleRefusalFor refuses -- what
---                    flies and the tanks (#193), aircraft above all: nobody
---                    may fly one here (client/vehrefuse.lua ejects them,
---                    server/vehicles.lua files a case), and a stalled
---                    helicopter in the air falls on whoever is under it, which
---                    the page does not say; a trailer or a train (no engine to
---                    stall); and the CPR ride's ambulance while it carries a
---                    downed player (BR.Rescue.vehicleBusy) -- the game's own
---                    machinery, not a player's car. An ARMED model-table row
---                    is no refusal since #322 (its weapons are switched off
---                    and it is an ordinary car), so it IS picked and stalls
---                    like any car; so are the station ambulances, ordinary
---                    cars players may take.
---   MARKED           with an entity state bag, `fx.empBag`, holding the
---                    milliseconds it has left as it is set -- replicated to
---                    every client the vehicle is relevant to, and to a client
---                    it becomes relevant to later. A vehicle a second EMP
---                    picks keeps whichever end is later.
---   STALLED          by client/terminalfx/emp.lua, on whichever client owns the
---                    vehicle (the driver, once they are in): its engine off and
---                    undriveable, on the bag's change, on entering it, and on
---                    the one SLOW pass when ownership has moved -- never per
---                    frame.
---   IT ENDS          on its own clock (the job below clears each bag), with
---                    the match (the job, and `br:match:destroyed` for a match
---                    torn down between two passes), off Season 2, and with
---                    br_core stopping -- the bags are CLEARED there, not just
---                    forgotten: they live on entities, not on the match, and a
---                    bag left on a car after a restart would stall whoever got
---                    in next.
+-- THE PAGE (br_lib/config/terminals.lua, `emp_*`): "For 3 minutes, every
+-- vehicle in the match stalls and won't start while a player outside your
+-- squad is driving it. Vehicles your squad drives keep working. If someone
+-- outside your squad takes the wheel, it stalls. Vehicles start again when it
+-- ends." No options; fx.empMs (3 minutes).
 --
--- NOT REFUSED FOR FINDING NO VEHICLE. A refusal spends nothing, so "no car
--- near this terminal" would be free intel (Pulse's rule); an EMP over an empty
--- car park is an EMP. Refused, spending nothing, only outside a match (and on
--- a build with no server vehicle natives). Nothing here creates, deletes or
--- moves a vehicle: server/vehicles.lua's creation rule, the fuel ledger
--- (server/fuel.lua tracks a vehicle by its driver, and a stalled one drives
--- nowhere) and sv_entityLockdown are untouched, and the only write is the
--- server's own state bag.
+-- ═══ A FACT ABOUT DRIVERS, NOT A MARK ON CARS ═══
+--
+-- Wave C stalled the vehicles inside a radius by a state bag on each. "All
+-- cars in the entire match, except the ones the user or their squad get into"
+-- is a rule about WHO IS DRIVING, and it holds for a car that was parked a
+-- mile away when it went off, for one that drives in later, and for one that
+-- changes hands mid-EMP -- so nothing is picked and nothing is marked. The
+-- server keeps one match-wide fact per EMP (`m.terminalFx.emps`: the squad it
+-- spares, who ran it, when it ends), and tells every player in the match how
+-- long THEIR driving stalls (TERMINAL_EMP, `leftMs`; absent when every EMP in
+-- force spares their squad) and how long any EMP lasts (`liveMs`). Each client
+-- applies it to the vehicle its own player is driving -- client/terminalfx/
+-- emp.lua, on the fact's change, on getting in, and on the one SLOW pass --
+-- never per frame, and never to a car nobody of theirs drives.
+--
+--   SPARED        the runner's squad (BR.TerminalSolve.squadKey); a solo
+--                 player is a squad of one. Two EMPs from two squads spare
+--                 neither from the other's: a player's driving stalls until
+--                 the last EMP that does not spare them ends.
+--   IT ENDS       at fx.empMs, on the job below; with the match (not PLAYING,
+--                 the end screen included, and a match torn down -- its
+--                 players go to the lobby, where every client lets go); off
+--                 Season 2; and on a client as br_core stops. Each end that
+--                 changes what a player's driving does is pushed to them.
+--   A CLIENT THAT RESTARTS is told again on br:ready.
+--
+-- NEVER REFUSED for anything but being outside a match: there is always a
+-- match's worth of vehicles to stall. Nothing here creates, deletes, moves or
+-- marks a vehicle: server/vehicles.lua's creation rule, the fuel ledger and
+-- sv_entityLockdown are untouched.
 
 BR = BR or {}
 BR.Terminal = BR.Terminal or {}
 
 local T = BR.Terminal
+local TS = BR.TerminalSolve
 
 local function fx() return BR.Config.Terminals.fx or {} end
 
@@ -64,128 +53,103 @@ local function on()
     return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('terminals') == true
 end
 
---- The state bag key a stalled vehicle carries; client/terminalfx/emp.lua
---- reads the same config line.
---- @return string
-local function bagKey()
-    return fx().empBag or 'brEmp'
-end
-
---- Vehicle types with no engine to stall (GetVehicleType's words).
-local NO_ENGINE = { trailer = true, train = true }
-
---- A BOOL native's answer, believed correctly: `0` is truthy in Lua.
-local function didHit(v)
-    return v == true or v == 1
-end
-
---- The marks of every match that has some, by match id: the same table as
---- that match's `terminalFx.emp`. Only so `br:match:destroyed` -- raised after
---- the match has left BR.Server.matches -- can still reach the bags to clear.
-local byMatch = {}
-
---- Can this server stall anything at all? GetAllVehicles and Entity(...).state
---- are OneSync's; a build without them can pick nothing.
---- @return boolean
-local function capable()
-    return type(GetAllVehicles) == 'function' and type(Entity) == 'function'
-end
-
---- Set (ms) or clear (nil) one vehicle's bag. pcall'd: a handle that went
---- stale between the pick and here throws rather than answering.
-local function setBag(veh, ms)
-    pcall(function()
-        Entity(veh).state:set(bagKey(), ms and math.max(1, math.floor(ms)) or nil, true)
-    end)
-end
-
---- Does the EMP take this vehicle? It has an engine, it is not one this
---- gamemode refuses (aircraft and tanks; an armed row is allowed since #322,
---- so it is taken), and it is not the CPR ride.
---- @param veh integer
---- @return boolean
-local function takes(veh)
-    local okT, vtype = pcall(GetVehicleType, veh)
-    vtype = okT and vtype or nil
-    if NO_ENGINE[vtype] then return false end
-    if BR.Config.VehicleRefusalFor then
-        local okM, model = pcall(GetEntityModel, veh)
-        local why = BR.Config.VehicleRefusalFor(okM and model or nil,
-            { typeOf = function() return vtype end })
-        if why ~= nil then return false end
-    end
-    if BR.Rescue and BR.Rescue.vehicleBusy and BR.Rescue.vehicleBusy(veh) then return false end
-    return true
-end
-
---- EVERY VEHICLE AN EMP AT (x, y) TAKES, in this match, now: in its routing
---- bucket, within `radius` meters on the ground, and one `takes` allows.
---- Sorted, so a log line and a suite read the same list.
---- @param m table
---- @param x number
---- @param y number
---- @param radius number
---- @return integer[] handles
-function T.empPick(m, x, y, radius)
+--- The EMPs in force in this match now, or an empty list: none once the
+--- match is not being played or off Season 2.
+--- @param m table|nil
+--- @param now number
+--- @return table[] { { squad, by, untilAt } }
+local function inForce(m, now)
+    local list = m and m.terminalFx and m.terminalFx.emps or nil
+    if not list or not on() or m.state ~= BR.MatchState.PLAYING then return {} end
     local out = {}
-    if not capable() then return out end
-    local okAll, all = pcall(GetAllVehicles)
-    if not okAll or type(all) ~= 'table' then return out end
-    local r2 = radius * radius
-    for _, veh in ipairs(all) do
-        local okE, exists = pcall(DoesEntityExist, veh)
-        local okB, bucket = pcall(GetEntityRoutingBucket, veh)
-        if okE and didHit(exists) and okB and bucket == m.bucket then
-            local okC, c = pcall(GetEntityCoords, veh)
-            if okC and c then
-                local dx, dy = c.x - x, c.y - y
-                if dx * dx + dy * dy <= r2 and takes(veh) then out[#out + 1] = veh end
-            end
-        end
+    for _, e in ipairs(list) do
+        if now < e.untilAt then out[#out + 1] = e end
     end
-    table.sort(out)
     return out
 end
 
---- Is this vehicle stalled by an EMP in this match right now? For the suites
---- and the console.
+--- THE EMP THIS PLAYER'S DRIVING STALLS UNDER that ends last -- the latest
+--- end among the EMPs in force that do not spare their squad -- or nil when
+--- none does. The ONE answer the push and the persistent notice read.
 --- @param m table
---- @param veh integer
+--- @param src integer
 --- @param now number
---- @return boolean
-function T.empStalled(m, veh, now)
-    local marks = m and m.terminalFx and m.terminalFx.emp or nil
-    local untilAt = marks and marks[veh] or nil
-    return untilAt ~= nil and now < untilAt and on() and m.state == BR.MatchState.PLAYING
+--- @return table|nil  { squad, by, untilAt }
+function T.empOn(m, src, now)
+    local e = BR.Roster.get(src)
+    if not e then return nil end
+    local key = TS.squadKey(e, src)
+    local best = nil
+    for _, emp in ipairs(inForce(m, now)) do
+        if emp.squad ~= key and (best == nil or emp.untilAt > best.untilAt) then best = emp end
+    end
+    return best
 end
 
---- Clear every bag a match's EMPs set, or (with `now`) the ones whose time is
---- up. Public so the suites can step it.
+--- How long this player's driving stalls, in ms from now, or nil.
+--- @param m table
+--- @param src integer
+--- @param now number
+--- @return number|nil
+function T.empFor(m, src, now)
+    local emp = T.empOn(m, src, now)
+    return emp and (emp.untilAt - now) or nil
+end
+
+--- What TERMINAL_EMP tells `src`: how long their driving stalls (`leftMs`,
+--- absent when spared or with none in force) and how long any EMP in this
+--- match lasts (`liveMs`, absent with none in force).
+local function payloadFor(m, src, now)
+    local live = nil
+    for _, emp in ipairs(inForce(m, now)) do
+        if live == nil or emp.untilAt > live then live = emp.untilAt end
+    end
+    local left = T.empFor(m, src, now)
+    return { matchId = m.id, leftMs = left and math.floor(left) or nil,
+             liveMs = live and math.floor(live - now) or nil }
+end
+
+--- Tell every player in this match (or only `only`) what an EMP does to their
+--- driving now. Public so the suites can step it.
+--- @param m table
+--- @param now number
+--- @param only integer|nil
+function T.pushEmp(m, now, only)
+    for _, src in ipairs(only and { only } or T.lobbyOf(m)) do
+        TriggerClientEvent(BR.Net.TERMINAL_EMP, src, payloadFor(m, src, now))
+    end
+end
+
+--- Go off: every player outside squad `key` stalls whatever they drive for
+--- fx.empMs.
+--- @param m table
+--- @param key string  the runner's squad, spared
+--- @param by integer
+--- @param now number
+function T.startEmp(m, key, by, now)
+    local st = T.fxOf(m)
+    st.emps = st.emps or {}
+    local ms = tonumber(fx().empMs) or 180000
+    st.emps[#st.emps + 1] = { squad = key, by = by, untilAt = now + ms }
+    T.pushEmp(m, now)
+    print(('[br_core] terminals: EMP by %s in match %s, %.0f s: every vehicle another squad drives stalls')
+        :format(tostring(key), tostring(m.id), ms / 1000))
+end
+
+--- Drop the EMPs that are over -- every one of them once the match is not
+--- being played or off Season 2 -- and tell the match when that changed what
+--- anybody's driving does. Public so the suites can step it.
 --- @param m table
 --- @param now number
 function T.expireEmp(m, now)
     local st = m.terminalFx
-    local marks = st and st.emp
-    if not marks then return end
-    -- THE MATCH IS OVER, OR THE SEASON SWITCHED: every bag goes now. They are
-    -- on entities, so forgetting them would leave stalled cars behind.
-    local all = (not on()) or m.state ~= BR.MatchState.PLAYING
-    local cleared = 0
-    for veh, untilAt in pairs(marks) do
-        if all or now >= untilAt then
-            marks[veh] = nil
-            setBag(veh, nil)
-            cleared = cleared + 1
-        end
-    end
-    if next(marks) == nil then
-        st.emp = nil
-        byMatch[m.id] = nil
-    end
-    if cleared > 0 then
-        print(('[br_core] terminals: EMP over for %d vehicle(s) in match %s')
-            :format(cleared, tostring(m.id)))
-    end
+    local list = st and st.emps
+    if not list then return end
+    local keep = inForce(m, now)
+    if #keep == #list then return end
+    st.emps = (#keep > 0) and keep or nil
+    T.pushEmp(m, now)
+    print(('[br_core] terminals: %d EMP(s) over in match %s'):format(#list - #keep, tostring(m.id)))
 end
 
 T.FUNCTIONS.emp = {
@@ -194,11 +158,10 @@ T.FUNCTIONS.emp = {
     refuse = function(src, session)
         local m = T.whereIs(src)
         if not m then return (not session.dev) and 'unavailable' or nil end
-        if not capable() then return 'unavailable' end
         return nil
     end,
-    run = function(src, session, opts)
-        local m = T.whereIs(src)
+    run = function(src, session)
+        local m, _, key = T.whereIs(src)
         if not m then
             if session.dev then
                 print(('[br_core] brterminal (client %d): EMP ran on the dev terminal '
@@ -207,68 +170,26 @@ T.FUNCTIONS.emp = {
             end
             return { ok = false, code = 'unavailable' }
         end
-        if not capable() then return { ok = false, code = 'unavailable' } end
-        local x, y = T.anchorOf(src, session)
-        if not x then return { ok = false, code = 'unavailable' } end
-        local radius = tonumber(opts and opts.radius) or 300
-        local seconds = tonumber(opts and opts.duration) or 30
-        local now = GetGameTimer()
-        local untilAt = now + seconds * 1000
-        local taken = T.empPick(m, x, y, radius)
-        local st = T.fxOf(m)
-        st.emp = st.emp or {}
-        for _, veh in ipairs(taken) do
-            -- A SECOND EMP NEVER SHORTENS A FIRST over the same vehicle.
-            local was = st.emp[veh]
-            if was == nil or was < untilAt then st.emp[veh] = untilAt end
-            setBag(veh, st.emp[veh] - now)
-        end
-        if next(st.emp) == nil then
-            st.emp = nil
-        else
-            byMatch[m.id] = st.emp
-        end
-        print(('[br_core] terminals: EMP (%d m, %d s) in match %s stalled %d vehicle(s)')
-            :format(radius, seconds, tostring(m.id), #taken))
+        T.startEmp(m, key, src, GetGameTimer())
         return { ok = true, code = 'done' }
     end,
 }
 
--- ONCE A SECOND: the bags whose time is up, and every bag of a match no
--- longer being played (or off Season 2), cleared.
+-- ONCE A SECOND: the EMPs whose time is up, and every EMP of a match no longer
+-- being played (or off Season 2), ended and said.
 if BR.Sched and BR.Sched.every then
     BR.Sched.every(fx().endCheckMs or 1000, 'terminal.emp', function()
         local now = GetGameTimer()
         BR.Server.eachMatch(function(m)
-            if m.terminalFx and m.terminalFx.emp then T.expireEmp(m, now) end
+            if m.terminalFx and m.terminalFx.emps then T.expireEmp(m, now) end
         end)
     end)
 end
 
---- Every bag one match's EMPs set, cleared, from the index.
---- @param id any  the match id
-local function clearMatch(id)
-    local marks = id ~= nil and byMatch[id] or nil
-    if not marks then return end
-    byMatch[id] = nil
-    for veh in pairs(marks) do
-        marks[veh] = nil
-        setBag(veh, nil)
-    end
-end
-
--- A MATCH TORN DOWN BETWEEN TWO PASSES (an abandoned one never reaches ENDED)
--- is no longer in BR.Server.matches, so the job above cannot see it: its bags
--- are cleared here, from the index.
-AddEventHandler('br:match:destroyed', function(d)
-    clearMatch(type(d) == 'table' and d.matchId or nil)
-end)
-
--- BR_CORE STOPPING (a restart mid-EMP): the bags outlive the resource on the
--- entities, so every one is cleared on the way out.
-AddEventHandler('onResourceStop', function(res)
-    if res ~= GetCurrentResourceName() then return end
-    local ids = {}
-    for id in pairs(byMatch) do ids[#ids + 1] = id end
-    for _, id in ipairs(ids) do clearMatch(id) end
+-- A client that restarts mid-EMP is told again.
+AddEventHandler(BR.Net.READY, function()
+    local src = tonumber(source)
+    if not src or not on() then return end
+    local m = T.whereIs(src)
+    if m and #inForce(m, GetGameTimer()) > 0 then T.pushEmp(m, GetGameTimer(), src) end
 end)
