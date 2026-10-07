@@ -10,6 +10,7 @@
  */
 
 import { dispatch } from './nui'
+import { createLocker2Mock } from './mockLocker2'
 import type {
   CallbackName, ChatMessage, Envelope, ScreenPayload, WireEnvelope,
 } from './types'
@@ -96,10 +97,15 @@ const MOCK_PEDS = [
   { id: 'exec', name: 'Executive' },   { id: 'yeti', name: 'Yeti' },
 ]
 
+/** Locker v2 (#28): Lua's half, played in bridge/mockLocker2.ts. */
+const LOCKER2 = createLocker2Mock(MOCK_PEDS, emit)
+
 /** Stand-in for Lua callbacks while running in a browser. */
 export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promise<Res> {
   // eslint-disable-next-line no-console
   console.info('[mock] fetchNui', name, data)
+
+  if (name.startsWith('br/locker2/') && LOCKER2.handle(name, data)) return {} as Res
 
   if (name === 'br/chat/send') {
     const d = data as { channel: ChatMessage['channel']; text: string }
@@ -439,6 +445,11 @@ export function startMockDriver(): void {
   // until it arrives -- so a harness that never sends it is a harness where
   // the locker cannot be opened at all.
   emit({ k: 'locker', d: { peds: MOCK_PEDS, chosen: 'streetguy' } })
+  LOCKER2.push()
+  // `?locker` opens the locker straight away, Season 2's unless `?season=1`.
+  if (/[?&]locker\b/.test(window.location.search)) {
+    window.setTimeout(() => emit({ k: 'focus', d: { screen: 'locker' } }), 300)
+  }
   emit({ k: 'progress', d: MOCK_PROGRESS })
   // THE HARNESS IS ALWAYS AN ADMIN, which is the opposite of the in-game
   // default and is right here: the browser is where the screen gets built, and
