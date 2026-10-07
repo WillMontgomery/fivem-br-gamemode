@@ -26,8 +26,8 @@ Around them, the Gameplay half:
 | **The world** | `br_core/client/yubikey.lua` | Each terminal's blip and plate (the laptops are the owner's ymap's, hidden where terminals are off); the press that asks to open one; the key's HUD glyph; Storm reveal on the maps. Decides nothing. |
 | **The shared rules** | `br_lib/shared/terminal_solve.lua` | Online against the storm (`offlineWhy`), the squad's key, the sites list, the notice tokens, the extra roll -- one spelling for both sides. |
 | **The effects** | `br_core/server/terminalfx.lua` | What the first built functions do: Scan and its bounty, Supply drop, Max ammo, and the pushes that keep Scan and the bounty on screen; and the helpers the files below share. |
-| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Ghost, Contract -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06); and round 5's Gear Up and Vehicle drop -- see [Gear Up](#gear-up-round-5-owner-2026-10-06) and [Vehicle drop](#vehicle-drop-round-5-owner-2026-10-06). Every row is built. |
-| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents and the bounty on this player's maps, an EMP held on the vehicle this player drives, and a Vehicle drop's look for somewhere to land, its descent and its blip, from the server's pushes. Decides nothing. |
+| **One file per function** | `br_core/server/terminalfx/<id>.lua` | Wave A on (2026-10-06): Field medic, Disarm, Ghost, Contract -- see [Wave A](#wave-a-owner-2026-10-06); wave B's Storm control, Time & weather and Power outage -- see [wave B](#the-storm-the-sky-the-clock-and-the-lights-wave-b); wave C's EMP, Comms blackout and Reboot -- see [Wave C](#wave-c-owner-2026-10-06); and round 5's Gear Up, Vehicle drop and Airstrike -- see [Gear Up](#gear-up-round-5-owner-2026-10-06), [Vehicle drop](#vehicle-drop-round-5-owner-2026-10-06) and [Airstrike](#airstrike-round-5-owner-2026-10-06). Every row is built. |
+| **The marks** | `br_core/client/terminalfx.lua`, `br_core/client/terminalfx/<id>.lua` | Scan's opponents and the bounty on this player's maps, an EMP held on the vehicle this player drives, a Vehicle drop's look for somewhere to land, its descent and its blip, and an Airstrike's circles, flare and rockets, from the server's pushes. Decides nothing. |
 | **The persistent notices** | `br_core/server/terminalfx.lua` (and each function file's source), `br_core/client/terminalfx.lua`, `ui-src/src/hud/Impacts.tsx` | Round 4: what another player's terminal run is doing to each player, with its clock, at the foot of the HUD's notice stack -- see [the persistent notices](#persistent-notices-round-4). |
 
 **The server decides everything.** The computer and the app only ask. A run is
@@ -234,6 +234,10 @@ filters and pages from it.
   blip is on the squad's maps).
   In a squad match the app draws "Squads!" beside its title. Presentation
   only; `test_terminal.lua` holds the set to the rows' own lines.
+- `fuzz` (round 5, Airstrike): a row run at a spot whose map pick shows the
+  player's opponents as rough circles near where they are -- never centered on
+  anybody -- while the big map is up. The client says when the pick starts and
+  ends (`TERMINAL_PICK`), and the server sends the circles (`TERMINAL_FUZZ`).
 - `quiet` (round 4, owner 2026-10-06: "Field medic should not notify
   everyone"): the lobby is not told it ran -- no `notice_action`, no
   `_description` -- and its page leaves out `risk_notice` (the app's
@@ -328,12 +332,14 @@ first.
 | `time_weather` | Time & weather | disruption | low | | **live** (wave B) |
 | `power_outage` | Power outage | disruption | low | | **live** (wave B) |
 | `disarm` | Disarm | disruption | high | 200 | **live** (wave A) |
+| `airstrike` | Airstrike | disruption | medium | 200 (proposed) | **live** (round 5) |
 | `supply_drop` | Supply drop | supply | medium | | **live** |
 | `max_ammo` | Max ammo | supply | low | | **live** |
 | `reboot` | Reboot | squad (squad-only) | medium | 150 | **live** (wave C) |
 | `ghost` | Ghost | squad (disruption alone) | low | | **live** (wave A) |
 | `emp` | EMP | disruption | medium | | **live** (wave C) |
 | `gear_up` | Gear Up | supply | low | 200 for the whole squad (`costBy`), else free | **live** (round 5) |
+| `vehicle_drop` | Vehicle drop | supply | medium | 100 (proposed) | **live** (round 5) |
 | `contract` | Contract | disruption | medium | | **live** (wave A) |
 | `field_medic` | Field medic | supply | low | | **live** (wave A) |
 
@@ -371,6 +377,10 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_DROP_FIND` | S→C | `{ nonce, r, minM, everyMs, forMs }` / `{ nonce, stop }` | Vehicle drop (round 5): to the ONE player the car is for, as the run is accepted -- look for somewhere to land it within `r`, at least `minM` from yourself, and answer every `everyMs` until `stop` or `forMs`. |
 | `BR.Net.TERMINAL_DROP_SPOT` | C→S | `{ nonce, x, y, z, h }` / `{ nonce, none }` | That client's best road or open ground. Taken only from the player asked, for the nonce asked, at most twenty a search, and only if `BR.TerminalSolve.dropCheck` passes against the server's own samples; the last good one stands, `none` changes nothing, and it is checked again when the car drops. |
 | `BR.Net.TERMINAL_DROP` | S→C | `{ matchId, id, netId, x, y, z, h, tRelease, tLand, alt, blip? }` / `{ matchId, id, x, y }` / `{ matchId, id, off }` | A Vehicle drop: its descent to the whole match as it drops (`blip` for the squad it is for); the blip moved, and taken off, to that squad alone; again to a squadmate on `br:ready` while it lasts. |
+| `BR.Net.TERMINAL_PICK` | C→S | `{ terminalId, functionId, on }` | Airstrike (round 5): a map pick started (`on`) or ended on this client. An end is always taken; a start only inside the session on that terminal, for a `fuzz` row, from a player the door would let run it and who can afford it, one per `runMinIntervalMs`. |
+| `BR.Net.TERMINAL_FUZZ` | S→C | `{ list = { { s, x, y, r } } }` | The rough circles while that pick lasts, every `fx.fuzzPingMs`, and an empty list as it ends (the pick, the session, `fx.fuzzMaxMs`, Season 2). Never a teammate or a squad under Ghost; nothing while the runner's squad has Scan running. |
+| `BR.Net.TERMINAL_STRIKE` | S→C | `{ matchId, id, x, y, r, startsAt, endsAt, rockets = { { x, y, at } } }` | An Airstrike, to the whole match as its warning starts and on `br:ready` while it lasts: the circle, and every rocket's point and time (server clock). The client draws it and nothing more. |
+| `BR.Net.TERMINAL_STRIKE_VEH` | S→C | `{ netId, frac, wreck? }` | A rocket's blast on a vehicle, to the one client the server says owns it: `frac` of `fx.strikeVehicleDamage` off its engine and body, or wrecked. |
 | `BR.Net.SQUAD_POS` (`server/party.lua`) | S→C | the squad beacon's rows | Comms blackout: while one another squad ran is in force, every row sent to a blacked-out squad leaves `x` and `y` off, and nothing else (`BR.Terminal.beaconDark`). |
 | `BR.Net.REVIVEKEY_ARRIVE`, `BR.Net.REVIVEKEY_PLACE` | S→C | `{ x, y, z }` / `{ cancelled }` | Reboot: the revive key's own return (`BR.ReviveKey.bringBackAt`), over this terminal. |
 | `BR.Net.TERMINAL_RESULT` | S→C | `{ terminalId, functionId, ok, code, state?, runMs?, cost?, balance?, toast? }` | To the runner alone. `code` is `running` when a run is accepted (with `runMs`), `done` when it is over (a paid one with the new `balance`), else a reason (`no_volts` with `cost` and `balance`). Every answer but `running` carries `toast`, the line the server would toast for it; a client whose computer cannot show the answer toasts that. Once the server knows the computer has closed, the last word is its own toast instead. |
@@ -812,7 +822,8 @@ it. This could be a multi-step flow on the popup box like where the confirm
 button is greyed out until they select a "set location" button", and "The supply <!-- spelling-ok: the owner's own words -->
 drop should also allow them to pick exactly where."
 
-A registry row with **`spot = true`** (Storm control, Supply drop) is run at a
+A registry row with **`spot = true`** (Storm control, Supply drop, and round
+5's Airstrike) is run at a
 place picked on the big map. Its run request carries it as **`at = { x, y }`**,
 and `BR.Terminal.spot` takes only that shape -- two finite numbers within 20 km
 of the map's middle -- for such a row, and none for any other: anything else is
@@ -847,8 +858,10 @@ Run disabled. Pressed, it goes down as `pick` (app → `br.js` → the shell's
 The box then shows the place beside "Set location" (its map coordinates in
 digits where the game has no name) and enables Run; pressing "Set location"
 again picks again, and a map closed with no waypoint puts the box back to its
-first step. The run carries the spot (`at`). The server never hears of the
-pick itself. A session the server ends meanwhile (the player downed, the
+first step. The run carries the spot (`at`). The server hears only that a pick
+started and ended (round 5: `TERMINAL_PICK`, `on` as the computer hides and not
+as it is shown again), which means something only for a `fuzz` row -- Airstrike's
+rough circles. A session the server ends meanwhile (the player downed, the
 storm) closes the hidden computer like any other -- the storm's close too,
 at once and with no blue screen, since nobody could see it under the map; the
 map is the player's to close, and the waypoint is still taken off it then.
@@ -1015,7 +1028,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Round 5: `run gear_up item=medkit`, `run gear_up item=assaultrifle who=mate mate=<server id>`, `run gear_up item=grenade who=squad` (no Volts from the dev command); `run vehicle_drop` or `run vehicle_drop to=mate mate=<server id>` -- it asks that player's client for a spot first and drops the car `runMinMs` (3 s) later. Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Round 5: `run gear_up item=medkit`, `run gear_up item=assaultrifle who=mate mate=<server id>`, `run gear_up item=grenade who=squad` (no Volts from the dev command); `run vehicle_drop` or `run vehicle_drop to=mate mate=<server id>` -- it asks that player's client for a spot first and drops the car `runMinMs` (3 s) later; `run airstrike x=<n> y=<n>` (the warning, then the rockets, the damage the server's). Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
@@ -1093,7 +1106,7 @@ sibling through the picker. Nothing runs per frame.
 |---|---|---|
 | Field medic | Every squadmate **standing** (ALIVE: not downed, not in the air) short of either gets full health (the display bar's 100) and full armor (`BR.Config.Match.maxArmour`), through `BR.Inv.grantEffect`. Round 4 (owner, 2026-10-06): and every player standing outside the squad with `fx.medicDrainFromHp` (50) health or more loses `fx.medicDrainHp` (20), through `BR.Damage.drain`; and the lobby is not told (`quiet`). Instant. | `health_full`: nothing at all would change -- everyone standing in the squad is full and nobody else standing has 50 |
 | Disarm | Every player still in the fight OUTSIDE the runner's squad (round 4, owner 2026-10-06: "should not apply to the user or their squad") loses ONE weapon: the highest rarity, then the most damage, then the lower slot (`BR.Terminal.disarmPick`; guns and melee, never throwables), through `BR.Inv.revoke`. Gone, not dropped. 200 Volts. | `no_weapons`: nobody outside the squad carries one |
-| Ghost | `duration` 120 / 240 s: the squad is left out of other squads' Scan marks, and a bounty on one of them leaves every other map. It hides nobody from sight. | -- |
+| Ghost | `duration` 120 / 240 s: the squad is left out of other squads' Scan marks and (round 5) an Airstrike pick's rough circles, and a bounty on one of them leaves every other map. It hides nobody from sight. | -- |
 | Contract | A bounty for `fx.bountyMs` (10 min, Scan's -- round 4, owner 2026-10-06: "The contract bounty should last 10 minutes") on the player outside the squad with the most eliminations, never one in the runner's squad; a tie to whoever reached the count first (`killsAt`, stamped as a kill is credited), then the lower id (`BR.Terminal.contractPick`). | `no_target`: nobody outside the squad has one |
 
 Each refusal is asked again when the load ends, so an effect that can no
@@ -1102,7 +1115,8 @@ through `brterminal run <id> [option=choice]`.
 
 **Ghost is one predicate.** `BR.Terminal.hidden(m, key, now)`: under Ghost, in
 a match being played, on Season 2. Scan's push and the bounty's push ask it
-before they put anybody on another squad's map, and Ghost pushes both at once
+before they put anybody on another squad's map (and, round 5, an Airstrike
+pick's rough circles), and Ghost pushes both at once
 when it starts. Nothing is sent about Ghost itself; the squad's own
 view (its beacon, its own bounty mark, its own Scan) and the match panel's
 bounty list are untouched.
@@ -1347,6 +1361,86 @@ The lobby hears `notice_action` with `vehicle_drop_description`; the teammate
 it lands next to is told who sent it (`vehicle_drop_received`). It does
 nothing timed to anybody else, so it has no persistent notice.
 
+## Airstrike (round 5, owner 2026-10-06)
+
+> "yes please put Airstrike in the same build", on the design proposed on
+> #396: not homing missiles; after a visible ~10 s warning (a flare and a
+> circle on everyone's map), about 10 unguided airstrike rockets onto random
+> points within ~40 m of the spot; the damage decided by the server and
+> credited to the runner, every client only drawing the rockets and the
+> explosions.
+
+`server/terminalfx/airstrike.lua` and `client/terminalfx/airstrike.lua`; the
+row (200 Volts, proposed; `spot`, `fuzz`), the copy, `art.strike`, `art.fuzz`,
+`art.rocket` and `fx.strike*`/`fx.fuzz*` in `br_lib/config/terminals.lua`.
+
+**The spot** is round 4's map pick; inside the play area
+(`BR.Config.Map.InBounds`) or `strike_spot`, nothing spent.
+
+**While it is picked** the runner sees every opponent as a rough circle
+(`fx.fuzzRadiusM`, 100 m) whose center is `fx.fuzzMinM`..`fx.fuzzMaxM` (25..85
+m) off them, spread evenly over that ring's area -- always around them, never
+on them (`BR.TerminalSolve.fuzzOffset`). Each offset is fixed for the match,
+per runner and opponent, so picking again tells nothing more; the circle moves
+with them every `fx.fuzzPingMs` (2 s) while the pick lasts, `fx.fuzzMaxMs` (2
+min) at most. Never a teammate, never a squad under Ghost
+(`BR.Terminal.hidden`, the one question every mark on another squad's map
+asks), and none at all while the runner's squad has Scan running -- the exact
+dots are already there. Only inside the session on that terminal, from a
+player the door would let run it and who can afford it. The client clears
+them the moment its pick ends (`BR.Terminal.picking`), and the server's empty
+list follows.
+
+**The warning**: from the run's end, `fx.strikeWarnMs` (10 s) to the first
+rocket. `TERMINAL_STRIKE` to the whole match carries the circle (a red radius
+blip on every map, `airstrike_blip`, until `fx.strikeLingerMs` after the last
+rocket) and every rocket's point and time; every client within
+`fx.strikeDrawM` (800 m) lights a red flare at the spot (`BR.Flare.fire`, the
+airdrop's own, on a thread of its own so its stream never holds the rockets)
+and streams the rocket's model and particles. The persistent notice
+(`impact_airstrike`) is on every player in the fight within its reach, the
+runner's squad included, never the runner, until the last rocket.
+
+**The rockets**: `fx.strikeRockets` (10) on points spread evenly over the area
+within `fx.strikeRadiusM` (40 m), one after another, each at a random moment in
+its own tenth of `fx.strikeSpreadMs` (4 s) (`BR.TerminalSolve.strikePlan`).
+Unguided: nothing about where anybody is goes into the plan. Each client in
+range draws each as a LOCAL object (`art.rocket.model`, the RPG's rocket) with
+the RPG's trail, falling on a slant from `fallM` (150 m) over `fallMs` (1.2 s)
+onto the first surface under its point (a roof, or the street), and where it
+lands a fireball (`exp_grd_vehicle`), the game's cheap explosion sound and a
+camera shake within 60 m. **Never `AddExplosion` and never a projectile**: a
+scripted explosion is networked, hurts whatever it touches on that machine and
+is judged by `server/damage.lua`'s explosion checks; these hurt nothing, send
+nothing and flag nobody. A FRAME callback only from a moment before the first
+rocket falls to the last one landing.
+
+**The damage is the server's.** Each rocket deals `fx.strikeDamage` (150) to
+every player standing or downed within `fx.strikeFullM` (4 m) of where it
+lands, falling off in a straight line to nothing at `fx.strikeReachM` (14 m)
+(`BR.TerminalSolve.blastDamage`), measured on the ground -- the server cannot
+see roofs, so a rocket hurts whoever is within reach on the map, indoors or up
+a tower. Players in the air and players out are untouched. Every hit goes
+through `BR.Damage.applyHit` -- the health ledger's own door: armor first, a
+downed player's bleed clock, the heal ceilings lowered, the victim's ped told
+to follow -- billed as the world's blast (`WEAPON_EXPLOSION`), so it kills
+outright, as every blast does. **An opponent's hit is the runner's**: the
+damage credited, a hitmarker, the kill theirs (if they are still on the
+server). **Friendly fire: the runner's own squad is hit too** -- it is their
+call where to aim -- **but a teammate's hit, and the runner's own, is nobody's**:
+`applyHit` with no dealer (round 5) -- no credit, no hitmarker, no assist
+window taken, no teamkill counted; its hurt window is the drain's own stamp
+(`lastDrainAt`), so the sampler holds and the health audit excuses the round
+trip, as for Field medic's drain. **Vehicles** within `fx.strikeReachM` of a
+rocket lose up to `fx.strikeVehicleDamage` (1000) engine and body points the
+same way, and within `fx.strikeWreckM` (4 m) are wrecked -- written by the one
+client the server says owns each (`TERMINAL_STRIKE_VEH`), since a vehicle's
+health is its owner's to write, and a wreck goes up the way any wreck does.
+
+The lobby hears `notice_action` with `airstrike_description`. The match ending,
+or Season 2 ending, stops the rockets still to land. `brterminal run airstrike
+x=<n> y=<n>` strikes there, charging nothing.
+
 ## Persistent notices (round 4)
 
 The owner, 2026-10-06: "Anything that a player is being impacted by, which
@@ -1377,6 +1471,7 @@ restarted client's list whole.
 | Scan (`impact_scan`) | every opponent of a scanning squad, but a squad under Ghost while it lasts | the match ends |
 | Time & weather (`impact_time`, `impact_weather`) | everyone in the fight but the runner of the time (while its clock is the match's) and of the weather, one row each | the match ends |
 | Storm control (`impact_storm`) | everyone in the fight but whoever aimed the storm that stands | the match ends |
+| Airstrike (`impact_airstrike`) | everyone in the fight within its reach (its 40 m and a blast's 14 m past it) by the server's own samples, as they walk in and out -- the runner's squad included, never the runner | its last rocket |
 
 **None:** Disarm, Field medic's drain, Max ammo, Reboot, Supply drop, Gear Up
 and Vehicle drop are instant or touch nobody else (nothing to count down); Ghost and Storm reveal put nothing on anybody

@@ -1304,6 +1304,29 @@ BR.Net = {
     -- is for); its blip moved, and taken off, to that squad alone; the squad's
     -- again on br:ready while it lasts.
     TERMINAL_DROP   = 'br:terminal:drop',
+    -- C->S { terminalId, functionId, on }. Airstrike (round 5): the map pick
+    -- for a row with `fuzz` started (`on`) or ended on this client
+    -- (client/terminal.lua). Taken only inside the session the server opened
+    -- on that terminal, from a player who could run that row now and afford
+    -- it; one every runMinIntervalMs at most.
+    TERMINAL_PICK   = 'br:terminal:pick',
+    -- S->C { list = { { s, x, y, r } } }. The rough circles while that pick
+    -- lasts: one per opponent, a circle of `r` whose center is OFF them (the
+    -- server's fixed offset for this match), every fx.fuzzPingMs; nothing for
+    -- a squad under Ghost, and an empty list when the runner's squad has Scan
+    -- running, when the pick ends, or after fx.fuzzMaxMs.
+    TERMINAL_FUZZ   = 'br:terminal:fuzz',
+    -- S->C { matchId, id, x, y, r, startsAt, endsAt, rockets = { { x, y, at } } }.
+    -- An Airstrike, to the whole match as its warning starts, and on br:ready
+    -- while it lasts: the circle, the flare and where and when each rocket
+    -- lands (server clock). The client only draws it; the server decides
+    -- every point of damage (server/terminalfx/airstrike.lua).
+    TERMINAL_STRIKE = 'br:terminal:strike',
+    -- S->C { netId, frac, wreck? }. A rocket's blast on a vehicle, to the one
+    -- client the server says owns it (the owner writes a vehicle's health):
+    -- take `frac` of fx.strikeVehicleDamage off its engine and body, or wreck
+    -- it.
+    TERMINAL_STRIKE_VEH = 'br:terminal:strikeVeh',
 
     -- THE YUBIKEY (#396, Season 2). S->C { held, squadUsed, squadMatch,
     -- first? }: whether this player holds one, and whether their squad has

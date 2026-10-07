@@ -724,6 +724,11 @@ client_scripts {
     -- client/terminalfx.lua's SLOW pass like the rest. A FRAME callback only
     -- while a copy of the car comes down.
     'client/terminalfx/vehicle_drop.lua',
+    -- And its Airstrike: the rough circles of its map pick, the circle, the
+    -- flare (BR.Flare, client/flares.lua, read at call time), the rockets'
+    -- particles and the owner's write to a vehicle a rocket hit. A FRAME
+    -- callback only while rockets fall.
+    'client/terminalfx/airstrike.lua',
 }
 
 -- sched.lua is server-only rather than shared, because the client has its own
@@ -981,6 +986,10 @@ server_scripts {
     -- BR.Vehicles.spawnOwned (server/vehicles.lua) and the blip's seat walk
     -- through BR.Vehicles.ridingIn, both read at call time.
     'server/terminalfx/vehicle_drop.lua',
+    -- And its Airstrike: the damage through BR.Damage.applyHit
+    -- (server/damage.lua), the vehicles through the OneSync pool, read at
+    -- call time.
+    'server/terminalfx/airstrike.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

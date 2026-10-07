@@ -188,6 +188,11 @@ BR.Config.Terminals = {
         impact_weather = 'Time & weather: the weather inside the circle was changed.',
         -- Storm control, for the rest of the match: everyone but the runner.
         impact_storm = 'Storm control: the storm will end where another player chose.',
+        -- WRITTEN (2026-10-06, round 5). Airstrike, from its warning to its last
+        -- rocket: every player in the fight inside its reach (the circle and the
+        -- blast's reach past it), the runner's squad included, but never the
+        -- runner. The countdown is to the last rocket.
+        impact_airstrike = 'Airstrike: rockets are coming down where you are.',
 
         -- ── the desktop (cuchi_computer) -- at the terminal. WRITTEN ─────────
 
@@ -791,6 +796,37 @@ BR.Config.Terminals = {
         disarm_description = 'Disarm. Every player outside their squad lost their most powerful weapon.',
         disarm_description_solo = 'Disarm. Every other player lost their most powerful weapon.',
 
+        -- Airstrike (owner's, approved 2026-10-06: "yes please put Airstrike in
+        -- the same build"). ALL WRITTEN (2026-10-06, round 5) for his review.
+        -- The 10 seconds, the 10 rockets, the 40 meters and the 4 seconds are
+        -- fx.strikeWarnMs, strikeRockets, strikeRadiusM and strikeSpreadMs, and
+        -- tools/test_terminalstrike.lua holds the page to them.
+        airstrike_name = 'Airstrike',
+        airstrike_summary = 'Calls 10 rockets down on a spot you pick on the map.',
+        -- What the server does (server/terminalfx/airstrike.lua): rough
+        -- circles while the spot is picked, then a warning everyone can see,
+        -- then unguided rockets whose damage the server works out. The
+        -- runner's squad is hit too (the coordinator's proposal: it is their
+        -- call where to aim). A player taken out by one counts as the
+        -- runner's elimination, but never a teammate.
+        airstrike_what = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless your squad already sees them with Scan.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, your squad and you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
+        airstrike_what_solo = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless you already see them with Scan.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
+        airstrike_duration = 'About 15 seconds: a 10-second warning, then the rockets',
+        airstrike_affects = 'Everyone near the spot, your squad included',
+        airstrike_affects_solo = 'Everyone near the spot, you included',
+        airstrike_notified = 'Everyone in the match, with a circle on their map',
+        airstrike_risks = "Everyone sees where it will land, and has 10 seconds to get away.\nYour squad is hit too if it's near the spot.",
+        airstrike_risks_solo = "Everyone sees where it will land, and has 10 seconds to get away.\nYou're hit too if you're near the spot.",
+        airstrike_done = 'The airstrike is on its way.',
+        airstrike_description = 'Airstrike. Rockets will hit the circle on the map in 10 seconds.',
+        -- The circle on every player's map, and the rough circles while a
+        -- spot is picked: their names in the pause map's legend.
+        airstrike_blip = 'Airstrike',
+        airstrike_fuzz_blip = 'Opponent nearby',
+        -- Why it cannot run, at the terminal -- refused, spending nothing, the
+        -- 200 Volts included: a spot off the play area.
+        strike_spot = 'That spot is off the map. Pick a spot inside the play area.',
+
         -- Supply drop (owner's; LIVE)
         supply_drop_name = 'Supply drop',
         supply_drop_summary = 'Calls in an extra airdrop.',
@@ -974,10 +1010,15 @@ BR.Config.Terminals = {
         -- function the owner cut in round 5, so they say what Ghost hides now:
         -- the squad, from Scan and the bounty markers.
         ghost_name = 'Ghost',
-        ghost_summary = 'Hides your squad from Scan and bounty markers for a while.',
-        ghost_summary_solo = 'Hides you from Scan and bounty markers for a while.',
-        ghost_what = "Your squad doesn't show up on other squads' Scan markers.\nIf one of you has a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
-        ghost_what_solo = "You don't show up on other players' Scan markers.\nIf you have a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
+        -- WRITTEN (2026-10-06, round 5, the Airstrike build): an Airstrike's
+        -- rough circles, shown while its spot is picked, ask Ghost too (the one
+        -- predicate every mark on another squad's map asks), so the lines say
+        -- so -- were "...from Scan and bounty markers..." and "...other squads'
+        -- Scan markers.".
+        ghost_summary = 'Hides your squad from Scan, Airstrike and bounty markers for a while.',
+        ghost_summary_solo = 'Hides you from Scan, Airstrike and bounty markers for a while.',
+        ghost_what = "Your squad doesn't show up on other squads' Scan or Airstrike markers.\nIf one of you has a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
+        ghost_what_solo = "You don't show up on other players' Scan or Airstrike markers.\nIf you have a bounty, the bounty marker is hidden too.\nIt doesn't hide you from anyone who can see you.",
         ghost_opt_duration = 'Duration',
         ghost_opt_duration_120 = '2 minutes',
         ghost_opt_duration_240 = '4 minutes',
@@ -1144,6 +1185,25 @@ BR.Config.Terminals = {
         -- chuteModel and its deploy anim), `chuteScale` times its authored
         -- size, `chuteRiseM` over the car's origin.
         drop = { sprite = 225, colour = 2, scale = 1.0, chuteScale = 3.0, chuteRiseM = 1.2 },
+        -- Airstrike (round 5): the circle on every player's map from its
+        -- warning to its last rocket (a radius blip, red), and the rough
+        -- circles of its map pick (a fainter red). Placeholders like Scan's.
+        strike = { colour = 1, alpha = 110 },
+        fuzz = { colour = 1, alpha = 60 },
+        -- What each client draws of it, and nothing more: the rocket's model
+        -- (the RPG's, which GTA's own airstrike rocket wears) with the RPG's
+        -- trail from `core`, falling from fallM over the spot in fallMs at a
+        -- slant of slantM; where it lands, a fireball from `core`
+        -- ('exp_grd_vehicle', the ground explosion GTA draws for a car), the
+        -- game's cheap explosion sound and a camera shake for a player within
+        -- shakeM. NOT AddExplosion: a scripted explosion is networked, does its
+        -- own damage and would be judged by server/damage.lua's explosion
+        -- checks. The look is the owner's to tune in game; nothing here
+        -- decides who is hurt.
+        rocket = { model = 'w_lr_rpg_rocket', trailAsset = 'core', trail = 'proj_rpg_trail',
+                   fallM = 150.0, fallMs = 1200, slantM = 25.0,
+                   blastAsset = 'core', blast = 'exp_grd_vehicle', blastScale = 1.0,
+                   sound = 'MAIN_EXPLOSION_CHEAP', shake = 'LARGE_EXPLOSION_SHAKE', shakeM = 60.0 },
     },
 
     -- ═══ WHERE A YUBIKEY COMES FROM (owner, 2026-10-04; crates 2026-10-06) ═══
@@ -1345,6 +1405,11 @@ BR.Config.Terminals = {
     --                "Set location" step (confirm_location), and the run
     --                carries the spot as `at = { x, y }` (BR.Terminal.spot;
     --                the function reads it as `opts.at`).
+    --   fuzz         true for a function run at a spot whose map pick shows
+    --                the player's opponents as rough circles near where they
+    --                are (round 5, Airstrike): the client says when the pick
+    --                starts and ends (TERMINAL_PICK) and the server sends them
+    --                (TERMINAL_FUZZ). Never centered on anybody.
     --   quiet        true for a function whose run the lobby is NOT told of
     --                (round 4, owner 2026-10-06: "Field medic should not
     --                notify everyone"): no notice_action, so no
@@ -1379,7 +1444,8 @@ BR.Config.Terminals = {
     -- consideration; Contract and Field medic are the app round's proposals,
     -- for the owner to keep or cut. He cut four on 2026-10-06: Lockdown ("The
     -- player gains nothing from using that"), Storm delay ("We have to keep
-    -- the pace of the match"), and two more in round 5.
+    -- the pace of the match"), and two more in round 5. Round 5 added Gear Up,
+    -- Vehicle drop and Airstrike.
     functions = {
         { id = 'scan',           category = 'intel',      risk = 'high',   implemented = true, cost = 200,
           bounty = 'runner', squadWide = true },
@@ -1421,6 +1487,15 @@ BR.Config.Terminals = {
               { id = 'duration', choices = { '120', '240' }, default = '120' },
           } },
         { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = true, cost = 200 },
+        -- ROUND 5 (owner, 2026-10-06: "yes please put Airstrike in the same
+        -- build"): about 10 unguided rockets on random points within 40 m of a
+        -- spot picked on the big map, after a 10 s warning everyone can see;
+        -- the server works out the damage. `fuzz`: while the spot is picked,
+        -- opponents show as rough circles (server/terminalfx/airstrike.lua).
+        -- 200 Volts: PROPOSED, with the rest of the costs under the owner's
+        -- review.
+        { id = 'airstrike',      category = 'disruption', risk = 'medium', implemented = true, cost = 200,
+          spot = true, fuzz = true },
         { id = 'supply_drop',    category = 'supply',     risk = 'medium', implemented = true,
           spot = true },
         { id = 'max_ammo',       category = 'supply',     risk = 'low',    implemented = true, squadWide = true },
@@ -1622,6 +1697,46 @@ BR.Config.Terminals = {
         dropAltM = 120.0,
         dropFallMs = 9000,
         dropDrawM = 600.0,
+
+        -- ── round 5 (2026-10-06): Airstrike ──
+        --
+        -- The strike (the owner's "~10 s warning", "about 10 unguided
+        -- rockets ... onto random points within ~40 m over a few seconds"): the
+        -- warning from the run's end to the first rocket, the rockets, their
+        -- spread on the ground and in time. The page says each one
+        -- (airstrike_what), and tools/test_terminalstrike.lua holds them
+        -- together.
+        strikeWarnMs = 10000,
+        strikeRockets = 10,
+        strikeRadiusM = 40.0,
+        strikeSpreadMs = 4000,
+        -- THE DAMAGE, THE SERVER'S (PROPOSED): each rocket deals strikeDamage
+        -- (display units, armor first) to every player within strikeFullM of
+        -- where it lands, falling off in a straight line to nothing at
+        -- strikeReachM -- a lethal core and the RPG's own 12 m blast, a bit
+        -- wider. Measured on the ground (x, y): the server cannot see roofs, so
+        -- a rocket hurts whoever is within reach on the map, indoors or up a
+        -- tower. Vehicles: within strikeWreckM, wrecked; out to strikeReachM,
+        -- strikeVehicleDamage engine and body points falling off the same way.
+        strikeDamage = 150.0,
+        strikeFullM = 4.0,
+        strikeReachM = 14.0,
+        strikeWreckM = 4.0,
+        strikeVehicleDamage = 1000.0,
+        -- How long the circle stays on the map after the last rocket, and how
+        -- far off a client draws the rockets and the flare.
+        strikeLingerMs = 2000,
+        strikeDrawM = 800.0,
+        -- THE ROUGH CIRCLES of its map pick: each opponent inside a circle of
+        -- fuzzRadiusM whose center sits fuzzMinM..fuzzMaxM from them (spread
+        -- evenly over that ring's area), fixed for the match per runner and
+        -- opponent so picking again tells nothing more, and moved with them
+        -- every fuzzPingMs while the pick lasts -- fuzzMaxMs at most.
+        fuzzRadiusM = 100.0,
+        fuzzMinM = 25.0,
+        fuzzMaxM = 85.0,
+        fuzzPingMs = 2000,
+        fuzzMaxMs = 120000,
     },
 
     -- ═══ GEAR UP'S LIST (round 5, owner 2026-10-06) ═══

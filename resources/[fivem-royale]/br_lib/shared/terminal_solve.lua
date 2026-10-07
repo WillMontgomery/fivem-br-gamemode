@@ -326,3 +326,57 @@ function T.dropCheck(spot, target, others, cfg, inBounds)
     if inBounds and not inBounds(spot.x, spot.y) then return 'bounds' end
     return nil
 end
+
+--- AN AIRSTRIKE ROCKET'S DAMAGE to a player `d` meters (on the ground) from
+--- where it lands: `full` within `fullM`, falling off in a straight line to
+--- nothing at `reachM` (round 5; fx.strikeDamage, strikeFullM, strikeReachM).
+--- Display units, before armor -- BR.Damage.applyHit takes it from there.
+--- @param d number
+--- @param full number @param fullM number @param reachM number
+--- @return number
+function T.blastDamage(d, full, fullM, reachM)
+    full, fullM, reachM = tonumber(full) or 0.0, tonumber(fullM) or 0.0, tonumber(reachM) or 0.0
+    if not finite(d) or d < 0.0 or full <= 0.0 or d >= reachM then return 0.0 end
+    if d <= fullM then return full + 0.0 end
+    return full * (reachM - d) / (reachM - fullM)
+end
+
+--- WHERE AND WHEN AN AIRSTRIKE'S ROCKETS LAND (round 5): fx.strikeRockets
+--- points spread EVENLY OVER THE AREA within fx.strikeRadiusM of (x, y) --
+--- r * sqrt(u), not r * u, which would bunch them at the middle -- each landing
+--- at `startAt` plus its own even share of fx.strikeSpreadMs, at a random
+--- moment inside that share, so they come down one after another. Unguided:
+--- nothing here looks at where anybody is.
+--- @param rand fun(): number  0..1 (math.random on the server; a seeded stream in the suites)
+--- @param x number @param y number
+--- @param cfg table  BR.Config.Terminals.fx
+--- @param startAt number  server time of the first share
+--- @return table[] { { x, y, at } }, in landing order
+function T.strikePlan(rand, x, y, cfg, startAt)
+    local n = math.max(1, math.floor(tonumber(cfg.strikeRockets) or 10))
+    local r = tonumber(cfg.strikeRadiusM) or 40.0
+    local share = math.max(0.0, tonumber(cfg.strikeSpreadMs) or 4000.0) / n
+    local out = {}
+    for i = 1, n do
+        local d = r * math.sqrt(rand())
+        local a = 2.0 * math.pi * rand()
+        out[i] = { x = x + d * math.cos(a), y = y + d * math.sin(a),
+                   at = math.floor(startAt + (i - 1) * share + rand() * share) }
+    end
+    return out
+end
+
+--- WHERE AN AIRSTRIKE PICK'S ROUGH CIRCLE SITS OFF AN OPPONENT (round 5): an
+--- offset fx.fuzzMinM..fuzzMaxM long, spread evenly over that ring's area, in
+--- any direction. NEVER NONE: the opponent is inside the circle and never at
+--- its center.
+--- @param rand fun(): number
+--- @param minM number @param maxM number
+--- @return number dx, number dy
+function T.fuzzOffset(rand, minM, maxM)
+    minM, maxM = tonumber(minM) or 25.0, tonumber(maxM) or 85.0
+    if maxM < minM then maxM = minM end
+    local d = math.sqrt(minM * minM + rand() * (maxM * maxM - minM * minM))
+    local a = 2.0 * math.pi * rand()
+    return d * math.cos(a), d * math.sin(a)
+end

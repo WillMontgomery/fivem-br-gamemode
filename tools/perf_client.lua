@@ -2213,6 +2213,22 @@ local PHASES = {
     end, after = function()
         if serverHas('terminals') then net(BR.Net.TERMINAL_DROP, { matchId = 1, id = 1, off = true }) end
     end },
+    { id = 'match airstrike', world = 's2-sky', settle = 30, setup = function()
+        -- An Airstrike 30 m off, its warning nearly over as the scene starts:
+        -- the circle and the flare, then its ten rockets falling and bursting
+        -- over the next four seconds -- the FRAME callback carrying them, gone
+        -- with the last -- and the circle off the map two seconds after.
+        if not serverHas('terminals') then return end
+        local p = entPos(W.me)
+        local t0 = gameMs() + 2000
+        local rockets = {}
+        for i = 1, 10 do
+            rockets[i] = { x = p.x + 30.0 + (i - 5) * 4.0, y = p.y + ((i % 3) - 1) * 6.0,
+                           at = t0 + (i - 1) * 400 + 200 }
+        end
+        net(BR.Net.TERMINAL_STRIKE, { matchId = 1, id = 1, x = p.x + 30.0, y = p.y, r = 40.0,
+            startsAt = t0, endsAt = rockets[10].at, rockets = rockets })
+    end },
 }
 
 local function snapshot()

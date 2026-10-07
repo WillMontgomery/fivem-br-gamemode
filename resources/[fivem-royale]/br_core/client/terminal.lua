@@ -16,7 +16,8 @@
 --                                cuchi_computer:closed  -> TERMINAL_CLOSED
 --   computer -> here -> the map  cuchi_computer:pick -> :Hide, the big map,
 --                                and :Show with the spot picked (round 4's
---                                map pick, below)
+--                                map pick, below); TERMINAL_PICK as it starts
+--                                and ends (round 5, Airstrike's rough circles)
 --   a run's last word that no computer can show -> a toast (its `toast`),
 --                                from TERMINAL_RESULT or cuchi_computer:missed
 --   computer -> here -> keys     cuchi_computer:opened/closed
@@ -274,8 +275,11 @@ end)
 --      none when no waypoint was set, which puts the box back to its first
 --      step.
 --
--- The server never hears of the pick: the spot rides the run request (`at`),
--- and the server decides what it means. A session the server ends meanwhile
+-- The spot rides the run request (`at`), and the server decides what it means.
+-- The server hears only that a pick STARTED and ENDED (round 5, TERMINAL_PICK:
+-- `on`, then not): for a row with `fuzz` (Airstrike) it sends the rough circles
+-- of the player's opponents while the map is up (client/terminalfx/airstrike.lua
+-- draws them); for any other it does nothing. A session the server ends meanwhile
 -- (the player downed, the storm) closes the hidden computer as any other; the
 -- map is the player's to close, and the waypoint is still taken off it then. A
 -- map that never comes up (`PICK_RAISE_MS`) ends the pick with no spot.
@@ -338,6 +342,7 @@ end
 local function finishPick()
     local p = picking
     picking = nil
+    TriggerServerEvent(BR.Net.TERMINAL_PICK, { terminalId = p.terminalId, functionId = p.functionId, on = false })
     local at = nil
     if BR.NativeTruthy(IsWaypointActive()) then
         local b = GetFirstBlipInfoId(8)
@@ -386,6 +391,7 @@ AddEventHandler('cuchi_computer:pick', function(terminalId, req)
     if c:Hide() ~= true then return end
     picking = p
     setKeys(false)
+    TriggerServerEvent(BR.Net.TERMINAL_PICK, { terminalId = terminalId, functionId = req.functionId, on = true })
     TriggerEvent('br:ui:mapToggle')
 end)
 

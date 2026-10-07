@@ -895,7 +895,19 @@ local function creditDamage(shooter, victim, landed)
     dealer.damage = (dealer.damage or 0.0) + landed
 end
 
---- @param shooter integer
+--- ═══ AND A HIT WITH NO DEALER (#396 round 5, Airstrike) ═══
+---
+--- `shooter` may be nil: a terminal's Airstrike rocket landing on its
+--- runner's own squad (the server decides the blast; owner, 2026-10-06), which
+--- is somebody's run and nobody's kill. Everything below happens -- armor
+--- first, the knock decided before the health is written, the heal ceilings
+--- lowered, the channel interrupted, the victim told, a defeat -- with three
+--- things left out: no hitmarker (there is nobody to send it to), no credit,
+--- and no assist window. An earlier shooter's `lastHitBy` stands, and the hurt
+--- window the sampler and the health audit read is the drain's own stamp
+--- (`lastDrainAt`, BR.Damage.drain's), so the round trip while the ped still
+--- reads high is held and excused, not counted.
+--- @param shooter integer|nil
 --- @param victim integer
 --- @param amount number   display units, already multiplied by body part
 --- @param meta table      { weapon, headshot, component, dist }
@@ -921,11 +933,13 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
         -- Read AFTER the bleed: `e` is the live entry, so a hit that ran the
         -- clock out has already flipped it to DEAD by this line and the
         -- marker gets to punctuate.
-        TriggerClientEvent(BR.Net.DAMAGE_FEED, shooter, {
-            amount   = math.floor(amount + 0.5),
-            headshot = meta and meta.headshot or false,
-            killed   = e.state ~= BR.PlayerState.DBNO,
-        })
+        if shooter then
+            TriggerClientEvent(BR.Net.DAMAGE_FEED, shooter, {
+                amount   = math.floor(amount + 0.5),
+                headshot = meta and meta.headshot or false,
+                killed   = e.state ~= BR.PlayerState.DBNO,
+            })
+        end
         return
     end
 
@@ -1045,7 +1059,7 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
         end
     end
 
-    TriggerClientEvent(BR.Net.DAMAGE_FEED, shooter, {
+    if shooter then TriggerClientEvent(BR.Net.DAMAGE_FEED, shooter, {
         amount   = math.floor(amount + 0.5),
         headshot = meta and meta.headshot or false,
         killed   = e.hp <= 0.0,
@@ -1057,14 +1071,19 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
         -- Withheld with the netId, so a hit that sends no correction still says
         -- nothing at all about the victim on this channel.
         src      = netId and victim or nil,
-    })
+    }) end
 
     -- Attribution, for the kill feed and for anything that finishes them
     -- later: the assist window means storm or fall damage on a wounded player
-    -- still credits whoever shot them.
-    e.lastHitBy = shooter
-    e.lastHitAt = GetGameTimer()
-    e.lastHitWeapon = meta and meta.weapon or nil
+    -- still credits whoever shot them. A hit with no dealer takes nobody's
+    -- window and leaves the last shooter's standing: its stamp is the drain's.
+    if shooter then
+        e.lastHitBy = shooter
+        e.lastHitAt = GetGameTimer()
+        e.lastHitWeapon = meta and meta.weapon or nil
+    else
+        e.lastDrainAt = GetGameTimer()
+    end
 
     if downing or e.hp <= 0.0 then
         local how = 'gunshot'

@@ -16,7 +16,17 @@
 --   PART B  Vehicle drop, the client: the look for a road or open ground, the
 --           descent's copy and its canopy, the real car hidden until it lands,
 --           the blip, and nothing per frame once it has.
---   PART C  Airstrike, the server and the client.
+--   PART C  Airstrike, the server: the spot, the plan (unguided, evenly over
+--           the circle, one after another), the damage the server works out
+--           (the falloff, friendly fire, the kill the runner's, never a
+--           teammate's), the vehicles' owners told, the persistent notice,
+--           the refusals, the match's end, br:ready, the dev command, and the
+--           rough circles of the map pick -- who may see them, never on
+--           anybody, fixed for the match, Ghost and Scan.
+--   PART D  Airstrike, the client: the rough circles, the circle, the flare,
+--           the rockets and their blasts -- particles and a sound, never an
+--           explosion -- the owner's write to a vehicle, and nothing per frame
+--           once the last rocket has landed.
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_terminalstrike.lua
 
@@ -898,6 +908,505 @@ do
 end
 
 -- =========================================================================
+-- PART C -- Airstrike, the server
+-- =========================================================================
+
+-- THE DAMAGE DOOR, ON ITS CONTRACT (server/damage.lua's BR.Damage.applyHit:
+-- the ledger, the knock and the kill, through the real sampler and combat, is
+-- tools/test_roster.lua's): every hit the server deals, recorded.
+local hits = {}
+BR.Damage = {
+    applyHit = function(shooter, victim, amount, meta)
+        hits[#hits + 1] = { shooter = shooter, victim = victim, amount = amount, meta = meta }
+    end,
+}
+-- THE ONESYNC VEHICLE POOL, over the same vehicles the drop's model keeps.
+function GetAllVehicles()
+    local out = {}
+    for v in pairs(vehicles) do out[#out + 1] = v end
+    table.sort(out)
+    return out
+end
+function GetEntityRoutingBucket(v) return vehicles[v] and vehicles[v].bucket or 0 end
+function NetworkGetEntityOwner(v) return vehicles[v] and vehicles[v].owner or -1 end
+function NetworkGetNetworkIdFromEntity(v) return v + 9000 end
+
+local EXPLOSION_HASH = BR.Config.EnvironmentalFor(0x2024F4E8) and BR.Config.EnvironmentalFor(0x2024F4E8).hash
+
+--- A seeded stream for the solvers (a fixed sequence, not the clock's).
+local function stream(seed)
+    local x = seed
+    return function()
+        x = (1103515245 * x + 12345) % 2147483648
+        return x / 2147483648
+    end
+end
+
+local function hitsOn(victim)
+    local out = {}
+    for _, h in ipairs(hits) do if h.victim == victim then out[#out + 1] = h end end
+    return out
+end
+
+--- A vehicle in the pool, as a match's car stands.
+local function car(x, y, owner, bucket)
+    vehSeq = vehSeq + 1
+    vehicles[vehSeq] = { model = 'sultan', x = x, y = y, z = 30.0, h = 0.0, bucket = bucket or 101,
+                         owner = owner, engine = 1000.0 }
+    return vehSeq
+end
+
+describe('Airstrike: registered, built, 200 Volts, run at a spot, and its page holds to its numbers')
+do
+    local row = T.row('airstrike')
+    ok(row ~= nil and row.implemented == true and T.FUNCTIONS.airstrike ~= nil
+        and T.FUNCTIONS.airstrike.refuse and T.FUNCTIONS.airstrike.run, 'listed, built, refuse and run')
+    eq(row and row.category, 'disruption', 'under Disruption')
+    eq(T.costOf(row), 200, '200 Volts (proposed)')
+    ok(row and row.spot == true and row.fuzz == true and row.options == nil,
+        "round 4's map pick, with the rough circles, and no options")
+    ok(row and row.squadWide == nil and row.bounty == nil, 'not squad-wide, no bounty')
+    eq(FX.strikeWarnMs, 10000, 'the "~10 s warning"')
+    eq(FX.strikeRockets, 10, '"about 10" rockets')
+    eq(FX.strikeRadiusM, 40.0, '"within ~40 m"')
+    ok(FX.strikeSpreadMs >= 2000 and FX.strikeSpreadMs <= 6000, '"over a few seconds"', FX.strikeSpreadMs)
+    for _, k in ipairs({ 'airstrike_what', 'airstrike_what_solo' }) do
+        local w = COPY[k]
+        ok(w:find(('%d seconds later, %d rockets'):format(FX.strikeWarnMs / 1000, FX.strikeRockets), 1, true)
+            and w:find(('within %d meters'):format(FX.strikeRadiusM), 1, true)
+            and w:find(('about %d seconds'):format(FX.strikeSpreadMs / 1000), 1, true)
+            and w:find("They aren't guided.", 1, true), k .. ' says the numbers, and that they are not guided')
+    end
+    ok(COPY.airstrike_description:find(('in %d seconds'):format(FX.strikeWarnMs / 1000), 1, true)
+        and COPY.airstrike_risks:find(('%d seconds'):format(FX.strikeWarnMs / 1000), 1, true)
+        and COPY.airstrike_risks_solo:find(('%d seconds'):format(FX.strikeWarnMs / 1000), 1, true),
+        'the lobby\'s line and the risks say 10 seconds too')
+    ok(COPY.airstrike_what:find('your squad and you included', 1, true)
+        and COPY.airstrike_affects:find('your squad included', 1, true),
+        'friendly fire is on the page: the squad is hit too')
+    ok(COPY.ghost_what:find('Airstrike', 1, true) and COPY.ghost_summary:find('Airstrike', 1, true)
+        and COPY.ghost_what_solo:find('Airstrike', 1, true) and COPY.ghost_summary_solo:find('Airstrike', 1, true),
+        "Ghost's page says it hides from an Airstrike's circles too")
+end
+
+describe('Airstrike: the plan -- unguided, evenly over the circle, one after another')
+do
+    local rand = stream(7)
+    local plan = TS.strikePlan(rand, 1000.0, 2000.0, FX, 5000)
+    eq(#plan, 10, 'ten rockets')
+    local inside, ordered, timed = true, true, true
+    for i, rk in ipairs(plan) do
+        local d = math.sqrt((rk.x - 1000.0) ^ 2 + (rk.y - 2000.0) ^ 2)
+        if d > 40.0 then inside = false end
+        if i > 1 and rk.at < plan[i - 1].at then ordered = false end
+        local share = FX.strikeSpreadMs / 10
+        if rk.at < 5000 + (i - 1) * share or rk.at > 5000 + i * share then timed = false end
+    end
+    ok(inside, 'every one within 40 m')
+    ok(ordered and timed, 'each in its own tenth of the 4 s, in order')
+    -- EVENLY OVER THE AREA: a quarter inside half the radius, not half.
+    local r2 = stream(11)
+    local inner, n = 0, 0
+    for _ = 1, 2000 do
+        for _, rk in ipairs(TS.strikePlan(r2, 0.0, 0.0, FX, 0)) do
+            n = n + 1
+            if rk.x * rk.x + rk.y * rk.y <= 20.0 * 20.0 then inner = inner + 1 end
+        end
+    end
+    near(inner / n, 0.25, 0.02, 'a quarter land inside half the radius: even over the area')
+    -- THE FALLOFF.
+    eq(TS.blastDamage(0.0, 150, 4, 14), 150.0, 'on it: full')
+    eq(TS.blastDamage(4.0, 150, 4, 14), 150.0, 'at 4 m: full')
+    near(TS.blastDamage(9.0, 150, 4, 14), 75.0, 1e-9, 'at 9 m: half')
+    eq(TS.blastDamage(14.0, 150, 4, 14), 0.0, 'at 14 m: nothing')
+    eq(TS.blastDamage(20.0, 150, 4, 14), 0.0, 'past it: nothing')
+    eq(TS.blastDamage(30.0, 150, 4, 14), 0.0, 'far past it: nothing')
+    eq(TS.blastDamage(0 / 0, 150, 4, 14), 0.0, 'not a number: nothing')
+    -- THE ROUGH CIRCLE: never on them, always around them.
+    local r3 = stream(13)
+    local within, mid = true, 0
+    local split = math.sqrt((25 * 25 + 85 * 85) / 2)
+    for _ = 1, 4000 do
+        local dx, dy = TS.fuzzOffset(r3, 25, 85)
+        local d = math.sqrt(dx * dx + dy * dy)
+        if d < 25 - 1e-9 or d > 85 + 1e-9 then within = false end
+        if d < split then mid = mid + 1 end
+    end
+    ok(within, 'the offset is always 25..85 m: the player is inside the 100 m circle and never at its center')
+    near(mid / 4000, 0.5, 0.03, 'spread evenly over the ring\'s area')
+end
+
+--- The lobby, with player 1 at the terminal and holding the key.
+local function strikeLobby()
+    local m = lobby('squad')
+    return m
+end
+
+local function spotNear(m, dx, dy) return { x = C0.x + dx, y = C0.y + dy } end
+
+describe('Airstrike: run at a spot -- the warning to everyone, the plan, the 200 Volts')
+do
+    reset()
+    local m = strikeLobby()
+    hits = {}
+    local at = spotNear(m, 300.0, 0.0)
+    local r = runAt(1, 'airstrike', nil, true, at)
+    eq(r and r.code, 'running', 'accepted')
+    finishLoad()
+    r = lastOf(BR.Net.TERMINAL_RESULT, 1)
+    eq(r and r.code, 'done', 'done at the end of the load')
+    eq(market.charges[1] and market.charges[1].cost, 200, '200 Volts')
+    local s = T.strikesLive(m)[1]
+    ok(s ~= nil and s.x == at.x and s.y == at.y and s.by == 1, 'the strike stands at the spot, by the runner')
+    eq(s.startsAt - s.warnAt, FX.strikeWarnMs, 'the first rocket 10 s after the run ends')
+    for src = 1, 5 do
+        local p = lastOf(BR.Net.TERMINAL_STRIKE, src)
+        ok(p and p.x == at.x and p.r == 40.0 and #p.rockets == 10 and p.startsAt == s.startsAt
+            and p.endsAt == s.rockets[10].at, ('player %d is warned: the circle and the rockets'):format(src))
+    end
+    local told = false
+    for _, n in ipairs(notices) do
+        if (textOf(n) or ''):find(COPY.airstrike_description, 1, true) then told = true end
+    end
+    ok(told, 'the lobby is told: "has redeemed their special power: Airstrike..."')
+    eq(#hits, 0, 'nothing is hit during the warning')
+    flush(s.startsAt - 1)
+    eq(#hits, 0, 'nor a millisecond before the first rocket')
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Airstrike: the server works out the damage -- falloff, friendly fire, the kill the runner\'s')
+do
+    reset()
+    local m = strikeLobby()
+    hits = {}
+    -- Everybody near the spot: the runner, a teammate, two opponents (one
+    -- downed), one in the air, one out, one far off.
+    local at = spotNear(m, 300.0, 0.0)
+    roster[1].pos = { x = at.x - 30.0, y = at.y, z = 30.0 }
+    roster[2].pos = { x = at.x + 9.0, y = at.y + 20.0, z = 30.0 }
+    roster[3].pos = { x = at.x, y = at.y - 20.0, z = 30.0 }
+    roster[4].pos = { x = at.x + 2.0, y = at.y - 20.0, z = 30.0 }
+    player(6, m, 'C', { x = at.x, y = at.y + 30.0 }, BR.PlayerState.FREEFALL)
+    player(7, m, 'C', { x = at.x + 1.0, y = at.y + 30.0 }, BR.PlayerState.OUT)
+    player(8, m, 'C', { x = at.x + 300.0, y = at.y }, BR.PlayerState.ALIVE)
+    roster[1].pos = SITE
+    runAt(1, 'airstrike', nil, true, at)
+    finishLoad()
+    roster[1].pos = { x = at.x - 30.0, y = at.y, z = 30.0 }
+    local s = T.strikesLive(m)[1]
+    -- PLACE THE ROCKETS (the plan is random; the damage is what is tested):
+    -- one on the teammate's 9 m, one on opponent 3, one on the runner, one on
+    -- the man in the air, one on the man who is out, the rest well away.
+    local spots = {
+        { x = at.x, y = at.y + 20.0 },          -- 9 m from player 2
+        { x = at.x, y = at.y - 20.0 },          -- on player 3; player 4 at 2 m
+        { x = at.x - 30.0, y = at.y },          -- on the runner
+        { x = at.x, y = at.y + 30.0 },          -- on player 6 (in the air) and 7 (out, 1 m)
+    }
+    for i, rk in ipairs(s.rockets) do
+        local sp = spots[i] or { x = at.x + 35.0, y = at.y - 39.0 + i }
+        rk.x, rk.y = sp.x, sp.y
+    end
+    flush(s.rockets[1].at)
+    local h2 = hitsOn(2)
+    ok(#h2 == 1 and math.abs(h2[1].amount - 75.0) < 1e-9, 'the teammate 9 m off: half of 150', h2[1] and h2[1].amount)
+    eq(h2[1] and h2[1].shooter, nil, 'FRIENDLY FIRE: the squad is hit too -- and it is nobody\'s hit')
+    ok(h2[1] and h2[1].meta.weapon == EXPLOSION_HASH and h2[1].meta.explosive == true,
+        "billed as the world's blast: it kills outright, and the feed says explosion")
+    flush(s.rockets[2].at)
+    local h3, h4 = hitsOn(3), hitsOn(4)
+    ok(#h3 == 1 and h3[1].amount == 150.0 and h3[1].shooter == 1, 'an opponent under it: 150, the runner\'s hit (credit, the kill)')
+    ok(#h4 == 1 and h4[1].amount == 150.0 and h4[1].shooter == 1, 'a downed opponent 2 m off: hit too (their bleed clock)')
+    flush(s.rockets[3].at)
+    local h1 = hitsOn(1)
+    ok(#h1 == 1 and h1[1].amount == 150.0 and h1[1].shooter == nil, 'the runner under their own rocket: hit, and nobody\'s')
+    flush(s.rockets[4].at)
+    eq(#hitsOn(6), 0, 'a player in the air: untouched')
+    eq(#hitsOn(7), 0, 'a player who is out: untouched')
+    flush()
+    eq(#hitsOn(8), 0, 'a player 300 m off: untouched')
+    eq(#hitsOn(5), 0, 'the solo player 500 m off: untouched')
+    eq(#T.strikesLive(m), 0, 'after the last rocket the strike is over')
+
+    -- THE RUNNER LEFT THE SERVER BEFORE IT LANDED: nobody's kill.
+    reset()
+    m = strikeLobby()
+    hits = {}
+    at = spotNear(m, 300.0, 0.0)
+    runAt(1, 'airstrike', nil, true, at)
+    finishLoad()
+    s = T.strikesLive(m)[1]
+    for _, rk in ipairs(s.rockets) do rk.x, rk.y = roster[3].pos.x, roster[3].pos.y end
+    roster[1] = nil
+    flush()
+    ok(#hitsOn(3) == 10 and hitsOn(3)[1].shooter == nil, 'the runner gone: every hit nobody\'s', #hitsOn(3))
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Airstrike: vehicles -- the owner is told; wrecked under a rocket, damaged by the falloff')
+do
+    reset()
+    local m = strikeLobby()
+    hits = {}
+    local at = spotNear(m, 300.0, 0.0)
+    runAt(1, 'airstrike', nil, true, at)
+    finishLoad()
+    local s = T.strikesLive(m)[1]
+    for _, rk in ipairs(s.rockets) do rk.x, rk.y = at.x, at.y end
+    local under = car(at.x + 1.0, at.y, 3, m.bucket)
+    local nine = car(at.x + 9.0, at.y, 4, m.bucket)
+    local far = car(at.x + 20.0, at.y, 3, m.bucket)
+    local other = car(at.x, at.y, 3, m.bucket + 50)
+    local nobody = car(at.x + 2.0, at.y, -1, m.bucket)
+    sent = {}
+    flush(s.rockets[1].at)
+    local v = eventsOf(BR.Net.TERMINAL_STRIKE_VEH)
+    local byNet = {}
+    for _, e in ipairs(v) do byNet[e.payload.netId] = e end
+    ok(byNet[under + 9000] and byNet[under + 9000].src == 3 and byNet[under + 9000].payload.wreck == true,
+        'a car under it: its owner told to wreck it')
+    ok(byNet[nine + 9000] and byNet[nine + 9000].src == 4 and byNet[nine + 9000].payload.wreck == nil
+        and math.abs(byNet[nine + 9000].payload.frac - 0.5) < 1e-9, 'a car 9 m off: its owner told, half the damage')
+    eq(byNet[far + 9000], nil, 'a car 20 m off: nothing')
+    eq(byNet[other + 9000], nil, "a car in another match's bucket: nothing")
+    eq(byNet[nobody + 9000], nil, 'a car nobody owns (out of everyone\'s scope): nothing to send')
+    eq(#v, 2, 'two cars, one message each')
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Airstrike: the persistent notice -- inside its reach, the squad included, never the runner')
+do
+    reset()
+    local m = strikeLobby()
+    local at = spotNear(m, 300.0, 0.0)
+    runAt(1, 'airstrike', nil, true, at)
+    finishLoad()
+    local s = T.strikesLive(m)[1]
+    roster[1].pos = { x = at.x, y = at.y, z = 30.0 }
+    roster[2].pos = { x = at.x + 50.0, y = at.y, z = 30.0 }
+    roster[3].pos = { x = at.x, y = at.y - 20.0, z = 30.0 }
+    roster[4].pos = { x = at.x + 60.0, y = at.y, z = 30.0 }
+    local now = gameMs
+    local rows = T.impactsOf(m, now)
+    local function has(src)
+        for _, r in ipairs(rows[src] or {}) do
+            if r.key == 'impact_airstrike' then return r end
+        end
+        return nil
+    end
+    eq(has(1), nil, 'the runner, under it: no row (their own run)')
+    ok(has(2) and has(2).untilAt == s.endsAt, 'a teammate 50 m off (inside 40 + 14): the row, until the last rocket')
+    ok(has(3) ~= nil, 'an opponent inside it: the row')
+    eq(has(4), nil, '60 m off: no row')
+    eq(has(5), nil, 'the solo player far off: no row')
+    rows = T.impactsOf(m, s.endsAt)
+    eq(has(2), nil, 'at the last rocket: gone')
+    ok(COPY.impact_airstrike:find('^Airstrike: ') ~= nil, 'its line names the tool first, as the others do')
+end
+
+describe('Airstrike: refused, spending nothing -- off the map, no spot; the end of the match stops the rockets')
+do
+    reset()
+    lobby('squad')
+    local r = runAt(1, 'airstrike', nil, false, { x = 6000.0, y = 6000.0 })
+    eq(r and r.code, 'strike_spot', 'a spot off the play area: strike_spot')
+    eq(r and r.toast, COPY.strike_spot, 'in its own line')
+    nothingSpent(1, 'strike_spot')
+    eq(#market.charges, 0, 'refused before the market is asked')
+    gameMs = gameMs + 1000
+    r = runAt(1, 'airstrike')
+    eq(r and r.code, 'bad_option', 'no spot: bad_option')
+    nothingSpent(1, 'no spot')
+
+    -- THE MATCH ENDS DURING THE WARNING: nothing lands.
+    reset()
+    local m = strikeLobby()
+    hits = {}
+    local at = spotNear(m, 300.0, 0.0)
+    runAt(1, 'airstrike', nil, true, at)
+    finishLoad()
+    local s = T.strikesLive(m)[1]
+    for _, rk in ipairs(s.rockets) do rk.x, rk.y = roster[3].pos.x, roster[3].pos.y end
+    m.state = BR.MatchState.ENDED
+    flush()
+    eq(#hits, 0, 'the match ended: no rocket lands')
+    eq(#T.strikesLive(m), 0, 'and the strike is gone')
+
+    -- SEASON 1.
+    reset()
+    m = strikeLobby()
+    hits = {}
+    runAt(1, 'airstrike', nil, true, spotNear(m, 300.0, 0.0))
+    finishLoad()
+    s = T.strikesLive(m)[1]
+    for _, rk in ipairs(s.rockets) do rk.x, rk.y = roster[3].pos.x, roster[3].pos.y end
+    season(1)
+    flush()
+    season(2)
+    eq(#hits, 0, 'off Season 2: no rocket lands')
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Airstrike: br:ready shows a strike again; the dev command needs the spot and charges nothing')
+do
+    reset()
+    local m = strikeLobby()
+    runAt(1, 'airstrike', nil, true, spotNear(m, 300.0, 0.0))
+    finishLoad()
+    sent = {}
+    fire(BR.Net.READY, 4)
+    local p = lastOf(BR.Net.TERMINAL_STRIKE, 4)
+    ok(p and #p.rockets == 10, 'a client that restarts during it is shown it again')
+    flush()
+    sent = {}
+    fire(BR.Net.READY, 4)
+    eq(lastOf(BR.Net.TERMINAL_STRIKE, 4), nil, 'and not once it is over')
+
+    reset()
+    m = strikeLobby()
+    hits = {}
+    local out = devRun(1, ('airstrike x=%.1f y=%.1f'):format(C0.x + 300.0, C0.y))
+    ok(out:find('ran airstrike for 1 without a key: ok', 1, true) ~= nil, 'brterminal run airstrike x= y=: it runs', out)
+    eq(#market.charges, 0, 'no Volts')
+    ok(lastOf(BR.Net.TERMINAL_STRIKE, 3) ~= nil, 'and everyone is warned')
+    out = devRun(1, 'airstrike')
+    ok(out:find('needs the spot', 1, true) ~= nil, 'without x= y= it says it needs the spot', out)
+    out = devRun(1, 'airstrike x=6000 y=6000')
+    ok(out:find('refused (strike_spot)', 1, true) ~= nil, 'off the map: strike_spot', out)
+    flush()
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Airstrike: the rough circles while the spot is picked')
+do
+    reset()
+    local m = strikeLobby()
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    local function pick(src, on, id, terminalId)
+        fire(BR.Net.TERMINAL_PICK, src, { terminalId = terminalId or 'tower', functionId = id or 'airstrike', on = on })
+    end
+    sent = {}
+    pick(1, true)
+    local f = lastOf(BR.Net.TERMINAL_FUZZ, 1)
+    ok(f and #f.list == 3, 'every opponent: the other squad (one of them downed) and the solo player', f and #f.list)
+    local by = {}
+    for _, c in ipairs(f and f.list or {}) do by[c.s] = c end
+    eq(by[2], nil, 'never a teammate')
+    for _, s in ipairs({ 3, 4, 5 }) do
+        local c, p = by[s], roster[s].pos
+        local d = c and math.sqrt((c.x - p.x) ^ 2 + (c.y - p.y) ^ 2)
+        ok(c and c.r == FX.fuzzRadiusM and d >= FX.fuzzMinM - 1e-9 and d <= FX.fuzzMaxM + 1e-9,
+            ('player %d: a 100 m circle %.0f m off them -- around them, never on them'):format(s, d or -1))
+    end
+    ok(T.fuzzing(1), 'the pick is showing them')
+    -- THEY MOVE: the circle moves with them, by the same offset.
+    local off3 = { x = by[3].x - roster[3].pos.x, y = by[3].y - roster[3].pos.y }
+    roster[3].pos = { x = roster[3].pos.x + 50.0, y = roster[3].pos.y, z = 30.0 }
+    gameMs = gameMs + FX.fuzzPingMs
+    jobs['terminal.fuzz']()
+    f = lastOf(BR.Net.TERMINAL_FUZZ, 1)
+    local c3 = nil
+    for _, c in ipairs(f.list) do if c.s == 3 then c3 = c end end
+    ok(c3 and math.abs(c3.x - roster[3].pos.x - off3.x) < 1e-9 and math.abs(c3.y - roster[3].pos.y - off3.y) < 1e-9,
+        'moved with them, the same offset: pushing again tells nothing new')
+    -- THE PICK ENDS.
+    pick(1, false)
+    f = lastOf(BR.Net.TERMINAL_FUZZ, 1)
+    ok(f and #f.list == 0 and not T.fuzzing(1), 'the pick ends: an empty list, and no more')
+    -- PICKED AGAIN: the same offsets (fixed for the match).
+    gameMs = gameMs + 1000
+    pick(1, true)
+    f = lastOf(BR.Net.TERMINAL_FUZZ, 1)
+    for _, c in ipairs(f.list) do if c.s == 3 then c3 = c end end
+    ok(c3 and math.abs(c3.x - roster[3].pos.x - off3.x) < 1e-9, 'picked again: the same circle, not a new guess')
+    -- GHOST: a squad under it is on nobody's map.
+    m.terminalFx.ghosts = { ['squad:B'] = { untilAt = gameMs + 60000 } }
+    jobs['terminal.fuzz']()
+    f = lastOf(BR.Net.TERMINAL_FUZZ, 1)
+    ok(#f.list == 1 and f.list[1].s == 5, 'squad B under Ghost: left out')
+    m.terminalFx.ghosts = nil
+    -- SCAN RUNNING FOR THE RUNNER'S SQUAD: the exact dots are already there.
+    m.terminalFx.scans['squad:A'] = { by = 1, at = gameMs }
+    jobs['terminal.fuzz']()
+    f = lastOf(BR.Net.TERMINAL_FUZZ, 1)
+    ok(f and #f.list == 0, 'their squad has Scan running: no rough circles')
+    m.terminalFx.scans['squad:A'] = nil
+    -- THE SESSION ENDS (walked off, closed): the next push ends the pick.
+    T.close(1, 'test')
+    jobs['terminal.fuzz']()
+    f = lastOf(BR.Net.TERMINAL_FUZZ, 1)
+    ok(f and #f.list == 0 and not T.fuzzing(1), 'the computer closed: the circles go')
+    -- TIME'S UP.
+    fire(BR.Net.TERMINAL_USE, 1, { terminalId = 'tower' })
+    gameMs = gameMs + 1000
+    pick(1, true)
+    ok(T.fuzzing(1), 'picking')
+    gameMs = gameMs + FX.fuzzMaxMs
+    jobs['terminal.fuzz']()
+    ok(not T.fuzzing(1), 'after fx.fuzzMaxMs it stops on its own')
+
+    -- WHO MAY SEE THEM: nobody else.
+    sent = {}
+    gameMs = gameMs + 1000
+    pick(1, true, 'emp')
+    eq(lastOf(BR.Net.TERMINAL_FUZZ, 1), nil, 'a row without `fuzz` (EMP, which could run): nothing')
+    gameMs = gameMs + 1000
+    pick(1, true, 'airstrike', 'shack')
+    eq(lastOf(BR.Net.TERMINAL_FUZZ, 1), nil, 'another terminal than the session\'s: nothing')
+    gameMs = gameMs + 1000
+    pick(2, true)
+    eq(lastOf(BR.Net.TERMINAL_FUZZ, 2), nil, 'no session at all: nothing')
+    keys[1] = false
+    gameMs = gameMs + 1000
+    pick(1, true)
+    eq(lastOf(BR.Net.TERMINAL_FUZZ, 1), nil, 'no key (it could not run): nothing')
+    keys[1] = true
+    market.wallet[1] = 150
+    gameMs = gameMs + 1000
+    pick(1, true)
+    eq(lastOf(BR.Net.TERMINAL_FUZZ, 1), nil, 'short of the 200 Volts: nothing')
+    market.wallet[1] = 1000
+    gameMs = gameMs + 1000
+    pick(1, true)
+    ok(lastOf(BR.Net.TERMINAL_FUZZ, 1) ~= nil, 'and with them: the circles')
+    sent = {}
+    pick(1, false)
+    pick(1, true)
+    eq(#eventsOf(BR.Net.TERMINAL_FUZZ, 1), 1, 'a second start inside the interval is dropped (only the end is sent)')
+    gameMs = gameMs + 1000
+    pick(1, true)
+    ok(T.fuzzing(1), 'picking again')
+    season(1)
+    gameMs = gameMs + 1000
+    jobs['terminal.fuzz']()
+    season(2)
+    ok(not T.fuzzing(1), 'off Season 2: over')
+    ok(errored() == nil, 'clean', errored())
+end
+
+describe('Airstrike: squad and solo lines; no client draws an explosion or fires a projectile')
+do
+    for _, key in ipairs({ 'airstrike_summary', 'airstrike_what', 'airstrike_duration', 'airstrike_affects',
+                           'airstrike_notified', 'airstrike_done', 'airstrike_description', 'airstrike_risks',
+                           'impact_airstrike', 'strike_spot', 'airstrike_blip', 'airstrike_fuzz_blip' }) do
+        ok(TS.pick(COPY, key, false) ~= '', key .. ' has a line')
+        ok(not TS.pick(COPY, key, false):lower():find('squad', 1, true),
+            ('%s never says squad outside a squad match'):format(key))
+    end
+    local src = (readFile(ROOT .. 'br_core/client/terminalfx/airstrike.lua') or ''):gsub('%-%-[^\n]*', '')
+    for _, native in ipairs({ 'AddExplosion', 'AddOwnedExplosion', 'ShootSingleBulletBetweenCoords',
+                              'ShootSingleBulletBetweenCoordsIgnoreEntity', 'ApplyDamageToPed',
+                              'SetEntityHealth' }) do
+        ok(not src:find(native .. '%s*%('), ('the client half never calls %s'):format(native))
+    end
+    local server = (readFile(ROOT .. 'br_core/server/terminalfx/airstrike.lua') or ''):gsub('%-%-[^\n]*', '')
+    ok(server:find('BR.Damage.applyHit(h.shooter, h.src, h.dmg', 1, true) ~= nil,
+        'every hit through the health ledger\'s own door (BR.Damage.applyHit)')
+end
+
+-- =========================================================================
 -- PART B -- Vehicle drop, the client
 -- =========================================================================
 
@@ -1386,6 +1895,256 @@ do
     for _ = 1, 10 do slow() end
     advance(2000, 16)
     eq(anyNative(), 0, 'no drop and no look: no native at all')
+    eq(frameLoops(), 0, 'and no FRAME callback')
+end
+
+-- =========================================================================
+-- PART D -- Airstrike, the client
+-- =========================================================================
+
+local fxCalls = { nonLooped = {}, looped = {}, stopped = 0, sounds = {}, shakes = {}, explode = {},
+                  rotations = {}, requested = {}, forbidden = 0 }
+function HasNamedPtfxAssetLoaded() return true end
+function RequestNamedPtfxAsset(a) fxCalls.requested[#fxCalls.requested + 1] = a end
+function UseParticleFxAsset() end
+function StartParticleFxNonLoopedAtCoord(name, x, y, z)
+    call('StartParticleFxNonLoopedAtCoord')
+    fxCalls.nonLooped[#fxCalls.nonLooped + 1] = { name = name, x = x, y = y, z = z }
+    return true
+end
+local loopedSeq = 0
+function StartParticleFxLoopedOnEntity(name, e)
+    call('StartParticleFxLoopedOnEntity')
+    loopedSeq = loopedSeq + 1
+    fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e }
+    return loopedSeq
+end
+function StopParticleFxLooped() fxCalls.stopped = fxCalls.stopped + 1 end
+function PlaySoundFromCoord(_, name, x, y, z)
+    call('PlaySoundFromCoord')
+    fxCalls.sounds[#fxCalls.sounds + 1] = { name = name, x = x, y = y, z = z }
+end
+function ShakeGameplayCam(name, k) fxCalls.shakes[#fxCalls.shakes + 1] = { name = name, k = k } end
+function SetEntityRotation(e, p, r, y) fxCalls.rotations[e] = { p = p, y = y } end
+local controlled, vehHealth = {}, {}
+function NetworkHasControlOfEntity(e) return controlled[e] == true end
+function NetworkExplodeVehicle(e) fxCalls.explode[#fxCalls.explode + 1] = e end
+function GetVehicleEngineHealth(e) return vehHealth[e] and vehHealth[e].engine or 1000.0 end
+function GetVehicleBodyHealth(e) return vehHealth[e] and vehHealth[e].body or 1000.0 end
+function SetVehicleEngineHealth(e, v) vehHealth[e] = vehHealth[e] or {}; vehHealth[e].engine = v end
+function SetVehicleBodyHealth(e, v) vehHealth[e] = vehHealth[e] or {}; vehHealth[e].body = v end
+-- WHAT NO CLIENT HALF MAY EVER DO: a networked, damaging explosion or a
+-- projectile.
+function AddExplosion() fxCalls.forbidden = fxCalls.forbidden + 1 end
+function AddOwnedExplosion() fxCalls.forbidden = fxCalls.forbidden + 1 end
+function ShootSingleBulletBetweenCoords() fxCalls.forbidden = fxCalls.forbidden + 1 end
+local flares = {}
+BR.Flare = { fire = function(x, y, z) flares[#flares + 1] = { x = x, y = y, z = z } return true end }
+local pickingNow = false
+BR.Terminal = { picking = function() return pickingNow end }
+loadAll({ 'br_core/client/terminalfx/airstrike.lua' })
+local RA = CC.art.rocket
+
+local function radiusBlips()
+    local out = {}
+    for id, b in pairs(C.blips) do
+        if b.kind == 'radius' then out[#out + 1] = { id = id, b = b } end
+    end
+    table.sort(out, function(a, b) return a.id < b.id end)
+    return out
+end
+
+describe('client: Airstrike\'s rough circles while the spot is picked')
+do
+    for k in pairs(C.blips) do C.blips[k] = nil end
+    pickingNow = true
+    C.calls = {}
+    cfire(BR.Net.TERMINAL_FUZZ, { list = { { s = 3, x = 100.0, y = 200.0, r = 100.0 },
+                                           { s = 5, x = -50.0, y = 10.0, r = 100.0 } } })
+    local rb = radiusBlips()
+    eq(#rb, 2, 'one circle per opponent')
+    ok(rb[1].b.r == 100.0 and rb[1].b.colour == CC.art.fuzz.colour and rb[1].b.alpha == CC.art.fuzz.alpha
+        and rb[1].b.name == CC.copy.airstrike_fuzz_blip, "100 m, in the art block's look, named from the copy")
+    eq(F.fuzzCount(), 2, 'two up')
+    local made = callsOf('AddBlipForRadius')
+    cfire(BR.Net.TERMINAL_FUZZ, { list = { { s = 3, x = 150.0, y = 200.0, r = 100.0 } } })
+    eq(callsOf('AddBlipForRadius'), made, 'moved, not rebuilt')
+    rb = radiusBlips()
+    ok(#rb == 1 and rb[1].b.x == 150.0, 'the one still sent moved; the other gone')
+    slow()
+    eq(F.fuzzCount(), 1, 'still picking: kept')
+    pickingNow = false
+    slow()
+    eq(F.fuzzCount(), 0, 'the pick over here: gone, without waiting for the server')
+    pickingNow = true
+    cfire(BR.Net.TERMINAL_FUZZ, { list = { { s = 3, x = 150.0, y = 200.0, r = 100.0 } } })
+    cfire(BR.Net.TERMINAL_FUZZ, { list = {} })
+    eq(F.fuzzCount(), 0, 'an empty list: gone')
+    cfire(BR.Net.TERMINAL_FUZZ, { list = { { s = 3, x = 0 / 0, y = 200.0, r = 100.0 },
+                                           { s = 4, x = 1.0, y = 2.0, r = -5.0 } } })
+    eq(F.fuzzCount(), 0, 'a malformed circle is not drawn')
+    clientSeason = 1
+    slow()
+    cfire(BR.Net.TERMINAL_FUZZ, { list = { { s = 3, x = 1.0, y = 2.0, r = 100.0 } } })
+    eq(F.fuzzCount(), 0, 'off Season 2: none')
+    clientSeason = 2
+    slow()
+    pickingNow = false
+end
+
+local function strikeMsg(id, x, y, over)
+    local t0 = clientMs + FX.strikeWarnMs
+    local rockets = {}
+    for i = 1, 10 do
+        rockets[i] = { x = x + (i - 5) * 3.0, y = y, at = t0 + (i - 1) * 400 + 100 }
+    end
+    local d = { matchId = 1, id = id, x = x, y = y, r = 40.0, startsAt = t0, endsAt = rockets[10].at,
+                rockets = rockets }
+    for k, v in pairs(over or {}) do d[k] = v end
+    return d
+end
+
+describe('client: Airstrike -- the circle, the flare, and nothing per frame during the warning')
+do
+    for k in pairs(C.blips) do C.blips[k] = nil end
+    resetWorld()
+    W.me = { x = 10.0, y = 0.0, z = 20.0 }
+    flares = {}
+    fxCalls.requested = {}
+    local msg = strikeMsg(1, 0.0, 0.0)
+    cfire(BR.Net.TERMINAL_STRIKE, msg)
+    local rb = radiusBlips()
+    ok(#rb == 1 and rb[1].b.r == 40.0 and rb[1].b.x == 0.0 and rb[1].b.colour == CC.art.strike.colour
+        and rb[1].b.name == CC.copy.airstrike_blip, 'the circle on the map: 40 m, named from the copy')
+    runThreads()
+    ok(#flares == 1 and flares[1].x == 0.0 and flares[1].y == 0.0 and math.abs(flares[1].z - 20.1) < 1e-9,
+        "a red flare at the spot, on the ground (the airdrop's BR.Flare.fire)")
+    local wantAssets = false
+    for _, a in ipairs(fxCalls.requested) do if a == RA.trailAsset then wantAssets = true end end
+    ok(wantAssets, 'the particle streams asked for at once')
+    eq(frameLoops(), 0, 'no FRAME callback during the warning')
+    advance(FX.strikeWarnMs - RA.fallMs - 400, 100)
+    eq(frameLoops(), 0, 'still none a moment before the first rocket falls')
+    eq(fxCalls.forbidden, 0, 'and nothing forbidden')
+end
+
+describe('client: Airstrike -- each rocket falls, and lands as particles and a sound')
+do
+    -- (Continuing the strike above.)
+    advance(300, 50)
+    eq(frameLoops(), 1, 'the FRAME callback, just before the first rocket falls')
+    advance(400, 50)
+    local _, falling = F.strikeCounts()
+    eq(falling, 1, 'the first rocket is in the air')
+    local rocket = nil
+    for id, e in pairs(C.ents) do
+        if e.alive and e.kind == 'obj' and e.model == joaat(RA.model) then rocket = id end
+    end
+    local e = rocket and C.ents[rocket]
+    ok(e and e.net == false and e.collision == false, 'a local object, never networked, colliding with nothing')
+    ok(e and e.z > 20.0 + 50.0, 'high over the ground', e and e.z)
+    local z0 = e and e.z
+    advance(300, 50)
+    ok(e and e.z < z0, 'coming down', e and e.z)
+    ok(fxCalls.looped[1] and fxCalls.looped[1].name == RA.trail and fxCalls.looped[1].ent == rocket,
+        "with the RPG's trail")
+    ok(fxCalls.rotations[rocket] and fxCalls.rotations[rocket].p < -60.0, 'nose down', fxCalls.rotations[rocket] and fxCalls.rotations[rocket].p)
+    -- IT LANDS.
+    local n0 = #fxCalls.nonLooped
+    advance(700, 50)
+    ok(not C.ents[rocket].alive, 'landed: the rocket object is gone')
+    ok(#fxCalls.nonLooped > n0, 'a fireball where it lands')
+    local blast = fxCalls.nonLooped[n0 + 1]
+    ok(blast and blast.name == RA.blast and blast.x == -12.0 and blast.z == 20.0, 'at its point, on the ground', blast and blast.x)
+    ok(fxCalls.sounds[1] and fxCalls.sounds[1].name == RA.sound, "the game's explosion sound")
+    ok(#fxCalls.shakes >= 1 and fxCalls.shakes[1].name == RA.shake, 'and a shake: this player is 22 m off')
+    advance(5000, 50)
+    eq(#fxCalls.nonLooped, n0 + 10, 'ten rockets, ten fireballs')
+    eq(frameLoops(), 0, 'the FRAME callback goes with the last')
+    local strikes = F.strikeCounts()
+    eq(strikes, 1, 'the circle stays a moment')
+    advance(FX.strikeLingerMs + 100, 500)
+    slow()
+    strikes = F.strikeCounts()
+    eq(strikes, 0, 'then goes')
+    eq(#radiusBlips(), 0, 'off the map')
+    eq(fxCalls.forbidden, 0, 'never an explosion that is real, never a projectile')
+end
+
+describe('client: Airstrike -- a rocket on a roof bursts on the roof; far off, only the circle')
+do
+    resetWorld()
+    W.me = { x = 10.0, y = 0.0, z = 20.0 }
+    W.raised = { { x = 110.0, y = 100.0, r = 2.0, z = 45.0 } }
+    fxCalls.nonLooped = {}
+    local msg = strikeMsg(2, 100.0, 100.0, {})
+    for _, rk in ipairs(msg.rockets) do rk.x, rk.y = 110.0, 100.0 end
+    cfire(BR.Net.TERMINAL_STRIKE, msg)
+    runThreads()
+    advance(FX.strikeWarnMs + 5000, 100)
+    ok(#fxCalls.nonLooped == 10 and fxCalls.nonLooped[1].z == 45.0, 'on the roof the rocket meets first', fxCalls.nonLooped[1] and fxCalls.nonLooped[1].z)
+    advance(FX.strikeLingerMs + 100, 500)
+    slow()
+
+    -- FAR OFF.
+    flares = {}
+    fxCalls.nonLooped = {}
+    W.me = { x = 5000.0, y = 0.0, z = 20.0 }
+    cfire(BR.Net.TERMINAL_STRIKE, strikeMsg(3, 0.0, 0.0))
+    runThreads()
+    eq(#radiusBlips(), 1, 'far off: the circle on the map')
+    eq(#flares, 0, 'no flare')
+    advance(FX.strikeWarnMs + 5000, 100)
+    eq(#fxCalls.nonLooped, 0, 'no rockets, no fireballs')
+    eq(frameLoops(), 0, 'and never a FRAME callback')
+    -- THE LOBBY.
+    W.me = { x = 10.0, y = 0.0, z = 20.0 }
+    cfire(BR.Net.TERMINAL_STRIKE, strikeMsg(4, 0.0, 0.0))
+    runThreads()
+    BR.State.me.state = BR.PlayerState.LOBBY
+    slow()
+    BR.State.me.state = BR.PlayerState.ALIVE
+    eq(F.strikeCounts(), 0, 'in the lobby: every strike goes')
+    eq(#radiusBlips(), 0, 'and its circle')
+    advance(FX.strikeWarnMs + 5000, 100)
+    eq(frameLoops(), 0, 'and nothing falls')
+    slow()
+end
+
+describe('client: Airstrike -- the owner of a vehicle a rocket hit writes the server\'s figure')
+do
+    realCars = { [9601] = 901, [9602] = 902 }
+    controlled = { [901] = true }
+    vehHealth = {}
+    C.ents[901] = { kind = 'veh', alive = true }
+    C.ents[902] = { kind = 'veh', alive = true }
+    cfire(BR.Net.TERMINAL_STRIKE_VEH, { netId = 9601, frac = 0.5 })
+    ok(vehHealth[901] and vehHealth[901].engine == 500.0 and vehHealth[901].body == 500.0,
+        'half the damage off its engine and its body')
+    cfire(BR.Net.TERMINAL_STRIKE_VEH, { netId = 9601, frac = 5.0 })
+    ok(vehHealth[901].engine == -500.0 and vehHealth[901].body == 0.0, 'a fraction past one is one')
+    cfire(BR.Net.TERMINAL_STRIKE_VEH, { netId = 9602, frac = 0.5 })
+    eq(vehHealth[902], nil, 'a vehicle this client does not own: untouched')
+    cfire(BR.Net.TERMINAL_STRIKE_VEH, { netId = 9601, wreck = true })
+    eq(fxCalls.explode[1], 901, 'wrecked: blown up the way any wreck is')
+    cfire(BR.Net.TERMINAL_STRIKE_VEH, { netId = 9999, wreck = true })
+    eq(#fxCalls.explode, 1, 'an unknown vehicle: nothing')
+    clientSeason = 1
+    slow()
+    cfire(BR.Net.TERMINAL_STRIKE_VEH, { netId = 9601, wreck = true })
+    clientSeason = 2
+    slow()
+    eq(#fxCalls.explode, 1, 'off Season 2: nothing')
+    C.ents[901], C.ents[902] = nil, nil
+    eq(fxCalls.forbidden, 0, 'and never AddExplosion')
+end
+
+describe('client: Airstrike -- nothing per frame and nothing a second with nothing to do')
+do
+    C.calls = {}
+    for _ = 1, 10 do slow() end
+    advance(2000, 16)
+    eq(anyNative(), 0, 'no strike and no circles: no native at all')
     eq(frameLoops(), 0, 'and no FRAME callback')
 end
 

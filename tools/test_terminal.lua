@@ -483,7 +483,9 @@ do
         end
         ok(row.spot == nil or row.spot == true, row.id .. ': spot is true or absent')
     end
-    eq(table.concat(spots, ','), 'storm_control,supply_drop', 'Storm control and Supply drop are run at a spot')
+    -- ROUND 5: and Airstrike ("uses round 4's "Set location" map pick").
+    eq(table.concat(spots, ','), 'storm_control,airstrike,supply_drop',
+        'Storm control, Airstrike and Supply drop are run at a spot')
 
     -- THROUGH THE NET EVENT, on a dev session: no spot, a bad one, a good one.
     local run = function(src, d) fireAs(src, BR.Net.TERMINAL_RUN, d) end
@@ -1193,8 +1195,9 @@ do
             ('%s costs 0..200 Volts ("no more than 200"): %s'):format(row.id, tostring(c)))
     end
     -- Round 5's two (PROPOSED, with every cost under the owner's review):
-    -- Vehicle drop 100.
-    local want = { scan = 200, disarm = 200, storm_control = 150, reboot = 150, vehicle_drop = 100 }
+    -- Vehicle drop 100, Airstrike 200.
+    local want = { scan = 200, disarm = 200, storm_control = 150, reboot = 150, vehicle_drop = 100,
+                   airstrike = 200 }
     for _, row in ipairs(C.functions) do
         eq(BR.Terminal.costOf(row), want[row.id] or 0, ('%s costs %d'):format(row.id, want[row.id] or 0))
     end
@@ -2366,8 +2369,18 @@ do
     fireB('cuchi_computer:pick', 'dev', { functionId = 'Not An Id' })
     eq(#calls('Hide'), 0, 'a pick for another terminal, or a malformed function, does nothing')
 
+    local function picks()
+        local out = {}
+        for _, t in ipairs(B.toServer) do if t.name == BR.Net.TERMINAL_PICK then out[#out + 1] = t.data end end
+        return out
+    end
+    eq(#picks(), 0, '(the server was told of no pick that did not start)')
     fireB('cuchi_computer:pick', 'dev', { functionId = 'storm_control' })
     eq(#calls('Hide'), 1, 'the computer is hidden')
+    -- ROUND 5: the server hears the pick start (Airstrike's rough circles).
+    local pk = picks()[1]
+    ok(#picks() == 1 and pk.terminalId == 'dev' and pk.functionId == 'storm_control' and pk.on == true,
+        'the server is told the pick started: TERMINAL_PICK, on')
     eq(B.screens[#B.screens], 'none', 'the key layer lets go, so the game has the keyboard')
     eq(W.events[#W.events], 'br:ui:mapToggle', 'the big map opens: br_ui\'s own, the map key\'s')
     eq(W.waypoint, nil, 'the player\'s own waypoint is cleared first: it is not the pick')
@@ -2394,6 +2407,9 @@ do
     eq(W.waypoint, nil, 'the waypoint is taken off the map')
     eq(B.screens[#B.screens], 'terminal', 'the key layer is the computer\'s again')
     eq(BR.Terminal.picking(), false, 'and the pick is over')
+    pk = picks()[2]
+    ok(#picks() == 2 and pk.terminalId == 'dev' and pk.functionId == 'storm_control' and pk.on == false,
+        'and the server is told it ended: TERMINAL_PICK, not on')
 
     -- NO WAYPOINT SET: the box goes back to its first step.
     fireB('cuchi_computer:pick', 'dev', { functionId = 'supply_drop' })

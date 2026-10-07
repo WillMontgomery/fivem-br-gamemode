@@ -17767,6 +17767,94 @@ do
            .. 'knock that is not happening', tostring(BR.Roster.get(1).hp))
 end
 
+describe("damage.noDealer -- a terminal's Airstrike: the server's blast, a dealer's or nobody's (#396, round 5)")
+do
+    -- The Airstrike's rockets are the server's: every hit goes through
+    -- BR.Damage.applyHit, billed as the world's blast. An opponent's is the
+    -- runner's -- credit, hitmarker, the kill. The runner's own squad's, and
+    -- the runner's, is NOBODY's: applyHit with no dealer. Driven here through
+    -- the real ledger, the real sampler and audit, and the real combat.
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+    local BLAST = BR.Config.EnvironmentalFor(0x2024F4E8).hash
+    local function blast(shooter, victim, amount)
+        BR.Damage.applyHit(shooter, victim, amount,
+            { weapon = BLAST, explosive = true, headshot = false, component = 0 })
+    end
+    local function step(ms)
+        for _ = 1, math.floor(ms / 250) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+    local function feedTo(src)
+        local n = 0
+        for _, s in ipairs(eventsOf(BR.Net.DAMAGE_FEED)) do
+            if src == nil or s.target == src then n = n + 1 end
+        end
+        return n
+    end
+
+    -- A HIT WITH NO DEALER, ON A STANDING PLAYER.
+    squadMatch(2)
+    local e = BR.Roster.get(1)
+    pedHealth[1001] = BR.ToEngineHp(100.0)
+    pedArmour[1001] = 0
+    e.hp, e.armour = 100.0, 0
+    step(250)
+    -- An earlier shot by somebody else: its assist window must stand.
+    e.lastHitBy, e.lastHitAt = 2, fakeTime
+    local auditBefore = e.healthAudit and e.healthAudit.hp or 0.0
+    sent = {}
+    blast(nil, 1, 30.0)
+    ok(math.abs(e.hp - 70.0) < 0.01, 'off the ledger at once', tostring(e.hp))
+    local hit = eventsOf(BR.Net.HIT_DAMAGE)[1]
+    ok(hit and hit.target == 1 and hit.args[1].amount > 0, 'the ped is told to follow (HIT_DAMAGE)')
+    eq(feedTo(nil), 0, 'no hitmarker: there is nobody to send it to')
+    ok(e.lastHitBy == 2 and e.lastDrainAt == fakeTime,
+        "the last shooter's window stands; the stamp is the drain's")
+    eq(BR.Roster.get(2).damage or 0.0, 0.0, 'and nobody is credited the damage')
+    -- THE ROUND TRIP: the ped still reads high. Held, not refused, not counted.
+    step(250)
+    ok(math.abs(e.hp - 70.0) < 0.01, 'the ledger holds while the ped catches up', tostring(e.hp))
+    eq(e.healthAudit and e.healthAudit.hp or 0.0, auditBefore, 'and the health audit counts nothing')
+    pedHealth[1001] = BR.ToEngineHp(70.0)
+    step(250)
+
+    -- A LETHAL BLAST WITH NO DEALER: out, at once, and nobody's kill.
+    sent = {}
+    e.lastHitBy, e.lastHitAt = nil, nil
+    blast(nil, 1, 500.0)
+    eq(e.state, BR.PlayerState.OUT, 'a lethal blast kills outright: no bleed clock after an explosion')
+    eq(BR.Roster.get(2).kills or 0, 0, 'and nobody is credited the kill: a teammate\'s rocket is no teamkill')
+    local feed = eventsOf(BR.Net.KILL_FEED)[1]
+    ok(feed and feed.args[1].killer == nil and feed.args[1].cause == 'explosion',
+        'the feed: no killer, "blew up"', feed and tostring(feed.args[1].killer))
+
+    -- A DOWNED PLAYER, NO DEALER: their bleed clock, and still no hitmarker.
+    squadMatch(2)
+    e = BR.Roster.get(1)
+    BR.Combat.knock(1, 2)
+    eq(e.state, BR.PlayerState.DBNO, 'knocked')
+    local untilBefore = e.dbnoUntil
+    sent = {}
+    blast(nil, 1, 20.0)
+    ok(e.dbnoUntil < untilBefore, 'a blast on a downed player takes off their bleed clock')
+    eq(feedTo(nil), 0, 'and sends no hitmarker')
+
+    -- WITH A DEALER (an opponent under the runner's rocket): theirs, as any hit.
+    squadMatch(2)
+    e = BR.Roster.get(1)
+    e.hp, e.armour = 100.0, 0
+    sent = {}
+    blast(2, 1, 500.0)
+    eq(e.state, BR.PlayerState.OUT, 'a lethal blast from the runner: out')
+    eq(BR.Roster.get(2).kills, 1, 'and the kill is the runner\'s')
+    ok(feedTo(2) == 1, 'their hitmarker')
+    pedHealth[1001], pedArmour[1001] = nil, nil
+end
+
 describe('dbno.deadPed')
 do
     -- THE FALL THAT WENT STRAIGHT TO OUT (owner, 2026-08-16).
