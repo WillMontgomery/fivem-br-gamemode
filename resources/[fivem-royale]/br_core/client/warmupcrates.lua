@@ -115,6 +115,28 @@ local MISSION_FLAGS = { false, true }
 --- [anchorIndex] = the object handle currently pinned there, or nil.
 local pinned = {}
 
+--- [anchorIndex] = BR.Loot.bodies() when a search there last found nothing.
+---
+--- ═══ A MISS IS AN ANSWER UNTIL A BODY IS BUILT (#393 review, 2026-10-06) ═══
+---
+--- The pass used to search again on every tick an anchor in reach had nothing
+--- pinned: two models, or every box model as well on Season 2, both spellings
+--- of `isMission`, four anchors, ten times a second -- 136 world scans a second
+--- on Season 1 and 476 on Season 2, for as long as a crate was not on its
+--- anchor. That is the ordinary state while the pad streams in, after a crate
+--- is knocked more than `pinTolerance` off its anchor, and for good when
+--- `e.gzOk` builds no body at all. Nothing can stand on an anchor that
+--- client/loot.lua has not built since the last look, so a search runs again
+--- only once it has built one (BR.Loot.bodies moved).
+local missedAt = {}
+
+--- How many bodies client/loot.lua has built, or 0 without it.
+--- @return integer
+local function bodies()
+    if BR.Loot and BR.Loot.bodies then return BR.Loot.bodies() or 0 end
+    return 0
+end
+
 --- Props flying home, detached from any entry. Same idea as client/loot.lua's
 --- `retiring` list and for the same reason: the thing being animated is no
 --- longer loot, cannot be targeted or claimed, and is scenery being cleared
@@ -166,9 +188,10 @@ end
 --- project has been wrong about natives before.
 ---
 --- Asking twice costs one extra native call, and only while nothing is pinned:
---- the caller caches the handle and comes back here only when it dies. Asking
---- once and guessing costs a feature that silently never engages, which is the
---- failure this project keeps paying for.
+--- the caller caches the handle and comes back here only when it dies, and
+--- after a miss only once a body has been built (missedAt). Asking once and
+--- guessing costs a feature that silently never engages, which is the failure
+--- this project keeps paying for.
 --- @param a table an anchor row
 --- @return integer|nil obj
 --- One model's search at an anchor, both spellings of `isMission`.
@@ -369,6 +392,7 @@ BR.Loop.register(BR.Loop.TICK, 'warmupcrates.track', function()
         -- state change is how a read lands on whatever the engine reissues that
         -- number to next.
         if next(pinned) then pinned = {} end
+        if next(missedAt) then missedAt = {} end
         hideBlip()
         return
     end
@@ -392,13 +416,22 @@ BR.Loop.register(BR.Loop.TICK, 'warmupcrates.track', function()
             -- handle we are holding names nothing. Dropped rather than kept:
             -- a stale handle is one the engine is free to reissue.
             pinned[i] = nil
+            missedAt[i] = nil
         elseif not pinned[i] or not isTrue(DoesEntityExist(pinned[i])) then
             -- Gone, or never found. A husk swap deletes one object and builds
             -- another, so this is the ordinary path once per cycle rather than
-            -- an error path.
-            pinned[i] = findProp(a)
-            if pinned[i] then
-                BR.WarmupCrates.stats.found = BR.WarmupCrates.stats.found + 1
+            -- an error path -- and the swap's new body is what moves the
+            -- count, so it is searched for as soon as it exists.
+            pinned[i] = nil
+            local built = bodies()
+            if missedAt[i] ~= built then
+                pinned[i] = findProp(a)
+                if pinned[i] then
+                    missedAt[i] = nil
+                    BR.WarmupCrates.stats.found = BR.WarmupCrates.stats.found + 1
+                else
+                    missedAt[i] = built
+                end
             end
         end
     end

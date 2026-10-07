@@ -691,7 +691,10 @@ function SetEntityCoordsNoOffset(h, x, y, z)
     if o then o.x, o.y, o.z = x, y, z end
 end
 
+--- Every search the pin makes, so its cost can be counted (#393 review).
+local searches = 0
 function GetClosestObjectOfType(x, y, z, r, hash)
+    searches = searches + 1
     local best, bestD
     for h, o in pairs(objects) do
         if o.model == hash then
@@ -748,13 +751,25 @@ loadAll({ 'br_core/client/warmupcrates.lua' })
 
 local Mk = W.marker
 
---- Put a crate object on an anchor, wearing one of the two models.
-local function putCrate(i, prop)
+-- ═══ EVERY CRATE HERE IS ONE client/loot.lua BUILT ═══
+--
+-- So each one moves BR.Loot.bodies, the count client/warmupcrates.lua searches
+-- again on after a miss (#393 review, 2026-10-06), exactly as loot.lua's
+-- adoption moves it in the game.
+local built = 0
+BR.Loot = BR.Loot or {}
+function BR.Loot.bodies() return built end
+
+--- Put a crate object on an anchor, wearing one of the two models, `dx` meters
+--- east of it (0: on it).
+local function putCrate(i, prop, dx)
     local a = W.anchors[i]
     nextObj = nextObj + 1
     objects[nextObj] = {
-        model = GetHashKey(prop), x = a.x, y = a.y, z = a.z, heading = a.heading,
+        model = GetHashKey(prop), x = a.x + (dx or 0.0), y = a.y, z = a.z,
+        heading = a.heading,
     }
+    built = built + 1
     return nextObj
 end
 
@@ -1056,6 +1071,54 @@ do
         if tickAndFrame()[1].a ~= Mk.openAlpha then ok(false, 'opened reads faint') end
     end
     ok(true, 'five more cycles and the alpha still follows the model both ways')
+end
+
+describe('the pin: a crate off its anchor is looked for once per body built')
+do
+    -- ═══ THE 136 SEARCHES A SECOND (#393 review, 2026-10-06) ═══
+    --
+    -- An anchor in reach with nothing pinned used to be searched on every tick:
+    -- two models, both spellings of `isMission`, four anchors, ten times a
+    -- second. A crate knocked more than `pinTolerance` off its anchor, or one
+    -- whose ground probe failed and was never built, kept that up for the whole
+    -- warmup. Nothing new can stand on an anchor until client/loot.lua builds a
+    -- body, so a miss now holds until one is built.
+    for hh in pairs(objects) do objects[hh] = nil end
+    BR.State.me.state = BR.PlayerState.ALIVE
+    tickAndFrame()
+    BR.State.me.state = BR.PlayerState.WARMUP
+    standAtAnchor(1, 2.0)
+
+    local off = putCrate(1, BR.Config.Loot.chestProp, 1.0)
+    searches = 0
+    tickAndFrame()
+    local first = searches
+    ok(first > 0, 'the first tick after a body is built looks at every anchor', first)
+    eq(BR.WarmupCrates.all()[1].sealed, nil,
+       'and a crate a meter off its anchor is not taken for the one on it')
+
+    searches = 0
+    for _ = 1, 50 do tickAndFrame() end
+    eq(searches, 0, 'five seconds more of ticks with nothing new built search nothing')
+
+    -- A BODY BUILT ANYWHERE is the next look: the swap that puts a crate back on
+    -- its anchor is a body built, and it is found on the very next tick.
+    objects[off] = nil
+    putCrate(1, BR.Config.Loot.chestProp)
+    tickAndFrame()
+    eq(BR.WarmupCrates.all()[1].sealed, true, 'a crate built on its anchor is found on the next tick')
+    searches = 0
+    for _ = 1, 50 do tickAndFrame() end
+    eq(searches, 0, 'and the three empty anchors are not searched again until another is built')
+
+    -- LEAVING REACH FORGETS THE MISS, so coming back looks again at once.
+    standAtAnchor(1, (BR.Config.Loot.propDistance or 180.0) + 100.0)
+    tickAndFrame()
+    standAtAnchor(1, 2.0)
+    searches = 0
+    tickAndFrame()
+    ok(searches > 0, 'and walking back into reach looks again', searches)
+    for hh in pairs(objects) do objects[hh] = nil end
 end
 
 describe('markers: when there is nothing to point at')

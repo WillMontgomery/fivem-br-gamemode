@@ -3058,6 +3058,15 @@ local cprSince = nil
 -- Whether the clip has been tasked and not yet stopped.
 local cprPlaying = false
 
+-- When cprStart last asked the streamer for CPR_DICT, or nil.
+--
+-- ASKED AT MOST ONCE A SECOND (#393 review, 2026-10-06). A request stands until
+-- it is met and HasAnimDictLoaded is the cheap half, so asking again on every
+-- frame of a hold -- sixty stream requests a second, for up to CPR_MAX_MS, when
+-- the dictionary will not load -- bought nothing a second ask cannot.
+local cprAskedAt = nil
+local CPR_ASK_MS = 1000
+
 --- Put the clip on our own ped. Idempotent, and never yields.
 ---
 --- NO Citizen.Wait, BECAUSE THE ONLY CALLER IS A FRAME CALLBACK. A yield in
@@ -3105,7 +3114,11 @@ local function cprStart(target)
     -- animation on a dictionary that is not there, which plays nothing and
     -- leaves `cprPlaying` lying about it for the whole hold.
     if not didHit(HasAnimDictLoaded(CPR_DICT)) then
-        if RequestAnimDict then RequestAnimDict(CPR_DICT) end
+        local now = GetGameTimer()
+        if RequestAnimDict and (cprAskedAt == nil or now - cprAskedAt >= CPR_ASK_MS) then
+            cprAskedAt = now
+            RequestAnimDict(CPR_DICT)
+        end
         return
     end
 
@@ -3877,7 +3890,12 @@ local function keepPose(src, now)
         if now - k.missingSince < CLONE_GRACE_MS then return end
         if k.posedAt and now - k.posedAt < CLONE_REPOSE_MS then return end
         if not says(HasAnimDictLoaded, crawl.dict) then
-            if RequestAnimDict then RequestAnimDict(crawl.dict) end
+            -- ASKED ONCE A CLONE_REPOSE_MS, as a pose is, rather than on every
+            -- tick until it lands (#393 review, 2026-10-06).
+            if RequestAnimDict and (k.askedAt == nil or now - k.askedAt >= CLONE_REPOSE_MS) then
+                k.askedAt = now
+                RequestAnimDict(crawl.dict)
+            end
             return
         end
         TaskPlayAnim(ped, crawl.dict, crawl.anim, 8.0, -8.0, -1, 1, 0.0,

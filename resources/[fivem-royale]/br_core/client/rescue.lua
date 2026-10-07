@@ -518,6 +518,10 @@ local POSE_DICT = ((R and R.stretcher and R.stretcher.pose) or {}).dict
 local POSE_ANIM = ((R and R.stretcher and R.stretcher.pose) or {}).anim
     or 'base'
 
+--- When poseOnStretcher last asked the streamer for POSE_DICT, or nil.
+local poseAskedAt = nil
+local POSE_ASK_MS = 1000
+
 --- Request the dictionary and wait a beat for it.
 ---
 --- DoesAnimDictExist FIRST, because requesting a name the game has never heard
@@ -560,7 +564,13 @@ end
 --- @return boolean posed
 local function poseOnStretcher(ped)
     if not isTrue(HasAnimDictLoaded(POSE_DICT)) then
-        RequestAnimDict(POSE_DICT)
+        -- ASKED AT MOST ONCE A SECOND (#393 review, 2026-10-06): a request
+        -- stands until it is met, and rescue.pose comes back ten times a second.
+        local now = GetGameTimer()
+        if poseAskedAt == nil or now - poseAskedAt >= POSE_ASK_MS then
+            poseAskedAt = now
+            RequestAnimDict(POSE_DICT)
+        end
         return false
     end
     TaskPlayAnim(ped, POSE_DICT, POSE_ANIM, 8.0, -8.0, -1, 1, 0.0,

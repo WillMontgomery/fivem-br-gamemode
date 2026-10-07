@@ -555,6 +555,10 @@ do
     POSE_ANIM = p.anim or 'base'
 end
 
+--- When poseOnStretcher last asked the streamer for POSE_DICT, or nil.
+local poseAskedAt = nil
+local POSE_ASK_MS = 1000
+
 --- Put the body in the pose, if the dictionary is here.
 ---
 --- THE ARGUMENT TAIL IS PART OF THE MEASUREMENT, exactly as the attach's is.
@@ -579,7 +583,13 @@ end
 --- @return boolean posed
 function poseOnStretcher(ped)   -- forward-declared as a local, above.
     if not isTrue(HasAnimDictLoaded(POSE_DICT)) then
-        RequestAnimDict(POSE_DICT)
+        -- ASKED AT MOST ONCE A SECOND (#393 review, 2026-10-06): a request
+        -- stands until it is met, and ambheal.pose comes back ten times a second.
+        local now = GetGameTimer()
+        if poseAskedAt == nil or now - poseAskedAt >= POSE_ASK_MS then
+            poseAskedAt = now
+            RequestAnimDict(POSE_DICT)
+        end
         return false
     end
     TaskPlayAnim(ped, POSE_DICT, POSE_ANIM, 8.0, -8.0, -1, 1, 0.0,

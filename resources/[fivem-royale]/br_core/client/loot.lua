@@ -86,6 +86,7 @@ local L = BR.Config.Loot
 
 local entries   = {}      -- [id] = entry, with prop bookkeeping attached
 local byObject  = {}      -- [objectHandle] = id, so a ray hit resolves instantly
+local adopted   = 0       -- bodies handed to an entry since load (BR.Loot.bodies)
 local queue     = {}      -- ids waiting for a model
 local queued    = {}      -- [id] = true, so the queue cannot double up
 
@@ -1897,6 +1898,7 @@ local function drain()
                                 elseif entries[id] == e and not e.obj then
                                     e.obj = obj
                                     byObject[obj] = id
+                                    adopted = adopted + 1
                                     -- WHAT THIS BODY IS (#395): the model it
                                     -- wears, and which prompt row it reads
                                     -- (nil = the wooden lid label). The sealed
@@ -2414,6 +2416,19 @@ if BR.Season and BR.Season.onChange then BR.Season.onChange(followSeason) end
 --- @return table
 function BR.Loot.boxModels()
     return boxBuilt
+end
+
+--- How many bodies this client has handed to an entry since it loaded: a count
+--- that only rises, once for every prop built and adopted.
+---
+--- A CHANGE SIGNAL, NOT A HANDLE (#393 review, 2026-10-06). client/
+--- warmupcrates.lua searches for its four crates again only when this has moved
+--- since its last miss, so a crate that is not on its anchor -- knocked off it,
+--- or never built -- costs one search per body built here instead of one on
+--- every tick. No object is handed out; see the note where airdropBox stood.
+--- @return integer
+function BR.Loot.bodies()
+    return adopted
 end
 
 -- A br_ui restart does not touch this, but a RECONNECT does: the snapshot
