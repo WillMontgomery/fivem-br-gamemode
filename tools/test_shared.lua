@@ -18719,6 +18719,218 @@ do
     ok(C.told[10] == t10 + 1 and C.told[12] == t12 + 1 and C.told[13] == t13 + 1,
         'and the warmup that starts the next round has every ped told afresh')
 end
+
+-- ---------------------------------------------------------------------------
+-- gamerules.pickups walks the pools only where something can die, and reads
+-- corpses only while the server would pay for one (#393).
+--
+-- The pass cost two GetGamePool calls ten times a second in every state, and
+-- one IsPedDeadOrDying per streamed ped per pass while ALIVE or WARMUP. In the
+-- lobby and on the warmup pad nothing can die and no pickup can appear (sterile
+-- buckets, every player and every ped we build invincible), so the pass does
+-- not run there; and while br_lib's npcDrop is off -- the shipped default, and
+-- the server's own first test -- the corpse watch could only ever send an event
+-- the server drops unread. What must not change: every populated state runs the
+-- pass exactly as before, a ped is told on the first pass it is seen (handles
+-- left over from before a sterile spell included), the sweep runs on every
+-- populated pass, and with npcDrop on a kill pays exactly as it did.
+-- ---------------------------------------------------------------------------
+
+describe('gamerules / the pickup pass runs where something can die, and reads corpses only when they pay')
+do
+    local PED = 1
+
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+
+    local function newRulesClient()
+        local env = newSandbox()
+        local C = { now = 1000, peds = {}, told = {}, removed = 0, handlers = {},
+                    pools = 0, deadAsked = 0, dead = {}, byMe = {}, sent = {} }
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return #tostring(s) end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+        env.AddEventHandler = function(name, fn)
+            C.handlers[name] = C.handlers[name] or {}
+            table.insert(C.handlers[name], fn)
+        end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand = function() end
+        env.TriggerServerEvent = function(name, payload)
+            C.sent[#C.sent + 1] = { name = name, payload = payload }
+        end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, SANDBOX_LIB)
+
+        env.PlayerPedId     = function() return PED end
+        -- C.peds[h] is where that ped stands; the local ped is at the origin.
+        env.GetEntityCoords = function(e)
+            local at = C.peds[e]
+            if e ~= PED and at then return { x = at.x, y = at.y, z = at.z } end
+            return { x = 0.0, y = 0.0, z = 0.0 }
+        end
+        env.DoesEntityExist = function(e) return (e == PED or C.peds[e]) and 1 or 0 end
+        env.GetGamePool = function(kind)
+            C.pools = C.pools + 1
+            local out = {}
+            if kind == 'CPed' then
+                out[1] = PED
+                for h in pairs(C.peds) do out[#out + 1] = h end
+                table.sort(out)
+            elseif kind == 'CPickup' then
+                out[1] = 77
+            end
+            return out
+        end
+        env.SetPedDropsWeaponsWhenDead = function(ped)
+            C.told[ped] = (C.told[ped] or 0) + 1
+        end
+        env.IsPedDeadOrDying = function(p)
+            C.deadAsked = C.deadAsked + 1
+            return C.dead[p] == true
+        end
+        env.HasEntityBeenDamagedByEntity = function(victim, attacker)
+            return attacker == PED and C.byMe[victim] == true
+        end
+        -- Every NPC here holds a pistol, and has a full magazine and then some.
+        env.GetCurrentPedWeapon = function() return true, 0x1B06D571 end
+        env.GetAmmoInPedWeapon  = function() return 40 end
+        env.IsEntityDead        = function() return false end
+        env.IsPedFatallyInjured = function() return false end
+        env.DoesPickupExist  = function() return 1 end
+        env.GetPickupCoords  = function() return { x = 5.0, y = 0.0, z = 0.0 } end
+        env.RemovePickup     = function() C.removed = C.removed + 1 end
+
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.applyGameRules = function() end
+        env.BR.State.me.state = env.BR.PlayerState.ALIVE
+
+        loadInto(env, { 'br_core/client/gamerules.lua' })
+
+        C.env = env
+        function C.tick(n)
+            for _ = 1, n or 1 do
+                C.now = C.now + 100
+                env.BR.Loop.step(env.BR.Loop.TICK)
+            end
+        end
+        function C.state(s) env.BR.State.me.state = env.BR.PlayerState[s] end
+        function C.drops()
+            local n = 0
+            for _, s in ipairs(C.sent) do
+                if s.name == env.BR.Net.NPC_DROP then n = n + 1 end
+            end
+            return n
+        end
+        return C
+    end
+
+    local function at(x) return { x = x, y = 0.0, z = 30.0 } end
+
+    -- ═══ THE LOBBY AND THE PAD: NOT A POOL WALKED ═══
+    local C = newRulesClient()
+    C.peds = { [10] = at(10.0), [11] = at(20.0), [12] = at(30.0) }
+    for _, s in ipairs({ 'LOBBY', 'WARMUP' }) do
+        C.state(s)
+        local pools, removed = C.pools, C.removed
+        C.tick(20)
+        ok(C.pools == pools and C.removed == removed and next(C.told) == nil,
+            ('%s: two seconds of passes walk no pool, tell no ped and sweep nothing'):format(s),
+            ('pools %d, removed %d'):format(C.pools - pools, C.removed - removed))
+    end
+
+    -- ═══ AND EVERY POPULATED STATE RUNS IT EXACTLY AS BEFORE ═══
+    for _, s in ipairs({ 'BUS', 'FREEFALL', 'GLIDE', 'ALIVE', 'DBNO', 'OUT' }) do
+        C.state(s)
+        local pools, removed = C.pools, C.removed
+        C.tick(10)
+        ok(C.pools - pools == 20 and C.removed - removed == 10,
+            ('%s: both pools walked and the sweep run on every one of ten passes'):format(s),
+            ('pools %d, removed %d'):format(C.pools - pools, C.removed - removed))
+    end
+    ok(C.told[10] ~= nil and C.told[11] ~= nil and C.told[12] ~= nil,
+        'and the peds were told once the pass ran again')
+
+    -- ═══ A HANDLE FROM BEFORE THE LOBBY IS TOLD AGAIN ON THE FIRST PASS BACK ═══
+    --
+    -- The game recycles handles. A pass rebuilds its told set from the pool it
+    -- walked, so a stale handle used to be forgotten one pass later; with no
+    -- passes in the lobby, the first pass back must not read the last match's
+    -- handles as already told. Three consecutive handles: at most one of them
+    -- can be on its once-a-second pass, so a stale record fails this.
+    C.state('ALIVE')
+    C.tick(3)
+    C.state('LOBBY')
+    C.tick(30)
+    C.state('WARMUP')
+    C.tick(30)
+    C.state('BUS')
+    local before = { C.told[10], C.told[11], C.told[12] }
+    C.tick()
+    ok(C.told[10] == before[1] + 1 and C.told[11] == before[2] + 1
+            and C.told[12] == before[3] + 1,
+        'the first pass after the lobby and the pad tells every ped in the pool afresh',
+        ('%s %s %s'):format(C.told[10] - before[1], C.told[11] - before[2],
+                            C.told[12] - before[3]))
+
+    -- ═══ NPC DROPS OFF -- THE SHIPPED DEFAULT: NO CORPSE IS READ ═══
+    ok(C.env.BR.Config.Loot.npcDrop.enabled ~= true,
+        'the harness runs the shipped config, where NPC drops are off')
+    C.state('ALIVE')
+    C.dead[10], C.byMe[10] = true, true
+    local asked, removed = C.deadAsked, C.removed
+    C.tick(10)
+    ok(C.deadAsked == asked, 'with NPC drops off, no IsPedDeadOrDying is asked of any ped',
+        C.deadAsked - asked)
+    eq(C.drops(), 0, 'and no NPC_DROP leaves -- the server would have dropped it unread')
+    eq(C.removed - removed, 10, 'while the vanilla sweep still runs on every pass')
+
+    -- ═══ NPC DROPS ON: A KILL PAYS EXACTLY AS IT DID ═══
+    local P = newRulesClient()
+    P.env.BR.Config.Loot.npcDrop.enabled = true
+    P.peds = { [10] = at(10.0), [11] = at(20.0), [12] = at(60.0), [13] = at(15.0) }
+    P.tick()
+    eq(P.drops(), 0, 'with NPC drops on, nobody dead is nobody paid')
+    ok(P.deadAsked > 0, 'but every streamed ped is watched again')
+    P.dead[10], P.byMe[10] = true, true     -- mine, 10 m away: pays
+    P.dead[11] = true                        -- somebody else's: does not
+    P.dead[12], P.byMe[12] = true, true     -- mine, but 60 m away: does not
+    P.tick(5)
+    eq(P.drops(), 1, 'one kill of mine within 40 m pays once, however many passes see it')
+    local d = P.sent[1] and P.sent[1].payload or {}
+    ok(d.item == 'pistol' and d.clip == 12 and d.x == 10.0 and d.y == 0.0,
+        'with the gun in its hand, a magazine at most, at the corpse',
+        ('%s %s %s %s'):format(tostring(d.item), tostring(d.clip), tostring(d.x),
+                               tostring(d.y)))
+    -- WARMUP could loot before; it is sterile now, and nothing can die there.
+    P.state('WARMUP')
+    P.dead[13], P.byMe[13] = true, true
+    P.tick(5)
+    eq(P.drops(), 1, 'and the pad, where nothing can die, sends nothing')
+    P.state('ALIVE')
+    P.tick()
+    eq(P.drops(), 2, 'while the same corpse pays on the first ALIVE pass')
+
+    -- A DOWNED PLAYER NEVER COULD LOOT, and the pass that runs for DBNO (and
+    -- OUT, and the flight) must not start paying for it.
+    P.peds[14] = at(12.0)
+    P.tick()
+    P.state('DBNO')
+    P.dead[14], P.byMe[14] = true, true
+    P.tick(5)
+    eq(P.drops(), 2, 'a corpse of mine while I am downed pays nothing, as before')
+    P.state('ALIVE')
+    P.tick()
+    eq(P.drops(), 3, 'and pays on the first ALIVE pass after')
+end
 -- ---------------------------------------------------------------------------
 -- The storm: WHOSE BODY the client reads it from.
 --

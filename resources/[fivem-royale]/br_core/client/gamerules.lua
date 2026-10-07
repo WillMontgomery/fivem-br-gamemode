@@ -351,11 +351,68 @@ local PICKUP_SWEEP_RANGE = 120.0
 -- declared above the BR.Net.STATE handler that clears it, not here beside the
 -- loop that reads it. See the note there.
 
+--- Would the server place a drop for an NPC this player killed?
+---
+--- THE SERVER'S OWN FIRST TEST, READ OFF THE SAME TABLE (#393). NPC drops are
+--- off since #232 (br_lib/config/loot.lua says why), and server/loot.lua's
+--- NPC_DROP handler returns on `npcDrop.enabled ~= true` before it reads
+--- anything else. That flag is in br_lib's shared config, which this client
+--- loads from the same file the server does, and nothing overrides it at run
+--- time. So while it is off, the corpse watch below -- one IsPedDeadOrDying per
+--- streamed ped per pass, ten passes a second -- could only ever end in an
+--- event the server drops unread. Asked at call time, never cached, so turning
+--- the feature back on is still the one line it has always been.
+--- @return boolean
+local function npcDropsPay()
+    local cfg = BR.Config.Loot and BR.Config.Loot.npcDrop
+    return cfg ~= nil and cfg.enabled == true
+end
+
+--- Can anything near this player die, or a pickup appear, at all?
+---
+--- ═══ NOT IN THE LOBBY OR ON THE WARMUP PAD (#393) ═══
+---
+--- The pass below costs two pool walks (GetGamePool) ten times a second in
+--- every state, and in these two it has nothing to find:
+---
+---   * NO AMBIENT LIFE. Both are sterile routing buckets (server/roster.lua's
+---     applyBucket turns population on for match buckets only), and
+---     BR.Native.applyGameRules holds every density multiplier at zero there.
+---   * NOBODY CAN DIE. Every player is invincible in LOBBY and WARMUP
+---     (applyGameRules' wantInvincible), and every ped this gamemode builds --
+---     the bus and airdrop pilots, the clerks, the rescue driver -- is made
+---     invincible where it is created.
+---   * NOTHING ELSE MAKES PICKUPS. No resource in this repository or in the
+---     server.cfg it ships creates one; a dead ped's dropped gun is the only
+---     source the sweep exists for.
+---
+--- So the flags, the corpse watch and the sweep could not change anything a
+--- player sees here. Every other state keeps the pass exactly as it was: the
+--- plane, the jump, the match, a downed player and a spectator are all in a
+--- populated bucket.
+--- @param st string|nil
+--- @return boolean
+local function sterile(st)
+    return st == BR.PlayerState.LOBBY or st == BR.PlayerState.WARMUP
+end
+
 BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
+    local st = BR.State.me.state
+    if sterile(st) then
+        -- THE RECORD GOES WITH THE PASSES. A pass rebuilds the told set from the
+        -- pool it walked, so a handle that left was forgotten one pass later;
+        -- with no passes running, the first one back would read the last
+        -- match's handles as already told -- and the game recycles handles. An
+        -- empty record has every ped told on the first pass after, which is
+        -- what the rebuild guaranteed.
+        if next(noDrop) then noDrop = {} end
+        return
+    end
+
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
-    local canLoot = BR.State.me.state == BR.PlayerState.ALIVE
-                 or BR.State.me.state == BR.PlayerState.WARMUP
+    -- ALIVE alone now: WARMUP, the other state that could loot, never gets here.
+    local canLoot = st == BR.PlayerState.ALIVE and npcDropsPay()
 
     -- 1. Nearby peds keep their guns when they die -- and if WE killed one,
     --    it becomes a proper loot entry instead.
@@ -369,7 +426,8 @@ BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
     --    ground.
     --
     --    A ped is told the first pass it is in the pool, and again once a second
-    --    on a pass its handle picks (see noDrop).
+    --    on a pass its handle picks (see noDrop). The corpse is only read while
+    --    the server would pay for it (npcDropsPay above).
     local was, now = noDrop, noDropNext
     for k in pairs(now) do now[k] = nil end
     noDropPass = noDropPass + 1
