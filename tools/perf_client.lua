@@ -1,8 +1,10 @@
 -- Offline frame profiler for br_core's client (#393).
 --
---   lua tools/perf_client.lua                 the table, every phase
+--   lua tools/perf_client.lua                 the table, every phase, Season 1
+--   lua tools/perf_client.lua --world s2      the same in another world (or `all`)
 --   lua tools/perf_client.lua --top 10        more contributors per phase
 --   lua tools/perf_client.lua --by 12         more natives named per contributor
+--   lua tools/perf_client.lua --files         per client file, and its heavy calls
 --   lua tools/perf_client.lua --phase match   one phase (and the ones before it)
 --   lua tools/perf_client.lua --check         the budget gate tools/verify.sh runs
 --   lua tools/perf_client.lua --rebaseline    measure and rewrite the budget
@@ -17,10 +19,16 @@
 -- plane's doors-open cruise over the mainland, the jump, a match -- and the
 -- match through the things a player does in it: aiming down a scope, pinging,
 -- driving with boost, reviving, talking, standing outside the storm, the emote
--- wheel, going down and spectating. Each phase is measured for a few hundred
--- frames.
+-- wheel, going down, spectating and standing at a terminal with a Yubikey. Each
+-- phase is measured for a few hundred frames.
 --
--- WHAT IT COUNTS, three ways, each exact and the same on every run:
+-- IN EVERY WORLD A CLIENT CAN STAND IN (see THE WORLDS below): Season 1, Season
+-- 2, Season 2 under the festive sky, and Season 1 reached by a live `brseason 1`
+-- from Season 2 with `brfestive` on -- the owner's state on 2026-10-06. --check
+-- and --rebaseline play the session in each of them; each world is one fresh
+-- run of this file, loaded by the first.
+--
+-- WHAT IT COUNTS, four ways, each exact and the same on every run:
 --   natives  every native the code calls, through a stub that charges it to
 --            whatever is running: a loop callback by its registered name, a raw
 --            thread by the file and line that created it, an event handler by
@@ -31,6 +39,11 @@
 --            game, so a draw that comes back must show as a draw.
 --   KB       kilobytes allocated per frame, with the collector stopped while
 --            measuring. Deterministic, and the cost a geometry rebuild shows as.
+--   heavy    the natives in HEAVY (below) -- a world scan, a stream request, an
+--            entity made or deleted, a sky, timecycle, model hide or ground
+--            write -- counted again, PER SECOND: each is engine work far past
+--            a read, so one of them repeated every SLOW pass is a regression
+--            the per-frame native count cannot see.
 -- Lua time is printed per phase only, over the whole measured window, beside
 -- the step of the clock it was read from (os.clock ticks a whole millisecond on
 -- Windows' PUC Lua): per callback, a call is shorter than one tick.
@@ -43,20 +56,30 @@
 -- in-game numbers are brbench / brab (client/debug.lua) and resmon.
 --
 -- THE BUDGET. tools/perf_budget.lua holds what each phase measured on each of the
--- three counts. --check fails a phase that goes over any of them by more than a
--- small slack (see the budget section at the bottom), which is how an ungated
--- per-frame loop, a draw that came back or a rebuild every frame gets caught
--- before a playtest does. docs/testing.md says how to rebaseline.
+-- four counts, in each world. --check fails a phase that goes over any of them by
+-- more than a small slack (see the budget section at the bottom), which is how
+-- an ungated per-frame loop, a draw that came back, a rebuild every frame or a
+-- heavy call every pass gets caught before a playtest does. docs/testing.md says
+-- how to rebaseline.
+
+--- When the first run of this file loads it again to measure one more world
+--- (see THE WORLDS), it is handed { world = id, args = its ARGS, self = path }
+--- and returns that world's numbers instead of printing them.
+local SUB = ...
+if type(SUB) ~= 'table' then SUB = nil end
 
 local ARGS = {}
-do
+if SUB then
+    for k, v in pairs(SUB.args) do ARGS[k] = v end
+else
     local i = 1
     while i <= #arg do
         local a = arg[i]
-        if a == '--check' or a == '--rebaseline' or a == '--quiet' or a == '--digest' then
+        if a == '--check' or a == '--rebaseline' or a == '--quiet' or a == '--digest'
+            or a == '--files' then
             ARGS[a:sub(3)] = true
         elseif a == '--top' or a == '--phase' or a == '--frames' or a == '--root'
-            or a == '--by' then
+            or a == '--by' or a == '--world' then
             ARGS[a:sub(3)] = arg[i + 1]
             i = i + 1
         end
@@ -68,16 +91,131 @@ local ROOT = ARGS.root or ''
 local RES  = ROOT .. 'resources/'
 local FR   = RES .. '[fivem-royale]/'
 local TOP  = tonumber(ARGS.top) or 5
-local MEASURE_FRAMES = tonumber(ARGS.frames) or 600
 local BUDGET_FILE = ROOT .. 'tools/perf_budget.lua'
+--- This file, which the first run loads again for each other world.
+local SELF = SUB and SUB.self or arg[0]
 
 local realPrint = print
 local clock = os.clock
 
+-- ------------------------------------------------------------- the worlds ---
+--
+-- ═══ ONE SESSION, PLAYED IN EVERY WORLD A CLIENT CAN STAND IN ═══
+--
+--   "seems like I caught br_core above 70ms frame time at 1080p again - that's
+--    not okay. this was with season 1 on and festive, with the failed attempt
+--    to change the weather"                              -- owner, 2026-10-06
+--
+-- The session used to be played on a Season 1 server and no other, so a cost
+-- that only a Season 2 client pays, or only one switched into Season 1 live,
+-- was never measured. Each world is the same session from a different start:
+--
+--   s1          Season 1 from boot: the shipping world. Its phases keep their
+--               bare names.
+--   s2          Season 2 from boot: terminals, Yubikeys, the Season 2 crates and
+--               the emote wheel on.
+--   s2-festive  Season 2 under the festive sky (server/world.lua's one fact):
+--               each role's sky is XMAS, with the white ground on under it.
+--   s1-live     the owner's, 2026-10-06: Season 2 at boot; in the lobby
+--               `brfestive on` while Season 2 is still in force (the festive
+--               sky and its white ground arrive), then `brseason 1` applies (the
+--               season moves, the festive sky goes with it, the laptops are
+--               hidden), and the rest of the session in Season 1.
+--
+-- A world's phases are budgeted as `<world>/<phase>`.
+local WORLDS = {
+    { id = 's1',         season = '1' },
+    { id = 's2',         season = '2' },
+    { id = 's2-festive', season = '2', festive = true },
+    { id = 's1-live',    season = '2', live = '1' },
+}
+local worldById = {}
+for _, w in ipairs(WORLDS) do worldById[w.id] = w end
+
+--- A world's name for a phase, in the budget and the table.
+--- @param world table @param phase string @return string
+local function phaseId(world, phase)
+    if world.id == 's1' then return phase end
+    return world.id .. '/' .. phase
+end
+
+-- ------------------------------------------------------------ heavy calls ---
+--
+-- ═══ A CALL THAT COSTS THE ENGINE MORE THAN A READ ═══
+--
+-- Every native counts one in `natives`, which is right for the reads and the
+-- per-frame draws that make up nearly all of them. These are not like them: a
+-- world scan walks a pool, a stream request queues a load, an entity made or
+-- deleted moves the world, and a sky, timecycle, model hide, ground or lights
+-- write applies a whole effect. Each belongs ON A CHANGE -- the loot under the
+-- player, a season, a festive sky, a storm crossing -- and one of them repeated
+-- every SLOW pass is 0.02 natives a frame, invisible beside a budget of
+-- hundreds, and still one heavy call a second for the engine. So they are
+-- counted again, per second, and budgeted on their own.
+--
+-- InvokeNative is here because the one hashed native br_core calls is the white
+-- ground's pass (client/world.lua).
+local HEAVY = {}
+for _, n in ipairs({
+    -- world scans
+    'GetGamePool', 'GetClosestObjectOfType', 'GetClosestVehicle', 'GetClosestPed',
+    'GetPedNearbyVehicles', 'GetPedNearbyPeds', 'StartExpensiveSynchronousShapeTestLosProbe',
+    -- streaming
+    'RequestModel', 'SetModelAsNoLongerNeeded', 'RequestAnimDict', 'RemoveAnimDict',
+    'RequestAnimSet', 'RequestClipSet', 'RequestNamedPtfxAsset', 'RemoveNamedPtfxAsset',
+    'RequestPtfxAsset', 'RequestStreamedTextureDict', 'RequestCollisionAtCoord',
+    'RequestScaleformMovie', 'RequestScaleformMovieInstance', 'RequestScriptAudioBank',
+    'RequestWeaponAsset', 'RequestIpl', 'RemoveIpl',
+    -- entities and cameras
+    'CreateObject', 'CreateObjectNoOffset', 'CreatePed', 'CreatePedInsideVehicle',
+    'ClonePed', 'CreateVehicle', 'DeleteEntity', 'DeleteObject', 'DeletePed',
+    'DeleteVehicle', 'CreateCam', 'CreateCamWithParams', 'DestroyCam', 'RenderScriptCams',
+    -- the world's look: model hides, sky, timecycle, ground, lights, screen effects
+    'CreateModelHide', 'CreateModelHideExcludingScriptObjects', 'RemoveModelHide',
+    'CreateModelSwap', 'RemoveModelSwap', 'SetWeatherTypeNow', 'SetWeatherTypeNowPersist',
+    'SetWeatherTypePersist', 'SetWeatherTypeOvertimePersist', 'SetOverrideWeather',
+    'ClearOverrideWeather', 'ClearWeatherTypePersist', 'SetRainLevel', 'SetSnowLevel',
+    'SetWind', 'SetWindSpeed', 'SetTimecycleModifier', 'ClearTimecycleModifier',
+    'SetTransitionTimecycleModifier', 'SetExtraTimecycleModifier',
+    'ClearExtraTimecycleModifier', 'SetForceVehicleTrails', 'SetForcePedFootstepsTracks',
+    'SetArtificialLightsState', 'SetArtificialLightsStateAffectsVehicles',
+    'AnimpostfxPlay', 'AnimpostfxStop', 'AnimpostfxStopAll', 'InvokeNative',
+    -- browsers
+    'CreateDui', 'DestroyDui', 'SetDuiUrl', 'CreateRuntimeTxd',
+    'CreateRuntimeTextureFromDuiHandle',
+}) do HEAVY[n] = true end
+
+-- ------------------------------------------------- what this run measures ---
+--
+-- --check and --rebaseline cover every world; a plain run covers Season 1, or
+-- the world --world names (`all` for every one). The first is measured by this
+-- run and each other one by a fresh run of this file (SUB).
+local runList = {}
+if SUB then
+    runList[1] = assert(worldById[SUB.world], 'no world ' .. tostring(SUB.world))
+elseif ARGS.world == 'all' or ((ARGS.check or ARGS.rebaseline) and not ARGS.world) then
+    for _, w in ipairs(WORLDS) do runList[#runList + 1] = w end
+else
+    local w = worldById[ARGS.world or 's1']
+    if not w then
+        local ids = {}
+        for _, x in ipairs(WORLDS) do ids[#ids + 1] = x.id end
+        realPrint(('no world %q: one of %s, or all'):format(tostring(ARGS.world),
+            table.concat(ids, ', ')))
+        os.exit(2)
+    end
+    if ARGS.rebaseline then
+        realPrint('--rebaseline writes every world; leave --world off')
+        os.exit(2)
+    end
+    runList[1] = w
+end
+local WORLD = runList[1]
+
 --- The recorded budget, or nil. Under --check its frame count is the one used,
 --- so the per-frame averages are taken over the same window it was written from.
 local budget = nil
-if ARGS.check then
+if ARGS.check and not SUB then
     local chunk = loadfile(BUDGET_FILE)
     budget = chunk and chunk() or nil
     if type(budget) ~= 'table' or type(budget.phases) ~= 'table' then
@@ -85,8 +223,10 @@ if ARGS.check then
         realPrint('     Write one: lua tools/perf_client.lua --rebaseline')
         os.exit(1)
     end
-    MEASURE_FRAMES = tonumber(budget.frames) or MEASURE_FRAMES
+    ARGS.frames = tonumber(budget.frames) or ARGS.frames
 end
+local MEASURE_FRAMES = tonumber(ARGS.frames) or 600
+ARGS.frames = MEASURE_FRAMES
 
 --- The step of `clock` on this machine, in ms: the smallest nonzero difference
 --- between two readings, over a 50 ms busy loop. Lua time is printed beside it,
@@ -127,26 +267,65 @@ local buckets = {}
 local function bucket(key)
     local b = buckets[key]
     if not b then
-        b = { key = key, n = 0, d = 0, kb = 0.0, calls = 0, by = {} }
+        b = { key = key, n = 0, d = 0, h = 0, kb = 0.0, calls = 0, by = {} }
         buckets[key] = b
     end
     return b
 end
 
+-- BY FILE, TOO, under --files: every count charged to a bucket is charged again
+-- to the client file whose code is running -- a loop callback's, a handler's, a
+-- thread's -- so a world's cost reads per file. Off otherwise, and then nothing
+-- below touches it.
+local FILES = ARGS.files == true
+local fileStats = {}
+local fileOfFn = setmetatable({}, { __mode = 'k' })
+
+--- The file a function was written in, or a name for the harness's own.
+--- @param fn function|string|nil
+--- @return string
+local function fileOf(fn)
+    if type(fn) == 'string' then return fn end
+    if type(fn) ~= 'function' then return '(harness)' end
+    local f = fileOfFn[fn]
+    if not f then
+        local info = debug.getinfo(fn, 'S')
+        f = (info.short_src or '?'):match('([^/\\]+)$') or '?'
+        if f == 'perf_client.lua' then f = '(harness)' end
+        fileOfFn[fn] = f
+    end
+    return f
+end
+
+local function fileStat(name)
+    local f = fileStats[name]
+    if not f then
+        f = { file = name, n = 0, h = 0, by = {} }
+        fileStats[name] = f
+    end
+    return f
+end
+
 local curB = bucket('(load)')
+local curF = nil
 local stack = {}
 
 --- Enter `key`, pausing whoever was running. Exclusive attribution: an event a
---- callback triggers is charged to the event, not to the callback.
-local function enter(key)
+--- callback triggers is charged to the event, not to the callback. `src` is
+--- the function (or the file) whose code runs under it, read only under --files.
+local function enter(key, src)
     local kb = gcCount('count')
     local top = stack[#stack]
     if top then top.b.kb = top.b.kb + (kb - top.kb0) end
     local b = bucket(key)
     b.calls = b.calls + 1
-    local rec = { b = b, kb0 = 0.0 }
+    local f = nil
+    if FILES then
+        f = (src ~= nil and fileStat(fileOf(src))) or (top and top.f) or fileStat('(harness)')
+    end
+    local rec = { b = b, kb0 = 0.0, f = f }
     stack[#stack + 1] = rec
-    curB = b
+    curB, curF = b, f
     rec.kb0 = gcCount('count')
 end
 
@@ -158,9 +337,9 @@ local function leave()
     local under = stack[#stack]
     if under then
         under.kb0 = gcCount('count')
-        curB = under.b
+        curB, curF = under.b, under.f
     else
-        curB = bucket('(harness)')
+        curB, curF = bucket('(harness)'), nil
     end
 end
 
@@ -168,7 +347,7 @@ end
 --- are packed: a packed result table would be the harness's allocation charged
 --- to the code.
 local function call(key, fn, ...)
-    enter(key)
+    enter(key, fn)
     local ok, err = pcall(fn, ...)
     leave()
     if not ok then
@@ -675,13 +854,23 @@ local function nativeFn(name)
     if f then return f end
     local body = IMPL[name] or defaultImpl(name)
     local isDraw = name:match('^Draw') ~= nil
+    local heavy = HEAVY[name] == true
     local fingerprint = ARGS.digest and isDraw
     f = function(...)
         local b = curB
         b.n = b.n + 1
         if isDraw then b.d = b.d + 1 end
+        if heavy then b.h = b.h + 1 end
         local by = b.by
         by[name] = (by[name] or 0) + 1
+        local cf = curF
+        if cf then
+            cf.n = cf.n + 1
+            if heavy then
+                cf.h = cf.h + 1
+                cf.by[name] = (cf.by[name] or 0) + 1
+            end
+        end
         if fingerprint then
             local h = fold(digest.h, name)
             for i = 1, select('#', ...) do h = fold(h, (select(i, ...))) end
@@ -707,6 +896,16 @@ local function countAs(name)
     local b = curB
     b.n = b.n + 1
     b.by[name] = (b.by[name] or 0) + 1
+    local heavy = HEAVY[name] == true
+    if heavy then b.h = b.h + 1 end
+    local cf = curF
+    if cf then
+        cf.n = cf.n + 1
+        if heavy then
+            cf.h = cf.h + 1
+            cf.by[name] = (cf.by[name] or 0) + 1
+        end
+    end
 end
 
 -- ------------------------------------------------------------ the runtime ---
@@ -722,9 +921,11 @@ local function srcKey(fn, prefix)
     return ('%s %s:%d'):format(prefix, file, info.linedefined or 0)
 end
 
-local function spawn(fn, delay)
+--- @param src function|nil  whose code it runs, for --files (`fn` by default)
+local function spawn(fn, delay, src)
     threads[#threads + 1] = {
         co = coroutine.create(fn), wake = NOW + (delay or 0), key = srcKey(fn, 'thread'),
+        src = src or fn,
     }
 end
 
@@ -741,7 +942,7 @@ local function runThreads()
     while i <= n do
         local th = threads[i]
         if th and not th.dead and th.wake <= NOW then
-            enter(th.key)
+            enter(th.key, th.src)
             local ok, ms = coroutine.resume(th.co)
             leave()
             if not ok then
@@ -854,7 +1055,7 @@ local RUNTIME = {
         CreateThread = function(fn) spawn(fn, 0) end,
         CreateThreadNow = function(fn) spawn(fn, 0) end,
         Wait = Wait,
-        SetTimeout = function(ms, fn) spawn(function() Wait(ms) fn() end, 0) end,
+        SetTimeout = function(ms, fn) spawn(function() Wait(ms) fn() end, 0, fn) end,
         Await = function(p) return p and p.value end,
         Trace = function() end,
         InvokeNative = function() countAs('InvokeNative') end,
@@ -1016,7 +1217,7 @@ local function hookLoop()
     BR.Loop.register = function(band, name, fn)
         local key = band .. ' ' .. tostring(name)
         local function wrapped(dt)
-            enter(key)
+            enter(key, fn)
             local ok, err = pcall(fn, dt)
             leave()
             if not ok then
@@ -1086,8 +1287,24 @@ local LAND = poi('lsia')             -- a tier-3 hot drop: the densest loot
 local ANCHOR = poi('vinewood') or LAND
 
 -- THE SEASON THE SERVER SERVES. Every server publishes one at boot
--- (BR.Season.boot); Season 1 is the one that ships.
-W.convars[BR.Season.SERVED] = '1'
+-- (BR.Season.boot); Season 1 is the one that ships, and each world (THE WORLDS,
+-- at the top) boots its own.
+W.convars[BR.Season.SERVED] = WORLD.season
+
+--- The season in force once the world's lobby has run: its boot season, or the
+--- one a live `brseason` moved it to.
+local inForce = WORLD.live or WORLD.season
+
+-- THE MUTANT, for --check's proof that the heavy count sees what it is for (see
+-- the end of this file): a model hide made and taken down on every SLOW pass.
+-- Only a run the first one loads for that proof is handed it.
+if ARGS.mutant == 'heavy' then
+    local hide, unhide = env.CreateModelHideExcludingScriptObjects, env.RemoveModelHide
+    BR.Loop.register(BR.Loop.SLOW, 'perf.mutant', function()
+        hide(0.0, 0.0, 0.0, 2.0, 0, true)
+        unhide(0.0, 0.0, 0.0, 2.0, 0, false)
+    end)
+end
 
 local function setPed(h, x, y, z)
     local e = W.ents[h]
@@ -1234,11 +1451,33 @@ local function lootLayout(zone)
     return byCell
 end
 
+--- The stub server's own season and festive answer: the world's boot season,
+--- moved by its live `brseason` (worldStart), and its festive sky. Not the
+--- client's copy: the match emote scene's switch is the client's alone, as a
+--- real server would hold a `brseason` typed mid-match for the lobby.
+local serverSeason = tonumber(WORLD.season)
+local serverFestive = false
+
+--- Does the season the stub server runs have this feature?
+--- @param id string @return boolean
+local function serverHas(id)
+    local row = BR.Config.Seasons.features[id]
+    return row ~= nil and serverSeason >= row.from
+end
+
 --- A fresh copy of a layout entry: the server sends a wire shape, never its own
 --- table, and the client writes its own fields onto what it receives.
+---
+--- SEASON 2 CRATES (#395): while the season in force has crates2, every chest is
+--- stamped with its look as the server indexes it (server/loot.lua's stampLook:
+--- the tier of its rarity, the festive answer), so a Season 2 world builds its
+--- boxes, as a Season 2 client does.
 local function wire(e)
     local c = {}
     for k, v in pairs(e) do c[k] = v end
+    if c.kind == 'chest' and c.bt == nil and BR.Crates and serverHas('crates2') then
+        c.bt, c.bf = BR.Crates.tierOf(c.rarity), serverFestive or nil
+    end
     return c
 end
 
@@ -1541,6 +1780,28 @@ local function frame()
     runThreads()
 end
 
+--- THE WORLD'S OWN START, at the end of the lobby's setup (THE WORLDS, at the
+--- top). s2-festive: the festive sky is on (server/world.lua sends the one
+--- fact). s1-live, the owner's 2026-10-06: `brfestive on` while Season 2 is
+--- still in force -- the festive sky and its white ground arrive -- two seconds
+--- of it, then `brseason 1` applies at the boundary (server/season.lua):
+--- br_seasonServed and SEASON_SWITCHED arrive, each on its own, and the festive
+--- sky is read again and sent off with the season that had it.
+local function worldStart()
+    if WORLD.festive then
+        serverFestive = true
+        net(BR.Net.WORLD_SET, { festive = true })
+    end
+    if WORLD.live then
+        net(BR.Net.WORLD_SET, { festive = true })
+        for _ = 1, 120 do frame() end
+        serverSeason = tonumber(WORLD.live)
+        W.convars[BR.Season.SERVED] = WORLD.live
+        net(BR.Net.SEASON_SWITCHED, { season = serverSeason, by = 'perf' })
+        net(BR.Net.WORLD_SET, {})
+    end
+end
+
 -- ----------------------------------------------------------------- phases ---
 --
 -- In session order. `setup` runs once at the phase boundary and is not
@@ -1559,6 +1820,7 @@ local PHASES = {
         })
         matchState(BR.MatchState.WAITING)
         island('lobby', 0.0)
+        worldStart()
     end },
     { id = 'warmup', settle = 240, setup = function()
         local P = BR.Config.Match.warmupPos
@@ -1617,6 +1879,12 @@ local PHASES = {
         W.chute = nil
         W.cam.rz = 0.0        -- facing north, up the map
         matchState(BR.MatchState.PLAYING, 1800000)
+        -- THE FESTIVE MATCH SKY (#399): under the festive sky a match's weather
+        -- cycles, drawn by the server (server/world.lua), its first turn as the
+        -- match starts PLAYING.
+        if serverFestive and serverHas('snow') then
+            net(BR.Net.WORLD_CYCLE, { weather = 'SNOW' })
+        end
         local stateOf = function(src)
             if src == DOWNED then return BR.PlayerState.DBNO end
             if src > 16 then return BR.PlayerState.OUT end
@@ -1721,6 +1989,10 @@ local PHASES = {
         local p2, p3 = BR.Config.Storm.phases[2], BR.Config.Storm.phases[3]
         stormPhase(3, LAND.x + 200.0, LAND.y + 300.0, p2.radius,
                    LAND.x + 300.0, LAND.y + 100.0, p3.radius, 300, 90, 30000)
+        -- And the festive match sky's next turn, minutes on.
+        if serverFestive and serverHas('snow') then
+            net(BR.Net.WORLD_CYCLE, { weather = 'BLIZZARD' })
+        end
     end },
     { id = 'match outside', settle = 60, setup = function()
         -- Caught outside the storm: well past the zone's edge.
@@ -1736,8 +2008,9 @@ local PHASES = {
         holdKey('bremotewheel', true)
     end, after = function()
         holdKey('bremotewheel', false)
-        W.convars[BR.Season.SERVED] = '1'
-        net(BR.Net.SEASON_SWITCHED, { season = 1, by = 'perf' })
+        -- Back to the world's season (Season 1 in s1 and s1-live).
+        W.convars[BR.Season.SERVED] = inForce
+        net(BR.Net.SEASON_SWITCHED, { season = tonumber(inForce), by = 'perf' })
     end },
     { id = 'match downed', settle = 60, setup = function()
         -- Knocked: down, crawling and bleeding out.
@@ -1751,6 +2024,29 @@ local PHASES = {
         watching = 2
         spectateFeed()
     end },
+    { id = 'match terminal', settle = 60, setup = function()
+        -- Back on their feet (a Reboot, terminals wave C) with a Yubikey, at a
+        -- terminal `brterminal place` stood where they are, forced online: the
+        -- plate in reach every frame, the blips on both maps every pass. Season
+        -- 1 has no terminals, so there this is the late match standing still.
+        watching = nil
+        net(BR.Net.SPECTATE_SET, { stop = true })
+        delta({ { op = 'update', src = ME, e = { state = BR.PlayerState.ALIVE } } })
+        local p = entPos(W.me)
+        net(BR.Net.TERMINAL_SITES, {
+            placed = { { id = 'perf', x = p.x + 1.0, y = p.y, z = p.z, h = 0.0 } },
+            removed = {}, forced = { 'perf' } })
+        net(BR.Net.YUBIKEY_STATE, { held = true, squadUsed = false, squadMatch = true })
+        -- AND TWO OF WAVE B'S FUNCTIONS OVER THEM, as a Season 2 server sends
+        -- them (server/terminalfx/): a Power outage around this terminal, and
+        -- Time & weather's RAIN inside the circle. Each writes the world once,
+        -- on arrival; every pass after that must find nothing to do.
+        if serverHas('terminals') then
+            net(BR.Net.TERMINAL_POWER, { matchId = 1,
+                list = { { kind = 'radius', x = p.x, y = p.y, r = 400.0 } } })
+            net(BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'RAIN' })
+        end
+    end },
 }
 
 local function snapshot()
@@ -1758,9 +2054,48 @@ local function snapshot()
     for k, b in pairs(buckets) do
         local by = {}
         for n, c in pairs(b.by) do by[n] = c end
-        s[k] = { n = b.n, d = b.d, kb = b.kb, calls = b.calls, by = by }
+        s[k] = { n = b.n, d = b.d, h = b.h, kb = b.kb, calls = b.calls, by = by }
     end
     return s
+end
+
+--- --files: each client file's counts, as snapshot() takes the buckets'.
+local function fileSnapshot()
+    local s = {}
+    for name, f in pairs(fileStats) do
+        local by = {}
+        for n, c in pairs(f.by) do by[n] = c end
+        s[name] = { n = f.n, h = f.h, by = by }
+    end
+    return s
+end
+
+--- --files: per file over a window, natives per frame and heavy calls per
+--- second, busiest first, with each heavy native per second.
+local function fileDiff(a, b, frames)
+    local rows = {}
+    for name, nb in pairs(b) do
+        local oa = a[name] or { n = 0, h = 0, by = {} }
+        local dn = nb.n - oa.n
+        if dn > 0 and name ~= '(harness)' then
+            local by = {}
+            for n, c in pairs(nb.by) do
+                local d = c - (oa.by[n] or 0)
+                if d > 0 then by[#by + 1] = { name = n, perSec = d * 60.0 / frames } end
+            end
+            table.sort(by, function(x, y)
+                if x.perSec ~= y.perSec then return x.perSec > y.perSec end
+                return x.name < y.name
+            end)
+            rows[#rows + 1] = { file = name, n = dn / frames, h = (nb.h - oa.h) * 60.0 / frames,
+                                by = by }
+        end
+    end
+    table.sort(rows, function(x, y)
+        if x.n ~= y.n then return x.n > y.n end
+        return x.file < y.file
+    end)
+    return rows
 end
 
 --- Buckets that are not br_core: the harness itself, the stub server, and the
@@ -1772,8 +2107,9 @@ end
 local function diff(a, b, frames)
     local rows = {}
     for k, nb in pairs(b) do
-        local oa = a[k] or { n = 0, d = 0, kb = 0, calls = 0, by = {} }
+        local oa = a[k] or { n = 0, d = 0, h = 0, kb = 0, calls = 0, by = {} }
         local dn, dd, dkb = nb.n - oa.n, nb.d - oa.d, nb.kb - oa.kb
+        local dh = nb.h - oa.h
         if (dn > 0 or dkb > 0) and counted(k) then
             local by = {}
             for n, c in pairs(nb.by) do
@@ -1784,8 +2120,9 @@ local function diff(a, b, frames)
                 if x.n ~= y.n then return x.n > y.n end
                 return x.name < y.name
             end)
+            -- Heavy calls PER SECOND: one a second is the regression they are for.
             rows[#rows + 1] = { key = k, n = dn / frames, d = dd / frames,
-                                kb = dkb / frames, by = by }
+                                kb = dkb / frames, h = dh * 60.0 / frames, by = by }
         end
     end
     -- A TOTAL ORDER, so the sums below are taken in the same order on every run:
@@ -1795,9 +2132,9 @@ local function diff(a, b, frames)
         if x.kb ~= y.kb then return x.kb > y.kb end
         return x.key < y.key
     end)
-    local tot = { n = 0, d = 0, kb = 0 }
+    local tot = { n = 0, d = 0, kb = 0, h = 0 }
     for _, r in ipairs(rows) do
-        tot.n, tot.d, tot.kb = tot.n + r.n, tot.d + r.d, tot.kb + r.kb
+        tot.n, tot.d, tot.kb, tot.h = tot.n + r.n, tot.d + r.d, tot.kb + r.kb, tot.h + r.h
     end
     return rows, tot
 end
@@ -1826,13 +2163,16 @@ for _, ph in ipairs(PHASES) do
     end
     for _ = 1, ph.settle do frame() gcMaybe() end
     digest.h, digest.n = 0, 0
+    local fileBefore = FILES and fileSnapshot() or nil
     local before = snapshot()
     local c0 = clock()
     for _ = 1, MEASURE_FRAMES do frame() gcMaybe() end
     local wall = (clock() - c0) * 1000.0 / MEASURE_FRAMES
     local rows, tot = diff(before, snapshot(), MEASURE_FRAMES)
-    results[#results + 1] = { id = ph.id, rows = rows, tot = tot, wall = wall,
-                              digest = ('%016x/%d'):format(digest.h, digest.n) }
+    results[#results + 1] = { id = phaseId(WORLD, ph.id), rows = rows, tot = tot, wall = wall,
+                              digest = ('%016x/%d'):format(digest.h, digest.n),
+                              files = FILES and fileDiff(fileBefore, fileSnapshot(),
+                                  MEASURE_FRAMES) or nil }
     if ARGS.phase and ph.id == ARGS.phase then break end
     -- A scene's `after` puts back what it changed, unmeasured, so the next one
     -- starts from the match it was written against.
@@ -1849,6 +2189,35 @@ for _, ph in ipairs(PHASES) do
 end
 collectgarbage('restart')
 
+--- Every callback that threw under the model, as `key xN`, sorted.
+--- @return string[]
+local function harnessErrors()
+    local errs = {}
+    for k, b in pairs(buckets) do
+        if (b.errs or 0) > 0 then errs[#errs + 1] = ('%s x%d'):format(k, b.errs) end
+    end
+    table.sort(errs)
+    return errs
+end
+
+-- --------------------------------------------------------- every world ---
+--
+-- This run's world is measured. A run loaded for one more world hands its
+-- numbers back here; the first run loads one fresh copy of this file for each
+-- world after its own, in WORLDS order, and reports, writes or checks them all.
+
+local run = { world = WORLD, results = results, errs = harnessErrors(),
+              loot = { asks = lootStats.asks, adds = lootStats.adds, gone = lootStats.gone } }
+if SUB then return run end
+
+local runs = { run }
+for i = 2, #runList do
+    local chunk = assert(loadfile(SELF))
+    runs[#runs + 1] = chunk({ world = runList[i].id, args = ARGS, self = SELF })
+    chunk = nil
+    collectgarbage('collect')
+end
+
 -- ----------------------------------------------------------------- report ---
 
 local function fmt(n) return ('%.1f'):format(n) end
@@ -1857,60 +2226,92 @@ if not ARGS.check and not ARGS.rebaseline then
     local step = clockStep()
     realPrint(('br_core client, offline: %d measured frames per phase at 60 fps')
         :format(MEASURE_FRAMES))
-    realPrint('natives, draws (Draw* natives) and KB allocated per frame are exact and the same on every run.')
+    realPrint('natives, draws (Draw* natives) and KB allocated per frame, and heavy calls per second, '
+        .. 'are exact and the same on every run.')
     realPrint(("Lua ms is the whole phase on this machine's PUC Lua, stubs included, read off a clock "
         .. 'that ticks %.3f ms: +/- %.4f ms/frame from the tick alone.'):format(step,
         step / MEASURE_FRAMES))
     realPrint("engine-side cost of a native (a DrawSpritePoly's triangles) is invisible here.")
-    for _, r in ipairs(results) do
+    for _, rn in ipairs(runs) do
         realPrint('')
-        realPrint(('== %-16s natives/frame %7s   draws/frame %6s   KB/frame %6.2f   Lua ms/frame %6.3f')
-            :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.wall))
-        if ARGS.digest then realPrint('   draw digest ' .. r.digest) end
-        for i = 1, math.min(TOP, #r.rows) do
-            local row = r.rows[i]
-            local top = {}
-            for j = 1, math.min(tonumber(ARGS.by) or 3, #row.by) do
-                top[#top + 1] = ('%s %s'):format(row.by[j].name, fmt(row.by[j].n))
+        realPrint(('######## world %s'):format(rn.world.id))
+        for _, r in ipairs(rn.results) do
+            realPrint('')
+            realPrint(('== %-16s natives/frame %7s   draws/frame %6s   KB/frame %6.2f   heavy/s %6.2f   Lua ms/frame %6.3f')
+                :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h, r.wall))
+            if ARGS.digest then realPrint('   draw digest ' .. r.digest) end
+            for i = 1, math.min(TOP, #r.rows) do
+                local row = r.rows[i]
+                local top = {}
+                for j = 1, math.min(tonumber(ARGS.by) or 3, #row.by) do
+                    top[#top + 1] = ('%s %s'):format(row.by[j].name, fmt(row.by[j].n))
+                end
+                realPrint(('   %-34s %7s  %6s draws  %6.2f KB   %s'):format(row.key, fmt(row.n),
+                    fmt(row.d), row.kb, table.concat(top, ', ')))
             end
-            realPrint(('   %-34s %7s  %6s draws  %6.2f KB   %s'):format(row.key, fmt(row.n),
-                fmt(row.d), row.kb, table.concat(top, ', ')))
+            -- EVERY HEAVY CALL, whoever made it, since one a second matters.
+            local heavyRows = {}
+            for _, row in ipairs(r.rows) do
+                for _, b in ipairs(row.by) do
+                    if HEAVY[b.name] then
+                        heavyRows[#heavyRows + 1] = ('%s %s %.2f/s'):format(row.key, b.name,
+                            b.n * 60.0)
+                    end
+                end
+            end
+            if #heavyRows > 0 then
+                table.sort(heavyRows)
+                realPrint('   heavy: ' .. table.concat(heavyRows, '; '))
+            end
+            if r.files then
+                realPrint(('   %-26s %9s %10s %9s   %s'):format('by file', 'nat/frame',
+                    'nat/s', 'heavy/s', 'heavy calls'))
+                for _, f in ipairs(r.files) do
+                    local hv = {}
+                    for _, b in ipairs(f.by) do
+                        hv[#hv + 1] = ('%s %.2f/s'):format(b.name, b.perSec)
+                    end
+                    realPrint(('   %-26s %9.2f %10.1f %9.2f   %s'):format(f.file, f.n,
+                        f.n * 60.0, f.h, table.concat(hv, ', ')))
+                end
+            end
         end
-    end
-    -- What the stub server did, so a scene that should have loot can be seen to.
-    realPrint('')
-    realPrint(('stub server, whole session: %d loot cell asks answered, %d entries added, %d gone')
-        :format(lootStats.asks, lootStats.adds, lootStats.gone))
-    local errs = {}
-    for k, b in pairs(buckets) do
-        if (b.errs or 0) > 0 then errs[#errs + 1] = ('%s x%d'):format(k, b.errs) end
-    end
-    if #errs > 0 then
-        table.sort(errs)
+        -- What the stub server did, so a scene that should have loot can be seen to.
         realPrint('')
-        realPrint('errors (the harness, not the game -- fix the model): ' .. table.concat(errs, '; '))
+        realPrint(('stub server, whole session: %d loot cell asks answered, %d entries added, %d gone')
+            :format(rn.loot.asks, rn.loot.adds, rn.loot.gone))
+        if #rn.errs > 0 then
+            realPrint('')
+            realPrint('errors (the harness, not the game -- fix the model): '
+                .. table.concat(rn.errs, '; '))
+        end
     end
 end
 
 -- ------------------------------------------------------------------ budget ---
 --
--- THE GUARD. tools/perf_budget.lua records, per phase, what the tree measured
--- when it was written, three ways: native calls, draws and kilobytes allocated,
--- each per frame. --check fails a phase that goes over any of them by more than
--- SLACK, which is set so that the smallest regression worth catching fails:
+-- THE GUARD. tools/perf_budget.lua records, per phase and per world, what the
+-- tree measured when it was written, four ways: native calls, draws and
+-- kilobytes allocated, each per frame, and heavy calls per second. --check
+-- fails a phase that goes over any of them by more than SLACK, which is set so
+-- that the smallest regression worth catching fails:
 --
 --   natives  2.5 a frame -- one more per-frame loop of three calls fails
 --   draws    0.9 a frame -- one more draw call every frame fails
 --   KB       0.9 a frame -- one more kilobyte allocated every frame fails
+--   heavy    0.5 a second -- one more heavy call on every SLOW pass fails
 --
--- THREE COUNTS AND NOT ONE, because each regression this exists to stop shows in
+-- FOUR COUNTS AND NOT ONE, because each regression this exists to stop shows in
 -- a different one. A loop nothing gates is native calls. A wall quad, a marker or
 -- a sprite that comes back is a draw, which the game pays for on the render
 -- thread as well -- and a draw that replaced another native would leave the
 -- native count where it was. A geometry rebuild every frame allocates and calls
--- no native at all: it is invisible to the other two and is what KB is for.
+-- no native at all: it is invisible to the other two and is what KB is for. And
+-- a model hide, a sky write or a world scan repeated once a second is 0.02
+-- natives a frame -- under any per-frame slack -- and a real cost to the
+-- engine every second: that is what heavy is for (see HEAVY at the top).
 --
--- STABLE BECAUSE IT IS EXACT. All three are counts, not timings: the clock is
+-- STABLE BECAUSE IT IS EXACT. All four are counts, not timings: the clock is
 -- the model's, math.random is seeded and the stub server answers in a fixed
 -- order. The one wobble is main.lua starting its band threads in pairs() order,
 -- which Lua seeds afresh each run, so a SLOW pass and the loot prop thread can
@@ -1922,29 +2323,30 @@ end
 -- THE SLACK LIVES HERE AND NOT IN THE BUDGET FILE, which holds only what was
 -- measured, so a rebaseline cannot loosen it and nobody edits it by hand.
 
-local SLACK = { n = 2.5, d = 0.9, kb = 0.9 }
+local SLACK = { n = 2.5, d = 0.9, kb = 0.9, h = 0.5 }
 local METRICS = {
-    { key = 'n',  field = 'natives', unit = 'natives' },
-    { key = 'd',  field = 'draws',   unit = 'draws' },
-    { key = 'kb', field = 'kb',      unit = 'KB' },
+    { key = 'n',  field = 'natives', unit = 'natives',     per = 'frame' },
+    { key = 'd',  field = 'draws',   unit = 'draws',       per = 'frame' },
+    { key = 'kb', field = 'kb',      unit = 'KB',          per = 'frame' },
+    { key = 'h',  field = 'heavy',   unit = 'heavy calls', per = 'second' },
 }
 
-local function harnessErrors()
-    local errs = {}
-    for k, b in pairs(buckets) do
-        if (b.errs or 0) > 0 then errs[#errs + 1] = ('%s x%d'):format(k, b.errs) end
-    end
-    table.sort(errs)
-    return errs
+--- The world a budgeted phase id belongs to: `<world>/<phase>`, or Season 1's
+--- bare name.
+--- @param id string @return string
+local function worldOf(id)
+    return id:match('^([%w%-]+)/') or 's1'
 end
 
 if ARGS.rebaseline then
     local lines = {
-        '-- br_core\'s per-frame budget: what each phase measured, per frame, as native',
-        '-- calls, draw calls (natives named Draw*) and kilobytes allocated.',
-        '-- `lua tools/perf_client.lua --check` (tools/verify.sh runs it) fails a phase',
-        ('-- that goes over any of them by more than %.1f natives, %.1f draws or %.1f KB.'):format(
-            SLACK.n, SLACK.d, SLACK.kb),
+        '-- br_core\'s per-frame budget: what each phase measured, in each world (see',
+        '-- THE WORLDS in tools/perf_client.lua), as native calls, draw calls (natives',
+        '-- named Draw*) and kilobytes allocated per frame, and heavy calls (HEAVY)',
+        '-- per second. `lua tools/perf_client.lua --check` (tools/verify.sh runs it)',
+        ('-- fails a phase that goes over any of them by more than %.1f natives, %.1f'):format(
+            SLACK.n, SLACK.d),
+        ('-- draws or %.1f KB a frame, or %.1f heavy calls a second.'):format(SLACK.kb, SLACK.h),
         '--',
         '-- WRITTEN, NOT EDITED: `lua tools/perf_client.lua --rebaseline` measures the',
         '-- tree and writes this file. The slack is in tools/perf_client.lua, not here.',
@@ -1954,13 +2356,16 @@ if ARGS.rebaseline then
         ('    frames = %d,'):format(MEASURE_FRAMES),
         '    phases = {',
     }
-    for _, r in ipairs(results) do
-        lines[#lines + 1] = ('        { id = %q, natives = %.3f, draws = %.3f, kb = %.3f },')
-            :format(r.id, r.tot.n, r.tot.d, r.tot.kb)
+    local errs = {}
+    for _, rn in ipairs(runs) do
+        for _, r in ipairs(rn.results) do
+            lines[#lines + 1] = ('        { id = %q, natives = %.3f, draws = %.3f, kb = %.3f, heavy = %.3f },')
+                :format(r.id, r.tot.n, r.tot.d, r.tot.kb, r.tot.h)
+        end
+        for _, e in ipairs(rn.errs) do errs[#errs + 1] = rn.world.id .. ': ' .. e end
     end
     lines[#lines + 1] = '    },'
     lines[#lines + 1] = '}'
-    local errs = harnessErrors()
     if #errs > 0 then
         realPrint('\27[31mrefusing to write a budget over harness errors:\27[0m '
             .. table.concat(errs, '; '))
@@ -1970,33 +2375,55 @@ if ARGS.rebaseline then
     fh:write(table.concat(lines, '\n'), '\n')
     fh:close()
     realPrint('wrote ' .. BUDGET_FILE)
-    for _, r in ipairs(results) do
-        realPrint(('   %-16s %7s natives  %6s draws  %6.2f KB  per frame'):format(r.id,
-            fmt(r.tot.n), fmt(r.tot.d), r.tot.kb))
+    for _, rn in ipairs(runs) do
+        for _, r in ipairs(rn.results) do
+            realPrint(('   %-26s %7s natives  %6s draws  %6.2f KB  per frame  %6.2f heavy/s')
+                :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h))
+        end
     end
+end
+
+--- Does phase result `r` go over budget row `b` on any count? The counts that
+--- do, as { metric, value, ceiling }, and the ones the row has no number for.
+--- @return table[] over, string[] missing
+local function overBudget(r, b)
+    local over, missing = {}, {}
+    for _, m in ipairs(METRICS) do
+        local was = tonumber(b[m.field])
+        if was == nil then
+            missing[#missing + 1] = m.unit
+        elseif r.tot[m.key] > was + SLACK[m.key] then
+            over[#over + 1] = { m = m, value = r.tot[m.key], was = was }
+        end
+    end
+    return over, missing
 end
 
 if ARGS.check then
     local want = {}
     for _, b in ipairs(budget.phases) do want[b.id] = b end
+    local covered = {}
+    for _, w in ipairs(runList) do covered[w.id] = true end
     local bad = 0
-    for _, r in ipairs(results) do
-        local b = want[r.id]
-        if not b then
-            realPrint(('\27[31mFAIL\27[0m phase %q has no budget -- rebaseline'):format(r.id))
-            bad = bad + 1
-        else
-            local over = false
-            for _, m in ipairs(METRICS) do
-                local was = tonumber(b[m.field])
-                if was == nil then
-                    realPrint(('\27[31mFAIL\27[0m %-16s has no %s budget -- rebaseline')
-                        :format(r.id, m.unit))
-                    bad, over = bad + 1, true
-                elseif r.tot[m.key] > was + SLACK[m.key] then
-                    bad, over = bad + 1, true
-                    realPrint(('\27[31mFAIL\27[0m %-16s %8.2f %s/frame, budget %.2f (measured %.2f + %.1f)')
-                        :format(r.id, r.tot[m.key], m.unit, was + SLACK[m.key], was,
+    for _, rn in ipairs(runs) do
+        local good = 0
+        for _, r in ipairs(rn.results) do
+            local b = want[r.id]
+            if not b then
+                realPrint(('\27[31mFAIL\27[0m phase %q has no budget -- rebaseline'):format(r.id))
+                bad = bad + 1
+            else
+                local over, missing = overBudget(r, b)
+                for _, unit in ipairs(missing) do
+                    realPrint(('\27[31mFAIL\27[0m %-26s has no %s budget -- rebaseline')
+                        :format(r.id, unit))
+                    bad = bad + 1
+                end
+                for _, o in ipairs(over) do
+                    local m = o.m
+                    bad = bad + 1
+                    realPrint(('\27[31mFAIL\27[0m %-26s %8.2f %s/%s, budget %.2f (measured %.2f + %.1f)')
+                        :format(r.id, o.value, m.unit, m.per, o.was + SLACK[m.key], o.was,
                             SLACK[m.key]))
                     -- The biggest contributors to the count that went over.
                     local top = {}
@@ -2009,45 +2436,89 @@ if ARGS.check then
                         realPrint(('       %-34s %8.2f'):format(top[i].key, top[i][m.key]))
                     end
                 end
+                if #over == 0 and #missing == 0 then
+                    good = good + 1
+                    if not ARGS.quiet then
+                        realPrint(('\27[32mok\27[0m   %-26s %7s natives  %6s draws  %6.2f KB  per frame  %6.2f heavy/s')
+                            :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h))
+                    end
+                end
             end
-            if not over and not ARGS.quiet then
-                realPrint(('\27[32mok\27[0m   %-16s %7s natives  %6s draws  %6.2f KB  per frame')
-                    :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb))
-            end
+            want[r.id] = nil
         end
-        want[r.id] = nil
-    end
-    for id in pairs(want) do
-        realPrint(('\27[31mFAIL\27[0m budgeted phase %q was not measured -- rebaseline'):format(id))
-        bad = bad + 1
-    end
-    local errs = harnessErrors()
-    if #errs > 0 then
-        -- A callback that throws under the model stops being counted, which would
-        -- pass the budget for the wrong reason.
-        realPrint('\27[31mFAIL\27[0m callbacks errored under the profiler: '
-            .. table.concat(errs, '; '))
-        bad = bad + 1
-    end
-    if bad == 0 and ARGS.quiet then
-        -- One line for tools/verify.sh: how many phases, and where the match sits.
-        local tail = ''
-        for _, r in ipairs(results) do
-            if r.id == 'match' then
-                tail = (', the match at %s natives, %s draws, %.2f KB a frame')
-                    :format(fmt(r.tot.n), fmt(r.tot.d), r.tot.kb)
+        if #rn.errs > 0 then
+            -- A callback that throws under the model stops being counted, which would
+            -- pass the budget for the wrong reason.
+            realPrint(('\27[31mFAIL\27[0m %s: callbacks errored under the profiler: %s')
+                :format(rn.world.id, table.concat(rn.errs, '; ')))
+            bad = bad + 1
+        elseif ARGS.quiet and good == #rn.results then
+            -- One line per world for tools/verify.sh: how many phases, and where the
+            -- match sits.
+            local tail = ''
+            for _, r in ipairs(rn.results) do
+                if r.id == phaseId(rn.world, 'match') then
+                    tail = (', the match at %s natives, %s draws, %.2f KB a frame, %.2f heavy/s')
+                        :format(fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h)
+                end
             end
+            realPrint(('%sok%s   %-10s %d phases within budget on natives, draws, KB and heavy calls%s')
+                :format(string.char(27) .. '[32m', string.char(27) .. '[0m', rn.world.id,
+                    #rn.results, tail))
         end
-        realPrint(('%sok%s   %d phases within budget on natives, draws and KB%s')
-            :format(string.char(27) .. '[32m', string.char(27) .. '[0m', #results, tail))
     end
+    -- A budgeted phase of a world this run covered that it did not measure. Not
+    -- asked under --phase, which stops the session early on purpose.
+    if not ARGS.phase then
+        local ids = {}
+        for id in pairs(want) do
+            if covered[worldOf(id)] then ids[#ids + 1] = id end
+        end
+        table.sort(ids)
+        for _, id in ipairs(ids) do
+            realPrint(('\27[31mFAIL\27[0m budgeted phase %q was not measured -- rebaseline'):format(id))
+            bad = bad + 1
+        end
+    end
+
+    -- ═══ THE HEAVY COUNT PROVES IT CAN SEE WHAT IT IS FOR ═══
+    --
+    -- One more run, of Season 1's lobby only, with the regression this count
+    -- exists for added to it: a model hide made and taken down on every SLOW
+    -- pass (the `mutant` below the file loads). That is two natives a second --
+    -- 0.03 a frame, well inside the native count's slack -- and it must fail the
+    -- heavy count. If it does not, the gate is blind and says so.
+    if not ARGS.phase and covered.s1 then
+        local lobby = nil
+        for _, b in ipairs(budget.phases) do if b.id == 'lobby' then lobby = b end end
+        local chunk = assert(loadfile(SELF))
+        local proof = chunk({ world = 's1', self = SELF,
+                              args = { frames = MEASURE_FRAMES, phase = 'lobby', mutant = 'heavy',
+                                       root = ARGS.root } })
+        chunk = nil
+        local r = proof.results[1]
+        local over = (lobby and r) and overBudget(r, lobby) or {}
+        local caught = false
+        for _, o in ipairs(over) do if o.m.key == 'h' then caught = true end end
+        if not caught then
+            realPrint('\27[31mFAIL\27[0m the heavy count did not catch a model hide on every SLOW pass '
+                .. ('(lobby with it: %.2f heavy/s, %.1f natives/frame)'):format(r and r.tot.h or -1,
+                    r and r.tot.n or -1))
+            bad = bad + 1
+        elseif not ARGS.quiet then
+            realPrint(('\27[32mok\27[0m   a model hide every SLOW pass fails the lobby: %.2f heavy/s, budget %.2f')
+                :format(r.tot.h, lobby.heavy + SLACK.h))
+        end
+    end
+
     if bad > 0 then
-        realPrint('     A phase over budget means something new runs, draws or allocates')
-        realPrint('     per frame there. Find it: lua tools/perf_client.lua --top 15 --phase <phase>')
+        realPrint('     A phase over budget means something new runs, draws, allocates or')
+        realPrint('     makes a heavy call there. Find it:')
+        realPrint('       lua tools/perf_client.lua --world <world> --top 15 --files --phase <phase>')
         realPrint('     Meant to cost more? lua tools/perf_client.lua --rebaseline, and')
         realPrint('     say why in the commit. See docs/testing.md.')
         os.exit(1)
     end
 end
 
-return results
+return runs
