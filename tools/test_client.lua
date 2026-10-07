@@ -23704,6 +23704,101 @@ do
     BR.Gunshop, BR.Spectate = realGunshop, realSpectate
 end
 
+describe('#393 -- the slot keys are read only while canArm() could take a press')
+do
+    local realRaw = IsRawKeyDown
+    local reads3 = 0
+    IsRawKeyDown = function(vk)
+        if vk == 0x33 then reads3 = reads3 + 1 end
+        return realRaw(vk)
+    end
+    -- The raw layer resolves its native at start, so it is restarted on the
+    -- counting one.
+    bootOn(true, true)
+    fire('br:ui:focusChanged', 'none')
+    frames(4)
+
+    local cases = {
+        { st = BR.PlayerState.ALIVE,    landed = true,  read = true },
+        { st = BR.PlayerState.WARMUP,   landed = false, read = true },
+        { st = BR.PlayerState.LOBBY,    landed = false, read = false },
+        { st = BR.PlayerState.BUS,      landed = false, read = false },
+        { st = BR.PlayerState.FREEFALL, landed = false, read = false },
+        { st = BR.PlayerState.GLIDE,    landed = true,  read = true },
+        { st = BR.PlayerState.OUT,      landed = false, read = false },
+    }
+    local wrong = {}
+    for _, c in ipairs(cases) do
+        BR.State.me.state, BR.State.landed = c.st, c.landed
+        frame(16)
+        reads3 = 0
+        frame(16)
+        if (reads3 > 0) ~= c.read then
+            wrong[#wrong + 1] = ('%s landed=%s: %d reads'):format(c.st, tostring(c.landed), reads3)
+        end
+    end
+    ok(#wrong == 0, 'slot 3 is read in exactly the states its press reaches the server',
+       table.concat(wrong, '; '))
+
+    -- And a press on it is still a press: back to ALIVE, 3 selects slot 3.
+    BR.State.me.state, BR.State.landed = BR.PlayerState.ALIVE, true
+    frame(16)
+    sent = {}
+    keys[0x33] = true
+    frame(16)
+    keys[0x33] = nil
+    frame(16)
+    local selected = nil
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.INV_SELECT then selected = s.args[1] and s.args[1].slot end
+    end
+    ok(selected == 3, 'and a press on it still selects the slot',
+       ('selected %s'):format(tostring(selected)))
+    IsRawKeyDown = realRaw
+    bootOn(true, true)
+end
+
+describe('#393 -- the jump key is read from boarding to touchdown, and not on foot')
+do
+    -- client/bus.lua's listener answers for the ride, client/skydive.lua's for
+    -- the descent; between the two, Space must be read on every frame from
+    -- boarding to touchdown -- a dead key in a fall is the worst failure this
+    -- game has -- and on none of a match on foot.
+    local realRaw = IsRawKeyDown
+    local space = 0
+    IsRawKeyDown = function(vk)
+        if vk == 0x20 then space = space + 1 end
+        return realRaw(vk)
+    end
+    bootOn(true, true)
+    fire('br:ui:focusChanged', 'none')
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    frames(4)
+
+    local P = BR.PlayerState
+    local cases = {
+        { st = P.LOBBY, read = false }, { st = P.WARMUP, read = false },
+        { st = P.BUS, read = true }, { st = P.FREEFALL, read = true },
+        { st = P.GLIDE, read = true }, { st = P.ALIVE, read = false },
+        { st = P.DBNO, read = false }, { st = P.OUT, read = false },
+    }
+    local wrong = {}
+    for _, c in ipairs(cases) do
+        BR.State.me.state = c.st
+        frame(16)
+        space = 0
+        frame(16)
+        if (space > 0) ~= c.read then
+            wrong[#wrong + 1] = ('%s: %d reads'):format(c.st, space)
+        end
+    end
+    ok(#wrong == 0, 'Space is read aboard, falling and gliding, and in no other state',
+       table.concat(wrong, '; '))
+    IsRawKeyDown = realRaw
+    BR.State.me.state = P.ALIVE
+    bootOn(true, true)
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

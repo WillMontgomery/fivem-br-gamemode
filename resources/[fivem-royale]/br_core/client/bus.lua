@@ -825,8 +825,17 @@ end
 -- own `brdeploy` keymapping delivers the very same press to the very same
 -- listener. Nothing changes for that player. For the player who DID rebind, the
 -- key they chose is now the only one that works, which is what a rebinder is.
+--
+-- READ FROM BOARDING ON, AND NOT BEFORE (#393). tryJump does nothing unless
+-- `riding`, so this listener tells keybinds.raw it has no use for Space outside
+-- the ride -- or outside the BUS state around it. The state half is for the
+-- jump: the server clears `riding` and the roster moves BUS to FREEFALL on its
+-- own schedule, skydive.lua's listener answers from FREEFALL on, and between
+-- the two no frame of the descent leaves Space unread.
 BR.Keys.on('deploy', function(pressed)
     if pressed then tryJump() end
+end, function()
+    return riding or BR.State.me.state == BR.PlayerState.BUS
 end)
 
 -- ------------------------------------------------------------- the prompt ---

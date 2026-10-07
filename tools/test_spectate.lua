@@ -196,10 +196,14 @@ BR.State.me = { src = 1, state = BR.PlayerState.OUT }
 -- here is that a subscriber exists and that a press reaches the server; WHICH
 -- physical key it is on is keybinds.lua's business and is tested there.
 local keySubs = {}
+--- [action] = each subscriber's `live` check, in subscription order (#393).
+local keyLive = {}
 BR.Keys = {
-    on = function(action, fn)
+    on = function(action, fn, live)
         keySubs[action] = keySubs[action] or {}
         table.insert(keySubs[action], fn)
+        keyLive[action] = keyLive[action] or {}
+        table.insert(keyLive[action], live or false)
     end,
     labelFor = function() return 'RIGHT' end,
 }
@@ -1632,6 +1636,55 @@ do
     ok(d ~= nil and d.clock == nil,
        'and none while that match has no clock -- before its bus has left',
        d and tostring(d.clock))
+end
+
+-- ═══════════════════════════════════════════════ the arrows' live check ═══
+--
+-- keybinds.raw leaves the arrows UNREAD while the `live` check the two
+-- listeners hand BR.Keys.on says no (#393) -- two raw-key reads a frame for
+-- every living player. That is only free if the check is exactly the gate the
+-- press goes through: say no where a press would have asked, and the arrows go
+-- dead for a spectator. So every player state, sealed and not, is put to both:
+-- the check, and an actual press counted on the wire.
+
+describe('the arrow keys are read exactly when a press could ask')
+do
+    for _, action in ipairs({ 'specNext', 'specPrev' }) do
+        local live = keyLive[action] and keyLive[action][1]
+        ok(type(live) == 'function', action .. ' hands BR.Keys.on a live check')
+        if type(live) == 'function' then
+            local wrong = {}
+            for _, sealedNow in ipairs({ false, true }) do
+                for _, st in pairs(BR.PlayerState) do
+                    -- Unsealed through the real edge (a SLOW pass off OUT), then
+                    -- sealed, if asked, by the real envelope.
+                    stop()
+                    BR.State.me.state = BR.PlayerState.ALIVE
+                    BR.Loop.step(BR.Loop.SLOW)
+                    if sealedNow then
+                        fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'match-over', final = true })
+                    end
+                    BR.State.me.state = st
+                    sent = {}
+                    local says = live() == true
+                    for _, fn in ipairs(keySubs[action]) do fn(true) end
+                    local asked = 0
+                    for _, s in ipairs(sent) do
+                        if s.name == BR.Net.SPECTATE_CYCLE then asked = asked + 1 end
+                    end
+                    if says ~= (asked == 1) then
+                        wrong[#wrong + 1] = ('%s%s: live %s, asked %d')
+                            :format(st, sealedNow and ' (sealed)' or '', tostring(says), asked)
+                    end
+                end
+            end
+            ok(#wrong == 0, action .. ': live in exactly the states where a press asks',
+               table.concat(wrong, '; '))
+        end
+    end
+    stop()
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.SLOW)
 end
 
 -- ---------------------------------------------------------------- result ---

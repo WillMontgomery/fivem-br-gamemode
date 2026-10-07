@@ -117,16 +117,52 @@ function BR.Keys.screenHoldsEscape()
         and BR.Menu.holdsEscape() == true
 end
 
+--- Actions with at least one listener that never said when it matters, so their
+--- key is read on every frame. See BR.Keys.on's `live`.
+local alwaysLive = {}
+
+--- [action] = array of `live` functions, one per listener that gave one.
+local liveWhen = {}
+
 --- Subscribe to a key action.
+---
+--- ═══ `live`: WHEN A PRESS COULD DO ANYTHING (#393) ═══
+---
+--- keybinds.raw reads a bound key with a native call a frame -- three for
+--- shift, two for Alt. A listener that does nothing outside some state (the
+--- spectate arrows outside spectating, the slots outside canArm(), the jump key
+--- off the plane) can say so here, and while EVERY listener of an action answers
+--- false the key is not read at all. A listener without `live` keeps its key
+--- read always, which is how every action behaved before this.
+---
+--- `live` MUST BE TRUE WHENEVER fn COULD ACT, and the cheap way to make that
+--- hold is for fn to ask the same function: spectate.lua's arrows ask
+--- canAsk(), inventory.lua's slots ask canArm(). It is asked on every frame, so
+--- it must be pure Lua -- a native in it costs what it saves. One that throws
+--- reads as live.
+---
+--- A key that went unread is ADOPTED when it is read again, never announced:
+--- one already down then is not a press. keybinds.raw has the full argument.
 --- @param action string   e.g. 'inventory', 'revive'
 --- @param fn function      receives (pressed: boolean)
-function BR.Keys.on(action, fn)
+--- @param live function|nil  true while a press could make fn do something
+function BR.Keys.on(action, fn, live)
     local l = BR.Keys.listeners[action]
     if not l then
         l = {}
         BR.Keys.listeners[action] = l
     end
     l[#l + 1] = fn
+    if type(live) ~= 'function' then
+        alwaysLive[action] = true
+        return
+    end
+    local g = liveWhen[action]
+    if not g then
+        g = {}
+        liveWhen[action] = g
+    end
+    g[#g + 1] = live
 end
 
 --- @param action string
@@ -892,12 +928,18 @@ end)
 --- has already gone wrong. The cost of the other direction is a map opened over
 --- a lobby for the length of that window; the cost of an allowlist is a dead key
 --- nobody can diagnose from a chair.
-BR.Keys.on('map', function(pressed)
-    if not pressed then return end
+---
+--- ONE FUNCTION FOR THE LISTENER AND FOR keybinds.raw (#393), which leaves the
+--- map key unread in the lobby, where its press does nothing.
+--- @return boolean
+local function mapOpens()
     local st = BR.State and BR.State.me and BR.State.me.state
-    if st == BR.PlayerState.LOBBY then return end
+    return st ~= BR.PlayerState.LOBBY
+end
+BR.Keys.on('map', function(pressed)
+    if not pressed or not mapOpens() then return end
     TriggerEvent('br:ui:mapToggle')
-end)
+end, mapOpens)
 
 -- THE KILL PROMPT BORROWS TAB, AND THE BORROWING HAS TO HAPPEN HERE (#177).
 --
@@ -1747,8 +1789,77 @@ function BR.Keys.actionOnKey(code)
     return nil, nil
 end
 
+--- ═══ A KEY IS READ ONLY WHILE A PRESS ON IT COULD DO SOMETHING (#393) ═══
+---
+--- Rows this frame did not read, by command. The next read of one ADOPTS what
+--- it finds instead of comparing it with `rawDown`, which describes a frame
+--- that is no longer the last one. See keybinds.raw.
+local idle = {}
+
+--- Every row went unread last frame: a screen held the keyboard.
+local idleAll = false
+
+--- Live actions whose `live` threw, already reported once.
+local liveErr = {}
+
+--- Could a press on this row do anything right now? See BR.Keys.on's `live`.
+---
+--- LIVE UNLESS EVERY LISTENER SAYS OTHERWISE: one listener without `live`, a
+--- row nobody listens to (the boost is read through isHeld, never a listener),
+--- a borrowed press waiting in `claims`, or a `live` that throws -- each keeps
+--- the key read, which is what every row did before.
+--- @param b table  a BR.Keys.bindings row
+--- @return boolean
+local function rowLive(b)
+    local action = b.action
+    if alwaysLive[action] or claims[action] ~= nil then return true end
+    local g = liveWhen[action]
+    if g == nil then return true end
+    for i = 1, #g do
+        local ok, yes = pcall(g[i])
+        if not ok then
+            if not liveErr[action] then
+                liveErr[action] = true
+                print(('[br_core] key "%s": its live check errored, so the key is read every frame: %s')
+                    :format(action, tostring(yes)))
+            end
+            return true
+        end
+        if yes == true then return true end
+    end
+    return false
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
+
+    -- ═══ NOTHING IS READ WHILE ONE OF OUR SCREENS HOLDS THE KEYBOARD (#393) ═══
+    --
+    -- Every reading taken here was only ever ADOPTED: no tap fires, no hold
+    -- fires, and every hold reads not-held (endHolds released them on the way
+    -- in). Chat, the pause menu, Settings and the player list each cost a read
+    -- of every bound key, every frame, for nothing.
+    --
+    -- THE WAY OUT IS WHERE THE READS RESUME, AND IT ADOPTS. The keyboard comes
+    -- back only through setUiKeyboard, from `br:ui:focusChanged` or
+    -- setExternalScreen, and both open the resync window first -- so the first
+    -- frame back is resync frame 0, every row is read (resync reads them all,
+    -- below), and every row takes what it finds as its state. That is what
+    -- reading under the screen made of it anyway: a key held through the screen
+    -- is no press when it closes. The one press it does not see is one whose
+    -- edge lands on that very frame, which no hand can aim for.
+    --
+    -- The window still counts its frames here, with nothing moving, so /brkeys
+    -- reads the same. What it decides while a screen is up decides nothing: no
+    -- tap fires under a screen, and the way out opens a new one.
+    if BR.Keys.uiOwnsKeyboard then
+        idleAll = true
+        if resyncing then
+            if resyncFrames > 0 then resyncing = false end
+            resyncFrames = resyncFrames + 1
+        end
+        return
+    end
 
     local map = load()
     -- Did the keyboard move at all this frame? Only used while resyncing, where
@@ -1764,7 +1875,33 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
         -- very next frame -- and it would ALSO be shadowing the engine's +/-
         -- pair, which can do the job properly. See the note on rawHolds at the
         -- hold() registrar; skipping the binding here is what hands it back.
-        if code and (BR.Keys.rawHolds or not b.hold) then
+        local readable = code and (BR.Keys.rawHolds or not b.hold)
+
+        -- ═══ ...AND ONLY WHILE A PRESS ON IT COULD DO SOMETHING (#393) ═══
+        --
+        -- The spectate arrows outside spectating, the slots outside canArm(),
+        -- the jump key off the plane: their listeners say so through `live`
+        -- (BR.Keys.on), and a press nobody would act on is not worth a native.
+        -- Reading it would only have fired listeners that return on their first
+        -- line. The row is marked idle and is adopted when it is read again.
+        --
+        -- EVERY ROW IS READ WHILE THE RESYNC WINDOW IS OPEN, because the window
+        -- closes on the first frame in which no READ row moved -- a row that
+        -- went unread could not have held it open, and the taps it suppresses
+        -- would have been fired a frame early.
+        --
+        -- AN UNREAD HOLD READS NOT-HELD, the answer this file gives whenever it
+        -- cannot vouch for the key (a screen holding the keyboard is the other).
+        -- A stale "held" would be released by endHolds() to a listener that
+        -- never started anything; a wrong "not held" costs nothing here, since
+        -- every listener of the row has just said it could not act.
+        if readable and not resyncing and not rowLive(b) then
+            idle[b.command] = true
+            if b.hold then BR.Keys.held[b.action] = false end
+            readable = false
+        end
+
+        if readable then
             -- EDGES ARE DERIVED, NOT ASKED FOR.
             --
             -- The first cut called IS_RAW_KEY_JUST_PRESSED, which DOES NOT
@@ -1846,7 +1983,24 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
                 BR.Keys.held[b.action] = down and not BR.Keys.uiOwnsKeyboard
             end
 
-            if down ~= was then
+            if idleAll or idle[b.command] then
+                -- ADOPTED: THIS ROW WAS NOT READ LAST FRAME (#393), so `was`
+                -- is not last frame's reading and no edge can be derived from
+                -- it. What a full read would have made of a key that is down now
+                -- depends on a frame nobody sampled -- and in every case but
+                -- one it is "no edge": a key that went down while the row was
+                -- idle fired then, to listeners that did nothing, and is held
+                -- now. So the state is taken and nothing is announced, the move
+                -- the resync window makes. The one case is a press whose edge
+                -- lands on exactly this frame: it is not seen, and a second
+                -- press is.
+                --
+                -- Not `moved`: inside the resync window a row can only be idle
+                -- on the window's frame 0, which cannot close it anyway, and
+                -- every row is read on every frame after that.
+                idle[b.command] = nil
+                rawDown[b.command] = down or nil
+            elseif down ~= was then
                 moved = true
                 rawDown[b.command] = down or nil
 
@@ -1882,6 +2036,7 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             end
         end
     end
+    idleAll = false
 
     -- THE WINDOW CLOSES WHEN THE KEYBOARD GOES QUIET, and never on a clock.
     --

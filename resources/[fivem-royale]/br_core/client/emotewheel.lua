@@ -106,6 +106,15 @@ function BR.EmoteWheel.isOpen()
     return open
 end
 
+--- COULD THE WHEEL KEY DO ANYTHING RIGHT NOW? (#393) A press opens the wheel
+--- only with emotes on, and a release only closes one that is up -- so outside
+--- both, keybinds.raw leaves Left Alt unread: two raw-key reads a frame, on
+--- every frame of a Season 1 session.
+--- @return boolean
+local function wheelKeyLive()
+    return open or BR.Season.has('emotes')
+end
+
 BR.Keys.on('emoteWheel', function(pressed)
     if pressed then
         if open then return end
@@ -179,7 +188,7 @@ BR.Keys.on('emoteWheel', function(pressed)
     end
     close()
     if pick then BR.Emotes.request(pick) end
-end)
+end, wheelKeyLive)
 
 -- ANY SCREEN PUSHED WHILE THE WHEEL IS UP CLOSES IT. TAB is the case that
 -- matters: the inventory opens on the raw layer whatever the frame pass

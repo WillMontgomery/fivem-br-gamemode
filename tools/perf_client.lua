@@ -2173,8 +2173,15 @@ local PHASES = {
     { id = 'match emote', settle = 60, setup = function()
         -- Season 2's emote wheel, open: the dev-mode brseason switch, then the
         -- wheel key held.
+        --
+        -- A FRAME BETWEEN THE TWO, as a player has: the season lands, and then
+        -- they press. Since #393 the wheel key goes unread while emotes are
+        -- off, and a key first read on the frame it is already down is adopted
+        -- as held rather than pressed -- so a press in the same frame as the
+        -- switch would measure a wheel that never opened.
         W.convars[BR.Season.SERVED] = '2'
         net(BR.Net.SEASON_SWITCHED, { season = 2, by = 'perf' })
+        frame()
         holdKey('bremotewheel', true)
     end, after = function()
         holdKey('bremotewheel', false)

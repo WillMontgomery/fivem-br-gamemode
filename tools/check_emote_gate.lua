@@ -124,7 +124,8 @@ end
 -- The doors
 -- ---------------------------------------------------------------------------
 
---- Openers whose body runs to the first `end)` at column 0. `view` says which
+--- Openers whose body runs to the first `end)` at column 0 -- or `end,`, where a
+--- key listener hands BR.Keys.on its `live` check (#393). `view` says which
 --- text the opener is matched against.
 local OPEN_PAREN = {
     { pat = '^AddEventHandler%(%s*BR%.Net%.(EMOTE_%u[%u_]*)%s*,%s*function', view = 'code', kind = 'net' },
@@ -317,7 +318,7 @@ local function run(files)
                 for _, o in ipairs(OPEN_PAREN) do
                     local name = (o.view == 'code' and code[i] or names[i]):match(o.pat)
                     if name then
-                        door(i, stopAt(i + 1, '^end%s*%)'), name)
+                        door(i, stopAt(i + 1, '^end%s*[%),]'), name)
                         if o.kind == 'net' then
                             saw((isServer and 'server:' or isClient and 'client:' or '?:') .. name)
                         else

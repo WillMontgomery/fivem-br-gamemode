@@ -1564,18 +1564,22 @@ end
 -- Every one of these is a REQUEST. The bar does not move until INV_SET comes
 -- back, which is why a refused switch looks like nothing happening rather than
 -- like a switch that undid itself.
+--
+-- canArm() IS ALSO HANDED TO BR.Keys.on (#393), here and on `use` below: each
+-- listener returns on its first line without it, so keybinds.raw does not read
+-- these seven keys in the lobby, aboard, through the descent, downed or out.
 for i = 1, SLOTS do
     BR.Keys.on('slot' .. i, function(pressed)
         if not pressed or not canArm() then return end
         TriggerServerEvent(BR.Net.INV_SELECT, { slot = i })
-    end)
+    end, canArm)
 end
 
 BR.Keys.on('drop', function(pressed)
     if not pressed or not canArm() then return end
     if not inv.slots[inv.active] then return end
     TriggerServerEvent(BR.Net.INV_DROP, { slot = inv.active })
-end)
+end, canArm)
 
 --- IS THERE A RELOAD FOR THE ACTIVE SLOT TO DO RIGHT NOW?
 ---
@@ -1775,7 +1779,7 @@ BR.Keys.on('use', function(pressed)
         TriggerServerEvent(BR.Net.INV_SELECT, { slot = slot })
     end
     sendUse(slot)
-end)
+end, canArm)
 
 -- The TAB panel. LUA OWNS WHETHER IT IS OPEN, because Lua owns the cursor:
 -- br_ui grants keep-input focus to any screen that is not the lobby or chat,

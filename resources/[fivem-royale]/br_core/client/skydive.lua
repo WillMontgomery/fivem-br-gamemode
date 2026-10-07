@@ -1218,6 +1218,27 @@ end)
 -- that choice from a key press would move it outside its window, and a trail
 -- set outside its window "looks exactly like the item the player bought not
 -- working" -- which is the report this issue opened with.
+--
+-- ═══ THE TWO KEYS ARE READ ONLY AROUND A DESCENT (#393) ═══
+--
+-- Both listeners below return on their first line unless `dropping`, so they
+-- tell keybinds.raw when that could change and it reads B and Space no more
+-- than that -- not on foot, which is most of a match.
+--
+-- WIDER THAN `dropping`, ON PURPOSE. `dropping` comes on with br:drop:begin,
+-- or with this file's re-arm once the roster calls us a faller, and a key
+-- first read on that frame is adopted rather than pressed (keybinds.raw says
+-- why). Reading from boarding on means it is already being read on that
+-- frame, and the BUS, FREEFALL and GLIDE states cover every way the re-arm
+-- can come on.
+--- @return boolean
+local function descentKeys()
+    if dropping then return true end
+    local st = BR.State.me.state
+    return st == BR.PlayerState.BUS or st == BR.PlayerState.FREEFALL
+        or st == BR.PlayerState.GLIDE
+end
+
 BR.Keys.on('trail', function(pressed)
     if not pressed or not dropping then return end
     -- Counted HERE -- after the drop test, before the armed one -- so the number
@@ -1260,7 +1281,7 @@ BR.Keys.on('trail', function(pressed)
     if BR.Cosmetics.showTrail(not BR.Cosmetics.trailOn) then
         promptSeen.acted = promptSeen.acted + 1
     end
-end)
+end, descentKeys)
 
 -- Manual deploy on OUR keymapped binding too (the base game's own deploy
 -- input already works natively during the task). If the engine lost the
@@ -1289,7 +1310,7 @@ BR.Keys.on('deploy', function(pressed)
         SetPedAmmo(ped, CHUTE, 1)   -- exactly one; never a reserve
         TaskParachute(ped, true, false)
     end
-end)
+end, descentKeys)
 
 -- The drop state machine, at TICK rate -- 10Hz is far finer than any of
 -- these transitions and keeps GetEntityHeightAboveGround (slow) off the

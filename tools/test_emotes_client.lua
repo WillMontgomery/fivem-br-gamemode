@@ -318,10 +318,14 @@ convars.br_seasonServed = RUN_SERVED
 
 -- The collaborators, modelled.
 local keyListeners, keyPushes, mapGatedCalls, heldKeys = {}, 0, 0, {}
+--- [action] = each listener's `live` check for keybinds.raw (#393).
+local keyLive = {}
 BR.Keys = {
-    on = function(a, fn)
+    on = function(a, fn, live)
         keyListeners[a] = keyListeners[a] or {}
         table.insert(keyListeners[a], fn)
+        keyLive[a] = keyLive[a] or {}
+        table.insert(keyLive[a], live or false)
     end,
     isHeld = function(a) return heldKeys[a] == true end,
     uiOwnsKeyboard = false,
@@ -1412,6 +1416,39 @@ do
         local code = src:gsub('%-%-[^\n]*', '')
         ok(code:find('ClearPedTasks', 1, true) == nil, f .. ' never calls ClearPedTasks')
     end
+end
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- #393. THE WHEEL KEY IS READ EXACTLY WHILE IT COULD DO SOMETHING
+-- ════════════════════════════════════════════════════════════════════════════
+--
+-- keybinds.raw leaves Left Alt unread while the wheel listener's `live` check
+-- says no. That is only free if the check covers both halves of the key: a
+-- press opens the wheel only with emotes on, and a release still has to reach
+-- a wheel that is up -- even one whose season has just closed under it.
+
+describe('#393 -- the wheel key is read exactly while it could do something')
+do
+    calm()
+    local live = keyLive.emoteWheel and keyLive.emoteWheel[1]
+    ok(type(live) == 'function', 'the wheel listener hands BR.Keys.on a live check')
+    if type(live) == 'function' then
+        gateOpen(); BR.Season.refresh()
+        ok(live() == true, 'emotes on, the wheel down: read -- a press opens it')
+        key(true)
+        ok(BR.EmoteWheel.isOpen(), 'and a press does open it')
+        gateClosed(); BR.Season.refresh()
+        ok(BR.EmoteWheel.isOpen() and live() == true,
+           'the season closing under an open wheel leaves the key read')
+        key(false)
+        ok(not BR.EmoteWheel.isOpen(), 'and its release still closes the wheel')
+        ok(live() == false, 'emotes off, the wheel down: unread')
+        key(true)
+        ok(not BR.EmoteWheel.isOpen(), 'and a press there opens nothing, as the check said')
+        key(false)
+    end
+    restoreSeason(); BR.Season.refresh()
+    calm()
 end
 
 -- Nothing above may have left a loop callback throwing.

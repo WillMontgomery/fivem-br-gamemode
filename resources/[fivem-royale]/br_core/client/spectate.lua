@@ -355,7 +355,13 @@ end)
 --- THE SERVER DECIDES AND MAY SAY NO. This sends the intent and nothing else --
 --- there is no local candidate list to walk, and there must not be one.
 --- @param dir number  +1 next, -1 previous, 0 "start / re-resolve"
-local function ask(dir)
+--- COULD A REQUEST GO OUT RIGHT NOW? ask()'s whole gate, as a function of its
+--- own so the arrow keys can hand it to BR.Keys.on: while it says no,
+--- keybinds.raw does not read the arrows at all (#393) -- two raw-key reads a
+--- frame for a living player, which is nearly everyone for nearly all of a
+--- match.
+--- @return boolean
+local function canAsk()
     -- NOT IN A MATCH THAT IS ALREADY DECIDED, AND THIS IS THE ONE DOOR.
     --
     -- The automatic open below and the arrow keys above both come through here,
@@ -363,7 +369,7 @@ local function ask(dir)
     -- which matters most for the arrows, the door with no death-verdict hold in
     -- front of it: a player who dies as the match ends and presses Right would
     -- otherwise get the camera the automatic path was just stopped from opening.
-    if sealed then return end
+    if sealed then return false end
 
     -- Not while still in the fight. The server refuses this case too (it is the
     -- side that decides), but sending a request per keypress from every living
@@ -372,8 +378,13 @@ local function ask(dir)
     if st == BR.PlayerState.ALIVE or st == BR.PlayerState.DBNO
        or st == BR.PlayerState.BUS or st == BR.PlayerState.FREEFALL
        or st == BR.PlayerState.GLIDE or st == BR.PlayerState.WARMUP then
-        return
+        return false
     end
+    return true
+end
+
+local function ask(dir)
+    if not canAsk() then return end
     TriggerServerEvent(BR.Net.SPECTATE_CYCLE, { dir = dir })
 end
 
@@ -387,10 +398,10 @@ end
 -- already moved them keeps their choice.
 BR.Keys.on('specNext', function(pressed)
     if pressed then ask(1) end
-end)
+end, canAsk)
 BR.Keys.on('specPrev', function(pressed)
     if pressed then ask(-1) end
-end)
+end, canAsk)
 
 -- ---------------------------------------------------------------- the exit ---
 
