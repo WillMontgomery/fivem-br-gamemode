@@ -3969,11 +3969,11 @@ local TIER_NAMES = { 'common', 'uncommon', 'rare', 'epic', 'legendary' }
 ---   /brbox ship <1-5> [festive|plain]       a shipping box of that tier
 ---   /brbox gift <white|blue|green|red>      a gift box
 ---
---- SERVER-OWNED LIKE REAL LOOT (br_core/server/loot.lua, devBoxStack): real
+--- SERVER-OWNED LIKE REAL LOOT (br_core/server/loot.lua's `brboxsv`, devBoxStack): real
 --- contents at that tier, the hold, the clip, the burst and the open prop, all
 --- through the path a real crate takes. Festive defaults to the zone's own
---- answer; `festive` or `plain` forces it for this box. Dev mode, and the
---- server's dev trust, as /brcrate.
+--- answer; `festive` or `plain` forces it for this box. Dev mode, and nothing
+--- else (#384's rule, owner 2026-10-06).
 RegisterCommand('brbox', function(_, args)
     local kind = tostring(args[1] or ''):lower()
     local C = BR.Config.Crates
@@ -4013,13 +4013,14 @@ RegisterCommand('brbox', function(_, args)
     local ped = PlayerPedId()
     local p   = GetEntityCoords(ped)
     local fw  = GetEntityForwardVector(ped)
-    TriggerServerEvent(BR.Net.LOOT_DEV, {
-        box = box,
-        x = p.x + fw.x * 2.0,
-        y = p.y + fw.y * 2.0,
-        z = p.z,
-    })
-    print(('[br_core] asked the server for %s%s (its answer is in the server console)')
+    -- THE SERVER'S `brboxsv`, a dev command like every other (#384's way, the
+    -- owner on 2026-10-06: "we should just require dev mode"). It answers
+    -- with a toast, so a refusal is never silent.
+    ExecuteCommand(('brboxsv %s %s %s %.3f %.3f %.3f'):format(
+        box.gift and 'gift' or 'ship', tostring(box.gift or box.tier),
+        box.festive == true and 'festive' or (box.festive == false and 'plain' or 'zone'),
+        p.x + fw.x * 2.0, p.y + fw.y * 2.0, p.z))
+    print(('[br_core] asked the server for %s%s (it answers with a toast)')
         :format(label, box.festive == true and ', festive'
                        or (box.festive == false and ', plain' or '')))
 

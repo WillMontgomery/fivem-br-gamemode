@@ -2700,28 +2700,62 @@ AddEventHandler(BR.Net.LOOT_DEV, function(d)
         at = { x = tonumber(d.x), y = tonumber(d.y), z = tonumber(d.z) }
     end
 
-    -- `box` IS `brbox` (#395): a Season 2 test crate of a chosen look. Its
-    -- report goes to this console only -- no toast -- and the client checks
-    -- the season and the arguments itself before it asks, printing its own
-    -- reasons in F8.
-    if d.box ~= nil then
-        local box = type(d.box) == 'table' and d.box or {}
-        -- Spelled out rather than `cond and box.festive or nil`, which turns an
-        -- asked-for `false` (brbox ... plain) into nil -- "whatever the zone says".
-        local festive = nil
-        if box.festive == true or box.festive == false then festive = box.festive end
-        local report = devSpawn(src, nil, at, {
-            tier    = tonumber(box.tier),
-            gift    = type(box.gift) == 'string' and box.gift or nil,
-            festive = festive,
-        })
-        print(('[br_core] brbox (client, %d): %s'):format(src, report))
-        return
-    end
-
     local report = devSpawn(src, d.item, at)
     print(('[br_core] brcrate (client, %d): %s'):format(src, report))
     BR.Server.notify(src, report, 'info')
+end)
+
+-- `brbox` (#395): a Season 2 test crate of a chosen look, in front of the
+-- player who typed it.
+--
+-- A STANDARD DEV COMMAND, AS `brprop` BECAME IN #384. It used to ride LOOT_DEV
+-- behind BR.Admin.devTrusted, which also wants the console grant, and on
+-- 2026-10-06 the owner's `brbox gift red` did nothing he could see: the
+-- refusal went to the server console alone. Now client/loot.lua's `brbox`
+-- checks its arguments and runs this with ExecuteCommand, which arrives as
+-- that player (`source` is his server id), so br_lib/shared/devgate.lua's
+-- RegisterCommand wrap -- dev mode and nothing else -- is its one gate, as for
+-- every other dev command. REGISTERED UNRESTRICTED ON PURPOSE: restricted would
+-- ask him for the `command.brboxsv` ACE, the grant this takes away.
+--
+--   brboxsv ship <1-5> <zone|festive|plain> <x> <y> <z>
+--   brboxsv gift <color> <zone|festive|plain> <x> <y> <z>
+--
+-- The answer goes to the server console AND back to him as a toast, so a
+-- refusal (no zone with loot, Season 1, a bad tier) is never silent again.
+RegisterCommand('brboxsv', function(source, args)
+    local src = tonumber(source) or 0
+    args = args or {}
+    if src <= 0 then
+        print("  brboxsv is the player's half of `brbox` (F8); from here use `brcrate <id>`")
+        return
+    end
+    local kind = tostring(args[1] or ''):lower()
+    local box = {}
+    if kind == 'ship' then
+        box.tier = tonumber(args[2])
+    elseif kind == 'gift' then
+        box.gift = tostring(args[2] or ''):lower()
+    else
+        BR.Server.notify(src, 'usage: brbox ship <1-5> [festive|plain] | brbox gift <color>', 'warn')
+        return
+    end
+    -- Spelled out rather than `cond and x or nil`, which turns an asked-for
+    -- `false` (brbox ... plain) into nil -- "whatever the zone says".
+    local f = tostring(args[3] or ''):lower()
+    local festive = nil
+    if f == 'festive' then festive = true elseif f == 'plain' then festive = false end
+    local at = nil
+    if tonumber(args[4]) and tonumber(args[5]) and tonumber(args[6]) then
+        at = { x = tonumber(args[4]), y = tonumber(args[5]), z = tonumber(args[6]) }
+    end
+    local report = devSpawn(src, nil, at, {
+        tier    = box.tier,
+        gift    = box.gift,
+        festive = festive,
+    })
+    print(('[br_core] brbox (client, %d): %s'):format(src, report))
+    BR.Server.notify(src, 'brbox: ' .. report, 'info')
 end)
 
 --- Force the festive months on or off for testing, or hand them back to the

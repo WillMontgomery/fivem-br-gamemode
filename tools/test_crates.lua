@@ -845,10 +845,12 @@ do
     season(2)
     local m = newMatch(1, false)
     standAt(10, m)
+    -- `brbox` runs the server's `brboxsv` as the player who typed it (#384's
+    -- way: dev mode alone, owner 2026-10-06), so this is that command's call.
     local function ask(box)
-        source = 10
-        handlers[BR.Net.LOOT_DEV]({ box = box, x = SPOT.x, y = SPOT.y, z = SPOT.z })
-        source = nil
+        local f = box.festive == true and 'festive' or (box.festive == false and 'plain' or 'zone')
+        commands['brboxsv'](10, { box.gift and 'gift' or 'ship', tostring(box.gift or box.tier), f,
+            tostring(SPOT.x), tostring(SPOT.y), tostring(SPOT.z) })
         local newest = nil
         for _, it in pairs(m.loot.items) do
             if not newest or it.id > newest.id then newest = it end
@@ -871,7 +873,13 @@ do
     local gft = ask({ gift = 'green' })
     eq(gft.bg, 'green', 'a gift box of the color asked for')
     ok(gft.bt ~= nil, 'stamped, so the client knows it is a Season 2 box')
-    eq(#notices, 0, 'and the dev crate toasts nobody -- its report is console-only')
+    local toasted, others = 0, 0
+    for _, n in ipairs(notices) do
+        if n.src == 10 and tostring(n.text):find('brbox: spawned', 1, true) then toasted = toasted + 1 end
+        if n.src ~= 10 then others = others + 1 end
+    end
+    ok(toasted >= 1, 'the player who asked is toasted the answer, so nothing is silent')
+    eq(others, 0, 'and nobody else is told')
     ok(said('brbox (client, 10)'), 'the server console has the report')
 
     local before = m.loot.nextId
@@ -886,10 +894,20 @@ do
     ok(said('Season 2 crates are off'), 'and the console says why')
 
     season(2)
+    -- DEV MODE IS ITS ONE GATE (devgate.lua's wrap of RegisterCommand, as for
+    -- every dev command); the console grant no longer matters.
     devTrust = false
     ask({ tier = 3 })
-    eq(m.loot.nextId, before, 'and without the server\'s dev trust, nothing')
+    ok(m.loot.nextId > before, 'without the console grant, a dev box still spawns it')
     devTrust = true
+    local was = m.loot.nextId
+    source = 10
+    handlers[BR.Net.LOOT_DEV]({ box = { gift = 'red' }, x = SPOT.x, y = SPOT.y, z = SPOT.z })
+    source = nil
+    local newest = nil
+    for _, it in pairs(m.loot.items) do if not newest or it.id > newest.id then newest = it end end
+    ok(m.loot.nextId == was or (newest and newest.bg == nil),
+        'the old net event ignores a box field: a gift box comes from the command alone now')
 end
 
 -- =========================================================================
@@ -995,9 +1013,7 @@ do
     ok(e2.opening ~= nil and e2.kind == 'chest', 'before: anchor 2 is mid-clip')
     -- A brbox GIFT BOX on the pad: a look somebody asked for.
     roster[43] = { name = 'b', state = BR.PlayerState.WARMUP, pos = { x = pad.x, y = pad.y, z = pad.z } }
-    source = 43
-    handlers[BR.Net.LOOT_DEV]({ box = { gift = 'green' }, x = pad.x + 3.0, y = pad.y, z = pad.z })
-    source = nil
+    commands['brboxsv'](43, { 'gift', 'green', 'zone', tostring(pad.x + 3.0), tostring(pad.y), tostring(pad.z) })
     local gift = nil
     for _, it in pairs(zone.loot.items) do
         if it.bg == 'green' and (not gift or it.id > gift.id) then gift = it end
