@@ -591,6 +591,12 @@ do
     eq(g[1] and g[1].pz, 31.0, 'vouched by the ground their ped stood on')
     local add = lastOf(BR.Net.LOOT_ADD, 1)
     ok(add and add[1] and add[1].kind == 'yubikey', 'announced to everyone looking at that cell, like any loot')
+    -- "the Yubikey ground glow should be blue for rare like anything else" (owner,
+    -- 2026-10-07): the glow and the label read an entry's rarity, and the key's is
+    -- rare, as it is told to every client.
+    eq(g[1] and g[1].rarity, R.RARE, 'a key on the ground is rare: blue, like any rare item')
+    eq(add and add[1] and add[1].rarity, R.RARE, 'and every client is told rare')
+    eq(Y.stack().rarity, R.RARE, 'and so is every key made, wherever it drops')
 
     -- A killer picks it up.
     player(2, m, nil, { x = C0.x + 20.0, y = C0.y - 5.0, z = 31.0 }, false, true)
@@ -811,7 +817,9 @@ do
     claim(1, crate.id)
     CT.sources.crateChance = 0.031
     eq(#groundKeys(m), 1, 'opened: the key bursts out with the rest')
-    eq(crate.sealedRarity, R.COMMON, 'and the husk remembers common, not the key\'s gold')
+    eq(crate.sealedRarity, R.COMMON, 'and the husk remembers common, not the key\'s blue')
+    local burst = groundKeys(m)[1]
+    eq(burst and burst.rarity, R.RARE, 'and the key that burst out is rare (owner, 2026-10-07)')
 
     -- A WHOLE LAYOUT, AS A MATCH MAKES IT: no crate holds a key, and every
     -- crate shows the best of its own contents.

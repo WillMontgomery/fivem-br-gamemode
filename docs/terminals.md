@@ -731,6 +731,10 @@ The owner's rules (#396, 2026-10-04), and where each lives:
   exactly like one without; the key's own glow shows only in the burst. About
   78 keys a match at the 2,512 crates a match lays out, if every crate is
   opened.
+- **Rare on the ground**: blue, its label rare, like any rare item -- "the
+  Yubikey ground glow should be blue for rare like anything else" (owner,
+  2026-10-07). It was legendary, gold. `Y.stack` is the one place a key is
+  made, so a dropped key, a burst one and a dev drop all read rare.
 
 ## Terminals in the world
 

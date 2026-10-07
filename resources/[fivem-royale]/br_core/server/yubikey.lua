@@ -266,12 +266,19 @@ end
 
 --- A Yubikey as a loot stack. `count` is 1 and means nothing: one key is one
 --- entry.
+---
+--- RARE, so it glows blue on the ground and its label reads rare, like any rare
+--- item: "the Yubikey ground glow should be blue for rare like anything else"
+--- (owner, 2026-10-07). It was legendary, gold, from #396 -- and round 5 had
+--- already made it as common in crates as a rare item ("let's make the Yubikey
+--- rare then, not legendary"). A crate it bursts out of still shows its own
+--- contents' rarity (Y.extraFor).
 --- @return table
 function Y.stack()
     local art = cfg().art or {}
     return {
         item = 'yubikey', kind = 'yubikey',
-        rarity = BR.Rarity.LEGENDARY, count = 1,
+        rarity = BR.Rarity.RARE, count = 1,
         prop = art.keyProp,
     }
 end
