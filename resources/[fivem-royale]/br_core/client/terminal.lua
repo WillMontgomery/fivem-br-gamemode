@@ -80,13 +80,24 @@ end
 --- (config/market.lua's `currency`, the one place it is spelled), which the
 --- app writes after a Volts figure, as every other Volts display does -- and
 --- how long the app's browser takes to load a page (owner, 2026-10-06:
---- "random between 1 and 3 seconds"; the app picks in the range).
+--- "random between 1 and 3 seconds"; the app picks in the range) -- and the
+--- loot rarities as the game colors them (round 6: Gear Up's items wear their
+--- rarity in its color), BR.RarityInfo's, the one source every rarity color is
+--- read from: { tier, key, hex } each, in tier order.
 --- @return table
 local function catalog()
     local C = BR.Config.Terminals
+    local rarities = {}
+    for tier, info in pairs(BR.RarityInfo or {}) do
+        if type(tier) == 'number' and type(info) == 'table' then
+            rarities[#rarities + 1] = { tier = tier, key = info.key, hex = info.hex }
+        end
+    end
+    table.sort(rarities, function(a, b) return a.tier < b.tier end)
     return { functions = C.functions, categories = C.categories,
              currency = BR.Config.Market and BR.Config.Market.currency or nil,
-             pageLoad = { minMs = C.pageMinMs, maxMs = C.pageMaxMs } }
+             pageLoad = { minMs = C.pageMinMs, maxMs = C.pageMaxMs },
+             rarities = rarities }
 end
 
 --- THE GAME'S CLOCK, as the computer's taskbar shows it (owner, round 2: "make

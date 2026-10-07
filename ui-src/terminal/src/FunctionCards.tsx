@@ -12,7 +12,7 @@ import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import type { FunctionDef, TerminalState } from './bridge'
 import {
   BOUNTIES, COSTS, NO_FILTERS, RISKS, STATUSES, bountyOf, cardsFor, costRange, fill, filtersOf, indicatorOf,
-  narrowed, riskColor, showsSquads, statusOf, withFilters, type CardFilters, type Route, type Say,
+  narrowed, riskColor, showsSquads, statusOf, statusText, withFilters, type CardFilters, type Route, type Say,
 } from './model'
 import { Squads } from './Squads'
 import { VoltsAmount, voltsLine } from './Volts'
@@ -28,9 +28,11 @@ import { VoltsAmount, voltsLine } from './Volts'
  * understand what they do". A card is the function's name (the way to its
  * page), its one-line summary, its category, its risk, its cost and its
  * bounty (round 4: "The cards should show cost in volts and bounty") and
- * whether it can run here now -- available, used, not available at this
- * terminal or not available. Never how it helps: the summary says what it
- * does, and nothing on a card sells it.
+ * whether it can run now -- available, used, not available, or (round 6,
+ * owner 2026-10-07: "Yes please say the real reason") the rule of the match
+ * that stops it, in a few words (model.ts statusText); the Status filter
+ * groups those as "not available now". Every terminal lists every tool. Never
+ * how it helps: the summary says what it does, and nothing on a card sells it.
  *
  * THE FUNCTIONS THIS PLAYER IS SHOWN (App.tsx, model.ts shownFunctions): in a
  * squad match all of them; outside one, not the squad-only ones, and Ghost
@@ -179,8 +181,8 @@ export function FunctionCards(props: {
               width: 50,
               header: say('card_status'),
               content: (f) => {
-                const s = statusOf(byId.get(f.id), f)
-                return <StatusIndicator type={indicatorOf(s)}>{say(`status_${s}`)}</StatusIndicator>
+                const fn = byId.get(f.id)
+                return <StatusIndicator type={indicatorOf(statusOf(fn, f))}>{statusText(fn, f, say)}</StatusIndicator>
               },
             },
             {

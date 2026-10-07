@@ -442,3 +442,32 @@ body {
   min-width: 150px;
   max-width: 300px;
 }
+
+/*
+ * GEAR UP'S ITEMS WEAR THEIR RARITY (round 6, owner 2026-10-07: "on the right
+ * side of each item in the list, add it's rarity with the colored font", and a
+ * tint of its color on the row under the pointer). RunBox.tsx draws each row
+ * through Select's renderOption: the item on the left, its rarity on the right
+ * in the rarity's own color (set inline, BR.RarityInfo's), and the tint inline
+ * while Cloudscape highlights the row. The row fills the option, so the tint
+ * does too, with Cloudscape's own option padding.
+ */
+.terminal-rarity-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 12px;
+}
+
+.terminal-rarity-item {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-rarity-tier {
+  flex: none;
+  font-weight: 700;
+}

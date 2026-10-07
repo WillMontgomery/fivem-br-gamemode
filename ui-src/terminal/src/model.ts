@@ -19,7 +19,7 @@
  * scripts/check-terminal.mjs fails a component that reads the copy another way.
  */
 
-import type { Catalog, Copy, FunctionDef, FunctionState, Mate, OptionDef, RunningInfo, TabNote } from './bridge'
+import type { Catalog, Copy, FunctionDef, FunctionState, Mate, OptionDef, Rarity, RunningInfo, TabNote } from './bridge'
 
 /** Every word the app says: a key in, the line (or nothing) out. */
 export type Say = (key: string | null | undefined) => string
@@ -560,6 +560,93 @@ export function costFor(def: FunctionDef, choice: Readonly<Record<string, string
 }
 
 /**
+ * IS THIS RUN AT A SPOT? (round 6, owner 2026-10-07: "Any use of "near this
+ * terminal" is like, not useful for this gamemode" -- Power outage's own area
+ * became a spot the player picks.) A row run at one every time (`spot`, no
+ * `spotWhen`: Storm control, Airstrike, Supply drop), or one whose run under
+ * these choices carries every choice its `spotWhen` names -- read off what the
+ * run would carry (runChoices), as the server reads BR.Terminal.options'
+ * answer (BR.TerminalSolve.spotWanted). Only then does the box ask for a spot
+ * and the run carry one: the server refuses a spot sent with any other choice.
+ */
+export function needsSpot(def: FunctionDef, choice: Readonly<Record<string, string>>,
+  mates: readonly Mate[] = []): boolean {
+  if (!def.spot) return false
+  if (def.spotWhen === null) return true
+  const run = runChoices(def, choice, mates)
+  return Object.entries(def.spotWhen).every(([k, v]) => run[k] === v)
+}
+
+/**
+ * THE INPUTS THE CONFIRM BOX ASKS FOR (round 6, owner 2026-10-07: "We need to
+ * move all required options/inputs to be part of the "confirm" modal ... much
+ * like we do location selection today"): every option offered under these
+ * choices (shownOptions -- an option with `when` only while it holds) that
+ * has words for this player (an option with none, Gear Up's "Who gets it"
+ * outside a squad match, is not asked and carries its default). The page
+ * itself shows none of them; its description says what they are.
+ */
+export function boxOptions(def: FunctionDef, choice: Readonly<Record<string, string>>, say: Say): OptionDef[] {
+  return shownOptions(def, choice).filter((o) => say(`${def.id}_opt_${o.id}`) !== '')
+}
+
+/**
+ * MAY THE BOX'S RUN GO? Every choice it asks for is made -- each option it
+ * shows has a value (a list of standing teammates with nobody on it has
+ * none) -- and, for a run at a spot (needsSpot), a spot was picked: Run stays
+ * disabled until then, as it waited for the location pick alone before.
+ */
+export function readyToRun(def: FunctionDef, choice: Readonly<Record<string, string>>, say: Say,
+  mates: readonly Mate[], picked: boolean): boolean {
+  for (const o of boxOptions(def, choice, say)) {
+    if (valueOf(o, choice, mates) === '') return false
+  }
+  return picked || !needsSpot(def, choice, mates)
+}
+
+/**
+ * A choice's rarity (round 6, Gear Up's item list): its tier on the option,
+ * as the game names and colors it (the catalog's rarities, BR.RarityInfo), or
+ * null for a choice that carries none.
+ */
+export function rarityOf(o: OptionDef, value: string, rarities: readonly Rarity[]): Rarity | null {
+  const t = o.rarity ? o.rarity[value] : undefined
+  if (t === undefined) return null
+  return rarities.find((r) => r.tier === t) ?? null
+}
+
+/**
+ * An option's choices in the order its box lists them: for one whose choices
+ * carry a rarity, "Sorted by most rare at the top" (owner, 2026-10-07) --
+ * legendary first, the registry's own order kept within a tier -- and the
+ * registry's order otherwise.
+ */
+export function orderedChoices(def: FunctionDef, o: OptionDef, say: Say, mates: readonly Mate[] = []):
+  { value: string; label: string }[] {
+  const items = choicesOf(def, o, say, mates)
+  const tiers = o.rarity
+  if (!tiers) return items
+  const t = (v: string) => tiers[v] ?? 0
+  return items
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => t(b.c.value) - t(a.c.value) || a.i - b.i)
+    .map((x) => x.c)
+}
+
+/**
+ * A #rrggbb color at an alpha, as rgba(): the rarity tint a row wears under
+ * the pointer (round 6: "hovering the mouse over each row should show a
+ * colored tint matching it's rarity"). rgba, because CEF 103 cannot parse
+ * color-mix (#385; check-css fails the bundle on one).
+ */
+export function tint(hex: string, alpha: number): string {
+  const n = /^#([0-9a-fA-F]{6})$/.exec(hex)?.[1]
+  if (!n) return 'transparent'
+  const v = parseInt(n, 16)
+  return `rgba(${(v >> 16) & 255}, ${(v >> 8) & 255}, ${v & 255}, ${Math.min(1, Math.max(0, alpha))})`
+}
+
+/**
  * THE VALUES AN OPTION CAN CARRY FOR THIS PLAYER (round 5's review: a solo
  * player's Gear Up card said "Free, or 200 Volts", the price of a choice he
  * is never offered). Exactly what the page lets him pick: each choice with
@@ -608,17 +695,24 @@ export function shownCategories(catalog: Catalog, shown: FunctionDef[]): string[
 }
 
 /**
- * What a card says about a function now: the four the owner named
- * (round 2's words: available, used, not available at this terminal, not
- * available).
+ * Where a function stands now, as the Status filter sorts it: available,
+ * used, not available now, or not available.
+ *
+ * ROUND 6 (owner, 2026-10-07: "Let's make all the terminals have all the
+ * same tools available please" -- and, on the tools' own rules, "Yes please
+ * say the real reason"). Every terminal lists every tool; what stops one is a
+ * rule of the match -- Power outage at night, Storm control once a match and
+ * before the last circle, Contract with an opponent to target -- never the
+ * terminal, so "Not available at this terminal" is gone. The card says the
+ * rule (statusText); the filter groups every such reason as `not_now`.
  */
-export type Status = 'available' | 'used' | 'not_here' | 'offline'
+export type Status = 'available' | 'used' | 'not_now' | 'offline'
 
 /**
  * A function's status, from the server's reason. Offline ("Not available") is
  * a function not built yet, or a terminal the storm has taken; used is the
- * squad's one use spent; not here ("Not available at this terminal") is
- * everything else that stops it at this terminal now.
+ * squad's one use spent; not now is every other reason the server gives --
+ * a rule of the match, or a run already under way.
  */
 export function statusOf(fn: FunctionState | undefined, def: FunctionDef | undefined): Status {
   if (def && !def.implemented) return 'offline'
@@ -631,8 +725,25 @@ export function statusOf(fn: FunctionState | undefined, def: FunctionDef | undef
     case 'squad_used':
       return 'used'
     default:
-      return 'not_here'
+      return 'not_now'
   }
+}
+
+/**
+ * WHAT A CARD'S STATUS SAYS: THE REAL REASON (round 6). For a function not
+ * available now, the server's reason in a few words -- `status_<reason>`
+ * (status_no_night, status_storm_aimed, ...), squad-free outside a squad
+ * match like every line -- or, for a reason with no short line of its own
+ * ('unavailable', a run under way), status_not_now. Every other status is
+ * its own line: status_available, status_used, status_offline.
+ */
+export function statusText(fn: FunctionState | undefined, def: FunctionDef | undefined, say: Say): string {
+  const s = statusOf(fn, def)
+  if (s === 'not_now' && fn && fn.reason) {
+    const why = say(`status_${fn.reason}`)
+    if (why !== '') return why
+  }
+  return say(`status_${s}`)
 }
 
 /**
@@ -651,7 +762,7 @@ export function indicatorOf(s: Status): 'success' | 'info' | 'warning' | 'stoppe
       return 'success'
     case 'used':
       return 'info'
-    case 'not_here':
+    case 'not_now':
       return 'warning'
     case 'offline':
       return 'stopped'
@@ -707,7 +818,7 @@ export const FILTER_KEYS = ['risk', 'cost', 'bounty', 'status'] as const
 export const RISKS: readonly FunctionDef['risk'][] = ['low', 'medium', 'high']
 export const COSTS: readonly Cost[] = ['free', 'paid']
 export const BOUNTIES: readonly Bounty[] = ['none', 'runner', 'target']
-export const STATUSES: readonly Status[] = ['available', 'used', 'not_here', 'offline']
+export const STATUSES: readonly Status[] = ['available', 'used', 'not_now', 'offline']
 
 /** A function's cost for this player, as the round-4 Cost filter read it: paid only if he can't run it free. */
 export function costOf(def: FunctionDef, say: Say): Cost {

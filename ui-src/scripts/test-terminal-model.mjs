@@ -30,8 +30,9 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  HOME, NO_FILTERS, addressOf, arrive, bountyOf, canBack, canForward, cardsFor, choicesOf, costFor, costOf,
-  costRange, costsOf, current, filtersOf, hrefOf, offeredValues, valueOf,
+  HOME, NO_FILTERS, STATUSES, addressOf, arrive, bountyOf, boxOptions, canBack, canForward, cardsFor, choicesOf,
+  costFor, costOf, costRange, costsOf, current, filtersOf, hrefOf, needsSpot, offeredValues, orderedChoices, rarityOf,
+  readyToRun, statusText, tint, valueOf,
   indicatorOf, loadMs, matches, narrowed, navigate, openingEnds, openingStarts, pageLinks, passes, placeText,
   progressAfter, rewrite, risksOf, routeOfHref, runChoices, sameRoute, showsSquads, shownCategories, shownFunctions,
   shownOptions, speaker, startBrowsing, startOpening, statusOf, step, trailOf, voltsParts, voltsText, withFilters,
@@ -208,8 +209,8 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   eq(statusOf({ id: 'x', available: false, reason: 'squad_used' }, def), 'used', 'used')
   eq(statusOf({ id: 'x', available: false, reason: 'offline' }, def), 'offline', 'a terminal outside the storm: Not available')
   eq(statusOf({ id: 'x', available: false, reason: 'fn_offline' }, def), 'offline', 'not built: Not available')
-  eq(statusOf({ id: 'x', available: false, reason: 'no_key' }, def), 'not_here', 'anything else: Not available at this terminal')
-  ok(['available', 'used', 'not_here', 'offline'].every((s) => indicatorOf(s) !== 'loading'), 'no status spins (#385)')
+  eq(statusOf({ id: 'x', available: false, reason: 'no_key' }, def), 'not_now', 'anything else: not available now (round 6)')
+  ok(['available', 'used', 'not_now', 'offline'].every((s) => indicatorOf(s) !== 'loading'), 'no status spins (#385)')
 }
 
 // ── the state and a run's answer ────────────────────────────────────────────
@@ -585,7 +586,7 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   eq(ids(f({ bounty: 'none' })), 'storm_reveal,storm_control,disarm,max_ammo,emp', 'bounty: none')
   eq(ids(f({ status: 'available' })), 'scan,disarm,contract,max_ammo', 'status: available')
   eq(ids(f({ status: 'used' })), 'storm_reveal', 'status: used')
-  eq(ids(f({ status: 'not_here' })), 'storm_control', 'status: not available at this terminal')
+  eq(ids(f({ status: 'not_now' })), 'storm_control', 'status: not available now (round 6)')
   eq(ids(f({ status: 'offline' })), 'emp', 'status: not available')
   eq(ids({ ...f({ cost: 'paid', status: 'available' }), category: 'disruption' }), 'disarm', 'several together')
   eq(ids({ ...f({ cost: 'paid' }), query: 'storm' }), 'storm_control',
@@ -768,19 +769,148 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
   // teammates reach the page.
   const src = join(dirname(fileURLToPath(import.meta.url)), '..', 'terminal', 'src')
   const page = readFileSync(join(src, 'FunctionPage.tsx'), 'utf8')
-  ok(page.includes('costFor(def, choice)'), 'the page prices the run by its choices')
-  ok(!/def\.cost\b/.test(page), "and never by the row's base cost")
-  ok(page.includes('runChoices(def, choice, mates)'), 'a run carries the teammate')
-  ok(page.includes('choicesOf(def, o, say, mates)') && page.includes('valueOf(o, choice, mates)'),
-    'each option offers its own choices, the teammates included')
-  ok(/shownOptions\(def, choice\)\.filter\(\(o\) => say\(`\$\{id\}_opt_\$\{o\.id\}`\) !== ''\)/.test(page),
-    'an option with no words for this player is not shown')
+  const box = readFileSync(join(src, 'RunBox.tsx'), 'utf8')
+  ok(page.includes('costFor(def, choice)') && box.includes('costFor(def, choice)'),
+    'the page and the confirm box price the run by its choices')
+  ok(!/def\.cost\b/.test(page) && !/def\.cost\b/.test(box), "and never by the row's base cost")
+  ok(box.includes('runChoices(def, choice, mates)'), 'a run carries the teammate')
+  ok(box.includes('orderedChoices(def, o, say, mates)') && box.includes('valueOf(o, choice, mates)'),
+    'each option offers its own choices, the teammates included (round 6: in the confirm box)')
+  ok(box.includes('boxOptions(def, choice, say)'), 'an option with no words for this player is not shown (model.ts boxOptions)')
+  ok(/shownOptions\(def, choice\)\.filter\(\(o\) => say\(`\$\{def\.id\}_opt_\$\{o\.id\}`\) !== ''\)/
+    .test(readFileSync(join(src, 'model.ts'), 'utf8')), 'boxOptions is the offered options with words')
   const cards = readFileSync(join(src, 'FunctionCards.tsx'), 'utf8')
   ok(cards.includes('costRange(f, say)') && cards.includes("say('cost_free_or')"),
     'the card says a price by choice -- the choices this player is offered')
   ok(!/costRange\(f\)/.test(cards), 'never over every choice the registry lists')
   const app = readFileSync(join(src, 'App.tsx'), 'utf8')
   ok(app.includes('mates={state.mates}'), "the page is handed the state's teammates")
+}
+
+// ── round 6 (owner, 2026-10-07): every input in the confirm box, a spot only
+//    under a choice, Gear Up's rarities, and the status says the real reason ──
+{
+  const here = dirname(fileURLToPath(import.meta.url))
+  const src = join(here, '..', 'terminal', 'src')
+  const cat = parseCatalog({
+    functions: [
+      { id: 'power_outage', category: 'disruption', risk: 'low', implemented: true,
+        spot: { when: { area: 'spot' } },
+        options: [
+          { id: 'area', choices: ['spot', 'city', 'county'], default: 'spot' },
+          { id: 'duration', choices: ['120', '240'], default: '120' },
+        ] },
+      { id: 'storm_control', category: 'storm', risk: 'medium', implemented: true, cost: 150, spot: true },
+      { id: 'bad_when', category: 'storm', risk: 'low', implemented: true, spot: { when: { area: 5 } } },
+      { id: 'empty_when', category: 'storm', risk: 'low', implemented: true, spot: { when: {} } },
+      { id: 'gear_up', category: 'supply', risk: 'low', implemented: true,
+        costBy: { option: 'who', choices: { squad: 200 } },
+        options: [
+          { id: 'item', choices: ['pistol', 'medkit', 'rpg', 'smg', 'knife'], default: 'pistol', dropdown: true,
+            rarity: { pistol: 1, medkit: 2, rpg: 5, smg: 3, knife: 9 } },
+          { id: 'who', choices: ['self', 'mate', 'squad'], default: 'self' },
+          { id: 'mate', when: { who: 'mate' }, source: 'mates', dropdown: true },
+        ] },
+    ],
+    categories: ['disruption', 'storm', 'supply'],
+    rarities: [
+      { tier: 5, key: 'legendary', hex: '#FFB020' }, { tier: 1, key: 'common', hex: '#B0B0B0' },
+      { tier: 2, key: 'uncommon', hex: '#4CD964' }, { tier: 3, key: 'rare', hex: '#3B9BFF' },
+      { tier: 4, key: 'epic', hex: '#B15BFF' }, { tier: 2, key: 'again', hex: '#000000' },
+      { tier: 6, key: 'mythic', hex: '#FFFFFF' }, { tier: 3, key: 'Bad Key', hex: '#3B9BFF' },
+      { tier: 1, key: 'odd', hex: 'red' },
+    ],
+  })
+  const fn = Object.fromEntries(cat.functions.map((f) => [f.id, f]))
+
+  // A SPOT ONLY UNDER A CHOICE: Power outage's area 'spot'.
+  ok(fn.power_outage.spot === true && JSON.stringify(fn.power_outage.spotWhen) === '{"area":"spot"}',
+    'a conditional spot is parsed: a spot row, and the choice it waits for')
+  ok(fn.storm_control.spot === true && fn.storm_control.spotWhen === null, 'spot = true: a spot every run')
+  ok(fn.bad_when.spot === false && fn.empty_when.spot === false, 'a `when` that is not one is no spot at all')
+  ok(needsSpot(fn.power_outage, {}), 'Power outage, untouched: its default area is the spot, so it takes one')
+  ok(needsSpot(fn.power_outage, { area: 'spot' }), 'the spot chosen: a spot')
+  ok(!needsSpot(fn.power_outage, { area: 'city' }) && !needsSpot(fn.power_outage, { area: 'county' }),
+    'Los Santos or Blaine County: no spot')
+  ok(needsSpot(fn.storm_control, {}), 'Storm control: a spot always')
+  ok(!needsSpot(fn.gear_up, { who: 'mate' }), 'a row with none: never')
+
+  // EVERY INPUT IS IN THE BOX, AND RUN WAITS FOR THEM.
+  const say = speaker({
+    power_outage_opt_area: 'Area', power_outage_opt_area_spot: 'Spot', power_outage_opt_area_city: 'City',
+    power_outage_opt_area_county: 'County', power_outage_opt_duration: 'Duration',
+    power_outage_opt_duration_120: '2', power_outage_opt_duration_240: '4',
+    gear_up_opt_item: 'Item', gear_up_opt_who: 'Who', gear_up_opt_who_self: 'You', gear_up_opt_who_mate: 'Mate',
+    gear_up_opt_who_squad: 'Squad', gear_up_opt_mate: 'Teammate',
+    gear_up_opt_item_pistol: 'Pistol', gear_up_opt_item_medkit: 'Med Kit', gear_up_opt_item_rpg: 'RPG',
+    gear_up_opt_item_smg: 'SMG', gear_up_opt_item_knife: 'Knife',
+    rarity_common: 'Common', rarity_legendary: 'Legendary',
+    status_not_now: 'Not now', status_offline: 'Not available', status_used: 'Used', status_available: 'Available',
+    status_no_night: 'Only at night', status_health_full: 'Squad full', status_health_full_solo: 'You are full',
+  }, true)
+  eq(boxOptions(fn.gear_up, {}, say).map((o) => o.id).join(','), 'item,who', 'the box asks for the item and who gets it')
+  eq(boxOptions(fn.gear_up, { who: 'mate' }, say).map((o) => o.id).join(','), 'item,who,mate',
+    'and the teammate only while "one teammate" is chosen (`when`, in the box)')
+  const mates = [{ id: '12', name: 'Bravo' }]
+  ok(readyToRun(fn.gear_up, {}, say, mates, false), 'Gear Up for yourself: every choice made (the defaults), Run goes')
+  ok(readyToRun(fn.gear_up, { who: 'mate' }, say, mates, false), 'one teammate, one standing: Run goes')
+  ok(!readyToRun(fn.gear_up, { who: 'mate' }, say, [], false), 'one teammate with nobody standing: Run waits')
+  ok(!readyToRun(fn.power_outage, {}, say, [], false), 'Power outage around a spot, none picked: Run waits')
+  ok(readyToRun(fn.power_outage, {}, say, [], true), 'and with one picked: Run goes')
+  ok(readyToRun(fn.power_outage, { area: 'city' }, say, [], false), 'Los Santos needs no spot: Run goes')
+  ok(!readyToRun(fn.storm_control, {}, say, [], false) && readyToRun(fn.storm_control, {}, say, [], true),
+    'Storm control waits for its spot, as it always did')
+  eq(costFor(fn.gear_up, { who: 'squad' }), 200, 'the box\'s price follows the choice made in it (costBy)')
+
+  // GEAR UP'S RARITIES: parsed, named, colored, sorted rarest first.
+  const item = fn.gear_up.options[0]
+  eq(JSON.stringify(item.rarity), '{"pistol":1,"medkit":2,"rpg":5,"smg":3}', 'each item\'s tier, a tier that is not one left out')
+  eq(fn.gear_up.options[1].rarity, null, 'an option with none has none')
+  eq(cat.rarities.map((r) => `${r.tier}:${r.key}:${r.hex}`).join(','),
+    '1:common:#B0B0B0,2:uncommon:#4CD964,3:rare:#3B9BFF,4:epic:#B15BFF,5:legendary:#FFB020',
+    'the rarities in tier order, one a tier, a malformed one dropped')
+  eq(parseCatalog({ functions: [], categories: [] }).rarities.length, 0, 'none sent: none')
+  eq(orderedChoices(fn.gear_up, item, say).map((c) => c.value).join(','), 'rpg,smg,medkit,pistol,knife',
+    '"Sorted by most rare at the top": legendary first, an item with no rarity last')
+  eq(orderedChoices(fn.gear_up, fn.gear_up.options[1], say).map((c) => c.value).join(','), 'self,mate,squad',
+    'an option without rarities keeps the registry\'s order')
+  const rpg = rarityOf(item, 'rpg', cat.rarities)
+  ok(rpg && rpg.key === 'legendary' && rpg.hex === '#FFB020', 'an item\'s rarity: its name\'s key and its color')
+  eq(rarityOf(item, 'knife', cat.rarities), null, 'an item with none: none')
+  eq(tint('#FFB020', 0.2), 'rgba(255, 176, 32, 0.2)', 'the hover tint is the rarity\'s color, see-through (no color-mix on CEF 103)')
+  eq(tint('red', 0.2), 'transparent', 'a color that is not #rrggbb tints nothing')
+
+  // THE STATUS SAYS THE REAL REASON (round 6: "Yes please say the real reason").
+  const row = { id: 'x', implemented: true }
+  const st = (reason) => ({ id: 'x', available: reason === null, reason })
+  eq(statusText(st('no_night'), row, say), 'Only at night', 'a rule of the match: its own short line')
+  eq(statusText(st('health_full'), row, speaker({ status_health_full: 'Squad full', status_health_full_solo: 'You are full' }, false)),
+    'You are full', 'squad-free outside a squad match, through the speaker')
+  eq(statusText(st('unavailable'), row, say), 'Not now', 'a reason with no short line: not available now')
+  eq(statusText(st('squad_used'), row, say), 'Used', 'used is Used')
+  eq(statusText(st('offline'), row, say), 'Not available', 'a terminal outside the storm: Not available')
+  eq(statusText(st(null), row, say), 'Available', 'available is Available')
+  eq(STATUSES.join(','), 'available,used,not_now,offline', 'the Status filter\'s four: no "at this terminal"')
+
+  // AND THE COMPONENTS: the page asks for nothing, the box asks for all of it.
+  const page = readFileSync(join(src, 'FunctionPage.tsx'), 'utf8')
+  const box = readFileSync(join(src, 'RunBox.tsx'), 'utf8')
+  ok(!/@cloudscape-design\/components\/(radio-group|select|form-field|modal)'/.test(page),
+    'the page draws no option and no box of its own (round 6: the inputs are in the confirm box)')
+  ok(/<RunBox\b/.test(page), 'its Run opens the confirm box')
+  ok(box.includes("iconName=\"location-pin\"") && box.includes("say('confirm_location')"),
+    '"Set location" wears the location-pin icon')
+  ok(box.includes('atSpot && props.spot ? props.spot.at : null'), 'a run carries a spot only when it is run at one')
+  ok(box.includes('disabled={!props.enabled || !ready}'), 'Run waits for every choice (readyToRun)')
+  ok(box.includes('renderOption={o.rarity ? rarityRow(o) : undefined}') && box.includes('item.highlighted')
+    && box.includes("say(`rarity_${r.key}`)") && box.includes('style={{ color: r.hex }}'),
+    'Gear Up\'s rows: the rarity\'s name on the right in its color, the tint on the highlighted row')
+  ok(!page.includes('status_${status}') && page.includes('statusText(fn, def, say)'), 'the page\'s status is the real reason')
+  const cards = readFileSync(join(src, 'FunctionCards.tsx'), 'utf8')
+  ok(cards.includes('statusText(fn, f, say)'), 'and the card\'s')
+  const client = readFileSync(join(here, '..', '..', 'resources', '[fivem-royale]', 'br_core', 'client', 'terminal.lua'), 'utf8')
+  ok(client.includes('for tier, info in pairs(BR.RarityInfo or {}) do') && client.includes('rarities = rarities }'),
+    'br_core\'s client hands the app BR.RarityInfo\'s colors in the catalog')
 }
 
 if (failed > 0) {

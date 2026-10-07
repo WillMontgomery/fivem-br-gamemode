@@ -97,7 +97,7 @@ const PROGRESS_STEP_MS = 100
 export function App(): ReactElement {
   const [state, setState] = useState<TerminalState | null>(null)
   const [copy, setCopy] = useState<Copy>({})
-  const [catalog, setCatalog] = useState<Catalog>({ functions: [], categories: [], currency: '', pageLoad: null })
+  const [catalog, setCatalog] = useState<Catalog>({ functions: [], categories: [], currency: '', pageLoad: null, rarities: [] })
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   // THE BROWSER: its history and the page load under way. The ref is the one
   // every handler and timer reads, so two clicks inside one render, or a load
@@ -483,6 +483,7 @@ export function App(): ReactElement {
           onPick={(id) => pick(id)}
           picked={picked}
           mates={state.mates}
+          rarities={catalog.rarities}
         />
       )
     }

@@ -722,7 +722,7 @@ do
         'shell_boot', 'desktop_icon', 'window_title', 'app_title', 'run',
         'address_host', 'path_home', 'path_tools', 'path_howto', 'path_privacy', 'path_login',
         'nav_home', 'nav_howto', 'nav_privacy', 'nav_categories', 'privacy_title', 'privacy_body',
-        'status_available', 'status_used', 'status_not_here', 'status_offline',
+        'status_available', 'status_used', 'status_not_now', 'status_offline',
         'risk_low', 'risk_medium', 'risk_high', 'risk_notice', 'cost_line',
         'howto_title', 'howto_tips_body', 'match_heading',
         'first_pickup', 'first_pickup_title', 'first_pickup_subtitle', 'first_pickup_dismiss',
@@ -1035,7 +1035,17 @@ do
     local C = BR.Config.Terminals
     local copy = C.copy
     eq(copy.status_offline, 'Not available', '"offline" is "Not available" (owner\'s words)')
-    eq(copy.status_not_here, 'Not available at this terminal', '"Not here" is "Not available at this terminal"')
+    -- ROUND 6 (owner, 2026-10-07: "Let's make all the terminals have all the
+    -- same tools available please"): every terminal lists every tool, so no
+    -- line says a tool is not available "at this terminal" -- the card says
+    -- the real reason ("Yes please say the real reason").
+    eq(copy.status_not_here, nil, 'round 2\'s "Not available at this terminal" is gone')
+    local here = {}
+    for k, v in pairs(copy) do
+        if type(v) == 'string' and v:lower():find('at this terminal', 1, true) then here[#here + 1] = k end
+    end
+    table.sort(here)
+    eq(table.concat(here, ', '), '', 'and no line says a tool is not available "at this terminal"')
     eq(copy.fn_offline, 'This tool is not available.', 'an unbuilt tool\'s page line says it too (round 5: tool)')
     ok(not copy.fn_offline:lower():find('offline', 1, true), 'and never says offline beside that badge')
     eq(copy.offline, 'This terminal is outside the storm and offline.',
@@ -1548,7 +1558,7 @@ do
     -- THE OWNER'S VERBATIM LINES ARE UNTOUCHED, and have no solo lines.
     for _, k in ipairs({ 'no_key', 'notice_access', 'notice_action', 'bounty_new', 'bounty_protect',
                          'terminal_label', 'terminal_use',
-                         'status_offline', 'status_not_here', 'match_heading', 'app_title' }) do
+                         'status_offline', 'match_heading', 'app_title' }) do
         eq(copy[k .. '_solo'], nil, ('the owner\'s %s has no rewritten twin'):format(k))
     end
     -- The categories: the squad one empties outside a squad match.

@@ -132,6 +132,26 @@ export interface OptionDef {
   when: Record<string, string> | null
   source: 'mates' | null
   dropdown: boolean
+  /**
+   * Each choice's loot rarity, 1 (common) to 5 (legendary), for an option
+   * whose choices are items (round 6: Gear Up's item list, "add it's rarity
+   * with the colored font. Sorted by most rare at the top"), or null. The
+   * registry fills it from each item's own `rarity` (br_lib/config/
+   * terminals.lua, the gearUp block).
+   */
+  rarity: Record<string, number> | null
+}
+
+/**
+ * One loot rarity as the game draws it (BR.RarityInfo, br_lib/shared/
+ * enums.lua -- the one source every rarity color in the game is read from):
+ * its tier (1 common .. 5 legendary), its key (whose `rarity_<key>` copy line
+ * is its name) and its color.
+ */
+export interface Rarity {
+  tier: number
+  key: string
+  hex: string
 }
 
 /**
@@ -169,8 +189,16 @@ export interface FunctionDef {
   /**
    * Run at a spot picked on the big map (round 4: Storm control, Supply
    * drop): its confirm box has a "Set location" step, and Run waits for it.
+   * True for a row that ever is -- always, or only under `spotWhen`.
    */
   spot: boolean
+  /**
+   * Round 6: run at a spot ONLY while the options carry these choices
+   * ({ optionId: choice }; Power outage's area 'spot'), or null for a row run
+   * at one every time. The registry's `spot = { when = { ... } }`; model.ts
+   * `needsSpot` and the server's BR.TerminalSolve.spotWanted read it alike.
+   */
+  spotWhen: Record<string, string> | null
   /**
    * The lobby is not told when it runs (round 4, owner 2026-10-06: "Field
    * medic should not notify everyone"), so its page leaves out risk_notice.
@@ -206,6 +234,8 @@ export interface Catalog {
    * br_lib/config/terminals.lua, owner 2026-10-06), or null when not sent.
    */
   pageLoad: { minMs: number; maxMs: number } | null
+  /** The loot rarities, rarest last, as the game colors them (round 6); empty when not sent. */
+  rarities: Rarity[]
 }
 
 /**
@@ -371,15 +401,24 @@ export function parseCatalog(v: unknown): Catalog | null {
       const dropdown = o.dropdown === true
       if (o.source === 'mates') {
         // ROUND 5: ITS CHOICES ARE THE STATE'S STANDING TEAMMATES, no list here.
-        options.push({ id: oid, choices: [], default: '', when: parseWhen(o.when), source: 'mates', dropdown })
+        options.push({
+          id: oid, choices: [], default: '', when: parseWhen(o.when), source: 'mates', dropdown, rarity: null,
+        })
         continue
       }
       const choices = list(o.choices).filter((c): c is string => typeof c === 'string' && CHOICE.test(c))
       if (choices.length === 0) continue
       const def = typeof o.default === 'string' && choices.includes(o.default) ? o.default : (choices[0] ?? '')
-      options.push({ id: oid, choices, default: def, when: parseWhen(o.when), source: null, dropdown })
+      options.push({
+        id: oid, choices, default: def, when: parseWhen(o.when), source: null, dropdown,
+        rarity: parseTiers(o.rarity, choices),
+      })
     }
     const cost = num(f.cost)
+    // A SPOT ALWAYS (`spot = true`), OR ONLY UNDER A CHOICE (round 6: `spot = {
+    // when = { ... } }`). A `when` that is not one is no spot at all, as the
+    // server's BR.TerminalSolve.spotRule reads it.
+    const spotWhen = isObj(f.spot) ? parseWhen(f.spot.when) : null
     functions.push({
       id, category, risk, implemented: f.implemented === true, options,
       cost: cost !== null && cost > 0 ? Math.floor(cost) : 0,
@@ -388,7 +427,8 @@ export function parseCatalog(v: unknown): Catalog | null {
       soloCategory: code(f.soloCategory),
       bounty: f.bounty === 'runner' || f.bounty === 'target' ? f.bounty : null,
       squadWide: f.squadWide === true,
-      spot: f.spot === true,
+      spot: f.spot === true || spotWhen !== null,
+      spotWhen,
       quiet: f.quiet === true,
     })
   }
@@ -396,7 +436,52 @@ export function parseCatalog(v: unknown): Catalog | null {
   return {
     functions, categories, currency: typeof v.currency === 'string' ? v.currency : '',
     pageLoad: parsePageLoad(v.pageLoad),
+    rarities: parseRarities(v.rarities),
   }
+}
+
+/** The highest loot tier (BR.Rarity.LEGENDARY). */
+const TIER_MAX = 5
+/** A rarity's color: #rrggbb, nothing else (it is drawn as text and a tint). */
+const HEX = /^#[0-9a-fA-F]{6}$/
+
+/** A tier: a whole number 1..5, or null. */
+function tier(v: unknown): number | null {
+  const n = num(v)
+  return n !== null && Number.isInteger(n) && n >= 1 && n <= TIER_MAX ? n : null
+}
+
+/**
+ * Each listed choice's tier, or null when the option carries none. A choice
+ * whose tier is not one is left out (drawn with no rarity), never guessed.
+ */
+function parseTiers(v: unknown, choices: string[]): Record<string, number> | null {
+  if (!isObj(v)) return null
+  const out: Record<string, number> = {}
+  let n = 0
+  for (const c of choices) {
+    const t = tier(v[c])
+    if (t === null) continue
+    out[c] = t
+    n++
+  }
+  return n > 0 ? out : null
+}
+
+/**
+ * The rarities: each a tier, a key and a #rrggbb color, at most one per tier,
+ * in tier order. Lua sends BR.RarityInfo's rows as a list.
+ */
+function parseRarities(v: unknown): Rarity[] {
+  const out: Rarity[] = []
+  for (const r of list(v)) {
+    if (!isObj(r)) continue
+    const t = tier(r.tier)
+    if (t === null || typeof r.key !== 'string' || !ID.test(r.key) || typeof r.hex !== 'string' || !HEX.test(r.hex)) continue
+    if (out.some((x) => x.tier === t)) continue
+    out.push({ tier: t, key: r.key, hex: r.hex })
+  }
+  return out.sort((a, b) => a.tier - b.tier)
 }
 
 /**

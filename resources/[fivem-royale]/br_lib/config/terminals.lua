@@ -418,14 +418,46 @@ BR.Config.Terminals = {
         -- What a card says about a function right now.
         status_available = 'Available',
         status_used = 'Used',
-        -- VERBATIM (owner, 2026-10-05, round 2: 'for "Not here" let's
-        -- instead say "Not available at this terminal"').
-        status_not_here = 'Not available at this terminal',
         -- VERBATIM (owner, 2026-10-05, round 2: 'the term "offline" is
         -- confusing when we use "Available" to indicate the opposite. Let's
         -- instead say "Not available"'). A function not built yet, or a
         -- terminal outside the storm.
         status_offline = 'Not available',
+        -- ROUND 6 (owner, 2026-10-07: "Let's make all the terminals have all
+        -- the same tools available please", and on the tools' own rules "Yes
+        -- please say the real reason"). Every terminal lists every tool, so
+        -- round 2's "Not available at this terminal" (status_not_here) is
+        -- gone: a tool stopped by a rule of the match says the rule, in a few
+        -- words, as status_<the server's reason> (the full line is beneath it
+        -- on the tool's page), and the Status filter groups them all as
+        -- status_not_now -- which is also what a reason with no short line of
+        -- its own says ('unavailable': a run already under way, say).
+        -- WRITTEN (round 6, proposal for the owner)
+        status_not_now = 'Not available now',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_no_key = 'Needs a Yubikey',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_no_storm = "Storm hasn't started",
+        -- WRITTEN (round 6, proposal for the owner)
+        status_storm_aimed = 'Storm spot already picked',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_no_circle = 'Final circle reached',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_no_target = 'No opponent with an elimination',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_no_weapons = 'No armed opponents',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_health_full = 'Nobody to heal or drain',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_reboot_none = 'Nobody to bring back',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_no_night = 'Only at night',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_ammo_full = 'Ammo already full',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_drop_busy = 'Airdrop already on its way',
+        -- WRITTEN (round 6, proposal for the owner)
+        status_no_site = 'No airdrop spot in the circle',
         -- How much a function exposes the player who runs it.
         risk_low = 'Low risk',
         risk_medium = 'Medium risk',
@@ -443,7 +475,6 @@ BR.Config.Terminals = {
 
         details_heading = 'Details',
         what_heading = 'What it does',
-        options_heading = 'Options',
         risks_heading = 'Risks',
         field_category = 'Category',
         field_status = 'Status',
@@ -1815,7 +1846,7 @@ do
         if o.id == 'item' then itemOpt = o end
     end
     if itemOpt then
-        local items, seen = {}, {}
+        local items, seen, tiers = {}, {}, {}
         local function add(def)
             if type(def) ~= 'table' or type(def.id) ~= 'string' or seen[def.id] then return end
             if skipId[def.id] or (def.class ~= nil and skipClass[def.class]) then return end
@@ -1823,6 +1854,10 @@ do
             seen[def.id] = true
             items[#items + 1] = def.id
             C.copy['gear_up_opt_item_' .. def.id] = def.label
+            -- ROUND 6 (owner, 2026-10-07: "add it's rarity with the colored
+            -- font. Sorted by most rare at the top"): the item's own rarity,
+            -- the one the stack Gear Up hands over carries (T.gearStack).
+            if BR.RarityInfo and BR.RarityInfo[def.rarity] then tiers[def.id] = def.rarity end
         end
         local K = BR.Config
         for _, list in ipairs({ K.Weapons, K.AirdropWeapons, K.Melee, K.Throwables, K.Consumables }) do
@@ -1830,10 +1865,21 @@ do
         end
         add(K.CprKit)
         itemOpt.choices = items
+        itemOpt.rarity = tiers
         local listed = false
         for _, id in ipairs(items) do
             if id == itemOpt.default then listed = true end
         end
         if not listed then itemOpt.default = items[1] end
+    end
+
+    -- THE RARITIES' NAMES (round 6, Gear Up's item list): rarity_<key>, the
+    -- names BR.RarityInfo gives them -- the inventory's and the market's own
+    -- words for them -- so the app says them through its speaker like every
+    -- other line. Their colors ride in the catalog (br_core/client/terminal.lua).
+    for _, info in pairs(BR.RarityInfo or {}) do
+        if type(info) == 'table' and type(info.key) == 'string' and type(info.label) == 'string' then
+            C.copy['rarity_' .. info.key] = info.label
+        end
     end
 end

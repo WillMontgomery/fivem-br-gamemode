@@ -1,22 +1,16 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import Badge from '@cloudscape-design/components/badge'
 import Box from '@cloudscape-design/components/box'
-import Button, { type ButtonProps } from '@cloudscape-design/components/button'
+import Button from '@cloudscape-design/components/button'
 import Container from '@cloudscape-design/components/container'
 import ContentLayout from '@cloudscape-design/components/content-layout'
-import FormField from '@cloudscape-design/components/form-field'
 import Header from '@cloudscape-design/components/header'
 import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
-import Modal from '@cloudscape-design/components/modal'
-import RadioGroup from '@cloudscape-design/components/radio-group'
-import Select from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import StatusIndicator from '@cloudscape-design/components/status-indicator'
-import type { FunctionDef, FunctionState, Mate, PickResult, Spot } from './bridge'
-import {
-  choicesOf, costFor, fill, indicatorOf, placeText, riskColor, risksOf, runChoices, showsSquads, shownOptions,
-  statusOf, valueOf, type Say,
-} from './model'
+import type { FunctionDef, FunctionState, Mate, PickResult, Rarity, Spot } from './bridge'
+import { costFor, indicatorOf, riskColor, risksOf, showsSquads, statusOf, statusText, type Say } from './model'
+import { RunBox, runStyle } from './RunBox'
 import { Squads } from './Squads'
 import { voltsLine, voltsLines } from './Volts'
 
@@ -27,9 +21,20 @@ import { voltsLine, voltsLines } from './Volts'
  * have for the card/function, what it does, what risks it holds for them,
  * etc -- just don't tell them how it can help them. That's on them to
  * decide." So, from the copy block: the details (category, status, duration,
- * who it affects, who is told, the cost), what it does, its options as real
- * form controls, and its risks -- the notice every run sends first -- and the
- * Run button. Nothing here says what it is good for.
+ * who it affects, who is told, the cost), what it does -- which names the
+ * options it takes -- and its risks -- the notice every run sends first -- and
+ * the Run button. Nothing here says what it is good for.
+ *
+ * THE OPTIONS ARE ASKED FOR IN THE CONFIRM BOX, NOT HERE (round 6, owner
+ * 2026-10-07: "We need to move all required options/inputs to be part of the
+ * "confirm" modal. We should explain what options exist in the description,
+ * but much like we do location selection today that should be in the confirm
+ * modal."). RunBox.tsx is that box; this page keeps the choices made in it
+ * while it is up, so the cost line here says the price of what was chosen.
+ *
+ * ITS STATUS IS THE REAL REASON (round 6: "Yes please say the real reason"):
+ * a tool not available now says the rule that stops it (model.ts
+ * statusText), and the full line beneath it.
  *
  * RUN ONLY ASKS. The button is disabled when the server says the function
  * cannot run and while a run of this player's is waiting or loading; a box
@@ -40,39 +45,19 @@ import { voltsLine, voltsLines } from './Volts'
  * a run the Volts cannot cover is refused by the server, which says the cost
  * and the balance (no_volts).
  *
- * A FUNCTION RUN AT A SPOT (round 4: Storm control, Supply drop) HAS TWO STEPS
- * IN ITS BOX: "Set location" hides the computer and opens the big map (the
- * desktop and br_core's client do that), and the box comes back showing the
- * place picked with Run enabled; the run carries the spot, and the server
- * decides what it means.
+ * A RUN AT A SPOT (round 4: Storm control, Supply drop; round 6: Power
+ * outage's own area) HAS A STEP IN ITS BOX: "Set location" hides the computer
+ * and opens the big map (the desktop and br_core's client do that), and the
+ * box comes back showing the place picked with Run enabled; the run carries
+ * the spot, and the server decides what it means.
  *
- * AN OPTION MAY BE A DROPDOWN (round 5, Gear Up): its item list and its
- * standing teammates, the latter from the state (`mates`), live. An option or
- * a choice whose words are empty for this player is not shown (Gear Up's
- * "Who gets it" outside a squad match). THE PRICE IS THE CHOICES' (`costBy`):
- * the cost line and the confirm box say what this run would cost.
- *
- * RUN WEARS THE FUNCTION'S RISK (round 2: "the Run button - make it the risk
- * color instead"): the same color as its low, medium or high risk badge, in
- * both modes, with the badge's own text color -- terminal.css's
- * `--terminal-run-*` variables, which are the badge's tokens. "SQUADS!"
- * FOLLOWS THE TITLE on a function whose effect reaches the whole squad, in a
- * squad match (round 4, Squads.tsx), and EVERY VOLTS on the page -- the cost,
- * the confirmation -- is in the Volts style (Volts.tsx). NO SHADOW
- * (owner, 2026-10-06: "not sure why these buttons have shadows"): a button
- * sits on its surface, like every control (terminal.css).
+ * RUN WEARS THE FUNCTION'S RISK (RunBox.tsx `runStyle`). "SQUADS!" FOLLOWS
+ * THE TITLE on a function whose effect reaches the whole squad, in a squad
+ * match (round 4, Squads.tsx), and EVERY VOLTS on the page -- the cost, the
+ * confirmation -- is in the Volts style (Volts.tsx). NO SHADOW (owner,
+ * 2026-10-06: "not sure why these buttons have shadows"): a button sits on
+ * its surface, like every control (terminal.css).
  */
-export function runStyle(risk: FunctionDef['risk']): ButtonProps.Style {
-  const v = (part: string) => `var(--terminal-run-${risk}-${part})`
-  const off = (part: string) => `var(--terminal-run-disabled-${part})`
-  return {
-    root: {
-      background: { default: v('bg'), hover: v('bg-hover'), active: v('bg-active'), disabled: off('bg') },
-      borderColor: { default: v('bg'), hover: v('bg-hover'), active: v('bg-active'), disabled: off('bg') },
-      color: { default: v('text'), hover: v('text'), active: v('text'), disabled: off('text') },
-    },
-  }
-}
 
 export function FunctionPage(props: {
   def: FunctionDef
@@ -89,6 +74,8 @@ export function FunctionPage(props: {
   picked: { seq: number; result: PickResult } | null
   /** The standing teammates an option may name (round 5). */
   mates: Mate[]
+  /** The loot rarities, as the game colors them (round 6: Gear Up's items). */
+  rarities: Rarity[]
 }): ReactElement {
   const { def, fn, say } = props
   const id = def.id
@@ -99,10 +86,10 @@ export function FunctionPage(props: {
   const [confirm, setConfirmState] = useState(false)
   // THE SPOT PICKED ON THE BIG MAP (round 4, owner 2026-10-06: "the confirm
   // button is greyed out until they select a "set location" button"; spelling-ok: his words): a
-  // function run at a spot (`spot` on its row) has a first step in its box,
-  // "Set location", and Run waits for a spot. Every opening of the box starts
-  // at that step; a pick that came back with no spot (no waypoint set when
-  // the map closed) goes back to it; "Set location" again picks again.
+  // run at a spot (model.ts needsSpot) has a step in its box, "Set location",
+  // and Run waits for a spot. Every opening of the box starts with none; a
+  // pick that came back with no spot (no waypoint set when the map closed)
+  // goes back to none; "Set location" again picks again.
   const [spot, setSpot] = useState<{ at: Spot; place: string } | null>(null)
   const setConfirm = (open: boolean) => {
     if (open) setSpot(null)
@@ -118,7 +105,6 @@ export function FunctionPage(props: {
     if (p.result.functionId !== id) return
     setSpot(p.result.at ? { at: p.result.at, place: p.result.place } : null)
   }, [props.picked, id])
-  const needsSpot = def.spot && spot === null
   // THE BOX GOES WITH ITS PAGE. A page load started before the box opened
   // (owner, 2026-10-06: every navigation loads for 1-3 s, and the page stays
   // up meanwhile) can end with the box still up; App.tsx must then hear it
@@ -132,17 +118,14 @@ export function FunctionPage(props: {
   const name = say(`${id}_name`)
   const currency = props.currency
   const reason = !available && fn && fn.reason ? (say(fn.reason) || say('unavailable')) : ''
-  // THE COST AND THE BOX SAY THE VOLTS IN THE VOLTS STYLE: {volts} is the
-  // run's cost, the figure and the word -- THIS run's, by the choices made
+  // THE COST SAYS THE VOLTS IN THE VOLTS STYLE: {volts} is the run's cost,
+  // the figure and the word -- THIS run's, by the choices made in the box
   // (round 5: costBy). The amounts are written inside the voltsLine call,
   // where check-terminal T12 (e) can see where they go.
   const price = costFor(def, choice)
   const cost = price > 0
     ? voltsLine(say('cost_line_volts'), currency, { volts: price })
     : voltsLine(say('cost_line'), currency)
-  const body = price > 0
-    ? voltsLine(say('confirm_body_volts'), currency, { volts: price })
-    : voltsLine(say('confirm_body'), currency)
 
   const details = [
     { label: say('field_category'), value: say(`category_${def.category}`) },
@@ -151,7 +134,7 @@ export function FunctionPage(props: {
       value: (
         <SpaceBetween size="xxs">
           {[
-            <StatusIndicator key="s" type={indicatorOf(status)}>{say(`status_${status}`)}</StatusIndicator>,
+            <StatusIndicator key="s" type={indicatorOf(status)}>{statusText(fn, def, say)}</StatusIndicator>,
             ...(reason !== '' ? [<Box key="r" variant="small">{voltsLine(reason, currency)}</Box>] : []),
           ]}
         </SpaceBetween>
@@ -182,54 +165,6 @@ export function FunctionPage(props: {
       </Container>
     </div>,
   ]
-  // ONLY THE OPTIONS OFFERED UNDER THE CHOICES MADE (round 4: Time &
-  // weather's time OR weather), and a run carries only theirs -- shown only
-  // when they have words for this player (round 5).
-  const mates = props.mates
-  const offered = shownOptions(def, choice).filter((o) => say(`${id}_opt_${o.id}`) !== '')
-  const control = (o: (typeof offered)[number]): ReactElement => {
-    const items = choicesOf(def, o, say, mates)
-    const value = valueOf(o, choice, mates)
-    if (o.dropdown) {
-      const options = items.map((c) => ({ value: c.value, label: c.label }))
-      return (
-        <Select
-          selectedOption={options.find((c) => c.value === value) ?? null}
-          options={options}
-          disabled={!available}
-          expandToViewport
-          onChange={({ detail }) => setChoice({ ...choice, [o.id]: detail.selectedOption.value ?? '' })}
-        />
-      )
-    }
-    return (
-      <RadioGroup
-        value={value}
-        onChange={({ detail }) => setChoice({ ...choice, [o.id]: detail.value })}
-        items={items.map((c) => ({
-          value: c.value,
-          label: c.label,
-          description: say(`${id}_opt_${o.id}_${c.value}_desc`) || undefined,
-          disabled: !available,
-        }))}
-      />
-    )
-  }
-  if (offered.length > 0) {
-    sections.push(
-      <div key="options" className="terminal-raised">
-        <Container header={<Header variant="h2">{say('options_heading')}</Header>}>
-          <SpaceBetween size="l">
-            {offered.map((o) => (
-              <FormField key={o.id} label={say(`${id}_opt_${o.id}`)}>
-                {control(o)}
-              </FormField>
-            ))}
-          </SpaceBetween>
-        </Container>
-      </div>,
-    )
-  }
   sections.push(
     <div key="risks" className="terminal-raised">
       <Container header={<Header variant="h2">{say('risks_heading')}</Header>}>
@@ -259,50 +194,27 @@ export function FunctionPage(props: {
       }
     >
       <SpaceBetween size="l">{sections}</SpaceBetween>
-      <Modal
+      <RunBox
+        def={def}
+        say={say}
+        currency={currency}
         visible={confirm}
-        onDismiss={() => setConfirm(false)}
-        closeAriaLabel={say('aria_close')}
-        header={fill(say('confirm_title'), { name })}
-        footer={
-          <Box float="right">
-            <SpaceBetween direction="horizontal" size="xs">
-              {[
-                <Button key="no" variant="link" onClick={() => setConfirm(false)}>{say('confirm_no')}</Button>,
-                <Button key="yes" variant="primary" style={runStyle(def.risk)}
-                  disabled={!available || props.busy || needsSpot}
-                  onClick={() => {
-                    const at = spot ? spot.at : null
-                    setConfirm(false)
-                    props.onRun(id, runChoices(def, choice, mates), at)
-                  }}>
-                  {say('confirm_yes')}
-                </Button>,
-              ]}
-            </SpaceBetween>
-          </Box>
-        }
-      >
-        {def.spot ? (
-          <SpaceBetween size="m">
-            {[
-              <Box key="body">{body}</Box>,
-              <SpaceBetween key="pick" direction="horizontal" size="s" alignItems="center">
-                {[
-                  <Button key="set" disabled={!available || props.busy}
-                    onClick={() => {
-                      setSpot(null)
-                      props.onPick(id)
-                    }}>
-                    {say('confirm_location')}
-                  </Button>,
-                  ...(spot ? [<Box key="place">{placeText(spot.at, spot.place)}</Box>] : []),
-                ]}
-              </SpaceBetween>,
-            ]}
-          </SpaceBetween>
-        ) : body}
-      </Modal>
+        enabled={available && !props.busy}
+        choice={choice}
+        onChoice={setChoice}
+        mates={props.mates}
+        rarities={props.rarities}
+        spot={spot}
+        onPick={() => {
+          setSpot(null)
+          props.onPick(id)
+        }}
+        onRun={(options, at) => {
+          setConfirm(false)
+          props.onRun(id, options, at)
+        }}
+        onCancel={() => setConfirm(false)}
+      />
     </ContentLayout>
   )
 }
