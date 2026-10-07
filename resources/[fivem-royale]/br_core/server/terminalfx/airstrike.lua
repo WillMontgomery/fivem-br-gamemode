@@ -36,7 +36,9 @@
 --   THE DAMAGE   THE SERVER'S. Each rocket deals fx.strikeDamage to every
 --                player standing or downed within fx.strikeFullM of where it
 --                lands, falling off to nothing at fx.strikeReachM
---                (BR.TerminalSolve.blastDamage), through BR.Damage.applyHit --
+--                (BR.TerminalSolve.blastDamage) -- exactly as far as the
+--                fireball every client draws reaches (round 6: the client
+--                sizes it off the same number) -- through BR.Damage.applyHit --
 --                the health ledger's own door, armor first, a downed player's
 --                bleed clock, the heal ceilings, the victim's ped told -- billed
 --                as the world's blast (WEAPON_EXPLOSION), so it kills outright
@@ -107,7 +109,7 @@ end
 
 --- How far a strike's harm reaches from its spot: the circle and the blast past it.
 local function reachOf(s)
-    return s.r + (tonumber(fx().strikeReachM) or 14.0)
+    return s.r + (tonumber(fx().strikeReachM) or 15.0)
 end
 
 --- One rocket lands: the server works out who and what it hurts.
@@ -147,7 +149,7 @@ local function blast(m, s, rk)
                     local okN, netId = pcall(NetworkGetNetworkIdFromEntity, veh)
                     owner = okO and math.tointeger(tonumber(owner)) or nil
                     if owner and owner > 0 and okN and netId then
-                        local wreck = d <= (tonumber(F.strikeWreckM) or 4.0)
+                        local wreck = d <= (tonumber(F.strikeWreckM) or 5.0)
                         TriggerClientEvent(BR.Net.TERMINAL_STRIKE_VEH, owner,
                             { netId = netId, frac = frac, wreck = wreck or nil })
                         if wreck then wrecked = wrecked + 1 else damaged = damaged + 1 end

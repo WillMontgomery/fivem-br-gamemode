@@ -1258,9 +1258,29 @@ BR.Config.Terminals = {
         -- own damage and would be judged by server/damage.lua's explosion
         -- checks. The look is the owner's to tune in game; nothing here
         -- decides who is hurt.
-        rocket = { model = 'w_lr_rpg_rocket', trailAsset = 'core', trail = 'proj_rpg_trail',
-                   fallM = 150.0, fallMs = 1200, slantM = 25.0,
-                   blastAsset = 'core', blast = 'exp_grd_vehicle', blastScale = 1.0,
+        --
+        -- ROUND 6 (owner, 2026-10-07: "missile props never actually spawn, and
+        -- the explosions from them should be 3x as big, at least"):
+        --   models    tried in order, the first that streams in within loadMs
+        --             drawn: the RPG's rocket, then the Homing Launcher's and a
+        --             vehicle missile as stand-ins if it will not come
+        --   lodDist   how far off each rocket is still drawn -- the airdrop's
+        --             propLodDist; a weapon's own is a few meters, so the
+        --             rockets were culled for their whole fall
+        --             (client/terminalfx/airstrike.lua's header)
+        --   fallMs    2.5 s, was 1.2: at 125 m/s a rocket crossed the screen in
+        --             a blink; at 60 it is seen falling
+        --   blastBaseM  how far the fireball reaches at scale 1, in meters. The
+        --             fireball is drawn at fx.strikeReachM / blastBaseM -- 3x
+        --             (15 m over 5), was 1x -- so it covers exactly the ground
+        --             the server's damage reaches. AN ESTIMATE of the effect's
+        --             own size: if the fireball looks smaller or bigger than the
+        --             blast that hurts, this is the one number to change.
+        rocket = { models = { 'w_lr_rpg_rocket', 'w_lr_homing_rocket', 'w_ex_vehiclemissile_3' },
+                   loadMs = 5000, lodDist = 1000,
+                   trailAsset = 'core', trail = 'proj_rpg_trail',
+                   fallM = 150.0, fallMs = 2500, slantM = 25.0,
+                   blastAsset = 'core', blast = 'exp_grd_vehicle', blastBaseM = 5.0,
                    sound = 'MAIN_EXPLOSION_CHEAP', shake = 'LARGE_EXPLOSION_SHAKE', shakeM = 60.0 },
     },
 
@@ -1799,10 +1819,19 @@ BR.Config.Terminals = {
         -- a rocket hurts whoever is within reach on the map, indoors or up a
         -- tower. Vehicles: within strikeWreckM, wrecked; out to strikeReachM,
         -- strikeVehicleDamage engine and body points falling off the same way.
+        --
+        -- ROUND 6 (owner, 2026-10-07: the explosions "should be 3x as big, at
+        -- least"): THE BLAST A PLAYER SEES IS THE BLAST THAT HURTS. The
+        -- fireball is drawn 3x its old size, out to strikeReachM (15 m; the
+        -- client sizes it off this number, art.rocket.blastBaseM), and the
+        -- damage reaches exactly that far -- so nobody outside the fireball is
+        -- hurt and nobody inside it is spared. It was a 1x fireball (about
+        -- 5 m) over a 14 m reach. The lethal core is the old fireball's own
+        -- 5 m (was 4), and so is the wreck radius.
         strikeDamage = 150.0,
-        strikeFullM = 4.0,
-        strikeReachM = 14.0,
-        strikeWreckM = 4.0,
+        strikeFullM = 5.0,
+        strikeReachM = 15.0,
+        strikeWreckM = 5.0,
         strikeVehicleDamage = 1000.0,
         -- How long the circle stays on the map after the last rocket, and how
         -- far off a client draws the rockets and the flare.

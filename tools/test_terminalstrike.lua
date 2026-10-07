@@ -1083,7 +1083,7 @@ do
     -- downed), one in the air, one out, one far off.
     local at = spotNear(m, 300.0, 0.0)
     roster[1].pos = { x = at.x - 30.0, y = at.y, z = 30.0 }
-    roster[2].pos = { x = at.x + 9.0, y = at.y + 20.0, z = 30.0 }
+    roster[2].pos = { x = at.x + 10.0, y = at.y + 20.0, z = 30.0 }
     roster[3].pos = { x = at.x, y = at.y - 20.0, z = 30.0 }
     roster[4].pos = { x = at.x + 2.0, y = at.y - 20.0, z = 30.0 }
     player(6, m, 'C', { x = at.x, y = at.y + 30.0 }, BR.PlayerState.FREEFALL)
@@ -1095,10 +1095,10 @@ do
     roster[1].pos = { x = at.x - 30.0, y = at.y, z = 30.0 }
     local s = T.strikesLive(m)[1]
     -- PLACE THE ROCKETS (the plan is random; the damage is what is tested):
-    -- one on the teammate's 9 m, one on opponent 3, one on the runner, one on
+    -- one on the teammate's 10 m, one on opponent 3, one on the runner, one on
     -- the man in the air, one on the man who is out, the rest well away.
     local spots = {
-        { x = at.x, y = at.y + 20.0 },          -- 9 m from player 2
+        { x = at.x, y = at.y + 20.0 },          -- 10 m from player 2
         { x = at.x, y = at.y - 20.0 },          -- on player 3; player 4 at 2 m
         { x = at.x - 30.0, y = at.y },          -- on the runner
         { x = at.x, y = at.y + 30.0 },          -- on player 6 (in the air) and 7 (out, 1 m)
@@ -1109,7 +1109,7 @@ do
     end
     flush(s.rockets[1].at)
     local h2 = hitsOn(2)
-    ok(#h2 == 1 and math.abs(h2[1].amount - 75.0) < 1e-9, 'the teammate 9 m off: half of 150', h2[1] and h2[1].amount)
+    ok(#h2 == 1 and math.abs(h2[1].amount - 75.0) < 1e-9, 'the teammate 10 m off, half way out (5 to 15 m): half of 150', h2[1] and h2[1].amount)
     eq(h2[1] and h2[1].shooter, nil, 'FRIENDLY FIRE: the squad is hit too -- and it is nobody\'s hit')
     ok(h2[1] and h2[1].meta.weapon == EXPLOSION_HASH and h2[1].meta.explosive == true,
         "billed as the world's blast: it kills outright, and the feed says explosion")
@@ -1154,7 +1154,7 @@ do
     local s = T.strikesLive(m)[1]
     for _, rk in ipairs(s.rockets) do rk.x, rk.y = at.x, at.y end
     local under = car(at.x + 1.0, at.y, 3, m.bucket)
-    local nine = car(at.x + 9.0, at.y, 4, m.bucket)
+    local ten = car(at.x + 10.0, at.y, 4, m.bucket)
     local far = car(at.x + 20.0, at.y, 3, m.bucket)
     local other = car(at.x, at.y, 3, m.bucket + 50)
     local nobody = car(at.x + 2.0, at.y, -1, m.bucket)
@@ -1165,8 +1165,8 @@ do
     for _, e in ipairs(v) do byNet[e.payload.netId] = e end
     ok(byNet[under + 9000] and byNet[under + 9000].src == 3 and byNet[under + 9000].payload.wreck == true,
         'a car under it: its owner told to wreck it')
-    ok(byNet[nine + 9000] and byNet[nine + 9000].src == 4 and byNet[nine + 9000].payload.wreck == nil
-        and math.abs(byNet[nine + 9000].payload.frac - 0.5) < 1e-9, 'a car 9 m off: its owner told, half the damage')
+    ok(byNet[ten + 9000] and byNet[ten + 9000].src == 4 and byNet[ten + 9000].payload.wreck == nil
+        and math.abs(byNet[ten + 9000].payload.frac - 0.5) < 1e-9, 'a car 10 m off: its owner told, half the damage')
     eq(byNet[far + 9000], nil, 'a car 20 m off: nothing')
     eq(byNet[other + 9000], nil, "a car in another match's bucket: nothing")
     eq(byNet[nobody + 9000], nil, 'a car nobody owns (out of everyone\'s scope): nothing to send')
@@ -1562,7 +1562,7 @@ function PlayerPedId() return 1 end
 local realCars = {}
 local function ent(kind, model, x, y, z)
     nextEnt = nextEnt + 1
-    C.ents[nextEnt] = { kind = kind, model = model, x = x, y = y, z = z, alive = true }
+    C.ents[nextEnt] = { kind = kind, model = model, x = x, y = y, z = z, alive = true, born = clientMs }
     return nextEnt
 end
 function CreateVehicle(model, x, y, z, h, net)
@@ -1906,11 +1906,27 @@ local fxCalls = { nonLooped = {}, looped = {}, stopped = 0, sounds = {}, shakes 
 function HasNamedPtfxAssetLoaded() return true end
 function RequestNamedPtfxAsset(a) fxCalls.requested[#fxCalls.requested + 1] = a end
 function UseParticleFxAsset() end
-function StartParticleFxNonLoopedAtCoord(name, x, y, z)
+function StartParticleFxNonLoopedAtCoord(name, x, y, z, _, _, _, scale)
     call('StartParticleFxNonLoopedAtCoord')
-    fxCalls.nonLooped[#fxCalls.nonLooped + 1] = { name = name, x = x, y = y, z = z }
+    fxCalls.nonLooped[#fxCalls.nonLooped + 1] = { name = name, x = x, y = y, z = z, scale = scale }
     return true
 end
+-- THE ROCKET MODEL'S STREAMING (round 6): which models the game has, and how
+-- long after its request each one arrives. Every model is in the game and
+-- arrives at once unless a block says otherwise.
+local models = { missing = {}, arrivesAfterMs = {}, askedAt = {} }
+function IsModelInCdimage(h) return not models.missing[h] end
+function RequestModel(h) models.askedAt[h] = models.askedAt[h] or clientMs end
+function HasModelLoaded(h)
+    if models.missing[h] then return false end
+    local after = models.arrivesAfterMs[h]
+    if not after then return true end
+    local at = models.askedAt[h]
+    return at ~= nil and clientMs - at >= after
+end
+local released = {}
+function SetModelAsNoLongerNeeded(h) released[#released + 1] = h end
+function SetEntityLodDist(e, d) if C.ents[e] then C.ents[e].lodDist = d end end
 local loopedSeq = 0
 function StartParticleFxLoopedOnEntity(name, e)
     call('StartParticleFxLoopedOnEntity')
@@ -2037,7 +2053,7 @@ do
     eq(falling, 1, 'the first rocket is in the air')
     local rocket = nil
     for id, e in pairs(C.ents) do
-        if e.alive and e.kind == 'obj' and e.model == joaat(RA.model) then rocket = id end
+        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) then rocket = id end
     end
     local e = rocket and C.ents[rocket]
     ok(e and e.net == false and e.collision == false, 'a local object, never networked, colliding with nothing')
@@ -2048,13 +2064,27 @@ do
     ok(fxCalls.looped[1] and fxCalls.looped[1].name == RA.trail and fxCalls.looped[1].ent == rocket,
         "with the RPG's trail")
     ok(fxCalls.rotations[rocket] and fxCalls.rotations[rocket].p < -60.0, 'nose down', fxCalls.rotations[rocket] and fxCalls.rotations[rocket].p)
-    -- IT LANDS.
+    -- ROUND 6: "missile props never actually spawn". DRAWN FROM AS FAR AS
+    -- ANYBODY SEES IT FALL: a weapon's drawable is culled past its own few
+    -- meters, and nobody watching stands that close to a rocket 150 m up.
+    local farthest = math.sqrt(FX.strikeDrawM ^ 2 + RA.fallM ^ 2)
+    ok(e and e.lodDist and e.lodDist >= farthest,
+        ('drawn from %d m, past the farthest client that draws it (%.0f m)'):format(e and e.lodDist or 0, farthest))
+    -- IT LANDS: after falling long enough to be seen (2 s at least).
     local n0 = #fxCalls.nonLooped
-    advance(700, 50)
+    advance(RA.fallMs - 450, 50)
     ok(not C.ents[rocket].alive, 'landed: the rocket object is gone')
     ok(#fxCalls.nonLooped > n0, 'a fireball where it lands')
     local blast = fxCalls.nonLooped[n0 + 1]
     ok(blast and blast.name == RA.blast and blast.x == -12.0 and blast.z == 20.0, 'at its point, on the ground', blast and blast.x)
+    ok(e and clientMs - e.born >= 2000, 'it was in the air for 2 seconds or more before it landed',
+        e and (clientMs - e.born))
+    -- "THE EXPLOSIONS FROM THEM SHOULD BE 3X AS BIG, AT LEAST": the fireball
+    -- drawn out to exactly the server's damage reach.
+    local scale = blast and blast.scale or 0
+    ok(scale >= 3.0, ('drawn at %.2f times its size: 3x at least (it was 1x)'):format(scale))
+    ok(math.abs(scale * RA.blastBaseM - FX.strikeReachM) < 1e-9,
+        ('the fireball reaches %.1f m, the damage %.1f m: the same blast'):format(scale * RA.blastBaseM, FX.strikeReachM))
     ok(fxCalls.sounds[1] and fxCalls.sounds[1].name == RA.sound, "the game's explosion sound")
     ok(#fxCalls.shakes >= 1 and fxCalls.shakes[1].name == RA.shake, 'and a shake: this player is 22 m off')
     advance(5000, 50)
@@ -2108,6 +2138,61 @@ do
     advance(FX.strikeWarnMs + 5000, 100)
     eq(frameLoops(), 0, 'and nothing falls')
     slow()
+end
+
+describe('client: Airstrike -- the rocket model: streamed and waited on, the stand-ins when it will not come')
+do
+    -- ROUND 6: the RPG's rocket was asked for once and never waited on; a
+    -- rocket whose model had not arrived was skipped every frame, silently.
+    local function rocketsOf(model)
+        local n = 0
+        for _, e in pairs(C.ents) do
+            if e.kind == 'obj' and e.model == model then n = n + 1 end
+        end
+        return n
+    end
+    local function strikeAt(id)
+        resetWorld()
+        W.me = { x = 10.0, y = 0.0, z = 20.0 }
+        fxCalls.nonLooped = {}
+        for k in pairs(C.ents) do C.ents[k] = nil end
+        cfire(BR.Net.TERMINAL_STRIKE, strikeMsg(id, 0.0, 0.0))
+        runThreads()
+        advance(FX.strikeWarnMs + 5000, 50)
+        advance(FX.strikeLingerMs + 100, 500)
+        slow()
+    end
+    local rpg, second = joaat(RA.models[1]), joaat(RA.models[2])
+    ok(RA.models[1] == 'w_lr_rpg_rocket', 'the RPG\'s rocket first')
+
+    -- ARRIVING LATE: three seconds after it is asked for, inside the warning.
+    models.arrivesAfterMs[rpg] = 3000
+    models.askedAt[rpg] = nil
+    strikeAt(21)
+    eq(rocketsOf(rpg), 10, 'a model that streams in three seconds later: every rocket is drawn')
+    models.arrivesAfterMs[rpg] = nil
+
+    -- NOT IN THE GAME: the next model in the list.
+    models.missing[rpg] = true
+    logs = {}
+    strikeAt(22)
+    eq(rocketsOf(rpg), 0, 'the RPG\'s rocket missing: none of it')
+    eq(rocketsOf(second), 10, 'every rocket is drawn as the next model in the list')
+    eq(#fxCalls.nonLooped, 10, 'and every one lands')
+
+    -- NONE AT ALL: the blasts still land, and the console says why once.
+    for _, name in ipairs(RA.models) do models.missing[joaat(name)] = true end
+    logs = {}
+    strikeAt(23)
+    local objs = 0
+    for _, e in pairs(C.ents) do if e.kind == 'obj' then objs = objs + 1 end end
+    eq(objs, 0, 'no model at all: no rocket object')
+    eq(#fxCalls.nonLooped, 10, 'the ten blasts still land')
+    local said = 0
+    for _, l in ipairs(logs) do if l:find('no rocket model would load', 1, true) then said = said + 1 end end
+    eq(said, 1, 'and the console says so, once')
+    models.missing = {}
+    ok(#released >= 1, 'a strike gone lets its model go')
 end
 
 describe('client: Airstrike -- the owner of a vehicle a rocket hit writes the server\'s figure')

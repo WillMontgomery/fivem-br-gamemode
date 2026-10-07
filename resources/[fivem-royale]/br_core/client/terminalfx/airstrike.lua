@@ -16,6 +16,30 @@
 --                trail, falling on a slant onto its point over art.rocket's
 --                fallMs, and where it lands a fireball and the game's cheap
 --                explosion sound, and a camera shake for a player near it.
+--                The fireball is drawn as big as the server's blast reaches
+--                (fx.strikeReachM over art.rocket.blastBaseM): what a player
+--                sees is what hurts them.
+--
+-- ═══ WHY THE ROCKETS WERE NEVER SEEN (round 6, owner 2026-10-07: "missile
+--     props never actually spawn") ═══
+--
+-- Two things stood between the object and the screen, and the suite's stubs
+-- hid both (every model loaded, every object drawn):
+--
+--   NEVER LOADED, SILENTLY. The model was asked for once with RequestModel and
+--   never waited on or checked; a rocket whose model had not arrived was simply
+--   skipped, every frame of its fall, with nothing said. Now the model is
+--   streamed with a bound before the first rocket falls (IsModelInCdimage and
+--   IsModelValid first, art.rocket.models in order -- the RPG's rocket, then
+--   two stand-ins), and a strike with none loaded says so once on the console.
+--   NEVER DRAWN FROM WHERE ANYONE STANDS. A weapon's drawable is authored to be
+--   seen in a hand, and the engine stops drawing an object past its model's own
+--   LOD distance -- the airdrop crate's lesson (client/airdrop.lua drawFar: "the
+--   box was there and was not being DRAWN"). A rocket spends its whole fall
+--   50 to 150 m from anybody watching, so it was culled until its last meters,
+--   which it covered in a frame or two. Each rocket now gets SET_ENTITY_LOD_DIST
+--   (art.rocket.lodDist, past the farthest client that draws one), and falls
+--   over 2.5 s rather than 1.2, so it is on screen long enough to be seen.
 --                PARTICLES AND A SOUND, NEVER AddExplosion OR A PROJECTILE: a
 --                scripted explosion is networked, hurts whatever it touches on
 --                this machine and is judged by the server's explosion checks;
@@ -142,11 +166,60 @@ local function dropRocket(rk)
     rk.obj = nil
 end
 
+--- Let the engine stream a rocket model out again, once no strike shown here
+--- still needs it.
+local function releaseModel(h)
+    if not h or not SetModelAsNoLongerNeeded then return end
+    for _, o in pairs(strikes) do
+        if o.model == h then return end
+    end
+    SetModelAsNoLongerNeeded(h)
+end
+
 local function dropStrike(s)
     for _, rk in ipairs(s.rockets) do dropRocket(rk) end
     removeBlip(s.ring)
     s.ring = nil
     strikes[s.id] = nil
+    releaseModel(s.model)
+    s.model = nil
+end
+
+--- How big the fireball is drawn: the server's blast reach over the effect's
+--- own radius at scale 1 -- so the fireball a player sees is the blast that
+--- hurts them (round 6: "the explosions from them should be 3x as big, at
+--- least"). Public so the suites can hold the two together.
+--- @return number
+function F.blastScale()
+    local R = rocketArt()
+    local base = tonumber(R.blastBaseM) or 5.0
+    local reach = tonumber(fx().strikeReachM) or 15.0
+    if base <= 0.0 then return 1.0 end
+    return reach / base
+end
+
+--- The first rocket model that streams in, bounded: art.rocket.models in order
+--- (the RPG's rocket first), each checked before it is asked for. Nil when
+--- none would come -- said once on the console, since nothing else can show it.
+--- @return integer|nil hash
+local function loadRocketModel()
+    local R = rocketArt()
+    local list = type(R.models) == 'table' and R.models or { R.model or 'w_lr_rpg_rocket' }
+    for _, name in ipairs(list) do
+        local h = GetHashKey(name)
+        if isTrue(IsModelInCdimage(h)) and isTrue(IsModelValid(h)) then
+            RequestModel(h)
+            local waited = 0
+            while not isTrue(HasModelLoaded(h)) and waited < (tonumber(R.loadMs) or 5000) do
+                Citizen.Wait(50)
+                waited = waited + 50
+            end
+            if isTrue(HasModelLoaded(h)) then return h end
+        end
+    end
+    print('^3[br_core] airstrike: no rocket model would load (' .. table.concat(list, ', ')
+        .. ') -- this strike shows its blasts only^7')
+    return nil
 end
 
 --- How many strikes this client shows, and rockets in the air. For the suites.
@@ -180,7 +253,7 @@ local function land(s, rk, view)
     if R.blastAsset and R.blast and isTrue(HasNamedPtfxAssetLoaded(R.blastAsset)) then
         UseParticleFxAsset(R.blastAsset)
         StartParticleFxNonLoopedAtCoord(R.blast, rk.x, rk.y, z, 0.0, 0.0, 0.0,
-            tonumber(R.blastScale) or 1.0, false, false, false)
+            F.blastScale(), false, false, false)
     end
     if R.sound then PlaySoundFromCoord(-1, R.sound, rk.x, rk.y, z, 0, false, 0, false) end
     if R.shake and view then
@@ -194,15 +267,18 @@ end
 --- A rocket in the air: made on its first frame, moved on every one after.
 local function fly(s, rk, now)
     local R = rocketArt()
-    local fallMs = tonumber(R.fallMs) or 1200
+    local fallMs = tonumber(R.fallMs) or 2500
     local t = (now - (rk.at - fallMs)) / fallMs
     if t < 0.0 then t = 0.0 end
     local x, y, z = along(s, rk, t)
     if not rk.obj then
-        local model = GetHashKey(R.model or 'w_lr_rpg_rocket')
-        if not isTrue(HasModelLoaded(model)) then return end
-        local obj = CreateObjectNoOffset(model, x, y, z, false, false, false)
+        -- THE MODEL prepare() STREAMED IN, or none would come (said once).
+        if not s.model then return end
+        local obj = CreateObjectNoOffset(s.model, x, y, z, false, false, false)
         if not obj or obj == 0 then return end
+        -- DRAWN FROM AS FAR AS ANYBODY SEES IT FALL (the header's second
+        -- reason): a weapon's drawable is culled past its own few meters.
+        if SetEntityLodDist then pcall(SetEntityLodDist, obj, math.floor(tonumber(R.lodDist) or 1000)) end
         SetEntityCollision(obj, false, false)
         FreezeEntityPosition(obj, true)
         -- NOSE DOWN ITS SLANT: GTA's forward is (-sin h, cos h), and the
@@ -224,7 +300,7 @@ local function stepRockets()
     local now = BR.Clock.now()
     local view = nil
     local pending = false
-    local fallMs = tonumber(rocketArt().fallMs) or 1200
+    local fallMs = tonumber(rocketArt().fallMs) or 2500
     for _, s in pairs(strikes) do
         if s.near then
             for _, rk in ipairs(s.rockets) do
@@ -283,13 +359,19 @@ local function prepare(s)
         if BR.Flare and BR.Flare.fire and BR.Clock.now() < s.startsAt then
             Citizen.CreateThread(function() BR.Flare.fire(s.x, s.y, gz + 0.1) end)
         end
-        RequestModel(GetHashKey(R.model or 'w_lr_rpg_rocket'))
         if R.trailAsset then RequestNamedPtfxAsset(R.trailAsset) end
         if R.blastAsset and R.blastAsset ~= R.trailAsset then RequestNamedPtfxAsset(R.blastAsset) end
         for _, rk in ipairs(s.rockets) do rk.gz = groundAt(rk.x, rk.y, gz) end
-        if strikes[s.id] ~= s then return end
+        -- THE MODEL, STREAMED AND WAITED ON (the header's first reason), well
+        -- inside the warning: it is asked for the moment the strike is known.
+        local model = loadRocketModel()
+        if strikes[s.id] ~= s then
+            releaseModel(model)
+            return
+        end
+        s.model = model
         local first = s.rockets[1] and s.rockets[1].at or s.startsAt
-        local wait = first - (tonumber(R.fallMs) or 1200) - 250 - BR.Clock.now()
+        local wait = first - (tonumber(R.fallMs) or 2500) - 250 - BR.Clock.now()
         if wait > 0 then Citizen.Wait(math.floor(wait)) end
         if strikes[s.id] == s then ensureLoop() end
     end)
