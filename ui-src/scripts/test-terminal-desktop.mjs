@@ -92,7 +92,9 @@ function desktop() {
     setAttribute: (k, v) => {
       if (k === 'src') src = v
     },
-    focus: () => {},
+    focus: () => {
+      page.focused = (page.focused || 0) + 1
+    },
   }
   frame.style = styleFor(page, null)
   const win = { classList: classList(), offsetWidth: 1254, offsetHeight: 662, offsetLeft: 0, offsetTop: 0 }
@@ -688,8 +690,11 @@ const BSOD = { bsod_face: ':(', bsod_text: 'It ran into a problem.', bsod_code: 
   eq(D.page.posts.length, n, 'and while hidden, nothing the app asks goes up')
 
   // BACK, WITH WHAT WAS PICKED.
+  const focused = D.page.focused || 0
   D.lua({ type: 'br:show', picked: { functionId: 'storm_control', at: { x: 120.5, y: -900 }, place: 'Elgin Ave, Downtown' } })
   eq(D.body(), 'block', 'br:show brings the page back')
+  eq((D.page.focused || 0) - focused, 1,
+    "and gives the app's frame the keyboard again, so Escape reaches its box, not this page")
   const got = D.page.app.filter((m) => m.type === 'picked').pop()
   ok(got && got.picked.functionId === 'storm_control' && got.picked.at.x === 120.5 && got.picked.at.y === -900
     && got.picked.place === 'Elgin Ave, Downtown', 'and the app is handed what was picked', got)

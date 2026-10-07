@@ -43,6 +43,19 @@ end
 -- which sprite-8 blips are ours and skip them.
 local ownBlips = {}
 
+BR.Markers = BR.Markers or {}
+
+--- Is `blip` one of this file's squad pings? They wear the waypoint's sprite,
+--- so anything else that walks the sprite-8 blips for the waypoint skips them
+--- as this file's own placement pass does -- client/terminal.lua's map pick
+--- (#396, round 4's review), where a squadmate's ping arriving while the big
+--- map is up would otherwise come first and be read as the spot.
+--- @param blip any
+--- @return boolean
+function BR.Markers.isOwn(blip)
+    return blip ~= nil and ownBlips[blip] == true
+end
+
 local function removeMarker(owner)
     local m = markers[owner]
     if m then

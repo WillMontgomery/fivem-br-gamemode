@@ -1662,6 +1662,31 @@ do
     eq(C.exports.Show({ functionId = 'storm_control' }), false, 'the next opening is not hidden')
     ok(C.focus.held == true, 'and holds the focus')
     C.exports.Close('done')
+
+    -- THE STORM'S CLOSE WHILE HIDDEN (round 4's map pick with round 4's blue
+    -- screen): the page is out of sight under the big map, so there is no
+    -- screen to play it on -- it closes at once, as every other close does,
+    -- and br_core hears `offline` then, not 4 s later.
+    C.exports.Open(STATE, COPY)
+    C.exports.Hide()
+    local before = #eventsNamed('cuchi_computer:closed')
+    eq(C.exports.Close('offline'), true, 'the storm closes a hidden computer')
+    local last = C.nui[#C.nui]
+    ok(last.type == 'br:close' and last.storm == nil, 'with no blue screen: nobody could see it')
+    local cl = eventsNamed('cuchi_computer:closed')
+    ok(#cl == before + 1 and cl[#cl].args[2] == 'offline', 'br_core hears it closed at once, offline')
+    eq(C.focus.held, false, 'and the vote is let go')
+    -- Back from the map first, the storm's close plays its screen as ever.
+    C.exports.Open(STATE, COPY)
+    C.exports.Hide()
+    C.exports.Show({ functionId = 'storm_control' })
+    before = #eventsNamed('cuchi_computer:closed')
+    C.exports.Close('offline')
+    ok(C.nui[#C.nui].type == 'br:close' and C.nui[#C.nui].storm == true,
+        'shown again, the storm\'s close plays its blue screen')
+    eq(#eventsNamed('cuchi_computer:closed'), before, 'and br_core hears it only when the screen is dark')
+    cb('off', {})
+    eq(#eventsNamed('cuchi_computer:closed'), before + 1, 'which the page says')
 end
 
 describe('round 2: the shell boots with the range and the game time, and relays the clock')
@@ -1862,6 +1887,7 @@ local function bootClient(opts)
             -- The shell's answer: shown, unless the model says it had closed.
             if name == 'Result' then return B.computer.resultShown ~= false end
             if name == 'Hide' then return B.computer.hideResult ~= false end
+            if name == 'Show' then return B.computer.showResult ~= false end
             return true
         end
     end
@@ -2236,6 +2262,53 @@ do
     local n = W.nativeCalls
     for _ = 1, 50 do tick() end
     eq(W.nativeCalls, n, 'fifty passes with no pick ask the map nothing')
+end
+
+describe("round 4's review: a squadmate's ping drawn while the map is up is never the pick")
+do
+    -- finishPick walks the sprite-8 blips to the waypoint. A squadmate who
+    -- pings while the player is on the big map adds one more, and the map can
+    -- list it first: it is skipped as client/markers.lua's own (BR.Markers.isOwn).
+    bootClient()
+    local W = B.map
+    local tick = B.loops['terminal.clock']
+    local function shows()
+        local out = {}
+        for _, c in ipairs(B.computer.calls) do if c.name == 'Show' then out[#out + 1] = c end end
+        return out
+    end
+    local drawn = {}
+    BR.Markers = { isOwn = function(b) return drawn[b] == true end }
+    fireB('cuchi_computer:opened', 'dev')
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'storm_control' })
+    BR.Native.frontendMap = true
+    tick()
+    W.pings = { 503 }
+    W.coords[503] = { x = 999.0, y = 999.0, z = 0.0 }
+    drawn[503] = true
+    W.waypoint = { handle = 803, x = 120.5, y = -900.0 }
+    W.coords[803] = { x = 120.5, y = -900.0, z = 0.0 }
+    BR.Native.frontendMap = false
+    tick()
+    local got = shows()[1] and shows()[1].args[1]
+    ok(got and got.at and got.at.x == 120.5 and got.at.y == -900.0,
+        'the waypoint is the pick, not the ping listed before it', got and got.at)
+    eq(W.waypoint, nil, 'and it is taken off the map')
+    eq(B.screens[#B.screens], 'terminal', 'the computer is back, and has the keys')
+
+    -- A SHELL THAT CANNOT SHOW IT (restarted meanwhile): the key layer stays
+    -- the game's -- no screen is up to hold it.
+    fireB('cuchi_computer:pick', 'dev', { functionId = 'supply_drop' })
+    eq(B.screens[#B.screens], 'none', 'picking: the game has the keys')
+    BR.Native.frontendMap = true
+    tick()
+    B.computer.showResult = false
+    BR.Native.frontendMap = false
+    tick()
+    eq(#shows(), 2, 'Show was asked')
+    eq(B.screens[#B.screens], 'none', 'and, not shown, the key layer is not claimed')
+    B.computer.showResult = nil
+    BR.Markers = nil
 end
 
 describe('round 4: a squad ping never takes the waypoint set for a map pick')

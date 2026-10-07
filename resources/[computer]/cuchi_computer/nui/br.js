@@ -716,6 +716,12 @@
                 if (isOpen && hidden) {
                     hidden = false;
                     document.body.style.display = "block";
+                    // THE KEYBOARD BACK TO THE APP (round 4's review): a frame
+                    // hidden with the page may have lost focus, and Escape on
+                    // this document would then shut the whole computer instead
+                    // of the app's box. launch() does the same.
+                    const f = frame();
+                    if (f) f.focus();
                     toApp({ type: "picked", picked: pickedOf(d.picked) });
                 }
                 break;

@@ -22450,6 +22450,20 @@ do
             .. 'the test is whose marker it is, not what colour it is',
         (#strangerish > 0) and table.concat(strangerish, ',') or 'silent')
 
+    -- ═══ AND THE MAP PICK CAN TELL THEM FROM THE WAYPOINT (#396) ═══
+    --
+    -- client/terminal.lua reads the waypoint set for a Storm control or Supply
+    -- drop spot past every blip of this file's (round 4's review): a squadmate's
+    -- ping arriving while the big map is up wears the waypoint's sprite and
+    -- could be listed first.
+    ok(BR.Markers ~= nil and BR.Markers.isOwn ~= nil and BR.Markers.isOwn(blipSeq) == true,
+        'a ping this file drew is one of its own')
+    ok(BR.Markers.isOwn(blipSeq + 1) == false and BR.Markers.isOwn(nil) == false,
+        'a blip it did not draw is not')
+    local last = blipSeq
+    sync({ op = 'clear', owner = 2 })
+    ok(BR.Markers.isOwn(last) == false, 'nor one it took down')
+
     AddBlipForCoord = prev.add
     DoesBlipExist   = prev.exists
     RemoveBlip      = prev.remove

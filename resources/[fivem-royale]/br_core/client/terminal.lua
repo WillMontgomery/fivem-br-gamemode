@@ -268,7 +268,8 @@ end)
 --      any way out: Escape, the map key, right-click);
 --   4. when it closes, the waypoint they set is read and cleared -- it is the
 --      pick, never a squad ping (client/markers.lua stands down while
---      BR.Terminal.picking()) -- and the computer is SHOWN again with it: the
+--      BR.Terminal.picking(), and a squadmate's ping drawn meanwhile is
+--      skipped, BR.Markers.isOwn) -- and the computer is SHOWN again with it: the
 --      spot and the game's own name for the place (its street and area), or
 --      none when no waypoint was set, which puts the box back to its first
 --      step.
@@ -323,6 +324,15 @@ local function placeOf(x, y)
     return table.concat(parts, ', ')
 end
 
+--- A sprite-8 blip that is not the waypoint set for the pick: one already on
+--- the map when it started, or a squad ping client/markers.lua drew since --
+--- a squadmate pinging while the big map is up (round 4's review).
+--- @return boolean
+local function notThePick(p, b)
+    if p.known[b] then return true end
+    return BR.Markers ~= nil and BR.Markers.isOwn ~= nil and BR.Markers.isOwn(b) == true
+end
+
 --- The map closed (or never came up): read the waypoint set for the pick,
 --- take it off the map, and show the computer again with what was picked.
 local function finishPick()
@@ -331,7 +341,7 @@ local function finishPick()
     local at = nil
     if BR.NativeTruthy(IsWaypointActive()) then
         local b = GetFirstBlipInfoId(8)
-        while BR.NativeTruthy(DoesBlipExist(b)) and p.known[b] do b = GetNextBlipInfoId(8) end
+        while BR.NativeTruthy(DoesBlipExist(b)) and notThePick(p, b) do b = GetNextBlipInfoId(8) end
         if BR.NativeTruthy(DoesBlipExist(b)) then
             local c = GetBlipInfoIdCoord(b)
             if c and BR.TerminalSolve.finite(c.x) and BR.TerminalSolve.finite(c.y) then
@@ -342,8 +352,11 @@ local function finishPick()
     end
     local c = (shown ~= nil and shown == p.terminalId) and computer() or nil
     if not c then return end
-    setKeys(true)
-    c:Show({ functionId = p.functionId, at = at, place = at and placeOf(at.x, at.y) or nil })
+    -- The key layer is the computer's again only once it is back on screen: a
+    -- shell that could not show it (restarted meanwhile) leaves the game its keys.
+    if c:Show({ functionId = p.functionId, at = at, place = at and placeOf(at.x, at.y) or nil }) == true then
+        setKeys(true)
+    end
 end
 
 --- One look at the pick, on the TICK pass: the map up, then down again.

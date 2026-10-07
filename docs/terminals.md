@@ -725,8 +725,9 @@ Run disabled. Pressed, it goes down as `pick` (app → `br.js` → the shell's
    br_ui's own raise deadline), then to fall, which it does when the
    frontend is down by any way out (Escape, the map key, right-click);
 4. **reads the waypoint** set meanwhile (the first sprite-8 blip not noted
-   before), takes it off the map -- `client/markers.lua` stands down while
-   `BR.Terminal.picking()`, so it is never a squad ping -- names the place
+   before and not a squad ping `client/markers.lua` drew meanwhile,
+   `BR.Markers.isOwn`), takes it off the map -- `client/markers.lua` stands
+   down while `BR.Terminal.picking()`, so it is never a squad ping -- names the place
    with the game's own natives (`GetStreetNameAtCoord`, `GetNameOfZone` and
    `GetLabelText`: "Elgin Ave, Downtown"), and **shows the computer again**
    (`Show`) with `{ functionId, at, place }`.
@@ -736,8 +737,12 @@ digits where the game has no name) and enables Run; pressing "Set location"
 again picks again, and a map closed with no waypoint puts the box back to its
 first step. The run carries the spot (`at`). The server never hears of the
 pick itself. A session the server ends meanwhile (the player downed, the
-storm) closes the hidden computer like any other; the map is the player's to
-close, and the waypoint is still taken off it then. No instruction is written
+storm) closes the hidden computer like any other -- the storm's close too,
+at once and with no blue screen, since nobody could see it under the map; the
+map is the player's to close, and the waypoint is still taken off it then.
+Back on screen, `br.js` gives the app's frame the keyboard again (so Escape
+closes the box, not the computer), and the key layer is claimed only once
+`Show` says the computer is up. No instruction is written
 on the map: the frontend's own buttons say how to set a waypoint. Nothing runs
 per frame: one nil test on the TICK pass while there is no pick.
 
