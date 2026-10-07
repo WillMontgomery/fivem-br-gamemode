@@ -566,9 +566,11 @@ export default function Hud({ visible }: { visible: boolean }) {
             {/* THE SEASON 2 YUBIKEY, EQUIPPED (#396): "displayed as an icon
                 somewhere on the screen to show it's equipped, however it
                 doesn't take up an inventory slot" -- so it sits above the
-                slots rather than in one. Absent, nothing at all. */}
+                slots rather than in one. The owner's own image since round 5,
+                25% larger than the plate it replaced and with no plate behind
+                it (YubikeyIcon.tsx). Absent, nothing at all. */}
             {typeof hud.yubikey === 'string' && hud.yubikey !== '' && (
-              <YubikeyIcon glyph={hud.yubikey} />
+              <YubikeyIcon />
             )}
             <VehicleBars vehicle={vehicle} />
             {/* data-tut: the in-game walkthrough points at the slots and,

@@ -30,8 +30,16 @@ purpose** (`shield`, `minishield`, `bandage`, `medkit`) — a shield and a cross
 are symbols rather than objects, and there is no photograph of them to take.
 A PNG dropped here under one of those ids would still be picked up, and
 `repairkit.png` is exactly that: a consumable with real artwork, which is why
-it is the one PNG in this directory that is not a weapon render. Ammo has no
+it was the first PNG in this directory that is not a weapon render (`yubikey.png`,
+below, is the second). Ammo has no
 artwork by design (there is nothing to draw) and never requests a file at all.
+
+`yubikey.png` is the Season 2 Yubikey (#396), its item id: the owner's own
+159x159 render of the blitz_seckey prop ("That image is mine - it's our exact
+prop, just turned into an icon so it looks familiar", 2026-10-06), with a
+transparent background. The key never takes a slot, so ItemIcon never asks for
+it; `src/hud/YubikeyIcon.tsx` draws it, by the inventory slots, while the
+player holds one.
 
 **Do not add consumable ids to `CONSUMABLE_ICON` in `src/hud/ItemIcon.tsx` to
 "fix" a missing picture.** That map is consulted only *after* a file has failed

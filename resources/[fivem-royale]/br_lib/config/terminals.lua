@@ -1033,8 +1033,10 @@ BR.Config.Terminals = {
         -- centimetres long).
         keyProp = 'prop_cs_usb_drive',
         keyScale = 4.0,
-        -- The equipped icon on the HUD, and the mark beside a holder's name in
-        -- the squad panel. A string drawn as text.
+        -- The mark beside a holder's name in the squad panel, a string drawn as
+        -- text; and on the HUD, whether the holder's own icon is drawn -- the
+        -- icon itself is the owner's image since round 5 (br_ui's
+        -- public/items/yubikey.png, hud/YubikeyIcon.tsx), not this glyph.
         hudGlyph = '⚿',
         -- The mark beside a squadmate with a bounty in the squad panel. A
         -- string drawn as text; a placeholder like hudGlyph.

@@ -30,7 +30,8 @@
 --   PART D  the hooks the other files make, pinned by text: market.lua hands
 --           the profile over, combat.lua and roster.lua drop the key on the
 --           right edges, party.lua's beacon carries the holder bit to the squad
---           alone, and the HUD envelope carries the glyph.
+--           alone, and the HUD envelope carries the glyph; and the HUD's key
+--           icon is the owner's image, 25% larger, with no plate (round 5).
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_yubikey.lua
 
@@ -1792,6 +1793,51 @@ do
         end
     end
     eq(table.concat(makers, ', '), '', 'no terminal file makes a laptop or names its model')
+end
+
+describe('round 5: the HUD key icon is the owner\'s image, 25% larger, with no plate')
+do
+    -- Owner, 2026-10-06: "please use this icon for the yubikey when it's
+    -- possessed. When displayed in the bottom right corner by the inventory
+    -- slots, make it 25% larger than it's currently drawn, and make it have
+    -- no background (the image background is already transparent)."
+    local UI = 'ui-src/'
+    local src = readFile(UI .. 'public/items/yubikey.png')
+    local built = readFile(ROOT .. 'br_ui/ui/items/yubikey.png')
+    ok(src ~= nil, 'the owner\'s image is in br_ui\'s source, public/items/yubikey.png')
+    ok(built ~= nil and built == src, 'and in the build, byte for byte (served as items/yubikey.png)')
+    src = src or ''
+    local function u32(at)
+        local a, b, c, d = src:byte(at, at + 3)
+        return ((a or 0) << 24) | ((b or 0) << 16) | ((c or 0) << 8) | (d or 0)
+    end
+    eq(src:sub(1, 8), '\137PNG\r\n\26\n', 'it is a PNG')
+    eq(u32(17), 159, 'his 159 wide')
+    eq(u32(21), 159, 'by 159 high')
+    eq(src:byte(26), 6, 'RGBA: its background is its own transparency')
+    eq(#src, 28062, 'the file he gave, its size unchanged')
+    local manifest = readFile(ROOT .. 'br_ui/fxmanifest.lua') or ''
+    ok(manifest:find("'ui/items/*.png'", 1, true) ~= nil, 'br_ui serves ui/items/*.png, so the game can load it')
+
+    local icon = (readFile(UI .. 'src/hud/YubikeyIcon.tsx') or ''):gsub('/%*.-%*/', '')
+    local start = icon:find('export function YubikeyIcon', 1, true)
+    local stop = start and icon:find('\nexport function YubikeyMark', start, true)
+    local body = start and icon:sub(start, (stop or #icon + 1) - 1) or ''
+    ok(icon:find("YUBIKEY_ICON_SRC = 'items/yubikey.png'", 1, true) ~= nil, 'YubikeyIcon draws items/yubikey.png')
+    ok(body:find('<img', 1, true) ~= nil and body:find('src={YUBIKEY_ICON_SRC}', 1, true) ~= nil,
+        'as an image, not the glyph')
+    -- 25% larger than the 2.4rem plate it was drawn at: 3rem.
+    eq(icon:match("YUBIKEY_ICON_SIZE = '([%d%.]+)rem'"), '3', 'at 3rem, 25% over the 2.4rem it was drawn at')
+    ok(body:find('width: YUBIKEY_ICON_SIZE', 1, true) ~= nil and body:find('height: YUBIKEY_ICON_SIZE', 1, true) ~= nil,
+        'both ways')
+    ok(not body:find('plate', 1, true) and not body:find('background', 1, true) and not body:find('glyph', 1, true),
+        'with no plate or background behind it, and no glyph in it')
+    local hud = readFile(UI .. 'src/hud/Hud.tsx') or ''
+    ok(hud:find("typeof hud.yubikey === 'string' && hud.yubikey !== '' && (\n              <YubikeyIcon />", 1, true) ~= nil,
+        'the HUD draws it while the glyph Lua sends says a key is held, and not otherwise')
+    -- The squad panel's mark is a different component, and unchanged.
+    local panel = readFile(UI .. 'src/hud/SquadPanel.tsx') or ''
+    ok(panel:find('<YubikeyMark glyph={m.yubikey} />', 1, true) ~= nil, 'the squad panel\'s holder mark is still the glyph')
 end
 
 realPrint(('%d passed, %d failed'):format(pass, fail))

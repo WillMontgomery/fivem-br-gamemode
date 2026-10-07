@@ -6,37 +6,49 @@
  * take up an inventory slot" -- and "In squads, teammates can see who holds a
  * key: this could be multiple per squad!"
  *
- * TWO MARKS, ONE GLYPH. YubikeyIcon is the holder's own, a plate in the
- * inventory's column; YubikeyMark sits beside a squadmate's name in the squad
- * panel. Both draw the string Lua hands them -- br_lib/config/terminals.lua's
- * `art.hudGlyph`, a placeholder until the owner's icon arrives -- so there is
- * no art here to drift from the config, and no word: neither carries a
- * caption.
+ * TWO MARKS. YubikeyIcon is the holder's own, in the inventory's column;
+ * YubikeyMark sits beside a squadmate's name in the squad panel and draws the
+ * string Lua hands it -- br_lib/config/terminals.lua's `art.hudGlyph`. Neither
+ * carries a caption.
+ *
+ * THE HOLDER'S ICON IS THE OWNER'S OWN IMAGE (2026-10-06, round 5: "please use
+ * this icon for the yubikey when it's possessed. When displayed in the bottom
+ * right corner by the inventory slots, make it 25% larger than it's currently
+ * drawn, and make it have no background (the image background is already
+ * transparent)"; "That image is mine - it's our exact prop, just turned into an
+ * icon so it looks familiar"). His 159x159 render of the blitz_seckey prop,
+ * public/items/yubikey.png -- served as items/yubikey.png beside the other item
+ * art, the key's item id being `yubikey` -- drawn at 3rem square: 25% over the
+ * 2.4rem plate it replaced, and with NO PLATE behind it, the image's own
+ * transparency over the game. Lua's glyph still decides WHETHER it is drawn
+ * (Hud.tsx), and still draws the squad panel's mark, which is unchanged.
  *
  * NEITHER RENDERS FOR AN ABSENT GLYPH, the panel's standing rule for a field
  * Lua did not send (see LevelMark). Absent is a player with no key, or a
  * Season 1 server.
  */
 
-/** The holder's own icon: a small square plate, above the inventory bar. */
-export function YubikeyIcon({ glyph }: { glyph: string }) {
+/** The owner's image of the key, at its item id (public/items/README.md). */
+export const YUBIKEY_ICON_SRC = 'items/yubikey.png'
+
+/**
+ * The size it is drawn at: the 2.4rem plate it replaced, 25% larger (owner,
+ * round 5). In rem, so it follows the player's interface scale as the
+ * inventory bar beside it does.
+ */
+export const YUBIKEY_ICON_SIZE = '3rem'
+
+/** The holder's own icon: the owner's image, no plate, above the inventory bar. */
+export function YubikeyIcon() {
   return (
-    <div
-      className="plate flex items-center justify-center shrink-0"
-      style={{ width: '2.4rem', height: '2.4rem' }}
+    <img
+      src={YUBIKEY_ICON_SRC}
+      alt=""
       aria-hidden
-    >
-      <span
-        className="leading-none"
-        style={{
-          fontSize: '1.45rem',
-          color: 'var(--color-royale-accent)',
-          textShadow: 'var(--shadow-text)',
-        }}
-      >
-        {glyph}
-      </span>
-    </div>
+      draggable={false}
+      className="block shrink-0"
+      style={{ width: YUBIKEY_ICON_SIZE, height: YUBIKEY_ICON_SIZE, objectFit: 'contain' }}
+    />
   )
 }
 
