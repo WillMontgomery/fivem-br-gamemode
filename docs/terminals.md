@@ -79,11 +79,17 @@ function's own refusal adds (`no_storm`, `no_site`, `drop_busy`, `ammo_full`,
 Storm control's `storm_aimed`;
 wave A's `health_full`, `no_weapons`, `no_target`; wave C's
 `reboot_none`). The app shows the line for the
-code, or `unavailable` when there is none, and maps it to the card's four
+code, or `unavailable` when there is none, and maps it to the card's
 statuses: Available, Used (`squad_used`), Not available (`fn_offline`,
-`offline`), Not available at this terminal (everything else). The balance is
-never a listing's reason: Run stays pressable whatever it is, and only a run
-is refused `no_volts`.
+`offline`), and -- round 6 (owner, 2026-10-07: "Let's make all the terminals
+have all the same tools available please"; on the tools' own rules, "Yes
+please say the real reason") -- for everything else **the reason itself**, in
+a few words: `status_<reason>` (`status_no_night` "Only at night",
+`status_storm_aimed`, ...), or `status_not_now` "Not available now" for a
+reason with no short line (`unavailable`). Home's Status filter groups all of
+those as Not available now. Every terminal lists every tool; round 2's "Not
+available at this terminal" is gone. The balance is never a listing's reason:
+Run stays pressable whatever it is, and only a run is refused `no_volts`.
 
 **`squadMatch`** is true in a match's bus or playing phase, in a mode whose
 squads are bigger than one; the lobby, the warmup pad and a dev terminal
@@ -107,15 +113,17 @@ edit there and a restart.
 Three kinds of line, marked in the file: the owner's **verbatim** words
 (`no_key`, `notice_access`, `notice_action`, `bounty_new`, `bounty_protect`,
 round 2's `app_title`/`desktop_icon`/`window_title` "Control Tower",
-`match_heading` "Match stats", `status_offline` "Not available" and
-`status_not_here` "Not available at this terminal", and round 3's plate,
+`match_heading` "Match stats", `status_offline` "Not available", and round 3's plate,
 `terminal_label` "Computer system" and `terminal_use` "press to open"), lines
 **written** for the 2026-10-05 app at his request and listed in that round's
 report for his review (the app's frame and pages, every function's lines, the
 how-to, round 2's lines, marked "WRITTEN (2026-10-05, round 2)", and round 3's
 one edit, `howto_terminal_body`'s "press interact"), and, since round 5, no
 **placeholder** at all: `first_pickup` is the owner's own text (the
-first-pickup card), and `already_holding` and `key_label` are written. A line
+first-pickup card; since round 6 four lines, `first_pickup_title`,
+`first_pickup_subtitle`, `first_pickup` and `first_pickup_dismiss`), and
+`already_holding` and `key_label` are written. Round 6's new lines are marked
+"WRITTEN (round 6, proposal for the owner)". A line
 with a newline in it is
 a list; `{name}`, `{value}`, `{count}`, `{stage}`/`{stages}`,
 `{online}`/`{total}` and `{volts}`/`{cost}`/`{balance}` (a figure and the
@@ -186,7 +194,9 @@ The table below is the lines outside the functions' own:
 | `bounty_protect` | A toast to the bounty's squad, not the bounty (Scan's or a Contract's: both ten minutes since round 4); `{playername}` |
 | `scan_blip`, `bounty_blip` | The legend names of Scan's and the bounty's marks |
 | `<id>_description` | The lobby: the `{description}` in `notice_action` |
-| `first_pickup` | The player who gets their first Yubikey ever: the first-pickup card's words, verbatim (round 5) -- not a toast |
+| `first_pickup_title`, `first_pickup_subtitle`, `first_pickup`, `first_pickup_dismiss` | The player who gets their first Yubikey ever: the first-pickup card's words, verbatim -- its H1, its H3, its body and the words beside the Enter cap (round 6; round 5's one line split as he asked) -- not a toast |
+| `status_<reason>`, `status_not_now` | At the terminal: a card's and a page's status when a rule of the match stops a tool -- the reason in a few words, or "Not available now" (round 6) |
+| `rarity_<key>` | At the terminal: Gear Up's item list, each item's rarity on the right of its row -- BR.RarityInfo's own names, filled in as the file loads (round 6) |
 | `already_holding` | A toast to a holder whose claim on a second key is refused ("You already have a Yubikey.") |
 | `notice_access` | A toast to the lobby (the whole match) when someone gains access; `{playername}` |
 | `notice_action` | A toast to the lobby when a function ran; `{playername}`, `{description}` |
@@ -211,7 +221,7 @@ stands at every site, which Season 1 hides) and `hideRadiusM`,
 ## The functions
 
 **ONE REGISTRY, READ BY BOTH SIDES**: `BR.Config.Terminals.functions`, each row
-`{ id, category, risk, implemented, options, cost?, squadOnly?, soloCategory?, bounty?, squadWide? }`,
+`{ id, category, risk, implemented, options, cost?, squadOnly?, soloCategory?, bounty?, squadWide?, spot?, fuzz?, quiet?, costBy? }`,
 with `categories` beside it.
 The server rules every run against it; br_core's client hands it to the
 computer with each opening (the **catalog**), and the app draws its cards,
@@ -237,6 +247,15 @@ filters and pages from it.
   blip is on the squad's maps).
   In a squad match the app draws "Squads!" beside its title. Presentation
   only; `test_terminal.lua` holds the set to the rows' own lines.
+- `spot` (round 4): `true` for a row run at a place picked on the big map
+  (see [the map pick](#the-map-pick-round-4)); or, round 6, `{ when = {
+  <option> = <choice>, ... } }` for a row run at one ONLY while the run's
+  options carry those choices -- Power outage's `{ when = { area = 'spot' } }`
+  (owner, 2026-10-07: 'Any use of "near this terminal" is like, not useful for
+  this gamemode'). One rule both sides read, `BR.TerminalSolve.spotWanted`
+  over the choices the run carries (`BR.Terminal.options`' answer); the app's
+  `model.ts` `needsSpot` asks the same. Each `when` names an option of its row
+  and one of its choices; any other shape is no spot (`spotRule`).
 - `fuzz` (round 5, Airstrike): a row run at a spot whose map pick shows the
   player's opponents as rough circles near where they are -- never centered on
   anybody -- while the big map is up. The client says when the pick starts and
@@ -279,8 +298,8 @@ Supply drop and Max ammo, and from wave A on a file of its own,
   reasons, which come in this order: `fn_offline`, `unavailable` (squad-only,
   outside a squad match), `offline`, `squad_used`, `no_key`, `unavailable` (a
   run in flight). `opts` is nil while the terminal is only being listed:
-  answer for ANY choice, so a card says "Not available at this terminal" only
-  when no choice could run. It is asked again when the loading is over.
+  answer for ANY choice, so a card says the reason only when no choice could
+  run. It is asked again when the loading is over.
 - `run(src, session, opts) -> { ok, code, after? }`, called when the loading
   is over. On `ok` the server tells the lobby `notice_action` (not for a
   `quiet` row), then calls
@@ -376,7 +395,7 @@ fails a row missing a line, and a built row with no server entry.
 | Event | Way | Payload | Rule |
 |---|---|---|---|
 | `BR.Net.TERMINAL_OPEN` | S→C | `{ state }` | Open the computer on this terminal. |
-| `BR.Net.TERMINAL_RUN` | C→S | `{ terminalId, functionId, options?, at? }` | Dropped, unanswered, without an open session on that terminal, with a malformed id, or sooner than `runMinIntervalMs` after the last. Options the registry does not allow are answered `bad_option`, and so is a spot (`at = { x, y }`, two finite numbers within 20 km of the map's middle) missing from a row run at one (`spot`) or sent with a row that takes none (`BR.Terminal.spot`). |
+| `BR.Net.TERMINAL_RUN` | C→S | `{ terminalId, functionId, options?, at? }` | Dropped, unanswered, without an open session on that terminal, with a malformed id, or sooner than `runMinIntervalMs` after the last. Options the registry does not allow are answered `bad_option`, and so is a spot (`at = { x, y }`, two finite numbers within 20 km of the map's middle) missing from a run at one (`spot`; round 6, or its `spot.when` holding for the choices sent) or sent with one that takes none (`BR.Terminal.spot`). |
 | `BR.Net.TERMINAL_INFO` | S→C | `{ terminalId, state }` | The open computer's state again, match panel included, every `infoPushMs` (1 s), to that player alone, only while open, never off Season 2. |
 | `BR.Net.TERMINAL_SCAN` | S→C | `{ matchId, list = { { s, x, y, down? } } }` | Scan: every opponent's position, to the scanning squad alone (dead and spectating members included), every `fx.scanPingMs` for the rest of the match. A squad under Ghost is left out. |
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
@@ -570,9 +589,15 @@ on every page but the login screen; Home, the tools page ("Match stats",
 collapsed, over the cards, with the five filters, pagination and preferences;
 "Home" in its address, its link and the trail's first crumb, owner 2026-10-06,
 while its heading counts the Tools), a page per tool (its trail
-Home, its category, its name; details with its cost, what it does, its options
-as RadioGroups, its risks, Run in its risk badge's color behind a
-confirmation), the how-to page, the Privacy page (the owner's approved
+Home, its category, its name; details with its cost, what it does -- which
+names its options -- its risks, and Run in its risk badge's color, which opens
+the **confirm box**, `RunBox.tsx`: round 6, owner 2026-10-07, "We need to move
+all required options/inputs to be part of the "confirm" modal": the run's
+price for the choices made in it, every option offered under them (radio
+buttons, or a dropdown -- Gear Up's items rarest first, each with its rarity's
+name on the right in the game's rarity color and a tint of it on the
+highlighted row, through Select's `renderOption`; the standing teammates), the
+spot for a run at one, and Run disabled until every choice is made), the how-to page, the Privacy page (the owner's approved
 made-up policy, "sponsored by Lifeinvader", in one container), and the login
 screen (the lock and `no_key`) when the computer opened without
 a key. A run the server accepts shows a determinate bar filling over its
@@ -688,11 +713,15 @@ The owner's rules (#396, 2026-10-04), and where each lives:
   round 5 (owner: "the tutorial-style card which tells them how to use it and
   requires manual dismissal using the return key"). `BR.Yubikey.give` pushes
   YUBIKEY_STATE with `first = true` -- a real pickup or `bryubikey give` -- and
-  `client/yubikey.lua` sends br_ui `BR.Nui.YUBIKEY_CARD { show, text }` with
-  the owner's words (`first_pickup`). br_ui draws them on the tutorial's card
-  (`tutorial/YubikeyCard.tsx`: `tut-card`, his **bold** through
-  `emphasize`, an Enter key cap, no title, no count, no button) centered in
-  the upper part of the screen, over the match only -- not over the lobby, a
+  `client/yubikey.lua` sends br_ui `BR.Nui.YUBIKEY_CARD { show, title,
+  subtitle, text, dismiss }` with the owner's words (`first_pickup_title`,
+  `first_pickup_subtitle`, `first_pickup`, `first_pickup_dismiss`). br_ui draws
+  them on the tutorial's card (`tutorial/YubikeyCard.tsx`: `tut-card`; round 6,
+  owner 2026-10-07: his first sentence an `<h1>`, his second an `<h3>`, the
+  body through `emphasize`, and the Enter key cap with "to dismiss" beside it;
+  no count, no button) in the lower quarter of the screen as the walkthrough's
+  `place: 'quarter'` cards are -- `cardPlacement.ts`'s `centred` at
+  `BAND.quarter`, from its measured box -- over the match only -- not over the lobby, a
   paused HUD or the verdict, where it waits for the next match. **Only Enter
   takes it down**, read in Lua as a control (INPUT_FRONTEND_RDOWN 191,
   INPUT_FRONTEND_ACCEPT 201 and INPUT_FRONTEND_ENDSCREEN_ACCEPT 215, disabled
@@ -844,9 +873,11 @@ option is called `at`) and decides what it means (Storm control: the storm
 closes toward it, round 5; Supply drop: the airdrop spot nearest it). `brterminal run
 <id> x=<n> y=<n>` is the same spot from the console.
 
-**The confirm box has two steps** for such a row (the app's `FunctionPage`):
-the body, then **"Set location"** (`confirm_location`, the owner's words) with
-Run disabled. Pressed, it goes down as `pick` (app → `br.js` → the shell's
+**The confirm box asks for the spot** for such a run (the app's `RunBox`,
+round 6: after the run's options, which live in the box too): **"Set
+location"** (`confirm_location`, the owner's words, with Cloudscape's
+`location-pin` icon since round 6) with Run disabled -- and, for a row whose
+`spot` has a `when`, only while the choices made hold it. Pressed, it goes down as `pick` (app → `br.js` → the shell's
 `pick` callback → `cuchi_computer:pick`), and `br_core`'s client
 (`client/terminal.lua`):
 
@@ -1080,7 +1111,7 @@ Every one is dev-mode only, Season 2 only (`brseason 2` on a dev box at Season
 | `brterminal list` | Every terminal, and whether your match has it online |
 | `brterminal online <id> [off]` | Force one online whatever the storm, or hand it back |
 | `brterminal reset` | Your squad's use this match, unspent |
-| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Round 5: `run gear_up item=medkit`, `run gear_up item=assaultrifle who=mate mate=<server id>`, `run gear_up item=grenade who=squad` (no Volts from the dev command); `run vehicle_drop` or `run vehicle_drop to=mate mate=<server id>` -- it asks that player's client for a spot first and drops the car `runMinMs` (3 s) later; `run airstrike x=<n> y=<n>` (the warning, then the rockets, the damage the server's). Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=here duration=240`. Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
+| `brterminal run <function> [option=choice ...]` | The function's effect for you: no key, no terminal, no notice, no loading, nothing spent -- no Volts either; the options through `BR.Terminal.options` (`brterminal run ghost duration=240`). "This terminal" is the dev terminal, which is nowhere: Reboot is centered on you. Round 5: `run gear_up item=medkit`, `run gear_up item=assaultrifle who=mate mate=<server id>`, `run gear_up item=grenade who=squad` (no Volts from the dev command); `run vehicle_drop` or `run vehicle_drop to=mate mate=<server id>` -- it asks that player's client for a spot first and drops the car `runMinMs` (3 s) later; `run airstrike x=<n> y=<n>` (the warning, then the rockets, the damage the server's). Wave B: `run storm_control x=<n> y=<n>` (the spot, as for Supply drop), `run time_weather change=time time=night` or `change=weather weather=snow`, `run power_outage area=county duration=240` (round 6: `area=spot` takes `x=<n> y=<n>`). Wave C: `run emp` (round 4: no options; it spares the squad of whoever typed it), `run comms_blackout duration=180`, `run reboot`. |
 
 From the server console, a verb about a player takes the id next:
 `brterminalsv open <player id> [...]`, `brterminalsv key <player id> give`.
