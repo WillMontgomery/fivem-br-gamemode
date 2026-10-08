@@ -1566,8 +1566,9 @@ end)
 BR.Loop.register(BR.Loop.FRAME, 'vehrefuse.trigger', function()
     if not enabled() then return end
 
-    local ped = PlayerPedId()
-    local veh = GetVehiclePedIsIn(ped, false) or 0
+    -- The frame's snapshot (#393): the same two answers, asked once a frame.
+    local ped = BR.Frame.ped()
+    local veh = BR.Frame.vehicle() or 0
     -- ZERO IS EXPLICIT: `0` is truthy in Lua. On foot, or still climbing in.
     if veh == 0 then return end
     if not mustHold(ped, veh) then return end

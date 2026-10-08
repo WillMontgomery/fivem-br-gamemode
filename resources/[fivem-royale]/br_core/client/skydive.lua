@@ -1026,7 +1026,7 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
         setPrompt(nil)
         return
     end
-    local ped = PlayerPedId()
+    local ped = BR.Frame.ped()   -- the frame's snapshot (#393)
 
     -- F IS NOT A RIPCORD-CUTTER. INPUT_PARACHUTE_DETACH cuts the canopy
     -- mid-glide in base GTA -- and F is also the default enter-vehicle key, so

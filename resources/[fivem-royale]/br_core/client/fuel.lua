@@ -1176,7 +1176,7 @@ end)
 BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
     if not enabled() then return end
 
-    local ped = PlayerPedId()
+    local ped = BR.Frame.ped()
     if not didHit(IsPedInAnyVehicle(ped, false)) then return end
 
     local veh = GetVehiclePedIsIn(ped, false)

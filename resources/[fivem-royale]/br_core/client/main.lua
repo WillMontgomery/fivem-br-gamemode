@@ -931,6 +931,122 @@ end
 local passSeq = 0
 BR.Loop.pass = nil
 
+-- ═══ ONE SNAPSHOT A FRAME: THE PED, WHERE IT STANDS, ITS VEHICLE, THE CLOCK (#393) ═══
+--
+-- A dozen FRAME callbacks each asked the engine, every frame, for the same few
+-- facts: whose ped this is, where it stands, what it is sitting in, what the frame
+-- clock reads. BR.Frame answers them once a FRAME pass -- the first callback to ask
+-- pays the native and the rest read its answer -- and is EXACTLY the native's answer
+-- everywhere, which is the whole of the claim:
+--
+--   * now()       GetGameTimer is latched once per frame (TIMING, at the top of this
+--                 file), so the pass's own reading IS every reading in the frame.
+--   * playerId()  the local player's index, the same for the life of this Lua state.
+--   * ped(), coords(), vehicle()
+--                 nothing changes them while a pass runs but a call this Lua state
+--                 makes -- other scripts and the engine's own update run between
+--                 passes, not in one -- and every native that can move, re-seat,
+--                 re-model or resurrect anything is wrapped below (FRAME_MOVERS): a
+--                 call to any of them, on any entity, drops all three, so the next
+--                 ask reads the engine again. tools/test_loop.lua's `frame.class`
+--                 reads every file in this Lua state and fails on such a native the
+--                 list does not hold, or one taken where the wrapper cannot see it.
+--
+-- OUTSIDE A FRAME PASS -- a TICK or SLOW pass, an event, a thread, a command --
+-- every ask is the native, as before.
+BR.Frame = BR.Frame or {}
+local snap = { live = false, now = 0, ped = nil, pos = nil, veh = nil, pid = nil }
+
+--- The frame clock: GetGameTimer().
+--- @return integer
+function BR.Frame.now()
+    if snap.live then return snap.now end
+    return GetGameTimer()
+end
+
+--- This player's index: PlayerId().
+--- @return integer
+function BR.Frame.playerId()
+    local pid = snap.pid
+    if pid == nil then
+        pid = PlayerId()
+        snap.pid = pid
+    end
+    return pid
+end
+
+--- This player's ped: PlayerPedId().
+--- @return integer
+function BR.Frame.ped()
+    if not snap.live then return PlayerPedId() end
+    local ped = snap.ped
+    if ped == nil then
+        ped = PlayerPedId()
+        snap.ped = ped
+    end
+    return ped
+end
+
+--- Where this player's ped stands: GetEntityCoords(PlayerPedId()).
+--- @return vector3
+function BR.Frame.coords()
+    if not snap.live then return GetEntityCoords(PlayerPedId()) end
+    local pos = snap.pos
+    if pos == nil then
+        pos = GetEntityCoords(BR.Frame.ped())
+        snap.pos = pos
+    end
+    return pos
+end
+
+--- What this player's ped is sitting in: GetVehiclePedIsIn(PlayerPedId(), false).
+--- @return integer
+function BR.Frame.vehicle()
+    if not snap.live then return GetVehiclePedIsIn(PlayerPedId(), false) end
+    local veh = snap.veh
+    if veh == nil then
+        veh = GetVehiclePedIsIn(BR.Frame.ped(), false)
+        snap.veh = veh
+    end
+    return veh
+end
+
+--- Every native that can move an entity -- or a ped riding on one -- re-seat a ped,
+--- re-model or resurrect the player, or delete what a ped sits in or hangs from.
+--- Read by tools/test_loop.lua's `frame.class`, which holds every such native the
+--- client state calls to this list.
+local FRAME_MOVERS = {
+    'SetEntityCoords', 'SetEntityCoordsNoOffset', 'SetEntityCoordsWithoutPlantsReset',
+    'SetPedCoordsKeepVehicle', 'SetEntityRotation', 'SetEntityHeading',
+    'SetEntityQuaternion', 'SetEntityMatrix', 'AttachEntityToEntity',
+    'AttachEntityToEntityPhysically', 'DetachEntity', 'SetPedIntoVehicle',
+    'TaskWarpPedIntoVehicle', 'TaskEnterVehicle', 'TaskLeaveVehicle',
+    'TaskLeaveAnyVehicle', 'ClearPedTasks', 'ClearPedTasksImmediately',
+    'KnockPedOffVehicle', 'DeleteEntity', 'DeleteVehicle', 'DeletePed', 'DeleteObject',
+    'SetPlayerModel', 'ChangePlayerPed', 'NetworkResurrectLocalPlayer', 'ResurrectPed',
+    'StartPlayerTeleport',
+}
+BR.Frame.MOVERS = FRAME_MOVERS
+
+--- Put the snapshot's wrapper on every mover this Lua state has. Called once, here,
+--- at load -- this file is the first client script, so every other file calls the
+--- wrapper by name at call time -- and public for a suite that stubs a native later.
+function BR.Frame.wrapMovers()
+    for _, name in ipairs(FRAME_MOVERS) do
+        local real = _G[name]
+        if type(real) == 'function' and not BR.Frame.wrapped[real] then
+            local wrapped = function(...)
+                snap.ped, snap.pos, snap.veh = nil, nil, nil
+                return real(...)
+            end
+            BR.Frame.wrapped[wrapped] = true
+            _G[name] = wrapped
+        end
+    end
+end
+BR.Frame.wrapped = setmetatable({}, { __mode = 'k' })
+BR.Frame.wrapMovers()
+
 --- Run a single pass over one band.
 ---
 --- Public rather than local for two reasons: the debug tooling can single-step a
@@ -946,6 +1062,14 @@ function BR.Loop.step(band)
     local t = GetGameTimer()
     local bandStart = t
     local swept = false
+
+    -- THE FRAME'S SNAPSHOT (BR.Frame, above): its clock is this reading, and the rest
+    -- is read by the first callback that asks.
+    local framePass = band == BR.Loop.FRAME
+    if framePass then
+        snap.live, snap.now = true, t
+        snap.ped, snap.pos, snap.veh = nil, nil, nil
+    end
 
     -- Only the frame band is a frame. TICK and SLOW passes say nothing about
     -- how smooth the picture is.
@@ -1020,6 +1144,7 @@ function BR.Loop.step(band)
     end
 
     BR.Loop.pass = nil
+    if framePass then snap.live = false end
 
     -- Sweep anything unregistered during the pass, now that iteration is done.
     if swept then

@@ -824,7 +824,7 @@ local function canTake()
     -- NOT FROM A CAR (user call, 2026-08-05). Driving through a POI hoovering
     -- up crates at 40mph is not looting, and the ray comes off the ped's
     -- forward vector, which in a vehicle is the vehicle's.
-    return not IsPedInAnyVehicle(PlayerPedId(), false)
+    return not IsPedInAnyVehicle(BR.Frame.ped(), false)
 end
 
 local function isContainer(e)
@@ -1442,7 +1442,7 @@ end
 --- @param now number|nil
 --- @return number
 local function groundZ(e, now)
-    now = now or GetGameTimer()
+    now = now or BR.Frame.now()
     if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
     -- THE LINE THE OWNER'S BRIDGE REPORT LANDS ON. This used to probe from
     -- 1200m unconditionally, which under an overpass answers with the deck --
@@ -3320,7 +3320,8 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
 end)
 
 BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
-    local frameNow = GetGameTimer()
+    -- The frame's snapshot (#393): the clock, the ped and where it stands.
+    local frameNow = BR.Frame.now()
     beginTargetCandidates()
 
     -- BEFORE THE EARLY-OUT, and deliberately. A retiring prop is no longer an
@@ -3342,8 +3343,8 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
 
     dt = (dt and dt > 0) and math.min(dt, 100) or 16
 
-    local ped = PlayerPedId()
-    local p = GetEntityCoords(ped)
+    local ped = BR.Frame.ped()
+    local p = BR.Frame.coords()
     local glow2  = L.glowDistance * L.glowDistance
     local canTakeNow = canTake()
 

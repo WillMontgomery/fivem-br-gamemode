@@ -2815,7 +2815,7 @@ local function nearestDowned()
            and e.state == BR.PlayerState.DBNO then
             local ped = BR.Squadmates.pedOf(src)
             if ped ~= 0 then
-                p = p or GetEntityCoords(PlayerPedId())
+                p = p or BR.Frame.coords()
                 local c = GetEntityCoords(ped)
                 local d = #(c - p)
                 if d <= reach and (not bestD or d < bestD) then

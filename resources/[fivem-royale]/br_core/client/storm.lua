@@ -131,7 +131,7 @@ local function viewpoint()
             if p then return p, 'spectate' end
         end
     end
-    return GetEntityCoords(PlayerPedId()), 'ped'
+    return BR.Frame.coords(), 'ped'   -- the frame's snapshot (#393)
 end
 
 -- ------------------------------------------------------------------- wall ---
@@ -3177,7 +3177,7 @@ local worldAt = nil
 local function entryShare()
     if not worldAt then return 0.0 end
     local ms = (cfg.render.fadeInSec or 10.0) * 1000.0
-    local held = GetGameTimer() - worldAt
+    local held = BR.Frame.now() - worldAt
     if held >= ms then return 1.0 end
     return held / ms
 end

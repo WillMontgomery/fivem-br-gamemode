@@ -14,7 +14,29 @@ function GetGameTimer()
     return fakeTime
 end
 function GetPlayerServerId() return 1 end
-function PlayerId() return 0 end
+
+-- THE PLAYER'S PED, MODELLED, and every read of it counted (#393's BR.Frame): a
+-- ped handle, where it stands, what it sits in -- and three of the natives that
+-- change them, defined BEFORE main.lua loads as the game's are, so its wrapper is
+-- on them.
+local frameNat = { pid = 0, ped = 0, coords = 0, veh = 0 }
+local me = { ped = 7, x = 1.0, y = 2.0, z = 3.0, veh = 0 }
+function PlayerId() frameNat.pid = frameNat.pid + 1 return 0 end
+function PlayerPedId() frameNat.ped = frameNat.ped + 1 return me.ped end
+function GetEntityCoords(e)
+    frameNat.coords = frameNat.coords + 1
+    if e == me.ped then return { x = me.x, y = me.y, z = me.z } end
+    return { x = 0.0, y = 0.0, z = 0.0 }
+end
+function GetVehiclePedIsIn(e)
+    frameNat.veh = frameNat.veh + 1
+    return e == me.ped and me.veh or 0
+end
+function SetEntityCoords(e, x, y, z)
+    if e == me.ped then me.x, me.y, me.z = x, y, z end
+end
+function SetPedIntoVehicle(e, v) if e == me.ped then me.veh = v end end
+function SetPlayerModel() me.ped = me.ped + 1 end
 
 local printed = {}
 local realPrint = print
@@ -747,6 +769,272 @@ do
         'and there is none between passes')
     BR.Loop.unregister(hf)
     BR.Loop.unregister(ht)
+end
+
+describe('frame snapshot')
+do
+    -- BR.Frame (#393): inside a FRAME pass the ped, its coords, its vehicle, the
+    -- clock and the player are read from the engine at most once, and are exactly
+    -- what the engine would answer -- a native that moves, re-seats or re-models
+    -- anything drops them, so the next ask reads afresh. Outside a FRAME pass
+    -- every ask is the native.
+    clearAll()
+    local seen = {}
+    local function snapshot(tag)
+        seen[#seen + 1] = {
+            tag = tag, now = BR.Frame.now(), pid = BR.Frame.playerId(),
+            ped = BR.Frame.ped(), c = BR.Frame.coords(), veh = BR.Frame.vehicle(),
+        }
+    end
+    local h1 = BR.Loop.register(BR.Loop.FRAME, 't.snap.a', function()
+        snapshot('a1')
+        snapshot('a2')
+    end)
+    local h2 = BR.Loop.register(BR.Loop.FRAME, 't.snap.b', function()
+        snapshot('b')
+        SetEntityCoords(BR.Frame.ped(), 50.0, 60.0, 70.0)   -- a teleport mid-pass
+        snapshot('b-moved')
+        SetPedIntoVehicle(BR.Frame.ped(), 99)                -- seated mid-pass
+        snapshot('b-seated')
+        SetPlayerModel(0, 123)                               -- a new ped mid-pass
+        snapshot('b-remodel')
+    end)
+    fakeTime = 5000
+    BR.Frame.playerId()
+    for k in pairs(frameNat) do frameNat[k] = 0 end
+    timerReads = 0
+    BR.Loop.step(BR.Loop.FRAME)
+    local a1, a2, b = seen[1], seen[2], seen[3]
+    local moved, seated, remodel = seen[4], seen[5], seen[6]
+    ok(#seen == 6 and a1.now == 5000 and a2.now == 5000 and b.now == 5000
+        and timerReads == 1,
+        'the clock is the pass\'s own reading, and no callback reads it again',
+        ('%d timer read(s)'):format(timerReads))
+    ok(a1.ped == 7 and a2.ped == 7 and b.ped == 7 and a1.c.x == 1.0 and b.c.y == 2.0
+        and a1.veh == 0,
+        'before any move, every callback reads the ped, its coords and its vehicle the '
+            .. 'engine has')
+    ok(moved.c.x == 50.0 and moved.c.y == 60.0 and moved.ped == 7,
+        'a teleport in the middle of the pass is read on the very next ask',
+        ('%s, %s'):format(tostring(moved.c.x), tostring(moved.c.y)))
+    ok(seated.veh == 99, 'and so is a seat taken in the middle of it', tostring(seated.veh))
+    ok(remodel.ped == 8 and remodel.c ~= nil,
+        'and a new ped made in the middle of it', tostring(remodel.ped))
+    ok(frameNat.pid == 0,
+        'and this player\'s index is never asked again once known', frameNat.pid)
+    -- Three asks of each before the moves: one native apiece. Each of the three
+    -- moves costs exactly the one re-read of each its next ask needs.
+    ok(frameNat.ped == 4 and frameNat.coords == 4 and frameNat.veh == 4,
+        'six asks of each in one pass: the engine is asked once before any move, and '
+            .. 'once again after each of the three',
+        ('PlayerPedId %d, GetEntityCoords %d, GetVehiclePedIsIn %d')
+            :format(frameNat.ped, frameNat.coords, frameNat.veh))
+
+    -- OUTSIDE A FRAME PASS EVERY ASK IS THE NATIVE.
+    for k in pairs(frameNat) do frameNat[k] = 0 end
+    local th = BR.Loop.register(BR.Loop.TICK, 't.snap.t', function()
+        BR.Frame.ped(); BR.Frame.ped()
+        BR.Frame.coords(); BR.Frame.coords()
+    end)
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Frame.ped()
+    timerReads = 0
+    BR.Frame.now()
+    ok(frameNat.ped == 5 and frameNat.coords == 2 and timerReads == 1,
+        'a TICK pass, and anything outside a pass, asks the engine every time',
+        ('PlayerPedId %d, GetEntityCoords %d, timer %d'):format(frameNat.ped,
+            frameNat.coords, timerReads))
+    BR.Loop.unregister(h1)
+    BR.Loop.unregister(h2)
+    BR.Loop.unregister(th)
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.TICK)
+    me.ped, me.x, me.y, me.z, me.veh = 7, 1.0, 2.0, 3.0, 0
+end
+
+describe('frame.class')
+do
+    -- ═══ EVERY NATIVE THAT CAN CHANGE WHAT BR.Frame HOLDS IS WRAPPED (#393) ═══
+    --
+    -- The snapshot is exact only if nothing can move, re-seat, re-model or resurrect
+    -- the player without the wrapper seeing it. So every file the manifest loads into
+    -- br_core's client state -- br_core's own, br_lib's shared files and the vendored
+    -- ScaleformUI -- is read, and every global call to a native whose name says it
+    -- moves an entity, attaches or detaches one, puts a ped in or out of a vehicle,
+    -- clears a ped's tasks, deletes an entity or re-makes the player must be one
+    -- BR.Frame.MOVERS wraps, or one of NEUTRAL with the reason it changes none of
+    -- them.
+    --
+    -- AND NOTHING GETS ROUND THE WRAPPER. client/main.lua is the first client script,
+    -- so every reference to a mover in a file after it -- a call, or one handed to
+    -- pcall or a guard -- is read once the wrapper is the global. Two things could
+    -- still miss it: a file loaded BEFORE main.lua (br_lib's shared scripts) holding
+    -- a mover in anything but a call, and a file assigning the global, which would
+    -- replace the wrapper. Both fail here.
+    local NEUTRAL = {
+        IsEntityAttached = 'a read', IsEntityAttachedToEntity = 'a read',
+        GetEntityAttachedTo = 'a read', IsEntityAttachedToAnyPed = 'a read',
+        IsEntityAttachedToAnyVehicle = 'a read', IsEntityAttachedToAnyObject = 'a read',
+        AttachCamToEntity = 'moves a camera, not an entity',
+        AttachCamToPedBone = 'moves a camera, not an entity',
+        DetachCam = 'a camera',
+        DeleteResourceKvp = 'a stored value', DeleteText = 'text on screen',
+        DeleteWaypoint = 'the map waypoint', DeleteCheckpoint = 'a checkpoint marker',
+        DeleteFunctionReference = 'the runtime\'s',
+        ThefeedCommentTeleportPoolOn = 'the feed', ThefeedCommentTeleportPoolOff = 'the feed',
+    }
+    local MOVERS = {}
+    for _, n in ipairs(BR.Frame.MOVERS or {}) do MOVERS[n] = true end
+    local PATTERNS = {
+        '^SetEntityCoords', '^SetPedCoords', '^SetEntityRotation$', '^SetEntityHeading$',
+        '^SetEntityQuaternion$', '^SetEntityMatrix$', 'Attach', '^Detach', 'IntoVehicle',
+        '^TaskWarp', '^TaskLeave', '^TaskEnterVehicle$', '^ClearPedTasks', '^KnockPedOff',
+        'Resurrect', '^SetPlayerModel$', '^ChangePlayerPed$', 'Teleport', '^Delete',
+    }
+    local function inClass(name)
+        for _, pat in ipairs(PATTERNS) do if name:match(pat) then return true end end
+        return false
+    end
+    local function slurp(path)
+        local f = io.open(path, 'rb')
+        if not f then return nil end
+        local s = f:read('a')
+        f:close()
+        return s
+    end
+    --- The source with comments and string contents blanked, newlines kept.
+    local function codeOnly(src)
+        local out, i, n = {}, 1, #src
+        local function blank(t) return (t:gsub('[^\n]', ' ')) end
+        while i <= n do
+            local c = src:sub(i, i)
+            if c == '-' and src:sub(i, i + 1) == '--' then
+                local eq = src:match('^%[(=*)%[', i + 2)
+                if eq then
+                    local close = ']' .. eq .. ']'
+                    local e = src:find(close, i + 4 + #eq, true) or n
+                    out[#out + 1] = blank(src:sub(i, e + #close - 1))
+                    i = e + #close
+                else
+                    local e = src:find('\n', i, true) or (n + 1)
+                    out[#out + 1] = blank(src:sub(i, e - 1))
+                    i = e
+                end
+            elseif c == '"' or c == "'" then
+                local j = i + 1
+                while j <= n do
+                    local d = src:sub(j, j)
+                    if d == '\\' then j = j + 2
+                    elseif d == c or d == '\n' then break
+                    else j = j + 1 end
+                end
+                out[#out + 1] = c .. blank(src:sub(i + 1, j - 1)) .. c
+                i = j + 1
+            elseif c == '[' and src:match('^%[=*%[', i) then
+                local eq = src:match('^%[(=*)%[', i)
+                local close = ']' .. eq .. ']'
+                local e = src:find(close, i + 2 + #eq, true) or n
+                out[#out + 1] = blank(src:sub(i, e + #close - 1))
+                i = e + #close
+            else
+                local j = src:find('[%-"\'%[]', i + 1) or (n + 1)
+                out[#out + 1] = src:sub(i, j - 1)
+                i = j
+            end
+        end
+        return table.concat(out)
+    end
+    local function scan(code, label, early)
+        local unknown, escaped, calls = {}, {}, 0
+        for st, name, e in code:gmatch('()([%a_][%w_]*)()') do
+            if name:match('^%u') and not name:match('^[%u%d_]+$') and inClass(name) then
+                local before = code:sub(math.max(1, st - 40), st - 1)
+                local prevCh = before:match('(%S)%s*$')
+                if prevCh ~= '.' and prevCh ~= ':' then
+                    local line = select(2, code:sub(1, st):gsub('\n', '')) + 1
+                    local where = ('%s:%d %s'):format(label, line, name)
+                    local nextCh = code:match('^%s*(.)', e)
+                    if nextCh == '(' then
+                        calls = calls + 1
+                        if not MOVERS[name] and NEUTRAL[name] == nil then
+                            unknown[#unknown + 1] = where
+                        end
+                    elseif MOVERS[name] then
+                        local after = code:match('^%s*([%w_=~]+)', e) or ''
+                        if after:sub(1, 1) == '=' and after:sub(1, 2) ~= '==' then
+                            escaped[#escaped + 1] = where .. ' (assigned)'
+                        elseif early then
+                            local guard = false
+                            if before:match('type%s*%(%s*$') and nextCh == ')' then
+                                guard = true
+                            elseif after == 'then' or after == 'and' or after == 'or'
+                                or after:sub(1, 2) == '==' or after:sub(1, 2) == '~=' then
+                                guard = true
+                            end
+                            if not guard then
+                                escaped[#escaped + 1] = where .. ' (before main.lua)'
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return unknown, escaped, calls
+    end
+    local man = slurp(ROOT .. 'br_core/fxmanifest.lua') or ''
+    local files, unresolved = {}, {}
+    for _, block in ipairs({ 'shared_scripts', 'client_scripts' }) do
+        local body = man:match(block .. '%s*(%b{})') or ''
+        for line in body:gmatch('[^\n]+') do
+            local entry = line:match("^%s*'([^']+)'")
+            if entry then
+                local res, path = entry:match('^@([^/]+)/(.+)$')
+                local found = nil
+                if not res then
+                    found = ROOT .. 'br_core/' .. entry
+                else
+                    for _, g in ipairs({ '[fivem-royale]', '[scaleformui]', '[voice]' }) do
+                        local pth = 'resources/' .. g .. '/' .. res .. '/' .. path
+                        if slurp(pth) then found = pth break end
+                    end
+                end
+                if found and slurp(found) then files[#files + 1] = found
+                else unresolved[#unresolved + 1] = entry end
+            end
+        end
+    end
+    ok(#files > 60 and #unresolved == 0, 'every file the manifest loads into the client '
+        .. 'state is read', ('%d read, unresolved: %s'):format(#files,
+            table.concat(unresolved, ', ')))
+    local unknown, escaped, calls = {}, {}, 0
+    local early = true
+    for _, f in ipairs(files) do
+        local label = f:match('([^/]+/[^/]+)$') or f
+        if f:find('br_core/client/main.lua', 1, true) then early = false end
+        local code = codeOnly(slurp(f))
+        local u, x, nC = scan(code, label, early)
+        for _, w in ipairs(u) do unknown[#unknown + 1] = w end
+        for _, w in ipairs(x) do escaped[#escaped + 1] = w end
+        calls = calls + nC
+    end
+    ok(calls > 100, 'the reading finds the movers the client calls', ('%d calls'):format(calls))
+    ok(#unknown == 0, 'every native the client state calls that can move, re-seat or '
+        .. 're-make the player is one BR.Frame wraps, or one that changes none of it',
+        table.concat(unknown, '; '))
+    ok(not early and #escaped == 0, 'and none is held by a file loaded before the wrapper, '
+        .. 'or replaced', table.concat(escaped, '; '))
+
+    -- AND THE READING CAN FAIL.
+    local u1 = scan(codeOnly('TaskWarpPedIntoVehicle(ped, veh, -1)\n'), 't')
+    local _, x2 = scan(codeOnly('local tp = SetEntityCoords\ntp(ped, 0, 0, 0)\n'), 't', true)
+    ok(#u1 == 0 and #x2 == 1, 'a mover a shared script takes into a local is caught',
+        table.concat(x2, ', '))
+    local _, x4 = scan(codeOnly('SetEntityCoords = function() end\n'), 't', false)
+    ok(#x4 == 1, 'and one replaced anywhere', table.concat(x4, ', '))
+    local _, x5 = scan(codeOnly('pcall(SetEntityCoords, ped, 0, 0, 0)\n'), 't', false)
+    ok(#x5 == 0, 'while one handed to pcall after the wrapper is the wrapper', table.concat(x5, ', '))
+    local u3 = scan(codeOnly('SetEntityCoordsTwice(ped)\n'), 't')
+    ok(#u3 == 1, 'and so is a mover-shaped native nobody has sorted', table.concat(u3, ', '))
 end
 
 describe('state helpers')

@@ -26,6 +26,11 @@ BR.Clock = {
 --- this rather than GetGameTimer() directly.
 --- @return number
 function BR.Clock.now()
+    -- The frame's own reading inside a client FRAME pass (BR.Frame, client/main.lua
+    -- -- the same number, GetGameTimer being latched for the frame); the native
+    -- everywhere else, the server included (#393).
+    local F = BR.Frame
+    if F then return F.now() + BR.Clock.offset end
     return GetGameTimer() + BR.Clock.offset
 end
 

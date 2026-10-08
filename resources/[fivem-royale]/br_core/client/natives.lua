@@ -2306,10 +2306,11 @@ function BR.Native.applyGameRules()
         pid = PlayerId()
         latch.pid = pid
     end
-    local ped = PlayerPedId()
+    -- The frame's snapshot (#393): the same answers, asked once a frame.
+    local ped = BR.Frame.ped()
     local st  = BR.State.me.state
     local mst = BR.State.match.state
-    local now = GetGameTimer()
+    local now = BR.Frame.now()
 
     -- The five triggers, read BEFORE anything updates them.
     local due = (ped ~= latch.ped)

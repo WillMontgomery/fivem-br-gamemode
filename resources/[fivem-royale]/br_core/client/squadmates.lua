@@ -670,7 +670,7 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
     -- across the scope every time the player raises it.
     if BR.Screen and BR.Screen.scoped then return end
 
-    local me = GetEntityCoords(PlayerPedId())
+    local me = BR.Frame.coords()
 
     -- THE NAME AND THE REVIVE PROMPT ARE THE SAME POINT ON THE SCREEN, AND ONE
     -- OF THEM HAS TO GO (owner, 2026-08-17: "when going in for the revive, the
@@ -804,7 +804,7 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
         return
     end
 
-    local ped     = PlayerPedId()
+    local ped     = BR.Frame.ped()
     local hp      = GetEntityHealth(ped)
     local armor   = GetPedArmour(ped)
     local prevHp, prevArmor = lastHp, lastArmor

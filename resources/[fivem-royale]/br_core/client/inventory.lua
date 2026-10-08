@@ -369,7 +369,7 @@ local SUPPRESS = {
 --- and still suppresses. There is no radio wheel to open until they are in.
 --- @return boolean
 local function inVehicle()
-    local v = IsPedInAnyVehicle(PlayerPedId(), false)
+    local v = IsPedInAnyVehicle(BR.Frame.ped(), false)
     return not (v == nil or v == false or v == 0)
 end
 
