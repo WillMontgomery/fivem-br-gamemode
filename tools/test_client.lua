@@ -13854,23 +13854,183 @@ do
         .. 'frame -- they are latching engine settings',
         ('%d cap write(s), %d cop-flag write(s)'):format(wanted.caps, copFlags))
 
-    -- ── THE RULE STILL HOLDS, AND HOLDS FASTER THAN A CADENCE WOULD ─────────
+    describe('gamerules.apply: the wanted level, PlayerId and the radar -- #393')
+    -- ── THE RULE STILL HOLDS, WITHIN A TENTH OF A SECOND (#393) ─────────────
     --
     -- THIS IS THE CASE THAT MAKES THE CHANGE SAFE. The old code wrote zero
     -- every frame without ever asking; this asks and writes when the answer is
     -- wrong. So a star raised by anything at all -- another resource, a
-    -- scripted event, the engine -- is cleared on the VERY NEXT FRAME, with no
-    -- wait for a heartbeat. A cadence alone could not promise that, which is
-    -- why the read is there rather than a timer.
+    -- scripted event, the engine -- is cleared at the next read, with no wait
+    -- for a heartbeat. The read was every frame; #393 reads it ten times a
+    -- second, because the cap is zero and every dispatch service is off, so a
+    -- level that gets through has nobody to send in the tenth of a second it
+    -- can stand.
     wanted.level = 3
-    rules(1, twoSquads)
-    ok(wanted.level == 0,
-        'RAISE THE WANTED LEVEL AND THE NEXT FRAME TAKES IT STRAIGHT BACK '
-        .. 'DOWN -- the rule is closed-loop now, not open-loop',
-        ('wanted level after one frame: %s'):format(tostring(wanted.level)))
+    local wantedFrames = 0
+    while wanted.level ~= 0 and wantedFrames < 30 do
+        fakeTime = fakeTime + 16
+        rules(1, twoSquads)
+        wantedFrames = wantedFrames + 1
+    end
+    ok(wanted.level == 0 and wantedFrames <= 7,
+        'RAISE THE WANTED LEVEL AND IT IS TAKEN BACK DOWN WITHIN A TENTH OF A '
+        .. 'SECOND -- the rule is closed-loop, read ten times a second',
+        ('wanted level %s after %d frame(s) of 16 ms'):format(tostring(wanted.level),
+            wantedFrames))
     ok(wanted.flushes == firstFlushes + 1,
         'and it costs exactly one flush to do it, on the frame that needed one',
         ('%d flush(es)'):format(wanted.flushes - firstFlushes))
+
+    -- ── TEN READS A SECOND, AND ONE PlayerId FOR EVER (#393) ────────────────
+    do
+        local realWanted, realPid = GetPlayerWantedLevel, PlayerId
+        local reads, pids = 0, 0
+        GetPlayerWantedLevel = function(...) reads = reads + 1 return realWanted(...) end
+        PlayerId = function(...) pids = pids + 1 return realPid(...) end
+        reset()
+        for _ = 1, 60 do
+            fakeTime = fakeTime + 16
+            rules(1, twoSquads)
+        end
+        GetPlayerWantedLevel, PlayerId = realWanted, realPid
+        ok(reads >= 8 and reads <= 10 and pids == 1,
+            'a second of frames reads the wanted level ten times, not sixty, and asks for '
+                .. 'this player\'s index once',
+            ('%d wanted read(s), %d PlayerId call(s) over 60 frames of 16 ms'):format(reads,
+                pids))
+    end
+
+    -- ── THE RADAR: EVERY FRAME WHILE HIDDEN, ON A CHANGE WHILE SHOWN (#393) ─
+    --
+    -- applyGameRules wrote DisplayRadar every frame. While the radar is to be
+    -- hidden it still does, so nothing can show it for a frame it is not shown
+    -- today. While it is to be shown it writes when the radar in force is not
+    -- that -- which every DisplayRadar in br_core's Lua state reports through
+    -- the wrapper natives.lua puts on it -- and on the heartbeat.
+    do
+        local realRadar = DisplayRadar
+        local radarCalls = {}
+        DisplayRadar = function(on) radarCalls[#radarCalls + 1] = on end
+        N.wrapRadar()
+        reset()
+        rules(1, twoSquads)
+        local first = #radarCalls
+        for _ = 1, 50 do
+            fakeTime = fakeTime + 16
+            rules(1, twoSquads)
+        end
+        ok(first == 1 and radarCalls[1] == true and #radarCalls == 1,
+            'IN THE MATCH THE RADAR IS WRITTEN ONCE: 50 frames after the first write '
+                .. 'none at all',
+            ('%d on the first frame, %d after it'):format(first, #radarCalls - first))
+
+        -- Something in this Lua state hides it -- the scope, a ScaleformUI menu --
+        -- through the global, and the next frame puts it back.
+        DisplayRadar(false)
+        local hidAt = #radarCalls
+        fakeTime = fakeTime + 16
+        rules(1, twoSquads)
+        ok(#radarCalls == hidAt + 1 and radarCalls[#radarCalls] == true,
+            'a hide made anywhere in br_core\'s state is put back on the very next frame',
+            ('%d write(s) after the hide, last %s'):format(#radarCalls - hidAt,
+                tostring(radarCalls[#radarCalls])))
+
+        -- The heartbeat writes it once a second whatever happens.
+        local beatAt = #radarCalls
+        fakeTime = fakeTime + 1000
+        rules(1, twoSquads)
+        ok(#radarCalls == beatAt + 1,
+            'and the heartbeat writes it once a second all the same',
+            ('%d write(s)'):format(#radarCalls - beatAt))
+
+        -- Hidden -- the lobby -- is every frame, as it always was.
+        local lobbyAt = #radarCalls
+        for _ = 1, 30 do
+            fakeTime = fakeTime + 16
+            rules(1, twoSquads, BR.PlayerState.LOBBY)
+        end
+        local hidden = 0
+        for i = lobbyAt + 1, #radarCalls do
+            if radarCalls[i] == false then hidden = hidden + 1 end
+        end
+        ok(#radarCalls - lobbyAt == 30 and hidden == 30,
+            'WHILE IT IS TO BE HIDDEN IT IS WRITTEN HIDDEN EVERY FRAME, as before: no frame '
+                .. 'can show it',
+            ('%d write(s), %d hidden, over 30 lobby frames'):format(#radarCalls - lobbyAt,
+                hidden))
+        DisplayRadar = realRadar
+    end
+
+    -- ── AND EVERY DisplayRadar THERE IS, IS IN br_core'S STATE ──────────────
+    --
+    -- The wrapper only sees calls made in br_core's Lua state. So every file in
+    -- this repository that calls DisplayRadar is read: each must be one the
+    -- manifest loads into br_core's client state, and call it by name -- never
+    -- take it into a local, where the wrapper cannot see it.
+    do
+        local man = io.open(ROOT .. 'br_core/fxmanifest.lua', 'rb'):read('a')
+        local inState = {}
+        for _, block in ipairs({ 'shared_scripts', 'client_scripts' }) do
+            local body = man:match(block .. '%s*(%b{})') or ''
+            for line in body:gmatch('[^\n]+') do
+                local entry = line:match("^%s*'([^']+)'")
+                if entry then
+                    local res, path = entry:match('^@([^/]+)/(.+)$')
+                    if res then inState[res .. '/' .. path] = true
+                    else inState['br_core/' .. entry] = true end
+                end
+            end
+        end
+        -- THE REPOSITORY'S OWN LIST, from git: Lua here cannot walk a directory
+        -- without a shell, and `git` is the one command this checkout and CI both
+        -- have under any shell. Too few files read fails below, loudly.
+        local files = {}
+        local pipe = io.popen('git ls-files -- resources')
+        if pipe then
+            for f in pipe:lines() do
+                if f:match('%.lua$') or f:match('%.js$') then files[#files + 1] = f end
+            end
+            pipe:close()
+        end
+        local outside, captured, callers = {}, {}, 0
+        for _, f in ipairs(files) do
+            local fh = io.open(f, 'rb')
+            local src = fh and fh:read('a') or ''
+            if fh then fh:close() end
+            if src:find('DisplayRadar', 1, true) then
+                local rel = f:match('resources/%[[^%]]+%]/(.+)$') or f
+                local code = {}
+                for line in (src .. '\n'):gmatch('([^\n]*)\n') do
+                    code[#code + 1] = (line:gsub('%-%-.*$', ''))
+                end
+                local any = false
+                for i, line in ipairs(code) do
+                    for at in line:gmatch('()DisplayRadar') do
+                        any = true
+                        local before = line:sub(1, at - 1)
+                        local after = line:sub(at + #'DisplayRadar')
+                        local isWrapper = before:match('_G%.$') ~= nil
+                        if not isWrapper and not after:match('^%s*%(') then
+                            captured[#captured + 1] = ('%s:%d'):format(rel, i)
+                        end
+                    end
+                end
+                if any then
+                    callers = callers + 1
+                    if not inState[rel] then outside[#outside + 1] = rel end
+                end
+            end
+        end
+        ok(#files > 100 and callers >= 3 and #outside == 0,
+            'every file in this repository that calls DisplayRadar runs in br_core\'s '
+                .. 'client state, where the wrapper sees it',
+            ('%d file(s) read, %d call it; outside it: %s'):format(#files, callers,
+                table.concat(outside, ', ')))
+        ok(#captured == 0,
+            'and every one calls it by name at call time, never through a local',
+            table.concat(captured, ', '))
+    end
+    describe('the engine team gate -- #115')
 
     -- ── AND IT IS RE-ASSERTED ON EVERYTHING THAT COULD CLEAR IT ─────────────
     --

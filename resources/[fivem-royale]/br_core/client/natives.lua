@@ -1650,7 +1650,44 @@ local LATCH_REFRESH_MS = 1000
 local latch = {
     at = 0, ped = nil, state = nil, match = nil,
     shield = nil, invincible = nil, visible = nil,
+    -- #393: this player's index, read once (it is the local player's for the
+    -- life of this Lua state), and when the wanted level was last read.
+    pid = nil, wantedAt = nil,
 }
+
+--- How often the wanted level is READ (#393). The cap below it is zero and
+--- dispatch is off, so there is nothing to see in the tenth of a second a
+--- level could stand; the write that clears one is unchanged.
+local WANTED_READ_MS = 100
+
+-- ═══ THE RADAR IN FORCE, AS EVERY CALL IN THIS LUA STATE LEFT IT (#393) ═══
+--
+-- applyGameRules re-asserted DisplayRadar on every frame. While the radar is to be
+-- HIDDEN it still does, so nothing can show it for a frame that is not shown today.
+-- While it is to be SHOWN it writes only when the radar in force is not the one it
+-- wants -- and it knows which that is, because every DisplayRadar this state makes
+-- comes through the wrapper below: this file's, client/screen.lua's scope, and the
+-- included ScaleformUI's menus, all called by name at call time. No other resource
+-- in this repository calls it (tools/test_client.lua reads them all), and the
+-- heartbeat (`due`) asserts it once a second whatever happens. So the one thing
+-- this gives up is a hide made outside this state while the radar should be up --
+-- nothing does that -- for at most a second; never a flash.
+local radar = { inForce = nil, wrapper = nil }
+
+--- Put the radar's wrapper on DisplayRadar, as this file does at load. Public for
+--- tools/test_client.lua, which stubs the native after this file has loaded; the
+--- game has it before. A second call on the wrapper itself does nothing.
+function BR.Native.wrapRadar()
+    local real = _G.DisplayRadar
+    if type(real) ~= 'function' or real == radar.wrapper then return end
+    radar.inForce = nil
+    radar.wrapper = function(on, ...)
+        radar.inForce = (on == true or on == 1)
+        return real(on, ...)
+    end
+    _G.DisplayRadar = radar.wrapper
+end
+BR.Native.wrapRadar()
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THE CLOCK (#394): SET ONCE, THEN LEFT TO RUN
@@ -2041,6 +2078,8 @@ function BR.Native.forgetRules()
     latch.at, latch.ped, latch.state, latch.match = 0, nil, nil, nil
     latch.shield, latch.invincible = nil, nil
     latch.visible = nil
+    latch.pid, latch.wantedAt = nil, nil
+    radar.inForce = nil
     clockReset()
     everyFrame = nil
 end
@@ -2261,7 +2300,12 @@ BR.Native.DISPATCH_OFF = {
 --- the frame loop because the `*ThisFrame` half genuinely resets every tick;
 --- see the long note above for what the other half does instead.
 function BR.Native.applyGameRules()
-    local pid = PlayerId()
+    -- The local player's index never changes in this Lua state (#393).
+    local pid = latch.pid
+    if not pid then
+        pid = PlayerId()
+        latch.pid = pid
+    end
     local ped = PlayerPedId()
     local st  = BR.State.me.state
     local mst = BR.State.match.state
@@ -2376,7 +2420,13 @@ function BR.Native.applyGameRules()
         end
     end
 
-    if due or (tonumber(GetPlayerWantedLevel(pid)) or 0) > 0 then
+    -- READ TEN TIMES A SECOND, NOT SIXTY (#393). The cap is zero and every
+    -- dispatch service is off, so a level that gets through stands for a tenth
+    -- of a second at most before this clears it, with nobody sent; the heartbeat
+    -- still writes it once a second whatever the read says.
+    local readWanted = not latch.wantedAt or (now - latch.wantedAt) >= WANTED_READ_MS
+    if readWanted then latch.wantedAt = now end
+    if due or (readWanted and (tonumber(GetPlayerWantedLevel(pid)) or 0) > 0) then
         SetPlayerWantedLevel(pid, 0, false)
         SetPlayerWantedLevelNow(pid, false)
     end
@@ -2681,11 +2731,18 @@ function BR.Native.applyGameRules()
     -- popped up into those milliseconds and was visible through a curtain that
     -- was still fading in (#124). Asked-for is the right test here, not
     -- arrived: a radar hidden slightly early costs nothing.
-    DisplayRadar(BR.Native.bigmap
+    --
+    -- ...AND WRITTEN EVERY FRAME ONLY WHILE IT IS TO BE HIDDEN (#393). See `radar`
+    -- above: a shown radar is written when the one in force is not it, which every
+    -- DisplayRadar in this state reports, and on the heartbeat.
+    local wantRadar = BR.Native.bigmap
         or (st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
         and not (BR.Spawn and BR.Spawn.traveling)
         and not (BR.Spawn and BR.Spawn.curtainWanted)
-        and not (BR.Screen and BR.Screen.scoped)))
+        and not (BR.Screen and BR.Screen.scoped))
+    if not wantRadar or due or radar.inForce ~= true then
+        DisplayRadar(wantRadar and true or false)
+    end
 
     -- GTA'S PAUSE MENU IS OURS NOW.
     --
