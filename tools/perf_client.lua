@@ -2060,19 +2060,28 @@ end
 
 local route
 
+--- The squad beacon as server/party.lua's party.squadpos sends it (#393's review):
+--- every member who is not aboard the plane -- nobody is beaconed from the plane --
+--- and nothing at all when nobody is. client/bus.lua reads it to take a plane past
+--- its route's end down early, so a model that beaconed nobody until PLAYING kept
+--- the plane flying through the chute where the game would not.
 local function squadPos()
     local e = W.ents[W.me]
-    local list = { { src = ME, name = 'Player1', x = e.x, y = e.y, state = S.me.state,
-                     hp = 100, armour = 50, level = 10, i = 1 } }
+    local list = {}
+    local function beacon(row)
+        if row.state ~= BR.PlayerState.BUS then list[#list + 1] = row end
+    end
+    beacon({ src = ME, name = 'Player1', x = e.x, y = e.y, state = S.me.state,
+             hp = 100, armour = 50, level = 10, i = 1 })
     local off = { [2] = { 20, 0 }, [3] = { 0, 25 }, [4] = { -30, 0 } }
     for i, src in ipairs(MATES) do
         local r = S.roster[src] or {}
-        list[#list + 1] = { src = src, name = 'Player' .. src, x = e.x + off[src][1],
+        beacon({ src = src, name = 'Player' .. src, x = e.x + off[src][1],
             y = e.y + off[src][2], state = r.state, hp = (r.state == BR.PlayerState.DBNO) and 0 or 100,
             armour = 0, level = 10, i = i + 1,
-            bleedEndsAt = (r.state == BR.PlayerState.DBNO) and (gameMs() + 60000) or nil }
+            bleedEndsAt = (r.state == BR.PlayerState.DBNO) and (gameMs() + 60000) or nil })
     end
-    net(BR.Net.SQUAD_POS, list)
+    if #list > 0 then net(BR.Net.SQUAD_POS, list) end
 end
 
 local function lobbyStatus()
@@ -2107,8 +2116,12 @@ local FEEDS = {
     { every = 500,  fn = lobbyStatus },
     { every = 500,  fn = digestFeed },
     { every = 1000, fn = function()
+        -- party.squadpos's live states: warmup, the bus and the match.
         local st = S.match.state
-        if st == BR.MatchState.PLAYING then squadPos() end
+        if st == BR.MatchState.WARMUP or st == BR.MatchState.BUS
+           or st == BR.MatchState.PLAYING then
+            squadPos()
+        end
     end },
     { every = 250, fn = function() if watching then spectateFeed() end end },
 }

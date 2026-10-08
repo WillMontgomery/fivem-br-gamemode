@@ -19073,6 +19073,10 @@ do
                        state = env.BR.PlayerState.ALIVE }
         end
         for _, fn in ipairs(handlers[env.BR.Net.SQUAD_POS] or {}) do fn(pos) end
+        W.pos = pos
+        function W.push(list)
+            for _, fn in ipairs(handlers[env.BR.Net.SQUAD_POS] or {}) do fn(list) end
+        end
 
         W.env = env
         function W.frame()
@@ -19163,6 +19167,22 @@ do
     x, y, z = H(20, { x = 7.0, y = 8.0, z = 9.0 })
     ok(x == 7.0 and y == 8.0 and z == 9.6 and W.coordsRead == reads + 1,
         'or the origin the caller already read, without reading it again')
+
+    -- ═══ THE BEACON'S TWO READS, AS client/bus.lua TAKES THEM (#393) ═══
+    --
+    -- A plane past its route's end comes down early only when no squadmate a
+    -- spectate could cut to can be near the rest of its flight: bus.lua asks where
+    -- each mate was (beaconOf) and how old that is (beaconAt). A push is stamped
+    -- with its arrival, and a mate in a comms blackout is kept, with no position.
+    local S = W.env.BR.Squadmates
+    W.now = W.now + 500
+    W.push({ W.pos[1], { src = 3, name = 'Charlie', i = 3,
+                         state = W.env.BR.PlayerState.ALIVE } })
+    ok(S.beaconAt() == W.now and S.beaconOf(2) and S.beaconOf(2).x == 1.0
+        and S.beaconOf(3) and S.beaconOf(3).x == nil,
+        'a beacon is stamped with when it came, and a mate in a blackout is kept with no '
+            .. 'position', ('at %s, now %d'):format(tostring(S.beaconAt()), W.now))
+    W.push(W.pos)
 
     -- ═══ THREE MATES: ASKED ONLY WHEN SOMEBODY HAS MARKED ME AT ALL (#393) ═══
     --

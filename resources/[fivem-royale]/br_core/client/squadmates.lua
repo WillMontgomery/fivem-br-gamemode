@@ -96,6 +96,16 @@ function BR.Squadmates.beaconOf(src)
     return mates[src]
 end
 
+--- When the last squad beacon arrived (GetGameTimer), or nil before the first: how
+--- old every position beaconOf hands back is. Read by client/bus.lua (#393), which
+--- takes a plane down early only when no squadmate a spectate could cut to can be
+--- near the rest of its flight.
+--- @return integer|nil
+function BR.Squadmates.beaconAt()
+    if lastPush == 0 then return nil end
+    return lastPush
+end
+
 -- SKEL_Head. The BONE ID, which is what GET_PED_BONE_COORDS takes -- not the
 -- bone INDEX that GetPedBoneIndex hands back, which is a different number and
 -- a different native.

@@ -8647,25 +8647,191 @@ do
     ok(planeWrites == 0, 'and nothing flies it afterwards', tostring(planeWrites))
     pedPos.x = 0.0
 
-    -- 4b. A PLANE PAST ITS END THAT NOBODY CAN SEE AGAIN COMES DOWN THEN (#393).
-    -- From (0, 0) the rest of the flight runs from 3.2 km out to 6.2 km. It stays
-    -- while any of it could still come into view -- 3 km, plus 100 m for every
-    -- second it has left -- and comes down once none can: 14 s past the end.
-    boardAndJump()
-    frame(tEnd + 10000 - GetGameTimer())
-    local seenAt10 = alive[PLANE] == true
-    planeWrites = 0
-    frame(16)
-    local flying = planeWrites == 1
-    frame(tEnd + 15000 - GetGameTimer())
-    ok(seenAt10 and flying and wasDeleted(PLANE) and wasDeleted(PILOT),
-        'past its end, a plane that could still come into view flies on, and one none of '
-            .. 'whose flight can be seen again is taken down at once, not partingMs later',
-        ('flying at +10 s: %s; deleted by +15 s: %s'):format(tostring(seenAt10 and flying),
+    -- 4b. A PLANE PAST ITS END THAT NOBODY CAN SEE AGAIN COMES DOWN THEN (#393) --
+    -- AND "NOBODY" IS EVERY VIEW THIS CLIENT CAN BE GIVEN, NOT ONLY THE ONE IT HAS.
+    --
+    -- #393's review: the test was the camera alone, and a camera that CUTS -- a
+    -- spectate starting on a squadmate by the rest of the flight -- landed on a view
+    -- with no plane in it. So the rest of the flight (3.2 km out to 6.2 km, along +x)
+    -- is held to every place a cut can land: the camera, the ped, each squadmate's
+    -- last beacon (aged), the lobby's and the warmup's marks; and a cut nobody can
+    -- place -- a solo's spectate, freeAfterSquadOut, a mate with no position -- keeps
+    -- it flying. The real marks are on Cayo, 4.5 km off this test's flight, so they
+    -- are moved out of the way here and put beside it in 4j; a camera stub says
+    -- where the last frame was seen from (by default, the ped). client/squadmates.lua
+    -- loads further down this file, so its two beacon reads -- beaconOf and beaconAt,
+    -- all bus.lua asks of it -- stand in here (tools/test_shared.lua holds the real
+    -- ones to what a SQUAD_POS push leaves).
+    local M = BR.Config.Match
+    local keepMarks = { lobby = M.lobbyPos, pad = M.warmupPos, spawns = M.warmupSpawns }
+    local FAR = { x = 0.0, y = -90000.0, z = 0.0, heading = 0.0 }
+    M.lobbyPos, M.warmupPos, M.warmupSpawns = FAR, FAR, { FAR }
+    local keepFree = BR.Config.Spectate.freeAfterSquadOut
+    local camAt = nil
+    local realCam = GetFinalRenderedCamCoord
+    GetFinalRenderedCamCoord = function()
+        local c = camAt or pedPos
+        return { x = c.x, y = c.y, z = 500.0 }
+    end
+    local keepMates = BR.Squadmates
+    local beacons, beaconAt = {}, nil
+    BR.Squadmates = {
+        beaconOf = function(src) return beacons[src] end,
+        beaconAt = function() return beaconAt end,
+    }
+    -- A squad: me and mate 2, alive, and no beacon yet.
+    local function squadOf()
+        BR.State.me.squadId = 'sq1'
+        BR.State.roster = {
+            [1] = { src = 1, squadId = 'sq1', state = BR.PlayerState.FREEFALL },
+            [2] = { src = 2, squadId = 'sq1', state = BR.PlayerState.ALIVE },
+        }
+        beacons, beaconAt = {}, nil
+    end
+    -- A SQUAD_POS push: mate 2 at (x, y), or in it with no position (a blackout),
+    -- or not in it at all (`absent`).
+    local function beacon(x, y, absent)
+        beacons = absent and {} or { [2] = { src = 2, x = x, y = y } }
+        beaconAt = GetGameTimer()
+    end
+    local function solo()
+        BR.State.me.squadId = nil
+        BR.State.roster = {}
+        beacons, beaconAt = {}, nil
+    end
+    local function board()
+        boardAndJump()
+        deleted = {}
+    end
+    local function at(ms) frame(tEnd + ms - GetGameTimer()) end
+    local function flies(why)
+        at(29900)
+        local up = alive[PLANE] == true and not wasDeleted(PLANE)
+        planeWrites = 0
+        frame(16)
+        ok(up and planeWrites == 1, why, ('alive %s, %d write(s) at +29.9 s'):format(
+            tostring(up), planeWrites))
+        at(30100)
+    end
+
+    -- THE BOUNDARY, FROM THE PED: camera far, ped at the origin, the mate far. The
+    -- flight is seen from the ped while its start is within 3 km, plus 100 m for
+    -- each second left, plus SHOT_M's 50 m: until 14.25 s past the end. Asked every
+    -- 250 ms.
+    squadOf()
+    board()
+    beacon(-20000.0, 0.0)
+    camAt = { x = -50000.0, y = 0.0 }
+    at(13950)
+    at(14210)
+    local up = alive[PLANE] == true and not wasDeleted(PLANE)
+    at(14470)
+    ok(up and wasDeleted(PLANE) and wasDeleted(PILOT),
+        'past its end, a plane whose flight could still be seen from the ped flies on '
+            .. '(+14.21 s), and is taken down at the first ask once none can (+14.47 s)',
+        ('flying at +14.21 s: %s; deleted by +14.47 s: %s'):format(tostring(up),
             tostring(wasDeleted(PLANE))))
     planeWrites = 0
     frames(5, 16)
     ok(planeWrites == 0, 'and nothing flies it afterwards', tostring(planeWrites))
+
+    -- AND IT IS STILL TAKEN DOWN: nobody anywhere near, at once.
+    pedPos.x = -50000.0
+    squadOf()
+    board()
+    beacon(-20000.0, 0.0)
+    at(300)
+    ok(wasDeleted(PLANE), 'with the camera, the ped, the squad and the marks all far, it '
+        .. 'comes down at the first ask past its end')
+    camAt = nil
+
+    -- 4d. A SQUADMATE BY THE REST OF THE FLIGHT, the review's case: I am far, and a
+    -- spectate can cut to them -- so it flies on to partingMs, and then comes down.
+    squadOf()
+    board()
+    beacon(5000.0, 2000.0)
+    flies('a squadmate 2 km off the rest of the flight keeps it flying to partingMs')
+    ok(wasDeleted(PLANE), 'and then it comes down, as it always did')
+
+    -- 4e. A SOLO: a dead solo can spectate anyone, so nobody far is proof.
+    solo()
+    board()
+    flies('a solo player\'s plane flies on to partingMs however far away they are')
+
+    -- 4f. A MATE WITH NO POSITION -- a comms blackout -- or no beacon at all.
+    squadOf()
+    board()
+    beacon(nil, nil)
+    flies('a squadmate in a comms blackout, nowhere to measure, keeps it flying')
+    squadOf()
+    board()
+    beacon(nil, nil, true)
+    flies('so does a living squadmate the last beacon left out')
+    squadOf()
+    board()
+    flies('and one before any beacon has come')
+
+    -- 4g. FREE SPECTATING widens a squad's set to everyone, as it does a solo's.
+    squadOf()
+    BR.Config.Spectate.freeAfterSquadOut = true
+    board()
+    beacon(-20000.0, 0.0)
+    flies('with freeAfterSquadOut, a far squad is no proof either')
+    BR.Config.Spectate.freeAfterSquadOut = keepFree
+
+    -- 4h. A BEACON'S AGE COUNTS: 100 m for every second since it was sampled. The
+    -- mate stands 4.8 km off the flight. Asked fresh every 250 ms, they are out of
+    -- view from 13.75 s on; on one beacon from +10 s, never.
+    squadOf()
+    board()
+    for ms = 10000, 16000, 250 do
+        beacon(5500.0, 4800.0)
+        at(ms)
+    end
+    ok(wasDeleted(PLANE), 'a squadmate 4.8 km off, on a fresh beacon, lets it come down')
+    squadOf()
+    board()
+    at(10000)
+    beacon(5500.0, 4800.0)
+    flies('the same squadmate on a beacon that has gone stale keeps it flying')
+
+    -- 4i. THE PED, while the camera is elsewhere -- spectating: the camera ends back
+    -- on the body.
+    pedPos.x, pedPos.y = 5000.0, 1000.0
+    camAt = { x = -50000.0, y = 0.0 }
+    squadOf()
+    board()
+    beacon(-20000.0, 0.0)
+    flies('a ped by the rest of the flight keeps it flying while the camera is far away')
+    pedPos.x, pedPos.y = -50000.0, 0.0
+    camAt = nil
+
+    -- 4j. THE MARKS A TRIP LANDS ON: the lobby's, and the warmup's.
+    M.lobbyPos = { x = 5000.0, y = 1000.0, z = 0.0, heading = 0.0 }
+    squadOf()
+    board()
+    beacon(-20000.0, 0.0)
+    flies('the lobby\'s mark by the rest of the flight keeps it flying (the trip home)')
+    M.lobbyPos = FAR
+    M.warmupSpawns = { FAR, { x = 5000.0, y = 1000.0, z = 0.0, heading = 0.0 } }
+    squadOf()
+    board()
+    beacon(-20000.0, 0.0)
+    flies('and so does a warmup spawn by it (the next match)')
+    M.warmupSpawns = { FAR }
+    -- The pad 3.1 km off the flight's last 10 m: at +29.9 s, within 3 km, 10 m for the
+    -- tenth of a second left, SHOT_M and the pad's 60 m radius -- and not without it.
+    M.warmupPos = { x = 6195.0, y = 3100.0, z = 0.0, heading = 0.0 }
+    squadOf()
+    board()
+    beacon(-20000.0, 0.0)
+    flies('and so does the warmup pad, its radius counted')
+    pedPos.x, pedPos.y = 0.0, 0.0
+
+    M.lobbyPos, M.warmupPos, M.warmupSpawns = keepMarks.lobby, keepMarks.pad, keepMarks.spawns
+    GetFinalRenderedCamCoord = realCam
+    solo()
+    BR.Squadmates = keepMates
 
     -- 4c. NEVER BEFORE THE ROUTE'S END, however far away the player is.
     pedPos.x = -50000.0

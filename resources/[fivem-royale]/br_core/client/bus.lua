@@ -35,7 +35,7 @@ local gearAt = nil      -- when to retract the landing gear; true once done
 local boardGen = 0      -- boarding generation; a stale boarding thread abandons
 local islandCut = false -- this flight has already released the lobby island
 local viewCheckAt = 0   -- when bus.fly next asks whether the flying-on plane can
-                        -- still be seen (#393, outOfView)
+                        -- still be seen (#393, maybeSeen)
 
 -- Smoothed airframe orientation. The path is a polyline, so its raw
 -- direction is CONSTANT within a segment and STEPS at every waypoint -- the
@@ -152,23 +152,50 @@ end
 --
 -- "CAN STILL BE SEEN" IS MEASURED SO THAT NO ANSWER OF "NO" CAN BE WRONG. Past its
 -- end the plane flies a straight line (partingPosAt) until partingMs is up, so the
--- rest of its flight is one segment, known now. It is out of view only if that
--- whole segment is more than VIEW_M from the camera -- on the ground, which is never
+-- rest of its flight is one segment, known now. It is out of view from a point only
+-- if that whole segment is more than VIEW_M from it -- on the ground, which is never
 -- farther than the real distance -- and more by CLOSE_MS for every second it has
 -- left, the fastest anyone can come toward it meanwhile. VIEW_M is well past the
 -- distance the engine draws a vehicle at -- a vehicle's farthest LOD is a few hundred
 -- meters, which the player's distance setting scales at most a few times -- and it is
 -- the 3 km past which this gamemode draws nothing of its own (the storm wall).
+--
+-- AND FROM EVERY PLACE THE VIEW CAN CUT TO, NOT ONLY THE ONE IT IS IN (#393's
+-- review). CLOSE_MS bounds a camera that moves; a camera that CUTS jumps, and a
+-- plane taken down because the camera was far is missing from the view the cut
+-- lands on. So each place a cut can land before the plane comes down is a viewpoint
+-- of its own, held to the same test (maybeSeen):
+--   * the camera that rendered the last frame;
+--   * this player's ped -- a spectating or a downed camera ends back on it;
+--   * every squadmate still in the match, at their last beacon (SQUAD_POS) plus
+--     CLOSE_MS for every second since it was sampled -- a spectate starts or
+--     switches onto one of them, and a revive key stands me up over the ambulance
+--     one of them is using;
+--   * the lobby's mark and the warmup's -- the trip home, and the next match.
+-- A cut this client cannot place keeps the plane flying to partingMs, as it always
+-- did: a solo's spectate, whose set is every living player
+-- (shared/spectate_solve.lua widens it for solos whatever the config says);
+-- Spectate.freeAfterSquadOut, which widens a squad's the same way; and a squadmate
+-- with no position -- a comms blackout, a beacon gone quiet.
+--
+-- WHAT IT CANNOT PLACE AND DOES NOT TRY TO: a moderator's console session
+-- (server/spectate.lua's adminStart names any connected player, and nothing
+-- reaches this client before it starts). A moderator who opens one on a stranger
+-- near the rest of a flight, in the half minute after its end, sees no plane there.
 local VIEW_M = 3000.0
 local CLOSE_MS = 100.0          -- m/s: faster than anything a player can drive
 local VIEW_CHECK_MS = 250
+-- How far a cut's camera can stand from the point it is placed by: a spectate
+-- shot's orbit (Spectate.camDistance), a mate's reach of the ambulance they use, a
+-- ped's own camera -- with room to spare.
+local SHOT_M = 50.0
+-- How old a beacon's position can be when it arrives: the server's sample interval
+-- (party.lua, 250 ms) and the trip, with room to spare.
+local BEACON_LAG_MS = 1000
 
---- Can none of what is left of this flight be seen from (cx, cy), at any time
---- before it comes down? `t` is now, `goneAt` when partingMs runs out.
+--- Is any of the segment (ax, ay)-(bx, by) within `need` of (cx, cy)?
 --- @return boolean
-local function outOfView(pts, t, goneAt, cx, cy)
-    local ax, ay = partingPosAt(pts, t)
-    local bx, by = partingPosAt(pts, goneAt)
+local function segWithin(ax, ay, bx, by, cx, cy, need)
     local ex, ey = bx - ax, by - ay
     local el = ex * ex + ey * ey
     local k = 0.0
@@ -177,19 +204,67 @@ local function outOfView(pts, t, goneAt, cx, cy)
         if k < 0.0 then k = 0.0 elseif k > 1.0 then k = 1.0 end
     end
     local dx, dy = ax + ex * k - cx, ay + ey * k - cy
-    local need = VIEW_M + CLOSE_MS * (goneAt - t) / 1000.0
-    return dx * dx + dy * dy > need * need
+    return dx * dx + dy * dy <= need * need
 end
 
---- Where the frame is seen from: the camera that renders it, or the ped.
+--- Where the last frame was seen from: the camera that rendered it, or the ped.
 --- @return number x, number y
 local function viewFrom()
     if GetFinalRenderedCamCoord then
         local c = GetFinalRenderedCamCoord()
         if c then return c.x, c.y end
     end
-    local p = GetEntityCoords(PlayerPedId())
+    local p = BR.Frame.coords()
     return p.x, p.y
+end
+
+--- Could any view this client can be given before the plane comes down see any of
+--- what is left of its flight? `t` is now, `goneAt` when partingMs runs out. See the
+--- note above for the viewpoints, and for what answers yes without being measured.
+--- @return boolean
+local function maybeSeen(pts, t, goneAt)
+    local ax, ay = partingPosAt(pts, t)
+    local bx, by = partingPosAt(pts, goneAt)
+    local reach = VIEW_M + CLOSE_MS * (goneAt - t) / 1000.0
+
+    local cx, cy = viewFrom()
+    if segWithin(ax, ay, bx, by, cx, cy, reach) then return true end
+    local p = BR.Frame.coords()
+    if segWithin(ax, ay, bx, by, p.x, p.y, reach + SHOT_M) then return true end
+    local M = BR.Config.Match or {}
+    local lobby, pad = M.lobbyPos, M.warmupPos
+    if lobby and segWithin(ax, ay, bx, by, lobby.x, lobby.y, reach + SHOT_M) then
+        return true
+    end
+    if pad and segWithin(ax, ay, bx, by, pad.x, pad.y,
+                         reach + SHOT_M + (M.warmupRadius or 0.0)) then
+        return true
+    end
+    for _, w in ipairs(M.warmupSpawns or {}) do
+        if segWithin(ax, ay, bx, by, w.x, w.y, reach + SHOT_M) then return true end
+    end
+
+    local me = BR.State.me or {}
+    local squad = me.squadId
+    if squad == nil then return true end
+    local spec = BR.Config.Spectate
+    if spec and spec.freeAfterSquadOut == true then return true end
+    local S = BR.Squadmates
+    local at = S and S.beaconAt and S.beaconAt() or nil
+    local myKey = tostring(me.src)
+    for key, e in pairs(BR.State.roster or {}) do
+        local src = (type(e) == 'table' and e.src) or key
+        if type(e) == 'table' and e.squadId == squad and tostring(src) ~= myKey
+           and e.state ~= BR.PlayerState.OUT and e.state ~= BR.PlayerState.LEFT then
+            local b = S and S.beaconOf and S.beaconOf(tonumber(src) or src) or nil
+            if not b or b.x == nil or b.y == nil or not at then return true end
+            local age = (GetGameTimer() - at + BEACON_LAG_MS) / 1000.0
+            if segWithin(ax, ay, bx, by, b.x, b.y, reach + SHOT_M + CLOSE_MS * age) then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 -- ------------------------------------------------------- the map drawing ---
@@ -705,8 +780,7 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
         -- And sooner, once nothing left of the flight can be seen (#393).
         if t > tEnd and t >= viewCheckAt then
             viewCheckAt = t + VIEW_CHECK_MS
-            local cx, cy = viewFrom()
-            if outOfView(route.points, t, goneAt, cx, cy) then
+            if not maybeSeen(route.points, t, goneAt) then
                 dropPlane()
                 return
             end
