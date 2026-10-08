@@ -706,7 +706,7 @@ do
     ok(f2 and f2.reason == 'no_storm', 'with no storm yet the card says no_storm', f2 and f2.reason)
 end
 
-describe('Storm control: a circle drawn while it loads -- the storm closes toward the spot from it')
+describe('Storm control: a circle drawn while it loads -- the storm moves toward the spot from it')
 do
     reset()
     local m = lobby('squad', 3)
@@ -742,7 +742,7 @@ end
 describe('Storm control: one spot a match -- a second run is refused, nothing spent, and the first spot holds')
 do
     -- ROUND 4'S REVIEW: each squad has its own use, so two squads can both run
-    -- it in one match. The first paid 150 Volts for a storm that closes toward
+    -- it in one match. The first paid 150 Volts for a storm that finishes on
     -- their spot for "the rest of the match"; a second run must not quietly
     -- make that false. So once the storm is aimed, Storm control is refused
     -- (storm_aimed) -- on the card, at the run and after the load.

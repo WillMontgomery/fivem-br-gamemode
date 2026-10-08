@@ -249,8 +249,8 @@ filters and pages from it.
   words only; each effect gives its own bounty.
 - `squadWide` (round 4): the effect reaches the runner's whole squad (its
   `_affects` starts "Your squad", or its marks show on the squad's maps): Scan,
-  Storm reveal, Max ammo, Reboot, Ghost, Field medic and Vehicle drop (its
-  blip is on the squad's maps).
+  Storm reveal, Max ammo, Reboot, Ghost, Field medic, Vehicle drop (its
+  blip is on the squad's maps) and Storm control (its spot is, 2026-10-07).
   In a squad match the app draws "Squads!" beside its title. Presentation
   only; `test_terminal.lua` holds the set to the rows' own lines.
 - `spot` (round 4): `true` for a row run at a place picked on the big map
@@ -422,7 +422,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_DEV` | S→C | `'<text>'` | A `brterminalsv` answer, printed on F8. |
 | `BR.Net.TERMINAL_USE` | C→S | `{ terminalId }` | "I pressed interact here." Opens a session only for a living player within reach by the server's own sample, in a PLAYING match, at an online terminal; offline is refused aloud. One per `runMinIntervalMs`. |
 | `BR.Net.TERMINAL_SITES` | S→C | `{ placed, removed, forced }` | The dev tools' changes, whole, to everyone, and on `br:ready`. |
-| `BR.Net.TERMINAL_REVEAL` | S→C | `{ x, y, r, matchId }` | Storm reveal, to the squad that ran it alone; again on `br:ready` while that match lasts, and again when Storm control moves the end. |
+| `BR.Net.TERMINAL_REVEAL` | S→C | `{ x, y, r, matchId }` | Storm reveal, to the squad that ran it alone; again on `br:ready` while that match lasts, and again when Storm control moves the end. Storm control's spot, to the runner's squad (its eliminated members included; the runner alone solo), once. |
 | `BR.Net.TERMINAL_SKY` | S→C | `{ matchId, weather? }` | Time & weather: the chosen weather (an engine weather's name, never RAIN or THUNDER), to the whole match when a run sets the time or the weather and when the match ends (no `weather`), and on `br:ready` while one is set. Each client claims it only while its view is inside the circle. |
 | `BR.Net.TERMINAL_POWER` | S→C | `{ matchId, list = { { kind, x?, y?, r?, line? } } }` | Power outage: every live outage area, to the whole match when one starts or ends (an empty list: the lights back), and on `br:ready` while one lasts. |
 | `BR.Net.YUBIKEY_STATE` | S→C | `{ held, first? }` | This player's key, to them alone, on every change and on `br:ready`; `first` on the push that gave them their first key ever (the first-pickup card). Round 7 took out `squadUsed` and `squadMatch`: the plate is one plate, so nothing read them. Squadmates learn who holds a key from the squad beacon's `yubikey` bit. |
@@ -922,7 +922,7 @@ and `BR.Terminal.spot` takes only that shape -- two finite numbers within 20 km
 of the map's middle -- for such a row, and none for any other: anything else is
 `bad_option`, nothing spent. The function reads it as `opts.at` (no registry
 option is called `at`) and decides what it means (Storm control: the storm
-closes toward it, round 5; Supply drop: the airdrop spot nearest it). `brterminal run
+finishes on it, 2026-10-07; Supply drop: the airdrop spot nearest it). `brterminal run
 <id> x=<n> y=<n>` is the same spot from the console.
 
 **The confirm box asks for the spot** for such a run (the app's `RunBox`,
@@ -972,7 +972,8 @@ per frame: one nil test on the TICK pass while there is no pick.
 copy of the match's storm stream, so asking never moves the real one;
 `tools/test_storm.lua`'s `server.final` holds it exact at every phase. The answer
 goes to the squad that ran it and nobody else (`TERMINAL_REVEAL`). It is drawn
-as a radius blip and a sprite on both maps until the trip back to the lobby. With
+as a radius blip and a sprite on both maps until the trip back to the lobby.
+Storm control leaves the same mark on its runner's squad's maps (below). With
 nothing to reveal (no storm stream yet) the function is `unavailable` and spends
 nothing. A dev `brphase` or `brstormfreeze` after a reveal ends the storm
 somewhere else.
@@ -984,92 +985,75 @@ Three functions change the world everybody in the match stands in (#396,
 ("We have to keep the pace of the match"). Each is built to its own page in `copy`, and where a line could
 not be true it was changed (the report of wave B lists every one).
 
-**Storm control** (`storm_control.lua`, 150 Volts, run at a spot -- round 4,
-owner 2026-10-06: "we should let them actually pick exactly where they want
-it"; round 5, the same day, on round 4's refusal of a spot outside the next
-circle: "this limitation should not exist. the next phases should instead work
-towards the location the player selected"). The run carries the spot set on
-the big map (`at`, see [the map pick](#the-map-pick-round-4)), and **no spot is
-refused**: every circle the storm draws from now on closes toward it, and the
-last ends on it when the storm can get there and as near it as it can
-otherwise. `BR.Storm.aim` plans the rest of the match once
+**Storm control** (`storm_control.lua`, 150 Volts, run at a spot). Owner,
+2026-10-07: "I select a marker of where I want the storm to FINISH that match.
+Then, once that's applied, I have a persistent marker that I can see and my
+teammates can see, which shows us that location. As the match progresses, each
+storm will incrementally move closer to that point - breakouts will be much more
+common if the point is far away, and that breaks our traditional rules." The run
+carries the spot set on the big map (`at`, see [the map pick](#the-map-pick-round-4)),
+and **no spot is refused**. `BR.Storm.aim` plans the rest of the match once
 (`BR.StormAimPlan`, `br_lib/shared/storm_solve.lua`) and keeps the plan as
 `m.stormAim`; from the next circle `enterPhase` draws, `drawCentre` reads each
-center off it. The plan holds the planner's own rules less its dice, for every
-circle: every zone nested in the one before by its real shape (#344,
-`NEST_CLEAR`), its exact bounding box inside the map bounds wherever the planner
-would ask it, and its center on the map -- the end's and every circle's between
-them alike (round 5's review found circles between centered in the Alamo Sea);
-no aimed phase breaks out or hugs the edge, and the city share (#381) is circle
-1's anchor's, drawn before any Storm control, so it never applies here.
+center off it.
 
-- **The land, in convex pieces.** On the map (`BR.StormOffMap`) is inside the
-  surveyed boundary and off every water rectangle -- not convex, so it is cut
-  once into convex pieces (`BR.StormLand`): the boundary ear-clipped into
-  triangles, flipped to the constrained Delaunay triangulation so no fan of
-  slivers meets at one corner, merged back into convex pieces wherever two make
-  one (Hertel-Mehlhorn), and every piece a water rectangle reaches into split
-  into its parts beside it. That is 30 pieces, kept a millimeter clear of the
-  water and of the coastline wherever a piece runs along it.
-- **The spot, on land.** A spot over water or off the surveyed map is aimed as
-  the nearest point to it on the map: the nearest point of the nearest piece,
-  exactly -- the shore it was picked beside.
-- **The end.** Each phase may place its zone at offsets from the center before
-  that form a convex room (the zone before, cut to chords and eroded by the next
-  zone's exact support). Along a route -- which convex set of land each phase's
-  center stands in -- the centers each phase can reach are convex, the last
-  phase's plus its room cut to the land, and so are the ends. A best-first
-  search over the routes finds the one whose ends come nearest the spot: no
-  route ends nearer it than the land inside its centers plus the rooms still to
-  come, so once none left can beat the best end found, nothing the rules allow
-  can. The storm ends on the spot when a chain of circles with every center on
-  land can get there, and otherwise on the nearest point to it such a chain can
-  reach. It is never outside the next circle on the map, which every later
-  circle is inside.
-- **Toward, phase by phase.** Each circle's center is the one nearest the spot
-  among the centers on land its rules allow from the circle before **and** from
-  which the storm can still end there over land (the backward reach on land, a
-  union of convex sets), so the walk closes on the spot as fast as the rules
-  permit. A circle moves away from the spot only where the bounds or the land
-  leave no nearer center that still ends there.
+- **The storm finishes on the spot.** The final circle -- circle 7, the last
+  with a radius (`BR.StormFinalPhase`), the one `no_circle` and Storm reveal's
+  'Final circle' mean -- is centered on it to the bit, and phase 8 shrinks onto
+  it there.
+- **Equal shares of what is left.** Each circle from the next one not yet drawn
+  moves `1 / (circles left)` of the remaining way: `c(p) = c(p-1) + (S - c(p-1)) /
+  (7 - p + 1)`. The steps are equal and on one line, so a far spot carries
+  circles past the ones before them -- breakouts, which the planner never makes
+  on its own and which Storm control is allowed. Round 5's search for the nearest
+  point nested circles could reach is gone; it finished 6.4 km short of Paleto
+  Bay aimed from Mirror Park.
+- **On land.** A spot over water or off the surveyed map is aimed at the nearest
+  point to it on the map: the nearest point of the nearest of the land's convex
+  pieces (`BR.StormLand`: the boundary ear-clipped, flipped to the constrained
+  Delaunay triangulation and merged back into convex pieces, every piece a water
+  rectangle reaches into split beside it, a millimeter clear of the water). A
+  circle whose share lands in the water (the Alamo Sea, a bay) is moved to the
+  nearest land the same way, and the next share is taken from where it stands.
+  No map-bounds clamp: it would break the equal steps, and an overhang is
+  cosmetic ([match-math.md](match-math.md)).
+- **Priced as breakouts.** An aimed phase whose circle is not inside the one
+  before gets a breakout's lifted ceiling, read off its own record; a line
+  across the gap is priced on the moving wall wherever the wall holds it (see
+  [match-math.md](match-math.md)). The fastest wall over the walked cases is
+  15.6 m/s.
+- **The mark.** Where the storm finishes is what Storm reveal shows, so it is
+  Storm reveal's mark (`BR.Terminal.reveal`, `TERMINAL_REVEAL`): the runner's
+  squad -- eliminated members included -- or the runner alone in a solo match,
+  until the match ends, sent again on `br:ready`. A squad has one use a match, so
+  it never holds both marks. Every other squad that ran Storm reveal is sent the
+  new finish once. The persistent notice (`impact_storm`) goes to everyone else.
 
-The walk is tried to the exact end first. Where the end sits on the very edge
-of what the storm can reach -- one chain reaches it, and that walk does not pass
-the planner's tests -- the end is held two centimeters in (the reach drawn in by
-two centimeters, or the nearest point pulled two centimeters toward the reach's
-middle, whichever is nearer the spot), and twenty centimeters or two meters
-where a walk needs more; a spot inside the reach is ended on exactly unless it
-is within those two centimeters of its edge. Every center is checked against
-the real `BR.StormShape.fit`, the bounds and the land before the plan is kept.
-Storm reveal walks the same `drawCentre`, so it answers the end, and a squad
-that ran it is sent the new end. **A circle on the map never moves** (round
-6, owner 2026-10-07: "Running the storm location selection before the first
-sweep moves the first sweep to that location. That shouldn't happen."): the
-phase the storm is in, entered again from where its wall stands -- a thaw
-(`brstormfreeze off`), `brphase` to the same phase -- keeps the circle every
-player was looking at, the one on the map when the storm was aimed or the one
-the aim's walk drew, and the walk carries on from it. (That re-entry planned
-again from the wall, which put circle 1 straight onto the spot before the
-first sweep.) A `brphase` jump to another phase plans again from the wall
-toward the same spot. Nothing else moves: the record on the map and the
-circle already drawn stay, and the change reaches every client, the map's morph (#350) and the
-airdrop's re-site (#386) as any record does. **One spot a match** (round 4's
-review): once the storm is aimed, every later Storm control in that match is
-refused `storm_aimed` (`BR.Storm.aimed`) -- on its card, at the run and after
-the load, so of two loading at once the second to land gives everything back --
-and its page says so ("Only one spot can be picked each match"). Refused too:
-`no_storm`, and `no_circle` once the final circle is on the map -- and nothing
-about the spot itself: the only shape the door refuses is the one the big map
-cannot produce (`bad_option`, see the map pick). A plan costs about 16 ms of the
-server's Lua (28 ms at the 99th percentile and 40 ms at the most, over 4,000
-plans by the coast and the Alamo Sea), once per Storm control; the search
-opens at most 256 routes (the most any plan opened was 126) and the walk weighs
-at most 64 sets of centers a phase (the most was 24), which bound it. Building
-the land's pieces costs about 2 ms, once. `tools/test_storm.lua`'s `control.*`
-blocks hold it: a brute-force search over the land on the end of 343 plans,
-brute-force searches of every circle toward the spot, 84 spots walked through
-the real phase job, the bounds from circles that overhang them, the land's
-pieces against `BR.StormOffMap`, and round 5's review's cases by the Alamo Sea.
+**A circle on the map never moves** (round 6, owner 2026-10-07: "Running the
+storm location selection before the first sweep moves the first sweep to that
+location. That shouldn't happen."): the aim applies from the next circle not yet
+drawn, and the phase the storm is in, entered again from where its wall stands
+-- a thaw (`brstormfreeze off`), `brphase` to the same phase -- keeps the circle
+every player was looking at, the one on the map when the storm was aimed or the
+one the aim's walk drew, and the walk carries on from it. A `brphase` jump to
+another phase plans again from the wall toward the same spot, and a plan made
+again from any circle of its own walk is that walk to the bit. Nothing else
+moves: the record on the map and the circle already drawn stay, and the change
+reaches every client, the map's morph (#350) and the airdrop's re-site (#386) as
+any record does. **One spot a match** (round 4's review): once the storm is aimed,
+every later Storm control in that match is refused `storm_aimed`
+(`BR.Storm.aimed`) -- on its card, at the run and after the load, so of two
+loading at once the second to land gives everything back -- and its page says so
+("Only one spot can be picked each match"). Refused too: `no_storm`, and
+`no_circle` once the final circle (circle 7) is on the map -- and nothing about
+the spot itself: the only shape the door refuses is the one the big map cannot
+produce (`bad_option`, see the map pick). A plan is a few sums a phase and a
+nearest-land lookup only for a center over water, once per Storm control.
+`tools/test_storm.lua`'s `control.*` blocks hold it: the rule against its own
+arithmetic over 630 plans (the same walk planned again from any of its circles),
+the nearest land against a brute-force walk of every coastline, 72 spots walked
+through the real phase job, the breakouts' pricing walked with a lobby, a 7 km
+island on the real client, and the land's pieces against `BR.StormOffMap`.
 
 **Time & weather** (`time_weather.lua`, both sides; options `change`, then
 `time` or `weather`). Round 4 (owner, 2026-10-06): "either time or weather to
@@ -1688,7 +1672,7 @@ restarted client's list whole.
 | A bounty (`impact_bounty`) | the player who carries it: a Contract's target, and a Scan's runner (the coordinator's spec named both) -- not while their squad is under Ghost, when no map shows them | its ten minutes |
 | Scan (`impact_scan`) | every opponent of a scanning squad, but a squad under Ghost while it lasts | the match ends |
 | Time & weather (`impact_time`, `impact_weather`) | everyone in the fight but the runner of the time (while its clock is the match's) and of the weather, one row each | the match ends |
-| Storm control (`impact_storm`) | everyone in the fight but whoever aimed the storm that stands | the match ends |
+| Storm control (`impact_storm`) | everyone in the fight but the squad that aimed the storm that stands, which has the spot on its maps instead (2026-10-07) | the match ends |
 | Airstrike (`impact_airstrike`) | everyone in the fight within its reach (its 40 m and a blast's 14 m past it) by the server's own samples, as they walk in and out -- the runner's squad included, never the runner | its last rocket |
 
 **None:** Disarm, Field medic's drain, Max ammo, Reboot, Supply drop, Gear Up

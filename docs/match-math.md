@@ -334,6 +334,12 @@ its measured error and cost are in storm_solve.lua. A line that already crosses
 open storm at the start of the sweep — every line out of a disjoint breakout's
 zone — can keep nobody inside, and is priced at its length: the destination
 reached by the end (one such player used to be priced at 3.9 million metres).
+On a Storm control phase (#396) such a line is read on the moving wall too,
+wherever the wall itself crosses it short of the destination at every instant
+read: a far spot's gap is kilometers wide, and at its length the wall sweeping
+the gap caught the lobby's rear-most runner (394 HP at phase 5, LSIA aimed from
+Sandy Shores). A line the wall leaves keeps its length. The wall asks 1.00 to
+1.03 times the line on the walked cases.
 
 **Priced at the length it is published at.** The wall turns into the
 destination's shape `morph.leadSeconds` before the sweep ends, so its corners
@@ -433,6 +439,23 @@ ceiling  = shrink × shrinkFactor × max(1, W / ((2 + gapMax) × curRadius))
 
 A breakout no longer than a circle's could be is priced exactly as before; a
 phase that did not roll one keeps its authored ceiling.
+
+**Storm control's breakouts (#396, 2026-10-07).** An aimed match's circles move an
+equal share of the remaining way to the picked spot, so a far spot carries them
+past the circle before by kilometers, and no roll decides it: an aimed phase is
+a breakout exactly when its destination is not inside the zone the wall starts
+as (`BR.StormNested` on its own record), and then gets the lifted ceiling above.
+With the authored ceiling the walked cases drew walls of 35–61 m/s across 1.6–2.2 km
+steps and 225 m/s across one of 8.9 km; lifted, the fastest is 15.6 m/s, and from
+phase 5 on no aimed phase reaches its ceiling. Phases 2–4 of a far aim can, as an
+ordinary breakout's can, and there the rear-most runner at 9 m/s is caught (up to
+411 HP in the walked cases). A far aim lengthens the match: one 8.9 km step at
+phase 7 sweeps for 985 s against an authored 40. The gap between the moving zone
+and a separate destination stays storm until the wall arrives, so a runner who
+outpaces the wall into the gap is billed; the island itself is safe from the start.
+Aimed centers are not clamped to `mapAABB` (the equal steps would break), so an
+aimed zone can overhang the bounds where an ordinary one is clamped: cosmetic, the
+bounds being a rectangle round an island.
 
 Two earlier formulations were wrong in instructive ways — scaling the budget by
 the *next* radius made the final phase (radius 0) unable to move at all, and
