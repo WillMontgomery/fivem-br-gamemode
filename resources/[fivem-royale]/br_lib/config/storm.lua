@@ -787,7 +787,7 @@ BR.Config.Storm = {
             --
             -- The fade below is carried by each piece's two ends, so a piece is cut
             -- no longer than this: a phase-1 blob's straight run can be 9.6 km, its
-            -- middle beside the player while both ends are past 8 km. Pieces of one
+            -- middle beside the player while both ends are past 3 km. Pieces of one
             -- straight run lie on one line, so this changes no picture. 1500 is the
             -- fade band's own width, which is what lets farFade's texture hold the
             -- far end of any piece the fade can still see (see farFade). MEASURED
@@ -805,8 +805,10 @@ BR.Config.Storm = {
             -- to ease in before and out after (client/storm.lua's wallSplit).
             splitRampSec = 2.0,
 
-            -- ═══ THE FAR WALL FADES OUT FROM 6.5 TO 8 km, AND IS NOT DRAWN PAST IT
+            -- ═══ THE FAR WALL FADES OUT FROM 1.5 TO 3 km, AND IS NOT DRAWN PAST IT
             --     (#393) ═══
+            --
+            --   "If the wall fade today is 5km, make it 3km"  -- the owner, 2026-10-07
             --
             -- Measured from the viewpoint the wall already faces by (the player, or
             -- the player watched), on the ground, to every end of every piece. Any
@@ -814,12 +816,14 @@ BR.Config.Storm = {
             -- was drawn with before this existed; past endM a piece is not
             -- submitted at all.
             --
-            -- WHY 6.5 TO 8. 8 is the owner's. 6.5 is as close as the band can start
-            -- while, from phase 3's hold on, the shape a player stands in is never
-            -- faded: it is phase 2's target or smaller, and MEASURED over 1000 seeds a
-            -- 1600 m blob is at most 6.40 km end to end (4.29 on average). Phase 1's
-            -- ring and circle 1 (up to 10.4 km) are what fade, which is where the draws
-            -- are -- and a breakout's far shape, like any far wall. And 1.5 km is wide
+            -- WHY 1.5 TO 3. 3 is the owner's, for frame time; the band keeps the
+            -- 1.5 km it had at 6.5 to 8. THE TRADE HE ACCEPTED: a zone wider than
+            -- about 3 km fades on its far side, the one a player stands in included.
+            -- From phase 3's hold on that zone is phase 2's target or smaller, and
+            -- MEASURED over 1000 seeds a 1600 m blob is up to 6.40 km end to end (4.29
+            -- on average), so a player near one end of it sees the far end thin out
+            -- from 1.5 km and go past 3. Phase 1's ring and circle 1 (up to 10.4 km)
+            -- fade the same way, which is where the draws are. And 1.5 km is wide
             -- enough that nothing pops: the fade is a smoothstep, flat at both ends,
             -- carried along each piece by the texture rather than one alpha a piece
             -- (one alpha a piece is a staircase -- the "three visible steps" the
@@ -829,7 +833,7 @@ BR.Config.Storm = {
             --
             -- `cols` is the texture's columns per band: the fade curve is held at 17
             -- points and the sampler blends between them.
-            farFade  = { startM = 6500.0, endM = 8000.0, cols = 16 },
+            farFade  = { startM = 1500.0, endM = 3000.0, cols = 16 },
 
             -- THE FLOOR ON ROUNDNESS, for the endgame circles where the sag rule
             -- would happily draw a 40m ring as a pentagon: a loop is drawn at no more

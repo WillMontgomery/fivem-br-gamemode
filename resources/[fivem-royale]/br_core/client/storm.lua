@@ -377,17 +377,17 @@ end
 --- straight blend:
 ---
 ---   * at the far end, it pulls the blend back toward the near end and leaves alpha
----     past 8 km -- 13 percent of it at 8 km, on a 1.5 km piece running straight away
----     from a viewer at 7;
----   * at the near end, it pushes the band's ramp in past 6.5 km -- 16 percent off a
----     point just inside 6.5, on a 1.5 km piece crossing it.
+---     past 3 km -- 13 percent of it at 3 km, on a 1.5 km piece running straight away
+---     from a viewer at 2;
+---   * at the near end, it pushes the band's ramp in past 1.5 km -- 16 percent off a
+---     point just inside 1.5, on a 1.5 km piece crossing it.
 ---
 --- Any piece with a point in the band has both ends within maxQuadM of it, so a
 --- texture holding maxQuadM / band bands of full alpha before the fade and as many of
 --- nothing after it never clamps a piece that is drawn: one band each at the shipping
---- 1500 m, 3 * cols + 1 = 49 columns. Then a point inside 6.5 km is shown at its
+--- 1500 m, 3 * cols + 1 = 49 columns. Then a point inside 1.5 km is shown at its
 --- distance or a few meters past it -- the convexity, 43 m at most on a 1.5 km piece --
---- and a point past 8 km is shown past it, at zero.
+--- and a point past 3 km is shown past it, at zero.
 --- @param sp table  cfg.render.strip
 --- @return integer|nil cols, integer width, integer x0
 local function farLayout(sp)
@@ -925,7 +925,7 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
         -- straight blend of its two ends. That is the true fade to meters on a quad
         -- a kilometer or so long -- and wrong on the 9.6 km straight run a phase-1
         -- blob can have, whose middle can stand next to the player while both ends
-        -- are past 8 km. So a straight run is cut into pieces no longer than
+        -- are past 3 km. So a straight run is cut into pieces no longer than
         -- maxQuadM, and an arc's step is capped by it too. A straight run's pieces
         -- lie on one line, so the picture does not change.
         local cRun = chordM
@@ -1139,6 +1139,7 @@ end
 --- ═══ AND THE FAR WALL FADES, AND PAST endM IS NOT SUBMITTED (#393) ═══
 ---
 ---   "Let's fade the wall past 8km include large pieces"   -- the owner, 2026-10-07
+---   "If the wall fade today is 5km, make it 3km"          -- the owner, 2026-10-07
 ---
 --- Measured on the ground from (vx, vy) -- the viewpoint the face test already uses,
 --- the player or the player watched -- to each END of each quad, which carries its own
@@ -1477,8 +1478,8 @@ local function drawStrip(shape, alphaScale, g, pool, view, split)
     -- buy nothing.
     --
     -- (Written at a chordM of 2. The owner has since chosen larger pieces
-    -- everywhere -- 8 m, config/storm.lua -- and a far wall that fades out from 6.5
-    -- km and is not drawn past 8, which emitStrip carries.)
+    -- everywhere -- 8 m, config/storm.lua -- and a far wall that fades out from 1.5
+    -- km and is not drawn past 3, which emitStrip carries.)
     -- THE FRAME'S DRAW, KEPT ON THE STRIP, and every number in it is one the loop
     -- that used to be here read from a local. emitStrip is that loop.
     local d = g.draw

@@ -1417,6 +1417,15 @@ end
 --- texture in the stubs is the other way and is tested separately, because "the
 --- operator asked for bands" and "the texture could not be built" are different rungs
 --- and the console line has to be able to tell them apart.
+--- `C` with the far fade off (#393): for the blocks about something else that look at a
+--- wall from more than 1.5 km off -- its ramp, its pool, phase 1's two walls -- which
+--- the owner's 3 km fade would thin or take away. wall.farfade is the fade's own block.
+--- @return table C
+local function noFarFade(C)
+    C.env.BR.Config.Storm.render.strip.farFade = nil
+    return C
+end
+
 local function bandedClient()
     local C = newStormClient()
     C.env.BR.Config.Storm.render.strip.fade.prefer = 'bands'
@@ -3520,7 +3529,7 @@ do
     -- alone claims is asserted here: the configured number of stacked quads, band
     -- planes with none missing, one alpha per plane uniform round the ring, and the
     -- ramp falling as the wall rises.
-    local B = bandedClient()
+    local B = noFarFade(bandedClient())
     B.recordWallOnly()
     B.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
     B.pedAt = pt(0.0, 0.0, 30.0)
@@ -4645,13 +4654,13 @@ do
     -- ═══ wall.busfade: THE FAR FADE ON THE BUS, WITH THE CULL AND THE CUT (#393) ═══
     --
     -- The fade and the cull are two partitions of one frame, and neither may eat into
-    -- the other: with the plane far enough off circle 1 that its far side is past 8
+    -- the other: with the plane far enough off circle 1 that its far side is past 3
     -- km, the culled frame and the cut that follows it must still draw exactly the
     -- uncut frame -- now the faded one -- each triangle once, and nothing on screen
     -- may go missing. Fewer poses than above; the claim is the same one.
     describe('wall.busfade')
     do
-        local FAR = { x = CCX - CR - 6300.0, y = 300.0, z = 500.0 }
+        local FAR = { x = CCX - CR - 1300.0, y = 300.0, z = 500.0 }
         local C = newBus(FAR.x, FAR.y, FAR.z)
         C.frame()
         local ref = C.polys
@@ -4667,7 +4676,7 @@ do
             for j = 1, 3 do if t[j].u ~= u0 then faded = true end end
         end
         ok(refN > 0 and refN < #O.polys and faded,
-            'precondition: from there the preview fades, and part of it is past 8 km',
+            'precondition: from there the preview fades, and part of it is past 3 km',
             ('%d triangles faded, %d with no fade'):format(refN, #O.polys))
         local bad, lost, posesF = nil, nil, 0
         for yaw = 0, 330, 30 do
@@ -5279,31 +5288,34 @@ end
 -- ---------------------------------------------------------------------------
 describe('wall.farfade')
 do
-    -- ═══ THE FAR WALL FADES FROM 6.5 TO 8 km, AND IS NOT DRAWN PAST IT (#393) ═══
+    -- ═══ THE FAR WALL FADES FROM 1.5 TO 3 km, AND IS NOT DRAWN PAST IT (#393) ═══
     --
     --   "Let's fade the wall past 8km include large pieces"  -- the owner, 2026-10-07
+    --   "If the wall fade today is 5km, make it 3km"         -- the owner, 2026-10-07
     --
-    -- Phase 1's opening ring, 9.4 km of radius, seen from 5.2 km off its center: its
-    -- near side inside 6.5 km, its far side past 14. Every claim is checked against a
+    -- Phase 1's opening ring, 9.4 km of radius, seen from 300 m inside its edge: its
+    -- near side inside 1.5 km, its far side past 18. Every claim is checked against a
     -- second client with no far fade -- the wall as it was drawn before, all of it.
     --
-    -- WHAT IS DRAWN AND WHAT IS NOT IS HELD TO THE OWNER'S 8 km, NOT THE CONFIG'S endM:
+    -- WHAT IS DRAWN AND WHAT IS NOT IS HELD TO THE OWNER'S 3 km, NOT THE CONFIG'S endM:
     -- a bound read from the config under test proves only that the code agrees with
     -- itself, and the review drew the wall out to 8.5 km through this block unseen.
-    -- The band's start is held to the widest zone a player stands in from phase 3's
-    -- hold on, found below rather than sampled. The curve between the two is the
-    -- config's, and the pop test is what holds it to being gentle.
-    local OWNER_END = 8000.0
+    -- The band is held to the 1.5 km it was when the fade ended at 8. The curve
+    -- between its two ends is the config's, and the pop test is what holds it to being
+    -- gentle. And the zone a player stands in is no longer exempt: the last claims
+    -- below pin the trade the owner took, its far side fading past 1.5 km.
+    local OWNER_END, OWNER_BAND = 3000.0, 1500.0
     local CFGS = newStormClient().env.BR.Config.Storm
     local SP, RR = CFGS.render.strip, CFGS.render
     local FF = SP.farFade
     local F0, F1 = FF.startM, FF.endM
     local BAND = F1 - F0
-    ok(F1 == OWNER_END and F0 < F1,
-        'the fade ends at the owner\'s 8 km: "fade the wall past 8km"',
+    ok(F1 == OWNER_END and BAND == OWNER_BAND,
+        'the fade ends at the owner\'s 3 km -- "make it 3km" -- over the same 1.5 km '
+            .. 'band it had, so from 1.5 km',
         ('startM %.0f, endM %.0f'):format(F0, F1))
     local RING = 9400.0
-    local VIEW = pt(-5000.0, -1500.0, 30.0)
+    local VIEW = pt(-8975.0, -1500.0, 30.0)
 
     --- The far fade, written out a second time: 1 inside F0, a smoothstep down to 0 at
     --- F1, and 0 past it.
@@ -5364,10 +5376,10 @@ do
     end
     ok(F.errored() == nil and R.errored() == nil and inside > 0 and inBand > 0
         and beyond > 0,
-        'precondition: the ring has pieces inside 6.5 km, in the band and past 8 km',
+        'precondition: the ring has pieces inside 1.5 km, in the band and past 3 km',
         ('%d inside, %d in the band, %d past'):format(inside, inBand, beyond))
 
-    -- ─── nothing past 8 km, nothing inside it lost, nothing new ───
+    -- ─── nothing past 3 km, nothing inside it lost, nothing new ───
     local want = {}
     for _, s in ipairs(refP) do
         if nearest(s, VIEW) < OWNER_END then want[#want + 1] = footKey(s) end
@@ -5377,7 +5389,7 @@ do
     local same = #want == #got
     for i = 1, math.min(#want, #got) do if want[i] ~= got[i] then same = false end end
     ok(same,
-        'exactly the pieces with a point inside 8 km are drawn, in the wall\'s own '
+        'exactly the pieces with a point inside 3 km are drawn, in the wall\'s own '
             .. 'order -- none past it, none inside it lost, none new',
         ('%d drawn, %d wanted of %d'):format(#got, #want, #refP))
     ok(#F.polys < #R.polys,
@@ -5403,10 +5415,10 @@ do
     end
     ok(uWrong == nil,
         'every end of every piece in the band carries the u of its own distance, and '
-            .. 'a piece wholly inside 6.5 km the center of the band\'s start column',
+            .. 'a piece wholly inside 1.5 km the center of the band\'s start column',
         uWrong)
 
-    -- ─── inside 6.5 km, exactly as before ───
+    -- ─── inside 1.5 km, exactly as before ───
     local byKey = {}
     for _, s in ipairs(refP) do byKey[footKey(s)] = s end
     local nearBad, nearN = nil, 0
@@ -5431,12 +5443,12 @@ do
         end
     end
     ok(nearN > 0 and nearBad == nil,
-        'a piece with both ends inside 6.5 km is drawn with every argument the wall '
+        'a piece with both ends inside 1.5 km is drawn with every argument the wall '
             .. 'with no fade passes, its u at the center of the band\'s start column -- '
             .. 'which is that wall\'s ramp to the byte (wall.ramp): the same texels',
         nearBad or ('%d pieces'):format(nearN))
 
-    -- ─── along each piece: zero past 8 km, full inside 6.5, never above its distance ─
+    -- ─── along each piece: zero past 3 km, full inside 1.5, never above its distance ─
     local alongBad, alongN = nil, 0
     for _, s in ipairs(farP) do
         for k = 0, 32 do
@@ -5447,9 +5459,9 @@ do
             local full = tex.px[0][X0].a / 255.0
             alongN = alongN + 1
             if d >= OWNER_END and a ~= 0.0 then
-                alongBad = alongBad or ('%.4f drawn at %.0f m, past 8 km'):format(a, d)
+                alongBad = alongBad or ('%.4f drawn at %.0f m, past 3 km'):format(a, d)
             elseif d <= F0 and a < 0.995 * full then
-                alongBad = alongBad or ('%.4f of %.4f at %.0f m, inside 6.5'):format(a,
+                alongBad = alongBad or ('%.4f of %.4f at %.0f m, inside 1.5'):format(a,
                     full, d)
             elseif a > full * fadeAt(d) + 0.01 then
                 alongBad = alongBad or ('%.4f at %.0f m, more than its fade %.4f')
@@ -5459,11 +5471,11 @@ do
     end
     ok(alongBad == nil,
         'and along every piece, read through the texture as a sampler blends it: '
-            .. 'nothing past 8 km, at least 99.5 percent inside 6.5, and never more '
+            .. 'nothing past 3 km, at least 99.5 percent inside 1.5, and never more '
             .. 'than the fade at that point\'s own distance',
         alongBad or ('%d points'):format(alongN))
 
-    -- ─── nothing pops: walking 4 km across the ring, toward its far side ───
+    -- ─── nothing pops: walking 4 km in from the ring, toward its far side ───
     local popBad, steps, toggled = nil, 0, 0
     local prev = nil
     for k = 0, 200 do
@@ -5507,7 +5519,7 @@ do
         'nothing pops: walking 4 km in 20 m steps, every piece that starts or stops '
             .. 'being drawn is under 1 percent where it does, and no end moves more '
             .. 'than 3 percent a step (the steepest the band gets is 2 percent)',
-        popBad or ('%d steps, %d pieces crossed 8 km'):format(steps, toggled))
+        popBad or ('%d steps, %d pieces crossed 3 km'):format(steps, toggled))
 
     -- ─── the banded fallback: a whole piece at a time, by its nearest point ───
     local BR_ = ringClient(true, true)
@@ -5525,7 +5537,7 @@ do
         local dn = nearest(s, VIEW)
         bandN = bandN + 1
         if not old or dn >= OWNER_END then
-            bandBad = bandBad or 'a piece drawn that the wall has not, or past 8 km'
+            bandBad = bandBad or 'a piece drawn that the wall has not, or past 3 km'
         else
             for b, band in ipairs(s.q.bands) do
                 local zc = (band.z0 + band.z1) * 0.5
@@ -5542,19 +5554,22 @@ do
     end
     ok(BF.errored() == nil and bandBad == nil and bandN == bWant and bandSeen > 0,
         'the banded fallback, which has no texture, draws the same pieces and fades '
-            .. 'each whole one by its nearest point: unchanged inside 6.5 km',
+            .. 'each whole one by its nearest point: unchanged inside 1.5 km',
         bandBad or ('%d pieces, %d bands faded'):format(bandN, bandSeen))
 
-    -- ─── from phase 3's hold on, a player inside a zone sees all of it unfaded ───
+    -- ─── THE TRADE: a zone wider than 3 km fades on its far side, even the one a
+    --     player stands in ───
     --
-    -- From phase 3's hold on the zone a player stands in is phase 2's target or a
-    -- zone inside it, so the band may start no nearer than the widest phase-2 target
-    -- is long. It is FOUND, over a thousand seeds, not sampled: a zone is the hull of
-    -- its corner discs, so its length end to end is the longest of |c_i - c_j| +
-    -- rho_i + rho_j over its corners -- 6.40 km at the widest, 4.30 on average, and
-    -- over 6 km on four seeds in a thousand, which is why a dozen seeds never found it.
-    -- A player stood a meter inside one end of that zone must see every piece of its
-    -- wall unfaded, the far end included.
+    -- At 6.5 to 8 km no zone a player stands in from phase 3's hold on faded. At the
+    -- owner's 3 km that is given up, by his decision ("make it 3km", 2026-10-07). From
+    -- phase 3's hold on the zone a player stands in is phase 2's target or a zone
+    -- inside it, and its length end to end is FOUND here, over a thousand seeds, not
+    -- sampled: a zone is the hull of its corner discs, so its length is the longest of
+    -- |c_i - c_j| + rho_i + rho_j over its corners -- 6.40 km at the widest, 4.30 on
+    -- average. A player stood a meter inside one end of the widest sees the wall round
+    -- them unfaded inside 1.5 km, the stretch out to 3 km thinning, and the far end not
+    -- drawn at all. If this block goes red because the far end is drawn again, the fade
+    -- was moved back out: that is the owner's number to change, not this test's.
     local phases = CFGS.phases
     local U = newStormClient().env
     local r2 = phases[2].radius
@@ -5570,12 +5585,18 @@ do
             end
         end
     end
-    local C = newStormClient()
-    local rec = C.record(3, 0.0, 0.0, r2, 0.0, 0.0, phases[3].radius, 600000, 60000, 1.7)
-    rec.seed = wSeed
-    rec.tStart = C.now - 60000
-    C.grown()
-    C.recordWallOnly()
+    --- The phase-3 hold in that zone, its wall alone, seen from (x, y).
+    local function inZone(C, x, y)
+        local rec = C.record(3, 0.0, 0.0, r2, 0.0, 0.0, phases[3].radius, 600000, 60000,
+            1.7)
+        rec.seed = wSeed
+        rec.tStart = C.now - 60000
+        C.grown()
+        C.recordWallOnly()
+        C.pedAt = pt(x, y, 30.0)
+        C.frame()
+        return rec
+    end
     -- One end of the zone: corner j's disc, on the far side from corner i's.
     local ks = U.BR.StormUnit(wSeed, 2).ks
     local ki, kj = ks[wi], ks[wj]
@@ -5584,32 +5605,50 @@ do
     if ul > 0.0 then ux, uy = ux / ul, uy / ul else ux, uy = 1.0, 0.0 end
     local ex = (kj.x - ux * kj.rho) * r2 + ux
     local ey = (kj.y - uy * kj.rho) * r2 + uy
-    C.pedAt = pt(ex, ey, 30.0)
-    C.frame()
-    local ps = piecesOf(C)
+    local C = newStormClient()
+    local rec = inZone(C, ex, ey)
+    local R0 = noFarFade(newStormClient())
+    inZone(R0, ex, ey)
+    local ps, all = piecesOf(C), piecesOf(R0)
     local u0 = (X0 + 0.5) / C.rt.tex.w
-    local wBad, farthest = nil, 0.0
+    local plain, faded, wBad, farDrawn = 0, 0, nil, 0.0
     for _, sg in ipairs(ps) do
+        local dn = nearest(sg, C.pedAt)
+        if dn > farDrawn then farDrawn = dn end
+        if dn >= OWNER_END then
+            wBad = wBad or ('a piece drawn %.0f m away, past 3 km'):format(dn)
+        end
+        if sg.ua == u0 and sg.ub == u0 then
+            plain = plain + 1
+            if math.max(ground(sg[1], sg[2], C.pedAt), ground(sg[3], sg[4], C.pedAt))
+                > OWNER_END - OWNER_BAND + 1e-6 then
+                wBad = wBad or 'a piece reaching past 1.5 km drawn unfaded'
+            end
+        else
+            faded = faded + 1
+        end
+    end
+    local farthest = 0.0
+    for _, sg in ipairs(all) do
         for e = 0, 1 do
             local d = ground(sg[1 + 2 * e], sg[2 + 2 * e], C.pedAt)
             if d > farthest then farthest = d end
         end
-        if sg.ua ~= u0 or sg.ub ~= u0 then
-            wBad = wBad or ('a piece faded, %.0f m away'):format(
-                math.max(ground(sg[1], sg[2], C.pedAt), ground(sg[3], sg[4], C.pedAt)))
-        end
     end
     local inside = C.env.BR.StormShape.distance(zoneOf(C.env, rec), ex, ey)
-    ok(F0 > widest and widest > 6300.0 and inside < 0.0 and farthest > 6300.0,
-        'the band starts past the widest zone a player stands in from phase 3\'s hold on: '
-            .. 'phase 2\'s widest target, over a thousand seeds',
-        ('widest %.1f m (seed %s) against a band from %.0f m; the player %.2f m inside, '
-            .. 'its far end %.1f m off'):format(widest, tostring(wSeed), F0, inside,
-            farthest))
-    ok(C.errored() == nil and #ps > 0 and wBad == nil,
-        'and from a meter inside one end of it, every piece of its wall is drawn unfaded, '
-            .. 'the far end 6.4 km off included',
-        wBad or ('%d pieces'):format(#ps))
+    ok(widest > 6300.0 and inside < 0.0 and farthest > 6300.0,
+        'precondition: the widest zone a player stands in from phase 3\'s hold on is '
+            .. 'over 6.3 km end to end -- phase 2\'s widest target, over a thousand seeds '
+            .. '-- and the player is just inside one end of it',
+        ('widest %.1f m (seed %s); the player %.2f m inside, its far end %.1f m off')
+            :format(widest, tostring(wSeed), inside, farthest))
+    ok(C.errored() == nil and R0.errored() == nil and wBad == nil and plain > 0
+        and faded > 0 and #ps < #all,
+        'THE TRADE: from a meter inside one end of it, the wall round the player is '
+            .. 'unfaded inside 1.5 km, thins out to 3 km, and the far end is not drawn -- '
+            .. 'a zone wider than 3 km fades on its far side, the one stood in included',
+        wBad or ('%d pieces unfaded, %d faded, %d of %d drawn, the farthest drawn '
+            .. '%.0f m off'):format(plain, faded, #ps, #all, farDrawn))
 end
 
 -- ---------------------------------------------------------------------------
@@ -6007,7 +6046,7 @@ do
     -- THE CLIENT DRAWS THE SAME TRIANGLES. The same sweep, frame after frame, drawn
     -- by a client using its pool and by one whose shape functions ignore the pool.
     local function sweeping(unpooled)
-        local C = newStormClient()
+        local C = noFarFade(newStormClient())
         if unpooled then
             local Z, I, R = C.env.BR.StormZone, C.env.BR.StormShape.inset,
                 C.env.BR.StormShape.runs
@@ -11153,9 +11192,10 @@ do
         return pv, rw
     end
 
-    --- A client on the bus, with the mainland loaded and circle 1 published.
+    --- A client on the bus, with the mainland loaded and circle 1 published. The far
+    --- fade is off: the opening ring is 4 km round a player in its middle.
     local function busClient()
-        local C = newStormClient()
+        local C = noFarFade(newStormClient())
         local env = C.env
         env.BR.State.storm = nil
         env.BR.State.match.state = MS.BUS
@@ -11475,8 +11515,9 @@ do
     --   and into the sweep, which now starts a minute and a half early.
     --
     -- AND SINCE THE MATCH GOES LIVE AT 65% LANDED, SOME OF IT IS STILL IN THE AIR
-    -- WHEN THESE RECORDS ARRIVE. So this client is gliding, not standing.
-    local C = newStormClient()
+    -- WHEN THESE RECORDS ARRIVE. So this client is gliding, not standing. The far fade
+    -- is off, as in `preview.twowalls`: the opening ring is 4 km round it.
+    local C = noFarFade(newStormClient())
     local env = C.env
     local MS, PS = env.BR.MatchState, env.BR.PlayerState
     local rr = env.BR.Config.Storm.render
