@@ -1813,6 +1813,100 @@ do
     end
 end
 
+describe('round 7 review: what a tool now does, said on every line of its page')
+do
+    -- Round 7 taught the EMP to stop NPC traffic and the Airstrike's rockets
+    -- to home in, and changed one line of each page: the EMP's Affects line
+    -- still named only players' vehicles under "NPC traffic stops too.", and
+    -- the Airstrike's still said "They aren't guided." So each behavior is
+    -- read from the client code that does it, and every line of that tool's
+    -- page that says it is held to it -- squad and solo -- and no line of the
+    -- tool (its page, its lobby line, its notice) says the opposite.
+    bootServer()
+    local copy = BR.Config.Terminals.copy
+    local BEHAVIORS = {
+        { name = 'NPC traffic stops (road speed zones at 0)',
+          seen = function(src) return src:find('AddRoadNodeSpeedZone', 1, true) ~= nil end,
+          says = { what = 'NPC traffic', affects = 'NPC traffic' } },
+        { name = 'its rockets fly in from art.rocket.launchM off to the side, homing',
+          seen = function(src) return src:find('launchM', 1, true) ~= nil end,
+          says = { what = 'home in on' },
+          never = { 'guided', 'fall on' } },
+    }
+    local seenBy = {}
+    for _, f in ipairs(fxFiles('client')) do
+        local id = f:match('([%w_]+)%.lua$')
+        local src = (readFile(ROOT .. f) or ''):gsub('%-%-[^\n]*', '')
+        for _, b in ipairs(BEHAVIORS) do
+            if b.seen(src) then
+                seenBy[b.name] = id
+                for part, phrase in pairs(b.says) do
+                    local key = id .. '_' .. part
+                    for _, k in ipairs({ key, key .. '_solo' }) do
+                        if k == key or copy[k] ~= nil then
+                            ok((copy[k] or ''):find(phrase, 1, true) ~= nil,
+                                ('%s: %s, and %s says "%s"'):format(id, b.name, k, phrase), copy[k])
+                        end
+                    end
+                end
+                for k, v in pairs(copy) do
+                    if k:sub(1, #id + 1) == id .. '_' or k:match('^impact_' .. id .. '$')
+                        or k:match('^impact_' .. id .. '_solo$') then
+                        for _, word in ipairs(b.never or {}) do
+                            ok(not v:lower():find(word, 1, true),
+                                ('%s: %s, and %s never says "%s"'):format(id, b.name, k, word), v)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    eq(seenBy[BEHAVIORS[1].name], 'emp', 'the EMP is the tool that stops NPC traffic')
+    eq(seenBy[BEHAVIORS[2].name], 'airstrike', 'the Airstrike is the tool whose rockets home in')
+end
+
+describe('round 7 review: a card\'s status worked out over the squad says so in a squad match')
+do
+    -- Max ammo is refused `ammo_full` when every gun its squad carries is
+    -- full -- a runner with no gun at all included, whose card said "Ammo
+    -- already full" as if it were theirs (owner, 2026-10-07: '"ammo already
+    -- full" shows when I've got no weapons in-hand, so that's a bit
+    -- confusing'). A reason whose full line has a squad and a solo version is
+    -- worked out over more than the viewer, so its card's short line has its
+    -- own solo sibling and says squad -- or is one of EITHER_WAY, which read
+    -- true of a squad and of a player alone alike (each checked by hand: a new
+    -- reason is added here, or given a sibling).
+    bootServer()
+    local copy = BR.Config.Terminals.copy
+    local TS = BR.TerminalSolve
+    local EITHER_WAY = {
+        health_full = 'Nobody to heal or drain',
+        no_guns = 'No guns to refill',
+        no_target = 'No opponent with an elimination',
+        no_weapons = 'No armed opponents',
+    }
+    local checked = {}
+    for k, v in pairs(copy) do
+        local reason = k:match('^status_(.+)$')
+        if reason and not reason:find('_solo$') and copy[reason] ~= nil and copy[reason .. '_solo'] ~= nil then
+            checked[#checked + 1] = reason
+            if EITHER_WAY[reason] then
+                eq(v, EITHER_WAY[reason], ('%s reads true of a squad and of a player alone (checked by hand)'):format(k))
+            else
+                ok(type(copy[k .. '_solo']) == 'string',
+                    ('%s is worked out over the squad: it has a %s_solo sibling'):format(k, k), v)
+                ok(v:lower():find('squad', 1, true) ~= nil, ('and %s says squad'):format(k), v)
+            end
+        end
+    end
+    table.sort(checked)
+    eq(table.concat(checked, ','), 'ammo_full,health_full,no_guns,no_target,no_weapons',
+        'the reasons worked out over more than the viewer')
+    eq(TS.pick(copy, 'status_ammo_full', true), "Squad's ammo already full",
+        'Max ammo, every gun in the squad full: the squad\'s, in a squad match')
+    eq(TS.pick(copy, 'status_ammo_full', false), 'Ammo already full', 'and the player\'s own outside one')
+end
+
 describe('round 2: squad-only functions -- hidden and refused outside a squad match')
 do
     bootServer()

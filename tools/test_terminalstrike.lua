@@ -975,7 +975,8 @@ do
         ok(w:find(('%d seconds later, %d rockets'):format(FX.strikeWarnMs / 1000, FX.strikeRockets), 1, true)
             and w:find(('within %d meters'):format(FX.strikeRadiusM), 1, true)
             and w:find(('about %d seconds'):format(FX.strikeSpreadMs / 1000), 1, true)
-            and w:find("They aren't guided.", 1, true), k .. ' says the numbers, and that they are not guided')
+            and w:find('rockets home in on random points', 1, true) and not w:find('guided', 1, true),
+            k .. ' says the numbers, and that they home in on their points (round 7), never that they are not guided')
     end
     ok(COPY.airstrike_description:find(('in %d seconds'):format(FX.strikeWarnMs / 1000), 1, true)
         and COPY.airstrike_risks:find(('%d seconds'):format(FX.strikeWarnMs / 1000), 1, true)

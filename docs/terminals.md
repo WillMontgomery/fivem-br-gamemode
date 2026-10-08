@@ -1222,7 +1222,13 @@ carried gun draws on to its cap and loads an empty magazine
 Refused, spending nothing, when nobody has room: `no_guns` when nobody still in
 the fight carries a gun at all (`BR.Inv.hasGuns`: a gun with a magazine, never
 melee or a throwable; round 7, owner 2026-10-07: '"ammo already full" shows
-when I've got no weapons in-hand, so that's a bit confusing'), else `ammo_full`. The whole squad in a squad match, wherever they are (round 4, owner 2026-10-06: "should apply to the whole squad, when in squads" -- it always did; `test_terminalfx.lua` pins a squadmate across the map and one in the air).
+when I've got no weapons in-hand, so that's a bit confusing'), else `ammo_full`.
+`ammo_full` is worked out over the whole squad, so its card reads
+`status_ammo_full` "Squad's ammo already full" in a squad match (WRITTEN,
+round 7 review: a runner with no gun whose teammates' guns were full read
+"Ammo already full" as their own) and `status_ammo_full_solo` "Ammo already
+full" outside one; `tools/test_terminal.lua` gives every status worked out
+over more than the viewer a solo sibling, or checks it reads true either way. The whole squad in a squad match, wherever they are (round 4, owner 2026-10-06: "should apply to the whole squad, when in squads" -- it always did; `test_terminalfx.lua` pins a squadmate across the map and one in the air).
 
 ## Wave A (owner, 2026-10-06)
 
@@ -1370,7 +1376,11 @@ radius or the number of zones, so it is a grid (`fx.empTraffic`: cells of at
 most 2,500 m over the boundary's box plus 500 m, a 2,000 m zone each at
 z 300 -- 20 zones), which covers every road whether the game measures a
 sphere or a circle. Whether the game holds all 20 is only checkable in game.
-`emp_what` says "NPC traffic stops too." (WRITTEN, round 7).
+`emp_what` says "NPC traffic stops too." and `emp_affects` ends ", and NPC
+traffic" (both WRITTEN, round 7; the Affects line after the review, which
+found it still naming only players' vehicles). `tools/test_terminal.lua`
+reads the speed zones from the client and holds every Affects and What line
+of the tool that lays them to NPC traffic.
 
 **Comms blackout is one predicate.** `BR.Terminal.blackedOut(m, key, now)`: a
 blackout run by another squad, in force, in a match being played, on Season
@@ -1602,7 +1612,10 @@ first surface under its point (a roof, or the street) at exactly its
 scheduled time, `flightMs` (3 s) after launch -- a cubic curve, its nose along
 it every frame (`rocketPath`). The launch bearing comes from the strike's id,
 fanned over `fanDeg` (50 degrees) by each rocket's place in the schedule, so
-every client draws the same flight. A real homing projectile
+every client draws the same flight. The page's third line says the rockets
+"home in on random points" (WRITTEN, round 7; it said "They aren't
+guided."), and `tools/test_terminal.lua` holds every Airstrike line to it
+while the client launches them off to the side. A real homing projectile
 (`ShootSingleBulletBetweenCoords` with the Homing Launcher) was weighed and
 refused: the native credits its `ownerPed` in the kill feed, and the
 launcher's ammo is `DestroyOnImpact ProcessImpacts` -- it explodes as itself,

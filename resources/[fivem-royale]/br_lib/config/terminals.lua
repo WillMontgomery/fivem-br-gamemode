@@ -456,8 +456,16 @@ BR.Config.Terminals = {
         status_reboot_none = 'Nobody to bring back',
         -- WRITTEN (round 6, proposal for the owner)
         status_no_night = 'Only at night',
-        -- WRITTEN (round 6, proposal for the owner)
-        status_ammo_full = 'Ammo already full',
+        -- Max ammo with every gun in the squad full. Worked out over the
+        -- whole squad, so in a squad match it says the squad's: a runner with
+        -- no gun whose teammates' guns were full read "Ammo already full" as
+        -- their own (round 7 review; owner, 2026-10-07: '"ammo already full"
+        -- shows when I've got no weapons in-hand, so that's a bit confusing').
+        -- WRITTEN (round 7, proposal for the owner)
+        status_ammo_full = "Squad's ammo already full",
+        -- WRITTEN (round 6, proposal for the owner). The same, outside a
+        -- squad match (round 6's line).
+        status_ammo_full_solo = 'Ammo already full',
         -- WRITTEN (round 7, proposal for the owner). Max ammo when nobody it
         -- fills carries a gun (owner, 2026-10-07: '"ammo already full" shows
         -- when I've got no weapons in-hand, so that's a bit confusing').
@@ -885,7 +893,8 @@ BR.Config.Terminals = {
         airstrike_summary = 'Calls 10 rockets down on a spot you pick on the map.',
         -- What the server does (server/terminalfx/airstrike.lua): rough
         -- circles while the spot is picked, then a warning everyone can see,
-        -- then unguided rockets whose damage the server works out. The
+        -- then rockets on random points (homing in on them since round 7),
+        -- whose damage the server works out. The
         -- runner's squad is hit too (the coordinator's proposal: it is their
         -- call where to aim). A player taken out by one counts as the
         -- runner's elimination, but never a teammate. The rough circles ask
@@ -893,8 +902,13 @@ BR.Config.Terminals = {
         -- so the page says Ghost hides a squad from them, as Scan's and
         -- Contract's do (round 5's review; tools/test_terminal.lua derives the
         -- rows whose marks ask Ghost from the code and holds each one's page).
-        airstrike_what = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless your squad already sees them with Scan. A squad running Ghost is hidden from the circles while it lasts.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, your squad and you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
-        airstrike_what_solo = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless you already see them with Scan. A player running Ghost is hidden from the circles while it lasts.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets fall on random points within 40 meters of the spot over about 4 seconds. They aren't guided.\nEach rocket hurts every player near where it lands, you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
+        -- WRITTEN (round 7, proposal for the owner): the third line, "10
+        -- rockets home in on random points" (was "10 rockets fall on random
+        -- points ... They aren't guided."), since they fly in as homing
+        -- missiles (owner, 2026-10-07: "Any chance we could use homing
+        -- missiles targeted at the random coords we already have?").
+        airstrike_what = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless your squad already sees them with Scan. A squad running Ghost is hidden from the circles while it lasts.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets home in on random points within 40 meters of the spot over about 4 seconds.\nEach rocket hurts every player near where it lands, your squad and you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
+        airstrike_what_solo = "You pick a spot on the map. While you pick, opponents show as rough circles somewhere near where they are, unless you already see them with Scan. A player running Ghost is hidden from the circles while it lasts.\nEveryone in the match sees a circle on their map, and a red flare marks the spot. Players inside it are warned.\n10 seconds later, 10 rockets home in on random points within 40 meters of the spot over about 4 seconds.\nEach rocket hurts every player near where it lands, you included, and damages vehicles.\nAn opponent taken out by a rocket counts as your elimination.",
         airstrike_duration = 'About 15 seconds: a 10-second warning, then the rockets',
         airstrike_affects = 'Everyone near the spot, your squad included',
         airstrike_affects_solo = 'Everyone near the spot, you included',
@@ -1166,9 +1180,11 @@ BR.Config.Terminals = {
         -- chosen').
         emp_duration = '3 minutes',
         -- WRITTEN (2026-10-06, round 4; was 'Every vehicle in the radius,
-        -- yours included').
-        emp_affects = 'Every vehicle in the match driven by a player outside your squad',
-        emp_affects_solo = 'Every vehicle in the match driven by another player',
+        -- yours included'). WRITTEN (round 7, proposal for the owner): ", and
+        -- NPC traffic" -- the What line's "NPC traffic stops too." said what
+        -- this line left out.
+        emp_affects = 'Every vehicle in the match driven by a player outside your squad, and NPC traffic',
+        emp_affects_solo = 'Every vehicle in the match driven by another player, and NPC traffic',
         emp_notified = 'Everyone in the match',
         -- No `emp_risks` since round 4: the squad's own vehicles no longer
         -- stall, so the lines saying they did ("Your squad's vehicles in the
@@ -1696,7 +1712,8 @@ BR.Config.Terminals = {
           } },
         { id = 'disarm',         category = 'disruption', risk = 'high',   implemented = true, cost = 200 },
         -- ROUND 5 (owner, 2026-10-06: "yes please put Airstrike in the same
-        -- build"): about 10 unguided rockets on random points within 40 m of a
+        -- build"): about 10 rockets (homing since round 7, on the same points)
+        -- on random points within 40 m of a
         -- spot picked on the big map, after a 10 s warning everyone can see;
         -- the server works out the damage. `fuzz`: while the spot is picked,
         -- opponents show as rough circles (server/terminalfx/airstrike.lua).
