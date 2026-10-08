@@ -9230,6 +9230,18 @@ end
 --- The distance between two points.
 local function gap2(ax, ay, bx, by) return math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2) end
 
+--- A copy of a plan's circles as they stand. The plan an aim hands back is the
+--- match's own (`m.stormAim`), and a re-entry off the walk plans again INTO it
+--- (aimedCenter), so a walk held to the live table is held to whatever it was
+--- rewritten to -- a plan that started from the wrong circle and was quietly
+--- planned again would pass. Held to the copy, it cannot.
+--- @return table path  { [phase] = { x, y, r } }
+local function pathOf(plan)
+    local out = {}
+    for p, v in pairs(plan.path) do out[p] = { x = v.x, y = v.y, r = v.r } end
+    return out
+end
+
 --- A plan held to the rule circle by circle, each from the one before it as the
 --- plan placed it: before the final circle, an equal share of what is left toward
 --- the spot -- to the bit -- or, where that share lands off the map, a center on
@@ -9514,8 +9526,15 @@ do
             else
                 local got = senv.BR.Storm.aim(S.match, spot.x, spot.y)
                 aimed = aimed + 1
+                local planned = pathOf(got)
                 local w = ruleHolds(senv, got, rec.phase + 1)
                 if w then bad[#bad + 1] = ('match %d spot %d: %s'):format(i, k, w) end
+                -- FROM THE CIRCLE ON THE MAP: the walk starts on the circle the
+                -- wall is closing on, not the one it closes from.
+                local start = planned[rec.phase]
+                if not (start and start.x == rec.cx1 and start.y == rec.cy1 and start.r == rec.r1) then
+                    bad[#bad + 1] = ('match %d spot %d: the plan does not start from the circle on the map'):format(i, k)
+                end
                 local f = senv.BR.Storm.finalCentre(S.match)
                 if not (f and f.x == got.sx and f.y == got.sy) then
                     bad[#bad + 1] = ('match %d spot %d: Storm reveal does not answer the spot'):format(i, k)
@@ -9536,7 +9555,7 @@ do
                             bad[#bad + 1] = ('match %d spot %d: phase %d did not start on the circle drawn before it')
                                 :format(i, k, r.phase)
                         end
-                        local want = got.path[r.phase]
+                        local want = planned[r.phase]
                         if not (want and r.cx1 == want.x and r.cy1 == want.y) then
                             bad[#bad + 1] = ('match %d spot %d: phase %d is not the plan\'s circle'):format(i, k, r.phase)
                         end
@@ -9870,6 +9889,7 @@ do
             local a = env.BR.Storm.aim(S.match, rec.cx1 + 1.8 * rec.r1, rec.cy1 - 0.6 * rec.r1)
             ok(a ~= nil and a.from == rec.phase + 1, tag .. ': aimed from the next circle not drawn',
                 a and a.from)
+            local planned = pathOf(a)
             S.now = S.now + 1500
             if path == 'thaw' then
                 S.cmds.brstormfreeze(0, {})
@@ -9889,7 +9909,7 @@ do
             walkOn(S, function(r)
                 if not seen[r.phase] then
                     seen[r.phase] = true
-                    local want = a.path[r.phase]
+                    local want = planned[r.phase]
                     if not (want and r.cx1 == want.x and r.cy1 == want.y) then
                         wrong[#wrong + 1] = r.phase
                     end
@@ -9923,13 +9943,14 @@ do
     env.BR.Server.devMode = true
     rec = S.match.storm
     a = env.BR.Storm.aim(S.match, rec.cx1 + 1.2 * rec.r1, rec.cy1)
+    local planned5 = pathOf(a)[5]
     walkOn(S, function(r, st) return r.phase == 5 and st == 'shrinking' end, 1000)
     rec = S.match.storm
-    ok(rec.cx1 == a.path[5].x and rec.cy1 == a.path[5].y, 'phase 5 is the walk\'s circle')
+    ok(rec.cx1 == planned5.x and rec.cy1 == planned5.y, 'phase 5 is the walk\'s circle')
     S.cmds.brstormfreeze(0, {})
     S.now = S.now + 5000
     S.cmds.brstormfreeze(0, { 'off' })
-    ok(S.match.storm.cx1 == a.path[5].x and S.match.storm.cy1 == a.path[5].y,
+    ok(S.match.storm.cx1 == planned5.x and S.match.storm.cy1 == planned5.y,
         'a thaw at phase 5 keeps the walk\'s own circle 5')
     walkOn(S, function(r) return r.phase == last end, 30000)
     ok(S.match.storm.cx1 == a.ex and S.match.storm.cy1 == a.ey, 'and the storm still ends where the plan ends')
@@ -9946,43 +9967,71 @@ do
     --
     -- Aimed matches walked through the REAL phase job, with 24 players standing
     -- in each circle as the phase after it is entered -- so enterPhase prices
-    -- every sweep for a lobby, as it does in a match. Every aimed phase whose
-    -- circle broke out must:
-    --   * get a breakout's lifted ceiling, read off its own record: no wall over
-    --     20 m/s (an ordinary match's capped phases reach 21), where the authored
-    --     ceiling drew 35 to 225 m/s;
-    --   * from phase 5 on, never be capped by that ceiling (phases 2 to 4 can be,
-    --     as an ordinary breakout's are), and where it is not, keep the lobby's
-    --     rear-most player whole: run straight at the destination's nearest point
-    --     at 9 m/s from the moment the wall sets off, billed by the server's rule
-    --     (10 m margin, the zone 700 ms either side) -- nothing. Priced on the
-    --     line's length across the gap, the wall caught that runner for 394 HP
-    --     (LSIA from Sandy Shores, phase 5);
-    --   * and on a conjoined phase, grow into its destination (BR.StormShape.grown
-    --     builds every step of it, so BR.StormZone never falls back to the pop).
+    -- every sweep for a lobby, as it does in a match: four named cases, and
+    -- eight of round 7's review spread (aims from one point of interest at
+    -- another, picked in phases 2 to 6; its match 1 is La Mesa aimed at Pacific
+    -- Bluffs). Every aimed phase whose circle broke out must:
+    --   * get a breakout's lifted ceiling, read off its own record, and sweep
+    --     within it. The authored ceiling drew walls of 35 to 225 m/s across
+    --     aimed steps; lifted, no corner moves faster than the fastest corner of
+    --     the same matches unaimed. ANY PHASE CAN STILL BE CAPPED BY IT, as an
+    --     ordinary breakout can -- two phase 5s of the spread are (968 and 1354 m
+    --     steps) -- and on a capped phase the wall can catch a runner, as on any;
+    --   * where it is not capped, never let the wall catch a runner from
+    --     behind: EVERY player of the lobby, running straight at the
+    --     destination's nearest point at 9 m/s from the moment the wall sets off
+    --     and billed by the server's rule (10 m margin, the zone 700 ms either
+    --     side), is never billed with the wall's own stretch of their line still
+    --     ahead of them -- only with it behind them, or with their line off the
+    --     wall's side. Priced on the line's length across the gap, the wall
+    --     caught the rear-most of them for 394 HP (LSIA from Sandy Shores, phase
+    --     5);
+    --   * and on a conjoined phase, grow into its destination
+    --     (BR.StormShape.grown builds every step of it, so BR.StormZone never
+    --     falls back to the pop).
+    --
+    -- WHAT THE PRICE DOES NOT DO IS KEEP THEM INSIDE. It paces the wall for the
+    -- lobby's longest run, so for every other player the moving zone is slower
+    -- than 9 m/s, and one who heads straight for a separate island runs out of
+    -- its front into the gap -- open storm until the wall gets there -- and is
+    -- billed until they reach the island; one who starts on a flank of a zone
+    -- that narrows as it travels runs out of its side the same way (Paleto Bay
+    -- picked in phase 2, phase 7). On these walks that is most of a
+    -- lobby at phase 7, and over a thousand HP on the longest steps: a normal
+    -- rotation, not a fast player's. It is counted here, so docs/match-math.md
+    -- and docs/terminals.md, which say so, stay true; whether the ground ahead
+    -- of the wall should be safe is the owner's call. (It is also why the rule
+    -- this block used to hold -- the rear-most runner billed nothing -- was
+    -- wrong: across this spread it bills that runner 40 HP at match 1's phase 6,
+    -- every second of it ahead of the wall.)
+    local first = boundedServer()
+    local POIS = {}
+    for _, p in ipairs(first.env.BR.Config.Map.POIs) do
+        if not first.env.BR.StormOffMap(p.x, p.y) then POIS[#POIS + 1] = p end
+    end
     local CASES = {
-        { 'Paleto Bay from Mirror Park, picked in phase 2', { x = 1050.0, y = -650.0 }, 1015838, 2, -150.0, 6300.0 },
-        { 'Paleto Bay from Mirror Park, picked in phase 5', { x = 1050.0, y = -650.0 }, 1015838, 5, -150.0, 6300.0 },
+        { 'Paleto Bay from Mirror Park, picked in phase 2', { x = 1050.0, y = -650.0 }, 1015838, 2, -150.0, 6300.0, 77 },
+        { 'Paleto Bay from Mirror Park, picked in phase 5', { x = 1050.0, y = -650.0 }, 1015838, 5, -150.0, 6300.0, 77 },
         { 'Paleto Bay from Mirror Park, picked in phase 6 (one 8.9 km step)', { x = 1050.0, y = -650.0 }, 1015838, 6,
-          -150.0, 6300.0 },
-        { 'LSIA from Sandy Shores, picked in phase 3', { x = 1850.0, y = 3700.0 }, 2002, 3, -1100.0, -2900.0 },
+          -150.0, 6300.0, 77 },
+        { 'LSIA from Sandy Shores, picked in phase 3', { x = 1850.0, y = 3700.0 }, 2002, 3, -1100.0, -2900.0, 77 },
     }
-    local bad, separate, conjoined, lifted, fastest, priced = {}, 0, 0, 0, 0.0, 0
-    for _, c in ipairs(CASES) do
-        local S = walkMapped(c[2], function(rec, st) return rec.phase == c[4] and st == 'holding' end, 5000, c[3])
+    for _, i in ipairs({ 1, 4, 6, 9, 13, 17, 22, 28 }) do
+        local a, s = POIS[(i * 7) % #POIS + 1], POIS[(i * 31 + 5) % #POIS + 1]
+        CASES[#CASES + 1] = { ('spread %d, %s aimed at %s in phase %d'):format(i, a.name, s.name, 2 + (i % 5)),
+            { x = a.x, y = a.y, name = a.name }, 2000000 + i * 7919, 2 + (i % 5), s.x, s.y, 77 + i }
+    end
+    --- A lobby of 24 for a walked match, off its own stream: placed inside a
+    --- record's destination, where they stand as the phase after it is entered
+    --- and priced. Returns the placer, which answers where it put them.
+    local function lobbyOf(S, seed)
         local env = S.env
         local SS = env.BR.StormShape
-        local cfg = env.BR.Config.Storm
-        local last = #cfg.phases
-        local rng = env.BR.Rng(77)
-        -- 24 players inside a record's destination: where they stand as the
-        -- phase after it is entered and priced.
-        local stood = {}
-        local function place(r)
+        local rng = env.BR.Rng(seed)
+        return function(r)
             local zone = env.BR.StormTarget(r)
-            for src = 2, 40 do S.roster[src] = nil end
-            stood = {}
-            local tries = 0
+            for src = 1, 40 do S.roster[src] = nil end
+            local stood, tries = {}, 0
             while #stood < 24 and tries < 20000 do
                 tries = tries + 1
                 local x = r.cx1 + (rng:float() * 2.0 - 1.0) * math.max(r.r1, 1.0) * 1.6
@@ -9993,29 +10042,66 @@ do
                                              pos = { x = x, y = y, z = 30.0 } }
                 end
             end
+            return stood
         end
-        --- What the server bills a player who runs straight at the destination's
-        --- nearest point at `v` m/s from the moment the wall sets off.
-        local function billed(r, px, py, v)
-            local D = env.BR.StormTarget(r)
-            local tx, ty = SS.pointAtArc(D, SS.nearestArc(D, px, py))
-            local hp = 0.0
+    end
+    local bad, separate, conjoined, lifted, capped, priced = {}, 0, 0, 0, {}, 0
+    local fastest, plain, runs, gapRuns, gapWorst, rearBilled, sideRuns = 0.0, 0.0, 0, 0, 0.0, 0, 0
+    for _, c in ipairs(CASES) do
+        local S = walkMapped(c[2], function(rec, st) return rec.phase == c[4] and st == 'holding' end, 5000, c[3])
+        local env = S.env
+        local SS = env.BR.StormShape
+        local cfg = env.BR.Config.Storm
+        local last = #cfg.phases
+        local place = lobbyOf(S, c[7])
+        local stood = {}
+        --- The zones the damage tick bills against a second apart across the
+        --- sweep, and the wall's corner list at each: built once a phase and
+        --- read for every runner.
+        local function secondsOf(r)
+            local out = {}
             for s = 0, math.floor(r.tShrink / 1000) do
                 local now = r.tStart + r.tWait + s * 1000
                 local cx, cy, rr, _, _, _, t, g = env.BR.StormAt(r, now)
-                local out = SS.distance(env.BR.StormZone(r, cx, cy, rr, t, g), px, py)
-                for _, z in ipairs(env.BR.StormCushionZones(r, now, 700.0)) do
-                    out = math.min(out, SS.distance(z, px, py))
+                local zs = { env.BR.StormZone(r, cx, cy, rr, t, g) }
+                for _, z in ipairs(env.BR.StormCushionZones(r, now, 700.0)) do zs[#zs + 1] = z end
+                local W = env.BR.StormWall(r, t)
+                out[#out + 1] = { zs = zs, ks = (W.hull and W.hull.ks) or SS.discHull(W.discs or {}) }
+            end
+            return out
+        end
+        --- What the server bills a player who runs straight at the destination's
+        --- nearest point at `v` m/s from the moment the wall sets off; for how
+        --- many of those seconds the wall's own stretch of their line was still
+        --- ahead of them -- caught from behind; and for how many their line was
+        --- off the wall altogether, beside it.
+        local function billed(r, secs, px, py, v)
+            local D = env.BR.StormTarget(r)
+            local tx, ty = SS.pointAtArc(D, SS.nearestArc(D, px, py))
+            local L = gap2(px, py, tx, ty)
+            local ux, uy = 0.0, 0.0
+            if L > 0.0 then ux, uy = (tx - px) / L, (ty - py) / L end
+            local hp, caught, beside = 0.0, 0, 0
+            for _, sec in ipairs(secs) do
+                local out = math.huge
+                for _, z in ipairs(sec.zs) do out = math.min(out, SS.distance(z, px, py)) end
+                if out > 10.0 then
+                    hp = hp + r.dps
+                    local fwd = SS.lineEntry(sec.ks, px, py, ux, uy, 0.0)
+                    if fwd and fwd <= gap2(px, py, tx, ty) then
+                        caught = caught + 1
+                    elseif not SS.lineEntry(sec.ks, px, py, -ux, -uy, 0.0) then
+                        beside = beside + 1
+                    end
                 end
-                if out > 10.0 then hp = hp + r.dps end
                 local d = gap2(px, py, tx, ty)
                 if d > v then px, py = px + (tx - px) / d * v, py + (ty - py) / d * v else px, py = tx, ty end
             end
-            return hp
+            return hp, caught, beside
         end
         local plan = env.BR.Storm.aim(S.match, c[5], c[6])
         ok(plan ~= nil, c[1] .. ': aimed')
-        place(S.match.storm)
+        stood = place(S.match.storm)
         local seen = { [S.match.storm.phase] = true }
         walkOn(S, function(r)
             if not seen[r.phase] then
@@ -10029,20 +10115,30 @@ do
                         bad[#bad + 1] = ('%s: phase %d sweeps past its ceiling'):format(c[1], r.phase)
                     end
                     fastest = math.max(fastest, env.BR.StormWallSpeed(r))
-                    if r.phase >= 5 and r.tShrink >= ceil * 1000.0 - 1.0 then
-                        bad[#bad + 1] = ('%s: phase %d is capped at its ceiling (%.0f s)'):format(c[1], r.phase, ceil)
-                    end
-                    if r.tShrink < ceil * 1000.0 - 1.0 then
+                    if r.tShrink >= ceil * 1000.0 - 1.0 then
+                        capped[#capped + 1] = ('%s phase %d'):format(c[1], r.phase)
+                    elseif r.r1 > 0.0 then
                         priced = priced + 1
+                        local secs = secondsOf(r)
                         local rear, far = nil, -1.0
                         local D = env.BR.StormTarget(r)
                         for _, q in ipairs(stood) do
                             local d = SS.distance(D, q.x, q.y)
                             if d > far then rear, far = q, d end
                         end
-                        local hp = billed(r, rear.x, rear.y, cfg.shrinkPace.metersPerSec)
-                        if hp > 0.0 then
-                            bad[#bad + 1] = ('%s: phase %d bills the rear-most runner %.0f HP'):format(c[1], r.phase, hp)
+                        for _, q in ipairs(stood) do
+                            local hp, caught, beside = billed(r, secs, q.x, q.y, cfg.shrinkPace.metersPerSec)
+                            runs = runs + 1
+                            if beside > 0 then sideRuns = sideRuns + 1 end
+                            if caught > 0 then
+                                bad[#bad + 1] = ('%s: phase %d: the wall catches a runner from (%.1f, %.1f) from '
+                                    .. 'behind, %d s'):format(c[1], r.phase, q.x, q.y, caught)
+                            end
+                            if hp > 0.0 then
+                                gapRuns = gapRuns + 1
+                                gapWorst = math.max(gapWorst, hp)
+                                if q == rear then rearBilled = rearBilled + 1 end
+                            end
                         end
                     end
                     if over then
@@ -10054,21 +10150,43 @@ do
                         end
                     end
                 end
-                place(r)
+                stood = place(r)
             end
             return r.phase == last
         end, 5000)
         if S.errored() then bad[#bad + 1] = S.errored() end
+
+        -- THE SAME MATCH UNAIMED, with its own lobby: how fast its walls' corners go.
+        local U = walkMapped(c[2], function(rec) return rec.phase == 1 end, 5000, c[3])
+        local uplace = lobbyOf(U, c[7])
+        uplace(U.match.storm)
+        local useen = { [1] = true }
+        walkOn(U, function(r)
+            if not useen[r.phase] then
+                useen[r.phase] = true
+                plain = math.max(plain, U.env.BR.StormWallSpeed(r))
+                uplace(r)
+            end
+            return r.phase == last
+        end, 5000)
+        if U.errored() then bad[#bad + 1] = U.errored() end
     end
-    ok(#bad == 0, 'every aimed breakout within its lifted ceiling, its rear-most runner whole, its growth built',
-        table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
-    ok(separate >= 8 and conjoined >= 1 and priced >= 6,
+    ok(#bad == 0, 'every aimed breakout within its lifted ceiling, its growth built, and no runner caught from '
+        .. 'behind where it is priced below the ceiling', table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
+    ok(separate >= 20 and conjoined >= 1 and priced >= 20,
         'over separate and conjoined breakouts, most priced below the ceiling',
         ('%d separate, %d conjoined, %d priced below it'):format(separate, conjoined, priced))
     ok(lifted >= 8, 'their sweeps run past the authored ceiling: the lift is used', lifted)
-    ok(fastest < 20.0, ('no aimed wall faster than an ordinary capped phase (%.1f m/s)'):format(fastest), fastest)
-    print(('       control.breakout: %d separate and %d conjoined aimed breakouts, %d priced below the ceiling, '
-        .. 'fastest wall %.1f m/s'):format(separate, conjoined, priced, fastest))
+    ok(fastest <= plain, ('no aimed wall corner faster than the same matches\' unaimed (%.1f m/s, against %.1f)')
+        :format(fastest, plain))
+    ok(gapRuns > 0, ('and a runner who reaches the gap ahead of the wall is billed there: %d of %d runs, up to %.0f HP')
+        :format(gapRuns, runs, gapWorst))
+    print(('       control.breakout: %d separate and %d conjoined aimed breakouts, %d priced below the ceiling and '
+        .. '%d capped (%s); %d of %d straight runs at 9 m/s billed in the gap, %d of them off the wall\'s side, up '
+        .. 'to %.0f HP, the rear-most runner on %d phases; fastest corner %.1f m/s aimed, %.1f unaimed')
+        :format(separate, conjoined, priced, #capped, table.concat(capped, '; '), gapRuns, runs, sideRuns, gapWorst,
+            rearBilled, fastest, plain))
+
 
     -- ═══ EVERY CONJOINED PAIR A PLAN CAN MAKE GROWS ═══
     --
@@ -10110,6 +10228,31 @@ do
     ok(#broken == 0 and pairs_ >= 20, ('%d conjoined aimed pairs: every one grows'):format(pairs_),
         table.concat(broken, '\n       ', 1, math.min(#broken, 8)))
     print(('       control.breakout: %d conjoined pairs from plans over the map'):format(pairs_))
+
+    -- ═══ A NESTED AIMED PHASE KEEPS ITS AUTHORED CEILING ═══
+    --
+    -- The lift is for a step that breaks out, read off the record -- not for
+    -- every aimed phase. Aimed at the next circle's own center, every later
+    -- circle is concentric, so nested; a straggler 3 km out prices the next sweep
+    -- far past its authored 75 s, and it must stop there, as an ordinary nested
+    -- phase's does.
+    do
+        local S = walkMapped({ x = 150.0, y = -900.0, name = 'Test' },
+            function(rec, st) return rec.phase == 3 and st == 'holding' end, 5000)
+        local env = S.env
+        local cfg = env.BR.Config.Storm
+        local rec = S.match.storm
+        ok(env.BR.Storm.aim(S.match, rec.cx1, rec.cy1) ~= nil, 'aimed at the next circle\'s own center')
+        S.roster[2] = { matchId = 1, name = 'P', state = env.BR.PlayerState.ALIVE, hp = 100.0,
+                        pos = { x = rec.cx1 + 3000.0, y = rec.cy1, z = 30.0 } }
+        walkOn(S, function(r) return r.phase == 4 end, 5000)
+        local r4 = S.match.storm
+        ok(r4.phase == 4 and env.BR.StormNested(r4), 'phase 4, aimed, is nested in circle 3')
+        ok(math.abs(r4.tShrink - cfg.phases[4].shrink * 1000.0) <= 1.0,
+            'and a straggler 3 km out gets the authored 75 s, not a breakout\'s lifted ceiling',
+            ('%.1f s'):format(r4.tShrink / 1000))
+        ok(S.errored() == nil, 'clean', S.errored())
+    end
 end
 
 -- ---------------------------------------------------------------------------
