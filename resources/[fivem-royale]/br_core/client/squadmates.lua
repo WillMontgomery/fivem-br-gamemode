@@ -794,6 +794,9 @@ end)
 -- without damage -- a bump, a shove -- reaches 424m.
 local lastHp, lastArmor = nil, nil
 
+--- A BOOL native's answer, read as Lua truth (0 is truthy in Lua).
+local isTrue = BR.NativeTruthy
+
 BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
     local st = BR.State.me.state
     if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.WARMUP then
@@ -822,6 +825,26 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
     -- doing this client-side -- M6's server-side validation replaces the
     -- whole approach with never applying the shot in the first place.
     local hurt = hp < prevHp or armor < prevArmor
+
+    -- ═══ AND THE MATES ARE ASKED ONLY WHEN SOMEBODY HAS MARKED ME AT ALL (#393) ═══
+    --
+    -- Each mate's question reads the damage record on my ped, and the record has two
+    -- questions of its own that answer for everyone at once: was I damaged by any
+    -- ped, by any vehicle. A mate's mark is one or the other -- the mate, or the car
+    -- the mate drives -- so on a frame where both say no, no mate's can say yes:
+    -- there is nothing to clear and, the frame not having hurt, nothing to decide.
+    -- Every other frame is exactly as before, the clearing included. Two questions
+    -- in place of one per mate, so it is asked only with three mates or more.
+    if not hurt then
+        local a = next(mates)
+        local b = a ~= nil and next(mates, a) or nil
+        if b ~= nil and next(mates, b) ~= nil
+           and not isTrue(HasEntityBeenDamagedByAnyPed(ped))
+           and not isTrue(HasEntityBeenDamagedByAnyVehicle(ped)) then
+            return
+        end
+    end
+
     local byMate = false
     for src in pairs(mates) do
         local matePed

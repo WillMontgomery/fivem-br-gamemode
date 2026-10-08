@@ -18952,12 +18952,15 @@ do
         ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
     end
 
-    local function newMateClient()
+    local function newMateClient(three)
         local env = newSandbox()
         local W = {
             now = 1000, hp = 200, armor = 50,
             -- [src] = the ped that player has right now (nil: out of scope)
-            pedOfSrc = { [2] = 20, [3] = 30 },
+            pedOfSrc = { [2] = 20, [3] = 30, [4] = three and 40 or nil },
+            -- [ped] = the car that ped drives (#393: a mate's car can mark me)
+            carOf = { [30] = 300 },
+            anyAsked = 0,
             marks = {},           -- [attacker ped] = true: the sticky record on me
             lookups = 0, asked = 0, cleared = 0, restored = {},
             coordsRead = 0, bone = nil,
@@ -19020,7 +19023,23 @@ do
         env.GetPedArmour    = function() return W.armor end
         env.HasEntityBeenDamagedByEntity = function(victim, attacker)
             W.asked = W.asked + 1
-            return victim == ME and W.marks[attacker] == true
+            return victim == ME and (W.marks[attacker] == true
+                or (W.carOf[attacker] ~= nil and W.marks[W.carOf[attacker]] == true))
+        end
+        -- The record's own two questions (#393): a mark by a ped, a mark by a car.
+        local function isCar(h)
+            for _, c in pairs(W.carOf) do if c == h then return true end end
+            return false
+        end
+        env.HasEntityBeenDamagedByAnyPed = function(victim)
+            W.anyAsked = W.anyAsked + 1
+            for h in pairs(W.marks) do if not isCar(h) then return victim == ME end end
+            return false
+        end
+        env.HasEntityBeenDamagedByAnyVehicle = function(victim)
+            W.anyAsked = W.anyAsked + 1
+            for h in pairs(W.marks) do if isCar(h) then return victim == ME end end
+            return false
         end
         env.ClearEntityLastDamageEntity = function()
             W.cleared = W.cleared + 1
@@ -19041,15 +19060,19 @@ do
         env.BR.State.roster = {
             [2] = { src = 2, state = env.BR.PlayerState.ALIVE },
             [3] = { src = 3, state = env.BR.PlayerState.ALIVE },
+            [4] = three and { src = 4, state = env.BR.PlayerState.ALIVE } or nil,
         }
         loadInto(env, { 'br_core/client/squadmates.lua' })
 
-        for _, fn in ipairs(handlers[env.BR.Net.SQUAD_POS] or {}) do
-            fn({ { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
-                   state = env.BR.PlayerState.ALIVE },
-                 { src = 3, name = 'Charlie', i = 3, x = 2.0, y = 0.0,
-                   state = env.BR.PlayerState.ALIVE } })
+        local pos = { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                        state = env.BR.PlayerState.ALIVE },
+                      { src = 3, name = 'Charlie', i = 3, x = 2.0, y = 0.0,
+                        state = env.BR.PlayerState.ALIVE } }
+        if three then
+            pos[3] = { src = 4, name = 'Delta', i = 4, x = 3.0, y = 0.0,
+                       state = env.BR.PlayerState.ALIVE }
         end
+        for _, fn in ipairs(handlers[env.BR.Net.SQUAD_POS] or {}) do fn(pos) end
 
         W.env = env
         function W.frame()
@@ -19140,6 +19163,46 @@ do
     x, y, z = H(20, { x = 7.0, y = 8.0, z = 9.0 })
     ok(x == 7.0 and y == 8.0 and z == 9.6 and W.coordsRead == reads + 1,
         'or the origin the caller already read, without reading it again')
+
+    -- ═══ THREE MATES: ASKED ONLY WHEN SOMEBODY HAS MARKED ME AT ALL (#393) ═══
+    --
+    -- With three mates or more, a frame that did not hurt first asks the record its
+    -- own two questions -- any ped, any vehicle -- and asks no mate when both say no.
+    -- What must not change: every mark a mate leaves, by hand or by car, is still
+    -- cleared on its own frame, and a frame that hurt still asks every mate afresh.
+    local T = newMateClient(true)
+    T.tick()
+    T.frame()
+    local tAsked, tAny = T.asked, T.anyAsked
+    for _ = 1, 60 do T.frame() end
+    eq(T.asked - tAsked, 0, 'three mates and nobody has marked me: sixty frames ask no mate')
+    eq(T.anyAsked - tAny, 120, 'only the record\'s two questions, once each a frame')
+
+    local tCleared = T.cleared
+    T.marks[30] = true            -- a mate's bump by hand that did no damage
+    T.frame()
+    ok(T.cleared == tCleared + 1 and next(T.marks) == nil,
+        'a mate\'s mark by hand, no hurt, is still cleared on its own frame')
+
+    tCleared = T.cleared
+    T.marks[300] = true           -- Charlie's car bumps me, no damage
+    T.frame()
+    ok(T.cleared == tCleared + 1 and next(T.marks) == nil,
+        'and so is a mark left by a mate\'s car')
+
+    T.marks[99] = true            -- an enemy's mark, no hurt: asked, not cleared
+    tCleared, tAsked = T.cleared, T.asked
+    T.frame()
+    ok(T.asked - tAsked == 3 and T.cleared == tCleared,
+        'an enemy\'s mark has every mate asked and clears nothing, as before')
+
+    T.marks = {}
+    T.hp, T.marks[40] = 150, true -- Delta hurts me
+    local tLookups = T.lookups
+    T.frame()
+    ok(T.hp == 200 and T.lookups - tLookups == 6,
+        'a frame that hurt resolves all three mates afresh and puts the damage back',
+        ('hp %d, %d lookups'):format(T.hp, T.lookups - tLookups))
 end
 -- ---------------------------------------------------------------------------
 -- The storm: WHOSE BODY the client reads it from.
