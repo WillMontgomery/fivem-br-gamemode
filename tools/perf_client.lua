@@ -5,6 +5,7 @@
 --   lua tools/perf_client.lua --top 10        more contributors per phase
 --   lua tools/perf_client.lua --by 12         more natives named per contributor
 --   lua tools/perf_client.lua --files         per client file, and its heavy calls
+--   lua tools/perf_client.lua --fns           the functions the VM instructions ran in
 --   lua tools/perf_client.lua --phase match   one phase (and the ones before it)
 --   lua tools/perf_client.lua --check         the budget gate tools/verify.sh runs
 --   lua tools/perf_client.lua --rebaseline    measure and rewrite the budget
@@ -32,7 +33,7 @@
 -- -- a season switch, the festive sky, its cycle, the match ending -- is made and
 -- measured on its own (THE CHANGES).
 --
--- WHAT IT COUNTS, four ways, each exact and the same on every run:
+-- WHAT IT COUNTS, five ways, the first four exact and the same on every run:
 --   natives  every native the code calls, through a stub that charges it to
 --            whatever is running: a loop callback by its registered name, a raw
 --            thread by the file and line that created it, an event handler by
@@ -49,6 +50,10 @@
 --            prop moved -- counted again, PER SECOND: each is engine work far
 --            past a read, so one of them repeated every SLOW pass is a
 --            regression the per-frame native count cannot see.
+--   vm       Lua VM instructions per frame that br_core's own code ran -- the stubs
+--            and this harness taken out -- SAMPLED (THE VM SAMPLER, below): what a
+--            change that calls no fewer natives saves, such as a wall walk that
+--            skips the quads past the far fade (#393). Near-exact, not exact.
 -- Lua time is printed per phase only, over the whole measured window, beside
 -- the step of the clock it was read from (os.clock ticks a whole millisecond on
 -- Windows' PUC Lua): per callback, a call is shorter than one tick.
@@ -61,7 +66,7 @@
 -- in-game numbers are brbench / brab (client/debug.lua) and resmon.
 --
 -- THE BUDGET. tools/perf_budget.lua holds what each phase measured on each of the
--- four counts, in each world. --check fails a phase that goes over any of them by
+-- five counts, in each world. --check fails a phase that goes over any of them by
 -- more than a small slack (see the budget section at the bottom), which is how
 -- an ungated per-frame loop, a draw that came back, a rebuild every frame or a
 -- heavy call every pass gets caught before a playtest does. docs/testing.md says
@@ -81,7 +86,7 @@ else
     while i <= #arg do
         local a = arg[i]
         if a == '--check' or a == '--rebaseline' or a == '--quiet' or a == '--digest'
-            or a == '--files' then
+            or a == '--files' or a == '--fns' then
             ARGS[a:sub(3)] = true
         elseif a == '--top' or a == '--phase' or a == '--frames' or a == '--root'
             or a == '--by' or a == '--world' then
@@ -337,7 +342,12 @@ math.randomseed(393)
 -- vector3 is a table here and a value in CfxLua, which allocates nothing for it,
 -- so counting it would charge GetEntityCoords to whoever asked.
 
-local gcCount = collectgarbage
+--- THE VM SAMPLER's state (below): `kb`, what its hook has allocated, which every
+--- reading the harness takes is net of, so no window -- a bucket's, a stub's -- is
+--- charged the hook's frame records however the two nest; and under --fns `fns`, the
+--- instructions by function over the phase being measured.
+local VM = { kb = 0.0, fns = nil, raw = collectgarbage }
+local function gcCount(opt) return VM.raw(opt) - VM.kb end
 local buckets = {}
 
 --- Is a bucket br_core's own? Not the harness, the stub server or a file's load.
@@ -354,7 +364,7 @@ local function bucket(key)
     local b = buckets[key]
     if not b then
         b = { key = key, n = 0, d = 0, h = 0, kb = 0.0, calls = 0, by = {}, hb = {},
-              c = counted(key) }
+              c = counted(key), vm = 0 }
         buckets[key] = b
     end
     return b
@@ -396,6 +406,82 @@ end
 local curB = bucket('(load)')
 local curF = nil
 local stack = {}
+
+-- ═══ THE VM SAMPLER: LUA INSTRUCTIONS, WITH THE HOOK'S OWN TAKEN BACK OUT (#393) ═══
+--
+-- The four counts above are blind to Lua that calls no native: a wall walk over
+-- quads it then does not draw, a list rebuilt every frame, a per-frame loop over
+-- every streamed entry. The measure-and-plan pass (2026-10-07) found a third of a
+-- match frame's br_core cost there. So a count hook fires every 1009 VM
+-- instructions, in every coroutine, and charges them to whoever is running --
+-- unless the instruction it landed on is this file's own (a native stub, the
+-- runtime, the bookkeeping), which is not br_core's.
+--
+-- WHY THE HOOK RE-ARMS ITSELF. Lua counts the hook's own instructions against the
+-- next interval: a hook of thirty instructions at a step of 37 left seven of br_core's
+-- between samples and read the workload 1.54 times too heavy (measured, perf393's
+-- m_bias.lua; 6.2 times with a heavier hook). Setting the hook again as its last act
+-- restarts the count after the hook's work, so each sample stands for the 1009
+-- instructions of the code under test before it: 0.9995 of the exact count on the
+-- same workload, against 1.012 without the re-arm.
+--
+-- AND EACH FRAME'S FIRST SAMPLE FALLS SOMEWHERE NEW. A fixed interval -- 1009, a
+-- prime -- still beat against the frame: a frame is the same few thousand
+-- instructions every time, so the samples sat on the same phase of it frame after
+-- frame, on the harness's bookkeeping or on the code beside it depending on where a
+-- change elsewhere had moved things -- one `or pausedAll` in BR.Loop.step moved
+-- Season 1's warmup by 412 instructions a frame. Drawing each interval at random
+-- removed that and put in its place a noise of a hundred and more, run to run. So
+-- the interval stays 1009 and every coroutine's count restarts at the top of each
+-- frame (frame(), VM.phase) a golden-ratio step further round: frame f's first
+-- sample comes after frac(f * 0.618) of an interval. Over the measured frames every
+-- instruction of a frame is sampled about as often as every other, so the count is
+-- unbiased, the same on every run, and a change elsewhere moves a phase by a few
+-- dozen instructions.
+--
+-- AND WHAT IT ALLOCATES IS NOT THE CODE'S: the frame record debug.getinfo returns is
+-- kept in VM.kb, which every reading the harness takes (gcCount) is net of.
+--- A coroutine with the sampler on, as every thread here and every coroutine the
+--- code makes for itself gets: a hook belongs to one coroutine.
+local hooked
+do
+    local STEP = 1009
+    local HARNESS_SRC = debug.getinfo(1, 'S').source
+    local own = setmetatable({}, { __mode = 'k' })   -- [function] = is it this file's
+    local sethook, getinfo, raw = debug.sethook, debug.getinfo, VM.raw
+    local hook
+    hook = function()
+        local k0 = raw('count')
+        local rec = getinfo(2, 'f')
+        local fn = rec and rec.func
+        if fn then
+            local mine = own[fn]
+            if mine == nil then
+                mine = getinfo(fn, 'S').source == HARNESS_SRC
+                own[fn] = mine
+            end
+            if not mine then
+                local b = curB
+                b.vm = b.vm + STEP
+                local fns = VM.fns
+                if fns and b.c then fns[fn] = (fns[fn] or 0) + STEP end
+            end
+        end
+        VM.kb = VM.kb + (raw('count') - k0)
+        sethook(hook, '', STEP)
+    end
+    sethook(hook, '', STEP)
+    hooked = function(co)
+        sethook(co, hook, '', STEP)
+        return co
+    end
+    --- The first sample of frame `f` in coroutine `co` (nil: this one) comes after
+    --- the golden-ratio share of STEP for that frame (see the note above).
+    VM.phase = function(f, co)
+        local first = 1 + math.floor(((f * 0.6180339887498949) % 1.0) * STEP)
+        if co then sethook(co, hook, '', first) else sethook(hook, '', first) end
+    end
+end
 
 --- Enter `key`, pausing whoever was running. Exclusive attribution: an event a
 --- callback triggers is charged to the event, not to the callback. `src` is
@@ -1128,7 +1214,7 @@ end
 --- @param src function|nil  whose code it runs, for --files (`fn` by default)
 local function spawn(fn, delay, src)
     threads[#threads + 1] = {
-        co = coroutine.create(fn), wake = NOW + (delay or 0), key = srcKey(fn, 'thread'),
+        co = hooked(coroutine.create(fn)), wake = NOW + (delay or 0), key = srcKey(fn, 'thread'),
         src = src or fn,
     }
 end
@@ -1330,16 +1416,28 @@ local RUNTIME = {
     source = 0,
 }
 
--- Lua's own library, shared with the code under test.
+-- Lua's own library, shared with the code under test -- its coroutine library with
+-- the VM sampler on every coroutine the code makes for itself.
 local STD = {
     assert = assert, error = error, ipairs = ipairs, next = next, pairs = pairs,
     pcall = pcall, rawequal = rawequal, rawget = rawget, rawset = rawset, rawlen = rawlen,
     select = select, setmetatable = setmetatable, getmetatable = getmetatable,
     tonumber = tonumber, tostring = tostring, type = type, xpcall = xpcall,
-    math = math, string = string, table = table, coroutine = coroutine, utf8 = utf8,
+    math = math, string = string, table = table, utf8 = utf8,
     os = os, io = io, debug = debug, unpack = table.unpack, load = load,
     collectgarbage = collectgarbage,
 }
+STD.coroutine = {}
+for k, v in pairs(coroutine) do STD.coroutine[k] = v end
+STD.coroutine.create = function(f) return hooked(coroutine.create(f)) end
+STD.coroutine.wrap = function(f)
+    local co = hooked(coroutine.create(f))
+    return function(...)
+        local r = table.pack(coroutine.resume(co, ...))
+        if not r[1] then error(r[2], 2) end
+        return table.unpack(r, 2, r.n)
+    end
+end
 
 -- Names the loaded code itself defines as globals: classes in ScaleformUI, BR,
 -- helpers. Never auto-stubbed, so `Foo = Foo or {}` still reads nil first.
@@ -1436,6 +1534,35 @@ local function hookLoop()
         end
         return real(band, name, wrapped)
     end
+
+    -- THE THREE BANDS START IN ONE ORDER, frame, tick, slow (#393). main.lua starts
+    -- them in pairs() order over its interval table, and Lua seeds that order afresh
+    -- each run -- so which pass ran first in a frame two bands share moved from run to
+    -- run: 0.1 natives a frame, but up to 5 percent of a phase's VM instructions, more
+    -- than any slack worth having. In the game the order is whatever the session
+    -- drew; here it is one of those, always the same. The threads are main.lua's own,
+    -- collected as it makes them and started in that order.
+    local realStart = BR.Loop.start
+    BR.Loop.start = function()
+        local made = {}
+        local cit = RUNTIME.Citizen
+        local create = cit.CreateThread
+        cit.CreateThread = function(fn) made[#made + 1] = fn end
+        realStart()
+        cit.CreateThread = create
+        local rank = { [BR.Loop.FRAME] = 1, [BR.Loop.TICK] = 2, [BR.Loop.SLOW] = 3 }
+        local function bandOf(fn)
+            for i = 1, 16 do
+                local n, v = debug.getupvalue(fn, i)
+                if n == nil then break end
+                if n == 'band' then return v end
+            end
+        end
+        table.sort(made, function(a, b)
+            return (rank[bandOf(a)] or 9) < (rank[bandOf(b)] or 9)
+        end)
+        for _, fn in ipairs(made) do spawn(fn, 0) end
+    end
 end
 
 local loadErrors = 0
@@ -1526,6 +1653,19 @@ end
 if ARGS.mutant == 'dui' then
     local send = env.SendDuiMessage
     BR.Loop.register(BR.Loop.TICK, 'perf.mutant', function() send(1, '{}') end)
+end
+-- Lua that calls no native, every frame: a few hundred instructions -- the
+-- strip re-walked, or every streamed entry looked at -- that no other count can
+-- see (the #393 measure-and-plan pass). Loaded as a chunk of its own, so the
+-- sampler counts it as the code's and not as this file's.
+if ARGS.mutant == 'vm' then
+    local walk = assert(load([[
+        local acc = 0
+        return function()
+            for i = 1, 100 do acc = (acc + i * 3) % 7919 end
+        end
+    ]], '=perf mutant', 't', env))()
+    BR.Loop.register(BR.Loop.FRAME, 'perf.mutant', walk)
 end
 -- Every laptop hidden fifty times over when the season moves (the review's
 -- M12): 750 model hides at a switch, and nothing in any steady phase.
@@ -2022,6 +2162,9 @@ end
 local function frame()
     NOW = NOW + FRAME_MS
     W.frameNo = W.frameNo + 1
+    -- THE VM SAMPLER'S PHASE for this frame, in every coroutine (see the sampler).
+    VM.phase(W.frameNo)
+    for i = 1, #threads do VM.phase(W.frameNo, threads[i].co) end
     deliver()
     carry()
     followCam()
@@ -2351,7 +2494,8 @@ local function snapshot()
         local by, hb = {}, {}
         for n, c in pairs(b.by) do by[n] = c end
         for n, c in pairs(b.hb) do hb[n] = c end
-        s[k] = { n = b.n, d = b.d, h = b.h, kb = b.kb, calls = b.calls, by = by, hb = hb }
+        s[k] = { n = b.n, d = b.d, h = b.h, kb = b.kb, calls = b.calls, by = by, hb = hb,
+                 vm = b.vm }
     end
     return s
 end
@@ -2398,10 +2542,10 @@ end
 local function diff(a, b, frames)
     local rows = {}
     for k, nb in pairs(b) do
-        local oa = a[k] or { n = 0, d = 0, h = 0, kb = 0, calls = 0, by = {}, hb = {} }
+        local oa = a[k] or { n = 0, d = 0, h = 0, kb = 0, calls = 0, by = {}, hb = {}, vm = 0 }
         local dn, dd, dkb = nb.n - oa.n, nb.d - oa.d, nb.kb - oa.kb
-        local dh = nb.h - oa.h
-        if (dn > 0 or dkb > 0) and counted(k) then
+        local dh, dvm = nb.h - oa.h, nb.vm - oa.vm
+        if (dn > 0 or dkb > 0 or dvm > 0) and counted(k) then
             local by = {}
             for n, c in pairs(nb.by) do
                 local d = c - (oa.by[n] or 0)
@@ -2421,7 +2565,8 @@ local function diff(a, b, frames)
             table.sort(hby, function(x, y) return x.name < y.name end)
             -- Heavy calls PER SECOND: one a second is the regression they are for.
             rows[#rows + 1] = { key = k, n = dn / frames, d = dd / frames,
-                                kb = dkb / frames, h = dh * 60.0 / frames, by = by, hby = hby }
+                                kb = dkb / frames, h = dh * 60.0 / frames, by = by, hby = hby,
+                                vm = dvm / frames }
         end
     end
     -- A TOTAL ORDER, so the sums below are taken in the same order on every run:
@@ -2431,9 +2576,10 @@ local function diff(a, b, frames)
         if x.kb ~= y.kb then return x.kb > y.kb end
         return x.key < y.key
     end)
-    local tot = { n = 0, d = 0, kb = 0, h = 0 }
+    local tot = { n = 0, d = 0, kb = 0, h = 0, vm = 0 }
     for _, r in ipairs(rows) do
         tot.n, tot.d, tot.kb, tot.h = tot.n + r.n, tot.d + r.d, tot.kb + r.kb, tot.h + r.h
+        tot.vm = tot.vm + r.vm
     end
     return rows, tot
 end
@@ -2465,16 +2611,31 @@ for _, ph in ipairs(PHASES) do
     for _ = 1, ph.settle do frame() gcMaybe() end
     digest.h, digest.n = 0, 0
     local fileBefore = FILES and fileSnapshot() or nil
+    if ARGS.fns then VM.fns = {} end
     local before = snapshot()
     local c0 = clock()
     for _ = 1, MEASURE_FRAMES do frame() gcMaybe() end
     local wall = (clock() - c0) * 1000.0 / MEASURE_FRAMES
+    local fns = nil
+    if VM.fns then
+        fns = {}
+        for fn, v in pairs(VM.fns) do
+            local info = debug.getinfo(fn, 'S')
+            fns[#fns + 1] = { name = ('%s:%d'):format((info.short_src or '?'):match('([^/\\]+)$')
+                or '?', info.linedefined or 0), vm = v / MEASURE_FRAMES }
+        end
+        table.sort(fns, function(x, y)
+            if x.vm ~= y.vm then return x.vm > y.vm end
+            return x.name < y.name
+        end)
+        VM.fns = nil
+    end
     local rows, tot = diff(before, snapshot(), MEASURE_FRAMES)
     -- A WORLD THAT BUDGETS ONLY SOME SCENES (`measure`) plays the rest, so its
     -- match is the one they are written against, and records only those.
     if WORLD.measure == nil or WORLD.measure[ph.id] then
         results[#results + 1] = { id = phaseId(WORLD, ph.id), rows = rows, tot = tot, wall = wall,
-                                  digest = ('%016x/%d'):format(digest.h, digest.n),
+                                  digest = ('%016x/%d'):format(digest.h, digest.n), fns = fns,
                                   files = FILES and fileDiff(fileBefore, fileSnapshot(),
                                       MEASURE_FRAMES) or nil }
     end
@@ -2735,8 +2896,8 @@ if not ARGS.check and not ARGS.rebaseline then
         realPrint(('######## world %s'):format(rn.world.id))
         for _, r in ipairs(rn.results) do
             realPrint('')
-            realPrint(('== %-16s natives/frame %7s   draws/frame %6s   KB/frame %6.2f   heavy/s %6.2f   Lua ms/frame %6.3f')
-                :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h, r.wall))
+            realPrint(('== %-16s natives/frame %7s   draws/frame %6s   KB/frame %6.2f   heavy/s %6.2f   VM instr/frame %7.0f   Lua ms/frame %6.3f')
+                :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h, r.tot.vm, r.wall))
             if ARGS.digest then realPrint('   draw digest ' .. r.digest) end
             for i = 1, math.min(TOP, #r.rows) do
                 local row = r.rows[i]
@@ -2744,8 +2905,14 @@ if not ARGS.check and not ARGS.rebaseline then
                 for j = 1, math.min(tonumber(ARGS.by) or 3, #row.by) do
                     top[#top + 1] = ('%s %s'):format(row.by[j].name, fmt(row.by[j].n))
                 end
-                realPrint(('   %-34s %7s  %6s draws  %6.2f KB   %s'):format(row.key, fmt(row.n),
-                    fmt(row.d), row.kb, table.concat(top, ', ')))
+                realPrint(('   %-34s %7s  %6s draws  %6.2f KB  %6.0f vm   %s'):format(row.key,
+                    fmt(row.n), fmt(row.d), row.kb, row.vm, table.concat(top, ', ')))
+            end
+            if r.fns then
+                realPrint('   VM instructions per frame, by function:')
+                for i = 1, math.min(math.max(TOP, 25), #r.fns) do
+                    realPrint(('     %-44s %8.0f'):format(r.fns[i].name, r.fns[i].vm))
+                end
             end
             -- EVERY HEAVY CALL, whoever made it, since one a second matters.
             local heavyRows = {}
@@ -2822,6 +2989,9 @@ end
 --   draws    0.9 a frame -- one more draw call every frame fails
 --   KB       0.9 a frame -- one more kilobyte allocated every frame fails
 --   heavy    0.5 a second -- one more heavy call on every SLOW pass fails
+--   vm       250 instructions a frame and 2 percent of the phase -- a walk over
+--            the far wall's quads, or every streamed entry looked at each frame,
+--            fails; a hundred instructions more somewhere does not
 --
 -- FOUR COUNTS AND NOT ONE, because each regression this exists to stop shows in
 -- a different one. A loop nothing gates is native calls. A wall quad, a marker or
@@ -2833,25 +3003,33 @@ end
 -- natives a frame -- under any per-frame slack -- and a real cost to the
 -- engine every second: that is what heavy is for (see HEAVY at the top).
 --
--- STABLE BECAUSE IT IS EXACT. All four are counts, not timings: the clock is
+-- STABLE BECAUSE IT IS EXACT. The first four are counts, not timings: the clock is
 -- the model's, math.random is seeded and the stub server answers in a fixed
--- order. The one wobble is main.lua starting its band threads in pairs() order,
--- which Lua seeds afresh each run, so a SLOW pass and the loot prop thread can
--- swap places within a frame: up to 0.1 natives a frame in the plane phases,
--- nothing in draws or KB. The slack is twenty-five times that. Lua time is not
--- budgeted at all: on this box it moves by tens of percent with whatever else is
--- running.
+-- order. The wobble there was, main.lua starting its band threads in pairs()
+-- order, is gone: hookLoop starts them frame, tick, slow (#393). The slack is far
+-- above what is left. The VM count is a sample, and Lua's string hashing, seeded
+-- afresh each run, still moves the pairs() walks of the code under test: a few
+-- dozen instructions a phase. Its slack is a share of the phase and a floor
+-- (vmSlack). Lua time is not budgeted at all: on
+-- this box it moves by tens of percent with whatever else is running.
 --
 -- THE SLACK LIVES HERE AND NOT IN THE BUDGET FILE, which holds only what was
 -- measured, so a rebaseline cannot loosen it and nobody edits it by hand.
 
-local SLACK = { n = 2.5, d = 0.9, kb = 0.9, h = 0.5 }
+local SLACK = { n = 2.5, d = 0.9, kb = 0.9, h = 0.5, vm = 250, vmShare = 0.02 }
 local METRICS = {
     { key = 'n',  field = 'natives', unit = 'natives',     per = 'frame' },
     { key = 'd',  field = 'draws',   unit = 'draws',       per = 'frame' },
     { key = 'kb', field = 'kb',      unit = 'KB',          per = 'frame' },
     { key = 'h',  field = 'heavy',   unit = 'heavy calls', per = 'second' },
+    { key = 'vm', field = 'vm',      unit = 'VM instructions', per = 'frame' },
 }
+
+--- The VM count's slack over a budgeted `was`: the larger of the floor and the share.
+--- @param was number @return number
+local function vmSlack(was)
+    return math.max(SLACK.vm, SLACK.vmShare * was)
+end
 
 -- A CHANGE (THE CHANGES, above) IS HELD TO ITS WINDOW'S TOTALS, with a slack
 -- of its own, set the same way: the smallest one-time regression worth
@@ -2887,8 +3065,11 @@ if ARGS.rebaseline then
         '-- per second. `lua tools/perf_client.lua --check` (tools/verify.sh runs it)',
         ('-- fails a phase that goes over any of them by more than %.1f natives, %.1f'):format(
             SLACK.n, SLACK.d),
-        ('-- draws or %.1f KB a frame, or %.1f heavy calls a second. Each change (THE'):format(
-            SLACK.kb, SLACK.h),
+        ('-- draws or %.1f KB a frame, %.1f heavy calls a second, or %d VM instructions'):format(
+            SLACK.kb, SLACK.h, SLACK.vm),
+        ('-- a frame or %d percent of the phase, whichever is more (sampled: THE VM'):format(
+            math.floor(SLACK.vmShare * 100 + 0.5)),
+        '-- SAMPLER in tools/perf_client.lua). Each change (THE',
         '-- CHANGES) is held to the totals of its window -- natives, heavy calls and KB --',
         ('-- and its busiest frame, by %d natives, %d heavy calls, %d KB and %d natives.'):format(
             CHANGE.slack.n, CHANGE.slack.h, CHANGE.slack.kb, CHANGE.slack.peak),
@@ -2904,8 +3085,8 @@ if ARGS.rebaseline then
     local errs = {}
     for _, rn in ipairs(runs) do
         for _, r in ipairs(rn.results) do
-            lines[#lines + 1] = ('        { id = %q, natives = %.3f, draws = %.3f, kb = %.3f, heavy = %.3f },')
-                :format(r.id, r.tot.n, r.tot.d, r.tot.kb, r.tot.h)
+            lines[#lines + 1] = ('        { id = %q, natives = %.3f, draws = %.3f, kb = %.3f, heavy = %.3f, vm = %.0f },')
+                :format(r.id, r.tot.n, r.tot.d, r.tot.kb, r.tot.h, r.tot.vm)
         end
         for _, e in ipairs(rn.errs) do errs[#errs + 1] = rn.world.id .. ': ' .. e end
     end
@@ -2931,8 +3112,8 @@ if ARGS.rebaseline then
     realPrint('wrote ' .. BUDGET_FILE)
     for _, rn in ipairs(runs) do
         for _, r in ipairs(rn.results) do
-            realPrint(('   %-26s %7s natives  %6s draws  %6.2f KB  per frame  %6.2f heavy/s')
-                :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h))
+            realPrint(('   %-26s %7s natives  %6s draws  %6.2f KB  per frame  %6.2f heavy/s  %7.0f vm')
+                :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h, r.tot.vm))
         end
         for _, c in ipairs(rn.changes or {}) do
             realPrint(('   %-58s %6.0f natives  %4.0f heavy  %7.2f KB  busiest %4d')
@@ -2949,10 +3130,11 @@ local function overBudget(r, b, metrics, slack)
     local over, missing = {}, {}
     for _, m in ipairs(metrics) do
         local was = tonumber(b[m.field])
+        local sl = was and ((m.key == 'vm') and vmSlack(was) or slack[m.key])
         if was == nil then
             missing[#missing + 1] = m.unit
-        elseif r.tot[m.key] > was + slack[m.key] then
-            over[#over + 1] = { m = m, value = r.tot[m.key], was = was, slack = slack[m.key] }
+        elseif r.tot[m.key] > was + sl then
+            over[#over + 1] = { m = m, value = r.tot[m.key], was = was, slack = sl }
         end
     end
     return over, missing
@@ -2990,8 +3172,8 @@ local function check()
                     local m = o.m
                     bad = bad + 1
                     realPrint(('\27[31mFAIL\27[0m %-26s %8.2f %s/%s, budget %.2f (measured %.2f + %.1f)')
-                        :format(r.id, o.value, m.unit, m.per, o.was + SLACK[m.key], o.was,
-                            SLACK[m.key]))
+                        :format(r.id, o.value, m.unit, m.per, o.was + o.slack, o.was,
+                            o.slack))
                     -- The biggest contributors to the count that went over.
                     local top = {}
                     for _, row in ipairs(r.rows) do top[#top + 1] = row end
@@ -3006,8 +3188,8 @@ local function check()
                 if #over == 0 and #missing == 0 then
                     good = good + 1
                     if not ARGS.quiet then
-                        realPrint(('\27[32mok\27[0m   %-26s %7s natives  %6s draws  %6.2f KB  per frame  %6.2f heavy/s')
-                            :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h))
+                        realPrint(('\27[32mok\27[0m   %-26s %7s natives  %6s draws  %6.2f KB  per frame  %6.2f heavy/s  %7.0f vm')
+                            :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h, r.tot.vm))
                     end
                 end
             end
@@ -3064,12 +3246,12 @@ local function check()
             local tail = ''
             for _, r in ipairs(rn.results) do
                 if r.id == phaseId(rn.world, 'match') then
-                    tail = (', the match at %s natives, %s draws, %.2f KB a frame, %.2f heavy/s')
-                        :format(fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.h)
+                    tail = (', the match at %s natives, %s draws, %.2f KB, %.0f VM instructions a frame, %.2f heavy/s')
+                        :format(fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.tot.vm, r.tot.h)
                 end
             end
             local nC = #(rn.changes or {})
-            realPrint(('%sok%s   %-10s %d phases%s within budget on natives, draws, KB and heavy calls%s')
+            realPrint(('%sok%s   %-10s %d phases%s within budget on natives, draws, KB, heavy calls and VM instructions%s')
                 :format(string.char(27) .. '[32m', string.char(27) .. '[0m', rn.world.id,
                     #rn.results, nC > 0 and (' and %d changes'):format(nC) or '', tail))
         end
@@ -3112,6 +3294,9 @@ local function check()
     --   burst  every laptop hidden fifty times over at a season switch: 750
     --          model hides once, and nothing in any steady phase. The whole of
     --          s1-live, against its change budget.
+    --   vm     a few hundred VM instructions every frame that call no native at
+    --          all -- a walk over quads that are then not drawn. Season 1's
+    --          lobby, against its VM budget: the one count that can see it.
     if not ARGS.phase then
         local byId = {}
         for _, b in ipairs(budget.phases) do byId[b.id] = b end
@@ -3123,6 +3308,8 @@ local function check()
               what = 'a browser message on every TICK pass' },
             { mutant = 'burst', world = 's1-live',
               what = 'the laptops hidden fifty times over at a season switch' },
+            { mutant = 'vm', world = 's1', phase = 'lobby', key = 'vm',
+              what = 'a Lua-only walk every frame' },
         }
         for _, pf in ipairs(PROOFS) do
             if covered[pf.world] then
@@ -3136,10 +3323,10 @@ local function check()
                     local r = proof.results[1]
                     local b = r and byId[r.id]
                     for _, o in ipairs(b and overBudget(r, b) or {}) do
-                        if o.m.key == 'h' then
+                        if o.m.key == (pf.key or 'h') then
                             caught = true
-                            where = ('%s at %.2f heavy/s, budget %.2f'):format(r.id, o.value,
-                                o.was + o.slack)
+                            where = ('%s at %.2f %s/%s, budget %.2f'):format(r.id, o.value,
+                                o.m.unit, o.m.per, o.was + o.slack)
                         end
                     end
                 else

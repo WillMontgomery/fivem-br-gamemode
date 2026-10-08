@@ -153,7 +153,7 @@ guarantee removed — all fail it.
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
 | **Unit tests** | 55 suites, over 10,000 assertions, covering the pure shared modules, server model, client interaction layer, AWS-facing subsystems, and individual files where a rule lives. The run order stays explicit, but `verify.sh` compares it with every `tools/test_*.lua` file and fails if either side has an extra entry — a new suite cannot exist without running in CI. |
-| **Frame budget** | br_core's native calls, draw calls and kilobytes allocated per frame, and heavy calls a second, phase by phase through a simulated session from the lobby to a match and the things a player does in one, stay within `tools/perf_budget.lua` — and so does the one-time cost of each season, festive and match-end change. See [the frame profiler](#the-frame-profiler-and-its-budget). |
+| **Frame budget** | br_core's native calls, draw calls, kilobytes allocated and Lua VM instructions per frame, and heavy calls a second, phase by phase through a simulated session from the lobby to a match and the things a player does in one, stay within `tools/perf_budget.lua` — and so does the one-time cost of each season, festive and match-end change. See [the frame profiler](#the-frame-profiler-and-its-budget). |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name, and requires every weapon and throwable to say explicitly whether a car seat accepts it — a missing `driveby` field reads as "no" and would silently drop a gun out of the drive-by hint. See [Vehicle data overrides](vehicle-data.md). |
 | **Vehicle table** | Re-derives every refused-vehicle hash from its name, signed and unsigned. The refusal list is what keeps aircraft and weaponised vehicles out, including out of the showroom catalogue, so a hash that stopped matching its name would silently stop refusing anything. |
@@ -474,6 +474,7 @@ lua tools/perf_client.lua                  # the table, every phase, Season 1
 lua tools/perf_client.lua --world s1-live  # another world, or --world all
 lua tools/perf_client.lua --top 15 --by 8  # more rows, more natives named per row
 lua tools/perf_client.lua --files          # per client file: natives, and heavy calls by name
+lua tools/perf_client.lua --fns            # the functions the VM instructions ran in, per phase
 lua tools/perf_client.lua --phase match    # stop after one phase
 lua tools/perf_client.lua --digest --root <other checkout>/  # same draws as another tree?
 lua tools/perf_client.lua --check          # the verify.sh gate
@@ -530,23 +531,43 @@ nothing more. **What it cannot see** is the engine's side of a call: a
 in the game, and real native costs differ by orders of magnitude. resmon,
 `brbench <name>` and `brab <name>` are the in-game measure.
 
+**The VM count (#393).** The four counts above cannot see Lua that calls no
+native -- a wall walk over quads it then does not draw, a list rebuilt every
+frame, every streamed entry looked at -- and the 2026-10-07 measure found a third
+of a match frame there. So a count hook fires every 1,009 VM instructions in
+every coroutine and charges them to whoever is running, unless the instruction
+it landed on is the harness's own (a stub, the runtime, the bookkeeping). Three
+things keep it honest. The hook sets itself again as its last act, so its own
+instructions are not charged to the next interval (without that the count read
+1.01 to 6 times high; with it, 0.9995 of an exact count on the same workload).
+Every coroutine's count restarts at the top of each frame a golden-ratio step
+further round, so the samples cannot sit on the same phase of a frame that is
+the same few thousand instructions every time -- a fixed interval let one
+unrelated line in `BR.Loop.step` move a phase by 400. And the model starts the
+three band threads frame, tick, slow every run, where `main.lua`'s `pairs()` let
+Lua's per-run seed pick, which moved phases by up to 5 percent. What the hook
+allocates is kept out of every KB reading. The result is the same on every run,
+and an unrelated change moves a phase by a few dozen instructions.
+
 **The gate.** `verify.sh`'s `frame budget` stage runs `--check`, every world.
 It fails a phase that goes over what `tools/perf_budget.lua` recorded for it by
-more than **2.5 natives, 0.9 draws or 0.9 KB a frame, or 0.5 heavy calls a
-second** — so one more 3-call loop, one more draw every frame, one more
-kilobyte a frame or one more heavy call every SLOW pass fails, in any phase of
-any world — and it fails if any callback errored under the model (a callback
+more than **2.5 natives, 0.9 draws or 0.9 KB a frame, 0.5 heavy calls a
+second, or 250 VM instructions or 2 percent of the phase, whichever is more** —
+so one more 3-call loop, one more draw every frame, one more kilobyte a frame,
+one more heavy call every SLOW pass or a few hundred instructions of Lua every
+frame fails, in any phase of any world — and it fails if any callback errored under the model (a callback
 that throws stops being counted). The slack is a constant in
 `tools/perf_client.lua`; the budget file holds only measurements, so
 rebaselining cannot loosen it. A failure names the count that went over and its
 five biggest contributors. A change fails over **25 natives, 2 heavy calls or
 10 KB in its window, or 25 natives in its busiest frame** — the fifteen laptop
-hides made twice fails. **The gate proves itself** on every check, with three
+hides made twice fails. **The gate proves itself** on every check, with four
 more runs, each with a regression added that must fail what it is aimed at, or
 the check fails: a model hide made and taken down on every SLOW pass, and a
 browser message on every TICK pass (Season 1's lobby, heavy calls a second),
-and every laptop hidden fifty times over at a season switch (`s1-live`'s
-change budget).
+every laptop hidden fifty times over at a season switch (`s1-live`'s change
+budget), and a Lua-only walk of a few hundred instructions every frame that
+calls no native (Season 1's lobby, VM instructions a frame).
 
 **When it fails**, run the table for that phase and find the new row. If the
 cost is a mistake — a per-frame loop with no gate, a native read per frame
