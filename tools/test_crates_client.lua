@@ -653,6 +653,55 @@ do
     eq(errored(), nil, 'no loop errored')
 end
 
+describe('loot.crates: a crate near or moving every pass, one at rest far off once a second -- #393')
+do
+    -- loot.crates asked the engine four questions of every crate with a body, ten
+    -- times a second, and a crate at rest changed nothing. Now one within 60 m of the
+    -- player, or moving at its last look, is looked at every pass, and any other once
+    -- a second -- which is how a far crate something knocked is found and followed.
+    reset()
+    propsLanded()
+    local nearW = crateWire({ x = 10.0 })
+    local farW = crateWire({ x = 120.0 })
+    add(nearW)
+    add(farW)
+    frames(40)
+    local nearB, farB = bodyAt(nearW.x, nearW.y), bodyAt(farW.x, farW.y)
+    local realVel = GetEntityVelocity
+    local vel, looks = {}, {}
+    GetEntityVelocity = function(h)
+        looks[h] = (looks[h] or 0) + 1
+        local v = vel[h]
+        return v and { x = v[1], y = v[2], z = v[3] } or { x = 0.0, y = 0.0, z = 0.0 }
+    end
+    frames(63, 16)                       -- about a second: ten passes
+    local nearN, farN = looks[nearB] or 0, looks[farB] or 0
+    ok(nearB ~= nil and farB ~= nil and nearN >= 9 and farN >= 1 and farN <= 2,
+        'over a second, the crate 10 m away is looked at every pass and the one 120 m '
+            .. 'away at rest once',
+        ('near %s looked at %d times, far %s %d'):format(tostring(nearB), nearN,
+            tostring(farB), farN))
+
+    -- SOMETHING KNOCKS THE FAR ONE: found at its next look, followed every pass
+    -- while it moves, and let go once it is still.
+    vel[farB] = { 3.0, 0.0, 0.0 }
+    looks = {}
+    frames(63, 16)
+    local followed = looks[farB] or 0
+    vel[farB] = nil
+    frames(14, 16)
+    looks = {}
+    frames(63, 16)
+    local afterRest = looks[farB] or 0
+    GetEntityVelocity = realVel
+    ok(followed >= 5 and afterRest <= 2,
+        'a far crate that is knocked is found within a second and followed every pass '
+            .. 'while it moves, and looked at once a second again when it is still',
+        ('%d looks the second it was knocked, %d the second after it stopped')
+            :format(followed, afterRest))
+    eq(errored(), nil, 'no loop errored')
+end
+
 describe('somebody else\'s open: the clip plays, the reveal does not')
 do
     reset()

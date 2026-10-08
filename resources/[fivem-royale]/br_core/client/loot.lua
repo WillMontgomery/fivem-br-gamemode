@@ -3211,14 +3211,42 @@ end
 ---
 --- This does no scanning: it walks only the entries that already HAVE a prop,
 --- which is at most PROP_MAX and usually a handful.
+---
+--- ═══ AND ONLY THE CRATES THAT ARE NEAR OR MOVING, TEN TIMES A SECOND (#393) ═══
+---
+--- A crate at rest has nothing to drag, and its pose is the one already recorded:
+--- each pass over one asked the engine four questions and changed nothing. So a
+--- crate is looked at every pass while it is within CRATE_NEAR_M of the player --
+--- where a car, a grenade or the player can shove it -- or while it was moving at
+--- its last look, until it settles; any other is looked at once a second, which is
+--- how a far crate something did knock is found and followed from then on.
+local CRATE_NEAR_M = 60.0
+local CRATE_REST_MS = 1000
+
 BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
+    local now = GetGameTimer()
+    local px, py = nil, nil
     for id, e in pairs(entries) do
         -- HUSKS TOO. An opened crate is the same physical box with a different
         -- lid: it already got the mass (both go through the `solid` branch at
         -- spawn) but it was excluded HERE, so an empty crate kept sliding like
         -- ice long after the sealed ones stopped (user, 2026-08-06). Mass and
         -- drag have to travel together or the pair is half a system.
-        if e.obj and (isContainer(e) or isHusk(e)) and DoesEntityExist(e.obj) then
+        local look = false
+        if e.obj and (isContainer(e) or isHusk(e)) then
+            look = e.crateMoving or now >= (e.crateLookAt or 0)
+            if not look then
+                if not px then
+                    local p = GetEntityCoords(PlayerPedId())
+                    px, py = p.x, p.y
+                end
+                local pose = poses[id]
+                local cx, cy = (pose and pose.x) or e.x, (pose and pose.y) or e.y
+                look = BR.Dist2(px, py, cx, cy) <= CRATE_NEAR_M * CRATE_NEAR_M
+            end
+        end
+        if look and DoesEntityExist(e.obj) then
+            e.crateLookAt = now + CRATE_REST_MS
             -- DRAG, because prop physics has no friction worth the name and
             -- SetObjectPhysicsParams' damping only bites in the air. The
             -- horizontal velocity is scaled down and zeroed once it is slower
@@ -3227,6 +3255,8 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
             local v = GetEntityVelocity(e.obj)
             local vx, vy, vz = v.x, v.y, v.z
             local speed2 = vx * vx + vy * vy
+            -- Followed every pass from here until it is still, falling included.
+            e.crateMoving = speed2 + vz * vz > 0.0001
             if speed2 > 0.0001 then
                 local minV = L.crateDragMin or 0.35
                 if speed2 < minV * minV then
