@@ -19033,11 +19033,13 @@ do
         end
         env.HasEntityBeenDamagedByAnyPed = function(victim)
             W.anyAsked = W.anyAsked + 1
+            if W.anyLies then return false end
             for h in pairs(W.marks) do if not isCar(h) then return victim == ME end end
             return false
         end
         env.HasEntityBeenDamagedByAnyVehicle = function(victim)
             W.anyAsked = W.anyAsked + 1
+            if W.anyLies then return false end
             for h in pairs(W.marks) do if isCar(h) then return victim == ME end end
             return false
         end
@@ -19223,6 +19225,21 @@ do
     ok(T.hp == 200 and T.lookups - tLookups == 6,
         'a frame that hurt resolves all three mates afresh and puts the damage back',
         ('hp %d, %d lookups'):format(T.hp, T.lookups - tLookups))
+
+    -- ═══ A FRAME THAT HURT ASKS EVERY MATE, WHATEVER THE RECORD'S TWO QUESTIONS SAY ═══
+    --
+    -- #393's review (N): those two decide only a frame that did not hurt. Were the
+    -- engine ever to answer no to both with a mate's mark on me, a frame that hurt
+    -- must still find the mark and put the damage back -- the refund does not lean
+    -- on them. Every hurt frame above had a mark they could see.
+    T.marks = {}
+    T.frame()
+    T.anyLies = true
+    T.hp, T.marks[20] = 120, true -- Bravo hurts me; any-ped and any-vehicle say no
+    T.frame()
+    T.anyLies = false
+    ok(T.hp == 200, 'a mate\'s hit is put back on a frame that hurt even when the record\'s '
+        .. 'own two questions answer no', ('hp %d'):format(T.hp))
 end
 -- ---------------------------------------------------------------------------
 -- The storm: WHOSE BODY the client reads it from.

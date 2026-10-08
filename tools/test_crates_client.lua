@@ -693,12 +693,99 @@ do
     looks = {}
     frames(63, 16)
     local afterRest = looks[farB] or 0
-    GetEntityVelocity = realVel
     ok(followed >= 5 and afterRest <= 2,
         'a far crate that is knocked is found within a second and followed every pass '
             .. 'while it moves, and looked at once a second again when it is still',
         ('%d looks the second it was knocked, %d the second after it stopped')
             :format(followed, afterRest))
+
+    -- FALLING IS MOVING (#393's review): a crate dropping straight down, with no
+    -- horizontal speed at all, is followed every pass until it lands.
+    -- Two seconds: found at its next look, within the first, then every pass.
+    vel[farB] = { 0.0, 0.0, -4.0 }
+    looks = {}
+    frames(126, 16)
+    local fell = looks[farB] or 0
+    vel[farB] = nil
+    frames(14, 16)
+    ok(fell >= 8, 'and so is one falling straight down, with no horizontal speed',
+        ('%d looks in the two seconds it fell'):format(fell))
+
+    -- THE LIMITS AT THEIR EDGES, not only far either side of them (#393's review): a
+    -- crate 58 m off is near and one 62 m off is not; and one at rest is looked at
+    -- once a second -- about three times in three seconds, not six.
+    local in58, out62 = crateWire({ x = 58.0 }), crateWire({ x = 62.0 })
+    add(in58)
+    add(out62)
+    frames(40)
+    local b58, b62 = bodyAt(in58.x, in58.y), bodyAt(out62.x, out62.y)
+    looks = {}
+    frames(63, 16)
+    local n58, n62 = looks[b58] or 0, looks[b62] or 0
+    ok(b58 ~= nil and b62 ~= nil and n58 >= 9 and n62 >= 1 and n62 <= 2,
+        'a crate 58 m away is looked at every pass, and one 62 m away once a second',
+        ('58 m: %d looks, 62 m: %d'):format(n58, n62))
+    looks = {}
+    frames(189, 16)                      -- three seconds
+    local rested = looks[farB] or 0
+    ok(rested >= 2 and rested <= 4,
+        'a far crate at rest is looked at once a second: about three times in three',
+        ('%d looks in three seconds'):format(rested))
+
+    -- AND NEAR THE PLAYER A SPECTATOR IS WATCHING (#393's review): the body lies
+    -- here, at the origin; the screen is by the far crate, 120 m off.
+    local keepSpec = BR.Spectate
+    BR.Spectate = {
+        active = function() return true end,
+        watchPoint = function() return { x = 118.0, y = 0.0, z = 31.0 } end,
+    }
+    looks = {}
+    frames(63, 16)
+    local watched = looks[farB] or 0
+    BR.Spectate = keepSpec
+    ok(watched >= 9,
+        'a crate by the player a spectator is watching is looked at every pass, however '
+            .. 'far away their own body lies',
+        ('%d looks in a second'):format(watched))
+    GetEntityVelocity = realVel
+    eq(errored(), nil, 'no loop errored')
+end
+
+describe('a box shoved into reach is offered on the next frame, not at the next build -- #393')
+do
+    -- The near set (client/loot.lua) is what the render pass walks, built ten times a
+    -- second. A crate's entry follows its shoved body (loot.props), and an entry that
+    -- moves can move into reach between two builds -- so it joins the set the pass
+    -- it moves, as a new entry does (#393's review: limits and joins at their
+    -- edges). Shoved from 40 m, outside the set, to 1.5 m, in front of the player.
+    reset()
+    propsLanded()
+    local w = crateWire({ bt = 3, x = 40.0 })
+    add(w)
+    frames(40)
+    local body = bodyAt(w.x, w.y)
+    if body then ents[body].x = 1.5 end
+    local moved = false
+    for _ = 1, 80 do
+        local n = #toServer
+        frame(16)
+        for i = n + 1, #toServer do
+            if toServer[i].name == BR.Net.LOOT_FIX then moved = true end
+        end
+        if moved then break end
+    end
+    -- One millisecond on: the last build was at most 96 ms ago, so this frame is
+    -- not one that builds the set.
+    polys = 0
+    frame(1)
+    local first = polys
+    polys = 0
+    frames(10, 16)
+    ok(body ~= nil and moved and first >= 2,
+        'a box shoved from 40 m to 1.5 m has its prompt drawn on the frame after its '
+            .. 'entry follows it',
+        ('body %s, moved %s, polys %d that frame, %d over the next ten'):format(
+            tostring(body), tostring(moved), first, polys))
     eq(errored(), nil, 'no loop errored')
 end
 

@@ -1662,6 +1662,47 @@ do
         ('aim calls %d'):format(aimCalls))
     pedPos.x, pedPos.y = 0.0, 0.0
 
+    -- THE SLACK AND THE STEP THAT BUILDS IT AGAIN, AT THEIR EDGES (#393's review: with
+    -- only the 299.5 m teleport above, a set with no slack and one built again only
+    -- after 100 m both passed). The glow reaches 25 m; the set holds 35 m -- 25 plus
+    -- NEAR_SLACK_M's 10 -- and is built again once the player is 10 m from where it
+    -- was built. What the frame walks is the set, so an item inside 25 m that is in
+    -- it on that frame is lit on that frame (the glow needs a body, which this suite
+    -- does not build for loose items; the walk is what is held here).
+
+    -- 9 m toward an item 30 m off: no build (under 10 m), and it is 21 m away.
+    clearWorld()
+    pedPos.x, pedPos.y = 0.0, 0.0
+    addEntry(BR.ItemKind.WEAPON, 'pistol', 30.0, 0.0)
+    frames(2)
+    justBuilt()
+    pedPos.x = 9.0
+    local _, _, bE = BR.Loot.nearSet()
+    frame(16)
+    local nE, _, bE2 = BR.Loot.nearSet()
+    ok(bE2 == bE and nE == 1,
+        'a player 9 m along toward an item 30 m off -- no build -- has it in the frame\'s '
+            .. 'walk as it comes inside 25 m: the set\'s slack holds it',
+        ('builds %d -> %d, %d in the set'):format(bE, bE2, nE))
+
+    -- 10.5 m toward an item 35.4 m off, which the build at the origin left out: that
+    -- step builds the set again, with the item, 24.9 m away, in it on that frame.
+    clearWorld()
+    pedPos.x, pedPos.y = 0.0, 0.0
+    addEntry(BR.ItemKind.WEAPON, 'pistol', 35.4, 0.0)
+    frames(2)
+    justBuilt()
+    local nD = BR.Loot.nearSet()
+    pedPos.x = 10.5
+    local _, _, bD = BR.Loot.nearSet()
+    frame(16)
+    local nD2, _, bD2 = BR.Loot.nearSet()
+    ok(nD == 0 and bD2 == bD + 1 and nD2 == 1,
+        'a player 10.5 m along toward an item 35.4 m off, outside the set, builds it again '
+            .. 'with that step, and the item is in that frame\'s walk',
+        ('set %d before, builds %d -> %d, %d in the set'):format(nD, bD, bD2, nD2))
+    pedPos.x, pedPos.y = 0.0, 0.0
+
     -- AN ITEM FLYING OUT OF A CRATE 50 m AWAY -- inside prop range, outside the
     -- near set's reach. Its body is built AFTER the set has been built again
     -- without it, as the 1 Hz build thread and a model stream make it in the game.

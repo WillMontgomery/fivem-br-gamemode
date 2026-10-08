@@ -414,9 +414,11 @@ local shineAt = 0
 -- of a second. So an entry inside the glow radius now was inside nearReach() of
 -- the point the set was built at, and is in it.
 --
--- AND TWO KINDS JOIN AT ONCE, between builds, so nothing waits a tenth of a second:
+-- AND THREE KINDS JOIN AT ONCE, between builds, so nothing waits a tenth of a second:
 --   * whatever LOOT_ADD announces -- an item out of a crate, a drop, a crate turned
 --     husk -- so its glow and its prompt are there on the next frame (addEntries);
+--   * a crate whose entry follows its shoved body (loot.props), since an entry
+--     that moves can move into the glow radius between two builds;
 --   * an item whose arrival flight is armed, wherever it is, because a prop in the
 --     air has to be flown all the way down -- the pass animates a flight outside
 --     the glow radius for exactly that reason -- and a flight still running when
@@ -2737,6 +2739,12 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.props', function()
                     e.movedAt = now
                     e.x, e.y, e.z = c.x, c.y, c.z
                     e.gz, e.gzAt = c.z, now
+                    -- An entry that moves joins the render pass's walk at once
+                    -- (#393), as a new one does: a crate shoved toward the
+                    -- player is lit and offered on the next frame, not at the
+                    -- next build of the near set. The build after drops it if
+                    -- it is not near.
+                    nearAdd(id)
                     TriggerServerEvent(BR.Net.LOOT_FIX,
                         { id = id, x = c.x, y = c.y, z = c.z })
                 end
@@ -3220,12 +3228,18 @@ end
 --- where a car, a grenade or the player can shove it -- or while it was moving at
 --- its last look, until it settles; any other is looked at once a second, which is
 --- how a far crate something did knock is found and followed from then on.
+---
+--- NEAR WHERE THIS SCREEN IS, TOO (#393's review): a spectator's body lies where
+--- they fell and the camera is on somebody else, so a crate within CRATE_NEAR_M of
+--- the player being watched (BR.Spectate.watchPoint) is near as well -- the shove
+--- a spectator watches is dragged on the pass it lands, as every crate's was.
 local CRATE_NEAR_M = 60.0
 local CRATE_REST_MS = 1000
 
 BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
     local now = GetGameTimer()
-    local px, py = nil, nil
+    local px, py, wx, wy = nil, nil, nil, nil
+    local near2 = CRATE_NEAR_M * CRATE_NEAR_M
     for id, e in pairs(entries) do
         -- HUSKS TOO. An opened crate is the same physical box with a different
         -- lid: it already got the mass (both go through the `solid` branch at
@@ -3239,10 +3253,15 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
                 if not px then
                     local p = GetEntityCoords(PlayerPedId())
                     px, py = p.x, p.y
+                    local S = BR.Spectate
+                    local w = S and S.active and S.active() and S.watchPoint
+                        and S.watchPoint() or nil
+                    if w then wx, wy = w.x, w.y end
                 end
                 local pose = poses[id]
                 local cx, cy = (pose and pose.x) or e.x, (pose and pose.y) or e.y
-                look = BR.Dist2(px, py, cx, cy) <= CRATE_NEAR_M * CRATE_NEAR_M
+                look = BR.Dist2(px, py, cx, cy) <= near2
+                    or (wx ~= nil and BR.Dist2(wx, wy, cx, cy) <= near2)
             end
         end
         if look and DoesEntityExist(e.obj) then
