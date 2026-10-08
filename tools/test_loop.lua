@@ -722,6 +722,33 @@ do
     BR.Loop.unregister(h)
 end
 
+describe('pass')
+do
+    -- BR.Loop.pass (#393): a number of its own for each pass of each band, for as
+    -- long as that pass runs, and nil between passes -- what lets a reader keep an
+    -- answer for the rest of a pass (br_lib/shared/storm_shape.lua's spec check).
+    local seen = {}
+    local hf = BR.Loop.register(BR.Loop.FRAME, 't.pass.f', function()
+        seen[#seen + 1] = BR.Loop.pass
+    end)
+    local ht = BR.Loop.register(BR.Loop.TICK, 't.pass.t', function()
+        seen[#seen + 1] = BR.Loop.pass
+    end)
+    local outside = BR.Loop.pass
+    BR.Loop.step(BR.Loop.FRAME)
+    local between = BR.Loop.pass
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(#seen == 3 and seen[1] ~= nil and seen[2] ~= nil and seen[3] ~= nil
+        and seen[1] ~= seen[2] and seen[2] ~= seen[3] and seen[1] ~= seen[3],
+        'each pass of each band has a number of its own while it runs',
+        table.concat({ tostring(seen[1]), tostring(seen[2]), tostring(seen[3]) }, ', '))
+    ok(outside == nil and between == nil and BR.Loop.pass == nil,
+        'and there is none between passes')
+    BR.Loop.unregister(hf)
+    BR.Loop.unregister(ht)
+end
+
 describe('state helpers')
 do
     BR.State.match.state = BR.MatchState.PLAYING

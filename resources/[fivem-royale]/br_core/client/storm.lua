@@ -764,6 +764,49 @@ end
 --- Numbers per quad in a built strip: ax, ay, bx, by, mid x, mid y, normal x, normal y.
 local QUAD_STRIDE = 8
 
+-- ═══ RUNS OF QUADS, EACH WITH A CIRCLE ROUND IT, FOR THE FAR FADE (#393) ═══
+--
+-- Past the far fade's end a quad is not drawn (emitStrip), and the frame used to
+-- find that out one quad at a time: a nearest-point test and two square roots for
+-- every quad of every wall, though at the owner's 3 km most of a phase-1 wall is
+-- past it. So when the strip is built, each RUN_QUADS quads in walk order get the
+-- circle round their corners, and a run whose circle stands wholly past the fade's
+-- end -- by RUN_MARGIN_M more, so no rounding can decide it -- is passed over whole.
+-- Every point of every quad in it is past the end, so the per-quad test would have
+-- skipped every one of them: the same quads are drawn, with the same arguments, in
+-- the same order. tools/test_storm.lua's `wall.runcull` holds both halves.
+local RUN_QUADS = 8
+local RUN_MARGIN_M = 1.0
+
+--- The circle round each RUN_QUADS consecutive quads of `g`: g.rb holds g.rn runs,
+--- center x, center y and radius each -- the half-diagonal of the run's box, which
+--- every point of every quad in it is within.
+local function stripRuns(g)
+    local q, rb, n = g.q, g.rb, g.n
+    local rn, i = 0, 0
+    while i < n do
+        local last = i + RUN_QUADS - 1
+        if last > n - 1 then last = n - 1 end
+        local o = i * QUAD_STRIDE
+        local x0, y0 = q[o + 1], q[o + 2]
+        local x1, y1 = x0, y0
+        for k = i, last do
+            local ok = k * QUAD_STRIDE
+            local ax, ay, bx, by = q[ok + 1], q[ok + 2], q[ok + 3], q[ok + 4]
+            if ax < x0 then x0 = ax elseif ax > x1 then x1 = ax end
+            if ay < y0 then y0 = ay elseif ay > y1 then y1 = ay end
+            if bx < x0 then x0 = bx elseif bx > x1 then x1 = bx end
+            if by < y0 then y0 = by elseif by > y1 then y1 = by end
+        end
+        local hx, hy = (x1 - x0) * 0.5, (y1 - y0) * 0.5
+        local ro = rn * 3
+        rb[ro + 1], rb[ro + 2], rb[ro + 3] = x0 + hx, y0 + hy, math.sqrt(hx * hx + hy * hy)
+        rn = rn + 1
+        i = last + 1
+    end
+    g.rn = rn
+end
+
 --- Walk `shape` into `g`: g.q holds g.n quads, QUAD_STRIDE numbers each.
 --- @param g table          the caller's strip; its arrays are reused
 --- @param shape table      an inset BR.StormShape
@@ -785,7 +828,7 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
     g.shape, g.chordM, g.minSeg, g.maxPolys, g.quadPolys = shape, chordM, minSeg,
         maxPolys, quadPolys
     g.maxQuadM, g.split = maxQuadM, split
-    g.n = 0
+    g.n, g.rn = 0, 0
     if nComp == 0 then return end
     -- A shape that is not in a pool -- a hold's -- walks its run lists into the
     -- strip's own, so the rebuilds while it eases a split in or out allocate nothing.
@@ -1050,6 +1093,7 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
         end
     end
     g.n = nq
+    stripRuns(g)
 end
 
 --- A strip for a caller to keep between frames; see buildStrip. Besides the walk it
@@ -1057,7 +1101,7 @@ end
 --- -- so the frame's quads can be emitted again, later in the same frame, exactly as
 --- they would have been (see BR.Storm.cameraCut).
 local function newStrip()
-    return { q = {}, step = {}, n = 0,
+    return { q = {}, step = {}, n = 0, rb = {}, rn = 0,
              draw = {}, bz0 = {}, bz1 = {}, ba = {}, baf = {} }
 end
 
@@ -1154,6 +1198,10 @@ end
 --- side of the bus camera it is on, so the cull draws the near quads in front of it
 --- and a cut puts back the near quads behind it -- the two halves of the same wall a
 --- frame with no cull would draw. And neither is a cull behind the camera.
+---
+--- AND A WHOLE RUN PAST endM IS PASSED OVER WITHOUT LOOKING AT ITS QUADS (stripRuns):
+--- every quad in it would have failed the per-quad test above. `draw.looked` is how
+--- many quads this frame looked at.
 --- @param g table            a built strip, its `draw` filled this frame
 --- @param view table|nil     { n = 2, { x, y, z, fx, fy, fz }, {...} }: the two
 ---                           camera planes, this frame's pose and the one before
@@ -1168,6 +1216,7 @@ local function emitStrip(g, view, complement)
     local bandZ0, bandZ1, bandA, bandAf = g.bz0, g.bz1, g.ba, g.baf
     local far, f0, band, f0sq, f1sq = d.far, d.f0, d.band, d.f0sq, d.f1sq
     local u0, uPerS, sBot, sTop = d.u0, d.uPerS, d.sBot, d.sTop
+    local runOut = far and (d.f0 + d.band + RUN_MARGIN_M) or 0.0
 
     local p1, p2, v1, v2
     if view then
@@ -1181,82 +1230,98 @@ local function emitStrip(g, view, complement)
         if (zhi - p2.z) * p2.fz > v2 then v2 = (zhi - p2.z) * p2.fz end
     end
 
-    local q = g.q
-    local skipped = 0
-    for i = 0, g.n - 1 do
-        local o = i * QUAD_STRIDE
-        local ax, ay, bx, by = q[o + 1], q[o + 2], q[o + 3], q[o + 4]
-        local draw = true
-        -- The far fade: each end's u, and the whole quad's multiplier for the bands.
-        local ua, ub, fm = u0, u0, 1.0
+    local q, rb, nq = g.q, g.rb, g.n
+    local skipped, looked = 0, 0
+    for r = 0, g.rn - 1 do
+        local first = r * RUN_QUADS
+        local last = first + RUN_QUADS - 1
+        if last > nq - 1 then last = nq - 1 end
+        local keep = true
         if far then
-            local dax, day, dbx, dby = ax - vx, ay - vy, bx - vx, by - vy
-            local da2, db2 = dax * dax + day * day, dbx * dbx + dby * dby
-            if da2 > f0sq or db2 > f0sq then
-                -- The quad's nearest point to the viewpoint, on the ground.
-                local ex, ey = bx - ax, by - ay
-                local el = ex * ex + ey * ey
-                local t = 0.0
-                if el > 0.0 then
-                    t = -(dax * ex + day * ey) / el
-                    if t < 0.0 then t = 0.0 elseif t > 1.0 then t = 1.0 end
-                end
-                local nx, ny = dax + ex * t, day + ey * t
-                local dn2 = nx * nx + ny * ny
-                if dn2 >= f1sq then
-                    draw = false
-                else
-                    local sa = (math.sqrt(da2) - f0) / band
-                    local sb = (math.sqrt(db2) - f0) / band
-                    if sa < sBot then sa = sBot elseif sa > sTop then sa = sTop end
-                    if sb < sBot then sb = sBot elseif sb > sTop then sb = sTop end
-                    ua, ub = u0 + sa * uPerS, u0 + sb * uPerS
-                    if dn2 > f0sq then fm = farMul((math.sqrt(dn2) - f0) / band) end
-                end
-            end
+            local ro = r * 3
+            local cx, cy = rb[ro + 1] - vx, rb[ro + 2] - vy
+            local reach = runOut + rb[ro + 3]
+            keep = cx * cx + cy * cy < reach * reach
         end
-        if draw and view then
-            local behind = quadBehind(p1, v1, ax, ay, bx, by)
-                and quadBehind(p2, v2, ax, ay, bx, by)
-            draw = behind == complement
-            if not draw then skipped = skipped + 1 end
-        end
-        if draw then
-            local out = (vx - q[o + 5]) * q[o + 7] + (vy - q[o + 6]) * q[o + 8] >= 0.0
-            if gradient then
-                if out then
-                    DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
-                        cr, cg, cb, av, gDict, gTex,
-                        ua, gV0, 1.0,  ub, gV0, 1.0,  ua, gV1, 1.0)
-                    DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
-                        cr, cg, cb, av, gDict, gTex,
-                        ub, gV0, 1.0,  ub, gV1, 1.0,  ua, gV1, 1.0)
-                else
-                    DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
-                        cr, cg, cb, av, gDict, gTex,
-                        ua, gV1, 1.0,  ub, gV0, 1.0,  ua, gV0, 1.0)
-                    DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
-                        cr, cg, cb, av, gDict, gTex,
-                        ua, gV1, 1.0,  ub, gV1, 1.0,  ub, gV0, 1.0)
-                end
-            else
-                for b = 1, bands do
-                    local z0, z1, ab = bandZ0[b], bandZ1[b], bandA[b]
-                    if fm < 1.0 then
-                        ab = math.floor(bandAf[b] * fm + 0.5)
-                        if ab < 0 then ab = 0 elseif ab > 255 then ab = 255 end
+        if keep then
+            looked = looked + (last - first + 1)
+            for i = first, last do
+                local o = i * QUAD_STRIDE
+                local ax, ay, bx, by = q[o + 1], q[o + 2], q[o + 3], q[o + 4]
+                local draw = true
+                -- The far fade: each end's u, and the whole quad's multiplier for the bands.
+                local ua, ub, fm = u0, u0, 1.0
+                if far then
+                    local dax, day, dbx, dby = ax - vx, ay - vy, bx - vx, by - vy
+                    local da2, db2 = dax * dax + day * day, dbx * dbx + dby * dby
+                    if da2 > f0sq or db2 > f0sq then
+                        -- The quad's nearest point to the viewpoint, on the ground.
+                        local ex, ey = bx - ax, by - ay
+                        local el = ex * ex + ey * ey
+                        local t = 0.0
+                        if el > 0.0 then
+                            t = -(dax * ex + day * ey) / el
+                            if t < 0.0 then t = 0.0 elseif t > 1.0 then t = 1.0 end
+                        end
+                        local nx, ny = dax + ex * t, day + ey * t
+                        local dn2 = nx * nx + ny * ny
+                        if dn2 >= f1sq then
+                            draw = false
+                        else
+                            local sa = (math.sqrt(da2) - f0) / band
+                            local sb = (math.sqrt(db2) - f0) / band
+                            if sa < sBot then sa = sBot elseif sa > sTop then sa = sTop end
+                            if sb < sBot then sb = sBot elseif sb > sTop then sb = sTop end
+                            ua, ub = u0 + sa * uPerS, u0 + sb * uPerS
+                            if dn2 > f0sq then fm = farMul((math.sqrt(dn2) - f0) / band) end
+                        end
                     end
-                    if out then
-                        DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, ab)
-                        DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, ab)
+                end
+                if draw and view then
+                    local behind = quadBehind(p1, v1, ax, ay, bx, by)
+                        and quadBehind(p2, v2, ax, ay, bx, by)
+                    draw = behind == complement
+                    if not draw then skipped = skipped + 1 end
+                end
+                if draw then
+                    local out = (vx - q[o + 5]) * q[o + 7] + (vy - q[o + 6]) * q[o + 8] >= 0.0
+                    if gradient then
+                        if out then
+                            DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
+                                cr, cg, cb, av, gDict, gTex,
+                                ua, gV0, 1.0,  ub, gV0, 1.0,  ua, gV1, 1.0)
+                            DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
+                                cr, cg, cb, av, gDict, gTex,
+                                ub, gV0, 1.0,  ub, gV1, 1.0,  ua, gV1, 1.0)
+                        else
+                            DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
+                                cr, cg, cb, av, gDict, gTex,
+                                ua, gV1, 1.0,  ub, gV0, 1.0,  ua, gV0, 1.0)
+                            DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
+                                cr, cg, cb, av, gDict, gTex,
+                                ua, gV1, 1.0,  ub, gV1, 1.0,  ub, gV0, 1.0)
+                        end
                     else
-                        DrawPoly(ax, ay, z1, bx, by, z0, ax, ay, z0, cr, cg, cb, ab)
-                        DrawPoly(ax, ay, z1, bx, by, z1, bx, by, z0, cr, cg, cb, ab)
+                        for b = 1, bands do
+                            local z0, z1, ab = bandZ0[b], bandZ1[b], bandA[b]
+                            if fm < 1.0 then
+                                ab = math.floor(bandAf[b] * fm + 0.5)
+                                if ab < 0 then ab = 0 elseif ab > 255 then ab = 255 end
+                            end
+                            if out then
+                                DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, ab)
+                                DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, ab)
+                            else
+                                DrawPoly(ax, ay, z1, bx, by, z0, ax, ay, z0, cr, cg, cb, ab)
+                                DrawPoly(ax, ay, z1, bx, by, z1, bx, by, z0, cr, cg, cb, ab)
+                            end
+                        end
                     end
                 end
             end
         end
     end
+    d.looked = looked
     return skipped
 end
 
@@ -3286,6 +3351,14 @@ end
 --- The preview wall's blob, and the circle and unit it was built for.
 local previewKey = { cx = nil, cy = nil, r = nil, seed = nil, unit = nil, blob = nil }
 local previewMemo = newWallMemo()
+
+--- The live wall's strip and circle 1's, as each was last drawn: their `n` quads, and
+--- in `draw.looked` how many of them the far fade's walk looked at (stripRuns). Read by
+--- tools/test_storm.lua's `wall.runcull`.
+--- @return table wall, table preview
+function BR.Storm.strips()
+    return wallMemo.strip, previewMemo.strip
+end
 
 --- Circle 1's blob: the same table for as long as the circle and its unit are the
 --- same. The unit is asked for every frame, as it always was, so a unit rebuilt

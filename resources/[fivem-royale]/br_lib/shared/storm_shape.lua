@@ -1808,18 +1808,54 @@ local function specStill(sp, opts)
     return true
 end
 
+-- ═══ AND ON A CLIENT, ONCE PER LOOP PASS RATHER THAN ONCE PER CALL (#393) ═══
+--
+-- A client frame asks for its zones many times over -- the live wall's two, circle
+-- 1's, the HUD's and the map's solves -- and every ask compared every knob and every
+-- radius again: about 2,300 VM instructions a match frame, for a config nothing in
+-- the game edits. So inside one pass of the client's loop (BR.Loop.pass, set by
+-- client/main.lua for exactly the length of one band's pass) a spec, and a chain,
+-- that has been checked once is not checked again. The first ask of a pass compares
+-- as before. No loop callback writes the config, so nothing can change it in the
+-- middle of a pass.
+--
+-- AND A LIVE EDIT IS STILL NEVER SERVED STALE. Outside a pass -- a console command,
+-- an event handler, the server, which has no loop, and the suite -- every ask
+-- compares, as it always did; and the next pass compares afresh, because its
+-- number is new. tools/test_storm.lua's `shape.pass` edits the knobs and a radius
+-- in place between frames and between asks, and reads each change back.
+
+--- The loop pass running now, or nil: outside one, or where there is no loop.
+--- @return integer|nil
+local function passNow()
+    local L = BR.Loop
+    return L and L.pass
+end
+
+--- specStill, at most once a loop pass for one spec.
+local function specStillNow(sp, opts)
+    local pass = passNow()
+    if pass and sp.stillPass == pass then return true end
+    if not specStill(sp, opts) then return false end
+    sp.stillPass = pass
+    return true
+end
+
 --- The unit table of one chain of one spec: the zones fitted to one phase table's
 --- radii, or to none. A chain whose radii have changed since it was built is
---- dropped rather than served.
+--- dropped rather than served -- checked at most once a loop pass (above).
 local function chainOf(chains, phases)
     local ch = chains and chains[phases or NO_CHAIN]
     if ch and phases then
+        local pass = passNow()
+        if pass and ch.stillPass == pass then return ch end
         if #phases ~= #ch.radii then return nil end
         for i = 1, #phases do
             if (phases[i] and tonumber(phases[i].radius)) ~= ch.radii[i] then
                 return nil
             end
         end
+        ch.stillPass = pass
     end
     return ch
 end
@@ -2092,7 +2128,7 @@ end
 function BR.StormShape.blobUnit(seed, zone, opts, phases)
     opts = opts or NO_OPTS
     local sp = specs[opts]
-    if not sp or not specStill(sp, opts) then
+    if not sp or not specStillNow(sp, opts) then
         sp = readSpec(opts)
         specs[opts] = sp
     end
@@ -2138,7 +2174,7 @@ end
 function BR.StormShape.blobUnitReady(seed, zone, opts, phases)
     opts = opts or NO_OPTS
     local sp = specs[opts]
-    if not sp or not specStill(sp, opts) or sp.gen ~= blobGen then return false end
+    if not sp or not specStillNow(sp, opts) or sp.gen ~= blobGen then return false end
     if not sp.counts then return true end
     local z = math.tointeger(math.floor(zone or 0)) or 0
     if z <= 0 then return true end

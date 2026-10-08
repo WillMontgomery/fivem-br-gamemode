@@ -5652,6 +5652,198 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('wall.runcull')
+do
+    -- ═══ A RUN OF QUADS WHOLLY PAST THE FADE'S END IS PASSED OVER, AND THE PICTURE
+    --     IS THE PER-QUAD TEST'S (#393) ═══
+    --
+    -- client/storm.lua keeps a circle round each eight quads of a strip when it is
+    -- built (stripRuns), and emitStrip passes a whole run over when its circle stands
+    -- wholly past farFade.endM. The claim is twofold, and both halves are held here:
+    --
+    --   * THE SAME PICTURE: from 64 viewpoints round and across phase 1's opening ring
+    --     -- inside it near the edge, out at the fade's start and end, at its middle --
+    --     exactly the pieces with a point inside the fade's end are drawn, in the
+    --     wall's own order, with every argument the no-fade wall's quad has: what the
+    --     per-quad test drew. The literal 3 km, not the config.
+    --   * LESS WALKED: most of the ring's quads are never looked at (`draw.looked`),
+    --     and with no far fade every one is, as before.
+    local OWNER_END = 3000.0
+    local RING = 9400.0
+    local function ring(noFade)
+        local C = newStormClient()
+        if noFade then noFarFade(C) end
+        local rec = C.record(1, 0.0, 0.0, RING, 900.0, 1400.0, 2600.0, 600000, 240000, 0.5)
+        rec.tStart = C.now - 60000
+        C.recordWallOnly()
+        return C
+    end
+    local function footKey(sg) return ('%a,%a,%a,%a'):format(sg[1], sg[2], sg[3], sg[4]) end
+    local function sameTri(a, b)
+        if a.a ~= b.a or a.r ~= b.r or a.g ~= b.g or a.b ~= b.b then return false end
+        for j = 1, 3 do
+            if a[j].x ~= b[j].x or a[j].y ~= b[j].y or a[j].z ~= b[j].z then return false end
+        end
+        return true
+    end
+    local F, R = ring(false), ring(true)
+    local views = {}
+    for k = 0, 15 do
+        local a = k * math.pi / 8 + 0.1
+        for _, d in ipairs({ RING - 300.0, RING - 1500.0, RING - 2990.0, RING - 3010.0 }) do
+            views[#views + 1] = pt(math.cos(a) * d, math.sin(a) * d, 30.0)
+        end
+    end
+    views[#views + 1] = pt(0.0, 0.0, 30.0)
+    local bad, looked, total, drawn, viewsN = nil, 0, 0, 0, 0
+    for _, v in ipairs(views) do
+        F.pedAt, R.pedAt = v, v
+        F.frame()
+        R.frame()
+        viewsN = viewsN + 1
+        local byKey, want = {}, {}
+        for _, sg in ipairs(piecesOf(R)) do
+            if segDist(v.x, v.y, sg) < OWNER_END then
+                want[#want + 1] = footKey(sg)
+                byKey[footKey(sg)] = sg
+            end
+        end
+        local got = piecesOf(F)
+        if #got ~= #want then
+            bad = bad or ('%d pieces drawn from (%.0f, %.0f), %d wanted'):format(#got, v.x,
+                v.y, #want)
+        end
+        for i, sg in ipairs(got) do
+            local k = footKey(sg)
+            if want[i] ~= k then
+                bad = bad or ('piece %d from (%.0f, %.0f) is not the one the per-quad test '
+                    .. 'draws'):format(i, v.x, v.y)
+            else
+                -- Its corners, its winding and its alpha are the no-fade wall's; its u
+                -- is the fade's own, which wall.farfade holds.
+                local t, o = sg.q.bands[1], byKey[k].q.bands[1]
+                if not sameTri(t.t1, o.t1) or not sameTri(t.t2, o.t2) then
+                    bad = bad or 'a piece drawn with corners or an alpha the wall has not'
+                end
+            end
+        end
+        drawn = drawn + #got
+        local g = F.env.BR.Storm.strips()
+        looked, total = looked + (g.draw.looked or -1), total + g.n
+    end
+    ok(F.errored() == nil and R.errored() == nil and bad == nil and drawn > 0,
+        'THE SAME PICTURE: from 64 viewpoints round and across the opening ring, exactly '
+            .. 'the pieces with a point inside 3 km are drawn, in the wall\'s order and with '
+            .. 'its arguments -- what the per-quad test drew',
+        bad or ('%d pieces over %d viewpoints'):format(drawn, viewsN))
+    ok(looked >= drawn / 2 and looked < total * 0.4,
+        'LESS WALKED: most of the ring\'s quads are passed over a run at a time, never '
+            .. 'looked at one by one',
+        ('%d of %d quads looked at over %d viewpoints'):format(looked, total, viewsN))
+    local gR = R.env.BR.Storm.strips()
+    ok(gR.n > 0 and gR.draw.looked == gR.n,
+        'and with no far fade every quad is looked at, as it always was',
+        ('%s of %d'):format(tostring(gR.draw.looked), gR.n))
+end
+
+-- ---------------------------------------------------------------------------
+describe('shape.pass')
+do
+    -- ═══ THE SHAPE CONFIG IS CHECKED ONCE A LOOP PASS, AND A LIVE EDIT IS STILL
+    --     SEEN (#393) ═══
+    --
+    -- br_lib/shared/storm_shape.lua compares every knob of the shape config, and every
+    -- radius of the phase table, against what it last built from -- and a client
+    -- frame asked it to a dozen times. Now a client checks once a pass of its loop
+    -- (BR.Loop.pass) and outside a pass every time. Counted here with a call hook on
+    -- the check itself, and then the knobs and a radius are edited IN PLACE, between
+    -- frames and between asks, and each edit must be what the next ask and the next
+    -- frame draw.
+    local shapeSrc = io.open(RES .. 'br_lib/shared/storm_shape.lua', 'rb'):read('a')
+    local function lineOf(pat)
+        local at = shapeSrc:find(pat, 1, true)
+        return at and (select(2, shapeSrc:sub(1, at):gsub('\n', '')) + 1)
+    end
+    local SPEC_LINE = lineOf('local function specStill(')
+    local function checks(fn)
+        local n = 0
+        debug.sethook(function()
+            local i = debug.getinfo(2, 'S')
+            if i.linedefined == SPEC_LINE and i.short_src:find('storm_shape', 1, true) then
+                n = n + 1
+            end
+        end, 'c')
+        fn()
+        debug.sethook()
+        return n
+    end
+    local function zoneClient(edit, phase)
+        local C = newStormClient()
+        if edit then edit(C.env.BR.Config.Storm) end
+        local rec
+        if phase == 3 then
+            rec = C.record(3, 0.0, 0.0, 1600.0, 300.0, 100.0, 950.0, 600000, 60000, 1.7)
+        else
+            rec = C.record(2, 0.0, 0.0, 1600.0, 300.0, 100.0, 950.0, 600000, 60000, 1.25)
+        end
+        rec.seed = 77
+        C.grown()
+        C.pedAt = pt(200.0, 100.0, 30.0)
+        C.frame()
+        return C
+    end
+    local C = zoneClient()
+    local env = C.env
+    local inFrame = checks(function() C.frame() end)
+    local outside = checks(function()
+        env.BR.StormUnit(77, 2)
+        env.BR.StormUnit(77, 2)
+        env.BR.StormUnit(77, 1)
+    end)
+    ok(SPEC_LINE ~= nil and inFrame == 1 and outside == 3,
+        'a frame checks the shape config once, however often it asks for a zone; outside '
+            .. 'a pass every ask checks',
+        ('line %s: %d in a frame, %d for three asks outside one'):format(tostring(SPEC_LINE),
+            inFrame, outside))
+
+    -- A KNOB EDITED IN PLACE BETWEEN TWO FRAMES. The spec it was read into is then not
+    -- the config's, so the next frame reads the knobs again and builds its zones anew
+    -- (BR.StormShape.builds counts each one built) -- and an ask outside a pass gets
+    -- the new shape at once.
+    local K = zoneClient()
+    local KB = K.env.BR.StormShape.builds
+    K.frame()
+    local k0 = KB.units
+    K.frame()
+    local kSteady = KB.units - k0
+    K.env.BR.Config.Storm.shape.circle = 1.0
+    K.frame()
+    local kAfter = KB.units - k0
+    local kind = K.env.BR.StormUnit(77, 2).kind
+    ok(kSteady == 0 and kAfter > 0 and kind == 'circle',
+        'a knob edited in place between two frames is read by the next frame, which builds '
+            .. 'its zones again, and by the next ask outside a pass',
+        ('%d built on a steady frame, %d once the knob moved; zone 2 a %s')
+            :format(kSteady, kAfter, tostring(kind)))
+
+    -- A RADIUS EDITED IN PLACE: zone 2 is fitted inside zone 1 at their ratio, so the
+    -- phase table is part of the chain, and a phase-3 hold's wall is zone 2.
+    local Q = zoneClient(nil, 3)
+    local QB = Q.env.BR.StormShape.builds
+    local v0 = Q.env.BR.StormUnit(77, 2)
+    Q.frame()
+    local q0 = QB.units
+    Q.env.BR.Config.Storm.phases[2].radius = Q.env.BR.Config.Storm.phases[2].radius * 0.7
+    Q.frame()
+    local qAfter = QB.units - q0
+    local v1 = Q.env.BR.StormUnit(77, 2)
+    ok(qAfter > 0 and v1 ~= v0,
+        'and a phase radius edited in place is a new chain: the next frame builds it, and '
+            .. 'the next ask outside a pass answers from it',
+        ('%d built by the frame after the edit'):format(qAfter))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.trueline')
 do
     -- ═══ ONLY THE DRAWN WALL MOVED: DAMAGE AND THE HUD READ THE TRUE SHAPE (#393) ═══

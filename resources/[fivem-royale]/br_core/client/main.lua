@@ -920,6 +920,17 @@ function BR.Loop.resetStats()
     for i = 1, #frameStats.counts do frameStats.counts[i] = 0 end
 end
 
+-- ═══ WHICH PASS IS RUNNING (#393) ═══
+--
+-- BR.Loop.pass is a number of its own for each pass of each band, for exactly as
+-- long as that pass runs, and nil between passes. A reader that asks the same
+-- question many times a frame may keep its answer for the rest of a pass when no
+-- loop callback can change it -- br_lib/shared/storm_shape.lua keeps its check that
+-- the storm's shape config is unchanged -- and must ask afresh outside one, where a
+-- console command or an event can have changed anything.
+local passSeq = 0
+BR.Loop.pass = nil
+
 --- Run a single pass over one band.
 ---
 --- Public rather than local for two reasons: the debug tooling can single-step a
@@ -929,6 +940,8 @@ end
 function BR.Loop.step(band)
     local list = registry[band]
     if not list then return end
+    passSeq = passSeq + 1
+    BR.Loop.pass = passSeq
 
     local t = GetGameTimer()
     local bandStart = t
@@ -1005,6 +1018,8 @@ function BR.Loop.step(band)
             end
         end
     end
+
+    BR.Loop.pass = nil
 
     -- Sweep anything unregistered during the pass, now that iteration is done.
     if swept then
