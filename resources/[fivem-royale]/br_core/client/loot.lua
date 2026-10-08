@@ -400,6 +400,40 @@ end)
 local shineId = nil
 local shineAt = 0
 
+-- ═══ THE NEAR SET: WHAT THE RENDER PASS WALKS EACH FRAME (#393) ═══
+--
+-- loot.render walked every streamed entry every frame -- several hundred at a
+-- dense POI, the whole 768 m subscription -- to find the handful inside the glow
+-- radius. Now every NEAR_SCAN_MS it walks them all once and keeps the ids within
+-- nearReach() of where the player stood, and each frame walks only those.
+--
+-- NOTHING INSIDE THE GLOW RADIUS CAN BE MISSING FROM IT, AT ANY SPEED. nearReach()
+-- is the widest radius the pass acts on -- the glow, the shine search, an
+-- interaction reach -- plus NEAR_SLACK_M, and the set is built again the moment
+-- the player stands NEAR_SLACK_M from where it was built, as well as every tenth
+-- of a second. So an entry inside the glow radius now was inside nearReach() of
+-- the point the set was built at, and is in it.
+--
+-- AND TWO KINDS JOIN AT ONCE, between builds, so nothing waits a tenth of a second:
+--   * whatever LOOT_ADD announces -- an item out of a crate, a drop, a crate turned
+--     husk -- so its glow and its prompt are there on the next frame (addEntries);
+--   * an item whose arrival flight is armed, wherever it is, because a prop in the
+--     air has to be flown all the way down -- the pass animates a flight outside
+--     the glow radius for exactly that reason -- and a flight still running when
+--     the set is built again stays in it. A flight left out would hang in mid-air.
+local NEAR_SCAN_MS = 100
+local NEAR_SLACK_M = 10.0
+local near = { ids = {}, n = 0, has = {}, at = nil, x = 0.0, y = 0.0, builds = 0 }
+
+--- Put one entry in the near set now, if it is not in it.
+--- @param id integer
+local function nearAdd(id)
+    if near.has[id] then return end
+    near.has[id] = true
+    near.n = near.n + 1
+    near.ids[near.n] = id
+end
+
 --- Props that are no longer loot, only scenery on its way out.
 ---
 --- THE ENTRY DIES THE INSTANT THE SERVER CONFIRMS THE CLAIM. That is the whole
@@ -2056,6 +2090,9 @@ local function drain()
                                     BR.Loot.arc.lastBuildMs = age
                                     if age < (L.arriveGraceMs or 3000) then
                                         e.arriveAt = GetGameTimer()
+                                        -- In the render pass's walk from the
+                                        -- next frame, wherever it is (#393).
+                                        nearAdd(e.id)
                                         BR.Loot.arc.armed = BR.Loot.arc.armed + 1
                                     else
                                         BR.Loot.arc.late = BR.Loot.arc.late + 1
@@ -2285,6 +2322,12 @@ end
 RegisterNetEvent(BR.Net.LOOT_ADD)
 AddEventHandler(BR.Net.LOOT_ADD, function(list)
     addEntries(list)
+    -- AND INTO THE RENDER PASS'S WALK AT ONCE (#393): a new item, a drop or a
+    -- crate turned husk is offered and lit on the next frame, not at the next
+    -- build of the near set. The build after drops whatever is not near.
+    for _, d in ipairs(list or {}) do
+        if d.id ~= nil and entries[d.id] then nearAdd(d.id) end
+    end
 end)
 
 -- The Volts cue. See protocol.lua: Volts are collected without a slot, so the
@@ -3104,6 +3147,46 @@ local function stepRetiring(now)
     end
 end
 
+--- The widest radius loot.render acts on: the glow, the shine search and an
+--- interaction reach -- plus NEAR_SLACK_M (the near set's note).
+--- @return number
+local function nearReach()
+    local r = L.glowDistance or 25.0
+    local shine = L.shineDistance or 18.0
+    local reach = (L.pickupDistance or 3.5) + 1.5
+    if shine > r then r = shine end
+    if reach > r then r = reach end
+    return r + NEAR_SLACK_M
+end
+
+--- Build the near set at (px, py): every entry within nearReach(), and every one
+--- whose arrival flight is still armed, wherever it is.
+--- @param px number @param py number @param now number
+local function nearBuild(px, py, now)
+    local ids, has = near.ids, near.has
+    for i = 1, near.n do
+        has[ids[i]] = nil
+        ids[i] = nil
+    end
+    near.n = 0
+    local r = nearReach()
+    local r2 = r * r
+    for id, e in pairs(entries) do
+        if e.arriveAt or BR.Dist2(px, py, e.x, e.y) <= r2 then nearAdd(id) end
+    end
+    near.at, near.x, near.y = now, px, py
+    near.builds = near.builds + 1
+end
+
+--- The near set as /brloot and the suite read it: how many entries it holds, how
+--- many are streamed, and how many times it has been built.
+--- @return integer size, integer streamed, integer builds
+function BR.Loot.nearSet()
+    local streamed = 0
+    for _ in pairs(entries) do streamed = streamed + 1 end
+    return near.n, streamed, near.builds
+end
+
 -- Glow, labels, the prompt and the container hold, all off one pass over the
 -- entries in range. Disable with /brloop disable loot.render, the same drill
 -- the storm renderer answers to.
@@ -3234,6 +3317,14 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     local glow2  = L.glowDistance * L.glowDistance
     local canTakeNow = canTake()
 
+    -- THE NEAR SET, built again every NEAR_SCAN_MS or as soon as the player is
+    -- NEAR_SLACK_M from where it was built (see its note).
+    if not near.at or frameNow - near.at >= NEAR_SCAN_MS
+       or BR.Dist2(p.x, p.y, near.x, near.y) > NEAR_SLACK_M * NEAR_SLACK_M then
+        nearBuild(p.x, p.y, frameNow)
+    end
+    local nearIds = near.ids
+
     -- ONE CRATE GLOWS: the nearest, and only inside the shine radius.
     --
     -- Every crate in the room lighting up at once was a wall of orange rather
@@ -3259,10 +3350,13 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         shineId = nil
         local best = shineMax * shineMax
         if BR.Loot.openedCount < (L.shineOpenLimit or 2) then
-            for id, e in pairs(entries) do
+            -- The near set holds every entry inside the shine radius (#393).
+            for i = 1, near.n do
+                local id = nearIds[i]
+                local e = entries[id]
                 -- Not one that is already opening (#395): it is a husk in
                 -- all but name, and the glow is for a box you can still open.
-                if isContainer(e) and e.gzOk and not e.opening then
+                if e and isContainer(e) and e.gzOk and not e.opening then
                     local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
                     if d2 < best then shineId, best = id, d2 end
                 end
@@ -3309,145 +3403,151 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     -- rest of the match once you walked away from them or opened them.
     if outlinedId and outlinedId ~= shineId then clearOutline(entries) end
 
-    for id, e in pairs(entries) do
-        local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
-        if canTakeNow then addTargetCandidate(id, e, d2) end
-        -- A husk is scenery. Glowing it would send players across open ground
-        -- for a crate somebody already emptied, which is the exact opposite of
-        -- what the open-crate model is for.
-        --
-        -- gzOk gates the DRAWING too, not just the prop: an entry rejected for
-        -- standing in the sea still had its rarity disc painted on the waves
-        -- (user, 2026-08-06).
-        -- AN ARC OUTRANGES THE DRAWING, and it has to. The glow radius is the
-        -- right gate for the hover -- nothing 30m away is being offered to
-        -- anybody -- but a prop already in the air has to be flown all the way
-        -- down whatever happens next. Gated on the same radius, it would be
-        -- stranded mid-flight by a player who drove out of range during the
-        -- half-second the landing takes, and a frozen object hanging over a
-        -- road is forever: nothing else ever moves it.
-        if e.arriveAt and d2 > glow2 and not isHusk(e) and e.gzOk then
-            animate(e, d2, dt, frameNow)
-        end
+    -- THE NEAR SET, NOT EVERY STREAMED ENTRY (#393): see its note for why nothing
+    -- this pass draws, lights, offers or flies can be outside it.
+    for i = 1, near.n do
+        local id = nearIds[i]
+        local e = entries[id]
+        if e then
+            local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
+            if canTakeNow then addTargetCandidate(id, e, d2) end
+            -- A husk is scenery. Glowing it would send players across open ground
+            -- for a crate somebody already emptied, which is the exact opposite of
+            -- what the open-crate model is for.
+            --
+            -- gzOk gates the DRAWING too, not just the prop: an entry rejected for
+            -- standing in the sea still had its rarity disc painted on the waves
+            -- (user, 2026-08-06).
+            -- AN ARC OUTRANGES THE DRAWING, and it has to. The glow radius is the
+            -- right gate for the hover -- nothing 30m away is being offered to
+            -- anybody -- but a prop already in the air has to be flown all the way
+            -- down whatever happens next. Gated on the same radius, it would be
+            -- stranded mid-flight by a player who drove out of range during the
+            -- half-second the landing takes, and a frozen object hanging over a
+            -- road is forever: nothing else ever moves it.
+            if e.arriveAt and d2 > glow2 and not isHusk(e) and e.gzOk then
+                animate(e, d2, dt, frameNow)
+            end
 
-        if d2 <= glow2 and not isHusk(e) and e.gzOk then
-            animate(e, d2, dt, frameNow)
-            local gz = groundZ(e, frameNow)
-            local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
-            local c = info.rgb
+            if d2 <= glow2 and not isHusk(e) and e.gzOk then
+                animate(e, d2, dt, frameNow)
+                local gz = groundZ(e, frameNow)
+                local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
+                local c = info.rgb
 
-            -- NO DISC UNDER A CRATE (user, 2026-08-07: "are you drawing a blue
-            -- marker under every unopened crate? We don't need that").
-            --
-            -- The disc exists to say "something is here" for a loose item,
-            -- which is a small prop easily lost in scenery. A crate is a
-            -- metre-wide box with an orange outline and a label on the lid --
-            -- it announces itself. The disc under it was a third signal for a
-            -- thing that already had two, in the RARITY colour, which also
-            -- quietly leaked what was inside before it was opened.
-            -- THE DISC YIELDS TO THE ITEM ITSELF.
-            --
-            -- Its whole job is "something is here", answered from across a
-            -- room for a small prop lost in scenery. Once the item has risen
-            -- to meet you and is turning in the air, that question is already
-            -- answered far better than a disc can -- and a marker left burning
-            -- under a floating object reads as two things, not one (user call,
-            -- 2026-08-08).
-            --
-            -- Tied to the SAME eased lift the hover uses, so it dies exactly
-            -- as the item rises and fades back in over exactly as long as the
-            -- item takes to settle. Two curves would drift; one cannot.
-            if not isContainer(e) then
-                -- ═══ AND THE ONE ENTRY THAT IS *NOTHING BUT* A MARKER (#224)
-                --     ═══
+                -- NO DISC UNDER A CRATE (user, 2026-08-07: "are you drawing a blue
+                -- marker under every unopened crate? We don't need that").
                 --
-                -- A dropped warmup car whose prop the engine would not build has
-                -- no object to hover, so the disc is not a hint beside the item
-                -- -- it IS the item, and it has to be the marker the owner named
-                -- rather than the small flat disc. Drawn at full alpha and at
-                -- the entry's own height, because there is nothing to yield to:
-                -- the eased fade above exists so the disc dies as the prop rises
-                -- to meet you, and here nothing rises.
+                -- The disc exists to say "something is here" for a loose item,
+                -- which is a small prop easily lost in scenery. A crate is a
+                -- metre-wide box with an orange outline and a label on the lid --
+                -- it announces itself. The disc under it was a third signal for a
+                -- thing that already had two, in the RARITY colour, which also
+                -- quietly leaked what was inside before it was opened.
+                -- THE DISC YIELDS TO THE ITEM ITSELF.
                 --
-                -- WHAT MARKER 34 ACTUALLY LOOKS LIKE IS NOT VERIFIED. It is the
-                -- number the owner asked for, passed through; two published
-                -- versions of this enum have disagreed with the game's own
-                -- parser on this project before, so nothing here claims to know
-                -- what it draws.
-                local mk = e.noProp and fallbackMarkerOf(e) or nil
-                if mk then
-                    local ms = fallbackMarkerScaleOf(e)
-                    DrawMarker(mk, e.x, e.y, gz + 0.05,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        ms, ms, ms,
-                        c[1], c[2], c[3], 200,
-                        -- Bobbing and camera-facing, which is what makes a
-                        -- SYMBOL marker readable where a flat disc is drawn on
-                        -- the ground and wants neither.
-                        true, true, 2, false, nil, nil, false)
-                else
-                    local a = math.floor(120 * (1.0 - ease(e.lift or 0.0)))
-                    if a > 0 then
-                        -- A flat disc rather than a sphere: it reads as
-                        -- "something is here" without swallowing the item
-                        -- itself.
-                        DrawMarker(1, e.x, e.y, gz - 0.05,
+                -- Its whole job is "something is here", answered from across a
+                -- room for a small prop lost in scenery. Once the item has risen
+                -- to meet you and is turning in the air, that question is already
+                -- answered far better than a disc can -- and a marker left burning
+                -- under a floating object reads as two things, not one (user call,
+                -- 2026-08-08).
+                --
+                -- Tied to the SAME eased lift the hover uses, so it dies exactly
+                -- as the item rises and fades back in over exactly as long as the
+                -- item takes to settle. Two curves would drift; one cannot.
+                if not isContainer(e) then
+                    -- ═══ AND THE ONE ENTRY THAT IS *NOTHING BUT* A MARKER (#224)
+                    --     ═══
+                    --
+                    -- A dropped warmup car whose prop the engine would not build has
+                    -- no object to hover, so the disc is not a hint beside the item
+                    -- -- it IS the item, and it has to be the marker the owner named
+                    -- rather than the small flat disc. Drawn at full alpha and at
+                    -- the entry's own height, because there is nothing to yield to:
+                    -- the eased fade above exists so the disc dies as the prop rises
+                    -- to meet you, and here nothing rises.
+                    --
+                    -- WHAT MARKER 34 ACTUALLY LOOKS LIKE IS NOT VERIFIED. It is the
+                    -- number the owner asked for, passed through; two published
+                    -- versions of this enum have disagreed with the game's own
+                    -- parser on this project before, so nothing here claims to know
+                    -- what it draws.
+                    local mk = e.noProp and fallbackMarkerOf(e) or nil
+                    if mk then
+                        local ms = fallbackMarkerScaleOf(e)
+                        DrawMarker(mk, e.x, e.y, gz + 0.05,
                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                            0.45, 0.45, 0.12,
-                            c[1], c[2], c[3], a,
-                            false, false, 2, false, nil, nil, false)
+                            ms, ms, ms,
+                            c[1], c[2], c[3], 200,
+                            -- Bobbing and camera-facing, which is what makes a
+                            -- SYMBOL marker readable where a flat disc is drawn on
+                            -- the ground and wants neither.
+                            true, true, 2, false, nil, nil, false)
+                    else
+                        local a = math.floor(120 * (1.0 - ease(e.lift or 0.0)))
+                        if a > 0 then
+                            -- A flat disc rather than a sphere: it reads as
+                            -- "something is here" without swallowing the item
+                            -- itself.
+                            DrawMarker(1, e.x, e.y, gz - 0.05,
+                                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                0.45, 0.45, 0.12,
+                                c[1], c[2], c[3], a,
+                                false, false, 2, false, nil, nil, false)
+                        end
                     end
                 end
-            end
 
-            -- CRATES SHINE ORANGE. Always orange, never the rarity colour: the
-            -- glow says "a crate is here", and what is inside is not knowable
-            -- until it is opened, so colouring it by contents was both a lie
-            -- and a second meaning for a channel that already has one (user
-            -- call, 2026-08-06).
-            --
-            -- An OUTLINE carries it, not the light: the world is in afternoon
-            -- daylight (noon to about 17:00, #394), where a light is very
-            -- nearly invisible -- which is why the
-            -- previous version read as no glow at all. The light stays at low
-            -- intensity for interiors and storm gloom.
-            if isContainer(e) then
-                local mine = (id == shineId)
-                -- Only the SWITCHING ON lives here now. Switching off is done
-                -- once per pass, above, against the id that is actually lit --
-                -- see clearOutline and the note on outlinedId for the three
-                -- ways this branch used to be skipped while a crate was still
-                -- glowing.
-                if mine and e.obj and DoesEntityExist(e.obj) then
-                    -- The COLOUR is re-sent every frame even when the outline
-                    -- is already on: alpha is what carries the distance fade,
-                    -- so it has to keep moving as the player walks in. Only
-                    -- the on/off flag is latched.
-                    if outlinedId ~= id then
-                        clearOutline(entries)
-                        outlinedId = id
-                        SetEntityDrawOutline(e.obj, true)
+                -- CRATES SHINE ORANGE. Always orange, never the rarity colour: the
+                -- glow says "a crate is here", and what is inside is not knowable
+                -- until it is opened, so colouring it by contents was both a lie
+                -- and a second meaning for a channel that already has one (user
+                -- call, 2026-08-06).
+                --
+                -- An OUTLINE carries it, not the light: the world is in afternoon
+                -- daylight (noon to about 17:00, #394), where a light is very
+                -- nearly invisible -- which is why the
+                -- previous version read as no glow at all. The light stays at low
+                -- intensity for interiors and storm gloom.
+                if isContainer(e) then
+                    local mine = (id == shineId)
+                    -- Only the SWITCHING ON lives here now. Switching off is done
+                    -- once per pass, above, against the id that is actually lit --
+                    -- see clearOutline and the note on outlinedId for the three
+                    -- ways this branch used to be skipped while a crate was still
+                    -- glowing.
+                    if mine and e.obj and DoesEntityExist(e.obj) then
+                        -- The COLOUR is re-sent every frame even when the outline
+                        -- is already on: alpha is what carries the distance fade,
+                        -- so it has to keep moving as the player walks in. Only
+                        -- the on/off flag is latched.
+                        if outlinedId ~= id then
+                            clearOutline(entries)
+                            outlinedId = id
+                            SetEntityDrawOutline(e.obj, true)
+                        end
+                        SetEntityDrawOutlineColor(SHINE[1], SHINE[2], SHINE[3],
+                            math.floor((L.shineAlpha or 60) * pulse * shineFade))
                     end
-                    SetEntityDrawOutlineColor(SHINE[1], SHINE[2], SHINE[3],
-                        math.floor((L.shineAlpha or 60) * pulse * shineFade))
+                    if mine then
+                        -- A hint at the crate in front of you, not a floodlight
+                        -- down the street -- and it dims to nothing as you back
+                        -- away rather than switching off.
+                        DrawLightWithRange(e.x, e.y, gz + 0.5,
+                            SHINE[1], SHINE[2], SHINE[3],
+                            L.shineLightRange or 1.2,
+                            (L.shineLightPower or 0.30) * pulse * shineFade)
+                    end
                 end
-                if mine then
-                    -- A hint at the crate in front of you, not a floodlight
-                    -- down the street -- and it dims to nothing as you back
-                    -- away rather than switching off.
-                    DrawLightWithRange(e.x, e.y, gz + 0.5,
-                        SHINE[1], SHINE[2], SHINE[3],
-                        L.shineLightRange or 1.2,
-                        (L.shineLightPower or 0.30) * pulse * shineFade)
-                end
-            end
 
-            -- NO DrawText ANYWHERE IN LOOT any more (user call, 2026-08-06).
-            -- The DUI prompt names whatever the player is actually facing,
-            -- with real typography and the right key on it; a second, worse
-            -- label floating over every item in the room was the engine text
-            -- renderer competing with it. The rarity disc is what carries
-            -- "something is here" at distance.
+                -- NO DrawText ANYWHERE IN LOOT any more (user call, 2026-08-06).
+                -- The DUI prompt names whatever the player is actually facing,
+                -- with real typography and the right key on it; a second, worse
+                -- label floating over every item in the room was the engine text
+                -- renderer competing with it. The rarity disc is what carries
+                -- "something is here" at distance.
+            end
         end
     end
 

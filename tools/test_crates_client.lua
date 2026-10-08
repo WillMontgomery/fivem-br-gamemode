@@ -910,6 +910,38 @@ do
     eq(wz, 0.3 + (L.crateLabelLift or 0.02), 'the wooden crate\'s label is still on its lid')
 end
 
+describe('the box prompt makes no closure and no table a frame -- #393')
+do
+    -- drawOnEntityAt made its corner as a closure over ten values on every call, so
+    -- a Season 2 box's prompt left about half a kilobyte for the collector every
+    -- frame it was up (#393's measure, 2026-10-06). The corner is a function of the
+    -- file now. Counted with the collector stopped, over two hundred draws, with the
+    -- stubs that answer a table answering the same one every time -- so what is
+    -- counted is drawOnEntityAt's own.
+    reset()
+    propsLanded()
+    local w = crateWire({ bt = 3, x = 1.5 })
+    add(w)
+    frames(15)
+    local box = bodyAt(w.x, w.y)
+    local page = BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
+    local realOff, realCam = GetOffsetFromEntityInWorldCoords, GetGameplayCamCoord
+    local one, cam = { x = 1.5, y = 0.0, z = 30.6 }, { x = 0.0, y = 0.0, z = 40.0 }
+    GetOffsetFromEntityInWorldCoords = function() return one end
+    GetGameplayCamCoord = function() return cam end
+    polys = 0
+    collectgarbage('collect')
+    collectgarbage('stop')
+    local k0 = collectgarbage('count')
+    for _ = 1, 200 do BR.Dui.drawOnEntityAt(page, box, 0.5, 0.0, 0.0, 0.6, 0.0, 0.0, 90.0) end
+    local kb = collectgarbage('count') - k0
+    collectgarbage('restart')
+    GetOffsetFromEntityInWorldCoords, GetGameplayCamCoord = realOff, realCam
+    ok(polys == 400 and kb < 1.0,
+        'two hundred box prompts are drawn, and allocate nothing',
+        ('%d polys, %.2f KB'):format(polys, kb))
+end
+
 describe('no new per-frame cost: a box with its prompt costs no more than the wooden crate')
 do
     local function price(look)

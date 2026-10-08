@@ -1144,6 +1144,24 @@ function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     end
 end
 
+--- The turn drawOnEntityAt is drawing with: the cosines and sines of its three
+--- angles. One table for the file, filled per call, so a label drawn every frame
+--- makes no closure and no table (#393: the corner was a closure made per call).
+local cornerTurn = { ca = 1.0, sa = 0.0, cb = 1.0, sb = 0.0, cc = 1.0, sc = 0.0 }
+
+--- One corner of drawOnEntityAt's label: the label-plane point (u, v, 0) turned
+--- about x, then y, then z by cornerTurn, moved to the center (ox, oy, oz), and
+--- taken through the entity's matrix.
+--- @return number x, number y, number z
+local function cornerAt(entity, ox, oy, oz, u, v)
+    local t = cornerTurn
+    local x1, y1, z1 = u, v * t.ca, v * t.sa                         -- about x
+    local x2, z2 = x1 * t.cb + z1 * t.sb, -x1 * t.sb + z1 * t.cb    -- about y
+    local x3, y3 = x2 * t.cc - y1 * t.sc, x2 * t.sc + y1 * t.cc     -- about z
+    local w = GetOffsetFromEntityInWorldCoords(entity, ox + x3, oy + y3, oz + z2)
+    return w.x, w.y, w.z
+end
+
 --- Draw a page as a label at a FIXED POSE in an entity's own frame (#395).
 ---
 --- The Season 2 boxes do not wear their prompt on the lid's bounding box -- a
@@ -1176,24 +1194,15 @@ function BR.Dui.drawOnEntityAt(page, entity, size, ox, oy, oz, rx, ry, rz, alpha
     local ra = math.rad(tonumber(rx) or 0.0)
     local rb = math.rad(tonumber(ry) or 0.0)
     local rc = math.rad(tonumber(rz) or 0.0)
-    local ca, sa = math.cos(ra), math.sin(ra)
-    local cb, sb = math.cos(rb), math.sin(rb)
-    local cc, sc = math.cos(rc), math.sin(rc)
+    local t = cornerTurn
+    t.ca, t.sa = math.cos(ra), math.sin(ra)
+    t.cb, t.sb = math.cos(rb), math.sin(rb)
+    t.cc, t.sc = math.cos(rc), math.sin(rc)
 
-    --- One corner: the label-plane point (u, v, 0) turned about x, then y, then
-    --- z, moved to the center, and taken through the entity's matrix.
-    local function corner(u, v)
-        local x1, y1, z1 = u, v * ca, v * sa                    -- about x
-        local x2, z2 = x1 * cb + z1 * sb, -x1 * sb + z1 * cb   -- about y
-        local x3, y3 = x2 * cc - y1 * sc, x2 * sc + y1 * cc    -- about z
-        local w = GetOffsetFromEntityInWorldCoords(entity, ox + x3, oy + y3, oz + z2)
-        return w.x, w.y, w.z
-    end
-
-    local ax, ay, az = corner(-hw,  hh)   -- top-left
-    local bx, by, bz = corner( hw,  hh)   -- top-right
-    local cx, cy, cz = corner(-hw, -hh)   -- bottom-left
-    local dx, dy, dz = corner( hw, -hh)   -- bottom-right
+    local ax, ay, az = cornerAt(entity, ox, oy, oz, -hw,  hh)   -- top-left
+    local bx, by, bz = cornerAt(entity, ox, oy, oz,  hw,  hh)   -- top-right
+    local cx, cy, cz = cornerAt(entity, ox, oy, oz, -hw, -hh)   -- bottom-left
+    local dx, dy, dz = cornerAt(entity, ox, oy, oz,  hw, -hh)   -- bottom-right
 
     drawQuad(page, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, alpha)
 end

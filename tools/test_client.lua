@@ -1585,6 +1585,124 @@ do
     releaseInteract()
 end
 
+describe('loot.render walks the near set, and nothing new or in flight waits for it -- #393')
+do
+    -- ═══ THE NEAR SET (client/loot.lua, #393) ═══
+    --
+    -- The render pass walked every streamed entry every frame. It walks only the
+    -- near set now, built ten times a second and whenever the player has moved
+    -- NEAR_SLACK_M from where it was built. What may not change is anything a
+    -- player sees: an item announced at hand is offered on the very next frame,
+    -- a player who teleports onto an item is offered it on the frame they land,
+    -- and an item flying out of a crate is flown down on every frame of its
+    -- flight wherever it is -- including when its body is built after the set
+    -- was, and across the builds that follow.
+    bootOn(true, true)
+    clearWorld()
+    pedPos.x, pedPos.y = 0.0, 0.0
+
+    -- Two hundred entries over the subscription, none within reach of the player.
+    for k = 1, 200 do
+        addEntry(BR.ItemKind.WEAPON, 'pistol', 100.0 + k * 3.0, (k % 7) * 40.0)
+    end
+    frames(2)
+    local _, _, b0 = BR.Loot.nearSet()
+    frames(30, 16)
+    local size, streamed, b1 = BR.Loot.nearSet()
+    ok(streamed == 200 and size == 0 and b1 - b0 >= 4 and b1 - b0 <= 6,
+        'two hundred entries streamed and none near: the pass walks none of them a frame, '
+            .. 'and all of them ten times a second -- not sixty',
+        ('%d streamed, %d near, %d builds over 30 frames'):format(streamed, size, b1 - b0))
+
+    --- Step frames until the near set has just been built, so the next frame is
+    --- one that does not build it.
+    local function justBuilt()
+        local _, _, b = BR.Loot.nearSet()
+        for _ = 1, 20 do
+            frame(16)
+            local _, _, nb = BR.Loot.nearSet()
+            if nb ~= b then return end
+        end
+    end
+
+    -- AND A FRAME THAT DOES NOT BUILD IT MEASURES NOTHING FAR: every distance the
+    -- pass takes goes through BR.Dist2, so they are counted.
+    justBuilt()
+    local realDist2, dists = BR.Dist2, 0
+    BR.Dist2 = function(...) dists = dists + 1 return realDist2(...) end
+    frame(16)
+    BR.Dist2 = realDist2
+    ok(dists <= 3,
+        'and a frame between builds takes no distance to any of the two hundred',
+        ('%d distances in one frame'):format(dists))
+
+    -- AN ITEM ANNOUNCED AT HAND, BETWEEN TWO BUILDS.
+    justBuilt()
+    aimCalls = 0
+    local atHand = addEntry(BR.ItemKind.WEAPON, 'pistol', 1.0, 0.0)
+    local _, _, bA = BR.Loot.nearSet()
+    frame(16)
+    local _, _, bB = BR.Loot.nearSet()
+    ok(bA == bB and aimCalls == 1,
+        'an item announced at hand between two builds is offered on the very next frame',
+        ('builds %d -> %d, aim calls %d, item #%d'):format(bA, bB, aimCalls, atHand))
+
+    -- A TELEPORT ONTO AN ITEM the last build left out.
+    clearWorld()
+    pedPos.x, pedPos.y = 0.0, 0.0
+    addEntry(BR.ItemKind.WEAPON, 'pistol', 300.0, 0.5)
+    frames(2)
+    justBuilt()
+    aimCalls = 0
+    pedPos.x, pedPos.y = 299.5, 0.0
+    frame(16)
+    ok(aimCalls == 1,
+        'a player who teleports onto an item the last build left out is offered it on '
+            .. 'the frame they land',
+        ('aim calls %d'):format(aimCalls))
+    pedPos.x, pedPos.y = 0.0, 0.0
+
+    -- AN ITEM FLYING OUT OF A CRATE 50 m AWAY -- inside prop range, outside the
+    -- near set's reach. Its body is built AFTER the set has been built again
+    -- without it, as the 1 Hz build thread and a model stream make it in the game.
+    local real = {
+        create = CreateObjectNoOffset, exists = DoesEntityExist,
+        move = SetEntityCoordsNoOffset, thread = Citizen.CreateThread,
+    }
+    local nextObj, moves, pending = 7000, {}, {}
+    CreateObjectNoOffset = function() nextObj = nextObj + 1 return nextObj end
+    DoesEntityExist = function(h) return type(h) == 'number' and h > 7000 end
+    SetEntityCoordsNoOffset = function(h) moves[h] = (moves[h] or 0) + 1 end
+    Citizen.CreateThread = function(fn) pending[#pending + 1] = fn end
+    clearWorld()
+    frames(2)
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9501, kind = BR.ItemKind.CONSUMABLE, item = BR.Config.Consumables[1].id,
+        x = 50.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+        fx = 49.0, fy = 0.0, fl = 0.6,
+    } })
+    frames(8, 16)           -- the set is built again, and the item is not in it
+    local ran = #pending
+    for _, fn in ipairs(pending) do fn() end
+    pending = {}
+    local obj = nextObj
+    local flew, frameN = 0, 0
+    for _ = 1, 20 do        -- 320 ms: three builds of the set, all inside the flight
+        local before = moves[obj] or 0
+        frame(16)
+        frameN = frameN + 1
+        if (moves[obj] or 0) > before then flew = flew + 1 end
+    end
+    CreateObjectNoOffset, DoesEntityExist = real.create, real.exists
+    SetEntityCoordsNoOffset, Citizen.CreateThread = real.move, real.thread
+    ok(ran >= 1 and obj > 7000 and flew == frameN,
+        'an item flying out of a crate 50 m away, its body built after the set was, is '
+            .. 'flown on every frame of its flight, across the builds that follow',
+        ('%d build thread(s) ran; prop %d moved on %d of %d frames'):format(ran, obj, flew,
+            frameN))
+    clearWorld()
+end
+
 local CHEST_MS = BR.Config.Loot.chestHoldMs or 1000
 
 -- ======================================================================== --
