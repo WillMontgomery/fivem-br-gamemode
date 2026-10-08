@@ -717,7 +717,9 @@ holds #385's findings over it, and that every line goes through the speaker.
 - **The cost in bold** ("Please bold the cost text inside the cards and
   details page."): a card's Cost, a tool's page's Cost line and, for the
   same reading, the Volts a run costs in the confirm box (the amount, not the
-  sentence) -- in their own color, the Volts still gold. T16.
+  sentence) and every `{cost}` a line fills -- no_volts's "This costs
+  {cost}", not its balance (round 7 review: `voltsLine`'s `bold` names the
+  amount) -- in their own color, the Volts still gold. T16.
 
 ## The Yubikey
 

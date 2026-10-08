@@ -416,7 +416,9 @@ export function App(): ReactElement {
   }
   if (flash) {
     // EVERY VOLTS IN A RUN'S ANSWER IN THE VOLTS STYLE (round 4): the new
-    // balance, and no_volts's word, cost and balance.
+    // balance, and no_volts's word, cost and balance -- its cost in bold, as
+    // the cards', the page's and the confirm box's are (round 7: "Please bold
+    // the cost text"); a balance is not a cost.
     let text: ReactNode[]
     if (flash.ok) {
       text = voltsLine(say(`${flash.functionId}_done`), currency)
@@ -425,7 +427,7 @@ export function App(): ReactElement {
         text = text.length > 0 ? [...text, ' ', ...b] : b
       }
     } else if (flash.code === 'no_volts') {
-      text = voltsLine(say('no_volts'), currency, { cost: flash.cost ?? 0, balance: flash.balance ?? 0 })
+      text = voltsLine(say('no_volts'), currency, { cost: flash.cost ?? 0, balance: flash.balance ?? 0 }, { bold: 'cost' })
     } else {
       text = voltsLine(say(flash.code) || say('unavailable'), currency)
     }

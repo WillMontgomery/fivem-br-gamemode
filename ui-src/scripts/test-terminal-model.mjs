@@ -923,6 +923,12 @@ eq(voltsText(50, ''), '50', 'no word: the figure alone')
     'each filled amount is an amount; the word alone is Volts, not an amount')
   ok(pieces.every((p) => !p.amount || p.volts), 'every amount is in the Volts style too')
   ok(voltsParts('No {volts} here', 'Volts').every((p) => !p.amount), 'a token not filled is no amount')
+  // Each amount knows its token, so a line can bold the one that is a cost
+  // (round 7 review: no_volts's "This costs {cost}", and not its balance).
+  const costly = voltsParts('This costs {cost}, and your balance is {balance}.', 'Volts', { cost: 200, balance: 50 })
+  eq(costly.filter((p) => p.amount).map((p) => `${p.name}=${p.text}`).join(','), 'cost=200 Volts,balance=50 Volts',
+    'each filled amount is named by its token')
+  ok(costly.filter((p) => !p.amount).every((p) => p.name === ''), 'and nothing else has a name')
 }
 
 if (failed > 0) {

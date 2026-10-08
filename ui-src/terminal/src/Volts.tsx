@@ -35,15 +35,18 @@ export function VoltsAmount(props: { n: number; currency: string }): ReactElemen
 
 /**
  * A line with every Volts in it in the Volts style (model.ts `voltsParts`).
- * With `bold`, each amount filled in ({volts}, {cost}, {balance}) is also in
- * bold (terminal.css `.terminal-cost`), the word alone is not: the cost the
- * confirm box says (owner, round 7: "Please bold the cost text").
+ * With `bold`, an amount filled in ({volts}, {cost}, {balance}) is also in
+ * bold (terminal.css `.terminal-cost`), the word alone is not: `true` for
+ * every amount (the confirm box's price), or the name of the one that is a
+ * cost (no_volts's 'cost', not its {balance}) -- owner, round 7: "Please
+ * bold the cost text".
  */
 export function voltsLine(text: string, currency: string, amounts: Record<string, number> = {},
-  how: { bold?: boolean } = {}): ReactNode[] {
+  how: { bold?: boolean | string } = {}): ReactNode[] {
+  const bolds = (name: string): boolean => how.bold === true || how.bold === name
   return voltsParts(text, currency, amounts).map((p, i) => {
     if (!p.volts) return p.text
-    if (how.bold === true && p.amount) {
+    if (p.amount && bolds(p.name)) {
       return <span key={i} className="terminal-cost"><span className="terminal-volts">{p.text}</span></span>
     }
     return <span key={i} className="terminal-volts">{p.text}</span>

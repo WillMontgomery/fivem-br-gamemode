@@ -95,7 +95,8 @@
  *   T16 cost       the cost in bold (round 7: "Please bold the cost text
  *                  inside the cards and details page."): `.terminal-cost` is
  *                  the weight alone, around a card's Cost, a tool's page's
- *                  Cost line and the Volts the confirm box says a run costs.
+ *                  Cost line, the Volts the confirm box says a run costs and
+ *                  every {cost} a line fills (no_volts's).
  *
  * STATIC, LIKE check-ui.mjs. It reads source with comments and strings
  * blanked, so prose that names a banned thing never trips it.
@@ -1042,7 +1043,9 @@ const WRAPS = []
 // the page's font (T12 (d)); a card's Cost section returns only what it draws
 // inside one, a tool's page's Cost line is inside one, and the confirm box
 // asks voltsLine for `bold`, which puts each amount filled in -- not the word
-// alone -- inside one.
+// alone -- inside one. AND EVERY {cost} (round 7 review: no_volts's "This
+// costs {cost}" was left plain): a voltsLine call anywhere in the app that
+// fills a `cost` asks for it in bold, by name or with every amount.
 {
   const R = 'T16 cost'
   const css = code(readFileSync(join(SRC, 'src', 'terminal.css'), 'utf8'), false)
@@ -1068,9 +1071,22 @@ const WRAPS = []
     fail(R, 'terminal/src/RunBox.tsx', 'the confirm box does not ask voltsLine for the price in bold ({ bold: true })')
   }
   const volts = code(readFileSync(join(SRC, 'src', 'Volts.tsx'), 'utf8'), false)
-  if (!/if \(how\.bold === true && p\.amount\) \{\s*return <span key=\{i\} className="terminal-cost"><span className="terminal-volts">\{p\.text\}<\/span><\/span>/.test(volts)) {
-    fail(R, 'terminal/src/Volts.tsx', 'voltsLine\'s `bold` does not put each amount (model.ts Piece.amount) inside .terminal-cost')
+  if (!/const bolds = \(name: string\): boolean => how\.bold === true \|\| how\.bold === name\n/.test(volts)
+    || !/if \(p\.amount && bolds\(p\.name\)\) \{\s*return <span key=\{i\} className="terminal-cost"><span className="terminal-volts">\{p\.text\}<\/span><\/span>/.test(volts)) {
+    fail(R, 'terminal/src/Volts.tsx', 'voltsLine\'s `bold` does not put the amount it names (model.ts Piece.amount, Piece.name), or every one, inside .terminal-cost')
   }
+  let costs = 0
+  for (const f of walk(join(SRC, 'src')).filter((p) => p.endsWith('.tsx'))) {
+    const text = code(readFileSync(f, 'utf8'), false)
+    for (const m of text.matchAll(/voltsLine\(([^\n]*)/g)) {
+      if (!/\{[^}]*\bcost:/.test(m[1])) continue
+      costs += 1
+      if (!/\{ bold: (true|'cost') \}\)/.test(m[1])) {
+        fail(R, rel(f), `voltsLine(${m[1].trim()} fills a {cost} that is not in bold -- pass { bold: 'cost' }`)
+      }
+    }
+  }
+  if (costs === 0) fail(R, 'terminal/src', 'no voltsLine call fills a {cost} -- no_volts\'s cost is drawn some other way')
 }
 
 // The build.

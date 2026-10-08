@@ -78,13 +78,15 @@ export function fill(text: string, vars: Record<string, string | number>): strin
  * too. Any other token is left as written (fill it first). Volts.tsx draws
  * the Volts pieces in the Volts gold, in the page's font; scripts/
  * check-terminal.mjs T12 fails a Volts amount drawn any other way. A piece
- * that is a filled amount is `amount` as well (the word alone is not): the
- * confirm box draws the Volts a run costs in bold (round 7, Volts.tsx).
+ * that is a filled amount is `amount` as well (the word alone is not), and
+ * `name` is its token's ('cost' for {cost}; '' for any other piece): the Volts
+ * a run costs are drawn in bold (round 7, Volts.tsx), its balance not.
  */
 export interface Piece {
   text: string
   volts: boolean
   amount: boolean
+  name: string
 }
 
 export function voltsParts(text: string, currency: string, amounts: Record<string, number> = {}): Piece[] {
@@ -92,18 +94,18 @@ export function voltsParts(text: string, currency: string, amounts: Record<strin
   const plain = (t: string) => {
     if (t === '') return
     if (currency === '') {
-      out.push({ text: t, volts: false, amount: false })
+      out.push({ text: t, volts: false, amount: false, name: '' })
       return
     }
     const word = new RegExp(`\\b${currency.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
     let at = 0
     for (const m of t.matchAll(word)) {
       const i = m.index ?? 0
-      if (i > at) out.push({ text: t.slice(at, i), volts: false, amount: false })
-      out.push({ text: m[0], volts: true, amount: false })
+      if (i > at) out.push({ text: t.slice(at, i), volts: false, amount: false, name: '' })
+      out.push({ text: m[0], volts: true, amount: false, name: '' })
       at = i + m[0].length
     }
-    if (at < t.length) out.push({ text: t.slice(at), volts: false, amount: false })
+    if (at < t.length) out.push({ text: t.slice(at), volts: false, amount: false, name: '' })
   }
   let at = 0
   for (const m of text.matchAll(/\{(\w+)\}/g)) {
@@ -111,7 +113,7 @@ export function voltsParts(text: string, currency: string, amounts: Record<strin
     if (!(k in amounts)) continue
     const i = m.index ?? 0
     plain(text.slice(at, i))
-    out.push({ text: voltsText(amounts[k] ?? 0, currency), volts: true, amount: true })
+    out.push({ text: voltsText(amounts[k] ?? 0, currency), volts: true, amount: true, name: k })
     at = i + m[0].length
   }
   plain(text.slice(at))
