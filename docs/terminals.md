@@ -1018,16 +1018,29 @@ center off it.
   No map-bounds clamp: it would break the equal steps, and an overhang is
   cosmetic ([match-math.md](match-math.md)).
 - **Priced as breakouts.** An aimed phase whose circle is not inside the one
-  before gets a breakout's lifted ceiling, read off its own record; a line
-  across the gap is priced on the moving wall wherever the wall holds it (see
-  [match-math.md](match-math.md)). The fastest wall over the walked cases is
-  15.6 m/s.
+  before gets a breakout's lifted ceiling, read off its own record (a nested one
+  keeps the authored ceiling); a line across the gap is priced on the moving wall
+  wherever the wall holds it, so below the ceiling the wall never catches a
+  runner from behind. Any phase can still reach the ceiling, as an ordinary
+  breakout can. **The gap is storm.** The price does not keep a runner inside:
+  the moving zone is paced for the lobby's longest run, so at 9 m/s anyone else
+  outruns it, and a player who heads straight for a separate island leaves it and
+  is billed crossing the gap -- on a far aim, most of a lobby at phase 7, and up
+  to 3,460 HP on an 8.2 km step -- while one who stays inside the moving zone
+  until it reaches the island almost never is. Whether that ground should be
+  safe is the owner's call. The numbers are in [match-math.md](match-math.md).
 - **The mark.** Where the storm finishes is what Storm reveal shows, so it is
   Storm reveal's mark (`BR.Terminal.reveal`, `TERMINAL_REVEAL`): the runner's
   squad -- eliminated members included -- or the runner alone in a solo match,
   until the match ends, sent again on `br:ready`. A squad has one use a match, so
-  it never holds both marks. Every other squad that ran Storm reveal is sent the
-  new finish once. The persistent notice (`impact_storm`) goes to everyone else.
+  it never holds both marks. The persistent notice (`impact_storm`) goes to
+  everyone else.
+- **Who else sees the spot.** Storm reveal answers where the storm finishes,
+  and on an aimed storm that is the spot. So a squad that ran Storm reveal
+  before the aim is sent the spot when Storm control runs (`reReveal`, once),
+  one that runs it after is answered the spot, and both get it again on
+  `br:ready`. Kept so a Storm reveal mark never shows a circle that will not
+  come; whether those squads should keep only the notice is the owner's call.
 
 **A circle on the map never moves** (round 6, owner 2026-10-07: "Running the
 storm location selection before the first sweep moves the first sweep to that

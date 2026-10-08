@@ -26,7 +26,9 @@
 --                  each config row, made and taken down only when the season
 --                  moves (below, "the laptops, Season 1").
 --   Storm reveal   where this match's storm ends, on both maps, from the
---                  squad's TERMINAL_REVEAL to the trip back to the lobby.
+--                  squad's TERMINAL_REVEAL to the trip back to the lobby --
+--                  Storm reveal's answer, or the spot Storm control picked
+--                  (2026-10-07): the same fact, the same mark.
 --   the first-pickup card  (round 5) the owner's words on br_ui's tutorial
 --                  card the first time this player ever gets a key
 --                  (YUBIKEY_STATE's `first`), up until they press Enter --
@@ -103,7 +105,8 @@ local list = nil
 --- and its one blip
 local world = {}
 
---- Storm reveal: { x, y, r, matchId, radius, big, mini }, or nil.
+--- The squad's mark of where the storm ends (Storm reveal's, or Storm
+--- control's spot): { x, y, r, matchId, radius, big, mini }, or nil.
 local reveal = nil
 
 --- The terminal within reach, from the TICK band, or nil.

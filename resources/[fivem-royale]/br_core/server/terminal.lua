@@ -217,7 +217,8 @@ end
 --- This match's terminal record, made on first use and gone with the match.
 ---   used     [squadKey] = { by, fn, at }: the squad's one use is spent
 ---   access   [src] = true: this player's access has been announced
----   reveals  [squadKey] = { x, y, r }: what Storm reveal showed them
+---   reveals  [squadKey] = { x, y, r }: where the storm ends, as Storm reveal
+---            showed them or Storm control's run marked it (BR.Terminal.reveal)
 --- @param m table
 --- @return table
 local function matchState(m)
@@ -554,9 +555,11 @@ T.FUNCTIONS.storm_reveal = {
         if finalFor(src) == nil then return 'no_storm' end
         return nil
     end,
-    -- THE SQUAD SEES WHERE THE STORM ENDS (BR.Storm.finalCentre), and nobody
-    -- else: TERMINAL_REVEAL goes to the squad that ran it, and BR.Net.READY
-    -- sends it again to a member whose client restarts.
+    -- THE SQUAD SEES WHERE THE STORM ENDS (BR.Storm.finalCentre): TERMINAL_REVEAL
+    -- goes to the squad that ran it, and BR.Net.READY sends it again to a member
+    -- whose client restarts. On an aimed storm that is the Storm control
+    -- runner's spot, and a squad that ran this before the aim is sent it too
+    -- (terminalfx/storm_control.lua).
     run = function(src, session)
         local f, m = finalFor(src)
         if not f then
@@ -1373,7 +1376,8 @@ AddEventHandler(BR.Net.TERMINAL_CLOSED, function(d)
 end)
 
 -- A late joiner, a reconnect, a restarted br_core or br_ui: the dev tools'
--- terminals, and the squad's Storm reveal while its match lasts.
+-- terminals, and the squad's mark of where the storm ends (Storm reveal's or
+-- Storm control's) while its match lasts.
 RegisterNetEvent(BR.Net.READY)
 AddEventHandler(BR.Net.READY, function()
     local src = tonumber(source)

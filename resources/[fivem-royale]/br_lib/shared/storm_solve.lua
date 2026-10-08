@@ -962,9 +962,13 @@ end
 -- (That phase-5 runner is priced 634 m now, past the phase's 60 s ceiling, where no
 -- price protects anybody. docs/match-math.md has how often a sweep reaches it.)
 --
--- A BREAKOUT reads the same lines against the wall union the destination. There a
--- runner who outpaces the wall's front can be ahead of it in the gap; the price
--- covers the one who keeps with it, as the blend's did.
+-- A BREAKOUT reads the same lines against the wall union the destination. There the
+-- price keeps the wall off a runner's back, not the runner inside: it paces the wall
+-- for the lobby's longest run, so at 9 m/s every shorter one is faster than the
+-- wall's front, and a straight run at a separate destination leaves it for the gap,
+-- which is storm until the wall arrives. The price covers the one who keeps with
+-- the wall, as the blend's did. (On Storm control's far breakouts, by phase 7 the
+-- runs that leave it are most of a lobby's: docs/match-math.md has the count.)
 --
 -- A LINE ACROSS A GAP is its own length. Where the straight run already crosses open
 -- storm at the start of the sweep -- every line out of a disjoint breakout's zone,
@@ -989,9 +993,11 @@ end
 -- through its side as it shrinks, or off an edge that retreats from under a
 -- player -- has no pace that keeps its runner inside, and lo(t) / t there only
 -- measures how soon it left (17.9 km a sweep for a player 2.6 m inside the edge,
--- on a 40 s probe of phase 7), so it keeps its length. Measured on those walks,
--- the wall asks 1.00 to 1.03 times the line. Ordinary breakouts keep the line's
--- length, as they have since #344.
+-- on a 40 s probe of phase 7), so it keeps its length. Over 3,890 lines of 86
+-- aimed breakouts (round 7's review spread) the wall asks 1.00 to 1.24 times the
+-- line. What it promises is the wall off the runner's back, never the runner
+-- inside the moving zone (see A BREAKOUT, above). Ordinary breakouts keep the
+-- line's length, as they have since #344.
 --
 -- READ AT 62 INSTANTS -- 48 even steps and 14 more in toward the start, where the
 -- maximum sits whenever a corner sets off faster than the blend would -- with where
@@ -1164,7 +1170,9 @@ end
 --- One line's price: run(P, Q) on the wall, or -- a line across open storm at the
 --- start of the sweep -- its length, unless `onWall` and the moving wall itself
 --- crosses the line short of the destination at every instant the price reads
---- (see the section note).
+--- (see the section note). The "short of" half is a guard: over the 3,890 lines
+--- of round 7's review spread no wall met a line only past its end, and the
+--- prices are the same to the micrometer without it.
 local function lineOf(e, pr, px, py, ux, uy, L, out, refine, onWall)
     if not gappedAtStart(pr, px, py, ux, uy, L, out) then
         return lineRun(e, pr, px, py, ux, uy, L, out, refine)

@@ -338,8 +338,10 @@ On a Storm control phase (#396) such a line is read on the moving wall too,
 wherever the wall itself crosses it short of the destination at every instant
 read: a far spot's gap is kilometers wide, and at its length the wall sweeping
 the gap caught the lobby's rear-most runner (394 HP at phase 5, LSIA aimed from
-Sandy Shores). A line the wall leaves keeps its length. The wall asks 1.00 to
-1.03 times the line on the walked cases.
+Sandy Shores). A line the wall leaves keeps its length. Over 3,890 lines of 86
+aimed breakouts the wall asks 1.00 to 1.24 times the line (271 lines above it).
+That keeps the wall off a runner's back; it does not keep the runner inside (see
+Storm control's breakouts, below).
 
 **Priced at the length it is published at.** The wall turns into the
 destination's shape `morph.leadSeconds` before the sweep ends, so its corners
@@ -444,18 +446,47 @@ phase that did not roll one keeps its authored ceiling.
 equal share of the remaining way to the picked spot, so a far spot carries them
 past the circle before by kilometers, and no roll decides it: an aimed phase is
 a breakout exactly when its destination is not inside the zone the wall starts
-as (`BR.StormNested` on its own record), and then gets the lifted ceiling above.
-With the authored ceiling the walked cases drew walls of 35–61 m/s across 1.6–2.2 km
-steps and 225 m/s across one of 8.9 km; lifted, the fastest is 15.6 m/s, and from
-phase 5 on no aimed phase reaches its ceiling. Phases 2–4 of a far aim can, as an
-ordinary breakout's can, and there the rear-most runner at 9 m/s is caught (up to
-411 HP in the walked cases). A far aim lengthens the match: one 8.9 km step at
-phase 7 sweeps for 985 s against an authored 40. The gap between the moving zone
-and a separate destination stays storm until the wall arrives, so a runner who
-outpaces the wall into the gap is billed; the island itself is safe from the start.
-Aimed centers are not clamped to `mapAABB` (the equal steps would break), so an
-aimed zone can overhang the bounds where an ordinary one is clamped: cosmetic, the
-bounds being a rectangle round an island.
+as (`BR.StormNested` on its own record), and then gets the lifted ceiling above;
+a nested aimed phase keeps the authored one. With the authored ceiling, aimed
+steps of 1.6–8.9 km drew walls of 35–225 m/s. The numbers below are round 7's
+review spread: 30 matches aimed from one point of interest at another, picked in
+phases 2–6, with 24 players standing in each circle — 86 aimed breakouts. Lifted,
+the fastest corner moves 28.5 m/s, where the same 30 matches unaimed reach 36.5 on
+a breakout and 50.8 on a nested phase. **Any phase can still reach its ceiling**,
+as an ordinary breakout can: 5 of the 86 did, two of them phase 5s (968 and 1354 m
+steps), and there the wall can catch a runner (394 HP at a capped phase 4). Below
+the ceiling the price keeps the wall off every runner's back: no player running
+straight at the destination at 9 m/s was billed for a second with the wall's own
+stretch of their line still ahead of them.
+
+**It does not keep them inside.** The price paces the wall for the lobby's longest
+run, so for everyone else the moving zone is slower than 9 m/s. A player who
+heads straight for a separate island runs out of the zone's front, or off a flank
+of a zone that narrows as it travels, into the gap — open storm until the wall
+gets there — and is billed until they reach the island, which is safe from the
+start. That is a normal rotation, not a fast player's. Over the 81 phases priced
+below the ceiling, 647 of 1,944 straight runs at 9 m/s were billed, every second
+of it with the wall behind them:
+
+| Aimed breakouts below the ceiling | Phases | Runners billed, average of 24 | Phases with a runner billed 100 HP or more | Worst |
+|---|---|---|---|---|
+| Phase 5 | 16 | 1.9 | 3 | 470 HP |
+| Phase 6 | 24 | 8.2 | 14 | 916 HP |
+| Phase 7 | 30 | 14.0 | 27 | 3,460 HP (an 8.2 km step) |
+
+Ordinary breakouts bill far less (40 matches of the same spread, unaimed: 0.8 and
+1.6 runners on average at phases 6 and 7, at most 60 HP). A player who stays
+inside the moving zone as it travels, and steps onto the island when it arrives,
+was billed in 2 of the 1,944 runs (75 and 44 HP; the longest run has no slack to
+spare). Whether the ground between the wall and the island should count as safe on
+an aimed phase — in `BR.StormZone`, so the wall, the HUD and the damage agree — is
+the owner's decision. `tools/test_storm.lua`'s `control.breakout` bills every runner
+of its lobbies and holds the first claim, counting the second.
+
+A far aim lengthens the match: one 8.9 km step at phase 7 sweeps for 985 s against
+an authored 40. Aimed centers are not clamped to `mapAABB` (the equal steps would
+break), so an aimed zone can overhang the bounds where an ordinary one is clamped:
+cosmetic, the bounds being a rectangle round an island.
 
 Two earlier formulations were wrong in instructive ways — scaling the budget by
 the *next* radius made the final phase (radius 0) unable to move at all, and

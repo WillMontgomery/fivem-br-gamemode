@@ -1242,9 +1242,12 @@ BR.Net = {
     -- -- whole, to everyone, on every change and on br:ready. The config's own
     -- rows are not sent: every client already has br_lib/config/terminals.lua.
     TERMINAL_SITES  = 'br:terminal:sites',
-    -- S->C { x, y, matchId }. Storm reveal: where this match's storm ends. To
-    -- the squad that ran it and nobody else, and again to a squad member on
-    -- br:ready while that match lasts.
+    -- S->C { x, y, r, matchId }. Where this match's storm ends, kept per squad
+    -- for the match (server/terminal.lua's BR.Terminal.reveal) and sent again
+    -- to a squad member on br:ready while that match lasts. Storm reveal: to
+    -- the squad that ran it. Storm control (2026-10-07): its spot to the
+    -- runner's squad, and the new end to every other squad that ran Storm
+    -- reveal this match.
     TERMINAL_REVEAL = 'br:terminal:reveal',
     -- S->C { matchId, weather? }. Time & weather (wave B): the weather this
     -- match's run chose -- a weather name or a sky role ('base') -- which each
