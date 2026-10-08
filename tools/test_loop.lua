@@ -15,7 +15,7 @@ function GetGameTimer()
 end
 function GetPlayerServerId() return 1 end
 
--- THE PLAYER'S PED, MODELLED, and every read of it counted (#393's BR.Frame): a
+-- THE PLAYER'S PED, MODELED, and every read of it counted (#393's BR.Frame): a
 -- ped handle, where it stands, what it sits in -- and three of the natives that
 -- change them, defined BEFORE main.lua loads as the game's are, so its wrapper is
 -- on them.

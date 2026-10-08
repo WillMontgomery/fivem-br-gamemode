@@ -3471,9 +3471,9 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
                 --
                 -- The disc exists to say "something is here" for a loose item,
                 -- which is a small prop easily lost in scenery. A crate is a
-                -- metre-wide box with an orange outline and a label on the lid --
+                -- meter-wide box with an orange outline and a label on the lid --
                 -- it announces itself. The disc under it was a third signal for a
-                -- thing that already had two, in the RARITY colour, which also
+                -- thing that already had two, in the RARITY color, which also
                 -- quietly leaked what was inside before it was opened.
                 -- THE DISC YIELDS TO THE ITEM ITSELF.
                 --
@@ -3530,9 +3530,9 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
                     end
                 end
 
-                -- CRATES SHINE ORANGE. Always orange, never the rarity colour: the
+                -- CRATES SHINE ORANGE. Always orange, never the rarity color: the
                 -- glow says "a crate is here", and what is inside is not knowable
-                -- until it is opened, so colouring it by contents was both a lie
+                -- until it is opened, so coloring it by contents was both a lie
                 -- and a second meaning for a channel that already has one (user
                 -- call, 2026-08-06).
                 --
@@ -3549,7 +3549,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
                     -- ways this branch used to be skipped while a crate was still
                     -- glowing.
                     if mine and e.obj and DoesEntityExist(e.obj) then
-                        -- The COLOUR is re-sent every frame even when the outline
+                        -- The COLOR is re-sent every frame even when the outline
                         -- is already on: alpha is what carries the distance fade,
                         -- so it has to keep moving as the player walks in. Only
                         -- the on/off flag is latched.
