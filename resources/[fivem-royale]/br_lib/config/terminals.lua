@@ -444,8 +444,10 @@ BR.Config.Terminals = {
         status_no_storm = "Storm hasn't started",
         -- WRITTEN (round 6, proposal for the owner)
         status_storm_aimed = 'Storm spot already picked',
-        -- WRITTEN (round 6, proposal for the owner)
-        status_no_circle = 'Final circle reached',
+        -- WRITTEN (storm control redesign, proposal for the owner; was round
+        -- 6's 'Final circle reached'): shown from the moment circle 7 is drawn,
+        -- while the wall is still closing on it.
+        status_no_circle = 'Final circle on the map',
         -- WRITTEN (round 6, proposal for the owner)
         status_no_target = 'No opponent with an elimination',
         -- WRITTEN (round 6, proposal for the owner)
@@ -702,9 +704,9 @@ BR.Config.Terminals = {
         -- block); a circle already on the map never moves (round 6). ONE SPOT A
         -- MATCH (round 4's review): once the storm is aimed, every later run is
         -- refused (storm_aimed).
-        storm_control_what = "You pick a spot on the map, and the storm finishes there. A spot in the water or off the map counts as the nearest land to it.\nEach new circle moves part of the way toward the spot, so a circle can land outside the one before it.\nThe final circle is marked on your squad's maps until the match ends.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
+        storm_control_what = "You pick a spot on the map, and the storm finishes there. A spot in the water or off the map counts as the nearest land to it.\nEach new circle moves closer to the spot, so a circle can land outside the one before it.\nThe final circle is marked on your squad's maps until the match ends.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
         -- WRITTEN (storm control redesign, proposal for the owner).
-        storm_control_what_solo = "You pick a spot on the map, and the storm finishes there. A spot in the water or off the map counts as the nearest land to it.\nEach new circle moves part of the way toward the spot, so a circle can land outside the one before it.\nThe final circle is marked on your map until the match ends.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
+        storm_control_what_solo = "You pick a spot on the map, and the storm finishes there. A spot in the water or off the map counts as the nearest land to it.\nEach new circle moves closer to the spot, so a circle can land outside the one before it.\nThe final circle is marked on your map until the match ends.\nCircles already on the map don't move. The change starts with the next circle the storm draws.\nOnly one spot can be picked each match. Once it is, Storm control can't be run again.",
         storm_control_duration = 'Rest of the match',
         storm_control_affects = 'Everyone in the match',
         storm_control_notified = 'Everyone in the match',
@@ -714,8 +716,9 @@ BR.Config.Terminals = {
         storm_control_risks = 'A far spot makes the circles jump far. Your squad still has to reach the last circle.',
         storm_control_risks_solo = 'A far spot makes the circles jump far. You still have to reach the last circle.',
         -- WRITTEN (storm control redesign, proposal for the owner; was 'The
-        -- storm will end on your spot, or as close to it as it can.').
-        storm_control_done = 'The storm will finish on your spot.',
+        -- storm will end on your spot, or as close to it as it can.'). The
+        -- spot the mark shows: the nearest land to a spot in the water.
+        storm_control_done = 'The storm will finish on the spot marked on your map.',
         -- WRITTEN (storm control redesign, proposal for the owner; was 'Storm
         -- control. They picked a spot for the storm to close toward.').
         storm_control_description = 'Storm control. They picked where the storm finishes.',
