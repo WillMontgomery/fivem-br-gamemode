@@ -8632,7 +8632,10 @@ do
         '/brbus reports the plane flying on and when it comes down', dump)
     logged = {}
 
-    -- 4. AND IT COMES DOWN partingMs PAST THE END, NOT BEFORE.
+    -- 4. AND IT COMES DOWN partingMs PAST THE END, NOT BEFORE -- seen, here, by a
+    -- player standing beside the rest of its flight (#393: one nobody can see
+    -- comes down sooner, case 4b).
+    pedPos.x = 6000.0
     frame(tEnd + BR.Config.Bus.partingMs - 100 - GetGameTimer())
     ok(alive[PLANE] == true, 'still flying just before partingMs runs out')
     frame(200)
@@ -8642,6 +8645,34 @@ do
     planeWrites = 0
     frames(5, 16)
     ok(planeWrites == 0, 'and nothing flies it afterwards', tostring(planeWrites))
+    pedPos.x = 0.0
+
+    -- 4b. A PLANE PAST ITS END THAT NOBODY CAN SEE AGAIN COMES DOWN THEN (#393).
+    -- From (0, 0) the rest of the flight runs from 3.2 km out to 6.2 km. It stays
+    -- while any of it could still come into view -- 3 km, plus 100 m for every
+    -- second it has left -- and comes down once none can: 14 s past the end.
+    boardAndJump()
+    frame(tEnd + 10000 - GetGameTimer())
+    local seenAt10 = alive[PLANE] == true
+    planeWrites = 0
+    frame(16)
+    local flying = planeWrites == 1
+    frame(tEnd + 15000 - GetGameTimer())
+    ok(seenAt10 and flying and wasDeleted(PLANE) and wasDeleted(PILOT),
+        'past its end, a plane that could still come into view flies on, and one none of '
+            .. 'whose flight can be seen again is taken down at once, not partingMs later',
+        ('flying at +10 s: %s; deleted by +15 s: %s'):format(tostring(seenAt10 and flying),
+            tostring(wasDeleted(PLANE))))
+    planeWrites = 0
+    frames(5, 16)
+    ok(planeWrites == 0, 'and nothing flies it afterwards', tostring(planeWrites))
+
+    -- 4c. NEVER BEFORE THE ROUTE'S END, however far away the player is.
+    pedPos.x = -50000.0
+    boardAndJump()
+    frame(tEnd - 500 - GetGameTimer())
+    ok(alive[PLANE] == true, 'before the route\'s end it flies on whoever can see it')
+    pedPos.x = 0.0
 
     -- 5. THE END OF THE MATCH, OR A LEAVE, TAKES IT DOWN AT ONCE.
     boardAndJump()

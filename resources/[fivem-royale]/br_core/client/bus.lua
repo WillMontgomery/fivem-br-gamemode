@@ -34,6 +34,8 @@ local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
 local gearAt = nil      -- when to retract the landing gear; true once done
 local boardGen = 0      -- boarding generation; a stale boarding thread abandons
 local islandCut = false -- this flight has already released the lobby island
+local viewCheckAt = 0   -- when bus.fly next asks whether the flying-on plane can
+                        -- still be seen (#393, outOfView)
 
 -- Smoothed airframe orientation. The path is a polyline, so its raw
 -- direction is CONSTANT within a segment and STEPS at every waypoint -- the
@@ -84,6 +86,7 @@ local function dropPlane()
     lastX, lastY, lastZ, lastT = nil, nil, nil, nil
     smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
     gearAt = nil
+    viewCheckAt = 0
 end
 
 --- Take the rider off the plane: camera down, ped back in the world, flags
@@ -137,6 +140,56 @@ local function partingPosAt(pts, t)
     local dx, dy = last.x - prev.x, last.y - prev.y
     local k = (t - last.t) / math.max(1, last.t - prev.t)
     return last.x + dx * k, last.y + dy * k, last.z, dx, dy
+end
+
+-- ═══ A PLANE PAST ITS ROUTE'S END THAT NOBODY CAN SEE AGAIN COMES DOWN NOW (#393) ═══
+--
+-- After the jump the plane flies on past the route's end for partingMs, and bus.fly
+-- paid five natives a frame to fly it there -- in the match, long after anyone could
+-- see it. So once it is PAST THE ROUTE'S END, bus.fly asks four times a second
+-- whether any of the flight it has left can still be seen, and takes it down if
+-- none can. Nothing changes for a plane in view: it flies on, as it did.
+--
+-- "CAN STILL BE SEEN" IS MEASURED SO THAT NO ANSWER OF "NO" CAN BE WRONG. Past its
+-- end the plane flies a straight line (partingPosAt) until partingMs is up, so the
+-- rest of its flight is one segment, known now. It is out of view only if that
+-- whole segment is more than VIEW_M from the camera -- on the ground, which is never
+-- farther than the real distance -- and more by CLOSE_MS for every second it has
+-- left, the fastest anyone can come toward it meanwhile. VIEW_M is well past the
+-- distance the engine draws a vehicle at -- a vehicle's farthest LOD is a few hundred
+-- meters, which the player's distance setting scales at most a few times -- and it is
+-- the 3 km past which this gamemode draws nothing of its own (the storm wall).
+local VIEW_M = 3000.0
+local CLOSE_MS = 100.0          -- m/s: faster than anything a player can drive
+local VIEW_CHECK_MS = 250
+
+--- Can none of what is left of this flight be seen from (cx, cy), at any time
+--- before it comes down? `t` is now, `goneAt` when partingMs runs out.
+--- @return boolean
+local function outOfView(pts, t, goneAt, cx, cy)
+    local ax, ay = partingPosAt(pts, t)
+    local bx, by = partingPosAt(pts, goneAt)
+    local ex, ey = bx - ax, by - ay
+    local el = ex * ex + ey * ey
+    local k = 0.0
+    if el > 0.0 then
+        k = ((cx - ax) * ex + (cy - ay) * ey) / el
+        if k < 0.0 then k = 0.0 elseif k > 1.0 then k = 1.0 end
+    end
+    local dx, dy = ax + ex * k - cx, ay + ey * k - cy
+    local need = VIEW_M + CLOSE_MS * (goneAt - t) / 1000.0
+    return dx * dx + dy * dy > need * need
+end
+
+--- Where the frame is seen from: the camera that renders it, or the ped.
+--- @return number x, number y
+local function viewFrom()
+    if GetFinalRenderedCamCoord then
+        local c = GetFinalRenderedCamCoord()
+        if c then return c.x, c.y end
+    end
+    local p = GetEntityCoords(PlayerPedId())
+    return p.x, p.y
 end
 
 -- ------------------------------------------------------- the map drawing ---
@@ -644,9 +697,19 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     -- the moment that takes, and does not jump forward when it ends either.
     if not riding then
         local tEnd = route.tEnd or route.points[#route.points].t
-        if t > tEnd + BR.Config.Bus.partingMs then
+        local goneAt = tEnd + BR.Config.Bus.partingMs
+        if t > goneAt then
             dropPlane()
             return
+        end
+        -- And sooner, once nothing left of the flight can be seen (#393).
+        if t > tEnd and t >= viewCheckAt then
+            viewCheckAt = t + VIEW_CHECK_MS
+            local cx, cy = viewFrom()
+            if outOfView(route.points, t, goneAt, cx, cy) then
+                dropPlane()
+                return
+            end
         end
     end
     local posAt = partingPosAt
