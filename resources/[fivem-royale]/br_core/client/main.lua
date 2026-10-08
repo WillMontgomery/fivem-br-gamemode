@@ -1047,6 +1047,28 @@ end
 BR.Frame.wrapped = setmetatable({}, { __mode = 'k' })
 BR.Frame.wrapMovers()
 
+-- ═══ EVERY CALLBACK OFF AT ONCE: `brloop off all` (#393) ═══
+--
+-- The owner's switch for resmon (client/debug.lua's brloop, dev mode only): with
+-- every callback stopped, what br_core still costs is the band threads' own
+-- resumes and whatever runs outside the loop -- event handlers, threads, the
+-- included ScaleformUI -- which is the fixed cost #393's measure-and-plan pass
+-- could not attribute. A pass returns before it touches anything; each callback's
+-- own on/off and suspension are left exactly as they were, so `on all` brings back
+-- what was running and nothing else.
+local pausedAll = false
+
+--- Stop (true) or restart (false) every callback in every band.
+--- @param on boolean
+function BR.Loop.pauseAll(on)
+    pausedAll = on and true or false
+end
+
+--- @return boolean  every callback stopped by pauseAll
+function BR.Loop.pausedAll()
+    return pausedAll
+end
+
 --- Run a single pass over one band.
 ---
 --- Public rather than local for two reasons: the debug tooling can single-step a
@@ -1055,7 +1077,7 @@ BR.Frame.wrapMovers()
 --- @param band string
 function BR.Loop.step(band)
     local list = registry[band]
-    if not list then return end
+    if not list or pausedAll then return end
     passSeq = passSeq + 1
     BR.Loop.pass = passSeq
 

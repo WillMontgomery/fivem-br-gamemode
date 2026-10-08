@@ -1037,6 +1037,37 @@ do
     ok(#u3 == 1, 'and so is a mover-shaped native nobody has sorted', table.concat(u3, ', '))
 end
 
+describe('pause all')
+do
+    -- `brloop off all` (#393): every callback in every band stops at once, and `on
+    -- all` brings back exactly what was running -- a callback switched off on its
+    -- own stays off.
+    clearAll()
+    local ran = { f = 0, t = 0, s = 0, off = 0 }
+    local hf = BR.Loop.register(BR.Loop.FRAME, 't.pause.f', function() ran.f = ran.f + 1 end)
+    local ht = BR.Loop.register(BR.Loop.TICK, 't.pause.t', function() ran.t = ran.t + 1 end)
+    local hs = BR.Loop.register(BR.Loop.SLOW, 't.pause.s', function() ran.s = ran.s + 1 end)
+    local ho = BR.Loop.register(BR.Loop.FRAME, 't.pause.off', function() ran.off = ran.off + 1 end)
+    BR.Loop.setEnabled('t.pause.off', false)
+    BR.Loop.pauseAll(true)
+    for _ = 1, 3 do
+        BR.Loop.step(BR.Loop.FRAME)
+        BR.Loop.step(BR.Loop.TICK)
+        BR.Loop.step(BR.Loop.SLOW)
+    end
+    ok(BR.Loop.pausedAll() and ran.f == 0 and ran.t == 0 and ran.s == 0,
+        'while paused, no callback in any band runs',
+        ('frame %d, tick %d, slow %d'):format(ran.f, ran.t, ran.s))
+    BR.Loop.pauseAll(false)
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(not BR.Loop.pausedAll() and ran.f == 1 and ran.t == 1 and ran.s == 1 and ran.off == 0,
+        'and unpaused, each runs again -- and one switched off on its own stays off',
+        ('frame %d, tick %d, slow %d, the one off %d'):format(ran.f, ran.t, ran.s, ran.off))
+    for _, h in ipairs({ hf, ht, hs, ho }) do BR.Loop.unregister(h) end
+end
+
 describe('state helpers')
 do
     BR.State.match.state = BR.MatchState.PLAYING

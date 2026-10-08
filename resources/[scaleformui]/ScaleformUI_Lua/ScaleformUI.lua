@@ -18775,6 +18775,11 @@ Citizen.CreateThread(function()
     initializeScaleforms()
     
     while true do
+        -- BR-PATCH 7: `brloop off sfui` (br_core/client/debug.lua, dev mode only)
+        -- sets ScaleformUI.brIdle, and this loop then waits a quarter second at a
+        -- time and does nothing else, so resmon can read br_core without it (#393).
+        -- nil unless that command set it: the loop below is upstream's.
+        while ScaleformUI.brIdle do Citizen.Wait(250) end
         -- Check if any menu is active
         if MenuHandler:IsAnyMenuOpen() or MenuHandler:IsAnyPauseMenuOpen() then
             if MenuHandler.ableToDraw and not (IsWarningMessageActive() or ScaleformUI.Scaleforms.Warning:IsShowing()) then

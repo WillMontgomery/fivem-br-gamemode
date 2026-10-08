@@ -656,10 +656,30 @@ end, false)
 RegisterCommand('brloop', function(_, args)
     local action, name = args[1], args[2]
     if not action or not name then
-        print('  usage: brloop <on|off> <callbackName>   (see brperf for names)')
+        print('  usage: brloop <on|off> <callbackName|all|sfui>   (see brperf for names)')
         return
     end
     local enable = (action == 'on' or action == 'enable')
+    -- THE OWNER'S RESMON SWITCHES (#393; docs/running.md says what to read). `all`
+    -- stops or restarts every BR.Loop callback at once (BR.Loop.pauseAll), and
+    -- `sfui` idles the included ScaleformUI's per-frame loop (BR-PATCH 7 in the
+    -- vendored library). Dev mode only, like every command here.
+    if name == 'all' then
+        BR.Loop.pauseAll(not enable)
+        print(('[br_core] every loop callback %s'):format(enable and 'running again'
+            or 'stopped -- what resmon reads now is br_core without them'))
+        return
+    end
+    if name == 'sfui' then
+        if type(ScaleformUI) ~= 'table' then
+            print('[br_core] ScaleformUI is not loaded in this resource')
+            return
+        end
+        ScaleformUI.brIdle = not enable or nil
+        print(('[br_core] ScaleformUI\'s frame loop %s'):format(enable and 'running again'
+            or 'idle -- what resmon reads now is br_core without it'))
+        return
+    end
     if BR.Loop.setEnabled(name, enable) then
         print(('[br_core] callback "%s" %s'):format(name, enable and 'enabled' or 'disabled'))
     else

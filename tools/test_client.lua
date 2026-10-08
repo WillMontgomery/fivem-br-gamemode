@@ -8701,6 +8701,46 @@ do
     sent = {}
 end
 
+describe('brloop off all, brloop off sfui -- the resmon switches, #393')
+do
+    -- client/debug.lua's brloop (dev mode, as every command): `all` stops every
+    -- BR.Loop callback and `on all` restarts them; `sfui` idles the included
+    -- ScaleformUI's frame loop through the flag BR-PATCH 7 reads at its top.
+    logged = {}
+    commands['brloop'](nil, { 'off', 'all' }, '')
+    local paused = BR.Loop.pausedAll()
+    local hits = 0
+    local h = BR.Loop.register(BR.Loop.FRAME, 'test.brloop', function() hits = hits + 1 end)
+    frames(3, 16)
+    commands['brloop'](nil, { 'on', 'all' }, '')
+    frame(16)
+    BR.Loop.unregister(h)
+    ok(paused == true and hits == 1 and not BR.Loop.pausedAll(),
+        'brloop off all stops every callback, and on all starts them again',
+        ('paused %s, %d run(s) over four frames'):format(tostring(paused), hits))
+
+    local hadSfui = ScaleformUI
+    ScaleformUI = ScaleformUI or {}
+    commands['brloop'](nil, { 'off', 'sfui' }, '')
+    local idle = ScaleformUI.brIdle
+    commands['brloop'](nil, { 'on', 'sfui' }, '')
+    ok(idle == true and ScaleformUI.brIdle == nil,
+        'brloop off sfui sets the flag ScaleformUI\'s loop idles on, and on sfui clears it',
+        ('%s then %s'):format(tostring(idle), tostring(ScaleformUI.brIdle)))
+    ScaleformUI = hadSfui
+
+    -- AND THE LOOP READS IT: the first thing in the vendored main loop's body.
+    local f = io.open('resources/[scaleformui]/ScaleformUI_Lua/ScaleformUI.lua', 'rb')
+    local src = f and f:read('a') or ''
+    if f then f:close() end
+    local loopAt = src:find('initializeScaleforms()\n    \n    while true do', 1, true)
+    local gate = loopAt and src:find('while ScaleformUI.brIdle do Citizen.Wait(250) end', loopAt,
+        true)
+    local firstWork = loopAt and src:find('MenuHandler:IsAnyMenuOpen()', loopAt, true)
+    ok(loopAt and gate and firstWork and gate < firstWork,
+        'and ScaleformUI\'s main loop waits on that flag before it does anything (BR-PATCH 7)')
+end
+
 describe('an inventory starts and returns to fists, not to slot 1 -- #155')
 do
     -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot
