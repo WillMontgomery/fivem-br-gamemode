@@ -1153,6 +1153,13 @@ end
 -- inside another leaves the outer one's intact. Capture keeps the measured loop in
 -- BR.Loop.step, stopwatch and all; its lastMs is zeroed when capture stops
 -- (captureStalls), which is why this pass need not write it.
+--
+-- THE PASS'S END IS FIXED AS IT STARTS, AND A RESUMED PASS KEEPS IT (round 9 review).
+-- The loop this replaced was `for i = 1, #list`, which reads the length once: a
+-- callback registered during a pass is appended past that end and first runs on the
+-- next pass. runFrom is handed the end passFast read, so resuming past a thrower
+-- cannot reach a callback registered before the throw. It did: that callback ran a
+-- pass early, so the pass it should have started on handed it a frame's dt, not 0.
 local passAt = {}
 
 --- A callback threw: count it, say so, and suspend it after MAX_CONSECUTIVE_ERRORS.
@@ -1169,9 +1176,9 @@ local function failed(e, err)
     end
 end
 
---- The pass from `from` on, unprotected: passFast's pcall is round it.
-local function runFrom(list, from, t, at)
-    for i = from, #list do
+--- The pass from `from` to `n`, unprotected: passFast's pcall is round it.
+local function runFrom(list, from, n, t, at)
+    for i = from, n do
         local e = list[i]
         if e.dead then
             at.swept = true
@@ -1196,15 +1203,18 @@ local function passFast(band, list, t)
     end
     local outerI, outerSwept = at.i, at.swept
     at.swept = false
-    local from = 1
+    local from, n = 1, #list
     while true do
         at.i = from - 1
-        local ok, err = pcall(runFrom, list, from, t, at)
+        local ok, err = pcall(runFrom, list, from, n, t, at)
         if ok then break end
         local i = at.i
         -- Nothing had started: the fault is this loop's own, not a callback's, and
         -- it goes up as it did when each callback had its own pcall.
-        if i < from then error(err, 0) end
+        if i < from then
+            at.i, at.swept = outerI, outerSwept
+            error(err, 0)
+        end
         failed(list[i], err)
         from = i + 1
     end

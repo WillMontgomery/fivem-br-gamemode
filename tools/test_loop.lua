@@ -1389,6 +1389,123 @@ do
         ('%d pcalls'):format(pcalls))
     for _, h in ipairs(hc) do BR.Loop.unregister(h) end
     BR.Loop.step(BR.Loop.TICK)
+
+    -- THE PASS'S END IS FIXED AS IT STARTS, AND A RESUMED PASS KEEPS IT (round 9
+    -- review). The loop this replaced read `#list` once, so a callback registered
+    -- mid-pass first ran on the next pass. Resumed past a thrower, the pass read it
+    -- again: z, registered by a while b is still to throw, ran on the same pass.
+    clearAll()
+    local ran, zdt = {}, {}
+    local hz
+    local hl = {
+        BR.Loop.register(BR.Loop.TICK, 't.one.end.a', function()
+            ran[#ran + 1] = 'a'
+            if not hz then
+                hz = BR.Loop.register(BR.Loop.TICK, 't.one.end.z', function(dt)
+                    ran[#ran + 1] = 'z'
+                    zdt[#zdt + 1] = dt
+                end)
+            end
+        end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.end.b', function()
+            ran[#ran + 1] = 'b'
+            error('b throws')
+        end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.end.c', function() ran[#ran + 1] = 'c' end),
+    }
+    BR.Loop.step(BR.Loop.TICK)
+    local firstPass = table.concat(ran, ',')
+    ran = {}
+    BR.Loop.step(BR.Loop.TICK)
+    ok(firstPass == 'a,b,c' and table.concat(ran, ',') == 'a,b,c,z' and zdt[1] == 0
+        and #zdt == 1,
+        'a callback registered mid-pass first runs on the next pass, a thrower after it or not',
+        ('first pass %s; second %s; z dt %s'):format(firstPass, table.concat(ran, ','),
+            tostring(zdt[1])))
+    hl[#hl + 1] = hz
+    for _, h in ipairs(hl) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- TWO BANDS WAITING MID-PASS AT ONCE, NEITHER INSIDE THE OTHER (round 9 review).
+    -- The yield above is nested -- the tick pass runs to its end while the frame pass
+    -- waits -- and putting the place back covers that. Here the frame pass waits in f2,
+    -- the tick pass waits in t4, and each throws when it resumes: each error is still
+    -- its own band's callback's, and the rest of each pass still runs.
+    clearAll()
+    local seen = {}
+    local function mark(s) seen[#seen + 1] = s end
+    local hy = {
+        BR.Loop.register(BR.Loop.FRAME, 't.one.y.f1', function() mark('f1') end),
+        BR.Loop.register(BR.Loop.FRAME, 't.one.y.f2', function()
+            mark('f2')
+            coroutine.yield()
+            error('f2 after its wait')
+        end),
+        BR.Loop.register(BR.Loop.FRAME, 't.one.y.f3', function() mark('f3') end),
+        BR.Loop.register(BR.Loop.FRAME, 't.one.y.f4', function() mark('f4') end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.y.t1', function() mark('t1') end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.y.t2', function() mark('t2') end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.y.t3', function() mark('t3') end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.y.t4', function()
+            mark('t4')
+            coroutine.yield()
+            error('t4 after its wait')
+        end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.y.t5', function() mark('t5') end),
+    }
+    local cf = coroutine.create(function() BR.Loop.step(BR.Loop.FRAME) end)
+    local ct = coroutine.create(function() BR.Loop.step(BR.Loop.TICK) end)
+    coroutine.resume(cf)
+    coroutine.resume(ct)
+    local okf, errf = coroutine.resume(cf)
+    local okt, errt = coroutine.resume(ct)
+    reread()
+    local charged = {}
+    for _, n in ipairs({ 'f1', 'f2', 'f3', 'f4', 't1', 't2', 't3', 't4', 't5' }) do
+        charged[#charged + 1] = n .. ' ' .. by['t.one.y.' .. n].errors
+    end
+    ok(okf and okt and coroutine.status(cf) == 'dead' and coroutine.status(ct) == 'dead'
+        and table.concat(seen, ',') == 'f1,f2,t1,t2,t3,t4,f3,f4,t5'
+        and by['t.one.y.f2'].errors == 1 and by['t.one.y.t4'].errors == 1
+        and by['t.one.y.f4'].errors == 0 and by['t.one.y.t3'].errors == 0
+        and by['t.one.y.t5'].errors == 0 and by['t.one.y.f3'].errors == 0,
+        'two bands waiting mid-pass at once each resume to their own place and charge their own thrower',
+        ('%s; ran %s; %s'):format(table.concat(charged, ', '), table.concat(seen, ','),
+            tostring(errf or errt)))
+    for _, h in ipairs(hy) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- A FAULT IN THE LOOP'S OWN BOOKKEEPING IS NO CALLBACK'S (round 9 review). Before a
+    -- callback is called there is nothing to charge: the pass goes up with the error,
+    -- as it did when each callback had its own pcall, and the thrower before it is
+    -- charged once. Here the fault is an entry whose `dead` cannot be read, once.
+    clearAll()
+    BR.Loop.step(BR.Loop.SLOW)
+    local own3 = 0
+    local ho = {
+        BR.Loop.register(BR.Loop.SLOW, 't.one.own1', function() error('own1 throws') end),
+        BR.Loop.register(BR.Loop.SLOW, 't.one.own2', function() end),
+        BR.Loop.register(BR.Loop.SLOW, 't.one.own3', function() own3 = own3 + 1 end),
+    }
+    local broken = true
+    setmetatable(ho[2], { __index = function(_, k)
+        if k == 'dead' and broken then
+            broken = false
+            error('the registry is broken', 0)
+        end
+    end })
+    for k = #printed, 1, -1 do printed[k] = nil end
+    local okp, perr = pcall(BR.Loop.step, BR.Loop.SLOW)
+    setmetatable(ho[2], nil)
+    reread()
+    ok(not okp and perr == 'the registry is broken' and by['t.one.own1'].errors == 1
+        and own3 == 0 and #printed == 1,
+        "a fault of the loop's own goes up as it always did, charged to no callback",
+        ('step %s (%s); own1 errors %d; own3 ran %d; %d lines'):format(tostring(okp),
+            tostring(perr), by['t.one.own1'].errors, own3, #printed))
+    for _, h in ipairs(ho) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.SLOW)
 end
 
 describe('state helpers')
