@@ -1802,34 +1802,6 @@ local idleAll = false
 --- Live actions whose `live` threw, already reported once.
 local liveErr = {}
 
---- Could a press on this row do anything right now? See BR.Keys.on's `live`.
----
---- LIVE UNLESS EVERY LISTENER SAYS OTHERWISE: one listener without `live`, a
---- row nobody listens to (the boost is read through isHeld, never a listener),
---- a borrowed press waiting in `claims`, or a `live` that throws -- each keeps
---- the key read, which is what every row did before.
---- @param b table  a BR.Keys.bindings row
---- @return boolean
-local function rowLive(b)
-    local action = b.action
-    if alwaysLive[action] or claims[action] ~= nil then return true end
-    local g = liveWhen[action]
-    if g == nil then return true end
-    for i = 1, #g do
-        local ok, yes = pcall(g[i])
-        if not ok then
-            if not liveErr[action] then
-                liveErr[action] = true
-                print(('[br_core] key "%s": its live check errored, so the key is read every frame: %s')
-                    :format(action, tostring(yes)))
-            end
-            return true
-        end
-        if yes == true then return true end
-    end
-    return false
-end
-
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
 
@@ -1867,7 +1839,20 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     -- stops changing, rather than for a length of time somebody picked.
     local moved = false
 
-    for _, b in ipairs(BR.Keys.bindings) do
+    -- ═══ THE SAME READS, FEWER INSTRUCTIONS AROUND THEM (#393 round 9) ═══
+    --
+    -- The owner's plane profile put this pass among the four biggest. What it asks
+    -- and when is untouched -- every readable key is read every frame its row is
+    -- live, every `live` check is still asked through its own pcall, a borrowed
+    -- press (`claims`) is looked up on every row every frame -- but the walk is a
+    -- numeric loop rather than ipairs, rawHolds is read once a pass (it is written
+    -- once, at resource start), and the row's live check, rawDownAny and truth are
+    -- written out below: the same tests in the same order, without three calls a row.
+    local bindings = BR.Keys.bindings
+    local rawHolds = BR.Keys.rawHolds
+    local held = BR.Keys.held
+    for bi = 1, #bindings do
+        local b = bindings[bi]
         local code = map[b.command]
         -- A HOLD BINDING IS ONLY OURS IF WE CAN ANSWER WHAT A HOLD ASKS.
         -- Without IsRawKeyDown this loop can see the press and never the
@@ -1875,7 +1860,7 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
         -- very next frame -- and it would ALSO be shadowing the engine's +/-
         -- pair, which can do the job properly. See the note on rawHolds at the
         -- hold() registrar; skipping the binding here is what hands it back.
-        local readable = code and (BR.Keys.rawHolds or not b.hold)
+        local readable = code and (rawHolds or not b.hold)
 
         -- ═══ ...AND ONLY WHILE A PRESS ON IT COULD DO SOMETHING (#393) ═══
         --
@@ -1895,10 +1880,43 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
         -- A stale "held" would be released by endHolds() to a listener that
         -- never started anything; a wrong "not held" costs nothing here, since
         -- every listener of the row has just said it could not act.
-        if readable and not resyncing and not rowLive(b) then
-            idle[b.command] = true
-            if b.hold then BR.Keys.held[b.action] = false end
-            readable = false
+        if readable and not resyncing then
+            -- COULD A PRESS ON THIS ROW DO ANYTHING RIGHT NOW? See BR.Keys.on's
+            -- `live`. LIVE UNLESS EVERY LISTENER SAYS OTHERWISE: one listener
+            -- without `live`, a row nobody listens to (the boost is read through
+            -- isHeld, never a listener), a borrowed press waiting in `claims`, or a
+            -- `live` that throws -- each keeps the key read, which is what every row
+            -- did before.
+            local action = b.action
+            local live = alwaysLive[action] or claims[action] ~= nil
+            if not live then
+                local g = liveWhen[action]
+                if g == nil then
+                    live = true
+                else
+                    for i = 1, #g do
+                        local ok, yes = pcall(g[i])
+                        if not ok then
+                            if not liveErr[action] then
+                                liveErr[action] = true
+                                print(('[br_core] key "%s": its live check errored, so the key is read every frame: %s')
+                                    :format(action, tostring(yes)))
+                            end
+                            live = true
+                            break
+                        end
+                        if yes == true then
+                            live = true
+                            break
+                        end
+                    end
+                end
+            end
+            if not live then
+                idle[b.command] = true
+                if b.hold then held[action] = false end
+                readable = false
+            end
         end
 
         if readable then
@@ -1937,7 +1955,22 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- than one virtual-key code and no source settles which slot this
             -- build fills for shift. See VK_ALSO above -- it is a superset, so
             -- for every key that already worked this is the same call it was.
-            local down = rawDownAny(code)
+            -- rawDownAny(code), written out: truth() of the code's own reading,
+            -- then of each VK_ALSO code until one reads down.
+            local v = rawDownFn(code)
+            local down = not (v == nil or v == false or v == 0)
+            if not down then
+                local also = VK_ALSO[code]
+                if also ~= nil then
+                    for i = 1, #also do
+                        v = rawDownFn(also[i])
+                        if not (v == nil or v == false or v == 0) then
+                            down = true
+                            break
+                        end
+                    end
+                end
+            end
             local was = rawDown[b.command] == true
 
             -- A HELD FLAG THAT IS ONLY EVER WRITTEN ON AN EDGE IS A LATCH, AND

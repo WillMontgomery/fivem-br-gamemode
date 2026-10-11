@@ -272,6 +272,58 @@ do
     ok(not suspended, 'keybinds.raw is not suspended by it')
 end
 
+describe('the pass reads the same keys without a call of its own per row (round 9)')
+do
+    -- #393 round 9: keybinds.raw's row loop used to call rowLive, rawDownAny and truth
+    -- for every row -- three Lua calls a row, a frame, in every phase. They are written
+    -- out in the loop now. The differential below holds what the loop decides to the
+    -- shipped loop's; this holds the calls: a quiet frame makes one call into
+    -- client/keybinds.lua of its own -- `load()`, which hands back the binding map --
+    -- and none per row, while it still reads every key it read, every live check is
+    -- still asked, and a key that is down still fires.
+    boot()
+    local asked, presses = 0, 0
+    BR.Keys.on('specNext', function(p) if p then presses = presses + 1 end end,
+        function() asked = asked + 1 return true end)
+    frames(2)
+
+    -- Calls into client/keybinds.lua's own functions BY NAME: a live check is
+    -- called through pcall and has none, so the checks (one of them, `map`'s, is
+    -- this file's own) are not counted here -- `asked` counts the test's.
+    local KB = 'client/keybinds.lua'
+    local calls, names = 0, {}
+    local function hook()
+        local info = debug.getinfo(2, 'Sn')
+        if info and info.what == 'Lua' and info.name ~= nil
+            and info.source:find(KB, 1, true) then
+            calls = calls + 1
+            names[info.name] = (names[info.name] or 0) + 1
+        end
+    end
+    asked = 0
+    debug.sethook(hook, 'c')
+    frame()
+    debug.sethook()
+    local readsBefore = totalReads()
+    local list = {}
+    for n, c in pairs(names) do list[#list + 1] = n .. ' ' .. c end
+    table.sort(list)
+    -- The loop calls the callback (named by the registry's field, `fn`); it calls load().
+    local own = calls - (names.fn or 0)
+    ok(own == 1 and names.load == 1,
+        'a quiet frame calls load() and nothing else of its own, however many rows it reads',
+        ('%d calls: %s'):format(calls, table.concat(list, ', ')))
+    ok(readsBefore >= 8 and asked == 1 and reads[VK.RIGHT] == 1,
+        'while it still reads every live key, asks every live check once, and reads RIGHT',
+        ('%d reads, %d live checks asked'):format(readsBefore, asked))
+
+    keys[VK.RIGHT] = true
+    frame()
+    keys[VK.RIGHT] = nil
+    frame()
+    ok(presses == 1, 'and a press still fires, once', ('%d'):format(presses))
+end
+
 describe('a hold row: its state is adopted, its release still arrives')
 do
     boot()
