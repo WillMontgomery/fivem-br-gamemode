@@ -273,12 +273,24 @@ local plannedWants = {}
 -- ═══ A PED THAT WAS NOT READY WHEN THE CAMERA STARTED (#406) ═══
 --
 -- `pedAskedAt` is when the walk asked for its ped (the model wait in run());
--- `pedReadyMs` is how long that ped took to arrive, and `skippedMs` how much of
--- the plan it was placed past because the camera was already flying. Read by
--- the failsafe and /brlobbywalk; reset by begin().
+-- `pedReadyMs` is how long until the walk had everything it waits for, and
+-- `pedGaveUp` whether the model wait ran out instead -- the walk then goes with
+-- whatever ped is on, and "ready" would be the wrong word for it. `skippedMs`
+-- is how much of the plan the ped was placed past because the camera was
+-- already flying. Read by the failsafe and /brlobbywalk; reset by begin(),
+-- and `pedGaveUp` is only ever written beside `pedReadyMs`, which gates it.
 local pedAskedAt = nil
 local pedReadyMs = nil
+local pedGaveUp = false
 local skippedMs = 0
+
+-- ═══ HOW FAR BEHIND THE CAMERA THE WALK MAY START AND STILL BE ON TIME (#406)
+--
+-- The walk and the flight each wait for the reveal on their own 50 ms poll, so
+-- an on-time walk starts up to a poll -- plus the frame each wakes on -- after
+-- the flight. Anything past this is a ped that was not there when the camera
+-- went, however that came about. 100 ms is 0.15 m of walk either way.
+local LATE_MS = 100
 
 -- ═══ THE EMOTE STATE, DECLARED HERE RATHER THAN BESIDE THE EMOTES ═══
 --
@@ -1457,10 +1469,12 @@ local function run(mine)
         if not s1Want then s1Want = GetHashKey(BR.PedById(BR.Locker.chosen()).model) end
         return s1Want
     end
+    local gaveUp = false
     if wanted() then
         local deadline = GetGameTimer() + (C.modelWaitMs or 8000)
+        gaveUp = true
         while token == mine and GetGameTimer() < deadline do
-            if GetEntityModel(PlayerPedId()) == wanted() then break end
+            if GetEntityModel(PlayerPedId()) == wanted() then gaveUp = false break end
             Citizen.Wait(50)
         end
     end
@@ -1535,7 +1549,12 @@ local function run(mine)
     --     begin() placed the old one (client/locker.lua's swap is what it was
     --     waiting for), so this is the earliest point at which the ped being
     --     stood on the mark is the ped that is going to walk.
-    standOnStart('while the cover was still up')
+    --
+    --     A PED LATE ENOUGH TO BE PLACED ALONG THE PATH (#406) comes through
+    --     here with the screen already uncovered, and the log says which it
+    --     was; the placement below lands in this same frame, so nothing shows.
+    standOnStart(revealed() and 'with the screen already uncovered'
+        or 'while the cover was still up')
 
     -- 5. AND NOW IT WAITS FOR SOMEBODY TO BE LOOKING.
     --
@@ -1544,8 +1563,7 @@ local function run(mine)
     --    curtain -- and starting the walk here is how four or five seconds of
     --    it were spent behind that cover. Bounded: a cover that never lifts
     --    costs a walk that starts anyway.
-    local readyAt = GetGameTimer()
-    pedReadyMs = readyAt - pedAskedAt
+    pedReadyMs, pedGaveUp = GetGameTimer() - pedAskedAt, gaveUp
     if not awaitReveal(mine) then return end
     if token ~= mine then return end
 
@@ -1565,22 +1583,42 @@ local function run(mine)
     -- the request itself would also skip the time the screen was still
     -- covered, when no walk was due, and land the ped early.
     --
-    -- One ready AFTER the flight began is placed where planAt says an on-time
-    -- walk would be standing now, facing along that leg, and walks the rest --
-    -- so it arrives when an on-time walk would. One ready after the camera has
-    -- landed appears on the lobby mark.
+    -- ═══ "BEHIND" IS READ WHEN THE WALK STARTS, NOT WHEN THE PED WAS READY
+    --
+    -- The flight and the walk each wait for the reveal, but on their own
+    -- deadlines: the flight's runs out revealWaitMs after begin(), the walk's
+    -- revealWaitMs after its ped was ready. A cover that outlasts the first --
+    -- a Season 2 boot, whose first apply can hold the loading screen nine
+    -- seconds -- sends the camera off under it while a ped that was ready
+    -- long ago is still waiting for the screen, and that ped is behind by the
+    -- difference just as surely as one that arrived late. So the question is
+    -- only how long ago the flight began, allowing a poll (LATE_MS).
+    --
+    -- THE WALK STILL WAITS FOR THE REVEAL rather than following the camera
+    -- under the cover: on the boot road the cover is the world not being
+    -- there yet, and a ped unfrozen onto it can fall through.
+    --
+    -- One behind is placed where planAt says an on-time walk would be standing
+    -- now, facing along that leg, and walks the rest -- so it arrives when an
+    -- on-time walk would. One behind after the camera has landed appears on the
+    -- lobby mark.
     --
     -- ANY PED, not only Season 2's: a Season 1 or stock ped held past the
     -- reveal by its clipset or its dictionaries is behind the camera too.
+    local function readiness()
+        if gaveUp then
+            return ('the walk stopped waiting for its ped after %dms'):format(pedReadyMs)
+        end
+        return ('the ped was ready %dms after it was asked for'):format(pedReadyMs)
+    end
     local firstLeg = 1
-    if flightBegan and readyAt > flightBegan then
-        local behind = GetGameTimer() - flightBegan
+    local behind = flightBegan and (GetGameTimer() - flightBegan) or 0
+    if behind > LATE_MS then
         local at = (not camLanded) and behind < plannedMs and planAt(behind) or nil
         if not at then
             skippedMs = plannedMs
-            print(('[br_core] lobby entrance: the ped was ready %dms after it was '
-                .. 'asked for, after the camera landed -- placed on the lobby mark')
-                :format(pedReadyMs))
+            print(('[br_core] lobby entrance: %s, and the camera had landed -- '
+                .. 'placed on the lobby mark'):format(readiness()))
             walkBegan = GetGameTimer()
             arrive()
             return
@@ -1588,9 +1626,9 @@ local function run(mine)
         skippedMs = behind
         firstLeg = at.leg
         standAlong(at)
-        print(('[br_core] lobby entrance: the ped was ready %dms after it was asked '
-            .. 'for, %dms into the flight -- placed %.1fm along the path, on leg %d')
-            :format(pedReadyMs, behind, at.meters, at.leg))
+        print(('[br_core] lobby entrance: %s, %dms into the flight -- placed '
+            .. '%.1fm along the path, on leg %d')
+            :format(readiness(), behind, at.meters, at.leg))
     else
         -- ...AND AGAIN, AS THE LAST WORD BEFORE THE FIRST LEG.
         --
@@ -2334,8 +2372,9 @@ RegisterCommand('brlobbywalk', function()
     -- AND HOW LONG THE PED TOOK TO ARRIVE, and what of the walk it missed for
     -- it (#406): the number to read when a custom ped joins the walk late.
     if pedReadyMs then
-        print(('  ped ready    %.1fs after it was asked for -- %s')
-            :format(pedReadyMs / 1000.0, skippedMs > 0
+        print(('  ped          %s %.1fs -- %s')
+            :format(pedGaveUp and 'NEVER READY, the walk went without it after'
+                    or 'ready after', pedReadyMs / 1000.0, skippedMs > 0
                 and ('behind the camera, %.1fs of the walk skipped'):format(skippedMs / 1000.0)
                 or 'walked the whole path'))
     end

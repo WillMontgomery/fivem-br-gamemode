@@ -5154,6 +5154,51 @@ do
     end
     C.modelWaitMs = realWait
 
+    -- ═══ (d) THE COVER OUTLASTS THE FLIGHT'S OWN WAIT ═══
+    --
+    -- The #406 review's scenario A. The flight gives up on the cover
+    -- revealWaitMs after the entrance begins and flies under it; a ped ready at
+    -- 3 s is still waiting for the screen, on a deadline of its own. When the
+    -- cover lifts the camera is two seconds down its path -- so the ped is
+    -- behind by that much although it was ready long before the camera went.
+    reset()
+    BR.State.worldReady = false
+    ped.model = GetHashKey('player_zero')
+    Citizen.SetTimeout(3000, function()
+        pedHandle = pedHandle + 1
+        wearChosenModel()
+    end)
+    local coverMs = C.revealWaitMs + 2000
+    Citizen.SetTimeout(coverMs, function() BR.State.worldReady = true end)
+    local flight0
+    for _ = 1, math.floor((coverMs + 2000) / 50) do
+        pump(50)
+        if said('camera flight starts') then flight0 = fakeTime break end
+    end
+    pump(45000)
+    local cov = { tasks = taskList(), flight0 = flight0 }
+    for _, e in ipairs(order) do
+        if e.kind == 'coords' and not cov.home and flight0 and e.at >= flight0
+           and math.abs(e.x - L.x) < 0.01 and math.abs(e.y - L.y) < 0.01 then
+            cov.home = e
+        end
+    end
+    local first = cov.tasks[1]
+    ok(flight0 ~= nil and first ~= nil and first.at - flight0 > 1000,
+       'precondition: the camera flew under the cover, and the walk began at the reveal')
+    local behind = (first and flight0) and (first.at - flight0)
+    local was = behind and ref.trace[behind]
+    local off = (first and was) and BR.Dist(first.fromX, first.fromY, was.x, was.y) or math.huge
+    ok(off <= PLACE_M,
+       ('a ped ready before a camera that flew under the cover starts where the on-time '
+           .. 'walk would be at the reveal (%.2fm off)'):format(off))
+    local covAt = (cov.home and flight0) and (cov.home.at - flight0)
+    ok(refAt and covAt and math.abs(covAt - refAt) <= ARRIVE_MS,
+       ('and arrives with the camera (%s ms after it started, against %s)')
+           :format(tostring(covAt), tostring(refAt)))
+    ok(not forcedHome(), 'on its own feet')
+    BR.State.worldReady = true
+
     -- ═══ (e) READY AFTER THE CAMERA HAS LANDED: ON THE MARK ═══
     --
     -- modelWaitMs is raised for this one: at its eight seconds the walk would
@@ -5240,6 +5285,28 @@ do
     local home = (lastLeg.home and lastLeg.flight0) and (lastLeg.home.at - lastLeg.flight0)
     ok(home and math.abs(home - C.walkTargetMs) <= ARRIVE_MS and not lastLeg.forced,
        ('and is home when the walk was due (%s ms)'):format(tostring(home)))
+
+    -- ═══ (e) A PED THAT NEVER ARRIVES IS NOT CALLED READY ═══
+    reset()
+    BR.State.worldReady = true
+    BR.LockerV2 = { wantHash = function() return 0 end, defer = function() return true end }
+    ped.model = GetHashKey('player_zero')
+    pump(30000)
+    BR.LockerV2 = nil
+    ok(said('the walk stopped waiting for its ped after'),
+       'a walk that gave up on its ped says it gave up')
+    ok(not said('the ped was ready'), 'and does not call the ped ready')
+    local ran, err = pcall(commands['brlobbywalk'], 0, {}, '')
+    ok(ran, '/brlobbywalk runs here: ' .. tostring(err))
+    ok(said('NEVER READY, the walk went without it after 8.0s -- behind the camera'),
+       '/brlobbywalk says so too, and what of the walk it skipped')
+
+    -- ...AND THE NEXT ENTRANCE, WHOSE PED IS THERE, IS NOT TOLD OTHERWISE.
+    local fine = entranceReadyAt(math.floor(C.walkTargetMs * 0.2))
+    logged = {}
+    ran, err = pcall(commands['brlobbywalk'], 0, {}, '')
+    ok(ran and fine.placed and said('ready after 3.6s -- behind the camera, 3.6s of the walk skipped'),
+       '/brlobbywalk: a late ped that did arrive is ready, and skipped what it was placed past')
 
     -- ═══ (f) WHAT CANNOT MOVE DURING THE MODEL WAIT IS NOT ASKED AGAIN ═══
     --
