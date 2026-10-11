@@ -280,6 +280,30 @@ function F.blastScale()
     return reach / base
 end
 
+--- How big strike `s`'s rockets and trails are drawn (round 9, owner: "do at
+--- least 20x but also give me a way to scale it with `brterminal run
+--- airstrike`"): art.rocket's scale and trailScale, or the `look` a dev
+--- rehearsal sent with this one strike. Public so the suites can hold them.
+--- @param s table|nil  a strike
+--- @return number
+function F.scaleOf(s)
+    return (s and s.scale) or tonumber(rocketArt().scale) or 1.0
+end
+
+--- @param s table|nil  a strike
+--- @return number
+function F.trailScaleOf(s)
+    return (s and s.trailScale) or tonumber(rocketArt().trailScale) or 1.0
+end
+
+--- A rehearsal's size, as the server sent it: a finite number from 0.1 to
+--- 100, or nil to use the art's.
+local function lookSize(v)
+    v = tonumber(v)
+    if not v or v ~= v or v < 0.1 or v > 100.0 then return nil end
+    return v + 0.0
+end
+
 --- The first rocket model that streams in, bounded: art.rocket.models in order
 --- (the Homing Launcher's rocket first), each checked before it is asked for.
 --- Nil when none would come -- said once on the console, since nothing else
@@ -322,8 +346,8 @@ local function sayDrawn(s)
             :format(#d.why > 0 and table.concat(d.why, '; ') or 'the model was still loading'))
         return
     end
-    local line = ('%d of %d rockets made as %s, %d with a trail, %d on screen')
-        :format(d.made, n, s.modelName, d.trails, d.seen)
+    local line = ('%d of %d rockets made as %s at %gx, %d with a trail at %gx, %d on screen')
+        :format(d.made, n, s.modelName, F.scaleOf(s), d.trails, F.trailScaleOf(s), d.seen)
     if d.seen > 0 then line = line .. (' (the longest %.1f s)'):format(d.seenMs / 1000) end
     if d.nearest then line = line .. (', the nearest %.0f m from this view'):format(d.nearest) end
     if d.refused > 0 then
@@ -461,7 +485,12 @@ local function fly(s, rk, now, dt, view)
         if R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) then
             UseParticleFxAsset(R.trailAsset)
             rk.trail = StartParticleFxLoopedOnEntity(R.trail, obj, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                1.0, false, false, false)
+                F.trailScaleOf(s), false, false, false)
+            -- THE TRAIL IS SEEN AS FAR AS THE ROCKET (round 9): a looped
+            -- effect's own far clip is shorter than lodDist.
+            if rk.trail and rk.trail ~= 0 and SetParticleFxLoopedFarClipDist then
+                pcall(SetParticleFxLoopedFarClipDist, rk.trail, (tonumber(R.lodDist) or 1000) + 0.0)
+            end
         end
         if dev then
             if rk.refused then
@@ -480,6 +509,9 @@ local function fly(s, rk, now, dt, view)
     end
     SetEntityCoords(rk.obj, x, y, z, false, false, false, false)
     aim(rk.obj, dx, dy, dz)
+    -- DRAWN AT art.rocket.scale TIMES ITS SIZE (round 9), after the turn: a
+    -- rotation writes a unit matrix, so the scale goes back on every frame.
+    BR.Native.propScale(rk.obj, F.scaleOf(s))
     -- WHAT THE GAME SAYS IT SHOWS, AND HOW NEAR (dev mode only).
     if dev then
         if isTrue(IsEntityOnScreen(rk.obj)) then
@@ -607,6 +639,12 @@ AddEventHandler(BR.Net.TERMINAL_STRIKE, function(d)
     end
     local s = { id = id, x = d.x + 0.0, y = d.y + 0.0, r = d.r + 0.0, startsAt = d.startsAt,
                 endsAt = d.endsAt, rockets = rockets }
+    -- A DEV REHEARSAL'S SIZES (round 9), for this one strike only; a real run
+    -- never carries `look` (server/terminal.lua's `brterminal run`).
+    if type(d.look) == 'table' then
+        s.scale = lookSize(d.look.scale)
+        s.trailScale = lookSize(d.look.trail)
+    end
     strikes[id] = s
     s.ring = circle(s.x, s.y, s.r, art().strike or {}, copy().airstrike_blip)
     -- What the dev line counts (the header's round 8), on a dev box only.

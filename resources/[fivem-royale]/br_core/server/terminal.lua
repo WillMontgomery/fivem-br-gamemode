@@ -1674,11 +1674,25 @@ RegisterCommand('brterminalsv', function(source, args)
             tell(src, ('%s is listed but its effect is not built (implemented = false)'):format(id))
             return
         end
-        local given, at = {}, nil
+        -- AIRSTRIKE'S SIZES, TO TUNE BY EYE (round 9, owner 2026-10-11: "give
+        -- me a way to scale it with `brterminal run airstrike`"): `scale=<n>`
+        -- and `trail=<n>`, 0.1 to 100, carried to every client with this one
+        -- strike as its `look`. Only here: the door's runs never carry one.
+        local given, at, look = {}, nil, nil
         for i = 2, #words do
             local k, v = words[i]:match('^([%w_]+)=(%S+)$')
             local n = (k == 'x' or k == 'y') and tonumber(v) or nil
-            if n then
+            local size = (k == 'scale' or k == 'trail') and tonumber(v) or nil
+            if (k == 'scale' or k == 'trail') and id ~= 'airstrike' then
+                tell(src, ('%s= is for airstrike only'):format(k))
+                return
+            elseif (k == 'scale' or k == 'trail') and not (size and size >= 0.1 and size <= 100.0) then
+                tell(src, ('%s= takes a number from 0.1 to 100'):format(k))
+                return
+            elseif size then
+                look = look or {}
+                look[k] = size + 0.0
+            elseif n then
                 at = at or {}
                 at[k] = n
             elseif k and v:match('^[%w_]+$') then
@@ -1700,6 +1714,7 @@ RegisterCommand('brterminalsv', function(source, args)
             return
         end
         opts.at = spot
+        opts.look = look
         local fn = T.FUNCTIONS[id]
         local devSession = { terminalId = 'dev', dev = false }
         local function go()

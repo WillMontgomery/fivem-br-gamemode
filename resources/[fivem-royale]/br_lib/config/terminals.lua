@@ -1406,8 +1406,25 @@ BR.Config.Terminals = {
         -- 240 m out, 70 m up, a 35 m dive and 5 s in the air: about 50 m/s,
         -- in that picture for a median 1.4 s. Was flightMs 3000, launchM 320,
         -- launchUpM 160, diveUpM 90, weaveM 40.
+        --
+        -- ROUND 9 (owner, 2026-10-11): round 8's dev line said every rocket was
+        -- made, trailed and on screen, and still nobody saw one -- the owner
+        -- spawned the models standing still and found them "the size of a
+        -- dinner plate", which at 50 m/s from tens of meters is a speck. "do
+        -- at least 20x but also give me a way to scale it with `brterminal run
+        -- airstrike`", and "make sure the LODs are set such that it'll load
+        -- that in further away":
+        --   scale       how many times its authored size each rocket is drawn
+        --               (BR.Native.propScale, every frame after it is turned:
+        --               a rotation resets the matrix). 20x, the owner's floor
+        --   trailScale  the trail's particle scale, to suit a rocket that size
+        --   lodDist     2,500 m (was 1,500), past fx.strikeDrawM's 1,500 plus
+        --               launchM out and launchUpM up; the trail is clipped
+        --               there too (SET_PARTICLE_FX_LOOPED_FAR_CLIP_DIST)
+        -- `brterminal run airstrike scale=<n> trail=<n>` (dev mode) draws one
+        -- strike at other sizes, for tuning these two by eye.
         rocket = { models = { 'w_lr_homing_rocket', 'w_lr_rpg_rocket', 'w_ex_vehiclemissile_3' },
-                   loadMs = 5000, lodDist = 1500,
+                   loadMs = 5000, lodDist = 2500, scale = 20.0, trailScale = 5.0,
                    trailAsset = 'core', trail = 'proj_rpg_trail',
                    flightMs = 5000, launchM = 240.0, launchUpM = 70.0, diveUpM = 35.0,
                    fanDeg = 50.0, weaveM = 30.0,
@@ -1998,9 +2015,12 @@ BR.Config.Terminals = {
         strikeWreckM = 5.0,
         strikeVehicleDamage = 1000.0,
         -- How long the circle stays on the map after the last rocket, and how
-        -- far off a client draws the rockets and the flare.
+        -- far off a client draws the rockets and the flare. 1,500 m since
+        -- round 9 (was 800): "make sure the LODs are set such that it'll load
+        -- that in further away" (owner, 2026-10-11) -- art.rocket.lodDist
+        -- stays past it.
         strikeLingerMs = 2000,
-        strikeDrawM = 800.0,
+        strikeDrawM = 1500.0,
         -- THE ROUGH CIRCLES of its map pick: each opponent inside a circle of
         -- fuzzRadiusM whose center sits fuzzMinM..fuzzMaxM from them (spread
         -- evenly over that ring's area), fixed for the match per runner and

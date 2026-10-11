@@ -1271,6 +1271,18 @@ do
     ok(out:find('ran airstrike for 1 without a key: ok', 1, true) ~= nil, 'brterminal run airstrike x= y=: it runs', out)
     eq(#market.charges, 0, 'no Volts')
     ok(lastOf(BR.Net.TERMINAL_STRIKE, 3) ~= nil, 'and everyone is warned')
+    ok(lastOf(BR.Net.TERMINAL_STRIKE, 3).look == nil, 'a run with no sizes carries no look')
+    -- ROUND 9: SIZES TO TUNE BY EYE, for this one strike.
+    out = devRun(1, ('airstrike x=%.1f y=%.1f scale=30 trail=8'):format(C0.x + 300.0, C0.y))
+    ok(out:find('ran airstrike for 1 without a key: ok', 1, true) ~= nil, 'scale=30 trail=8: it runs', out)
+    local look = lastOf(BR.Net.TERMINAL_STRIKE, 3).look
+    ok(look and look.scale == 30.0 and look.trail == 8.0, 'and every client is sent that look', look and look.scale)
+    out = devRun(1, ('airstrike x=%.1f y=%.1f scale=0'):format(C0.x + 300.0, C0.y))
+    ok(out:find('scale= takes a number from 0.1 to 100', 1, true) ~= nil, 'scale=0 is refused', out)
+    out = devRun(1, ('airstrike x=%.1f y=%.1f trail=big'):format(C0.x + 300.0, C0.y))
+    ok(out:find('trail= takes a number from 0.1 to 100', 1, true) ~= nil, 'trail=big is refused', out)
+    out = devRun(1, 'ghost scale=2')
+    ok(out:find('scale= is for airstrike only', 1, true) ~= nil, 'scale= on another function is refused', out)
     out = devRun(1, 'airstrike')
     ok(out:find('needs the spot', 1, true) ~= nil, 'without x= y= it says it needs the spot', out)
     out = devRun(1, 'airstrike x=6000 y=6000')
@@ -1936,11 +1948,14 @@ local released = {}
 function SetModelAsNoLongerNeeded(h) released[#released + 1] = h end
 function SetEntityLodDist(e, d) if C.ents[e] then C.ents[e].lodDist = d end end
 local loopedSeq = 0
-function StartParticleFxLoopedOnEntity(name, e)
+function StartParticleFxLoopedOnEntity(name, e, _, _, _, _, _, _, scale)
     call('StartParticleFxLoopedOnEntity')
     loopedSeq = loopedSeq + 1
-    fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e, h = loopedSeq }
+    fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e, h = loopedSeq, scale = scale }
     return loopedSeq
+end
+function SetParticleFxLoopedFarClipDist(h, d)
+    for _, l in ipairs(fxCalls.looped) do if l.h == h then l.farClip = d end end
 end
 function StopParticleFxLooped(h)
     fxCalls.stopped = fxCalls.stopped + 1
@@ -2134,6 +2149,55 @@ do
     eq(strikes, 0, 'then goes')
     eq(#radiusBlips(), 0, 'off the map')
     eq(fxCalls.forbidden, 0, 'never an explosion that is real, never a projectile')
+end
+
+describe('client: Airstrike -- round 9: rockets drawn 20x, trails to match, both seen from far off')
+do
+    -- "the size of a dinner plate" (owner, 2026-10-11): "do at least 20x but
+    -- also give me a way to scale it with `brterminal run airstrike`", and
+    -- "make sure the LODs are set such that it'll load that in further away".
+    ok(RA.scale >= 20.0, ('the art draws them at %gx: 20x at least'):format(RA.scale))
+    ok(RA.trailScale > 1.0, ('the trail is drawn bigger to suit (%gx)'):format(RA.trailScale))
+    ok(FX.strikeDrawM >= 1500.0, ('a client up to %d m off draws the strike (was 800)'):format(FX.strikeDrawM))
+    local function flyOne(id, over)
+        resetWorld()
+        W.me = { x = 10.0, y = 0.0, z = 20.0 }
+        for k in pairs(C.ents) do C.ents[k] = nil end
+        fxCalls.looped = {}
+        cfire(BR.Net.TERMINAL_STRIKE, strikeMsg(id, 0.0, 0.0, over))
+        runThreads()
+        advance(FX.strikeWarnMs - RA.flightMs + 700, 50)
+        local rocket = nil
+        for eid, e in pairs(C.ents) do
+            if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) then rocket = eid end
+        end
+        local e = rocket and C.ents[rocket]
+        local scale1 = e and e.scale
+        advance(200, 50)
+        local trail = fxCalls.looped[1]
+        local out = { scale = scale1, scaleLater = e and e.scale, trail = trail and trail.scale,
+                      farClip = trail and trail.farClip }
+        advance(FX.strikeWarnMs + 5000, 100)
+        advance(FX.strikeLingerMs + 100, 500)
+        slow()
+        return out
+    end
+    local d = flyOne(71)
+    eq(d.scale, RA.scale, 'a rocket is drawn at the art scale on its first frame')
+    eq(d.scaleLater, RA.scale, 'and still is after it turns: the scale goes back on every frame')
+    eq(d.trail, RA.trailScale, 'its trail at the art trail scale')
+    eq(d.farClip, RA.lodDist + 0.0, 'the trail clipped no nearer than the rocket is drawn')
+    local farthest = math.sqrt((FX.strikeDrawM + RA.launchM) ^ 2 + RA.launchUpM ^ 2)
+    ok(RA.lodDist >= farthest, ('drawn from %d m, past the farthest client that draws it (%.0f m)'):format(RA.lodDist, farthest))
+    -- A REHEARSAL'S LOOK: this strike only.
+    d = flyOne(72, { look = { scale = 30.0, trail = 8.0 } })
+    eq(d.scale, 30.0, 'brterminal run airstrike scale=30: that strike is drawn at 30x')
+    eq(d.trail, 8.0, 'trail=8: its trails at 8x')
+    d = flyOne(73)
+    eq(d.scale, RA.scale, 'the next strike, with no look, is back at the art scale')
+    d = flyOne(74, { look = { scale = 0.0, trail = 1e9 } })
+    eq(d.scale, RA.scale, 'a size outside 0.1 to 100 is ignored (scale=0)')
+    eq(d.trail, RA.trailScale, 'and so is trail=1e9')
 end
 
 describe('client: Airstrike -- a rocket on a roof bursts on the roof; far off, only the circle')
@@ -2421,7 +2485,7 @@ do
     -- DRAWN, AND THE GAME SAYS ON SCREEN.
     onScreen = true
     local l = strikeAt(62)
-    ok(l and l:find('10 of 10 rockets made as w_lr_homing_rocket, 10 with a trail, 10 on screen', 1, true)
+    ok(l and l:find('10 of 10 rockets made as w_lr_homing_rocket at 20x, 10 with a trail at 5x, 10 on screen', 1, true)
         and l:find('the nearest %d+ m from this view'), 'drawn: what was made, its trail, on screen, how near', l)
     -- DRAWN, AND THE GAME SAYS NOT ONE WAS ON SCREEN.
     onScreen = false
@@ -2451,7 +2515,7 @@ do
     W.me = { x = 5000.0, y = 0.0, z = 20.0 }
     cfire(BR.Net.TERMINAL_STRIKE, strikeMsg(66, 0.0, 0.0))
     l = lineFor(66)
-    ok(l and l:find('not drawn here -- 5000 m from this view; rockets are drawn within 800 m', 1, true),
+    ok(l and l:find(('not drawn here -- 5000 m from this view; rockets are drawn within %d m'):format(FX.strikeDrawM), 1, true),
         'too far off: how far, and the reach', l)
     advance(FX.strikeWarnMs + FX.strikeLingerMs + 1000, 500)
     slow()

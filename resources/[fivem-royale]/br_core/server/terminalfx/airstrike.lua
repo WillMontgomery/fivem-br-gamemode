@@ -103,8 +103,10 @@ end
 local function payloadOf(m, s)
     local rockets = {}
     for i, rk in ipairs(s.rockets) do rockets[i] = { x = rk.x, y = rk.y, at = rk.at } end
+    -- `look` is a dev rehearsal's sizes (round 9, `brterminal run airstrike
+    -- scale=<n> trail=<n>`); a real run has none and the art's are drawn.
     return { matchId = m.id, id = s.id, x = s.x, y = s.y, r = s.r,
-             startsAt = s.startsAt, endsAt = s.endsAt, rockets = rockets }
+             startsAt = s.startsAt, endsAt = s.endsAt, rockets = rockets, look = s.look }
 end
 
 --- How far a strike's harm reaches from its spot: the circle and the blast past it.
@@ -235,6 +237,7 @@ T.FUNCTIONS.airstrike = {
             id = strikeSeq, by = src, squad = key, x = at.x + 0.0, y = at.y + 0.0,
             r = tonumber(F.strikeRadiusM) or 40.0, warnAt = now, startsAt = startsAt,
             rockets = TS.strikePlan(math.random, at.x, at.y, F, startsAt),
+            look = type(opts.look) == 'table' and opts.look or nil,
         }
         s.endsAt = s.rockets[#s.rockets].at
         strikesOf(m)[s.id] = s
