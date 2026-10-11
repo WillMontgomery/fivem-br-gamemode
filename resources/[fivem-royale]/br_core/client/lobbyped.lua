@@ -1442,10 +1442,20 @@ local function run(mine)
     --    client/loading.lua -- which does ask every poll -- revealed once the
     --    ped landed, and the camera flew without it. That is the late custom
     --    ped of #406.
+    --
+    --    BUT ONLY THE ANSWER THAT MOVES IS ASKED AGAIN. wantHash() is table
+    --    reads; Season 1's fallback is a kvp read and a hash, and it cannot
+    --    change while this waits -- the locker is locked for the entrance, and
+    --    /brlocker drops the walk -- so it is worked out the first time it is
+    --    needed and kept. Asked on every poll it was both natives twenty times
+    --    a second for an answer that never moved (perf, "Season 2 to 1").
+    local s1Want = nil
     local function wanted()
         if not (BR.PedById and BR.Locker and BR.Locker.chosen) then return nil end
-        local want = BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)
-        return want
+        local v2 = BR.LockerV2 and BR.LockerV2.wantHash()
+        if v2 then return v2 end
+        if not s1Want then s1Want = GetHashKey(BR.PedById(BR.Locker.chosen()).model) end
+        return s1Want
     end
     if wanted() then
         local deadline = GetGameTimer() + (C.modelWaitMs or 8000)

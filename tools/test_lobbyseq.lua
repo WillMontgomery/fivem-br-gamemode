@@ -5241,6 +5241,28 @@ do
     ok(home and math.abs(home - C.walkTargetMs) <= ARRIVE_MS and not lastLeg.forced,
        ('and is home when the walk was due (%s ms)'):format(tostring(home)))
 
+    -- ═══ (f) WHAT CANNOT MOVE DURING THE MODEL WAIT IS NOT ASKED AGAIN ═══
+    --
+    -- The #406 review's perf finding: Season 1's fallback -- a kvp read and a
+    -- hash -- was worked out on every 50 ms poll. Only wantHash() can move.
+    reset()
+    BR.State.worldReady = true
+    ped.model = GetHashKey('player_zero')
+    local realKvp = GetResourceKvpString
+    local reads = 0
+    GetResourceKvpString = function(k)
+        reads = reads + 1
+        return realKvp(k)
+    end
+    pump(1000)
+    local before = reads
+    pump(2000)
+    GetResourceKvpString = realKvp
+    ok(BR.LobbyPed.entering() and not BR.LobbyPed.walking(),
+       'precondition: the walk is still waiting for a model that has not come')
+    ok(reads - before == 0,
+       ('two seconds of the model wait read the stored character %d times, not once a poll')
+           :format(reads - before))
     reset()
 end
 
