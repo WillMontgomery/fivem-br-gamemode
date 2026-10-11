@@ -753,8 +753,9 @@ end
 --   nearest point to it on the map.
 --   THE FINAL CIRCLE (circle 7, BR.StormFinalPhase) is centered on it, and the
 --   last phase closes onto it in place.
---   EACH CIRCLE BETWEEN moves an equal share of the remaining way toward it, so a
---   far spot carries circles past the ones before them: breakouts, which
+--   EACH CIRCLE BETWEEN steps toward it, the earliest steps longest (each
+--   `control.stepRatio` times the one before; owner, 2026-10-11), so a far
+--   spot carries circles past the ones before them: breakouts, which
 --   enterPhase prices as it prices any (the lifted ceiling, the wall across the
 --   gap).
 --
@@ -811,7 +812,7 @@ function BR.Storm.aimCheck(m, x, y)
 end
 
 --- Aim this match's storm at (x, y): from the next circle drawn on, every circle
---- moves an equal share of the way toward it, and the final circle is centered
+--- steps toward it, the earliest steps longest, and the final circle is centered
 --- on it. Refused as BR.Storm.aimCheck says, with nothing changed -- a storm
 --- already aimed included.
 --- @param m table

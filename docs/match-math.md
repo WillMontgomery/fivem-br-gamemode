@@ -442,8 +442,9 @@ ceiling  = shrink × shrinkFactor × max(1, W / ((2 + gapMax) × curRadius))
 A breakout no longer than a circle's could be is priced exactly as before; a
 phase that did not roll one keeps its authored ceiling.
 
-**Storm control's breakouts (#396, 2026-10-07).** An aimed match's circles move an
-equal share of the remaining way to the picked spot, so a far spot carries them
+**Storm control's breakouts (#396, 2026-10-07).** An aimed match's circles step to
+the picked spot, each step half the one before since 2026-10-11 (`control.stepRatio`;
+round 7's were equal), so a far spot carries them
 past the circle before by kilometers, and no roll decides it: an aimed phase is
 a breakout exactly when its destination is not inside the zone the wall starts
 as (`BR.StormNested` on its own record), and then gets the lifted ceiling above;
@@ -457,7 +458,17 @@ as an ordinary breakout can: 5 of the 86 did, two of them phase 5s (968 and 1354
 steps), and there the wall can catch a runner (394 HP at a capped phase 4). Below
 the ceiling the price keeps the wall off every runner's back: no player running
 straight at the destination at 9 m/s was billed for a second with the wall's own
-stretch of their line still ahead of them.
+stretch of their line still ahead of them. (Those numbers, and the table below,
+are round 7's equal steps.)
+
+**Front-loaded since 2026-10-11** (owner: "we need more motion in location in the
+immediate next phases, favoring earlier movements"). Over 60 aimed matches -- ten
+pairs of places, picked in each of phases 1-6, 24 players standing in each circle --
+the median step at circle 2 goes from 896 m to 2,729 and at circle 7 from 1,608 to
+559, and circle 7's median sweep from 188 s to 68. The fastest wall corner is 30.9
+m/s, against 48.4 with equal steps and 49.1 in the same matches unaimed. The long
+early steps reach phases 2-4's ceilings more often: 39 of 210 aimed phases, against
+23.
 
 **It does not keep them inside.** The price paces the wall for the lobby's longest
 run, so for everyone else the moving zone is slower than 9 m/s. A player who
@@ -484,8 +495,9 @@ the owner's decision. `tools/test_storm.lua`'s `control.breakout` bills every ru
 of its lobbies and holds the first claim, counting the second.
 
 A far aim lengthens the match: one 8.9 km step at phase 7 sweeps for 985 s against
-an authored 40. Aimed centers are not clamped to `mapAABB` (the equal steps would
-break), so an aimed zone can overhang the bounds where an ordinary one is clamped:
+an authored 40 -- a pick in phase 6 has one step, whatever the ratio. Aimed
+centers are not clamped to `mapAABB` (the line of steps would break), so an aimed
+zone can overhang the bounds where an ordinary one is clamped:
 cosmetic, the bounds being a rectangle round an island.
 
 Two earlier formulations were wrong in instructive ways — scaling the budget by

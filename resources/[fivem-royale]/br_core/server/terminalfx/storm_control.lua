@@ -16,8 +16,8 @@
 -- player picked (`spot = true` on the row: BR.Terminal.spot checks its shape,
 -- and it arrives as `opts.at`). The storm's half is server/storm.lua's:
 -- BR.Storm.aim plans the rest of the match toward the spot and hands the match
--- the plan, so every circle the storm draws from now on moves an equal share of
--- the way toward it and the final circle is centered on it. No spot is
+-- the plan, so every circle the storm draws from now on steps toward it, the
+-- earliest steps longest, and the final circle is centered on it. No spot is
 -- refused: one over water or off the map is aimed as the nearest land to it.
 --
 -- THE MARK, ON THE SQUAD'S MAPS (2026-10-07). Where the storm finishes is

@@ -1712,11 +1712,16 @@ end
 --   ('The final circle is already on the map.') and Storm reveal's 'Final
 --   circle' mark mean. Its center is the spot, to the bit, and the point the
 --   last phase shrinks onto is the spot too, so the last sweep closes in place.
---   EQUAL SHARES OF WHAT IS LEFT. Each circle from the next one not yet drawn
---   moves an equal share of the remaining way from the circle before it:
---     c(p) = c(p-1) + (S - c(p-1)) / (F - p + 1)
---   for F the final circle's phase, so the steps are equal and on one line
---   from the circle on the map to the spot.
+--   THE EARLIEST STEPS LONGEST (owner, 2026-10-11: "we need more motion in
+--   location in the immediate next phases, favoring earlier movements"). Each
+--   circle from the next one not yet drawn steps toward the spot, each step q
+--   times the one before (BR.Config.Storm.control.stepRatio, 0.5), on one line
+--   from the circle on the map to the spot:
+--     c(p) = c(p-1) + (S - c(p-1)) / (1 + q + ... + q^(F - p))
+--   for F the final circle's phase -- what is left over the steps left, each
+--   weighted q times the one before. q = 1 is round 7's equal steps, 1 / (F - p
+--   + 1) of what is left; at 0.5 every step is about the same number of radii
+--   of the circle it leaves, since the circles roughly halve too.
 --   BREAKOUTS ALLOWED. A far spot carries a circle past the one before it,
 --   which the planner never does on its own; Storm control is the exception,
 --   and server/storm.lua prices those phases as the breakouts they are.
@@ -1725,18 +1730,18 @@ end
 -- nearest point to it on the map (landNearest: the nearest point of the nearest
 -- convex piece of land, exactly) -- the shore it was picked beside -- so the
 -- final circle is centered where `BR.NextZoneCentre`'s own "not off the map" test
--- lets any circle be. A circle between whose equal step lands over water (the
+-- lets any circle be. A circle between whose step lands over water (the
 -- Alamo Sea, a bay) is moved to the nearest land the same way, and the next step
 -- is taken from where it stands, so every center is on the map.
 --
--- NO MAP-BOUNDS CLAMP. A box would break the equal steps, and a zone
+-- NO MAP-BOUNDS CLAMP. A box would break the line of steps, and a zone
 -- overhanging mapAABB is cosmetic (docs/match-math.md).
 --
 -- DETERMINISTIC AND CHEAP: no draw from any stream, a few sums a phase, and a
 -- nearest-land lookup only for a center over water. A plan made again from any
 -- circle of its own walk gives the same later circles to the bit, since each
--- step reads only the circle before it -- so aimedCenter can plan again on a dev
--- path and still land on the walk.
+-- step reads only the circle before it and how many steps are left -- so
+-- aimedCenter can plan again on a dev path and still land on the walk.
 
 -- How far outside a half-plane a corner must be to cut it.
 local AIM_HPI_EPS = 1e-9
@@ -2224,6 +2229,30 @@ local function landNearest(pieces, x, y)
     return bx, by
 end
 
+--- STORM CONTROL'S STEP RATIO: each step this many times the one before it
+--- (BR.Config.Storm.control.stepRatio). Anything that is not a number in (0, 1]
+--- is 1, the equal steps the rule had before it.
+--- @return number
+local function aimRatio(S)
+    local q = S and S.control and tonumber(S.control.stepRatio)
+    if not q or q ~= q or q <= 0.0 or q > 1.0 then return 1.0 end
+    return q
+end
+
+--- How many of this step's lengths are left to walk, with `left` steps to go
+--- and each step q times the one before: 1 + q + q^2 + ... + q^(left - 1),
+--- summed term by term, so at q = 1 it is `left` itself, exactly. This step is
+--- what is left divided by it.
+--- @return number
+local function aimShares(q, left)
+    local g, w = 0.0, 1.0
+    for _ = 1, left do
+        g = g + w
+        w = w * q
+    end
+    return g
+end
+
 --- THE FINAL CIRCLE'S PHASE: the last phase whose zone has a radius -- circle 7 of
 --- 8, the one the last phase shrinks onto its point. Storm control centers it on
 --- the spot (BR.StormAimPlan), and is refused `no_circle` once it is on the map
@@ -2237,8 +2266,9 @@ function BR.StormFinalPhase()
 end
 
 --- WHERE STORM CONTROL'S STORM GOES (#396): every circle from phase `from` to the
---- last, by the rules in the block above -- equal shares of what is left toward
---- the spot, the final circle and the last phase's point on it.
+--- last, by the rules in the block above -- the earliest steps longest, each
+--- `control.stepRatio` times the one before, toward the spot; the final circle
+--- and the last phase's point on it.
 ---
 --- The walk starts from the circle at (cx, cy) -- the next circle on the map, or
 --- where a dev path re-entered from. Asks nothing of any stream.
@@ -2270,14 +2300,15 @@ function BR.StormAimPlan(seed, from, cx, cy, r, mo, tx, ty)
         plan.ex, plan.ey = cx, cy
         return plan
     end
+    local q = aimRatio(S)
     local px, py = cx, cy
     for p = from, N do
         -- THE FINAL CIRCLE AND AFTER: the spot itself, assigned rather than
         -- worked out -- the last share computed lands on it only to rounding.
         local x, y = sx, sy
         if p < F then
-            local left = F - p + 1
-            x, y = px + (sx - px) / left, py + (sy - py) / left
+            local G = aimShares(q, F - p + 1)
+            x, y = px + (sx - px) / G, py + (sy - py) / G
             if BR.StormOffMap(x, y) then x, y = landNearest(pieces, x, y) end
         end
         plan.path[p] = { x = x, y = y, r = phases[p].radius }

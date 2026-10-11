@@ -9358,8 +9358,10 @@ end
 --
 -- The blocks below hold br_lib/shared/storm_solve.lua's STORM CONTROL rule to
 -- arithmetic of their own: the final circle (circle 7) is centered on the spot
--- to the bit and the last phase closes onto it there, every circle between an
--- equal share of the remaining way on one line (`control.equal`); a spot in the
+-- to the bit and the last phase closes onto it there, every circle between on
+-- one line, the earliest steps longest and each `control.stepRatio` times the
+-- one before (`control.steps`; owner, 2026-10-11: "we need more motion in
+-- location in the immediate next phases, favoring earlier movements"); a spot in the
 -- water or off the map is aimed at the nearest land, to a brute-force walk of
 -- every coastline, and so is a circle whose step lands in the water, every
 -- center on the map (`control.water`); and through the real phase job every
@@ -9473,9 +9475,26 @@ local function pathOf(plan)
     return out
 end
 
+--- How many of this step's lengths are left to walk, by the test's own sum: with
+--- `left` steps to go and each step q times the one before, 1 + q + ... +
+--- q^(left - 1). This step is what is left divided by it.
+local function sharesLeft(q, left)
+    local g, w = 0.0, 1.0
+    for _ = 1, left do
+        g = g + w
+        w = w * q
+    end
+    return g
+end
+
+--- The step ratio the config ships (BR.Config.Storm.control.stepRatio).
+local function stepRatio(env)
+    return env.BR.Config.Storm.control.stepRatio
+end
+
 --- A plan held to the rule circle by circle, each from the one before it as the
---- plan placed it: before the final circle, an equal share of what is left toward
---- the spot -- to the bit -- or, where that share lands off the map, a center on
+--- plan placed it: before the final circle, what is left toward the spot over
+--- sharesLeft -- to the bit -- or, where that step lands off the map, a center on
 --- the map no further from it than the nearest land the brute force finds (five
 --- millimeters' grace); the final circle and the last phase's point on the spot,
 --- to the bit; every radius the phase's own; and the plan finishing on the spot.
@@ -9494,8 +9513,8 @@ local function ruleHolds(env, plan, from)
                     :format(p, c.x, c.y, plan.sx, plan.sy), snaps
             end
         else
-            local left = F - p + 1
-            local x, y = prev.x + (plan.sx - prev.x) / left, prev.y + (plan.sy - prev.y) / left
+            local G = sharesLeft(stepRatio(env), F - p + 1)
+            local x, y = prev.x + (plan.sx - prev.x) / G, prev.y + (plan.sy - prev.y) / G
             if env.BR.StormOffMap(x, y) then
                 snaps = snaps + 1
                 local lx, ly = bfLand(env, x, y)
@@ -9504,7 +9523,7 @@ local function ruleHolds(env, plan, from)
                         .. 'the nearest land to it'):format(p, x, y, c.x, c.y), snaps
                 end
             elseif not (c.x == x and c.y == y) then
-                return ('circle %d is at (%.6f, %.6f), not an equal share of what is left (%.6f, %.6f)')
+                return ('circle %d is at (%.6f, %.6f), not the rule\'s step (%.6f, %.6f)')
                     :format(p, c.x, c.y, x, y), snaps
             end
         end
@@ -9534,15 +9553,25 @@ local function fuzzPlaces(env)
 end
 
 -- ---------------------------------------------------------------------------
-describe('control.equal')
+describe('control.steps')
 do
-    -- ═══ EQUAL SHARES OF WHAT IS LEFT, AND THE FINAL CIRCLE ON THE SPOT (BR.StormAimPlan) ═══
+    -- ═══ THE EARLIEST STEPS LONGEST, AND THE FINAL CIRCLE ON THE SPOT (BR.StormAimPlan) ═══
+    --
+    --   "we need more motion in location in the immediate next phases, favoring
+    --    earlier movements."                                -- owner, 2026-10-11
+    --
+    -- Round 7's equal steps moved every circle the same distance, so the late,
+    -- small circles moved most for their size (Paleto Bay from Mirror Park: 1 to
+    -- 14 radii of the circle left). Each step is now stepRatio times the one
+    -- before it.
     local S = boundedServer()
     local env = S.env
     local P = env.BR.Config.Storm.phases
     local N = #P
     local F = env.BR.StormFinalPhase()
+    local q = stepRatio(env)
     eq(F, N - 1, 'the final circle is the last one with a radius: circle 7 of 8')
+    ok(type(q) == 'number' and q > 0.0 and q < 1.0, 'the steps shrink: a step ratio between 0 and 1', q)
     -- PALETO BAY FROM MIRROR PARK, picked in phase 2's hold (the redesign's case):
     -- circle 2 at (-7, -1353), r 1600, and the spot 7.7 km away. Round 5's plan
     -- finished 6.4 km short of it.
@@ -9556,15 +9585,33 @@ do
     eq(plan.path[2].x, cx, 'the walk starts on the circle already on the map')
     local why = ruleHolds(env, plan, 3)
     ok(why == nil, 'every circle the rule\'s', why)
-    local share = gap2(cx, cy, SX, SY) / (F - 2)
-    local worst, bend = 0.0, 0.0
+    -- FIVE STEPS, EACH q TIMES THE ONE BEFORE, on one line: the first is
+    -- 1 / (1 + q + ... + q^4) of the way, worked out here from the distance alone.
+    local D = gap2(cx, cy, SX, SY)
+    local first = D / (1.0 + q + q * q + q ^ 3 + q ^ 4)
+    local worst, bend, steps = 0.0, 0.0, {}
     for p = 3, F do
         local a, b = plan.path[p - 1], plan.path[p]
-        worst = math.max(worst, math.abs(gap2(a.x, a.y, b.x, b.y) - share))
-        bend = math.max(bend, math.abs((b.x - cx) * (SY - cy) - (b.y - cy) * (SX - cx)) / gap2(cx, cy, SX, SY))
+        steps[#steps + 1] = gap2(a.x, a.y, b.x, b.y)
+        worst = math.max(worst, math.abs(steps[#steps] - first * q ^ (p - 3)))
+        bend = math.max(bend, math.abs((b.x - cx) * (SY - cy) - (b.y - cy) * (SX - cx)) / D)
     end
-    ok(worst < 1e-6 and bend < 1e-6, ('five equal steps of %.0f m, on the line to the spot'):format(share),
-        ('%.3e m off equal, %.3e m off the line'):format(worst, bend))
+    local shown = {}
+    for i, d in ipairs(steps) do shown[i] = ('%.0f'):format(d) end
+    ok(worst < 1e-6 and bend < 1e-6, ('five steps of %s m, each %.2f of the one before, on the line to the spot')
+        :format(table.concat(shown, ', '), q), ('%.3e m off the rule, %.3e m off the line'):format(worst, bend))
+    ok(steps[1] > D / 5 and steps[5] < D / 5,
+        'the first step longer than round 7\'s equal share and the last shorter',
+        ('%.0f and %.0f m against %.0f'):format(steps[1], steps[5], D / 5))
+    -- EVERY STEP ABOUT THE SAME FOR THE CIRCLE IT LEAVES: within 1.5 and 3 radii
+    -- of it, where the equal steps ran from 1 radius at circle 3 to 14 at circle 7.
+    local lo, hi = math.huge, 0.0
+    for p = 3, F do
+        local k = steps[p - 2] / P[p - 1].radius
+        lo, hi = math.min(lo, k), math.max(hi, k)
+    end
+    ok(lo >= 1.5 and hi <= 3.0, 'every step 1.5 to 3 radii of the circle it leaves',
+        ('%.2f to %.2f'):format(lo, hi))
     ok(not nestedIn(env, SEED, 3, cx, cy, P[2].radius, plan.path[3].x, plan.path[3].y, P[3].radius),
         'and circle 3 breaks out of circle 2: a far spot leaves the circle on the map')
     -- DETERMINISTIC: the same arguments, the same doubles.
@@ -9588,13 +9635,15 @@ do
     --
     -- Seven seeds, picks in phases 1 to 6 (the plan starts at the next circle),
     -- circles at POIs and spots at POIs, in the ocean, past the corners, in the
-    -- Alamo Sea and on the coast. Each plan holds to the rule (ruleHolds); planned
-    -- again from any circle of its own walk, it gives the same later circles to the
-    -- bit -- what lets a dev path re-plan and stay on the walk; and its final circle
-    -- is the spot itself even where the last share, worked out, would miss it by
-    -- rounding.
+    -- Alamo Sea and on the coast. Each plan holds to the rule (ruleHolds); one
+    -- that no water moved takes no step longer than the one before it; planned
+    -- again from any circle of its own walk, it gives the same later circles to
+    -- the bit -- what lets a dev path re-plan and stay on the walk; and its final
+    -- circle is the spot itself even where the last step, worked out, would miss
+    -- it by rounding.
     local hosts, spots = fuzzPlaces(env)
-    local bad, plans, rounded, markov = {}, 0, 0, 0
+    local bad, plans, rounded, markov, dry = {}, 0, 0, 0, 0
+    local byPick = {}
     for si, seed in ipairs({ 11, 396, 4242, 90210, 5037, 77, 1015838 }) do
         for from = 2, F do
             local h = hosts[1 + ((seed * 7 + from * 13) % #hosts)]
@@ -9604,8 +9653,23 @@ do
             for ti, t in ipairs(targets) do
                 plans = plans + 1
                 local pl = env.BR.StormAimPlan(seed, from, h.x, h.y, P[from - 1].radius, nil, t.x, t.y)
-                local w = ruleHolds(env, pl, from)
+                local w, snaps = ruleHolds(env, pl, from)
                 if w then bad[#bad + 1] = ('seed %d from %d spot %d: %s'):format(seed, from, ti, w) end
+                if snaps == 0 and not w then
+                    dry = dry + 1
+                    byPick[from - 1] = (byPick[from - 1] or 0) + 1
+                    local before = math.huge
+                    for p = from, F do
+                        local a, b = pl.path[p - 1], pl.path[p]
+                        local d = gap2(a.x, a.y, b.x, b.y)
+                        if d > before + 1e-6 then
+                            bad[#bad + 1] = ('seed %d from %d spot %d: circle %d steps %.3f m, the one before %.3f')
+                                :format(seed, from, ti, p, d, before)
+                            break
+                        end
+                        before = d
+                    end
+                end
                 local pre = pl.path[F - 1]
                 if pre and from <= F - 1 then
                     local fx, fy = pre.x + (pl.sx - pre.x) / 1, pre.y + (pl.sy - pre.y) / 1
@@ -9625,11 +9689,15 @@ do
             end
         end
     end
-    ok(#bad == 0, ('%d plans over the map: every circle the rule\'s, and the same walk planned again from any '
-        .. 'circle of it'):format(plans), table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
+    ok(#bad == 0, ('%d plans over the map: every circle the rule\'s, no step longer than the one before where no '
+        .. 'water moved one, and the same walk planned again from any circle of it'):format(plans),
+        table.concat(bad, '\n       ', 1, math.min(#bad, 8)))
     ok(plans >= 300, 'and there were plans to hold', plans)
-    print(('       control.equal: %d plans, %d whose last share alone would have missed the spot by rounding'):format(
-        plans, rounded))
+    local picks = 0
+    for k = 1, F - 1 do if (byPick[k] or 0) >= 10 then picks = picks + 1 end end
+    ok(picks == F - 1, 'with ten or more plans no water moved, picked in every phase from 1 to 6', picks)
+    print(('       control.steps: %d plans, %d no water moved, %d whose last step alone would have missed the spot '
+        .. 'by rounding'):format(plans, dry, rounded))
     ok(S.errored() == nil, 'clean', S.errored())
 end
 
@@ -10037,8 +10105,8 @@ do
     --
     -- `brphase` jumping to ANOTHER phase, mid-sweep, starts it from the wall
     -- where it stands -- not the circle the plan started from -- so the plan is
-    -- made again from there, toward the same spot: equal shares of what is left
-    -- from that circle, the final circle still on the spot, and Storm reveal
+    -- made again from there, toward the same spot: the rule's steps from that
+    -- circle, the final circle still on the spot, and Storm reveal
     -- answering it. (Re-entering the phase the storm is IN keeps its circle:
     -- control.announced.)
     local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
@@ -10060,15 +10128,15 @@ do
         if not seen[r.phase] then
             seen[r.phase] = true
             if r.phase > 4 and r.phase < F then
-                local left = F - r.phase + 1
-                local x, y = prev.x + (a.sx - prev.x) / left, prev.y + (a.sy - prev.y) / left
+                local G = sharesLeft(stepRatio(env), F - r.phase + 1)
+                local x, y = prev.x + (a.sx - prev.x) / G, prev.y + (a.sy - prev.y) / G
                 if not (r.cx1 == x and r.cy1 == y) then shares = false end
             end
             prev = { x = r.cx1, y = r.cy1 }
         end
         return r.phase == last
     end, 30000)
-    ok(shares, 'every circle after it an equal share of what is left from the circle the jump drew')
+    ok(shares, 'every circle after it the rule\'s step from the circle the jump drew')
     local fin = S.match.storm
     ok(fin.cx1 == a.sx and fin.cy1 == a.sy, 'and the storm still finishes on the spot')
     ok(f and f.x == a.sx and f.y == a.sy, 'which Storm reveal, asked after the re-entry, answered',
@@ -10198,16 +10266,20 @@ do
     --
     -- Aimed matches walked through the REAL phase job, with 24 players standing
     -- in each circle as the phase after it is entered -- so enterPhase prices
-    -- every sweep for a lobby, as it does in a match: four named cases, and
-    -- eight of round 7's review spread (aims from one point of interest at
+    -- every sweep for a lobby, as it does in a match: five named cases (the
+    -- fifth a near spot, whose steps leave each circle only part way: since the
+    -- steps were front-loaded, 2026-10-11, the far ones break out clean of every
+    -- circle and none of the other walks is conjoined), and eight of round 7's
+    -- review spread (aims from one point of interest at
     -- another, picked in phases 2 to 6; its match 1 is La Mesa aimed at Pacific
     -- Bluffs). Every aimed phase whose circle broke out must:
     --   * get a breakout's lifted ceiling, read off its own record, and sweep
     --     within it. The authored ceiling drew walls of 35 to 225 m/s across
     --     aimed steps; lifted, no corner moves faster than the fastest corner of
     --     the same matches unaimed. ANY PHASE CAN STILL BE CAPPED BY IT, as an
-    --     ordinary breakout can -- two phase 5s of the spread are (968 and 1354 m
-    --     steps) -- and on a capped phase the wall can catch a runner, as on any;
+    --     ordinary breakout can -- phases 3 to 5 of these walks are, where the
+    --     front-loaded steps are longest -- and on a capped phase the wall can
+    --     catch a runner, as on any;
     --   * where it is not capped, never let the wall catch a runner from
     --     behind: EVERY player of the lobby, running straight at the
     --     destination's nearest point at 9 m/s from the moment the wall sets off
@@ -10246,6 +10318,8 @@ do
         { 'Paleto Bay from Mirror Park, picked in phase 6 (one 8.9 km step)', { x = 1050.0, y = -650.0 }, 1015838, 6,
           -150.0, 6300.0, 77 },
         { 'LSIA from Sandy Shores, picked in phase 3', { x = 1850.0, y = 3700.0 }, 2002, 3, -1100.0, -2900.0, 77 },
+        { 'the Diamond Casino from Mirror Park, picked in phase 2 (a near spot)', { x = 1050.0, y = -650.0 }, 1015838,
+          2, 949.0, 146.0, 77 },
     }
     for _, i in ipairs({ 1, 4, 6, 9, 13, 17, 22, 28 }) do
         local a, s = POIS[(i * 7) % #POIS + 1], POIS[(i * 31 + 5) % #POIS + 1]

@@ -700,8 +700,8 @@ BR.Config.Terminals = {
         -- 2026-10-07, confirmed: the final circle is centered on the spot (the
         -- nearest land, for one in the water); the spot is marked for the
         -- runner and their squad for the rest of the match; each new circle
-        -- moves an equal share of the remaining way toward it, so circles may
-        -- break out past the one before (server/storm.lua's STORM CONTROL
+        -- moves toward it, the earliest steps longest (owner, 2026-10-11), so
+        -- circles may break out past the one before (server/storm.lua's STORM CONTROL
         -- block); a circle already on the map never moves (round 6). ONE SPOT A
         -- MATCH (round 4's review): once the storm is aimed, every later run is
         -- refused (storm_aimed).

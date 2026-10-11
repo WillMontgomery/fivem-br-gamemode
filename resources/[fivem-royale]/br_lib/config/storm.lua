@@ -194,6 +194,39 @@ BR.Config.Storm = {
         minRadius   = 0.0,
     },
 
+    -- ═══ STORM CONTROL MOVES MOST IN THE NEXT PHASES (#396) ═══
+    --
+    --   "the incremental move towards the final location is not tuned right.
+    --    Currently there seems to be more move between locations towards the last
+    --    phases - but that's when the players are already focused to a small area
+    --    - we need more motion in location in the immediate next phases,
+    --    favoring earlier movements."                     -- owner, 2026-10-11
+    --
+    -- An aimed match's circles walk to the spot in steps, each `stepRatio` times
+    -- the one before (BR.StormAimPlan); the final circle still lands on the spot
+    -- exactly. 1.0 is round 7's equal steps. 0.5 because the circles roughly halve
+    -- too (radii 2600 to 40, each 0.36 to 0.62 of the one before), so every step
+    -- is about the same for the circle it leaves. Paleto Bay from Mirror Park,
+    -- picked in phase 2 (8.0 km, walked with 24 players in each circle):
+    --
+    --   circle               3      4      5      6      7
+    --   equal (1.0)   m   1608   1608   1608   1608   1608   (1.0 to 14.6 radii)
+    --                 s    225    188    206    187    183   sweep
+    --   0.5           m   4150   2075   1038    519    259   (2.0 to 2.6 radii)
+    --                 s    253    194    143     66     40   sweep
+    --
+    -- Over 60 aimed matches (ten pairs of places, picked in each of phases 1 to
+    -- 6) the median step at circle 2 goes from 896 m to 2729 and at circle 7 from
+    -- 1608 to 559; circle 7's median sweep from 188 s to 68. The fastest wall
+    -- corner is 30.9 m/s, against 48.4 with equal steps and 49.1 in the same
+    -- matches unaimed. The cost: the long early steps reach phases 2 to 4's
+    -- breakout ceilings more often (39 of 210 aimed phases against 23), and a
+    -- capped wall can catch a runner. A pick in phase 6 has one step whatever
+    -- this is.
+    control = {
+        stepRatio = 0.5,
+    },
+
     -- ═══ A CONJOINED ZONE GROWS INTO ITS DESTINATION, IT DOES NOT POP (#344) ═══
     --
     --   "when the storm finishes moving and the next phase is opened, if they're

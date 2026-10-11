@@ -1002,11 +1002,18 @@ center off it.
   with a radius (`BR.StormFinalPhase`), the one `no_circle` and Storm reveal's
   'Final circle' mean -- is centered on it to the bit, and phase 8 shrinks onto
   it there.
-- **Equal shares of what is left.** Each circle from the next one not yet drawn
-  moves `1 / (circles left)` of the remaining way: `c(p) = c(p-1) + (S - c(p-1)) /
-  (7 - p + 1)`. The steps are equal and on one line, so a far spot carries
-  circles past the ones before them -- breakouts, which the planner never makes
-  on its own and which Storm control is allowed. Round 5's search for the nearest
+- **The earliest steps longest.** Owner, 2026-10-11: "we need more motion in
+  location in the immediate next phases, favoring earlier movements". Each circle
+  from the next one not yet drawn steps toward the spot, each step `q` times the
+  one before (`BR.Config.Storm.control.stepRatio`, 0.5): `c(p) = c(p-1) + (S -
+  c(p-1)) / (1 + q + ... + q^(7 - p))`. Round 7's equal steps (`q` = 1) moved the
+  late, small circles most for their size -- Paleto Bay from Mirror Park, picked
+  in phase 2, five steps of 1608 m, 1.0 to 14.6 radii of the circle left; at 0.5
+  they are 4150, 2075, 1038, 519 and 259 m, 2.0 to 2.6 radii each, and circle 7's
+  sweep is 40 s rather than 183 (`br_lib/config/storm.lua` has the numbers). The
+  steps are on one line, so a far spot carries circles past the ones before them
+  -- breakouts, which the planner never makes on its own and which Storm control
+  is allowed. Round 5's search for the nearest
   point nested circles could reach is gone; it finished 6.4 km short of Paleto
   Bay aimed from Mirror Park.
 - **On land.** A spot over water or off the surveyed map is aimed at the nearest
@@ -1016,7 +1023,7 @@ center off it.
   rectangle reaches into split beside it, a millimeter clear of the water). A
   circle whose share lands in the water (the Alamo Sea, a bay) is moved to the
   nearest land the same way, and the next share is taken from where it stands.
-  No map-bounds clamp: it would break the equal steps, and an overhang is
+  No map-bounds clamp: it would break the line of steps, and an overhang is
   cosmetic ([match-math.md](match-math.md)).
 - **Priced as breakouts.** An aimed phase whose circle is not inside the one
   before gets a breakout's lifted ceiling, read off its own record (a nested one
