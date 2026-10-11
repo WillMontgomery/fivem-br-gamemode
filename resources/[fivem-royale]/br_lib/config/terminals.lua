@@ -1446,11 +1446,16 @@ BR.Config.Terminals = {
         --            rocket and missile trails first, then smoke and boosts.
         --            trailAsset/trail is the one strikes draw; `brterminal run
         --            airstrike fx=<n>` draws one strike with the n-th.
+        -- AND THE LOOK, TUNED IN brrocket BY THE OWNER (2026-10-11: "confirmed
+        -- they can kill me too! this config looks exactly perfect"): the
+        -- guided-missile trail at 7.8x, 5.237 m behind the rocket's origin,
+        -- turned 180 degrees -- the block brrocket printed, pasted as he gave it.
         rocket = { models = { 'w_lr_homing_rocket', 'w_lr_rpg_rocket', 'w_ex_vehiclemissile_3' },
-                   loadMs = 5000, lodDist = 2500, scale = 8.0, trailScale = 3.0,
-                   trailRot = { 0.0, 0.0, 0.0 },
-                   trailAsset = 'core', trail = 'proj_rpg_trail',
+                   loadMs = 5000, lodDist = 2500, scale = 8.0, trailScale = 7.8,
+                   trailOffset = { 0.0, -5.237, 0.0 }, trailRot = { 0.0, 0.0, -180.0 },
+                   trailAsset = 'scr_xs_props', trail = 'scr_xs_guided_missile_trail',
                    trails = {
+                       { 'scr_xs_props', 'scr_xs_guided_missile_trail' },
                        { 'core', 'proj_rpg_trail' },
                        { 'core', 'proj_missile_trail' },
                        { 'core', 'proj_tank_trail' },
@@ -1459,7 +1464,6 @@ BR.Config.Terminals = {
                        { 'scr_agencyheistb', 'scr_agency3b_proj_rpg_trail' },
                        { 'scr_ie_tw', 'scr_impexp_tw_rpg_trail' },
                        { 'weap_sm_barrage', 'proj_rpg_barrage_trail' },
-                       { 'scr_xs_props', 'scr_xs_guided_missile_trail' },
                        { 'scr_hr_mfh', 'scr_hr_mfh_missile_trail' },
                        { 'scr_ar_planes', 'scr_ar_trail_smoke' },
                        { 'scr_ar_planes', 'scr_ar_trail_smoke_slow' },

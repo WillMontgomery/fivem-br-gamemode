@@ -2212,6 +2212,24 @@ do
     eq(RA.scale, 8.0, '"Scale=8 for the props looks best" (owner, 2026-10-11)')
     ok(RA.trailScale > 1.0, ('the trail is drawn bigger to suit (%gx)'):format(RA.trailScale))
     ok(FX.strikeDrawM >= 1500.0, ('a client up to %d m off draws the strike (was 800)'):format(FX.strikeDrawM))
+    -- THE OWNER'S TUNED LOOK (2026-10-11, from brrocket: "this config looks
+    -- exactly perfect"), held here; the mechanics below run on a neutral copy
+    -- of the place and turn, and the end of this block flies one as shipped.
+    eq(RA.trailScale, 7.8, 'the trail at his 7.8x')
+    ok(RA.trailAsset == 'scr_xs_props' and RA.trail == 'scr_xs_guided_missile_trail', 'the guided-missile trail he picked')
+    ok(type(RA.trailOffset) == 'table' and RA.trailOffset[1] == 0.0 and RA.trailOffset[2] == -5.237
+        and RA.trailOffset[3] == 0.0, '5.237 m behind the rocket origin')
+    ok(type(RA.trailRot) == 'table' and RA.trailRot[1] == 0.0 and RA.trailRot[2] == 0.0 and RA.trailRot[3] == -180.0,
+        'turned 180 degrees')
+    ok(RA.trails[1][1] == RA.trailAsset and RA.trails[1][2] == RA.trail, 'and first in the list brrocket steps through')
+    local seen = {}
+    for _, e in ipairs(RA.trails) do
+        local k = e[1] .. '/' .. e[2]
+        ok(not seen[k], 'each effect listed once: ' .. k)
+        seen[k] = true
+    end
+    local tunedOff, tunedRot = RA.trailOffset, RA.trailRot
+    RA.trailOffset, RA.trailRot = nil, { 0.0, 0.0, 0.0 }
     local function flyOne(id, over)
         resetWorld()
         W.me = { x = 10.0, y = 0.0, z = 20.0 }
@@ -2509,6 +2527,13 @@ do
     commands.brrocket(0, {})
     ok(F.rocketSample() == nil, 'and away again')
     devBox = wasDev
+
+    -- AS SHIPPED: a strike with no look draws his tuned trail.
+    RA.trailOffset, RA.trailRot = tunedOff, tunedRot
+    d = flyOne(82)
+    ok(d.name == 'scr_xs_guided_missile_trail' and d.trail == 7.8, 'a strike trails with his effect at 7.8x', d.name)
+    ok(d.off and d.off[1] == 0.0 and d.off[2] == -5.237 and d.off[3] == 0.0 and d.rot and d.rot[3] == -180.0,
+        'at his place and turn')
 end
 
 describe('client: Airstrike -- a rocket on a roof bursts on the roof; far off, only the circle')
@@ -2796,7 +2821,7 @@ do
     -- DRAWN, AND THE GAME SAYS ON SCREEN.
     onScreen = true
     local l = strikeAt(62)
-    ok(l and l:find('10 of 10 rockets made as w_lr_homing_rocket at 8x, 10 with a trail at 3x, 10 on screen', 1, true)
+    ok(l and l:find('10 of 10 rockets made as w_lr_homing_rocket at 8x, 10 with a trail at 7.8x, 10 on screen', 1, true)
         and l:find('the nearest %d+ m from this view'), 'drawn: what was made, its trail, on screen, how near', l)
     -- DRAWN, AND THE GAME SAYS NOT ONE WAS ON SCREEN.
     onScreen = false
