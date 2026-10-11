@@ -1137,6 +1137,82 @@ function BR.Loop.pausedAll()
     return pausedAll
 end
 
+-- ═══ ONE PROTECTED PASS A BAND, NOT A pcall A CALLBACK (#393 round 9) ═══
+--
+-- The owner's function profile (2026-10-11) put this loop's own machinery at a
+-- sixth of the plane's frame: a pcall and the stopwatch's bookkeeping around each
+-- of some seventy callbacks. While stall capture is off -- always, unless /brperf
+-- armed it -- a pass runs its callbacks inside ONE pcall instead. When one throws,
+-- that pcall ends; the error is charged to the callback that raised it (the pass
+-- wrote its index down before calling it), and a fresh pcall resumes the pass at the
+-- next one. So isolation is what it was: every other callback runs, in the same
+-- order, on the same pass, and the thrower's errors, consecutive count, message and
+-- suspension are what its own pcall made them. The index is kept PER BAND: the
+-- bands are separate threads, and one that yields mid-pass must not resume to
+-- another band's index. And it is put back as the pass ends, so a pass stepped from
+-- inside another leaves the outer one's intact. Capture keeps the measured loop in
+-- BR.Loop.step, stopwatch and all; its lastMs is zeroed when capture stops
+-- (captureStalls), which is why this pass need not write it.
+local passAt = {}
+
+--- A callback threw: count it, say so, and suspend it after MAX_CONSECUTIVE_ERRORS.
+--- One subsystem failing must not take the whole loop with it -- a crash in the loot
+--- renderer should not stop storm damage.
+local function failed(e, err)
+    e.errors      = e.errors + 1
+    e.consecutive = e.consecutive + 1
+    print(('[br_core] loop callback "%s" errored: %s'):format(e.name, tostring(err)))
+    if e.consecutive >= MAX_CONSECUTIVE_ERRORS then
+        e.suspended = true
+        print(('[br_core] suspending "%s" after %d consecutive errors; re-enable with /brloop enable %s')
+            :format(e.name, e.consecutive, e.name))
+    end
+end
+
+--- The pass from `from` on, unprotected: passFast's pcall is round it.
+local function runFrom(list, from, t, at)
+    for i = from, #list do
+        local e = list[i]
+        if e.dead then
+            at.swept = true
+        elseif e.enabled and not e.suspended then
+            at.i = i
+            local last = e.lastRun
+            e.lastRun = t
+            e.calls = e.calls + 1
+            e.fn(last > 0 and (t - last) or 0)
+            e.consecutive = 0
+        end
+    end
+end
+
+--- One pass of `list` under one pcall, resumed past each callback that throws.
+--- @return boolean  a dead entry was passed, so the list needs sweeping
+local function passFast(band, list, t)
+    local at = passAt[band]
+    if not at then
+        at = { i = 0, swept = false }
+        passAt[band] = at
+    end
+    local outerI, outerSwept = at.i, at.swept
+    at.swept = false
+    local from = 1
+    while true do
+        at.i = from - 1
+        local ok, err = pcall(runFrom, list, from, t, at)
+        if ok then break end
+        local i = at.i
+        -- Nothing had started: the fault is this loop's own, not a callback's, and
+        -- it goes up as it did when each callback had its own pcall.
+        if i < from then error(err, 0) end
+        failed(list[i], err)
+        from = i + 1
+    end
+    local swept = at.swept
+    at.i, at.swept = outerI, outerSwept
+    return swept
+end
+
 --- Run a single pass over one band.
 ---
 --- Public rather than local for two reasons: the debug tooling can single-step a
@@ -1178,60 +1254,56 @@ function BR.Loop.step(band)
         markHitch('band.slow', '1 Hz client scheduler')
     end
 
-    for i = 1, #list do
-        local e = list[i]
-        if e.dead then
-            swept = true
-        elseif e.enabled and not e.suspended then
-            local dt = e.lastRun > 0 and (t - e.lastRun) or 0
-            e.lastRun = t
+    -- ONE PROTECTED PASS (passFast, above) unless /brperf armed the stopwatch.
+    if not stallCapture then
+        swept = passFast(band, list, t)
+    else
+        for i = 1, #list do
+            local e = list[i]
+            if e.dead then
+                swept = true
+            elseif e.enabled and not e.suspended then
+                local dt = e.lastRun > 0 and (t - e.lastRun) or 0
+                e.lastRun = t
 
-            -- ═══ WHAT THIS STOPWATCH ACTUALLY MEASURES ═══
-            --
-            -- Not cost. The clock is latched per frame, so `elapsed` is 0 for a
-            -- free callback and 0 for a nine-millisecond one alike. It can only
-            -- come back non-zero when the call SPANNED A FRAME BOUNDARY -- the
-            -- callback yielded, or blocked the main thread long enough for the
-            -- engine to re-latch.
-            --
-            -- That makes it useless as a cost meter and rather good as a STALL
-            -- DETECTOR, which is what the frame band actually needs: a per-frame
-            -- callback that spans a frame is, by definition, a hitch, and this
-            -- is the only thing in the project that can name which one.
-            --
-            -- It earned its keep on 2026-08-23: one pass of airdrop.render in
-            -- 113,237 came back at 55ms and every other sample in the whole
-            -- registry was 0. That is a real event with a real suspect attached.
-            --
-            -- So `stalls` is the number to read and `peakMs` is the size of the
-            -- worst one. totalMs/avgMs are kept only because the fields are
-            -- public; nothing may present them as a per-call cost, because a
-            -- total built from a sea of zeros plus one spike divided by 113,237
-            -- calls is 0.000 and means nothing at all. Cost comes from
-            -- BR.Loop.bench and BR.Loop.ab.
-            e.calls = e.calls + 1
-            local s = stallCapture and GetGameTimer() or nil
-            local ok, err = pcall(e.fn, dt)
-            local elapsed = s and (GetGameTimer() - s) or 0
-            e.lastMs = elapsed              -- for the hitch snapshot
-            if elapsed > 0 then
-                e.stalls  = e.stalls + 1
-                e.totalMs = e.totalMs + elapsed
-                if elapsed > e.peakMs then e.peakMs = elapsed end
-            end
+                -- ═══ WHAT THIS STOPWATCH ACTUALLY MEASURES ═══
+                --
+                -- Not cost. The clock is latched per frame, so `elapsed` is 0 for a
+                -- free callback and 0 for a nine-millisecond one alike. It can only
+                -- come back non-zero when the call SPANNED A FRAME BOUNDARY -- the
+                -- callback yielded, or blocked the main thread long enough for the
+                -- engine to re-latch.
+                --
+                -- That makes it useless as a cost meter and rather good as a STALL
+                -- DETECTOR, which is what the frame band actually needs: a per-frame
+                -- callback that spans a frame is, by definition, a hitch, and this
+                -- is the only thing in the project that can name which one.
+                --
+                -- It earned its keep on 2026-08-23: one pass of airdrop.render in
+                -- 113,237 came back at 55ms and every other sample in the whole
+                -- registry was 0. That is a real event with a real suspect attached.
+                --
+                -- So `stalls` is the number to read and `peakMs` is the size of the
+                -- worst one. totalMs/avgMs are kept only because the fields are
+                -- public; nothing may present them as a per-call cost, because a
+                -- total built from a sea of zeros plus one spike divided by 113,237
+                -- calls is 0.000 and means nothing at all. Cost comes from
+                -- BR.Loop.bench and BR.Loop.ab.
+                e.calls = e.calls + 1
+                local s = stallCapture and GetGameTimer() or nil
+                local ok, err = pcall(e.fn, dt)
+                local elapsed = s and (GetGameTimer() - s) or 0
+                e.lastMs = elapsed              -- for the hitch snapshot
+                if elapsed > 0 then
+                    e.stalls  = e.stalls + 1
+                    e.totalMs = e.totalMs + elapsed
+                    if elapsed > e.peakMs then e.peakMs = elapsed end
+                end
 
-            if ok then
-                e.consecutive = 0
-            else
-                -- One subsystem failing must not take the whole loop with it --
-                -- a crash in the loot renderer should not stop storm damage.
-                e.errors      = e.errors + 1
-                e.consecutive = e.consecutive + 1
-                print(('[br_core] loop callback "%s" errored: %s'):format(e.name, tostring(err)))
-                if e.consecutive >= MAX_CONSECUTIVE_ERRORS then
-                    e.suspended = true
-                    print(('[br_core] suspending "%s" after %d consecutive errors; re-enable with /brloop enable %s')
-                        :format(e.name, e.consecutive, e.name))
+                if ok then
+                    e.consecutive = 0
+                else
+                    failed(e, err)
                 end
             end
         end

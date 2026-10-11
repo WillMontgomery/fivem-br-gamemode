@@ -1236,6 +1236,161 @@ do
             table.concat(notKept, ', ')))
 end
 
+describe('one protected pass (round 9)')
+do
+    -- #393 round 9: while stall capture is off, a pass runs its callbacks under ONE
+    -- pcall and resumes it past each one that throws, instead of a pcall each. What a
+    -- player gets is unchanged -- every other callback runs, in order, on the same pass
+    -- -- and so is what a thrower is charged: its errors, its consecutive count, its
+    -- message, its suspension.
+    clearAll()
+    BR.Loop.captureStalls(false)
+    local order = {}
+    local hs = {}
+    for i = 1, 10 do
+        local fn
+        if i == 3 or i == 7 then
+            fn = function() order[#order + 1] = i error('boom ' .. i) end
+        else
+            fn = function() order[#order + 1] = i end
+        end
+        hs[#hs + 1] = BR.Loop.register(BR.Loop.TICK, 't.one.' .. i, fn)
+    end
+    local realPcall = pcall
+    local pcalls = 0
+    local function counting(...) pcalls = pcalls + 1 return realPcall(...) end
+    for k = #printed, 1, -1 do printed[k] = nil end
+    _G.pcall = counting
+    BR.Loop.step(BR.Loop.TICK)
+    _G.pcall = realPcall
+    ok(table.concat(order, ',') == '1,2,3,4,5,6,7,8,9,10',
+        'every callback runs once, in order, past two that throw', table.concat(order, ','))
+    ok(pcalls == 3,
+        'under one pcall for the pass and one more to resume past each thrower, not one each',
+        ('%d pcalls for 10 callbacks, 2 throwing'):format(pcalls))
+    local by = {}
+    local function reread()
+        for _, s in ipairs(BR.Loop.stats()) do by[s.name] = s end
+    end
+    reread()
+    ok(by['t.one.3'].errors == 1 and by['t.one.7'].errors == 1 and by['t.one.4'].errors == 0
+        and by['t.one.8'].errors == 0 and by['t.one.1'].calls == 1 and by['t.one.10'].calls == 1,
+        'and each error is charged to the callback that raised it, and only to it')
+    ok(#printed == 2 and printed[1]:find('"t.one.3" errored: ', 1, true) ~= nil
+        and printed[1]:find('boom 3', 1, true) ~= nil
+        and printed[2]:find('"t.one.7" errored: ', 1, true) ~= nil,
+        'with the message a pcall of its own printed', table.concat(printed, ' | '))
+
+    for _ = 1, 4 do BR.Loop.step(BR.Loop.TICK) end
+    reread()
+    ok(by['t.one.3'].suspended and by['t.one.7'].suspended and not by['t.one.5'].suspended
+        and by['t.one.5'].calls == 5 and by['t.one.3'].errors == 5,
+        'and suspended on its fifth in a row, the rest running throughout')
+    for _, h in ipairs(hs) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- A callback that recovers resets its run of errors, as before.
+    clearAll()
+    local fails = true
+    local hr = BR.Loop.register(BR.Loop.TICK, 't.one.flaky', function()
+        if fails then error('flaky') end
+    end)
+    for _ = 1, 3 do BR.Loop.step(BR.Loop.TICK) end
+    fails = false
+    BR.Loop.step(BR.Loop.TICK)
+    fails = true
+    for _ = 1, 3 do BR.Loop.step(BR.Loop.TICK) end
+    reread()
+    ok(by['t.one.flaky'].errors == 6 and not by['t.one.flaky'].suspended,
+        'a pass that succeeds resets the run: six errors, never five in a row, not suspended')
+    BR.Loop.unregister(hr)
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- THE PLACE IS EACH BAND'S OWN. A frame pass that yields mid-pass, a tick pass
+    -- with a thrower run while it waits, and the frame pass resumed to a thrower of
+    -- its own: each error lands on its own band's callback.
+    clearAll()
+    local frameOrder = {}
+    local hb = {
+        BR.Loop.register(BR.Loop.FRAME, 't.one.f1', function() frameOrder[#frameOrder + 1] = 1 end),
+        BR.Loop.register(BR.Loop.FRAME, 't.one.f2', function()
+            frameOrder[#frameOrder + 1] = 2
+            coroutine.yield()
+        end),
+        BR.Loop.register(BR.Loop.FRAME, 't.one.f3', function() error('frame thrower') end),
+        BR.Loop.register(BR.Loop.FRAME, 't.one.f4', function() frameOrder[#frameOrder + 1] = 4 end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.t1', function() end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.t2', function() end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.t3', function() error('tick thrower') end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.t4', function() end),
+        BR.Loop.register(BR.Loop.TICK, 't.one.t5', function() end),
+    }
+    local co = coroutine.create(function() BR.Loop.step(BR.Loop.FRAME) end)
+    coroutine.resume(co)
+    BR.Loop.step(BR.Loop.TICK)
+    local okc = coroutine.resume(co)
+    reread()
+    ok(okc and coroutine.status(co) == 'dead' and table.concat(frameOrder, ',') == '1,2,4'
+        and by['t.one.f3'].errors == 1 and by['t.one.t3'].errors == 1
+        and by['t.one.f2'].errors == 0 and by['t.one.f4'].errors == 0
+        and by['t.one.t2'].errors == 0 and by['t.one.t4'].errors == 0
+        and by['t.one.t5'].errors == 0,
+        "a band that yields mid-pass resumes to its own place, and each error is its own band's",
+        ('frame order %s; f2 %d f3 %d f4 %d t2 %d t3 %d t4 %d'):format(
+            table.concat(frameOrder, ','), by['t.one.f2'].errors, by['t.one.f3'].errors,
+            by['t.one.f4'].errors, by['t.one.t2'].errors, by['t.one.t3'].errors,
+            by['t.one.t4'].errors))
+    for _, h in ipairs(hb) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- A pass stepped from inside another, of the same band, leaves the outer pass's
+    -- place intact: the outer callback that throws after it is the one charged. (The
+    -- band is swept first: an inner pass that swept would shift the outer one's list
+    -- under it, which no pcall arrangement makes safe and nothing in the game does.)
+    clearAll()
+    BR.Loop.step(BR.Loop.SLOW)
+    local depth, inner = 0, 0
+    local hn = {
+        BR.Loop.register(BR.Loop.SLOW, 't.one.n1', function()
+            depth = depth + 1
+            if depth == 1 then
+                BR.Loop.step(BR.Loop.SLOW)
+                depth = 0
+                error('outer thrower')
+            end
+            inner = inner + 1
+        end),
+        BR.Loop.register(BR.Loop.SLOW, 't.one.n2', function() end),
+        BR.Loop.register(BR.Loop.SLOW, 't.one.n3', function() end),
+    }
+    BR.Loop.step(BR.Loop.SLOW)
+    reread()
+    ok(inner == 1 and by['t.one.n1'].errors == 1 and by['t.one.n2'].errors == 0
+        and by['t.one.n3'].errors == 0 and by['t.one.n3'].calls == 2,
+        "and a pass stepped from inside another leaves the outer one's place intact",
+        ('inner %d; n1 errors %d; n2 errors %d; n3 errors %d calls %d'):format(inner,
+            by['t.one.n1'].errors, by['t.one.n2'].errors, by['t.one.n3'].errors,
+            by['t.one.n3'].calls))
+    for _, h in ipairs(hn) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.SLOW)
+
+    -- Stall capture keeps the measured loop: a pcall and a stopwatch per callback.
+    clearAll()
+    local hc = {}
+    for i = 1, 4 do hc[i] = BR.Loop.register(BR.Loop.TICK, 't.one.cap' .. i, function() end) end
+    BR.Loop.captureStalls(true)
+    pcalls = 0
+    _G.pcall = counting
+    BR.Loop.step(BR.Loop.TICK)
+    _G.pcall = realPcall
+    BR.Loop.captureStalls(false)
+    ok(pcalls == 4, 'and under stall capture each callback has its own pcall and stopwatch',
+        ('%d pcalls'):format(pcalls))
+    for _, h in ipairs(hc) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.TICK)
+end
+
 describe('state helpers')
 do
     BR.State.match.state = BR.MatchState.PLAYING
