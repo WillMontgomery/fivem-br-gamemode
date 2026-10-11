@@ -351,6 +351,28 @@ function F.trailOffsetOf(s)
     return 0.0, backOf(s and s.model) * F.scaleOf(s), 0.0
 end
 
+--- The trail effect strike `s` draws (round 9, owner: "perhaps you should
+--- also give me a choice of particles?"): the n-th of art.rocket.trails when
+--- a rehearsal or brrocket picked one, else trailAsset/trail.
+--- @return string|nil asset, string|nil effect, integer|nil n
+function F.trailFxOf(s)
+    local R = rocketArt()
+    local n = s and s.fx
+    local e = n and type(R.trails) == 'table' and R.trails[n]
+    if type(e) == 'table' and type(e[1]) == 'string' and type(e[2]) == 'string' then
+        return e[1], e[2], n
+    end
+    return R.trailAsset, R.trail, nil
+end
+
+--- A rehearsal's pick of art.rocket.trails, as the server sent it, or nil.
+local function lookFx(v)
+    local n = math.tointeger(tonumber(v))
+    local list = rocketArt().trails
+    if not n or type(list) ~= 'table' or n < 1 or n > #list then return nil end
+    return n
+end
+
 --- @return number pitch, number roll, number yaw
 function F.trailRotOf(s)
     local r = (s and s.trot) or rocketArt().trailRot
@@ -536,25 +558,30 @@ local function fly(s, rk, now, dt, view)
         SetEntityCollision(obj, false, false)
         FreezeEntityPosition(obj, true)
         rk.obj = obj
-        -- THE TRAIL'S CARRIER (round 9): an invisible twin of the rocket at
+        -- THE TRAIL'S CARRIER (round 9): a see-through twin of the rocket at
         -- its own size, on the same path and turned the same way every frame.
         -- A looped effect on the scaled rocket is scaled with its matrix --
         -- the effect's own offsets and spread twenty times over -- which is
         -- what put the smoke "wayyyyy behind the props"; on the twin the trail
-        -- sits in meters, wherever trailOffset says.
+        -- sits in meters, wherever trailOffset says. SEE-THROUGH (alpha 0),
+        -- NOT INVISIBLE: on an invisible twin the owner saw only the effect's
+        -- glow, in the dark, and no smoke -- an effect on an entity that is
+        -- not drawn may not be drawn either. At 1x it sits inside its scaled
+        -- rocket anyway.
         local carrier = CreateObjectNoOffset(s.model, x, y, z, false, false, false)
         if carrier and carrier ~= 0 then
-            SetEntityVisible(carrier, false, false)
+            SetEntityAlpha(carrier, 0, false)
             SetEntityCollision(carrier, false, false)
             FreezeEntityPosition(carrier, true)
             if SetEntityLodDist then pcall(SetEntityLodDist, carrier, math.floor(tonumber(R.lodDist) or 1000)) end
             rk.carrier = carrier
         end
-        if R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) then
-            UseParticleFxAsset(R.trailAsset)
+        local tAsset, tName = F.trailFxOf(s)
+        if tAsset and tName and isTrue(HasNamedPtfxAssetLoaded(tAsset)) then
+            UseParticleFxAsset(tAsset)
             local ox, oy, oz = F.trailOffsetOf(s)
             local rx, ry, rz = F.trailRotOf(s)
-            rk.trail = StartParticleFxLoopedOnEntity(R.trail, rk.carrier or obj, ox, oy, oz, rx, ry, rz,
+            rk.trail = StartParticleFxLoopedOnEntity(tName, rk.carrier or obj, ox, oy, oz, rx, ry, rz,
                 F.trailScaleOf(s), false, false, false)
             -- THE TRAIL IS SEEN AS FAR AS THE ROCKET (round 9): a looped
             -- effect's own far clip is shorter than lodDist.
@@ -570,10 +597,10 @@ local function fly(s, rk, now, dt, view)
             dev.made = dev.made + 1
             if rk.trail and rk.trail ~= 0 then
                 dev.trails = dev.trails + 1
-            elseif R.trailAsset and R.trail then
-                dev.noTrail = isTrue(HasNamedPtfxAssetLoaded(R.trailAsset))
-                    and ('the game would not start ' .. R.trail)
-                    or ('the particle asset ' .. R.trailAsset .. ' was not loaded')
+            elseif tAsset and tName then
+                dev.noTrail = isTrue(HasNamedPtfxAssetLoaded(tAsset))
+                    and ('the game would not start ' .. tName)
+                    or ('the particle asset ' .. tAsset .. ' was not loaded')
             end
         end
     end
@@ -665,8 +692,9 @@ local function prepare(s)
         if BR.Flare and BR.Flare.fire and BR.Clock.now() < s.startsAt then
             Citizen.CreateThread(function() BR.Flare.fire(s.x, s.y, gz + 0.1) end)
         end
-        if R.trailAsset then RequestNamedPtfxAsset(R.trailAsset) end
-        if R.blastAsset and R.blastAsset ~= R.trailAsset then RequestNamedPtfxAsset(R.blastAsset) end
+        local tAsset = F.trailFxOf(s)
+        if tAsset then RequestNamedPtfxAsset(tAsset) end
+        if R.blastAsset and R.blastAsset ~= tAsset then RequestNamedPtfxAsset(R.blastAsset) end
         for _, rk in ipairs(s.rockets) do rk.gz = groundAt(rk.x, rk.y, gz) end
         -- THE MODEL, STREAMED AND WAITED ON (the header's first reason), well
         -- inside the warning: it is asked for the moment the strike is known.
@@ -720,6 +748,7 @@ AddEventHandler(BR.Net.TERMINAL_STRIKE, function(d)
         s.trailScale = lookSize(d.look.trail)
         s.toff = lookVec(d.look.toff, 50.0)
         s.trot = lookVec(d.look.trot, 360.0)
+        s.fx = lookFx(d.look.fx)
     end
     strikes[id] = s
     s.ring = circle(s.x, s.y, s.r, art().strike or {}, copy().airstrike_blip)
@@ -794,7 +823,7 @@ F.onSlow(function()
     end
 end)
 
--- === brrocket: A ROCKET ON A SHORT PASS, TUNED WITH THE KEYS (round 9) ===
+-- === brrocket: A ROCKET ON A SLOW PASS, TUNED WITH THE KEYS (round 9) ===
 --
 -- "perhaps you could give me a stationary example where I can tune the
 -- position, direction, and size of the smoke trails relative to the props,
@@ -803,13 +832,17 @@ end)
 -- we've done for other things. ... Any manual adjustment commands must allow
 -- keyboard input."                                    -- owner, 2026-10-11
 --
--- `brrocket` flies one rocket across your view, 12 m in front of you, over and
+-- `brrocket` flies one rocket across your view, 7 m in front of you, over and
 -- over, drawn exactly as a strike draws one (the scaled rocket, its trail on
 -- the invisible carrier); `brrocket` again puts it away and prints what it came
 -- to. IT FLIES BECAUSE THE TRAIL ONLY LAYS SMOKE WHILE IT MOVES: standing still
 -- (the first cut), the owner saw "the smoke isn't always drawing - seems to be
--- one frame whenever I move it's position" -- proj_rpg_trail emits along the
--- way its emitter travels, so a still rocket shows none. While it is out the keys tune it, in /brplate's shape: the
+-- one frame whenever I move it's position". Then, flying at 20 m/s: "still no
+-- particles, and that brrocket flight is far too fast for me fine-tune
+-- anything", and "in the dark it does have a glow - perhaps you should also
+-- give me a choice of particles?" So the pass is slow (2 m/s) with its speed
+-- on the keys, the effect is a choice, and the twin is see-through rather
+-- than invisible (fly()'s note). While it is out the keys tune it, in /brplate's shape: the
 -- arrows, PAGE UP/DOWN and DELETE are claimed, walking and the mouse stay
 -- yours so you can walk round it, a tap is one step and a hold is twenty a
 -- second, and the modifiers are read without being taken.
@@ -819,10 +852,12 @@ end)
 --   ALT + UP / DOWN          the trail's pitch    ALT + LEFT / RIGHT   its yaw
 --   ALT + CTRL + UP / DOWN   its roll
 --   PAGE UP / DOWN           the trail's size     CTRL + PAGE UP / DOWN   the rocket's
+--   CTRL + LEFT / RIGHT      the effect: the previous or next of art.rocket.trails
+--   ALT + PAGE UP / DOWN     the pass's speed, 0 (standing still) to 50 m/s
 --   hold SHIFT               bigger steps         DELETE   back to the art's numbers
 -- While it is out, `brterminal run airstrike` fires a strike drawn the same
 -- way: client/terminal.lua adds this look (F.rocketLookWords) for any of
--- scale=, trail=, toff=, trot= not typed. The look lasts the session, so the
+-- scale=, trail=, toff=, trot=, fx= not typed. The look lasts the session, so the
 -- next `brrocket` picks up where this one was left. Dev mode only (the dev
 -- gate wraps every command).
 local sample = nil
@@ -830,11 +865,14 @@ local look = {}
 local keysLoop = nil
 local nudgeAt, deleteWasDown = 0, false
 local making = false
+local fxWasDown = false
 
---- The pass: 12 m ahead of you, 40 m long across your view, flown left to
---- right at 20 m/s (2 s a pass), then again from the start with a fresh trail
---- (moved back with the old one running, it would draw smoke along the jump).
-local PASS_AHEAD_M, PASS_LENGTH_M, PASS_SPEED_MPS = 12.0, 40.0, 20.0
+--- The pass: 7 m ahead of you, 8 m long across your view, flown left to right
+--- at passSpeed (2 m/s to start: 4 s a pass, slow enough to watch), then again
+--- from the start with a fresh trail (moved back with the old one running, it
+--- would draw smoke along the jump). The speed is the session's, like the look.
+local PASS_AHEAD_M, PASS_LENGTH_M = 7.0, 8.0
+local passSpeed = 2.0
 
 --- The keys it reads. The arrows, the page keys and DELETE are claimed while
 --- it is out (ROCKET_BLOCKED); CTRL, ALT and SHIFT are read, never claimed.
@@ -848,11 +886,12 @@ local ROCKET_KEY = {
     COARSE = 21,    -- LEFT SHIFT   INPUT_SPRINT
 }
 --- 27 is INPUT_PHONE, the up arrow's other control (/brplate's list).
+--- CTRL + LEFT / RIGHT picks the effect and ALT + PAGE UP / DOWN the speed.
 local ROCKET_BLOCKED = { 27, 172, 173, 174, 175, 10, 11, 178 }
 --- attachtune.lua's meters and degrees; sizes a tenth at a time.
 local ROCKET_STEP = {
-    fine   = { m = 0.01, deg = 1.0,  x = 0.1 },
-    coarse = { m = 0.10, deg = 15.0, x = 1.0 },
+    fine   = { m = 0.01, deg = 1.0,  x = 0.1, mps = 1.0 },
+    coarse = { m = 0.10, deg = 15.0, x = 1.0, mps = 5.0 },
 }
 local ROCKET_REPEAT_MS = 50
 
@@ -881,11 +920,13 @@ function F.rocketLookWords()
     if not sample then return nil end
     local ox, oy, oz = F.trailOffsetOf(look)
     local rx, ry, rz = F.trailRotOf(look)
+    local _, _, n = F.trailFxOf(look)
     return {
         scale = ('%g'):format(F.scaleOf(look)),
         trail = ('%g'):format(F.trailScaleOf(look)),
         toff = ('%g,%g,%g'):format(ox, oy, oz),
         trot = ('%g,%g,%g'):format(rx, ry, rz),
+        fx = n and tostring(n) or nil,
     }
 end
 
@@ -895,8 +936,9 @@ end
 function F.rocketLine(t)
     local ox, oy, oz = F.trailOffsetOf(t)
     local rx, ry, rz = F.trailRotOf(t)
-    return ('brterminal run airstrike scale=%g trail=%g toff=%g,%g,%g trot=%g,%g,%g')
-        :format(F.scaleOf(t), F.trailScaleOf(t), ox, oy, oz, rx, ry, rz)
+    local _, _, n = F.trailFxOf(t)
+    return ('brterminal run airstrike scale=%g trail=%g toff=%g,%g,%g trot=%g,%g,%g%s')
+        :format(F.scaleOf(t), F.trailScaleOf(t), ox, oy, oz, rx, ry, rz, n and (' fx=' .. n) or '')
 end
 
 --- What brrocket draws now, and the look it is tuned to (for the suites).
@@ -908,7 +950,7 @@ local function sampleClear()
         BR.Loop.unregister(keysLoop)
         keysLoop = nil
     end
-    nudgeAt, deleteWasDown = 0, false
+    nudgeAt, deleteWasDown, fxWasDown = 0, false, false
     if not sample then return end
     if sample.trail then StopParticleFxLooped(sample.trail, false) end
     removeEnt(sample.obj)
@@ -916,24 +958,44 @@ local function sampleClear()
     sample = nil
 end
 
---- A trail on the carrier as the look says, the asset already in.
+--- A trail on the carrier as the look says, once its effect's asset is in
+--- (asked for here; a pick from another asset streams in over a few frames).
+--- Tried once a pass per effect, so an effect the game will not start is said
+--- on the readout rather than retried every frame.
 local function trailStart()
-    local R = rocketArt()
-    if not (sample and R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset))) then return end
-    UseParticleFxAsset(R.trailAsset)
+    if not sample or sample.trail then return end
+    local asset, name, n = F.trailFxOf(look)
+    if not (asset and name) then return end
+    local key = ('%s/%s/%d'):format(asset, name, sample.lap)
+    if sample.tried == key then return end
+    if not isTrue(HasNamedPtfxAssetLoaded(asset)) then
+        RequestNamedPtfxAsset(asset)
+        return
+    end
+    sample.tried = key
+    UseParticleFxAsset(asset)
     local ox, oy, oz = F.trailOffsetOf(look)
     local rx, ry, rz = F.trailRotOf(look)
-    sample.trail = StartParticleFxLoopedOnEntity(R.trail, sample.carrier, ox, oy, oz, rx, ry, rz,
+    local h = StartParticleFxLoopedOnEntity(name, sample.carrier, ox, oy, oz, rx, ry, rz,
         F.trailScaleOf(look), false, false, false)
+    sample.trail = (h and h ~= 0) and h or nil
+    sample.refused = not sample.trail
 end
 
 --- Where the pass has the rocket now, every frame: both it and its carrier
 --- moved and turned (the turn puts the matrix back to 1x, so the scale goes
 --- on after), and a fresh trail at the start of each pass.
 local function sampleFly()
-    local run = (GetGameTimer() - sample.t0) / 1000.0 * PASS_SPEED_MPS
-    local lap = math.floor(run / PASS_LENGTH_M)
-    local along = run - lap * PASS_LENGTH_M
+    local now = GetGameTimer()
+    local run = sample.run + (now - sample.lastMs) / 1000.0 * passSpeed
+    sample.lastMs = now
+    local lap = sample.lap
+    if run >= PASS_LENGTH_M then
+        run = run % PASS_LENGTH_M
+        lap = lap + 1
+    end
+    sample.run = run
+    local along = run
     if lap ~= sample.lap and sample.trail then
         StopParticleFxLooped(sample.trail, false)
         sample.trail = nil
@@ -944,10 +1006,8 @@ local function sampleFly()
         aim(e, sample.ux, sample.uy, 0.0)
     end
     BR.Native.propScale(sample.obj, F.scaleOf(look))
-    if lap ~= sample.lap then
-        sample.lap = lap
-        trailStart()
-    end
+    sample.lap = lap
+    trailStart()
 end
 
 --- The rocket and its trail as the look says now: turned (which puts its
@@ -998,7 +1058,16 @@ local function readout(depth, turn, step)
         :format((turn and not depth) and B or '', rx, W, (turn and depth) and B or '', ry, W,
                 turn and B or '', rz, W))
     y = y + 0.026
-    readoutLine(y, ('step %.2f m   %.0f deg   %.1fx'):format(step.m, step.deg, step.x))
+    y = y + 0.026
+    local asset, name, n = F.trailFxOf(look)
+    local list = rocketArt().trails
+    readoutLine(y, ('effect %s%s/%d%s   %s / %s%s')
+        :format((depth and not turn) and B or '', tostring(n or 0), type(list) == 'table' and #list or 0, W,
+                tostring(asset), tostring(name), (sample and sample.refused) and '   ~r~would not start~w~' or ''))
+    y = y + 0.026
+    readoutLine(y, ('pass %s%.0f m/s%s'):format(turn and B or '', passSpeed, W))
+    y = y + 0.026
+    readoutLine(y, ('step %.2f m   %.0f deg   %.1fx   %.0f m/s'):format(step.m, step.deg, step.x, step.mps))
 end
 
 --- The keys, per frame while the rocket is out (FRAME, for /brplate's reason:
@@ -1017,14 +1086,35 @@ local function rocketKeys()
     if del and not deleteWasDown then
         look = {}
         sampleApply()
+        -- the art's effect too: a fresh trail on it
+        if sample.trail then StopParticleFxLooped(sample.trail, false) end
+        sample.trail, sample.tried, sample.refused = nil, nil, false
+        trailStart()
     end
     deleteWasDown = del
+
+    -- CTRL + LEFT / RIGHT, once a press: the previous or next effect.
+    local pick = (depth and not turn) and ((held(ROCKET_KEY.RIGHT) and 1 or 0) - (held(ROCKET_KEY.LEFT) and 1 or 0)) or 0
+    if pick ~= 0 and not fxWasDown then
+        local list = rocketArt().trails
+        local count = type(list) == 'table' and #list or 0
+        if count > 0 then
+            local _, _, n = F.trailFxOf(look)
+            look.fx = ((n or 1) - 1 + pick) % count + 1
+            local asset = F.trailFxOf(look)
+            if asset then RequestNamedPtfxAsset(asset) end
+            if sample.trail then StopParticleFxLooped(sample.trail, false) end
+            sample.trail, sample.tried, sample.refused = nil, nil, false
+            trailStart()
+        end
+    end
+    fxWasDown = pick ~= 0
 
     local dv, dh, ds = 0, 0, 0
     if held(ROCKET_KEY.UP) then dv = dv + 1 end
     if held(ROCKET_KEY.DOWN) then dv = dv - 1 end
-    if held(ROCKET_KEY.RIGHT) then dh = dh + 1 end
-    if held(ROCKET_KEY.LEFT) then dh = dh - 1 end
+    if held(ROCKET_KEY.RIGHT) and not (depth and not turn) then dh = dh + 1 end
+    if held(ROCKET_KEY.LEFT) and not (depth and not turn) then dh = dh - 1 end
     if held(ROCKET_KEY.BIGGER) then ds = ds + 1 end
     if held(ROCKET_KEY.SMALLER) then ds = ds - 1 end
     if dv == 0 and dh == 0 and ds == 0 then
@@ -1035,7 +1125,9 @@ local function rocketKeys()
     if now < nudgeAt then return end
     nudgeAt = now + ROCKET_REPEAT_MS
 
-    if ds ~= 0 then
+    if ds ~= 0 and turn then
+        passSpeed = clampTo(passSpeed + ds * step.mps, 0.0, 50.0)
+    elseif ds ~= 0 then
         if depth then
             look.scale = clampTo(roundTo(F.scaleOf(look) + ds * step.x, 2), 0.1, 100.0)
         else
@@ -1060,13 +1152,13 @@ end
 --- Start the rocket's pass as the look says. MUST be called from inside a
 --- Citizen thread: the model and the trail's asset may stream in.
 local function sampleMake()
-    local R = rocketArt()
     local model = loadRocketModel()
     if not model then
         print('[br_core] brrocket: no rocket model would load')
         return
     end
-    if R.trailAsset then RequestNamedPtfxAsset(R.trailAsset) end
+    local tAsset = F.trailFxOf(look)
+    if tAsset then RequestNamedPtfxAsset(tAsset) end
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
     local h = math.rad(tonumber(GetEntityHeading(ped)) or 0.0)
@@ -1089,27 +1181,28 @@ local function sampleMake()
         FreezeEntityPosition(e, true)
         aim(e, ux, uy, 0.0)
     end
-    SetEntityVisible(carrier, false, false)
+    SetEntityAlpha(carrier, 0, false)
     sample = { obj = obj, carrier = carrier, model = model, ux = ux, uy = uy,
-               x0 = x, y0 = y, z0 = z, t0 = GetGameTimer(), lap = 0 }
+               x0 = x, y0 = y, z0 = z, run = 0.0, lastMs = GetGameTimer(), lap = 0 }
     look.model = model
     BR.Native.propScale(obj, F.scaleOf(look))
     local waited = 0
-    while R.trailAsset and not isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) and waited < 3000 do
+    while tAsset and not isTrue(HasNamedPtfxAssetLoaded(tAsset)) and waited < 3000 do
         Citizen.Wait(50)
         waited = waited + 50
     end
     if not sample or sample.obj ~= obj then return end   -- put away while it waited
-    sample.t0 = GetGameTimer()
+    sample.lastMs = GetGameTimer()
     trailStart()
     keysLoop = BR.Loop.register(BR.Loop.FRAME, 'terminalfx.rocketkeys', rocketKeys)
-    print('[br_core] brrocket: a rocket flying a pass 12 m in front of you, again and again. The keys:')
+    print('[br_core] brrocket: a rocket flying a slow pass 7 m in front of you, again and again. The keys:')
     print('  LEFT / RIGHT             trail across the rocket (x)')
     print('  UP / DOWN                trail along it (y)')
     print('  CTRL + UP / DOWN         trail up and down (z)')
     print('  ALT + UP / DOWN          trail pitch    ALT + LEFT / RIGHT   trail yaw')
     print('  ALT + CTRL + UP / DOWN   trail roll')
     print('  PAGE UP / DOWN           trail size     CTRL + PAGE UP / DOWN   rocket size')
+    print('  CTRL + LEFT / RIGHT      the effect     ALT + PAGE UP / DOWN    the pass speed (0 stands still)')
     print('  hold SHIFT               bigger steps   DELETE   the art\'s numbers')
     print('  `brterminal run airstrike` fires one drawn this way; `brrocket` again puts it away')
 end
@@ -1122,7 +1215,9 @@ RegisterCommand('brrocket', function()
         print('[br_core] brrocket: put away. A strike drawn this way:')
         print('  ' .. F.rocketLine(look))
         print('  or paste into br_lib/config/terminals.lua, art.rocket:')
-        print(('      scale = %g, trailScale = %g,'):format(F.scaleOf(look), F.trailScaleOf(look)))
+        local tA, tN = F.trailFxOf(look)
+        print(('      scale = %g, trailScale = %g, trailAsset = \'%s\', trail = \'%s\','):format(
+            F.scaleOf(look), F.trailScaleOf(look), tostring(tA), tostring(tN)))
         print(('      trailOffset = { %g, %g, %g }, trailRot = { %g, %g, %g },')
             :format(ox, oy, oz, rx, ry, rz))
         sampleClear()

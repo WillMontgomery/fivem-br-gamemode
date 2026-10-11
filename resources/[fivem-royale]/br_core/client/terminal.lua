@@ -509,11 +509,11 @@ RegisterCommand('brterminal', function(_, args)
         end
         -- A TUNED ROCKET'S LOOK (round 9): with `brrocket` out, the strike is
         -- drawn the way it was tuned on the keys -- each of scale=, trail=,
-        -- toff=, trot= not typed comes from it (owner, 2026-10-11: "fire an
+        -- toff=, trot=, fx= not typed comes from it (owner, 2026-10-11: "fire an
         -- airstrike on my own using the other command to try it out").
         local fx = BR.TerminalFx
         local words = id == 'airstrike' and fx and fx.rocketLookWords and fx.rocketLookWords() or nil
-        for _, k in ipairs({ 'scale', 'trail', 'toff', 'trot' }) do
+        for _, k in ipairs({ 'scale', 'trail', 'toff', 'trot', 'fx' }) do
             if words and words[k] and typed[k] == nil then rest[#rest + 1] = k .. '=' .. words[k] end
         end
     end

@@ -1289,6 +1289,13 @@ do
     ok(out:find('toff= takes three numbers, x,y,z', 1, true) ~= nil, 'toff=1,2 is refused', out)
     out = devRun(1, ('airstrike x=%.1f y=%.1f trot=500,0,0'):format(C0.x + 300.0, C0.y))
     ok(out:find('trot= takes three numbers, x,y,z', 1, true) ~= nil, 'trot=500,0,0 is refused', out)
+    out = devRun(1, ('airstrike x=%.1f y=%.1f fx=4'):format(C0.x + 300.0, C0.y))
+    look = lastOf(BR.Net.TERMINAL_STRIKE, 3).look
+    ok(look and look.fx == 4, 'fx=4 rides the strike to every client', look and look.fx)
+    out = devRun(1, ('airstrike x=%.1f y=%.1f fx=99'):format(C0.x + 300.0, C0.y))
+    ok(out:find('fx= takes a number from 1 to', 1, true) ~= nil, 'fx=99 is refused', out)
+    out = devRun(1, 'ghost fx=1')
+    ok(out:find('fx= is for airstrike only', 1, true) ~= nil, 'fx= on another function is refused', out)
     out = devRun(1, 'ghost toff=0,0,0')
     ok(out:find('toff= is for airstrike only', 1, true) ~= nil, 'toff= on another function is refused', out)
     out = devRun(1, 'ghost scale=2')
@@ -1958,14 +1965,20 @@ local released = {}
 function SetModelAsNoLongerNeeded(h) released[#released + 1] = h end
 function SetEntityLodDist(e, d) if C.ents[e] then C.ents[e].lodDist = d end end
 local loopedSeq = 0
+refuseFx, refusedTries = {}, 0
 function StartParticleFxLoopedOnEntity(name, e, ox, oy, oz, rx, ry, rz, scale)
     call('StartParticleFxLoopedOnEntity')
+    if refuseFx[name] then
+        refusedTries = refusedTries + 1
+        return 0
+    end
     loopedSeq = loopedSeq + 1
     fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e, h = loopedSeq, scale = scale,
                                             off = { ox, oy, oz }, rot = { rx, ry, rz } }
     return loopedSeq
 end
 function SetEntityVisible(e, v) if C.ents[e] then C.ents[e].visible = v end end
+function SetEntityAlpha(e, a) if C.ents[e] then C.ents[e].alpha = a end end
 -- A rocket model's box: 0.3 m long, its back 0.15 m behind its origin.
 function GetModelDimensions() return { x = -0.05, y = -0.15, z = -0.05 }, { x = 0.05, y = 0.15, z = 0.05 } end
 function GetEntityHeading() return 0.0 end
@@ -2127,7 +2140,7 @@ do
     eq(falling, 1, 'the first rocket is in the air')
     local rocket = nil
     for id, e in pairs(C.ents) do
-        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.visible ~= false then rocket = id end
+        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.alpha ~= 0 then rocket = id end
     end
     local e = rocket and C.ents[rocket]
     ok(e and e.net == false and e.collision == false, 'a local object, never networked, colliding with nothing')
@@ -2139,8 +2152,8 @@ do
     ok(e and e.z < z0, 'coming down', e and e.z)
     local carrier = fxCalls.looped[1] and C.ents[fxCalls.looped[1].ent]
     ok(fxCalls.looped[1] and fxCalls.looped[1].name == RA.trail and fxCalls.looped[1].ent ~= rocket
-        and carrier and carrier.visible == false and carrier.scale == nil and carrier.model == e.model,
-        "with the homing rocket's trail, on an invisible twin at 1x (round 9: on the scaled rocket it trailed far behind)")
+        and carrier and carrier.alpha == 0 and carrier.visible ~= false and carrier.scale == nil and carrier.model == e.model,
+        "with the homing rocket's trail, on a see-through twin at 1x (round 9: on the scaled rocket it trailed far behind; on an invisible twin only its glow showed)")
     ok(carrier and carrier.x == e.x and carrier.y == e.y and carrier.z == e.z, 'the twin flies with its rocket, this frame')
     -- ITS NOSE ALONG ITS PATH (round 7: a curve, turned every frame): heading
     -- the way it just moved, and pointing down as it comes down.
@@ -2209,7 +2222,7 @@ do
         advance(FX.strikeWarnMs - RA.flightMs + 700, 50)
         local rocket = nil
         for eid, e in pairs(C.ents) do
-            if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.visible ~= false then rocket = eid end
+            if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.alpha ~= 0 then rocket = eid end
         end
         local e = rocket and C.ents[rocket]
         local scale1 = e and e.scale
@@ -2218,10 +2231,10 @@ do
         local carrier = trail and C.ents[trail.ent]
         local out = { scale = scale1, scaleLater = e and e.scale, trail = trail and trail.scale,
                       farClip = trail and trail.farClip, off = trail and trail.off, rot = trail and trail.rot,
-                      carrier = trail and trail.ent, rocket = rocket,
+                      carrier = trail and trail.ent, rocket = rocket, name = trail and trail.name,
                       together = false }
         for _, r in pairs(C.ents) do
-            if carrier and r.alive and r.kind == 'obj' and r.visible ~= false
+            if carrier and r.alive and r.kind == 'obj' and r.alpha ~= 0
                 and r.x == carrier.x and r.y == carrier.y and r.z == carrier.z then out.together = true end
         end
         advance(FX.strikeWarnMs + 5000, 100)
@@ -2260,8 +2273,18 @@ do
     d = flyOne(78, { look = { toff = { 0.0, 900.0, 0.0 }, trot = { 'x', 0, 0 } } })
     ok(d.off and math.abs(d.off[2] - (-0.15 * RA.scale)) < 1e-9 and d.rot and d.rot[1] == 0.0,
         'a place past 50 m or a turn that is not a number is ignored')
+    -- THE EFFECT: "perhaps you should also give me a choice of particles?"
+    fxCalls.requested = {}
+    d = flyOne(79, { look = { fx = 4 } })
+    local askedFor = false
+    for _, a in ipairs(fxCalls.requested) do if a == RA.trails[4][1] then askedFor = true end end
+    ok(d.name == RA.trails[4][2] and askedFor, 'fx=4: that strike trails with the fourth effect, its asset asked for', d.name)
+    d = flyOne(80, { look = { fx = #RA.trails + 1 } })
+    eq(d.name, RA.trail, 'an fx past the list is ignored: the art effect')
+    d = flyOne(81)
+    eq(d.name, RA.trail, 'and a strike with no look trails with the art effect')
 
-    -- brrocket: ONE ROCKET STANDING STILL, TUNED WITH THE KEYS.
+    -- brrocket: ONE ROCKET ON A SLOW PASS, TUNED WITH THE KEYS.
     -- "perhaps you could give me a stationary example where I can tune the
     -- position, direction, and size of the smoke trails relative to the props"
     -- and "instead of so many commands and args, we use keyboard keys ... Any
@@ -2270,6 +2293,7 @@ do
     W.me = { x = 10.0, y = 0.0, z = 20.0 }
     for k in pairs(C.ents) do C.ents[k] = nil end
     fxCalls.looped = {}
+    fxCalls.requested = {}
     logs = {}
     local wasDev = devBox
     devBox = true
@@ -2290,6 +2314,10 @@ do
         for _, l in ipairs(fxCalls.looped) do if smp and l.h == smp.trail then return l end end
         return nil
     end
+    local function asked(asset)
+        for _, a in ipairs(fxCalls.requested) do if a == asset then return true end end
+        return false
+    end
     ok(commands.brrocket ~= nil, 'brrocket is a command')
     local loopsBefore = frameLoops()
     commands.brrocket(0, {})
@@ -2297,26 +2325,25 @@ do
     local sm, lk = F.rocketSample()
     local so = sm and C.ents[sm.obj]
     local sc = sm and C.ents[sm.carrier]
-    ok(so and so.scale == RA.scale and so.visible ~= false, 'brrocket: a rocket at the art\'s size')
-    -- THE PASS (owner: "the smoke isn't always drawing - seems to be one frame
-    -- whenever I move it's position"): the trail lays smoke only while it
-    -- moves, so the rocket flies 40 m across your view, 12 m ahead, at 20 m/s.
+    ok(so and so.scale == RA.scale and so.alpha ~= 0, 'brrocket: a rocket at the art\'s size')
+    ok(sc and sc.alpha == 0 and sc.visible ~= false and sc.scale == nil,
+        'its twin at 1x, see-through but not invisible ("in the dark it does have a glow": an invisible one drew no smoke)')
+    -- THE PASS: slow enough to watch ("that brrocket flight is far too fast
+    -- for me fine-tune anything"), 8 m across your view, 7 m ahead, 2 m/s.
     local tl = trailNow()
-    ok(so and math.abs(so.y - 12.0) < 1e-9 and math.abs(so.x - (10.0 - 20.0)) < 1e-9 and math.abs(so.z - 21.0) < 1e-9,
-        'it starts 12 m in front of you, 20 m to your left', so and so.x)
-    advance(500, 50)
-    ok(math.abs(so.x - 0.0) < 1e-9 and math.abs(so.y - 12.0) < 1e-9, 'and flies right at 20 m/s: 10 m in half a second', so.x)
+    ok(so and math.abs(so.y - 7.0) < 1e-9 and math.abs(so.x - (10.0 - 4.0)) < 1e-9 and math.abs(so.z - 21.0) < 1e-9,
+        'it starts 7 m in front of you, 4 m to your left', so and so.x)
+    advance(1000, 50)
+    ok(math.abs(so.x - 8.0) < 1e-6 and math.abs(so.y - 7.0) < 1e-9, 'and flies right at 2 m/s: 2 m in a second', so.x)
     ok(sc.x == so.x and sc.y == so.y and sc.z == so.z, 'its twin with it, every frame')
     ok(so.scale == RA.scale, 'still at its size in flight')
-    ok(trailNow() == tl, 'one trail for the whole pass')
-    advance(1500, 50)
-    ok(math.abs(so.x - (10.0 - 20.0)) < 1e-9, 'at the end of 40 m it starts the pass again', so.x)
+    ok(trailNow() == tl and tl.name == RA.trail, 'one trail for the whole pass, the art\'s effect')
+    advance(3100, 50)
+    ok(so.x < 6.5, 'at the end of 8 m it starts the pass again', so.x)
     ok(fxCalls.stoppedSet[tl.h] and trailNow() ~= nil and trailNow() ~= tl and trailNow().ent == sm.carrier,
         'with a fresh trail on the twin, the old one let go (no smoke drawn back along the jump)')
     tl = trailNow()
-    ok(sc and sc.visible == false and sc.scale == nil and sc.x == so.x, 'its invisible twin at 1x, in the same place')
-    tl = trailNow()
-    ok(tl and tl.ent == sm.carrier and tl.scale == RA.trailScale and math.abs(tl.off[2] - BACK) < 1e-9,
+    ok(tl and tl.scale == RA.trailScale and math.abs(tl.off[2] - BACK) < 1e-9,
         'its trail on the twin, at the art\'s size, at the back of the rocket')
     eq(frameLoops(), loopsBefore + 1, 'one FRAME callback for the keys while it is out')
     ok((logs[#logs] or ''):find('`brrocket` again puts it away', 1, true) ~= nil, 'the keys are printed', logs[#logs])
@@ -2359,6 +2386,56 @@ do
     hold({ RK.PGDN }, 5000)
     eq(lk.trailScale, 0.1, 'and never below a tenth')
 
+    -- ALT + PAGE KEYS: THE PASS'S SPEED, DOWN TO STANDING STILL.
+    hold({ RK.ALT, RK.PGUP })
+    hold({ RK.ALT, RK.SHIFT, RK.PGUP })
+    --- How far the rocket goes along the pass in `ms` (round the end of it).
+    local function travel(ms)
+        local x1 = so.x
+        advance(ms, 50)
+        local m = so.x - x1
+        if m < -1e-9 then m = m + 8.0 end
+        return m
+    end
+    local m = travel(500)
+    ok(math.abs(m - 4.0) < 1e-6, ('ALT + PAGE UP, then with SHIFT: 2 + 1 + 5 = 8 m/s (%.3f m in half a second)'):format(m))
+    hold({ RK.ALT, RK.PGDN }, 2000)
+    m = travel(1000)
+    ok(m == 0.0, 'ALT + PAGE DOWN held: 0, the rocket standing still', m)
+    hold({ RK.ALT, RK.PGUP })
+    hold({ RK.ALT, RK.PGUP })
+    m = travel(500)
+    ok(math.abs(m - 1.0) < 1e-6, ('and back up to 2 m/s (%.3f m in half a second)'):format(m))
+
+    -- CTRL + LEFT / RIGHT: THE EFFECT ("perhaps you should also give me a
+    -- choice of particles?"), once a press, the trail started again on it.
+    ok(type(RA.trails) == 'table' and #RA.trails >= 8, ('a list of effects to pick from (%d)'):format(#(RA.trails or {})))
+    ok(RA.trails[1][1] == RA.trailAsset and RA.trails[1][2] == RA.trail, 'the art\'s own first')
+    tl = trailNow()
+    local beforeX = lk.toff[1]
+    hold({ RK.CTRL, RK.RIGHT }, 500)
+    ok(lk.fx == 2, 'CTRL + RIGHT: the next effect, once however long it is held', lk.fx)
+    ok(lk.toff[1] == beforeX, 'and it does not move the trail across')
+    ok(fxCalls.stoppedSet[tl.h] and trailNow() and trailNow().name == RA.trails[2][2] and asked(RA.trails[2][1]),
+        'the old trail let go, the new one on the twin, its asset asked for', trailNow() and trailNow().name)
+    hold({ RK.CTRL, RK.LEFT })
+    hold({ RK.CTRL, RK.LEFT })
+    eq(lk.fx, #RA.trails, 'CTRL + LEFT past the first: round to the last')
+    ok(trailNow() and trailNow().name == RA.trails[#RA.trails][2], 'drawn with it')
+    -- AN EFFECT THE GAME WILL NOT START: said on screen, tried once a pass.
+    refuseFx[RA.trails[1][2]] = true
+    hold({ RK.CTRL, RK.RIGHT })
+    eq(lk.fx, 1, 'CTRL + RIGHT past the last: round to the first')
+    refusedTries = 0
+    advance(1000, 50)
+    ok(trailNow() == nil and F.rocketSample().refused and refusedTries <= 1,
+        'one that will not start: no trail, said, and not tried again every frame', refusedTries)
+    refuseFx[RA.trails[1][2]] = nil
+    hold({ RK.CTRL, RK.RIGHT })
+    hold({ RK.CTRL, RK.RIGHT })
+    hold({ RK.CTRL, RK.RIGHT })
+    eq(lk.fx, 4, 'three more: the fourth')
+
     -- WHAT IS CLAIMED, AND WHAT IS NOT.
     keyClaims = {}
     advance(50, 50)
@@ -2374,15 +2451,19 @@ do
     -- `brterminal run airstrike` WHILE IT IS OUT: the words it adds.
     local w = F.rocketLookWords()
     ok(w and w.scale == ('%g'):format(lk.scale) and w.trail == '0.1' and w.toff == ('0,%g,0.01'):format(BACK)
-        and w.trot == ('1,1,%g'):format(lk.trot[3]), 'the look as `brterminal run airstrike` words', w and w.toff)
+        and w.trot == ('1,1,%g'):format(lk.trot[3]) and w.fx == '4', 'the look as `brterminal run airstrike` words', w and w.fx)
 
-    -- DELETE: the art's numbers, once a press.
+    -- DELETE: the art's numbers and effect, once a press.
+    tl = trailNow()
     hold({ RK.DEL })
     sm, lk = F.rocketSample()
-    ok(lk.toff == nil and lk.trot == nil and lk.scale == nil and lk.trailScale == nil, 'DELETE: the art\'s numbers back')
+    ok(lk.toff == nil and lk.trot == nil and lk.scale == nil and lk.trailScale == nil and lk.fx == nil,
+        'DELETE: the art\'s numbers back')
+    ok(fxCalls.stoppedSet[tl.h] and trailNow() and trailNow().name == RA.trail, 'and the art\'s effect, on a fresh trail')
     tl = trailNow()
     ok(tl.scale == RA.trailScale and math.abs(tl.off[2] - BACK) < 1e-9 and tl.rot[3] == 0.0 and so.scale == RA.scale,
         'and the rocket and its trail with them')
+    ok(F.rocketLookWords().fx == nil, 'with no fx= to add')
     keyDown = { [RK.DEL] = true, [RK.PGUP] = true }
     advance(100, 50)
     keyDown = {}
@@ -2392,19 +2473,23 @@ do
         'DELETE held is one reset, not one a frame (PAGE UP held with it counts twice)', lk.trailScale)
 
     -- A NEW PASS STARTS ITS TRAIL AS THE LOOK IS NOW.
+    tl = trailNow()
     hold({ RK.CTRL, RK.UP })
-    advance(2000, 50)
-    ok(trailNow() ~= tl and trailNow().off[3] == 0.01 and math.abs(trailNow().scale - (RA.trailScale + 0.2)) < 1e-9,
-        'the next pass trail starts where the keys left it')
+    hold({ RK.CTRL, RK.RIGHT })
+    advance(4100, 50)
+    ok(trailNow() ~= tl and trailNow().off[3] == 0.01 and math.abs(trailNow().scale - (RA.trailScale + 0.2)) < 1e-9
+        and trailNow().name == RA.trails[2][2], 'the next pass trail starts where the keys left it')
     tl = trailNow()
 
     -- PUT AWAY: the line, and everything gone.
     logs = {}
     commands.brrocket(0, {})
     local said = table.concat(logs, '\n')
-    ok(said:find(('brterminal run airstrike scale=%g trail=%g toff=0,%g,0.01 trot=0,0,0')
+    ok(said:find(('brterminal run airstrike scale=%g trail=%g toff=0,%g,0.01 trot=0,0,0 fx=2')
         :format(RA.scale, RA.trailScale + 0.2, BACK), 1, true) ~= nil, 'brrocket again: the line that fires it', said)
-    ok(said:find('trailOffset = {', 1, true) ~= nil, 'and the config to paste')
+    ok(said:find('trailOffset = {', 1, true) ~= nil
+        and said:find(("trailAsset = '%s', trail = '%s'"):format(RA.trails[2][1], RA.trails[2][2]), 1, true) ~= nil,
+        'and the config to paste, the effect with it')
     ok(F.rocketSample() == nil and not so.alive and not sc.alive and fxCalls.stoppedSet[tl.h], 'the rocket, twin and trail gone')
     eq(frameLoops(), loopsBefore, 'and the FRAME callback with them')
     ok(F.rocketLookWords() == nil, 'and `brterminal run airstrike` is drawn the art\'s way again')
@@ -2418,8 +2503,9 @@ do
     commands.brrocket(0, {})
     runThreads()
     sm, lk = F.rocketSample()
-    tl = fxCalls.looped[#fxCalls.looped]
-    ok(sm and math.abs(tl.scale - (RA.trailScale + 0.2)) < 1e-9, 'brrocket again: the look this session left it at')
+    tl = trailNow()
+    ok(sm and tl and math.abs(tl.scale - (RA.trailScale + 0.2)) < 1e-9 and tl.name == RA.trails[2][2],
+        'brrocket again: the look this session left it at')
     commands.brrocket(0, {})
     ok(F.rocketSample() == nil, 'and away again')
     devBox = wasDev
@@ -2472,7 +2558,7 @@ do
     local function rocketsOf(model)
         local n = 0
         for _, e in pairs(C.ents) do
-            if e.kind == 'obj' and e.model == model and e.visible ~= false then n = n + 1 end
+            if e.kind == 'obj' and e.model == model and e.alpha ~= 0 then n = n + 1 end
         end
         return n
     end
@@ -2582,7 +2668,7 @@ do
     advance(msg.rockets[1].at - RA.flightMs + 1000 - clientMs, 50)
     local obj = nil
     for id, e in pairs(C.ents) do
-        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.visible ~= false then obj = obj or id end
+        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.alpha ~= 0 then obj = obj or id end
     end
     local e = obj and C.ents[obj]
     local wx, wy, wz = F.rocketAt(31, 1, clientMs)

@@ -1434,13 +1434,40 @@ BR.Config.Terminals = {
         --                the rocket's origin; absent, the back of the rocket at
         --                its scale (its model box)
         --   trailRot     { pitch, roll, yaw } in degrees, the trail's turn
-        -- `brrocket` (dev mode) stands one rocket still in front of you to tune
-        -- all four, and prints the `brterminal run airstrike ... toff=x,y,z
-        -- trot=p,r,y` line that fires a strike drawn the same way.
+        -- `brrocket` (dev mode) flies one rocket past you to tune all four, and
+        -- prints the `brterminal run airstrike ... toff=x,y,z trot=p,r,y` line
+        -- that fires a strike drawn the same way.
+        -- AND THE EFFECT ITSELF, CHOSEN BY EYE (owner, 2026-10-11, of the trail
+        -- on brrocket's rocket: "Looks like in the dark it does have a glow -
+        -- perhaps you should also give me a choice of particles?"):
+        --   trails   the looped effects brrocket's CTRL + LEFT/RIGHT step
+        --            through, { particle asset, effect }, from the game's own
+        --            list (DurtyFree/gta-v-data-dumps, particleEffectsCompact):
+        --            rocket and missile trails first, then smoke and boosts.
+        --            trailAsset/trail is the one strikes draw; `brterminal run
+        --            airstrike fx=<n>` draws one strike with the n-th.
         rocket = { models = { 'w_lr_homing_rocket', 'w_lr_rpg_rocket', 'w_ex_vehiclemissile_3' },
                    loadMs = 5000, lodDist = 2500, scale = 8.0, trailScale = 3.0,
                    trailRot = { 0.0, 0.0, 0.0 },
                    trailAsset = 'core', trail = 'proj_rpg_trail',
+                   trails = {
+                       { 'core', 'proj_rpg_trail' },
+                       { 'core', 'proj_missile_trail' },
+                       { 'core', 'proj_tank_trail' },
+                       { 'scr_bigscore', 'scr_bigscore_rpg_trail' },
+                       { 'scr_exile2', 'scr_ex2_rpg_trail' },
+                       { 'scr_agencyheistb', 'scr_agency3b_proj_rpg_trail' },
+                       { 'scr_ie_tw', 'scr_impexp_tw_rpg_trail' },
+                       { 'weap_sm_barrage', 'proj_rpg_barrage_trail' },
+                       { 'scr_xs_props', 'scr_xs_guided_missile_trail' },
+                       { 'scr_hr_mfh', 'scr_hr_mfh_missile_trail' },
+                       { 'scr_ar_planes', 'scr_ar_trail_smoke' },
+                       { 'scr_ar_planes', 'scr_ar_trail_smoke_slow' },
+                       { 'scr_ba_bb', 'scr_ba_bb_plane_smoke_trail' },
+                       { 'veh_impexp_rocket', 'veh_rocket_boost' },
+                       { 'core', 'veh_exhaust_afterburner' },
+                       { 'core', 'proj_flare_trail' },
+                   },
                    flightMs = 5000, launchM = 240.0, launchUpM = 70.0, diveUpM = 35.0,
                    fanDeg = 50.0, weaveM = 30.0,
                    blastAsset = 'core', blast = 'exp_grd_vehicle', blastBaseM = 5.0,

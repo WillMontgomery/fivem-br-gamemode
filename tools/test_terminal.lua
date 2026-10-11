@@ -2773,11 +2773,11 @@ do
     BR.TerminalFx = BR.TerminalFx or {}
     local hadWords = BR.TerminalFx.rocketLookWords
     BR.TerminalFx.rocketLookWords = function()
-        return { scale = '6', trail = '2.5', toff = '0,-1.1,0.05', trot = '0,0,90' }
+        return { scale = '6', trail = '2.5', toff = '0,-1.1,0.05', trot = '0,0,90', fx = '5' }
     end
     B.executed = {}
     cmd(nil, { 'run', 'airstrike', 'trail=4' })
-    eq(B.executed[1], 'brterminalsv run airstrike trail=4 x=40.0 y=200.0 scale=6 toff=0,-1.1,0.05 trot=0,0,90',
+    eq(B.executed[1], 'brterminalsv run airstrike trail=4 x=40.0 y=200.0 scale=6 toff=0,-1.1,0.05 trot=0,0,90 fx=5',
         'with brrocket out: its look, but a word typed wins')
     cmd(nil, { 'run', 'scan' })
     eq(B.executed[2], 'brterminalsv run scan', 'and only for airstrike')

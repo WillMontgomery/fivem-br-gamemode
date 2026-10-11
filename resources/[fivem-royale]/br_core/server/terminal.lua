@@ -1700,7 +1700,22 @@ RegisterCommand('brterminalsv', function(source, args)
                     vec[i] = n + 0.0
                 end
             end
-            if (k == 'toff' or k == 'trot') and id ~= 'airstrike' then
+            -- `fx=<n>` (round 9, owner: "give me a choice of particles"): the
+            -- n-th of art.rocket.trails for this strike's trail.
+            if k == 'fx' then
+                local list = BR.Config.Terminals.art and BR.Config.Terminals.art.rocket
+                    and BR.Config.Terminals.art.rocket.trails or {}
+                local n = math.tointeger(tonumber(v))
+                if id ~= 'airstrike' then
+                    tell(src, 'fx= is for airstrike only')
+                    return
+                elseif not n or n < 1 or n > #list then
+                    tell(src, ('fx= takes a number from 1 to %d'):format(#list))
+                    return
+                end
+                look = look or {}
+                look.fx = n
+            elseif (k == 'toff' or k == 'trot') and id ~= 'airstrike' then
                 tell(src, ('%s= is for airstrike only'):format(k))
                 return
             elseif (k == 'toff' or k == 'trot') and not vec then
