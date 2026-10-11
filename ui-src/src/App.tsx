@@ -28,6 +28,7 @@ import TutorialLock from './tutorial/TutorialLock'
 import YubikeyCard from './tutorial/YubikeyCard'
 import { GAME_STEPS } from './tutorial/gameSteps'
 import { DECLINE_STEPS, LOBBY_WAYS_BACK } from './tutorial/steps'
+import { matchHalfOnWarmup } from './tutorial/continueToggle'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
 import { useScreenReport } from './bridge/useScreenReport'
@@ -376,14 +377,22 @@ export default function App() {
     // in a match until I `brtutorial off`"). The checkbox says what the player
     // WOULD like; `tutorialGameArmed` says they finished the lobby half with it
     // ticked, and only that may start anything. See the store.
-    if (!s.tutorialGameArmed || s.tutorialGameRun) return
     // A BYSTANDER IS NOT IN THIS MATCH. `participant === false` is a player
     // sitting in the lobby while somebody else's round runs, and starting a HUD
     // walkthrough over a lobby they are still looking at would point every card
     // at nothing.
-    if (matchParticipant === false) return
+    //
+    // AND THE CONTINUE TOGGLE TURNED OFF IS A NO (#405): armed by the lobby half
+    // and declined after it, the arm is spent here and nothing starts. The rule
+    // is tutorial/continueToggle.ts's, where scripts/test-continue-toggle.mjs
+    // can reach it.
+    const half = matchHalfOnWarmup({
+      armed: s.tutorialGameArmed, gameOn: s.tutorialGameOn,
+      running: s.tutorialGameRun, participant: matchParticipant,
+    })
+    if (half === 'wait') return
     s.setTutorialGameArmed(false)
-    void fetchNui(CB.TUTORIAL_SET, { game: true })
+    if (half === 'start') void fetchNui(CB.TUTORIAL_SET, { game: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchState, matchParticipant, tutorialGameArmed, tutorialGameRun])
 
@@ -423,6 +432,24 @@ export default function App() {
   // staring at somebody else's wasted screen.
   const showLobby = (!tearingDown || !matchParticipant)
     && (matchState === 'waiting' || hudState === 'lobby')
+
+  // ═══ A LOBBY CARD BELONGS TO THE LOBBY (#405) ═══
+  //
+  // Owner, 2026-10-11: he turned the continue toggle off, went to warmup, and
+  // the "Are you sure?" card was still up over the in-game walkthrough's first
+  // card, ringing an empty box mid-left -- the toggle, in a lobby that had faded
+  // out but was still laid out under the HUD.
+  //
+  // The lobby's cards are covered when the lobby is: under a sub-screen, as they
+  // always were, and when it is not on screen at all, which they never were.
+  // They wait rather than fail, so a card comes back with its lobby -- except the
+  // decline card, which is put away for good when the lobby goes: it is about a
+  // switch the player just flipped, and it has nothing to say a match later.
+  const lobbyCovered = !showLobby || LOBBY_SUBSCREENS.has(focus)
+  useEffect(() => {
+    if (!showLobby) dispatch().setTutorialDeclineCard(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLobby])
 
   // The bus ride is a cutscene: no vitals, no counters, no kill feed.
   // Notices still render -- "doors open" IS one.
@@ -830,7 +857,11 @@ export default function App() {
           // `none` IS THE BARE HUD. The walkthrough itself takes no focus, so
           // anything else on the stack is genuinely something the player opened
           // over the controls these cards point at.
-          subscreenUp={focus !== 'none'}
+          //
+          // ...AND THE HUD NOT BEING UP AT ALL COVERS THEM TOO (#405). These cards
+          // point at the HUD; a frame of them over the lobby, before Lua's leave
+          // tick ends the run, is a card about nothing.
+          subscreenUp={focus !== 'none' || !hudUp}
           // AND THE CARDS ARE DRIVEN BY THE ARROW KEYS, not by a cursor there
           // is no longer any way to produce. See `keyDriven`.
           keyDriven
@@ -899,6 +930,7 @@ export default function App() {
         <TutorialLayer
           steps={DECLINE_STEPS}
           screen={focus}
+          subscreenUp={lobbyCovered}
           onDone={() => dispatch().setTutorialDeclineCard(false)}
           onAbandon={() => dispatch().setTutorialDeclineCard(false)}
         />
@@ -911,7 +943,7 @@ export default function App() {
       {tutorialRun && (
         <TutorialLayer
           screen={focus}
-          subscreenUp={LOBBY_SUBSCREENS.has(focus)}
+          subscreenUp={lobbyCovered}
           onDone={() => {
             const s = dispatch()
             s.setTutorialRun(false)

@@ -472,11 +472,18 @@ export default function TutorialLayer(p: TutorialLayerProps) {
 
     const tick = () => {
       const el = document.querySelector<HTMLElement>(`[data-tut="${step.target}"]`)
-      const next: Rect | null = el
-        ? (() => {
-            const b = el.getBoundingClientRect()
-            return { x: b.left, y: b.top, w: b.width, h: b.height }
-          })()
+      // ═══ NO RING AROUND NOTHING (#405) ═══
+      //
+      // An element can be laid out and not be seen. The lobby fades out to
+      // `visibility: hidden` and stays mounted under the HUD, so the decline
+      // card's toggle still answered a box -- and the owner got a ring drawn
+      // around empty screen mid-left in warmup. A target with no box, or one
+      // that is not visible, is not on screen: it is measured as absent, which
+      // either waits for its screen or ends the run loudly, as `missing` says.
+      const b = el?.getBoundingClientRect()
+      const next: Rect | null = el && b && b.width > 0 && b.height > 0
+        && getComputedStyle(el).visibility === 'visible'
+        ? { x: b.left, y: b.top, w: b.width, h: b.height }
         : null
 
       // The clip box is measured on the same frame as the rect, so the two can

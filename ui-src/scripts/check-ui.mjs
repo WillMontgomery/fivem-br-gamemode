@@ -2490,6 +2490,70 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R33  No tutorial card outlives the screen it belongs to, and no ring is drawn
+//      around nothing (#405).
+//
+// Owner, 2026-10-11: "I just turned off the extended offer, went to warmup and
+// got this" -- the lobby's "Are you sure?" card over the in-game walkthrough's
+// first card, ringing an empty box mid-left. Three faults, three pins:
+//
+//   STARTED ANYWAY -- App's warmup effect stops asking matchHalfOnWarmup (pinned
+//     by scripts/test-continue-toggle.mjs), or starts the match half on anything
+//     but 'start', so a toggle turned off after the lobby half still runs it;
+//   FOLLOWED INTO WARMUP -- a lobby layer (the run or the decline card) is not
+//     covered by `lobbyCovered`, which is `!showLobby || LOBBY_SUBSCREENS...`, or
+//     the decline card is no longer put away when the lobby goes;
+//   AROUND NOTHING -- TutorialLayer measures a target without asking that it is
+//     visible and has a box, so a faded-out lobby's toggle still gets a ring.
+//
+// IT CAN FAIL. Put `subscreenUp={LOBBY_SUBSCREENS.has(focus)}` back on either
+// lobby layer, drop the `setTutorialDeclineCard(false)` effect, or the
+// `visibility === 'visible'` term.
+// ---------------------------------------------------------------------------
+{
+  const A = join(SRC, 'App.tsx')
+  const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
+  if (!existsSync(A) || !existsSync(L)) {
+    fail('R33 tutorial-belongs', 'src',
+      'App.tsx or tutorial/TutorialLayer.tsx is missing. If they moved, move this rule with them (#405).')
+  } else {
+    const app = stripComments(read(A))
+    if (!/matchHalfOnWarmup\(\{/.test(app)
+        || !/if\s*\(half\s*===\s*'start'\)\s*void\s+fetchNui\(CB\.TUTORIAL_SET,\s*\{\s*game:\s*true\s*\}\)/.test(app)) {
+      fail('R33 tutorial-belongs', 'src/App.tsx',
+        'the warmup effect no longer starts the match half only on'
+        + ' matchHalfOnWarmup(...) === \'start\'. A toggle turned off after the lobby'
+        + ' half would run it anyway (#405).')
+    }
+    if (!/const\s+lobbyCovered\s*=\s*!showLobby\s*\|\|\s*LOBBY_SUBSCREENS\.has\(focus\)/.test(app)) {
+      fail('R33 tutorial-belongs', 'src/App.tsx',
+        '`lobbyCovered` is not `!showLobby || LOBBY_SUBSCREENS.has(focus)` (#405).')
+    }
+    const decline = /<TutorialLayer\s+steps=\{DECLINE_STEPS\}([\s\S]*?)\/>/.exec(app)
+    if (!decline || !/subscreenUp=\{lobbyCovered\}/.test(decline[1])) {
+      fail('R33 tutorial-belongs', 'src/App.tsx',
+        'the decline card\'s layer is not given `subscreenUp={lobbyCovered}`, so it'
+        + ' draws over a screen it is not about -- warmup included (#405).')
+    }
+    const run = /\{tutorialRun\s*&&\s*\(\s*<TutorialLayer\s+screen=\{focus\}\s+subscreenUp=\{([^}]*)\}/.exec(app)
+    if (!run || run[1].trim() !== 'lobbyCovered') {
+      fail('R33 tutorial-belongs', 'src/App.tsx',
+        'the lobby run\'s layer is not given `subscreenUp={lobbyCovered}` (#405).')
+    }
+    if (!/if\s*\(!showLobby\)\s*dispatch\(\)\.setTutorialDeclineCard\(false\)/.test(app)) {
+      fail('R33 tutorial-belongs', 'src/App.tsx',
+        'the decline card is no longer put away when the lobby goes (#405).')
+    }
+    const layer = stripComments(read(L))
+    if (!/b\.width\s*>\s*0\s*&&\s*b\.height\s*>\s*0[\s\S]{0,80}getComputedStyle\(el\)\.visibility\s*===\s*'visible'/.test(layer)) {
+      fail('R33 tutorial-belongs', 'src/tutorial/TutorialLayer.tsx',
+        'the measure loop no longer treats a target with no box, or one that is not'
+        + ' visible, as absent -- so a ring can be drawn around nothing (#405).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

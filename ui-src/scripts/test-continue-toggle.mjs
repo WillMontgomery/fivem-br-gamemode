@@ -22,7 +22,7 @@
  * Run: npm run test:continuetoggle   (and as part of npm run build)
  */
 
-import { showContinueToggle } from '../src/tutorial/continueToggle.ts'
+import { matchHalfOnWarmup, showContinueToggle } from '../src/tutorial/continueToggle.ts'
 
 let failed = 0
 let ran = 0
@@ -111,6 +111,21 @@ for (const offerable of [false, true]) {
 }
 check(`finished hides it in all ${combos} combinations`, vetoBroken, 0)
 check(`not finished: identical to the old rule in all ${combos} combinations`, drift, 0)
+
+// ── THE MATCH HALF AT WARMUP (#405) ─────────────────────────────────────────
+// Owner, 2026-10-11: "I just turned off the extended offer, went to warmup" --
+// and the in-game walkthrough started. Armed by the lobby half, declined after.
+const W = { armed: true, gameOn: true, running: false, participant: true }
+const warm = (over) => matchHalfOnWarmup({ ...W, ...over })
+check('#405: armed, then the toggle turned off -> the arm is spent, nothing starts',
+  warm({ gameOn: false }), 'spend')
+check('armed with the toggle on -> it starts', warm({}), 'start')
+check('a decline taken back (toggle on again) -> it starts', warm({ gameOn: true }), 'start')
+check('not armed -> nothing', warm({ armed: false }), 'wait')
+check('not armed, toggle off -> nothing', warm({ armed: false, gameOn: false }), 'wait')
+check('already running -> nothing', warm({ running: true }), 'wait')
+check('a bystander keeps the arm for a match they are in', warm({ participant: false }), 'wait')
+check('participant not known yet -> it starts', warm({ participant: undefined }), 'start')
 
 if (failed) {
   console.error(`\ntest-continue-toggle: ${failed} of ${ran} failed`)
