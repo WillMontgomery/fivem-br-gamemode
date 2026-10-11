@@ -2567,6 +2567,16 @@ function BR.Loot.boxModels()
     return boxBuilt
 end
 
+--- Has this box model been written off for the session (boxFailed): a stream
+--- that timed out, or an object the engine refused? Every crate wearing it is
+--- the wooden crate from then on, so client/preload.lua neither asks for it nor
+--- holds the warmup's fade for it (#403 review).
+--- @param hash integer
+--- @return boolean
+function BR.Loot.boxWrittenOff(hash)
+    return boxFailed[hash] == true
+end
+
 --- How many bodies this client has handed to an entry since it loaded: a count
 --- that only rises, once for every prop built and adopted.
 ---

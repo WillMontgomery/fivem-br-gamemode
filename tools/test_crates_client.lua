@@ -579,6 +579,10 @@ do
     add(w4)
     frames(8)
     eq(select(2, bodyAt(w4.x, w4.y)), L.chestProp, 'and the next one is wood at once')
+    eq(BR.Loot.boxWrittenOff(GetHashKey('ship_3_slow')), true,
+        'and BR.Loot.boxWrittenOff says so, for the warmup fade (#403 review)')
+    eq(BR.Loot.boxWrittenOff(GetHashKey('ship_4_absent')), false,
+        'a model the build lacks is not written off: it never streamed at all')
     noStream.ship_3_slow = nil
 
     -- AND ONE THE ENGINE WILL NOT BUILD AS AN OBJECT: wood, on the next pass.
@@ -589,6 +593,8 @@ do
     add(w5)
     frames(8)
     eq(select(2, bodyAt(w5.x, w5.y)), L.chestProp, 'a box the engine refuses: the wooden crate')
+    eq(BR.Loot.boxWrittenOff(GetHashKey('ship_5_refused')), true,
+        'and is written off the same way')
     refuse.ship_5_refused = nil
     eq(BR.Loot.boxes.fallback > 0, true, 'the fallbacks are counted for /brloot')
     eq(errored(), nil, 'no loop errored')

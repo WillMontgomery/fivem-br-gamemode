@@ -166,6 +166,19 @@ local function inThisBuild(hash)
     return known
 end
 
+--- Has client/loot.lua written this box off -- a stream that timed out there,
+--- or an object the engine refused -- so every crate wearing it is the wooden
+--- crate? Then it is neither asked for nor waited on (#403 review): a box in
+--- the build that never streams would otherwise hold the fade its whole ten
+--- seconds, under "Loading assets", on every trip for the rest of the session.
+--- Asked live, not cached: the answer can arrive during a wait.
+--- @param hash integer
+--- @return boolean
+local function writtenOff(hash)
+    return BR.Loot ~= nil and BR.Loot.boxWrittenOff ~= nil
+        and BR.Loot.boxWrittenOff(hash) == true
+end
+
 --- Has client/loot.lua built this box, and so taken it over?
 --- @param hash integer
 --- @return boolean
@@ -223,7 +236,9 @@ local function sync(withCars)
         end
     end
     for _, m in ipairs(crateSet()) do
-        if m.ours and inThisBuild(m.hash) then want[m.hash] = 'crate' end
+        if m.ours and inThisBuild(m.hash) and not writtenOff(m.hash) then
+            want[m.hash] = 'crate'
+        end
     end
 
     for hash in pairs(held) do
@@ -245,13 +260,18 @@ end
 ---
 --- A model this build does not have is never counted: it could never load,
 --- and a client without the Season 2 props draws the wooden crate instead
---- (client/loot.lua). One that is in the build and never loads is what the
---- fade's ten seconds are for. Asks for nothing -- BR.Preload.trip did.
+--- (client/loot.lua). Nor is one client/loot.lua has written off (writtenOff),
+--- for the same reason. One that is in the build and never loads is what the
+--- fade's ten seconds are for -- at most once a session, since loot.lua writes it
+--- off three seconds into building it. Asks for nothing -- BR.Preload.trip did.
 --- @return integer
 function BR.Preload.pendingCrates()
     local n = 0
     for _, m in ipairs(crateSet()) do
-        if inThisBuild(m.hash) and not isTrue(HasModelLoaded(m.hash)) then n = n + 1 end
+        if inThisBuild(m.hash) and not writtenOff(m.hash)
+                and not isTrue(HasModelLoaded(m.hash)) then
+            n = n + 1
+        end
     end
     return n
 end

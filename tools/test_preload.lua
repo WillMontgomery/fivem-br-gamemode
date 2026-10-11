@@ -157,7 +157,10 @@ BR.Shop = {
 
 --- The boxes client/loot.lua has built (BR.Loot.boxModels): [hash] = state.
 local built = {}
-BR.Loot = { boxModels = function() return built end }
+--- The boxes it has written off (BR.Loot.boxWrittenOff): [hash] = true.
+local dead = {}
+BR.Loot = { boxModels = function() return built end,
+            boxWrittenOff = function(h) return dead[h] == true end }
 
 local C = BR.Config.Crates
 local L = BR.Config.Loot
@@ -245,7 +248,7 @@ local function reset()
     BR.State.queued = false
     season(2)
     BR.World.setFestive(false)
-    built = {}
+    built, dead = {}, {}
     TriggerEvent('onClientResourceStop', 'br_core')
     for k in pairs(loaded) do loaded[k] = nil end
     clear()
@@ -574,6 +577,48 @@ do
     BR.Preload.pendingCrates()
     ok(total(requested) == 0 and total(released) == 0,
         'asking the count asks the streamer for nothing', calls - c)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 11. A BOX client/loot.lua WROTE OFF IS NEITHER WAITED ON NOR ASKED FOR AGAIN
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- #403 review: loot.lua gives a box that will not stream three seconds and then
+-- draws every crate wearing it as the wooden crate for the session. Still
+-- counted here, it held the fade its whole ten seconds, under "Loading
+-- assets", on every trip after.
+do
+    reset()
+    local DEAD = C.shipping[2].sealed
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.Preload.trip()
+    ok(BR.Preload.pendingCrates() == #PLAIN,
+        'precondition: every box this build has is waited on', BR.Preload.pendingCrates())
+    dead[hash(DEAD)] = true
+    ok(BR.Preload.pendingCrates() == #PLAIN - 1,
+        'a box written off during the wait stops holding it at once',
+        BR.Preload.pendingCrates())
+
+    -- The next trip, from a queued lobby.
+    BR.State.me.state = BR.PlayerState.BUS
+    slow()
+    clear()
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.State.queued = true
+    slow()
+    local rest = {}
+    for _, n in ipairs(PLAIN) do
+        if n ~= DEAD then rest[#rest + 1] = n end
+    end
+    local fine, why = once(requested, rest)
+    ok(fine and requested[DEAD] == nil,
+        'and the lobby asks for every other box, but never that one again', why)
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.Preload.trip()
+    for _, n in ipairs(rest) do loaded[n] = true end
+    ok(BR.Preload.pendingCrates() == 0,
+        'so the next trip\'s wait ends when the rest have loaded',
+        BR.Preload.pendingCrates())
 end
 
 -- ---------------------------------------------------------------- result ---
