@@ -292,6 +292,15 @@ local skippedMs = 0
 -- went, however that came about. 100 ms is 0.15 m of walk either way.
 local LATE_MS = 100
 
+-- ═══ THE GROUND UNDER A PLACED PED IS LOOKED FOR, NOT GUESSED (#406) ═══
+--
+-- planAt's height is a straight line between two surveyed corners, and leg 2
+-- drops 2.2 m: if that stretch is steps rather than a slope, the line is up to
+-- a meter into or above them. So the ground is probed from this far above the
+-- planned height, and an answer further than this from it is something else --
+-- an awning, a hole -- and the plan's own height is kept.
+local PROBE_M = 2.0
+
 -- ═══ THE EMOTE STATE, DECLARED HERE RATHER THAN BESIDE THE EMOTES ═══
 --
 -- Only because stop() is above them and has to clear `emoting`: a local
@@ -1351,14 +1360,41 @@ local function standOnStart(why)
     FreezeEntityPosition(ped, true)
 end
 
+--- The ground under (x, y), looked for from PROBE_M above `z`. Nil when the
+--- probe has no answer. THE FIRST RETURN IS A BOOL and goes through isTrue: a
+--- miss answers 0.0 beside its false, which is sea level here and would read as
+--- a height (client/gunshop.lua's probeGround makes the same point).
+--- @return number|nil
+local function groundUnder(x, y, z)
+    if type(GetGroundZFor_3dCoord) ~= 'function' then return nil end
+    local hit, gz = GetGroundZFor_3dCoord(x, y, z + PROBE_M, false)
+    if not isTrue(hit) then return nil end
+    return tonumber(gz)
+end
+
 --- Put a late ped where the walk would have got to (#406). planAt's point,
 --- written the way standOnStart writes the start mark: exact, frozen, and
 --- unfrozen by the walk that follows in the same frame.
+---
+--- THE ONE COORDINATE THIS FILE WRITES THAT NOBODY SURVEYED, so its height is
+--- probed (see PROBE_M): the ground under the point, plus the height the start
+--- mark's ped stands above its own ground -- both read here, under the same
+--- engine, so the ped is placed at its own standing height on whatever is
+--- really there. Either probe missing, or an answer outside the window, keeps
+--- the plan's height.
 --- @param p table  { x, y, z, heading }
 local function standAlong(p)
     local ped = PlayerPedId()
     RequestCollisionAtCoord(p.x, p.y, p.z)
-    SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false)
+    local z = p.z
+    local s = startMark()
+    local here = groundUnder(p.x, p.y, p.z)
+    local there = s and groundUnder(s.x, s.y, s.z)
+    if here and there then
+        local probed = here + (s.z - there)
+        if math.abs(probed - p.z) <= PROBE_M then z = probed end
+    end
+    SetEntityCoordsNoOffset(ped, p.x, p.y, z, false, false, false)
     SetEntityHeading(ped, p.heading + 0.0)
     FreezeEntityPosition(ped, true)
 end

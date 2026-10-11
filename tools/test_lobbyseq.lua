@@ -5286,6 +5286,61 @@ do
     ok(home and math.abs(home - C.walkTargetMs) <= ARRIVE_MS and not lastLeg.forced,
        ('and is home when the walk was due (%s ms)'):format(tostring(home)))
 
+    -- ═══ (d) THE HEIGHT OF A PLACED PED IS THE GROUND'S, NOT THE LINE'S ═══
+    --
+    -- planAt's height is a straight line between surveyed corners; leg 2 drops
+    -- 2.2 m. Here the ground is a flat terrace at the start mark's level and a
+    -- step down near the leg's far end -- so 8 s in, the line puts the ped's
+    -- middle 0.2 m BELOW the terrace it stands on: its legs in the ground.
+    -- The stub answers the way the native does: the highest ground at or
+    -- below the height it is asked from, and nothing when it is asked from
+    -- underneath. The start mark's ped stands 0.95 m over its ground.
+    local realProbe = GetGroundZFor_3dCoord
+    local stepY = P[1].y + (P[2].y - P[1].y) * 0.8
+    local terrace = S.z - 0.95
+    local function ground(fn)
+        GetGroundZFor_3dCoord = function(x, y, fromZ)
+            local g = fn(x, y)
+            if g == nil or g > fromZ then return 0, 0.0 end
+            return 1, g
+        end
+    end
+    local function lateZ(readyMs)
+        local r = entranceReadyAt(readyMs)
+        return r.placedAt and r.placed and r.placedAt.z or nil, r
+    end
+
+    GetGroundZFor_3dCoord = realProbe
+    local lineZ = lateZ(8000)
+    ok(lineZ and lineZ < terrace and lineZ > P[2].z,
+       ('precondition: 8 s in, the line between the corners is %s, under the terrace'):format(tostring(lineZ)))
+
+    ground(function(_, y) return (y > stepY) and terrace or (P[2].z - 1.0) end)
+    local stepZ = lateZ(8000)
+    ok(stepZ and math.abs(stepZ - S.z) < 0.01,
+       ('on stepped ground the ped is placed standing on the terrace, at %s (the line said %s)')
+           :format(tostring(stepZ), tostring(lineZ)))
+
+    -- A PROBE WITH NO ANSWER IS NOT SEA LEVEL. The native answers 0.0 beside
+    -- its false; read as a height that is a ped at the start mark's standing
+    -- height plus nothing, wherever it is.
+    ground(function() return nil end)
+    local missZ = lateZ(8000)
+    ok(missZ and lineZ and math.abs(missZ - lineZ) < 0.01,
+       ('a probe with no answer keeps the plan\'s height (%s)'):format(tostring(missZ)))
+
+    -- AND AN ANSWER FAR FROM THE PLAN IS SOMETHING ELSE: a hole under the
+    -- point, eight meters down, is not where the path is.
+    ground(function(x, y)
+        if BR.Dist(x, y, S.x, S.y) < 0.5 then return terrace end
+        return lineZ - 9.0
+    end)
+    local holeZ = lateZ(8000)
+    ok(holeZ and lineZ and math.abs(holeZ - lineZ) < 0.01,
+       ('an answer further than the probe window from the plan keeps the plan\'s height (%s)')
+           :format(tostring(holeZ)))
+    GetGroundZFor_3dCoord = realProbe
+
     -- ═══ (e) A PED THAT NEVER ARRIVES IS NOT CALLED READY ═══
     reset()
     BR.State.worldReady = true
