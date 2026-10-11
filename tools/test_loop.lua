@@ -1079,9 +1079,10 @@ do
     local names = {}
     for n in pairs(E) do names[#names + 1] = n end
     table.sort(names)
-    local want = { 'airdrop.render', 'bus.board', 'bus.fly', 'bus.ghosts', 'skydive.state' }
+    local want = { 'airdrop.render', 'bus.board', 'bus.fly', 'bus.ghosts', 'gamerules.apply', 'skydive.state' }
     ok(table.concat(names, ',') == table.concat(want, ','),
-        'the essential ones: the plane, the ride, the other planes, the drop\'s floor, the airdrop',
+        'the essential ones: the plane, the ride, the other planes, the drop\'s floor, the airdrop, '
+            .. 'and the rules that hold GTA\'s traffic and people down',
         table.concat(names, ', '))
 
     local ran = { fly = 0, board = 0, sky = 0, other = 0, late = 0, gone = 0, off = 0 }
@@ -1159,6 +1160,80 @@ do
     for _, n in ipairs(names) do if not found[n] then missing[#missing + 1] = n end end
     ok(#missing == 0, 'every essential name is a callback a client file in the manifest registers',
         'not registered anywhere: ' .. table.concat(missing, ', '))
+
+    -- ═══ AND EVERY CALLBACK THAT HOLDS GTA'S POPULATION DOWN IS ONE OF THEM ═══
+    --
+    -- Round 8's review: the five density multipliers last one frame, and on the
+    -- frames nothing writes them GTA spawns at 1.0 -- people, traffic and parked
+    -- cars that are still there after `on all`. So a callback that writes one,
+    -- itself or through the BR.Native function that does (applyGameRules), must
+    -- never stop. Read off the source, so a new one cannot slip past.
+    local function linesOf(path)
+        local fh = io.open(path, 'r')
+        local out = {}
+        if not fh then return out end
+        for l in fh:lines() do out[#out + 1] = l end
+        fh:close()
+        return out
+    end
+    local DENSITY = 'DensityMultiplierThisFrame'
+    local holders = {}
+    do
+        local fn = nil
+        for _, l in ipairs(linesOf(ROOT .. 'br_core/client/natives.lua')) do
+            local start = l:match('^function BR%.Native%.([%w_]+)%(')
+            if start then fn = start elseif l:match('^end') then fn = nil end
+            if fn and l:find(DENSITY, 1, true) and not l:match('^%s*%-%-') then holders[fn] = true end
+        end
+    end
+    local holderNames = {}
+    for n in pairs(holders) do holderNames[#holderNames + 1] = n end
+    ok(holders.applyGameRules == true and #holderNames == 1,
+        'the population is held by one BR.Native function, applyGameRules', table.concat(holderNames, ', '))
+    local function holds(text)
+        if text:find(DENSITY, 1, true) then return true end
+        for n in pairs(holders) do
+            if text:find('BR.Native.' .. n .. '(', 1, true) then return true end
+        end
+        return false
+    end
+    local holding, notKept, read = {}, {}, 0
+    for path in body:gmatch("'(client/[^']+%.lua)'") do
+        local L = linesOf(ROOT .. 'br_core/' .. path)
+        for i, l in ipairs(L) do
+            local ind, name, rest = l:match("^(%s*).-BR%.Loop%.register%(%s*BR%.Loop%.%u+%s*,%s*'([^']+)'%s*,%s*(.*)$")
+            if name then
+                read = read + 1
+                -- The callback's own lines: the function written in place, to
+                -- its `end)`, or the named function handed over, to its `end`.
+                local text = {}
+                local fnName = rest:match('^([%a_][%w_]*)%s*%)')
+                local from, close = nil, nil
+                if fnName then
+                    for j, m in ipairs(L) do
+                        if m:match('^%s*local function ' .. fnName .. '%(')
+                            or m:match('^%s*function ' .. fnName .. '%(') then
+                            from, close = j, '^' .. m:match('^(%s*)') .. 'end'
+                        end
+                    end
+                else
+                    from, close = i, '^' .. ind .. 'end%)'
+                end
+                for j = from or (#L + 1), #L do
+                    if not L[j]:match('^%s*%-%-') then text[#text + 1] = L[j] end
+                    if j > from and L[j]:match(close) then break end
+                end
+                if holds(table.concat(text, '\n')) then
+                    holding[#holding + 1] = name
+                    if not E[name] then notKept[#notKept + 1] = name end
+                end
+            end
+        end
+    end
+    ok(read >= 100 and #holding >= 1 and #notKept == 0,
+        'every callback that writes the density multipliers keeps running under off all',
+        ('%d registrations read; holding: %s; not kept: %s'):format(read, table.concat(holding, ', '),
+            table.concat(notKept, ', ')))
 end
 
 describe('state helpers')

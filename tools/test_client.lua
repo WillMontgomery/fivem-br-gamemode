@@ -9006,7 +9006,8 @@ do
     ok(detached == 0 and engineOff == 0, 'its rider still aboard, its engine never stopped',
         ('detached %d, engine off %d'):format(detached, engineOff))
     ok(probe == 0, 'and every other callback stopped', ('a plain callback ran %d times'):format(probe))
-    ok((logged[#logged] or ''):find('stopped but airdrop.render, bus.board, bus.fly, bus.ghosts, skydive.state', 1, true),
+    ok((logged[#logged] or ''):find('stopped but airdrop.render, bus.board, bus.fly, bus.ghosts, '
+            .. 'gamerules.apply, skydive.state', 1, true),
         'the console names what kept running', logged[#logged])
 
     -- THE JUMP, STILL UNDER `off all` (the server's exit coordinates are an

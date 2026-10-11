@@ -662,7 +662,8 @@ RegisterCommand('brloop', function(_, args)
     local enable = (action == 'on' or action == 'enable')
     -- THE OWNER'S RESMON SWITCHES (#393; docs/running.md says what to read). `all`
     -- stops or restarts every BR.Loop callback at once (BR.Loop.pauseAll) but the
-    -- few that fly a vehicle or hold the drop (BR.Loop.ESSENTIAL, round 8), and
+    -- few that fly a vehicle, hold the drop or hold GTA's population down
+    -- (BR.Loop.ESSENTIAL, round 8), and
     -- `sfui` idles the included ScaleformUI's per-frame loop (BR-PATCH 7 in the
     -- vendored library). Dev mode only, like every command here.
     if name == 'all' then

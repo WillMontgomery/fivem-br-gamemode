@@ -56,17 +56,30 @@ local registry = {
 -- restarts. So `off all` stops everything BUT what flies a vehicle or holds the
 -- drop's safety net, and `on all` has nothing to repair. skydive.state is that
 -- net: with skydive.prompt stopped, F cuts a canopy away again, and the floor
--- gives it back and opens it. Everything else stops and is whole again the
--- frame it starts: a HUD element, a prompt, a key (our jump and chute keys too;
--- GTA's own parachute control is live while skydive.prompt is stopped), a
--- camera that freezes and catches up. docs/running.md says what these cost in a
--- reading.
+-- gives it back and opens it.
+--
+-- AND GTA'S OWN RULES (round 8's review). gamerules.apply is the only thing that
+-- holds GTA's ambient population down, and its five density multipliers last one
+-- frame: stopped, GTA spawns people, traffic and parked cars at its own 1.0, and
+-- they are still there after `on all`. The same pass keeps the death latch, the
+-- HUD hides and the pause-menu retake. tools/test_loop.lua holds every callback
+-- that writes a density multiplier to this list.
+--
+-- Everything else stops and comes back by itself when it restarts: a prompt or a
+-- draw, a camera that freezes and catches up, a prop flown by the clock (the
+-- Airstrike's rockets, a vehicle drop, loot and warmup crates flying home) placed
+-- where the clock says or finished. What the stopped ones let through needs a key
+-- pressed or a hit landed meanwhile: GTA's weapon wheel and the controls our
+-- callbacks block (our keys do nothing; GTA's own parachute control works), and a
+-- squadmate's hit that squadmates.noff would have undone. docs/running.md says
+-- what the kept ones cost in a reading.
 local ESSENTIAL = {
-    ['bus.fly']        = 'the plane: its route, its rider, the ride camera',
-    ['bus.board']      = 'the ride: boarding, its end, the eject net, the island handoff',
-    ['bus.ghosts']     = "another match's planes, seen from the warmup pad",
-    ['skydive.state']  = 'the drop: the chute floor and the landing',
-    ['airdrop.render'] = 'the airdrop: its aircraft and the falling crate',
+    ['bus.fly']         = 'the plane: its route, its rider, the ride camera',
+    ['bus.board']       = 'the ride: boarding, its end, the eject net, the island handoff',
+    ['bus.ghosts']      = "another match's planes, seen from the warmup pad",
+    ['skydive.state']   = 'the drop: the chute floor and the landing',
+    ['airdrop.render']  = 'the airdrop: its aircraft and the falling crate',
+    ['gamerules.apply'] = "GTA's rules: its people and traffic held down, the death latch, its HUD",
 }
 BR.Loop.ESSENTIAL = ESSENTIAL
 
