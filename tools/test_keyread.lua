@@ -237,6 +237,27 @@ do
     ok(reads[VK.B] == 1, 'either one saying yes is enough')
 end
 
+describe('a live check says yes with true, as it always had to')
+do
+    -- The row's check is `yes == true`, as rowLive's was before round 9 wrote it out in
+    -- the loop: a check answering 1 or a string has not said yes. (The round 9 review:
+    -- `if yes then` passed every suite here; only a differential with a check answering
+    -- 1 told the two apart.)
+    boot()
+    local answer = 1
+    BR.Keys.on('specNext', function() end, function() return answer end)
+    frame()
+    ok((reads[VK.RIGHT] or 0) == 0, 'a check answering 1 has not said yes: RIGHT is unread',
+       ('%d reads of RIGHT'):format(reads[VK.RIGHT] or 0))
+    answer = 'yes'
+    frame()
+    ok((reads[VK.RIGHT] or 0) == 0, 'nor has one answering a string',
+       ('%d reads of RIGHT'):format(reads[VK.RIGHT] or 0))
+    answer = true
+    frame()
+    ok(reads[VK.RIGHT] == 1, 'and one answering true reads it')
+end
+
 describe('a borrowed press keeps its key read')
 do
     boot()

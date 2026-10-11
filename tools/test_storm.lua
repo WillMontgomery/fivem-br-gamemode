@@ -6576,6 +6576,19 @@ do
     ok(Q.errored() == nil and ours > 50 and ours == #Q.polys,
         'and a wrapper of our own over the global is called for every draw',
         ('%d through ours, %d drawn'):format(ours, #Q.polys))
+
+    -- AND THE HANDLER IS LOOKED UP AGAIN WHEN THE GLOBAL CHANGES (round 9 review): P
+    -- has drawn through the handler behind the loader's wrapper all along; with the
+    -- global swapped for a wrapper of ours mid-session, the next frame draws through
+    -- ours, every triangle.
+    local handler = direct(P.env.DrawSpritePoly, 'DrawSpritePoly')
+    local swapped = 0
+    P.env.DrawSpritePoly = function(...) swapped = swapped + 1 return handler(...) end
+    P.now = P.now + 2984
+    P.frame()
+    ok(P.errored() == nil and handler ~= nil and swapped > 20 and swapped == #P.polys,
+        'and a global swapped mid-session is the one the next frame draws through',
+        ('%d through the new global, %d drawn'):format(swapped, #P.polys))
 end
 
 -- ---------------------------------------------------------------------------
