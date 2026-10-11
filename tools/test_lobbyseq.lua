@@ -4485,6 +4485,34 @@ do
 end
 
 do
+    -- ═══ A CURTAIN LIFTED MID-WAIT IS NOT PUT BACK BY THE WORDS ═══
+    --
+    -- #403 review: the watchdog and /brunstuck can take the curtain down while
+    -- the gate is still waiting (both call BR.Spawn.curtain(false)). The words
+    -- change a curtain that is up; they never raise one, so three seconds in
+    -- a lifted curtain stays lifted instead of coming back as black.
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 0 })
+    crateStock({ blitz_loot_epic = false })
+
+    order, words = {}, {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    local limit = fakeTime + 10000
+    while hurriedAt == nil and fakeTime < limit do pump(50) end
+    ok(hurriedAt ~= nil and BR.Spawn.curtainWanted == true,
+        'precondition: the gate opened under the curtain')
+    BR.Spawn.curtain(false)
+    pump(BR.Spawn.departure.loadingWordsMs + 1000)
+    ok(#loadingWords() == 0 and not BR.Spawn.curtainWanted,
+        'a curtain lifted before three seconds is not raised again with the '
+            .. '"Loading assets" words', #loadingWords())
+    pump(10000)
+end
+
+do
     -- ═══ A CRATE QUESTION THAT THROWS IS NO WAIT, SAID ONCE ═══
     reset()
     wearChosenModel()
