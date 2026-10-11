@@ -89,14 +89,40 @@
 --                server's figure, or the vehicle wrecked -- the owner writes a
 --                vehicle's health, and the wreck goes up as any wreck does.
 --
+-- ═══ WHY THEY WERE STILL NOT SEEN (round 8, owner 2026-10-11: "Airstrikes
+--     didn't seem to spawn any props....") ═══
+--
+-- The server ran each strike (its log said "ok (done)" three times) and this
+-- file flew each rocket -- where nobody could see it. Measured on the curve
+-- itself (tools/test_terminalstrike.lua), from where the rehearsal stands --
+-- 60 m off the spot, looking at it, through GTA's 50-degree camera -- a round
+-- 7 rocket was in the picture, near enough to be more than a few pixels, for
+-- a median 0.35 s of its 3 s. It launched 320 m off and 160 m up (a 1 m rocket
+-- at 300 m is four pixels), crossed the sky above the top of the picture at
+-- 130 m/s and came into it only for its last dive. Round 6's straight fall
+-- from 150 m was the same: above the picture until its last half second.
+-- Since round 8 each comes in LOW AND SLOWER (art.rocket): 240 m off and 70 m
+-- up, five seconds in the air at about 50 m/s, diving from 35 m onto its
+-- point -- in that picture for a median 1.4 s, and from 150 m off for 1.75 s
+-- or more, every rocket (round 7: 0.58 s).
+--
+-- AND THE NEXT TEST SAYS WHICH IT WAS (dev mode only, F8): one line per
+-- strike -- how many rockets were made, as which model, how many had their
+-- trail, how many the game reported on screen (IS_ENTITY_ON_SCREEN, sampled
+-- while they fly) and how near the nearest came; or why none was drawn here:
+-- too far off, already over, each model and why it would not load, the
+-- object the game would not make.
+--
 -- ═══ WHAT IT COSTS ═══
 --
 -- Nothing per frame but the rockets: a FRAME callback registered a moment
 -- before the first one launches within draw distance and unregistered when
--- the last has landed (about seven seconds). Each rocket in the air is moved
+-- the last has landed (about ten seconds). Each rocket in the air is moved
 -- AND turned every frame since round 7 -- a curve's heading changes as it
 -- flies, where round 5's straight slant was turned once -- so a strike's
--- frames cost two natives a rocket, up to eight rockets in the air at once.
+-- frames cost two natives a rocket, all ten in the air at once for a moment
+-- since round 8's five-second flight (and a third, IS_ENTITY_ON_SCREEN, in
+-- dev mode only).
 -- The circles move on the server's pushes; the SLOW hook returns at once with
 -- nothing up.
 
@@ -111,6 +137,16 @@ local isTrue = BR.NativeTruthy
 local function fx() return BR.Config.Terminals.fx or {} end
 local function art() return BR.Config.Terminals.art or {} end
 local function copy() return BR.Config.Terminals.copy end
+
+--- Is this a dev box? Asked once a strike (BR.Dev.on reads two convars).
+local function devOn()
+    return BR.Dev ~= nil and BR.Dev.on ~= nil and BR.Dev.on() == true
+end
+
+--- The dev line (the header's round 8): F8, dev mode only.
+local function sayDev(id, text)
+    print(('[br_core] airstrike %s: %s'):format(tostring(id), text))
+end
 
 local function removeBlip(b)
     if b and isTrue(DoesBlipExist(b)) then RemoveBlip(b) end
@@ -245,27 +281,59 @@ function F.blastScale()
 end
 
 --- The first rocket model that streams in, bounded: art.rocket.models in order
---- (the RPG's rocket first), each checked before it is asked for. Nil when
---- none would come -- said once on the console, since nothing else can show it.
---- @return integer|nil hash
+--- (the Homing Launcher's rocket first), each checked before it is asked for.
+--- Nil when none would come -- said once on the console, since nothing else
+--- can show it -- with why each one would not, for the dev line.
+--- @return integer|nil hash, string|nil name, string[] why
 local function loadRocketModel()
     local R = rocketArt()
     local list = type(R.models) == 'table' and R.models or { R.model or 'w_lr_rpg_rocket' }
+    local bound = tonumber(R.loadMs) or 5000
+    local why = {}
     for _, name in ipairs(list) do
         local h = GetHashKey(name)
-        if isTrue(IsModelInCdimage(h)) and isTrue(IsModelValid(h)) then
+        if not isTrue(IsModelInCdimage(h)) then
+            why[#why + 1] = name .. ' is not in the game files'
+        elseif not isTrue(IsModelValid(h)) then
+            why[#why + 1] = name .. ' is not a valid model'
+        else
             RequestModel(h)
             local waited = 0
-            while not isTrue(HasModelLoaded(h)) and waited < (tonumber(R.loadMs) or 5000) do
+            while not isTrue(HasModelLoaded(h)) and waited < bound do
                 Citizen.Wait(50)
                 waited = waited + 50
             end
-            if isTrue(HasModelLoaded(h)) then return h end
+            if isTrue(HasModelLoaded(h)) then return h, name, why end
+            why[#why + 1] = ('%s did not load in %d ms'):format(name, bound)
         end
     end
     print('^3[br_core] airstrike: no rocket model would load (' .. table.concat(list, ', ')
         .. ') -- this strike shows its blasts only^7')
-    return nil
+    return nil, nil, why
+end
+
+--- The dev line for a strike drawn here, once its last rocket has landed:
+--- what was made and seen, or why nothing was.
+local function sayDrawn(s)
+    local d = s.dev
+    local n = #s.rockets
+    if not s.modelName then
+        sayDev(s.id, ('no rocket drawn -- %s; the blasts only')
+            :format(#d.why > 0 and table.concat(d.why, '; ') or 'the model was still loading'))
+        return
+    end
+    local line = ('%d of %d rockets made as %s, %d with a trail, %d on screen')
+        :format(d.made, n, s.modelName, d.trails, d.seen)
+    if d.seen > 0 then line = line .. (' (the longest %.1f s)'):format(d.seenMs / 1000) end
+    if d.nearest then line = line .. (', the nearest %.0f m from this view'):format(d.nearest) end
+    if d.refused > 0 then
+        line = line .. ('; %d the game would not make (CreateObjectNoOffset answered 0)'):format(d.refused)
+    end
+    local late = n - d.made - d.refused
+    if late > 0 then line = line .. ('; %d landed before the model was in'):format(late) end
+    if d.noTrail then line = line .. '; no trail: ' .. d.noTrail end
+    if #d.why > 0 then line = line .. ' (' .. table.concat(d.why, '; ') .. ')' end
+    sayDev(s.id, line)
 end
 
 --- How many strikes this client shows, and rockets in the air. For the suites.
@@ -297,11 +365,12 @@ local function rocketPath(rk, t)
     local vx, vy = -uy, ux
     local gx, gy, gz = rk.x, rk.y, rk.gz
     -- The four points: the launch; level at launch height, 60% of the way
-    -- out and veering; over the point at diveUpM, a little short of it; the
-    -- point.
+    -- out and veering; at diveUpM a fifth of the way out (round 8: at a
+    -- tenth, a five-second flight slowed to under half its launch speed over
+    -- its point); the point.
     local p0x, p0y, p0z = gx + ux * L, gy + uy * L, gz + H
     local p1x, p1y, p1z = gx + ux * L * 0.6 + vx * Wv, gy + uy * L * 0.6 + vy * Wv, gz + H
-    local p2x, p2y, p2z = gx + ux * L * 0.1 + vx * Wv * 0.3, gy + uy * L * 0.1 + vy * Wv * 0.3, gz + D
+    local p2x, p2y, p2z = gx + ux * L * 0.2 + vx * Wv * 0.3, gy + uy * L * 0.2 + vy * Wv * 0.3, gz + D
     local a = 1.0 - t
     local b0, b1, b2, b3 = a * a * a, 3.0 * a * a * t, 3.0 * a * t * t, t * t * t
     local x = b0 * p0x + b1 * p1x + b2 * p2x + b3 * gx
@@ -361,18 +430,28 @@ local function land(s, rk, view)
         local within = tonumber(R.shakeM) or 60.0
         if d < within then ShakeGameplayCam(R.shake, 0.6 * (1.0 - d / within)) end
     end
+    -- THE DEV LINE once the last has landed (the header's round 8).
+    s.landed = (s.landed or 0) + 1
+    if s.dev and s.landed == #s.rockets then sayDrawn(s) end
 end
 
 --- A rocket in the air: made on its first frame, moved and turned along its
 --- curve on every one after.
-local function fly(s, rk, now)
+local function fly(s, rk, now, dt, view)
     local R = rocketArt()
     local x, y, z, dx, dy, dz = rocketPath(rk, flightT(rk, now))
+    local dev = s.dev
     if not rk.obj then
         -- THE MODEL prepare() STREAMED IN, or none would come (said once).
         if not s.model then return end
         local obj = CreateObjectNoOffset(s.model, x, y, z, false, false, false)
-        if not obj or obj == 0 then return end
+        if not obj or obj == 0 then
+            if dev and not rk.refused then
+                rk.refused = true
+                dev.refused = dev.refused + 1
+            end
+            return
+        end
         -- DRAWN FROM AS FAR AS ANYBODY SEES IT FALL (the header's second
         -- reason): a weapon's drawable is culled past its own few meters.
         if SetEntityLodDist then pcall(SetEntityLodDist, obj, math.floor(tonumber(R.lodDist) or 1000)) end
@@ -384,18 +463,46 @@ local function fly(s, rk, now)
             rk.trail = StartParticleFxLoopedOnEntity(R.trail, obj, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 1.0, false, false, false)
         end
+        if dev then
+            if rk.refused then
+                rk.refused = nil
+                dev.refused = dev.refused - 1
+            end
+            dev.made = dev.made + 1
+            if rk.trail and rk.trail ~= 0 then
+                dev.trails = dev.trails + 1
+            elseif R.trailAsset and R.trail then
+                dev.noTrail = isTrue(HasNamedPtfxAssetLoaded(R.trailAsset))
+                    and ('the game would not start ' .. R.trail)
+                    or ('the particle asset ' .. R.trailAsset .. ' was not loaded')
+            end
+        end
     end
     SetEntityCoords(rk.obj, x, y, z, false, false, false, false)
     aim(rk.obj, dx, dy, dz)
+    -- WHAT THE GAME SAYS IT SHOWS, AND HOW NEAR (dev mode only).
+    if dev then
+        if isTrue(IsEntityOnScreen(rk.obj)) then
+            if not rk.seenMs then dev.seen = dev.seen + 1 end
+            rk.seenMs = (rk.seenMs or 0) + (dt or 0)
+            if rk.seenMs > dev.seenMs then dev.seenMs = rk.seenMs end
+        end
+        if view then
+            local ex, ey, ez = x - view.x, y - view.y, z - (view.z or z)
+            local d = math.sqrt(ex * ex + ey * ey + ez * ez)
+            if not dev.nearest or d < dev.nearest then dev.nearest = d end
+        end
+    end
 end
 
-local function stepRockets()
+local function stepRockets(dt)
     local now = BR.Clock.now()
     local view = nil
     local pending = false
     local ms = flightMs()
     for _, s in pairs(strikes) do
         if s.near then
+            if s.dev then view = view or viewpoint() end
             for _, rk in ipairs(s.rockets) do
                 if not rk.done then
                     if now >= rk.at then
@@ -403,7 +510,7 @@ local function stepRockets()
                         land(s, rk, view)
                     else
                         pending = true
-                        if now >= rk.at - ms and rk.gz then fly(s, rk, now) end
+                        if now >= rk.at - ms and rk.gz then fly(s, rk, now, dt, view) end
                     end
                 end
             end
@@ -457,12 +564,13 @@ local function prepare(s)
         for _, rk in ipairs(s.rockets) do rk.gz = groundAt(rk.x, rk.y, gz) end
         -- THE MODEL, STREAMED AND WAITED ON (the header's first reason), well
         -- inside the warning: it is asked for the moment the strike is known.
-        local model = loadRocketModel()
+        local model, name, why = loadRocketModel()
         if strikes[s.id] ~= s then
             releaseModel(model)
             return
         end
-        s.model = model
+        s.model, s.modelName = model, name
+        if s.dev then s.dev.why = why end
         local first = s.rockets[1] and s.rockets[1].at or s.startsAt
         local wait = first - flightMs() - 250 - BR.Clock.now()
         if wait > 0 then Citizen.Wait(math.floor(wait)) end
@@ -501,14 +609,24 @@ AddEventHandler(BR.Net.TERMINAL_STRIKE, function(d)
                 endsAt = d.endsAt, rockets = rockets }
     strikes[id] = s
     s.ring = circle(s.x, s.y, s.r, art().strike or {}, copy().airstrike_blip)
+    -- What the dev line counts (the header's round 8), on a dev box only.
+    local dev = devOn()
+    if dev then s.dev = { made = 0, refused = 0, trails = 0, seen = 0, seenMs = 0, why = {} } end
     -- THE ROCKETS, THE FLARE AND THE BLASTS ONLY WITHIN SIGHT.
     local p = viewpoint()
     local reach = tonumber(fx().strikeDrawM) or 800.0
-    if p and BR.Clock.now() < s.endsAt then
+    if not p then
+        if dev then sayDev(id, 'not drawn here -- this client has no view to draw it from') end
+    elseif BR.Clock.now() >= s.endsAt then
+        if dev then sayDev(id, 'not drawn here -- its last rocket had landed before it arrived') end
+    else
         local dx, dy = p.x - s.x, p.y - s.y
         if dx * dx + dy * dy <= reach * reach then
             s.near = true
             prepare(s)
+        elseif dev then
+            sayDev(id, ('not drawn here -- %.0f m from this view; rockets are drawn within %.0f m')
+                :format(math.sqrt(dx * dx + dy * dy), reach))
         end
     end
 end)

@@ -1612,11 +1612,11 @@ The server's points, schedule and damage are untouched. Each rocket is the
 Homing Launcher's own model (`w_lr_homing_rocket`, then the RPG's rocket and a
 vehicle missile as stand-ins) with the trail the Homing Launcher's ammo draws
 (`proj_rpg_trail`, weaponhominglauncher.meta's TrailFx), looped on it from
-launch to landing. It is launched `launchM` (320 m) off to the side and
-`launchUpM` (160 m) over its point, cruises in at that height veering
-`weaveM` (40 m) to one side, dives from `diveUpM` (90 m) and lands on the
+launch to landing. It is launched `launchM` (240 m) off to the side and
+`launchUpM` (70 m) over its point, cruises in at that height veering
+`weaveM` (30 m) to one side, dives from `diveUpM` (35 m) and lands on the
 first surface under its point (a roof, or the street) at exactly its
-scheduled time, `flightMs` (3 s) after launch -- a cubic curve, its nose along
+scheduled time, `flightMs` (5 s) after launch -- a cubic curve, its nose along
 it every frame (`rocketPath`). The launch bearing comes from the strike's id,
 fanned over `fanDeg` (50 degrees) by each rocket's place in the schedule, so
 every client draws the same flight. The page's third line says the rockets
@@ -1632,9 +1632,27 @@ hurts whatever it touches on that machine and is judged by
 `server/damage.lua`'s explosion checks; these hurt nothing, send nothing and
 flag nobody. A FRAME callback only from a moment before the first rocket
 launches to the last one landing; each rocket in the air is moved and turned
-every frame (two natives a rocket, up to eight at once), so the strike's own
-frames cost more than round 6's straight slant -- `match airstrike` in
-`tools/perf_budget.lua` was rebaselined for that alone.
+every frame (two natives a rocket, all ten at once for a moment since round
+8), so the strike's own frames cost more than round 6's straight slant --
+`match airstrike` in `tools/perf_budget.lua` was rebaselined for that alone.
+
+**Why they were still not seen** (round 8, owner 2026-10-11: "Airstrikes
+didn't seem to spawn any props...."). The server ran each strike and the
+client flew each rocket -- where nobody could see it. From where `brterminal
+run airstrike` stands its player (60 m off, looking at the spot, GTA's
+50-degree camera), a round 7 rocket was in the picture and near enough to be
+more than a few pixels for a median 0.35 s of its 3 s: launched 320 m out and
+160 m up, it crossed above the top of the picture at 130 m/s and came in for
+its last dive alone (round 6's fall from 150 m likewise). So it comes in low
+and slower now (the numbers above, about 50 m/s): a median 1.4 s in that
+picture, and 1.75 s or more for every rocket seen from 150 m off;
+`tools/test_terminalstrike.lua` measures both on the real curve. **The dev
+line** (dev mode only): one F8 line a strike -- `airstrike <id>: 10 of 10
+rockets made as w_lr_homing_rocket, 10 with a trail, 9 on screen (the longest
+1.6 s), the nearest 58 m from this view`, the count on screen being what
+`IS_ENTITY_ON_SCREEN` answered while they flew -- or why nothing was drawn:
+too far off (and the reach), already over, each model and why it would not
+load, or how many objects the game would not make.
 
 **The damage is the server's.** Each rocket deals `fx.strikeDamage` (150) to
 every player standing or downed within `fx.strikeFullM` (5 m; 4 m until round

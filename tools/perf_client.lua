@@ -2487,7 +2487,8 @@ local PHASES = {
         -- the circle and the flare, then its ten rockets flying in and bursting
         -- over the next four seconds -- the FRAME callback carrying them, each
         -- moved and turned along its homing curve every frame (round 7), gone
-        -- with the last -- and the circle off the map two seconds after.
+        -- with the last -- and the circle off the map two seconds after. Round
+        -- 8's flights are five seconds, so the first are already in the air.
         if not serverHas('terminals') then return end
         local p = entPos(W.me)
         local t0 = gameMs() + 2000

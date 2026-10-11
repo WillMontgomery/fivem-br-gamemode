@@ -1971,6 +1971,14 @@ local flares = {}
 BR.Flare = { fire = function(x, y, z) flares[#flares + 1] = { x = x, y = y, z = z } return true end }
 local pickingNow = false
 BR.Terminal = { picking = function() return pickingNow end }
+-- ROUND 8: the dev line -- a dev box or not, and what the game says it shows.
+local devBox = false
+BR.Dev = { on = function() return devBox end }
+local onScreen = true
+function IsEntityOnScreen(e)
+    call('IsEntityOnScreen')
+    return onScreen and C.ents[e] ~= nil and C.ents[e].alive
+end
 loadAll({ 'br_core/client/terminalfx/airstrike.lua' })
 local RA = CC.art.rocket
 
@@ -2098,7 +2106,7 @@ do
     advance(RA.flightMs - 600, 50)
     ok(C.ents[rocket].alive, 'a moment before its time: still in the air')
     rot = fxCalls.rotations[rocket]
-    ok(rot and rot.p < -60.0, 'diving onto its point, nose down', rot and rot.p)
+    ok(rot and rot.p < -20.0, 'diving onto its point, nose down', rot and rot.p)
     advance(150, 50)
     ok(not C.ents[rocket].alive, 'landed: the rocket object is gone')
     ok(fxCalls.stoppedSet[fxCalls.looped[1].h] == true, 'and its trail stopped with it')
@@ -2300,6 +2308,154 @@ do
     eq(fxCalls.forbidden, 0, 'and never an explosion that is real, nor a projectile')
     advance(FX.strikeLingerMs + 100, 500)
     slow()
+end
+
+describe('client: Airstrike -- every rocket in the picture of a player watching the spot (round 8)')
+do
+    -- Owner, 2026-10-11: "Airstrikes didn't seem to spawn any props...." The
+    -- server ran each (its log: "ok (done)") and the client flew each -- where
+    -- nobody could see it. THE PICTURE: GTA's gameplay camera, 50 degrees
+    -- high, 16:9, eyes 1.8 m up, looking level at the spot. A rocket counts as
+    -- seen on a frame it is inside that picture and near enough for its meter
+    -- to be 5 pixels of a 1080-line screen (247 m). Round 7's flight -- 320 m
+    -- out, 160 m up, 3 s -- was in it for a median 0.35 s from 60 m, where
+    -- `brterminal run airstrike` stands its player, and for as little as 0.58 s
+    -- from 150 m: it crossed above the top of the picture and came in for its
+    -- last dive alone.
+    resetWorld()
+    W.me = { x = 10.0, y = 0.0, z = 20.0 }
+    for k in pairs(C.ents) do C.ents[k] = nil end
+    local halfV = math.rad(25.0)
+    local halfH = math.atan(16.0 / 9.0 * math.tan(halfV))
+    local farthest = 1080.0 / math.rad(50.0) / 5.0
+    local function seenMs(id, i, at, vx, vy, vz, yaw)
+        local ms = 0
+        for t = at - RA.flightMs, at, 16 do
+            local x, y, z = F.rocketAt(id, i, t)
+            local dx, dy, dz = x - vx, y - vy, z - vz
+            local flat = math.sqrt(dx * dx + dy * dy)
+            local dist = math.sqrt(flat * flat + dz * dz)
+            local side = (math.atan(dy, dx) - yaw + math.pi) % (2.0 * math.pi) - math.pi
+            if dist <= farthest and math.abs(side) < halfH and math.abs(math.atan(dz, flat)) < halfV then
+                ms = ms + 16
+            end
+        end
+        return ms
+    end
+    local function watch(off)
+        local all = {}
+        for id = 51, 56 do
+            local msg = strikeMsg(id, 0.0, 0.0)
+            cfire(BR.Net.TERMINAL_STRIKE, msg)
+            runThreads()
+            for b = 0, 315, 45 do
+                local vx, vy = math.cos(math.rad(b)) * off, math.sin(math.rad(b)) * off
+                local yaw = math.atan(-vy, -vx)
+                for i, rk in ipairs(msg.rockets) do
+                    all[#all + 1] = seenMs(id, i, rk.at, vx, vy, W.groundZ + 1.8, yaw)
+                end
+            end
+        end
+        table.sort(all)
+        return all[math.floor(#all / 2)], all[1]
+    end
+    local median60 = watch(60.0)
+    ok(median60 >= 1000, ('from 60 m, where the rehearsal stands: each rocket in the picture for a '
+        .. 'median %.2f s of its %.1f s -- a second at least'):format(median60 / 1000, RA.flightMs / 1000))
+    local _, least150 = watch(150.0)
+    ok(least150 >= 1500, ('from 150 m: every rocket in the picture for %.2f s or more -- a second '
+        .. 'and a half at least'):format(least150 / 1000))
+    -- AND NOT BY BEING SLOW: a missile's speed, never under 30 m/s.
+    local slowest = math.huge
+    local msg = strikeMsg(51, 0.0, 0.0)
+    cfire(BR.Net.TERMINAL_STRIKE, msg)
+    runThreads()
+    local at = msg.rockets[1].at
+    for t = at - RA.flightMs, at - 16, 16 do
+        local x0, y0, z0 = F.rocketAt(51, 1, t)
+        local x1, y1, z1 = F.rocketAt(51, 1, t + 16)
+        local v = math.sqrt((x1 - x0) ^ 2 + (y1 - y0) ^ 2 + (z1 - z0) ^ 2) / 0.016
+        if v < slowest then slowest = v end
+    end
+    ok(slowest >= 30.0, ('flying at %.0f m/s at its slowest'):format(slowest))
+    advance(FX.strikeWarnMs + RA.flightMs, 100)
+    advance(FX.strikeLingerMs + 100, 500)
+    slow()
+end
+
+describe('client: Airstrike -- the dev line says what was drawn, or why not (round 8)')
+do
+    -- So the next test in game is conclusive either way: on a dev box, one F8
+    -- line a strike.
+    local function lineFor(id)
+        local want = ('[br_core] airstrike %d: '):format(id)
+        local found = nil
+        for _, l in ipairs(logs) do
+            if l:sub(1, #want) == want then
+                if found then return nil, 'said twice' end
+                found = l
+            end
+        end
+        return found
+    end
+    local function strikeAt(id, over)
+        resetWorld()
+        W.me = { x = 10.0, y = 0.0, z = 20.0 }
+        for k in pairs(C.ents) do C.ents[k] = nil end
+        logs = {}
+        if over then over() end
+        cfire(BR.Net.TERMINAL_STRIKE, strikeMsg(id, 0.0, 0.0))
+        runThreads()
+        advance(FX.strikeWarnMs + 5000, 50)
+        local l = lineFor(id)
+        advance(FX.strikeLingerMs + 100, 500)
+        slow()
+        return l
+    end
+
+    -- NOT A DEV BOX: nothing.
+    devBox = false
+    eq(strikeAt(61), nil, 'off a dev box: no line')
+
+    devBox = true
+    -- DRAWN, AND THE GAME SAYS ON SCREEN.
+    onScreen = true
+    local l = strikeAt(62)
+    ok(l and l:find('10 of 10 rockets made as w_lr_homing_rocket, 10 with a trail, 10 on screen', 1, true)
+        and l:find('the nearest %d+ m from this view'), 'drawn: what was made, its trail, on screen, how near', l)
+    -- DRAWN, AND THE GAME SAYS NOT ONE WAS ON SCREEN.
+    onScreen = false
+    l = strikeAt(63)
+    ok(l and l:find('10 of 10 rockets made', 1, true) and l:find(', 0 on screen', 1, true),
+        'made but never on screen: it says so', l)
+    onScreen = true
+    -- NO MODEL WOULD LOAD: each one, and why.
+    l = strikeAt(64, function()
+        for _, name in ipairs(RA.models) do models.missing[joaat(name)] = true end
+    end)
+    models.missing = {}
+    ok(l and l:find('no rocket drawn -- w_lr_homing_rocket is not in the game files; '
+        .. 'w_lr_rpg_rocket is not in the game files; w_ex_vehiclemissile_3 is not in the game files', 1, true),
+        'no model: each one named, and why', l)
+    -- THE GAME WOULD NOT MAKE THE OBJECT.
+    local realCreate = CreateObjectNoOffset
+    CreateObjectNoOffset = function() return 0 end
+    l = strikeAt(65)
+    CreateObjectNoOffset = realCreate
+    ok(l and l:find('0 of 10 rockets made', 1, true)
+        and l:find('10 the game would not make (CreateObjectNoOffset answered 0)', 1, true),
+        'the object refused: it says so', l)
+    -- TOO FAR OFF: said as it arrives.
+    resetWorld()
+    logs = {}
+    W.me = { x = 5000.0, y = 0.0, z = 20.0 }
+    cfire(BR.Net.TERMINAL_STRIKE, strikeMsg(66, 0.0, 0.0))
+    l = lineFor(66)
+    ok(l and l:find('not drawn here -- 5000 m from this view; rockets are drawn within 800 m', 1, true),
+        'too far off: how far, and the reach', l)
+    advance(FX.strikeWarnMs + FX.strikeLingerMs + 1000, 500)
+    slow()
+    devBox = false
 end
 
 describe('client: Airstrike -- the owner of a vehicle a rocket hit writes the server\'s figure')

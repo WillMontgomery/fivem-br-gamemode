@@ -1374,7 +1374,7 @@ BR.Config.Terminals = {
         --             whole fall (client/terminalfx/airstrike.lua's header).
         --             1,500 m since round 7: past the farthest client that
         --             draws one, fx.strikeDrawM beyond its point plus launchM
-        --             out and launchUpM up (about 1,130 m)
+        --             out and launchUpM up (about 1,040 m since round 8)
         --   blastBaseM  how far the fireball reaches at scale 1, in meters. The
         --             fireball is drawn at fx.strikeReachM / blastBaseM -- 3x
         --             (15 m over 5), was 1x -- so it covers exactly the ground
@@ -1396,11 +1396,21 @@ BR.Config.Terminals = {
         --             a rocket in the order the server lands them
         --   weaveM    how far each veers off the straight line on the way in,
         --             one side then the other
+        --
+        -- ROUND 8 (owner, 2026-10-11: "Airstrikes didn't seem to spawn any
+        -- props...."): LOW AND SLOWER, so they are in the picture. Round 7's
+        -- 320 m out, 160 m up and 3 s crossed above the top of a player's
+        -- screen at 130 m/s and came into it for its last dive alone -- a
+        -- median 0.35 s, seen from where the rehearsal stands (the client's
+        -- header has the measure, tools/test_terminalstrike.lua holds it).
+        -- 240 m out, 70 m up, a 35 m dive and 5 s in the air: about 50 m/s,
+        -- in that picture for a median 1.4 s. Was flightMs 3000, launchM 320,
+        -- launchUpM 160, diveUpM 90, weaveM 40.
         rocket = { models = { 'w_lr_homing_rocket', 'w_lr_rpg_rocket', 'w_ex_vehiclemissile_3' },
                    loadMs = 5000, lodDist = 1500,
                    trailAsset = 'core', trail = 'proj_rpg_trail',
-                   flightMs = 3000, launchM = 320.0, launchUpM = 160.0, diveUpM = 90.0,
-                   fanDeg = 50.0, weaveM = 40.0,
+                   flightMs = 5000, launchM = 240.0, launchUpM = 70.0, diveUpM = 35.0,
+                   fanDeg = 50.0, weaveM = 30.0,
                    blastAsset = 'core', blast = 'exp_grd_vehicle', blastBaseM = 5.0,
                    sound = 'MAIN_EXPLOSION_CHEAP', shake = 'LARGE_EXPLOSION_SHAKE', shakeM = 60.0 },
     },
