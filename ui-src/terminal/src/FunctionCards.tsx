@@ -31,7 +31,7 @@ import { VoltsAmount, voltsLine } from './Volts'
  * whether it can run now -- available, used, not available, or (round 6,
  * owner 2026-10-07: "Yes please say the real reason") the rule of the match
  * that stops it, in a few words (model.ts statusText); the Status filter
- * groups those as "not available now". Every terminal lists every tool. Never
+ * groups those as "Blocked right now". Every terminal lists every tool. Never
  * how it helps: the summary says what it does, and nothing on a card sells it.
  *
  * THE FUNCTIONS THIS PLAYER IS SHOWN (App.tsx, model.ts shownFunctions): in a

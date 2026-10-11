@@ -436,8 +436,9 @@ BR.Config.Terminals = {
         -- on the tool's page), and the Status filter groups them all as
         -- status_not_now -- which is also what a reason with no short line of
         -- its own says ('unavailable': a run already under way, say).
-        -- WRITTEN (round 6, proposal for the owner)
-        status_not_now = 'Not available now',
+        -- VERBATIM (owner, 2026-10-11, on round 6's 'Not available now':
+        -- "agree, change to "Blocked right now"").
+        status_not_now = 'Blocked right now',
         -- WRITTEN (round 6, proposal for the owner)
         status_no_key = 'Needs a Yubikey',
         -- WRITTEN (round 6, proposal for the owner)

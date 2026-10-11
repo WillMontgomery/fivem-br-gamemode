@@ -1242,6 +1242,10 @@ do
     -- line says a tool is not available "at this terminal" -- the card says
     -- the real reason ("Yes please say the real reason").
     eq(copy.status_not_here, nil, 'round 2\'s "Not available at this terminal" is gone')
+    -- Owner, 2026-10-11, on round 6's "Not available now": "agree, change to
+    -- "Blocked right now"". A card's status and the Status filter's bucket.
+    eq(copy.status_not_now, 'Blocked right now', 'status_not_now is "Blocked right now" (owner\'s words)')
+    eq(copy.status_not_now_solo, nil, 'and it says no squad, so it has no _solo sibling')
     local here = {}
     for k, v in pairs(copy) do
         if type(v) == 'string' and v:lower():find('at this terminal', 1, true) then here[#here + 1] = k end

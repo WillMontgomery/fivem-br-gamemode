@@ -701,7 +701,7 @@ export function shownCategories(catalog: Catalog, shown: FunctionDef[]): string[
 
 /**
  * Where a function stands now, as the Status filter sorts it: available,
- * used, not available now, or not available.
+ * used, blocked right now (status_not_now), or not available.
  *
  * ROUND 6 (owner, 2026-10-07: "Let's make all the terminals have all the
  * same tools available please" -- and, on the tools' own rules, "Yes please

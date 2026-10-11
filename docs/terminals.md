@@ -86,9 +86,10 @@ statuses: Available, Used (`squad_used`), Not available (`fn_offline`,
 have all the same tools available please"; on the tools' own rules, "Yes
 please say the real reason") -- for everything else **the reason itself**, in
 a few words: `status_<reason>` (`status_no_night` "Only at night",
-`status_storm_aimed`, ...), or `status_not_now` "Not available now" for a
-reason with no short line (`unavailable`). Home's Status filter groups all of
-those as Not available now. Every terminal lists every tool; round 2's "Not
+`status_storm_aimed`, ...), or `status_not_now` "Blocked right now" (the
+owner's words, 2026-10-11; round 6's "Not available now") for a reason with
+no short line (`unavailable`). Home's Status filter groups all of those as
+Blocked right now. Every terminal lists every tool; round 2's "Not
 available at this terminal" is gone. The balance is never a listing's reason:
 Run stays pressable whatever it is, and only a run is refused `no_volts`.
 
@@ -197,7 +198,7 @@ The table below is the lines outside the functions' own:
 | `scan_blip`, `bounty_blip` | The legend names of Scan's and the bounty's marks |
 | `<id>_description` | The lobby: the `{description}` in `notice_action` |
 | `first_pickup_title`, `first_pickup_subtitle`, `first_pickup`, `first_pickup_dismiss` | The player who gets their first Yubikey ever: the first-pickup card's words, verbatim -- its H1, its H3, its body and the words beside the Enter cap (round 6; round 5's one line split as he asked) -- not a toast |
-| `status_<reason>`, `status_not_now` | At the terminal: a card's and a page's status when a rule of the match stops a tool -- the reason in a few words, or "Not available now" (round 6) |
+| `status_<reason>`, `status_not_now` | At the terminal: a card's and a page's status when a rule of the match stops a tool -- the reason in a few words, or "Blocked right now" (round 6; the owner's words since 2026-10-11) |
 | `rarity_<key>` | At the terminal: Gear Up's item list, each item's rarity on the right of its row -- BR.RarityInfo's own names, filled in as the file loads (round 6) |
 | `already_holding` | A toast to a holder whose claim on a second key is refused ("You already have a Yubikey.") |
 | `notice_access` | A toast to the lobby (the whole match) when someone gains access; `{playername}` |
