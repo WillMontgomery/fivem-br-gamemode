@@ -4978,15 +4978,22 @@ end
 --- One entrance with the screen uncovered from the first frame, so the camera
 --- flies while the walk waits. `readyMs` is how long after the flight's first
 --- move the chosen ped lands, on a new handle; nil wears it before the
---- entrance begins. `sampleMs` records where the ped stands that long into the
---- flight. Returns the flight's start, the legs tasked, the arrival on the
---- mark, and the sample.
-local function entranceReadyAt(readyMs, sampleMs)
+--- entrance begins. `opts.trace` records where the ped stands on every step of
+--- the clock for the first 25 s of the flight; `opts.winner` makes it a
+--- winning return. Returns the flight's start, the legs tasked, the arrival on
+--- the mark, the trace, and where the ped was placed if it was.
+local function entranceReadyAt(readyMs, opts)
+    opts = opts or {}
     reset()
     BR.State.worldReady = true
     if readyMs then ped.model = GetHashKey('player_zero') else wearChosenModel() end
+    if opts.winner then
+        TriggerEvent('br:ui:sendLocal', BR.Nui.SUMMARY, { won = true, placement = 1 })
+        BR.LobbyPed.rearm()
+        order = {}
+    end
 
-    local r = {}
+    local r = { trace = {} }
     for _ = 1, 40 do
         if said('camera flight starts') then break end
         pump(50)
@@ -5000,32 +5007,75 @@ local function entranceReadyAt(readyMs, sampleMs)
             wearChosenModel()
         end)
     end
-    if sampleMs then
-        pump(r.flight0 + sampleMs - fakeTime)
-        r.sample = { x = ped.x, y = ped.y }
+    if opts.trace then
+        for ms = 50, 25000, 50 do
+            pump(50)
+            r.trace[ms] = { x = ped.x, y = ped.y }
+        end
     end
     pump(45000)
 
     local L = BR.Config.Match.lobbyPos
     r.tasks = {}
+    local lastCoords = nil
     for _, e in ipairs(order) do
-        if e.kind == 'task' then r.tasks[#r.tasks + 1] = e end
+        if e.kind == 'coords' then lastCoords = e end
+        if e.kind == 'task' then
+            if #r.tasks == 0 then r.placedAt = lastCoords end
+            r.tasks[#r.tasks + 1] = e
+        end
         if e.kind == 'coords' and not r.home and e.at >= r.flight0
            and math.abs(e.x - L.x) < 0.01 and math.abs(e.y - L.y) < 0.01 then
             r.home = e
         end
     end
+    r.flips = 0
+    local W = BR.Config.Match.lobbyEntrance.emotes.win
+    for _, a in ipairs(anims()) do
+        if a.dict == W.dict and a.clip == W.clip then r.flips = r.flips + 1 end
+    end
+    r.forced = forcedHome()
+    r.placed = said('placed') and said('along the path')
     return r
 end
+
+--- The task in `list` that walks to the same corner as `t`.
+local function sameCorner(list, t)
+    for _, e in ipairs(list) do
+        if math.abs(e.x - t.x) < 0.01 and math.abs(e.y - t.y) < 0.01 then return e end
+    end
+end
+
+--- The worst gap, in meters, between where `late` handed each of its legs over
+--- and where `ref` handed the same leg over.
+local function handoverGap(ref, late)
+    local worst = 0.0
+    for k = 2, #late.tasks do
+        local r = sameCorner(ref.tasks, late.tasks[k])
+        if not r then return math.huge end
+        local d = BR.Dist(r.fromX, r.fromY, late.tasks[k].fromX, late.tasks[k].fromY)
+        if d > worst then worst = d end
+    end
+    return worst
+end
+
+-- ═══ HOW CLOSE IS "WHERE THE ON-TIME WALK WAS" ═══
+--
+-- TIGHT ENOUGH THAT EVERY TERM OF THE PLACEMENT IS LOAD-BEARING (#406 review).
+-- The fixture walks the ped in 50 ms steps of up to 0.08 m and hands a leg over
+-- on the first poll inside its radius, so two honest walks can differ by up to
+-- a step and arrive a poll apart (measured: 0.02 m, 0.01 m and the same poll);
+-- the per-leg speed ramp alone is worth 0.6 m at 40%, and a joined leg handing
+-- over at its own fraction instead of the plan's is 0.4 m late on its corner.
+local PLACE_M, HAND_M, ARRIVE_MS = 0.1, 0.1, 50
 
 do
     local C = BR.Config.Match.lobbyEntrance
     local L = BR.Config.Match.lobbyPos
     local S = C.pedStart
-    local at40 = math.floor(C.walkTargetMs * 0.4)
 
     -- ═══ (a) READY WHEN THE CAMERA STARTS: THE WHOLE PATH, AS BEFORE ═══
-    local ref = entranceReadyAt(nil, at40)
+    local ref = entranceReadyAt(nil, { trace = true })
     ok(ref.flight0 ~= nil, 'precondition: the camera flies from the first frame')
     local refWalk = (ref.home and ref.tasks[1]) and (ref.home.at - ref.tasks[1].at) or -1
     ok(math.abs(refWalk - C.walkTargetMs) <= 1000,
@@ -5035,7 +5085,8 @@ do
        'a ped ready when the camera starts walks the whole path from the start mark')
     ok(ref.tasks[1] and ref.tasks[1].fromHeading == S.heading,
        'facing the start mark\'s own heading, as it always has')
-    ok(not said('placed'), 'and nothing is placed along the path')
+    ok(not ref.placed, 'and nothing is placed along the path')
+    local refAt = ref.home and (ref.home.at - ref.flight0)
 
     -- ═══ (b) ASKED FOR LONG BEFORE THE CAMERA, READY JUST BEFORE IT ═══
     --
@@ -5052,49 +5103,62 @@ do
     end)
     Citizen.SetTimeout(4000, function() BR.State.worldReady = true end)
     pump(45000)
-    local tasks = {}
-    for _, e in ipairs(order) do
-        if e.kind == 'task' then tasks[#tasks + 1] = e end
-    end
+    local tasks = taskList()
     ok(#tasks == #C.pedPath + 1 and tasks[1]
        and BR.Dist(tasks[1].fromX, tasks[1].fromY, S.x, S.y) < 0.01,
        'a ped that took 3 s but was ready before the camera started walks the whole path')
     BR.State.worldReady = true
 
-    -- ═══ (c) READY 40% INTO THE WALK: 40% ALONG IT, AND HOME WITH THE CAMERA ═══
-    local late = entranceReadyAt(at40)
-    local first = late.tasks and late.tasks[1]
-    ok(first ~= nil and ref.sample ~= nil
-       and BR.Dist(first.fromX, first.fromY, ref.sample.x, ref.sample.y) < 0.75,
-       ('a ped ready %d ms into the flight starts where the on-time walk was then (%.2fm off)')
-           :format(at40, (first and ref.sample)
-               and BR.Dist(first.fromX, first.fromY, ref.sample.x, ref.sample.y) or -1))
-    ok(first ~= nil and BR.Dist(first.fromX, first.fromY, S.x, S.y) > 5.0,
-       'not on the start mark')
-    ok(#late.tasks < #C.pedPath + 1 and late.tasks[#late.tasks]
-       and math.abs(late.tasks[#late.tasks].x - L.x) < 0.01
-       and math.abs(late.tasks[#late.tasks].y - L.y) < 0.01,
-       'it walks only the legs that are left, and the last one onto the mark')
-    local refAt = ref.home and (ref.home.at - ref.flight0)
-    local lateAt = late.home and late.flight0 and (late.home.at - late.flight0)
-    ok(refAt and lateAt and math.abs(lateAt - refAt) <= 500,
-       ('and it arrives when the on-time walk did, the same time after the camera '
-           .. 'lands (%s ms against %s)'):format(tostring(lateAt), tostring(refAt)))
-    ok(not forcedHome(), 'on its own feet: the failsafe never places it')
+    -- ═══ (c) READY PARTWAY: WHERE THE ON-TIME WALK WAS, AND HOME WITH IT ═══
+    --
+    -- Four moments: 20% and 40% of the walk, and two late on a leg -- 9.5 s on
+    -- leg 2 and 12.5 s on leg 3 -- where what is left of the leg is shorter
+    -- than its corner radius over 0.4, so a joined leg that worked out its own
+    -- handover would turn late. modelWaitMs is raised so the last two are
+    -- really that late: at eight seconds the walk goes without its ped.
+    local realWait = C.modelWaitMs
+    C.modelWaitMs = 60000
+    for _, readyMs in ipairs({ math.floor(C.walkTargetMs * 0.2),
+                               math.floor(C.walkTargetMs * 0.4), 9500, 12500 }) do
+        local late = entranceReadyAt(readyMs)
+        local first = late.tasks and late.tasks[1]
+        local behind = first and (first.at - late.flight0)
+        local was = behind and ref.trace[behind]
+        local off = (first and was) and BR.Dist(first.fromX, first.fromY, was.x, was.y) or math.huge
+        ok(off <= PLACE_M,
+           ('ready %d ms into the flight: placed where the on-time walk was %s ms in (%.2fm off)')
+               :format(readyMs, tostring(behind), off))
+        ok(first ~= nil and BR.Dist(first.fromX, first.fromY, S.x, S.y) > 2.0,
+           ('ready %d ms in: not on the start mark'):format(readyMs))
+        ok(late.placed, ('ready %d ms in: and the console says it was placed'):format(readyMs))
+        ok(#late.tasks < #C.pedPath + 1 and late.tasks[#late.tasks]
+           and math.abs(late.tasks[#late.tasks].x - L.x) < 0.01
+           and math.abs(late.tasks[#late.tasks].y - L.y) < 0.01,
+           ('ready %d ms in: it walks only the legs that are left, the last onto the mark'):format(readyMs))
+        local gap = handoverGap(ref, late)
+        ok(gap <= HAND_M,
+           ('ready %d ms in: every corner is turned where the on-time walk turned it (%.2fm off)')
+               :format(readyMs, gap))
+        local lateAt = late.home and late.flight0 and (late.home.at - late.flight0)
+        ok(refAt and lateAt and math.abs(lateAt - refAt) <= ARRIVE_MS,
+           ('ready %d ms in: home when the on-time walk was (%s ms after the camera '
+               .. 'started, against %s)'):format(readyMs, tostring(lateAt), tostring(refAt)))
+        ok(not late.forced, ('ready %d ms in: on its own feet, never the failsafe'):format(readyMs))
 
-    -- ═══ (d) AND IT FACES ALONG THE LEG IT WAS PLACED ON ═══
-    local want = first and BR.GtaHeading(BR.Bearing(first.fromX, first.fromY, first.x, first.y))
-    local off = want and math.abs((first.fromHeading - want + 540.0) % 360.0 - 180.0)
-    ok(off and off < 1.0,
-       ('the late ped is placed facing along its leg, toward the next point (%s deg off)')
-           :format(off and ('%.1f'):format(off) or '?'))
+        -- AND IT FACES ALONG THE LEG IT WAS PLACED ON.
+        local want = first and BR.GtaHeading(BR.Bearing(first.fromX, first.fromY, first.x, first.y))
+        local turn = want and math.abs((first.fromHeading - want + 540.0) % 360.0 - 180.0)
+        ok(turn and turn < 1.0,
+           ('ready %d ms in: placed facing along its leg, toward the next point (%s deg off)')
+               :format(readyMs, turn and ('%.1f'):format(turn) or '?'))
+    end
+    C.modelWaitMs = realWait
 
     -- ═══ (e) READY AFTER THE CAMERA HAS LANDED: ON THE MARK ═══
     --
     -- modelWaitMs is raised for this one: at its eight seconds the walk would
     -- give up on the ped and start without it, long before a 13.8 s flight
     -- lands, and that is a different road.
-    local realWait = C.modelWaitMs
     C.modelWaitMs = 60000
     local after = C.camFlightMs + 1000
     local landed = entranceReadyAt(after)
@@ -5110,6 +5174,73 @@ do
     ok(not BR.LobbyPed.entering() and not BR.LobbyPed.walking()
        and not BR.LobbyPed.lockerLocked(),
        'and the entrance is over: not walking, the locker free')
+
+    -- ═══ (f) AND NOTHING OF IT IS LEFT FOR THE NEXT ENTRANCE ═══
+    --
+    -- The entrance above skipped the whole plan. A winner's return straight
+    -- after it, on time, must still walk all of it, flip once, and be judged
+    -- late against its own plan plus its flip -- a skip carried over would
+    -- have the failsafe fire in the middle of the flip's walk home.
+    local next1 = entranceReadyAt(nil, { winner = true })
+    ok(#next1.tasks == #C.pedPath + 1, 'the next entrance walks the whole path')
+    ok(next1.flips == 1, ('and flips once (%d)'):format(next1.flips))
+    ok(not next1.forced, 'and is never placed by the failsafe: no skip was left behind')
+    reset()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 26. #406 REVIEW: THE REST OF WHAT A LATE PED IS OWED
+-- ═══════════════════════════════════════════════════════════════════════════
+
+do
+    local C = BR.Config.Match.lobbyEntrance
+    local L = BR.Config.Match.lobbyPos
+    local S = C.pedStart
+    local P = C.pedPath
+    local at40 = math.floor(C.walkTargetMs * 0.4)
+
+    -- ═══ (a) THE FAILSAFE IS DUE WHEN AN ON-TIME WALK WOULD BE HOME ═══
+    --
+    -- A late ped that is placed and then never moves is placed home at the
+    -- plan's own due time plus the grace, counted from the camera's first move
+    -- -- not that plus the part of the walk it was placed past.
+    local realTask = TaskGoStraightToCoord
+    TaskGoStraightToCoord = function(...)
+        realTask(...)
+        ped.dest = nil      -- tasked, and never moves
+    end
+    local stuck = entranceReadyAt(at40)
+    TaskGoStraightToCoord = realTask
+    local firesAt = (stuck.home and stuck.flight0) and (stuck.home.at - stuck.flight0)
+    local due = C.walkTargetMs + C.arriveGraceMs
+    ok(stuck.forced and stuck.placed, 'precondition: placed along the path, then failsafe-placed')
+    ok(firesAt and firesAt >= due - 50 and firesAt <= due + 100,
+       ('the failsafe fires the grace after an on-time walk was due, not after the part '
+           .. 'it skipped too (%s ms after the camera started, due %d)'):format(tostring(firesAt), due))
+
+    -- ═══ (b) A LATE WINNER STILL FLIPS, AT THE SECOND-TO-LAST POINT ═══
+    local win = entranceReadyAt(at40, { winner = true })
+    ok(win.placed and win.flips == 1,
+       ('a winner placed partway along still flips, once (%d)'):format(win.flips))
+    ok(not win.forced, 'and walks home on its own feet')
+
+    -- ═══ (c) ...UNLESS IT WAS PLACED PAST THAT POINT ═══
+    --
+    -- Only reachable when the camera is still flying once the walk is on its
+    -- last leg -- 26 ms of today's numbers -- so the flight is stretched for
+    -- it, and the model wait with it (at eight seconds the walk would go
+    -- without the ped, which is a different road).
+    local realFlight, realWait = C.camFlightMs, C.modelWaitMs
+    C.camFlightMs, C.modelWaitMs = 20000, 60000
+    local lastLeg = entranceReadyAt(15000, { winner = true })
+    C.camFlightMs, C.modelWaitMs = realFlight, realWait
+    ok(lastLeg.placed and #lastLeg.tasks == 1,
+       ('precondition: a winner ready 15 s in joins on the last leg (%d leg(s))'):format(#lastLeg.tasks))
+    ok(lastLeg.flips == 0, 'and does not flip: the point it flips at is behind it')
+    local home = (lastLeg.home and lastLeg.flight0) and (lastLeg.home.at - lastLeg.flight0)
+    ok(home and math.abs(home - C.walkTargetMs) <= ARRIVE_MS and not lastLeg.forced,
+       ('and is home when the walk was due (%s ms)'):format(tostring(home)))
+
     reset()
 end
 
