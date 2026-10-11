@@ -86,6 +86,20 @@ a nil native is not an error, it is a silent no-op. `luac -p` cannot see it and
 unit tests stub it. Every native a new subsystem leans on gets a probe in
 `brnativecheck` **before** the in-game test.
 
+**A native's global is a Lua wrapper, and its cost can be more than the
+native's.** FiveM's natives loader writes each global the first time it is
+read, as a chunk named `@<Name>.lua`: `local fn = _gn(hash)` and a function that
+hands its arguments to `fn`, string arguments through `_ts` (`tostring`, and
+`nil` for 0). The owner's sweep profile (#393, 2026-10-11) charged
+`DrawSpritePoly`'s wrapper and its two `_ts` calls more than the draws.
+`BR.Native.direct` (`client/natives.lua`) hands a hot caller the handler behind
+the loader's own wrapper -- found by chunk name and the upvalue `fn`, for the
+natives in its `STRAIGHT` list only (not `IsRawKeyDown`, whose wrapper adds the
+loader's `_r`), and only with strings for string arguments -- and the global
+itself for anything else, so a wrapper of ours or a suite's stub is still
+called. The storm wall's textured draws and `inv.controls`' thirteen
+suppressions use it.
+
 **`IsRawKeyDown` is a level; `IsRawKeyPressed` is a single-frame edge.** Only
 the first can answer the question a *hold* asks — "is this key down on this
 frame". A build that predates `IsRawKeyDown` and falls back to `IsRawKeyPressed`
