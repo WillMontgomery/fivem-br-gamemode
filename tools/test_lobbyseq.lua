@@ -4907,6 +4907,57 @@ end
 -- disabled subsystem from a block that only wanted it quiet for itself.
 ok(BR.Loop.setEnabled('spawn.gather', true), 'spawn.gather is left enabled')
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 24. #406: THE WALK ASKS WHICH PED IT IS WAITING FOR ON EVERY POLL
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-11: "when loading in a custom ped from season 2, the spawn is
+-- taking longer, resulting in a gap between the time where the camera arrives
+-- at the lobby and the ped finishes walking."
+--
+-- On Season 2 the model the walk waits for is BR.LockerV2.wantHash(), and that
+-- answer MOVES during the wait: 0 while the first apply is still waiting on the
+-- server, the worn ped's model once it is being put on. A wait that read it
+-- once compared the player's model with 0 for the whole of modelWaitMs, so the
+-- walk started eight seconds after it began however early the ped arrived.
+-- Locker v2 is stood in for by its one answer; the screen is uncovered from the
+-- start, so the camera is flying while the walk waits.
+
+do
+    reset()
+    BR.State.worldReady = true
+    local H = GetHashKey('mp_m_freemode_01')
+    local v2want = 0
+    BR.LockerV2 = { wantHash = function() return v2want end,
+                    defer = function() return true end }
+    -- Whatever the player spawned as: a real ped never answers model 0.
+    ped.model = GetHashKey('player_zero')
+
+    pump(300)
+    ok(BR.LobbyPed.entering(), 'precondition: a Season 2 entrance has started')
+    ok(not BR.LobbyPed.walking(),
+       'precondition: and it is waiting while the first apply has not decided')
+
+    -- The custom ped is put on two seconds in, on a new handle, and wantHash
+    -- names it in the same frame, as locker2.lua's swap does.
+    pump(2000)
+    v2want = H
+    pedHandle = pedHandle + 1
+    ped.model = H
+    local landedAt = fakeTime
+
+    pump(500)
+    local _, task = firstOf('task')
+    ok(task ~= nil and task.at - landedAt <= 100,
+       ('the walk starts within a poll of the custom ped landing, not at the end of '
+           .. 'modelWaitMs (%s ms after it)'):format(task and tostring(task.at - landedAt) or 'no walk'))
+
+    pump(40000)
+    ok(not BR.LobbyPed.entering(), 'and the entrance finishes')
+    BR.LockerV2 = nil
+    reset()
+end
+
 -- ------------------------------------------------------------------ report ---
 
 if fail > 0 then

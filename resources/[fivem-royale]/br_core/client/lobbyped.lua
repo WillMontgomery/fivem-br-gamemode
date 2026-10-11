@@ -1340,14 +1340,25 @@ local function run(mine)
     --    tick, and a walk started before that is a walk the default freemode
     --    ped begins and the real character finishes -- on a different handle,
     --    with the task lost in between.
-    local want = nil
-    if BR.PedById and BR.Locker and BR.Locker.chosen then
-        want = BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)
+    --
+    --    ASKED AGAIN ON EVERY POLL, NOT ONCE (#406). On Season 2 the answer
+    --    moves while this waits: wantHash() is 0 while Locker v2's first apply
+    --    is still waiting on the server, nil while the season is not known yet
+    --    (which reads as Season 1's model), and the worn ped's model only once
+    --    it is being put on. A copy taken when the wait began could be a model
+    --    that never arrives, so the walk sat out all of modelWaitMs while
+    --    client/loading.lua -- which does ask every poll -- revealed once the
+    --    ped landed, and the camera flew without it. That is the late custom
+    --    ped of #406.
+    local function wanted()
+        if not (BR.PedById and BR.Locker and BR.Locker.chosen) then return nil end
+        local want = BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)
+        return want
     end
-    if want then
+    if wanted() then
         local deadline = GetGameTimer() + (C.modelWaitMs or 8000)
         while token == mine and GetGameTimer() < deadline do
-            if GetEntityModel(PlayerPedId()) == want then break end
+            if GetEntityModel(PlayerPedId()) == wanted() then break end
             Citizen.Wait(50)
         end
     end
