@@ -44,6 +44,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { fetchNui } from '../bridge/nui'
 import { useUi } from '../store'
 import AnnotationCard from './AnnotationCard'
+import PointingHand from './PointingHand'
 import {
   BAND, centred, place, sameBox, type CardBox, type Rect,
 } from './cardPlacement'
@@ -602,6 +603,21 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       || step.advance === 'slotswitch'
     if (!waits) return
     const t = setTimeout(() => setStuck(true), STUCK_MS)
+    return () => clearTimeout(t)
+  }, [step])
+
+  // ── the hand, for a card that has waited long enough ────────────────────
+  //
+  // See `Step.hand`. ON A CLOCK FROM THE CARD ARRIVING, and from zero every
+  // time it arrives -- Previous and back again is a fresh five seconds, not a
+  // hand that is already there. Drawn only with the card and its ring, and gone
+  // the moment the control is pressed (`clickedFor`) or the card starts to leave.
+  const [handFor, setHandFor] = useState<string | null>(null)
+  useEffect(() => {
+    setHandFor(null)
+    if (!step || step.hand === undefined) return
+    const id = step.id
+    const t = setTimeout(() => setHandFor(id), step.hand)
     return () => clearTimeout(t)
   }, [step])
 
@@ -1328,6 +1344,11 @@ export default function TutorialLayer(p: TutorialLayerProps) {
               Math.max(0, clip.x - rect.x)}px)`,
           }}
         />
+      )}
+      {/* THE HAND (#405), on the control the card is waiting for. The fingertip
+          lands just inside its lower half, toward the middle. */}
+      {rect !== null && handFor === step.id && !leaving && clickedFor !== step.id && (
+        <PointingHand x={rect.x + rect.w * 0.55} y={rect.y + rect.h * 0.62} />
       )}
       <AnnotationCard
         key={step.id}

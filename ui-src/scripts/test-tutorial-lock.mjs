@@ -123,6 +123,10 @@ check('...and the whole Market answers under it, Done too',
     || isLocked(step('market-inside'), ['page-market']), false)
 check('...and it holds Escape on the Market', holdsEscape(step('market-inside'), 'market'), true)
 check('step 1 has its interactive-demo section', typeof step('welcome').note, 'string')
+check('step 2: a hand points at Squads after five seconds or more',
+  step('mode').hand >= 5000 && step('mode').target === 'mode-squad', true)
+check('...and no other card has one',
+  LOBBY_STEPS.filter((x) => x.hand !== undefined).map((x) => x.id).join(','), 'mode')
 check('step 16 (help): only Help', liveOnLobby('help'), 'help')
 check('step 17 (help-inside): Back locked', locked('help-inside', 'helpBack'), true)
 check('step 17: the rest of Help answers', locked('help-inside', 'helpCopy'), false)

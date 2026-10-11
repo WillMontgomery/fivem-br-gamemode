@@ -2008,6 +2008,45 @@ html, body, #root {
   100% { opacity: 0;    transform: scale(1.22); }
 }
 
+/* ═══ THE POINTING HAND (#405) ═══
+
+   Owner, 2026-10-11: on Solo or Squads, after five seconds, "place an animated
+   hand pointing to the 'Squads' button". tutorial/PointingHand.tsx draws it.
+
+   THE WRAPPER IS A POINT, the fingertip's; the SVG hangs off it by the tip's
+   own offset (13 x 2 in a 40 x 52 viewBox, at 2.4rem wide), and the tilt and
+   the tap pivot on that same point, so the finger always lands on the control.
+
+   TRANSFORM ONLY, like every animation on these cards: it arrives, then taps
+   toward the control and back, forever, until its card goes. */
+.tut-hand {
+  position: absolute;
+  z-index: 56;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.tut-hand svg {
+  position: absolute;
+  left: -0.78rem;
+  top: -0.12rem;
+  width: 2.4rem;
+  height: 3.12rem;
+  transform-origin: 0.78rem 0.12rem;
+  animation: tutHandIn 260ms var(--ease-snap) both,
+             tutHandTap 1100ms 260ms var(--ease-out) infinite;
+}
+
+@keyframes tutHandIn {
+  0%   { opacity: 0; transform: translate(0.9rem, 1.5rem) rotate(-14deg); }
+  100% { opacity: 1; transform: translate(0.35rem, 0.6rem) rotate(-14deg); }
+}
+
+@keyframes tutHandTap {
+  0%, 100% { transform: translate(0.35rem, 0.6rem) rotate(-14deg); }
+  45%, 60% { transform: translate(0, 0) rotate(-14deg) scale(0.94); }
+}
+
 /* ═══ A LAYER NOBODY CAN SEE DOES NO ANIMATION WORK (#252) ═══
 
    The curtain is always mounted, at opacity 0, and its loading ring spun the
@@ -2047,6 +2086,7 @@ html, body, #root {
 }
 .layer-off .panel-hot,
 .layer-off .storm-warning,
-.layer-off .tut-ring {
+.layer-off .tut-ring,
+.layer-off .tut-hand svg {
   animation-play-state: running, paused !important;
 }

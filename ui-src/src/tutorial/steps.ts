@@ -356,6 +356,14 @@ export type Step = {
    * buttons."
    */
   locked?: string[]
+  /**
+   * After this many milliseconds on the card, an animated hand points at its
+   * target, and keeps pointing until the card goes (#405).
+   *
+   * Owner, 2026-10-11, on Solo or Squads: "if they sit there for 5+ seconds,
+   * place an animated hand pointing to the 'Squads' button."
+   */
+  hand?: number
 }
 
 /**
@@ -417,6 +425,7 @@ export const LOBBY_STEPS: Step[] = [
     body: '**Solo** is one life against everybody. Pick **Squads** - you are put in a team of up to four who can revive each other, and the party controls appear so you can bring friends in with you.',
     advance: 'click',
     live: ['mode-squad'],
+    hand: 5000,
   },
 
   // ═══ SETTINGS ═══

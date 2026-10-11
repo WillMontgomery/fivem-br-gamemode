@@ -2405,6 +2405,47 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R31  The hand on step 2 is drawn on time and goes with the card (#405).
+//
+// Owner, 2026-10-11: "if they sit there for 5+ seconds, place an animated hand
+// pointing to the 'Squads' button." `hand: 5000` on the step is pinned by
+// scripts/test-tutorial-lock.mjs; this pins the layer drawing it:
+//
+//   NOT DRAWN -- TutorialLayer stops rendering <PointingHand> for the card
+//     whose clock ran out (`handFor === step.id`);
+//   OUTSTAYS -- it stops hiding it the moment the control is pressed
+//     (`clickedFor !== step.id`) or the card starts to leave (`!leaving`);
+//   NOT OURS -- PointingHand.tsx draws anything but its own inline SVG (an
+//     <img>, or an imported picture), where the owner's rule is art drawn here.
+//
+// IT CAN FAIL. Drop the `clickedFor !== step.id` term, or swap the <svg> for
+// an <img>.
+// ---------------------------------------------------------------------------
+{
+  const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
+  const H = join(SRC, 'tutorial', 'PointingHand.tsx')
+  if (!existsSync(L) || !existsSync(H)) {
+    fail('R31 tutorial-hand', 'src/tutorial',
+      'TutorialLayer.tsx or PointingHand.tsx is missing. If they moved, move this rule with them (#405).')
+  } else {
+    const layer = stripComments(read(L))
+    const gate = /\{([^{}]*)&&\s*\(\s*<PointingHand\b/.exec(layer)
+    if (!gate || !/handFor\s*===\s*step\.id/.test(gate[1])
+        || !/!leaving/.test(gate[1]) || !/clickedFor\s*!==\s*step\.id/.test(gate[1])) {
+      fail('R31 tutorial-hand', 'src/tutorial/TutorialLayer.tsx',
+        '<PointingHand> is not gated on `handFor === step.id && !leaving && clickedFor !== step.id`.'
+        + ' The hand comes when the card has waited and goes the moment it is answered (#405).')
+    }
+    const hand = stripComments(read(H))
+    if (!/<svg\b/.test(hand) || /<img\b/.test(hand) || /\bimport\b[^\n]*\.(png|jpe?g|webp|gif|svg)'/.test(hand)) {
+      fail('R31 tutorial-hand', 'src/tutorial/PointingHand.tsx',
+        'the hand is not this file\'s own inline <svg>. It is drawn in the repo, not'
+        + ' downloaded or licensed art (#405).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {
