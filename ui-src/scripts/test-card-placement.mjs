@@ -312,14 +312,14 @@ function sweep(boxFor) {
 // where nothing else moved -- without it the first measurement of a card can be
 // skipped, which is the bug back. check-ui R22 holds the layer's dependency
 // array to this list; this asserts the list itself has not drifted.
-check('the invalidation set is exactly the five inputs the box depends on',
-  [...CARD_INPUTS], ['cardUp', 'stepId', 'uiScale', 'textScale', 'viewportTick'])
+check('the invalidation set is exactly the six inputs the box depends on',
+  [...CARD_INPUTS], ['cardUp', 'stepId', 'note', 'uiScale', 'textScale', 'viewportTick'])
 
 function depKey(state) {
   return CARD_INPUTS.map((k) => state[k]).join('|')
 }
 const world = {
-  cardUp: true, stepId: 'lobby-ready', uiScale: 1, textScale: 1, viewportTick: 0,
+  cardUp: true, stepId: 'lobby-ready', note: '', uiScale: 1, textScale: 1, viewportTick: 0,
   stuck: false, crates: 0,
 }
 for (const k of CARD_INPUTS) {

@@ -76,7 +76,8 @@ export type Advance =
   | 'screen'
   /**
    * The player picking things up. The card waits until they are carrying
-   * `pickups` MORE items than when it opened.
+   * `weapons` MORE weapons than when it opened (#405: it counted items, and a
+   * box of ammo answered "take two things").
    *
    * OBSERVED, NOT REPORTED. Owner, 2026-09-04: "Upon opening one, they should
    * get an instruction to pick up 2 loot items." The inventory is already in
@@ -191,8 +192,24 @@ export type Step = {
   advance: Advance
   /** For `advance: 'screen'` -- the screen whose arrival ends the step. */
   awaitScreen?: string
-  /** For `advance: 'pickup'` -- how many more ITEMS end the step. See `tally`. */
-  pickups?: number
+  /**
+   * For `advance: 'pickup'` -- how many more WEAPONS end the step. Default 1.
+   * See `pickupSince` in progress.ts (#405).
+   */
+  weapons?: number
+  /**
+   * For `advance: 'pickup'` -- shown as the card's second section while the
+   * player is still short of weapons and has taken ammo, which takes no slot
+   * and does not count. Owner, 2026-10-11: "If they pickup 1 weapon and 1 item
+   * that doesn't take a slot like ammo, then direct them accordingly."
+   */
+  ammoNote?: string
+  /**
+   * The card is about the open full-screen map and draws only over it (#405).
+   * A card that is only being read goes back to the card that opens the map if
+   * the map is closed under it; see `mapGoneTo` in progress.ts.
+   */
+  overMap?: boolean
   /** For `advance: 'crate'` -- how many warmup crates end the step. Default 1. */
   crates?: number
   /**

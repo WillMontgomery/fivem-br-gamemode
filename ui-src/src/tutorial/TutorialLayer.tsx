@@ -49,6 +49,9 @@ import WayBack from './WayBack'
 import {
   BAND, centred, place, sameBox, type CardBox, type Rect,
 } from './cardPlacement'
+import {
+  asRevisited, canGoBack, carried, mapGoneTo, pickupSince, pickupState,
+} from './progress'
 import { LOBBY_STEPS, type Step } from './steps'
 
 /**
@@ -402,23 +405,21 @@ export default function TutorialLayer(p: TutorialLayerProps) {
    */
   const [settledFor, setSettledFor] = useState<string | null>(null)
   /**
-   * Steps this run has already satisfied once.
+   * The index the player stepped BACK onto, shown as a page, or null.
    *
-   * ═══ GOING BACK MUST NOT ASK FOR THE WORK AGAIN ═══
+   * ═══ GOING BACK MUST NOT ASK FOR THE WORK AGAIN, AND MUST NOT BOUNCE ═══
    *
    * Owner, 2026-09-08: "after using the arrow keys to go from 12 back to 11, I
-   * have to open a new crate to move back to 12 lol." Every observed advance
-   * baselines its counter on entry, which is right the FIRST time -- a player who
-   * opened a crate on the way to the card must not walk past it -- and wrong on
-   * the way back, where it demands a second crate for a card they already
-   * answered.
+   * have to open a new crate to move back to 12 lol." That was answered by
+   * keeping each step's first baseline -- and a kept baseline is an advance
+   * that is already met, so the card sent them straight forward again. Owner,
+   * 2026-10-11: "For the in-game tutorial, step 15 back button doesn't work."
    *
-   * SO THE BASELINE IS TAKEN ONCE PER STEP PER RUN. A step they have already
-   * satisfied keeps its old baseline, so re-entering it is instantly satisfied
-   * again and Previous behaves like a reader turning a page rather than like
-   * undo.
+   * So a card reached by Previous is a page instead (see `asRevisited` in
+   * progress.ts): it waits for nothing and ends on Next. Set in the same
+   * update as `i`, so no frame shows the card with its old advance.
    */
-  const doneOnce = useRef(new Set<string>())
+  const [revisit, setRevisit] = useState<number | null>(null)
   /**
    * Has this step been waiting long enough that it is probably not coming?
    *
@@ -440,7 +441,13 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const [stuck, setStuck] = useState(false)
 
   const steps: Step[] = p.steps ?? LOBBY_STEPS
-  const step = steps[i]
+  const scripted = steps[i]
+  // ONE OBJECT PER VISIT. Every effect below keys on `step`, so the page made
+  // for a revisit is memoised rather than rebuilt each render.
+  const step = useMemo(
+    () => (scripted !== undefined && revisit === i ? asRevisited(scripted) : scripted),
+    [scripted, revisit, i],
+  )
 
   // ── the measure loop ────────────────────────────────────────────────────
   //
@@ -564,12 +571,24 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   navRef.current = (dir) => {
     if (!step) return
     if (dir === 'next') {
+      // ONLY WHERE A BUTTON WOULD HAVE BEEN. An arrow must not walk past a card
+      // that is waiting for the player to do something -- that is the owner's
+      // rule about Next buttons, and a key is a Next button with no pixels.
       if (step.advance === 'next') go(i + 1)
       else if (step.advance === 'dismiss') go(steps.length)
       else if (stuck) go(i + 1)
     } else if (dir === 'back') {
-      if (i > 0 && !step.noBack && steps[i - 1] !== undefined) go(i - 1)
+      // THE CARD'S OWN RULE, NOT A LOOSER ONE (#405). See `canGoBack`: the
+      // arrows used to skip the doorway test the button applies.
+      if (canGoBack(steps, i)) go(i - 1, 'back')
     } else if (dir === 'action' && step.action) {
+      // `{ open: true }`, NOT `{}`. br_ui/client/players.lua reads
+      // `data.open == true` and its own header states the rule -- "STATE, NOT
+      // TOGGLES. The page sends what it wants to be true" -- so an empty payload
+      // says CLOSE, and closing an already-closed panel early-returns and does
+      // nothing at all. That was the whole of "the button doesn't work" (owner,
+      // 2026-09-06): in game only the key path runs, and only it was sending
+      // the wrong thing.
       void fetchNui(step.action.cb, { open: true })
     }
   }
@@ -581,26 +600,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     // game input and the keys cannot reach Lua -- EXCEPT once `stuck` has opened
     // the escape, which must work everywhere or it is not an escape.
     if (!step || !p.keyDriven || (step.screen !== undefined && !stuck)) return
-
-    if (nav.dir === 'next') {
-      // ONLY WHERE A BUTTON WOULD HAVE BEEN. An arrow must not walk past a card
-      // that is waiting for the player to do something -- that is the owner's
-      // rule about Next buttons, and a key is a Next button with no pixels.
-      if (step.advance === 'next') go(i + 1)
-      else if (step.advance === 'dismiss') go(steps.length)
-      else if (stuck) go(i + 1)
-    } else if (nav.dir === 'back') {
-      if (i > 0 && !step.noBack && steps[i - 1] !== undefined) go(i - 1)
-    } else if (nav.dir === 'action' && step.action) {
-      // `{ open: true }`, NOT `{}`. br_ui/client/players.lua reads
-      // `data.open == true` and its own header states the rule -- "STATE, NOT
-      // TOGGLES. The page sends what it wants to be true" -- so an empty payload
-      // says CLOSE, and closing an already-closed panel early-returns and does
-      // nothing at all. That was the whole of "the button doesn't work" (owner,
-      // 2026-09-06): in game only this key path runs, and only this path was
-      // sending the wrong thing. The click path below has always sent it.
-      void fetchNui(step.action.cb, { open: true })
-    }
+    // THE SAME BODY THE DOM ARROWS RUN, so the two sources cannot disagree.
+    navRef.current(nav.dir)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav])
 
@@ -660,7 +661,9 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const pushNotice = useUi((st) => st.pushNotice)
 
   const go = useCallback(
-    (to: number) => {
+    // `how` IS 'back' ONLY FOR PREVIOUS, the button or the arrow. A card the
+    // walkthrough itself returns to (`mapGoneTo`) asks for its work again.
+    (to: number, how?: 'back') => {
       // ═══ A CARD CLOSES WHAT IT OPENED ═══
       //
       // See `Step.onLeave`. Fired here rather than in each advance path because
@@ -715,7 +718,11 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       setTimeout(() => {
         setLeaving(false)
         if (to >= steps.length) onDoneRef.current()
-        else setI(Math.max(0, to))
+        else {
+          // One update with `i`, so the revisited card never draws as itself.
+          setRevisit(how === 'back' ? Math.max(0, to) : null)
+          setI(Math.max(0, to))
+        }
       }, 180)
     },
     [steps.length],
@@ -894,17 +901,12 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const slotSwitches = useUi((st) => st.tutorialSlots)
   const slotsAtStart = useRef(slotSwitches)
   useEffect(() => {
-    if (step?.advance === 'slotswitch' && !doneOnce.current.has(step.id)) {
-      slotsAtStart.current = slotSwitches
-    }
+    if (step?.advance === 'slotswitch') slotsAtStart.current = slotSwitches
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'slotswitch') return
-    if (slotSwitches > slotsAtStart.current) {
-      doneOnce.current.add(step.id)
-      go(i + 1)
-    }
+    if (slotSwitches > slotsAtStart.current) go(i + 1)
   }, [step, slotSwitches, i, go])
 
   // ── sending a chat message ends the step ───────────────────────────────────────────────────────────
@@ -915,17 +917,12 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const chatSent = useUi((st) => st.chatSent)
   const chatAtStart = useRef(chatSent)
   useEffect(() => {
-    if (step?.advance === 'chatsent' && !doneOnce.current.has(step.id)) {
-      chatAtStart.current = chatSent
-    }
+    if (step?.advance === 'chatsent') chatAtStart.current = chatSent
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'chatsent') return
-    if (chatSent > chatAtStart.current) {
-      doneOnce.current.add(step.id)
-      go(i + 1)
-    }
+    if (chatSent > chatAtStart.current) go(i + 1)
   }, [step, chatSent, i, go])
 
   // ── the map going AWAY ends the step ────────────────────────────────────
@@ -939,6 +936,18 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     if (!(frontendUp && frontendReason === 'map')) go(i + 1)
   }, [step, frontendUp, frontendReason, i, go])
 
+  // ── a card being read over the map, and the map closed under it ─────────
+  //
+  // See `mapGoneTo` (#405): the storm and plane card has nothing to wait for,
+  // so a closed map takes the run back to "Press M to open the full map" --
+  // which asks for the map again -- rather than leaving a card hidden with no
+  // way on.
+  useEffect(() => {
+    if (!step || (frontendUp && frontendReason === 'map')) return
+    const to = mapGoneTo(steps, i)
+    if (to !== null && step.advance === 'next') go(to)
+  }, [step, frontendUp, frontendReason, steps, i, go])
+
   // ── dropping a waypoint ends the step ───────────────────────────────────
   //
   // Owner, 2026-09-07: "encourage them to try it and only proceed after they've
@@ -947,17 +956,12 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const waypoints = useUi((st) => st.tutorialWaypoints)
   const wpAtStart = useRef(waypoints)
   useEffect(() => {
-    if (step?.advance === 'waypoint' && !doneOnce.current.has(step.id)) {
-      wpAtStart.current = waypoints
-    }
+    if (step?.advance === 'waypoint') wpAtStart.current = waypoints
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'waypoint') return
-    if (waypoints > wpAtStart.current) {
-      doneOnce.current.add(step.id)
-      go(i + 1)
-    }
+    if (waypoints > wpAtStart.current) go(i + 1)
   }, [step, waypoints, i, go])
 
   // ── ...and closing the map without one puts the card away ───────────────
@@ -992,55 +996,26 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // may already be carrying something they found on the way to the crates, and
   // a card that asks for two and is satisfied by what is already in their hands
   // has taught them nothing.
-  // COUNTING FILLED SLOTS WAS THE WRONG QUESTION, and it trapped the owner on
-  // this very card (2026-09-05: "I took 2 things from the crate and the next
-  // step never appeared after that"). Two of the three things a warmup crate
-  // drops cannot raise the slot count at all:
   //
-  //   * AMMO OCCUPIES NO SLOT. br_core/server/inventory.lua's `give` opens with
-  //     "Ammo never occupies a slot" and returns before the slot code runs.
-  //   * A SECOND CONSUMABLE TOPS UP THE FIRST. The same function fills existing
-  //     stacks before opening a new one, so two bandages are one slot.
+  // ═══ WEAPONS, AND NOTHING ELSE (#405) ═══
   //
-  // A crate rolls three items at 55/18/21/6 weapon/ammo/consumable/throwable, so
-  // "take two things" routinely moves the slot count by one, or by none.
+  // Owner, 2026-10-11: "the 'pick up 2 things' should actually require 2
+  // weapons." This counted THINGS, and three rounds went into counting them
+  // right -- ammo takes no slot, a second bandage tops up the first, a gun fills
+  // its own pool as it lands (2026-09-05 to 09-08) -- and a gun plus a box of
+  // rounds still ended it, which leaves the next card ("switch between them")
+  // one weapon to switch to. Weapon slots are what that card needs. See
+  // `pickupSince` in progress.ts, which also tells a box of rounds from the
+  // pool a new gun fills, so the card can say why the box did not count.
   //
-  // THE FIX IS PAGE-SIDE AND NEEDS NO WIRE. The payload already carries
-  // `slots[i].count` and an `ammo` map, so this side can ask the right question
-  // from what it already receives -- rather than adding a counter to the
-  // protocol that only a walkthrough would ever read.
+  // PAGE-SIDE AND NO WIRE: every slot already carries its `kind` and `pool`,
+  // and the payload its `ammo` map.
   const inv = useUi((st) => st.inv)
+  const have = useMemo(() => carried(inv), [inv])
 
-  /**
-   * Everything they are carrying, by id, so two of a thing is two.
-   *
-   * AMMO IS COUNTED AS ONE PICKUP PER POOL, NOT PER ROUND. One ammo box adds
-   * thirty to a pool, and a card that says "take two things" must not be
-   * satisfied by a single box. So a pool that rose is worth exactly 1, and
-   * everything else is worth however much of it arrived.
-   */
-  const tally = useMemo(() => {
-    const m = new Map<string, number>()
-    // WHICH AMMO POOL EACH CARRIED WEAPON DRAWS FROM, so a pool that rose
-    // BECAUSE a gun arrived can be told from one that rose because a box did.
-    // `pool` is on the wire for exactly this linkage.
-    const pools = new Set<string>()
-    for (const s of inv.slots) {
-      if (!s) continue
-      m.set(s.id, (m.get(s.id) ?? 0) + (s.count ?? 1))
-      if (s.pool) pools.add('@' + s.pool)
-    }
-    for (const [pool, n] of Object.entries(inv.ammo ?? {})) {
-      m.set('@' + pool, n)
-    }
-    return { m, pools }
-  }, [inv])
-
-  const startedWith = useRef(tally)
+  const startedWith = useRef(have)
   useEffect(() => {
-    if (step?.advance === 'pickup' && !doneOnce.current.has(step.id)) {
-      startedWith.current = tally
-    }
+    if (step?.advance === 'pickup') startedWith.current = have
     // Only when the STEP changes -- re-running this on every pickup would move
     // the baseline up with them and the card would never be satisfied.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1054,66 +1029,29 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const crates = useUi((st) => st.tutorialCrates)
   const cratesAtStart = useRef(crates)
   useEffect(() => {
-    if (step?.advance === 'crate' && !doneOnce.current.has(step.id)) {
-      cratesAtStart.current = crates
-    }
+    if (step?.advance === 'crate') cratesAtStart.current = crates
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'crate') return
-    if (crates - cratesAtStart.current >= (step.crates ?? 1)) {
-      doneOnce.current.add(step.id)
-      go(i + 1)
-    }
+    if (crates - cratesAtStart.current >= (step.crates ?? 1)) go(i + 1)
   }, [step, crates, i, go])
 
+  // READ IN THE EFFECT, after the baseline effect above has run for this step,
+  // so the first commit of the card cannot be judged against the last one's.
   useEffect(() => {
     if (!step || step.advance !== 'pickup') return
-    const before = startedWith.current
-    let got = 0
+    if (pickupState(step, pickupSince(startedWith.current, have)).done) go(i + 1)
+  }, [step, have, i, go])
 
-    // ═══ A GUN AND ITS AMMO ARE ONE PICKUP ═══
-    //
-    // Third report of this card advancing early, and this is why: picking up a
-    // WEAPON gives the weapon AND fills its ammo pool, so one grab raised two
-    // keys and the previous fix -- one point per key that rose -- counted it as
-    // two (owner, 2026-09-08).
-    //
-    // A POOL IS DISCOUNTED ONCE PER WEAPON THAT ARRIVED WITH IT. Not suppressed
-    // outright: an ammo box for a gun they are already carrying is a genuine
-    // second pickup, and that pool rises with no new weapon behind it.
-    const newWeaponPools = new Set<string>()
-    for (const s of inv.slots) {
-      if (!s || !s.pool) continue
-      // A weapon is a slot whose id was not there before.
-      if ((before.m.get(s.id) ?? 0) === 0) newWeaponPools.add('@' + s.pool)
-    }
-
-    for (const [k, n] of tally.m) {
-      // ═══ ONE THING THAT ROSE IS ONE PICKUP, WHATEVER IT ROSE BY ═══
-      //
-      // This counted the MAGNITUDE for anything that was not ammo, so a single
-      // grab that happened to be a stack of two bandages read as two pickups and
-      // walked the card past on one item (owner, 2026-09-07: "step 12 still auto
-      // progresses to step 13 even when I have only picked up one item").
-      //
-      // The card asks for two THINGS, and a player counting what they did counts
-      // grabs, not units -- a box of thirty rounds is not thirty things and
-      // neither is a double stack of bandages. Under-counting is the safe
-      // direction here: the card waits, which is what it is for, and the crates
-      // drop three different items so two grabs are two keys in the ordinary
-      // case.
-      if (n <= (before.m.get(k) ?? 0)) continue
-      // The pool that arrived with a new gun is that gun's, not a pickup of
-      // its own.
-      if (newWeaponPools.has(k)) continue
-      got += 1
-    }
-    if (got >= (step.pickups ?? 1)) {
-      doneOnce.current.add(step.id)
-      go(i + 1)
-    }
-  }, [step, tally, i, go])
+  // ...AND WHY A BOX OF ROUNDS DID NOT COUNT. Owner: "If they pickup 1 weapon
+  // and 1 item that doesn't take a slot like ammo, then direct them
+  // accordingly." The step's `ammoNote` replaces its section while that is so.
+  // Read at render; the card is not drawn until its target has settled, which is
+  // after the baseline above has been taken.
+  const ammoShort = step !== undefined && step.advance === 'pickup'
+    && step.ammoNote !== undefined
+    && pickupState(step, pickupSince(startedWith.current, have)).short
 
   // ── a screen opening ends the step ──────────────────────────────────────
   //
@@ -1169,9 +1107,10 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // A CARD ABOUT THE MAP DRAWS ONLY OVER THE MAP. Without this the waypoint
   // card followed the player back out to the HUD and sat there over a control
   // it says nothing about (owner, 2026-09-07: "right now the card still
-  // shows"). Waiting, not failing: it returns when the map does.
+  // shows"). Waiting, not failing: it returns when the map does. Every card
+  // about the open map says so with `overMap` (#405).
   const waitingForMap = step !== undefined
-    && (step.advance === 'waypoint' || step.advance === 'mapclose')
+    && step.overMap === true
     && !(frontendUp && frontendReason === 'map')
   const missing = step !== undefined && step.target !== undefined
     && rect === null && !waitingForScreen
@@ -1252,6 +1191,10 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const uiScale = useUi((st) => st.settings.uiScale)
   const textScale = useUi((st) => st.settings.textScale)
   const stepId = step?.id
+  // THE CARD'S SECOND SECTION, which can change while the card is up: the
+  // pickup card's direction arrives with the box of rounds (#405). It changes
+  // the card's height, so it is an input to the measurement below.
+  const note = step === undefined ? undefined : ammoShort ? step.ammoNote : step.note
 
   useEffect(() => {
     const bump = () => setViewportTick((n) => n + 1)
@@ -1272,7 +1215,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
     const next = { w: el.offsetWidth, h: el.offsetHeight, rem }
     setCard((prev) => (sameBox(prev, next) ? prev : next))
-  }, [cardUp, stepId, uiScale, textScale, viewportTick])
+  }, [cardUp, stepId, note, uiScale, textScale, viewportTick])
 
   // ── a screen the walkthrough does not visit, and the way back from it ───
   //
@@ -1383,7 +1326,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // `{key:…}`, `[[Esc]]` and `~Volts~` are the renderer's to resolve, not
         // this layer's. See the note where `withKeys` used to be.
         body={step.body}
-        note={step.note}
+        // The pickup card's direction takes the section's place while it holds.
+        note={note}
         index={i + 1}
         total={steps.length}
         left={left}
@@ -1419,13 +1363,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // button either." Last would have to reopen the screen the player has
         // just left and put them where they were in it, and it does not do
         // that -- so it would take them back to a card describing a control
-        // that is no longer on screen.
-        onBack={
-          i > 0 && !step.noBack && steps[i - 1] !== undefined
-            && steps[i - 1]!.screen === step.screen
-            ? () => go(i - 1)
-            : null
-        }
+        // that is no longer on screen. One rule with the arrows: `canGoBack`.
+        onBack={canGoBack(steps, i) ? () => go(i - 1, 'back') : null}
         // The last card ends the run rather than advancing into nothing.
         onDismiss={step.advance === 'dismiss' ? () => go(steps.length) : null}
         dismissLabel={step.dismissLabel}

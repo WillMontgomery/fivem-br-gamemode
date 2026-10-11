@@ -1450,7 +1450,7 @@ for (const name of builtCss) {
 // dependency array in the layer, and scripts/test-card-placement.mjs must agree.
 //
 // IT CAN FAIL. Put `const CARD_W = 304` back in TutorialLayer.tsx, or delete a
-// name from the `[cardUp, stepId, uiScale, textScale, viewportTick]` array.
+// name from the `[cardUp, stepId, note, uiScale, textScale, viewportTick]` array.
 // ---------------------------------------------------------------------------
 {
   const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
@@ -1497,11 +1497,11 @@ for (const name of builtCss) {
         + ' so it would report 86% of the card -- the same under-measure with a'
         + ' new cause.')
     }
-    if (!/\},\s*\[\s*cardUp\s*,\s*stepId\s*,\s*uiScale\s*,\s*textScale\s*,\s*viewportTick\s*\]\s*\)/.test(layer)) {
+    if (!/\},\s*\[\s*cardUp\s*,\s*stepId\s*,\s*note\s*,\s*uiScale\s*,\s*textScale\s*,\s*viewportTick\s*\]\s*\)/.test(layer)) {
       fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
         'the measurement layout effect is not keyed on'
-        + ' [cardUp, stepId, uiScale, textScale, viewportTick]. A missing name'
-        + ' drops a re-measure (a card mounting, a new step, either slider, a'
+        + ' [cardUp, stepId, note, uiScale, textScale, viewportTick]. A missing name'
+        + ' drops a re-measure (a card mounting, a new step, its section, either slider, a'
         + ' resize) and the card keeps a placement computed for a different box.'
         + ' See CARD_INPUTS.')
     }
@@ -1512,9 +1512,9 @@ for (const name of builtCss) {
         + ' the card is drawn at the placement it had before it was measured,'
         + ' and then jumps.')
     }
-    if (!/CARD_INPUTS\s*=\s*\[\s*'cardUp'\s*,\s*'stepId'\s*,\s*'uiScale'\s*,\s*'textScale'\s*,\s*'viewportTick'\s*\]/.test(kernel)) {
+    if (!/CARD_INPUTS\s*=\s*\[\s*'cardUp'\s*,\s*'stepId'\s*,\s*'note'\s*,\s*'uiScale'\s*,\s*'textScale'\s*,\s*'viewportTick'\s*\]/.test(kernel)) {
       fail('R22 card-measured', 'src/tutorial/cardPlacement.ts',
-        'CARD_INPUTS is not exactly [\'cardUp\', \'stepId\', \'uiScale\','
+        'CARD_INPUTS is not exactly [\'cardUp\', \'stepId\', \'note\', \'uiScale\','
         + ' \'textScale\', \'viewportTick\']. It is the single source for the'
         + ' invalidation set; the layer\'s dependency array and'
         + ' test-card-placement.mjs read against it.')
@@ -2368,15 +2368,16 @@ for (const name of builtCss) {
 // words and the steps are in steps.ts and scripts/test-tutorial-lock.mjs pins
 // them; this pins the two places they reach the page:
 //
-//   NOT DRAWN -- TutorialLayer stops passing `note={step.note}`, or
-//     AnnotationCard stops rendering `p.note` through `emphasize`, so step 1's
-//     section is written and never shown;
+//   NOT DRAWN -- TutorialLayer stops passing `note={note}` with `note` falling
+//     back to `step.note` (part 2 put the pickup card's ammo direction in front
+//     of it), or AnnotationCard stops rendering `p.note` through `emphasize`,
+//     so step 1's section is written and never shown;
 //   NOT THERE -- the Market's Done loses `data-tut="market-done"`, so the Market
 //     card finds nothing to point at and the walkthrough ends 1.2s after the
 //     Market opens (see `missing` in TutorialLayer).
 //
-// IT CAN FAIL. Drop `note={step.note}`, the `{emphasize(p.note)}` paragraph,
-// or the span around the Market's Done.
+// IT CAN FAIL. Drop `note={note}`, the `: step.note` fallback, the
+// `{emphasize(p.note)}` paragraph, or the span around the Market's Done.
 // ---------------------------------------------------------------------------
 {
   const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
@@ -2387,10 +2388,12 @@ for (const name of builtCss) {
       'tutorial/TutorialLayer.tsx, tutorial/AnnotationCard.tsx or screens/Market.tsx is'
       + ' missing. If they moved, move this rule with them (#405).')
   } else {
-    if (!/\bnote=\{step\.note\}/.test(stripComments(read(L)))) {
+    const layer30 = stripComments(read(L))
+    if (!/\bnote=\{note\}/.test(layer30)
+        || !/const\s+note\s*=\s*step\s*===\s*undefined\s*\?\s*undefined\s*:\s*ammoShort\s*\?\s*step\.ammoNote\s*:\s*step\.note\b/.test(layer30)) {
       fail('R30 tutorial-copy', 'src/tutorial/TutorialLayer.tsx',
-        'the card is no longer given `note={step.note}`, so step 1\'s interactive-demo'
-        + ' section never reaches it (#405).')
+        'the card is no longer given `note={note}` with `note` falling back to'
+        + ' `step.note`, so step 1\'s interactive-demo section never reaches it (#405).')
     }
     if (!/className=\{`tut-body tut-note[^`]*`\}>\{emphasize\(p\.note\)\}<\/p>/.test(stripComments(read(C)))) {
       fail('R30 tutorial-copy', 'src/tutorial/AnnotationCard.tsx',
@@ -2550,6 +2553,73 @@ for (const name of builtCss) {
         'the measure loop no longer treats a target with no box, or one that is not'
         + ' visible, as absent -- so a ring can be drawn around nothing (#405).')
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R34  The in-game walkthrough's Previous, pickup and map cards follow the
+//      tested rules (#405, part 2).
+//
+// Owner, 2026-10-11: "For the in-game tutorial, step 15 back button doesn't
+// work", "the 'pick up 2 things' should actually require 2 weapons", and
+// "In-game step 17 - show them how they can see the storm area and plane
+// route." The rules are in tutorial/progress.ts and the data in gameSteps.ts,
+// both pinned by scripts/test-tutorial-game.mjs; only this can see the layer
+// use them:
+//
+//   BOUNCE -- a card reached by Previous is not turned into a page
+//     (`asRevisited` on `revisit === i`, set by `go(..., 'back')`), or the kept
+//     baseline (`doneOnce`) that sent step 15 straight back comes back;
+//   TWO RULES FOR BACK -- the card's Previous, or either arrow path, decides
+//     without `canGoBack`, or a `go(i - 1)` that is not a Previous appears;
+//   THINGS, NOT WEAPONS -- the pickup advance is not `pickupState(...).done`
+//     over `pickupSince` against the card's own baseline;
+//   OFF THE MAP -- the map gate is not `overMap`, or a closed map on the storm
+//     card does not go where `mapGoneTo` says.
+//
+// IT CAN FAIL. Put `onBack={i > 0 && ...}` back, drop `'back'` from either
+// call, bring `doneOnce` back, count `tally` again, or test the map gate on
+// `step.advance`.
+// ---------------------------------------------------------------------------
+{
+  const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
+  if (!existsSync(L) || !existsSync(join(SRC, 'tutorial', 'progress.ts'))) {
+    fail('R34 tutorial-game', 'src/tutorial',
+      'TutorialLayer.tsx or progress.ts is missing. If they moved, move this rule with them (#405).')
+  } else {
+    const layer = stripComments(read(L))
+    const want = (re, why) => { if (!re.test(layer)) fail('R34 tutorial-game', 'src/tutorial/TutorialLayer.tsx', why) }
+    const never = (re, why) => { if (re.test(layer)) fail('R34 tutorial-game', 'src/tutorial/TutorialLayer.tsx', why) }
+
+    want(/from '\.\/progress'/,
+      'the layer no longer imports its rules from ./progress, which is what the test loads (#405).')
+    want(/revisit\s*===\s*i\s*\?\s*asRevisited\(scripted\)\s*:\s*scripted/,
+      'a card reached by Previous is no longer shown as `asRevisited(...)`. Step 15\'s'
+      + ' Previous lands on a card whose advance is already met and is sent straight back (#405).')
+    want(/setRevisit\(\s*how\s*===\s*'back'/,
+      '`go` no longer records a Previous as a revisit in the same update as `i` (#405).')
+    never(/\bdoneOnce\b/,
+      '`doneOnce` is back. A kept baseline is an advance already met: Previous bounces (#405).')
+    want(/onBack=\{canGoBack\(steps,\s*i\)\s*\?\s*\(\)\s*=>\s*go\(i\s*-\s*1,\s*'back'\)\s*:\s*null\}/,
+      'the card\'s Previous is not `canGoBack(steps, i) ? () => go(i - 1, \'back\') : null` (#405).')
+    want(/if\s*\(canGoBack\(steps,\s*i\)\)\s*go\(i\s*-\s*1,\s*'back'\)/,
+      'the arrows do not go back through `canGoBack` -- the button and the keys would'
+      + ' disagree again (#405).')
+    want(/\)\s*return\s+navRef\.current\(nav\.dir\)\s*\},\s*\[nav\]\)/,
+      'the arrows from Lua no longer run the same body as the arrows from the page (#405).')
+    never(/go\(\s*i\s*-\s*1\s*\)/,
+      'a `go(i - 1)` that is not a Previous: it lands on a card as it was, which bounces (#405).')
+    want(/pickupState\(step,\s*pickupSince\(startedWith\.current,\s*have\)\)\.done\)\s*go\(i\s*\+\s*1\)/,
+      'the pickup card no longer ends on `pickupState(...).done` -- two WEAPONS, owner'
+      + ' 2026-10-11 (#405).')
+    never(/\btally\b/,
+      'the pickup card counts `tally` again -- things, not weapons (#405).')
+    want(/const\s+waitingForMap\s*=\s*step\s*!==\s*undefined\s*&&\s*step\.overMap\s*===\s*true/,
+      'the map gate is not `step.overMap`, so the storm and plane card follows the'
+      + ' player off the map (#405).')
+    want(/const\s+to\s*=\s*mapGoneTo\(steps,\s*i\)\s*if\s*\(to\s*!==\s*null\s*&&\s*step\.advance\s*===\s*'next'\)\s*go\(to\)/,
+      'a closed map on the storm and plane card no longer goes back to the card that'
+      + ' opens it (`mapGoneTo`) -- the card would hide with no way on (#405).')
   }
 }
 

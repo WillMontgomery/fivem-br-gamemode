@@ -337,9 +337,20 @@ export const GAME_STEPS: Step[] = [
     // holding the interact key against a prompt, not by walking through it. The
     // key is printed from the player's own binding, like every other key in this
     // script.
-    body: 'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two things** from the crate you opened. Nothing you pick up in warmup comes with you into the match.',
+    //
+    // ═══ TWO WEAPONS (#405) ═══
+    //
+    // Owner, 2026-10-11: "the 'pick up 2 things' should actually require 2
+    // weapons." The next card is about switching slots, and ammo gives them no
+    // slot to switch to. "From the crates", not "the crate you opened": three
+    // items at 55% a weapon leaves about two crates in five short of two guns,
+    // and the four crates refill when you walk away.
+    body: 'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two weapons** from the crates. Nothing you pick up in warmup comes with you into the match.',
     advance: 'pickup',
-    pickups: 2,
+    weapons: 2,
+    // "If they pickup 1 weapon and 1 item that doesn't take a slot like ammo,
+    // then direct them accordingly." Shown under the body while it is true.
+    ammoNote: '**Ammo** does not take a slot, so it does not count - grab another **weapon**.',
     // NO WAY BACK. The card before this one is the crate card, and stepping back
     // to it would ask them to open a crate they have already opened -- the
     // walkthrough's own history is what makes that redundant, not a rule.
@@ -386,11 +397,34 @@ export const GAME_STEPS: Step[] = [
     advance: 'map',
   },
   {
+    id: 'game-map-storm',
+    // ═══ THE STORM AREA AND THE PLANE ROUTE, ON THE MAP THEY ARE ON (#405) ═══
+    //
+    // Owner, 2026-10-11: "In-game step 17 - show them how they can see the storm
+    // area and plane route." The first card over the open map, so it is step 17.
+    //
+    // BOTH ARE ALREADY DRAWN IN WARMUP, which is why this is a card and not a
+    // staged demo. Circle 1 is published at WARMUP (#327, BR.Net.STORM_PREVIEW)
+    // and drawn in the "Next Safe Zone" purple by client/storm.lua; the route is
+    // published at WARMUP (BR.Net.BUS_ROUTE) and drawn by client/bus.lua as the
+    // blue GPS line. The pad is on the island and both are over the mainland,
+    // hence the zoom.
+    //
+    // NO WAY BACK: the card before it opened the map. See `overMap`: closing the
+    // map on this card takes them back to that one.
+    title: 'The storm and the plane',
+    body: 'Scroll to zoom out. The **purple circle** is the first safe zone the storm closes in to, and the **blue line** is the route the plane will fly.',
+    advance: 'next',
+    overMap: true,
+    noBack: true,
+    place: 'quarter',
+  },
+  {
     id: 'game-map-waypoint',
-    // THE ONE CARD IN THE GAME THAT DRAWS OVER THE BIG MAP. See App.tsx: the
-    // page normally hides behind every engine screen, and this subtree opts out
-    // for the map alone -- owner, 2026-09-04, "allow ONLY this tutorial to shine
-    // through".
+    // A CARD DRAWN OVER THE BIG MAP, like the two either side of it. See
+    // App.tsx: the page normally hides behind every engine screen, and this
+    // subtree opts out for the map alone -- owner, 2026-09-04, "allow ONLY this
+    // tutorial to shine through".
     //
     // NO ANCHOR: the subject is the whole map surface. Every HUD element it
     // could have borrowed is underneath a full-screen scaleform, so a ring would
@@ -401,6 +435,7 @@ export const GAME_STEPS: Step[] = [
     // have a next/last button but instead encourage them to try it and only
     // proceed after they've placed a waypoint at least once."
     advance: 'waypoint',
+    overMap: true,
     noBack: true,
     place: 'quarter',
   },
@@ -413,6 +448,7 @@ export const GAME_STEPS: Step[] = [
     title: 'Nicely done',
     body: 'Great job! Now press [[Esc]] to close the map.',
     advance: 'mapclose',
+    overMap: true,
     noBack: true,
     place: 'quarter',
   },

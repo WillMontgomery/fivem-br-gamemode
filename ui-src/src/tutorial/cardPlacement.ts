@@ -233,6 +233,9 @@ export function sameBox(a: CardBox | null, b: CardBox): boolean {
  *                 a card can be skipped entirely, which is the whole bug back.
  *   stepId        different step, different prose, different height. CARD_H was
  *                 only ever guessing at this one, at every resolution.
+ *   note          the card's second section, which can change while the card
+ *                 is up -- the pickup card's direction arrives with a box of
+ *                 rounds (#405) -- and adds a paragraph of height when it does.
  *   uiScale       the interface-size slider -- multiplies rem, and is what
  *                 writes --ui-scale (settings/apply.ts).
  *   textScale     the text-size slider. `.tscale` is on the card itself, so
@@ -258,4 +261,4 @@ export function sameBox(a: CardBox | null, b: CardBox): boolean {
  * exactly these names, and scripts/test-card-placement.mjs asserts this list, so
  * the spec has one home.
  */
-export const CARD_INPUTS = ['cardUp', 'stepId', 'uiScale', 'textScale', 'viewportTick'] as const
+export const CARD_INPUTS = ['cardUp', 'stepId', 'note', 'uiScale', 'textScale', 'viewportTick'] as const
