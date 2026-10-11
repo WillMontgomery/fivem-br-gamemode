@@ -6405,6 +6405,128 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('wall.straight')
+do
+    -- ═══ THE WALL'S DRAWS GO TO THE HANDLER BEHIND THE LOADER'S WRAPPER (#393 round 9) ═══
+    --
+    -- FiveM's natives loader writes DrawSpritePoly as a Lua wrapper, in the chunk
+    -- '@DrawSpritePoly.lua', over the engine's handler -- an upvalue `fn` -- passing the
+    -- two texture names through _ts (tostring for a string). The owner's sweep profile
+    -- charged the wrapper and its _ts calls more than the draws. client/natives.lua's
+    -- BR.Native.direct hands a hot caller that handler, and only that: the claim here is
+    -- that it sees through the loader's own wrapper and nothing else, and that the wall
+    -- drawn through it is the wall drawn through the global, argument for argument.
+
+    -- The real BR.Native.direct, out of the real client/natives.lua.
+    local function nativesEnv(withDebug)
+        local env = newSandbox()
+        env.RegisterCommand = function() end
+        env.AddEventHandler = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+        if withDebug then env.debug = debug end
+        loadInto(env, { 'br_lib/shared/enums.lua', 'br_core/client/natives.lua' })
+        return env
+    end
+    local direct = nativesEnv(true).BR.Native.direct
+    local directNoDebug = nativesEnv(false).BR.Native.direct
+
+    --- A global shaped as the loader writes it: chunk '@<name>.lua', upvalue `fn`.
+    local function loaderShaped(name, handler, onCall, upvalueName)
+        local src = ([[
+            local %s, onCall = ...
+            local function _ts(v) if v == 0 or not v then return nil end return tostring(v) end
+            return function(x1, y1, z1, x2, y2, z2, x3, y3, z3, red, green, blue, alpha,
+                            textureDict, textureName, u1, v1, w1, u2, v2, w2, u3, v3, w3)
+                onCall()
+                return %s(x1, y1, z1, x2, y2, z2, x3, y3, z3, red, green, blue, alpha,
+                    _ts(textureDict), _ts(textureName), u1, v1, w1, u2, v2, w2, u3, v3, w3)
+            end]]):format(upvalueName or 'fn', upvalueName or 'fn')
+        return assert(load(src, '@' .. name .. '.lua', 't', { tostring = tostring }))(
+            handler, onCall or function() end)
+    end
+
+    local h = function() end
+    local w = loaderShaped('DrawSpritePoly', h)
+    ok(direct(w, 'DrawSpritePoly') == h,
+        "direct() hands back the handler behind the loader's own DrawSpritePoly")
+    local other = assert(load('local fn = ... return function(...) return fn(...) end',
+        '@client/somewhere.lua', 't', {}))(h)
+    ok(direct(other, 'DrawSpritePoly') == other,
+        'but a wrapper from any other chunk -- ours, a stub -- is handed back as it is')
+    local noFn = loaderShaped('DrawSpritePoly', h, nil, 'handler')
+    ok(direct(noFn, 'DrawSpritePoly') == noFn,
+        'and so is one in the right chunk with no `fn` behind it')
+    local raw = loaderShaped('IsRawKeyDown', h)
+    ok(direct(raw, 'IsRawKeyDown') == raw and direct(w, 'IsRawKeyDown') == w,
+        "and so is any native not known to pass its arguments straight on (IsRawKeyDown adds the loader's _r)")
+    ok(directNoDebug(w, 'DrawSpritePoly') == w and direct(nil, 'DrawSpritePoly') == nil,
+        'and without a debug library, or without the native, the global is what comes back')
+
+    -- THE WALL THROUGH IT. One client draws through a loader-shaped DrawSpritePoly over
+    -- the suite's recording stub, with the real direct(); the other through the stub.
+    local function client(shaped)
+        local C = noFarFade(newStormClient())
+        C.wrapped = 0
+        if shaped then
+            C.env.DrawSpritePoly = loaderShaped('DrawSpritePoly', C.env.DrawSpritePoly,
+                function() C.wrapped = C.wrapped + 1 end)
+            C.env.BR.Native.direct = direct
+        end
+        local rec = C.record(1, 0.0, 0.0, 5200.0, 900.0, 1400.0, 2600.0, 1000, 240000, 0.5)
+        rec.seed = 393
+        C.recordWallOnly()
+        C.pedAt = pt(400.0, 300.0, 30.0)
+        return C
+    end
+    local P, U = client(true), client(false)
+    local frames, drawn, sprites, diff = 0, 0, 0, nil
+    for k = 1, 24 do
+        -- A sweep, then the hold after it.
+        local stepMs = (k <= 16) and 2984 or 40000
+        P.now, U.now = P.now + stepMs, U.now + stepMs
+        P.frame()
+        U.frame()
+        frames = frames + 1
+        drawn = drawn + #P.polys
+        if not diff and #P.polys ~= #U.polys then
+            diff = ('frame %d: %d triangles against %d'):format(frames, #P.polys, #U.polys)
+        end
+        for i = 1, math.min(#P.polys, #U.polys) do
+            local a, b = P.polys[i], U.polys[i]
+            if a.sprite then sprites = sprites + 1 end
+            local same = a.sprite == b.sprite and a.txd == b.txd and a.tex == b.tex
+                and a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a
+            for j = 1, 3 do
+                same = same and a[j].x == b[j].x and a[j].y == b[j].y and a[j].z == b[j].z
+                    and a[j].u == b[j].u and a[j].v == b[j].v and a[j].w == b[j].w
+            end
+            if not same and not diff then diff = ('frame %d, triangle %d'):format(frames, i) end
+        end
+    end
+    ok(P.errored() == nil and U.errored() == nil, 'both clients draw clean',
+        P.errored() or U.errored())
+    ok(P.wrapped == 0 and sprites > 24 * 50,
+        "the wall's textured draws go to the handler and never through the wrapper",
+        ('%d through the wrapper, %d textured triangles'):format(P.wrapped, sprites))
+    ok(diff == nil and drawn > 24 * 50,
+        'and they are the triangles the global draws: corners, color, alpha, texture and UVs',
+        diff or ('%d triangles over %d frames'):format(drawn, frames))
+
+    -- A wrapper of OUR OWN over the global is honored: every draw goes through it.
+    local Q = client(false)
+    local ours = 0
+    local stub = Q.env.DrawSpritePoly
+    Q.env.DrawSpritePoly = function(...) ours = ours + 1 return stub(...) end
+    Q.env.BR.Native.direct = direct
+    Q.now = Q.now + 2984
+    Q.frame()
+    ok(Q.errored() == nil and ours > 50 and ours == #Q.polys,
+        'and a wrapper of our own over the global is called for every draw',
+        ('%d through ours, %d drawn'):format(ours, #Q.polys))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.ramp')
 do
     -- ═══ THE BAKED ALPHA RAMP, WHICH IS WHY THE WALL IS SMOOTH ═══

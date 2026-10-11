@@ -361,6 +361,9 @@ math.randomseed(393)
 --- charged the hook's frame records however the two nest; and under --fns `fns`, the
 --- instructions by function over the phase being measured.
 local VM = { kb = 0.0, fns = nil, raw = collectgarbage }
+--- The chunks the modelled natives loader writes each native's global in ('@<Name>.lua',
+--- nativeFn below): the harness's code, like this file's, so the sampler skips them.
+local NATIVE_SRC = {}
 local function gcCount(opt) return VM.raw(opt) - VM.kb end
 local buckets = {}
 
@@ -471,7 +474,8 @@ do
         if fn then
             local mine = own[fn]
             if mine == nil then
-                mine = getinfo(fn, 'S').source == HARNESS_SRC
+                local src = getinfo(fn, 'S').source
+                mine = src == HARNESS_SRC or NATIVE_SRC[src] == true
                 own[fn] = mine
             end
             if not mine then
@@ -1182,9 +1186,21 @@ local function nativeFn(name)
         if top then top.kb0 = top.kb0 + (gcCount('count') - k0) end
         return r1, r2, r3, r4, r5, r6
     end
-    natives[name] = f
+    -- THE GLOBAL IS THE LOADER'S WRAPPER, AS IT IS IN THE GAME (#393 round 9). FiveM's
+    -- natives loader writes each native's global as a Lua function, in the chunk
+    -- '@<Name>.lua', that hands its arguments to the engine's handler -- an upvalue
+    -- named `fn` -- and BR.Native.direct (client/natives.lua) lets a hot caller call
+    -- that handler itself. So the model is built the same way: `f` above is the
+    -- handler, the global is a wrapper over it, and a call through either is counted
+    -- once, under the native's name, with the same digest. The wrapper is the
+    -- harness's, not br_core's: NATIVE_SRC keeps it out of the VM count.
+    local src = '@' .. name .. '.lua'
+    NATIVE_SRC[src] = true
+    local shaped = assert(load('local fn = ... return function(...) return fn(...) end',
+        src, 't', {}))(f)
+    natives[name] = shaped
     seenNative[name] = true
-    return f
+    return shaped
 end
 
 --- Count a runtime crossing that is not a native in name but is one in cost:

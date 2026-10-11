@@ -21,6 +21,62 @@ BR.Native.use = {
     spectatorNative = false,  -- false = free-cam + SetFocusEntity (the safer default)
 }
 
+-- ═══ A HOT NATIVE CALLED STRAIGHT, PAST THE LOADER'S WRAPPER (#393 round 9) ═══
+--
+-- Every native global is a small Lua function FiveM's natives loader writes the
+-- first time the name is read (citizen/scripting/lua/natives_loader.lua, from
+-- natives_universal.zip), loaded as the chunk '@<Name>.lua'. DRAW_SPRITE_POLY's is
+--
+--   local fn = _gn(0x29280002282F1928)
+--   function Global.DrawSpritePoly(x1, ..., textureDict, textureName, ...)
+--       return fn(x1, ..., _ts(textureDict), _ts(textureName), ...)
+--   end
+--
+-- and the owner's sweep profile (2026-10-11) charged that wrapper and its two
+-- _ts/tostring calls more than the draws themselves. `fn` -- the engine's handler,
+-- Citizen.GetNative's answer -- is the same call without them: _ts hands a string
+-- back as itself (tostring), and every other argument goes through untouched. So a
+-- hot caller may hold `fn` and pass it the same arguments.
+--
+-- ONLY THE LOADER'S OWN WRAPPER IS SEEN THROUGH. A global from any other chunk -- a
+-- wrapper of ours (BR.Frame's movers, the radar), a stub in a suite -- or one without
+-- an upvalue `fn` is handed back as it is and called as before; so is every native
+-- not in STRAIGHT, whose wrappers are known to pass their arguments straight on.
+-- IsRawKeyDown's is not one: it adds the loader's `_r`. A caller passing a texture
+-- dictionary or name must pass strings -- _ts turns 0 and nil into nil, which a
+-- direct call would not.
+-- (Keyed in brackets: a bare `Name = true` line reads as a global definition to
+-- tools/perf_client.lua's scan, which would then never model the native.)
+local STRAIGHT = {
+    ['DrawSpritePoly']            = true,   -- (..., _ts(textureDict), _ts(textureName), ...)
+    ['DisableControlAction']      = true,   -- (padIndex, control, disable)
+    ['HideHudComponentThisFrame'] = true,   -- (id)
+}
+BR.Native.STRAIGHT = STRAIGHT
+
+--- The engine's handler behind `fn`, a native's global named `name`, when that
+--- global is the natives loader's own pass-through wrapper; otherwise `fn` itself.
+--- Pure: a caller keeps the answer while its global is the same function.
+--- @param fn function|nil  the global, as the caller sees it now
+--- @param name string      the native's name
+--- @return function|nil
+function BR.Native.direct(fn, name)
+    if type(fn) ~= 'function' or not STRAIGHT[name] then return fn end
+    local dbg = debug
+    if type(dbg) ~= 'table' or not dbg.getinfo or not dbg.getupvalue then return fn end
+    local info = dbg.getinfo(fn, 'S')
+    if not info or info.source ~= '@' .. name .. '.lua' then return fn end
+    for i = 1, 8 do
+        local n, v = dbg.getupvalue(fn, i)
+        if n == nil then break end
+        if n == 'fn' then
+            if type(v) == 'function' then return v end
+            break
+        end
+    end
+    return fn
+end
+
 -- ---------------------------------------------------------------- parachute ---
 
 -- GET_PED_PARACHUTE_STATE return values (verified against citizenfx/natives).

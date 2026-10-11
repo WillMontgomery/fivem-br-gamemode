@@ -24520,6 +24520,60 @@ do
     BR.Gunshop, BR.Spectate = realGunshop, realSpectate
 end
 
+describe('#393 round 9 -- inv.controls disables through the handler behind the wrapper')
+do
+    -- FiveM's natives loader writes DisableControlAction as a Lua wrapper in the chunk
+    -- '@DisableControlAction.lua' over the engine's handler, an upvalue `fn`.
+    -- inv.controls makes its thirteen disables a frame through that handler
+    -- (BR.Native.direct): the same controls, the same arguments, no wrapper.
+    local realDisable = DisableControlAction
+    local fromInv = { wrapper = 0, handler = 0 }
+    -- Whose call it is: `level` frames up from here.
+    local function byInventory(level)
+        local info = debug.getinfo(level, 'S')
+        return info and info.source:find('client/inventory.lua', 1, true) ~= nil
+    end
+    local function handler(pad, c, d)
+        if byInventory(3) then fromInv.handler = fromInv.handler + 1 end
+        return realDisable(pad, c, d)
+    end
+    local shaped = assert(load([[
+        local fn, seen = ...
+        return function(padIndex, control, disable)
+            seen()
+            return fn(padIndex, control, disable)
+        end]], '@DisableControlAction.lua', 't', {}))(handler, function()
+            if byInventory(4) then fromInv.wrapper = fromInv.wrapper + 1 end
+        end)
+
+    local function frameDisables()
+        for k in pairs(disabled) do disabled[k] = nil end
+        BR.Loop.step(BR.Loop.FRAME)
+        local out = {}
+        for c in pairs(disabled) do out[#out + 1] = c end
+        table.sort(out)
+        return table.concat(out, ',')
+    end
+    local plain = frameDisables()
+    DisableControlAction = shaped
+    fromInv.wrapper, fromInv.handler = 0, 0
+    local straight = frameDisables()
+    local w1, h1 = fromInv.wrapper, fromInv.handler
+    DisableControlAction = realDisable
+    local back = frameDisables()
+
+    -- A call through the wrapper reaches the handler too (a tail call, so the handler
+    -- sees inventory.lua as its caller): what went to the handler STRAIGHT is the
+    -- difference. inventory.lua's other disables, elsewhere in the file, still go
+    -- through the global.
+    ok(h1 - w1 == 13,
+        'its thirteen suppressions go straight to the handler behind the loader\'s wrapper',
+        ('%d to the handler, %d of them through the wrapper'):format(h1, w1))
+    ok(straight == plain and back == plain and plain ~= '',
+        'and the frame disables exactly the controls it did through the global, before and after',
+        ('%s / %s / %s'):format(plain, straight, back))
+end
+
 describe('#393 -- the slot keys are read only while canArm() could take a press')
 do
     local realRaw = IsRawKeyDown

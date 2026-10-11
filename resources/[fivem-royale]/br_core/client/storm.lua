@@ -1180,6 +1180,28 @@ local function quadBehind(p, vmax, ax, ay, bx, by)
     return ha + vmax < -VIEW_MARGIN
 end
 
+-- ═══ THE WALL'S DRAWS GO STRAIGHT TO THE ENGINE'S HANDLER (#393 round 9) ═══
+--
+-- DrawSpritePoly is the natives loader's Lua wrapper, which hands its 24 arguments on
+-- with the texture names through _ts/tostring -- in the owner's sweep profile it cost
+-- more than the draws. BR.Native.direct finds the handler behind it (client/natives.lua
+-- says when it may), and the wall passes it the same arguments; anything else -- a
+-- wrapper of our own, a suite's stub, a build without the native -- is called as the
+-- global it is. Looked up again whenever the global changes.
+local spriteSeen, spriteCall = nil, nil
+
+--- DrawSpritePoly, or the handler behind it.
+--- @return function|nil
+local function spritePoly()
+    local w = DrawSpritePoly
+    if w ~= spriteSeen then
+        spriteSeen = w
+        local direct = BR.Native and BR.Native.direct
+        spriteCall = direct and direct(w, 'DrawSpritePoly') or w
+    end
+    return spriteCall
+end
+
 --- Emit a built strip with the draw drawStrip settled for it this frame.
 ---
 --- With no `view` this is the loop that was here, call for call: every quad, in walk
@@ -1224,6 +1246,11 @@ local function emitStrip(g, view, complement)
     local far, f0, band, f0sq, f1sq = d.far, d.f0, d.band, d.f0sq, d.f1sq
     local u0, uPerS, sBot, sTop = d.u0, d.uPerS, d.sBot, d.sTop
     local runOut = far and (d.f0 + d.band + RUN_MARGIN_M) or 0.0
+    -- The handler takes the texture names as they are, so only strings go straight.
+    local sprite = DrawSpritePoly
+    if gradient and type(gDict) == 'string' and type(gTex) == 'string' then
+        sprite = spritePoly()
+    end
 
     local p1, p2, v1, v2
     if view then
@@ -1294,17 +1321,17 @@ local function emitStrip(g, view, complement)
                     local out = (vx - q[o + 5]) * q[o + 7] + (vy - q[o + 6]) * q[o + 8] >= 0.0
                     if gradient then
                         if out then
-                            DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
+                            sprite(ax, ay, zb, bx, by, zb, ax, ay, zt,
                                 cr, cg, cb, av, gDict, gTex,
                                 ua, gV0, 1.0,  ub, gV0, 1.0,  ua, gV1, 1.0)
-                            DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
+                            sprite(bx, by, zb, bx, by, zt, ax, ay, zt,
                                 cr, cg, cb, av, gDict, gTex,
                                 ub, gV0, 1.0,  ub, gV1, 1.0,  ua, gV1, 1.0)
                         else
-                            DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
+                            sprite(ax, ay, zt, bx, by, zb, ax, ay, zb,
                                 cr, cg, cb, av, gDict, gTex,
                                 ua, gV1, 1.0,  ub, gV0, 1.0,  ua, gV0, 1.0)
-                            DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
+                            sprite(ax, ay, zt, bx, by, zt, bx, by, zb,
                                 cr, cg, cb, av, gDict, gTex,
                                 ua, gV1, 1.0,  ub, gV1, 1.0,  ub, gV0, 1.0)
                         end

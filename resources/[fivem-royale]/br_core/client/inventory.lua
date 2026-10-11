@@ -2258,12 +2258,24 @@ local function healing()
     return c ~= nil and (c.health ~= nil or c.armour ~= nil)
 end
 
+-- DisableControlAction, or the engine's handler behind the loader's wrapper of it
+-- (BR.Native.direct, client/natives.lua, #393 round 9): the same call for the same
+-- arguments, thirteen times a frame. Looked up again whenever the global changes.
+local disableSeen, disableCall = nil, nil
+
 -- Control suppression and slot cycling, per frame.
 --
 -- FRAME rather than TICK because DisableControlAction only lasts one frame,
 -- and a wheel that flickers into existence every other frame is worse than one
 -- that never goes away.
 BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
+    local w = DisableControlAction
+    if w ~= disableSeen then
+        disableSeen = w
+        local direct = BR.Native and BR.Native.direct
+        disableCall = direct and direct(w, 'DisableControlAction') or w
+    end
+    local disable = disableCall
     -- THE SUPPRESSION IS UNCONDITIONAL, AND IT SITS ABOVE THE canArm() GATE ON
     -- PURPOSE (#134). Owner, playtesting the drop: "I just found out the GTA V
     -- weapon wheel displays when holding TAB in the plane. That shouldn't
@@ -2314,7 +2326,7 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- Cost is twelve native calls a frame in the phases that previously made
     -- none, and it has to be per-frame: a disable lasts exactly one frame.
     for i = 1, #SUPPRESS do
-        DisableControlAction(0, SUPPRESS[i], true)
+        disable(0, SUPPRESS[i], true)
     end
 
     -- A SPECTATOR'S MOUSE BELONGS TO THE CAMERA, AND THIS FILE IS THE ONE PLACE
