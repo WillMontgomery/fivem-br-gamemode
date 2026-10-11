@@ -45,6 +45,37 @@ local registry = {
     [BR.Loop.SLOW]  = {},
 }
 
+-- ═══ THE CALLBACKS `brloop off all` NEVER STOPS (round 8, #393) ═══
+--
+-- Owner, 2026-10-11: "brloop off all changes br_core from 0.35ms to 0.04ms, but
+-- my ped was left behind in place, and when turning it back on, the plane's
+-- engines were not running." Each plane here is a LOCAL vehicle, unfrozen so its
+-- engine runs, that only these callbacks move (bus.fly places the ride's camera
+-- too): stopped, it flies on by its own physics, off its route and away from a
+-- camera left where it was, and its engine stopped meanwhile, which nothing
+-- restarts. So `off all` stops everything BUT what flies a vehicle or holds the
+-- drop's safety net, and `on all` has nothing to repair. skydive.state is that
+-- net: with skydive.prompt stopped, F cuts a canopy away again, and the floor
+-- gives it back and opens it. Everything else stops and is whole again the
+-- frame it starts: a HUD element, a prompt, a key (our jump and chute keys too;
+-- GTA's own parachute control is live while skydive.prompt is stopped), a
+-- camera that freezes and catches up. docs/running.md says what these cost in a
+-- reading.
+local ESSENTIAL = {
+    ['bus.fly']        = 'the plane: its route, its rider, the ride camera',
+    ['bus.board']      = 'the ride: boarding, its end, the eject net, the island handoff',
+    ['bus.ghosts']     = "another match's planes, seen from the warmup pad",
+    ['skydive.state']  = 'the drop: the chute floor and the landing',
+    ['airdrop.render'] = 'the airdrop: its aircraft and the falling crate',
+}
+BR.Loop.ESSENTIAL = ESSENTIAL
+
+-- `brloop off all` (BR.Loop.pauseAll, below), and while it holds, each band's
+-- essential callbacks: the lists BR.Loop.step walks instead of the registry's.
+-- Declared up here because BR.Loop.register reads both.
+local pausedAll = false
+local held = nil
+
 local started = false
 
 -- TIMING -- WHY THIS FILE MEASURED NOTHING FOR MONTHS. READ BEFORE CHANGING.
@@ -786,8 +817,10 @@ function BR.Loop.register(band, name, fn)
         error(('BR.Loop.register: "%s" needs a function'):format(tostring(name)), 2)
     end
 
+    -- One unregistered and not swept yet is gone (BR.Loop.unregister) -- under
+    -- `off all` the registry is not swept until `on all`.
     for _, e in ipairs(list) do
-        if e.name == name then
+        if e.name == name and not e.dead then
             error(('BR.Loop.register: duplicate callback name "%s"'):format(name), 2)
         end
     end
@@ -806,9 +839,15 @@ function BR.Loop.register(band, name, fn)
         consecutive= 0,
         lastRun    = 0,
         suspended  = false,
+        essential  = ESSENTIAL[name] ~= nil,   -- runs under `brloop off all`
     }
 
     list[#list + 1] = entry
+    -- Registered while `off all` holds: an essential one runs at once.
+    if pausedAll and entry.essential then
+        local kept = held[band]
+        kept[#kept + 1] = entry
+    end
     return entry
 end
 
@@ -1053,18 +1092,34 @@ BR.Frame.wrapMovers()
 -- every callback stopped, what br_core still costs is the band threads' own
 -- resumes and whatever runs outside the loop -- event handlers, threads, the
 -- included ScaleformUI -- which is the fixed cost #393's measure-and-plan pass
--- could not attribute. A pass returns before it touches anything; each callback's
--- own on/off and suspension are left exactly as they were, so `on all` brings back
--- what was running and nothing else.
-local pausedAll = false
+-- could not attribute. Each callback's own on/off and suspension are left exactly
+-- as they were, so `on all` brings back what was running and nothing else.
+--
+-- BUT THE ESSENTIAL ONES KEEP RUNNING (round 8; ESSENTIAL at the top of this file
+-- says which and why): a pass while paused walks only them -- a list of its own
+-- per band, made here, so a pass that is not paused pays nothing for it. One
+-- registered meanwhile joins it (BR.Loop.register); one unregistered meanwhile is
+-- swept from it, and from the registry by the first pass after `on all`.
 
---- Stop (true) or restart (false) every callback in every band.
+--- Stop (true) or restart (false) every callback in every band but ESSENTIAL's.
 --- @param on boolean
 function BR.Loop.pauseAll(on)
-    pausedAll = on and true or false
+    on = on and true or false
+    if on == pausedAll then return end
+    pausedAll = on
+    held = nil
+    if not on then return end
+    held = {}
+    for band, list in pairs(registry) do
+        local kept = {}
+        for _, e in ipairs(list) do
+            if e.essential and not e.dead then kept[#kept + 1] = e end
+        end
+        held[band] = kept
+    end
 end
 
---- @return boolean  every callback stopped by pauseAll
+--- @return boolean  every callback but the essential ones stopped by pauseAll
 function BR.Loop.pausedAll()
     return pausedAll
 end
@@ -1077,7 +1132,11 @@ end
 --- @param band string
 function BR.Loop.step(band)
     local list = registry[band]
-    if not list or pausedAll then return end
+    if not list then return end
+    if pausedAll then
+        list = held[band]
+        if #list == 0 then return end
+    end
     passSeq = passSeq + 1
     BR.Loop.pass = passSeq
 

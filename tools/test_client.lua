@@ -8948,6 +8948,113 @@ do
         'and ScaleformUI\'s main loop waits on that flag before it does anything (BR-PATCH 7)')
 end
 
+describe('brloop off all on the plane and in the drop: nothing left behind, nothing to put back -- round 8')
+do
+    -- Owner, 2026-10-11 (#393): "brloop off all changes br_core from 0.35ms to
+    -- 0.04ms, but my ped was left behind in place, and when turning it back on,
+    -- the plane's engines were not running." The plane is a local vehicle only
+    -- bus.fly moves, its rider attached to it and the ride camera placed by the
+    -- same pass; the drop's chute floor is skydive.state's. Under `off all` they
+    -- run (BR.Loop.ESSENTIAL) and everything else stops.
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+    local function runNew(from) for i = from + 1, #threads do threads[i]() end end
+    local PLANE = 258
+    local saved = {}
+    for _, n in ipairs({ 'SetEntityCoordsNoOffset', 'SetCamCoord', 'DetachEntity', 'SetVehicleEngineOn',
+                         'GetPedParachuteState', 'IsPedOnFoot', 'IsEntityInWater', 'IsEntityInAir',
+                         'IsPedFalling', 'IsPedInParachuteFreeFall', 'GetEntityHeightAboveGround',
+                         'HasPedGotWeapon', 'ForcePedToOpenParachute' }) do saved[n] = _G[n] end
+    local planeX, planeWrites, camWrites, detached, engineOff, canopy = nil, 0, 0, 0, 0, 0
+    SetEntityCoordsNoOffset = function(ent, x, ...)
+        if ent == PLANE then planeX = x; planeWrites = planeWrites + 1 end
+        return saved.SetEntityCoordsNoOffset(ent, x, ...)
+    end
+    SetCamCoord = function() camWrites = camWrites + 1 end
+    DetachEntity = function(e) if e == PlayerPedId() then detached = detached + 1 end end
+    SetVehicleEngineOn = function(v, on) if v == PLANE and not on then engineOff = engineOff + 1 end end
+    local probe = 0
+    local hProbe = BR.Loop.register(BR.Loop.FRAME, 'test.brloop.probe', function() probe = probe + 1 end)
+
+    -- ABOARD A DEPARTED FLIGHT: along +x at 100 m/s, 400 m every 4 s.
+    local t0 = GetGameTimer()
+    local pts = {}
+    for i = 0, 8 do pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, t = t0 + i * 4000 } end
+    fire(BR.Net.BUS_ROUTE, { points = pts, timed = true, heading = 0.0, sx = 0.0, sy = 0.0,
+        alt = 500.0, legs = { 'a', 'b' }, tStart = t0, rotateAt = t0 + 2000, jumpFrom = t0 + 3000,
+        doorsClose = t0 + 20000, tEnd = t0 + 32000 })
+    BR.State.match = { state = BR.MatchState.BUS }
+    BR.State.me.state = BR.PlayerState.BUS
+    local n = #threads
+    BR.Loop.step(BR.Loop.TICK)
+    runNew(n)
+    frames(10, 500)   -- +5 s: airborne, doors open
+
+    -- TEN SECONDS OF THE MEASURE ON THE PLANE.
+    logged = {}
+    commands['brloop'](nil, { 'off', 'all' }, '')
+    planeWrites, camWrites, probe = 0, 0, 0
+    for _ = 1, 100 do
+        frame(100)
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    local wantX = (GetGameTimer() - t0) / 4000 * 400.0
+    ok(planeWrites == 100 and planeX and math.abs(planeX - wantX) < 1.0,
+        'off all on the plane: the plane is still flown along its route every frame',
+        ('%d writes over 100 frames, x %s, its route says %.1f'):format(planeWrites, tostring(planeX), wantX))
+    ok(camWrites == 100, 'the ride camera still follows it', ('%d camera writes'):format(camWrites))
+    ok(detached == 0 and engineOff == 0, 'its rider still aboard, its engine never stopped',
+        ('detached %d, engine off %d'):format(detached, engineOff))
+    ok(probe == 0, 'and every other callback stopped', ('a plain callback ran %d times'):format(probe))
+    ok((logged[#logged] or ''):find('stopped but airdrop.render, bus.board, bus.fly, bus.ghosts, skydive.state', 1, true),
+        'the console names what kept running', logged[#logged])
+
+    -- THE JUMP, STILL UNDER `off all` (the server's exit coordinates are an
+    -- event, not a callback), AND THE CANOPY CUT AWAY BELOW THE CHUTE FLOOR --
+    -- F, which skydive.prompt blocks, is live while it is stopped: the floor
+    -- gives the chute back and opens it with every key and prompt stopped.
+    GetPedParachuteState = function() return BR.Native.ChuteState.NONE end
+    IsPedOnFoot = function() return false end
+    IsEntityInWater = function() return false end
+    IsEntityInAir = function() return true end
+    IsPedFalling = function() return true end
+    IsPedInParachuteFreeFall = function() return true end
+    GetEntityHeightAboveGround = function() return BR.Config.Drop.autoDeployAGL - 20.0 end
+    HasPedGotWeapon = function() return false end
+    ForcePedToOpenParachute = function() canopy = canopy + 1 end
+    -- Blocks above leave skydive.state suspended (it threw under their stubs);
+    -- this is the switch `brloop enable skydive.state` throws.
+    BR.Loop.setEnabled('skydive.state', true)
+    n = #threads
+    fire(BR.Net.BUS_JUMP_OK, { x = 1500.0, y = 0.0, z = 480.0, heading = 270.0 })
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    runNew(n)
+    for _ = 1, 5 do
+        frame(100)
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    ok(detached == 1 and canopy >= 1,
+        'a jump while paused: off the plane, and a canopy cut away below the floor is opened again',
+        ('detached %d, canopy forced %d times'):format(detached, canopy))
+
+    -- ON ALL: NOTHING TO PUT BACK. The plane flies on after the jump, as ever.
+    commands['brloop'](nil, { 'on', 'all' }, '')
+    planeWrites = 0
+    frames(5, 100)
+    ok(planeWrites == 5 and engineOff == 0 and probe == 5,
+        'on all: the plane flying on as it was, its engine never off, the rest running again',
+        ('%d writes, engine off %d, plain callback %d'):format(planeWrites, engineOff, probe))
+
+    -- Put the world back the way the blocks below expect to find it.
+    BR.Loop.unregister(hProbe)
+    for k, v in pairs(saved) do _G[k] = v end
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    sent, logged = {}, {}
+end
+
 describe('an inventory starts and returns to fists, not to slot 1 -- #155')
 do
     -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot

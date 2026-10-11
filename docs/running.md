@@ -574,7 +574,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brterminalsv open [words]`, `brterminalsv close` | server, dev mode | The server half of `brterminal`, which runs it for you; registered unrestricted, so dev mode is its only gate. From the server console it takes a player id first: `brterminalsv open 3 nokey` |
 | `brterminal run <function> [option=choice ...]` | client, dev mode | A built function's effect for you, with no key, no terminal, no notice, no load and no Volts (#396); "this terminal" is where you stand. The three that change the world (wave B, 2026-10-06): `brterminal run storm_control x=<n> y=<n>` (the storm finishes on that spot, or the land nearest it, each circle's step toward it half the one before, and the spot is marked on your squad's maps -- one spot a match, so a second is refused `storm_aimed` until the next match), `run time_weather change=time time=day\|dusk\|night` or `change=weather weather=<one of its ten>` and `run power_outage area=city\|county duration=120\|240` (round 6: `area=spot x=<n> y=<n>`, a km around a spot picked on the map, once the confirm box asks for it). Round 6: a function run at a spot typed with no `x=` `y=` lands 60 m in front of you, so `brterminal run airstrike` rehearses the real strike for nothing; and `brterminal reset [player id]` hands your squad its use back for this match and you your Yubikey, so the same player can use a terminal again. Time & weather sets the match's clock for everyone or the weather inside the circle, for the rest of the match or until another run changes it; Power outage darkens the lights of the players inside its area only; the dev run skips the door, so it needs no night (at a terminal it is refused unless it's night because of a Time & weather run, round 4). Season 2 only. See [the terminals' contract](terminals.md) |
 | `brperf [reset\|stop]` | both | Per-subsystem calls, errors and suspension. Client `reset` clears the window and arms per-callback stall capture; `stop` removes its timer overhead while the always-on frame histogram continues. Use `brbench`/`brab` for ordinary sub-frame cost |
-| `brloop <on\|off> <callback\|all\|sfui>` | client, dev mode | Bisect br_core's frame cost. A callback name switches that one BR.Loop callback (`brperf` lists them); `all` stops or restarts every callback in every band at once, each one's own switch left as it was; `sfui` idles the included ScaleformUI's per-frame loop (BR-PATCH 7). See *Measuring br_core in resmon* below for what to read (#393) |
+| `brloop <on\|off> <callback\|all\|sfui>` | client, dev mode | Bisect br_core's frame cost. A callback name switches that one BR.Loop callback (`brperf` lists them); `all` stops or restarts every callback in every band at once but the five that fly the planes and hold the drop's chute floor (round 8), each one's own switch left as it was; `sfui` idles the included ScaleformUI's per-frame loop (BR-PATCH 7). See *Measuring br_core in resmon* below for what to read (#393) |
 | `brstormhitch [reset [ms]\|stop\|rows]` | client | `reset`, play a hold and a sweep, then `/brstormhitch`: a plain summary — what the storm map sent while the storm moved (the old zone's fade writes, and any clips added or removed for a picture drawn mid-sweep), the worst frame and how many frames went over 16.7 ms, and a one-line verdict. `rows` adds the detail: which storm/map/network/UI paths ran before each long frame. Opt-in and dormant outside a capture |
 | `brstormbisect <normal\|mapoff\|mapfreeze\|walloff> [ms]` | client | Runtime A/B for #350 and #344. Each mode starts a fresh hitch capture while changing only local rendering: remove the custom map fill, keep it resident but send it nothing (no fade, no redraw), or suppress the shaped 3D wall. `normal` restores shipping behavior |
 | `brconfig` | server | The config values that most often explain odd behaviour |
@@ -620,10 +620,12 @@ costs:
 1. Note br_core's reading where you want it measured -- the lobby, on the plane,
    in freefall, in a match's hold.
 2. `brloop off all`, wait ten seconds, note the reading, then `brloop on all`.
-   Every BR.Loop callback stops: HUD extras and GTA's weapon wheel come back for
-   those seconds, and nothing is sent to the server. What is left is br_core
-   without its callbacks -- the band threads' own resumes, event handlers,
-   threads and ScaleformUI.
+   Every BR.Loop callback stops but five: HUD extras and GTA's weapon wheel come
+   back for those seconds, our keys do nothing (the jump and the chute key
+   too; GTA's own parachute control works meanwhile), and nothing is sent to
+   the server. What is left is br_core without its
+   callbacks -- the band threads' own resumes, event handlers, threads and
+   ScaleformUI -- and those five (below).
 3. `brloop off sfui`, wait, note, `brloop on sfui`. ScaleformUI's frame loop
    idles; its menus and prompts do not draw meanwhile.
 4. `brloop off <callback>` and `on` for one callback -- `storm.wall`,
@@ -635,6 +637,30 @@ more, it is outside them, and the `sfui` reading says whether ScaleformUI is it.
 Anything else outside is the next thing to look at with FiveM's own
 `profiler record`. `tools/perf_client.lua` is the offline count of the same
 callbacks (natives, draws, KB and VM instructions a frame, phase by phase).
+
+**The five that keep running** (round 8; `BR.Loop.ESSENTIAL` in
+`client/main.lua`). Owner, 2026-10-11: "brloop off all changes br_core from
+0.35ms to 0.04ms, but my ped was left behind in place, and when turning it
+back on, the plane's engines were not running." A plane here is a local
+vehicle only its callback moves, and the same pass places the ride camera;
+stopped, the plane flew on by its own physics away from a camera left where it
+was, and its engine stopped meanwhile, which nothing restarts. So these never
+stop, and `on all` has nothing to put back:
+
+| callback | what it keeps | what it costs, per frame (`tools/perf_client.lua`, Season 1) |
+|---|---|---|
+| `bus.fly` | the plane on its route, its rider, the ride camera | 8 natives and about 450-860 VM instructions on the plane; 4 in freefall and under 1 under the canopy while the plane flies on; nothing after |
+| `bus.board` (10 Hz) | boarding, the ride's end, the eject net, the island handoff | 0.3 natives on the plane; nothing after |
+| `bus.ghosts` | another match's planes, seen from the warmup pad | nothing with none in the air |
+| `skydive.state` (10 Hz) | the chute floor -- with skydive.prompt stopped F cuts a canopy away again, and the floor gives it back and opens it -- and the landing | 2.8 natives in freefall, 2.3 under the canopy; nothing after |
+| `airdrop.render` | the airdrop's aircraft and the falling crate | 3 to 11 natives while one flies in; 0.3 while its blip is up; nothing between |
+
+In the lobby, on the warmup pad, in a match with no airdrop and spectating
+they return at once (a few VM instructions each), so `off all` reads br_core
+without its callbacks. On the plane they are about 8 of its 100 natives a
+frame and 8 percent of its Lua; in freefall about 7 of 96; under an airdrop
+in flight up to 11. Everything else stops and is whole again the frame it
+restarts: a prompt redrawn, a key read, a camera that froze catching up.
 
 Separately, the console's SSH channel carries a read-only `configreport` verb
 that renders a config surface into the admin UI. It reads an explicit allowlist

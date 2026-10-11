@@ -1068,6 +1068,99 @@ do
     for _, h in ipairs({ hf, ht, hs, ho }) do BR.Loop.unregister(h) end
 end
 
+describe('pause all keeps the essential callbacks running (round 8)')
+do
+    -- Owner, 2026-10-11: "my ped was left behind in place, and when turning it
+    -- back on, the plane's engines were not running." What flies a vehicle or
+    -- holds the drop never stops (BR.Loop.ESSENTIAL); everything else does.
+    clearAll()
+    BR.Loop.step(BR.Loop.FRAME)   -- sweep what earlier blocks left
+    local E = BR.Loop.ESSENTIAL or {}
+    local names = {}
+    for n in pairs(E) do names[#names + 1] = n end
+    table.sort(names)
+    local want = { 'airdrop.render', 'bus.board', 'bus.fly', 'bus.ghosts', 'skydive.state' }
+    ok(table.concat(names, ',') == table.concat(want, ','),
+        'the essential ones: the plane, the ride, the other planes, the drop\'s floor, the airdrop',
+        table.concat(names, ', '))
+
+    local ran = { fly = 0, board = 0, sky = 0, other = 0, late = 0, gone = 0, off = 0 }
+    local hFly = BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function() ran.fly = ran.fly + 1 end)
+    local hBoard = BR.Loop.register(BR.Loop.TICK, 'bus.board', function() ran.board = ran.board + 1 end)
+    local hSky = BR.Loop.register(BR.Loop.TICK, 'skydive.state', function() ran.sky = ran.sky + 1 end)
+    local hOther = BR.Loop.register(BR.Loop.FRAME, 't.ess.other', function() ran.other = ran.other + 1 end)
+    local hGone = BR.Loop.register(BR.Loop.FRAME, 'bus.ghosts', function() ran.gone = ran.gone + 1 end)
+    local hOff = BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function() ran.off = ran.off + 1 end)
+    BR.Loop.setEnabled('airdrop.render', false)
+
+    BR.Loop.pauseAll(true)
+    BR.Loop.pauseAll(true)   -- twice is once
+    for _ = 1, 3 do
+        BR.Loop.step(BR.Loop.FRAME)
+        BR.Loop.step(BR.Loop.TICK)
+        BR.Loop.step(BR.Loop.SLOW)
+    end
+    ok(ran.fly == 3 and ran.board == 3 and ran.sky == 3 and ran.gone == 3,
+        'while paused, every essential one runs every pass, in its own band',
+        ('bus.fly %d, bus.board %d, skydive.state %d, bus.ghosts %d'):format(ran.fly, ran.board, ran.sky, ran.gone))
+    ok(ran.other == 0, 'and nothing else does', ('the other ran %d'):format(ran.other))
+    ok(ran.off == 0, 'an essential one switched off on its own stays off', ('ran %d'):format(ran.off))
+
+    -- UNREGISTERED WHILE PAUSED (a plane taken down), then REGISTERED WHILE
+    -- PAUSED (the next flight boarding mid-measure), beside one that is not
+    -- essential.
+    BR.Loop.unregister(hFly)
+    BR.Loop.unregister(hGone)
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(ran.fly == 3 and ran.gone == 3, 'one unregistered while paused stops at once',
+        ('bus.fly %d, bus.ghosts %d'):format(ran.fly, ran.gone))
+    local waits = 0
+    local hWaits = BR.Loop.register(BR.Loop.FRAME, 't.ess.waits', function() waits = waits + 1 end)
+    local hFly2 = BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function() ran.late = ran.late + 1 end)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(ran.late == 1 and waits == 0,
+        'an essential one registered while paused runs at once, any other waits for on all',
+        ('bus.fly %d, the other %d'):format(ran.late, waits))
+
+    BR.Loop.pauseAll(false)
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.TICK)
+    local stillThere = 0
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'bus.fly' or s.name == 'bus.ghosts' then stillThere = stillThere + 1 end
+    end
+    ok(ran.other == 1 and waits == 1 and ran.late == 2 and ran.board == 4 and ran.sky == 4 and ran.off == 0,
+        'unpaused: all run again, and the one switched off stays off',
+        ('other %d, waiting %d, bus.fly %d, bus.board %d, skydive.state %d, off %d')
+            :format(ran.other, waits, ran.late, ran.board, ran.sky, ran.off))
+    ok(stillThere == 1 and ran.fly == 3 and ran.gone == 3,
+        'and the ones unregistered while paused are gone from the registry', ('%d left'):format(stillThere))
+    for _, h in ipairs({ hWaits, hFly2, hBoard, hSky, hOther, hOff }) do BR.Loop.unregister(h) end
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- EACH NAME IS ONE A CLIENT FILE REGISTERS: a renamed callback must not
+    -- quietly fall out of the list and stop with the rest.
+    local man = io.open(ROOT .. 'br_core/fxmanifest.lua', 'r')
+    local manText = man and man:read('*a') or ''
+    if man then man:close() end
+    local body = manText:match('client_scripts%s*(%b{})') or ''
+    local found = {}
+    for path in body:gmatch("'(client/[^']+%.lua)'") do
+        local fh = io.open(ROOT .. 'br_core/' .. path, 'r')
+        local src = fh and fh:read('*a') or ''
+        if fh then fh:close() end
+        for name in src:gmatch("BR%.Loop%.register%(%s*BR%.Loop%.%u+%s*,%s*'([^']+)'") do
+            if E[name] then found[name] = true end
+        end
+    end
+    local missing = {}
+    for _, n in ipairs(names) do if not found[n] then missing[#missing + 1] = n end end
+    ok(#missing == 0, 'every essential name is a callback a client file in the manifest registers',
+        'not registered anywhere: ' .. table.concat(missing, ', '))
+end
+
 describe('state helpers')
 do
     BR.State.match.state = BR.MatchState.PLAYING
