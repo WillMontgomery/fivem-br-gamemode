@@ -1090,6 +1090,8 @@ end)
 --- sealed and open, or Season 1's wooden pair -- and counts the ones this build
 --- has that have not loaded. Both halves are asked on every pass and the wait
 --- ends when both are done, so the two stream side by side under one deadline.
+--- A box client/loot.lua has written off (it would not stream there) is not
+--- counted: it is drawn as the wooden crate, so nothing waits on it twice.
 ---
 --- PAST `loadingWordsMs` WITH EITHER HALF STILL COMING, THE CURTAIN SAYS SO: its
 --- words change to "Loading assets" (BR.Spawn.curtainWords), once, and stay
