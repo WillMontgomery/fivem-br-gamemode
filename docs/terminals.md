@@ -1057,8 +1057,12 @@ drawn, and the phase the storm is in, entered again from where its wall stands
 -- a thaw (`brstormfreeze off`), `brphase` to the same phase -- keeps the circle
 every player was looking at, the one on the map when the storm was aimed or the
 one the aim's walk drew, and the walk carries on from it. A `brphase` jump to
-another phase plans again from the wall toward the same spot, and a plan made
-again from any circle of its own walk is that walk to the bit. Nothing else
+another phase skips time, not the walk (round 8's review): it draws the walk's
+circle for that phase wherever the wall stands, paused or not, so stepping a
+paused storm with `brphase` shows the match's own steps. Only a phase the walk
+has no circle for (one before the aim) is planned again from the wall toward the
+same spot, and a plan made again from any circle of its own walk is that walk to
+the bit. Nothing else
 moves: the record on the map and the circle already drawn stay, and the change
 reaches every client, the map's morph (#350) and the airdrop's re-site (#386) as
 any record does. **One spot a match** (round 4's review): once the storm is aimed,

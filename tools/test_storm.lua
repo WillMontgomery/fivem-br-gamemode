@@ -10099,49 +10099,150 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('control.replan')
+describe('control.jump')
 do
-    -- ═══ A DEV PATH OFF THE AIMED WALK PLANS AGAIN ═══
+    -- ═══ A JUMP SKIPS TIME, NOT THE WALK (round 8's review) ═══
     --
-    -- `brphase` jumping to ANOTHER phase, mid-sweep, starts it from the wall
-    -- where it stands -- not the circle the plan started from -- so the plan is
-    -- made again from there, toward the same spot: the rule's steps from that
-    -- circle, the final circle still on the spot, and Storm reveal
-    -- answering it. (Re-entering the phase the storm is IN keeps its circle:
+    --   "Currently there seems to be more move between locations towards the
+    --    last phases"                                     -- owner, 2026-10-11
+    --
+    -- He stepped the storm with `brphase` while it was paused, and each jump
+    -- planned the walk again from the wall -- still holding at circle 1 -- so the
+    -- steps started over at every jump: circle 2 to circle 7 in 4231, 136, 302,
+    -- 754 and 2641 m with the halving steps, 1795, 396, 660, 1320 and 3961 with
+    -- round 7's equal ones, the last step the longest both times. A `brphase` to
+    -- any phase the walk has a circle for now draws that circle, wherever the wall
+    -- stands: frozen, holding, mid-sweep or arrived, forward or back. Only a phase
+    -- the walk has no circle for -- one before the aim -- is planned again from
+    -- the wall. (Re-entering the phase the storm is IN keeps its circle:
     -- control.announced.)
-    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
-    local S = walkUntil(ANCHOR, function(rec, st) return rec.phase == 3 and st == 'shrinking' end)
-    local env = S.env
-    local rec = S.match.storm
-    local a = env.BR.Storm.aim(S.match, rec.cx1 + 0.4 * rec.r1, rec.cy1)
-    ok(a ~= nil, 'aimed at phase 3')
-    S.now = S.now + 2000
-    S.cmds.brphase(nil, { '4' })
-    local re = S.match.storm
-    ok(re.phase == 4 and re.mo == nil and re.cx0 ~= rec.cx1,
-        'jumped to phase 4 from the wall mid-sweep, off the aimed walk')
-    local f = env.BR.Storm.finalCentre(S.match)
-    local F = env.BR.StormFinalPhase()
-    local seen, shares, last = {}, true, #env.BR.Config.Storm.phases
-    local prev = { x = re.cx1, y = re.cy1 }
-    walkOn(S, function(r)
-        if not seen[r.phase] then
-            seen[r.phase] = true
-            if r.phase > 4 and r.phase < F then
-                local G = sharesLeft(stepRatio(env), F - r.phase + 1)
-                local x, y = prev.x + (a.sx - prev.x) / G, prev.y + (a.sy - prev.y) / G
-                if not (r.cx1 == x and r.cy1 == y) then shares = false end
+    local ANCH = { x = 1050.0, y = -650.0, name = 'Mirror Park' }
+    local SEED, SX, SY = 1015838, -150.0, 6300.0
+    local function walked(mode)
+        local S = walkMapped(ANCH, function(rec, st) return rec.phase == 2 and st == 'holding' end, 5000, SEED)
+        local env = S.env
+        env.BR.Server.devMode = true
+        local N = #env.BR.Config.Storm.phases
+        if mode ~= 'real' then S.cmds.brstormfreeze(nil, {}) end
+        local a = env.BR.Storm.aim(S.match, SX, SY)
+        local planned = pathOf(a)
+        local circles = { [2] = { x = S.match.storm.cx1, y = S.match.storm.cy1 } }
+        if mode == 'real' then
+            walkOn(S, function(r)
+                if not circles[r.phase] then circles[r.phase] = { x = r.cx1, y = r.cy1 } end
+                return r.phase == N
+            end, 2000)
+        else
+            for n = 3, N do
+                local r = S.match.storm
+                if mode == 'settled' then
+                    S.now = math.max(S.now, r.tStart + r.tWait + r.tShrink + 1000)
+                else
+                    S.now = S.now + (mode == 'mid' and 45000 or 2000)
+                end
+                S.cmds.brphase(nil, { tostring(n) })
+                circles[n] = { x = S.match.storm.cx1, y = S.match.storm.cy1 }
             end
-            prev = { x = r.cx1, y = r.cy1 }
         end
-        return r.phase == last
-    end, 30000)
-    ok(shares, 'every circle after it the rule\'s step from the circle the jump drew')
-    local fin = S.match.storm
-    ok(fin.cx1 == a.sx and fin.cy1 == a.sy, 'and the storm still finishes on the spot')
-    ok(f and f.x == a.sx and f.y == a.sy, 'which Storm reveal, asked after the re-entry, answered',
-        f and ('(%.2f, %.2f) vs (%.2f, %.2f)'):format(f.x, f.y, a.sx, a.sy))
-    ok(S.errored() == nil, 'clean', S.errored())
+        return S, a, planned, circles
+    end
+    local real
+    for _, mode in ipairs({ 'real', 'quick', 'mid', 'settled' }) do
+        local S, a, planned, circles = walked(mode)
+        local env = S.env
+        local F, N = env.BR.StormFinalPhase(), #env.BR.Config.Storm.phases
+        local off, steps = {}, {}
+        for p = 3, N do
+            if not (circles[p] and circles[p].x == planned[p].x and circles[p].y == planned[p].y) then
+                off[#off + 1] = p
+            end
+        end
+        for p = 3, F do
+            steps[#steps + 1] = gap2(circles[p - 1].x, circles[p - 1].y, circles[p].x, circles[p].y)
+        end
+        local shown = {}
+        for i, d in ipairs(steps) do shown[i] = ('%.0f'):format(d) end
+        local tag = ({ real = 'the real match', quick = 'paused, then brphase 3 to 8 two seconds apart',
+            mid = 'paused, then brphase 3 to 8 mid-sweep', settled = 'each sweep let finish, then brphase' })[mode]
+        ok(#off == 0, tag .. ': every circle the walk\'s, to the bit', 'off the walk: ' .. table.concat(off, ', '))
+        local shrinking = true
+        for i = 2, #steps do if not (steps[i] < steps[i - 1]) then shrinking = false end end
+        ok(shrinking and steps[1] > 8 * steps[#steps],
+            tag .. ': circle 2 to circle 7, each step shorter than the one before, the first the longest',
+            table.concat(shown, ', ') .. ' m')
+        if mode == 'real' then
+            real = shown
+        else
+            ok(table.concat(shown, ',') == table.concat(real, ','), tag .. ': the same steps as the real match',
+                table.concat(shown, ', ') .. ' against ' .. table.concat(real, ', '))
+        end
+        local fin = S.match.storm
+        ok(fin.phase == N and fin.cx1 == a.sx and fin.cy1 == a.sy, tag .. ': the storm finishes on the spot')
+        ok(S.errored() == nil, tag .. ': clean', S.errored())
+    end
+
+    -- BACK AND FORTH: brphase 6, then 4, then 7, from a paused storm -- each the
+    -- walk's own circle, and Storm reveal still answering the spot.
+    do
+        local S = walkMapped(ANCH, function(rec, st) return rec.phase == 2 and st == 'holding' end, 5000, SEED)
+        local env = S.env
+        env.BR.Server.devMode = true
+        S.cmds.brstormfreeze(nil, {})
+        local a = env.BR.Storm.aim(S.match, SX, SY)
+        local planned = pathOf(a)
+        local wrong = {}
+        for _, n in ipairs({ 6, 4, 7 }) do
+            S.now = S.now + 3000
+            S.cmds.brphase(nil, { tostring(n) })
+            local r = S.match.storm
+            if not (r.phase == n and r.cx1 == planned[n].x and r.cy1 == planned[n].y) then wrong[#wrong + 1] = n end
+        end
+        ok(#wrong == 0, 'brphase 6, 4 and 7 each draw the walk\'s circle', table.concat(wrong, ', '))
+        local f = env.BR.Storm.finalCentre(S.match)
+        ok(f and f.x == a.sx and f.y == a.sy, 'and Storm reveal, asked after them, answers the spot')
+        ok(S.errored() == nil, 'clean', S.errored())
+    end
+
+    -- A PHASE THE WALK HAS NO CIRCLE FOR: aimed at phase 3 (the walk from circle
+    -- 4), mid-sweep, then `brphase 2` -- planned again from the wall, toward the
+    -- same spot: the rule's steps from the circle the jump drew, the final circle
+    -- still on the spot, and Storm reveal answering it.
+    do
+        local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
+        local S = walkUntil(ANCHOR, function(rec, st) return rec.phase == 3 and st == 'shrinking' end)
+        local env = S.env
+        local rec = S.match.storm
+        local a = env.BR.Storm.aim(S.match, rec.cx1 + 0.4 * rec.r1, rec.cy1)
+        ok(a ~= nil and a.from == 4, 'aimed at phase 3: the walk from circle 4')
+        local planned = pathOf(a)
+        S.now = S.now + 2000
+        S.cmds.brphase(nil, { '2' })
+        local re = S.match.storm
+        ok(re.phase == 2 and re.cx0 ~= rec.cx1 and planned[2] == nil,
+            'jumped back to phase 2 from the wall mid-sweep, a phase the walk has no circle for')
+        local f = env.BR.Storm.finalCentre(S.match)
+        local F = env.BR.StormFinalPhase()
+        local seen, shares, last = {}, true, #env.BR.Config.Storm.phases
+        local prev = { x = re.cx1, y = re.cy1 }
+        walkOn(S, function(r)
+            if not seen[r.phase] then
+                seen[r.phase] = true
+                if r.phase > 2 and r.phase < F then
+                    local G = sharesLeft(stepRatio(env), F - r.phase + 1)
+                    local x, y = prev.x + (a.sx - prev.x) / G, prev.y + (a.sy - prev.y) / G
+                    if not (r.cx1 == x and r.cy1 == y) then shares = false end
+                end
+                prev = { x = r.cx1, y = r.cy1 }
+            end
+            return r.phase == last
+        end, 30000)
+        ok(shares, 'every circle after it the rule\'s step from the circle the jump drew')
+        local fin = S.match.storm
+        ok(fin.cx1 == a.sx and fin.cy1 == a.sy, 'and the storm still finishes on the spot')
+        ok(f and f.x == a.sx and f.y == a.sy, 'which Storm reveal, asked after the jump, answered',
+            f and ('(%.2f, %.2f) vs (%.2f, %.2f)'):format(f.x, f.y, a.sx, a.sy))
+        ok(S.errored() == nil, 'clean', S.errored())
+    end
 end
 
 -- ---------------------------------------------------------------------------

@@ -170,10 +170,37 @@ local function seedRng(m)
     m.stormRng = BR.Rng(m.stormSeed)
 end
 
---- Where an aimed match's phase closes (Storm control, #396): the plan's center
---- for it when the phase starts where the plan said it would, and otherwise -- a
---- dev path jumping to another phase from where the wall stands (`brphase`) -- a
---- new plan from there toward the same spot, kept for the phases after it.
+--- Plan an aimed match's walk again from a circle, toward the same spot, from
+--- phase `from` on, into the match's own plan. A plan made again from any circle
+--- of its own walk is that walk to the bit (BR.StormAimPlan).
+--- @return table plan
+local function planAgain(m, aim, from, cx, cy, r, mo)
+    local plan = BR.StormAimPlan(m.stormSeed, from, cx, cy, r, mo, aim.x, aim.y)
+    for p, v in pairs(plan.path) do aim.path[p] = v end
+    aim.sx, aim.sy, aim.ex, aim.ey = plan.sx, plan.sy, plan.ex, plan.ey
+    print(('[br_core] storm: match %s off the aimed walk at phase %d -- planned again, it now ends at (%.1f, %.1f)')
+        :format(BR.MatchTag(m.id), from, plan.ex, plan.ey))
+    return plan
+end
+
+--- Where an aimed match's phase closes (Storm control, #396): the walk's circle
+--- for it, wherever the wall stands, and a new walk from the wall toward the same
+--- spot only for a phase the walk has no circle for.
+---
+--- ═══ A JUMP SKIPS TIME, NOT THE WALK (round 8's review) ═══
+---
+---   "Currently there seems to be more move between locations towards the last
+---    phases"                                            -- owner, 2026-10-11
+---
+--- He stepped the storm with `brphase` while it was paused, and a jump to another
+--- phase used to plan the walk again from the wall -- which was still holding at
+--- circle 1 -- so the steps started over at every jump and the last one was the
+--- longest: 4231, 136, 302, 754 and 2641 m from circle 2 to circle 7, where the
+--- match itself walks 4150, 2075, 1038, 519 and 259. So a `brphase` to any phase
+--- the walk has a circle for -- forward or back, from a wall frozen, holding,
+--- mid-sweep or arrived -- draws that circle. Only a phase before the walk (one
+--- before the aim; `brphase 1` after aiming at phase 3) is planned again, from
+--- the wall, and the walk after it is the new one.
 ---
 --- ═══ A CIRCLE ON THE MAP NEVER MOVES (round 6, owner 2026-10-07) ═══
 ---
@@ -189,7 +216,8 @@ end
 --- straight onto it. Now the phase the live record is in keeps its own circle,
 --- whatever re-enters it -- the one on the map when the storm was aimed, or the
 --- one the aim's walk drew -- and the walk after it carries on from that circle
---- (planned again from it only if the walk was planned from another one).
+--- (planned again from it, at once, only if the walk was planned from another
+--- one, so every later phase has the walk's circle to jump to).
 --- @return number, number  the center
 local function aimedCenter(m, aim, phase, cx0, cy0, r0, mo)
     local live = m.storm
@@ -197,19 +225,13 @@ local function aimedCenter(m, aim, phase, cx0, cy0, r0, mo)
         local kept = aim.path[phase]
         if not (kept and kept.x == live.cx1 and kept.y == live.cy1 and kept.r == live.r1) then
             aim.path[phase] = { x = live.cx1, y = live.cy1, r = live.r1 }
-            for p = phase + 1, #cfg.phases do aim.path[p] = nil end
+            if phase < #cfg.phases then planAgain(m, aim, phase + 1, live.cx1, live.cy1, live.r1, nil) end
         end
         return live.cx1, live.cy1
     end
-    local prev, here = aim.path[phase - 1], aim.path[phase]
-    if here and prev and mo == nil and prev.x == cx0 and prev.y == cy0 and prev.r == r0 then
-        return here.x, here.y
-    end
-    local plan = BR.StormAimPlan(m.stormSeed, phase, cx0, cy0, r0, mo, aim.x, aim.y)
-    for p, v in pairs(plan.path) do aim.path[p] = v end
-    aim.sx, aim.sy, aim.ex, aim.ey = plan.sx, plan.sy, plan.ex, plan.ey
-    print(('[br_core] storm: match %s re-entered phase %d off the aimed walk -- planned again, it now ends at (%.1f, %.1f)')
-        :format(BR.MatchTag(m.id), phase, plan.ex, plan.ey))
+    local here = aim.path[phase]
+    if here then return here.x, here.y end
+    local plan = planAgain(m, aim, phase, cx0, cy0, r0, mo)
     return plan.path[phase].x, plan.path[phase].y
 end
 
