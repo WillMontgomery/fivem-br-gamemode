@@ -630,6 +630,23 @@ export const LOBBY_STEPS: Step[] = [
 ]
 
 /**
+ * Screens the walkthrough does not visit, and the control on each that leads
+ * back to it (#405).
+ *
+ * Owner, 2026-10-11: "If at any point during the lobby tutorial they open the
+ * menu using ESC, direct their focus to the 'back to lobby' button." Escape on
+ * the lobby opens OUR pause menu (App.tsx). The card waits under it, as every
+ * lobby card waits under a screen it is not about; this is the ring that waits
+ * with it, on the way back, and that button takes the keyboard's focus.
+ *
+ * NOT A LOCK. The pause menu is where Leave server lives (#83), and a player
+ * who wants to leave mid-walkthrough must still be able to.
+ */
+export const LOBBY_WAYS_BACK: Record<string, string> = {
+  pause: 'pause-back',
+}
+
+/**
  * The one card that is not part of a walkthrough.
  *
  * ═══ A CARD, BECAUSE A TOAST DOES NOT EXIST IN THE LOBBY ═══

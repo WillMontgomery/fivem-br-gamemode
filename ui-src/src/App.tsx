@@ -27,7 +27,7 @@ import TutorialLayer from './tutorial/TutorialLayer'
 import TutorialLock from './tutorial/TutorialLock'
 import YubikeyCard from './tutorial/YubikeyCard'
 import { GAME_STEPS } from './tutorial/gameSteps'
-import { DECLINE_STEPS } from './tutorial/steps'
+import { DECLINE_STEPS, LOBBY_WAYS_BACK } from './tutorial/steps'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
 import { useScreenReport } from './bridge/useScreenReport'
@@ -925,6 +925,9 @@ export default function App() {
           onAbandon={() => { const s = dispatch(); s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
           onStep={(id) => dispatch().setTutorialStep(id)}
           onHeading={(id) => dispatch().setTutorialHeading(id)}
+          // ESCAPE MID-WALKTHROUGH (#405): our pause menu opens, and its Back to
+          // lobby is ringed and takes the keyboard's focus.
+          waysBack={LOBBY_WAYS_BACK}
         />
       )}
       </div>

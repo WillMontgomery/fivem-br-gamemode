@@ -2446,6 +2446,50 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R32  Escape mid-walkthrough lands on Back to lobby (#405).
+//
+// Owner, 2026-10-11: "If at any point during the lobby tutorial they open the
+// menu using ESC, direct their focus to the 'back to lobby' button." The data
+// (`LOBBY_WAYS_BACK`) is pinned by scripts/test-tutorial-lock.mjs; this pins the
+// four places it reaches the page:
+//
+//   NOT PASSED -- App.tsx's lobby layer loses `waysBack={LOBBY_WAYS_BACK}`;
+//   NOT DRAWN -- TutorialLayer stops rendering <WayBack> for a waiting card;
+//   NOT FOCUSED -- WayBack.tsx stops calling `.focus()` on the control;
+//   NOT THERE -- the pause menu's Back to lobby loses `data-tut="pause-back"`.
+//
+// IT CAN FAIL. Drop any one of the four.
+// ---------------------------------------------------------------------------
+{
+  const A = join(SRC, 'App.tsx')
+  const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
+  const W = join(SRC, 'tutorial', 'WayBack.tsx')
+  const P = join(SRC, 'screens', 'PauseMenu.tsx')
+  if (![A, L, W, P].every((f) => existsSync(f))) {
+    fail('R32 tutorial-way-back', 'src',
+      'App.tsx, tutorial/TutorialLayer.tsx, tutorial/WayBack.tsx or screens/PauseMenu.tsx'
+      + ' is missing. If they moved, move this rule with them (#405).')
+  } else {
+    if (!/waysBack=\{LOBBY_WAYS_BACK\}/.test(stripComments(read(A)))) {
+      fail('R32 tutorial-way-back', 'src/App.tsx',
+        'the lobby TutorialLayer is not given `waysBack={LOBBY_WAYS_BACK}` (#405).')
+    }
+    if (!/waitingForScreen[\s\S]{0,200}p\.waysBack\?\.\[p\.screen\][\s\S]{0,200}<WayBack\b/.test(stripComments(read(L)))) {
+      fail('R32 tutorial-way-back', 'src/tutorial/TutorialLayer.tsx',
+        'a card waiting under a screen with a way back no longer renders <WayBack> (#405).')
+    }
+    if (!/\.focus\(\)/.test(stripComments(read(W)))) {
+      fail('R32 tutorial-way-back', 'src/tutorial/WayBack.tsx',
+        'the way back is no longer given the keyboard\'s focus (#405).')
+    }
+    if (!/<span data-tut="pause-back"[^>]*>\s*<Btn[^>]*onPress=\{close\}>\s*\{inLobby \? 'Back to lobby'/.test(stripComments(read(P)))) {
+      fail('R32 tutorial-way-back', 'src/screens/PauseMenu.tsx',
+        'the pause menu\'s Back to lobby is not inside `data-tut="pause-back"` (#405).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

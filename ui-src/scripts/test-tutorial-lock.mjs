@@ -25,7 +25,7 @@
  * Run: npm run test:tutoriallock   (and as part of npm run build)
  */
 
-import { LOBBY_STEPS } from '../src/tutorial/steps.ts'
+import { LOBBY_STEPS, LOBBY_WAYS_BACK } from '../src/tutorial/steps.ts'
 import { holdsEscape, isLocked, lockCss, lockSelector } from '../src/tutorial/lock.ts'
 
 let failed = 0
@@ -154,6 +154,10 @@ check('a card on Help holds Escape on Help (Back is the way out)', holdsEscape(s
 check('the last card does not hold Escape on a screen they opened themselves',
   holdsEscape(step('ready'), 'settings'), false)
 check('nor on the pause menu', holdsEscape(step('mode'), 'pause'), false)
+check('Escape mid-walkthrough opens the pause menu, and its way back is Back to lobby',
+  LOBBY_WAYS_BACK.pause, 'pause-back')
+check('...which no card can lock: no card\'s sheet reaches the pause menu',
+  LOBBY_STEPS.some((x) => (lockSelector(x) ?? '').includes('pause')), false)
 
 if (failed) {
   console.error(`\ntest-tutorial-lock: ${failed} of ${ran} failed`)

@@ -45,6 +45,7 @@ import { fetchNui } from '../bridge/nui'
 import { useUi } from '../store'
 import AnnotationCard from './AnnotationCard'
 import PointingHand from './PointingHand'
+import WayBack from './WayBack'
 import {
   BAND, centred, place, sameBox, type CardBox, type Rect,
 } from './cardPlacement'
@@ -335,6 +336,12 @@ export type TutorialLayerProps = {
    * live.
    */
   steps?: Step[]
+  /**
+   * Screens this script does not visit, and the control on each that leads
+   * back to it -- ringed and focused while a card waits under that screen
+   * (#405). See LOBBY_WAYS_BACK in steps.ts.
+   */
+  waysBack?: Record<string, string>
 }
 
 export default function TutorialLayer(p: TutorialLayerProps) {
@@ -1259,6 +1266,15 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     const next = { w: el.offsetWidth, h: el.offsetHeight, rem }
     setCard((prev) => (sameBox(prev, next) ? prev : next))
   }, [cardUp, stepId, uiScale, textScale, viewportTick])
+
+  // ── a screen the walkthrough does not visit, and the way back from it ───
+  //
+  // See `waysBack` and WayBack.tsx. Only while the card is waiting because of
+  // that screen, so it can never sit beside a card of its own.
+  const wayBack = step !== undefined && waitingForScreen && p.screen !== undefined
+    ? p.waysBack?.[p.screen]
+    : undefined
+  if (wayBack !== undefined) return <WayBack key={wayBack} target={wayBack} />
 
   if (!cardUp || !step) return null
 

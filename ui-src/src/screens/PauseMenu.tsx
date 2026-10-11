@@ -523,9 +523,13 @@ export default function PauseMenu() {
                 exit of that name: that row is filtered out on this screen, so
                 the words are free and they are the truest ones available. */}
             <div className="mt-6">
-              <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
-                {inLobby ? 'Back to lobby' : 'Resume'}
-              </Btn>
+              {/* data-tut: Escape mid-walkthrough lands here -- the walkthrough
+                  rings this and gives it the keyboard's focus (#405). */}
+              <span data-tut="pause-back" className="inline-block">
+                <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
+                  {inLobby ? 'Back to lobby' : 'Resume'}
+                </Btn>
+              </span>
             </div>
 
             {/* THE DISCORD CARD SAT HERE FOR ONE DAY, under the way out, and
