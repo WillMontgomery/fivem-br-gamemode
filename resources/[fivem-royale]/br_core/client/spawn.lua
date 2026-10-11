@@ -188,7 +188,8 @@ end
 --- costs one stale frame instead of leaving the two sides inverted with no way
 --- back (the rule br_ui/client/players.lua documents).
 --- @param show boolean
---- @param kind string|nil  'leaving' | 'dropping' -- the WORDS on the curtain
+--- @param kind string|nil  'leaving' | 'dropping' | 'loading' -- the WORDS on
+---        the curtain
 function BR.Spawn.curtain(show, kind)
     show = show == true
     BR.Spawn.curtainWanted = show
@@ -202,6 +203,22 @@ function BR.Spawn.curtain(show, kind)
         syncOwnVisibility()
         TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
     end
+end
+
+--- Change the words on a curtain that is already up, and nothing else (#403).
+---
+--- NOT BR.Spawn.curtain(true, kind), which is RAISING one: that restarts the
+--- curtain's clock and takes back the gate's allowance (curtainGraceMs), so the
+--- watchdog would measure from the change of words rather than from the black,
+--- and could lift it over a trip still inside its gate. The page keeps the
+--- words through the curtain's own fade down, and every raise names its own,
+--- so nothing has to put them back.
+--- @param kind string  a curtain kind; see BR.Spawn.curtain
+--- @return boolean  whether a curtain was up to change
+function BR.Spawn.curtainWords(kind)
+    if not BR.Spawn.curtainWanted then return false end
+    TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true, kind = kind })
+    return true
 end
 
 --- Hold this thread until the page says a cover is fully opaque.
@@ -910,7 +927,25 @@ BR.Spawn.departure = {
     -- the pad's terrain does not eat into it, and a car that never stands --
     -- a model that never arrives, a paint seed the server never sends --
     -- costs at most this much extra black.
+    --
+    -- AND IT IS THE CRATES' CEILING TOO (#403): the gate waits on the crate
+    -- models this warmup builds beside the cars, under this same one deadline,
+    -- so the two together can never hold the black longer than the cars could.
     showroomWaitMs = 10000,
+
+    -- ═══ WHEN THE CURTAIN SAYS "Loading assets" (#403) ═══
+    --
+    -- Owner, 2026-10-11: "If these take longer than 3 seconds combined, change
+    -- the "joining the match" text to say "loading assets". We'll change to
+    -- more custom vehicles in Season 2 soon and should expect that users will
+    -- be confused when their game takes longer to load sometimes."
+    --
+    -- The curtain over this trip reads "Dropping in" (br_ui's LeaveScreen,
+    -- kind 'dropping'); past this long into the gate, with the cars or the
+    -- crates still coming, it reads "Loading assets" (kind 'loading') until it
+    -- lifts. Counted from the same moment as the ceiling above, so it measures
+    -- the wait for the models and nothing before it.
+    loadingWordsMs = 3000,
 }
 
 --- Whether WE are holding the streaming focus on a warmup spawn.
@@ -1023,7 +1058,8 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.focuswatch', function()
     releaseFocus()
 end)
 
---- Hold the warmup's fade until the showroom's cars are standing (#368).
+--- Hold the warmup's fade until the showroom's cars are standing (#368) and
+--- the crates' models have loaded (#403).
 ---
 --- ASKED OF client/shop.lua, WHICH OWNS THE PAD. The cars waited on are the
 --- ones its pad will actually show, and one counts once its build has stood it
@@ -1046,15 +1082,33 @@ end)
 --- that dissolved under them, a bus that left under a late joiner -- so the
 --- wait ends there instead of holding the black over whatever comes next.
 ---
---- FAILS OPEN. No shop file, or a question that throws, is no wait at all.
+--- ═══ AND THE CRATES' MODELS WITH THEM (#403) ═══
+---
+--- Owner, 2026-10-11: "when we wait for the vehicle models to load, let's also
+--- wait for the crate models to load." ASKED OF client/preload.lua, which knows
+--- which crate models this warmup builds -- the season's boxes, festive or not,
+--- sealed and open, or Season 1's wooden pair -- and counts the ones this build
+--- has that have not loaded. Both halves are asked on every pass and the wait
+--- ends when both are done, so the two stream side by side under one deadline.
+---
+--- PAST `loadingWordsMs` WITH EITHER HALF STILL COMING, THE CURTAIN SAYS SO: its
+--- words change to "Loading assets" (BR.Spawn.curtainWords), once, and stay
+--- until it lifts. A wait that ends sooner never changes them.
+---
+--- FAILS OPEN. No shop or preload file, or a question that throws, is no wait
+--- for that half.
 ---
 --- MUST be called from inside a Citizen thread -- it yields.
 --- @param deadline number  GetGameTimer() at which it gives up
---- @return string how  'stood', 'deadline' or 'left' (warmup, that is)
---- @return integer short  on 'deadline', how many cars were still not standing
-local function awaitShowroom(deadline)
+--- @param onSlow function|nil  called once, as the words change
+--- @return string how  'loaded', 'deadline' or 'left' (warmup, that is)
+--- @return integer cars  on 'deadline', how many cars were still not standing
+--- @return integer crates  on 'deadline', how many crate models had not loaded
+local function awaitAssets(deadline, onSlow)
+    local said = false
+
     --- @return integer|nil  nil once this player is no longer in warmup
-    local function pending()
+    local function cars()
         if BR.State.me.state ~= BR.PlayerState.WARMUP then return nil end
         if not (BR.Shop and BR.Shop.pendingCars) then return 0 end
         if BR.Shop.hurry then pcall(BR.Shop.hurry) end
@@ -1067,11 +1121,37 @@ local function awaitShowroom(deadline)
         return tonumber(n) or 0
     end
 
+    --- @return integer
+    local function crates()
+        if not (BR.Preload and BR.Preload.pendingCrates) then return 0 end
+        local ok, n = pcall(BR.Preload.pendingCrates)
+        if not ok then
+            -- Once a gate: the cars may still be holding it, and this is asked
+            -- twenty times a second.
+            if not said then
+                said = true
+                print(('[br_core] crate model check errored (%s) -- not waiting')
+                    :format(tostring(n)))
+            end
+            return 0
+        end
+        return tonumber(n) or 0
+    end
+
+    local wordsAt = GetGameTimer() + (tonumber(BR.Spawn.departure.loadingWordsMs) or 3000)
+    local worded = false
     while true do
-        local n = pending()
-        if n == nil then return 'left', 0 end
-        if n <= 0 then return 'stood', 0 end
-        if GetGameTimer() >= deadline then return 'deadline', n end
+        local c = cars()
+        if c == nil then return 'left', 0, 0 end
+        local k = crates()
+        if c <= 0 and k <= 0 then return 'loaded', 0, 0 end
+        local now = GetGameTimer()
+        if now >= deadline then return 'deadline', c, k end
+        if not worded and now >= wordsAt then
+            worded = true
+            BR.Spawn.curtainWords('loading')
+            if onSlow then onSlow(c, k) end
+        end
         Citizen.Wait(50)
     end
 end
@@ -1086,7 +1166,13 @@ function BR.Spawn.toWarmupPad()
     -- these become, so every moment they spend streaming under the curtain is
     -- one the player does not spend on black. A refused trip keeps them
     -- streaming while the next tick retries; asking twice costs nothing.
+    --
+    -- AND THE CRATES' WITH THEM (#403). A player who queued in the lobby had
+    -- both asked for there already (client/preload.lua); this hands the cars
+    -- over to the showroom, which asks for them again just above and hands
+    -- each back once it stands, and asks for the crates if the lobby did not.
     if BR.Shop and BR.Shop.preload then pcall(BR.Shop.preload) end
+    if BR.Preload and BR.Preload.trip then pcall(BR.Preload.trip) end
 
     -- REFUSED, NOT SWALLOWED. The caller latches on "I have gathered this
     -- player", so a silent refusal here (a trip home still finishing when the
@@ -1340,12 +1426,18 @@ function BR.Spawn.toWarmupPad()
         -- it always was. In the trace line, `ground` is when the fade would
         -- have started and the step after it is when it did, and why:
         --
-        --   cars              every car the pad will show was standing
-        --   CARS-NEVER-STOOD  the ten seconds ran out first. The bracket says
-        --                     how many were still not standing; all of them
-        --                     usually means the paint seed never came.
+        --   assets            every car the pad will show was standing and
+        --                     every crate model this warmup builds had loaded
+        --                     (#403 added the crates; this step was `cars`)
+        --   ASSETS-TIMED-OUT  the ten seconds ran out first. The bracket says
+        --                     how many cars were still not standing -- all of
+        --                     them usually means the paint seed never came --
+        --                     and how many crate models had not loaded
         --   LEFT-WARMUP       the player left warmup, so there was nothing
         --                     left to wait for
+        --
+        -- and, between `ground` and one of those, `loading` when the wait
+        -- passed loadingWordsMs and the curtain's words changed (#403).
         --
         -- The curtain's watchdog is told this trip may now run the gate's
         -- ceiling longer than a trip that never waited (see curtainGraceMs).
@@ -1353,14 +1445,18 @@ function BR.Spawn.toWarmupPad()
             step('ground')
             holdUntil = GetGameTimer() + BR.Spawn.departure.showroomWaitMs
             curtainGraceMs = BR.Spawn.departure.showroomWaitMs
-            local how, short = awaitShowroom(holdUntil)
+            local how, cars, crates = awaitAssets(holdUntil, function(c, k)
+                step('loading', ('%d cars, %d crate models still coming'):format(c, k))
+            end)
             holdUntil = nil
-            if how == 'stood' then
-                step('cars')
+            if how == 'loaded' then
+                step('assets')
             elseif how == 'left' then
                 step('LEFT-WARMUP')
             else
-                step('CARS-NEVER-STOOD', ('%d not standing'):format(short or 0))
+                step('ASSETS-TIMED-OUT',
+                     ('%d cars not standing, %d crate models not loaded')
+                         :format(cars or 0, crates or 0))
             end
         end
 

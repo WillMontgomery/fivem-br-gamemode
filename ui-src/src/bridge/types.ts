@@ -1362,7 +1362,7 @@ export interface KeybindAction {
 }
 
 /** What the black curtain is covering. See screens/LeaveScreen.tsx. */
-export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
+export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting' | 'loading'
 
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {

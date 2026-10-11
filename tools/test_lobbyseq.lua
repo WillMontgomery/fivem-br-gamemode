@@ -3871,7 +3871,7 @@ end
 --- the fade would have started) to whichever step ended the wait.
 local function held()
     local g = traceAt('ground')
-    local s = traceAt('cars') or traceAt('CARS%-NEVER%-STOOD')
+    local s = traceAt('assets') or traceAt('ASSETS%-TIMED%-OUT')
         or traceAt('LEFT%-WARMUP')
     return (g and s) and (s - g) or nil
 end
@@ -3927,8 +3927,8 @@ do
         'and the curtain still comes down after the fade, not before it')
 
     local line = traceLine() or ''
-    ok(line:find('ground', 1, true) and traceAt('cars') ~= nil
-           and not line:find('CARS-NEVER-STOOD', 1, true),
+    ok(line:find('ground', 1, true) and traceAt('assets') ~= nil
+           and not line:find('ASSETS-TIMED-OUT', 1, true),
         'the trace line says when the fade would have started and when the '
             .. 'cars stood')
     ok(not said('did not report back'),
@@ -3951,7 +3951,7 @@ do
         ('cars that are already standing cost the fade nothing -- it lands in '
             .. 'the frame the ground does, as it always did (held %sms)')
             :format(tostring(held())))
-    ok(traceAt('cars') ~= nil, 'and the trace says the cars ended it')
+    ok(traceAt('assets') ~= nil, 'and the trace says the cars ended it')
 end
 
 do
@@ -3978,11 +3978,11 @@ do
     ok(h ~= nil and h - cap <= 50,
         ('and no longer: counted from the moment the fade would have started '
             .. '(%sms over)'):format(h and (h - cap) or '?'))
-    ok(traceAt('CARS%-NEVER%-STOOD') ~= nil
-           and traceAt('CARS%-NEVER%-STOOD') == traceAt('in'),
+    ok(traceAt('ASSETS%-TIMED%-OUT') ~= nil
+           and traceAt('ASSETS%-TIMED%-OUT') == traceAt('in'),
         'the trace says the deadline, not the cars, ended the wait -- and the '
             .. 'trip landed in that same frame')
-    ok((traceLine() or ''):find('CARS%-NEVER%-STOOD %d+ms %(1 not standing%)')
+    ok((traceLine() or ''):find('ASSETS%-TIMED%-OUT %d+ms %(1 cars not standing, 0 crate models not loaded%)')
            ~= nil,
         'and how many cars were still not standing when it did: '
             .. tostring(traceLine()))
@@ -4098,8 +4098,8 @@ do
     ok(fin ~= nil and fin - left <= 50,
         ('the wait ends the moment the player is no longer in warmup (%sms)')
             :format(fin and (fin - left) or 'never'))
-    ok(traceAt('LEFT%-WARMUP') ~= nil and traceAt('cars') == nil
-           and traceAt('CARS%-NEVER%-STOOD') == nil,
+    ok(traceAt('LEFT%-WARMUP') ~= nil and traceAt('assets') == nil
+           and traceAt('ASSETS%-TIMED%-OUT') == nil,
         'and the trace says that is what ended it, rather than claiming the '
             .. 'cars stood: ' .. tostring(traceLine()))
     pump(20000)
@@ -4174,7 +4174,7 @@ do
     ok(fin ~= nil and last ~= nil and fin >= last and fin - last <= 50,
         ('and the fade lands as its last car stands (%sms after), not on a '
             .. 'later tick'):format((fin and last) and (fin - last) or '?'))
-    ok(traceAt('cars') ~= nil, 'with the trace saying the cars ended it')
+    ok(traceAt('assets') ~= nil, 'with the trace saying the cars ended it')
     ok(hurriedAt ~= nil and g ~= nil and hurriedAt >= t0 + g,
         'and nothing hurries the pad before the gate opens: by then the ped '
             .. 'is on the pad with its ground loaded')
@@ -4248,6 +4248,271 @@ do
     ok(said('placement hold errored'), 'and the console says why')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 22b. AND ON THE CRATES' MODELS, SAYING "Loading assets" PAST 3 s (#403)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-11: "when we wait for the vehicle models to load, let's also
+-- wait for the crate models to load. If these take longer than 3 seconds
+-- combined, change the "joining the match" text to say "loading assets"."
+--
+-- client/preload.lua is not loaded here, as client/shop.lua is not: WHICH crate
+-- models, and when one counts as loaded, are tools/test_preload.lua's. This is
+-- the trip's half -- that it asks, that the fade waits on the answer beside the
+-- cars under the one deadline, and when the curtain's words change -- against a
+-- schedule: how long each crate model takes to load once the trip has asked,
+-- or `false` for one that never does. A model nobody asked for never loads,
+-- which is what makes "the trip asked" visible here.
+
+--- [name] = ms from the trip's ask until that crate model has loaded, or false.
+local crateSchedule = {}
+--- [name] = the fixture time it loads, set by the ask.
+local crateLoadsAt = {}
+--- When true, the crate question throws.
+local crateThrows = false
+
+BR.Preload = {
+    trip = function()
+        note('cratetrip')
+        for name, ms in pairs(crateSchedule) do
+            if crateLoadsAt[name] == nil then
+                crateLoadsAt[name] = ms and (fakeTime + ms) or math.huge
+            end
+        end
+    end,
+    pendingCrates = function()
+        if crateThrows then error('a crate question that throws') end
+        local n = 0
+        for name in pairs(crateSchedule) do
+            local at = crateLoadsAt[name]
+            if not at or fakeTime < at then n = n + 1 end
+        end
+        return n
+    end,
+}
+
+--- A fresh set of crate models, none of them asked for yet.
+--- @param t table  [name] = ms | false
+local function crateStock(t)
+    crateSchedule, crateLoadsAt, crateThrows = t, {}, false
+end
+
+--- Every raise or change of the curtain's words, in order: { kind, at }.
+local words = {}
+AddEventHandler('br:ui:sendLocal', function(kind, d)
+    if kind == BR.Nui.LEAVING and d and d.show then
+        words[#words + 1] = { kind = d.kind, at = fakeTime }
+    end
+end)
+
+--- The changes to 'loading', in order.
+local function loadingWords()
+    local out = {}
+    for _, w in ipairs(words) do
+        if w.kind == 'loading' then out[#out + 1] = w end
+    end
+    return out
+end
+
+do
+    -- ═══ SLOW CRATES: THE FADE WAITS FOR THE LAST CRATE MODEL ═══
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 0 })
+    crateStock({ blitz_loot_common = 2000, blitz_loot_rare_opened = 4500 })
+
+    order, words = {}, {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    local t0 = fakeTime
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(20000)
+
+    local iAsk, ask = firstOf('cratetrip')
+    ok(ask ~= nil and ask.at == t0,
+        'the crate models are asked for in the tick the trip starts')
+    ok(iAsk ~= nil and iAsk < (firstOf('fadeout') or 0),
+        'before the world has even gone black')
+
+    local _, fin = departed()
+    local last = t0 + 4500
+    ok(fin ~= nil and fin >= last,
+        ('with every car standing, the warmup still does not fade in until the '
+            .. 'last crate model has loaded (fade at +%s, crate at +4500)')
+            :format(fin and (fin - t0) or 'never'))
+    ok(fin ~= nil and fin - last <= 50,
+        ('and fades in the frame it has (%sms late)'):format(fin and (fin - last) or '?'))
+    ok(traceAt('assets') ~= nil and traceAt('ASSETS%-TIMED%-OUT') == nil,
+        'the trace says the assets ended the wait: ' .. tostring(traceLine()))
+    ok(not said('did not report back'),
+        'and the 9s escape did not mistake the wait for a lost placement')
+end
+
+do
+    -- ═══ PAST 3 SECONDS, THE CURTAIN SAYS "Loading assets" ═══
+    --
+    -- Measured from the moment the fade would have started, over the whole
+    -- wait -- the cars and the crates stream side by side, so "3 seconds
+    -- combined" is three seconds of that one wait. Here a crate model is what
+    -- is still coming; the block after this has a car do it.
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    order, words = {}, {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    stock({ veto = 0 })
+    crateStock({ blitz_loot_epic = false })
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    local limit = fakeTime + 10000
+    -- The gate's first pass hurries the pad: that is the moment it opened
+    -- (the trace line only prints once the trip has landed).
+    while hurriedAt == nil and fakeTime < limit do pump(50) end
+    ok(hurriedAt ~= nil and #loadingWords() == 0,
+        'precondition: the gate opened, with the curtain\'s words unchanged')
+    local raisedAt = BR.Spawn.curtainAt
+    pump(10000)
+    -- (The crate never loads: the deadline block below asserts what that
+    -- costs. What is read here is the words.)
+    local lw = loadingWords()
+    ok(#lw == 1,
+        ('the words change exactly once (%d changes)'):format(#lw))
+    local at = (traceAt('loading') and traceAt('ground'))
+        and (traceAt('loading') - traceAt('ground'))
+    ok(at ~= nil and at >= BR.Spawn.departure.loadingWordsMs
+           and at - BR.Spawn.departure.loadingWordsMs <= 50,
+        ('three seconds into the wait, to the pass (%sms after the fade would '
+            .. 'have started)'):format(tostring(at)))
+    ok(BR.Spawn.departure.loadingWordsMs == 3000,
+        ('and three seconds is the owner\'s number (%sms)')
+            :format(tostring(BR.Spawn.departure.loadingWordsMs)))
+    ok(words[1] ~= nil and words[1].kind == 'dropping'
+           and words[#words].kind == 'loading',
+        'the curtain went up saying "Dropping in" and was changed to the '
+            .. '\'loading\' words, not raised again under another name')
+    ok(traceAt('loading') ~= nil
+           and (traceLine() or ''):find('loading %d+ms %(0 cars, 1 crate models still coming%)'),
+        'the trace says when the words changed and what was still coming: '
+            .. tostring(traceLine()))
+    pump(2000)
+    ok(BR.Spawn.curtainAt == raisedAt,
+        'changing the words does not restart the curtain\'s own clock')
+    ok(not said('the curtain outlived its trip'),
+        'and the curtain watchdog did not take the change for a new curtain')
+    ok(#loadingWords() == 1, 'and nothing changed the words back before it lifted')
+end
+
+do
+    -- ═══ AND THE CARS ALONE PASSING 3 SECONDS SAY THE SAME ═══
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 9000 })
+    crateStock({ blitz_loot_common = 0 })
+
+    order, words = {}, {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(20000)
+    ok(#loadingWords() == 1 and traceAt('loading') ~= nil
+           and (traceLine() or ''):find('loading %d+ms %(1 cars, 0 crate models still coming%)'),
+        'a slow car changes the words too: ' .. tostring(traceLine()))
+    ok(traceAt('assets') ~= nil, 'and the wait still ends on the assets')
+end
+
+do
+    -- ═══ A WAIT UNDER 3 SECONDS NEVER CHANGES THE WORDS ═══
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 0 })
+
+    order, words = {}, {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    -- The crate model loads two seconds after the gate opens.
+    crateStock({ blitz_loot_common = false })
+    local limit = fakeTime + 10000
+    while hurriedAt == nil and fakeTime < limit do pump(50) end
+    crateLoadsAt.blitz_loot_common = fakeTime + 2000
+    pump(20000)
+
+    local h = held()
+    ok(h ~= nil and h >= 1950 and h < BR.Spawn.departure.loadingWordsMs,
+        ('precondition: the crates held the fade for under three seconds (%sms)')
+            :format(tostring(h)))
+    ok(#loadingWords() == 0 and traceAt('loading') == nil,
+        'and the curtain kept its words the whole way')
+    ok(traceAt('assets') ~= nil, 'the wait ended on the assets')
+end
+
+do
+    -- ═══ A CRATE MODEL THAT NEVER LOADS: TEN SECONDS, AND NOT ONE MORE ═══
+    --
+    -- The same deadline as the cars', and the ONE deadline: crates that never
+    -- load cannot hold the black any longer than cars that never stand could.
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 0 })
+    crateStock({ blitz_loot_legendary_xmas = false })
+
+    order, words = {}, {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(30000)
+
+    local cap = BR.Spawn.departure.showroomWaitMs
+    local h = held()
+    ok(h ~= nil and h >= cap,
+        ('a crate model that never loads holds the fade for the whole ten '
+            .. 'seconds (%sms)'):format(tostring(h)))
+    ok(h ~= nil and h - cap <= 50,
+        ('and no longer (%sms over)'):format(h and (h - cap) or '?'))
+    ok((traceLine() or ''):find('ASSETS%-TIMED%-OUT %d+ms %(0 cars not standing, 1 crate models not loaded%)')
+           ~= nil,
+        'the trace says the deadline ended it, and that it was a crate model: '
+            .. tostring(traceLine()))
+    ok(#loadingWords() == 1, 'the curtain said "Loading assets" while it waited')
+    local res, fin = departed()
+    ok(res ~= nil and fin ~= nil, 'and the world did fade in')
+    ok(not said('did not report back'),
+        'the 9s escape stepped back for the wait instead of firing into it')
+    ok(not BR.Spawn.traveling and BR.LobbyPed.isNetworked(),
+        'and the trip still lands: networked, not traveling')
+    pump(2000)
+    ok(firstOf('curtaindown') ~= nil, 'with the curtain down')
+end
+
+do
+    -- ═══ A CRATE QUESTION THAT THROWS IS NO WAIT, SAID ONCE ═══
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 6000 })
+    crateStock({})
+    crateThrows = true
+
+    order, words = {}, {}
+    logged = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    local t0 = fakeTime
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(20000)
+
+    local _, fin = departed()
+    ok(fin ~= nil and fin >= t0 + 6000 and fin - (t0 + 6000) <= 50,
+        'the cars still hold the fade, and only the cars')
+    local n = 0
+    for _, l in ipairs(logged) do
+        if l:find('crate model check errored', 1, true) then n = n + 1 end
+    end
+    ok(n == 1, ('and the console says why, once (%d lines)'):format(n))
+    crateThrows = false
+end
+
+BR.Preload = nil
+crateStock({})
 BR.Shop = nil
 
 -- ═══════════════════════════════════════════════════════════════════════════

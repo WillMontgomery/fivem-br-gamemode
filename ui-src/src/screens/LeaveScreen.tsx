@@ -32,7 +32,7 @@ import { useCoverReport } from '../bridge/cover'
 import { useFade } from '../ui/useFade'
 
 /** What the curtain is covering. Lua names it; the wording lives here. */
-export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
+export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting' | 'loading'
 
 /**
  * The opacity transition's own duration, in ms, and it MUST match the class
@@ -52,6 +52,14 @@ const COPY: Record<CurtainKind, { title: string; sub: string }> = {
   // which is the whole argument for one curtain with three vocabularies
   // instead of three interstitials that drift apart.
   disconnecting: { title: 'Leaving the server', sub: 'Disconnecting…' },
+  // THE DROP, STILL WAITING ON ITS MODELS PAST THREE SECONDS (#403). Owner,
+  // 2026-10-11: "If these take longer than 3 seconds combined, change the
+  // "joining the match" text to say "loading assets"." That text is the
+  // title above, "Dropping in", so this is the same curtain with its title in
+  // the owner's words, cased the same way, and the line under it unchanged.
+  // Lua changes the kind mid-curtain (BR.Spawn.curtainWords), which replays
+  // the fly-up -- the h1 below is keyed by kind.
+  loading: { title: 'Loading assets', sub: 'Building the island…' },
 }
 
 export default function LeaveScreen({
