@@ -1683,7 +1683,33 @@ RegisterCommand('brterminalsv', function(source, args)
             local k, v = words[i]:match('^([%w_]+)=(%S+)$')
             local n = (k == 'x' or k == 'y') and tonumber(v) or nil
             local size = (k == 'scale' or k == 'trail') and tonumber(v) or nil
-            if (k == 'scale' or k == 'trail') and id ~= 'airstrike' then
+            -- `toff=x,y,z` and `trot=p,r,y` (round 9): where the trail sits on
+            -- each rocket and which way it points, as brrocket prints them.
+            local vec = nil
+            if k == 'toff' or k == 'trot' then
+                local lim = k == 'toff' and 50.0 or 360.0
+                local parts = {}
+                for part in v:gmatch('[^,]+') do parts[#parts + 1] = tonumber(part) end
+                vec = #parts == 3 and parts or nil
+                for i = 1, 3 do
+                    local n = vec and vec[i]
+                    if not n or n ~= n or n < -lim or n > lim then
+                        vec = nil
+                        break
+                    end
+                    vec[i] = n + 0.0
+                end
+            end
+            if (k == 'toff' or k == 'trot') and id ~= 'airstrike' then
+                tell(src, ('%s= is for airstrike only'):format(k))
+                return
+            elseif (k == 'toff' or k == 'trot') and not vec then
+                tell(src, ('%s= takes three numbers, x,y,z'):format(k))
+                return
+            elseif vec then
+                look = look or {}
+                look[k] = vec
+            elseif (k == 'scale' or k == 'trail') and id ~= 'airstrike' then
                 tell(src, ('%s= is for airstrike only'):format(k))
                 return
             elseif (k == 'scale' or k == 'trail') and not (size and size >= 0.1 and size <= 100.0) then

@@ -1281,6 +1281,16 @@ do
     ok(out:find('scale= takes a number from 0.1 to 100', 1, true) ~= nil, 'scale=0 is refused', out)
     out = devRun(1, ('airstrike x=%.1f y=%.1f trail=big'):format(C0.x + 300.0, C0.y))
     ok(out:find('trail= takes a number from 0.1 to 100', 1, true) ~= nil, 'trail=big is refused', out)
+    out = devRun(1, ('airstrike x=%.1f y=%.1f toff=0,-2,0.5 trot=10,0,180'):format(C0.x + 300.0, C0.y))
+    look = lastOf(BR.Net.TERMINAL_STRIKE, 3).look
+    ok(look and look.toff and look.toff[2] == -2.0 and look.toff[3] == 0.5 and look.trot and look.trot[3] == 180.0,
+        'toff= and trot= ride the strike to every client', look and look.toff)
+    out = devRun(1, ('airstrike x=%.1f y=%.1f toff=1,2'):format(C0.x + 300.0, C0.y))
+    ok(out:find('toff= takes three numbers, x,y,z', 1, true) ~= nil, 'toff=1,2 is refused', out)
+    out = devRun(1, ('airstrike x=%.1f y=%.1f trot=500,0,0'):format(C0.x + 300.0, C0.y))
+    ok(out:find('trot= takes three numbers, x,y,z', 1, true) ~= nil, 'trot=500,0,0 is refused', out)
+    out = devRun(1, 'ghost toff=0,0,0')
+    ok(out:find('toff= is for airstrike only', 1, true) ~= nil, 'toff= on another function is refused', out)
     out = devRun(1, 'ghost scale=2')
     ok(out:find('scale= is for airstrike only', 1, true) ~= nil, 'scale= on another function is refused', out)
     out = devRun(1, 'airstrike')
@@ -1948,12 +1958,17 @@ local released = {}
 function SetModelAsNoLongerNeeded(h) released[#released + 1] = h end
 function SetEntityLodDist(e, d) if C.ents[e] then C.ents[e].lodDist = d end end
 local loopedSeq = 0
-function StartParticleFxLoopedOnEntity(name, e, _, _, _, _, _, _, scale)
+function StartParticleFxLoopedOnEntity(name, e, ox, oy, oz, rx, ry, rz, scale)
     call('StartParticleFxLoopedOnEntity')
     loopedSeq = loopedSeq + 1
-    fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e, h = loopedSeq, scale = scale }
+    fxCalls.looped[#fxCalls.looped + 1] = { name = name, ent = e, h = loopedSeq, scale = scale,
+                                            off = { ox, oy, oz }, rot = { rx, ry, rz } }
     return loopedSeq
 end
+function SetEntityVisible(e, v) if C.ents[e] then C.ents[e].visible = v end end
+-- A rocket model's box: 0.3 m long, its back 0.15 m behind its origin.
+function GetModelDimensions() return { x = -0.05, y = -0.15, z = -0.05 }, { x = 0.05, y = 0.15, z = 0.05 } end
+function GetEntityHeading() return 0.0 end
 function SetParticleFxLoopedFarClipDist(h, d)
     for _, l in ipairs(fxCalls.looped) do if l.h == h then l.farClip = d end end
 end
@@ -2090,7 +2105,7 @@ do
     eq(falling, 1, 'the first rocket is in the air')
     local rocket = nil
     for id, e in pairs(C.ents) do
-        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) then rocket = id end
+        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.visible ~= false then rocket = id end
     end
     local e = rocket and C.ents[rocket]
     ok(e and e.net == false and e.collision == false, 'a local object, never networked, colliding with nothing')
@@ -2100,8 +2115,11 @@ do
     local x1, y1 = e.x, e.y
     advance(50, 50)
     ok(e and e.z < z0, 'coming down', e and e.z)
-    ok(fxCalls.looped[1] and fxCalls.looped[1].name == RA.trail and fxCalls.looped[1].ent == rocket,
-        "with the homing rocket's trail")
+    local carrier = fxCalls.looped[1] and C.ents[fxCalls.looped[1].ent]
+    ok(fxCalls.looped[1] and fxCalls.looped[1].name == RA.trail and fxCalls.looped[1].ent ~= rocket
+        and carrier and carrier.visible == false and carrier.scale == nil and carrier.model == e.model,
+        "with the homing rocket's trail, on an invisible twin at 1x (round 9: on the scaled rocket it trailed far behind)")
+    ok(carrier and carrier.x == e.x and carrier.y == e.y and carrier.z == e.z, 'the twin flies with its rocket, this frame')
     -- ITS NOSE ALONG ITS PATH (round 7: a curve, turned every frame): heading
     -- the way it just moved, and pointing down as it comes down.
     local rot = fxCalls.rotations[rocket]
@@ -2156,7 +2174,7 @@ do
     -- "the size of a dinner plate" (owner, 2026-10-11): "do at least 20x but
     -- also give me a way to scale it with `brterminal run airstrike`", and
     -- "make sure the LODs are set such that it'll load that in further away".
-    ok(RA.scale >= 20.0, ('the art draws them at %gx: 20x at least'):format(RA.scale))
+    eq(RA.scale, 8.0, '"Scale=8 for the props looks best" (owner, 2026-10-11)')
     ok(RA.trailScale > 1.0, ('the trail is drawn bigger to suit (%gx)'):format(RA.trailScale))
     ok(FX.strikeDrawM >= 1500.0, ('a client up to %d m off draws the strike (was 800)'):format(FX.strikeDrawM))
     local function flyOne(id, over)
@@ -2169,14 +2187,21 @@ do
         advance(FX.strikeWarnMs - RA.flightMs + 700, 50)
         local rocket = nil
         for eid, e in pairs(C.ents) do
-            if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) then rocket = eid end
+            if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.visible ~= false then rocket = eid end
         end
         local e = rocket and C.ents[rocket]
         local scale1 = e and e.scale
         advance(200, 50)
         local trail = fxCalls.looped[1]
+        local carrier = trail and C.ents[trail.ent]
         local out = { scale = scale1, scaleLater = e and e.scale, trail = trail and trail.scale,
-                      farClip = trail and trail.farClip }
+                      farClip = trail and trail.farClip, off = trail and trail.off, rot = trail and trail.rot,
+                      carrier = trail and trail.ent, rocket = rocket,
+                      together = false }
+        for _, r in pairs(C.ents) do
+            if carrier and r.alive and r.kind == 'obj' and r.visible ~= false
+                and r.x == carrier.x and r.y == carrier.y and r.z == carrier.z then out.together = true end
+        end
         advance(FX.strikeWarnMs + 5000, 100)
         advance(FX.strikeLingerMs + 100, 500)
         slow()
@@ -2198,6 +2223,63 @@ do
     d = flyOne(74, { look = { scale = 0.0, trail = 1e9 } })
     eq(d.scale, RA.scale, 'a size outside 0.1 to 100 is ignored (scale=0)')
     eq(d.trail, RA.trailScale, 'and so is trail=1e9')
+    -- THE TRAIL'S PLACE: by default the back of the rocket at its scale, in
+    -- meters on the unscaled twin, pointing the way the rocket does.
+    d = flyOne(76)
+    ok(d.carrier and d.carrier ~= d.rocket, 'the trail rides a twin, not the scaled rocket')
+    ok(d.together, 'the twin is where its rocket is, every frame')
+    ok(d.off and d.off[1] == 0.0 and math.abs(d.off[2] - (-0.15 * RA.scale)) < 1e-9 and d.off[3] == 0.0,
+        ('at the back of the rocket at its scale (y %.2f m)'):format(d.off and d.off[2] or 0))
+    ok(d.rot and d.rot[1] == 0.0 and d.rot[2] == 0.0 and d.rot[3] == 0.0, 'pointing along it')
+    ok(not C.ents[d.carrier].alive, 'and the twin is gone with its rocket')
+    d = flyOne(77, { look = { toff = { 0.5, -2.0, 0.25 }, trot = { 10.0, 0.0, 180.0 } } })
+    ok(d.off and d.off[1] == 0.5 and d.off[2] == -2.0 and d.off[3] == 0.25, 'toff=0.5,-2,0.25: the trail there')
+    ok(d.rot and d.rot[1] == 10.0 and d.rot[3] == 180.0, 'trot=10,0,180: turned so')
+    d = flyOne(78, { look = { toff = { 0.0, 900.0, 0.0 }, trot = { 'x', 0, 0 } } })
+    ok(d.off and math.abs(d.off[2] - (-0.15 * RA.scale)) < 1e-9 and d.rot and d.rot[1] == 0.0,
+        'a place past 50 m or a turn that is not a number is ignored')
+
+    -- brrocket: ONE ROCKET STANDING STILL, TO TUNE ITS TRAIL BY EYE.
+    -- "perhaps you could give me a stationary example where I can tune the
+    -- position, direction, and size of the smoke trails relative to the props"
+    resetWorld()
+    W.me = { x = 10.0, y = 0.0, z = 20.0 }
+    for k in pairs(C.ents) do C.ents[k] = nil end
+    fxCalls.looped = {}
+    logs = {}
+    local wasDev = devBox
+    devBox = true
+    ok(commands.brrocket ~= nil, 'brrocket is a command')
+    commands.brrocket(0, { 'scale=10', 'trail=4', 'toff=0,-1.5,0.2', 'trot=0,0,180' })
+    runThreads()
+    local sm = F.rocketSample()
+    local so = sm and C.ents[sm.obj]
+    local sc = sm and C.ents[sm.carrier]
+    ok(so and so.scale == 10.0 and so.visible ~= false, 'a rocket at 10x')
+    ok(so and math.abs(so.y - 6.0) < 1e-9 and math.abs(so.x - 10.0) < 1e-9, '6 m in front of you')
+    ok(sc and sc.visible == false and sc.scale == nil and sc.x == so.x, 'its invisible twin at 1x, in the same place')
+    local tl = fxCalls.looped[#fxCalls.looped]
+    ok(tl and tl.ent == sm.carrier and tl.scale == 4.0 and tl.off[2] == -1.5 and tl.off[3] == 0.2 and tl.rot[3] == 180.0,
+        'its trail on the twin, at 4x, where toff and trot say')
+    local said = logs[#logs] or ''
+    ok(said:find('brterminal run airstrike scale=10 trail=4 toff=0,-1.5,0.2 trot=0,0,180', 1, true) ~= nil,
+        'and the line that fires a strike drawn the same way', said)
+    local first = tl.h
+    commands.brrocket(0, { 'trail=6' })
+    runThreads()
+    tl = fxCalls.looped[#fxCalls.looped]
+    ok(fxCalls.stoppedSet[first] and tl.scale == 6.0 and tl.off[2] == -1.5 and F.rocketSample().obj == sm.obj,
+        'a change keeps the rest and the same rocket, the old trail stopped')
+    logs = {}
+    commands.brrocket(0, { 'toff=1,2' })
+    ok((logs[1] or ''):find('toff= takes three numbers', 1, true) ~= nil, 'toff=1,2 is refused', logs[1])
+    commands.brrocket(0, { 'reset' })
+    runThreads()
+    tl = fxCalls.looped[#fxCalls.looped]
+    ok(tl and tl.scale == RA.trailScale and C.ents[F.rocketSample().obj].scale == RA.scale, 'reset: the art values')
+    commands.brrocket(0, { 'off' })
+    ok(F.rocketSample() == nil and not so.alive and not sc.alive, 'off: both gone')
+    devBox = wasDev
 end
 
 describe('client: Airstrike -- a rocket on a roof bursts on the roof; far off, only the circle')
@@ -2247,7 +2329,7 @@ do
     local function rocketsOf(model)
         local n = 0
         for _, e in pairs(C.ents) do
-            if e.kind == 'obj' and e.model == model then n = n + 1 end
+            if e.kind == 'obj' and e.model == model and e.visible ~= false then n = n + 1 end
         end
         return n
     end
@@ -2357,7 +2439,7 @@ do
     advance(msg.rockets[1].at - RA.flightMs + 1000 - clientMs, 50)
     local obj = nil
     for id, e in pairs(C.ents) do
-        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) then obj = obj or id end
+        if e.alive and e.kind == 'obj' and e.model == joaat(RA.models[1]) and e.visible ~= false then obj = obj or id end
     end
     local e = obj and C.ents[obj]
     local wx, wy, wz = F.rocketAt(31, 1, clientMs)
@@ -2485,7 +2567,7 @@ do
     -- DRAWN, AND THE GAME SAYS ON SCREEN.
     onScreen = true
     local l = strikeAt(62)
-    ok(l and l:find('10 of 10 rockets made as w_lr_homing_rocket at 20x, 10 with a trail at 5x, 10 on screen', 1, true)
+    ok(l and l:find('10 of 10 rockets made as w_lr_homing_rocket at 8x, 10 with a trail at 3x, 10 on screen', 1, true)
         and l:find('the nearest %d+ m from this view'), 'drawn: what was made, its trail, on screen, how near', l)
     -- DRAWN, AND THE GAME SAYS NOT ONE WAS ON SCREEN.
     onScreen = false

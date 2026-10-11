@@ -246,6 +246,8 @@ local function dropRocket(rk)
     end
     removeEnt(rk.obj)
     rk.obj = nil
+    removeEnt(rk.carrier)
+    rk.carrier = nil
 end
 
 --- Let the engine stream a rocket model out again, once no strike shown here
@@ -302,6 +304,58 @@ local function lookSize(v)
     v = tonumber(v)
     if not v or v ~= v or v < 0.1 or v > 100.0 then return nil end
     return v + 0.0
+end
+
+--- A rehearsal's three numbers (`toff=x,y,z`, `trot=p,r,y`), as the server
+--- sent them: three finite numbers each within -lim..lim, or nil.
+local function lookVec(v, lim)
+    if type(v) ~= 'table' then return nil end
+    local out = {}
+    for i = 1, 3 do
+        local n = tonumber(v[i])
+        if not n or n ~= n or n < -lim or n > lim then return nil end
+        out[i] = n + 0.0
+    end
+    return out
+end
+
+--- How far the back of a rocket model sits behind its origin at 1x, in
+--- meters (its box's least y; GTA's forward is +y). Asked once a model.
+local backs = {}
+local function backOf(model)
+    if not model then return -0.15 end
+    if backs[model] == nil then
+        -- A vector3 in game; anything else (a stub, a failed call) is the
+        -- default, never an error in the frame pass.
+        local ok, lo = pcall(GetModelDimensions, model)
+        local y = nil
+        if ok and lo ~= nil and type(lo) ~= 'number' then
+            local okY, v = pcall(function() return lo.y or lo[2] end)
+            y = okY and v or nil
+        end
+        backs[model] = tonumber(y) or -0.15
+    end
+    return backs[model]
+end
+
+--- Where strike `s`'s trail sits on its rocket and which way it points
+--- (round 9, owner: "the smoke trails are wayyyyy behind the props
+--- physically"): meters from the rocket's origin along its right, its nose
+--- and its top -- art.rocket.trailOffset, or the back of the rocket at its
+--- scale -- and degrees of pitch, roll and yaw (art.rocket.trailRot). A
+--- rehearsal's `look` (toff, trot) wins. Public for the suites and brrocket.
+--- @return number x, number y, number z
+function F.trailOffsetOf(s)
+    local o = (s and s.toff) or rocketArt().trailOffset
+    if type(o) == 'table' then return o[1] + 0.0, o[2] + 0.0, o[3] + 0.0 end
+    return 0.0, backOf(s and s.model) * F.scaleOf(s), 0.0
+end
+
+--- @return number pitch, number roll, number yaw
+function F.trailRotOf(s)
+    local r = (s and s.trot) or rocketArt().trailRot
+    if type(r) == 'table' then return r[1] + 0.0, r[2] + 0.0, r[3] + 0.0 end
+    return 0.0, 0.0, 0.0
 end
 
 --- The first rocket model that streams in, bounded: art.rocket.models in order
@@ -482,9 +536,25 @@ local function fly(s, rk, now, dt, view)
         SetEntityCollision(obj, false, false)
         FreezeEntityPosition(obj, true)
         rk.obj = obj
+        -- THE TRAIL'S CARRIER (round 9): an invisible twin of the rocket at
+        -- its own size, on the same path and turned the same way every frame.
+        -- A looped effect on the scaled rocket is scaled with its matrix --
+        -- the effect's own offsets and spread twenty times over -- which is
+        -- what put the smoke "wayyyyy behind the props"; on the twin the trail
+        -- sits in meters, wherever trailOffset says.
+        local carrier = CreateObjectNoOffset(s.model, x, y, z, false, false, false)
+        if carrier and carrier ~= 0 then
+            SetEntityVisible(carrier, false, false)
+            SetEntityCollision(carrier, false, false)
+            FreezeEntityPosition(carrier, true)
+            if SetEntityLodDist then pcall(SetEntityLodDist, carrier, math.floor(tonumber(R.lodDist) or 1000)) end
+            rk.carrier = carrier
+        end
         if R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) then
             UseParticleFxAsset(R.trailAsset)
-            rk.trail = StartParticleFxLoopedOnEntity(R.trail, obj, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            local ox, oy, oz = F.trailOffsetOf(s)
+            local rx, ry, rz = F.trailRotOf(s)
+            rk.trail = StartParticleFxLoopedOnEntity(R.trail, rk.carrier or obj, ox, oy, oz, rx, ry, rz,
                 F.trailScaleOf(s), false, false, false)
             -- THE TRAIL IS SEEN AS FAR AS THE ROCKET (round 9): a looped
             -- effect's own far clip is shorter than lodDist.
@@ -512,6 +582,10 @@ local function fly(s, rk, now, dt, view)
     -- DRAWN AT art.rocket.scale TIMES ITS SIZE (round 9), after the turn: a
     -- rotation writes a unit matrix, so the scale goes back on every frame.
     BR.Native.propScale(rk.obj, F.scaleOf(s))
+    if rk.carrier then
+        SetEntityCoords(rk.carrier, x, y, z, false, false, false, false)
+        aim(rk.carrier, dx, dy, dz)
+    end
     -- WHAT THE GAME SAYS IT SHOWS, AND HOW NEAR (dev mode only).
     if dev then
         if isTrue(IsEntityOnScreen(rk.obj)) then
@@ -644,6 +718,8 @@ AddEventHandler(BR.Net.TERMINAL_STRIKE, function(d)
     if type(d.look) == 'table' then
         s.scale = lookSize(d.look.scale)
         s.trailScale = lookSize(d.look.trail)
+        s.toff = lookVec(d.look.toff, 50.0)
+        s.trot = lookVec(d.look.trot, 360.0)
     end
     strikes[id] = s
     s.ring = circle(s.x, s.y, s.r, art().strike or {}, copy().airstrike_blip)
@@ -718,8 +794,148 @@ F.onSlow(function()
     end
 end)
 
+-- === brrocket: A ROCKET STANDING STILL, TO TUNE ITS TRAIL (round 9) ===
+--
+-- "perhaps you could give me a stationary example where I can tune the
+-- position, direction, and size of the smoke trails relative to the props,
+-- then fire an airstrike on my own using the other command to try it out"
+--                                                     -- owner, 2026-10-11
+--
+-- One rocket 6 m in front of you at chest height, nose along your heading,
+-- drawn exactly as a strike draws one (the scaled rocket, its trail on the
+-- invisible carrier). Each `brrocket key=value ...` changes it in place and
+-- prints the `brterminal run airstrike ...` line that fires a real strike
+-- drawn the same way. Dev mode only (the dev gate wraps every command).
+--   scale=<n>   the rocket's size (0.1-100)      trail=<n>   the trail's size
+--   toff=x,y,z  the trail's place, meters from the rocket's origin: x right,
+--               y toward the nose, z up (each -50..50)
+--   trot=p,r,y  the trail's turn in degrees: pitch, roll, yaw (each -360..360)
+--   reset       back to the art's values         off         take it away
+local sample = nil
+
+local function sampleClear()
+    if not sample then return end
+    if sample.trail then StopParticleFxLooped(sample.trail, false) end
+    removeEnt(sample.obj)
+    removeEnt(sample.carrier)
+    sample = nil
+end
+
+--- The `brterminal run airstrike` line that draws a strike as the sample is.
+--- @param t table  the sample's look
+--- @return string
+function F.rocketLine(t)
+    local ox, oy, oz = F.trailOffsetOf(t)
+    local rx, ry, rz = F.trailRotOf(t)
+    return ('brterminal run airstrike scale=%g trail=%g toff=%g,%g,%g trot=%g,%g,%g')
+        :format(F.scaleOf(t), F.trailScaleOf(t), ox, oy, oz, rx, ry, rz)
+end
+
+--- Put the sample's rocket and trail where `t` says (made the first time).
+--- MUST be called from inside a Citizen thread: the model may stream in.
+local function sampleDraw(t)
+    local R = rocketArt()
+    if not sample then
+        local model = loadRocketModel()
+        if not model then
+            print('[br_core] brrocket: no rocket model would load')
+            return
+        end
+        if R.trailAsset then RequestNamedPtfxAsset(R.trailAsset) end
+        local ped = PlayerPedId()
+        local p = GetEntityCoords(ped)
+        local h = math.rad(tonumber(GetEntityHeading(ped)) or 0.0)
+        local ux, uy = -math.sin(h), math.cos(h)
+        local x, y, z = p.x + ux * 6.0, p.y + uy * 6.0, p.z + 0.6
+        local obj = CreateObjectNoOffset(model, x, y, z, false, false, false)
+        local carrier = CreateObjectNoOffset(model, x, y, z, false, false, false)
+        if not obj or obj == 0 or not carrier or carrier == 0 then
+            removeEnt(obj)
+            removeEnt(carrier)
+            print('[br_core] brrocket: the game would not make the rocket')
+            return
+        end
+        for _, e in ipairs({ obj, carrier }) do
+            SetEntityCollision(e, false, false)
+            FreezeEntityPosition(e, true)
+        end
+        SetEntityVisible(carrier, false, false)
+        sample = { obj = obj, carrier = carrier, model = model, x = x, y = y, z = z, ux = ux, uy = uy }
+    end
+    t.model = sample.model
+    for _, e in ipairs({ sample.obj, sample.carrier }) do
+        SetEntityCoords(e, sample.x, sample.y, sample.z, false, false, false, false)
+        aim(e, sample.ux, sample.uy, 0.0)
+    end
+    BR.Native.propScale(sample.obj, F.scaleOf(t))
+    if sample.trail then StopParticleFxLooped(sample.trail, false) end
+    sample.trail = nil
+    local waited = 0
+    while R.trailAsset and not isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) and waited < 3000 do
+        Citizen.Wait(50)
+        waited = waited + 50
+    end
+    if R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) then
+        UseParticleFxAsset(R.trailAsset)
+        local ox, oy, oz = F.trailOffsetOf(t)
+        local rx, ry, rz = F.trailRotOf(t)
+        sample.trail = StartParticleFxLoopedOnEntity(R.trail, sample.carrier, ox, oy, oz, rx, ry, rz,
+            F.trailScaleOf(t), false, false, false)
+    end
+    sample.t = t
+    print('[br_core] brrocket: ' .. F.rocketLine(t))
+end
+
+--- `x,y,z` as three numbers each within -lim..lim, or nil.
+local function threeOf(v, lim)
+    local out = {}
+    for part in tostring(v):gmatch('[^,]+') do out[#out + 1] = tonumber(part) end
+    if #out ~= 3 then return nil end
+    return lookVec(out, lim)
+end
+
+--- What brrocket draws now (for the suites).
+--- @return table|nil
+function F.rocketSample() return sample end
+
+RegisterCommand('brrocket', function(_, args)
+    local verb = args[1] and args[1]:lower() or ''
+    if verb == 'off' then
+        sampleClear()
+        print('[br_core] brrocket: off')
+        return
+    end
+    local t = {}
+    if sample and sample.t and verb ~= 'reset' then
+        for k, v in pairs(sample.t) do t[k] = v end
+    end
+    for _, word in ipairs(args) do
+        local k, v = word:match('^([%w_]+)=(%S+)$')
+        if k == 'scale' or k == 'trail' then
+            local n = lookSize(v)
+            if not n then
+                print(('[br_core] brrocket: %s= takes a number from 0.1 to 100'):format(k))
+                return
+            end
+            if k == 'scale' then t.scale = n else t.trailScale = n end
+        elseif k == 'toff' or k == 'trot' then
+            local vec = threeOf(v, k == 'toff' and 50.0 or 360.0)
+            if not vec then
+                print(('[br_core] brrocket: %s= takes three numbers, x,y,z'):format(k))
+                return
+            end
+            t[k] = vec
+        elseif word:lower() ~= 'reset' then
+            print('[br_core] brrocket [scale=<n>] [trail=<n>] [toff=x,y,z] [trot=p,r,y] | reset | off')
+            return
+        end
+    end
+    Citizen.CreateThread(function() sampleDraw(t) end)
+end, false)
+
 AddEventHandler('onResourceStop', function(name)
     if name ~= GetCurrentResourceName() then return end
     clearFuzz()
     for _, s in pairs(strikes) do dropStrike(s) end
+    sampleClear()
 end)

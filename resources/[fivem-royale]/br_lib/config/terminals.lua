@@ -1423,8 +1423,23 @@ BR.Config.Terminals = {
         --               there too (SET_PARTICLE_FX_LOOPED_FAR_CLIP_DIST)
         -- `brterminal run airstrike scale=<n> trail=<n>` (dev mode) draws one
         -- strike at other sizes, for tuning these two by eye.
+        -- THEN, the same day: "Scale=8 for the props looks best", and "the
+        -- smoke trails are wayyyyy behind the props physically. They never
+        -- even reach the site of impact." A looped effect on a scaled object
+        -- is scaled with it, its own offsets included, so the trail now rides
+        -- an invisible twin at 1x (client/terminalfx/airstrike.lua):
+        --   scale        8 (was 20)
+        --   trailScale   3 (was 5), the trail on the twin, no longer magnified
+        --   trailOffset  { x right, y toward the nose, z up } in meters from
+        --                the rocket's origin; absent, the back of the rocket at
+        --                its scale (its model box)
+        --   trailRot     { pitch, roll, yaw } in degrees, the trail's turn
+        -- `brrocket` (dev mode) stands one rocket still in front of you to tune
+        -- all four, and prints the `brterminal run airstrike ... toff=x,y,z
+        -- trot=p,r,y` line that fires a strike drawn the same way.
         rocket = { models = { 'w_lr_homing_rocket', 'w_lr_rpg_rocket', 'w_ex_vehiclemissile_3' },
-                   loadMs = 5000, lodDist = 2500, scale = 20.0, trailScale = 5.0,
+                   loadMs = 5000, lodDist = 2500, scale = 8.0, trailScale = 3.0,
+                   trailRot = { 0.0, 0.0, 0.0 },
                    trailAsset = 'core', trail = 'proj_rpg_trail',
                    flightMs = 5000, launchM = 240.0, launchUpM = 70.0, diveUpM = 35.0,
                    fanDeg = 50.0, weaveM = 30.0,
