@@ -134,9 +134,12 @@ function TaskGoStraightToCoord(_p, x, y, z, speed, _timeout, heading)
     -- behind br_ui's opaque curtain is a leg nobody watches. Recorded at the
     -- moment of the call, because by the time an assertion runs the cover is
     -- long gone and the question is unanswerable.
+    --
+    -- AND WHICH WAY THE PED WAS FACING when the leg was handed to it: a ped
+    -- placed partway along the path (#406) must already face along it.
     note('task', {
         x = x, y = y, z = z, speed = speed, heading = heading,
-        fromX = ped.x, fromY = ped.y,
+        fromX = ped.x, fromY = ped.y, fromHeading = ped.heading,
         covered = (BR.Spawn and BR.Spawn.curtainWanted == true)
             or IsScreenFadedIn() == 0,
     })
@@ -4955,6 +4958,158 @@ do
     pump(40000)
     ok(not BR.LobbyPed.entering(), 'and the entrance finishes')
     BR.LockerV2 = nil
+    reset()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 25. #406: A PED READY AFTER THE CAMERA STARTS JOINS THE WALK WHERE IT WOULD BE
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-11: "We need to solve for this by starting a timer when we
+-- request the ped, and placing them further along that walking path when they
+-- do spawn - that way they arrive at the same time to the final position."
+--
+-- MEASURED AGAINST AN ON-TIME WALK IN THIS FIXTURE, not against lobbyped.lua's
+-- own plan: where the late ped is placed is compared with where the fixture's
+-- on-time ped had actually walked to at that moment, and when it arrives with
+-- when that one did. A test that asked the plan where the plan puts the ped
+-- would agree with itself whatever the plan said.
+
+--- One entrance with the screen uncovered from the first frame, so the camera
+--- flies while the walk waits. `readyMs` is how long after the flight's first
+--- move the chosen ped lands, on a new handle; nil wears it before the
+--- entrance begins. `sampleMs` records where the ped stands that long into the
+--- flight. Returns the flight's start, the legs tasked, the arrival on the
+--- mark, and the sample.
+local function entranceReadyAt(readyMs, sampleMs)
+    reset()
+    BR.State.worldReady = true
+    if readyMs then ped.model = GetHashKey('player_zero') else wearChosenModel() end
+
+    local r = {}
+    for _ = 1, 40 do
+        if said('camera flight starts') then break end
+        pump(50)
+    end
+    r.flight0 = said('camera flight starts') and fakeTime or nil
+    if not r.flight0 then return r end
+
+    if readyMs then
+        Citizen.SetTimeout(r.flight0 + readyMs - fakeTime, function()
+            pedHandle = pedHandle + 1
+            wearChosenModel()
+        end)
+    end
+    if sampleMs then
+        pump(r.flight0 + sampleMs - fakeTime)
+        r.sample = { x = ped.x, y = ped.y }
+    end
+    pump(45000)
+
+    local L = BR.Config.Match.lobbyPos
+    r.tasks = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'task' then r.tasks[#r.tasks + 1] = e end
+        if e.kind == 'coords' and not r.home and e.at >= r.flight0
+           and math.abs(e.x - L.x) < 0.01 and math.abs(e.y - L.y) < 0.01 then
+            r.home = e
+        end
+    end
+    return r
+end
+
+do
+    local C = BR.Config.Match.lobbyEntrance
+    local L = BR.Config.Match.lobbyPos
+    local S = C.pedStart
+    local at40 = math.floor(C.walkTargetMs * 0.4)
+
+    -- ═══ (a) READY WHEN THE CAMERA STARTS: THE WHOLE PATH, AS BEFORE ═══
+    local ref = entranceReadyAt(nil, at40)
+    ok(ref.flight0 ~= nil, 'precondition: the camera flies from the first frame')
+    local refWalk = (ref.home and ref.tasks[1]) and (ref.home.at - ref.tasks[1].at) or -1
+    ok(math.abs(refWalk - C.walkTargetMs) <= 1000,
+       ('precondition: the on-time walk takes its planned time (%d ms)'):format(refWalk))
+    ok(#ref.tasks == #C.pedPath + 1 and ref.tasks[1]
+       and BR.Dist(ref.tasks[1].fromX, ref.tasks[1].fromY, S.x, S.y) < 0.01,
+       'a ped ready when the camera starts walks the whole path from the start mark')
+    ok(ref.tasks[1] and ref.tasks[1].fromHeading == S.heading,
+       'facing the start mark\'s own heading, as it always has')
+    ok(not said('placed'), 'and nothing is placed along the path')
+
+    -- ═══ (b) ASKED FOR LONG BEFORE THE CAMERA, READY JUST BEFORE IT ═══
+    --
+    -- THE TIMER IS NOT SPENT UNDER THE COVER. The ped lands three seconds after
+    -- the entrance asked for it and a second before the screen is uncovered:
+    -- the walk was never behind, so it is the whole path. A walk that skipped
+    -- from the request would start three seconds in and land early.
+    reset()
+    BR.State.worldReady = false
+    ped.model = GetHashKey('player_zero')
+    Citizen.SetTimeout(3000, function()
+        pedHandle = pedHandle + 1
+        wearChosenModel()
+    end)
+    Citizen.SetTimeout(4000, function() BR.State.worldReady = true end)
+    pump(45000)
+    local tasks = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'task' then tasks[#tasks + 1] = e end
+    end
+    ok(#tasks == #C.pedPath + 1 and tasks[1]
+       and BR.Dist(tasks[1].fromX, tasks[1].fromY, S.x, S.y) < 0.01,
+       'a ped that took 3 s but was ready before the camera started walks the whole path')
+    BR.State.worldReady = true
+
+    -- ═══ (c) READY 40% INTO THE WALK: 40% ALONG IT, AND HOME WITH THE CAMERA ═══
+    local late = entranceReadyAt(at40)
+    local first = late.tasks and late.tasks[1]
+    ok(first ~= nil and ref.sample ~= nil
+       and BR.Dist(first.fromX, first.fromY, ref.sample.x, ref.sample.y) < 0.75,
+       ('a ped ready %d ms into the flight starts where the on-time walk was then (%.2fm off)')
+           :format(at40, (first and ref.sample)
+               and BR.Dist(first.fromX, first.fromY, ref.sample.x, ref.sample.y) or -1))
+    ok(first ~= nil and BR.Dist(first.fromX, first.fromY, S.x, S.y) > 5.0,
+       'not on the start mark')
+    ok(#late.tasks < #C.pedPath + 1 and late.tasks[#late.tasks]
+       and math.abs(late.tasks[#late.tasks].x - L.x) < 0.01
+       and math.abs(late.tasks[#late.tasks].y - L.y) < 0.01,
+       'it walks only the legs that are left, and the last one onto the mark')
+    local refAt = ref.home and (ref.home.at - ref.flight0)
+    local lateAt = late.home and late.flight0 and (late.home.at - late.flight0)
+    ok(refAt and lateAt and math.abs(lateAt - refAt) <= 500,
+       ('and it arrives when the on-time walk did, the same time after the camera '
+           .. 'lands (%s ms against %s)'):format(tostring(lateAt), tostring(refAt)))
+    ok(not forcedHome(), 'on its own feet: the failsafe never places it')
+
+    -- ═══ (d) AND IT FACES ALONG THE LEG IT WAS PLACED ON ═══
+    local want = first and BR.GtaHeading(BR.Bearing(first.fromX, first.fromY, first.x, first.y))
+    local off = want and math.abs((first.fromHeading - want + 540.0) % 360.0 - 180.0)
+    ok(off and off < 1.0,
+       ('the late ped is placed facing along its leg, toward the next point (%s deg off)')
+           :format(off and ('%.1f'):format(off) or '?'))
+
+    -- ═══ (e) READY AFTER THE CAMERA HAS LANDED: ON THE MARK ═══
+    --
+    -- modelWaitMs is raised for this one: at its eight seconds the walk would
+    -- give up on the ped and start without it, long before a 13.8 s flight
+    -- lands, and that is a different road.
+    local realWait = C.modelWaitMs
+    C.modelWaitMs = 60000
+    local after = C.camFlightMs + 1000
+    local landed = entranceReadyAt(after)
+    C.modelWaitMs = realWait
+    ok(landed.tasks and #landed.tasks == 0,
+       ('a ped ready after the camera landed walks no leg (%d tasked)')
+           :format(landed.tasks and #landed.tasks or -1))
+    ok(landed.home ~= nil and landed.home.at - landed.flight0 >= after,
+       'it appears on the lobby mark the moment it is ready')
+    ok(math.abs(ped.x - L.x) < 0.01 and math.abs(ped.y - L.y) < 0.01
+       and ped.heading == L.heading and ped.frozen,
+       'standing on the mark, facing the lobby shot, frozen like every lobby ped')
+    ok(not BR.LobbyPed.entering() and not BR.LobbyPed.walking()
+       and not BR.LobbyPed.lockerLocked(),
+       'and the entrance is over: not walking, the locker free')
     reset()
 end
 

@@ -265,6 +265,21 @@ local plannedMs = 0
 local pausedMs = 0
 local plannedLens = {}
 
+-- Where each leg of the plan starts and how short of its corner it hands over:
+-- blendPlan's own arithmetic, kept so a late ped can be placed on it (#406).
+local plannedStarts = {}
+local plannedWants = {}
+
+-- ═══ A PED THAT WAS NOT READY WHEN THE CAMERA STARTED (#406) ═══
+--
+-- `pedAskedAt` is when the walk asked for its ped (the model wait in run());
+-- `pedReadyMs` is how long that ped took to arrive, and `skippedMs` how much of
+-- the plan it was placed past because the camera was already flying. Read by
+-- the failsafe and /brlobbywalk; reset by begin().
+local pedAskedAt = nil
+local pedReadyMs = nil
+local skippedMs = 0
+
 -- ═══ THE EMOTE STATE, DECLARED HERE RATHER THAN BESIDE THE EMOTES ═══
 --
 -- Only because stop() is above them and has to clear `emoting`: a local
@@ -757,9 +772,11 @@ end
 --- because of its detour north) simply runs long, and /brlobbywalk says by how
 --- much. The floor matters too: a case SHORTER than the target would otherwise
 --- be solved with a blend below a walk, which is a ped wading.
---- @param from table   where the walk starts { x, y }
+--- @param from table   where the walk starts { x, y, z }
 --- @param pts table    the legs, in order
---- @return table blends, number seconds  what those blends actually take
+--- @return table blends, number seconds, table lens, table starts, table wants
+---         the blends, what they take, each leg's walked length, where each
+---         leg starts { x, y, z }, and how short of its corner it hands over
 local function blendPlan(from, pts)
     local C = cfg()
     local mps    = C.walkMps or 1.4
@@ -782,9 +799,10 @@ local function blendPlan(from, pts)
     local radius  = C.arriveRadius or 0.9
     local markRad = C.markRadius or 0.15
 
-    local lens = {}
-    local px, py = from.x, from.y
+    local lens, starts, wants = {}, {}, {}
+    local px, py, pz = from.x, from.y, from.z or 0.0
     for i = 1, #pts do
+        starts[i] = { x = px, y = py, z = pz }
         local raw = BR.Dist(px, py, pts[i].x, pts[i].y)
         local want
         if i == #pts then
@@ -793,6 +811,7 @@ local function blendPlan(from, pts)
             want = math.min(corner, raw * 0.4)
             if want < radius then want = radius end
         end
+        wants[i] = want
         lens[i] = math.max(0.0, raw - want)
 
         -- ...and the next leg starts from where this one stopped, which is
@@ -801,13 +820,14 @@ local function blendPlan(from, pts)
             local t = lens[i] / raw
             px = px + (pts[i].x - px) * t
             py = py + (pts[i].y - py) * t
+            pz = pz + ((pts[i].z or pz) - pz) * t
         else
-            px, py = pts[i].x, pts[i].y
+            px, py, pz = pts[i].x, pts[i].y, pts[i].z or pz
         end
     end
 
     local n = #lens
-    if n == 0 or mps <= 0.0 then return {}, 0.0 end
+    if n == 0 or mps <= 0.0 then return {}, 0.0, {}, {}, {} end
 
     local function blendFor(r, i)
         if n < 2 then return r end
@@ -843,7 +863,49 @@ local function blendPlan(from, pts)
 
     local out = {}
     for i = 1, n do out[i] = blendFor(a, i) end
-    return out, secondsFor(a), lens
+    return out, secondsFor(a), lens, starts, wants
+end
+
+--- Where the plan has the ped `ms` into its walk (#406).
+---
+--- THE PLAN'S OWN ARITHMETIC, NOT A SECOND MODEL OF THE WALK. Each leg is the
+--- length blendPlan solved for -- from where the last leg handed over to `want`
+--- short of this corner -- covered at its own blend times walkMps, which is
+--- exactly the sum plannedMs came from. So the point this answers is where an
+--- on-time walk would be standing, and the walk from there arrives when an
+--- on-time walk would.
+---
+--- FACING ALONG THE LEG, which is the way a ped walking it faces; the next
+--- task then carries it on in the direction it is already pointing.
+--- @param ms number
+--- @return table|nil  { x, y, z, heading, leg, meters }
+local function planAt(ms)
+    local mps = cfg().walkMps or 1.4
+    if mps <= 0.0 or #plannedLens == 0 or #plannedStarts == 0 then return nil end
+    local left = math.max(0.0, ms / 1000.0)
+    local done = 0.0
+    for i = 1, #plannedLens do
+        local a, b = plannedStarts[i], path[i]
+        local blend = blends[i] or 1.0
+        if blend < 0.1 then blend = 0.1 end
+        local secs = plannedLens[i] / (blend * mps)
+        if left < secs or i == #plannedLens then
+            local raw = BR.Dist(a.x, a.y, b.x, b.y)
+            local f = (secs > 0.0) and math.min(1.0, left / secs) or 1.0
+            local k = (raw > 0.0001) and (plannedLens[i] * f / raw) or 0.0
+            return {
+                x = a.x + (b.x - a.x) * k,
+                y = a.y + (b.y - a.y) * k,
+                z = a.z + ((b.z or a.z) - a.z) * k,
+                heading = BR.GtaHeading(BR.Bearing(a.x, a.y, b.x, b.y)),
+                leg = i,
+                meters = done + plannedLens[i] * f,
+            }
+        end
+        left = left - secs
+        done = done + plannedLens[i]
+    end
+    return nil
 end
 
 --- The clipset for this ped's walk.
@@ -1277,6 +1339,18 @@ local function standOnStart(why)
     FreezeEntityPosition(ped, true)
 end
 
+--- Put a late ped where the walk would have got to (#406). planAt's point,
+--- written the way standOnStart writes the start mark: exact, frozen, and
+--- unfrozen by the walk that follows in the same frame.
+--- @param p table  { x, y, z, heading }
+local function standAlong(p)
+    local ped = PlayerPedId()
+    RequestCollisionAtCoord(p.x, p.y, p.z)
+    SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false)
+    SetEntityHeading(ped, p.heading + 0.0)
+    FreezeEntityPosition(ped, true)
+end
+
 --- Put the ped on the start mark and raise the first shot over it.
 ---
 --- ═══ SYNCHRONOUS, AND THAT IS THE POINT ═══
@@ -1327,12 +1401,30 @@ local function pedReport()
         tonumber(GetEntitySpeed(p)) or 0.0)
 end
 
+--- The ped is home: on the mark, parked, and the entrance over.
+local function arrive()
+    walkEnded = GetGameTimer()
+
+    -- 6. ARRIVED. The walking style is cleared here because the owner asked for
+    --    it here ("On arrival, clear the walking style"), and stop() clears it
+    --    again on every other ending -- the two are not redundant, they are the
+    --    happy path and every other path.
+    walking = false
+    standOnMark()
+    -- THE CLOCK THE PARKED EMOTE RUNS ON starts here and only here: on the
+    -- ARRIVAL, not on any other ending. "once the ped is parked" means the walk
+    -- finished, not that it was abandoned halfway into a warmup.
+    parkedAt = GetGameTimer()
+    BR.LobbyPed.stop('arrived')
+end
+
 --- The whole entrance, from the black screen to the ped standing on its mark.
 --- The ped is already on its start mark when this begins -- see placeOnStart.
 --- @param mine number
 local function run(mine)
     local C = cfg()
     local ped = PlayerPedId()
+    pedAskedAt = GetGameTimer()
 
     -- 3. WAIT FOR THE MODEL. The owner called this out explicitly, and the
     --    failure it prevents is the one client/loading.lua already documents:
@@ -1442,20 +1534,67 @@ local function run(mine)
     --    curtain -- and starting the walk here is how four or five seconds of
     --    it were spent behind that cover. Bounded: a cover that never lifts
     --    costs a walk that starts anyway.
+    local readyAt = GetGameTimer()
+    pedReadyMs = readyAt - pedAskedAt
     if not awaitReveal(mine) then return end
     if token ~= mine then return end
 
-    -- ...AND AGAIN, AS THE LAST WORD BEFORE THE FIRST LEG.
+    -- ═══ A PED THAT WAS NOT READY WHEN THE CAMERA STARTED (#406) ═══
     --
-    -- The call above is the one that is guaranteed to be under cover; this one
-    -- is the one that is guaranteed to be LAST. Both are wanted: awaitReveal is
-    -- up to ten seconds long on the boot road and is the only stretch of the
-    -- entrance this file leaves unattended, and a ped that arrives at the walk
-    -- off its mark has no good outcome left -- a correction that is briefly
-    -- visible is strictly better than nineteen metres walked the wrong way with
-    -- the camera already flying. On every road where nothing went wrong it
-    -- writes the coordinates the ped is already standing on and says nothing.
-    standOnStart('with the walk already due')
+    -- Owner, 2026-10-11: "We need to solve for this by starting a timer when
+    -- we request the ped, and placing them further along that walking path
+    -- when they do spawn - that way they arrive at the same time to the final
+    -- position."
+    --
+    -- THE REQUEST IS TIMED, AND THE WALK OWES WHAT THE CAMERA FLEW WITHOUT IT.
+    -- `pedAskedAt` (the top of this function) is when the ped was asked for,
+    -- and the console says how long it took. But it is asked for under the
+    -- cover, and an on-time walk starts on the same reveal the flight does --
+    -- so a ped ready before the flight began is not behind at all, however
+    -- long it took, and walks the whole path as it always has. Counting from
+    -- the request itself would also skip the time the screen was still
+    -- covered, when no walk was due, and land the ped early.
+    --
+    -- One ready AFTER the flight began is placed where planAt says an on-time
+    -- walk would be standing now, facing along that leg, and walks the rest --
+    -- so it arrives when an on-time walk would. One ready after the camera has
+    -- landed appears on the lobby mark.
+    --
+    -- ANY PED, not only Season 2's: a Season 1 or stock ped held past the
+    -- reveal by its clipset or its dictionaries is behind the camera too.
+    local firstLeg = 1
+    if flightBegan and readyAt > flightBegan then
+        local behind = GetGameTimer() - flightBegan
+        local at = (not camLanded) and behind < plannedMs and planAt(behind) or nil
+        if not at then
+            skippedMs = plannedMs
+            print(('[br_core] lobby entrance: the ped was ready %dms after it was '
+                .. 'asked for, after the camera landed -- placed on the lobby mark')
+                :format(pedReadyMs))
+            walkBegan = GetGameTimer()
+            arrive()
+            return
+        end
+        skippedMs = behind
+        firstLeg = at.leg
+        standAlong(at)
+        print(('[br_core] lobby entrance: the ped was ready %dms after it was asked '
+            .. 'for, %dms into the flight -- placed %.1fm along the path, on leg %d')
+            :format(pedReadyMs, behind, at.meters, at.leg))
+    else
+        -- ...AND AGAIN, AS THE LAST WORD BEFORE THE FIRST LEG.
+        --
+        -- The call above is the one that is guaranteed to be under cover; this
+        -- one is the one that is guaranteed to be LAST. Both are wanted:
+        -- awaitReveal is up to ten seconds long on the boot road and is the only
+        -- stretch of the entrance this file leaves unattended, and a ped that
+        -- arrives at the walk off its mark has no good outcome left -- a
+        -- correction that is briefly visible is strictly better than nineteen
+        -- meters walked the wrong way with the camera already flying. On every
+        -- road where nothing went wrong it writes the coordinates the ped is
+        -- already standing on and says nothing.
+        standOnStart('with the walk already due')
+    end
     ped = PlayerPedId()
 
     -- 6. AND NOW IT MAY MOVE. client/natives.lua re-freezes a LOBBY ped every
@@ -1593,7 +1732,7 @@ local function run(mine)
     local function graceExpired()
         if not camLanded or not flightEnded then return false end
         local from = flightEnded
-        local due = (walkBegan or GetGameTimer()) + plannedMs + pausedMs
+        local due = (walkBegan or GetGameTimer()) + plannedMs - skippedMs + pausedMs
         if due > from then from = due end
         return (GetGameTimer() - from) > grace
     end
@@ -1603,10 +1742,12 @@ local function run(mine)
     -- mark, not the next corner.
     local forced = false
 
-    for i = 1, #path do
+    -- A late ped (#406) joins the plan on the leg it was placed on.
+    for i = firstLeg, #path do
         if token ~= mine then return end
         local n = path[i]
         local last = (i == #path)
+        local joined = skippedMs > 0 and i == firstLeg
 
         -- ═══ THE WINNER FLIPS AT THE SECOND-TO-LAST POINT ═══
         --
@@ -1615,7 +1756,10 @@ local function run(mine)
         -- to the final point" -- so the walk genuinely stops for it, and a
         -- winning return is longer than a losing one by the length of the clip.
         -- The eighteen seconds is the WALK.
-        if last and winThisRun then
+        --
+        -- NOT FOR A PED PLACED PAST THAT POINT (#406): one that joins the walk
+        -- partway along the last leg has the second-to-last point behind it.
+        if last and winThisRun and not joined then
             -- MEASURED FROM OUT HERE RATHER THAN INSIDE doFlip, so the pause is
             -- recorded even on the roads doFlip returns early on -- a missing
             -- clip, a config with no `win` entry, a dictionary that would not
@@ -1653,6 +1797,9 @@ local function run(mine)
             want = math.min(corner, legLen * 0.4)
             if want < radius then want = radius end
         end
+        -- A LEG JOINED PARTWAY (#406) hands over where the plan's does, not at
+        -- a fraction of the stretch that happened to be left of it.
+        if joined and plannedWants[i] then want = plannedWants[i] end
 
         -- AND A PED THAT HAS STOPPED SHORT IS NOT GOING TO GET CLOSER.
         --
@@ -1705,19 +1852,7 @@ local function run(mine)
     end
     if token ~= mine then return end
 
-    walkEnded = GetGameTimer()
-
-    -- 6. ARRIVED. The walking style is cleared here because the owner asked for
-    --    it here ("On arrival, clear the walking style"), and stop() clears it
-    --    again on every other ending -- the two are not redundant, they are the
-    --    happy path and every other path.
-    walking = false
-    standOnMark()
-    -- THE CLOCK THE PARKED EMOTE RUNS ON starts here and only here: on the
-    -- ARRIVAL, not on any other ending. "once the ped is parked" means the walk
-    -- finished, not that it was abandoned halfway into a warmup.
-    parkedAt = GetGameTimer()
-    BR.LobbyPed.stop('arrived')
+    arrive()
 end
 
 --- Begin. Called by the tick below, and by BR.LobbyPed.startNow.
@@ -1730,9 +1865,9 @@ local function begin()
     local first = startMark()
     local secs = 0.0
     if first then
-        blends, secs, plannedLens = blendPlan(first, path)
+        blends, secs, plannedLens, plannedStarts, plannedWants = blendPlan(first, path)
     else
-        blends, plannedLens = {}, {}
+        blends, plannedLens, plannedStarts, plannedWants = {}, {}, {}, {}
     end
     -- WHAT THE PLAN SAYS THIS DRAW SHOULD TAKE, kept so the failsafe can ask
     -- "is the ped LATE" rather than "has the camera parked". Case 2 honestly
@@ -1752,6 +1887,8 @@ local function begin()
     parkedAt = nil
     waved = false
     pausedMs = 0
+    skippedMs = 0
+    pedAskedAt, pedReadyMs = nil, nil
     emoting, emoteUntil = nil, nil
 
     -- The win is consumed rather than read: one win, one flip.
@@ -2183,6 +2320,14 @@ RegisterCommand('brlobbywalk', function()
                     (walkEnded - flightEnded) / 1000.0))
     else
         print('  last run     not measured yet')
+    end
+    -- AND HOW LONG THE PED TOOK TO ARRIVE, and what of the walk it missed for
+    -- it (#406): the number to read when a custom ped joins the walk late.
+    if pedReadyMs then
+        print(('  ped ready    %.1fs after it was asked for -- %s')
+            :format(pedReadyMs / 1000.0, skippedMs > 0
+                and ('behind the camera, %.1fs of the walk skipped'):format(skippedMs / 1000.0)
+                or 'walked the whole path'))
     end
 
     -- ═══ THE CASE THAT WAS DRAWN, AND THE SPEEDS IT DERIVED ═══
