@@ -794,7 +794,7 @@ F.onSlow(function()
     end
 end)
 
--- === brrocket: A ROCKET STANDING STILL, TUNED WITH THE KEYS (round 9) ===
+-- === brrocket: A ROCKET ON A SHORT PASS, TUNED WITH THE KEYS (round 9) ===
 --
 -- "perhaps you could give me a stationary example where I can tune the
 -- position, direction, and size of the smoke trails relative to the props,
@@ -803,10 +803,13 @@ end)
 -- we've done for other things. ... Any manual adjustment commands must allow
 -- keyboard input."                                    -- owner, 2026-10-11
 --
--- `brrocket` stands one rocket 6 m in front of you at chest height, nose along
--- your heading, drawn exactly as a strike draws one (the scaled rocket, its
--- trail on the invisible carrier); `brrocket` again puts it away and prints
--- what it came to. While it is out the keys tune it, in /brplate's shape: the
+-- `brrocket` flies one rocket across your view, 12 m in front of you, over and
+-- over, drawn exactly as a strike draws one (the scaled rocket, its trail on
+-- the invisible carrier); `brrocket` again puts it away and prints what it came
+-- to. IT FLIES BECAUSE THE TRAIL ONLY LAYS SMOKE WHILE IT MOVES: standing still
+-- (the first cut), the owner saw "the smoke isn't always drawing - seems to be
+-- one frame whenever I move it's position" -- proj_rpg_trail emits along the
+-- way its emitter travels, so a still rocket shows none. While it is out the keys tune it, in /brplate's shape: the
 -- arrows, PAGE UP/DOWN and DELETE are claimed, walking and the mouse stay
 -- yours so you can walk round it, a tap is one step and a hold is twenty a
 -- second, and the modifiers are read without being taken.
@@ -827,6 +830,11 @@ local look = {}
 local keysLoop = nil
 local nudgeAt, deleteWasDown = 0, false
 local making = false
+
+--- The pass: 12 m ahead of you, 40 m long across your view, flown left to
+--- right at 20 m/s (2 s a pass), then again from the start with a fresh trail
+--- (moved back with the old one running, it would draw smoke along the jump).
+local PASS_AHEAD_M, PASS_LENGTH_M, PASS_SPEED_MPS = 12.0, 40.0, 20.0
 
 --- The keys it reads. The arrows, the page keys and DELETE are claimed while
 --- it is out (ROCKET_BLOCKED); CTRL, ALT and SHIFT are read, never claimed.
@@ -908,6 +916,40 @@ local function sampleClear()
     sample = nil
 end
 
+--- A trail on the carrier as the look says, the asset already in.
+local function trailStart()
+    local R = rocketArt()
+    if not (sample and R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset))) then return end
+    UseParticleFxAsset(R.trailAsset)
+    local ox, oy, oz = F.trailOffsetOf(look)
+    local rx, ry, rz = F.trailRotOf(look)
+    sample.trail = StartParticleFxLoopedOnEntity(R.trail, sample.carrier, ox, oy, oz, rx, ry, rz,
+        F.trailScaleOf(look), false, false, false)
+end
+
+--- Where the pass has the rocket now, every frame: both it and its carrier
+--- moved and turned (the turn puts the matrix back to 1x, so the scale goes
+--- on after), and a fresh trail at the start of each pass.
+local function sampleFly()
+    local run = (GetGameTimer() - sample.t0) / 1000.0 * PASS_SPEED_MPS
+    local lap = math.floor(run / PASS_LENGTH_M)
+    local along = run - lap * PASS_LENGTH_M
+    if lap ~= sample.lap and sample.trail then
+        StopParticleFxLooped(sample.trail, false)
+        sample.trail = nil
+    end
+    local x, y = sample.x0 + sample.ux * along, sample.y0 + sample.uy * along
+    for _, e in ipairs({ sample.obj, sample.carrier }) do
+        SetEntityCoords(e, x, y, sample.z0, false, false, false, false)
+        aim(e, sample.ux, sample.uy, 0.0)
+    end
+    BR.Native.propScale(sample.obj, F.scaleOf(look))
+    if lap ~= sample.lap then
+        sample.lap = lap
+        trailStart()
+    end
+end
+
 --- The rocket and its trail as the look says now: turned (which puts its
 --- matrix back to 1x), then scaled, and the running trail moved, turned and
 --- sized in place rather than started again.
@@ -965,6 +1007,7 @@ local function rocketKeys()
     if not sample then return end
     for i = 1, #ROCKET_BLOCKED do DisableControlAction(0, ROCKET_BLOCKED[i], true) end
     look.model = sample.model
+    sampleFly()
     local depth, turn = held(ROCKET_KEY.DEPTH), held(ROCKET_KEY.TURN)
     local step = held(ROCKET_KEY.COARSE) and ROCKET_STEP.coarse or ROCKET_STEP.fine
     readout(depth, turn, step)
@@ -1014,7 +1057,7 @@ local function rocketKeys()
     sampleApply()
 end
 
---- Stand the rocket up as the look says. MUST be called from inside a
+--- Start the rocket's pass as the look says. MUST be called from inside a
 --- Citizen thread: the model and the trail's asset may stream in.
 local function sampleMake()
     local R = rocketArt()
@@ -1027,8 +1070,12 @@ local function sampleMake()
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
     local h = math.rad(tonumber(GetEntityHeading(ped)) or 0.0)
-    local ux, uy = -math.sin(h), math.cos(h)
-    local x, y, z = p.x + ux * 6.0, p.y + uy * 6.0, p.z + 0.6
+    -- Ahead is your heading; the pass runs to your right across it.
+    local fx, fy = -math.sin(h), math.cos(h)
+    local ux, uy = math.cos(h), math.sin(h)
+    local x = p.x + fx * PASS_AHEAD_M - ux * PASS_LENGTH_M / 2
+    local y = p.y + fy * PASS_AHEAD_M - uy * PASS_LENGTH_M / 2
+    local z = p.z + 1.0
     local obj = CreateObjectNoOffset(model, x, y, z, false, false, false)
     local carrier = CreateObjectNoOffset(model, x, y, z, false, false, false)
     if not obj or obj == 0 or not carrier or carrier == 0 then
@@ -1043,7 +1090,8 @@ local function sampleMake()
         aim(e, ux, uy, 0.0)
     end
     SetEntityVisible(carrier, false, false)
-    sample = { obj = obj, carrier = carrier, model = model, ux = ux, uy = uy }
+    sample = { obj = obj, carrier = carrier, model = model, ux = ux, uy = uy,
+               x0 = x, y0 = y, z0 = z, t0 = GetGameTimer(), lap = 0 }
     look.model = model
     BR.Native.propScale(obj, F.scaleOf(look))
     local waited = 0
@@ -1052,15 +1100,10 @@ local function sampleMake()
         waited = waited + 50
     end
     if not sample or sample.obj ~= obj then return end   -- put away while it waited
-    if R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) then
-        UseParticleFxAsset(R.trailAsset)
-        local ox, oy, oz = F.trailOffsetOf(look)
-        local rx, ry, rz = F.trailRotOf(look)
-        sample.trail = StartParticleFxLoopedOnEntity(R.trail, carrier, ox, oy, oz, rx, ry, rz,
-            F.trailScaleOf(look), false, false, false)
-    end
+    sample.t0 = GetGameTimer()
+    trailStart()
     keysLoop = BR.Loop.register(BR.Loop.FRAME, 'terminalfx.rocketkeys', rocketKeys)
-    print('[br_core] brrocket: a rocket 6 m in front of you. The keys:')
+    print('[br_core] brrocket: a rocket flying a pass 12 m in front of you, again and again. The keys:')
     print('  LEFT / RIGHT             trail across the rocket (x)')
     print('  UP / DOWN                trail along it (y)')
     print('  CTRL + UP / DOWN         trail up and down (z)')

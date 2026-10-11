@@ -1998,7 +1998,12 @@ function PlaySoundFromCoord(_, name, x, y, z)
     fxCalls.sounds[#fxCalls.sounds + 1] = { name = name, x = x, y = y, z = z }
 end
 function ShakeGameplayCam(name, k) fxCalls.shakes[#fxCalls.shakes + 1] = { name = name, k = k } end
-function SetEntityRotation(e, p, r, y) fxCalls.rotations[e] = { p = p, y = y } end
+-- A rotation write rebuilds the matrix at 1x, as the game does: a scaled prop
+-- must be scaled again after every turn (BR.Native.propScale's contract).
+function SetEntityRotation(e, p, r, y)
+    fxCalls.rotations[e] = { p = p, y = y }
+    if C.ents[e] then C.ents[e].scale = nil end
+end
 local controlled, vehHealth = {}, {}
 function NetworkHasControlOfEntity(e) return controlled[e] == true end
 function NetworkExplodeVehicle(e) fxCalls.explode[#fxCalls.explode + 1] = e end
@@ -2279,6 +2284,12 @@ do
         advance(50, 50)
     end
     local BACK = -0.15 * RA.scale
+    --- The trail the rocket flies with right now (a fresh one each pass).
+    local function trailNow()
+        local smp = F.rocketSample()
+        for _, l in ipairs(fxCalls.looped) do if smp and l.h == smp.trail then return l end end
+        return nil
+    end
     ok(commands.brrocket ~= nil, 'brrocket is a command')
     local loopsBefore = frameLoops()
     commands.brrocket(0, {})
@@ -2287,9 +2298,24 @@ do
     local so = sm and C.ents[sm.obj]
     local sc = sm and C.ents[sm.carrier]
     ok(so and so.scale == RA.scale and so.visible ~= false, 'brrocket: a rocket at the art\'s size')
-    ok(so and math.abs(so.y - 6.0) < 1e-9 and math.abs(so.x - 10.0) < 1e-9, '6 m in front of you')
+    -- THE PASS (owner: "the smoke isn't always drawing - seems to be one frame
+    -- whenever I move it's position"): the trail lays smoke only while it
+    -- moves, so the rocket flies 40 m across your view, 12 m ahead, at 20 m/s.
+    local tl = trailNow()
+    ok(so and math.abs(so.y - 12.0) < 1e-9 and math.abs(so.x - (10.0 - 20.0)) < 1e-9 and math.abs(so.z - 21.0) < 1e-9,
+        'it starts 12 m in front of you, 20 m to your left', so and so.x)
+    advance(500, 50)
+    ok(math.abs(so.x - 0.0) < 1e-9 and math.abs(so.y - 12.0) < 1e-9, 'and flies right at 20 m/s: 10 m in half a second', so.x)
+    ok(sc.x == so.x and sc.y == so.y and sc.z == so.z, 'its twin with it, every frame')
+    ok(so.scale == RA.scale, 'still at its size in flight')
+    ok(trailNow() == tl, 'one trail for the whole pass')
+    advance(1500, 50)
+    ok(math.abs(so.x - (10.0 - 20.0)) < 1e-9, 'at the end of 40 m it starts the pass again', so.x)
+    ok(fxCalls.stoppedSet[tl.h] and trailNow() ~= nil and trailNow() ~= tl and trailNow().ent == sm.carrier,
+        'with a fresh trail on the twin, the old one let go (no smoke drawn back along the jump)')
+    tl = trailNow()
     ok(sc and sc.visible == false and sc.scale == nil and sc.x == so.x, 'its invisible twin at 1x, in the same place')
-    local tl = fxCalls.looped[#fxCalls.looped]
+    tl = trailNow()
     ok(tl and tl.ent == sm.carrier and tl.scale == RA.trailScale and math.abs(tl.off[2] - BACK) < 1e-9,
         'its trail on the twin, at the art\'s size, at the back of the rocket')
     eq(frameLoops(), loopsBefore + 1, 'one FRAME callback for the keys while it is out')
@@ -2300,7 +2326,7 @@ do
     hold({ RK.RIGHT })
     ok(lk.toff and lk.toff[1] == 0.01 and math.abs(lk.toff[2] - BACK) < 1e-9 and lk.toff[3] == 0.0,
         'RIGHT, tapped: the trail 1 cm to the rocket\'s right, the rest where it was')
-    ok(#fxCalls.looped == starts and tl.off[1] == 0.01, 'the running trail moved in place, not started again')
+    ok(#fxCalls.looped == starts and trailNow() == tl and tl.off[1] == 0.01, 'the running trail moved in place, not started again')
     hold({ RK.SHIFT, RK.UP }, 1000, 25)
     ok(math.abs(lk.toff[2] - (BACK + 2.0)) < 1e-9,
         ('SHIFT + UP held a second at 40 fps: 20 steps of 10 cm toward the nose (y %.3f)'):format(lk.toff[2]))
@@ -2309,7 +2335,7 @@ do
     hold({ RK.CTRL, RK.UP })
     ok(lk.toff[3] == 0.01 and math.abs(lk.toff[2] - BACK) < 1e-9, 'CTRL + UP: up 1 cm, not along')
     hold({ RK.LEFT })
-    ok(lk.toff[1] == 0.0 and tl.off[1] == 0.0 and tl.off[3] == 0.01, 'LEFT: back across, and the trail with it')
+    ok(lk.toff[1] == 0.0 and trailNow().off[1] == 0.0 and trailNow().off[3] == 0.01, 'LEFT: back across, and the trail with it')
 
     -- ALT TURNS IT.
     hold({ RK.ALT, RK.UP })
@@ -2317,7 +2343,7 @@ do
     hold({ RK.ALT, RK.CTRL, RK.UP })
     ok(lk.trot and lk.trot[1] == 1.0 and lk.trot[2] == 1.0 and lk.trot[3] == 1.0,
         'ALT + UP pitch, ALT + RIGHT yaw, ALT + CTRL + UP roll: a degree each')
-    ok(tl.rot[1] == 1.0 and tl.rot[2] == 1.0 and tl.rot[3] == 1.0, 'the running trail turned in place')
+    ok(trailNow().rot[1] == 1.0 and trailNow().rot[2] == 1.0 and trailNow().rot[3] == 1.0, 'the running trail turned in place')
     ok(lk.toff[1] == 0.0 and lk.toff[3] == 0.01, 'and turning it does not move it')
     hold({ RK.ALT, RK.SHIFT, RK.LEFT }, 1000)
     ok(lk.trot[3] >= -180.0 and lk.trot[3] <= 180.0 and math.abs(lk.trot[3] - (1.0 - 300.0 + 360.0)) < 1e-9,
@@ -2325,7 +2351,7 @@ do
 
     -- THE PAGE KEYS SIZE IT.
     hold({ RK.PGUP })
-    ok(math.abs(lk.trailScale - (RA.trailScale + 0.1)) < 1e-9 and math.abs(tl.scale - lk.trailScale) < 1e-9,
+    ok(math.abs(lk.trailScale - (RA.trailScale + 0.1)) < 1e-9 and math.abs(trailNow().scale - lk.trailScale) < 1e-9,
         'PAGE UP: the trail a tenth bigger, in place')
     hold({ RK.CTRL, RK.PGDN })
     ok(math.abs(lk.scale - (RA.scale - 0.1)) < 1e-9 and math.abs(so.scale - lk.scale) < 1e-9,
@@ -2354,6 +2380,7 @@ do
     hold({ RK.DEL })
     sm, lk = F.rocketSample()
     ok(lk.toff == nil and lk.trot == nil and lk.scale == nil and lk.trailScale == nil, 'DELETE: the art\'s numbers back')
+    tl = trailNow()
     ok(tl.scale == RA.trailScale and math.abs(tl.off[2] - BACK) < 1e-9 and tl.rot[3] == 0.0 and so.scale == RA.scale,
         'and the rocket and its trail with them')
     keyDown = { [RK.DEL] = true, [RK.PGUP] = true }
@@ -2364,11 +2391,18 @@ do
     ok(math.abs((lk.trailScale or 0) - (RA.trailScale + 0.2)) < 1e-9,
         'DELETE held is one reset, not one a frame (PAGE UP held with it counts twice)', lk.trailScale)
 
+    -- A NEW PASS STARTS ITS TRAIL AS THE LOOK IS NOW.
+    hold({ RK.CTRL, RK.UP })
+    advance(2000, 50)
+    ok(trailNow() ~= tl and trailNow().off[3] == 0.01 and math.abs(trailNow().scale - (RA.trailScale + 0.2)) < 1e-9,
+        'the next pass trail starts where the keys left it')
+    tl = trailNow()
+
     -- PUT AWAY: the line, and everything gone.
     logs = {}
     commands.brrocket(0, {})
     local said = table.concat(logs, '\n')
-    ok(said:find(('brterminal run airstrike scale=%g trail=%g toff=0,%g,0 trot=0,0,0')
+    ok(said:find(('brterminal run airstrike scale=%g trail=%g toff=0,%g,0.01 trot=0,0,0')
         :format(RA.scale, RA.trailScale + 0.2, BACK), 1, true) ~= nil, 'brrocket again: the line that fires it', said)
     ok(said:find('trailOffset = {', 1, true) ~= nil, 'and the config to paste')
     ok(F.rocketSample() == nil and not so.alive and not sc.alive and fxCalls.stoppedSet[tl.h], 'the rocket, twin and trail gone')
