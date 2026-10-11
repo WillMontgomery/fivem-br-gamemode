@@ -332,7 +332,32 @@ export type Step = {
    * without the list needing to know how navigation is done.
    */
   screen?: string
+  /**
+   * The only lobby controls that answer while this card is up (#405).
+   *
+   * EVERY LOBBY STEP SAYS WHAT IS LIVE, and tutorial/lock.ts is the one place
+   * that reads it. A name is a `data-tut` anchor and covers everything inside
+   * it, so `page-settings` is the whole Settings screen. Absent means every
+   * control answers. The card's own buttons are never locked: the walkthrough
+   * draws outside the screens a lock reaches.
+   */
+  live?: string[]
+  /**
+   * Controls locked even inside `live`, or everywhere when `live` is absent.
+   * Owner, 2026-10-11: "When they get to step 4, lock the Save and Cancel
+   * buttons."
+   */
+  locked?: string[]
 }
+
+/**
+ * The Settings tabs, by anchor. A card on one tab locks the other two: a tab
+ * switched under it takes its control off the screen, and a card whose control
+ * has gone ends the whole walkthrough (see `missing` in TutorialLayer).
+ */
+const SETTINGS_TABS = ['settings-tab-general', 'settings-tab-controls', 'settings-tab-accessibility']
+/** Save and Cancel, which close Settings and so are the card's way out. */
+const SETTINGS_EXITS = ['settings-save', 'settings-cancel']
 
 /**
  * PLACEHOLDER PROSE, AND IT IS MARKED AS SUCH ON PURPOSE.
@@ -348,6 +373,20 @@ export type Step = {
  *
  * See the issue comment on #261 for the list handed to him.
  */
+/*
+ * ═══ WHAT IS LIVE ON EACH CARD (#405) ═══
+ *
+ * Owner, 2026-10-11, the whole of it: from step 2 every button is disabled
+ * except the one the card wants pressed (and the card's own Previous); Save and
+ * Cancel stay locked through the Settings cards until step 11 is done; Back on
+ * Help is locked while the page is described; and on the last card everything
+ * comes back except Ready up, which the walkthrough ending releases. Every
+ * `live` and `locked` below is that, card by card -- tutorial/lock.ts applies
+ * it and scripts/test-tutorial-lock.mjs pins it.
+ *
+ * THE FIRST CARD LOCKS EVERYTHING TOO. On that card the only option in focus
+ * is its own Next.
+ */
 export const LOBBY_STEPS: Step[] = [
   {
     id: 'welcome',
@@ -355,6 +394,7 @@ export const LOBBY_STEPS: Step[] = [
     title: 'Welcome to Blitz Royale',
     body: 'This is the lobby. Everything you do between matches happens on this screen, and this walkthrough covers all of it.',
     advance: 'next',
+    live: [],
   },
   {
     id: 'mode',
@@ -367,6 +407,7 @@ export const LOBBY_STEPS: Step[] = [
     title: 'Solo or Squads',
     body: '**Solo** is one life against everybody. Pick **Squads** - you are put in a team of up to four who can revive each other, and the party controls appear so you can bring friends in with you.',
     advance: 'click',
+    live: ['mode-squad'],
   },
 
   // ═══ SETTINGS ═══
@@ -376,6 +417,7 @@ export const LOBBY_STEPS: Step[] = [
     title: 'Make it yours first',
     body: 'Open **Settings**. Before anything else it is worth making the game fit your screen and your ears.',
     advance: 'click',
+    live: ['settings'],
   },
   {
     id: 'settings-uiscale',
@@ -384,6 +426,8 @@ export const LOBBY_STEPS: Step[] = [
     body: 'This scales every panel in the game. Drag it and let go - *watch this card resize with it*.',
     advance: 'click',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
   {
     id: 'settings-textscale',
@@ -392,6 +436,8 @@ export const LOBBY_STEPS: Step[] = [
     body: 'This scales the words on their own, on top of the interface size. Set both so you can read a toast without leaning in.',
     advance: 'click',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
   {
     id: 'settings-display',
@@ -400,6 +446,8 @@ export const LOBBY_STEPS: Step[] = [
     body: "Resolution, fullscreen and the graphics quality are the *game's own* settings, not ours - this panel points you at where GTA keeps them. Nothing to change here.",
     advance: 'next',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
   {
     id: 'settings-volui',
@@ -408,6 +456,8 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Interface sounds are the clicks and cues these menus make. Drag it and let go to set them.',
     advance: 'click',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
   {
     id: 'settings-voice',
@@ -417,6 +467,8 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Voice chat is set separately for **solos** and **squads**, so you can hear your team without hearing strangers. You can change your input/output settings here as well.',
     advance: 'next',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
   {
     id: 'settings-controls',
@@ -425,6 +477,8 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Open **Controls**.',
     advance: 'click',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, 'settings-tab-general', 'settings-tab-accessibility'],
   },
   {
     id: 'settings-controls-body',
@@ -434,6 +488,8 @@ export const LOBBY_STEPS: Step[] = [
     body: 'This is every key the game uses and what it does. Click any row to rebind it, and anything you change is yours from the next match on.',
     advance: 'next',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
   {
     id: 'settings-accessibility',
@@ -442,14 +498,22 @@ export const LOBBY_STEPS: Step[] = [
     body: 'And **Accessibility** has color-blind modes, with a preview so you can see the difference before you commit to it.',
     advance: 'click',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: [...SETTINGS_EXITS, 'settings-tab-general', 'settings-tab-controls'],
   },
   {
+    // SAVE UNLOCKS HERE, AND ONLY SAVE. Owner: "Unlock the save button only
+    // after the completion of step 11." Cancel stays locked: it closes Settings
+    // too, and a card waiting on Save behind a closed Settings would wait for a
+    // screen the locked lobby cannot reopen.
     id: 'settings-done',
     target: 'settings-save',
     title: 'That is Settings',
     body: 'Press **Save** to keep your changes and close this screen.',
     advance: 'click',
     screen: 'settings',
+    live: ['page-settings'],
+    locked: ['settings-cancel'],
   },
 
   // ═══ THE LOBBY'S OTHER DOORS ═══
@@ -459,6 +523,7 @@ export const LOBBY_STEPS: Step[] = [
     title: 'Your character',
     body: 'Open the **Locker**.',
     advance: 'click',
+    live: ['locker'],
   },
   {
     id: 'locker-inside',
@@ -467,6 +532,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Pick the character you want to drop in as. It is how other players see you and nothing more. Press **Done** when you are ready.',
     advance: 'click',
     screen: 'locker',
+    live: ['page-locker'],
   },
   {
     id: 'market',
@@ -474,6 +540,7 @@ export const LOBBY_STEPS: Step[] = [
     title: 'Spending Volts',
     body: "Volts are the currency of the game. You can use them to buy things within the game, or within the **Market**, where you'll find cosmetics.",
     advance: 'click',
+    live: ['market'],
   },
   {
     id: 'help',
@@ -481,6 +548,7 @@ export const LOBBY_STEPS: Step[] = [
     title: 'The manual',
     body: 'Open **Help**.',
     advance: 'click',
+    live: ['help'],
   },
   {
     id: 'help-inside',
@@ -490,6 +558,10 @@ export const LOBBY_STEPS: Step[] = [
     body: 'The player guide lives here and explains every system in the game. There is a button to copy its link if you would rather read it in a browser, and a link to our **Discord** where you can connect with the Blitz community.',
     advance: 'next',
     screen: 'help',
+    // BACK IS LOCKED WHILE THE PAGE IS DESCRIBED. Owner: "Lock the Back button
+    // during step 17, and unlock it once they've progressed to step 18."
+    live: ['page-help'],
+    locked: ['help-back'],
   },
   {
     id: 'help-back',
@@ -502,6 +574,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Press **Back** when you are done reading.',
     advance: 'click',
     screen: 'help',
+    live: ['page-help'],
   },
   {
     id: 'ready',
@@ -513,6 +586,10 @@ export const LOBBY_STEPS: Step[] = [
     // second half; this is the only card that says the Volts depend on it.
     body: 'That covers the lobby. Leave **Continue tutorial into the first match** switched on and finish it in game to earn your **500 Volts** - the reward is only paid for the whole thing.',
     advance: 'dismiss',
+    // EVERYTHING BACK BUT READY UP. Owner: "When they get to step 19 all buttons
+    // should be unlocked, except ready up which requires 19 to be completed."
+    // Dismissing this card ends the run, and the run ending is what releases it.
+    locked: ['ready'],
   },
 ]
 

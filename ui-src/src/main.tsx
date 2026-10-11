@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { HeroUIProvider } from '@heroui/react'
 import App from './App'
 import { installErrorSinks, isBrowser, reportEnvironment } from './bridge/nui'
+import { installLockGuard } from './tutorial/lockGuard'
 
 // FONTS, SELF-HOSTED. Never a CDN: CEF has no network on a cold boot, and a
 // font that fails to arrive is worse than one that was never asked for -- it
@@ -50,6 +51,12 @@ import './index.css'
 // case where a blank screen with no console output is most likely, and this is
 // what turns that into a line in the F8 console and the server log.
 installErrorSinks()
+
+// The walkthrough's keyboard locks (#405), BEFORE ANY SCREEN MOUNTS: four
+// screens close on Escape from their own capture listeners on `window`, and the
+// only listener that runs ahead of all of them is one added before them. See
+// tutorial/lockGuard.ts.
+installLockGuard()
 
 // Report what this CEF build can actually render. Colour functions in
 // particular differ enough between CEF versions to make a correct stylesheet

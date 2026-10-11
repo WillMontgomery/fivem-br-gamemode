@@ -95,8 +95,13 @@ export default function Page({
   // `.page` makes the wrapper the viewport rect itself, so a fixed child
   // resolves to exactly the box it would have had anyway. The transform stays
   // and the children never learn about any of this.
+  //
+  // `data-tut` NAMES THE WHOLE SCREEN for the walkthrough's locks (#405): a card
+  // that leaves a screen live names `page-settings`, `page-locker` and so on,
+  // and tutorial/lock.ts reads it like any other anchor.
   return (
-    <div ref={ref} data-page={name} className={`page ${show ? (stuck ? 'page-shown' : 'page-in') : 'page-out'}`}>
+    <div ref={ref} data-page={name} data-tut={`page-${name}`}
+         className={`page ${show ? (stuck ? 'page-shown' : 'page-in') : 'page-out'}`}>
       {held.current}
     </div>
   )

@@ -24,6 +24,7 @@ import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
 import TutorialLayer from './tutorial/TutorialLayer'
+import TutorialLock from './tutorial/TutorialLock'
 import YubikeyCard from './tutorial/YubikeyCard'
 import { GAME_STEPS } from './tutorial/gameSteps'
 import { DECLINE_STEPS } from './tutorial/steps'
@@ -903,6 +904,10 @@ export default function App() {
         />
       )}
 
+      {/* THE LOBBY'S LOCKS (#405): every control the card is not about is
+          disabled for as long as the lobby walkthrough runs. Data on each step,
+          drawn as one style sheet -- see tutorial/lock.ts. */}
+      {tutorialRun && <TutorialLock />}
       {tutorialRun && (
         <TutorialLayer
           screen={focus}
@@ -919,6 +924,7 @@ export default function App() {
           }}
           onAbandon={() => { const s = dispatch(); s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
           onStep={(id) => dispatch().setTutorialStep(id)}
+          onHeading={(id) => dispatch().setTutorialHeading(id)}
         />
       )}
       </div>

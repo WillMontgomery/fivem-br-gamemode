@@ -2291,6 +2291,76 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R29  The lobby walkthrough's locks are on the page (#405).
+//
+// Owner, 2026-10-11: from step 2, every button but the one the card wants
+// pressed is disabled, card by card down the lobby half. The data is on each
+// step and scripts/test-tutorial-lock.mjs pins it against tutorial/lock.ts; only
+// this can see the rule reach the page:
+//
+//   NOT DRAWN -- App.tsx stops mounting <TutorialLock /> while the lobby run is
+//     up, or it stops rendering `lockCss(...)`, so no control is ever locked;
+//   NOT FOLLOWED -- the lobby layer stops passing `onHeading` to the store, so
+//     the lock never leaves step 1;
+//   NOT GUARDED -- main.tsx stops calling installLockGuard() before the first
+//     render, so Escape closes a screen a card is waiting on and a key presses a
+//     locked control;
+//   NOT NAMED -- a sub-screen's wrapper loses `data-tut={`page-${name}`}`, or
+//     Cancel loses `settings-cancel`, so a step's `live` or `locked` names an
+//     anchor that is no longer there.
+//
+// IT CAN FAIL. Delete `{tutorialRun && <TutorialLock />}`, the `onHeading=`
+// prop, the installLockGuard() call, or the span around Cancel.
+// ---------------------------------------------------------------------------
+{
+  const A = join(SRC, 'App.tsx')
+  const M = join(SRC, 'main.tsx')
+  const T = join(SRC, 'tutorial', 'TutorialLock.tsx')
+  const P = join(SRC, 'ui', 'Page.tsx')
+  const S = join(SRC, 'screens', 'Settings.tsx')
+  if (![A, M, T, P, S].every((f) => existsSync(f))) {
+    fail('R29 tutorial-lock', 'src',
+      'App.tsx, main.tsx, tutorial/TutorialLock.tsx, ui/Page.tsx or screens/Settings.tsx'
+      + ' is missing. If they moved, move this rule with them (#405).')
+  } else {
+    const app = stripComments(read(A))
+    if (!/\{\s*tutorialRun\s*&&\s*<TutorialLock\s*\/>\s*\}/.test(app)) {
+      fail('R29 tutorial-lock', 'src/App.tsx',
+        'App no longer mounts `{tutorialRun && <TutorialLock />}`. Without it no lobby'
+        + ' control is ever locked to the card (#405).')
+    }
+    if (!/onHeading=\{\(id\)\s*=>\s*dispatch\(\)\.setTutorialHeading\(id\)\}/.test(app)) {
+      fail('R29 tutorial-lock', 'src/App.tsx',
+        'the lobby TutorialLayer no longer passes'
+        + ' `onHeading={(id) => dispatch().setTutorialHeading(id)}`. The locks follow'
+        + ' the card through it (#405).')
+    }
+    if (!/lockCss\(/.test(stripComments(read(T)))) {
+      fail('R29 tutorial-lock', 'src/tutorial/TutorialLock.tsx',
+        'TutorialLock no longer renders `lockCss(...)`, the one rule in tutorial/lock.ts (#405).')
+    }
+    const main = stripComments(read(M))
+    const guard = main.indexOf('installLockGuard()')
+    const render = main.indexOf('createRoot(')
+    if (guard < 0 || render < 0 || guard > render) {
+      fail('R29 tutorial-lock', 'src/main.tsx',
+        'installLockGuard() is not called before createRoot(. Escape is held for a'
+        + ' walkthrough screen only by a listener added ahead of every screen\'s own (#405).')
+    }
+    if (!/data-tut=\{`page-\$\{name\}`\}/.test(stripComments(read(P)))) {
+      fail('R29 tutorial-lock', 'src/ui/Page.tsx',
+        'the Page wrapper lost `data-tut={`page-${name}`}`. A step names a whole'
+        + ' screen as live by it (#405).')
+    }
+    if (!/data-tut="settings-cancel"/.test(stripComments(read(S)))) {
+      fail('R29 tutorial-lock', 'src/screens/Settings.tsx',
+        'Cancel is no longer inside `data-tut="settings-cancel"`, which the Settings'
+        + ' cards lock until step 11 is done (#405).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

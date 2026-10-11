@@ -305,6 +305,12 @@ export type TutorialLayerProps = {
   /** Which step is on screen, by id. The lobby reads it -- see the store. */
   onStep?: (id: string | null) => void
   /**
+   * Which step the walkthrough is on OR ON ITS WAY TO, by id, published the
+   * moment a move is asked for rather than when the next card is built (#405).
+   * The lobby's locks follow it -- see `tutorialHeading` in the store.
+   */
+  onHeading?: (id: string | null) => void
+  /**
    * Are these cards driven by the arrow keys rather than by a cursor?
    *
    * TRUE FOR THE IN-GAME HALF ONLY. It takes no NUI focus -- so there is no
@@ -647,6 +653,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       // `go` every step -- and `go` is captured by half a dozen effects whose own
       // deps include it, so each of those would re-run on every advance too.
       const leaving = steps[iRef.current]
+      // THE LOCKS MOVE ON THE PRESS. See `onHeading`.
+      onHeadingRef.current?.(to >= 0 && to < steps.length ? steps[to]!.id : null)
       if (leaving?.onLeave) {
         void fetchNui(leaving.onLeave.cb, leaving.onLeave.data ?? {})
       }
@@ -700,6 +708,14 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     onStepRef.current?.(step?.id ?? null)
     return () => onStepRef.current?.(null)
   }, [step])
+  // ...AND WHERE IT IS HEADING, which `go` moves first. Said again for every
+  // card, so the first card and a card reached any other way are heading-true
+  // too; cleared only when the layer goes. A ref, like `onDoneRef`, because `go`
+  // is built once and reads it.
+  const onHeadingRef = useRef(p.onHeading)
+  onHeadingRef.current = p.onHeading
+  useEffect(() => { onHeadingRef.current?.(step?.id ?? null) }, [step])
+  useEffect(() => () => onHeadingRef.current?.(null), [])
 
   // ── the staged demonstration ────────────────────────────────────────────
   //

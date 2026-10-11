@@ -283,6 +283,15 @@ export interface UiState {
    * the id is the only thing that names it.
    */
   tutorialStep: string | null
+  /**
+   * The lobby card the walkthrough is on, or on its way to, by id (#405).
+   *
+   * THE LOCKS FOLLOW THIS, NOT `tutorialStep`. A card leaves on a 180ms exit
+   * before the next one is built, and the press that ended it has usually opened
+   * a screen already -- so a lock keyed to the card on screen would draw that
+   * screen dimmed for the length of the exit. This moves on the press.
+   */
+  tutorialHeading: string | null
   /** The in-game tutorial's own toggle. On by default, like the first. */
   tutorialGameOn: boolean
   /**
@@ -488,6 +497,7 @@ export interface UiState {
   setTutorialOffer: (v: boolean) => void
   setTutorialChecked: (v: boolean) => void
   setTutorialStep: (v: string | null) => void
+  setTutorialHeading: (v: string | null) => void
   setTutorialGameOn: (v: boolean) => void
   setTutorialGameArmed: (v: boolean) => void
   setTutorialGameStep: (id: string | null) => void
@@ -888,6 +898,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialOffer: false,
   tutorialChecked: true,
   tutorialStep: null,
+  tutorialHeading: null,
   tutorialGameOn: true,
   tutorialGameArmed: false,
   tutorialGameStep: null,
@@ -1013,6 +1024,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialOffer: (tutorialOffer) => set({ tutorialOffer }),
   setTutorialChecked: (tutorialChecked) => set({ tutorialChecked }),
   setTutorialStep: (tutorialStep) => set({ tutorialStep }),
+  setTutorialHeading: (tutorialHeading) => set({ tutorialHeading }),
   setTutorialGameOn: (tutorialGameOn) => set({ tutorialGameOn }),
   setTutorialGameArmed: (tutorialGameArmed) => set({ tutorialGameArmed }),
   setTutorialGameStep: (tutorialGameStep) => set({ tutorialGameStep }),

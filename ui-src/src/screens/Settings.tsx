@@ -1012,9 +1012,13 @@ export default function Settings({
               {saving ? 'Saving…' : 'Save'}
             </Btn>
           </span>
-          <Btn variant="default" size="lg" cue="ui.back" onPress={cancel}>
-            Cancel
-          </Btn>
+          {/* data-tut: the walkthrough locks Cancel with Save until its Settings
+              cards are done (#405). */}
+          <span data-tut="settings-cancel" className="inline-block">
+            <Btn variant="default" size="lg" cue="ui.back" onPress={cancel}>
+              Cancel
+            </Btn>
+          </span>
         </div>
     </>
   )
