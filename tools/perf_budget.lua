@@ -121,7 +121,7 @@ return {
         { id = "s1-noload/match spectate", natives = 158.383, draws = 40.000, kb = 0.840, heavy = 82.000, vm = 12379 },
         { id = "s1-noload/match terminal", natives = 133.618, draws = 41.000, kb = 0.546, heavy = 22.400, vm = 12490 },
         { id = "s2-sky/match vehicle drop", natives = 146.923, draws = 41.000, kb = 1.051, heavy = 145.900, vm = 13161 },
-        { id = "s2-sky/match airstrike", natives = 154.462, draws = 41.000, kb = 0.847, heavy = 439.400, vm = 13926 },
+        { id = "s2-sky/match airstrike", natives = 161.413, draws = 41.000, kb = 0.850, heavy = 855.100, vm = 14119 },
         { id = "s2-custom/lobby", natives = 60.573, draws = 0.000, kb = 0.412, heavy = 17.300, vm = 5830 },
         { id = "s2-custom/warmup", natives = 102.068, draws = 4.000, kb = 0.316, heavy = 6.800, vm = 7726 },
         { id = "s2-custom/plane boarding", natives = 79.623, draws = 0.000, kb = 0.286, heavy = 20.700, vm = 7317 },

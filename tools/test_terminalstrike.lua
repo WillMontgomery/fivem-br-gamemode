@@ -1969,6 +1969,23 @@ function SetEntityVisible(e, v) if C.ents[e] then C.ents[e].visible = v end end
 -- A rocket model's box: 0.3 m long, its back 0.15 m behind its origin.
 function GetModelDimensions() return { x = -0.05, y = -0.15, z = -0.05 }, { x = 0.05, y = 0.15, z = 0.05 } end
 function GetEntityHeading() return 0.0 end
+-- brrocket's keys (round 9): what is held, what is claimed, the readout,
+-- and the running trail moved and sized in place.
+keyDown, keyClaims, textDrawn = {}, {}, 0
+function IsDisabledControlPressed(_, id) return keyDown[id] == true end
+function DisableControlAction(_, id) keyClaims[id] = (keyClaims[id] or 0) + 1 end
+for _, n in ipairs({ 'SetTextFont', 'SetTextScale', 'SetTextColour', 'SetTextDropshadow', 'SetTextEdge',
+                     'SetTextDropShadow', 'SetTextOutline', 'BeginTextCommandDisplayText',
+                     'AddTextComponentSubstringPlayerName' }) do
+    _G[n] = function() end
+end
+function EndTextCommandDisplayText() textDrawn = textDrawn + 1 end
+function SetParticleFxLoopedOffsets(h, x, y, z, rx, ry, rz)
+    for _, l in ipairs(fxCalls.looped) do if l.h == h then l.off = { x, y, z }; l.rot = { rx, ry, rz } end end
+end
+function SetParticleFxLoopedScale(h, k)
+    for _, l in ipairs(fxCalls.looped) do if l.h == h then l.scale = k end end
+end
 function SetParticleFxLoopedFarClipDist(h, d)
     for _, l in ipairs(fxCalls.looped) do if l.h == h then l.farClip = d end end
 end
@@ -2239,9 +2256,11 @@ do
     ok(d.off and math.abs(d.off[2] - (-0.15 * RA.scale)) < 1e-9 and d.rot and d.rot[1] == 0.0,
         'a place past 50 m or a turn that is not a number is ignored')
 
-    -- brrocket: ONE ROCKET STANDING STILL, TO TUNE ITS TRAIL BY EYE.
+    -- brrocket: ONE ROCKET STANDING STILL, TUNED WITH THE KEYS.
     -- "perhaps you could give me a stationary example where I can tune the
     -- position, direction, and size of the smoke trails relative to the props"
+    -- and "instead of so many commands and args, we use keyboard keys ... Any
+    -- manual adjustment commands must allow keyboard input" (owner, 2026-10-11).
     resetWorld()
     W.me = { x = 10.0, y = 0.0, z = 20.0 }
     for k in pairs(C.ents) do C.ents[k] = nil end
@@ -2249,36 +2268,126 @@ do
     logs = {}
     local wasDev = devBox
     devBox = true
+    local RK = { UP = 172, DOWN = 173, LEFT = 174, RIGHT = 175, PGUP = 10, PGDN = 11,
+                 DEL = 178, CTRL = 36, ALT = 19, SHIFT = 21 }
+    --- `keys` held for `ms` (frames `frame` ms apart), then let go for a frame.
+    local function hold(keys, ms, frame)
+        keyDown = {}
+        for _, k in ipairs(keys) do keyDown[k] = true end
+        advance(ms or 50, frame or 50)
+        keyDown = {}
+        advance(50, 50)
+    end
+    local BACK = -0.15 * RA.scale
     ok(commands.brrocket ~= nil, 'brrocket is a command')
-    commands.brrocket(0, { 'scale=10', 'trail=4', 'toff=0,-1.5,0.2', 'trot=0,0,180' })
+    local loopsBefore = frameLoops()
+    commands.brrocket(0, {})
     runThreads()
-    local sm = F.rocketSample()
+    local sm, lk = F.rocketSample()
     local so = sm and C.ents[sm.obj]
     local sc = sm and C.ents[sm.carrier]
-    ok(so and so.scale == 10.0 and so.visible ~= false, 'a rocket at 10x')
+    ok(so and so.scale == RA.scale and so.visible ~= false, 'brrocket: a rocket at the art\'s size')
     ok(so and math.abs(so.y - 6.0) < 1e-9 and math.abs(so.x - 10.0) < 1e-9, '6 m in front of you')
     ok(sc and sc.visible == false and sc.scale == nil and sc.x == so.x, 'its invisible twin at 1x, in the same place')
     local tl = fxCalls.looped[#fxCalls.looped]
-    ok(tl and tl.ent == sm.carrier and tl.scale == 4.0 and tl.off[2] == -1.5 and tl.off[3] == 0.2 and tl.rot[3] == 180.0,
-        'its trail on the twin, at 4x, where toff and trot say')
-    local said = logs[#logs] or ''
-    ok(said:find('brterminal run airstrike scale=10 trail=4 toff=0,-1.5,0.2 trot=0,0,180', 1, true) ~= nil,
-        'and the line that fires a strike drawn the same way', said)
-    local first = tl.h
-    commands.brrocket(0, { 'trail=6' })
-    runThreads()
-    tl = fxCalls.looped[#fxCalls.looped]
-    ok(fxCalls.stoppedSet[first] and tl.scale == 6.0 and tl.off[2] == -1.5 and F.rocketSample().obj == sm.obj,
-        'a change keeps the rest and the same rocket, the old trail stopped')
+    ok(tl and tl.ent == sm.carrier and tl.scale == RA.trailScale and math.abs(tl.off[2] - BACK) < 1e-9,
+        'its trail on the twin, at the art\'s size, at the back of the rocket')
+    eq(frameLoops(), loopsBefore + 1, 'one FRAME callback for the keys while it is out')
+    ok((logs[#logs] or ''):find('`brrocket` again puts it away', 1, true) ~= nil, 'the keys are printed', logs[#logs])
+    local starts = #fxCalls.looped
+
+    -- THE ARROWS MOVE THE TRAIL, IN PLACE.
+    hold({ RK.RIGHT })
+    ok(lk.toff and lk.toff[1] == 0.01 and math.abs(lk.toff[2] - BACK) < 1e-9 and lk.toff[3] == 0.0,
+        'RIGHT, tapped: the trail 1 cm to the rocket\'s right, the rest where it was')
+    ok(#fxCalls.looped == starts and tl.off[1] == 0.01, 'the running trail moved in place, not started again')
+    hold({ RK.SHIFT, RK.UP }, 1000, 25)
+    ok(math.abs(lk.toff[2] - (BACK + 2.0)) < 1e-9,
+        ('SHIFT + UP held a second at 40 fps: 20 steps of 10 cm toward the nose (y %.3f)'):format(lk.toff[2]))
+    hold({ RK.SHIFT, RK.DOWN }, 1000, 10)
+    ok(math.abs(lk.toff[2] - BACK) < 1e-9, 'and held a second at 100 fps: the same 20 back, whatever the frame rate')
+    hold({ RK.CTRL, RK.UP })
+    ok(lk.toff[3] == 0.01 and math.abs(lk.toff[2] - BACK) < 1e-9, 'CTRL + UP: up 1 cm, not along')
+    hold({ RK.LEFT })
+    ok(lk.toff[1] == 0.0 and tl.off[1] == 0.0 and tl.off[3] == 0.01, 'LEFT: back across, and the trail with it')
+
+    -- ALT TURNS IT.
+    hold({ RK.ALT, RK.UP })
+    hold({ RK.ALT, RK.RIGHT })
+    hold({ RK.ALT, RK.CTRL, RK.UP })
+    ok(lk.trot and lk.trot[1] == 1.0 and lk.trot[2] == 1.0 and lk.trot[3] == 1.0,
+        'ALT + UP pitch, ALT + RIGHT yaw, ALT + CTRL + UP roll: a degree each')
+    ok(tl.rot[1] == 1.0 and tl.rot[2] == 1.0 and tl.rot[3] == 1.0, 'the running trail turned in place')
+    ok(lk.toff[1] == 0.0 and lk.toff[3] == 0.01, 'and turning it does not move it')
+    hold({ RK.ALT, RK.SHIFT, RK.LEFT }, 1000)
+    ok(lk.trot[3] >= -180.0 and lk.trot[3] <= 180.0 and math.abs(lk.trot[3] - (1.0 - 300.0 + 360.0)) < 1e-9,
+        ('yaw stays within -180..180 (%.1f after 300 degrees left)'):format(lk.trot[3]))
+
+    -- THE PAGE KEYS SIZE IT.
+    hold({ RK.PGUP })
+    ok(math.abs(lk.trailScale - (RA.trailScale + 0.1)) < 1e-9 and math.abs(tl.scale - lk.trailScale) < 1e-9,
+        'PAGE UP: the trail a tenth bigger, in place')
+    hold({ RK.CTRL, RK.PGDN })
+    ok(math.abs(lk.scale - (RA.scale - 0.1)) < 1e-9 and math.abs(so.scale - lk.scale) < 1e-9,
+        'CTRL + PAGE DOWN: the rocket a tenth smaller')
+    hold({ RK.PGDN }, 5000)
+    eq(lk.trailScale, 0.1, 'and never below a tenth')
+
+    -- WHAT IS CLAIMED, AND WHAT IS NOT.
+    keyClaims = {}
+    advance(50, 50)
+    local claimed = true
+    for _, id in ipairs({ 27, 172, 173, 174, 175, 10, 11, 178 }) do claimed = claimed and (keyClaims[id] or 0) > 0 end
+    ok(claimed, 'the arrows, the phone, the page keys and DELETE are claimed while it is out')
+    ok(not keyClaims[RK.CTRL] and not keyClaims[RK.ALT] and not keyClaims[RK.SHIFT] and not keyClaims[32],
+        'CTRL, ALT, SHIFT and walking are not')
+    local drawn = textDrawn
+    advance(50, 50)
+    ok(textDrawn > drawn, 'the numbers are on screen every frame')
+
+    -- `brterminal run airstrike` WHILE IT IS OUT: the words it adds.
+    local w = F.rocketLookWords()
+    ok(w and w.scale == ('%g'):format(lk.scale) and w.trail == '0.1' and w.toff == ('0,%g,0.01'):format(BACK)
+        and w.trot == ('1,1,%g'):format(lk.trot[3]), 'the look as `brterminal run airstrike` words', w and w.toff)
+
+    -- DELETE: the art's numbers, once a press.
+    hold({ RK.DEL })
+    sm, lk = F.rocketSample()
+    ok(lk.toff == nil and lk.trot == nil and lk.scale == nil and lk.trailScale == nil, 'DELETE: the art\'s numbers back')
+    ok(tl.scale == RA.trailScale and math.abs(tl.off[2] - BACK) < 1e-9 and tl.rot[3] == 0.0 and so.scale == RA.scale,
+        'and the rocket and its trail with them')
+    keyDown = { [RK.DEL] = true, [RK.PGUP] = true }
+    advance(100, 50)
+    keyDown = {}
+    advance(50, 50)
+    sm, lk = F.rocketSample()
+    ok(math.abs((lk.trailScale or 0) - (RA.trailScale + 0.2)) < 1e-9,
+        'DELETE held is one reset, not one a frame (PAGE UP held with it counts twice)', lk.trailScale)
+
+    -- PUT AWAY: the line, and everything gone.
     logs = {}
-    commands.brrocket(0, { 'toff=1,2' })
-    ok((logs[1] or ''):find('toff= takes three numbers', 1, true) ~= nil, 'toff=1,2 is refused', logs[1])
-    commands.brrocket(0, { 'reset' })
+    commands.brrocket(0, {})
+    local said = table.concat(logs, '\n')
+    ok(said:find(('brterminal run airstrike scale=%g trail=%g toff=0,%g,0 trot=0,0,0')
+        :format(RA.scale, RA.trailScale + 0.2, BACK), 1, true) ~= nil, 'brrocket again: the line that fires it', said)
+    ok(said:find('trailOffset = {', 1, true) ~= nil, 'and the config to paste')
+    ok(F.rocketSample() == nil and not so.alive and not sc.alive and fxCalls.stoppedSet[tl.h], 'the rocket, twin and trail gone')
+    eq(frameLoops(), loopsBefore, 'and the FRAME callback with them')
+    ok(F.rocketLookWords() == nil, 'and `brterminal run airstrike` is drawn the art\'s way again')
+    keyClaims = {}
+    keyDown = { [RK.RIGHT] = true }
+    advance(100, 50)
+    keyDown = {}
+    ok(next(keyClaims) == nil, 'and the arrows are the player\'s again')
+
+    -- AND OUT AGAIN: where it was left.
+    commands.brrocket(0, {})
     runThreads()
+    sm, lk = F.rocketSample()
     tl = fxCalls.looped[#fxCalls.looped]
-    ok(tl and tl.scale == RA.trailScale and C.ents[F.rocketSample().obj].scale == RA.scale, 'reset: the art values')
-    commands.brrocket(0, { 'off' })
-    ok(F.rocketSample() == nil and not so.alive and not sc.alive, 'off: both gone')
+    ok(sm and math.abs(tl.scale - (RA.trailScale + 0.2)) < 1e-9, 'brrocket again: the look this session left it at')
+    commands.brrocket(0, {})
+    ok(F.rocketSample() == nil, 'and away again')
     devBox = wasDev
 end
 

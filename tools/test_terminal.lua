@@ -2767,6 +2767,26 @@ do
     eq(B.executed[2], 'brterminalsv run airstrike x=5 y=6', 'a spot typed is the spot')
     cmd(nil, { 'run', 'scan' })
     eq(B.executed[3], 'brterminalsv run scan', 'a function with no spot gets none')
+    -- ROUND 9: with `brrocket` out, the look tuned on its keys rides
+    -- `brterminal run airstrike` -- each of its words not typed.
+    local hadFx = BR.TerminalFx
+    BR.TerminalFx = BR.TerminalFx or {}
+    local hadWords = BR.TerminalFx.rocketLookWords
+    BR.TerminalFx.rocketLookWords = function()
+        return { scale = '6', trail = '2.5', toff = '0,-1.1,0.05', trot = '0,0,90' }
+    end
+    B.executed = {}
+    cmd(nil, { 'run', 'airstrike', 'trail=4' })
+    eq(B.executed[1], 'brterminalsv run airstrike trail=4 x=40.0 y=200.0 scale=6 toff=0,-1.1,0.05 trot=0,0,90',
+        'with brrocket out: its look, but a word typed wins')
+    cmd(nil, { 'run', 'scan' })
+    eq(B.executed[2], 'brterminalsv run scan', 'and only for airstrike')
+    BR.TerminalFx.rocketLookWords = function() return nil end
+    cmd(nil, { 'run', 'airstrike' })
+    eq(B.executed[3], 'brterminalsv run airstrike x=40.0 y=200.0', 'with it put away: nothing added')
+    BR.TerminalFx.rocketLookWords = hadWords
+    if not hadFx then BR.TerminalFx = nil end
+    B.executed = { 'a', 'b', 'c' }
     cmd(nil, { 'reset' })
     cmd(nil, { 'reset', '7' })
     eq(B.executed[4], 'brterminalsv reset', '`brterminal reset`: your own squad and key')

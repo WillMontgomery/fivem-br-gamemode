@@ -794,35 +794,95 @@ F.onSlow(function()
     end
 end)
 
--- === brrocket: A ROCKET STANDING STILL, TO TUNE ITS TRAIL (round 9) ===
+-- === brrocket: A ROCKET STANDING STILL, TUNED WITH THE KEYS (round 9) ===
 --
 -- "perhaps you could give me a stationary example where I can tune the
 -- position, direction, and size of the smoke trails relative to the props,
 -- then fire an airstrike on my own using the other command to try it out"
---                                                     -- owner, 2026-10-11
+-- "how about instead of so many commands and args, we use keyboard keys like
+-- we've done for other things. ... Any manual adjustment commands must allow
+-- keyboard input."                                    -- owner, 2026-10-11
 --
--- One rocket 6 m in front of you at chest height, nose along your heading,
--- drawn exactly as a strike draws one (the scaled rocket, its trail on the
--- invisible carrier). Each `brrocket key=value ...` changes it in place and
--- prints the `brterminal run airstrike ...` line that fires a real strike
--- drawn the same way. Dev mode only (the dev gate wraps every command).
---   scale=<n>   the rocket's size (0.1-100)      trail=<n>   the trail's size
---   toff=x,y,z  the trail's place, meters from the rocket's origin: x right,
---               y toward the nose, z up (each -50..50)
---   trot=p,r,y  the trail's turn in degrees: pitch, roll, yaw (each -360..360)
---   reset       back to the art's values         off         take it away
+-- `brrocket` stands one rocket 6 m in front of you at chest height, nose along
+-- your heading, drawn exactly as a strike draws one (the scaled rocket, its
+-- trail on the invisible carrier); `brrocket` again puts it away and prints
+-- what it came to. While it is out the keys tune it, in /brplate's shape: the
+-- arrows, PAGE UP/DOWN and DELETE are claimed, walking and the mouse stay
+-- yours so you can walk round it, a tap is one step and a hold is twenty a
+-- second, and the modifiers are read without being taken.
+--   LEFT / RIGHT             the trail across the rocket (x, + its right)
+--   UP / DOWN                along it (y, + toward the nose)
+--   CTRL + UP / DOWN         up and down (z)
+--   ALT + UP / DOWN          the trail's pitch    ALT + LEFT / RIGHT   its yaw
+--   ALT + CTRL + UP / DOWN   its roll
+--   PAGE UP / DOWN           the trail's size     CTRL + PAGE UP / DOWN   the rocket's
+--   hold SHIFT               bigger steps         DELETE   back to the art's numbers
+-- While it is out, `brterminal run airstrike` fires a strike drawn the same
+-- way: client/terminal.lua adds this look (F.rocketLookWords) for any of
+-- scale=, trail=, toff=, trot= not typed. The look lasts the session, so the
+-- next `brrocket` picks up where this one was left. Dev mode only (the dev
+-- gate wraps every command).
 local sample = nil
+local look = {}
+local keysLoop = nil
+local nudgeAt, deleteWasDown = 0, false
+local making = false
 
-local function sampleClear()
-    if not sample then return end
-    if sample.trail then StopParticleFxLooped(sample.trail, false) end
-    removeEnt(sample.obj)
-    removeEnt(sample.carrier)
-    sample = nil
+--- The keys it reads. The arrows, the page keys and DELETE are claimed while
+--- it is out (ROCKET_BLOCKED); CTRL, ALT and SHIFT are read, never claimed.
+local ROCKET_KEY = {
+    UP = 172, DOWN = 173, LEFT = 174, RIGHT = 175,   -- INPUT_CELLPHONE_UP/DOWN/LEFT/RIGHT
+    BIGGER = 10,    -- PAGE UP      INPUT_SCRIPTED_FLY_ZUP
+    SMALLER = 11,   -- PAGE DOWN    INPUT_SCRIPTED_FLY_ZDOWN
+    RESET = 178,    -- DELETE       INPUT_CELLPHONE_OPTION
+    DEPTH = 36,     -- LEFT CTRL    INPUT_DUCK
+    TURN = 19,      -- LEFT ALT     INPUT_CHARACTER_WHEEL
+    COARSE = 21,    -- LEFT SHIFT   INPUT_SPRINT
+}
+--- 27 is INPUT_PHONE, the up arrow's other control (/brplate's list).
+local ROCKET_BLOCKED = { 27, 172, 173, 174, 175, 10, 11, 178 }
+--- attachtune.lua's meters and degrees; sizes a tenth at a time.
+local ROCKET_STEP = {
+    fine   = { m = 0.01, deg = 1.0,  x = 0.1 },
+    coarse = { m = 0.10, deg = 15.0, x = 1.0 },
+}
+local ROCKET_REPEAT_MS = 50
+
+local function held(id) return isTrue(IsDisabledControlPressed(0, id)) end
+
+local function roundTo(v, places)
+    local k = 10 ^ places
+    return math.floor(v * k + 0.5) / k
 end
 
---- The `brterminal run airstrike` line that draws a strike as the sample is.
---- @param t table  the sample's look
+local function clampTo(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+--- Degrees kept within -180..180, so the line always fits the server's -360..360.
+local function wrapDeg(v)
+    return (v + 180.0) % 360.0 - 180.0
+end
+
+--- The look's four words for `brterminal run airstrike`, or nil when no rocket
+--- is out. Public for client/terminal.lua and the suites.
+--- @return table|nil  { scale=, trail=, toff=, trot= } as typed text
+function F.rocketLookWords()
+    if not sample then return nil end
+    local ox, oy, oz = F.trailOffsetOf(look)
+    local rx, ry, rz = F.trailRotOf(look)
+    return {
+        scale = ('%g'):format(F.scaleOf(look)),
+        trail = ('%g'):format(F.trailScaleOf(look)),
+        toff = ('%g,%g,%g'):format(ox, oy, oz),
+        trot = ('%g,%g,%g'):format(rx, ry, rz),
+    }
+end
+
+--- The `brterminal run airstrike` line that draws a strike as `t` looks.
+--- @param t table  a look
 --- @return string
 function F.rocketLine(t)
     local ox, oy, oz = F.trailOffsetOf(t)
@@ -831,106 +891,206 @@ function F.rocketLine(t)
         :format(F.scaleOf(t), F.trailScaleOf(t), ox, oy, oz, rx, ry, rz)
 end
 
---- Put the sample's rocket and trail where `t` says (made the first time).
---- MUST be called from inside a Citizen thread: the model may stream in.
-local function sampleDraw(t)
-    local R = rocketArt()
-    if not sample then
-        local model = loadRocketModel()
-        if not model then
-            print('[br_core] brrocket: no rocket model would load')
-            return
-        end
-        if R.trailAsset then RequestNamedPtfxAsset(R.trailAsset) end
-        local ped = PlayerPedId()
-        local p = GetEntityCoords(ped)
-        local h = math.rad(tonumber(GetEntityHeading(ped)) or 0.0)
-        local ux, uy = -math.sin(h), math.cos(h)
-        local x, y, z = p.x + ux * 6.0, p.y + uy * 6.0, p.z + 0.6
-        local obj = CreateObjectNoOffset(model, x, y, z, false, false, false)
-        local carrier = CreateObjectNoOffset(model, x, y, z, false, false, false)
-        if not obj or obj == 0 or not carrier or carrier == 0 then
-            removeEnt(obj)
-            removeEnt(carrier)
-            print('[br_core] brrocket: the game would not make the rocket')
-            return
-        end
-        for _, e in ipairs({ obj, carrier }) do
-            SetEntityCollision(e, false, false)
-            FreezeEntityPosition(e, true)
-        end
-        SetEntityVisible(carrier, false, false)
-        sample = { obj = obj, carrier = carrier, model = model, x = x, y = y, z = z, ux = ux, uy = uy }
+--- What brrocket draws now, and the look it is tuned to (for the suites).
+--- @return table|nil sample, table look
+function F.rocketSample() return sample, look end
+
+local function sampleClear()
+    if keysLoop then
+        BR.Loop.unregister(keysLoop)
+        keysLoop = nil
     end
-    t.model = sample.model
-    for _, e in ipairs({ sample.obj, sample.carrier }) do
-        SetEntityCoords(e, sample.x, sample.y, sample.z, false, false, false, false)
-        aim(e, sample.ux, sample.uy, 0.0)
-    end
-    BR.Native.propScale(sample.obj, F.scaleOf(t))
+    nudgeAt, deleteWasDown = 0, false
+    if not sample then return end
     if sample.trail then StopParticleFxLooped(sample.trail, false) end
-    sample.trail = nil
+    removeEnt(sample.obj)
+    removeEnt(sample.carrier)
+    sample = nil
+end
+
+--- The rocket and its trail as the look says now: turned (which puts its
+--- matrix back to 1x), then scaled, and the running trail moved, turned and
+--- sized in place rather than started again.
+local function sampleApply()
+    if not sample then return end
+    look.model = sample.model
+    aim(sample.obj, sample.ux, sample.uy, 0.0)
+    BR.Native.propScale(sample.obj, F.scaleOf(look))
+    if sample.trail then
+        local ox, oy, oz = F.trailOffsetOf(look)
+        local rx, ry, rz = F.trailRotOf(look)
+        SetParticleFxLoopedOffsets(sample.trail, ox, oy, oz, rx, ry, rz)
+        SetParticleFxLoopedScale(sample.trail, F.trailScaleOf(look))
+    end
+end
+
+--- One line of the readout: /brplate's `text`, matched call for call.
+local function readoutLine(y, s)
+    SetTextFont(4)
+    SetTextScale(0.0, 0.34)
+    SetTextColour(255, 255, 255, 235)
+    SetTextDropshadow(0, 0, 0, 0, 255)
+    SetTextEdge(1, 0, 0, 0, 205)
+    SetTextDropShadow()
+    SetTextOutline()
+    BeginTextCommandDisplayText('STRING')
+    AddTextComponentSubstringPlayerName(s)
+    EndTextCommandDisplayText(0.015, y)
+end
+
+--- The numbers, every frame, with what the keys drive right now in blue
+--- (/brplate's rule: numbers, and the color says which).
+local function readout(depth, turn, step)
+    local B, W = '~b~', '~w~'
+    local ox, oy, oz = F.trailOffsetOf(look)
+    local rx, ry, rz = F.trailRotOf(look)
+    local y = 0.34
+    readoutLine(y, ('~b~rocket~w~   size %s%.2fx%s   trail %s%.2fx%s')
+        :format(depth and B or '', F.scaleOf(look), W, depth and '' or B, F.trailScaleOf(look), W))
+    y = y + 0.026
+    readoutLine(y, ('place   x %s%.3f%s   y %s%.3f%s   z %s%.3f%s m')
+        :format(turn and '' or B, ox, W, (turn or depth) and '' or B, oy, W,
+                (not turn and depth) and B or '', oz, W))
+    y = y + 0.026
+    readoutLine(y, ('turn   pitch %s%.0f%s   roll %s%.0f%s   yaw %s%.0f%s')
+        :format((turn and not depth) and B or '', rx, W, (turn and depth) and B or '', ry, W,
+                turn and B or '', rz, W))
+    y = y + 0.026
+    readoutLine(y, ('step %.2f m   %.0f deg   %.1fx'):format(step.m, step.deg, step.x))
+end
+
+--- The keys, per frame while the rocket is out (FRAME, for /brplate's reason:
+--- DisableControlAction lasts one frame).
+local function rocketKeys()
+    if not sample then return end
+    for i = 1, #ROCKET_BLOCKED do DisableControlAction(0, ROCKET_BLOCKED[i], true) end
+    look.model = sample.model
+    local depth, turn = held(ROCKET_KEY.DEPTH), held(ROCKET_KEY.TURN)
+    local step = held(ROCKET_KEY.COARSE) and ROCKET_STEP.coarse or ROCKET_STEP.fine
+    readout(depth, turn, step)
+
+    -- DELETE, once a press: the art's numbers back.
+    local del = held(ROCKET_KEY.RESET)
+    if del and not deleteWasDown then
+        look = {}
+        sampleApply()
+    end
+    deleteWasDown = del
+
+    local dv, dh, ds = 0, 0, 0
+    if held(ROCKET_KEY.UP) then dv = dv + 1 end
+    if held(ROCKET_KEY.DOWN) then dv = dv - 1 end
+    if held(ROCKET_KEY.RIGHT) then dh = dh + 1 end
+    if held(ROCKET_KEY.LEFT) then dh = dh - 1 end
+    if held(ROCKET_KEY.BIGGER) then ds = ds + 1 end
+    if held(ROCKET_KEY.SMALLER) then ds = ds - 1 end
+    if dv == 0 and dh == 0 and ds == 0 then
+        nudgeAt = 0
+        return
+    end
+    local now = GetGameTimer()
+    if now < nudgeAt then return end
+    nudgeAt = now + ROCKET_REPEAT_MS
+
+    if ds ~= 0 then
+        if depth then
+            look.scale = clampTo(roundTo(F.scaleOf(look) + ds * step.x, 2), 0.1, 100.0)
+        else
+            look.trailScale = clampTo(roundTo(F.trailScaleOf(look) + ds * step.x, 2), 0.1, 100.0)
+        end
+    end
+    if turn and (dv ~= 0 or dh ~= 0) then
+        local rx, ry, rz = F.trailRotOf(look)
+        if depth then ry = ry + dv * step.deg else rx = rx + dv * step.deg end
+        rz = rz + dh * step.deg
+        look.trot = { wrapDeg(roundTo(rx, 2)), wrapDeg(roundTo(ry, 2)), wrapDeg(roundTo(rz, 2)) }
+    elseif dv ~= 0 or dh ~= 0 then
+        local ox, oy, oz = F.trailOffsetOf(look)
+        ox = ox + dh * step.m
+        if depth then oz = oz + dv * step.m else oy = oy + dv * step.m end
+        look.toff = { clampTo(roundTo(ox, 3), -50.0, 50.0), clampTo(roundTo(oy, 3), -50.0, 50.0),
+                      clampTo(roundTo(oz, 3), -50.0, 50.0) }
+    end
+    sampleApply()
+end
+
+--- Stand the rocket up as the look says. MUST be called from inside a
+--- Citizen thread: the model and the trail's asset may stream in.
+local function sampleMake()
+    local R = rocketArt()
+    local model = loadRocketModel()
+    if not model then
+        print('[br_core] brrocket: no rocket model would load')
+        return
+    end
+    if R.trailAsset then RequestNamedPtfxAsset(R.trailAsset) end
+    local ped = PlayerPedId()
+    local p = GetEntityCoords(ped)
+    local h = math.rad(tonumber(GetEntityHeading(ped)) or 0.0)
+    local ux, uy = -math.sin(h), math.cos(h)
+    local x, y, z = p.x + ux * 6.0, p.y + uy * 6.0, p.z + 0.6
+    local obj = CreateObjectNoOffset(model, x, y, z, false, false, false)
+    local carrier = CreateObjectNoOffset(model, x, y, z, false, false, false)
+    if not obj or obj == 0 or not carrier or carrier == 0 then
+        removeEnt(obj)
+        removeEnt(carrier)
+        print('[br_core] brrocket: the game would not make the rocket')
+        return
+    end
+    for _, e in ipairs({ obj, carrier }) do
+        SetEntityCollision(e, false, false)
+        FreezeEntityPosition(e, true)
+        aim(e, ux, uy, 0.0)
+    end
+    SetEntityVisible(carrier, false, false)
+    sample = { obj = obj, carrier = carrier, model = model, ux = ux, uy = uy }
+    look.model = model
+    BR.Native.propScale(obj, F.scaleOf(look))
     local waited = 0
     while R.trailAsset and not isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) and waited < 3000 do
         Citizen.Wait(50)
         waited = waited + 50
     end
+    if not sample or sample.obj ~= obj then return end   -- put away while it waited
     if R.trailAsset and R.trail and isTrue(HasNamedPtfxAssetLoaded(R.trailAsset)) then
         UseParticleFxAsset(R.trailAsset)
-        local ox, oy, oz = F.trailOffsetOf(t)
-        local rx, ry, rz = F.trailRotOf(t)
-        sample.trail = StartParticleFxLoopedOnEntity(R.trail, sample.carrier, ox, oy, oz, rx, ry, rz,
-            F.trailScaleOf(t), false, false, false)
+        local ox, oy, oz = F.trailOffsetOf(look)
+        local rx, ry, rz = F.trailRotOf(look)
+        sample.trail = StartParticleFxLoopedOnEntity(R.trail, carrier, ox, oy, oz, rx, ry, rz,
+            F.trailScaleOf(look), false, false, false)
     end
-    sample.t = t
-    print('[br_core] brrocket: ' .. F.rocketLine(t))
+    keysLoop = BR.Loop.register(BR.Loop.FRAME, 'terminalfx.rocketkeys', rocketKeys)
+    print('[br_core] brrocket: a rocket 6 m in front of you. The keys:')
+    print('  LEFT / RIGHT             trail across the rocket (x)')
+    print('  UP / DOWN                trail along it (y)')
+    print('  CTRL + UP / DOWN         trail up and down (z)')
+    print('  ALT + UP / DOWN          trail pitch    ALT + LEFT / RIGHT   trail yaw')
+    print('  ALT + CTRL + UP / DOWN   trail roll')
+    print('  PAGE UP / DOWN           trail size     CTRL + PAGE UP / DOWN   rocket size')
+    print('  hold SHIFT               bigger steps   DELETE   the art\'s numbers')
+    print('  `brterminal run airstrike` fires one drawn this way; `brrocket` again puts it away')
 end
 
---- `x,y,z` as three numbers each within -lim..lim, or nil.
-local function threeOf(v, lim)
-    local out = {}
-    for part in tostring(v):gmatch('[^,]+') do out[#out + 1] = tonumber(part) end
-    if #out ~= 3 then return nil end
-    return lookVec(out, lim)
-end
-
---- What brrocket draws now (for the suites).
---- @return table|nil
-function F.rocketSample() return sample end
-
-RegisterCommand('brrocket', function(_, args)
-    local verb = args[1] and args[1]:lower() or ''
-    if verb == 'off' then
+RegisterCommand('brrocket', function()
+    if sample then
+        look.model = sample.model
+        local ox, oy, oz = F.trailOffsetOf(look)
+        local rx, ry, rz = F.trailRotOf(look)
+        print('[br_core] brrocket: put away. A strike drawn this way:')
+        print('  ' .. F.rocketLine(look))
+        print('  or paste into br_lib/config/terminals.lua, art.rocket:')
+        print(('      scale = %g, trailScale = %g,'):format(F.scaleOf(look), F.trailScaleOf(look)))
+        print(('      trailOffset = { %g, %g, %g }, trailRot = { %g, %g, %g },')
+            :format(ox, oy, oz, rx, ry, rz))
         sampleClear()
-        print('[br_core] brrocket: off')
         return
     end
-    local t = {}
-    if sample and sample.t and verb ~= 'reset' then
-        for k, v in pairs(sample.t) do t[k] = v end
-    end
-    for _, word in ipairs(args) do
-        local k, v = word:match('^([%w_]+)=(%S+)$')
-        if k == 'scale' or k == 'trail' then
-            local n = lookSize(v)
-            if not n then
-                print(('[br_core] brrocket: %s= takes a number from 0.1 to 100'):format(k))
-                return
-            end
-            if k == 'scale' then t.scale = n else t.trailScale = n end
-        elseif k == 'toff' or k == 'trot' then
-            local vec = threeOf(v, k == 'toff' and 50.0 or 360.0)
-            if not vec then
-                print(('[br_core] brrocket: %s= takes three numbers, x,y,z'):format(k))
-                return
-            end
-            t[k] = vec
-        elseif word:lower() ~= 'reset' then
-            print('[br_core] brrocket [scale=<n>] [trail=<n>] [toff=x,y,z] [trot=p,r,y] | reset | off')
-            return
-        end
-    end
-    Citizen.CreateThread(function() sampleDraw(t) end)
+    if making then return end
+    making = true
+    Citizen.CreateThread(function()
+        sampleMake()
+        making = false
+    end)
 end, false)
 
 AddEventHandler('onResourceStop', function(name)
