@@ -993,8 +993,14 @@ do
     local want = 'BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)'
     ok(readFile(RES .. 'br_core/client/loading.lua'):find('local want = ' .. want, 1, true) ~= nil,
         'client/loading.lua waits on wantHash or Season 1\'s expression')
-    ok(readFile(RES .. 'br_core/client/lobbyped.lua'):find('want = ' .. want, 1, true) ~= nil,
-        'and so does client/lobbyped.lua\'s entrance')
+    -- The entrance splits the same expression (#406): wantHash() is asked on
+    -- every poll, and Season 1's half is worked out once and kept, because it
+    -- cannot move while the walk waits.
+    local lobbyped = readFile(RES .. 'br_core/client/lobbyped.lua')
+    ok(lobbyped:find('local v2 = BR.LockerV2 and BR.LockerV2.wantHash()\n'
+        .. '        if v2 then return v2 end\n', 1, true) ~= nil
+        and lobbyped:find('s1Want = GetHashKey(BR.PedById(BR.Locker.chosen()).model)', 1, true) ~= nil,
+        'and so does client/lobbyped.lua\'s entrance, wantHash first and Season 1\'s model when it says nil')
     -- Evaluated as written, on Season 1, the expression is Season 1's.
     local W = clientWorld({ season = 1, v2 = true })
     local BR = W.BR
