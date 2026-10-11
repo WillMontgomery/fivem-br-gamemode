@@ -361,7 +361,7 @@ math.randomseed(393)
 --- charged the hook's frame records however the two nest; and under --fns `fns`, the
 --- instructions by function over the phase being measured.
 local VM = { kb = 0.0, fns = nil, raw = collectgarbage }
---- The chunks the modelled natives loader writes each native's global in ('@<Name>.lua',
+--- The chunks the modeled natives loader writes each native's global in ('@<Name>.lua',
 --- nativeFn below): the harness's code, like this file's, so the sampler skips them.
 local NATIVE_SRC = {}
 local function gcCount(opt) return VM.raw(opt) - VM.kb end

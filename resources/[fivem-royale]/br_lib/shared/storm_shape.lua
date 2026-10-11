@@ -3761,7 +3761,7 @@ end
 ---
 --- @param shape table
 --- @param c table     a component, as pointAtComponent takes
---- @param t number    metres along that component; any real number
+--- @param t number    meters along that component; any real number
 --- @param cur table   the walk's cursor, { i, s }: set i = 1, s = -math.huge to start
 --- @return number x, number y, number nx, number ny
 function BR.StormShape.pointAtComponentFrom(shape, c, t, cur)
