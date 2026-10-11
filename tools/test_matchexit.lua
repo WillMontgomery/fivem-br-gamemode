@@ -1321,6 +1321,64 @@ do
     ok(BR.State.match.clock == nil, 'and a lobby snapshot carries none')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE LOBBY'S HEAD START RUNS OFF THE REAL LOBBY BROADCAST (#403 review)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- client/preload.lua asks for the warmup's models while BR.State.queued is
+-- true, and this file is where that field is written: the LOBBY_STATUS
+-- handler, from whether my id is in the queue. tools/test_preload.lua sets the
+-- field by hand, so a handler that never wrote it (no head start, ever) or
+-- wrote true for everybody (every lobby player streaming the whole showroom)
+-- passed it. So here the real handler feeds the real preload.lua, which is
+-- loaded last so no block above runs it.
+
+describe('the lobby broadcast starts and stops the head start on the warmup\'s models')
+do
+    local CAR_A, CAR_B = 9101, 9102
+    local requested, released = {}, {}
+    function RequestModel(h) requested[h] = (requested[h] or 0) + 1 end
+    function SetModelAsNoLongerNeeded(h) released[h] = (released[h] or 0) + 1 end
+    BR.Shop = { models = function() return { CAR_A, CAR_B } end }
+    loadAll({ 'br_core/client/preload.lua' })
+
+    local function status(ids) fire(BR.Net.LOBBY_STATUS, { ids = ids, players = {} }) end
+    local function slow(ms)
+        advance(ms or 1000)
+        BR.Loop.step(BR.Loop.SLOW)
+    end
+
+    BR.State.me.src = 1
+    snapshot(BR.PlayerState.LOBBY, BR.MatchState.WAITING)
+
+    -- OTHER PLAYERS QUEUED, NOT ME.
+    status({ 2, 3 })
+    ok(BR.State.queued == false,
+       'a broadcast that queues other players says I am not queued', tostring(BR.State.queued))
+    slow()
+    slow()
+    ok(next(requested) == nil, '...and nothing is asked for')
+
+    -- ME IN THE QUEUE.
+    status({ 2, 1 })
+    ok(BR.State.queued == true,
+       'a broadcast with my id in the queue says I am queued', tostring(BR.State.queued))
+    slow()
+    ok(requested[CAR_A] == 1 and requested[CAR_B] == 1,
+       '...and the next pass asks for the showroom\'s cars, once each',
+       ('%s/%s'):format(tostring(requested[CAR_A]), tostring(requested[CAR_B])))
+
+    -- OUT OF IT AGAIN.
+    status({ 2 })
+    ok(BR.State.queued == false,
+       'a broadcast without my id takes me out of the queue', tostring(BR.State.queued))
+    slow()
+    slow(BR.Preload.graceMs)
+    ok(released[CAR_A] == 1 and released[CAR_B] == 1,
+       '...and once the grace has passed, every car is handed back',
+       ('%s/%s'):format(tostring(released[CAR_A]), tostring(released[CAR_B])))
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
