@@ -1024,7 +1024,10 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
         -- THE WALK RESUMES ITS PIECE SCAN WHERE THE LAST SAMPLE STOPPED (#393 round
         -- 9): every sample below is at or past the one before it, so
         -- pointAtComponentFrom finds each one's piece from the last one's instead of
-        -- from the first piece -- the same points to the bit (storm_shape.lua).
+        -- from the first piece -- the same points to the bit (storm_shape.lua). That
+        -- holds because a split piece's extra vertex is asked BEFORE the piece's end
+        -- (below): asked after it, as round 9 first had it, it lay behind the cursor
+        -- and every one rescanned from the first piece -- a breakout's whole sweep.
         local cur = g.cur
         if not cur then cur = {} g.cur = cur end
         cur.i, cur.s = 1, -math.huge
@@ -1055,6 +1058,20 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
             local tPrev = t0
             for j = 1, cnt do
                 local tj = (j < cnt) and (t0 + step * j) or (t0 + rlen)
+                -- THE SPLIT VERTEX AND ITS QUAD FIRST: the vertex lies between tPrev
+                -- and tj (split is 0..1), so asked before tj the walk stays in order;
+                -- and its quad reads nothing of tj's point, so it is stored here, in
+                -- the order it always was, with one test of `sub` a step as before.
+                if sub then
+                    local mx, my = SS.pointAtComponentFrom(shape, c,
+                        tPrev + (tj - tPrev) * 0.5 * split, cur)
+                    local o = nq * QUAD_STRIDE
+                    q[o + 1], q[o + 2], q[o + 3], q[o + 4] = ax, ay, mx, my
+                    q[o + 5], q[o + 6] = (ax + mx) * 0.5, (ay + my) * 0.5
+                    q[o + 7], q[o + 8] = my - ay, -(mx - ax)
+                    nq = nq + 1
+                    ax, ay = mx, my
+                end
                 local bx, by
                 if i == nRuns and j == cnt then
                     -- THE CLOSING QUAD TAKES THE STORED FIRST POINT. `t0 + rlen` of
@@ -1075,16 +1092,6 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
                     -- not a visible decision -- but it is a deterministic one, and
                     -- the vertex is ON the corner either way rather than past it.
                     bx, by = SS.pointAtComponentFrom(shape, c, tj, cur)
-                end
-                if sub then
-                    local mx, my = SS.pointAtComponentFrom(shape, c,
-                        tPrev + (tj - tPrev) * 0.5 * split, cur)
-                    local o = nq * QUAD_STRIDE
-                    q[o + 1], q[o + 2], q[o + 3], q[o + 4] = ax, ay, mx, my
-                    q[o + 5], q[o + 6] = (ax + mx) * 0.5, (ay + my) * 0.5
-                    q[o + 7], q[o + 8] = my - ay, -(mx - ax)
-                    nq = nq + 1
-                    ax, ay = mx, my
                 end
                 -- The quad, stored rather than drawn: its corners, and the midpoint
                 -- and normal drawStrip's face test reads -- the same expressions

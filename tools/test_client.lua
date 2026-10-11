@@ -8303,8 +8303,16 @@ do
 
     local realFrom, realAt = BR.PathPosAtFrom, BR.PathPosAt
     local fromCalls, atFromBus, wrong = 0, 0, nil
+    -- Each cursor's last t: a cursor asked behind where it stood scans from the start.
+    local cursors, behind, lastT = 0, 0, {}
     BR.PathPosAtFrom = function(points, t, cur)
         fromCalls = fromCalls + 1
+        if lastT[cur] == nil then
+            cursors = cursors + 1
+        elseif t < lastT[cur] then
+            behind = behind + 1
+        end
+        lastT[cur] = t
         local a1, a2, a3, a4, a5 = realFrom(points, t, cur)
         local b1, b2, b3, b4, b5 = realAt(points, t)
         if (a1 ~= b1 or a2 ~= b2 or a3 ~= b3 or a4 ~= b4 or a5 ~= b5) and not wrong then
@@ -8346,6 +8354,12 @@ do
     ok(fromCalls >= 2 * 150 and atFromBus == 0,
         'bus.fly asks the resumed walk for both of its points every frame on the route',
         ('%d resumed asks, %d from the start'):format(fromCalls, atFromBus))
+    -- THE TWO READS HOLD A CURSOR EACH (round 9 review): one cursor for both would be
+    -- asked at t + 1200 and then at the next frame's t, behind it, every frame -- the
+    -- same answers, and a scan from the start each time. A cursor is asked in order.
+    ok(cursors == 2 and behind == 0,
+        'each of the two reads keeps a cursor of its own, never asked behind where it stood',
+        ('%d cursors, %d asks behind'):format(cursors, behind))
     ok(wrong == nil, 'and every answer is PathPosAt\'s, to the bit', wrong)
 
     -- And a walk that is asked out of order, or on another route, gives way.

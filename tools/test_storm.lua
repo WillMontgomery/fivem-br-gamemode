@@ -6402,6 +6402,58 @@ do
     ok(diff == nil and drawn > 30 * 100,
         'and through a sweep it draws the triangles a rescanning walk does, frame by frame',
         diff or ('%d triangles over %d frames'):format(drawn, frames))
+
+    -- ═══ AND EVERY SAMPLE OF A WALK IS AT OR PAST THE ONE BEFORE IT (round 9 review) ═══
+    --
+    -- The resumed walk is exact in any order, but it saves anything only while each
+    -- sample is at or past the last: one behind the cursor scans from the first piece.
+    -- A moving wall's split puts a vertex inside each arc piece, and round 9 first asked
+    -- for it AFTER the piece's end -- behind the cursor, every time, for a breakout's
+    -- whole sweep. Here each of the client's walks is held to never stepping back,
+    -- through a breakout sweeping with its split up; and the split is shown to be there:
+    -- with splitRampSec 0 the same frames ask for fewer points.
+    local function ordered(splitOff)
+        local C = noFarFade(newStormClient())
+        local S = C.env.BR.StormShape
+        local FROM = S.pointAtComponentFrom
+        C.asks, C.back = 0, 0
+        local lastC, lastT = {}, {}
+        S.pointAtComponentFrom = function(shape, c, t, cur)
+            C.asks = C.asks + 1
+            -- A walk starts with its cursor at -huge (buildStrip, each component).
+            if cur.s == -math.huge then lastC[cur], lastT[cur] = nil, nil end
+            if lastC[cur] == c and t < lastT[cur] then C.back = C.back + 1 end
+            lastC[cur], lastT[cur] = c, t
+            return FROM(shape, c, t, cur)
+        end
+        local CFG = C.env.BR.Config.Storm
+        if splitOff then CFG.render.strip.splitRampSec = 0 end
+        -- Phase 3 breaking out, apart: test_storm's sweep suite's { 3, 1.6, 602 }.
+        local r0, r1 = CFG.phases[2].radius, CFG.phases[3].radius
+        local shrink = math.floor((CFG.phases[3].shrink or 60) * 1000)
+        local off, a = r0 + r1 * 1.6, 602 * 2.3
+        local rec = C.record(3, 0.0, 0.0, r0, math.cos(a) * off, math.sin(a) * off, r1,
+            1000, shrink, 0.5)
+        rec.seed = 602
+        C.recordWallOnly()
+        C.pedAt = pt(rec.cx1, rec.cy1, 30.0)
+        local start = C.now
+        for k = 1, 24 do
+            C.now = start + 1000 + math.floor(shrink * k / 25)
+            C.frame()
+        end
+        C.nested = C.env.BR.StormNested(rec)
+        return C
+    end
+    local O, N = ordered(false), ordered(true)
+    ok(O.errored() == nil and N.errored() == nil and O.nested == false,
+        'a breakout sweeps clean, split up and split off', O.errored() or N.errored())
+    ok(O.back == 0 and O.asks > 24 * 40,
+        "every point a moving wall's walk asks is at or past the one before it",
+        ('%d of %d asked behind the last'):format(O.back, O.asks))
+    ok(O.asks > N.asks * 1.2,
+        "and the walk's split vertices are among them: without the split it asks fewer",
+        ('%d asked split, %d without'):format(O.asks, N.asks))
 end
 
 -- ---------------------------------------------------------------------------
