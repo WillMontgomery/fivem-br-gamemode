@@ -165,6 +165,19 @@ local clock = os.clock
 --               components and props -- as the game does, so what is measured
 --               is the watch, not a re-dress on every pass.
 --
+-- AND ONE FOR A PLAYER WHO HAS READIED UP (#403 review, 2026-10-11):
+--
+--   s2-queued   Season 2 from boot, the player's party in the lobby's queue
+--               from the lobby on, as a player waiting for the room to fill
+--               stands. client/preload.lua streams the warmup's cars and crate
+--               boxes only while this player is queued, and every other world's
+--               lobby queues nobody, so this lobby is the one that measures it:
+--               its burst in the settle, and nothing after. The warmup after it
+--               is the one a queued player reaches, with the models already
+--               asked for. And after its changes, the queued lobby's own: joining
+--               the queue, festive and the season moving in it, and leaving it.
+--               A world of its own so that no other world's session moves.
+--
 -- A world's phases are budgeted as `<world>/<phase>`.
 local WORLDS = {
     { id = 's1',         season = '1' },
@@ -177,6 +190,7 @@ local WORLDS = {
     { id = 's2-sky',     season = '2', upTo = 'match airstrike',
       measure = { ['match vehicle drop'] = true, ['match airstrike'] = true } },
     { id = 's2-custom',  season = '2', custom = true },
+    { id = 's2-queued',  season = '2', queued = true },
 }
 local worldById = {}
 for _, w in ipairs(WORLDS) do worldById[w.id] = w end
@@ -1669,6 +1683,15 @@ if ARGS.mutant == 'vm' then
 end
 -- Every laptop hidden fifty times over when the season moves (the review's
 -- M12): 750 model hides at a switch, and nothing in any steady phase.
+-- A stream request on every SLOW pass while this player is queued (#403
+-- review): the lobby's head start asking again instead of once. Only a lobby
+-- that queues the player (s2-queued) can see it.
+if ARGS.mutant == 'queued' then
+    local request = env.RequestModel
+    BR.Loop.register(BR.Loop.SLOW, 'perf.mutant', function()
+        if BR.State.queued == true then request(1) end
+    end)
+end
 if ARGS.mutant == 'burst' then
     local hide = env.CreateModelHideExcludingScriptObjects
     BR.Season.onChange(function()
@@ -2084,15 +2107,21 @@ local function squadPos()
     if #list > 0 then net(BR.Net.SQUAD_POS, list) end
 end
 
+--- Is this player's party in the lobby's queue? Only in s2-queued (THE WORLDS),
+--- from its lobby until the forming match consumes the queue (warmup's setup),
+--- and again for its queued changes.
+local queuedMe = false
+
 local function lobbyStatus()
     local players = {}
     for src = 1, PLAYERS do
         players[#players + 1] = { src = src, name = 'Player' .. src, inParty = src <= 4,
             leader = src == 1, inMatch = S.match.state ~= BR.MatchState.WAITING,
-            queued = false }
+            queued = queuedMe and src <= 4 }
     end
-    net(BR.Net.LOBBY_STATUS, { queued = 0, needed = 2, connected = PLAYERS, mode = 'squad',
-        ids = {}, players = players })
+    net(BR.Net.LOBBY_STATUS, { queued = queuedMe and 4 or 0, needed = 2, connected = PLAYERS,
+        mode = 'squad', ids = queuedMe and { ME, MATES[1], MATES[2], MATES[3] } or {},
+        players = players })
 end
 
 local function digestFeed()
@@ -2231,8 +2260,13 @@ local PHASES = {
         matchState(BR.MatchState.WAITING)
         island('lobby', 0.0)
         worldStart()
+        if WORLD.queued then
+            queuedMe = true
+            lobbyStatus()
+        end
     end },
     { id = 'warmup', settle = 240, setup = function()
+        queuedMe = false
         local P = BR.Config.Match.warmupPos
         setPed(W.me, P.x, P.y, P.z)
         W.cam.x, W.cam.y, W.cam.z = P.x, P.y - 4.0, P.z + 1.5
@@ -2808,6 +2842,26 @@ local function backToLobby()
     island('lobby', 0.0)
 end
 
+--- THE QUEUED LOBBY'S CHANGES (s2-queued, THE WORLDS), from the Season 2
+--- festive lobby the changes above end in: readying up streams the warmup's
+--- models, a festive or season change in the queue swaps the boxes, and
+--- leaving the queue hands them back once client/preload.lua's grace has run
+--- out -- measured from four seconds after it, so the window holds the release.
+local function queuedChanges()
+    measureChange('lobby: joins the queue', function()
+        queuedMe = true
+        lobbyStatus()
+    end)
+    measureChange('lobby queued: festive off', function() brfestive(false) end)
+    measureChange('lobby queued: festive on', function() brfestive(true) end)
+    measureChange('lobby queued: Season 2 to 1', function() switchTo(1) end)
+    measureChange('lobby queued: Season 1 to 2', function() switchTo(2) end)
+    queuedMe = false
+    lobbyStatus()
+    for _ = 1, 240 do frame() gcMaybe() end
+    measureChange('lobby: out of the queue, the grace runs out', function() end)
+end
+
 --- The changes, from the end of the session (the match terminal scene).
 local function playChanges()
     local inS2 = serverHas('crates2')
@@ -2854,6 +2908,7 @@ local function playChanges()
         measureChange('lobby: Season 2 to 1, the value late',
             function() switchTo(1, true) end, 30, valueLands)
     end
+    if WORLD.queued and inS2 then queuedChanges() end
 end
 
 -- Only after the whole session: a run stopped at a phase, or a world that
@@ -3311,6 +3366,9 @@ local function check()
     --   vm     a few hundred VM instructions every frame that call no native at
     --          all -- a walk over quads that are then not drawn. Season 1's
     --          lobby, against its VM budget: the one count that can see it.
+    --   queued a stream request on every SLOW pass while this player is in the
+    --          lobby's queue (#403 review): s2-queued's lobby, the one lobby
+    --          that queues anybody.
     if not ARGS.phase then
         local byId = {}
         for _, b in ipairs(budget.phases) do byId[b.id] = b end
@@ -3324,6 +3382,8 @@ local function check()
               what = 'the laptops hidden fifty times over at a season switch' },
             { mutant = 'vm', world = 's1', phase = 'lobby', key = 'vm',
               what = 'a Lua-only walk every frame' },
+            { mutant = 'queued', world = 's2-queued', phase = 'lobby',
+              what = 'a stream request on every SLOW pass while queued' },
         }
         for _, pf in ipairs(PROOFS) do
             if covered[pf.world] then
