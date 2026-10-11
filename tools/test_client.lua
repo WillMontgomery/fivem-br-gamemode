@@ -8291,6 +8291,87 @@ do
     sent = {}
 end
 
+describe('#393 round 9 -- bus.fly resumes its walk of the route, and flies the same plane')
+do
+    -- bus.fly asks where the plane is, and where it will be 1.2 s on, every frame;
+    -- BR.PathPosAt scanned the route from its second point for each. It now asks
+    -- BR.PathPosAtFrom with a cursor of its own for each. Every answer is checked
+    -- here, as the plane flies, against PathPosAt's for the same arguments.
+    local threads = {}
+    local realCreate = Citizen.CreateThread
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    local realFrom, realAt = BR.PathPosAtFrom, BR.PathPosAt
+    local fromCalls, atFromBus, wrong = 0, 0, nil
+    BR.PathPosAtFrom = function(points, t, cur)
+        fromCalls = fromCalls + 1
+        local a1, a2, a3, a4, a5 = realFrom(points, t, cur)
+        local b1, b2, b3, b4, b5 = realAt(points, t)
+        if (a1 ~= b1 or a2 ~= b2 or a3 ~= b3 or a4 ~= b4 or a5 ~= b5) and not wrong then
+            wrong = ('t %s: %s,%s,%s against %s,%s,%s'):format(tostring(t), tostring(a1),
+                tostring(a2), tostring(a3), tostring(b1), tostring(b2), tostring(b3))
+        end
+        return a1, a2, a3, a4, a5
+    end
+    BR.PathPosAt = function(points, t)
+        local info = debug.getinfo(2, 'S')
+        if info and info.source:find('client/bus.lua', 1, true) then atFromBus = atFromBus + 1 end
+        return realAt(points, t)
+    end
+
+    -- A route of sixty points, a turn and a climb, a second apart.
+    local t0 = GetGameTimer()
+    local pts = {}
+    for i = 0, 59 do
+        local a = i * 0.05
+        pts[#pts + 1] = { x = 4000.0 * math.cos(a), y = 4000.0 * math.sin(a),
+                          z = 200.0 + i * 7.5, t = t0 + 2000 + i * 1000 }
+    end
+    fire(BR.Net.BUS_ROUTE, {
+        points = pts, timed = true, heading = 0.0,
+        sx = pts[1].x, sy = pts[1].y, alt = 200.0, legs = { 'a', 'b' },
+        tStart = t0, rotateAt = t0 + 1000,
+        jumpFrom = t0 + 3000, doorsClose = t0 + 50000,
+        tEnd = t0 + 61000,
+    })
+    BR.State.match = { state = BR.MatchState.BUS }
+    BR.State.me.state = BR.PlayerState.BUS
+    local before = #threads
+    BR.Loop.step(BR.Loop.TICK)
+    for i = before + 1, #threads do threads[i]() end
+    -- Through the route at 16 ms a frame, then whole seconds: the cursor walks on.
+    for _ = 1, 120 do frame(16) end
+    for _ = 1, 50 do frame(1000) end
+
+    ok(fromCalls >= 2 * 150 and atFromBus == 0,
+        'bus.fly asks the resumed walk for both of its points every frame on the route',
+        ('%d resumed asks, %d from the start'):format(fromCalls, atFromBus))
+    ok(wrong == nil, 'and every answer is PathPosAt\'s, to the bit', wrong)
+
+    -- And a walk that is asked out of order, or on another route, gives way.
+    local cur = {}
+    local seq = { 30500, 31000, 12000, 59999.5, 2000, 61000, 45000.25, 45000.25, 44000 }
+    local bad = nil
+    for _, dt in ipairs(seq) do
+        local t = t0 + dt
+        local a = { realFrom(pts, t, cur) }
+        local b = { realAt(pts, t) }
+        for k = 1, 5 do if a[k] ~= b[k] and not bad then bad = ('t0+%s'):format(dt) end end
+    end
+    local other = { { x = 0.0, y = 0.0, z = 0.0, t = t0 }, { x = 10.0, y = 0.0, z = 0.0, t = t0 + 90000 } }
+    local a = { realFrom(other, t0 + 45000, cur) }
+    local b = { realAt(other, t0 + 45000) }
+    for k = 1, 5 do if a[k] ~= b[k] and not bad then bad = 'another route' end end
+    ok(bad == nil, 'backwards, on a waypoint, at the ends and on another route, the same answer', bad)
+
+    BR.PathPosAtFrom, BR.PathPosAt = realFrom, realAt
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    Citizen.CreateThread = realCreate
+    sent = {}
+end
+
 -- ------------------------------------------- the orbit camera's pose (#393) ---
 --
 -- client/storm.lua leaves out of the preview wall what is behind the bus's own

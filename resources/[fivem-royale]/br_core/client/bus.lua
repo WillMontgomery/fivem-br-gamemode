@@ -131,11 +131,18 @@ end
 --- fly away. Past the last point this carries on along the last leg at that
 --- leg's speed, level at the last point's height, so the look-ahead below keeps
 --- pointing forward instead of swinging back to the point it just passed.
+---
+--- `cur`, when given, is a cursor for BR.PathPosAtFrom: bus.fly asks every frame
+--- with the clock running forward, and resumes its scan of the route where the
+--- last frame's stopped (#393 round 9). The same answer either way.
 --- @return number x, number y, number z, number dx, number dy
-local function partingPosAt(pts, t)
+local function partingPosAt(pts, t, cur)
     local n = #pts
     local last = pts[n]
-    if n < 2 or t <= last.t then return BR.PathPosAt(pts, t) end
+    if n < 2 or t <= last.t then
+        if cur then return BR.PathPosAtFrom(pts, t, cur) end
+        return BR.PathPosAt(pts, t)
+    end
     local prev = pts[n - 1]
     local dx, dy = last.x - prev.x, last.y - prev.y
     local k = (t - last.t) / math.max(1, last.t - prev.t)
@@ -725,6 +732,10 @@ function BR.Bus.camPose()
     return cam, camPose.cur, camPose.prev
 end
 
+-- bus.fly's two cursors on the route (partingPosAt): where the plane is, and where
+-- it will be 1.2 s on.
+local flyNow, flyAhead = {}, {}
+
 -- Fly the plane. Frame loop, active only while a bus exists AND the record it
 -- flies by has a clock stamped on it; everyone computes the same position from
 -- the same record and the same clock.
@@ -787,7 +798,7 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
         end
     end
     local posAt = partingPosAt
-    local x, y, z = posAt(route.points, t)
+    local x, y, z = posAt(route.points, t, flyNow)
 
     -- A hand on the yoke: slow layered sine drift in altitude, +/- ~8 units,
     -- driven by the SYNCED clock so all 48 planes drift identically. Only
@@ -818,7 +829,7 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     -- polyline -- and the exponential ease below takes out what little
     -- stepping remains. Roll banks into the heading change and pitch
     -- follows the climb, both gently.
-    local ax, ay, az = posAt(route.points, t + 1200)
+    local ax, ay, az = posAt(route.points, t + 1200, flyAhead)
     local ddx, ddy, ddz = ax - x, ay - y, az - z
     local hLen = math.sqrt(ddx * ddx + ddy * ddy)
 

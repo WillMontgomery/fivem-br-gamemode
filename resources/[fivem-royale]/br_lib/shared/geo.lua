@@ -153,6 +153,50 @@ function BR.PathPosAt(points, t)
     return last.x, last.y, last.z, 0.0, 0.0
 end
 
+--- BR.PathPosAt for a caller that asks again and again as its clock runs forward
+--- -- the plane, every frame (#393 round 9). The same answer, to the bit.
+---
+--- PathPosAt scans the path from its second point for the first one at or after
+--- t. `cur` remembers which point that was for the last t asked, on which path:
+--- a later t on the same path cannot have its point before that one -- every
+--- point before it is earlier than the last t, so earlier than this one -- and the
+--- scan starts there. A t behind the last one (the synced clock can step back), a
+--- different path or one of another length scans from the start, as PathPosAt
+--- does.
+---
+--- @param points table  array of { x, y, z, t }
+--- @param t number      synced-clock milliseconds
+--- @param cur table     the caller's cursor, {} to start; kept between calls
+--- @return number x, number y, number z, number dx, number dy
+function BR.PathPosAtFrom(points, t, cur)
+    local n = #points
+    local first, last = points[1], points[n]
+
+    if t <= first.t or n == 1 then
+        local nxt = points[2] or last
+        return first.x, first.y, first.z, nxt.x - first.x, nxt.y - first.y
+    end
+    if t >= last.t then
+        local prev = points[n - 1] or first
+        return last.x, last.y, last.z, last.x - prev.x, last.y - prev.y
+    end
+
+    local i = 2
+    if cur.points == points and cur.n == n and t >= cur.t then i = cur.i end
+    while i <= n do
+        local b = points[i]
+        if t <= b.t then
+            cur.points, cur.n, cur.t, cur.i = points, n, t, i
+            local a = points[i - 1]
+            local k = (t - a.t) / math.max(1, b.t - a.t)
+            return BR.Lerp(a.x, b.x, k), BR.Lerp(a.y, b.y, k), BR.Lerp(a.z, b.z, k),
+                   b.x - a.x, b.y - a.y
+        end
+        i = i + 1
+    end
+    return last.x, last.y, last.z, 0.0, 0.0
+end
+
 --- Pick a chord across a circle: two points on the circumference, offset from
 --- centre so the line does not always pass through the middle.
 ---
