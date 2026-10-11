@@ -338,6 +338,18 @@ exports('pushFocus', pushFocus)
 exports('popFocus', popFocus)
 exports('clearFocus', clearFocus)
 
+--- The focus stack, bottom first, AS A COPY (#405).
+---
+--- For pause.lua's handover to GTA's own menu, which empties this stack and has
+--- to know what was on it to put it back. A copy, so nothing outside this file
+--- can push or pop around applyFocus.
+BR.Ui = BR.Ui or {}
+function BR.Ui.focusStack()
+    local out = {}
+    for i, s in ipairs(focusStack) do out[i] = s end
+    return out
+end
+
 --- Focus diagnostics.
 ---
 --- "I have no mouse" is a symptom with no error attached to it, and the cause is

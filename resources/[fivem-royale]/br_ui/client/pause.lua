@@ -74,6 +74,21 @@ local mapSeen = false
 --- property this file was missing.
 local mapLastUp = 0
 
+--- OUR SCREENS THAT WERE OVER THE LOBBY WHEN GTA'S OWN MENU TOOK THE SCREEN (#405).
+---
+--- Owner, 2026-10-11: "If they're at step 6 and actually decide to open the GTA
+--- pause menu to tweak settings, when they return they're confused because our
+--- settings page is seemingly gone and they're back on the main screen. Same for
+--- step 8." The handover empties the focus stack -- it must, nothing of ours may
+--- draw over the scaleform -- and br_core's `br:ui:frontendClosed` puts back
+--- `lobby` and nothing else, so Settings was simply never asked for again. The
+--- Graphics card's own words promised the opposite: "Close that menu and you
+--- will come straight back here."
+---
+--- So the handover writes down what was over the lobby, and the frontend closing
+--- puts it back -- see BR.Pause.resumable and putBack.
+local resume = {}
+
 --- Which raise owns the shared flags.
 ---
 --- WHY A GENERATION AND NOT A BOOLEAN (#207). The watcher thread's teardown
@@ -657,6 +672,44 @@ function BR.Pause.openFrontendMap(page)
     end)
 end
 
+--- The screens to bring back once the lobby is back: everything that was over
+--- `lobby` on the stack, bottom first (#405).
+---
+--- PURE, so the harness can ask it directly. A stack with no `lobby` in it is a
+--- match, and gives nothing back: br_core does not restore anything there
+--- either, and a menu put back in the middle of a fight is not a kindness.
+--- @param stack string[]
+--- @return string[]
+function BR.Pause.resumable(stack)
+    local out, above = {}, false
+    for _, s in ipairs(stack or {}) do
+        if above then out[#out + 1] = s end
+        if s == 'lobby' then above = true end
+    end
+    return out
+end
+
+--- Put back what the handover took, if the lobby came back (#405).
+---
+--- ONLY OVER THE LOBBY, AND br_core DECIDES THAT. `br:ui:frontendClosed` has just
+--- run, and br_core answers it by pushing `lobby` when -- and only when -- the
+--- player is still in the lobby. If a match took them while GTA's menu was up,
+--- `lobby` is not on top and nothing comes back over the match.
+---
+--- THE PAUSE MENU COMES BACK THROUGH BR.Pause.open, on its Settings tab -- the
+--- only tab with a door into GTA's menu -- so `open` and the tab stay true. Any
+--- other screen is pushed as it was.
+local function putBack()
+    local back = resume
+    resume = {}
+    local stack = BR.Ui and BR.Ui.focusStack() or {}
+    if stack[#stack] ~= 'lobby' then return end
+    for _, s in ipairs(back) do
+        if s == 'pause' then BR.Pause.open('settings')
+        else TriggerEvent('br:ui:pushFocus', s) end
+    end
+end
+
 --- GTA's own pause menu, opened PLAINLY, for the player to navigate.
 ---
 --- A DIFFERENT JOB FROM THE MAP, hence a different function. The map is a
@@ -727,6 +780,7 @@ function BR.Pause.openFrontendPlain()
             -- this whole path exists to fix.
             announceFrontend(false)
             TriggerEvent('br:ui:frontendClosed')
+            putBack()
             return
         end
 
@@ -757,6 +811,8 @@ function BR.Pause.openFrontendPlain()
         -- the lobby with no cursor and nothing to click. br_core decides what
         -- to restore, because it is the one that knows where they are.
         TriggerEvent('br:ui:frontendClosed')
+        -- ...AND WHAT WAS OVER THE LOBBY COMES BACK OVER IT (#405). See `resume`.
+        putBack()
     end)
 end
 
@@ -959,6 +1015,8 @@ end)
 --- Every route into the engine's frontend goes through this function now, so
 --- there is one place that knows the order and one place to be wrong.
 function BR.Pause.handOverToFrontend()
+    -- WRITTEN DOWN BEFORE ANYTHING IS POPPED (#405). See `resume`.
+    resume = BR.Pause.resumable(BR.Ui and BR.Ui.focusStack() or {})
     BR.Pause.close()
     TriggerEvent('br:ui:closeSettings')
     TriggerEvent('br:ui:clearFocus')

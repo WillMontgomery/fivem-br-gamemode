@@ -17588,6 +17588,122 @@ do
 end
 
 -- ======================================================================== --
+-- #405. A SCREEN HANDED TO GTA'S OWN MENU COMES BACK WHEN IT CLOSES
+-- ======================================================================== --
+--
+-- "If they're at step 6 and actually decide to open the GTA pause menu to tweak
+-- settings, when they return they're confused because our settings page is
+-- seemingly gone and they're back on the main screen. Same for step 8."
+-- (owner, 2026-10-11.)
+--
+-- THE CAUSE, IN ONE SENTENCE: the handover empties the focus stack -- it must,
+-- nothing of ours may draw over the scaleform -- and br_core answers the menu
+-- closing by pushing `lobby` and nothing else, so Settings was never asked for
+-- again and the walkthrough's card sat waiting for a screen that had gone.
+--
+-- WHAT IS REAL AND WHAT STANDS IN. br_ui's nui.lua and pause.lua are the real
+-- files, loaded by the blocks above, and the handover's thread is RUN here --
+-- recorded, then stepped against an engine menu that comes up and then goes.
+-- br_core's half is not in this harness (client/state.lua is not loaded); it is
+-- stood in for by its whole body, quoted: `if S.me.state == LOBBY then
+-- pushFocus('lobby') end`. Nothing about it changed in this round.
+
+describe('#405 -- a screen handed to GTA\'s own menu comes back when it closes')
+do
+    -- THE ENGINE'S MENU, SCRIPTED: up for the raise and the check after it, then
+    -- gone -- which is the player closing it, by whatever route.
+    local answers = {}
+    local realActive = IsPauseMenuActive
+    IsPauseMenuActive = function()
+        if #answers > 0 then return table.remove(answers, 1) end
+        return false
+    end
+    IsPauseMenuRestarting = function() return false end
+    ActivateFrontendMenu = function() end
+
+    -- br_core's `br:ui:frontendClosed`, stood in for (see the header).
+    local inLobby, standIn = true, true
+    AddEventHandler('br:ui:frontendClosed', function()
+        if standIn and inLobby then TriggerEvent('br:ui:pushFocus', 'lobby') end
+    end)
+
+    -- WHAT THE PAGE WAS TOLD, read off the envelopes themselves.
+    local realSend = SendNUIMessage
+    local focusSent = {}
+    SendNUIMessage = function(msg)
+        if type(msg) == 'table' and msg.k == BR.Nui.FOCUS then focusSent[#focusSent + 1] = msg.d end
+    end
+    local function told() return focusSent[#focusSent] or {} end
+
+    local threads = {}
+    local realThread = Citizen.CreateThread
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    --- Hand over to GTA's menu from whatever is up, and let the player close it.
+    local function roundTrip()
+        threads = {}
+        BR.Pause.handOverToFrontend()
+        answers = { true, true }    -- the raise lands, the check sees it up
+        for _, fn in ipairs(threads) do fn() end
+        return #threads
+    end
+
+    while BR.Pause.closeMap() do end
+    BR.Pause.close()
+
+    -- 1. THE REPORT. Settings from the lobby, through its Graphics button.
+    fire('br:ui:clearFocus')
+    fire('br:ui:pushFocus', 'lobby')
+    fire('br:ui:pushFocus', 'settings')
+    ok(roundTrip() == 1, 'the handover raised GTA\'s menu on its own thread, and the thread ran')
+    local st = BR.Ui.focusStack()
+    ok(st[#st] == 'settings',
+       'Settings is on top again once GTA\'s menu closes, over the lobby',
+       table.concat(st, ' > '))
+    ok(told().screen == 'settings', 'and the page was told Settings, last', tostring(told().screen))
+
+    -- 2. THE SAME DOOR FROM THE LOBBY'S PAUSE MENU, whose Settings tab is inline.
+    fire('br:ui:clearFocus')
+    fire('br:ui:pushFocus', 'lobby')
+    BR.Pause.open()
+    roundTrip()
+    ok(told().screen == 'pause' and told().tab == 'settings',
+       'the pause menu comes back, on its Settings tab',
+       ('%s / %s'):format(tostring(told().screen), tostring(told().tab)))
+    BR.Pause.close()
+
+    -- 3. A MATCH IS NOT THE LOBBY: nothing comes back over a fight.
+    inLobby = false
+    fire('br:ui:clearFocus')
+    BR.Pause.open()
+    roundTrip()
+    ok(told().screen == 'none', 'in a match, the menu GTA\'s closed is not put back',
+       tostring(told().screen))
+
+    -- 4. A MATCH THAT TOOK THEM WHILE GTA'S MENU WAS UP: br_core does not put the
+    --    lobby back, so nothing is put back over the match either.
+    fire('br:ui:clearFocus')
+    fire('br:ui:pushFocus', 'lobby')
+    fire('br:ui:pushFocus', 'settings')
+    roundTrip()
+    ok(told().screen == 'none',
+       'no lobby to come back to, no Settings over the match', tostring(told().screen))
+
+    -- 5. THE RULE ON ITS OWN.
+    local r = BR.Pause.resumable({ 'lobby', 'settings' })
+    ok(#r == 1 and r[1] == 'settings', 'resumable: what was over the lobby', table.concat(r, ','))
+    ok(#BR.Pause.resumable({ 'pause' }) == 0, 'resumable: a match stack gives nothing back')
+
+    -- Tidy.
+    standIn = false
+    fire('br:ui:clearFocus')
+    BR.Pause.close()
+    SendNUIMessage = realSend
+    Citizen.CreateThread = realThread
+    IsPauseMenuActive = realActive
+end
+
+-- ======================================================================== --
 -- #208. GTA'S OWN VEHICLE NAME DOES NOT DRAW OVER OURS
 -- ======================================================================== --
 --
