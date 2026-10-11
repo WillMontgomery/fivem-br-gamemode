@@ -183,6 +183,12 @@ local candidate = nil
 --- never reaches that line, and a request nobody releases keeps thirteen
 --- vehicles in memory for a whole match. The reconciler releases whatever is
 --- left here once this player is no longer in warmup.
+---
+--- AND SINCE #403 THE LOBBY ASKS FIRST. A player queued in the lobby has these
+--- same models (BR.Shop.models) asked for by client/preload.lua, which hands
+--- them over to this table as the trip starts -- forgotten there, never
+--- released -- so the ordinary road above is still the one that hands them
+--- back. The warmup's fade now waits on the crates' models beside these cars.
 local preloaded = {}
 
 --- Model dimensions, cached by model hash. A model's size never changes and the
@@ -835,6 +841,24 @@ function BR.Shop.preload()
             preloaded[model] = true
         end
     end
+end
+
+--- The showroom's models, by hash, for the lobby's head start (#403).
+---
+--- client/preload.lua asks for exactly these while this player is queued in
+--- the lobby, so the preload above finds them already resident when the trip
+--- starts. THE SAME `showable` TEST as the preload and the fade, so the lobby,
+--- the trip and the wait agree on which cars this warmup has. Asks for nothing
+--- itself; a fresh table every call, which the caller keeps.
+--- @return integer[]
+function BR.Shop.models()
+    local out = {}
+    if not BR.ShopSolve.enabled(S) then return out end
+    for _, row in ipairs(rows) do
+        local model = showable(row)
+        if model then out[#out + 1] = model end
+    end
+    return out
 end
 
 --- How many of the showroom's cars are not standing on the pad yet -- what the

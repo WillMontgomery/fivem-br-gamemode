@@ -2418,6 +2418,11 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
     -- it for why being queued suspends the watch rather than ending it.
     readyQueued = you
 
+    -- AND SO DOES THE LOBBY'S HEAD START ON THE WARMUP'S MODELS (#403):
+    -- client/preload.lua asks for them while this is true, and hands them back
+    -- once it has stayed false -- leaving the queue, or a queue that broke up.
+    S.queued = you
+
     -- Drop ourselves from the invitable list here rather than making the UI
     -- filter: the client knows its own server id, the interface should not
     -- have to care.

@@ -5610,6 +5610,21 @@ do
     ok(not holds(requests, BLISTA) and holds(requests, SULTAN),
         'and its model is not asked for either')
 
+    -- ═══ THE LOBBY'S HEAD START ASKS FOR THE SAME CARS (#403) ═══
+    --
+    -- client/preload.lua asks for BR.Shop.models while this player is queued
+    -- in the lobby, so the trip's preload finds them resident. They must be
+    -- exactly the cars the preload above asks for and the fade waits on, and
+    -- the list itself must ask the streamer for nothing.
+    requests = {}
+    local listed = BR.Shop.models()
+    ok(#requests == 0, 'the lobby\'s list of showroom models asks for nothing itself',
+        #requests)
+    ok(#listed == 2 and holds(listed, SULTAN) and holds(listed, BISON)
+           and not holds(listed, BLISTA),
+        'and names exactly the cars the trip asks for: not the one this build '
+            .. 'does not have', #listed)
+
     -- ═══ THE SEED LANDS; THE GATE'S HURRY PUTS THE PAD UP ON THE SPOT ═══
     --
     -- The reconciler would build on its next pass, up to a second away. The
@@ -5715,6 +5730,8 @@ do
     ok(#requests == 0 and BR.Shop.pendingCars() == 0 and #builds == n,
         'with the shop switched off there is nothing to ask for, nothing to '
             .. 'build and nothing to wait on', #requests)
+    ok(#BR.Shop.models() == 0,
+        'and nothing for the lobby to ask for ahead of it (#403)', #BR.Shop.models())
     DIAG.enabled = true
 
     Citizen.CreateThread, Citizen.Wait = syncThread, syncWait

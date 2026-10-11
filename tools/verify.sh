@@ -140,6 +140,7 @@ NOTES=(
     "test_revivekey|Revive keys: a downed player can't take their own; expiry, range, buying, two at once"
     "test_ambulances|Station ambulances: visible in the match, cleaned up after it, and shown on squad maps"
     "test_shop|Warmup car shop: you get exactly the car shown, it survives the reset, never two for one"
+    "test_preload|Queued in the lobby, the warmup's cars and crate boxes stream early and are always handed back; Season 2 boxes only on Season 2, festive ones only when festive"
     "test_gunshop|In-match gun shop sells exactly the map's rare-and-up guns, and nothing from airdrops"
     "test_volts|Volts spent in a match are counted only when the purchase actually went through"
     "test_emotes|Emotes on the server: buying, equipping and granting them, all off before Season 2"
@@ -960,6 +961,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # spawns and the 100 ms log it keeps, a client's report of what survived an
     # ownership move, `drive` and `clear` -- and nothing at all until typed.
     #
+    # test_preload.lua is #403's lobby head start on the warmup's models, on the
+    # real client/preload.lua: what it asks for while a player is queued (the
+    # showroom's cars and the season's boxes, festive only when festive), and
+    # that every request is handed back on every road out -- except the two it
+    # must leave alone, because a release in br_core hands back every request
+    # for that model in br_core: the cars once the showroom has them, and a box
+    # client/loot.lua has built. Its wait-side half is in test_lobbyseq.lua.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -1004,6 +1013,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_revivekey.lua
         tools/test_ambulances.lua
         tools/test_shop.lua
+        tools/test_preload.lua
         tools/test_gunshop.lua
         tools/test_volts.lua
         tools/test_emotes.lua

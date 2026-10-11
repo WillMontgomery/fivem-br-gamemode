@@ -505,6 +505,16 @@ client_scripts {
     -- IT IS THE FIFTH CONSUMER OF THE ONE PROMPT BROWSER and is declared beside
     -- the fourth for that reason: crate, pump, revive, heal station, showroom.
     'client/shop.lua',
+    -- The lobby's head start on the warmup's models, and the crate half of the
+    -- warmup fade's wait (#403).
+    --
+    -- AFTER client/shop.lua, AND THAT IS A REAL ORDER: both hand models back on
+    -- the SLOW band, which runs its callbacks in the order they registered, so
+    -- in any pass where this one asks for a car in the lobby the showroom's own
+    -- net has already handed back its trip's requests rather than handing back
+    -- this one's a pass later. After client/loot.lua for a reader: it asks
+    -- BR.Loot.crates2On and BR.Loot.boxModels, both at call time.
+    'client/preload.lua',
     -- The revive key on screen (#219 step 5): the plate over a dead mate's key,
     -- the plate at an ambulance, and the hold that brings them back.
     --
