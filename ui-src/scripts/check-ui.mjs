@@ -2361,6 +2361,50 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R30  The round's new card copy reaches a card (#405).
+//
+// Owner, 2026-10-11: step 1 gets "a section in the card that explains this is
+// an interactive demo", and the Market gets a card on its Done button. The
+// words and the steps are in steps.ts and scripts/test-tutorial-lock.mjs pins
+// them; this pins the two places they reach the page:
+//
+//   NOT DRAWN -- TutorialLayer stops passing `note={step.note}`, or
+//     AnnotationCard stops rendering `p.note` through `emphasize`, so step 1's
+//     section is written and never shown;
+//   NOT THERE -- the Market's Done loses `data-tut="market-done"`, so the Market
+//     card finds nothing to point at and the walkthrough ends 1.2s after the
+//     Market opens (see `missing` in TutorialLayer).
+//
+// IT CAN FAIL. Drop `note={step.note}`, the `{emphasize(p.note)}` paragraph,
+// or the span around the Market's Done.
+// ---------------------------------------------------------------------------
+{
+  const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
+  const C = join(SRC, 'tutorial', 'AnnotationCard.tsx')
+  const K = join(SRC, 'screens', 'Market.tsx')
+  if (![L, C, K].every((f) => existsSync(f))) {
+    fail('R30 tutorial-copy', 'src',
+      'tutorial/TutorialLayer.tsx, tutorial/AnnotationCard.tsx or screens/Market.tsx is'
+      + ' missing. If they moved, move this rule with them (#405).')
+  } else {
+    if (!/\bnote=\{step\.note\}/.test(stripComments(read(L)))) {
+      fail('R30 tutorial-copy', 'src/tutorial/TutorialLayer.tsx',
+        'the card is no longer given `note={step.note}`, so step 1\'s interactive-demo'
+        + ' section never reaches it (#405).')
+    }
+    if (!/className=\{`tut-body tut-note[^`]*`\}>\{emphasize\(p\.note\)\}<\/p>/.test(stripComments(read(C)))) {
+      fail('R30 tutorial-copy', 'src/tutorial/AnnotationCard.tsx',
+        'the card no longer renders `p.note` as a `tut-note` paragraph through emphasize (#405).')
+    }
+    if (!/<span data-tut="market-done"[^>]*>\s*<Btn[^>]*onPress=\{close\}>\s*Done/.test(stripComments(read(K)))) {
+      fail('R30 tutorial-copy', 'src/screens/Market.tsx',
+        'the Market\'s Done is not inside `data-tut="market-done"`. The Market card'
+        + ' points at it and waits on the press (#405).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

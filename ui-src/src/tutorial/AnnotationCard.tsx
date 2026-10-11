@@ -183,6 +183,11 @@ export type CardProps = {
   ref?: Ref<HTMLDivElement>
   title: string
   body: string
+  /**
+   * A second section, under the body and set apart from it (#405). Same
+   * markup, same weight -- the separation is the rule above it.
+   */
+  note?: string
   /** 1-based, for the "3 of 9" line. */
   index: number
   total: number
@@ -292,6 +297,9 @@ export default function AnnotationCard(p: CardProps) {
           the mistake underneath the bug. */}
       <div className={`tut-title${landed ? ' tut-in' : ''}`}>{p.title}</div>
       <p className={`tut-body${landed ? ' tut-in' : ''}`}>{emphasize(p.body)}</p>
+      {p.note ? (
+        <p className={`tut-body tut-note${landed ? ' tut-in' : ''}`}>{emphasize(p.note)}</p>
+      ) : null}
 
       <div className="tut-foot">
         {/* THE COUNT IS NOT DECORATION. "How much of this is left" is the first

@@ -333,6 +333,14 @@ export type Step = {
    */
   screen?: string
   /**
+   * A second section under the body, set apart from it. Same markup as `body`.
+   *
+   * ONE CARD HAS ONE. Owner, 2026-10-11 (#405), on the first card: "add a
+   * section in the card that explains this is an interactive demo and the
+   * player must click the options in focus."
+   */
+  note?: string
+  /**
    * The only lobby controls that answer while this card is up (#405).
    *
    * EVERY LOBBY STEP SAYS WHAT IS LIVE, and tutorial/lock.ts is the one place
@@ -384,8 +392,8 @@ const SETTINGS_EXITS = ['settings-save', 'settings-cancel']
  * `live` and `locked` below is that, card by card -- tutorial/lock.ts applies
  * it and scripts/test-tutorial-lock.mjs pins it.
  *
- * THE FIRST CARD LOCKS EVERYTHING TOO. On that card the only option in focus
- * is its own Next.
+ * THE FIRST CARD LOCKS EVERYTHING TOO. Its new section says the player must
+ * click the options in focus, and on that card the option in focus is Next.
  */
 export const LOBBY_STEPS: Step[] = [
   {
@@ -393,6 +401,7 @@ export const LOBBY_STEPS: Step[] = [
     target: 'lobby-menu',
     title: 'Welcome to Blitz Royale',
     body: 'This is the lobby. Everything you do between matches happens on this screen, and this walkthrough covers all of it.',
+    note: 'This is an interactive demo - click the options in focus to move through it.',
     advance: 'next',
     live: [],
   },
@@ -529,7 +538,9 @@ export const LOBBY_STEPS: Step[] = [
     id: 'locker-inside',
     target: 'locker-done',
     title: 'Who you look like',
-    body: 'Pick the character you want to drop in as. It is how other players see you and nothing more. Press **Done** when you are ready.',
+    // THE INVITATION IS THE OWNER'S (#405): "invite them to change their
+    // character, but press done when they're ready." The whole Locker is live.
+    body: 'Go ahead and change your character - it is how other players see you. Press **Done** when you are ready.',
     advance: 'click',
     screen: 'locker',
     live: ['page-locker'],
@@ -541,6 +552,22 @@ export const LOBBY_STEPS: Step[] = [
     body: "Volts are the currency of the game. You can use them to buy things within the game, or within the **Market**, where you'll find cosmetics.",
     advance: 'click',
     live: ['market'],
+  },
+  {
+    // ═══ A CARD INSIDE THE MARKET (#405) ═══
+    //
+    // It used to have none: owner, 2026-09-04, "We don't have much to show them
+    // in the market yet, so we'll leave them to their own devices there." Now,
+    // 2026-10-11: "When they open it, tell them it may look a bit empty in here
+    // for now as we're still working on things, and focus them to the Done
+    // button." HIS SENTENCE, and the ring on Done is the focus.
+    id: 'market-inside',
+    target: 'market-done',
+    title: 'The Market',
+    body: "It may look a bit empty in here for now, as we're still working on things.",
+    advance: 'click',
+    screen: 'market',
+    live: ['page-market'],
   },
   {
     id: 'help',

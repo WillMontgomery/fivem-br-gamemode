@@ -1858,6 +1858,16 @@ html, body, #root {
 }
 
 .tut-body b { font-weight: var(--font-tutorial-head); color: #ffffff; }
+
+/* A CARD'S SECOND SECTION (#405): the body's own type, set apart by a rule and
+   arriving a beat after it. The first card carries one -- "this is an
+   interactive demo". */
+.tut-note {
+  margin-top: 0.6rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+.tut-note.tut-in { transition-delay: 120ms; }
 .tut-body i { font-style: italic; }
 
 .tut-foot {

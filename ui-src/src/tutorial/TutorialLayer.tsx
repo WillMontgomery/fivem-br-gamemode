@@ -1127,7 +1127,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   //
   // It is a general rule rather than a special case for the Market, because it
   // is true of every un-scoped step: a card explaining Ready up has nothing to
-  // say while the Locker is covering it.
+  // say while the Locker is covering it. (The Market has a card of its own now,
+  // #405 -- scoped to it with `screen`, which is the other half of this rule.)
   //
   // `none` IS THE BARE LOBBY -- store/index.ts's initial `focus`.
   const waitingForScreen = step !== undefined
@@ -1338,6 +1339,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // `{key:…}`, `[[Esc]]` and `~Volts~` are the renderer's to resolve, not
         // this layer's. See the note where `withKeys` used to be.
         body={step.body}
+        note={step.note}
         index={i + 1}
         total={steps.length}
         left={left}

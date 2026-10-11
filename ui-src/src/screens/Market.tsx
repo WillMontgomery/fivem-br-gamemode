@@ -241,9 +241,13 @@ export default function Market() {
         </div>
 
         <div className="shrink-0 py-6">
-          <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
-            Done
-          </Btn>
+          {/* data-tut: the walkthrough's Market card rings Done and waits on the
+              press (#405). `inline-block` so the anchor has the button's box. */}
+          <span data-tut="market-done" className="inline-block">
+            <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
+              Done
+            </Btn>
+          </span>
         </div>
       </div>
     </div>

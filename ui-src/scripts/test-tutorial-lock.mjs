@@ -112,6 +112,17 @@ check('step 13 (locker): only Locker', liveOnLobby('locker'), 'locker')
 check('step 14 (inside the Locker): the whole Locker answers, Done too',
   locked('locker-inside', 'lockerRow') || locked('locker-inside', 'lockerDone'), false)
 check('step 15 (market): only Market', liveOnLobby('market'), 'market')
+check('inside the Market there is a card, scoped to it, on Done',
+  `${step('market-inside').screen}/${step('market-inside').target}/${step('market-inside').advance}`,
+  'market/market-done/click')
+check('...it follows the Market card directly',
+  LOBBY_STEPS.findIndex((x) => x.id === 'market-inside')
+    - LOBBY_STEPS.findIndex((x) => x.id === 'market'), 1)
+check('...and the whole Market answers under it, Done too',
+  isLocked(step('market-inside'), ['market-done', 'page-market'])
+    || isLocked(step('market-inside'), ['page-market']), false)
+check('...and it holds Escape on the Market', holdsEscape(step('market-inside'), 'market'), true)
+check('step 1 has its interactive-demo section', typeof step('welcome').note, 'string')
 check('step 16 (help): only Help', liveOnLobby('help'), 'help')
 check('step 17 (help-inside): Back locked', locked('help-inside', 'helpBack'), true)
 check('step 17: the rest of Help answers', locked('help-inside', 'helpCopy'), false)
