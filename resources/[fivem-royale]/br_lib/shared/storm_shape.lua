@@ -3746,6 +3746,56 @@ function BR.StormShape.pointAtComponent(shape, c, t)
     return BR.StormShape.pointAtArc(shape, c.s0 + (t % c.len))
 end
 
+--- pointAtComponent for a walk that moves FORWARD, resuming where its last sample
+--- stopped (#393 round 9). The same numbers, to the bit.
+---
+--- pieceAtArc scans from the first piece for every sample, so the wall's walk of a
+--- blob of fifty pieces paid a scan of half of them on each of its few hundred
+--- samples a frame. `cur` remembers the piece the last sample landed on and the arc
+--- length it asked for: a sample at or past that arc length starts its scan there.
+--- That is exact because the piece ends seal() lays down never decrease -- each is
+--- the running sum `P + pc.len` -- so every piece before the remembered one ends at
+--- or before the last sample, and so before this one, and pieceAtArc would have
+--- passed it too. A sample BEHIND the cursor (a walk that wraps, or any other
+--- order) scans from the first piece, as pointAtComponent does.
+---
+--- @param shape table
+--- @param c table     a component, as pointAtComponent takes
+--- @param t number    metres along that component; any real number
+--- @param cur table   the walk's cursor, { i, s }: set i = 1, s = -math.huge to start
+--- @return number x, number y, number nx, number ny
+function BR.StormShape.pointAtComponentFrom(shape, c, t, cur)
+    local s
+    if not c or c.len <= 0.0 then s = t else s = c.s0 + (t % c.len) end
+    local P = shape and shape.P or 0.0
+    if P <= 0.0 then return 0.0, 0.0, 1.0, 0.0 end
+    s = s % P
+    local pcs = shape.pieces
+    local n = #pcs
+    local i = 1
+    if s >= cur.s then i = cur.i end
+    while i <= n do
+        local pc = pcs[i]
+        if s < pc.s0 + pc.len then
+            cur.i, cur.s = i, s
+            -- pieceAt, written out: the same expressions on the same operands.
+            local u = s - pc.s0
+            if pc.kind == 'arc' then
+                local th = pc.a0 + pc.sweep * (u / pc.len)
+                local cc, ss = cos(th), sin(th)
+                return pc.cx + cc * pc.r, pc.cy + ss * pc.r, cc * pc.out, ss * pc.out
+            end
+            return pc.x0 + pc.ux * u, pc.y0 + pc.uy * u, pc.nx, pc.ny
+        end
+        i = i + 1
+    end
+    -- pieceAtArc's own fallback: s at or a hair under P lands on the last piece's end.
+    local pc = pcs[n]
+    if not pc then return 0.0, 0.0, 1.0, 0.0 end
+    cur.i, cur.s = n, s
+    return pieceAt(pc, pc.len)
+end
+
 --- The boundary point at arc length `s`, and the OUTWARD unit normal there.
 ---
 --- `s` IS WRAPPED HERE, and that is the whole reason this is a function rather

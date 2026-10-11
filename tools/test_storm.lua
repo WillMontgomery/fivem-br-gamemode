@@ -6271,6 +6271,140 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('wall.cursor')
+do
+    -- ═══ THE STRIP'S WALK RESUMES ITS PIECE SCAN, AND DRAWS THE SAME WALL (#393 round 9) ═══
+    --
+    -- pieceAtArc scanned from the first piece for every sample, so a moving blob wall
+    -- of fifty pieces paid a scan of half of them on each of its few hundred samples a
+    -- frame. buildStrip now asks StormShape.pointAtComponentFrom, which starts from the
+    -- piece the walk's last sample landed on. The claim is that nothing moved: every
+    -- answer is pointAtComponent's to the bit -- forward, backward, on the piece seams,
+    -- past the component's end -- and the client draws the same triangles with it.
+    local C0 = newStormClient()
+    local BR = C0.env.BR
+    local SS = BR.StormShape
+    local function lerp(a, b, t) return a + (b - a) * t end
+    local recs = {
+        { phase = 1, cx0 = 0.0, cy0 = 0.0, r0 = 5200.0, cx1 = 900.0, cy1 = 1400.0, r1 = 2600.0 },
+        { phase = 3, cx0 = 0.0, cy0 = 0.0, r0 = 1600.0, cx1 = 300.0, cy1 = -200.0, r1 = 950.0 },
+        { phase = 6, cx0 = 0.0, cy0 = 0.0, r0 = 260.0, cx1 = 120.0, cy1 = 60.0, r1 = 110.0 },
+        { phase = 2, cx0 = 0.0, cy0 = 0.0, r0 = 2600.0, cx1 = 4400.0, cy1 = 0.0, r1 = 1600.0 },
+    }
+    for _, r in ipairs(recs) do r.seed, r.tWait, r.tShrink = 393, 60000, 60000 end
+    local shapes = {
+        SS.circle(90.0, 40.0, 950.0),
+        SS.union2(0.0, 0.0, 400.0, 550.0, 0.0, 300.0),
+        SS.union2(0.0, 0.0, 400.0, 2000.0, 0.0, 300.0),
+    }
+    for _, rec in ipairs(recs) do
+        for _, t in ipairs({ 0.0, 0.03, 0.5, 0.97 }) do
+            local z = BR.StormZone(rec, lerp(rec.cx0, rec.cx1, t), lerp(rec.cy0, rec.cy1, t),
+                lerp(rec.r0, rec.r1, t), t, 1.0)
+            shapes[#shapes + 1] = z
+            shapes[#shapes + 1] = SS.inset(z, 6.0)
+        end
+    end
+
+    local rng = 393
+    local function rand()
+        rng = (rng * 1103515245 + 12345) % 2147483648
+        return rng / 2147483648
+    end
+    local compared, bad, pieces = 0, nil, 0
+    local function same(shape, c, t, cur, how)
+        local a1, a2, a3, a4 = SS.pointAtComponent(shape, c, t)
+        local b1, b2, b3, b4 = SS.pointAtComponentFrom(shape, c, t, cur)
+        compared = compared + 1
+        if (a1 ~= b1 or a2 ~= b2 or a3 ~= b3 or a4 ~= b4) and not bad then
+            bad = ('%s at t %.17g: (%.17g, %.17g) against (%.17g, %.17g)'):format(how, t,
+                b1, b2, a1, a2)
+        end
+    end
+    for _, shape in ipairs(shapes) do
+        pieces = math.max(pieces, #shape.pieces)
+        for _, c in ipairs(SS.components(shape)) do
+            -- Forward, in steps of every size, through every seam and past the end.
+            local cur = { i = 1, s = -math.huge }
+            local t = 0.0
+            while t < c.len * 1.3 do
+                same(shape, c, t, cur, 'forward')
+                t = t + rand() * c.len / 40.0
+            end
+            -- On every piece seam of the component, exactly, and a hair either side.
+            cur.i, cur.s = 1, -math.huge
+            for _, pc in ipairs(shape.pieces) do
+                local at = pc.s0 - c.s0
+                if at >= 0.0 and at <= c.len then
+                    for _, d in ipairs({ -1e-9, 0.0, 1e-9 }) do same(shape, c, at + d, cur, 'seam') end
+                end
+            end
+            same(shape, c, c.len, cur, 'the end')
+            -- Any order: the cursor must give way to a sample behind it.
+            for _ = 1, 60 do same(shape, c, (rand() * 2.6 - 0.8) * c.len, cur, 'any order') end
+            -- And the walk with no component, which wraps on the perimeter.
+            cur.i, cur.s = 1, -math.huge
+            for k = 0, 30 do same(shape, nil, k * shape.P / 29.0, cur, 'no component') end
+        end
+    end
+    ok(bad == nil and compared > 5000 and pieces >= 8,
+        'the resumed walk answers pointAtComponent to the bit: forward, on every seam, '
+            .. 'past the end and in any order, on circles, unions and blob walls',
+        bad or ('%d samples on %d shapes, up to %d pieces'):format(compared, #shapes, pieces))
+
+    -- THE CLIENT WALKS THROUGH IT AND DRAWS THE SAME TRIANGLES: the same sweep drawn by
+    -- a client as shipped and by one whose resumed walk rescans from the first piece.
+    local function sweeping(rescan)
+        local C = noFarFade(newStormClient())
+        local S = C.env.BR.StormShape
+        local PAC, FROM = S.pointAtComponent, S.pointAtComponentFrom
+        C.calls = { from = 0, plain = 0 }
+        S.pointAtComponent = function(...) C.calls.plain = C.calls.plain + 1 return PAC(...) end
+        S.pointAtComponentFrom = function(shape, c, t, cur)
+            C.calls.from = C.calls.from + 1
+            if rescan then return PAC(shape, c, t) end
+            return FROM(shape, c, t, cur)
+        end
+        local rec = C.record(1, 0.0, 0.0, 5200.0, 900.0, 1400.0, 2600.0, 1000, 240000, 0.5)
+        rec.seed = 393
+        C.recordWallOnly()
+        C.pedAt = pt(400.0, 300.0, 30.0)
+        return C
+    end
+    local P, U = sweeping(false), sweeping(true)
+    local frames, drawn, diff = 0, 0, nil
+    for _ = 1, 30 do
+        P.now, U.now = P.now + 2984, U.now + 2984
+        P.frame()
+        U.frame()
+        frames = frames + 1
+        drawn = drawn + #P.polys
+        if not diff then
+            if #P.polys ~= #U.polys then
+                diff = ('frame %d: %d triangles against %d'):format(frames, #P.polys, #U.polys)
+            else
+                for i = 1, #P.polys do
+                    local a, b = P.polys[i], U.polys[i]
+                    for j = 1, 3 do
+                        if a[j].x ~= b[j].x or a[j].y ~= b[j].y or a[j].z ~= b[j].z then
+                            diff = diff or ('frame %d, triangle %d'):format(frames, i)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    ok(P.errored() == nil and U.errored() == nil, 'both clients sweep clean',
+        P.errored() or U.errored())
+    ok(P.calls.from > 30 * 40 and P.calls.plain == 0,
+        "and the moving wall's walk asks the resumed one for every point",
+        ('%d resumed, %d from the first piece'):format(P.calls.from, P.calls.plain))
+    ok(diff == nil and drawn > 30 * 100,
+        'and through a sweep it draws the triangles a rescanning walk does, frame by frame',
+        diff or ('%d triangles over %d frames'):format(drawn, frames))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.ramp')
 do
     -- ═══ THE BAKED ALPHA RAMP, WHICH IS WHY THE WALL IS SMOOTH ═══

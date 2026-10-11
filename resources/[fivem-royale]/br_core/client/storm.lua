@@ -1021,7 +1021,14 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
         local stretch = 1.0
         if need > room then stretch = need / room end
 
-        local fx, fy = SS.pointAtComponent(shape, c, 0.0)
+        -- THE WALK RESUMES ITS PIECE SCAN WHERE THE LAST SAMPLE STOPPED (#393 round
+        -- 9): every sample below is at or past the one before it, so
+        -- pointAtComponentFrom finds each one's piece from the last one's instead of
+        -- from the first piece -- the same points to the bit (storm_shape.lua).
+        local cur = g.cur
+        if not cur then cur = {} g.cur = cur end
+        cur.i, cur.s = 1, -math.huge
+        local fx, fy = SS.pointAtComponentFrom(shape, c, 0.0, cur)
         local ax, ay = fx, fy
         for i = 1, nRuns do
             local rn = runs[i]
@@ -1067,11 +1074,11 @@ local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys, pool, m
                     -- 4.9e-13 metres (see the header), so which of them answers is
                     -- not a visible decision -- but it is a deterministic one, and
                     -- the vertex is ON the corner either way rather than past it.
-                    bx, by = SS.pointAtComponent(shape, c, tj)
+                    bx, by = SS.pointAtComponentFrom(shape, c, tj, cur)
                 end
                 if sub then
-                    local mx, my = SS.pointAtComponent(shape, c,
-                        tPrev + (tj - tPrev) * 0.5 * split)
+                    local mx, my = SS.pointAtComponentFrom(shape, c,
+                        tPrev + (tj - tPrev) * 0.5 * split, cur)
                     local o = nq * QUAD_STRIDE
                     q[o + 1], q[o + 2], q[o + 3], q[o + 4] = ax, ay, mx, my
                     q[o + 5], q[o + 6] = (ax + mx) * 0.5, (ay + my) * 0.5
@@ -1101,7 +1108,7 @@ end
 --- -- so the frame's quads can be emitted again, later in the same frame, exactly as
 --- they would have been (see BR.Storm.cameraCut).
 local function newStrip()
-    return { q = {}, step = {}, n = 0, rb = {}, rn = 0,
+    return { q = {}, step = {}, n = 0, rb = {}, rn = 0, cur = { i = 1, s = -math.huge },
              draw = {}, bz0 = {}, bz1 = {}, ba = {}, baf = {} }
 end
 
