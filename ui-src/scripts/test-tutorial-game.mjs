@@ -30,7 +30,7 @@
 import { GAME_STEPS } from '../src/tutorial/gameSteps.ts'
 import { LOBBY_STEPS } from '../src/tutorial/steps.ts'
 import {
-  asRevisited, canGoBack, carried, mapGoneTo, pickupSince, pickupState,
+  asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, weaponsSince,
 } from '../src/tutorial/progress.ts'
 
 let failed = 0
@@ -102,47 +102,90 @@ check('its ammo direction, verbatim', pickup.ammoNote,
 
 const gun = (id, pool) => ({ id, kind: 'weapon', count: 1, pool })
 const inv = (slots, ammo = {}) => carried({ slots: [...slots, null, null, null, null, null].slice(0, 5), ammo })
-const after = (before, now) => pickupState(pickup, pickupSince(before, now))
+/**
+ * THE CARD'S COUNT, AS THE LAYER KEEPS IT: weapons against the card's baseline
+ * (`weaponsSince`), boxes one inventory update at a time (`boxIn` against the
+ * update before). Each argument after the first is one push from the server,
+ * which sends the whole inventory once per item given (BR.Inv.give).
+ */
+const run = (start, ...updates) => {
+  let last = start
+  let boxes = 0
+  for (const u of updates) {
+    if (boxIn(last, u)) boxes += 1
+    last = u
+  }
+  return pickupState(pickup, { weapons: weaponsSince(start, last), ammo: boxes })
+}
 
-const empty = inv([], { light: 0, medium: 0, shells: 0 })
+const AMMO0 = { light: 0, medium: 0, shells: 0 }
+const empty = inv([], AMMO0)
+const pistol = (light, more = {}) => inv([gun('pistol', 'light')], { ...AMMO0, light, ...more })
 {
-  const s = after(empty, inv([gun('pistol', 'light')], { light: 24, medium: 0, shells: 0 }))
+  const s = run(empty, pistol(24))
   check('one gun (and the rounds it lands with): not done', s.done, false)
   check('...and nothing to explain', s.short, false)
+  check('a gun landing with its reserve is not a box', boxIn(empty, pistol(24)), false)
 }
 {
-  const s = after(empty, inv([gun('pistol', 'light')], { light: 24, medium: 30, shells: 0 }))
-  check('one gun and a box of rounds: not done -- the owner\'s case', s.done, false)
+  const s = run(empty, pistol(24), pistol(24, { medium: 30 }))
+  check('one gun, then a box of other rounds: not done -- the owner\'s case', s.done, false)
   check('...and the card says why', s.short, true)
 }
 {
-  const s = after(empty, inv([gun('pistol', 'light'), gun('pumpshotgun', 'shells')],
-    { light: 24, medium: 0, shells: 8 }))
+  // #405's review: the box matching the gun was read as the gun's own reserve,
+  // because one pool rose and a gun of that pool had arrived since the card
+  // opened. One update at a time, they are two pickups.
+  const s = run(empty, pistol(24), pistol(54))
+  check('one gun, then a box of ITS rounds: not done', s.done, false)
+  check('...and the card says why (#405 review)', s.short, true)
+  const t = run(empty, inv([], { ...AMMO0, light: 30 }), pistol(54))
+  check('the box first, then the gun: the card says why too', t.short, true)
+}
+{
+  const s = run(empty, pistol(24), inv([gun('pistol', 'light'), gun('pumpshotgun', 'shells')],
+    { ...AMMO0, light: 24, shells: 8 }))
   check('two guns: done', s.done, true)
   check('...with nothing to explain', s.short, false)
 }
 {
-  const s = after(empty, inv([gun('pistol', 'light'), gun('pistol', 'light')],
-    { light: 48, medium: 0, shells: 0 }))
-  check('the same gun twice is two weapons: done', s.done, true)
+  const s = run(empty, pistol(24), pistol(54), inv([gun('pistol', 'light'), gun('smg', 'medium')],
+    { ...AMMO0, light: 54, medium: 30 }))
+  check('a gun, a box and a second gun: done', s.done, true)
+  check('...and a finished card has nothing to explain, box or no box', s.short, false)
 }
 {
-  const s = after(empty, inv([gun('pistol', 'light'), { id: 'bandage', kind: 'consumable', count: 2 }],
-    { light: 24, medium: 0, shells: 0 }))
+  const s = run(empty, pistol(24), inv([gun('pistol', 'light'), gun('pistol', 'light')],
+    { ...AMMO0, light: 48 }))
+  check('the same gun twice is two weapons: done', s.done, true)
+  check('...and the second one\'s rounds are its own, not a box', s.short, false)
+}
+{
+  const s = run(empty, inv([gun('pistol', 'light'), { id: 'bandage', kind: 'consumable', count: 2 }],
+    { ...AMMO0, light: 24 }))
   check('a gun and a bandage: not done', s.done, false)
   check('...and the bandage took a slot, so no ammo note', s.short, false)
 }
 {
-  const s = after(empty, inv([gun('pistol', 'light'), { id: 'grenade', kind: 'throwable', count: 1 }],
-    { light: 24, medium: 0, shells: 0 }))
+  const s = run(empty, pistol(24), inv([gun('pistol', 'light'), { id: 'grenade', kind: 'throwable', count: 1 }],
+    { ...AMMO0, light: 24 }))
   check('a gun and a grenade: not done', s.done, false)
 }
 {
-  const before = inv([gun('pistol', 'light')], { light: 24, medium: 0, shells: 0 })
-  const s = after(before, inv([gun('pistol', 'light'), gun('smg', 'smg')], { light: 24, medium: 0, shells: 0, smg: 30 }))
+  const before = pistol(24)
+  const s = run(before, inv([gun('pistol', 'light'), gun('smg', 'medium')], { ...AMMO0, light: 24, medium: 30 }))
   check('a gun carried before the card does not count: one more is not done', s.done, false)
-  const t = after(before, inv([gun('pistol', 'light')], { light: 54, medium: 0, shells: 0 }))
+  const t = run(before, pistol(54))
   check('a box of rounds for a gun already carried takes no slot: the card says so', t.short, true)
+  const u = run(before, inv([], { ...AMMO0, light: 24 }), pistol(24))
+  check('the carried gun dropped and picked up again is not a new weapon', u.done || u.short, false)
+  const v = run(before, inv([], { ...AMMO0, light: 24 }), inv([gun('smg', 'medium')], { ...AMMO0, light: 24, medium: 30 }),
+    inv([gun('smg', 'medium'), gun('pumpshotgun', 'shells')], { ...AMMO0, light: 24, medium: 30, shells: 8 }))
+  check('the carried gun dropped, then two new ones: done -- a drop takes nothing off', v.done, true)
+  const two = inv([gun('pistol', 'light'), gun('pistol', 'light')], { ...AMMO0, light: 48 })
+  const w = run(two, pistol(48), inv([gun('pistol', 'light'), gun('smg', 'medium'), gun('pumpshotgun', 'shells')],
+    { ...AMMO0, light: 48, medium: 30, shells: 8 }))
+  check('...nor does one of two carried pistols dropped', w.done, true)
 }
 
 // ─── THE STORM AREA AND THE PLANE ROUTE ─────────────────────────────────────
@@ -162,6 +205,8 @@ check('closing it on the waypoint card does not (it waits, with its toast)',
   mapGoneTo(GAME_STEPS, at('game-map-waypoint')), null)
 check('closing it on the close card does not (that is its advance)',
   mapGoneTo(GAME_STEPS, at('game-map-close')), null)
+check('a card that is not about the map goes nowhere when it closes -- the shop card among them',
+  GAME_STEPS.filter((x, n) => x.overMap !== true && mapGoneTo(GAME_STEPS, n) !== null).map((x) => x.id).join(','), '')
 
 if (failed) {
   console.error(`\ntest-tutorial-game: ${failed} of ${ran} failed`)

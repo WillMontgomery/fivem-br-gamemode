@@ -50,7 +50,7 @@ import {
   BAND, centred, place, sameBox, type CardBox, type Rect,
 } from './cardPlacement'
 import {
-  asRevisited, canGoBack, carried, mapGoneTo, pickupSince, pickupState,
+  asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, weaponsSince,
 } from './progress'
 import { LOBBY_STEPS, type Step } from './steps'
 
@@ -1005,8 +1005,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // its own pool as it lands (2026-09-05 to 09-08) -- and a gun plus a box of
   // rounds still ended it, which leaves the next card ("switch between them")
   // one weapon to switch to. Weapon slots are what that card needs. See
-  // `pickupSince` in progress.ts, which also tells a box of rounds from the
-  // pool a new gun fills, so the card can say why the box did not count.
+  // `weaponsSince` in progress.ts.
   //
   // PAGE-SIDE AND NO WIRE: every slot already carries its `kind` and `pool`,
   // and the payload its `ammo` map.
@@ -1014,12 +1013,27 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const have = useMemo(() => carried(inv), [inv])
 
   const startedWith = useRef(have)
+  // THE BOXES OF ROUNDS THIS CARD HAS SEEN, counted ONE UPDATE AT A TIME (#405).
+  // See `boxIn`: against the baseline, a box matching the gun that just landed
+  // was read as that gun's own reserve, and the card never said why it waited.
+  // State, not a ref, because the card's second section is drawn from it.
+  const [boxes, setBoxes] = useState(0)
+  const lastHave = useRef(have)
   useEffect(() => {
-    if (step?.advance === 'pickup') startedWith.current = have
+    if (step?.advance === 'pickup') { startedWith.current = have; setBoxes(0) }
     // Only when the STEP changes -- re-running this on every pickup would move
     // the baseline up with them and the card would never be satisfied.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
+  // EVERY UPDATE MOVES `lastHave`, on the pickup card or not, so the update the
+  // card compares is always the one just before it.
+  useEffect(() => {
+    const was = lastHave.current
+    lastHave.current = have
+    if (step?.advance === 'pickup' && boxIn(was, have)) setBoxes((n) => n + 1)
+    // Only on an inventory update; `step` is this render's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [have])
 
   // ── opening a warmup crate ends the step ────────────────────────────────
   //
@@ -1041,8 +1055,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // so the first commit of the card cannot be judged against the last one's.
   useEffect(() => {
     if (!step || step.advance !== 'pickup') return
-    if (pickupState(step, pickupSince(startedWith.current, have)).done) go(i + 1)
-  }, [step, have, i, go])
+    if (pickupState(step, { weapons: weaponsSince(startedWith.current, have), ammo: boxes }).done) go(i + 1)
+  }, [step, have, boxes, i, go])
 
   // ...AND WHY A BOX OF ROUNDS DID NOT COUNT. Owner: "If they pickup 1 weapon
   // and 1 item that doesn't take a slot like ammo, then direct them
@@ -1051,7 +1065,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // after the baseline above has been taken.
   const ammoShort = step !== undefined && step.advance === 'pickup'
     && step.ammoNote !== undefined
-    && pickupState(step, pickupSince(startedWith.current, have)).short
+    && pickupState(step, { weapons: weaponsSince(startedWith.current, have), ammo: boxes }).short
 
   // ── a screen opening ends the step ──────────────────────────────────────
   //

@@ -2592,13 +2592,18 @@ for (const name of builtCss) {
 //   TWO RULES FOR BACK -- the card's Previous, or either arrow path, decides
 //     without `canGoBack`, or a `go(i - 1)` that is not a Previous appears;
 //   THINGS, NOT WEAPONS -- the pickup advance is not `pickupState(...).done`
-//     over `pickupSince` against the card's own baseline;
+//     over `weaponsSince` against the card's own baseline;
+//   A BOX READ AS A GUN -- boxes of rounds are not counted ONE UPDATE AT A
+//     TIME (`boxIn(was, have)` with `was` the update before), or not reset when
+//     the card opens, or the card's ammo direction is not drawn from that count
+//     (`ammoShort`) -- #405's review: a box matching the gun just picked up was
+//     read as the gun's own reserve, and the direction never showed;
 //   OFF THE MAP -- the map gate is not `overMap`, or a closed map on the storm
 //     card does not go where `mapGoneTo` says.
 //
 // IT CAN FAIL. Put `onBack={i > 0 && ...}` back, drop `'back'` from either
-// call, bring `doneOnce` back, count `tally` again, or test the map gate on
-// `step.advance`.
+// call, bring `doneOnce` back, count `tally` again, compare a box against
+// `startedWith`, make `ammoShort` false, or test the map gate on `step.advance`.
 // ---------------------------------------------------------------------------
 {
   const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
@@ -2628,9 +2633,21 @@ for (const name of builtCss) {
       'the arrows from Lua no longer run the same body as the arrows from the page (#405).')
     never(/go\(\s*i\s*-\s*1\s*\)/,
       'a `go(i - 1)` that is not a Previous: it lands on a card as it was, which bounces (#405).')
-    want(/pickupState\(step,\s*pickupSince\(startedWith\.current,\s*have\)\)\.done\)\s*go\(i\s*\+\s*1\)/,
-      'the pickup card no longer ends on `pickupState(...).done` -- two WEAPONS, owner'
-      + ' 2026-10-11 (#405).')
+    const GOT = String.raw`pickupState\(step,\s*\{\s*weapons:\s*weaponsSince\(startedWith\.current,\s*have\),\s*ammo:\s*boxes\s*\}\)`
+    want(new RegExp(String.raw`${GOT}\.done\)\s*go\(i\s*\+\s*1\)`),
+      'the pickup card no longer ends on `pickupState(...).done` over `weaponsSince` -- two'
+      + ' WEAPONS, owner 2026-10-11 (#405).')
+    want(new RegExp(String.raw`const\s+ammoShort\s*=\s*step\s*!==\s*undefined\s*&&\s*step\.advance\s*===\s*'pickup'\s*&&\s*step\.ammoNote\s*!==\s*undefined\s*&&\s*${GOT}\.short\b`),
+      'the card\'s ammo direction (`ammoShort`) is no longer `pickupState(...).short` over the'
+      + ' boxes counted -- "direct them accordingly" would never show (#405).')
+    want(/const\s+was\s*=\s*lastHave\.current\s+lastHave\.current\s*=\s*have\s+if\s*\(step\?\.advance\s*===\s*'pickup'\s*&&\s*boxIn\(was,\s*have\)\)\s*setBoxes\(\(n\)\s*=>\s*n\s*\+\s*1\)\s*\},\s*\[have\]\)/,
+      'boxes of rounds are no longer counted one inventory update at a time'
+      + ' (`boxIn(was, have)` against the update before, on every `have`). Against the'
+      + ' baseline, a box matching the gun just picked up reads as its reserve (#405).')
+    want(/if\s*\(step\?\.advance\s*===\s*'pickup'\)\s*\{\s*startedWith\.current\s*=\s*have;\s*setBoxes\(0\)\s*\}/,
+      'the pickup card no longer takes its baseline and clears its box count when it opens (#405).')
+    never(/\bpickupSince\b|boxIn\(\s*startedWith/,
+      'a box of rounds is judged against the card\'s baseline again -- #405\'s review (#405).')
     never(/\btally\b/,
       'the pickup card counts `tally` again -- things, not weapons (#405).')
     want(/const\s+waitingForMap\s*=\s*step\s*!==\s*undefined\s*&&\s*step\.overMap\s*===\s*true/,

@@ -194,14 +194,15 @@ export type Step = {
   awaitScreen?: string
   /**
    * For `advance: 'pickup'` -- how many more WEAPONS end the step. Default 1.
-   * See `pickupSince` in progress.ts (#405).
+   * See `weaponsSince` in progress.ts (#405).
    */
   weapons?: number
   /**
    * For `advance: 'pickup'` -- shown as the card's second section while the
    * player is still short of weapons and has taken ammo, which takes no slot
    * and does not count. Owner, 2026-10-11: "If they pickup 1 weapon and 1 item
-   * that doesn't take a slot like ammo, then direct them accordingly."
+   * that doesn't take a slot like ammo, then direct them accordingly." A box is
+   * told from a gun's own reserve one update at a time; see `boxIn`.
    */
   ammoNote?: string
   /**

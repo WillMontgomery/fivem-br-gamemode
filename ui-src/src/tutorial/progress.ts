@@ -111,7 +111,7 @@ export function carried(inv: {
 }
 
 /**
- * What the pickup card has seen arrive since it opened.
+ * Weapon slots that arrived since the pickup card opened.
  *
  * ═══ TWO WEAPONS, NOT TWO THINGS ═══
  *
@@ -120,32 +120,47 @@ export function carried(inv: {
  * ammo, then direct them accordingly." The card after this one is about
  * switching between slots, and a box of rounds gives them nothing to switch to.
  *
- *   weapons  weapon slots that arrived. A second copy of a gun they already
- *            hold is a second slot and counts.
- *   ammo     pools that rose with NO GUN OF THAT POOL ARRIVING -- a box picked
- *            up, which takes no slot. A gun fills its own pool as it lands, and
- *            that is the gun, not a second pickup.
- *
- * Under-counting `ammo` is the safe direction: it only decides whether the card
- * explains itself, never whether it ends.
+ * A second copy of a gun they already hold is a second slot and counts. AGAINST
+ * THE CARD'S BASELINE, deliberately: a gun dropped and picked up again is the
+ * same one gun, and nets to nothing.
  */
-export function pickupSince(before: Carried, now: Carried): { weapons: number; ammo: number } {
+export function weaponsSince(before: Carried, now: Carried): number {
   let weapons = 0
-  const gunPools = new Set<string>()
   for (const [id, n] of now.weapons) {
     const rose = n - (before.weapons.get(id) ?? 0)
-    if (rose <= 0) continue
-    weapons += rose
+    if (rose > 0) weapons += rose
+  }
+  return weapons
+}
+
+/**
+ * Did this ONE inventory update bring a box of rounds?
+ *
+ * ═══ ONE UPDATE AGAINST THE ONE BEFORE IT, NEVER AGAINST THE BASELINE (#405) ═══
+ *
+ * A gun fills its own pool as it lands, and that is the gun, not a second
+ * pickup. Measured from the card's baseline, though, a pistol and then a box of
+ * pistol rounds is ONE rise in one pool with a pistol arriving -- so the box was
+ * read as the pistol's own reserve and the card never said why it was still
+ * waiting, in exactly the owner's case: a crate's ammo is dealt from its own
+ * deck, apart from its weapons, so a box that matches the gun is common.
+ *
+ * The server sends the whole inventory once per item given (server/inventory.lua,
+ * BR.Inv.give: one push for a gun and the reserve it lands with, one for a box),
+ * so within one update the two cannot be confused: a pool that rose with no gun
+ * of that pool arriving in the SAME update is a box.
+ */
+export function boxIn(prev: Carried, now: Carried): boolean {
+  const gunPools = new Set<string>()
+  for (const [id, n] of now.weapons) {
+    if (n <= (prev.weapons.get(id) ?? 0)) continue
     const pool = now.pools.get(id)
     if (pool) gunPools.add(pool)
   }
-  let ammo = 0
   for (const [pool, n] of now.ammo) {
-    if (n <= (before.ammo.get(pool) ?? 0)) continue
-    if (gunPools.has(pool)) continue
-    ammo += 1
+    if (n > (prev.ammo.get(pool) ?? 0) && !gunPools.has(pool)) return true
   }
-  return { weapons, ammo }
+  return false
 }
 
 /**
@@ -153,6 +168,9 @@ export function pickupSince(before: Carried, now: Carried): { weapons: number; a
  *
  * `short` is the owner's case: still short of weapons, with rounds taken that
  * did not count. The card shows its `ammoNote` while it is true.
+ *
+ * @param got  `weapons` from `weaponsSince`; `ammo` the boxes `boxIn` has
+ *             counted, one update at a time, since the card opened
  */
 export function pickupState(
   step: Pick<Step, 'weapons'>,
