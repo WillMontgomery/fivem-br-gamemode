@@ -29,9 +29,10 @@
 -- emblem tattoos (MP_*_Crew_Tat_*), FM_Tat_M_046 and FM_Tat_F_046 (in no shop),
 -- the single-player collection (Michael, Franklin and Trevor's), and the female
 -- side of TAT_FM_204, whose overlay FM_Tat_F_000 the game data does not have.
--- (1) shows every set after mp2023_02 -- mp2023_01, mp2024_01, mp2024_02 --
--- adding hair overlays only, so (2) stopping at The Chop Shop loses no tattoo
--- up to build 3717. A set the game adds after that is not in this list.
+-- In (1), the newest sets but The Chop Shop -- mp2023_01, the one before it,
+-- and mp2024_01 and mp2024_02 after it -- add hair overlays only, so (2)
+-- stopping at The Chop Shop loses no tattoo up to build 3717. A set the game
+-- adds after that is not in this list.
 --
 -- Regenerated, not hand-edited: the rows are the join above, in (1)'s
 -- collection order and then by label key.
