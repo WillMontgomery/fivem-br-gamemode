@@ -436,7 +436,7 @@ answers what the client asks for — loot cells, from `BR.BuildLootLayout` and
 `server/loot.lua` and `server/warmupcrates.lua` do, Season 2's crates stamped
 with their look — one frame later, and br_environment claims the island's sky
 (`lobby`, `cover`, then `base` at the release). One squad player is walked
-through twenty phases, with payloads built by the server's own shared builders:
+through twenty-two phases, with payloads built by the server's own shared builders:
 
 | phase | what it is |
 |---|---|
@@ -447,6 +447,7 @@ through twenty phases, with payloads built by the server's own shared builders:
 | match | a phase-1 hold at the densest loot spot, a carbine in hand, a squadmate down nearby |
 | match aim, pings, drive, revive, ptt, loot | the same, with one thing done: a sniper scope at FOV 8, all four markers down, driving with boost held, interact held at the downed squadmate, push-to-talk held, a chest held open |
 | match sweep | phase 1's sweep, the wall moving |
+| match breakout, combine | a phase-3 breakout's sweep (#393 round 3): the destination well apart from the zone, then overlapping it, so the moving wall and the destination are stitched into one boundary |
 | match late, outside, emote, downed, spectate | a phase-3 hold; then 250 m outside the zone, Season 2's emote wheel open, knocked, and spectating a squadmate |
 | match terminal | back up with a Yubikey at a terminal, Power outage and Time & weather over it (Season 2; in Season 1 the late match standing still) |
 | match vehicle drop | `s2-sky` only: a Vehicle drop for this player at the terminal -- their client looking for somewhere to land it once a second, and the car coming down 20 m off under the cargo chute for nine of the ten measured seconds, its blip on both maps |

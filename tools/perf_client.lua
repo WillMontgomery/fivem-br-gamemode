@@ -2442,6 +2442,31 @@ local PHASES = {
         stormPhase(1, ANCHOR.x, ANCHOR.y, openingR(ANCHOR.x, ANCHOR.y),
                    c1.cx, c1.cy, c1.r, 120, 240, 120000 + 100000)
     end },
+    -- ═══ A BREAKOUT'S SWEEP, WHICH 'match sweep' NEVER REACHES (#393 round 3) ═══
+    --
+    --   "need to see if we can realistically get anymore juice out of the sweep.
+    --    ... The latter of which was captured while the storm was combining into
+    --    the destination border, and the former was just a standard sweep + morph."
+    --                                                        -- owner, 2026-10-11
+    --
+    -- 'match sweep' is phase 1, whose destination is nested in the zone, so its
+    -- wall is the moving hull alone. A breakout's zone is that wall stitched to a
+    -- destination outside it -- a second shape, a union and the union's inset every
+    -- frame -- and it was the costliest storm.wall in both of the owner's captures.
+    -- Phase 3 a sixth of the way into its sweep, the destination well apart, and
+    -- then 40% in with the destination overlapping the zone, so the two stitch.
+    { id = 'match breakout', settle = 60, setup = function()
+        local p2, p3 = BR.Config.Storm.phases[2], BR.Config.Storm.phases[3]
+        local off = p2.radius + p3.radius * 3.0
+        stormPhase(3, LAND.x, LAND.y, p2.radius, LAND.x + off * 0.6,
+                   LAND.y + off * 0.8, p3.radius, 60, 120, 60000 + 20000)
+    end },
+    { id = 'match combine', settle = 60, setup = function()
+        local p2, p3 = BR.Config.Storm.phases[2], BR.Config.Storm.phases[3]
+        local off = p2.radius + p3.radius * 0.2
+        stormPhase(3, LAND.x, LAND.y, p2.radius, LAND.x + off * 0.6,
+                   LAND.y + off * 0.8, p3.radius, 60, 120, 60000 + 50000)
+    end },
     { id = 'match late', settle = 120, setup = function()
         -- Later on: the downed squadmate has been picked up. A long hold, so
         -- the scenes after this one are all inside it.
