@@ -6589,6 +6589,149 @@ do
     A.flareSpeed = realSpeed
 end
 
+describe('client: the two flare positions are retained, exact and clean (#393)')
+do
+    clientReset()
+
+    -- LOOK AT THE ARGUMENT WHERE THE OWNERSHIP CHANGES. The optimization is in
+    -- airdrop.lua and the consumer is flares.lua; recording only the resulting
+    -- shots would not prove which order updateSite received or whether a fresh
+    -- container was built before every call.
+    local realUpdate = BR.Flare.updateSite
+    local calls = {}
+    BR.Flare.updateSite = function(site, now, refireMs, positions)
+        calls[#calls + 1] = {
+            now = now,
+            refireMs = refireMs,
+            positions = positions,
+            left = positions[1],
+            right = positions[2],
+            values = {
+                { x = positions[1].x, y = positions[1].y,
+                  z = positions[1].z, h = positions[1].h },
+                { x = positions[2].x, y = positions[2].y,
+                  z = positions[2].z, h = positions[2].h },
+            },
+        }
+        return realUpdate(site, now, refireMs, positions)
+    end
+
+    local rec = announce(260.0, 30000)
+    local firstAt = gameMs
+    render()
+
+    eq(#calls, 1, 'the release frame hands one pair to updateSite')
+    local first = calls[1]
+    ok(first and first.positions and first.left and first.right,
+        'as one container holding two position records')
+    eq(first and first.refireMs, A.flareFallRefireMs,
+        'on the same configured update cadence')
+
+    local function check(call, at, name)
+        local spin = A.spinDegrees or 0.0
+        local z = BR.AirdropCrateZ(rec, at, ground.z, A)
+        local h = BR.AirdropHeadingAt(rec, at, spin)
+        for i = 1, 2 do
+            local side = i == 1 and 1.0 or -1.0
+            local x, y = BR.AirdropOffsetAt(rec, at,
+                (A.flareOffset.x or 1.1) * side, A.flareOffset.y, spin)
+            local p = call.values[i]
+            ok(near(p.x, x, 1e-9) and near(p.y, y, 1e-9)
+               and near(p.z, z + (A.flareOffset.z or 0.0), 1e-9)
+               and near(p.h, h, 1e-9),
+                ('%s position %d is the solver\'s %s side, with every field current')
+                    :format(name, i, side > 0 and 'positive' or 'negative'),
+                ('got %.9f %.9f %.9f %.9f; want %.9f %.9f %.9f %.9f')
+                    :format(p.x, p.y, p.z, p.h, x, y,
+                            z + (A.flareOffset.z or 0.0), h))
+        end
+    end
+    check(first, firstAt, 'release')
+
+    eq(#shots, 2, 'updateSite consumes that release pair')
+    for i = 1, 2 do
+        local p, s = first.values[i], shots[i]
+        ok(s and near(s.x1, p.x, 1e-9) and near(s.y1, p.y, 1e-9)
+           and near(s.z1, p.z, 1e-9),
+            ('in position order: record %d becomes shot %d'):format(i, i))
+    end
+
+    -- POISON EVERY CONSUMED FIELD. A test that only compared identities would
+    -- pass if reuse carried last frame's x, y, z or heading into the next call.
+    -- The next frame has to overwrite all eight values before updateSite sees
+    -- anything.
+    local positions, left, right = first.positions, first.left, first.right
+    left.x, left.y, left.z, left.h = 9101, 9102, 9103, 9104
+    right.x, right.y, right.z, right.h = 9201, 9202, 9203, 9204
+
+    gameMs = gameMs + A.flareFallRefireMs
+    local secondAt = gameMs
+    render()
+
+    eq(#calls, 2, 'the due frame hands updateSite one new solved pair')
+    local second = calls[2]
+    ok(second.positions == positions,
+        'reusing the same container instead of allocating one per frame')
+    ok(second.left == left and second.right == right,
+        'and the same two position records')
+    check(second, secondAt, 'next')
+
+    eq(#shots, 4, 'the unchanged cadence consumes the next pair when due')
+    for i = 1, 2 do
+        local p, s = second.values[i], shots[i + 2]
+        ok(s and near(s.x1, p.x, 1e-9) and near(s.y1, p.y, 1e-9)
+           and near(s.z1, p.z, 1e-9),
+            ('in the same order: refreshed record %d becomes shot %d')
+                :format(i, i + 2))
+    end
+
+    -- THE DROP WRAPPER OUTLIVES ITS PROPS FOR THE BLIP WINDOW. Weak values prove
+    -- dropProps releases the retained container and both rows at touchdown,
+    -- rather than keeping three tables for those remaining minutes.
+    local weak = setmetatable({
+        positions = positions,
+        left = left,
+        right = right,
+    }, { __mode = 'v' })
+
+    BR.Flare.updateSite = realUpdate
+    calls, first, second, positions, left, right = nil, nil, nil, nil, nil, nil
+    gameMs = rec.tLand + 1
+    render()
+    ok(oneBlip() ~= nil, 'the landed drop wrapper is still alive for its blip')
+    collectgarbage('collect')
+    ok(weak.positions == nil and weak.left == nil and weak.right == nil,
+        'but its retained flare buffers leave with the falling props')
+end
+
+describe('client: a warm flare descent adds no incremental position-table allocation per frame (#393)')
+do
+    local function measuredKB(ready)
+        clientReset()
+        weaponLoads = ready and 1 or 0
+        announce(260.0, 30000)
+        render() -- build every one-time object and, when ready, the retained pair
+
+        collectgarbage('collect')
+        collectgarbage('stop')
+        local k0 = collectgarbage('count')
+        for _ = 1, 240 do render() end
+        local kb = collectgarbage('count') - k0
+        collectgarbage('restart')
+        return kb
+    end
+
+    -- Same falling drop and same frozen clock. The only difference is whether
+    -- place() reaches the warm flare path. Four fresh tables per frame make this
+    -- gap tens of kilobytes; retained records leave only call bookkeeping.
+    local without = measuredKB(false)
+    local with = measuredKB(true)
+    ok(with - without < 1.0,
+        '240 warm frames add less than 1 KB over the no-flare path',
+        ('with %.2f KB, without %.2f KB, delta %.2f KB')
+            :format(with, without, with - without))
+end
+
 --- The delivery plane's HANDLE, not its row. The terrain block below reads the
 --- z that was written to it, which needs the key.
 local function planeHandle()

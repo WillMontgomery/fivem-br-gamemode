@@ -97,8 +97,8 @@ the loader's own wrapper -- found by chunk name and the upvalue `fn`, for the
 natives in its `STRAIGHT` list only (not `IsRawKeyDown`, whose wrapper adds the
 loader's `_r`), and only with strings for string arguments -- and the global
 itself for anything else, so a wrapper of ours or a suite's stub is still
-called. The storm wall's textured draws and `inv.controls`' thirteen
-suppressions use it.
+called. The storm wall's textured draws, `inv.controls`' thirteen suppressions,
+and `gamerules.apply`'s six HUD hides use it.
 
 **`IsRawKeyDown` is a level; `IsRawKeyPressed` is a single-frame edge.** Only
 the first can answer the question a *hold* asks — "is this key down on this

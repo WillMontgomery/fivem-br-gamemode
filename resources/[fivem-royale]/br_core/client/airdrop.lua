@@ -98,7 +98,7 @@ local A = BR.Config.Airdrop
 --- @return boolean
 local isTrue = BR.NativeTruthy
 
---- [n] = { rec, obj, chute, flares, plane, pilot, blip, blipMini, gz, gzAt,
+--- [n] = { rec, obj, chute, flares, flarePos, plane, pilot, blip, blipMini, gz, gzAt,
 ---         spawning, flying, warned, audio, rotor, assetsTried, primed,
 ---         flaresReady, groundTried, planeZ, planeZFrom, roof }
 ---
@@ -377,6 +377,10 @@ local function dropProps(d)
     -- because we hold nothing: the flares are the engine's and it expires them.
     BR.Flare.clearSite(d.flares)
     d.flares = nil
+    -- `d` stays alive for the blip after touchdown, but these three retained
+    -- tables belong only to the falling props. Let them go with the flare site
+    -- instead of keeping them for the rest of the blip window.
+    d.flarePos = nil
 
     if d.chute and isTrue(DoesEntityExist(d.chute)) then DeleteEntity(d.chute) end
     if d.obj and isTrue(DoesEntityExist(d.obj)) then DeleteEntity(d.obj) end
@@ -1448,11 +1452,22 @@ local function place(d, now)
     if not d.flaresReady then return end
 
     local off = A.flareOffset or { x = 1.1, y = 0.0, z = 0.0 }
-    local pos = {}
-    for i, side in ipairs({ 1.0, -1.0 }) do
+    -- THREE TABLES ONCE PER FALL, AND NO SIDE ARRAY PER FRAME (#393). The old
+    -- path made the container, both records and `{ 1.0, -1.0 }` on every pass.
+    -- updateSite consumes these two records synchronously and retains none of
+    -- them. Every field is overwritten before the call, so reuse cannot carry a
+    -- prior frame's position or heading into this one.
+    local pos = d.flarePos
+    if not pos then
+        pos = { {}, {} }
+        d.flarePos = pos
+    end
+    for i = 1, 2 do
+        local side = i == 1 and 1.0 or -1.0
         local fx, fy = BR.AirdropOffsetAt(d.rec, now,
             (off.x or 1.1) * side, off.y, spin)
-        pos[i] = { x = fx, y = fy, z = z + (off.z or 0.0), h = hdg }
+        local p = pos[i]
+        p.x, p.y, p.z, p.h = fx, fy, z + (off.z or 0.0), hdg
     end
     d.flares = d.flares or BR.Flare.newSite()
     BR.Flare.updateSite(d.flares, GetGameTimer(),

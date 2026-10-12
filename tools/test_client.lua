@@ -14511,6 +14511,71 @@ do
             'and every one calls it by name at call time, never through a local',
             table.concat(captured, ', '))
     end
+
+    describe('#393 -- gamerules.apply hides the six HUD components through the native handler')
+    do
+        -- FiveM's loader global is a Lua wrapper from
+        -- '@HideHudComponentThisFrame.lua' over an upvalue named `fn`.
+        -- applyGameRules makes this exact six-call sequence every frame. It may
+        -- skip that loader wrapper, but it may not skip a wrapper installed by
+        -- anything else, retain a stale handler after the global changes, or
+        -- alter one call while doing so.
+        local realHud, realDirect = HideHudComponentThisFrame, N.direct
+        local resolutions, throughWrapper = 0, {}
+        local throughHandler, throughFallback = {}, {}
+        local function handler(id)
+            throughHandler[#throughHandler + 1] = id
+            return realHud(id)
+        end
+        local shaped = assert(load([[
+            local fn, seen = ...
+            return function(id)
+                seen(id)
+                return fn(id)
+            end
+        ]], '@HideHudComponentThisFrame.lua', 't', {}))(handler, function(id)
+            throughWrapper[#throughWrapper + 1] = id
+        end)
+
+        N.direct = function(...)
+            resolutions = resolutions + 1
+            return realDirect(...)
+        end
+        HideHudComponentThisFrame = shaped
+        reset()
+        rules(1, twoSquads)
+        rules(1, twoSquads)
+
+        local twice = '3,4,7,9,2,6,3,4,7,9,2,6'
+        ok(resolutions == 1,
+            'two frames with one loader global resolve its handler once',
+            ('%d resolution(s)'):format(resolutions))
+        ok(#throughWrapper == 0 and table.concat(throughHandler, ',') == twice,
+            'both frames reach the handler directly with all six ids in their original order',
+            ('wrapper=%s; handler=%s')
+                :format(table.concat(throughWrapper, ','),
+                        table.concat(throughHandler, ',')))
+
+        -- A normal Lua wrapper is not the loader's wrapper. The next frame must
+        -- notice the new global and call it, then keep its answer for the next
+        -- unchanged frame just as inventory and storm do.
+        HideHudComponentThisFrame = function(id)
+            throughFallback[#throughFallback + 1] = id
+            return realHud(id)
+        end
+        rules(1, twoSquads)
+        rules(1, twoSquads)
+
+        ok(resolutions == 2 and #throughHandler == 12 and #throughWrapper == 0,
+            'changing the global resolves once more and stops using the old handler',
+            ('%d resolution(s), %d old-handler call(s), %d loader-wrapper call(s)')
+                :format(resolutions, #throughHandler, #throughWrapper))
+        ok(table.concat(throughFallback, ',') == twice,
+            'a non-loader wrapper is preserved with the same six calls on every frame',
+            table.concat(throughFallback, ','))
+
+        HideHudComponentThisFrame, N.direct = realHud, realDirect
+    end
     describe('the engine team gate -- #115')
 
     -- ── AND IT IS RE-ASSERTED ON EVERYTHING THAT COULD CLEAR IT ─────────────

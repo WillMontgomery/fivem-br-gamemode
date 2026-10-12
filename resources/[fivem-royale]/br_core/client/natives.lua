@@ -1634,7 +1634,8 @@ end
 --   ThefeedHide, the five density multipliers, DisableFrontend) and
 --   DisableControlAction. These are DECLARED to last one frame; the engine
 --   re-raises the thing they suppress on every frame it wants to draw it, so
---   a cadence here would be a flicker. NOT ONE OF THEM IS TOUCHED.
+--   a cadence here would be a flicker. NOT ONE ID, ORDER OR CADENCE CHANGES;
+--   the six HUD calls only skip the loader's pass-through Lua wrapper.
 --
 --   LATCHING -- everything else. A wanted-level cap, a population flag, a
 --   relationship group, an invincibility bit: set once and the engine holds
@@ -1729,6 +1730,12 @@ local WANTED_READ_MS = 100
 -- this gives up is a hide made outside this state while the radar should be up --
 -- nothing does that -- for at most a second; never a flash.
 local radar = { inForce = nil, wrapper = nil }
+
+-- HideHudComponentThisFrame, or the engine's handler behind the loader's wrapper
+-- of it (BR.Native.direct above): the same one integer argument, six times a
+-- frame. The global is checked again on every pass so a wrapper installed later
+-- is honored; the handler lookup itself only happens when that global changes.
+local hideHudSeen, hideHudCall = nil, nil
 
 --- Put the radar's wrapper on DisplayRadar, as this file does at load. Public for
 --- tools/test_client.lua, which stubs the native after this file has loaded; the
@@ -2999,21 +3006,29 @@ function BR.Native.applyGameRules()
     -- NOTE: this also silences vMenu's notifications, deliberately.
     ThefeedHideThisFrame()
 
+    local w = HideHudComponentThisFrame
+    if w ~= hideHudSeen then
+        hideHudSeen = w
+        local direct = BR.Native and BR.Native.direct
+        hideHudCall = direct and direct(w, 'HideHudComponentThisFrame') or w
+    end
+    local hideHud = hideHudCall
+
     -- The cash/bank readout pops top-right at load-in and every time the
     -- pause menu closes. There is no money in a battle royale. The area
     -- and street names ("Grand Senora Desert") go with them -- the map is
     -- the gamemode's to narrate (user call, 2026-08-04).
-    HideHudComponentThisFrame(3)   -- HUD_CASH
-    HideHudComponentThisFrame(4)   -- HUD_MP_CASH (the bank line)
-    HideHudComponentThisFrame(7)   -- HUD_AREA_NAME
-    HideHudComponentThisFrame(9)   -- HUD_STREET_NAME
+    hideHud(3)   -- HUD_CASH
+    hideHud(4)   -- HUD_MP_CASH (the bank line)
+    hideHud(7)   -- HUD_AREA_NAME
+    hideHud(9)   -- HUD_STREET_NAME
 
     -- GTA'S OWN WEAPON AND AMMO READOUT (user call, 2026-08-06). The
     -- inventory bar IS the ammo counter -- it shows the magazine, the reserve
     -- and which of five slots is up. The engine's version sits in the same
     -- corner showing a subset of that, from its own idea of what the ped
     -- holds, and the two disagree by design: ours is the server's number.
-    HideHudComponentThisFrame(2)   -- HUD_WEAPON_ICON (the ammo counter)
+    hideHud(2)   -- HUD_WEAPON_ICON (the ammo counter)
 
     -- GTA'S OWN VEHICLE NAME, WHICH DRAWS ON TOP OF OURS (#208, owner
     -- 2026-08-22: "there's a GTA V text in the bottom right describing what
@@ -3049,7 +3064,7 @@ function BR.Native.applyGameRules()
     -- engine every frame it wants to draw, so a one-shot hide at resource start
     -- would last exactly one frame. This runs on BR.Loop.FRAME via
     -- client/gamerules.lua with no state gate above it.
-    HideHudComponentThisFrame(6)   -- HUD_VEHICLE_NAME (the make/model card)
+    hideHud(6)   -- HUD_VEHICLE_NAME (the make/model card)
 
     -- The corner busy spinner ("Loading...") -- the engine raises it during
     -- session setup and other resources may leave one on. The convar

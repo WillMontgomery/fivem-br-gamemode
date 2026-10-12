@@ -3980,10 +3980,15 @@ local function reportClone(src, k, now)
            .. 'body LOOKS down'):format(poseLine(k.ped)))
 end
 
+-- Scratch membership for this pass, kept out of the 10 Hz allocation path
+-- (#393). It must be emptied before every roster walk: a stale source would
+-- make the release pass below believe a player who left DBNO was still down.
+local down = {}
+
 BR.Loop.register(BR.Loop.TICK, 'dbno.clones', function()
     local now = GetGameTimer()
     local me  = BR.State.me
-    local down = {}
+    for src in pairs(down) do down[src] = nil end
     -- `crawl` as a TABLE: resolved, and present on this build. Unresolved
     -- waits for the boot thread; `false` is a build that lies still, and posing
     -- somebody else in a clip this machine cannot play is not a thing.

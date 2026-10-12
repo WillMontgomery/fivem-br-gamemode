@@ -15070,6 +15070,42 @@ do
         ('%s errors'):format(tostring(e)))
 end
 
+describe('dbno.remote.pose.allocations')
+do
+    -- #393: THE ALLOCATION IS THE PROPERTY. Every lifecycle path above already
+    -- pins the roster decisions and stale-key cleanup. Isolate dbno.clones on a
+    -- healthy roster and compare the public scheduler with that one callback
+    -- enabled and disabled. Putting `local down = {}` back inside the callback
+    -- makes the enabled side allocate more than 100 KB in this run.
+    local function measuredKB(enabled)
+        local R = newObserver()
+        local env = R.env
+        for _, s in ipairs(env.BR.Loop.stats()) do
+            if s.band == env.BR.Loop.TICK and s.name ~= 'dbno.clones' then
+                env.BR.Loop.setEnabled(s.name, false)
+            end
+        end
+        local found = env.BR.Loop.setEnabled('dbno.clones', enabled)
+
+        collectgarbage('collect')
+        collectgarbage('stop')
+        local before = collectgarbage('count')
+        for _ = 1, 2048 do env.BR.Loop.step(env.BR.Loop.TICK) end
+        local kb = collectgarbage('count') - before
+        collectgarbage('restart')
+        return kb, found
+    end
+
+    local without, foundOff = measuredKB(false)
+    local with, foundOn = measuredKB(true)
+    ok(foundOff and foundOn,
+        'the isolated measurement found the shipped dbno.clones callback')
+    ok(with - without < 2.0,
+        '2,048 quiet clone passes add less than 2 KB over the disabled path',
+        ('enabled %.2f KB, disabled %.2f KB, delta %.2f KB')
+            :format(with, without, with - without))
+end
+
 do
     -- --------------------------- 5. the downed player's own machine (#164/#226)
     local R = newObserver()
