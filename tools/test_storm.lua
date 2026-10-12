@@ -6417,6 +6417,143 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('state.pool')
+do
+    -- ═══ storm.state BUILDS A SWEEP'S ZONE INTO TWO POOLS OF ITS OWN (#393 round 3) ═══
+    --
+    -- Through a sweep storm.state built a whole zone on every 10 Hz pass, and a
+    -- breakout's is a wall, a destination and their union. It builds into one of two
+    -- pools now (client/storm.lua's statePools), and the claims are that nothing a
+    -- player can read moved and that the garbage went:
+    --
+    --   * at 60 frames a second with the 10 Hz pass between them, every HUD envelope
+    --     storm.state and storm.edge send is the unpooled client's, field for field,
+    --     through a breakout's sweep with the player running outside it -- so
+    --     storm.edge measures a new distance every frame against the zone the last
+    --     pass built;
+    --   * and still is when a pass throws part way through its build, which is what
+    --     the second pool is for: with one, storm.edge would go on measuring a zone
+    --     whose wall the failed build had already written over;
+    --   * and the zone a pass builds through a breakout's sweep allocates nothing.
+    local function client(unpooled, rc)
+        local C = newStormClient()
+        local env = C.env
+        local Z = env.BR.StormZone
+        C.zoneKB = 0.0
+        env.BR.StormZone = function(rec, cx, cy, r, t, g, pool)
+            local k0 = collectgarbage('count')
+            local z = Z(rec, cx, cy, r, t, g, (not unpooled) and pool or nil)
+            C.zoneKB = C.zoneKB + (collectgarbage('count') - k0)
+            return z
+        end
+        -- The wall is off: the only zone built is storm.state's.
+        if not env.BR.Loop.setEnabled('storm.wall', false) then
+            error('no storm.wall callback to disable -- the name moved')
+        end
+        C.recordWallOnly()
+        local rec = C.record(rc.phase, rc.cx0, rc.cy0, rc.r0, rc.cx1, rc.cy1, rc.r1, 1000,
+            rc.shrink, 0.5)
+        rec.seed = 393
+        local union = env.BR.StormShape.blobUnion
+        env.BR.StormShape.blobUnion = function(...)
+            if C.armed then
+                C.armed = false
+                C.threw = (C.threw or 0) + 1
+                error('injected: a pass that throws part way through its build')
+            end
+            return union(...)
+        end
+        return C
+    end
+    local function step(C, i, armed, at)
+        C.now = C.now + 16
+        C.pedAt = at
+        if i % 6 == 0 then
+            C.armed = armed
+            C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+            C.armed = false
+        end
+        C.markers, C.polys = {}, {}
+        C.env.BR.Loop.step(C.env.BR.Loop.FRAME)
+    end
+    local function sameEnvelopes(P, U)
+        if #P.envelopes ~= #U.envelopes then
+            return ('%d envelopes against %d'):format(#P.envelopes, #U.envelopes)
+        end
+        for i = 1, #P.envelopes do
+            local a, b = P.envelopes[i], U.envelopes[i]
+            for k, v in pairs(a) do
+                if b[k] ~= v then
+                    return ('envelope %d: %s %s against %s'):format(i, k, tostring(v),
+                        tostring(b[k]))
+                end
+            end
+            for k in pairs(b) do
+                if a[k] == nil then return ('envelope %d: %s missing'):format(i, k) end
+            end
+        end
+        return nil
+    end
+    local sweeps = {
+        { name = 'a breakout stitched', run = function(i) return pt(-1900.0 - i, 0.0, 30.0) end,
+          rec = { phase = 3, cx0 = 0.0, cy0 = 0.0, r0 = 1600.0, cx1 = 1074.0, cy1 = 1432.0,
+                  r1 = 950.0, shrink = 60000 } },
+        { name = 'a breakout apart', run = function(i) return pt(-2900.0 - i, 0.0, 30.0) end,
+          rec = { phase = 2, cx0 = 0.0, cy0 = 0.0, r0 = 2600.0, cx1 = 4400.0, cy1 = 0.0,
+                  r1 = 1600.0, shrink = 60000 } },
+    }
+    for _, sw in ipairs(sweeps) do
+        for _, throwing in ipairs({ false, true }) do
+            local P, U = client(false, sw.rec), client(true, sw.rec)
+            local frames = 3600
+            for i = 1, frames do
+                -- A pass in eight throws, from the sweep's first seconds on.
+                local armed = throwing and i % 48 == 0 and i > 120
+                step(P, i, armed, sw.run(i))
+                step(U, i, armed, sw.run(i))
+            end
+            local d = sameEnvelopes(P, U)
+            local label = sw.name .. (throwing and ', a pass in eight throwing part way' or '')
+            ok(d == nil and #P.envelopes > frames * 0.8
+                and (not throwing or (P.threw or 0) > 50 and P.threw == U.threw),
+                label .. ': every HUD envelope at 60 fps is the unpooled client\'s, '
+                    .. 'field for field',
+                d or ('%d envelopes over %d frames, %d passes thrown'):format(
+                    #P.envelopes, frames, P.threw or 0))
+        end
+    end
+
+    -- AND THE GARBAGE: the 10 Hz pass alone through a breakout's sweep, the collector
+    -- stopped, and what the zone builds inside it counted -- once both pools are warm.
+    local kb = {}
+    for _, unpooled in ipairs({ false, true }) do
+        for _, sw in ipairs(sweeps) do
+            local C = client(unpooled, sw.rec)
+            C.pedAt = sw.run(0)
+            C.now = C.now + 2000
+            for _ = 1, 2 do
+                C.now = C.now + 100
+                C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+            end
+            collectgarbage('collect')
+            collectgarbage('stop')
+            C.zoneKB = 0.0
+            for _ = 1, 300 do
+                C.now = C.now + 100
+                C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+            end
+            kb[#kb + 1] = C.zoneKB / 300
+            collectgarbage('restart')
+        end
+    end
+    ok(kb[1] < 0.05 and kb[2] < 0.05 and kb[3] > 10.0 and kb[4] > 10.0,
+        'and the zone a 10 Hz pass builds through a breakout\'s sweep allocates nothing, '
+            .. 'stitched and apart',
+        ('%.3f and %.3f KB a pass, against %.1f and %.1f unpooled'):format(kb[1], kb[2],
+            kb[3], kb[4]))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.cursor')
 do
     -- ═══ THE STRIP'S WALK RESUMES ITS PIECE SCAN, AND DRAWS THE SAME WALL (#393 round 9) ═══

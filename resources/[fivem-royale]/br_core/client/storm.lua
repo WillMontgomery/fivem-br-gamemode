@@ -2105,8 +2105,34 @@ local stormBisectMode = 'normal'
 -- grow.seconds.
 local zoneKey = { zone = nil }
 
---- BR.StormZone(rec, cx, cy, r, t, g), built only when an input changed.
-local function zoneFor(rec, cx, cy, r, t, g)
+-- ═══ AND storm.state BUILDS A SWEEP'S ZONE INTO A POOL OF ITS OWN (#393 round 3) ═══
+--
+-- Through a sweep no key matches -- t moves every pass -- so storm.state built a
+-- whole zone ten times a second: a breakout's with its destination and its union,
+-- the garbage storm.wall stopped making, at a sixth of the rate. It builds into one
+-- of TWO pools of its own (storm_shape.lua's "a pool"), never storm.wall's.
+--
+-- TWO, BECAUSE THE LAST ZONE IS STILL BEING READ. storm.edge measures against
+-- `solved.zone` every frame, which is the zone the last COMPLETED pass built, so a
+-- build goes into the other pool -- the spare -- and the two change places only
+-- once the pass has handed its zone to `solved`. A pass that throws part way
+-- leaves `solved` and the pool its zone is in as they were, exactly as an unpooled
+-- build left the old zone, and the next pass builds into the same spare again.
+-- The key is cleared before any build, so it never names a zone half built.
+--
+-- ONLY A SWEEP'S (0 < t < 1). A hold's zone is kept by the key above and drawn
+-- through drawWall's memo, which knows a zone by its table, and a pooled zone is
+-- the same table every build. No sweep's key matches a hold's: storm.wall builds
+-- its own sweeps and asks zoneFor only at t 0 and 1.
+local statePools = { BR.StormShape.newPool(), BR.StormShape.newPool() }
+--- The state pool `solved.zone` was built into, or nil when it was built unpooled.
+local solvedPool = nil
+
+--- BR.StormZone(rec, cx, cy, r, t, g), built only when an input changed -- into
+--- `spare` when one is passed and the wall is sweeping.
+--- @return table zone
+--- @return table|nil pool   the pool the zone is in, or nil
+local function zoneFor(rec, cx, cy, r, t, g, spare)
     local uB = BR.StormUnit(rec.seed, rec.phase)
     local uA = BR.StormUnit(rec.seed, (rec.phase or 1) - 1)
     local k = zoneKey
@@ -2116,9 +2142,15 @@ local function zoneFor(rec, cx, cy, r, t, g)
         and k.cx0 == rec.cx0 and k.cy0 == rec.cy0 and k.r0 == rec.r0
         and k.cx1 == rec.cx1 and k.cy1 == rec.cy1 and k.r1 == rec.r1
         and k.tWait == rec.tWait and k.tShrink == rec.tShrink then
-        return k.zone
+        return k.zone, k.pool
     end
-    local zone = BR.StormZone(rec, cx, cy, r, t, g)
+    k.zone, k.pool = nil, nil
+    local pool = nil
+    if spare and t and t > 0.0 and t < 1.0 then
+        pool = spare
+        BR.StormShape.resetPool(pool)
+    end
+    local zone = BR.StormZone(rec, cx, cy, r, t, g, pool)
     k.zone, k.rec, k.t, k.cx, k.cy, k.r, k.g, k.uA, k.uB = zone, rec, t, cx, cy, r, g, uA, uB
     k.phase, k.seed, k.mo = rec.phase, rec.seed, rec.mo
     k.cx0, k.cy0, k.r0, k.cx1, k.cy1, k.r1 = rec.cx0, rec.cy0, rec.r0, rec.cx1, rec.cy1, rec.r1
@@ -2127,7 +2159,8 @@ local function zoneFor(rec, cx, cy, r, t, g)
     -- nested in its destination and overlaps it.
     k.gMatters = (t or 0.0) <= 0.0 and (rec.r1 or 0.0) > 0.0
         and not BR.StormNested(rec) and (BR.StormOverlaps(rec)) == true
-    return zone
+    k.pool = pool
+    return zone, pool
 end
 
 --- What drawWall keeps for the live wall between frames, and the pool a moving
@@ -4323,7 +4356,8 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- sky and the two crossing cues describing the curtain the player can see
     -- rather than a circle nothing draws any more -- at the same sweep fraction the
     -- wall morphs by, and the same growth a conjoined zone spreads by.
-    local zone = zoneFor(rec, cx, cy, r, t, g)
+    local zone, zonePool = zoneFor(rec, cx, cy, r, t, g,
+        (solvedPool == statePools[1]) and statePools[2] or statePools[1])
     local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
     viewEdge = edge
     BR.Loop.hitchContext(rec.phase, st, edge > 0)
@@ -4617,6 +4651,8 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         -- it costs one boolean test per frame and nothing else.
         outside = edge > 0,
     }
+    -- AND THE POOL IT IS IN IS NOW THE ONE BEING READ (see statePools).
+    solvedPool = zonePool
 
     -- Inside, nothing here changes fast enough to be worth the traffic.
     if gt - lastPush >= 250 then
