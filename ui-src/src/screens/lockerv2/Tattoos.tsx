@@ -6,7 +6,7 @@ import { fetchNui } from '../../bridge/nui'
 import { CB } from '../../bridge/types'
 import type { Locker2TatsPayload } from '../../bridge/types'
 import { play } from '../../audio/cues'
-import { TATTOOS, ZONE_LABEL, tattooFallback } from './copy'
+import { TATTOOS, ZONE_LABEL, tattooLabels } from './copy'
 import { TATTOOS_CAT, anchorId, tattooCat } from './model'
 
 /**
@@ -68,8 +68,8 @@ export function TattooSection({ tats, on, disabled, onTouch }: {
             <div key={zone.z} id={anchorId(cat)}>
               <SpaceBetween size="xxs">
                 <Box variant="h5">{ZONE_LABEL[zone.z] ?? ''}</Box>
-                {zone.items.map((t, n) => (
-                  <TattooBox key={t.i} i={t.i} label={t.name ?? tattooFallback(n + 1)}
+                {tattooLabels(zone.items).map(([t, label]) => (
+                  <TattooBox key={t.i} i={t.i} label={label}
                     checked={on.has(t.i)} disabled={disabled} cat={cat} onTouch={onTouch} />
                 ))}
               </SpaceBetween>

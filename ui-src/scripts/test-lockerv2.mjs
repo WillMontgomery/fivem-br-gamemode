@@ -29,7 +29,7 @@
  *             whole items, a name only if it is one), the section's anchors
  *             only once the list has come, every tattoo on kept however many
  *             (no cap), the words, and the wiring: asked once drawn, each box
- *             a LOCKER2_TAT, a nameless one its place in the zone.
+ *             a LOCKER2_TAT, the nameless numbered among themselves.
  *
  * And what a unit test cannot see, read from the source and the build:
  *
@@ -55,7 +55,8 @@ import {
   tabsShown, TATTOO_ZONES, tattooCats, tattoosOn, wrapStep, zoneOfCat, zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
-  BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, TATTOOS, ZONE_LABEL, rowLabel, tattooFallback, updateLabel,
+  BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, TATTOOS, ZONE_LABEL, rowLabel, tattooFallback, tattooLabels,
+  updateLabel,
 } from '../src/screens/lockerv2/copy.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -288,6 +289,14 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
     ZONE_LABEL.rleg, tattooFallback(3)],
   ['Tattoos', 'Head', 'Torso', 'Left arm', 'Right arm', 'Left leg', 'Right leg', 'Tattoo 3'])
   eq('every zone Lua sends has a word', TATTOO_ZONES.every((z) => typeof ZONE_LABEL[z] === 'string'), true)
+  // #28 review: the one tattoo the game has no text for (TAT_AW_000) sits last
+  // of Torso's hundreds, and read "Tattoo 326". The nameless are numbered
+  // among themselves.
+  const torso = [...Array.from({ length: 325 }, (_, k) => ({ i: k + 1, name: `N${k}` })), { i: 999 }]
+  eq('the one nameless tattoo at the foot of a zone is "Tattoo 1"', tattooLabels(torso).at(-1), [{ i: 999 }, 'Tattoo 1'])
+  eq('nameless ones count only themselves; named ones are the game\'s text',
+    tattooLabels([{ i: 1 }, { i: 2, name: 'Skull' }, { i: 3 }]).map(([t, l]) => `${t.i}:${l}`),
+    ['1:Tattoo 1', '2:Skull', '3:Tattoo 2'])
 }
 
 // ── WIRING (source) ──────────────────────────────────────────────────────────
@@ -360,8 +369,8 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
   const tat = read(join(SRC, 'screens', 'lockerv2', 'Tattoos.tsx'))
   check('each box asks Lua to put its tattoo on or take it off, nothing decided here',
     tat.includes('void fetchNui(CB.LOCKER2_TAT, { i, on: detail.checked })') && tat.includes('checked={on.has(t.i)}'))
-  check('a tattoo with no name is its place in its zone, never a key',
-    tat.includes('label={t.name ?? tattooFallback(n + 1)}'))
+  check('each box\'s name is its zone\'s tattooLabels, a nameless one numbered among the nameless, never a key',
+    tat.includes('{tattooLabels(zone.items).map(([t, label]) => (') && tat.includes('label={label}'))
   check('a box pressed sends its zone\'s category', tat.includes('onPointerDown={() => onTouch(cat)}'))
   check('the list arrives on its own envelope and is kept for the session',
     v2.includes("useNuiEvent('locker2tats', (d) => keepTats(d))")

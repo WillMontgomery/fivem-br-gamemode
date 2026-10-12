@@ -87,9 +87,18 @@ export const ZONE_LABEL: Record<string, string> = {
   rleg: 'Right leg',          // WRITTEN (proposal for the owner)
 }
 
-/** A tattoo the game has no text for: its place in its zone's list, never
- *  its label key printed as a word. */
+/** A tattoo the game has no text for: the nth such in its zone, never its
+ *  label key printed as a word. */
 export const tattooFallback = (n: number): string => `Tattoo ${n}` // WRITTEN (proposal for the owner)
+
+/** A zone's tattoos, each with its name, in the zone's order: the game's own,
+ *  and the nameless ones numbered among themselves, so the first is "Tattoo 1"
+ *  wherever it sits (#28 review: TAT_AW_000 read "Tattoo 326" at the foot of
+ *  Torso). */
+export function tattooLabels<T extends { name?: string }>(items: readonly T[]): [T, string][] {
+  let nameless = 0
+  return items.map((t): [T, string] => [t, t.name ?? tattooFallback(++nameless)])
+}
 
 /**
  * The rows, by the key Lua sends (`k`, documented on Locker2Row in
