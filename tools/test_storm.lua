@@ -6627,6 +6627,45 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('wall.splitask')
+do
+    -- ═══ THROUGH A BREAKOUT'S SWEEP THE SPLIT IS 1 WITHOUT ASKING ABOUT OVERLAP (#393 round 3) ═══
+    --
+    -- storm.wall asks wallSplit every frame it draws. Across a breakout's sweep the
+    -- sweep's own window already answers 1, which no growth window can raise, so the
+    -- overlap -- BR.StormOverlaps, the record's info and its growth looked up again --
+    -- is no longer asked. The split is the strip's, and wall.cursor and the wall
+    -- differential hold what it draws; this holds that the question is gone through the
+    -- middle of a stitched breakout's sweep, and is still asked in the hold before it,
+    -- where the growth window is the answer.
+    local C = noFarFade(newStormClient())
+    local BR = C.env.BR
+    local asked = 0
+    local overlaps = BR.StormOverlaps
+    BR.StormOverlaps = function(rec) asked = asked + 1 return overlaps(rec) end
+    local rec = C.record(3, 0.0, 0.0, 1600.0, 1074.0, 1432.0, 950.0, 60000, 60000, 0.5)
+    rec.seed = 393
+    C.recordWallOnly()
+    C.pedAt = pt(900.0, 700.0, 30.0)
+    C.now = rec.tStart + 30000
+    asked = 0
+    for _ = 1, 20 do C.frame() end
+    local holdAsks = asked
+    C.now = rec.tStart + 60000 + 20000
+    asked = 0
+    local drawn = 0
+    for _ = 1, 120 do
+        C.frame()
+        drawn = drawn + #C.polys
+    end
+    ok(holdAsks >= 20 and asked == 0 and drawn > 120 * 50 and C.errored() == nil,
+        'through the middle of a breakout\'s sweep the wall is drawn without asking '
+            .. 'whether its destination overlaps, and in the hold it still asks',
+        ('%d asks over 20 frames of the hold, %d over 120 of the sweep, %d triangles; %s')
+            :format(holdAsks, asked, drawn, tostring(C.errored())))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.cursor')
 do
     -- ═══ THE STRIP'S WALK RESUMES ITS PIECE SCAN, AND DRAWS THE SAME WALL (#393 round 9) ═══

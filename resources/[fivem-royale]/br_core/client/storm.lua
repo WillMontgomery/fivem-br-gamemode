@@ -2073,6 +2073,10 @@ local function wallSplit(rec, now)
     -- A BREAKOUT moves as two zones stitched together for the whole of its sweep,
     -- and for its growth when it has one.
     w = math.max(w, splitAround(now, ts, te, rampMs))
+    -- AND THROUGH THE SWEEP THAT IS ALREADY THE MOST IT CAN BE (#393 round 3): no
+    -- growth window can raise a 1, so the overlap is not asked for -- every frame
+    -- of a breakout's sweep, an infoOf and a growthInfo saved.
+    if w >= 1.0 then return w end
     if BR.StormOverlaps(rec) then
         local grow = cfg.grow and cfg.grow.seconds or 0.0
         w = math.max(w, splitAround(now, t0,
