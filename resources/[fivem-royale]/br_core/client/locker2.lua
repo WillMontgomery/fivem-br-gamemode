@@ -211,12 +211,106 @@ local function prop(ped, a, i)
     end
 end
 
+-- ═══ TATTOOS (owner, 2026-10-11) ═══
+--
+-- br_lib/config/tattoos.lua lists them by the game's shop label key; the
+-- appearance's `t` says which are on (br_lib/shared/appearance.lua). Each is
+-- put on with the overlay of the look's own sex, and only where this game
+-- build has its collection. A key the list does not know is skipped.
+
+--- The list, indexed once: each label key's row, and whether this build has
+--- its collection.
+local tatIdx = nil
+local function tattooIndex()
+    if tatIdx then return tatIdx end
+    local cfg = BR.Config.Tattoos
+    local b = type(GetGameBuildNumber) == 'function' and GetGameBuildNumber() or 0
+    local build = type(b) == 'number' and b or 0
+    tatIdx = { byKey = {}, avail = {}, hash = { m = {}, f = {} } }
+    for i, row in ipairs(cfg and cfg.list or {}) do
+        tatIdx.byKey[row[1]] = i
+        local need = cfg.builds and cfg.builds[row[3]]
+        tatIdx.avail[i] = need == nil or build <= 0 or build >= need
+    end
+    return tatIdx
+end
+
+--- Row i's overlay name for a sex, or nil: that sex has none, or this build
+--- lacks the set.
+local function tattooFor(i, sex)
+    local idx = tattooIndex()
+    if not idx.avail[i] then return nil end
+    local row = BR.Config.Tattoos.list[i]
+    local name = row and row[sex == 'f' and 5 or 4]
+    return type(name) == 'string' and name or nil
+end
+
+--- Row i's { collection hash, overlay hash } for a sex, or nil.
+local function tattooHash(i, sex)
+    local idx = tattooIndex()
+    local cached = idx.hash[sex][i]
+    if cached ~= nil then return cached or nil end
+    local name = tattooFor(i, sex)
+    local h = name and { GetHashKey(BR.Config.Tattoos.list[i][3]), GetHashKey(name) } or false
+    idx.hash[sex][i] = h
+    return h or nil
+end
+
+--- The rows of `a`'s tattoos this ped can wear, in the list's order.
+local function tattooRows(a)
+    local idx = tattooIndex()
+    local out = {}
+    for _, key in ipairs(A.tattoos(a)) do
+        local i = idx.byKey[key]
+        if i and tattooFor(i, a.s) then out[#out + 1] = i end
+    end
+    table.sort(out)
+    return out
+end
+
+--- Exactly `a`'s tattoos on the ped, and how many went on. A decoration only
+--- ever comes off with all the others, so taking one off is this too. Nothing
+--- else this resource puts on a ped is a decoration -- the hair is a
+--- component, with no fade -- so the clear takes nothing that is not ours.
+local function tattoos(ped, a)
+    ClearPedDecorations(ped)
+    local rows = tattooRows(a)
+    for _, i in ipairs(rows) do
+        local h = tattooHash(i, a.s)
+        AddPedDecorationFromHashes(ped, h[1], h[2])
+    end
+    return #rows
+end
+
+--- How many decorations the ped carries, where the runtime can say.
+local function decoCount(ped)
+    if type(GetPedDecorations) ~= 'function' then return nil end
+    local d = GetPedDecorations(ped)
+    return type(d) == 'table' and #d or nil
+end
+
+--- What the ped carries just after its tattoos went on: none asks nothing.
+local function noteDecos(ped, put)
+    S.decos = { ped = ped, n = (put or 0) > 0 and decoCount(ped) or 0 }
+end
+
+--- Has the ped lost decorations since they went on -- a resurrection that kept
+--- its handle? Against what it carried then, not against the list, so an
+--- engine that draws fewer than it was asked to is not asked again every pass.
+local function tattoosLost(ped)
+    local d = S.decos
+    if not d or d.ped ~= ped or not d.n or d.n == 0 then return false end
+    local n = decoCount(ped)
+    return n ~= nil and n < d.n
+end
+
 --- The whole appearance, in one block with no wait: head blend, face
 --- features, overlays and their colors, hair and its color, eyes, components,
---- props. Every part syncs to other players only with a head blend set, which
---- is why the blend is always first and always applied.
+--- props, tattoos. Every part syncs to other players only with a head blend
+--- set, which is why the blend is always first and always applied.
 --- @param ped number
 --- @param a table
+--- @return integer  how many tattoos went on
 function V.applyTo(ped, a)
     headBlend(ped, a)
     features(ped, a)
@@ -227,11 +321,13 @@ function V.applyTo(ped, a)
         if slot ~= 2 then component(ped, a, slot) end
     end
     for i = 1, #A.PROPS do prop(ped, a, i) end
+    return tattoos(ped, a)
 end
 
 --- The head blend settles over a few frames, and an overlay set before it has
 --- can be lost. So both are asserted again once it has finished (or after
---- headBlendWaitMs), if the ped still wears this look.
+--- headBlendWaitMs), if the ped still wears this look -- and its tattoos, if
+--- any went missing meanwhile.
 local function reassertLater(ped, a)
     Citizen.CreateThread(function()
         local deadline = GetGameTimer() + C().headBlendWaitMs
@@ -242,6 +338,7 @@ local function reassertLater(ped, a)
             headBlend(ped, a)
             features(ped, a)
             overlays(ped, a)
+            if tattoosLost(ped) then noteDecos(ped, tattoos(ped, a)) end
         end
     end)
 end
@@ -324,7 +421,7 @@ local function swap(hash, a, cb, keep)
         SetPedCanRagdoll(ped, false)
         FreezeEntityPosition(ped, true)
 
-        if a then V.applyTo(ped, a) end
+        if a then noteDecos(ped, V.applyTo(ped, a)) end
         noteApplied(hash, a, ped)
         S.applying = false
         if a then reassertLater(ped, a) end
@@ -341,7 +438,7 @@ end
 local function dress(hash, a, cb, keep)
     local ped = PlayerPedId()
     if a and GetEntityModel(ped) == hash and not S.applying then
-        V.applyTo(ped, a)
+        noteDecos(ped, V.applyTo(ped, a))
         noteApplied(hash, a, ped)
         reassertLater(ped, a)
         if cb then cb(true) end
@@ -622,6 +719,58 @@ local function rowsFor(d)
     return rows, cats
 end
 
+--- A tattoo's name: the game's own text for its label key, or nil where the
+--- game has none (GetLabelText answers 'NULL'). The page names those itself.
+local function labelOf(key)
+    if type(GetLabelText) ~= 'function' then return nil end
+    local s = GetLabelText(key)
+    if type(s) ~= 'string' or s == '' or s == 'NULL' then return nil end
+    return s
+end
+
+--- One sex's tattoos as the page lists them, built once: by body zone in the
+--- list's order of zones, each zone by name, the ones with no name last.
+local catalogs = {}
+local function catalog(sex)
+    if catalogs[sex] then return catalogs[sex] end
+    local cfg = BR.Config.Tattoos
+    local byZone = {}
+    for i, row in ipairs(cfg and cfg.list or {}) do
+        if tattooFor(i, sex) then
+            byZone[row[2]] = byZone[row[2]] or {}
+            local items = byZone[row[2]]
+            items[#items + 1] = { i = i, name = labelOf(row[1]) }
+        end
+    end
+    local zones = {}
+    for _, z in ipairs(cfg and cfg.zones or {}) do
+        local items = byZone[z]
+        if items then
+            table.sort(items, function(x, y)
+                if (x.name ~= nil) ~= (y.name ~= nil) then return x.name ~= nil end
+                local lx, ly = x.name and x.name:lower(), y.name and y.name:lower()
+                if lx ~= ly then return lx < ly end
+                return x.i < y.i
+            end)
+            zones[#zones + 1] = { z = z, items = items }
+        end
+    end
+    catalogs[sex] = { sex = sex, zones = zones }
+    return catalogs[sex]
+end
+
+--- A category of the anchor navigation by its id: a row category or one of
+--- the Tattoos section's.
+local function catById(id)
+    for _, cat in ipairs(C().categories) do
+        if cat.id == id then return cat end
+    end
+    for _, cat in ipairs(C().tattooCats or {}) do
+        if cat.id == id then return cat end
+    end
+    return nil
+end
+
 --- My peds while the saved peds are still being fetched, as the page opens:
 --- it holds the loading indicator there until the server answers (owner,
 --- 2026-10-07: "show a loading icon while we wait for the results").
@@ -665,8 +814,10 @@ function V.push()
     local edit = nil
     if S.draft and CUSTOM[S.tab] then
         local rows, cats = rowsFor(S.draft)
+        -- The tattoos on, by their row in the list: a few bytes each. Their
+        -- names go once, when the page asks (LOCKER2_TATS), never on a push.
         edit = { sex = S.draft.sex, editing = S.draft.editing, dirty = S.draft.dirty,
-                 cat = S.draft.cat, cats = cats, rows = rows }
+                 cat = S.draft.cat, cats = cats, rows = rows, tats = tattooRows(S.draft.a) }
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2, {
         on = true,
@@ -1104,18 +1255,38 @@ end
 --- the camera actually is, never off the page's copy of `cat`.
 ACTIONS[BR.NuiCb.LOCKER2_CAT] = function(data)
     if not S.draft then return end
-    for _, cat in ipairs(C().categories) do
-        if cat.id == data.cat then
-            local LC = BR.LobbyCam
-            local there = LC and LC.focused and LC.focused() == cat.cam
-            -- Nothing to move and nothing to draw: no push either, since every
-            -- row touched sends this.
-            if there and S.draft.cat == cat.id then return false end
-            S.draft.cat = cat.id
-            if LC and LC.focus and not there then LC.focus(cat.cam) end
-            return
-        end
+    local cat = catById(data.cat)
+    if not cat then return end
+    local LC = BR.LobbyCam
+    local there = LC and LC.focused and LC.focused() == cat.cam
+    -- Nothing to move and nothing to draw: no push either, since every row
+    -- touched sends this.
+    if there and S.draft.cat == cat.id then return false end
+    S.draft.cat = cat.id
+    if LC and LC.focus and not there then LC.focus(cat.cam) end
+end
+
+--- One tattoo on or off: any number at once, all free. On is one more
+--- decoration; off is the rest put back, since they only come off together.
+ACTIONS[BR.NuiCb.LOCKER2_TAT] = function(data)
+    local d = S.draft
+    if not d then return end
+    local i = math.tointeger(tonumber(data.i))
+    if not i or not tattooFor(i, d.sex) then return end
+    local key, on = BR.Config.Tattoos.list[i][1], data.on == true
+    if A.hasTattoo(d.a, key) == on then return end
+    A.setTattoo(d.a, key, on)
+    touched()
+    local ped = PlayerPedId()
+    if GetEntityModel(ped) ~= GetHashKey(C().models[d.sex]) then return end
+    if on then
+        local h = tattooHash(i, d.sex)
+        AddPedDecorationFromHashes(ped, h[1], h[2])
+        noteDecos(ped, 1)
+    else
+        noteDecos(ped, tattoos(ped, d.a))
     end
+    noteApplied(GetEntityModel(ped), A.copy(d.a), ped)
 end
 
 ACTIONS[BR.NuiCb.LOCKER2_WEAR] = function(data)
@@ -1172,6 +1343,13 @@ AddEventHandler('br:ui:action', function(name, data)
         return
     elseif name == BR.NuiCb.LOCKER2_SHOTDONE then
         if BR.Locker2Shot then BR.Locker2Shot.done(data.id) end
+        return
+    elseif name == BR.NuiCb.LOCKER2_TATS then
+        -- The list the page draws the Tattoos section from, once per sex: it
+        -- changes nothing, so nothing refuses it.
+        if data.sex == 'm' or data.sex == 'f' then
+            TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2_TATS, catalog(data.sex))
+        end
         return
     elseif name == BR.NuiCb.LOCKER2_SHOT then
         local wanted = BR.Locker2Shot ~= nil and BR.Locker2Shot.takeSave(data.id)
@@ -1392,7 +1570,9 @@ end)
 -- re-applied outright when the ped handle itself is new. The bag slot is the
 -- parachute's while one is held or in use, and the hat slot a helmet's while
 -- one is worn; neither is compared then. The reference is the last look
--- applied, so an unsaved edit is kept, not undone.
+-- applied, so an unsaved edit is kept, not undone. Tattoos go back on with the
+-- whole look on a new handle, and on their own when the same ped carries fewer
+-- decorations than just after they went on.
 --
 -- IN EVERY STATE THE PLAYER HAS A PED TO BE SEEN IN (#28 review): the lobby,
 -- the warmup pad, the plane, the drop, the match and downed. The warmup trip
@@ -1424,7 +1604,7 @@ BR.Loop.register(BR.Loop.TICK, 'locker2.watch', function()
     local a = ap.a
     if ped ~= ap.ped then
         ap.ped = ped
-        V.applyTo(ped, a)
+        noteDecos(ped, V.applyTo(ped, a))
         reassertLater(ped, a)
         return
     end
@@ -1468,6 +1648,9 @@ BR.Loop.register(BR.Loop.TICK, 'locker2.watch', function()
         end
         reassertLater(ped, a)
     end
+    -- THE SAME PED WITH ITS TATTOOS GONE (a resurrection can keep the handle):
+    -- they go back on. Asked only of a ped that had some.
+    if tattoosLost(ped) then noteDecos(ped, tattoos(ped, a)) end
 end)
 
 -- ---------------------------------------------------------------------------
@@ -1482,6 +1665,7 @@ RegisterCommand('brlocker2', function(_, args)
     print(('  peds     %d'):format(#S.peds))
     print(('  tab      %s  draft %s'):format(tostring(S.tab), S.draft and (S.draft.dirty and 'dirty' or 'clean') or 'none'))
     print(('  applied  %s'):format(S.applied and (S.applied.a and 'custom' or 'stock') or 'none'))
+    print(('  tattoos  %d'):format(S.applied and S.applied.a and #tattooRows(S.applied.a) or 0))
 end, false)
 
 --- The state, for the suites.

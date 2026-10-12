@@ -633,7 +633,7 @@ for _, name in ipairs({
     BR.NuiCb.LOCKER2_SET, BR.NuiCb.LOCKER2_COLOR, BR.NuiCb.LOCKER2_CAT,
     BR.NuiCb.LOCKER2_SAVE, BR.NuiCb.LOCKER2_RENAME, BR.NuiCb.LOCKER2_DELETE,
     BR.NuiCb.LOCKER2_EDIT, BR.NuiCb.LOCKER2_SHOTS, BR.NuiCb.LOCKER2_SHOTDONE,
-    BR.NuiCb.LOCKER2_SHOT,
+    BR.NuiCb.LOCKER2_SHOT, BR.NuiCb.LOCKER2_TATS, BR.NuiCb.LOCKER2_TAT,
     -- Rebinding is br_core's: it owns the binding table and the raw-key
     -- reader, and the settings screen is only the page that shows them.
     BR.NuiCb.KEYBIND_SET,

@@ -77,6 +77,20 @@ BR.Config.Locker2 = {
         { id = 'shoes', cam = 'feet', rows = { 'c6' } },
     },
 
+    --- THE TATTOOS SECTION (owner, 2026-10-11), after the categories above: its
+    --- own anchor, then one per body zone of br_lib/config/tattoos.lua that has
+    --- any tattoo, each with the preset the camera moves to. The arms have no
+    --- preset of their own; the upper body frames both.
+    tattooCats = {
+        { id = 'tattoos', cam = 'upper' },
+        { id = 'tat_head', zone = 'head', cam = 'head' },
+        { id = 'tat_torso', zone = 'torso', cam = 'upper' },
+        { id = 'tat_larm', zone = 'larm', cam = 'upper' },
+        { id = 'tat_rarm', zone = 'rarm', cam = 'upper' },
+        { id = 'tat_lleg', zone = 'lleg', cam = 'legs' },
+        { id = 'tat_rleg', zone = 'rleg', cam = 'legs' },
+    },
+
     --- Which palette an overlay's color comes from: 1 is the hair palette, 2
     --- the makeup palette (SetPedHeadOverlayColor's colorType). An overlay not
     --- listed has no color.

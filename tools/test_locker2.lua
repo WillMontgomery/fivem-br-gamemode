@@ -7,6 +7,7 @@
 -- never share a BR table:
 --
 --   br_lib/shared/appearance.lua     the schema, its validator and its JSON
+--   br_lib/config/tattoos.lua        every tattoo the shops sell (2026-10-11)
 --   br_core/server/locker2.lua       over a modeled br_ddb that keeps rows
 --   br_core/client/locker2.lua       over a modeled ped, models, kvp and
 --   br_core/client/locker2shot.lua   threads (coroutines on a fake clock)
@@ -86,7 +87,8 @@ end
 local shared = newEnv()
 shared.print = function() end
 for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/config/peds.lua',
-                     'br_lib/config/locker2.lua', 'br_lib/shared/appearance.lua' }) do
+                     'br_lib/config/locker2.lua', 'br_lib/shared/appearance.lua',
+                     'br_lib/config/tattoos.lua' }) do
     if f == 'br_lib/config/peds.lua' then
         shared.BR = shared.BR or {}
         shared.BR.Config = shared.BR.Config or {}
@@ -221,6 +223,169 @@ do
     ok(pb and pb.k == 'p' and A.equal(pb.a, A.default('f')), 'a saved ped carries its appearance')
     ok(A.decodeWorn('{"k":"p","id":"0abcdefgh12"}') == nil, 'a saved ped with no appearance is nothing')
     ok(A.decodeWorn('') == nil and A.decodeWorn('{}') == nil, 'nor is an empty record')
+end
+
+local TAT = shared.BR.Config.Tattoos
+
+--- The row of the tattoo list with this label key, and its index.
+local function tatRow(key)
+    for i, r in ipairs(TAT.list) do
+        if r[1] == key then return r, i end
+    end
+    return nil, nil
+end
+
+--- The first row with an overlay for one sex only.
+local function onlyFor(sex)
+    for i, r in ipairs(TAT.list) do
+        local m, f = r[4], r[5]
+        if (sex == 'm' and m and not f) or (sex == 'f' and f and not m) then return r, i end
+    end
+    return nil, nil
+end
+
+--- Every value at the far end of its range: the longest look there is.
+local function longest(sex)
+    local a = A.default(sex)
+    a.sk, a.e, a.h = 45, 30, { 63, 63 }
+    for i = 1, A.FEATURES do a.ff[i] = (i == 19 or i == 20) and 100 or -100 end
+    for i = 1, A.OVERLAYS do a.o[i] = { 254, 100, 63 } end
+    for i = 1, A.COMPS do a.c[i] = { 1023, 31 } end
+    for i = 1, #A.PROPS do a.p[i] = { 1023, 31 } end
+    return a
+end
+
+describe('tattoos.data')
+do
+    -- "whatever the game has include DLC sets" (owner, 2026-10-11): the shops'
+    -- tattoos for the two freemode peds, and nothing that is not one.
+    ok(type(TAT) == 'table' and type(TAT.list) == 'table', 'br_lib/config/tattoos.lua loads')
+    eq(#TAT.list, 775, 'every shop tattoo: 775 items')
+    eq(table.concat(TAT.zones, ','), 'head,torso,larm,rarm,lleg,rleg', 'six body zones, in the order drawn')
+    local zoneOk = {}
+    for _, z in ipairs(TAT.zones) do zoneOk[z] = true end
+    local keys, names = {}, { m = {}, f = {} }
+    local count, perZone = { m = 0, f = 0 }, { m = {}, f = {} }
+    local bad = {}
+    for _, row in ipairs(TAT.list) do
+        local key, zone, coll = row[1], row[2], row[3]
+        if not A.tattooPart(key) then bad[#bad + 1] = 'key ' .. tostring(key) end
+        if keys[key] then bad[#bad + 1] = 'twice ' .. tostring(key) end
+        keys[key] = true
+        if not zoneOk[zone] then bad[#bad + 1] = 'zone ' .. tostring(zone) end
+        if type(coll) ~= 'string' or not coll:match('^mp.*_overlays$') and coll ~= 'multiplayer_overlays' then
+            bad[#bad + 1] = 'collection ' .. tostring(coll)
+        end
+        if not row[4] and not row[5] then bad[#bad + 1] = 'no overlay ' .. key end
+        for sex, name in pairs({ m = row[4], f = row[5] }) do
+            if name then
+                local low = type(name) == 'string' and name:lower() or ''
+                if low:find('hair', 1, true) or low:find('crew', 1, true) then bad[#bad + 1] = 'not a tattoo ' .. low end
+                if names[sex][low] then bad[#bad + 1] = 'overlay twice ' .. low end
+                names[sex][low] = true
+                count[sex] = count[sex] + 1
+                perZone[sex][zone] = (perZone[sex][zone] or 0) + 1
+            end
+        end
+    end
+    ok(#bad == 0, 'every row: a TAT_<set>_<nnn> key once, a zone, an MP collection, an overlay for a sex, '
+        .. 'never a hair overlay or a crew emblem', table.concat(bad, '; '))
+    eq(count.m, 744, 'the male ped has 744 tattoos')
+    eq(count.f, 746, 'the female ped 746')
+    local every = true
+    for _, z in ipairs(TAT.zones) do every = every and (perZone.m[z] or 0) > 0 and (perZone.f[z] or 0) > 0 end
+    ok(every, 'every zone has tattoos for both')
+    for _, coll in ipairs({ 'mpHeist4_overlays', 'mpSecurity_overlays', 'mpSum2_overlays',
+                            'mpChristmas3_overlays', 'mp2023_02_overlays' }) do
+        local n = 0
+        for _, row in ipairs(TAT.list) do if row[3] == coll then n = n + 1 end end
+        ok(n > 0, 'DLC sets are in: ' .. coll, n)
+    end
+    local fm204 = tatRow('TAT_FM_204')
+    ok(fm204 and fm204[4] == 'FM_Tat_M_000' and fm204[5] == false,
+        'a shop item whose overlay the game lacks for one sex is that sex\'s none (TAT_FM_204)')
+    ok(onlyFor('m') ~= nil and onlyFor('f') ~= nil, 'and some tattoos are one sex\'s alone')
+    -- A collection newer than 1604 names the build that has it, never one the
+    -- server does not run.
+    local enforced = tonumber((readFile('server.cfg.example') or ''):match('\nsv_enforceGameBuild%s+(%d+)'))
+    local used = {}
+    for _, row in ipairs(TAT.list) do used[row[3]] = true end
+    local badBuild = {}
+    for coll, b in pairs(TAT.builds) do
+        if not used[coll] or math.type(b) ~= 'integer' or not enforced or b > enforced then
+            badBuild[#badBuild + 1] = coll
+        end
+    end
+    ok(enforced ~= nil and #badBuild == 0, 'every gated set is in the list and on the enforced build',
+        table.concat(badBuild, ' '))
+    local src = readFile(RES .. 'br_lib/config/tattoos.lua') or ''
+    ok(src:find('DurtyFree/gta-v-data-dumps', 1, true) and src:find('root-cause/v-tattoos', 1, true),
+        'its header cites where the list came from')
+end
+
+describe('appearance.tattoos')
+do
+    local base = A.encode(A.default('m'))
+    ok(not base:find('"t"', 1, true), 'no tattoos, no `t`: a save from before tattoos encodes as it did')
+    local old = A.decode(base)
+    ok(old and old.t == nil and #A.tattoos(old) == 0, 'and an old save reads as none')
+    local a = A.default('m')
+    ok(A.setTattoo(a, 'TAT_FM_012', true) and A.setTattoo(a, 'TAT_AR_002', true) and A.setTattoo(a, 'TAT_AR_000', true),
+        'tattoos go on by the game\'s label key')
+    eq(A.encode(a):match(',"t":(%b{})}$'), '{"AR":"5","FM":"0001"}', 'one hex string per set, sets sorted, last')
+    ok(A.hasTattoo(a, 'TAT_AR_002') and not A.hasTattoo(a, 'TAT_AR_001'), 'read back one by one')
+    eq(table.concat(A.tattoos(a), ','), 'TAT_AR_000,TAT_AR_002,TAT_FM_012', 'or all at once, sorted')
+    ok(A.equal(A.decode(A.encode(a)), a), 'and round-trip')
+    ok(not A.equal(a, A.default('m')), 'a look with a tattoo is not the look without')
+    A.setTattoo(a, 'TAT_FM_012', false)
+    eq(A.encode(a):match(',"t":(%b{})}$'), '{"AR":"5"}', 'off drops a set left empty')
+    A.setTattoo(a, 'TAT_AR_000', false)
+    A.setTattoo(a, 'TAT_AR_002', false)
+    eq(A.encode(a), base, 'and with none on, `t` itself')
+    ok(not A.setTattoo(a, 'FM_Tat_M_000', true) and not A.setTattoo(a, 'TAT_AR_1', true)
+        and not A.setTattoo(a, 42, true), 'a key that is not TAT_<set>_<nnn> is no tattoo')
+    local nc = A.decode(base:sub(1, -2) .. ',"t":{"FM":"0100","AR":"50","X7":"","ZZ":"000"}}')
+    ok(nc ~= nil, 'a `t` out of canonical form is read')
+    eq(nc and A.encode(nc):match(',"t":(%b{})}$'), '{"AR":"5","FM":"01"}',
+        'and written canonical: sorted, no trailing zero, no empty set')
+    local empty = A.decode(base:sub(1, -2) .. ',"t":{}}')
+    eq(empty and A.encode(empty), base, '{} is written as no `t`')
+    -- A set or a number no list knows is the SHAPE of a tattoo: kept, skipped
+    -- where tattoos are put on (season2.tattoo_paths), never refused.
+    local unk = A.decode(base:sub(1, -2) .. ',"t":{"ZZ9":"f","AR":"0008"}}')
+    ok(unk ~= nil, 'a set or a number no list knows is not refused')
+    eq(unk and A.encode(unk):match(',"t":(%b{})}$'), '{"AR":"0008","ZZ9":"f"}', 'and is kept as it was')
+    local function badT(t, label)
+        local x = A.default('m')
+        x.t = t
+        ok(not A.validate(x) and A.encode(x) == nil, label)
+    end
+    badT('AR', '`t` that is not an object')
+    badT({ ar = '1' }, 'a set in lower case')
+    badT({ AR = 'g' }, 'a digit that is not hex')
+    badT({ AR = 'F' }, 'upper-case hex')
+    badT({ AR = 5 }, 'a number for a set')
+    badT({ AR = string.rep('f', 251) }, 'past 250 digits')
+    badT({ _AR = '1' }, 'a set starting with _')
+    badT({ AR__X = '1' }, 'a set with __')
+    badT({ [string.rep('A', 17)] = '1' }, 'a set name past 16')
+    badT({ '1' }, 'an array')
+    -- NO CAP (owner, 2026-10-11): every tattoo of the list on the longest look
+    -- there is still fits, and so does the worn record carrying it.
+    for _, sex in ipairs({ 'm', 'f' }) do
+        local all = longest(sex)
+        for _, row in ipairs(TAT.list) do A.setTattoo(all, row[1], true) end
+        local str = A.encode(all)
+        ok(str ~= nil and #str <= A.MAX_BYTES, sex .. ': every tattoo on the longest look fits in MAX_BYTES',
+            str and #str)
+        local back = str and A.decode(str)
+        eq(back and #A.tattoos(back), #TAT.list, sex .. ': and every one survives the round trip')
+        local w = A.encodeWorn({ k = 'p', id = '0abcdefgh12', a = all })
+        ok(w ~= nil and #w <= A.MAX_BYTES + 64 and A.decodeWorn(w) ~= nil, sex .. ': the worn record too', w and #w)
+    end
+    local js = readFile('js-src/br_ddb/src/locker2.js') or ''
+    eq(tonumber(js:match('APPEARANCE_MAX = (%d+)')), A.MAX_BYTES,
+        'br_ddb stores the same 2048 bytes, so the database takes every tattoo too')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -689,6 +854,42 @@ do
     eq(warned, 1, 'said once')
 end
 
+describe('server.tattoos')
+do
+    local W = serverWorld(2)
+    local a = A.default('f')
+    A.setTattoo(a, 'TAT_X7_031', true)
+    A.setTattoo(a, 'TAT_BB_000', true)
+    local enc = A.encode(a)
+    local oldA = A.encode(A.default('m'))
+    W.ddb['license:p1'] = { profile = {}, peds = {
+        ['0abcdefgh11'] = { n = 'Old', a = oldA, cr = 1, up = 1 },
+        ['0abcdefgh12'] = { n = 'Odd', a = oldA:sub(1, -2) .. ',"t":{"ZZ":"1"}}', cr = 1, up = 1 },
+    } }
+    W.net(NET.LOCKER2_FETCH, 1, {})
+    eq(#W.last(NET.LOCKER2_STATE).p.peds, 2, 'a save from before tattoos and one naming a set nobody knows both load')
+    W.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Inked', a = enc })
+    local r = W.lastResult()
+    ok(r.ok == true and W.ddb['license:p1'].peds[r.id].a == enc, 'a save with tattoos is stored, canonical')
+    ok(enc:find(',"t":{"BB":"1","X7":"00000008"}}', 1, true) ~= nil, 'with its `t`', enc:sub(-40))
+    W.advance(100)
+    local worn = A.decodeWorn(W.ddb['license:p1'].profile.locker2)
+    ok(worn and A.hasTattoo(worn.a, 'TAT_X7_031') and A.hasTattoo(worn.a, 'TAT_BB_000'), 'and worn with them')
+    local spaced = enc:sub(1, -3) .. ',"AR":"0"}}'
+    W.advance(2000)
+    W.net(NET.LOCKER2_SAVE, 1, { req = 2, op = 'update', id = r.id, a = spaced })
+    eq(W.ddb['license:p1'].peds[r.id].a, enc, 'an empty set sent is not stored')
+    -- Through the database and back: a new session reads the tattoos.
+    local W2 = serverWorld(2)
+    W2.ddb = W.ddb
+    W2.net(NET.LOCKER2_FETCH, 1, {})
+    local back = nil
+    for _, p in ipairs(W2.last(NET.LOCKER2_STATE).p.peds) do
+        if p.id == r.id then back = A.decode(p.a) end
+    end
+    ok(back and table.concat(A.tattoos(back), ',') == 'TAT_BB_000,TAT_X7_031', 'a new session reads them back')
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 3. THE CLIENT, over a modeled ped
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -699,7 +900,7 @@ local DEFAULT_PED = hashOf('player_default')
 
 local function newPed(model)
     return { model = model, comps = {}, props = {}, ff = {}, ov = {}, ovc = {}, hair = nil, eye = nil,
-             blend = nil, blendAt = 0, x = 10.0, y = 20.0, z = 30.0, h = 90.0, exists = true }
+             blend = nil, blendAt = 0, x = 10.0, y = 20.0, z = 30.0, h = 90.0, exists = true, decos = {} }
 end
 
 --- A client. opts: season (nil unknown), v2 (load Locker v2), kvp, quiet.
@@ -786,7 +987,20 @@ local function clientWorld(opts)
     N.ResetPedVisibleDamage = function() end
     N.ClearPedWetness = function() end
     N.ClearPedEnvDirt = function() end
-    N.ClearPedDecorations = function() end
+    N.ClearPedDecorations = function(h) P(h).decos = {} end
+    -- Decorations as the engine keeps them: a list per ped, at most decoCap.
+    N.AddPedDecorationFromHashes = function(h, c, o)
+        local d = P(h).decos
+        if #d < (W.decoCap or math.huge) then d[#d + 1] = { c, o } end
+    end
+    N.GetPedDecorations = function(h)
+        local out = {}
+        for i, d in ipairs(P(h).decos) do out[i] = { d[1], d[2] } end
+        return out
+    end
+    -- The game's text: every label but the ones it has none for.
+    N.GetLabelText = function(k) return (W.noLabel or { TAT_AW_000 = true })[k] and 'NULL' or ('Label ' .. k) end
+    N.GetGameBuildNumber = function() return W.build or 3889 end
     N.RegisterPedheadshot = function(h)
         W.shots[#W.shots + 1] = { ped = h, at = W.time, gone = false }
         return #W.shots
@@ -841,7 +1055,8 @@ local function clientWorld(opts)
     env.BR = { Config = {} }
     for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua', 'br_lib/config/peds.lua',
                          'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
-                         'br_lib/config/locker2.lua', 'br_lib/shared/appearance.lua' }) do
+                         'br_lib/config/locker2.lua', 'br_lib/shared/appearance.lua',
+                         'br_lib/config/tattoos.lua' }) do
         loadInto(env, f)
     end
     local BR = env.BR
@@ -1867,6 +2082,274 @@ do
     eq(W.ped().model, hashOf(W.BR.PedById(STOCK1).model), 'nor can it be worn')
 end
 
+-- ═══ SEASON 2: TATTOOS (owner, 2026-10-11) ═══
+
+--- The decorations a ped carries, as the overlay names of the list, sorted.
+local function decoNames(p, sex)
+    local by = {}
+    for _, r in ipairs(TAT.list) do
+        local n = r[sex == 'f' and 5 or 4]
+        if n then by[hashOf(r[3]) .. ':' .. hashOf(n)] = n end
+    end
+    local out = {}
+    for _, d in ipairs(p.decos) do out[#out + 1] = by[d[1] .. ':' .. d[2]] or '?' end
+    table.sort(out)
+    return table.concat(out, ',')
+end
+
+describe('season2.tattoos')
+do
+    local W = joined()
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    W.pump(300)
+    local labels = W.count('GetLabelText')
+    eq(labels, 0, 'no name is looked up before the page asks for the list')
+    W.ui(NUICB.LOCKER2_TATS, { sex = 'm' })
+    local list = W.nui(NUI.LOCKER2_TATS)
+    ok(list and list.sex == 'm', 'the page asks for the male list and gets it')
+    local zs, total, badItem, sorted = {}, 0, 0, true
+    for _, z in ipairs(list.zones) do
+        zs[#zs + 1] = z.z
+        local prev = nil
+        for _, it in ipairs(z.items) do
+            total = total + 1
+            local row = TAT.list[it.i]
+            if not row or not row[4] or row[2] ~= z.z then badItem = badItem + 1 end
+            if row and it.name and it.name ~= 'Label ' .. row[1] then badItem = badItem + 1 end
+            local key = it.name and it.name:lower() or nil
+            if prev ~= nil and key ~= nil and key < prev then sorted = false end
+            if prev == false and key ~= nil then sorted = false end
+            prev = key == nil and false or key
+        end
+    end
+    eq(table.concat(zs, ','), 'head,torso,larm,rarm,lleg,rleg', 'by body zone, in order')
+    eq(total, 744, 'every male tattoo, DLC sets included')
+    eq(badItem, 0, 'each the male overlay\'s row, in its own zone, named with the game\'s text')
+    ok(sorted, 'each zone by name, the ones with no text last')
+    local aw = nil
+    for _, z in ipairs(list.zones) do
+        for _, it in ipairs(z.items) do if TAT.list[it.i][1] == 'TAT_AW_000' then aw = it end end
+    end
+    ok(aw and aw.name == nil, 'a tattoo the game has no text for is sent with no name, never its key')
+    W.ui(NUICB.LOCKER2_TATS, { sex = 'f' })
+    local fl, ft = W.nui(NUI.LOCKER2_TATS), 0
+    for _, z in ipairs(fl.zones) do ft = ft + #z.items end
+    ok(fl.sex == 'f' and ft == 746, 'the female list is her own 746', ft)
+    labels = W.count('GetLabelText')
+    W.ui(NUICB.LOCKER2_TATS, { sex = 'm' })
+    eq(W.count('GetLabelText'), labels, 'a list is built once: asking again looks nothing up')
+    local function listsSent()
+        local n = 0
+        for _, e in ipairs(W.events) do
+            if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2_TATS then n = n + 1 end
+        end
+        return n
+    end
+    local sent = listsSent()
+    W.ui(NUICB.LOCKER2_TATS, { sex = 'x' })
+    eq(listsSent(), sent, 'a sex that is not one gets nothing')
+
+    -- On and off, at once on the ped, the sex's own overlay.
+    local r1, i1 = tatRow('TAT_AR_000')
+    W.ui(NUICB.LOCKER2_TAT, { i = i1, on = true })
+    eq(decoNames(W.ped(), 'm'), r1[4], 'on puts it on the ped at once, the male overlay')
+    eq(W.ped().decos[1][1], hashOf(r1[3]), 'from its collection')
+    local m = W.nui(NUI.LOCKER2)
+    ok(m.edit.dirty == true and #m.edit.tats == 1 and m.edit.tats[1] == i1, 'the push says it is on; the draft is dirty')
+    W.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
+    eq(W.nui(NUI.LOCKER2).tab, 'male', 'so the other tabs are locked, as for any change')
+    -- NO CAP.
+    for idx, row in ipairs(TAT.list) do
+        if row[4] then W.ui(NUICB.LOCKER2_TAT, { i = idx, on = true }) end
+    end
+    eq(#W.nui(NUI.LOCKER2).edit.tats, 744, 'every male tattoo on at once: no cap')
+    eq(#W.ped().decos, 744, 'and all of them on the ped')
+    local clears = W.count('ClearPedDecorations')
+    W.ui(NUICB.LOCKER2_TAT, { i = i1, on = false })
+    eq(W.count('ClearPedDecorations'), clears + 1, 'off clears the decorations')
+    eq(#W.ped().decos, 743, 'and puts the rest back')
+    ok(not decoNames(W.ped(), 'm'):find(r1[4], 1, true), 'without that one')
+    -- Refused: nothing changes.
+    local before = #W.nui(NUI.LOCKER2).edit.tats
+    local _, fOnly = onlyFor('f')
+    for _, bad in ipairs({ { i = 0, on = true }, { i = #TAT.list + 1, on = true }, { i = 1.5, on = true },
+                           { i = 'x', on = true }, { i = fOnly, on = true } }) do
+        W.ui(NUICB.LOCKER2_TAT, bad)
+    end
+    eq(#W.nui(NUI.LOCKER2).edit.tats, before, 'no row, a fraction, a word or a female-only tattoo on the male tab: refused')
+    -- Save carries them.
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Inked' })
+    local s = W.sentTo(NET.LOCKER2_SAVE)[1]
+    local sa = s and A.decode(s.a)
+    eq(sa and #A.tattoos(sa), 743, 'Save sends every tattoo on')
+    W.net(NET.LOCKER2_RESULT, { req = s.req, ok = true, id = PID, ped = { id = PID, name = 'Inked', a = s.a, up = 9 },
+        worn = { k = 'p', id = PID, a = s.a } })
+    ok(W.nui(NUI.LOCKER2).edit.dirty == false, 'saved: clean')
+    eq(#A.tattoos(A.decodeWorn(W.kvp['br:locker2:worn']).a), 743, 'and worn with them here')
+    -- The camera follows a zone, as it follows a row.
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'tat_lleg' })
+    eq(W.cams[#W.cams], 'focus:legs', 'a leg zone looks at the legs')
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'tat_head' })
+    eq(W.cams[#W.cams], 'focus:head', 'the head zone at the head')
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'tattoos' })
+    eq(W.cams[#W.cams], 'focus:upper', 'the section itself at the upper body')
+    eq(W.nui(NUI.LOCKER2).edit.cat, 'tattoos', 'and its anchor is lit')
+
+    -- Reset takes them off with the rest; the female tab uses her overlays.
+    local F = joined()
+    F.ui(NUICB.LOCKER2_OPEN)
+    F.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    F.pump(300)
+    local rx, ix = tatRow('TAT_X7_031')
+    F.ui(NUICB.LOCKER2_TAT, { i = ix, on = true })
+    eq(decoNames(F.ped(), 'f'), rx[5], 'the female tab puts on the female overlay')
+    local _, mOnly = onlyFor('m')
+    F.ui(NUICB.LOCKER2_TAT, { i = mOnly, on = true })
+    eq(#F.nui(NUI.LOCKER2).edit.tats, 1, 'and refuses a male-only tattoo')
+    F.ui(NUICB.LOCKER2_RESET)
+    F.pump(300)
+    local fm = F.nui(NUI.LOCKER2)
+    ok(fm.edit.dirty == false and #fm.edit.tats == 0 and #F.ped().decos == 0, 'Reset takes the tattoos off too')
+    -- Refused while the ped is held, as every change is.
+    F.locked = true
+    F.ui(NUICB.LOCKER2_TAT, { i = ix, on = true })
+    eq(#F.ped().decos, 0, 'nothing while the entrance holds the ped')
+end
+
+describe('season2.tattoo_paths')
+do
+    -- EVERY PLACE A SAVED CUSTOM PED IS PUT ON, its tattoos go on with it.
+    local inked = femaleLook()
+    A.setTattoo(inked, 'TAT_X7_031', true)
+    A.setTattoo(inked, 'TAT_H4_000', true)
+    -- A set the list does not know and a male-only tattoo: skipped, no error.
+    A.setTattoo(inked, 'TAT_ZZ_001', true)
+    A.setTattoo(inked, onlyFor('m')[1], true)
+    local enc = A.encode(inked)
+    local want = table.concat((function()
+        local t = { tatRow('TAT_X7_031')[5], tatRow('TAT_H4_000')[5] }
+        table.sort(t)
+        return t
+    end)(), ',')
+
+    -- 1. The join: the server's worn ped, first applied.
+    local W = clientWorld({ season = 2, v2 = true })
+    W.pump(200)
+    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
+    W.pump(600)
+    eq(decoNames(W.ped(), 'f'), want, 'the join puts the saved tattoos on, an unknown set and a male-only one skipped')
+    -- 2. A new ped in every state there is one (warmup, the plane, the drop,
+    -- the match, downed): the respawns and the warmup trip.
+    for _, st in ipairs({ 'WARMUP', 'BUS', 'FREEFALL', 'GLIDE', 'ALIVE', 'DBNO' }) do
+        W.BR.State.me.state = W.BR.PlayerState[st]
+        W.handle = W.handle + 1
+        W.peds[W.handle] = newPed(FEMALE)
+        W.pump(600)
+        eq(decoNames(W.ped(), 'f'), want, 'in ' .. st .. ' a new ped gets the tattoos back')
+    end
+    -- 3. The same ped losing them (a resurrection that kept its handle).
+    W.ped().decos = {}
+    W.pump(600)
+    eq(decoNames(W.ped(), 'f'), want, 'the same ped with its tattoos gone gets them back')
+    local clears = W.count('ClearPedDecorations')
+    W.pump(10000)
+    eq(W.count('ClearPedDecorations'), clears, 'and nothing is put on again while they are all there')
+    -- 4. An engine that draws fewer than asked is not asked again every pass.
+    local C2 = clientWorld({ season = 2, v2 = true })
+    C2.decoCap = 1
+    C2.pump(200)
+    C2.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
+    C2.pump(600)
+    C2.BR.State.me.state = C2.BR.PlayerState.ALIVE
+    local c0 = C2.count('ClearPedDecorations')
+    C2.pump(5000)
+    eq(C2.count('ClearPedDecorations'), c0, 'a ped that carries fewer than it was given is not cleared every pass')
+
+    -- 5. Wearing a saved ped from the page, over one of the same model.
+    local plain = femaleLook()
+    local P = joined({ { id = PID, name = 'Ann', a = enc, up = 5 },
+                       { id = '0abcdefgh13', name = 'Old', a = A.encode(plain), up = 6 } })
+    P.ui(NUICB.LOCKER2_OPEN)
+    P.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
+    P.pump(300)
+    eq(decoNames(P.ped(), 'f'), want, 'a saved ped worn from the page wears its tattoos')
+    -- 6. An old save, with no `t`, over it: none, the last look's taken off.
+    P.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = '0abcdefgh13' })
+    P.pump(300)
+    ok(P.ped().model == FEMALE and #P.ped().decos == 0, 'an old save wears none, and takes the last one\'s off')
+    -- 7. Edit opens it with its tattoos ticked.
+    P.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P.pump(300)
+    local tats = P.nui(NUI.LOCKER2).edit.tats
+    eq(#tats, 2, 'Edit shows its two tattoos on, the skipped ones not')
+    eq(decoNames(P.ped(), 'f'), want, 'and the preview wears them')
+    -- 8. A stock ped, picked straight after the tattooed one: none.
+    P.ui(NUICB.LOCKER2_TAB, { tab = 'peds' })
+    P.pump(300)
+    P.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
+    P.pump(300)
+    eq(decoNames(P.ped(), 'f'), want, 'the tattooed ped worn again')
+    P.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
+    P.pump(300)
+    P.ui(NUICB.LOCKER2_WEAR, { k = 's', id = STOCK2 })
+    P.pump(600)
+    local adds = P.count('AddPedDecorationFromHashes')
+    ok(P.ped().model == hashOf(P.BR.PedById(STOCK2).model) and #P.ped().decos == 0, 'a stock ped wears no tattoo')
+    P.BR.State.me.state = P.BR.PlayerState.ALIVE
+    P.pump(5000)
+    eq(P.count('AddPedDecorationFromHashes'), adds, 'and none is put on it later')
+    -- 9. The headshot clone wears them.
+    local H = joined({ { id = PID, name = 'Ann', a = enc, up = 5 } })
+    H.ui(NUICB.LOCKER2_OPEN)
+    H.ui(NUICB.LOCKER2_SHOTS, { ids = { PID } })
+    H.pump(600)
+    eq(decoNames(H.peds[H.created[1].handle], 'f'), want, 'a card\'s headshot clone wears the tattoos')
+    -- 10. A build without a set skips it, in the list and on the ped.
+    local B = clientWorld({ season = 2, v2 = true })
+    B.build = 3000
+    B.pump(200)
+    B.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
+    B.pump(600)
+    eq(decoNames(B.ped(), 'f'), tatRow('TAT_H4_000')[5], 'a build without The Chop Shop skips its tattoo')
+    B.ui(NUICB.LOCKER2_OPEN)
+    B.ui(NUICB.LOCKER2_TATS, { sex = 'f' })
+    local x7 = 0
+    for _, z in ipairs(B.nui(NUI.LOCKER2_TATS).zones) do
+        for _, it in ipairs(z.items) do if TAT.list[it.i][3] == 'mp2023_02_overlays' then x7 = x7 + 1 end end
+    end
+    eq(x7, 0, 'and does not list it')
+end
+
+describe('season2.tattoo_season1')
+do
+    -- Season 1 is untouched: no tattoo native in a whole session.
+    local W = clientWorld({ season = 1, v2 = true })
+    W.pump(600)
+    W.fire('br:ui:ready')
+    W.ui(NUICB.LOCKER_PICK, { id = STOCK2 })
+    W.pump(600)
+    W.BR.State.me.state = W.BR.PlayerState.ALIVE
+    W.pump(5000)
+    eq(W.count('AddPedDecorationFromHashes') + W.count('ClearPedDecorations') + W.count('GetPedDecorations')
+        + W.count('GetLabelText') + W.count('GetGameBuildNumber'), 0, 'Season 1 calls no tattoo native at all')
+    -- A live switch back to Season 1 leaves Season 1's ped bare.
+    local inked = femaleLook()
+    A.setTattoo(inked, 'TAT_X7_031', true)
+    local F = clientWorld({ season = 2, v2 = true })
+    F.pump(200)
+    F.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(inked) }, store = true, peds = {} })
+    F.pump(600)
+    eq(#F.ped().decos, 1, 'on Season 2 the saved ped wears its tattoo')
+    F.season(1)
+    F.pump(600)
+    ok(F.ped().model ~= FEMALE and #F.ped().decos == 0, 'back on Season 1 its ped wears none')
+    local adds = F.count('AddPedDecorationFromHashes')
+    F.BR.State.me.state = F.BR.PlayerState.ALIVE
+    F.pump(5000)
+    eq(F.count('AddPedDecorationFromHashes'), adds, 'and none is put on it later')
+end
+
 -- ═══ THE CAMERA'S FOCUS (client/lobbycam.lua) ═══
 
 describe('lobbycam.focus')
@@ -1944,10 +2427,10 @@ do
     for _, k in ipairs(keys) do
         if not types:find("'" .. NUICB[k] .. "'", 1, true) then missing[#missing + 1] = NUICB[k] end
     end
-    for _, k in ipairs({ 'LOCKER2', 'LOCKER2_SHOT' }) do
+    for _, k in ipairs({ 'LOCKER2', 'LOCKER2_SHOT', 'LOCKER2_TATS' }) do
         if not types:find("'" .. NUI[k] .. "'", 1, true) then missing[#missing + 1] = NUI[k] end
     end
-    eq(#keys, 16, 'sixteen callbacks')
+    eq(#keys, 18, 'eighteen callbacks (the tattoo list and a tattoo, 2026-10-11)')
     ok(#missing == 0, 'bridge/types.ts carries every locker2 callback and message name', table.concat(missing, ' '))
     -- And br_ui forwards every callback to br_core.
     local nui = readFile(RES .. 'br_ui/client/nui.lua')
@@ -1982,6 +2465,22 @@ do
     ok(#rowLabels > 2 and #catLabels > 2, 'copy.ts has its ROW_LABEL and CAT_LABEL')
     ok(#unlabeled == 0, 'the page has a label for every row and category Lua sends',
        table.concat(unlabeled, ' '))
+    -- And for the Tattoos section: its own heading and every zone Lua sends,
+    -- each zone's category the one the page's anchor asks for.
+    local zoneLabels = block('ZONE_LABEL')
+    local unzoned = {}
+    for _, z in ipairs(TAT.zones) do
+        if not labeled(zoneLabels, z) then unzoned[#unzoned + 1] = z end
+    end
+    ok(copy:find("export const TATTOOS = '", 1, true) ~= nil and #unzoned == 0,
+        'the page has a label for the Tattoos section and every zone', table.concat(unzoned, ' '))
+    local cats = {}
+    for _, c in ipairs(shared.BR.Config.Locker2.tattooCats) do
+        cats[#cats + 1] = c.id
+        if c.zone then ok(c.id == 'tat_' .. c.zone, 'zone ' .. c.zone .. '\'s category is tat_' .. c.zone) end
+    end
+    eq(table.concat(cats, ','), 'tattoos,tat_head,tat_torso,tat_larm,tat_rarm,tat_lleg,tat_rleg',
+        'the section and its six zones, in order')
 end
 
 -- ------------------------------------------------------------------ done ---

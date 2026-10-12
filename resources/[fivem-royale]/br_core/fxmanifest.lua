@@ -368,6 +368,12 @@ client_scripts {
     -- reader: Season 1's locker asks BR.LockerV2 at call time (nil-guarded),
     -- and v2 reads BR.Locker.chosen() at call time. Its ticks need the loop
     -- registry (client/main.lua) and BR.Season (shared), both above.
+    --
+    -- Its tattoo list (2026-10-11) is CLIENT ONLY: the server checks a saved
+    -- look's shape (br_lib/shared/appearance.lua) and never which tattoos it
+    -- names, so the 775 rows load where they are put on and nowhere else.
+    -- Read at call time, so its place beside locker2.lua is a reader's.
+    '@br_lib/config/tattoos.lua',
     'client/locker2.lua',
     'client/locker2shot.lua',
     -- Whether that ped is a LOBBY ped -- hidden from every other lobby client

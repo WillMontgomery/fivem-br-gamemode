@@ -26,11 +26,14 @@
 --        parachute packs included (owner, 2026-10-07)
 --   p    props 0, 1, 2, 6, 7: [drawable -1..1023 (-1 is none, with texture 0),
 --        texture 0..31]
+--   t    tattoos, OPTIONAL and last: { "<set>": "<hex>" }; absent is none,
+--        which is every save from before tattoos. See THE TATTOOS below.
 --
 -- Textures stop at 31 because that is all the sync tree carries (5 bits): a
 -- texture above it would show on this machine and nowhere else.
 --
--- FIXED KEY ORDER, INTEGERS ONLY, AT MOST 2048 BYTES. Nothing is clamped: a
+-- FIXED KEY ORDER, INTEGERS ONLY (but `t`'s hex), AT MOST 2048 BYTES. Nothing
+-- is clamped: a
 -- value out of range is refused, so the server stores exactly what the player
 -- saw or nothing.
 --
@@ -39,6 +42,27 @@
 -- whatever the table holds. Two looks that show the same are then the same
 -- string: equal() agrees, a draft that only changed what nobody can see is not
 -- dirty, and what the server stores is what the player saw.
+--
+-- ═══ THE TATTOOS (2026-10-11) ═══
+--
+-- "No cap on tattoos per ped, and yes whatever the game has include DLC sets"
+-- (owner). A tattoo is named by the game's own shop label key, TAT_<set>_<nnn>
+-- (br_lib/config/tattoos.lua), and `t` holds one hex string per set with any on:
+--
+--   "t":{"AR":"5","FM":"0001"}   is TAT_AR_000, TAT_AR_002 and TAT_FM_012
+--
+-- Hex digit k (0-based) covers numbers 4k..4k+3, bit (nnn % 4) within it. So
+-- any number of tattoos fits: every one the game has is under 500 bytes, and
+-- the whole appearance stays inside MAX_BYTES with no cap at all. A key means
+-- the same tattoo on every build and for both sexes; the client puts on the
+-- overlay of the appearance's own sex.
+--
+-- CANONICAL: sets sorted, trailing zero digits dropped, an empty set dropped,
+-- and no `t` at all when nothing is on -- so a look with no tattoos encodes
+-- exactly as it did before they existed. Only the SHAPE is checked here: a set
+-- or a number this build's list does not know (a set the game build lacks, a
+-- list from a later round) is kept as it is and skipped where tattoos are put
+-- on, never refused.
 
 BR = BR or {}
 BR.Appearance = {}
@@ -55,6 +79,10 @@ A.FEATURES = 20
 --- The overlay that may not be none: the eyebrows.
 A.EYEBROWS = 2
 A.NONE = 255
+--- The longest tattoo set name (the <set> of TAT_<set>_<nnn>) and hex string:
+--- a label number has three digits, so 250 hex digits reach every one.
+A.TATTOO_SET_MAX = 16
+A.TATTOO_HEX_MAX = 250
 
 local SEXES = { m = true, f = true }
 
@@ -121,7 +149,27 @@ local function onlyKeys(t, allowed)
     return true
 end
 
-local TOP = { v = true, s = true, sk = true, e = true, h = true, ff = true, o = true, c = true, p = true }
+local TOP = { v = true, s = true, sk = true, e = true, h = true, ff = true, o = true, c = true, p = true,
+              t = true }
+
+--- A tattoo set's name: capitals and digits, words joined by one `_` (BUS_F).
+local function isSet(k)
+    return type(k) == 'string' and #k >= 1 and #k <= A.TATTOO_SET_MAX and k:match('^[%u%d_]+$') ~= nil
+        and k:find('__', 1, true) == nil and k:sub(1, 1) ~= '_' and k:sub(-1) ~= '_'
+end
+
+--- `t`'s shape -- set -> hex string -- and never what the sets mean.
+local function validTattoos(t)
+    if t == nil then return true end
+    if type(t) ~= 'table' then return false end
+    for k, v in pairs(t) do
+        if not isSet(k) then return false end
+        if type(v) ~= 'string' or #v > A.TATTOO_HEX_MAX or v:match('^[0-9a-f]*$') == nil then
+            return false
+        end
+    end
+    return true
+end
 
 --- Is this an appearance? Never clamps.
 --- @param a any
@@ -168,6 +216,7 @@ function A.validate(a)
         end
         if p[1] == -1 and p[2] ~= 0 then return false, 'p' .. A.PROPS[i] end
     end
+    if not validTattoos(a.t) then return false, 't' end
     return true, nil
 end
 
@@ -193,6 +242,22 @@ local function overlaysOf(o)
     return '[' .. table.concat(out, ',') .. ']'
 end
 
+--- `t` as it is written: ',"t":{...}' with its sets sorted, each without its
+--- trailing zero digits, an empty one left out -- or '' when nothing is on.
+local function tattoosOf(t)
+    if t == nil then return '' end
+    local sets = {}
+    for k, v in pairs(t) do
+        local hex = v:gsub('0+$', '')
+        if hex ~= '' then sets[#sets + 1] = { k, hex } end
+    end
+    if #sets == 0 then return '' end
+    table.sort(sets, function(x, y) return x[1] < y[1] end)
+    local out = {}
+    for i, s in ipairs(sets) do out[i] = ('"%s":"%s"'):format(s[1], s[2]) end
+    return ',"t":{' .. table.concat(out, ',') .. '}'
+end
+
 --- The canonical string, or nil and why when `a` is not an appearance.
 --- @param a table
 --- @return string|nil
@@ -200,8 +265,78 @@ end
 function A.encode(a)
     local ok, why = A.validate(a)
     if not ok then return nil, why end
-    return ('{"v":1,"s":"%s","sk":%d,"e":%d,"h":%s,"ff":%s,"o":%s,"c":%s,"p":%s}'):format(
-        a.s, a.sk, a.e, ints(a.h), ints(a.ff), overlaysOf(a.o), pairsOf(a.c), pairsOf(a.p)), nil
+    return ('{"v":1,"s":"%s","sk":%d,"e":%d,"h":%s,"ff":%s,"o":%s,"c":%s,"p":%s%s}'):format(
+        a.s, a.sk, a.e, ints(a.h), ints(a.ff), overlaysOf(a.o), pairsOf(a.c), pairsOf(a.p),
+        tattoosOf(a.t)), nil
+end
+
+-- ═══ TATTOOS BY LABEL KEY ═══
+
+--- A label key's set and number: 'TAT_BUS_F_013' is 'BUS_F', 13. nil for a
+--- key that is not TAT_<set>_<three digits>.
+--- @param key any
+--- @return string|nil set
+--- @return integer|nil n
+function A.tattooPart(key)
+    if type(key) ~= 'string' then return nil, nil end
+    local set, n = key:match('^TAT_(.+)_(%d%d%d)$')
+    if not set or not isSet(set) then return nil, nil end
+    return set, math.tointeger(tonumber(n))
+end
+
+--- Is this tattoo on?
+--- @param a table
+--- @param key string
+--- @return boolean
+function A.hasTattoo(a, key)
+    local set, n = A.tattooPart(key)
+    if not set or type(a.t) ~= 'table' then return false end
+    local hex = a.t[set]
+    local k = n // 4 + 1
+    if type(hex) ~= 'string' or #hex < k then return false end
+    local d = tonumber(hex:sub(k, k), 16) or 0
+    return d & (1 << (n % 4)) ~= 0
+end
+
+--- Put a tattoo on or take it off. Any number may be on.
+--- @param a table
+--- @param key string
+--- @param on boolean
+--- @return boolean  false for a key that is not a tattoo's
+function A.setTattoo(a, key, on)
+    local set, n = A.tattooPart(key)
+    if not set then return false end
+    local t = type(a.t) == 'table' and a.t or {}
+    local hex = t[set] or ''
+    local k = n // 4 + 1
+    if #hex < k then hex = hex .. string.rep('0', k - #hex) end
+    local d = tonumber(hex:sub(k, k), 16) or 0
+    local bit = 1 << (n % 4)
+    d = on and (d | bit) or (d & ~bit)
+    hex = (hex:sub(1, k - 1) .. ('%x'):format(d) .. hex:sub(k + 1)):gsub('0+$', '')
+    t[set] = hex ~= '' and hex or nil
+    a.t = next(t) ~= nil and t or nil
+    return true
+end
+
+--- Every tattoo on, as label keys, sorted.
+--- @param a table
+--- @return string[]
+function A.tattoos(a)
+    local out = {}
+    if type(a.t) ~= 'table' then return out end
+    for set, hex in pairs(a.t) do
+        if isSet(set) and type(hex) == 'string' then
+            for k = 1, #hex do
+                local d = tonumber(hex:sub(k, k), 16) or 0
+                for b = 0, 3 do
+                    if d & (1 << b) ~= 0 then out[#out + 1] = ('TAT_%s_%03d'):format(set, (k - 1) * 4 + b) end
+                end
+            end
+        end
+    end
+    table.sort(out)
+    return out
 end
 
 -- ═══ A STRICT JSON READER ═══

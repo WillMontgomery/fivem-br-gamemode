@@ -1518,15 +1518,20 @@ BR.Nui = {
     -- Locker v2 (#28, Season 2): { on, tab, stock, peds, worn, loading,
     -- locked, busy, edit }. Sent on ready, on a season change and on every
     -- change. `peds` = { { id, name, up, img? } } with no appearance; `edit`
-    -- = { sex, editing, dirty, cat, cats, rows } on a Custom tab, where a row
-    -- is { k, cat, kind = 'count', v, n, colors } or { k, cat, kind =
-    -- 'slider', v, min, max, def }. See br_core/client/locker2.lua.
+    -- = { sex, editing, dirty, cat, cats, rows, tats } on a Custom tab, where a
+    -- row is { k, cat, kind = 'count', v, n, colors } or { k, cat, kind =
+    -- 'slider', v, min, max, def }, and `tats` the tattoos on, by their `i` in
+    -- LOCKER2_TATS. See br_core/client/locker2.lua.
     LOCKER2   = 'locker2',
     -- { id, up?, txd?, url?, img?, save? }: one card's headshot. `txd` and
     -- `url` (nui-img, with a cache-buster) for a shot taken now -- the page
     -- answers br/locker2/shotdone, and br/locker2/shot with the image when
     -- `save` is set; `img` for one the server already holds.
     LOCKER2_SHOT = 'locker2shot',
+    -- { sex, zones = { { z, items = { { i, name? } } } } }: one sex's tattoos
+    -- by body zone, once, when the page asks (br/locker2/tats). `name` is the
+    -- game's own text for the tattoo's label, absent where it has none.
+    LOCKER2_TATS = 'locker2tats',
     -- LEVEL AND XP. WHERE THE BAR IS, and the only envelope allowed to say so.
     -- Every value on it is evaluated by BR.Xp on the server -- from MARKET_STATE
     -- on connect and after a credit, and from MATCH_EARNED at the end of a
@@ -1701,6 +1706,8 @@ BR.NuiCb = {
     LOCKER2_SHOTS    = 'br/locker2/shots',     -- { ids }: cards with no image
     LOCKER2_SHOTDONE = 'br/locker2/shotdone',  -- { id, ok }
     LOCKER2_SHOT     = 'br/locker2/shot',      -- { id, img }: a saved ped's webp
+    LOCKER2_TATS     = 'br/locker2/tats',      -- { sex }: the tattoo list, answered as LOCKER2_TATS
+    LOCKER2_TAT      = 'br/locker2/tat',       -- { i, on }: one tattoo on or off
     -- The guided first run (#261). { run = boolean } for the lobby half,
     -- { game = boolean } for the in-game one, and `done = true` alongside
     -- `game = false` when the last card was DISMISSED rather than abandoned --
