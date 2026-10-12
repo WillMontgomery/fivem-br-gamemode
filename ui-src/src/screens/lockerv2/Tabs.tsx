@@ -10,10 +10,14 @@ import { CB } from '../../bridge/types'
 import type { Locker2Edit, Locker2Payload, Locker2Ped } from '../../bridge/types'
 import { play } from '../../audio/cues'
 import Ring from '../../hud/Ring'
-import { BTN, CAT_LABEL } from './copy'
-import { activeAnchor, anchorId, categoriesOf, needShots, shotKey } from './model'
+import { BTN, CAT_LABEL, TATTOOS, ZONE_LABEL } from './copy'
+import {
+  TATTOOS_CAT, activeAnchor, anchorId, categoriesOf, needShots, shotKey, tattooCats, tattoosOn, zoneOfCat,
+} from './model'
 import { askedKeys, cachedKeys, markAsked, shotFor, useShotCache } from './shots'
+import { askTats, useTats } from './tattooLists'
 import { CountRow, SliderRow } from './Rows'
+import { TattooSection } from './Tattoos'
 
 /** Wear a stock or a saved ped. "a pick applies at once with no Save" (the
  *  owner's confirmed assumption, #28), and the last press wins in Lua. */
@@ -149,9 +153,21 @@ export function PedsTab({ st, blocked, onEdit, onCreate, onRename, onDelete }: {
  */
 export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undefined; disabled: boolean }) {
   const scroller = useRef<HTMLDivElement>(null)
+  // The Tattoos section's list for this sex: asked for once it is drawn, and
+  // the section appears when it comes (tattooLists.ts).
+  const sex = edit?.sex ?? null
+  const tats = useTats(sex)
+  useEffect(() => { if (sex !== null) askTats(sex) }, [sex])
   if (!edit) return null
 
-  const cats = categoriesOf(edit.rows)
+  const rowCats = categoriesOf(edit.rows)
+  const tatCats = tattooCats(tats)
+  const cats = [...rowCats, ...tatCats]
+  const anchorText = (c: string): string => {
+    if (c === TATTOOS_CAT) return TATTOOS
+    const zone = zoneOfCat(c)
+    return zone !== null ? ZONE_LABEL[zone] ?? '' : CAT_LABEL[c] ?? ''
+  }
   const toCat = (cat: string) => {
     void fetchNui(CB.LOCKER2_CAT, { cat })
   }
@@ -167,7 +183,9 @@ export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undef
     <div className="flex min-h-0 flex-1" style={{ gap: '1em' }}>
       <div className="thin-scroll min-h-0 overflow-y-auto" style={{ flex: '0 0 30%' }}>
         <AnchorNavigation
-          anchors={cats.map((c) => ({ text: CAT_LABEL[c] ?? '', href: `#${anchorId(c)}`, level: 1 }))}
+          anchors={cats.map((c) => ({
+            text: anchorText(c), href: `#${anchorId(c)}`, level: zoneOfCat(c) !== null ? 2 : 1,
+          }))}
           activeHref={activeAnchor(edit.cat)}
           onFollow={(e) => {
             e.preventDefault()
@@ -182,7 +200,7 @@ export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undef
       <div ref={scroller} className="thin-scroll min-h-0 flex-1 overflow-y-auto"
         style={{ position: 'relative', paddingRight: '0.5em' }}>
         <SpaceBetween size="l">
-          {cats.map((cat) => (
+          {rowCats.map((cat) => (
             <div key={cat} id={anchorId(cat)}>
               <SpaceBetween size="s">
                 <Box variant="h4">{CAT_LABEL[cat] ?? ''}</Box>
@@ -192,6 +210,9 @@ export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undef
               </SpaceBetween>
             </div>
           ))}
+          {tats !== null && tatCats.length > 0 && (
+            <TattooSection tats={tats} on={tattoosOn(edit)} disabled={disabled} onTouch={toCat} />
+          )}
         </SpaceBetween>
       </div>
     </div>

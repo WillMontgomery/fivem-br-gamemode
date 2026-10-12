@@ -14,7 +14,7 @@
  */
 
 import type {
-  Locker2Edit, Locker2Payload, Locker2Ped, Locker2Row, Locker2Worn,
+  Locker2Edit, Locker2Payload, Locker2Ped, Locker2Row, Locker2Tattoo, Locker2TatsPayload, Locker2Worn,
 } from '../../bridge/types'
 
 /** The four pages. `peds` is "My peds"; `male` and `female` are the Custom tabs. */
@@ -247,6 +247,59 @@ export function categoriesOf(rows: { cat: string }[]): string[] {
 /** The id an anchor and its section share. */
 export const anchorId = (cat: string): string => `lk2-cat-${cat}`
 
+// ═══ TATTOOS (owner, 2026-10-11) ═══
+//
+// "No cap on tattoos per ped, and yes whatever the game has include DLC sets.
+// They're all free just like the rest of the locker." A Tattoos section on the
+// Custom tabs after every other category: its own anchor, then one per body
+// zone. Lua sends each sex's list once (`locker2tats`, names from the game's
+// own text) and, on every push, only which are on (`edit.tats`).
+
+/** The body zones, in the order drawn (br_lib/config/tattoos.lua's `zones`). */
+export const TATTOO_ZONES = ['head', 'torso', 'larm', 'rarm', 'lleg', 'rleg'] as const
+
+/** The Tattoos section's own anchor, and a zone's: the ids Lua's
+ *  `tattooCats` gives them, so LOCKER2_CAT moves the camera for both. */
+export const TATTOOS_CAT = 'tattoos'
+export const tattooCat = (zone: string): string => `tat_${zone}`
+/** A zone's anchor's zone (drawn one level in, under Tattoos), else null. */
+export function zoneOfCat(cat: string): string | null {
+  const z = cat.startsWith('tat_') ? cat.slice(4) : ''
+  return (TATTOO_ZONES as readonly string[]).includes(z) ? z : null
+}
+
+/**
+ * One sex's list as the page may draw it: zones it knows, in its order, each
+ * with its whole items -- an `i` that is a positive integer, a name only if it
+ * is a non-empty string -- and none empty. Anything else is dropped.
+ */
+export function parseTats(raw: unknown): Locker2TatsPayload | null {
+  const d = obj(raw)
+  if (!d || (d.sex !== 'm' && d.sex !== 'f')) return null
+  const byZone = new Map<string, Locker2Tattoo[]>()
+  for (const z of list(d.zones).map(obj)) {
+    if (!z || !str(z.z) || byZone.has(z.z)) continue
+    const items = list(z.items).map(obj)
+      .filter((t): t is Record<string, unknown> => t !== null && Number.isInteger(t.i) && (t.i as number) > 0)
+      .map((t): Locker2Tattoo => (str(t.name) && t.name !== '' ? { i: t.i as number, name: t.name } : { i: t.i as number }))
+    if (items.length > 0) byZone.set(z.z, items)
+  }
+  return {
+    sex: d.sex,
+    zones: TATTOO_ZONES.filter((z) => byZone.has(z)).map((z) => ({ z, items: byZone.get(z) ?? [] })),
+  }
+}
+
+/** The Tattoos section's anchors: its own, then one per zone that has any --
+ *  none at all while the list has not come, or has nothing. */
+export function tattooCats(tats: Locker2TatsPayload | null): string[] {
+  if (!tats || tats.zones.length === 0) return []
+  return [TATTOOS_CAT, ...tats.zones.map((z) => tattooCat(z.z))]
+}
+
+/** Which tattoos are on, for a quick look-up; any number of them. */
+export const tattoosOn = (edit: Locker2Edit): ReadonlySet<number> => new Set(edit.tats)
+
 // ═══ HEADSHOTS (contract section 6, with the skeptic's correction 6) ═══
 
 /**
@@ -354,6 +407,7 @@ function edit(v: unknown): Locker2Edit | null {
     dirty: e.dirty === true,
     cat: str(e.cat) ? e.cat : null,
     rows: list(e.rows).map(row).filter((r): r is Locker2Row => r !== null),
+    tats: list(e.tats).filter((i): i is number => Number.isInteger(i) && (i as number) > 0),
   }
 }
 

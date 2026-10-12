@@ -25,6 +25,11 @@
  *   CAMERA    every category touch is sent; a new draft lights no anchor.
  *   PICTURES  every image drawn to a canvas is asked for with CORS; a stored
  *             picture arrives on its own and is kept, never on the push.
+ *   TATTOOS   each sex's list made safe to draw (the body's zones in order,
+ *             whole items, a name only if it is one), the section's anchors
+ *             only once the list has come, every tattoo on kept however many
+ *             (no cap), the words, and the wiring: asked once drawn, each box
+ *             a LOCKER2_TAT, a nameless one its place in the zone.
  *
  * And what a unit test cannot see, read from the source and the build:
  *
@@ -46,11 +51,11 @@ import { fileURLToPath } from 'node:url'
 import {
   SLIDER_HOLD_MS, activeAnchor, anchorId, canvasImage, categoriesOf, counterText, dataUrlBytes,
   doneSteps, editFor, escapeAction, filterName, followTab, imgOk, nameOk, needShots, openingTab,
-  parseLocker2, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds, tabOptions,
-  tabsShown, wrapStep, zoomFor,
+  parseLocker2, parseTats, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds, tabOptions,
+  tabsShown, TATTOO_ZONES, tattooCats, tattoosOn, wrapStep, zoneOfCat, zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
-  BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, rowLabel, updateLabel,
+  BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, TATTOOS, ZONE_LABEL, rowLabel, tattooFallback, updateLabel,
 } from '../src/screens/lockerv2/copy.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -254,6 +259,37 @@ eq('a ped saved again needs a new picture', needShots([{ id: 'c', up: 9 }], new 
 
 eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(Number.NaN)], [2, 1, 1])
 
+// ── TATTOOS (owner, 2026-10-11) ──────────────────────────────────────────────
+// "No cap on tattoos per ped, and yes whatever the game has include DLC sets."
+{
+  const t = parseTats({ sex: 'm', zones: [
+    { z: 'torso', items: [{ i: 5, name: 'Skull' }, { i: 7 }, { i: 0, name: 'bad' }, 'junk', { i: 2.5 }, { i: 9, name: '' }] },
+    { z: 'head', items: [{ i: 1, name: 'Star' }] },
+    { z: 'nope', items: [{ i: 3 }] },
+    { z: 'lleg', items: {} },
+    { z: 'head', items: [{ i: 4 }] },
+  ] })
+  eq('tattoo list: the body\'s zones in order; unknown, empty and repeated zones dropped',
+    t.zones.map((z) => z.z), ['head', 'torso'])
+  eq('tattoo list: whole items kept, a name only when it is one', t.zones[1].items, [{ i: 5, name: 'Skull' }, { i: 7 }, { i: 9 }])
+  eq('tattoo list: not a sex, or nothing, is no list', [parseTats({ sex: 'x', zones: [] }), parseTats(null)], [null, null])
+  eq('tattoo anchors: none before the list has come, then the section and each zone it has',
+    [tattooCats(null), tattooCats(t)], [[], ['tattoos', 'tat_head', 'tat_torso']])
+  eq('tattoo anchors: an empty list has none', tattooCats({ sex: 'm', zones: [] }), [])
+  eq('a zone\'s anchor sits one level in; nothing else does',
+    [zoneOfCat('tat_head'), zoneOfCat('tat_rleg'), zoneOfCat('tattoos'), zoneOfCat('face'), zoneOfCat('tat_nope')],
+    ['head', 'rleg', null, null, null])
+  const many = Array.from({ length: 750 }, (_, k) => k + 1)
+  const p = parseLocker2({ edit: { sex: 'm', rows: [], tats: [...many, 0, -1, 1.5, 'x'] } })
+  eq('envelope: every tattoo on is kept, however many -- no cap', p.edit.tats.length, 750)
+  eq('envelope: none on crosses as {} and is none', parseLocker2({ edit: { sex: 'f', rows: [], tats: {} } }).edit.tats, [])
+  check('the boxes ticked are the ones on', tattoosOn(p.edit).has(750) && !tattoosOn(p.edit).has(751))
+  eq('tattoo words', [TATTOOS, ZONE_LABEL.head, ZONE_LABEL.torso, ZONE_LABEL.larm, ZONE_LABEL.rarm, ZONE_LABEL.lleg,
+    ZONE_LABEL.rleg, tattooFallback(3)],
+  ['Tattoos', 'Head', 'Torso', 'Left arm', 'Right arm', 'Left leg', 'Right leg', 'Tattoo 3'])
+  eq('every zone Lua sends has a word', TATTOO_ZONES.every((z) => typeof ZONE_LABEL[z] === 'string'), true)
+}
+
 // ── WIRING (source) ──────────────────────────────────────────────────────────
 {
   const app = read(join(SRC, 'App.tsx'))
@@ -314,6 +350,24 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
     v2.includes('disabledReason: o.explained ? LOCKED_TAB : undefined'))
   check('Escape is taken in the capture phase', v2.includes("window.addEventListener('keydown', onKey, true)"))
 
+  // THE TATTOOS SECTION'S WIRING.
+  check('the Custom tab asks for its sex\'s tattoo list once it is drawn',
+    /useEffect\(\(\) => \{ if \(sex !== null\) askTats\(sex\) \}, \[sex\]\)/.test(tabs))
+  check('its anchors follow the row categories, from the list',
+    tabs.includes('const cats = [...rowCats, ...tatCats]') && tabs.includes('const tatCats = tattooCats(tats)'))
+  check('the section draws what is on, and a press moves the camera as a row\'s does',
+    tabs.includes('<TattooSection tats={tats} on={tattoosOn(edit)} disabled={disabled} onTouch={toCat} />'))
+  const tat = read(join(SRC, 'screens', 'lockerv2', 'Tattoos.tsx'))
+  check('each box asks Lua to put its tattoo on or take it off, nothing decided here',
+    tat.includes('void fetchNui(CB.LOCKER2_TAT, { i, on: detail.checked })') && tat.includes('checked={on.has(t.i)}'))
+  check('a tattoo with no name is its place in its zone, never a key',
+    tat.includes('label={t.name ?? tattooFallback(n + 1)}'))
+  check('a box pressed sends its zone\'s category', tat.includes('onPointerDown={() => onTouch(cat)}'))
+  check('the list arrives on its own envelope and is kept for the session',
+    v2.includes("useNuiEvent('locker2tats', (d) => keepTats(d))")
+    && /export function keepTats\(raw: unknown\): void \{\s*const t = parseTats\(raw\)/.test(
+      read(join(SRC, 'screens', 'lockerv2', 'tattooLists.ts'))))
+
   const footer = read(join(SRC, 'screens', 'lockerv2', 'Footer.tsx'))
   check('every Save menu opens inside the island (expandToViewport={false})',
     (footer.match(/<ButtonDropdown/g) ?? []).length === 2
@@ -327,7 +381,8 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
   for (const s of ['Save or reset your changes first.', 'Name your ped', 'Rename ped', 'Discard changes?',
     "'Cancel'", "'Replace'", "'Keep editing'", "'Discard'", "'Save as new'", '`Update ${name}`',
     '`Replace ${name}?`', '`Delete ${name}?`', "'Skin tone'", "'Neck thickness'", "'Shoes'",
-    '`${base} opacity`', '`${base} color`']) {
+    '`${base} opacity`', '`${base} color`', "'Tattoos'", "'Head'", "'Torso'", "'Left arm'", "'Right arm'",
+    "'Left leg'", "'Right leg'", '`Tattoo ${n}`']) {
     const line = copy.split('\n').find((l) => l.includes(s))
     check(`WRITTEN marker beside ${s}`, line !== undefined && line.includes('// WRITTEN (proposal for the owner)'))
   }

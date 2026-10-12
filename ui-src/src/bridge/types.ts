@@ -1105,6 +1105,9 @@ export interface Locker2Edit {
    *  as every new draft starts. The anchor lit is always this one. */
   cat: string | null
   rows: Locker2Row[]
+  /** The tattoos on, by their `i` in the sex's Locker2TatsPayload. Any
+   *  number of them (owner, 2026-10-11: "No cap on tattoos per ped"). */
+  tats: number[]
 }
 
 export interface Locker2Payload {
@@ -1135,6 +1138,18 @@ export interface Locker2Payload {
  *  texture, at https://nui-img/<txd>/<txd> -- or, with `img` and no `txd`,
  *  the stored picture of the saved ped `id` as last saved at `up`. */
 export interface Locker2ShotPayload { id: string; up?: number; txd?: string; img?: string }
+
+/** One tattoo the Tattoos section lists: its row in Lua's list, and the
+ *  game's own text for it -- absent where the game has none. */
+export interface Locker2Tattoo { i: number; name?: string }
+
+/** BR.Nui.LOCKER2_TATS ('locker2tats'): one sex's tattoos by body zone, in
+ *  the order drawn, sent once when the page asks (LOCKER2_TATS). `z` is head,
+ *  torso, larm, rarm, lleg or rleg. */
+export interface Locker2TatsPayload {
+  sex: 'm' | 'f'
+  zones: { z: string; items: Locker2Tattoo[] }[]
+}
 
 /**
  * LEVEL AND XP.
@@ -1625,9 +1640,10 @@ export type Envelope =
   | { k: 'tutorialnav'; d: { dir: 'next' | 'back' | 'action'; seq: number } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
-  /** Locker v2 (#28): BR.Nui.LOCKER2 and BR.Nui.LOCKER2_SHOT. */
+  /** Locker v2 (#28): BR.Nui.LOCKER2, BR.Nui.LOCKER2_SHOT and BR.Nui.LOCKER2_TATS. */
   | { k: 'locker2';  d: Locker2Payload }
   | { k: 'locker2shot'; d: Locker2ShotPayload }
+  | { k: 'locker2tats'; d: Locker2TatsPayload }
   | { k: 'progress'; d: ProgressPayload }
   | { k: 'market';   d: MarketPayload }
   /** The emote gate (#215): BR.Nui.EMOTES, sent with every Market grid. */
@@ -1753,6 +1769,10 @@ export const CB = {
   LOCKER2_SHOT:     'br/locker2/shot',
   /** { id, ok }: the page is done with that texture. */
   LOCKER2_SHOTDONE: 'br/locker2/shotdone',
+  /** { sex }: the Tattoos section's list, answered as a `locker2tats`. */
+  LOCKER2_TATS:     'br/locker2/tats',
+  /** { i, on }: one tattoo on or off. */
+  LOCKER2_TAT:      'br/locker2/tat',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
   MARKET_EQUIP:   'br/market/equip',

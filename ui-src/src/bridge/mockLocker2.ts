@@ -105,7 +105,21 @@ function rowsOf(sex: Sex, look: Look): Locker2Row[] {
   })
 }
 
+/** The tattoos on a look, held in it as `tat:<i>` keys. */
+const tatsOf = (look: Look): number[] => Object.keys(look).filter((k) => k.startsWith('tat:'))
+  .map((k) => Number(k.slice(4))).sort((x, y) => x - y)
+
+/** The harness's tattoo lists: a few per zone, unnamed -- a tattoo's name is
+ *  the game's own text, which only the game has -- so each draws its fallback. */
+const mockTats = (sex: Sex) => ({
+  sex,
+  zones: ['head', 'torso', 'larm', 'rarm', 'lleg', 'rleg'].map((z, zi) => ({
+    z, items: Array.from({ length: sex === 'm' ? 6 : 5 }, (_, n) => ({ i: zi * 10 + n + 1 })),
+  })),
+})
+
 const same = (a: Look, b: Look) => DEFS.every((d) => a[d.k]?.v === b[d.k]?.v && a[d.k]?.t === b[d.k]?.t)
+  && tatsOf(a).join() === tatsOf(b).join()
 
 interface Saved { id: string; name: string; up: number; img?: string; sex: Sex; look: Look }
 
@@ -181,6 +195,7 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         dirty: !same(draft.look, draft.base),
         cat: draft.cat,
         rows: rowsOf(draft.sex, draft.look),
+        tats: tatsOf(draft.look),
       }
       : null,
   })
@@ -323,6 +338,17 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
       case 'br/locker2/shot':
       case 'br/locker2/shotdone':
         return true
+      case 'br/locker2/tats':
+        if (d.sex === 'm' || d.sex === 'f') emit({ k: 'locker2tats', d: mockTats(d.sex) })
+        return true
+      case 'br/locker2/tat': {
+        // Any number on, as in Lua: no cap.
+        if (!draft || typeof d.i !== 'number') return true
+        if (d.on === true) draft.look[`tat:${d.i}`] = { v: 1, t: 0 }
+        else delete draft.look[`tat:${d.i}`]
+        push()
+        return true
+      }
       default:
         return false
     }

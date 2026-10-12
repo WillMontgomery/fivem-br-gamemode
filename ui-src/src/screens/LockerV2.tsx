@@ -15,6 +15,7 @@ import {
 } from './lockerv2/model'
 import { useCloudscapeScope, useIslandZoom, usePortalZoom } from './lockerv2/scope'
 import { keepShot, takeShot } from './lockerv2/shots'
+import { keepTats } from './lockerv2/tattooLists'
 import { CustomTab, PedsTab, StockTab } from './lockerv2/Tabs'
 import { Footer } from './lockerv2/Footer'
 import { LockerModal, type ModalState } from './lockerv2/Modals'
@@ -124,6 +125,9 @@ export default function LockerV2() {
     if (d?.img !== undefined) keepShot(d.id, d.up, d.img)
     else takeShot(d?.id, d?.txd)
   })
+
+  // A sex's tattoo list, the once it is asked for (lockerv2/tattooLists.ts).
+  useNuiEvent('locker2tats', (d) => keepTats(d))
 
   const edit = editFor(tab, st.edit)
   const dirty = edit?.dirty === true

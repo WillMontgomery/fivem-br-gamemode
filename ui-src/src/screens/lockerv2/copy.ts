@@ -72,6 +72,25 @@ export const CAT_LABEL: Record<string, string> = {
   shoes: 'Shoes',             // WRITTEN (proposal for the owner)
 }
 
+/** The Tattoos section's own anchor and heading (owner, 2026-10-11: "You can
+ *  build the tattoos section now"). */
+export const TATTOOS = 'Tattoos' // WRITTEN (proposal for the owner)
+
+/** Its body zones, by the zone Lua sends. A tattoo's own name is never here:
+ *  it is the game's text for the tattoo, sent by Lua. */
+export const ZONE_LABEL: Record<string, string> = {
+  head: 'Head',               // WRITTEN (proposal for the owner)
+  torso: 'Torso',             // WRITTEN (proposal for the owner)
+  larm: 'Left arm',           // WRITTEN (proposal for the owner)
+  rarm: 'Right arm',          // WRITTEN (proposal for the owner)
+  lleg: 'Left leg',           // WRITTEN (proposal for the owner)
+  rleg: 'Right leg',          // WRITTEN (proposal for the owner)
+}
+
+/** A tattoo the game has no text for: its place in its zone's list, never
+ *  its label key printed as a word. */
+export const tattooFallback = (n: number): string => `Tattoo ${n}` // WRITTEN (proposal for the owner)
+
 /**
  * The rows, by the key Lua sends (`k`, documented on Locker2Row in
  * bridge/types.ts): the appearance JSON's own field names, `c<slot>` for a
