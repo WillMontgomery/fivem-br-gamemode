@@ -43,13 +43,21 @@ import type { Advance, Step } from './steps'
  * than the one before it has no Previous, because Previous cannot reopen the
  * screen the player has left. `noBack` is the same refusal for a doorway the
  * `screen` field cannot see.
+ *
+ * ...AND A TAB IS A DOORWAY TOO (#405). Owner, 2026-09-04: "For the first
+ * instruction on each page like step 10, no 'last' button should be available."
+ * That was one `noBack`, on step 10, and step 12 -- the first card on the
+ * Accessibility tab -- never got one. From it, Previous twice landed on step 10
+ * with the Controls tab locked and closed, its control nowhere on screen, and
+ * the run ended 1.2 seconds later. `view` names the part of the screen a card
+ * is shown over, and a change of view is refused the way a change of screen is.
  */
 export function canGoBack(steps: readonly Step[], i: number): boolean {
   const here = steps[i]
   const prev = i > 0 ? steps[i - 1] : undefined
   if (here === undefined || prev === undefined) return false
   if (here.noBack === true) return false
-  return prev.screen === here.screen
+  return prev.screen === here.screen && prev.view === here.view
 }
 
 /** The advances that are already a page, or that ask for a real control. */

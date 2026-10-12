@@ -21,7 +21,8 @@
  *
  * IT ALSO RUNS THE KEYBOARD'S HALF (#405's review): lockGuard.ts itself, loaded
  * with the store swapped for a stand-in and driven with events on a stand-in
- * page.
+ * page -- and it walks every state the Settings cards can reach, so Previous
+ * can never land on a card whose control is on another tab.
  *
  * WHAT THIS CANNOT REACH: that App mounts the lock and main.tsx installs the
  * keyboard guard (check-ui rule R29), and that every screen a lock reaches asks
@@ -30,12 +31,16 @@
  * Run: npm run test:tutoriallock   (and as part of npm run build)
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { registerHooks } from 'node:module'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { LOBBY_STEPS, LOBBY_WAYS_BACK } from '../src/tutorial/steps.ts'
 import { holdsEscape, isLocked, lockCss, lockSelector } from '../src/tutorial/lock.ts'
+import { asRevisited, canGoBack } from '../src/tutorial/progress.ts'
+
+const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 
 let failed = 0
 let ran = 0
@@ -168,6 +173,78 @@ check('Escape mid-walkthrough opens the pause menu, and its way back is Back to 
   LOBBY_WAYS_BACK.pause, 'pause-back')
 check('...which no card can lock: no card\'s sheet reaches the pause menu',
   LOBBY_STEPS.some((x) => (lockSelector(x) ?? '').includes('pause')), false)
+
+// ── PREVIOUS NEVER LANDS ON A CARD WHOSE CONTROL IS OFF THE SCREEN ───────────
+//
+// #405's review: card 12 is the first card on the Accessibility tab and had a
+// Previous; Previous twice from it landed on card 10 over Accessibility, with
+// the Controls tab locked and card 10's control nowhere -- and the run ended
+// 1.2 seconds later (`missing`). A CLASS, so this walks it rather than naming
+// the one route: every state the Settings cards can reach -- Next, the card's
+// own press, Previous, and any tab the card leaves live -- with the REAL locks
+// (lock.ts), the REAL Previous (progress.ts), and which control renders on which
+// tab read out of screens/Settings.tsx itself. In every one of them, the card's
+// control has to be on screen.
+console.log('previous, across Settings\' tabs')
+{
+  const src = readFileSync(join(SRC, 'screens', 'Settings.tsx'), 'utf8')
+  // The tab bodies, in source order: `{tab === 'x' && (` up to the next one,
+  // and the last up to the footer (Save). Anchors outside every body render on
+  // every tab -- the tabs themselves, Save and Cancel.
+  const marks = [...src.matchAll(/\{tab === '(\w+)' && \(/g)].map((m) => ({ tab: m[1], at: m.index }))
+  const footer = src.indexOf('data-tut="settings-save"')
+  const anchorsIn = (from, to) =>
+    [...src.slice(from, to).matchAll(/\b(?:data-tut|tut)="([\w-]+)"/g)].map((m) => m[1])
+  const onTab = new Map()
+  marks.forEach((m, k) => {
+    for (const a of anchorsIn(m.at, k + 1 < marks.length ? marks[k + 1].at : footer)) onTab.set(a, m.tab)
+  })
+  const tabs = marks.map((m) => m.tab)
+  check('Settings.tsx: three tab bodies, then the footer', `${tabs.join(',')}|${footer > (marks.at(-1)?.at ?? Infinity)}`,
+    'general,accessibility,controls|true')
+  check('...and the controls the cards name are where the cards say',
+    ['settings-uiscale', 'settings-voice', 'settings-controls-body'].map((a) => onTab.get(a)).join(','),
+    'general,general,controls')
+  const rendered = (anchor, tab) => !onTab.has(anchor) || onTab.get(anchor) === tab
+  const tabAnchors = (t) => [`settings-tab-${t}`, 'settings-tabs', 'page-settings']
+
+  const first = LOBBY_STEPS.findIndex((s) => s.screen === 'settings')
+  const seen = new Set()
+  const bad = []
+  const queue = [[first, 'general', false]]
+  while (queue.length > 0) {
+    const [i, tab, back] = queue.shift()
+    const key = `${i}|${tab}|${back}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const scripted = LOBBY_STEPS[i]
+    if (scripted?.screen !== 'settings') continue
+    const s = back ? asRevisited(scripted) : scripted
+    if (s.target !== undefined && !rendered(s.target, tab)) bad.push(`${s.id} over ${tab}`)
+    if (s.advance === 'next') queue.push([i + 1, tab, false])
+    if (s.advance === 'click') {
+      const opens = /^settings-tab-(\w+)$/.exec(s.target ?? '')
+      queue.push([i + 1, opens ? opens[1] : tab, false])
+    }
+    if (canGoBack(LOBBY_STEPS, i)) queue.push([i - 1, tab, true])
+    // ANY OTHER TAB THE CARD LEAVES LIVE. The tab a `click` card points at is
+    // its press, above, which moves the card on as it opens.
+    for (const t of tabs) {
+      const press = s.advance === 'click' && s.target === `settings-tab-${t}`
+      if (t !== tab && !press && !isLocked(s, tabAnchors(t))) queue.push([i, t, back])
+    }
+  }
+  check('no state the Settings cards can reach has a card whose control is off the screen',
+    [...new Set(bad)].join('; '), '')
+  check('...and the walk saw every Settings card',
+    new Set([...seen].map((k) => k.split('|')[0]).filter((n) => LOBBY_STEPS[n]?.screen === 'settings')).size,
+    LOBBY_STEPS.filter((s) => s.screen === 'settings').length)
+  const at = (id) => LOBBY_STEPS.findIndex((s) => s.id === id)
+  check('the first card on Controls has no Previous', canGoBack(LOBBY_STEPS, at('settings-controls-body')), false)
+  check('the first card on Accessibility has no Previous', canGoBack(LOBBY_STEPS, at('settings-done')), false)
+  check('a card on the same tab as the one before it keeps Previous',
+    canGoBack(LOBBY_STEPS, at('settings-accessibility')) && canGoBack(LOBBY_STEPS, at('settings-textscale')), true)
+}
 
 // ── THE KEYBOARD'S HALF, RUN: lockGuard.ts against a stand-in page ──────────
 //

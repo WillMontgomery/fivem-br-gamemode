@@ -340,8 +340,22 @@ export type Step = {
    * pressed (owner, 2026-09-04: "For the first instruction on each page like
    * step 10, no 'last' button should be available. Currently, pressing it does
    * nothing.").
+   *
+   * Settings' tabs say so with `view` now (#405), which covers every tab rather
+   * than the one card that had this.
    */
   noBack?: boolean
+  /**
+   * The part of its screen this card is shown over, when the screen has parts
+   * the `screen` field cannot see: Settings' tabs (#405).
+   *
+   * THE TAB THAT IS OPEN WHEN THE CARD ARRIVES, which is not always the tab its
+   * control sits on -- "Open Accessibility" is shown over Controls. A card whose
+   * view differs from the card before it has no Previous (`canGoBack`): the
+   * first card on each tab, which is the owner's 2026-09-04 rule for step 10
+   * made true of step 12 as well.
+   */
+  view?: string
   /**
    * Steps that only exist once the player has opened a child page. The layer
    * runs these when `screen` matches what is actually on top, which is how
@@ -461,6 +475,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'This scales every panel in the game. Drag it and let go - *watch this card resize with it*.',
     advance: 'click',
     screen: 'settings',
+    view: 'general',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
@@ -471,6 +486,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'This scales the words on their own, on top of the interface size. Set both so you can read a toast without leaning in.',
     advance: 'click',
     screen: 'settings',
+    view: 'general',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
@@ -481,6 +497,7 @@ export const LOBBY_STEPS: Step[] = [
     body: "Resolution, fullscreen and the graphics quality are the *game's own* settings, not ours - this panel points you at where GTA keeps them. Nothing to change here.",
     advance: 'next',
     screen: 'settings',
+    view: 'general',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
@@ -491,6 +508,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Interface sounds are the clicks and cues these menus make. Drag it and let go to set them.',
     advance: 'click',
     screen: 'settings',
+    view: 'general',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
@@ -502,6 +520,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Voice chat is set separately for **solos** and **squads**, so you can hear your team without hearing strangers. You can change your input/output settings here as well.',
     advance: 'next',
     screen: 'settings',
+    view: 'general',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
@@ -512,17 +531,18 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Open **Controls**.',
     advance: 'click',
     screen: 'settings',
+    view: 'general',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, 'settings-tab-general', 'settings-tab-accessibility'],
   },
   {
     id: 'settings-controls-body',
     target: 'settings-controls-body',
-    noBack: true,
     title: 'Every key, in one place',
     body: 'This is every key the game uses and what it does. Click any row to rebind it, and anything you change is yours from the next match on.',
     advance: 'next',
     screen: 'settings',
+    view: 'controls',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, ...SETTINGS_TABS],
   },
@@ -533,6 +553,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'And **Accessibility** has color-blind modes, with a preview so you can see the difference before you commit to it.',
     advance: 'click',
     screen: 'settings',
+    view: 'controls',
     live: ['page-settings'],
     locked: [...SETTINGS_EXITS, 'settings-tab-general', 'settings-tab-controls'],
   },
@@ -547,6 +568,7 @@ export const LOBBY_STEPS: Step[] = [
     body: 'Press **Save** to keep your changes and close this screen.',
     advance: 'click',
     screen: 'settings',
+    view: 'accessibility',
     live: ['page-settings'],
     locked: ['settings-cancel'],
   },
