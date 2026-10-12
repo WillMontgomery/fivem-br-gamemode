@@ -182,13 +182,24 @@ end
 -- comp), so nothing of the last build survives into this one. A LIST is emptied
 -- from the top before it is refilled, so its length is this build's.
 
+-- THE LISTS ARE ALSO KEPT AS AN ARRAY (#393 round 3), so a reset walks them by
+-- index rather than visiting every key of the pool, and the takes a build makes
+-- once a piece -- arc, seg, corner, step, disc and run, a hundred and more a
+-- frame on a breakout -- read their list where they stand instead of calling
+-- poolTake for it. The same list, the same next table, the same fields.
+
+--- A pool's first list of `kind`: made, named in the pool, and added to its array.
+local function newList(pool, kind)
+    local list = { n = 0 }
+    pool[kind] = list
+    local all = pool.lists
+    all[#all + 1] = list
+    return list
+end
+
 --- A table of `kind` from the pool, the next one not yet taken this build.
 local function poolTake(pool, kind)
-    local list = pool[kind]
-    if not list then
-        list = { n = 0 }
-        pool[kind] = list
-    end
+    local list = pool[kind] or newList(pool, kind)
     local n = list.n + 1
     list.n = n
     local t = list[n]
@@ -210,16 +221,15 @@ end
 --- A new, empty pool.
 --- @return table
 function BR.StormShape.newPool()
-    return { builds = 0 }
+    return { builds = 0, lists = {} }
 end
 
 --- Hand every table in `pool` back for the next build. What the last build made
 --- from it must not be read after this.
 --- @param pool table
 function BR.StormShape.resetPool(pool)
-    for _, l in pairs(pool) do
-        if type(l) == 'table' then l.n = 0 end
-    end
+    local all = pool.lists
+    for i = 1, #all do all[i].n = 0 end
     pool.builds = pool.builds + 1
 end
 
@@ -284,7 +294,14 @@ end
 local function arc(cx, cy, r, a0, sweep, exact, pool)
     if not exact then r = radius(r) end
     if pool then
-        local pc = poolTake(pool, 'arc')
+        local list = pool.arc or newList(pool, 'arc')
+        local n = list.n + 1
+        list.n = n
+        local pc = list[n]
+        if not pc then
+            pc = {}
+            list[n] = pc
+        end
         pc.kind = 'arc'
         pc.cx, pc.cy, pc.r = cx + 0.0, cy + 0.0, r
         pc.a0, pc.sweep = a0 + 0.0, sweep + 0.0
@@ -310,7 +327,14 @@ local function seg(x0, y0, x1, y1, pool)
     if len <= 0.0 then return nil end     -- no direction, so no normal
     local ux, uy = dx / len, dy / len
     if pool then
-        local pc = poolTake(pool, 'seg')
+        local list = pool.seg or newList(pool, 'seg')
+        local n = list.n + 1
+        list.n = n
+        local pc = list[n]
+        if not pc then
+            pc = {}
+            list[n] = pc
+        end
         pc.kind = 'seg'
         pc.x0, pc.y0, pc.x1, pc.y1 = x0 + 0.0, y0 + 0.0, x1 + 0.0, y1 + 0.0
         pc.ux, pc.uy = ux, uy
@@ -993,7 +1017,14 @@ local function corner(x, y, rho, a0, a1, c0, s0, c1, s1, pool)
     c0, s0 = c0 or cos(a0), s0 or sin(a0)
     c1, s1 = c1 or cos(a1), s1 or sin(a1)
     if pool then
-        local k = poolTake(pool, 'corner')
+        local list = pool.corner or newList(pool, 'corner')
+        local n = list.n + 1
+        list.n = n
+        local k = list[n]
+        if not k then
+            k = {}
+            list[n] = k
+        end
         k.x, k.y, k.rho, k.a0, k.a1 = x, y, rho, a0, a1
         k.c0, k.s0, k.c1, k.s1 = c0, s0, c1, s1
         k.h1 = x * c1 + y * s1 + rho
@@ -1295,7 +1326,14 @@ end
 --- One step of the hull walk: { disc index, from angle, to angle }.
 local function step(pool, i, a0, a1)
     if not pool then return { i, a0, a1 } end
-    local e = poolTake(pool, 'step')
+    local list = pool.step or newList(pool, 'step')
+    local n = list.n + 1
+    list.n = n
+    local e = list[n]
+    if not e then
+        e = {}
+        list[n] = e
+    end
     e[1], e[2], e[3] = i, a0, a1
     return e
 end
@@ -2518,7 +2556,19 @@ function BR.StormShape.morphHull(src, dst, t, keep, pool)
     local md = poolList(pool, 'md')
     for i = 1, #src do
         local a, b = src[i], dst[i]
-        local d = pool and poolTake(pool, 'disc') or {}
+        local d
+        if pool then
+            local list = pool.disc or newList(pool, 'disc')
+            local n = list.n + 1
+            list.n = n
+            d = list[n]
+            if not d then
+                d = {}
+                list[n] = d
+            end
+        else
+            d = {}
+        end
         d.x, d.y, d.r = s * a.x + t * b.x, s * a.y + t * b.y, s * a.r + t * b.r
         md[i] = d
     end
@@ -3806,7 +3856,19 @@ function BR.StormShape.runs(shape, ci, pool)
         -- it recorded rather than a second derivation of it off two floating-point
         -- sums that agree to picometres and decide a boundary case between them.
         if pc.comp == ci then
-            local rn = pool and poolTake(pool, 'run') or {}
+            local rn
+            if pool then
+                local list = pool.run or newList(pool, 'run')
+                local n = list.n + 1
+                list.n = n
+                rn = list[n]
+                if not rn then
+                    rn = {}
+                    list[n] = rn
+                end
+            else
+                rn = {}
+            end
             rn.t0, rn.len = pc.s0 - base, pc.len
             rn.r = (pc.kind == 'arc') and pc.r or nil
             out[#out + 1] = rn

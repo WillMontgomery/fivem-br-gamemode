@@ -6414,6 +6414,79 @@ do
         'a warm pool builds, insets and walks a breakout\'s sweep without allocating, '
             .. 'stitched and apart',
         ('%.2f and %.2f KB over %d pooled builds'):format(heldKB[1], heldKB[2], heldBuilds))
+
+    -- ═══ THE PER-PIECE TAKES MAKE NO CALL, AND A RESET WALKS AN ARRAY (#393 round 3) ═══
+    --
+    -- arc, seg, corner, step, disc and run are taken a hundred and more times a frame on
+    -- a breakout, and each took its table through poolTake: a call apiece, for four lines
+    -- of arithmetic. They read their list where they stand now, and resetPool walks the
+    -- pool's lists by index. The pool blocks above are the claim that nothing moved;
+    -- these are that the calls are gone -- every call a warm breakout build makes is
+    -- watched, and none of those six functions calls poolTake -- and that a reset hands
+    -- back every list and touches nothing else the pool holds.
+    describe('wall.take')
+    local SRC = 'resources/[fivem-royale]/br_lib/shared/storm_shape.lua'
+    local defined = {}
+    do
+        local f = assert(io.open(SRC, 'r'))
+        local ln = 0
+        for line in f:lines() do
+            ln = ln + 1
+            local name = line:match('^local function ([%w_]+)%(')
+                or line:match('^function BR%.StormShape%.([%w_]+)%(')
+            if name then defined[ln] = name end
+        end
+        f:close()
+    end
+    local hot = { arc = true, seg = true, corner = true, step = true, morphHull = true,
+                  runs = true }
+    local takes, hotTakes = 0, {}
+    local function build()
+        for _, t in ipairs(ts) do
+            SS.resetPool(hp)
+            local z = zoneAt(stitchedRec, t, hp)
+            local zi = SS.inset(z, 6.0, hp)
+            for ci = 1, #SS.components(zi) do SS.runs(zi, ci, hp) end
+        end
+    end
+    build()
+    debug.sethook(function()
+        local callee = debug.getinfo(2, 'S')
+        if callee.source:sub(-#'storm_shape.lua') ~= 'storm_shape.lua' then return end
+        if defined[callee.linedefined] ~= 'poolTake' then return end
+        takes = takes + 1
+        local caller = debug.getinfo(3, 'S')
+        local name = caller and defined[caller.linedefined]
+        if name and hot[name] then hotTakes[name] = (hotTakes[name] or 0) + 1 end
+    end, 'c')
+    build()
+    debug.sethook()
+    local named = {}
+    for n, c in pairs(hotTakes) do named[#named + 1] = ('%s %d'):format(n, c) end
+    table.sort(named)
+    ok(takes > 0 and #named == 0,
+        'a warm breakout build takes its arc and run pieces, corners, hull steps, morph '
+            .. 'discs and run entries from the pool without calling poolTake',
+        ('%d poolTake calls in all; from the six: %s'):format(takes,
+            #named > 0 and table.concat(named, ', ') or 'none'))
+
+    local rp = SS.newPool()
+    SS.resetPool(rp)
+    local z = zoneAt(stitchedRec, 0.3, rp)
+    SS.inset(z, 6.0, rp)
+    SS.resetPool(rp)
+    local lists, stale = 0, nil
+    for k, l in pairs(rp) do
+        if type(l) == 'table' and k ~= 'lists' and k ~= 'held' then
+            lists = lists + 1
+            if l.n ~= 0 then stale = stale or k end
+        end
+    end
+    ok(lists > 20 and stale == nil and #(rp.lists or {}) == lists and rp.held ~= nil
+        and rp.held.n == nil,
+        'and a reset hands back every list the build took from, and touches nothing else '
+            .. 'the pool holds', ('%d lists, %d in the array, stale %s'):format(lists,
+            #(rp.lists or {}), tostring(stale)))
 end
 
 -- ---------------------------------------------------------------------------
