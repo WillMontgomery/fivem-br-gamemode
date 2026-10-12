@@ -613,7 +613,7 @@ export const LOBBY_STEPS: Step[] = [
     id: 'market-inside',
     target: 'market-done',
     title: 'The Market',
-    body: "It may look a bit empty in here for now, as we're still working on things.",
+    body: "It may look a bit empty in here for now as we're still working on things.",
     advance: 'click',
     screen: 'market',
     live: ['page-market'],
