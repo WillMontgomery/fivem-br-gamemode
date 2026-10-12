@@ -108,7 +108,12 @@ export function lockCss(spec: LockSpec | null | undefined): string {
 }
 
 /**
- * Does the walkthrough hold Escape on this screen?
+ * Does the walkthrough hold this screen open against Escape?
+ *
+ * HOLDS THE CLOSING, NOT THE KEY (#405). Each screen's own close-on-Escape asks
+ * (`escapeHeld` in lockGuard.ts) and does not close; a Controls row listening
+ * for a key, or a Locker dialog, still hears Escape as it always did. The one
+ * screen that cannot ask is held by the guard -- see `guardHoldsEscape`.
  *
  * WHILE A CARD LIVES ON THE SCREEN, YES. Every one of these screens closes on
  * Escape, and a card that waits on the screen it is about would be left waiting
@@ -121,4 +126,20 @@ export function lockCss(spec: LockSpec | null | undefined): string {
  */
 export function holdsEscape(step: { screen?: string } | null | undefined, focus: string): boolean {
   return step?.screen !== undefined && step.screen === focus
+}
+
+/**
+ * Must the keyboard guard hold Escape itself, rather than leave it to the screen?
+ *
+ * ONLY FOR THE ONE SCREEN THAT CANNOT ASK. Every other walkthrough screen asks
+ * `escapeHeld()` in its own close-on-Escape, so the key still reaches whatever
+ * else on it uses Escape. Season 1's Locker is frozen byte-for-byte (owner, #28:
+ * "make sure that stays in and remains untouched"; test-lockerv2.mjs holds it to
+ * a hash), so it cannot ask -- and its only use of Escape is closing, so holding
+ * the key there holds nothing else. Season 2's Locker asks, for its dialogs.
+ */
+export function guardHoldsEscape(
+  step: { screen?: string } | null | undefined, focus: string, seasonTwoLocker: boolean,
+): boolean {
+  return holdsEscape(step, focus) && focus === 'locker' && !seasonTwoLocker
 }

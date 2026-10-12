@@ -19,11 +19,20 @@
  * wrote them. The steps are looked up by id, so a card added later (the Market's,
  * in this same round) does not move what a number below means.
  *
+ * IT ALSO RUNS THE KEYBOARD'S HALF (#405's review): lockGuard.ts itself, loaded
+ * with the store swapped for a stand-in and driven with events on a stand-in
+ * page.
+ *
  * WHAT THIS CANNOT REACH: that App mounts the lock and main.tsx installs the
- * keyboard guard. That is check-ui rule R29.
+ * keyboard guard (check-ui rule R29), and that every screen a lock reaches asks
+ * before it closes on Escape (R35).
  *
  * Run: npm run test:tutoriallock   (and as part of npm run build)
  */
+
+import { existsSync } from 'node:fs'
+import { registerHooks } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
 import { LOBBY_STEPS, LOBBY_WAYS_BACK } from '../src/tutorial/steps.ts'
 import { holdsEscape, isLocked, lockCss, lockSelector } from '../src/tutorial/lock.ts'
@@ -123,8 +132,8 @@ check('...and the whole Market answers under it, Done too',
     || isLocked(step('market-inside'), ['page-market']), false)
 check('...and it holds Escape on the Market', holdsEscape(step('market-inside'), 'market'), true)
 check('step 1 has its interactive-demo section', typeof step('welcome').note, 'string')
-check('step 2: a hand points at Squads after five seconds or more',
-  step('mode').hand >= 5000 && step('mode').target === 'mode-squad', true)
+check('step 2: a hand points at Squads at five seconds -- "5+ seconds", and no later',
+  step('mode').hand === 5000 && step('mode').target === 'mode-squad', true)
 check('...and no other card has one',
   LOBBY_STEPS.filter((x) => x.hand !== undefined).map((x) => x.id).join(','), 'mode')
 check('step 16 (help): only Help', liveOnLobby('help'), 'help')
@@ -154,10 +163,212 @@ check('a card on Help holds Escape on Help (Back is the way out)', holdsEscape(s
 check('the last card does not hold Escape on a screen they opened themselves',
   holdsEscape(step('ready'), 'settings'), false)
 check('nor on the pause menu', holdsEscape(step('mode'), 'pause'), false)
+check('...even while a card waits on Settings under it', holdsEscape(step('settings-display'), 'pause'), false)
 check('Escape mid-walkthrough opens the pause menu, and its way back is Back to lobby',
   LOBBY_WAYS_BACK.pause, 'pause-back')
 check('...which no card can lock: no card\'s sheet reaches the pause menu',
   LOBBY_STEPS.some((x) => (lockSelector(x) ?? '').includes('pause')), false)
+
+// ── THE KEYBOARD'S HALF, RUN: lockGuard.ts against a stand-in page ──────────
+//
+// #405's review: four mutations of the keyboard's half -- the guard reaching the
+// pause menu, no blur on focus, Enter missing from the keys, no blur when the
+// card moves on -- survived every suite, because nothing ran that code. This
+// loads the REAL lockGuard.ts, with the store swapped for a stand-in and a page
+// of stand-in elements, and drives it with events.
+//
+// And the review's second finding: the guard held Escape for a walkthrough
+// screen by stopping it outright, so a Controls row the card says to click could
+// not be canceled. A listener added after the guard must hear Escape.
+console.log('the keyboard')
+{
+  const store = {
+    state: { tutorialRun: false, tutorialHeading: null, focus: 'lobby', locker2: { on: false } },
+    subs: [],
+    set(p) {
+      const prev = store.state
+      store.state = { ...prev, ...p }
+      for (const f of store.subs) f(store.state, prev)
+    },
+  }
+  globalThis.__tutLockStore = store
+  registerHooks({
+    resolve(spec, ctx, next) {
+      if (spec === '../store' && ctx.parentURL?.includes('/src/tutorial/')) {
+        return { url: 'tutlock:store', shortCircuit: true }
+      }
+      if (spec.startsWith('.') && ctx.parentURL?.includes('/src/') && !/\.[cm]?[jt]sx?$/.test(spec)) {
+        const u = new URL(`${spec}.ts`, ctx.parentURL)
+        if (existsSync(fileURLToPath(u))) return { url: u.href, shortCircuit: true }
+      }
+      return next(spec, ctx)
+    },
+    load(url, ctx, next) {
+      if (url === 'tutlock:store') {
+        return {
+          format: 'module',
+          shortCircuit: true,
+          source: 'const s = globalThis.__tutLockStore\n'
+            + 'export const useUi = { getState: () => s.state, subscribe: (f) => { s.subs.push(f); return () => {} } }\n',
+        }
+      }
+      return next(url, ctx)
+    },
+  })
+
+  // A STAND-IN PAGE. `matches` knows the selector shapes lock.ts uses -- a tag,
+  // attribute tests, comma lists -- and throws on anything else, so a new shape
+  // in CONTROLS or LOCK_SURFACES is a failure here rather than a silent miss.
+  const blurred = []
+  class El {
+    constructor(tag, attrs = {}, kids = []) {
+      this.tag = tag
+      this.attrs = attrs
+      this.parentElement = null
+      for (const k of kids) k.parentElement = this
+    }
+    getAttribute(n) { return this.attrs[n] ?? null }
+    matches(sel) {
+      return sel.split(',').some((part) => {
+        const m = /^([a-z]+)?((?:\[[\w-]+(?:="[^"]*")?\])*)$/.exec(part.trim())
+        if (!m) throw new Error(`stand-in page cannot match '${part.trim()}'`)
+        if (m[1] && m[1] !== this.tag) return false
+        return [...m[2].matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)]
+          .every(([, n, v]) => (v === undefined ? n in this.attrs : this.attrs[n] === v))
+      })
+    }
+    closest(sel) {
+      for (let e = this; e !== null; e = e.parentElement) if (e.matches(sel)) return e
+      return null
+    }
+  }
+  class HEl extends El {
+    blur() {
+      blurred.push(this)
+      if (globalThis.document.activeElement === this) globalThis.document.activeElement = page
+    }
+  }
+  globalThis.Element = El
+  globalThis.HTMLElement = HEl
+  const btn = () => new HEl('button')
+  const tut = (name, kid, tag = 'span') => new HEl(tag, { 'data-tut': name }, [kid])
+  const squads = btn(); const ready = btn(); const settingsBtn = btn()
+  const save = btn(); const slider = new HEl('input', { type: 'range' }); const row = btn()
+  const pauseBack = btn()
+  const page = new HEl('body', {}, [
+    new HEl('div', { 'data-layer': 'lobby' }, [
+      new HEl('div', { 'data-tut': 'lobby-menu' }, [
+        tut('mode-picker', tut('mode-squad', squads, 'div'), 'div'),
+        tut('ready', ready), tut('settings', settingsBtn, 'div'),
+      ]),
+    ]),
+    new HEl('div', { 'data-page': 'settings', 'data-tut': 'page-settings' }, [
+      tut('settings-save', save), tut('settings-uiscale', slider, 'div'),
+      tut('settings-controls-body', row, 'section'),
+    ]),
+    new HEl('div', { 'data-page': 'pause', 'data-tut': 'page-pause' }, [tut('pause-back', pauseBack)]),
+  ])
+  globalThis.document = { activeElement: page }
+
+  const listeners = []
+  globalThis.window = { addEventListener: (type, fn) => listeners.push({ type, fn }) }
+  const fire = (type, init) => {
+    const ev = {
+      type, ...init, prevented: false, stopped: false,
+      preventDefault() { this.prevented = true },
+      stopImmediatePropagation() { this.stopped = true },
+      stopPropagation() {},
+    }
+    for (const l of [...listeners]) {
+      if (l.type !== type) continue
+      l.fn(ev)
+      if (ev.stopped) break
+    }
+    return ev
+  }
+  const key = (k, on) => { globalThis.document.activeElement = on; return fire('keydown', { key: k }) }
+  const focusOn = (el) => {
+    blurred.length = 0
+    globalThis.document.activeElement = el
+    fire('focusin', { target: el })
+    return blurred.includes(el)
+  }
+
+  const G = await import('../src/tutorial/lockGuard.ts')
+  G.installLockGuard()
+
+  // What a screen does with Escape: Settings closes on it (asking first, #405),
+  // and a Controls row that is listening cancels on it. Both added AFTER the
+  // guard, as every screen's are.
+  let closed = false
+  let listening = false
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    if (typeof G.escapeHeld === 'function' && G.escapeHeld()) return
+    closed = true
+  })
+  window.addEventListener('keydown', (e) => { if (listening && e.key === 'Escape') listening = false })
+
+  check('no walkthrough: Enter on Ready up goes through', key('Enter', ready).stopped, false)
+  check('no walkthrough: nothing loses focus', focusOn(ready), false)
+
+  store.set({ tutorialRun: true, tutorialHeading: 'mode', focus: 'lobby' })
+  for (const k of ['Enter', ' ', 'ArrowRight', 'Home']) {
+    const ev = key(k, ready)
+    check(`step 2: '${k}' on a focused, locked Ready up is stopped`, ev.stopped && ev.prevented, true)
+  }
+  check('step 2: Enter on Squads, the live control, goes through', key('Enter', squads).stopped, false)
+  check('step 2: Tab onto Ready up loses it at once', focusOn(ready), true)
+  check('step 2: Squads keeps focus', focusOn(squads), false)
+  check('the pause menu is no lock\'s: Back to lobby keeps focus', focusOn(pauseBack), false)
+  check('...and Enter presses it', key('Enter', pauseBack).stopped, false)
+  check('Tab itself is never stopped', key('Tab', ready).stopped, false)
+
+  blurred.length = 0
+  globalThis.document.activeElement = squads
+  store.set({ tutorialHeading: 'settings' })
+  check('the card moves on: the Squads just pressed is let go', blurred.includes(squads), true)
+  blurred.length = 0
+  globalThis.document.activeElement = settingsBtn
+  store.set({ tutorialHeading: 'settings-uiscale', focus: 'settings' })
+  check('...and Settings, the moment its screen is up', blurred.includes(settingsBtn), true)
+  blurred.length = 0
+  globalThis.document.activeElement = slider
+  store.set({ tutorialHeading: 'settings-textscale' })
+  check('...but not a control the next card leaves live', blurred.includes(slider), false)
+  check('step 4: Save is locked to the keyboard', key('Enter', save).stopped, true)
+  check('step 4: the slider answers its arrows', key('ArrowRight', slider).stopped, false)
+
+  store.set({ tutorialHeading: 'settings-controls-body' })
+  check('a card on Settings holds the screen open', typeof G.escapeHeld === 'function' && G.escapeHeld(), true)
+  listening = true
+  closed = false
+  const esc = key('Escape', row)
+  check('Escape is not stopped by the guard', esc.stopped, false)
+  check('...so a listening Controls row hears it and cancels (#405 review)', listening, false)
+  check('...and Settings does not close under the card', closed, false)
+
+  // THE LOCKER CARD. Season 2's Locker asks, so its dialogs still close on
+  // Escape; Season 1's is frozen byte-for-byte (#28) and cannot ask, so the
+  // guard holds the key for it -- its only use of Escape is closing.
+  store.set({ tutorialHeading: 'locker-inside', focus: 'locker', locker2: { on: true } })
+  check('Season 2\'s Locker: Escape reaches it (a dialog closes on it)', key('Escape', page).stopped, false)
+  check('...and it is asked to stay open', G.escapeHeld?.(), true)
+  store.set({ locker2: { on: false } })
+  const s1 = key('Escape', page)
+  check('Season 1\'s Locker, which cannot ask: the guard holds Escape for it', s1.stopped && s1.prevented, true)
+  store.set({ tutorialHeading: 'ready' })
+  check('...and only while a card waits on it', key('Escape', page).stopped, false)
+  store.set({ tutorialHeading: 'settings-controls-body', focus: 'settings' })
+  check('no other screen has Escape taken by the guard', key('Escape', row).stopped, false)
+
+  store.set({ focus: 'pause' })
+  check('the pause menu is never held', G.escapeHeld?.(), false)
+  store.set({ tutorialHeading: 'ready', focus: 'settings' })
+  check('Settings opened from the last card is not held', G.escapeHeld?.(), false)
+  store.set({ tutorialRun: false, tutorialHeading: null })
+  check('no walkthrough, nothing held', G.escapeHeld?.(), false)
+}
 
 if (failed) {
   console.error(`\ntest-tutorial-lock: ${failed} of ${ran} failed`)

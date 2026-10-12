@@ -5,6 +5,7 @@ import { CB } from '../bridge/types'
 import type { MarketItem } from '../bridge/types'
 import Btn from '../ui/Btn'
 import { play } from '../audio/cues'
+import { escapeHeld } from '../tutorial/lockGuard'
 
 /**
  * The market.
@@ -123,6 +124,10 @@ export default function Market() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      // NOT WHILE A WALKTHROUGH CARD WAITS ON THIS SCREEN (#405): the card's own
+      // control is the way out. Only the closing is held -- the key goes on to
+      // everything else here as usual.
+      if (escapeHeld()) return
       e.preventDefault()
       e.stopPropagation()
       play('ui.back')

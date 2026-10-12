@@ -189,9 +189,12 @@ export function doneSteps(dirty: boolean, confirmed: boolean): DoneStep[] {
 }
 
 /** Escape closes only the open modal (the skeptic's correction 11); with none
- *  open it is Done. */
-export function escapeAction(modalOpen: boolean): 'modal' | 'done' {
-  return modalOpen ? 'modal' : 'done'
+ *  open it is Done -- unless a walkthrough card is waiting on the locker
+ *  (#405), when it is nothing: the card's Done is the way out, and an open
+ *  dialog still closes. */
+export function escapeAction(modalOpen: boolean, held = false): 'modal' | 'done' | 'none' {
+  if (modalOpen) return 'modal'
+  return held ? 'none' : 'done'
 }
 
 /** How long after the last touch a slider shows its own value rather than

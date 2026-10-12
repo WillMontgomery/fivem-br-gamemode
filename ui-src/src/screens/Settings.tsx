@@ -8,6 +8,7 @@ import { KeyText } from '../ui/KeyCap'
 import { play } from '../audio/cues'
 import { DEFAULT_SETTINGS } from '../settings/apply'
 import Keybinds from './Keybinds'
+import { escapeHeld } from '../tutorial/lockGuard'
 
 /**
  * Settings.
@@ -499,6 +500,10 @@ export default function Settings({
     if (inline) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      // NOT WHILE A WALKTHROUGH CARD WAITS ON THIS SCREEN (#405): the card's own
+      // control is the way out. Only the closing is held -- the key goes on to
+      // everything else here as usual.
+      if (escapeHeld()) return
       e.preventDefault()
       e.stopPropagation()
       cancel()

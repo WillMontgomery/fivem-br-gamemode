@@ -184,6 +184,10 @@ eq('Done after Discard: close, then the focus', doneSteps(true, true),
 eq('Done with nothing to lose: close, then the focus', doneSteps(false, false),
   [{ do: 'close' }, { do: 'unfocus' }])
 eq('Escape: an open dialog alone, else Done', [escapeAction(true), escapeAction(false)], ['modal', 'done'])
+// #405's review: a walkthrough card waiting on the locker held Escape for the
+// whole screen, so a dialog no longer closed on it. Only Done is held.
+eq('Escape under a walkthrough card: a dialog still closes, Done is held',
+  [escapeAction(true, true), escapeAction(false, true)], ['modal', 'none'])
 eq('dialog wording', [MODAL.name, MODAL.rename, MODAL.discard, BTN.keepEditing, BTN.discard],
   ['Name your ped', 'Rename ped', 'Discard changes?', 'Keep editing', 'Discard'])
 

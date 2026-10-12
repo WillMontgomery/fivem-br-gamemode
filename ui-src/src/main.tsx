@@ -52,10 +52,10 @@ import './index.css'
 // what turns that into a line in the F8 console and the server log.
 installErrorSinks()
 
-// The walkthrough's keyboard locks (#405), BEFORE ANY SCREEN MOUNTS: four
-// screens close on Escape from their own capture listeners on `window`, and the
-// only listener that runs ahead of all of them is one added before them. See
-// tutorial/lockGuard.ts.
+// The walkthrough's keyboard locks (#405), BEFORE ANY SCREEN MOUNTS: a key
+// that would press a locked control has to be stopped ahead of every screen's
+// own capture listener on `window`, and the only listener that runs ahead of
+// all of them is one added before them. See tutorial/lockGuard.ts.
 installLockGuard()
 
 // Report what this CEF build can actually render. Colour functions in

@@ -18,6 +18,7 @@ import { keepShot, takeShot } from './lockerv2/shots'
 import { CustomTab, PedsTab, StockTab } from './lockerv2/Tabs'
 import { Footer } from './lockerv2/Footer'
 import { LockerModal, type ModalState } from './lockerv2/Modals'
+import { escapeHeld } from '../tutorial/lockGuard'
 
 /**
  * LOCKER V2 (#28): Season 2's locker. Season 1's is screens/Locker.tsx, the
@@ -154,8 +155,9 @@ export default function LockerV2() {
       if (e.key !== 'Escape') return
       e.preventDefault()
       e.stopPropagation()
-      if (escapeAction(live.current.modal !== null) === 'modal') { setModal(null); return }
-      live.current.done(false)
+      const act = escapeAction(live.current.modal !== null, escapeHeld())
+      if (act === 'modal') { setModal(null); return }
+      if (act === 'done') live.current.done(false)
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)

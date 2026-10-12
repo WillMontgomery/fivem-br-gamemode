@@ -2301,7 +2301,8 @@ for (const name of builtCss) {
 //   NOT DRAWN -- App.tsx stops mounting <TutorialLock /> while the lobby run is
 //     up, or it stops rendering `lockCss(...)`, so no control is ever locked;
 //   NOT FOLLOWED -- the lobby layer stops passing `onHeading` to the store, so
-//     the lock never leaves step 1;
+//     the lock never leaves step 1, or `go` stops publishing where it is
+//     heading on the press, so the next screen draws under the last card's lock;
 //   NOT GUARDED -- main.tsx stops calling installLockGuard() before the first
 //     render, so Escape closes a screen a card is waiting on and a key presses a
 //     locked control;
@@ -2310,7 +2311,8 @@ for (const name of builtCss) {
 //     anchor that is no longer there.
 //
 // IT CAN FAIL. Delete `{tutorialRun && <TutorialLock />}`, the `onHeading=`
-// prop, the installLockGuard() call, or the span around Cancel.
+// prop, the heading line in `go`, the installLockGuard() call, or the span
+// around Cancel.
 // ---------------------------------------------------------------------------
 {
   const A = join(SRC, 'App.tsx')
@@ -2334,6 +2336,13 @@ for (const name of builtCss) {
         'the lobby TutorialLayer no longer passes'
         + ' `onHeading={(id) => dispatch().setTutorialHeading(id)}`. The locks follow'
         + ' the card through it (#405).')
+    }
+    if (!/const\s+leaving\s*=\s*steps\[iRef\.current\]\s*onHeadingRef\.current\?\.\(to\s*>=\s*0\s*&&\s*to\s*<\s*steps\.length\s*\?\s*steps\[to\]!\.id\s*:\s*null\)/
+        .test(stripComments(read(join(SRC, 'tutorial', 'TutorialLayer.tsx'))))) {
+      fail('R29 tutorial-lock', 'src/tutorial/TutorialLayer.tsx',
+        '`go` no longer publishes the card it is heading to, first thing, on the press'
+        + ' (`onHeadingRef.current?.(...)`). The locks would follow the card on screen'
+        + ' and draw the next screen dimmed for the length of the exit (#405).')
     }
     if (!/lockCss\(/.test(stripComments(read(T)))) {
       fail('R29 tutorial-lock', 'src/tutorial/TutorialLock.tsx',
@@ -2509,9 +2518,13 @@ for (const name of builtCss) {
 //   AROUND NOTHING -- TutorialLayer measures a target without asking that it is
 //     visible and has a box, so a faded-out lobby's toggle still gets a ring.
 //
+//   OVER THE LOBBY -- the in-game layer's `subscreenUp` stops counting the HUD
+//     not being up, so its cards draw over a lobby for the frames before Lua's
+//     leave tick ends the run.
+//
 // IT CAN FAIL. Put `subscreenUp={LOBBY_SUBSCREENS.has(focus)}` back on either
-// lobby layer, drop the `setTutorialDeclineCard(false)` effect, or the
-// `visibility === 'visible'` term.
+// lobby layer, drop the `setTutorialDeclineCard(false)` effect, the
+// `visibility === 'visible'` term, or the in-game layer's `|| !hudUp`.
 // ---------------------------------------------------------------------------
 {
   const A = join(SRC, 'App.tsx')
@@ -2542,6 +2555,12 @@ for (const name of builtCss) {
     if (!run || run[1].trim() !== 'lobbyCovered') {
       fail('R33 tutorial-belongs', 'src/App.tsx',
         'the lobby run\'s layer is not given `subscreenUp={lobbyCovered}` (#405).')
+    }
+    const game = /<TutorialLayer\s+steps=\{GAME_STEPS\}([\s\S]*?)\/>/.exec(app)
+    if (!game || !/subscreenUp=\{focus\s*!==\s*'none'\s*\|\|\s*!hudUp\}/.test(game[1])) {
+      fail('R33 tutorial-belongs', 'src/App.tsx',
+        'the in-game layer is not given `subscreenUp={focus !== \'none\' || !hudUp}`, so its'
+        + ' cards draw over a lobby that has come back (#405).')
     }
     if (!/if\s*\(!showLobby\)\s*dispatch\(\)\.setTutorialDeclineCard\(false\)/.test(app)) {
       fail('R33 tutorial-belongs', 'src/App.tsx',
@@ -2620,6 +2639,113 @@ for (const name of builtCss) {
     want(/const\s+to\s*=\s*mapGoneTo\(steps,\s*i\)\s*if\s*\(to\s*!==\s*null\s*&&\s*step\.advance\s*===\s*'next'\)\s*go\(to\)/,
       'a closed map on the storm and plane card no longer goes back to the card that'
       + ' opens it (`mapGoneTo`) -- the card would hide with no way on (#405).')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R35  A walkthrough card holds its screen open against Escape, and nothing
+//      else about Escape (#405's review).
+//
+// Owner, 2026-10-11: on the walkthrough's screens the way out is the control
+// the card points at. That was done by stopping Escape outright for the whole
+// screen, which also stopped a Controls row the card says to click from being
+// canceled -- the next key pressed was bound -- and a Season 2 Locker dialog
+// from closing. Now only the CLOSING is held: every screen a lock reaches asks
+// `escapeHeld()` in its own close-on-Escape. The one that cannot ask is Season
+// 1's Locker, frozen byte-for-byte (#28, test-lockerv2.mjs), and the guard holds
+// the key for it through `guardHoldsEscape` -- its only use of Escape is closing.
+//
+//   A SCREEN THAT DOES NOT ASK -- a `<Page>` named in LOCK_SURFACES whose
+//     component (or the screen its gate loads) closes on `e.key !== 'Escape'`
+//     without `escapeHeld()` before the listener ends, so it closes under a
+//     card that is waiting on it. Season 1's Locker excepted, and only while
+//     its one use of Escape is that close;
+//   A SCREEN THE RULE CANNOT SEE -- a surface with no `<Page>` in App.tsx, or
+//     none of whose files has a close-on-Escape, which means this rule went
+//     blind rather than that the screen is fine;
+//   THE KEY TAKEN AGAIN -- tutorial/lockGuard.ts handles Escape anywhere but
+//     its one `guardHoldsEscape(...)` branch, or that branch is gone, so
+//     Season 1's Locker closes under its card.
+//
+// IT CAN FAIL. Drop `if (escapeHeld()) return` from Settings, Help or the
+// Market, `escapeHeld()` from LockerV2's escapeAction call, or the guard's
+// `guardHoldsEscape` branch; or stop Escape anywhere else in the guard.
+// ---------------------------------------------------------------------------
+{
+  const LOCK = join(SRC, 'tutorial', 'lock.ts')
+  const A = join(SRC, 'App.tsx')
+  const G = join(SRC, 'tutorial', 'lockGuard.ts')
+  const FROZEN = join(SRC, 'screens', 'Locker.tsx')
+  if (![LOCK, A, G].every((f) => existsSync(f))) {
+    fail('R35 tutorial-escape', 'src',
+      'tutorial/lock.ts, App.tsx or tutorial/lockGuard.ts is missing. If they moved, move this rule with them (#405).')
+  } else {
+    const app = stripComments(read(A))
+    const imports = new Map([...app.matchAll(/^import\s+(\w+)(?:\s*,\s*\{[^}]*\})?\s+from\s+'(\.\/[^']+)'/gm)]
+      .map((m) => [m[1], m[2]]))
+    const fileOf = (from, spec) => {
+      const base = join(from, spec)
+      return ['.tsx', '.ts'].map((x) => base + x).find((f) => existsSync(f)) ?? null
+    }
+    const guard = stripComments(read(G))
+    const guardHolds = /if\s*\(e\.key\s*===\s*'Escape'\)\s*\{\s*const\s+s\s*=\s*useUi\.getState\(\)\s*if\s*\(guardHoldsEscape\(step,\s*s\.focus,\s*s\.locker2\.on\)\)\s*\{\s*e\.preventDefault\(\)\s*e\.stopImmediatePropagation\(\)\s*\}\s*return\s*\}/.test(guard)
+    if (!guardHolds) {
+      fail('R35 tutorial-escape', 'src/tutorial/lockGuard.ts',
+        'the guard\'s Escape branch is not `if (e.key === \'Escape\') { ... guardHoldsEscape(step,'
+        + ' s.focus, s.locker2.on) ... return }`. Season 1\'s Locker cannot ask and would close'
+        + ' under its card (#405).')
+    }
+    if ((guard.match(/'Escape'/g) ?? []).length !== 1) {
+      fail('R35 tutorial-escape', 'src/tutorial/lockGuard.ts',
+        'the lock guard handles Escape somewhere besides its one `guardHoldsEscape` branch.'
+        + ' Stopping it takes it from everything on the screen -- a listening Controls row,'
+        + ' a Locker dialog. Each screen asks `escapeHeld()` instead (#405).')
+    }
+    const pages = [...read(LOCK).matchAll(/'\[data-page="(\w+)"\]'/g)].map((m) => m[1])
+    if (pages.length === 0) {
+      fail('R35 tutorial-escape', 'src/tutorial/lock.ts', 'no `[data-page="..."]` in LOCK_SURFACES -- the rule is blind (#405).')
+    }
+    for (const page of pages) {
+      const mounts = [...app.matchAll(new RegExp(`<Page name="${page}"[^>]*>([\\s\\S]*?)</Page>`, 'g'))]
+      const comps = new Set(mounts.flatMap((m) => [...m[1].matchAll(/<([A-Z]\w*)\b/g)].map((x) => x[1])))
+      const files = []
+      for (const c of comps) {
+        const spec = imports.get(c)
+        const f = spec ? fileOf(SRC, spec) : null
+        if (!f) continue
+        files.push(f)
+        // A GATE THAT LOADS THE SCREEN AS A CHUNK (the Season 2 Locker): the
+        // screen is the file it imports.
+        for (const m of read(f).matchAll(/\bimport\('(\.{1,2}\/[^']+)'\)/g)) {
+          const g = fileOf(join(f, '..'), m[1])
+          if (g && !files.includes(g)) files.push(g)
+        }
+      }
+      let closes = 0
+      for (const f of files) {
+        const src = stripComments(read(f))
+        const rel = relative(ROOT, f).split('\\').join('/')
+        for (const m of src.matchAll(/e\.key\s*!==\s*'Escape'\)\s*return/g)) {
+          closes += 1
+          const rest = src.slice(m.index)
+          const end = rest.indexOf('addEventListener(')
+          if (/\bescapeHeld\(\)/.test(end < 0 ? rest : rest.slice(0, end))) continue
+          // SEASON 1'S LOCKER CANNOT ASK. The guard holds the key for it, which
+          // holds nothing else only while closing is its one use of Escape.
+          if (f === FROZEN && page === 'locker' && guardHolds
+              && (src.match(/'Escape'/g) ?? []).length === 1) continue
+          fail('R35 tutorial-escape', rel,
+            `the "${page}" screen closes on Escape without asking \`escapeHeld()\` first, so it`
+            + ' closes under a walkthrough card that is waiting on it (#405).')
+        }
+      }
+      if (closes === 0) {
+        fail('R35 tutorial-escape', 'src/App.tsx',
+          `no close-on-Escape found for the "${page}" screen (its <Page> in App.tsx, the`
+          + ' components it mounts, and any chunk they load). This rule has gone blind:'
+          + ' follow the screen to where it closes (#405).')
+      }
+    }
   }
 }
 

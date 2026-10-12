@@ -4,6 +4,7 @@ import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
 import DiscordCard from '../ui/DiscordCard'
 import { play } from '../audio/cues'
+import { escapeHeld } from '../tutorial/lockGuard'
 
 /**
  * The manual.
@@ -101,6 +102,10 @@ export default function Help({ inline = false, onDone }:
     if (inline) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      // NOT WHILE A WALKTHROUGH CARD WAITS ON THIS SCREEN (#405): the card's own
+      // control is the way out. Only the closing is held -- the key goes on to
+      // everything else here as usual.
+      if (escapeHeld()) return
       e.preventDefault()
       e.stopPropagation()
       close()
