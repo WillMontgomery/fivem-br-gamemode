@@ -304,6 +304,12 @@ local function tattoosLost(ped)
     return n ~= nil and n < d.n
 end
 
+--- A ped that lost some gets its tattoos back, and what it carries then is
+--- noted: a ped given fewer back than before is not asked again every pass.
+local function restoreLost(ped, a)
+    if tattoosLost(ped) then noteDecos(ped, tattoos(ped, a)) end
+end
+
 --- The whole appearance, in one block with no wait: head blend, face
 --- features, overlays and their colors, hair and its color, eyes, components,
 --- props, tattoos. Every part syncs to other players only with a head blend
@@ -338,7 +344,7 @@ local function reassertLater(ped, a)
             headBlend(ped, a)
             features(ped, a)
             overlays(ped, a)
-            if tattoosLost(ped) then noteDecos(ped, tattoos(ped, a)) end
+            restoreLost(ped, a)
         end
     end)
 end
@@ -1650,7 +1656,7 @@ BR.Loop.register(BR.Loop.TICK, 'locker2.watch', function()
     end
     -- THE SAME PED WITH ITS TATTOOS GONE (a resurrection can keep the handle):
     -- they go back on. Asked only of a ped that had some.
-    if tattoosLost(ped) then noteDecos(ped, tattoos(ped, a)) end
+    restoreLost(ped, a)
 end)
 
 -- ---------------------------------------------------------------------------
@@ -1665,7 +1671,10 @@ RegisterCommand('brlocker2', function(_, args)
     print(('  peds     %d'):format(#S.peds))
     print(('  tab      %s  draft %s'):format(tostring(S.tab), S.draft and (S.draft.dirty and 'dirty' or 'clean') or 'none'))
     print(('  applied  %s'):format(S.applied and (S.applied.a and 'custom' or 'stock') or 'none'))
-    print(('  tattoos  %d'):format(S.applied and S.applied.a and #tattooRows(S.applied.a) or 0))
+    -- In the look, and the decorations the engine says the ped carries now:
+    -- the playtest's count for whether every tattoo ticked is drawn.
+    print(('  tattoos  %d  decorations %s'):format(S.applied and S.applied.a and #tattooRows(S.applied.a) or 0,
+        tostring(decoCount(PlayerPedId()) or '?')))
 end, false)
 
 --- The state, for the suites.

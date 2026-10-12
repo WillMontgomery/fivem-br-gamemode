@@ -344,6 +344,11 @@ do
     eq(A.encode(a), base, 'and with none on, `t` itself')
     ok(not A.setTattoo(a, 'FM_Tat_M_000', true) and not A.setTattoo(a, 'TAT_AR_1', true)
         and not A.setTattoo(a, 42, true), 'a key that is not TAT_<set>_<nnn> is no tattoo')
+    ok(not A.setTattoo(a, 'TAT_ar_001', true) and not A.setTattoo(a, 'TAT__AR_001', true)
+        and not A.setTattoo(a, 'TAT_AR__X_001', true) and a.t == nil,
+        'nor one whose set is not capitals and digits joined by one _, which `t` could not store')
+    eq(table.concat(A.tattoos({ t = { ar = '1', AR = '1' } }), ','), 'TAT_AR_000',
+        'and a set that is not one reads as no tattoo')
     local nc = A.decode(base:sub(1, -2) .. ',"t":{"FM":"0100","AR":"50","X7":"","ZZ":"000"}}')
     ok(nc ~= nil, 'a `t` out of canonical form is read')
     eq(nc and A.encode(nc):match(',"t":(%b{})}$'), '{"AR":"5","FM":"01"}',
@@ -958,6 +963,8 @@ local function clientWorld(opts)
         local p = P(h)
         p.blend = { s1, k1 }
         p.blendAt = W.time + 100
+        -- An engine whose head blend takes the decorations with it, if asked.
+        if W.blendTakesTattoos then p.decos = {} end
     end
     N.HasPedHeadBlendFinished = function(h) return W.time >= P(h).blendAt and 1 or 0 end
     N.SetPedFaceFeature = function(h, i, v) P(h).ff[i] = v end
@@ -2319,6 +2326,173 @@ do
         for _, it in ipairs(z.items) do if TAT.list[it.i][3] == 'mp2023_02_overlays' then x7 = x7 + 1 end end
     end
     eq(x7, 0, 'and does not list it')
+end
+
+describe('season2.tattoo_bookkeeping')
+do
+    -- EVERY WRITE THE TATTOOS ADD TO A PATH THAT PUTS A LOOK ON (#28 review):
+    -- what the ped carries, noted after a swap, a dress, a tick on or off and
+    -- a restore; a tick noted as the look applied; and no tick on a ped that
+    -- is not the draft's model. Each test below fails with its write taken out.
+    local inked = femaleLook()
+    A.setTattoo(inked, 'TAT_X7_031', true)
+    A.setTattoo(inked, 'TAT_H4_000', true)
+    local enc, plainEnc = A.encode(inked), A.encode(femaleLook())
+    local want = table.concat((function()
+        local t = { tatRow('TAT_X7_031')[5], tatRow('TAT_H4_000')[5] }
+        table.sort(t)
+        return t
+    end)(), ',')
+    local rX7, iX7 = tatRow('TAT_X7_031')
+    local _, iH4 = tatRow('TAT_H4_000')
+    local function stepUntil(W, cond, ms)
+        local stop = W.time + ms
+        while not cond() and W.time < stop do W.pump(50) end
+        return cond()
+    end
+    local function wornInked(setup)
+        local W = clientWorld({ season = 2, v2 = true })
+        if setup then setup(W) end
+        W.pump(200)
+        W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
+        return W
+    end
+
+    -- 1. A SWAP notes what the ped carries: the same ped losing its tattoos
+    -- straight after one gets them back.
+    local W = wornInked()
+    W.pump(600)
+    local h = W.handle
+    W.ped().decos = {}
+    W.pump(600)
+    ok(W.handle == h and decoNames(W.ped(), 'f') == want, 'after a swap, the same ped losing its tattoos gets them back',
+        decoNames(W.ped(), 'f'))
+
+    -- 2. A RESTORE notes what it put back: one given fewer back (the engine's
+    -- room taken) is not tried again every pass.
+    local R = wornInked()
+    R.pump(600)
+    R.decoCap = 1
+    R.ped().decos = {}
+    R.pump(600)
+    eq(#R.ped().decos, 1, 'a restore with room for one puts one back')
+    local clears = R.count('ClearPedDecorations')
+    R.pump(5000)
+    eq(R.count('ClearPedDecorations'), clears, 'and is not tried again every pass')
+
+    -- 3. THE HEAD BLEND ASSERTED AGAIN once it settles puts back what it took,
+    -- then and there, not at the watcher's next pass.
+    local B = wornInked(function(w) w.blendTakesTattoos = true end)
+    ok(stepUntil(B, function() return B.count('SetPedHeadBlendData') == 2 end, 2000), 'the blend is asserted again')
+    eq(decoNames(B.ped(), 'f'), want, 'a blend asserted again that takes the tattoos puts them straight back')
+
+    -- 4. A DRESS IN PLACE notes what the ped carries.
+    local D = joined({ { id = PID, name = 'Ann', a = enc, up = 5 },
+                       { id = '0abcdefgh13', name = 'Old', a = plainEnc, up = 6 } })
+    D.ui(NUICB.LOCKER2_OPEN)
+    D.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = '0abcdefgh13' })
+    D.pump(300)
+    local dh = D.handle
+    D.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
+    D.pump(300)
+    D.ped().decos = {}
+    D.pump(600)
+    ok(D.handle == dh and decoNames(D.ped(), 'f') == want,
+        'after a dress in place, the same ped losing its tattoos gets them back', decoNames(D.ped(), 'f'))
+
+    -- 5. A TICK ON notes what the ped carries, and the draft as the look on.
+    local T = joined()
+    T.ui(NUICB.LOCKER2_OPEN)
+    T.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    T.pump(300)
+    T.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    T.ped().decos = {}
+    T.pump(600)
+    eq(decoNames(T.ped(), 'f'), rX7[5], 'after a tick, the same ped losing the tattoo gets it back')
+    -- 6. A TICK OFF notes it too: one taken off is not mistaken for one lost.
+    T.ui(NUICB.LOCKER2_TAT, { i = iH4, on = true })
+    T.ui(NUICB.LOCKER2_TAT, { i = iH4, on = false })
+    local tc = T.count('ClearPedDecorations')
+    T.pump(3000)
+    eq(T.count('ClearPedDecorations'), tc, 'a tattoo taken off is not put back on, nor the rest again')
+    eq(decoNames(T.ped(), 'f'), rX7[5], 'and the other stays on')
+
+    -- 7. DONE, OR BACK'S DISCARD, after a tick: the worn ped goes back on
+    -- without the draft's tattoo.
+    local E = joined({ { id = PID, name = 'Ann', a = plainEnc, up = 5 } })
+    E.ui(NUICB.LOCKER2_OPEN)
+    E.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
+    E.pump(300)
+    E.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    E.pump(300)
+    E.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    eq(#E.ped().decos, 1, 'the tick is on the preview')
+    E.ui(NUICB.LOCKER2_CLOSE)
+    E.pump(600)
+    eq(#E.ped().decos, 0, 'closing the page takes the draft\'s tattoo off the worn ped')
+
+    -- 8. A MATCH STARTED MID-EDIT plays in the draft, its tattoo included,
+    -- through a respawn.
+    local M = joined({ { id = PID, name = 'Ann', a = plainEnc, up = 5 } })
+    M.ui(NUICB.LOCKER2_OPEN)
+    M.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
+    M.pump(300)
+    M.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    M.pump(300)
+    M.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    M.BR.State.me.state = M.BR.PlayerState.ALIVE
+    M.pump(300)
+    M.handle = M.handle + 1
+    M.peds[M.handle] = newPed(FEMALE)
+    M.pump(600)
+    eq(decoNames(M.ped(), 'f'), rX7[5], 'a match started mid-edit keeps the draft\'s tattoo through a respawn')
+
+    -- 9. A TICK WHILE THE PED IS NOT THE DRAFT'S MODEL -- the Custom tab's
+    -- model never streamed, so the stock ped is still on -- puts nothing on it.
+    local G = joined()
+    G.neverLoad = true
+    G.ui(NUICB.LOCKER2_OPEN)
+    G.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    G.pump(5600)
+    ok(G.ped().model == hashOf(G.BR.PedById(STOCK1).model) and G.nui(NUI.LOCKER2).edit ~= nil,
+        'a Custom tab whose model never streamed: its draft over the stock ped')
+    local adds, blends = G.count('AddPedDecorationFromHashes'), G.count('SetPedHeadBlendData')
+    G.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    G.pump(2000)
+    ok(G.count('AddPedDecorationFromHashes') == adds and #G.ped().decos == 0, 'a tick puts no tattoo on the stock ped')
+    eq(G.count('SetPedHeadBlendData'), blends, 'nor, later, the custom look')
+
+    -- 10. ONE SEX'S OVERLAY LOOKED UP IS NOT THE OTHER'S: the same tattoo on
+    -- the male tab, then the female.
+    local X = joined()
+    X.ui(NUICB.LOCKER2_OPEN)
+    X.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    X.pump(300)
+    X.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    eq(decoNames(X.ped(), 'm'), rX7[4], 'the male tab: his overlay')
+    X.ui(NUICB.LOCKER2_RESET)
+    X.pump(300)
+    X.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    X.pump(300)
+    X.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    eq(decoNames(X.ped(), 'f'), rX7[5], 'then the female tab: hers, not the one looked up for him')
+
+    -- 11. brlocker2 SAYS HOW MANY THE LOOK HAS AND HOW MANY THE ENGINE HOLDS:
+    -- the playtest's count for an engine that draws fewer than were ticked.
+    local K = joined()
+    K.decoCap = 1
+    K.ui(NUICB.LOCKER2_OPEN)
+    K.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    K.pump(300)
+    K.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    K.ui(NUICB.LOCKER2_TAT, { i = iH4, on = true })
+    local printed = {}
+    K.env.print = function(s) printed[#printed + 1] = s end
+    K.commands.brlocker2(0, {})
+    K.env.print = function() end
+    local line = nil
+    for _, s in ipairs(printed) do if s:find('tattoos', 1, true) then line = s end end
+    eq(line, '  tattoos  2  decorations 1', 'brlocker2: two in the look, one on the ped as the engine says')
 end
 
 describe('season2.tattoo_season1')
