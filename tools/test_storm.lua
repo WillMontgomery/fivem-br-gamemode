@@ -6389,6 +6389,73 @@ do
             .. 'pool, and the record edited in place field by field',
         hbad or ('%d builds compared'):format(hcompared))
 
+    -- ═══ AND WHAT IT HOLDS IS THE FRESH THING WHEN IT IS HANDED OUT (round 3's review) ═══
+    --
+    -- The builds above compare what comes OUT of a pooled build, and a held thing can be
+    -- stale where nothing that comes out shows it: a mark on a piece the union never
+    -- hands on, or a box that only decides which pieces are asked whether they meet. So
+    -- each held shape is checked at the moment it is handed to a union -- the destination
+    -- against a fresh BR.StormTarget, the held inset against the fresh one's erosion,
+    -- field by field -- and after every build each box the pool holds against the one a
+    -- pool of its own makes for the same build. Through a breakout coming apart and back
+    -- (a union apart marks its destination's first piece as opening a component, and the
+    -- next build must hand it out unmarked), and with edgeInset moved both ways -- down
+    -- as well as up, the way a stale box is too small and misses a crossing.
+    local wp = SS.newPool()
+    local cur = {}
+    local handBad, handed = nil, { shape = 0, inset = 0 }
+    local boxBad, boxed = nil, { box = 0, ibox = 0 }
+    local unite = SS.blobUnion
+    SS.blobUnion = function(a, b, pool)
+        local h = (pool == wp) and wp.held or nil
+        if h and b ~= nil and (b == h.shape or b == h.inset) then
+            local which = (b == h.shape) and 'shape' or 'inset'
+            local fresh = BR.StormTarget(cur.rec)
+            if which == 'inset' then fresh = SS.inset(fresh, cur.meters) end
+            handed[which] = handed[which] + 1
+            local d = diffOf(b, fresh, 'held ' .. which)
+            if d and not handBad then
+                handBad = ('%s at t %s, inset %s: %s'):format(cur.how, cur.t, cur.meters, d)
+            end
+        end
+        return unite(a, b, pool)
+    end
+    local function heldBuild(rec, t, meters, how)
+        cur.rec, cur.t, cur.meters, cur.how = rec, t, meters, how
+        SS.resetPool(wp)
+        SS.inset(zoneAt(rec, t, wp), meters, wp)
+        local own = SS.newPool()
+        SS.inset(zoneAt(rec, t, own), meters, own)
+        for _, key in ipairs({ 'box', 'ibox' }) do
+            local mine, theirs = wp.held and wp.held[key], own.held and own.held[key]
+            if mine and theirs then
+                boxed[key] = boxed[key] + 1
+                local d = diffOf(mine, theirs, key)
+                if d and not boxBad then
+                    boxBad = ('%s at t %s, inset %s: %s'):format(how, t, meters, d)
+                end
+            end
+        end
+    end
+    -- The phase-2 breakout stands apart from its destination until about t 0.06, so
+    -- these come apart and back on every other build.
+    local turns = { 0.01, 0.5, 0.03, 0.7, 0.001, 0.98, 0.04, 0.3 }
+    local insets = { 9.5, 6.0, 3.0, 6.0, 12.0, 6.0, 2.0 }
+    for _, m in ipairs(insets) do
+        for _, t in ipairs(turns) do heldBuild(apartRec, t, m, 'apart and back') end
+    end
+    for _, m in ipairs(insets) do
+        for _, t in ipairs(ts) do heldBuild(stitchedRec, t, m, 'stitched') end
+    end
+    SS.blobUnion = unite
+    ok(handBad == nil and boxBad == nil and handed.shape > 50 and handed.inset > 50
+        and boxed.box > 50 and boxed.ibox > 50,
+        'every shape the pool holds is the fresh one when it is handed to a union, and '
+            .. 'every box it holds a fresh pool\'s: a breakout coming apart and back, and '
+            .. 'edgeInset moved down as well as up',
+        handBad or boxBad or ('%d destinations and %d insets handed out, %d and %d boxes '
+            .. 'compared'):format(handed.shape, handed.inset, boxed.box, boxed.ibox))
+
     -- AND A WARM POOL BUILDS A BREAKOUT'S SWEEP WITHOUT ALLOCATING: no destination, no
     -- erosion of it, no union, no inset of the union and no runs.
     local heldKB, heldBuilds = {}, 0
@@ -6586,11 +6653,32 @@ do
         local env = C.env
         local Z = env.BR.StormZone
         C.zoneKB = 0.0
+        C.holdBuilds, C.holdPooled, C.sweepBuilds = 0, 0, 0
         env.BR.StormZone = function(rec, cx, cy, r, t, g, pool)
+            -- What zoneFor asked for, whichever client this is: a hold's zone is never
+            -- to be handed a pool (the key below).
+            if t and t > 0.0 and t < 1.0 then
+                C.sweepBuilds = C.sweepBuilds + 1
+            else
+                C.holdBuilds = C.holdBuilds + 1
+                if pool then C.holdPooled = C.holdPooled + 1 end
+            end
             local k0 = collectgarbage('count')
             local z = Z(rec, cx, cy, r, t, g, (not unpooled) and pool or nil)
             C.zoneKB = C.zoneKB + (collectgarbage('count') - k0)
+            if C.armAfter then C.armAfter, C.armedAfter = false, z end
             return z
+        end
+        -- A PASS THAT THROWS ONCE ITS ZONE IS BUILT: storm.state measures the zone it
+        -- was handed straight away, so the throw is there, before `solved` takes it.
+        local distance = env.BR.StormShape.distance
+        env.BR.StormShape.distance = function(shape, x, y)
+            if C.armedAfter ~= nil and shape == C.armedAfter then
+                C.armedAfter = nil
+                C.threwAfter = (C.threwAfter or 0) + 1
+                error('injected: a pass that throws once its zone is built')
+            end
+            return distance(shape, x, y)
         end
         -- The wall is off: the only zone built is storm.state's.
         if not env.BR.Loop.setEnabled('storm.wall', false) then
@@ -6697,6 +6785,94 @@ do
             .. 'stitched and apart',
         ('%.3f and %.3f KB a pass, against %.1f and %.1f unpooled'):format(kb[1], kb[2],
             kb[3], kb[4]))
+
+    -- ═══ AND THE KEY, THE POOL IT NAMES, AND A HOLD'S ZONE (round 3's review) ═══
+    --
+    -- Mid-sweep the key matches only when two passes read one instant -- the clock
+    -- standing still, or stepping back onto a pass's own instant, which a resync can
+    -- do -- and the passes above never had it match. So a stitched breakout's whole
+    -- phase, its hold, its sweep and the hold after, with the clock doing both, each
+    -- time followed by a pass that throws; and again every HUD envelope must be the
+    -- unpooled client's:
+    --
+    --   * a pass the key answers must name the pool its zone is in, or the next build
+    --     goes into that pool -- and with that build throwing part way, storm.edge goes
+    --     on measuring the zone it wrote over;
+    --   * the key must be dropped before a build begins, or a build that throws leaves
+    --     it naming a zone that build wrote over, handed out again when the clock comes
+    --     back to its instant. A pass that throws once its zone is built leaves that
+    --     zone in the spare, which is where the next build goes;
+    --   * and a hold's zone is never built into either pool, before the sweep or after
+    --     it, since drawWall knows a hold's zone by its table.
+    local rc = { phase = 3, cx0 = 0.0, cy0 = 0.0, r0 = 1600.0, cx1 = 1074.0, cy1 = 1432.0,
+                 r1 = 950.0, shrink = 20000 }
+    local P, U = client(false, rc), client(true, rc)
+    local frame = 0
+    local function passAt(C, now, armIn, armAfter, f0)
+        C.now, C.pedAt = now, pt(-1900.0 - f0, 0.0, 30.0)
+        C.armed, C.armAfter = armIn, armAfter
+        C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+        C.armed, C.armAfter, C.armedAfter = false, false, nil
+        for f = 1, 6 do
+            C.now, C.pedAt = now + 16 * f, pt(-1900.0 - f0 - f, 0.0, 30.0)
+            C.markers, C.polys = {}, {}
+            C.env.BR.Loop.step(C.env.BR.Loop.FRAME)
+        end
+    end
+    local passes, sweepPasses, frozen, back = 0, 0, 0, 0
+    local function both(now, armIn, armAfter)
+        passAt(P, now, armIn, armAfter, frame)
+        passAt(U, now, armIn, armAfter, frame)
+        frame = frame + 6
+        passes = passes + 1
+        local _, _, _, _, _, _, t = P.env.BR.StormAt(P.env.BR.State.storm, now)
+        if t > 0.0 and t < 1.0 then sweepPasses = sweepPasses + 1 end
+    end
+    local t0 = P.env.BR.State.storm.tStart
+    local ts, te = t0 + 1000, t0 + 1000 + rc.shrink
+    for now = t0 + 100, ts - 100, 100 do both(now) end
+    local now, gap, kind = ts + 100, 0, 0
+    while now < te - 1000 do
+        both(now)
+        gap = gap + 1
+        -- One to five ordinary passes between, so each kind meets both pools.
+        if gap >= 1 + (frozen + back) % 5 then
+            gap = 0
+            kind = kind + 1
+            if kind % 2 == 1 then
+                -- A second pass on the same instant, which the key answers, then one
+                -- that throws.
+                both(now)
+                both(now + 100, true)
+                frozen = frozen + 1
+            else
+                -- A pass that throws once built, one that throws inside its build, and
+                -- the clock back on the first's instant.
+                both(now + 100, false, true)
+                both(now + 200, true)
+                both(now + 100)
+                back = back + 1
+            end
+            now = now + 200
+        end
+        now = now + 100
+    end
+    for later = te + 100, te + 1000, 100 do both(later) end
+    local d = sameEnvelopes(P, U)
+    ok(d == nil and frozen >= 8 and back >= 8 and P.threw == frozen + back
+        and U.threw == P.threw and P.threwAfter == back and U.threwAfter == back
+        and #P.envelopes > frame * 0.8,
+        'a breakout\'s phase with the clock standing still and stepping back, a pass '
+            .. 'throwing after each: every HUD envelope is the unpooled client\'s',
+        d or ('%d envelopes over %d frames; %d stills, %d steps back; %d and %d passes '
+            .. 'thrown'):format(#P.envelopes, frame, frozen, back, P.threw or 0,
+            P.threwAfter or 0))
+    ok(P.holdPooled == 0 and U.holdPooled == 0 and P.holdBuilds > 0
+        and sweepPasses - P.sweepBuilds == frozen and sweepPasses - U.sweepBuilds == frozen,
+        'and the key answered exactly the second passes on one instant, and no hold\'s '
+            .. 'zone was built into a pool, before the sweep or after it',
+        ('%d hold zones built, %d pooled; %d sweep passes, %d built, %d stills')
+            :format(P.holdBuilds, P.holdPooled, sweepPasses, P.sweepBuilds, frozen))
 end
 
 -- ---------------------------------------------------------------------------
@@ -6736,6 +6912,64 @@ do
             .. 'whether its destination overlaps, and in the hold it still asks',
         ('%d asks over 20 frames of the hold, %d over 120 of the sweep, %d triangles; %s')
             :format(holdAsks, asked, drawn, tostring(C.errored())))
+
+    -- ═══ AND THE ANSWER IS STILL THE MOST OF EVERY WINDOW (round 3's review) ═══
+    --
+    -- The early return is exact only at 1: no window can raise a 1, and a growth window
+    -- can raise anything under it. Under a dev time scale a breakout's hold is shorter
+    -- than its growth, so the growth window runs into the sweep's own ramp and is the
+    -- answer there -- and a return taken under 1 hands back the ramp's smaller number,
+    -- a wall split less than it should be from the sweep's first frame. So wallSplit
+    -- itself is asked at every millisecond from before the record starts to after its
+    -- sweep ends -- a hold wholly inside the growth window and one whose ramp only
+    -- overlaps the growth's -- and its answer must be the most of the record's windows,
+    -- exactly, each eased by the client's own splitAround.
+    BR.StormOverlaps = overlaps
+    local function upvalue(fn, name)
+        for i = 1, 255 do
+            local n, v = debug.getupvalue(fn, i)
+            if n == nil then return nil end
+            if n == name then return v end
+        end
+    end
+    local registry = upvalue(BR.Loop.register, 'registry')
+    local wallFn = nil
+    for _, e in ipairs(registry and registry[BR.Loop.FRAME] or {}) do
+        if e.name == 'storm.wall' then wallFn = e.fn end
+    end
+    local wallSplit = wallFn and upvalue(wallFn, 'wallSplit')
+    local splitAround = wallSplit and upvalue(wallSplit, 'splitAround')
+    local rampMs = BR.Config.Storm.render.strip.splitRampSec * 1000.0
+    local growMs = BR.Config.Storm.grow.seconds * 1000.0
+    local asks, wrong, raised, overlapping = 0, nil, 0, 0
+    for _, waitMs in ipairs({ 12000, growMs + 0.5 * rampMs }) do
+        local r = C.record(3, 0.0, 0.0, 1600.0, 1074.0, 1432.0, 950.0, waitMs, 12000, 0.5)
+        r.seed = 393
+        if wallSplit and splitAround and overlaps(r) == true and not BR.StormNested(r) then
+            overlapping = overlapping + 1
+            local t0 = r.tStart
+            local ts, te = t0 + r.tWait, t0 + r.tWait + r.tShrink
+            local tg = t0 + math.min(growMs, r.tWait)
+            for now = t0 - rampMs - 10, te + rampMs + 10 do
+                local sweep = splitAround(now, ts, te, rampMs)
+                local want = math.max(splitAround(now, t0, t0, rampMs),
+                    splitAround(now, ts, ts, rampMs), splitAround(now, te, te, rampMs),
+                    sweep, splitAround(now, t0, tg, rampMs))
+                local got = wallSplit(r, now)
+                asks = asks + 1
+                if want > sweep and sweep > 0.0 then raised = raised + 1 end
+                if got ~= want and not wrong then
+                    wrong = ('a %d ms hold at %+d ms: %.17g, the windows\' most %.17g')
+                        :format(waitMs, now - t0, got, want)
+                end
+            end
+        end
+    end
+    ok(overlapping == 2 and wrong == nil and raised > 1000,
+        'and at every millisecond of a breakout whose growth runs into its sweep\'s ramp, '
+            .. 'the split is the most of its windows, the growth\'s included',
+        wrong or ('%d asks, %d of them in the sweep\'s ramp raised by the growth; %d of 2 '
+            .. 'records overlapping'):format(asks, raised, overlapping))
 end
 
 -- ---------------------------------------------------------------------------
