@@ -624,7 +624,8 @@ end
 ---
 --- A FRESH SHAPE EVERY CALL, deliberately: blobUnion re-stamps the pieces of the
 --- parts it is handed, so a cached target walked after a union would read the
---- union's arc lengths. Building one is a placement and a piece list.
+--- union's arc lengths. Building one is a placement and a piece list. The moving
+--- wall's pool holds one and puts its stamps back before each use (heldTarget).
 --- @param rec table
 --- @return table shape
 function BR.StormTarget(rec)
@@ -634,6 +635,36 @@ function BR.StormTarget(rec)
     local u = BR.StormUnit(rec.seed, rec.phase)
     if not u then return BR.StormShape.circle(rec.cx1, rec.cy1, r1) end
     return BR.StormShape.blob(rec.cx1, rec.cy1, r1, u)
+end
+
+--- BR.StormTarget(rec) for a pool's builds (#393 round 3): made once while everything
+--- it reads -- r1, the center, and the unit BR.StormUnit hands back for the seed and
+--- the phase, by identity, so a unit rebuilt under a changed shape config is a miss
+--- -- is what it was, and handed back with its own stamps put back
+--- (BR.StormShape.restamp). HELD IN THE POOL, so only the moving wall's own builds
+--- ever share it; the map, the HUD and the server keep a fresh one. A miss drops the
+--- held erosion with it (BR.StormShape.inset's union branch).
+--- @param rec table
+--- @param pool table
+--- @return table shape
+local function heldTarget(rec, pool)
+    local h = pool.held
+    if not h then
+        h = {}
+        pool.held = h
+    end
+    local r1 = rec.r1 or 0.0
+    local u = nil
+    if r1 > 0.0 then u = BR.StormUnit(rec.seed, rec.phase) end
+    if h.shape and h.r1 == r1 and h.cx1 == rec.cx1 and h.cy1 == rec.cy1 and h.u == u then
+        BR.StormShape.restamp(h.shape, h)
+        return h.shape
+    end
+    local shape = BR.StormTarget(rec)
+    h.shape, h.r1, h.cx1, h.cy1, h.u = shape, r1, rec.cx1, rec.cy1, u
+    h.insetM, h.inset, h.survives = nil, nil, nil
+    BR.StormShape.stamp(shape, h)
+    return shape
 end
 
 --- The wall of a record already worked out: see BR.StormWall. A moving wall is
@@ -783,7 +814,7 @@ function BR.StormZone(rec, cx, cy, r, t, g, pool)
     local whole = e.nested or t >= 1.0 or (rec.r1 or 0.0) <= 0.0
     local wall = wallOf(rec, e, t, pool)
     if whole then return wall end
-    local target = BR.StormTarget(rec)
+    local target = pool and heldTarget(rec, pool) or BR.StormTarget(rec)
     g = (g == nil) and 1.0 or BR.Clamp(g, 0.0, 1.0)
     if g < 1.0 and t <= 0.0 and wall.hull and target.hull then
         local over, S = growthInfo(rec, e)

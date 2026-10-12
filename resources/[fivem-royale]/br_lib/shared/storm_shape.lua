@@ -223,6 +223,45 @@ function BR.StormShape.resetPool(pool)
     pool.builds = pool.builds + 1
 end
 
+-- ═══ A SHAPE HELD ACROSS BUILDS IS RESTAMPED BEFORE EACH USE (#393 round 3) ═══
+--
+-- A breakout's destination never changes during its phase, yet a moving wall's
+-- every frame built it again -- a placement and a piece list -- and eroded it again,
+-- because blobUnion re-stamps the pieces of the parts it is handed (its header says
+-- why) and a shape walked after a union would read the union's arc lengths. The
+-- moving wall's pool holds one instead (storm_solve.lua's heldTarget), and puts
+-- its stamps back before each build hands it out.
+--
+-- THREE FIELDS ARE THE WHOLE OF WHAT ANYTHING WRITES TO A PIECE once a shape is
+-- sealed: seal() stamps `s0` and `comp` on every piece it keeps, blobUnion marks
+-- `newComponent` on its second part's first piece, and subPiece clears that mark
+-- on a piece it hands back whole. A shape whose own `s0` and `comp` are put back
+-- and whose marks are cleared -- a placed zone and its erosion are one component,
+-- marked nowhere -- is therefore, field for field, the shape a fresh build makes.
+-- tools/test_storm.lua's wall.held compares the two with ==.
+
+--- Record `shape`'s own stamps into `st`, for BR.StormShape.restamp.
+--- @param shape table
+--- @param st table   the holder's own; its `s0` and `comp` are replaced
+function BR.StormShape.stamp(shape, st)
+    local pcs = shape.pieces
+    local s0, comp = {}, {}
+    for i = 1, #pcs do s0[i], comp[i] = pcs[i].s0, pcs[i].comp end
+    st.s0, st.comp = s0, comp
+end
+
+--- Put `shape`'s own stamps back, as BR.StormShape.stamp recorded them, and clear
+--- every piece's newComponent mark.
+--- @param shape table
+--- @param st table
+function BR.StormShape.restamp(shape, st)
+    local pcs, s0, comp = shape.pieces, st.s0, st.comp
+    for i = 1, #pcs do
+        local pc = pcs[i]
+        pc.s0, pc.comp, pc.newComponent = s0[i], comp[i], nil
+    end
+end
+
 --- A counter-clockwise sweep from angle a to angle b, in (0, 2*pi].
 ---
 --- A zero difference means "all the way round" rather than "no arc at all": the
@@ -4379,12 +4418,31 @@ function BR.StormShape.inset(shape, meters, pool)
     -- had is worse than a boundary drawn slightly small.
     --
     -- A POOL ERODES THE PARTS INTO IT AND UNITES THEM THERE, which is a breakout's
-    -- moving wall every frame (#393 round 3).
+    -- moving wall every frame (#393 round 3) -- and the destination the pool holds
+    -- (`pool.held`, storm_solve.lua's heldTarget) is eroded once for as long as it
+    -- and the meters are what they were, the erosion held beside it and restamped
+    -- like it. Whether it survives, and what it erodes to, read its corners and
+    -- never its stamps, so the held answer is the fresh one.
     if kind == 'blobUnion' then
         local kept = poolList(pool, 'kept')
+        local held = pool and pool.held
         for i = 1, #shape.parts do
             local part = shape.parts[i]
-            if survivesInset(part, meters) then
+            if held and part == held.shape then
+                if held.insetM ~= meters then
+                    held.insetM = meters
+                    held.survives = survivesInset(part, meters)
+                    held.inset = nil
+                    if held.survives then
+                        held.inset = BR.StormShape.inset(part, meters)
+                        held.ist = held.ist or {}
+                        BR.StormShape.stamp(held.inset, held.ist)
+                    end
+                elseif held.inset then
+                    BR.StormShape.restamp(held.inset, held.ist)
+                end
+                if held.survives then kept[#kept + 1] = held.inset end
+            elseif survivesInset(part, meters) then
                 kept[#kept + 1] = BR.StormShape.inset(part, meters, pool)
             end
         end

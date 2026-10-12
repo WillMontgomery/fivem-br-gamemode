@@ -6336,6 +6336,84 @@ do
                 .. 'unpooled one does, frame by frame, argument for argument',
             same or ('%d triangles over %d frames'):format(drawn, frames))
     end
+
+    -- ═══ A POOL HOLDS ITS BREAKOUT'S DESTINATION, AND IT IS THE FRESH ONE (#393 round 3) ═══
+    --
+    -- A breakout's destination never changes during its phase, so the moving wall's pool
+    -- builds it and erodes it once, and puts their stamps back before each build hands
+    -- them out (storm_solve.lua's heldTarget, storm_shape.lua's restamp). The claims:
+    -- every build is the unpooled one to the bit -- through a sweep, with the inset
+    -- changed and changed back, with a second breakout built in the same pool, and with
+    -- the record edited in place one field at a time -- and a warm pool builds a
+    -- breakout's whole sweep without allocating anything.
+    describe('wall.held')
+    local hp = SS.newPool()
+    local hbad, hcompared = nil, 0
+    local function sameAs(rec, t, meters, how)
+        local want = zoneAt(rec, t)
+        local wantIn = SS.inset(want, meters)
+        SS.resetPool(hp)
+        local got = zoneAt(rec, t, hp)
+        local gotIn = SS.inset(got, meters, hp)
+        local d = diffOf(got, want, 'zone') or diffOf(gotIn, wantIn, 'inset')
+        for ci = 1, #SS.components(wantIn) do
+            d = d or diffOf(SS.runs(gotIn, ci, hp), SS.runs(wantIn, ci), 'runs ' .. ci)
+        end
+        hcompared = hcompared + 1
+        if d and not hbad then hbad = ('%s at t %s: %s'):format(how, t, d) end
+    end
+    local function copyOf(r)
+        local c = {}
+        for k, v in pairs(r) do c[k] = v end
+        return c
+    end
+    local stitchedRec, apartRec = copyOf(recs[7]), copyOf(recs[6])
+    for _, t in ipairs(ts) do sameAs(stitchedRec, t, 6.0, 'a stitched sweep') end
+    for i, t in ipairs(ts) do
+        sameAs(stitchedRec, t, (i % 3 == 0) and 9.5 or 6.0, 'the inset changed and back')
+    end
+    for _, t in ipairs(ts) do sameAs(apartRec, t, 6.0, 'a second breakout in the pool') end
+    for _, t in ipairs(ts) do sameAs(stitchedRec, t, 6.0, 'and the first again') end
+    -- AN EDIT IN PLACE IS A MISS: every field the destination is built from.
+    local edited = copyOf(recs[7])
+    local edits = { { 'cx1', 1174.0 }, { 'cy1', 1332.0 }, { 'r1', 900.0 }, { 'seed', 394 },
+                    { 'phase', 2 } }
+    for _, e in ipairs(edits) do
+        sameAs(edited, 0.4, 6.0, 'before ' .. e[1] .. ' was edited')
+        edited[e[1]] = e[2]
+        sameAs(edited, 0.4, 6.0, 'with ' .. e[1] .. ' edited in place')
+    end
+    ok(hbad == nil and hcompared == 4 * #ts + 2 * #edits,
+        'a pool\'s held destination and its held inset are the fresh ones to the bit: '
+            .. 'through a sweep, the inset changed and back, a second breakout in the same '
+            .. 'pool, and the record edited in place field by field',
+        hbad or ('%d builds compared'):format(hcompared))
+
+    -- AND A WARM POOL BUILDS A BREAKOUT'S SWEEP WITHOUT ALLOCATING: no destination, no
+    -- erosion of it, no union, no inset of the union and no runs.
+    local heldKB, heldBuilds = {}, 0
+    for _, rec in ipairs({ stitchedRec, apartRec }) do
+        local function sweepRec()
+            for _, t in ipairs(ts) do
+                SS.resetPool(hp)
+                local z = zoneAt(rec, t, hp)
+                local zi = SS.inset(z, 6.0, hp)
+                for ci = 1, #SS.components(zi) do SS.runs(zi, ci, hp) end
+            end
+        end
+        collectgarbage('collect')
+        collectgarbage('stop')
+        sweepRec()
+        local k0 = collectgarbage('count')
+        for _ = 1, 20 do sweepRec() end
+        heldKB[#heldKB + 1] = collectgarbage('count') - k0
+        collectgarbage('restart')
+        heldBuilds = heldBuilds + 20 * #ts
+    end
+    ok(heldKB[1] < 1.0 and heldKB[2] < 1.0,
+        'a warm pool builds, insets and walks a breakout\'s sweep without allocating, '
+            .. 'stitched and apart',
+        ('%.2f and %.2f KB over %d pooled builds'):format(heldKB[1], heldKB[2], heldBuilds))
 end
 
 -- ---------------------------------------------------------------------------
