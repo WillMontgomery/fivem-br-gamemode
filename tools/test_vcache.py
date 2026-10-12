@@ -194,8 +194,8 @@ def edit(path, text):
     age(path)
 
 
-def age(path):
-    then = time.time() - 5
+def age(path, seconds=5):
+    then = time.time() - seconds
     os.utime(path, (then, then))
     os.utime(os.path.dirname(path), (then, then))
 
@@ -469,9 +469,15 @@ class NeverStored(Checkout):
         self.assertIn('a', self.ran(out), out)
 
     def test_an_edit_just_before_the_run_is_stored(self):
-        # Saved, then verify at once -- the usual way. That is before the
-        # unit started, so it is what the suite read, and storable.
-        write(self.p('data', 'a.txt'), 'alpha, saved just now\n')
+        # Saved just beyond the clock ambiguity moved_since deliberately
+        # refuses: 0.25 s for a fractional timestamp, or 2.5 s when this
+        # filesystem rounds to whole seconds. The fine case stays inside two
+        # seconds so restoring the old coarse slack still fails this test.
+        p = self.p('data', 'a.txt')
+        write(p, 'alpha, saved just now\n')
+        age(p, 0.25)
+        if os.stat(p).st_mtime_ns % 1000000000 == 0:
+            age(p, 2.5)
         rc, out = self.run_verify(expect_rc=0)
         self.assertNotIn('not stored', out)
         rc, out = self.run_verify(expect_rc=0)

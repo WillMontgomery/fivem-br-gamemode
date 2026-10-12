@@ -97,7 +97,8 @@ saw, a hash that differs from the one the Python tracer took when it read, or
 any input modified after the unit started, or so close before it that the
 timestamp cannot tell (0.1 s on a filesystem that keeps fractions of a second,
 covering a Windows clock tick; 2 s on one that keeps whole seconds). A file
-saved and verified straight away is before the start, so it is stored.
+saved immediately before verify may be conservatively refused inside that
+window; it runs again and can be stored once its timestamp is unambiguous.
 Refusals print one line, `not stored: <unit> (<why>)`, and simply run next
 time; if `verify.sh` or a cache file itself changed during the run, nothing is
 stored.
