@@ -2188,9 +2188,11 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- really moves: at phase 1's pace about a fifth of a metre a frame, which is
     -- pixels at any distance a player stands from it. What it no longer does is
     -- make a few hundred tables a frame to do it (#393: 22 KB a frame through a
-    -- sweep). It is built into sweepPool, which the next frame's build takes back,
-    -- and inset and walked in the same pool. The numbers are the unpooled build's
-    -- to the bit; storm_shape.lua's "a pool" says why, and the suite checks it.
+    -- sweep, and 57 KB through a breakout's, whose zone is the wall stitched to its
+    -- destination). It is built into sweepPool, which the next frame's build takes
+    -- back, and inset and walked in the same pool. The numbers are the unpooled
+    -- build's to the bit; storm_shape.lua's "a pool" says why, and the suite checks
+    -- it.
     local split = wallSplit(rec, now)
     if t and t > 0.0 and t < 1.0 then
         BR.StormShape.resetPool(sweepPool)

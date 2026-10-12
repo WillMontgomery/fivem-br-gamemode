@@ -6159,8 +6159,9 @@ do
     end
 
     -- Nested phases of the shipping sizes, an off-centre one whose destination presses
-    -- on the wall (the second hull a frame), and a breakout the pool must stand aside
-    -- for.
+    -- on the wall (the second hull a frame), and two breakouts, which are pooled too
+    -- since round 3: one whose destination stands apart, and one that overlaps the
+    -- zone and is stitched to the wall.
     local recs = {
         { phase = 1, cx0 = 0.0, cy0 = 0.0, r0 = 5200.0, cx1 = 900.0, cy1 = 1400.0, r1 = 2600.0 },
         { phase = 3, cx0 = 0.0, cy0 = 0.0, r0 = 1600.0, cx1 = 300.0, cy1 = -200.0, r1 = 950.0 },
@@ -6168,6 +6169,7 @@ do
         { phase = 6, cx0 = 0.0, cy0 = 0.0, r0 = 260.0, cx1 = 120.0, cy1 = 60.0, r1 = 110.0 },
         { phase = 8, cx0 = 0.0, cy0 = 0.0, r0 = 40.0, cx1 = 10.0, cy1 = 0.0, r1 = 0.0 },
         { phase = 2, cx0 = 0.0, cy0 = 0.0, r0 = 2600.0, cx1 = 4400.0, cy1 = 0.0, r1 = 1600.0 },
+        { phase = 3, cx0 = 0.0, cy0 = 0.0, r0 = 1600.0, cx1 = 1074.0, cy1 = 1432.0, r1 = 950.0 },
     }
     for _, r in ipairs(recs) do r.seed, r.tWait, r.tShrink = 393, 60000, 60000 end
     -- Out of order on purpose, so consecutive builds differ in size both ways.
@@ -6175,6 +6177,7 @@ do
 
     local pool = SS.newPool()
     local compared, bad, nested, kinds = 0, nil, 0, {}
+    local stitched, apart = 0, 0
     for _, t in ipairs(ts) do
         for ri, rec in ipairs(recs) do
             local want = zoneAt(rec, t)
@@ -6191,12 +6194,20 @@ do
             compared = compared + 1
             kinds[want.kind] = true
             if BR.StormNested(rec) then nested = nested + 1 end
+            if want.kind == 'blobUnion' then
+                if #SS.components(want) == 1 then stitched = stitched + 1
+                else apart = apart + 1 end
+            end
         end
     end
     ok(bad == nil and compared == #ts * #recs,
         'a pooled zone, its inset and its runs are the unpooled ones to the bit, at '
-            .. 'every instant of six sweeps, built in an order that makes every list grow '
+            .. 'every instant of seven sweeps, built in an order that makes every list grow '
             .. 'and shrink', bad or ('%d builds compared'):format(compared))
+    ok(stitched >= 4 and apart >= 2,
+        'and the breakouts among them are unions both ways: stitched into one boundary, '
+            .. 'and apart in two before the first wall reaches its destination',
+        ('%d stitched, %d apart'):format(stitched, apart))
     ok(kinds.blob and nested > 0 and nested < compared,
         'and the sweeps are blob walls, nested and broken out',
         ('kinds seen: %s; %d of %d nested'):format(
@@ -6235,9 +6246,50 @@ do
         ('%.2f KB over %d pooled builds, against %.0f KB unpooled'):format(pooledKB,
             20 * #ts, freshKB))
 
+    -- AND A BREAKOUT'S (#393 round 3): the moving wall, its union with the destination
+    -- and the union's inset and runs, apart and stitched, are built into the pool. Only
+    -- the destination is made fresh -- BR.StormTarget, a placement and a piece list --
+    -- so a warm pool's build allocates what the destination alone does: not even the
+    -- crossing finder's step is a closure any more.
+    local breakouts = { recs[6], recs[7] }
+    local function breakoutsOnce(pooled)
+        for _, rec in ipairs(breakouts) do
+            for _, t in ipairs(ts) do
+                local p = pooled and pool or nil
+                if p then SS.resetPool(p) end
+                local z = zoneAt(rec, t, p)
+                local zi = SS.inset(z, 6.0, p)
+                for ci = 1, #SS.components(zi) do SS.runs(zi, ci, p) end
+            end
+        end
+    end
+    collectgarbage('collect')
+    collectgarbage('stop')
+    breakoutsOnce(true)
+    local b0 = collectgarbage('count')
+    for _ = 1, 20 do breakoutsOnce(true) end
+    local bPooledKB = collectgarbage('count') - b0
+    local b1 = collectgarbage('count')
+    for _ = 1, 20 do
+        for _, _ in ipairs(ts) do
+            for _, rec in ipairs(breakouts) do BR.StormTarget(rec) end
+        end
+    end
+    local targetKB = collectgarbage('count') - b1
+    local b2 = collectgarbage('count')
+    for _ = 1, 20 do breakoutsOnce(false) end
+    local bFreshKB = collectgarbage('count') - b2
+    collectgarbage('restart')
+    local nB = 20 * #ts * #breakouts
+    ok(bPooledKB - targetKB < 0.1 * nB and bFreshKB > 4.0 * bPooledKB,
+        'a warm pool builds, insets and walks a breakout\'s zone, apart and stitched, '
+            .. 'allocating only its destination',
+        ('%.1f KB over %d pooled builds, the destinations alone %.1f, against %.0f KB '
+            .. 'unpooled'):format(bPooledKB, nB, targetKB, bFreshKB))
+
     -- THE CLIENT DRAWS THE SAME TRIANGLES. The same sweep, frame after frame, drawn
     -- by a client using its pool and by one whose shape functions ignore the pool.
-    local function sweeping(unpooled)
+    local function sweeping(unpooled, rc, view)
         local C = noFarFade(newStormClient())
         if unpooled then
             local Z, I, R = C.env.BR.StormZone, C.env.BR.StormShape.inset,
@@ -6246,28 +6298,44 @@ do
             C.env.BR.StormShape.inset = function(s, m) return I(s, m) end
             C.env.BR.StormShape.runs = function(s, ci) return R(s, ci) end
         end
-        local rec = C.record(1, 0.0, 0.0, 5200.0, 900.0, 1400.0, 2600.0, 1000, 240000, 0.5)
+        local rec = C.record(rc.phase, rc.cx0, rc.cy0, rc.r0, rc.cx1, rc.cy1, rc.r1, 1000,
+            rc.shrink, 0.5)
         rec.seed = 393
         C.recordWallOnly()
-        C.pedAt = pt(400.0, 300.0, 30.0)
+        C.pedAt = view
         return C
     end
-    local P, U = sweeping(false), sweeping(true)
-    local frames, drawn, same = 0, 0, nil
-    for _ = 1, 40 do
-        P.now, U.now = P.now + 2984, U.now + 2984
-        P.frame()
-        U.frame()
-        frames = frames + 1
-        drawn = drawn + #P.polys
-        same = same or diffOf(P.polys, U.polys, 'frame ' .. frames)
+    -- Phase 1's sweep, and since round 3 the two breakouts' -- the wall and the
+    -- destination apart, then stitched.
+    local clientSweeps = {
+        { name = 'phase 1', step = 2984, least = 100, view = pt(400.0, 300.0, 30.0),
+          rec = { phase = 1, cx0 = 0.0, cy0 = 0.0, r0 = 5200.0, cx1 = 900.0, cy1 = 1400.0,
+                  r1 = 2600.0, shrink = 240000 } },
+        { name = 'a breakout apart', step = 2984, least = 50, view = pt(2000.0, 400.0, 30.0),
+          rec = { phase = 2, cx0 = 0.0, cy0 = 0.0, r0 = 2600.0, cx1 = 4400.0, cy1 = 0.0,
+                  r1 = 1600.0, shrink = 120000 } },
+        { name = 'a breakout stitched', step = 2984, least = 50, view = pt(900.0, 700.0, 30.0),
+          rec = { phase = 3, cx0 = 0.0, cy0 = 0.0, r0 = 1600.0, cx1 = 1074.0, cy1 = 1432.0,
+                  r1 = 950.0, shrink = 120000 } },
+    }
+    for _, cs in ipairs(clientSweeps) do
+        local P, U = sweeping(false, cs.rec, cs.view), sweeping(true, cs.rec, cs.view)
+        local frames, drawn, same = 0, 0, nil
+        for _ = 1, 40 do
+            P.now, U.now = P.now + cs.step, U.now + cs.step
+            P.frame()
+            U.frame()
+            frames = frames + 1
+            drawn = drawn + #P.polys
+            same = same or diffOf(P.polys, U.polys, 'frame ' .. frames)
+        end
+        ok(P.errored() == nil and U.errored() == nil, cs.name .. ': both clients sweep clean',
+            P.errored() or U.errored())
+        ok(same == nil and drawn > 40 * cs.least,
+            cs.name .. ': and through a sweep the pooled client draws the triangles the '
+                .. 'unpooled one does, frame by frame, argument for argument',
+            same or ('%d triangles over %d frames'):format(drawn, frames))
     end
-    ok(P.errored() == nil and U.errored() == nil, 'both clients sweep clean',
-        P.errored() or U.errored())
-    ok(same == nil and drawn > 40 * 100,
-        'and through a sweep the pooled client draws the triangles the unpooled one '
-            .. 'does, frame by frame, argument for argument',
-        same or ('%d triangles over %d frames'):format(drawn, frames))
 end
 
 -- ---------------------------------------------------------------------------

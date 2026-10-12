@@ -169,6 +169,14 @@ end
 -- reuses every table in it. client/storm.lua's moving wall is the only caller:
 -- it builds, insets and walks the shape within one frame and keeps nothing.
 --
+-- A BREAKOUT IS ONE TOO (#393 round 3): the moving wall, its union with the
+-- destination -- the crossings, the slices, the stitched piece list -- and the
+-- union's inset, which was 57 KB a frame of storm.wall on the gate's breakout
+-- and the costliest wall in the owner's two breakout captures. A part the union
+-- is handed whole is re-stamped by its seal, as it always was (blobUnion's
+-- header), and a pooled piece is re-taken with its stamps cleared, so a pooled
+-- wall handed to it is the unpooled one to the bit as well.
+--
 -- A RECORD TABLE is overwritten field by field, every field the unpooled
 -- constructor sets, plus a nil for each field anything sets later (seal's s0 and
 -- comp), so nothing of the last build survives into this one. A LIST is emptied
@@ -2732,6 +2740,9 @@ function BR.StormShape.zone(x1, y1, r1, x2, y2, r2, unit, target)
     return BR.StormShape.blobUnion(a, b)
 end
 
+--- Crossings in arc-length order: table.sort's comparator, made once.
+local function byS(x, y) return x.s < y.s end
+
 -- ═══ STITCHING TWO OVERLAPPING BOUNDARIES INTO ONE LOOP (#356) ═══
 --
 --   "current/next storm circles, while overlapping, were actually drawn as 2
@@ -2801,7 +2812,7 @@ local CROSS_GRAZE = 1e-9
 --- tidiness with garbage. `newComponent` is cleared on the way through, because a
 --- piece that once opened a component must not open one here by inheritance.
 --- @return table|nil
-local function subPiece(pc, t0, t1)
+local function subPiece(pc, t0, t1, pool)
     local L = t1 - t0
     if L <= 0.0 then return nil end
     if t0 <= 0.0 and L >= pc.len then
@@ -2814,11 +2825,11 @@ local function subPiece(pc, t0, t1)
         -- already has the radius it has: a corner arc under a metre re-floored here
         -- would no longer meet the run beside it.
         local perM = pc.sweep / pc.len
-        return arc(pc.cx, pc.cy, pc.r, pc.a0 + perM * t0, perM * L, true)
+        return arc(pc.cx, pc.cy, pc.r, pc.a0 + perM * t0, perM * L, true, pool)
     end
     local x0, y0 = pieceAt(pc, t0)
     local x1, y1 = pieceAt(pc, t1)
-    return seg(x0, y0, x1, y1)
+    return seg(x0, y0, x1, y1, pool)
 end
 
 --- The pieces of `shape` from arc length `s0` forward for `len` metres.
@@ -2828,11 +2839,12 @@ end
 --- stall on a piece whose remainder is a picometre, and a stall in a per-frame
 --- build is a hung client rather than a wrong picture. One lap of the piece table
 --- is the most any slice can need, so that is the loop.
+--- @param pool table|nil  build the list and the split ends into it
 --- @return table  pieces, in boundary order, ends split
-local function sliceOf(shape, s0, len)
+local function sliceOf(shape, s0, len, pool)
     local pcs = shape.pieces
     local n = #pcs
-    local out = {}
+    local out = poolList(pool, 'slice')
     if n == 0 or len <= 0.0 then return out end
     local pc0, t0 = pieceAtArc(shape, s0 % shape.P)
     local i0 = 1
@@ -2845,7 +2857,7 @@ local function sliceOf(shape, s0, len)
         local avail = pc.len - from
         if avail > 0.0 then
             local use = (avail < left) and avail or left
-            local p = subPiece(pc, from, from + use)
+            local p = subPiece(pc, from, from + use, pool)
             if p then out[#out + 1] = p end
             left = left - use
         end
@@ -3029,6 +3041,29 @@ local function meet(p, q)
     return meetArcs(p, q)
 end
 
+--- Where A's piece `p` meets B's piece `q`, `t` meters along p and `u` along q:
+--- added to `out` when it is a crossing rather than a touch. crossings()' own
+--- step, and not a closure inside it, so a pooled union makes no table at all.
+local function addCrossing(out, pool, Pa, Pb, p, q, t, u)
+    local tx, ty
+    if p.kind == 'arc' then
+        local th = p.a0 + p.sweep * (t / p.len)
+        tx, ty = -sin(th) * p.out, cos(th) * p.out
+    else
+        tx, ty = p.ux, p.uy
+    end
+    local _, _, nx, ny = pieceAt(q, u)
+    local dot = tx * nx + ty * ny
+    if abs(dot) < CROSS_GRAZE then return end
+    if not pool then
+        out[#out + 1] = { s = (p.s0 + t) % Pa, t = (q.s0 + u) % Pb, into = dot < 0.0 }
+        return
+    end
+    local x = poolTake(pool, 'xing')
+    x.s, x.t, x.into = (p.s0 + t) % Pa, (q.s0 + u) % Pb, dot < 0.0
+    out[#out + 1] = x
+end
+
 --- Every place `a`'s boundary crosses `b`'s, in arc order along a.
 ---
 --- A list of `{ s, t, into }` -- the arc length along A, the arc length along B at
@@ -3064,31 +3099,19 @@ end
 --- question from whether they can be stitched: two that never meet are nested or
 --- apart, and one point then says which (insideWhole). Two that met in a pattern
 --- this cannot stitch are neither, and get both boundaries drawn.
+--- @param pool table|nil  build the box lists and the crossings into it
 --- @return table|nil  { { s = number, t = number, into = boolean }, ... }
 --- @return boolean met
-local function crossings(a, b)
+local function crossings(a, b, pool)
     local Pa, Pb = a.P, b and b.P or 0.0
     if Pa <= 0.0 or Pb <= 0.0 then return nil, false end
 
     local bp = b.pieces
-    local bx0, bx1, by0, by1 = {}, {}, {}, {}
+    local bx0, bx1, by0, by1 = poolList(pool, 'bx0'), poolList(pool, 'bx1'),
+        poolList(pool, 'by0'), poolList(pool, 'by1')
     for j = 1, #bp do bx0[j], bx1[j], by0[j], by1[j] = boxOf(bp[j]) end
 
-    local out, met = {}, false
-    local function record(p, q, t, u)
-        local tx, ty
-        if p.kind == 'arc' then
-            local th = p.a0 + p.sweep * (t / p.len)
-            tx, ty = -sin(th) * p.out, cos(th) * p.out
-        else
-            tx, ty = p.ux, p.uy
-        end
-        local _, _, nx, ny = pieceAt(q, u)
-        local dot = tx * nx + ty * ny
-        if abs(dot) < CROSS_GRAZE then return end
-        out[#out + 1] = { s = (p.s0 + t) % Pa, t = (q.s0 + u) % Pb, into = dot < 0.0 }
-    end
-
+    local out, met = poolList(pool, 'xout'), false
     for i = 1, #a.pieces do
         local p = a.pieces[i]
         local px0, px1, py0, py1 = boxOf(p)
@@ -3096,8 +3119,8 @@ local function crossings(a, b)
             if px0 <= bx1[j] and bx0[j] <= px1 and py0 <= by1[j] and by0[j] <= py1 then
                 local q = bp[j]
                 local n, t1, u1, t2, u2 = meet(p, q)
-                if n >= 1 then record(p, q, t1, u1) end
-                if n >= 2 then record(p, q, t2, u2) end
+                if n >= 1 then addCrossing(out, pool, Pa, Pb, p, q, t1, u1) end
+                if n >= 2 then addCrossing(out, pool, Pa, Pb, p, q, t2, u2) end
                 if n >= 1 then met = true end
             end
         end
@@ -3107,8 +3130,8 @@ local function crossings(a, b)
     -- ONE CROSSING FOUND TWICE IS ONE CROSSING: a point on the joint between two
     -- pieces of either boundary is on both of them. Across the seam at arc length
     -- zero as well as everywhere else.
-    table.sort(out, function(x, y) return x.s < y.s end)
-    local keep = {}
+    table.sort(out, byS)
+    local keep = poolList(pool, 'xkeep')
     for k = 1, #out do
         local last = keep[#keep]
         if not last or out[k].s - last.s > CROSS_SAME then keep[#keep + 1] = out[k] end
@@ -3126,6 +3149,32 @@ local function crossings(a, b)
         if keep[k].into == keep[k - 1].into then return nil, true end
     end
     return keep, true
+end
+
+--- The center discFor would stand `shape`'s disc on, without the table it builds:
+--- stitch's bounding-circle test reads the two centers and nothing else (#393
+--- round 3). The same x and y for every kind, read off the same fields.
+local function centerOf(shape)
+    local kind = shape and shape.kind
+    if kind == 'blob' then
+        local m = shape.blob
+        return m.cx, m.cy
+    end
+    if kind == 'blobUnion' then return centerOf(shape.parts[1]) end
+    local d = BR.StormShape.discFor(shape)
+    return d.x, d.y
+end
+
+--- The `meta` a union is sealed with -- its two parts and the map's prims -- from
+--- the pool when there is one, every field seal reads set.
+local function unionMeta(a, b, prims, pool)
+    if not pool then return { parts = { a, b }, prims = prims } end
+    local parts = poolList(pool, 'uparts')
+    parts[1], parts[2] = a, b
+    local meta = poolTake(pool, 'umeta')
+    meta.parts, meta.prims = parts, prims
+    meta.discs, meta.box, meta.hull, meta.blob, meta.meet = nil, nil, nil, nil, nil
+    return meta
 end
 
 --- The two boundaries as ONE closed loop, or nil when they do not properly cross.
@@ -3146,18 +3195,20 @@ end
 --- plausible on a map. A signed distance per run says which side it is really on,
 --- and a disagreement falls back to the two-component boundary instead of drawing
 --- a loop nobody can account for.
+--- @param pool table|nil  build the union and everything it is made of into it
 --- @return table|nil shape
 --- @return boolean met   whether the two boundaries met at all; see crossings()
-local function stitch(a, b)
+local function stitch(a, b, pool)
     -- THE BOUNDING CIRCLES FIRST. One subtraction answers every disjoint pair,
     -- which on a breakout phase is most of them -- see boundRadius.
-    local ac, bc = BR.StormShape.discFor(a), BR.StormShape.discFor(b)
-    local dx, dy = bc.x - ac.x, bc.y - ac.y
+    local acx, acy = centerOf(a)
+    local bcx, bcy = centerOf(b)
+    local dx, dy = bcx - acx, bcy - acy
     if sqrt(dx * dx + dy * dy) > boundRadius(a) + boundRadius(b) then
         return nil, false
     end
 
-    local xs, met = crossings(a, b)
+    local xs, met = crossings(a, b, pool)
     if not xs then return nil, met end
 
     -- START ON AN EXIT, so the list reads exit, entry, exit, entry ... and each
@@ -3168,7 +3219,7 @@ local function stitch(a, b)
     end
 
     local Pa, Pb = a.P, b.P
-    local pieces = {}
+    local pieces = poolList(pool, 'upcs')
     local nx = #xs
     for k = 1, nx, 2 do
         local sOut, sIn = xs[k].s, xs[k + 1].s
@@ -3192,17 +3243,17 @@ local function stitch(a, b)
         local qx, qy = BR.StormShape.pointAtArc(b, tFrom + lb * 0.5)
         if BR.StormShape.distance(a, qx, qy) < 0.0 then return nil, true end
 
-        local as = sliceOf(a, sOut, la)
+        local as = sliceOf(a, sOut, la, pool)
         for i = 1, #as do pieces[#pieces + 1] = as[i] end
-        local bs = sliceOf(b, tFrom, lb)
+        local bs = sliceOf(b, tFrom, lb, pool)
         for i = 1, #bs do pieces[#pieces + 1] = bs[i] end
     end
     if #pieces < 2 then return nil, true end
 
-    local prims = {}
+    local prims = poolList(pool, 'uprims')
     for _, p in ipairs(a.prims or {}) do prims[#prims + 1] = p end
     for _, p in ipairs(b.prims or {}) do prims[#prims + 1] = p end
-    return seal(pieces, 'blobUnion', { parts = { a, b }, prims = prims })
+    return seal(pieces, 'blobUnion', unionMeta(a, b, prims, pool), pool)
 end
 
 --- Two shapes as ONE boundary where they overlap, and two where they do not.
@@ -3226,9 +3277,11 @@ end
 --- means. A disjoint pair must keep both components: they are kilometres apart,
 --- the gap between them is not safe, and a strip that walked through the seam
 --- would bridge them with one quad across the sea.
+--- @param pool table|nil  BR.StormShape.newPool(): build the union into its tables
+---                         (see "a pool" at the top). The parts are not copied.
 --- @return table shape
-function BR.StormShape.blobUnion(a, b)
-    local one, met = stitch(a, b)
+function BR.StormShape.blobUnion(a, b, pool)
+    local one, met = stitch(a, b, pool)
     if one then return one end
 
     -- ONE SHAPE SWALLOWED THE OTHER, WHICH IS zone()'s NESTED CASE ARRIVING LATE.
@@ -3240,7 +3293,7 @@ function BR.StormShape.blobUnion(a, b)
         if insideWhole(b, a) then return a end
     end
 
-    local pieces = {}
+    local pieces = poolList(pool, 'upcs')
     for _, pc in ipairs(a.pieces) do pieces[#pieces + 1] = pc end
     local first = true
     for _, pc in ipairs(b.pieces) do
@@ -3250,10 +3303,10 @@ function BR.StormShape.blobUnion(a, b)
         if first then pc.newComponent = true first = false end
         pieces[#pieces + 1] = pc
     end
-    local prims = {}
+    local prims = poolList(pool, 'uprims')
     for _, p in ipairs(a.prims or {}) do prims[#prims + 1] = p end
     for _, p in ipairs(b.prims or {}) do prims[#prims + 1] = p end
-    return seal(pieces, 'blobUnion', { parts = { a, b }, prims = prims })
+    return seal(pieces, 'blobUnion', unionMeta(a, b, prims, pool), pool)
 end
 
 -- ═══ A CONJOINED ZONE GROWS INTO ITS DESTINATION INSTEAD OF POPPING (#344) ═══
@@ -4238,30 +4291,30 @@ end
 --- @param pool table|nil  a blob is eroded and sealed into its tables (see "a
 ---                         pool" at the top); every other kind ignores it
 --- @return table shape
-function BR.StormShape.inset(shape, metres, pool)
+function BR.StormShape.inset(shape, meters, pool)
     local kind = shape and shape.kind
-    metres = metres or 0.0
+    meters = meters or 0.0
 
     if kind == 'circle' or kind == 'union2' then
         local discs = shape.discs
         if #discs == 1 then
             local c = discs[1]
-            return BR.StormShape.circle(c.x, c.y, c.r - metres)
+            return BR.StormShape.circle(c.x, c.y, c.r - meters)
         end
         local a, b = discs[1], discs[2]
-        return BR.StormShape.union2(a.x, a.y, a.r - metres,
-            b.x, b.y, b.r - metres)
+        return BR.StormShape.union2(a.x, a.y, a.r - meters,
+            b.x, b.y, b.r - meters)
     end
 
     if kind == 'roundedRect' then
         local b = shape.box
         return BR.StormShape.roundedRect(b.cx, b.cy,
-            b.hx - metres, b.hy - metres, b.cr - metres)
+            b.hx - meters, b.hy - meters, b.cr - meters)
     end
 
     -- ═══ FOR A BLOB IT IS THE TRUE EROSION, CORNER BY CORNER ═══
     --
-    -- See erode(): a corner at least `metres` round keeps its centre and loses that
+    -- See erode(): a corner at least `meters` round keeps its center and loses that
     -- much radius, a sharper one becomes sharp where its offset runs meet, and a run
     -- the erosion turns inside out takes its two sharp ends with it. Not a
     -- scaled-down blob: a blob of radius r - d would pull every corner toward the
@@ -4296,8 +4349,8 @@ function BR.StormShape.inset(shape, metres, pool)
         -- tenth of that. A pair that will not intersect after eroding -- one eroded
         -- to its inscribed circle -- falls through to the ordinary path.
         if shape.meet then
-            local a = BR.StormShape.inset(shape.meet[1], metres)
-            local b = BR.StormShape.inset(shape.meet[2], metres)
+            local a = BR.StormShape.inset(shape.meet[1], meters)
+            local b = BR.StormShape.inset(shape.meet[2], meters)
             local cut = BR.StormShape.intersect(a, b)
             if cut then return cut end
         end
@@ -4305,13 +4358,13 @@ function BR.StormShape.inset(shape, metres, pool)
         -- fresh, and so is the rare hull that has to be chorded before it erodes.
         local p = (not shape.meet) and pool or nil
         local h, m = shape.hull, shape.blob
-        local ks = erode(h.ks, metres, p) or erode(chorded(h.ks, CHORD_SAG), metres)
+        local ks = erode(h.ks, meters, p) or erode(chorded(h.ks, CHORD_SAG), meters)
         if ks then
-            return hullOf(ks, blobMeta(m.cx, m.cy, m.r - metres, m.unit, m.r - metres,
+            return hullOf(ks, blobMeta(m.cx, m.cy, m.r - meters, m.unit, m.r - meters,
                 p), p)
         end
         local x, y, depth = deepPoint(shape)
-        return BR.StormShape.circle(x, y, depth - metres)
+        return BR.StormShape.circle(x, y, depth - meters)
     end
 
     -- ═══ AND A UNION ERODES ITS PARTS, WHICH IS union2's OWN COMPROMISE ═══
@@ -4324,12 +4377,15 @@ function BR.StormShape.inset(shape, metres, pool)
     -- A PART EATEN BY THE INSET LEAVES THE OTHER, rather than a one-metre stub
     -- beside it, for the reason union2's header argues: a component the storm never
     -- had is worse than a boundary drawn slightly small.
+    --
+    -- A POOL ERODES THE PARTS INTO IT AND UNITES THEM THERE, which is a breakout's
+    -- moving wall every frame (#393 round 3).
     if kind == 'blobUnion' then
-        local kept = {}
+        local kept = poolList(pool, 'kept')
         for i = 1, #shape.parts do
             local part = shape.parts[i]
-            if survivesInset(part, metres) then
-                kept[#kept + 1] = BR.StormShape.inset(part, metres)
+            if survivesInset(part, meters) then
+                kept[#kept + 1] = BR.StormShape.inset(part, meters, pool)
             end
         end
         if #kept == 0 then
@@ -4337,10 +4393,10 @@ function BR.StormShape.inset(shape, metres, pool)
             -- edgeInset -- the collapsed endgame. The first part's remnant is a
             -- boundary that can still be walked, which is what MIN_RADIUS exists
             -- to guarantee and what a collapsed zone has always been.
-            return BR.StormShape.inset(shape.parts[1], metres)
+            return BR.StormShape.inset(shape.parts[1], meters, pool)
         end
         if #kept == 1 then return kept[1] end
-        return BR.StormShape.blobUnion(kept[1], kept[2])
+        return BR.StormShape.blobUnion(kept[1], kept[2], pool)
     end
 
     error('StormShape.inset: no erosion for a shape of kind ' .. tostring(kind)

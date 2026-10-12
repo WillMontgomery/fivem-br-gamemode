@@ -761,8 +761,9 @@ end
 --- @param r number         the CURRENT radius
 --- @param t number|nil     how far through the sweep; nil reads as 0
 --- @param g number|nil     how far a conjoined zone has grown; nil reads as 1
---- @param pool table|nil   BR.StormShape.newPool(): a moving wall that IS the zone
----                         is built into it (storm_shape.lua's "a pool"). Valid
+--- @param pool table|nil   BR.StormShape.newPool(): a moving wall is built into it,
+---                         and a breakout's union of it with the destination
+---                         (storm_shape.lua's "a pool"). Valid
 ---                         until the next build from the same pool. Only
 ---                         client/storm.lua's moving wall passes one.
 --- @return table shape
@@ -775,11 +776,12 @@ function BR.StormZone(rec, cx, cy, r, t, g, pool)
         return BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
     end
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
-    -- THE POOL ONLY WHERE THE WALL IS THE WHOLE ANSWER. A breakout's zone is the
-    -- wall stitched to the destination, and blobUnion re-stamps the pieces of the
-    -- parts it is handed, so a pooled wall is never handed to it.
+    -- A BREAKOUT IS BUILT INTO THE POOL TOO (#393 round 3): the moving wall and its
+    -- union with the destination. blobUnion re-stamps the pieces of the parts it is
+    -- handed, and a pooled wall's pieces are re-taken with their stamps cleared, so
+    -- the union is the unpooled one to the bit (storm_shape.lua's "a pool").
     local whole = e.nested or t >= 1.0 or (rec.r1 or 0.0) <= 0.0
-    local wall = wallOf(rec, e, t, whole and pool or nil)
+    local wall = wallOf(rec, e, t, pool)
     if whole then return wall end
     local target = BR.StormTarget(rec)
     g = (g == nil) and 1.0 or BR.Clamp(g, 0.0, 1.0)
@@ -790,7 +792,7 @@ function BR.StormZone(rec, cx, cy, r, t, g, pool)
             if zone then return zone end
         end
     end
-    return BR.StormShape.blobUnion(wall, target)
+    return BR.StormShape.blobUnion(wall, target, pool)
 end
 
 --- WHEN THE WALL IS ONE FIXED OUTLINE MOVED AND SCALED, and how: the frame it stands
