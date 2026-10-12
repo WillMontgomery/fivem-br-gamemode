@@ -643,7 +643,8 @@ end
 --- -- is what it was, and handed back with its own stamps put back
 --- (BR.StormShape.restamp). HELD IN THE POOL, so only the moving wall's own builds
 --- ever share it; the map, the HUD and the server keep a fresh one. A miss drops the
---- held erosion with it (BR.StormShape.inset's union branch).
+--- held erosion with it (BR.StormShape.inset's union branch), and the boxes the
+--- crossing finder keeps for both.
 --- @param rec table
 --- @param pool table
 --- @return table shape
@@ -662,7 +663,7 @@ local function heldTarget(rec, pool)
     end
     local shape = BR.StormTarget(rec)
     h.shape, h.r1, h.cx1, h.cy1, h.u = shape, r1, rec.cx1, rec.cy1, u
-    h.insetM, h.inset, h.survives = nil, nil, nil
+    h.insetM, h.inset, h.survives, h.box, h.ibox = nil, nil, nil, nil, nil
     BR.StormShape.stamp(shape, h)
     return shape
 end

@@ -487,6 +487,22 @@ local function pieceAtArc(shape, s)
     return pc, pc and pc.len or 0.0
 end
 
+--- pieceAtArc, answering the piece's INDEX in the list rather than the piece: what
+--- sliceOf walks on from (#393 round 3), so it no longer scans the list a second
+--- time to find the piece it was just handed. A shape's pieces are distinct
+--- tables -- seal stamps each with its own arc length -- so the index is the one
+--- that second scan found (tools/test_storm.lua's wall.slice holds that).
+local function pieceIndexAtArc(shape, s)
+    local pcs = shape.pieces
+    local n = #pcs
+    for i = 1, n do
+        local pc = pcs[i]
+        if s < pc.s0 + pc.len then return i, s - pc.s0 end
+    end
+    local pc = pcs[n]
+    return n, pc and pc.len or 0.0
+end
+
 -- ------------------------------------------------------------ constructors ---
 
 --- A circle. THE ONLY CONSTRUCTOR ANYTHING IN THE GAME CALLS.
@@ -2935,9 +2951,7 @@ local function sliceOf(shape, s0, len, pool)
     local n = #pcs
     local out = poolList(pool, 'slice')
     if n == 0 or len <= 0.0 then return out end
-    local pc0, t0 = pieceAtArc(shape, s0 % shape.P)
-    local i0 = 1
-    for i = 1, n do if pcs[i] == pc0 then i0 = i break end end
+    local i0, t0 = pieceIndexAtArc(shape, s0 % shape.P)
     local left = len
     for k = 0, n do
         if left <= 0.0 then break end
@@ -3196,9 +3210,29 @@ local function crossings(a, b, pool)
     if Pa <= 0.0 or Pb <= 0.0 then return nil, false end
 
     local bp = b.pieces
-    local bx0, bx1, by0, by1 = poolList(pool, 'bx0'), poolList(pool, 'bx1'),
-        poolList(pool, 'by0'), poolList(pool, 'by1')
-    for j = 1, #bp do bx0[j], bx1[j], by0[j], by1[j] = boxOf(bp[j]) end
+    -- A POOL'S HELD DESTINATION, AND ITS HELD INSET, ARE BOXED ONCE (#393 round 3):
+    -- a box reads a piece's geometry and never its stamps, and the held shapes'
+    -- geometry is what it was (storm_solve.lua's heldTarget drops these with them).
+    local held = pool and pool.held
+    local bb = nil
+    if held and (b == held.shape or b == held.inset) then
+        local key = (b == held.shape) and 'box' or 'ibox'
+        bb = held[key]
+        if not bb then
+            bb = { {}, {}, {}, {} }
+            local x0, x1, y0, y1 = bb[1], bb[2], bb[3], bb[4]
+            for j = 1, #bp do x0[j], x1[j], y0[j], y1[j] = boxOf(bp[j]) end
+            held[key] = bb
+        end
+    end
+    local bx0, bx1, by0, by1
+    if bb then
+        bx0, bx1, by0, by1 = bb[1], bb[2], bb[3], bb[4]
+    else
+        bx0, bx1, by0, by1 = poolList(pool, 'bx0'), poolList(pool, 'bx1'),
+            poolList(pool, 'by0'), poolList(pool, 'by1')
+        for j = 1, #bp do bx0[j], bx1[j], by0[j], by1[j] = boxOf(bp[j]) end
+    end
 
     local out, met = poolList(pool, 'xout'), false
     for i = 1, #a.pieces do
@@ -4494,7 +4528,7 @@ function BR.StormShape.inset(shape, meters, pool)
                 if held.insetM ~= meters then
                     held.insetM = meters
                     held.survives = survivesInset(part, meters)
-                    held.inset = nil
+                    held.inset, held.ibox = nil, nil
                     if held.survives then
                         held.inset = BR.StormShape.inset(part, meters)
                         held.ist = held.ist or {}

@@ -6487,6 +6487,79 @@ do
         'and a reset hands back every list the build took from, and touches nothing else '
             .. 'the pool holds', ('%d lists, %d in the array, stale %s'):format(lists,
             #(rp.lists or {}), tostring(stale)))
+
+    -- ═══ A SLICE STARTS FROM THE INDEX ITS SCAN FOUND, AND A HELD SHAPE IS BOXED ONCE
+    --     (#393 round 3) ═══
+    --
+    -- sliceOf scanned the piece list for the piece pieceAtArc had just handed it, and the
+    -- crossing finder boxed every piece of a pool's held destination and held inset on
+    -- every build. The first is exact only while no shape lists one piece twice -- seal
+    -- stamps each piece with its own arc length, so one listed twice would carry the
+    -- second stamp at both places -- and that is held here over every zone, inset and
+    -- union the sweeps above build. The second is held by watching the boxes asked for:
+    -- after a warm build, none is a held piece's.
+    describe('wall.slice')
+    local dup, shapes = nil, 0
+    local function distinct(shape, how)
+        shapes = shapes + 1
+        local seen = {}
+        for i, pc in ipairs(shape.pieces or {}) do
+            if seen[pc] and not dup then dup = ('%s: piece %d is piece %d'):format(how, i,
+                seen[pc]) end
+            seen[pc] = i
+        end
+        for _, part in ipairs(shape.parts or {}) do distinct(part, how .. ' part') end
+    end
+    for ri, rec in ipairs(recs) do
+        for _, t in ipairs(ts) do
+            local z = zoneAt(rec, t)
+            distinct(z, ('record %d at %s'):format(ri, t))
+            distinct(SS.inset(z, 6.0), ('record %d at %s, inset'):format(ri, t))
+        end
+    end
+    ok(dup == nil and shapes > 2 * #recs * #ts,
+        'no zone, inset or part lists one piece twice, so a slice can start at the index '
+            .. 'its scan found', dup or ('%d shapes'):format(shapes))
+
+    local heldPieces, boxedHeld, boxes = {}, 0, 0
+    local function noteHeld()
+        local h = hp.held
+        for _, sh in ipairs({ h and h.shape, h and h.inset }) do
+            for _, pc in ipairs(sh and sh.pieces or {}) do heldPieces[pc] = true end
+        end
+    end
+    local function stitchedSweep()
+        for _, t in ipairs(ts) do
+            SS.resetPool(hp)
+            local z = zoneAt(stitchedRec, t, hp)
+            SS.inset(z, 6.0, hp)
+        end
+    end
+    stitchedSweep()
+    noteHeld()
+    local slicesScanned = 0
+    debug.sethook(function()
+        local callee = debug.getinfo(2, 'S')
+        if callee.source:sub(-#'storm_shape.lua') ~= 'storm_shape.lua' then return end
+        local name = defined[callee.linedefined]
+        if name == 'boxOf' then
+            boxes = boxes + 1
+            local _, pc = debug.getlocal(2, 1)
+            if heldPieces[pc] then boxedHeld = boxedHeld + 1 end
+        elseif name == 'pieceAtArc' then
+            local caller = debug.getinfo(3, 'S')
+            if caller and defined[caller.linedefined] == 'sliceOf' then
+                slicesScanned = slicesScanned + 1
+            end
+        end
+    end, 'c')
+    stitchedSweep()
+    debug.sethook()
+    ok(next(heldPieces) ~= nil and boxes > 0 and boxedHeld == 0 and slicesScanned == 0,
+        'a warm pool\'s stitched sweep boxes none of its held destination\'s pieces again, '
+            .. 'and its slices start without a second scan',
+        ('%d boxes asked, %d of them a held piece\'s; sliceOf asked pieceAtArc %d times')
+            :format(boxes, boxedHeld, slicesScanned))
 end
 
 -- ---------------------------------------------------------------------------
