@@ -1,60 +1,111 @@
-import { useState } from 'react'
-import type { SyntheticEvent } from 'react'
+import { memo, useMemo } from 'react'
+import AttributeEditor from '@cloudscape-design/components/attribute-editor'
+import type { AttributeEditorProps } from '@cloudscape-design/components/attribute-editor'
 import Box from '@cloudscape-design/components/box'
-import Button from '@cloudscape-design/components/button'
-import Cards from '@cloudscape-design/components/cards'
+import Select from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import { fetchNui } from '../../bridge/nui'
 import { CB } from '../../bridge/types'
 import type { Locker2TatRow, Locker2TatsPayload } from '../../bridge/types'
 import { play } from '../../audio/cues'
 import { BTN, TATTOOS, ZONE_LABEL, tattooLabels } from './copy'
-import { TATTOOS_CAT, anchorId, canAddTattoo, selectedRow, tattooCat, zoneRows } from './model'
+import { TATTOOS_CAT, anchorId, canAddTattoo, sameTatRows, tattooCat, tattooChoices, zoneRows } from './model'
+import './tattoos.css'
 
 /**
- * THE TATTOOS SECTION OF THE CUSTOM TABS (owner, 2026-10-12): "How about a
- * list, starting empty, with add and remove buttons. When I click add, create
- * a new row with a left/right arrow and the title of the tattoo in between.
- * Allow me to select each row and remove if I want to. You can just make it
- * max 10 per category."
+ * THE TATTOOS SECTION OF THE CUSTOM TABS (owner, 2026-10-12): "a list,
+ * starting empty, with add and remove buttons ... You can just make it max 10
+ * per category." Then, of a list of big cards: "This takes up wayyyy too much
+ * real estate ... perhaps we use the thing that's literally made for this -
+ * attribute editor."
  *
- * Per body zone: its rows, then Add and Remove under them, as My peds puts its
- * buttons under its cards. A row is a card -- the left arrow, the tattoo's
- * name, the right arrow -- and pressing it anywhere but an arrow selects it,
- * lit as My peds lights the worn ped's card: one row in the whole section at a
- * time. Remove takes the selected row out; Add stops at TATTOOS_PER_ZONE.
+ * One Cloudscape AttributeEditor per body zone, under the zone's heading. Each
+ * item is one row, its one field a Select of the zone's tattoos for this sex
+ * by the game's names, filtered by typing; its Remove beside it; Add under the
+ * rows, off at TATTOOS_PER_ZONE. A row's list never offers what another row of
+ * its zone holds, so a zone never has one tattoo twice.
  *
- * As with every row, the page never decides: Add, an arrow and Remove each ask
- * Lua, which picks the tattoo (the zone's first one no row holds; the next
- * such each way, wrapping), puts it on the ped and sends the rows back. Any
- * press in a zone also sends its category, so the camera goes to that part of
- * the ped. Keyboard: Cloudscape's own -- Tab to a button and Enter or Space; a
- * card's radio takes Space, and the arrow keys move between a zone's cards.
+ * As with every row, the page never decides: Add, a choice and Remove each ask
+ * Lua (LOCKER2_TAT_ADD, _SET, _DEL), which holds every rule, puts the tattoo on
+ * the ped at once and sends the rows back; Add's row starts on the zone's first
+ * tattoo no row holds. Any press in a zone also sends its category, so the
+ * camera goes to that part of the ped.
+ *
+ * COMPACT: the section wears Cloudscape's own compact density (its
+ * `awsui-compact-mode` class, scoped to the section and nothing else in the
+ * locker), so a row is a 28 px Select and its Remove, 16 px apart.
+ *
+ * The Select's list opens inside the island (expandToViewport false), as the
+ * Save menu's does (Footer.tsx). A push -- one per press, and one every 60 ms
+ * while a slider is dragged -- re-renders a zone only when its rows changed.
  */
 
-/** An arrow's press is the arrow's alone: never the card's select, which
- *  would also take the focus off the arrow. */
-const own = (e: SyntheticEvent) => e.stopPropagation()
+/** The editor's one field and its Remove on one line at every width; no
+ *  field label (tattoos.css keeps the first row's Remove level with its
+ *  Select, where Cloudscape leaves room for a label). */
+const ROW_LAYOUT: readonly AttributeEditorProps.GridLayout[] = [{ rows: [[1]], removeButton: { width: 'auto' } }]
 
-function RowHead({ row, label, disabled }: { row: Locker2TatRow; label: string; disabled: boolean }) {
-  const step = (d: 1 | -1) => {
-    play('ui.select')
-    void fetchNui(CB.LOCKER2_TAT_STEP, { r: row.r, d })
-  }
+/** One zone: its heading, its anchor and its editor. Drawn again only when its
+ *  rows or `disabled` change -- `onTouch` is CustomTab's toCat, a new function
+ *  each render that always sends the same thing. The editor's own Remove has
+ *  no off state: while the ped is held it sends nothing, and Lua refuses every
+ *  change then anyway. */
+const ZoneEditor = memo(function ZoneEditor({ zone, rows, disabled, onTouch }: {
+  zone: Locker2TatsPayload['zones'][number]
+  /** This zone's rows, in Lua's order. */
+  rows: readonly Locker2TatRow[]
+  disabled: boolean
+  onTouch: (cat: string) => void
+}) {
+  const cat = tattooCat(zone.z)
+  // Each tattoo's option: the game's name, a nameless one numbered among the
+  // nameless of its zone -- never its key. Built once per list.
+  const opts = useMemo(() => tattooLabels(zone.items).map(([t, label]) => ({
+    i: t.i, option: { value: String(t.i), label },
+  })), [zone.items])
+  const byI = useMemo(() => new Map(opts.map((o) => [o.i, o.option])), [opts])
   return (
-    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
-      <span onClick={own}>
-        <Button variant="icon" iconName="angle-left" ariaLabel={BTN.last}
-          disabled={disabled} onClick={() => step(-1)} />
-      </span>
-      <span style={{ flex: '1 1 auto', minWidth: 0, textAlign: 'center' }}>{label}</span>
-      <span onClick={own}>
-        <Button variant="icon" iconName="angle-right" ariaLabel={BTN.next}
-          disabled={disabled} onClick={() => step(1)} />
-      </span>
-    </span>
+    <div id={anchorId(cat)} onPointerDown={() => onTouch(cat)}>
+      <SpaceBetween size="xs">
+        <Box variant="h5">{ZONE_LABEL[zone.z] ?? ''}</Box>
+        <AttributeEditor
+          items={rows}
+          gridLayout={ROW_LAYOUT}
+          definition={[{
+            control: (row: Locker2TatRow) => (
+              <Select
+                selectedOption={byI.get(row.i) ?? null}
+                options={tattooChoices(opts, rows, row).map((o) => o.option)}
+                filteringType="auto"
+                expandToViewport={false}
+                disabled={disabled}
+                onChange={({ detail }) => {
+                  const i = Number(detail.selectedOption.value)
+                  if (!Number.isInteger(i) || i === row.i) return
+                  play('ui.select')
+                  void fetchNui(CB.LOCKER2_TAT_SET, { r: row.r, i })
+                }}
+              />
+            ),
+          }]}
+          addButtonText={BTN.add}
+          removeButtonText={BTN.remove}
+          disableAddButton={disabled || !canAddTattoo(rows.length, zone.items.length)}
+          onAddButtonClick={() => {
+            play('ui.select')
+            void fetchNui(CB.LOCKER2_TAT_ADD, { z: zone.z })
+          }}
+          onRemoveButtonClick={({ detail }) => {
+            const row = rows[detail.itemIndex]
+            if (!row || disabled) return
+            play('ui.select')
+            void fetchNui(CB.LOCKER2_TAT_DEL, { r: row.r })
+          }}
+        />
+      </SpaceBetween>
+    </div>
   )
-}
+}, (a, b) => a.zone === b.zone && a.disabled === b.disabled && sameTatRows(a.rows, b.rows))
 
 export function TattooSection({ tats, rows, disabled, onTouch }: {
   tats: Locker2TatsPayload
@@ -64,63 +115,13 @@ export function TattooSection({ tats, rows, disabled, onTouch }: {
   /** A zone was pressed: the camera follows it. */
   onTouch: (cat: string) => void
 }) {
-  // The selected row, by its id: one in the whole section at a time.
-  const [sel, setSel] = useState<number | null>(null)
   return (
-    <div id={anchorId(TATTOOS_CAT)}>
+    <div id={anchorId(TATTOOS_CAT)} className="lk2-tats awsui-compact-mode">
       <SpaceBetween size="s">
         <Box variant="h4">{TATTOOS}</Box>
-        {tats.zones.map((zone) => {
-          const cat = tattooCat(zone.z)
-          const mine = zoneRows(rows, zone.z)
-          const picked = selectedRow(mine, sel)
-          // Each tattoo's name: the game's own, a nameless one numbered among
-          // the nameless of its zone -- never its key.
-          const names = new Map(tattooLabels(zone.items).map(([t, label]) => [t.i, label]))
-          return (
-            <div key={zone.z} id={anchorId(cat)} onPointerDown={() => onTouch(cat)}>
-              <SpaceBetween size="xs">
-                <Box variant="h5">{ZONE_LABEL[zone.z] ?? ''}</Box>
-                {mine.length > 0 && (
-                  <Cards
-                    items={mine}
-                    trackBy="r"
-                    cardsPerRow={[{ cards: 1 }]}
-                    selectionType="single"
-                    entireCardClickable
-                    selectedItems={picked ? [picked] : []}
-                    isItemDisabled={() => disabled}
-                    onSelectionChange={({ detail }) => {
-                      const row = detail.selectedItems[0]
-                      if (row) { play('ui.select'); setSel(row.r) }
-                    }}
-                    cardDefinition={{
-                      header: (row) => <RowHead row={row} label={names.get(row.i) ?? ''} disabled={disabled} />,
-                    }}
-                  />
-                )}
-                <SpaceBetween direction="horizontal" size="xs">
-                  <Button disabled={disabled || !canAddTattoo(mine.length, zone.items.length)}
-                    onClick={() => {
-                      play('ui.select')
-                      void fetchNui(CB.LOCKER2_TAT_ADD, { z: zone.z })
-                    }}>
-                    {BTN.add}
-                  </Button>
-                  <Button disabled={disabled || picked === null}
-                    onClick={() => {
-                      if (!picked) return
-                      play('ui.select')
-                      setSel(null)
-                      void fetchNui(CB.LOCKER2_TAT_DEL, { r: picked.r })
-                    }}>
-                    {BTN.remove}
-                  </Button>
-                </SpaceBetween>
-              </SpaceBetween>
-            </div>
-          )
-        })}
+        {tats.zones.map((zone) => (
+          <ZoneEditor key={zone.z} zone={zone} rows={zoneRows(rows, zone.z)} disabled={disabled} onTouch={onTouch} />
+        ))}
       </SpaceBetween>
     </div>
   )

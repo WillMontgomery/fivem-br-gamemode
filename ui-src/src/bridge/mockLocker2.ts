@@ -358,7 +358,7 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         if (d.sex === 'm' || d.sex === 'f') emit({ k: 'locker2tats', d: mockTats(d.sex) })
         return true
       // The tattoo rows, as Lua holds them: 10 a zone, no tattoo in two rows
-      // of a zone, the arrows wrapping over the ones other rows hold.
+      // of a zone, a row's choice only one of its zone's.
       case 'br/locker2/tatadd': {
         if (!draft || typeof d.z !== 'string') return true
         const z = d.z
@@ -373,21 +373,14 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         push()
         return true
       }
-      case 'br/locker2/tatstep': {
+      case 'br/locker2/tatset': {
         const row = draft?.tats.find((x) => x.r === d.r)
-        const dir = d.d === 1 || d.d === -1 ? d.d : 0
-        if (!draft || !row || dir === 0) return true
-        const order = zoneItems(row.z)
-        const used = new Set(draft.tats.filter((x) => x.z === row.z && x !== row).map((x) => x.i))
-        const from = order.indexOf(row.i)
-        for (let k = 1; k <= order.length; k++) {
-          const i = order[(((from + dir * k) % order.length) + order.length) % order.length]
-          if (i !== undefined && i !== row.i && !used.has(i)) {
-            delete draft.look[`tat:${row.i}`]
-            draft.look[`tat:${i}`] = { v: 1, t: 0 }
-            row.i = i
-            break
-          }
+        const i = d.i
+        if (draft && row && typeof i === 'number' && i !== row.i && zoneItems(row.z).includes(i)
+          && !draft.tats.some((x) => x.z === row.z && x !== row && x.i === i)) {
+          delete draft.look[`tat:${row.i}`]
+          draft.look[`tat:${i}`] = { v: 1, t: 0 }
+          row.i = i
         }
         push()
         return true

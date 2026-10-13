@@ -255,7 +255,8 @@ export const anchorId = (cat: string): string => `lk2-cat-${cat}`
 // category: its own anchor, then one per body zone. Lua sends each sex's list
 // once (`locker2tats`, names from the game's own text) and, on every push, the
 // rows (`edit.tats`): "a list, starting empty, with add and remove buttons ...
-// You can just make it max 10 per category."
+// You can just make it max 10 per category" -- drawn as an attribute editor a
+// zone (Tattoos.tsx).
 
 /** The body zones, in the order drawn (br_lib/config/tattoos.lua's `zones`). */
 export const TATTOO_ZONES = ['head', 'torso', 'larm', 'rarm', 'lleg', 'rleg'] as const
@@ -313,15 +314,21 @@ export const canAddTattoo = (rowCount: number, itemCount: number): boolean =>
   rowCount < TATTOOS_PER_ZONE && rowCount < itemCount
 
 /**
- * The selected row, if it is one of these. A selection is a row's own id, so
- * it follows the row through its arrows, and is no row at all once that row
- * is gone or the draft is another (Reset, Edit, a tab): Lua never gives an id
- * twice. Remove is lit only with one.
+ * A row's list: its zone's tattoos in the zone's order, but none another row
+ * of the zone holds -- so a zone never has one tattoo twice. The row's own
+ * stays in it. Lua refuses the rest whatever the page sends.
  */
-export function selectedRow(rows: readonly Locker2TatRow[], sel: number | null): Locker2TatRow | null {
-  if (sel === null) return null
-  return rows.find((r) => r.r === sel) ?? null
+export function tattooChoices<T extends { i: number }>(
+  items: readonly T[], rows: readonly Locker2TatRow[], row: Locker2TatRow,
+): T[] {
+  const taken = new Set(rows.filter((x) => x.r !== row.r).map((x) => x.i))
+  return items.filter((t) => !taken.has(t.i))
 }
+
+/** The same rows, each the same tattoo, in the same order: a zone that
+ *  draws nothing new on a push. */
+export const sameTatRows = (a: readonly Locker2TatRow[], b: readonly Locker2TatRow[]): boolean =>
+  a.length === b.length && a.every((x, k) => x.r === b[k]?.r && x.i === b[k]?.i && x.z === b[k]?.z)
 
 // ═══ HEADSHOTS (contract section 6, with the skeptic's correction 6) ═══
 

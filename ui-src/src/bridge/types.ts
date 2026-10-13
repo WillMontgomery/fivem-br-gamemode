@@ -1110,7 +1110,7 @@ export interface Locker2Edit {
 }
 
 /** One row of the Tattoos section (owner, 2026-10-12): `r` the row's own id,
- *  which a step keeps and no other row ever has; `z` its zone; `i` its tattoo,
+ *  which a choice keeps and no other row ever has; `z` its zone; `i` its tattoo,
  *  by its `i` in the sex's Locker2TatsPayload. */
 export interface Locker2TatRow { r: number; z: string; i: number }
 
@@ -1777,9 +1777,9 @@ export const CB = {
   LOCKER2_TATS:     'br/locker2/tats',
   /** { z }: a new tattoo row at the foot of a zone (Add). */
   LOCKER2_TAT_ADD:  'br/locker2/tatadd',
-  /** { r, d }: a tattoo row's arrow, d = 1 or -1, wrapping. */
-  LOCKER2_TAT_STEP: 'br/locker2/tatstep',
-  /** { r }: Remove, on the selected row. */
+  /** { r, i }: a tattoo row's tattoo, chosen in its list. */
+  LOCKER2_TAT_SET:  'br/locker2/tatset',
+  /** { r }: Remove, a row's own button. */
   LOCKER2_TAT_DEL:  'br/locker2/tatdel',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',

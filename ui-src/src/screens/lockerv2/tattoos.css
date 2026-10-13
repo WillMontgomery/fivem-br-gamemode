@@ -1,0 +1,11 @@
+/* THE TATTOOS SECTION'S ONE RULE (#28, Tattoos.tsx), shipped in the LockerV2
+   chunk beside Cloudscape's own CSS and scoped to the section.
+
+   Its attribute editors have no field label, and Cloudscape pads the first
+   row's Remove down by a label's height to sit level with a field under one.
+   With none, that padding drops the first Remove below its Select; this keeps
+   it level. scripts/test-lockerv2.mjs fails the build if the installed
+   Cloudscape stops naming the class. */
+.lk2-tats [class*='awsui_remove-button-field-padding'] {
+  padding-block-start: 0 !important;
+}

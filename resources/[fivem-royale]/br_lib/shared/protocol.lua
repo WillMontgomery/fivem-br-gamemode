@@ -1709,7 +1709,7 @@ BR.NuiCb = {
     LOCKER2_SHOT     = 'br/locker2/shot',      -- { id, img }: a saved ped's webp
     LOCKER2_TATS     = 'br/locker2/tats',      -- { sex }: the tattoo list, answered as LOCKER2_TATS
     LOCKER2_TAT_ADD  = 'br/locker2/tatadd',    -- { z }: a new tattoo row in a zone
-    LOCKER2_TAT_STEP = 'br/locker2/tatstep',   -- { r, d }: a tattoo row's arrow, d = 1 or -1
+    LOCKER2_TAT_SET  = 'br/locker2/tatset',    -- { r, i }: a tattoo row's tattoo, chosen in its list
     LOCKER2_TAT_DEL  = 'br/locker2/tatdel',    -- { r }: Remove a tattoo row
     -- The guided first run (#261). { run = boolean } for the lobby half,
     -- { game = boolean } for the in-game one, and `done = true` alongside

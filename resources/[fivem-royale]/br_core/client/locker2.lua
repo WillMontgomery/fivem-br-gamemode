@@ -801,20 +801,16 @@ local function catalog(sex)
     return catalogs[sex]
 end
 
---- The order a zone's arrows step through for a sex -- the page's list, by
---- the game's name -- and each tattoo's place in it. Built once off the
---- catalog: { list = { i... }, at = { [i] = place } }.
+--- A zone's tattoos for a sex in the order Add picks from -- the page's list,
+--- by the game's name. Built once off the catalog: { i... }.
 local orders = { m = {}, f = {} }
 local function zoneOrder(sex, z)
     local o = orders[sex][z]
     if o then return o end
-    o = { list = {}, at = {} }
+    o = {}
     for _, zone in ipairs(catalog(sex).zones) do
         if zone.z == z then
-            for k, it in ipairs(zone.items) do
-                o.list[k] = it.i
-                o.at[it.i] = k
-            end
+            for k, it in ipairs(zone.items) do o[k] = it.i end
         end
     end
     orders[sex][z] = o
@@ -829,8 +825,8 @@ end
 --- THE DRAFT'S TATTOO ROWS (owner, 2026-10-12: "a list, starting empty, with
 --- add and remove buttons"): per body zone, in the order the page draws them,
 --- { [zone] = { { r, i }... } }. `i` is the tattoo's row in the list; `r` the
---- row's own id, never given twice in a session, so the page's selection
---- follows a row through its steps and never lands on another draft's. The
+--- row's own id, never given twice in a session, so a choice or a Remove the
+--- page sends lands on that row and never on another draft's. The
 --- look's `t` says which tattoos are on, and these the order the page lists
 --- them in, which the save cannot hold: a look opens with its rows in the
 --- list's order, at most TATTOOS_PER_ZONE a zone (tattooRows).
@@ -1374,13 +1370,13 @@ end
 
 -- ═══ THE TATTOO ROWS (owner, 2026-10-12) ═══
 --
--- "How about a list, starting empty, with add and remove buttons. When I click
--- add, create a new row with a left/right arrow and the title of the tattoo in
--- between. Allow me to select each row and remove if I want to. You can just
--- make it max 10 per category." Each zone's rows are the draft's (tatRowsOf);
--- the page says which row and which way, and every rule is held here: at most
--- TATTOOS_PER_ZONE rows a zone, never one tattoo in two rows of a zone, the
--- arrows wrapping through the zone's tattoos for the draft's sex. All free.
+-- "How about a list, starting empty, with add and remove buttons ... You can
+-- just make it max 10 per category." Then, of the page: "perhaps we use the
+-- thing that's literally made for this - attribute editor." Each zone's rows
+-- are the draft's (tatRowsOf), one an editor's item, its tattoo chosen in a
+-- list of the zone's. The page says which row and which tattoo, and every rule
+-- is held here: at most TATTOOS_PER_ZONE rows a zone, never one tattoo in two
+-- rows of a zone, only the zone's own tattoos for the draft's sex. All free.
 
 --- The row with id `r`, and its zone's rows and its place there.
 local function tatRowById(d, r)
@@ -1402,7 +1398,7 @@ local function usedIn(rows, skip)
 end
 
 --- A change to the draft's tattoos, onto the preview at once: one more
---- decoration for an Add (`added`), and for a step or a Remove the rest put
+--- decoration for an Add (`added`), and for a choice or a Remove the rest put
 --- back, since decorations only come off together.
 local function tatChanged(added)
     local d = S.draft
@@ -1428,7 +1424,7 @@ ACTIONS[BR.NuiCb.LOCKER2_TAT_ADD] = function(data)
     if not rows or #rows >= A.TATTOOS_PER_ZONE then return end
     local used = usedIn(rows)
     local pick = nil
-    for _, i in ipairs(zoneOrder(d.sex, data.z).list) do
+    for _, i in ipairs(zoneOrder(d.sex, data.z)) do
         if not used[i] then
             pick = i
             break
@@ -1441,34 +1437,23 @@ ACTIONS[BR.NuiCb.LOCKER2_TAT_ADD] = function(data)
     tatChanged(pick)
 end
 
---- { r, d }: a row's arrow, d = 1 or -1, wrapping through its zone's
---- tattoos and over the ones its other rows hold.
-ACTIONS[BR.NuiCb.LOCKER2_TAT_STEP] = function(data)
+--- { r, i }: a row's tattoo, chosen in its list -- one of its own zone's for
+--- the draft's sex, and none another row of the zone holds.
+ACTIONS[BR.NuiCb.LOCKER2_TAT_SET] = function(data)
     local d = S.draft
-    local r, dir = math.tointeger(tonumber(data.r)), math.tointeger(tonumber(data.d))
-    if not d or not r or (dir ~= 1 and dir ~= -1) then return end
+    local r, i = math.tointeger(tonumber(data.r)), math.tointeger(tonumber(data.i))
+    if not d or not r or not i then return end
     local row, rows = tatRowById(d, r)
-    if not row then return end
-    local order = zoneOrder(d.sex, BR.Config.Tattoos.list[row.i][2])
-    local n = #order.list
-    local from = order.at[row.i] or (dir == 1 and 0 or n + 1)
-    local used = usedIn(rows, row)
-    local pick = nil
-    for k = 1, n do
-        local i = order.list[(from - 1 + dir * k) % n + 1]
-        if i ~= row.i and not used[i] then
-            pick = i
-            break
-        end
-    end
-    if not pick then return end
-    A.setTattoo(d.a, BR.Config.Tattoos.list[row.i][1], false)
-    A.setTattoo(d.a, BR.Config.Tattoos.list[pick][1], true)
-    row.i = pick
+    if not row or i == row.i or not tattooFor(i, d.sex) then return end
+    local list = BR.Config.Tattoos.list
+    if list[i][2] ~= list[row.i][2] or usedIn(rows, row)[i] then return end
+    A.setTattoo(d.a, list[row.i][1], false)
+    A.setTattoo(d.a, list[i][1], true)
+    row.i = i
     tatChanged(nil)
 end
 
---- { r }: Remove, on the row the page has selected.
+--- { r }: Remove, a row's own button.
 ACTIONS[BR.NuiCb.LOCKER2_TAT_DEL] = function(data)
     local d = S.draft
     local r = math.tointeger(tonumber(data.r))

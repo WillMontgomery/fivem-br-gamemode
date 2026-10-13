@@ -28,14 +28,16 @@
  *   TATTOOS   each sex's list made safe to draw (the body's zones in order,
  *             whole items, a name only if it is one), the section's anchors
  *             only once the list has come, Lua's rows made safe to draw (a
- *             list that starts empty), 10 a zone, Add off at 10, Remove off
- *             with nothing selected, the words, and the wiring (2026-10-12):
- *             asked once drawn, no list drawn for a zone with no rows, a row
- *             an arrow, its name and an arrow, each arrow a LOCKER2_TAT_STEP of
- *             its row and never the card's select, the selection one row by
- *             its id, Add a LOCKER2_TAT_ADD of its zone, Remove a
- *             LOCKER2_TAT_DEL of the selected row, the nameless numbered among
- *             themselves.
+ *             list that starts empty), 10 a zone, Add off at 10, a row's list
+ *             leaving out what the zone's other rows hold, the words, and the
+ *             wiring (2026-10-12, "attribute editor"): asked once drawn, one
+ *             AttributeEditor a zone under its heading, compact, each item one
+ *             row whose one field is a filtered Select of the zone's tattoos
+ *             by the game's names, a choice a LOCKER2_TAT_SET of its row, the
+ *             editor's Add a LOCKER2_TAT_ADD of its zone and its own Remove a
+ *             LOCKER2_TAT_DEL of that row, no label, no empty-state or helper
+ *             text, no cards, arrows or selection, the nameless numbered among
+ *             themselves, and the first Remove kept level with its Select.
  *
  * And what a unit test cannot see, read from the source and the build:
  *
@@ -45,7 +47,8 @@
  *   CHUNK     Cloudscape ships in assets/LockerV2.{js,css} and nowhere in the
  *             main bundle; that CSS is Cloudscape's own scoped rules (.awsui_*
  *             selectors, `--*` properties, awsui keyframes) and nothing global:
- *             no @font-face, no body or html rule, none of global-styles.
+ *             no @font-face, no body or html rule, none of global-styles --
+ *             but the Tattoos section's one rule, under `.lk2-tats`.
  *
  * Run: npm run test:lockerv2   (and as part of npm run build, after vite)
  */
@@ -58,8 +61,8 @@ import {
   SLIDER_HOLD_MS, activeAnchor, anchorId, canvasImage, categoriesOf, counterText, dataUrlBytes,
   doneSteps, editFor, escapeAction, filterName, followTab, imgOk, nameOk, needShots, openingTab,
   parseLocker2, parseTats, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds, tabOptions,
-  tabsShown, TATTOOS_PER_ZONE, TATTOO_ZONES, canAddTattoo, selectedRow, tattooCats, wrapStep, zoneOfCat, zoneRows,
-  zoomFor,
+  tabsShown, TATTOOS_PER_ZONE, TATTOO_ZONES, canAddTattoo, sameTatRows, tattooCats, tattooChoices, wrapStep, zoneOfCat,
+  zoneRows, zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
   BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, TATTOOS, ZONE_LABEL, rowLabel, tattooFallback, tattooLabels,
@@ -303,9 +306,22 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
   eq('Add: lit below 10, off at 10 -- and off once every tattoo of the zone has a row',
     [canAddTattoo(0, 76), canAddTattoo(9, 76), canAddTattoo(10, 76), canAddTattoo(11, 76), canAddTattoo(3, 3)],
     [true, true, false, false, false])
-  eq('Remove: off with nothing selected, a row of another zone selected, or one gone',
-    [selectedRow(torsoRows, null), selectedRow(torsoRows, 3), selectedRow(torsoRows, 99)], [null, null, null])
-  eq('Remove: on with a row of the zone selected, which is that row', selectedRow(torsoRows, 2), { r: 2, z: 'torso', i: 9 })
+  // A ROW'S LIST ("attribute editor", 2026-10-12): the zone's tattoos, but
+  // none another row of the zone holds, so a zone never has one twice.
+  const torsoItems = [{ i: 5 }, { i: 7 }, { i: 9 }, { i: 11 }]
+  eq('a row\'s list: the zone\'s tattoos in order, its own kept, the other row\'s left out',
+    tattooChoices(torsoItems, torsoRows, torsoRows[0]).map((t) => t.i), [5, 7, 11])
+  eq('and the other row\'s list leaves out the first row\'s',
+    tattooChoices(torsoItems, torsoRows, torsoRows[1]).map((t) => t.i), [7, 9, 11])
+  eq('a zone\'s only row is offered every tattoo of the zone',
+    tattooChoices(torsoItems, [torsoRows[0]], torsoRows[0]).map((t) => t.i), [5, 7, 9, 11])
+  eq('a zone redraws only when a row comes, goes, moves or changes its tattoo', [
+    sameTatRows(torsoRows, torsoRows.map((r) => ({ ...r }))),
+    sameTatRows(torsoRows, [torsoRows[0], { ...torsoRows[1], i: 7 }]),
+    sameTatRows(torsoRows, [torsoRows[0]]),
+    sameTatRows(torsoRows, [torsoRows[1], torsoRows[0]]),
+    sameTatRows(torsoRows, [torsoRows[0], { ...torsoRows[1], r: 8 }]),
+  ], [true, false, false, false, false])
   eq('tattoo words', [TATTOOS, ZONE_LABEL.head, ZONE_LABEL.torso, ZONE_LABEL.larm, ZONE_LABEL.rarm, ZONE_LABEL.lleg,
     ZONE_LABEL.rleg, tattooFallback(3), BTN.add, BTN.remove],
   ['Tattoos', 'Head', 'Torso', 'Left arm', 'Right arm', 'Left leg', 'Right leg', 'Tattoo 3', 'Add', 'Remove'])
@@ -388,30 +404,63 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
   check('the section draws Lua\'s rows, and a press moves the camera as a row\'s does',
     tabs.includes('<TattooSection tats={tats} rows={edit.tats} disabled={disabled} onTouch={toCat} />'))
   const tat = read(join(SRC, 'screens', 'lockerv2', 'Tattoos.tsx'))
-  // "dude why would we use a bajillion check boxes lol" (owner, 2026-10-12).
+  // "dude why would we use a bajillion check boxes lol", then "This takes up
+  // wayyyy too much real estate ... perhaps we use the thing that's literally
+  // made for this - attribute editor" (owner, 2026-10-12).
   check('no checkbox list', !/checkbox/i.test(tat))
-  check('a zone with no rows draws no list, and no words in its place',
-    tat.includes('{mine.length > 0 && (') && tat.includes('const mine = zoneRows(rows, zone.z)'))
-  check('a row is the left arrow, the tattoo\'s name, the right arrow',
-    /iconName="angle-left"[\s\S]*?onClick=\{\(\) => step\(-1\)\}[\s\S]*?\{label\}[\s\S]*?iconName="angle-right"[\s\S]*?onClick=\{\(\) => step\(1\)\}/
+  check('no card list, no row arrows, no selection to keep',
+    !/<Cards|angle-left|angle-right|selectionType|useState|LOCKER2_TAT_STEP/.test(tat))
+  check('one AttributeEditor a zone, drawn for every zone of the list with that zone\'s rows',
+    (tat.match(/<AttributeEditor\b/g) ?? []).length === 1
+    && tat.includes('<ZoneEditor key={zone.z} zone={zone} rows={zoneRows(rows, zone.z)} disabled={disabled} onTouch={onTouch} />')
+    && tat.includes('items={rows}'))
+  check('under the zone\'s own heading and anchor',
+    /<div id=\{anchorId\(cat\)\} onPointerDown=\{\(\) => onTouch\(cat\)\}>\s*<SpaceBetween size="xs">\s*<Box variant="h5">\{ZONE_LABEL\[zone\.z\] \?\? ''\}<\/Box>\s*<AttributeEditor/
       .test(tat))
-  check('each arrow asks Lua to step its own row, nothing decided here',
-    tat.includes('void fetchNui(CB.LOCKER2_TAT_STEP, { r: row.r, d })'))
-  check('an arrow\'s press never reaches the card (no select, the focus kept on the arrow)',
-    (tat.match(/<span onClick=\{own\}>/g) ?? []).length === 2 && tat.includes('const own = (e: SyntheticEvent) => e.stopPropagation()'))
-  check('a row\'s name is its zone\'s tattooLabels, a nameless one numbered among the nameless, never a key',
-    tat.includes('new Map(tattooLabels(zone.items).map(([t, label]) => [t.i, label]))')
-    && tat.includes("label={names.get(row.i) ?? ''}"))
-  check('a row is selected by pressing it, one at a time, lit as My peds lights its card',
-    tat.includes('selectionType="single"') && tat.includes('entireCardClickable')
-    && tat.includes('selectedItems={picked ? [picked] : []}') && tat.includes('setSel(row.r)')
-    && tat.includes('const picked = selectedRow(mine, sel)') && (tat.match(/useState</g) ?? []).length === 1)
-  check('Add asks Lua for a row in its zone, and is off at the cap',
-    tat.includes('void fetchNui(CB.LOCKER2_TAT_ADD, { z: zone.z })')
-    && tat.includes('disabled={disabled || !canAddTattoo(mine.length, zone.items.length)}'))
-  check('Remove asks Lua to take out the selected row, and is off with nothing selected',
-    tat.includes('void fetchNui(CB.LOCKER2_TAT_DEL, { r: picked.r })') && tat.includes('disabled={disabled || picked === null}'))
+  check('compact: the section wears Cloudscape\'s compact density, and only the section',
+    tat.includes('className="lk2-tats awsui-compact-mode"')
+    && (read(join(SRC, 'screens', 'LockerV2.tsx')) + tabs).indexOf('awsui-compact-mode') === -1)
+  check('each item\'s one field is a Select, its Remove beside it on one line at every width',
+    /definition=\{\[\{\s*control: \(row: Locker2TatRow\) => \(\s*<Select\b/.test(tat)
+    && tat.includes("const ROW_LAYOUT: readonly AttributeEditorProps.GridLayout[] = [{ rows: [[1]], removeButton: { width: 'auto' } }]")
+    && tat.includes('gridLayout={ROW_LAYOUT}'))
+  check('no label, no empty-state, helper, info or constraint text, no placeholder',
+    !/\blabel\s*:/.test(tat)
+    && !/\b(empty|additionalInfo|i18nStrings|placeholder|filteringPlaceholder|filteringAriaLabel|noMatch|ariaLabel|removeButtonAriaLabel)=/.test(tat)
+    && !/\b(description|info|constraintText|errorText|warningText)\s*:/.test(tat))
+  check('the Select filters as typed and opens inside the island, off while the ped is held',
+    tat.includes('filteringType="auto"') && tat.includes('expandToViewport={false}') && tat.includes('disabled={disabled}'))
+  check('its options are the zone\'s tattoos by the game\'s names, a nameless one numbered among the nameless, never a key',
+    tat.includes('const opts = useMemo(() => tattooLabels(zone.items).map(([t, label]) => ({')
+    && tat.includes('i: t.i, option: { value: String(t.i), label },'))
+  check('a row\'s Select offers none another row of its zone holds, and shows its own',
+    tat.includes('options={tattooChoices(opts, rows, row).map((o) => o.option)}')
+    && tat.includes('selectedOption={byI.get(row.i) ?? null}'))
+  check('choosing asks Lua to put that tattoo in that row, nothing decided here',
+    /const i = Number\(detail\.selectedOption\.value\)\s*if \(!Number\.isInteger\(i\) \|\| i === row\.i\) return\s*play\('ui\.select'\)\s*void fetchNui\(CB\.LOCKER2_TAT_SET, \{ r: row\.r, i \}\)/
+      .test(tat))
+  check('the editor\'s Add asks Lua for a row in its zone, and is off at the cap',
+    tat.includes('addButtonText={BTN.add}')
+    && /onAddButtonClick=\{\(\) => \{\s*play\('ui\.select'\)\s*void fetchNui\(CB\.LOCKER2_TAT_ADD, \{ z: zone\.z \}\)/.test(tat)
+    && tat.includes('disableAddButton={disabled || !canAddTattoo(rows.length, zone.items.length)}'))
+  check('the editor\'s own Remove asks Lua to take out that row, by its id',
+    tat.includes('removeButtonText={BTN.remove}') && !/customRowActions|isItemRemovable/.test(tat)
+    && /onRemoveButtonClick=\{\(\{ detail \}\) => \{\s*const row = rows\[detail\.itemIndex\]\s*if \(!row \|\| disabled\) return\s*play\('ui\.select'\)\s*void fetchNui\(CB\.LOCKER2_TAT_DEL, \{ r: row\.r \}\)/
+      .test(tat))
+  check('a push redraws a zone only when its rows or its state changed',
+    tat.includes("}, (a, b) => a.zone === b.zone && a.disabled === b.disabled && sameTatRows(a.rows, b.rows))"))
   check('a press anywhere in a zone sends its category', tat.includes('onPointerDown={() => onTouch(cat)}'))
+  // THE FIRST REMOVE, LEVEL: Cloudscape pads row 1's Remove down by a label's
+  // height; with no label, the section's one rule takes that padding off.
+  const tatCss = read(join(SRC, 'screens', 'lockerv2', 'tattoos.css'))
+  check('the section loads its one rule, which levels the first Remove with its Select',
+    tat.includes("import './tattoos.css'")
+    && /\.lk2-tats \[class\*='awsui_remove-button-field-padding'\] \{\s*padding-block-start: 0 !important;\s*\}/.test(tatCss)
+    && tatCss.replace(/\/\*[\s\S]*?\*\//g, '').match(/\{/g)?.length === 1)
+  const aeCss = read(join(ROOT, 'node_modules', '@cloudscape-design', 'components', 'attribute-editor', 'styles.scoped.css'))
+  check('the installed Cloudscape still pads the first Remove with that class, by a label\'s height',
+    /\.awsui_remove-button-field-padding_\w+:not\(#\\9\) \{\s*padding-block-start: calc\(var\(--space-xxs-\w+, 4px\) \+ var\(--line-height-body-m-\w+, 20px\)\);\s*\}/
+      .test(aeCss))
   check('the list arrives on its own envelope and is kept for the session',
     v2.includes("useNuiEvent('locker2tats', (d) => keepTats(d))")
     && /export function keepTats\(raw: unknown\): void \{\s*const t = parseTats\(raw\)/.test(
@@ -470,6 +519,7 @@ if (!existsSync(OUT)) {
     const text = read(css).replace(/\/\*[\s\S]*?\*\//g, '')
     const bad = []
     const global = []
+    const ours = []
     let rules = 0
     // The element a selector styles is its last compound. `body.awsui-x {...}`
     // names a Cloudscape class and still styles <body> -- the shape of
@@ -492,6 +542,11 @@ if (!existsSync(OUT)) {
         global.push(`${sel.slice(0, 100)} {${body.slice(0, 60)}`)
         return false
       }
+      // The Tattoos section's own rule (tattoos.css), inside the section only.
+      if (parts.every((s) => /^\.lk2-tats\s/.test(s.trim()))) {
+        ours.push(`${sel} {${body}}`)
+        return true
+      }
       return parts.every((s) => /\.awsui[-_]/.test(s))
     }
     const walkCss = (t) => {
@@ -513,8 +568,14 @@ if (!existsSync(OUT)) {
       }
     }
     walkCss(text)
-    check(`chunk CSS is Cloudscape's scoped rules only (${rules} rules)`, rules > 100 && bad.length === 0,
-      bad.slice(0, 5).join('\n          '))
+    check(`chunk CSS is Cloudscape's scoped rules only, and the Tattoos section's one (${rules} rules)`,
+      rules > 100 && bad.length === 0, bad.slice(0, 5).join('\n          '))
+    check('the Tattoos section\'s one rule ships in the chunk, and no other of ours',
+      ours.length === 1
+      && /^\.lk2-tats \[class\*=['"]?awsui_remove-button-field-padding['"]?\] \{padding-block-start:\s*0(px)?\s*!important;?\}$/.test(ours[0] ?? ''),
+      ours.join('\n          '))
+    check('and the class it takes the padding off is in the chunk, so it still applies',
+      /\.awsui_remove-button-field-padding_\w+:not\(#[^)]*\)\s*\{padding-block-start:/.test(text))
     check('chunk CSS has no @font-face', !/@font-face/.test(text))
     check('chunk CSS styles no html, body, :root or * (global-styles\' shape)', global.length === 0,
       global.slice(0, 3).join('\n          '))
