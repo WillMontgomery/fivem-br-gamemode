@@ -2591,8 +2591,8 @@ for (const name of builtCss) {
 //     baseline (`doneOnce`) that sent step 15 straight back comes back;
 //   TWO RULES FOR BACK -- the card's Previous, or either arrow path, decides
 //     without `canGoBack`, or a `go(i - 1)` that is not a Previous appears;
-//   THINGS, NOT WEAPONS -- the pickup advance is not `pickupState(...).done`
-//     over `weaponsSince` against the card's own baseline;
+//   SLOTS, NOT ROUNDS -- the pickup advance is not `pickupState(...).done`
+//     over `slotsSince` against the card's own baseline;
 //   A BOX READ AS A GUN -- boxes of rounds are not counted ONE UPDATE AT A
 //     TIME (`boxIn(was, have)` with `was` the update before), or not reset when
 //     the card opens, or the card's ammo direction is not drawn from that count
@@ -2633,10 +2633,10 @@ for (const name of builtCss) {
       'the arrows from Lua no longer run the same body as the arrows from the page (#405).')
     never(/go\(\s*i\s*-\s*1\s*\)/,
       'a `go(i - 1)` that is not a Previous: it lands on a card as it was, which bounces (#405).')
-    const GOT = String.raw`pickupState\(step,\s*\{\s*weapons:\s*weaponsSince\(startedWith\.current,\s*have\),\s*ammo:\s*boxes\s*\}\)`
+    const GOT = String.raw`pickupState\(step,\s*\{\s*slots:\s*slotsSince\(startedWith\.current,\s*have\),\s*ammo:\s*boxes\s*\}\)`
     want(new RegExp(String.raw`${GOT}\.done\)\s*go\(i\s*\+\s*1\)`),
-      'the pickup card no longer ends on `pickupState(...).done` over `weaponsSince` -- two'
-      + ' WEAPONS, owner 2026-10-11 (#405).')
+      'the pickup card no longer ends on `pickupState(...).done` over `slotsSince` -- two'
+      + ' things that take a SLOT, owner 2026-10-12 (#405).')
     want(new RegExp(String.raw`const\s+ammoShort\s*=\s*step\s*!==\s*undefined\s*&&\s*step\.advance\s*===\s*'pickup'\s*&&\s*step\.ammoNote\s*!==\s*undefined\s*&&\s*${GOT}\.short\b`),
       'the card\'s ammo direction (`ammoShort`) is no longer `pickupState(...).short` over the'
       + ' boxes counted -- "direct them accordingly" would never show (#405).')
@@ -2649,7 +2649,7 @@ for (const name of builtCss) {
     never(/\bpickupSince\b|boxIn\(\s*startedWith/,
       'a box of rounds is judged against the card\'s baseline again -- #405\'s review (#405).')
     never(/\btally\b/,
-      'the pickup card counts `tally` again -- things, not weapons (#405).')
+      'the pickup card counts `tally` again -- rounds as well as slots (#405).')
     want(/const\s+waitingForMap\s*=\s*step\s*!==\s*undefined\s*&&\s*step\.overMap\s*===\s*true/,
       'the map gate is not `step.overMap`, so the storm and plane card follows the'
       + ' player off the map (#405).')

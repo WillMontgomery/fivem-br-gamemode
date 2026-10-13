@@ -7,6 +7,8 @@
  *   "the 'pick up 2 things' should actually require 2 weapons. If they pickup 1
  *    weapon and 1 item that doesn't take a slot like ammo, then direct them
  *    accordingly."
+ *   2026-10-12, after a medkit did not count: "Things like that should satisfy
+ *    the requirement. Anything that takes a slot."
  *   "In-game step 17 - show them how they can see the storm area and plane
  *    route."
  *
@@ -30,7 +32,7 @@
 import { GAME_STEPS } from '../src/tutorial/gameSteps.ts'
 import { LOBBY_STEPS } from '../src/tutorial/steps.ts'
 import {
-  asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, weaponsSince,
+  asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, slotsSince,
 } from '../src/tutorial/progress.ts'
 
 let failed = 0
@@ -91,20 +93,20 @@ check('a lobby card that wants its control pressed still wants it',
 check('a card reached going forward is not touched',
   step('game-inventory').advance, 'slotswitch')
 
-// ─── TWO WEAPONS ────────────────────────────────────────────────────────────
+// ─── TWO THINGS THAT TAKE A SLOT ────────────────────────────────────────────
 console.log('pickup')
 const pickup = step('game-pickup')
-check('the pickup card wants two weapons', pickup.weapons, 2)
-check('its body asks for two weapons, verbatim', pickup.body,
-  'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two weapons** from the crates. Nothing you pick up in warmup comes with you into the match.')
+check('the pickup card wants two slots filled', pickup.slots, 2)
+check('its body asks for two things, verbatim', pickup.body,
+  'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two things** from the crates. Nothing you pick up in warmup comes with you into the match.')
 check('its ammo direction, verbatim', pickup.ammoNote,
-  '**Ammo** does not take a slot, so it does not count - grab another **weapon**.')
+  '**Ammo** does not take a slot, so it does not count - grab something else.')
 
 const gun = (id, pool) => ({ id, kind: 'weapon', count: 1, pool })
 const inv = (slots, ammo = {}) => carried({ slots: [...slots, null, null, null, null, null].slice(0, 5), ammo })
 /**
- * THE CARD'S COUNT, AS THE LAYER KEEPS IT: weapons against the card's baseline
- * (`weaponsSince`), boxes one inventory update at a time (`boxIn` against the
+ * THE CARD'S COUNT, AS THE LAYER KEEPS IT: slots against the card's baseline
+ * (`slotsSince`), boxes one inventory update at a time (`boxIn` against the
  * update before). Each argument after the first is one push from the server,
  * which sends the whole inventory once per item given (BR.Inv.give).
  */
@@ -115,7 +117,7 @@ const run = (start, ...updates) => {
     if (boxIn(last, u)) boxes += 1
     last = u
   }
-  return pickupState(pickup, { weapons: weaponsSince(start, last), ammo: boxes })
+  return pickupState(pickup, { slots: slotsSince(start, last), ammo: boxes })
 }
 
 const AMMO0 = { light: 0, medium: 0, shells: 0 }
@@ -157,19 +159,37 @@ const pistol = (light, more = {}) => inv([gun('pistol', 'light')], { ...AMMO0, l
 {
   const s = run(empty, pistol(24), inv([gun('pistol', 'light'), gun('pistol', 'light')],
     { ...AMMO0, light: 48 }))
-  check('the same gun twice is two weapons: done', s.done, true)
+  check('the same gun twice is two slots: done', s.done, true)
   check('...and the second one\'s rounds are its own, not a box', s.short, false)
 }
 {
   const s = run(empty, inv([gun('pistol', 'light'), { id: 'bandage', kind: 'consumable', count: 2 }],
     { ...AMMO0, light: 24 }))
-  check('a gun and a bandage: not done', s.done, false)
-  check('...and the bandage took a slot, so no ammo note', s.short, false)
+  check('a gun and a bandage: done -- anything that takes a slot (2026-10-12)', s.done, true)
+  check('...with nothing to explain', s.short, false)
+}
+{
+  // The owner's case, 2026-10-12: a box of rounds, then a medkit. The rounds
+  // brought the ammo note; the medkit must count and end the card.
+  const med = { id: 'medkit', kind: 'consumable', count: 1 }
+  const s = run(empty, pistol(24), pistol(54), inv([gun('pistol', 'light'), med], { ...AMMO0, light: 54 }))
+  check('a gun, a box of rounds, then a medkit: done (owner, 2026-10-12)', s.done, true)
+  check('...and the ammo note is gone', s.short, false)
+  const t = run(empty, inv([], { ...AMMO0, light: 30 }), inv([med], { ...AMMO0, light: 30 }))
+  check('rounds and one medkit: not done', t.done, false)
+  check('...and the card still says why', t.short, true)
 }
 {
   const s = run(empty, pistol(24), inv([gun('pistol', 'light'), { id: 'grenade', kind: 'throwable', count: 1 }],
     { ...AMMO0, light: 24 }))
-  check('a gun and a grenade: not done', s.done, false)
+  check('a gun and a grenade: done -- a grenade takes a slot', s.done, true)
+}
+{
+  const band = (n) => ({ id: 'bandage', kind: 'consumable', count: n })
+  const s = run(inv([band(1)], AMMO0), inv([band(2)], AMMO0))
+  check('a second bandage that tops up the first takes no new slot: not done', s.done, false)
+  const t = run(empty, inv([band(1)], AMMO0), inv([band(1), { id: 'medkit', kind: 'consumable', count: 1 }], AMMO0))
+  check('a bandage and a medkit: done', t.done, true)
 }
 {
   const before = pistol(24)
@@ -195,7 +215,7 @@ check('the storm and plane card is the owner\'s step 17', at('game-map-storm') +
 check('...the first card after the map opens', GAME_STEPS[at('game-map-storm') - 1].advance, 'map')
 check('its title, verbatim', storm.title, 'The storm and the plane')
 check('its body, verbatim', storm.body,
-  'Scroll to zoom out. The **purple circle** is the first safe zone the storm closes in to, and the **blue line** is the route the plane will fly.')
+  'Scroll to zoom out. The **purple area** is the first safe zone the storm closes in to, and the **blue line** is the route the plane will fly.')
 check('it is read, and ends on Next', storm.advance, 'next')
 for (const id of ['game-map-storm', 'game-map-waypoint', 'game-map-close']) {
   check(`${id} draws only over the open map`, step(id).overMap, true)

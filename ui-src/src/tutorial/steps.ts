@@ -75,9 +75,9 @@ export type Advance =
    */
   | 'screen'
   /**
-   * The player picking things up. The card waits until they are carrying
-   * `weapons` MORE weapons than when it opened (#405: it counted items, and a
-   * box of ammo answered "take two things").
+   * The player picking things up. The card waits until they have filled
+   * `slots` MORE inventory slots than when it opened, with anything (#405: a
+   * box of ammo takes no slot and does not count; a medkit does, 2026-10-12).
    *
    * OBSERVED, NOT REPORTED. Owner, 2026-09-04: "Upon opening one, they should
    * get an instruction to pick up 2 loot items." The inventory is already in
@@ -193,13 +193,13 @@ export type Step = {
   /** For `advance: 'screen'` -- the screen whose arrival ends the step. */
   awaitScreen?: string
   /**
-   * For `advance: 'pickup'` -- how many more WEAPONS end the step. Default 1.
-   * See `weaponsSince` in progress.ts (#405).
+   * For `advance: 'pickup'` -- how many more SLOTS, filled with anything, end
+   * the step. Default 1. See `slotsSince` in progress.ts (#405).
    */
-  weapons?: number
+  slots?: number
   /**
    * For `advance: 'pickup'` -- shown as the card's second section while the
-   * player is still short of weapons and has taken ammo, which takes no slot
+   * player is still short of slots and has taken ammo, which takes no slot
    * and does not count. Owner, 2026-10-11: "If they pickup 1 weapon and 1 item
    * that doesn't take a slot like ammo, then direct them accordingly." A box is
    * told from a gun's own reserve one update at a time; see `boxIn`.

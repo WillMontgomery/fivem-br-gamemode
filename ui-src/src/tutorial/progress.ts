@@ -82,7 +82,9 @@ export interface CarriedSlot {
 
 /** What a player is carrying, counted the way the pickup card asks. */
 export interface Carried {
-  /** Weapon SLOTS by weapon id -- a second SNS Pistol is a second slot. */
+  /** SLOTS by item id, whatever the item -- a second SNS Pistol is a second slot. */
+  items: Map<string, number>
+  /** Weapon SLOTS by weapon id, for telling a gun's own reserve from a box. */
   weapons: Map<string, number>
   /** The pool each carried weapon draws from, by weapon id. */
   pools: Map<string, string>
@@ -99,38 +101,44 @@ export function carried(inv: {
   slots: ReadonlyArray<CarriedSlot | null>
   ammo?: Record<string, number> | null
 }): Carried {
+  const items = new Map<string, number>()
   const weapons = new Map<string, number>()
   const pools = new Map<string, string>()
   for (const s of inv.slots) {
-    if (!s || s.kind !== 'weapon') continue
+    if (!s) continue
+    items.set(s.id, (items.get(s.id) ?? 0) + 1)
+    if (s.kind !== 'weapon') continue
     weapons.set(s.id, (weapons.get(s.id) ?? 0) + 1)
     if (s.pool) pools.set(s.id, s.pool)
   }
   const ammo = new Map<string, number>(Object.entries(inv.ammo ?? {}))
-  return { weapons, pools, ammo }
+  return { items, weapons, pools, ammo }
 }
 
 /**
- * Weapon slots that arrived since the pickup card opened.
+ * Slots filled since the pickup card opened.
  *
- * ═══ TWO WEAPONS, NOT TWO THINGS ═══
+ * ═══ ANYTHING THAT TAKES A SLOT ═══
  *
  * Owner, 2026-10-11: "the 'pick up 2 things' should actually require 2
  * weapons. If they pickup 1 weapon and 1 item that doesn't take a slot like
- * ammo, then direct them accordingly." The card after this one is about
- * switching between slots, and a box of rounds gives them nothing to switch to.
+ * ammo, then direct them accordingly." Then, 2026-10-12, after a medkit did
+ * not count: "Things like that should satisfy the requirement. Anything that takes a slot." The card after this
+ * one is about switching between slots, and a box of rounds gives them nothing
+ * to switch to -- but a medkit does.
  *
- * A second copy of a gun they already hold is a second slot and counts. AGAINST
- * THE CARD'S BASELINE, deliberately: a gun dropped and picked up again is the
- * same one gun, and nets to nothing.
+ * A NEW SLOT, NOT A BIGGER STACK: a second copy of something that lands in a
+ * slot of its own counts; one that tops up a stack already carried takes no
+ * new slot. AGAINST THE CARD'S BASELINE, deliberately: something dropped and
+ * picked up again is the same one thing, and nets to nothing.
  */
-export function weaponsSince(before: Carried, now: Carried): number {
-  let weapons = 0
-  for (const [id, n] of now.weapons) {
-    const rose = n - (before.weapons.get(id) ?? 0)
-    if (rose > 0) weapons += rose
+export function slotsSince(before: Carried, now: Carried): number {
+  let slots = 0
+  for (const [id, n] of now.items) {
+    const rose = n - (before.items.get(id) ?? 0)
+    if (rose > 0) slots += rose
   }
-  return weapons
+  return slots
 }
 
 /**
@@ -166,18 +174,18 @@ export function boxIn(prev: Carried, now: Carried): boolean {
 /**
  * Has the pickup card got what it asked for, and if not, does it need to say why?
  *
- * `short` is the owner's case: still short of weapons, with rounds taken that
+ * `short` is the owner's case: still short of slots, with rounds taken that
  * did not count. The card shows its `ammoNote` while it is true.
  *
- * @param got  `weapons` from `weaponsSince`; `ammo` the boxes `boxIn` has
+ * @param got  `slots` from `slotsSince`; `ammo` the boxes `boxIn` has
  *             counted, one update at a time, since the card opened
  */
 export function pickupState(
-  step: Pick<Step, 'weapons'>,
-  got: { weapons: number; ammo: number },
+  step: Pick<Step, 'slots'>,
+  got: { slots: number; ammo: number },
 ): { done: boolean; short: boolean } {
-  const want = step.weapons ?? 1
-  const done = got.weapons >= want
+  const want = step.slots ?? 1
+  const done = got.slots >= want
   return { done, short: !done && got.ammo > 0 }
 }
 

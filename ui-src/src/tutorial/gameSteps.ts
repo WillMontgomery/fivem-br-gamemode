@@ -338,19 +338,20 @@ export const GAME_STEPS: Step[] = [
     // key is printed from the player's own binding, like every other key in this
     // script.
     //
-    // ═══ TWO WEAPONS (#405) ═══
+    // ═══ TWO THINGS THAT TAKE A SLOT (#405) ═══
     //
     // Owner, 2026-10-11: "the 'pick up 2 things' should actually require 2
-    // weapons." The next card is about switching slots, and ammo gives them no
-    // slot to switch to. "From the crates", not "the crate you opened": three
-    // items at 55% a weapon leaves about two crates in five short of two guns,
-    // and the four crates refill when you walk away.
-    body: 'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two weapons** from the crates. Nothing you pick up in warmup comes with you into the match.',
+    // weapons." Then, 2026-10-12, after a medkit did not count: "Things like
+    // that should satisfy the requirement. Anything that takes a slot." The
+    // next card is about switching slots, and ammo gives them no slot to switch
+    // to. "From the crates", not "the crate you opened", and the four crates
+    // refill when you walk away.
+    body: 'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two things** from the crates. Nothing you pick up in warmup comes with you into the match.',
     advance: 'pickup',
-    weapons: 2,
+    slots: 2,
     // "If they pickup 1 weapon and 1 item that doesn't take a slot like ammo,
     // then direct them accordingly." Shown under the body while it is true.
-    ammoNote: '**Ammo** does not take a slot, so it does not count - grab another **weapon**.',
+    ammoNote: '**Ammo** does not take a slot, so it does not count - grab something else.',
     // NO WAY BACK. The card before this one is the crate card, and stepping back
     // to it would ask them to open a crate they have already opened -- the
     // walkthrough's own history is what makes that redundant, not a rule.
@@ -413,7 +414,7 @@ export const GAME_STEPS: Step[] = [
     // NO WAY BACK: the card before it opened the map. See `overMap`: closing the
     // map on this card takes them back to that one.
     title: 'The storm and the plane',
-    body: 'Scroll to zoom out. The **purple circle** is the first safe zone the storm closes in to, and the **blue line** is the route the plane will fly.',
+    body: 'Scroll to zoom out. The **purple area** is the first safe zone the storm closes in to, and the **blue line** is the route the plane will fly.',
     advance: 'next',
     overMap: true,
     noBack: true,

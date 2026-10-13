@@ -50,7 +50,7 @@ import {
   BAND, centred, place, sameBox, type CardBox, type Rect,
 } from './cardPlacement'
 import {
-  asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, weaponsSince,
+  asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, slotsSince,
 } from './progress'
 import { LOBBY_STEPS, type Step } from './steps'
 
@@ -997,15 +997,14 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // a card that asks for two and is satisfied by what is already in their hands
   // has taught them nothing.
   //
-  // ═══ WEAPONS, AND NOTHING ELSE (#405) ═══
+  // ═══ SLOTS, FILLED WITH ANYTHING (#405) ═══
   //
   // Owner, 2026-10-11: "the 'pick up 2 things' should actually require 2
-  // weapons." This counted THINGS, and three rounds went into counting them
-  // right -- ammo takes no slot, a second bandage tops up the first, a gun fills
-  // its own pool as it lands (2026-09-05 to 09-08) -- and a gun plus a box of
-  // rounds still ended it, which leaves the next card ("switch between them")
-  // one weapon to switch to. Weapon slots are what that card needs. See
-  // `weaponsSince` in progress.ts.
+  // weapons" -- then, 2026-10-12, after a medkit did not count: "Things like
+  // that should satisfy the requirement. Anything that takes a slot." Ammo
+  // takes no slot, a second bandage tops up the first, a gun fills its own pool
+  // as it lands (2026-09-05 to 09-08); what the next card ("switch between
+  // them") needs is two more slots. See `slotsSince` in progress.ts.
   //
   // PAGE-SIDE AND NO WIRE: every slot already carries its `kind` and `pool`,
   // and the payload its `ammo` map.
@@ -1055,7 +1054,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // so the first commit of the card cannot be judged against the last one's.
   useEffect(() => {
     if (!step || step.advance !== 'pickup') return
-    if (pickupState(step, { weapons: weaponsSince(startedWith.current, have), ammo: boxes }).done) go(i + 1)
+    if (pickupState(step, { slots: slotsSince(startedWith.current, have), ammo: boxes }).done) go(i + 1)
   }, [step, have, boxes, i, go])
 
   // ...AND WHY A BOX OF ROUNDS DID NOT COUNT. Owner: "If they pickup 1 weapon
@@ -1065,7 +1064,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // after the baseline above has been taken.
   const ammoShort = step !== undefined && step.advance === 'pickup'
     && step.ammoNote !== undefined
-    && pickupState(step, { weapons: weaponsSince(startedWith.current, have), ammo: boxes }).short
+    && pickupState(step, { slots: slotsSince(startedWith.current, have), ammo: boxes }).short
 
   // ── a screen opening ends the step ──────────────────────────────────────
   //
