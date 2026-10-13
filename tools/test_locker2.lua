@@ -235,11 +235,13 @@ local function tatRow(key)
     return nil, nil
 end
 
---- The first row with an overlay for one sex only.
-local function onlyFor(sex)
+--- The first row with an overlay for one sex only, in a zone if one is named.
+local function onlyFor(sex, zone)
     for i, r in ipairs(TAT.list) do
         local m, f = r[4], r[5]
-        if (sex == 'm' and m and not f) or (sex == 'f' and f and not m) then return r, i end
+        if ((sex == 'm' and m and not f) or (sex == 'f' and f and not m)) and (zone == nil or r[2] == zone) then
+            return r, i
+        end
     end
     return nil, nil
 end
@@ -410,11 +412,12 @@ do
     for _, key in ipairs(nOf('torso', 'f', 10)) do A.setTattoo(capped, key, true) end
     for _, key in ipairs(nOf('head', 'f', 10)) do A.setTattoo(capped, key, true) end
     ok(not A.tattoosOverCap(capped, zoneOf), '10 in each of two zones: not over')
-    local _, mOnly = onlyFor('m')
+    local _, mOnly = onlyFor('m', 'torso')
     local withHis = A.copy(capped)
     A.setTattoo(withHis, TAT.list[mOnly][1], true)
     A.setTattoo(withHis, 'TAT_ZZ_001', true)
-    ok(not A.tattoosOverCap(withHis, zoneOf), 'one only the other sex wears, or one no list knows, is not counted')
+    ok(not A.tattoosOverCap(withHis, zoneOf),
+        'an 11th on her torso that only he wears, or one no list knows, is not counted')
     local eleven = A.copy(capped)
     A.setTattoo(eleven, nOf('torso', 'f', 11)[11], true)
     ok(A.tattoosOverCap(eleven, zoneOf), 'an 11th in a zone is over')
@@ -934,7 +937,7 @@ do
     local ten = A.default('f')
     for _, key in ipairs(hers('torso', 10)) do A.setTattoo(ten, key, true) end
     for _, key in ipairs(hers('head', 10)) do A.setTattoo(ten, key, true) end
-    local _, mOnly = onlyFor('m')
+    local _, mOnly = onlyFor('m', 'torso')
     A.setTattoo(ten, TAT.list[mOnly][1], true)
     local eleven = A.copy(ten)
     A.setTattoo(eleven, hers('torso', 11)[11], true)
@@ -2831,6 +2834,23 @@ do
     eq(table.concat(back, ','), table.concat(first10, ','), 'Reset puts back the rows it opened with')
     ok(fresh and #zoneRowsIn(P2, 'larm') == 0, 'as new rows, the added one gone')
     ok(P2.nui(NUI.LOCKER2).edit.dirty == false and #P2.ped().decos == 11, 'clean, and the preview with it')
+
+    -- 6. One only he wears, kept in her look beside her torso's 10, is not
+    -- counted: her Save still goes.
+    local _, mOnly = onlyFor('m', 'torso')
+    local his = femaleLook()
+    for _, i in ipairs(first10) do A.setTattoo(his, TAT.list[i][1], true) end
+    A.setTattoo(his, TAT.list[mOnly][1], true)
+    local H = joined({ { id = PID, name = 'Ann', a = A.encode(his), up = 5 } })
+    H.ui(NUICB.LOCKER2_OPEN)
+    H.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    H.pump(300)
+    eq(#zoneRowsIn(H, 'torso'), 10, 'her 10 as rows, his not')
+    H.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    H.ui(NUICB.LOCKER2_SAVE, { op = 'update' })
+    local hs = H.sentTo(NET.LOCKER2_SAVE)[1]
+    ok(hs ~= nil and A.hasTattoo(A.decode(hs.a), TAT.list[mOnly][1]),
+        'her Save goes, his kept in the look and not counted against her 10')
 end
 
 describe('season2.tattoo_season1')
