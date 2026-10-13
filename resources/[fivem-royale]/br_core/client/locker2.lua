@@ -1842,7 +1842,7 @@ RegisterCommand('brlocker2', function(_, args)
     print(('  tab      %s  draft %s'):format(tostring(S.tab), S.draft and (S.draft.dirty and 'dirty' or 'clean') or 'none'))
     print(('  applied  %s'):format(S.applied and (S.applied.a and 'custom' or 'stock') or 'none'))
     -- In the look, and the decorations the engine says the ped carries now:
-    -- the playtest's count for whether every tattoo ticked is drawn.
+    -- the playtest's count for whether every tattoo in the rows is drawn.
     print(('  tattoos  %d  decorations %s'):format(S.applied and S.applied.a and #tattooRows(S.applied.a) or 0,
         tostring(decoCount(PlayerPedId()) or '?')))
 end, false)

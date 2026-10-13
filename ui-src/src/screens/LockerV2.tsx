@@ -10,7 +10,7 @@ import { useNuiEvent } from '../bridge/useNuiEvent'
 import { play } from '../audio/cues'
 import { LOCKED_TAB, TAB_LABEL } from './lockerv2/copy'
 import {
-  doneSteps, editFor, escapeAction, followTab, isCustom, openingTab, saveVariant, slideDir,
+  doneSteps, editFor, escapeAction, followTab, isCustom, openingTab, popupOpen, saveVariant, slideDir,
   slideEnds, tabOptions, tabsShown, type Tab,
 } from './lockerv2/model'
 import { useCloudscapeScope, useIslandZoom, usePortalZoom } from './lockerv2/scope'
@@ -151,15 +151,19 @@ export default function LockerV2() {
   }
 
   // ESCAPE closes the open dialog alone, else it is Done. Capture phase, so it
-  // is ours before Cloudscape's own handlers or the lobby's pause key see it.
+  // is ours before Cloudscape's own handlers or the lobby's pause key see it --
+  // except while a dropdown is open (a tattoo picker, the Save menu): then it
+  // is the dropdown's, and Cloudscape closes it (#28 review).
+  const screen = useRef<HTMLDivElement>(null)
   const live = useRef({ modal, done })
   live.current = { modal, done }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      const act = escapeAction(live.current.modal !== null, escapeHeld(), popupOpen(screen.current))
+      if (act === 'pass') return
       e.preventDefault()
       e.stopPropagation()
-      const act = escapeAction(live.current.modal !== null, escapeHeld())
       if (act === 'modal') { setModal(null); return }
       if (act === 'done') live.current.done(false)
     }
@@ -228,7 +232,7 @@ export default function LockerV2() {
   }
 
   return (
-    <div className="interactive fixed inset-0 z-50">
+    <div ref={screen} className="interactive fixed inset-0 z-50">
       <div
         className="absolute inset-0 cursor-ew-resize"
         onPointerDown={onDown}

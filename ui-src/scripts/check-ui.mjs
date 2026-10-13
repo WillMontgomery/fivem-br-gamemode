@@ -2767,6 +2767,64 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R36  Escape reaches an open dropdown before its screen closes (#28 review).
+//
+// Every screen here closes on Escape from a capture-phase listener on window,
+// which runs before anything inside the page sees the key. The Season 2
+// Locker's tattoo pickers and its Save menu are Cloudscape dropdowns, and its
+// listener stopped Escape before them: Escape in an open picker asked "Discard
+// changes?", or with nothing to lose closed the locker. LockerV2.tsx now leaves
+// the key alone while a dropdown is open (model.ts: escapeAction's 'pass',
+// found by OPEN_POPUP on the trigger), and Cloudscape closes it.
+//
+//   A DROPDOWN ON ANOTHER SCREEN -- a file outside the Season 2 Locker
+//     (screens/LockerV2.tsx, screens/lockerv2/) that renders a Cloudscape
+//     Select, Multiselect or ButtonDropdown: no other screen's Escape asks yet;
+//   A DROPDOWN OPEN_POPUP CANNOT SEE -- Cloudscape's autosuggest, date pickers,
+//     property filter or popover, which do not mark an open trigger with
+//     aria-haspopup and aria-expanded="true";
+//   THE LOCKER TAKING THE KEY AGAIN -- LockerV2.tsx's Escape stops the key
+//     before it has asked `popupOpen(...)` and returned on 'pass'.
+//
+// IT CAN FAIL. Drop `if (act === 'pass') return` or `popupOpen(screen.current)`
+// from LockerV2.tsx, or render a Select in Settings.
+// ---------------------------------------------------------------------------
+{
+  const DROPDOWNS = ['select', 'multiselect', 'button-dropdown']
+  const UNSEEN = ['autosuggest', 'date-picker', 'date-range-picker', 'property-filter', 'popover']
+  const V2 = join(SRC, 'screens', 'LockerV2.tsx')
+  const inLocker2 = (f) => f === V2 || rel(f).startsWith('src/screens/lockerv2/')
+  for (const f of files.filter((x) => /\.tsx?$/.test(x))) {
+    const src = stripComments(read(f))
+    for (const m of src.matchAll(/^import\s+(?!type\b)[^;\n]*?from\s+'@cloudscape-design\/components\/([\w-]+)'/gm)) {
+      const c = m[1]
+      if (UNSEEN.includes(c)) {
+        fail('R36 escape-dropdown', rel(f),
+          `renders Cloudscape's ${c}, which model.ts's OPEN_POPUP cannot see open, so the screen's`
+          + ' Escape would close the screen instead of it. Teach OPEN_POPUP (and test-lockerv2.mjs) its'
+          + ' open state first (#28 review).')
+      } else if (DROPDOWNS.includes(c) && !inLocker2(f)) {
+        fail('R36 escape-dropdown', rel(f),
+          `renders Cloudscape's ${c} outside the Season 2 Locker. Its screen's capture-phase Escape`
+          + ' would take the key before the open dropdown can: ask model.ts\'s popupOpen() there and'
+          + ' leave the key alone while it is true, as LockerV2.tsx does, then let this rule see it (#28 review).')
+      }
+    }
+  }
+  if (!existsSync(V2)) {
+    fail('R36 escape-dropdown', 'src/screens/LockerV2.tsx', 'missing. If it moved, move this rule with it (#28).')
+  } else {
+    const v2 = stripComments(read(V2))
+    const yields = /e\.key !== 'Escape'\) return\s*const act = escapeAction\([^\n]*\bpopupOpen\(\w+(?:\.current)?\)\)\s*if \(act === 'pass'\) return\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)/
+    if (!yields.test(v2)) {
+      fail('R36 escape-dropdown', 'src/screens/LockerV2.tsx',
+        'its Escape does not ask `popupOpen(...)` first and return on \'pass\' before it stops the key:'
+        + ' Escape in an open tattoo picker or Save menu closes the locker or asks "Discard changes?" (#28 review).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

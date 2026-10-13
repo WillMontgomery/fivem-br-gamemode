@@ -18,7 +18,8 @@
  *   NAMES     letters and digits only, 1 to 24, filtered as typed.
  *   DONE      dirty asks first and does nothing else; then `close`, then
  *             LOCKER_FOCUS { open: false }, in that order. Escape closes an open
- *             dialog alone.
+ *             dialog alone, and is an open dropdown's own (a tattoo picker,
+ *             the Save menu) while one is open.
  *   FOLLOW    the page moves its tab on the press, and shows Lua's once a push
  *             has seen its latest request; it draws a draft only under the
  *             tab of its sex; a slider shows Lua's value once untouched.
@@ -32,8 +33,9 @@
  *             leaving out what the zone's other rows hold, the words, and the
  *             wiring (2026-10-12, "attribute editor"): asked once drawn, one
  *             AttributeEditor a zone under its heading, compact, each item one
- *             row whose one field is a filtered Select of the zone's tattoos
- *             by the game's names, a choice a LOCKER2_TAT_SET of its row, the
+ *             row whose one field is a Select of the zone's tattoos by the
+ *             game's names, filtered by the name alone, a choice a
+ *             LOCKER2_TAT_SET of its row, the
  *             editor's Add a LOCKER2_TAT_ADD of its zone and its own Remove a
  *             LOCKER2_TAT_DEL of that row, no label, no empty-state or helper
  *             text, no cards, arrows or selection, the nameless numbered among
@@ -60,9 +62,9 @@ import { fileURLToPath } from 'node:url'
 import {
   SLIDER_HOLD_MS, activeAnchor, anchorId, canvasImage, categoriesOf, counterText, dataUrlBytes,
   doneSteps, editFor, escapeAction, filterName, followTab, imgOk, nameOk, needShots, openingTab,
-  parseLocker2, parseTats, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds, tabOptions,
-  tabsShown, TATTOOS_PER_ZONE, TATTOO_ZONES, canAddTattoo, sameTatRows, tattooCats, tattooChoices, wrapStep, zoneOfCat,
-  zoneRows, zoomFor,
+  OPEN_POPUP, parseLocker2, parseTats, popupOpen, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds,
+  tabOptions, tabsShown, TATTOOS_PER_ZONE, TATTOO_ZONES, canAddTattoo, sameTatRows, tattooCats, tattooChoices,
+  tattooFilter, wrapStep, zoneOfCat, zoneRows, zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
   BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, TATTOOS, ZONE_LABEL, rowLabel, tattooFallback, tattooLabels,
@@ -204,6 +206,22 @@ eq('Escape: an open dialog alone, else Done', [escapeAction(true), escapeAction(
 // whole screen, so a dialog no longer closed on it. Only Done is held.
 eq('Escape under a walkthrough card: a dialog still closes, Done is held',
   [escapeAction(true, true), escapeAction(false, true)], ['modal', 'none'])
+// #28 review: Escape in an open tattoo picker brought up "Discard changes?",
+// or with nothing to lose closed the locker. An open dropdown has it first.
+eq('Escape with a dropdown open is the dropdown\'s, whatever else is up',
+  [escapeAction(false, false, true), escapeAction(true, false, true), escapeAction(false, true, true),
+    escapeAction(false, false, false)], ['pass', 'pass', 'pass', 'done'])
+{
+  const asked = []
+  const root = (hit) => ({ querySelector: (s) => { asked.push(s); return hit ? {} : null } })
+  const SEL = 'button[aria-haspopup][aria-expanded="true"]'
+  eq('a dropdown is open when the screen has a trigger with a popup, expanded; none without a screen',
+    [popupOpen(root(true)), popupOpen(root(false)), popupOpen(null), asked], [true, false, false, [SEL, SEL]])
+  // A BUTTON (found in the browser): a Select's filter is an input with
+  // aria-expanded="true" always, left in the page after its picker closes --
+  // on that, Escape would never close the locker again.
+  eq('that selector is OPEN_POPUP, and a trigger button only', OPEN_POPUP, SEL)
+}
 eq('dialog wording', [MODAL.name, MODAL.rename, MODAL.discard, BTN.keepEditing, BTN.discard],
   ['Name your ped', 'Rename ped', 'Discard changes?', 'Keep editing', 'Discard'])
 
@@ -315,6 +333,18 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
     tattooChoices(torsoItems, torsoRows, torsoRows[1]).map((t) => t.i), [7, 9, 11])
   eq('a zone\'s only row is offered every tattoo of the zone',
     tattooChoices(torsoItems, [torsoRows[0]], torsoRows[0]).map((t) => t.i), [5, 7, 9, 11])
+  // #28 review: Cloudscape's own filter searched each option's value too, the
+  // tattoo's number in the list -- in Left arm (41 to 54) "5" listed Tattoo 5
+  // and Tattoo 10 to 14. The picker filters by the name alone.
+  const larm = Array.from({ length: 14 }, (_, k) => ({ value: String(41 + k), label: `Tattoo ${k + 1}` }))
+  eq('typing a digit finds names with it, never a number in the list',
+    tattooFilter(larm, '5').map((o) => o.label), ['Tattoo 5'])
+  eq('the name, any case, anywhere in it; nothing typed is the whole list', [
+    tattooFilter([{ value: '15', label: 'Dragon' }, { value: '2', label: 'Snake' }, { value: '3', label: 'Old Dragon' }], 'dRAg')
+      .map((o) => o.value),
+    tattooFilter(larm, '').length,
+    tattooFilter(larm, '41').length,
+  ], [['15', '3'], 14, 0])
   eq('a zone redraws only when a row comes, goes, moves or changes its tattoo', [
     sameTatRows(torsoRows, torsoRows.map((r) => ({ ...r }))),
     sameTatRows(torsoRows, [torsoRows[0], { ...torsoRows[1], i: 7 }]),
@@ -395,6 +425,28 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
   check('the locked tabs carry the hover card as disabledReason',
     v2.includes('disabledReason: o.explained ? LOCKED_TAB : undefined'))
   check('Escape is taken in the capture phase', v2.includes("window.addEventListener('keydown', onKey, true)"))
+  // #28 review: the capture-phase handler stopped Escape before a tattoo
+  // picker or the Save menu could close on it.
+  check('Escape asks for an open dropdown on the screen first, and leaves the key alone then',
+    /const act = escapeAction\(live\.current\.modal !== null, escapeHeld\(\), popupOpen\(screen\.current\)\)\s*if \(act === 'pass'\) return\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)/.test(v2)
+    && v2.includes('<div ref={screen} className="interactive fixed inset-0 z-50">')
+    && (v2.match(/e\.stopPropagation\(\)/g) ?? []).length === 1)
+  const CS = join(ROOT, 'node_modules', '@cloudscape-design', 'components')
+  const csRead = (...p) => { const f = join(CS, ...p); return existsSync(f) ? read(f) : '' }
+  const bt = csRead('internal', 'components', 'button-trigger', 'index.js')
+  const bdd = csRead('button-dropdown', 'internal.js')
+  const btn = csRead('button', 'internal.js')
+  check('the installed Cloudscape marks an open Select (and Multiselect) on its trigger button: aria-haspopup, aria-expanded',
+    csRead('select', 'parts', 'trigger.js').includes('React.createElement(ButtonTrigger, { ...triggerProps, id: id, ref: mergedRef, pressed: !!isOpen,')
+    && bt.includes("'aria-expanded': pressed,")
+    && bt.includes("'aria-haspopup': ariaHasPopup !== null && ariaHasPopup !== void 0 ? ariaHasPopup : 'listbox',")
+    && bt.includes('return (React.createElement("button", { ref: ref, ...attributes,'))
+  check('and an open ButtonDropdown (the Save menu) on its trigger button the same way',
+    bdd.includes('ariaExpanded: canBeOpened && isOpen,') && bdd.includes("ariaHaspopup: hasFiltering ? 'dialog' : true,")
+    && btn.includes("'aria-expanded': ariaExpanded,") && btn.includes("'aria-haspopup': ariaHaspopup,")
+    && btn.includes('tag: "button", componentName: "Button"'))
+  check('and a Select\'s filter is an input that is aria-expanded always -- why OPEN_POPUP is a button',
+    /'aria-expanded': true,\s*'aria-haspopup': 'listbox',/.test(csRead('select', 'parts', 'filter.js')))
 
   // THE TATTOOS SECTION'S WIRING.
   check('the Custom tab asks for its sex\'s tattoo list once it is drawn',
@@ -409,7 +461,8 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
   // made for this - attribute editor" (owner, 2026-10-12).
   check('no checkbox list', !/checkbox/i.test(tat))
   check('no card list, no row arrows, no selection to keep',
-    !/<Cards|angle-left|angle-right|selectionType|useState|LOCKER2_TAT_STEP/.test(tat))
+    !/<Cards|angle-left|angle-right|selectionType|RadioGroup|[sS]elected(Row|R)\b|setSelected|LOCKER2_TAT_STEP/.test(tat)
+    && (tat.match(/useState\b/g) ?? []).length === 2 && tat.includes("const [typed, setTyped] = useState('')"))
   check('one AttributeEditor a zone, drawn for every zone of the list with that zone\'s rows',
     (tat.match(/<AttributeEditor\b/g) ?? []).length === 1
     && tat.includes('<ZoneEditor key={zone.z} zone={zone} rows={zoneRows(rows, zone.z)} disabled={disabled} onTouch={onTouch} />')
@@ -421,20 +474,29 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
     tat.includes('className="lk2-tats awsui-compact-mode"')
     && (read(join(SRC, 'screens', 'LockerV2.tsx')) + tabs).indexOf('awsui-compact-mode') === -1)
   check('each item\'s one field is a Select, its Remove beside it on one line at every width',
-    /definition=\{\[\{\s*control: \(row: Locker2TatRow\) => \(\s*<Select\b/.test(tat)
+    /definition=\{\[\{\s*control: \(row: Locker2TatRow\) => \(\s*<TattooPick row=\{row\} rows=\{rows\} opts=\{opts\} byI=\{byI\} disabled=\{disabled\} \/>\s*\),\s*\}\]\}/.test(tat)
+    && /function TattooPick\([\s\S]*?\) \{\s*const \[typed, setTyped\] = useState\(''\)\s*return \(\s*<Select\b/.test(tat)
+    && (tat.match(/<Select\b/g) ?? []).length === 1
     && tat.includes("const ROW_LAYOUT: readonly AttributeEditorProps.GridLayout[] = [{ rows: [[1]], removeButton: { width: 'auto' } }]")
     && tat.includes('gridLayout={ROW_LAYOUT}'))
   check('no label, no empty-state, helper, info or constraint text, no placeholder',
     !/\blabel\s*:/.test(tat)
     && !/\b(empty|additionalInfo|i18nStrings|placeholder|filteringPlaceholder|filteringAriaLabel|noMatch|ariaLabel|removeButtonAriaLabel)=/.test(tat)
     && !/\b(description|info|constraintText|errorText|warningText)\s*:/.test(tat))
-  check('the Select filters as typed and opens inside the island, off while the ped is held',
-    tat.includes('filteringType="auto"') && tat.includes('expandToViewport={false}') && tat.includes('disabled={disabled}'))
+  // #28 review: filteringType="auto" searched each option's value, the
+  // tattoo's number in the list. The page filters by name and hands Cloudscape
+  // the result.
+  check('the Select filters by name as typed (manual, the text from onLoadItems) and opens inside the island, off while the ped is held',
+    tat.includes('filteringType="manual"') && tat.includes('onLoadItems={({ detail }) => setTyped(detail.filteringText)}')
+    && tat.includes('expandToViewport={false}') && tat.includes('disabled={disabled}'))
+  const autoFilters = walkSrc(SRC).filter((f) => /\.tsx?$/.test(f)).filter((f) => /filteringType=["{']*auto/.test(read(f)))
+  check('no Cloudscape filter anywhere searches an option\'s value (no filteringType="auto")',
+    autoFilters.length === 0, autoFilters.join(', '))
   check('its options are the zone\'s tattoos by the game\'s names, a nameless one numbered among the nameless, never a key',
     tat.includes('const opts = useMemo(() => tattooLabels(zone.items).map(([t, label]) => ({')
     && tat.includes('i: t.i, option: { value: String(t.i), label },'))
   check('a row\'s Select offers none another row of its zone holds, and shows its own',
-    tat.includes('options={tattooChoices(opts, rows, row).map((o) => o.option)}')
+    tat.includes('options={tattooFilter(tattooChoices(opts, rows, row).map((o) => o.option), typed)}')
     && tat.includes('selectedOption={byI.get(row.i) ?? null}'))
   check('choosing asks Lua to put that tattoo in that row, nothing decided here',
     /const i = Number\(detail\.selectedOption\.value\)\s*if \(!Number\.isInteger\(i\) \|\| i === row\.i\) return\s*play\('ui\.select'\)\s*void fetchNui\(CB\.LOCKER2_TAT_SET, \{ r: row\.r, i \}\)/

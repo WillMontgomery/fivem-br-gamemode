@@ -192,11 +192,31 @@ export function doneSteps(dirty: boolean, confirmed: boolean): DoneStep[] {
 /** Escape closes only the open modal (the skeptic's correction 11); with none
  *  open it is Done -- unless a walkthrough card is waiting on the locker
  *  (#405), when it is nothing: the card's Done is the way out, and an open
- *  dialog still closes. */
-export function escapeAction(modalOpen: boolean, held = false): 'modal' | 'done' | 'none' {
+ *  dialog still closes.
+ *
+ *  AN OPEN DROPDOWN COMES FIRST (#28 review): a tattoo picker or the Save
+ *  menu takes Escape for itself ('pass' -- the page leaves the key alone and
+ *  Cloudscape closes the dropdown). Taken in the capture phase, it never
+ *  reached the picker, and closing a picker asked "Discard changes?" or
+ *  closed the locker. */
+export function escapeAction(
+  modalOpen: boolean, held = false, popupOpen = false,
+): 'pass' | 'modal' | 'done' | 'none' {
+  if (popupOpen) return 'pass'
   if (modalOpen) return 'modal'
   return held ? 'none' : 'done'
 }
+
+/** An open Cloudscape dropdown, by its trigger: a Select's and a
+ *  ButtonDropdown's are buttons with aria-haspopup, and aria-expanded="true"
+ *  while open (test-lockerv2.mjs holds the installed Cloudscape to that). A
+ *  button: a Select's filter is an input that says aria-expanded="true"
+ *  always, and stays in the page once its picker has opened. */
+export const OPEN_POPUP = 'button[aria-haspopup][aria-expanded="true"]'
+
+/** Is a dropdown open anywhere under `root` (the screen)? */
+export const popupOpen = (root: ParentNode | null): boolean =>
+  root !== null && root.querySelector(OPEN_POPUP) !== null
 
 /** How long after the last touch a slider shows its own value rather than
  *  Lua's: long enough for a drag's echoes, short enough that a set Lua
@@ -323,6 +343,17 @@ export function tattooChoices<T extends { i: number }>(
 ): T[] {
   const taken = new Set(rows.filter((x) => x.r !== row.r).map((x) => x.i))
   return items.filter((t) => !taken.has(t.i))
+}
+
+/**
+ * A picker's list as typed: the options whose NAME holds the text, any case.
+ * The name alone (#28 review): Cloudscape's own filter also searches each
+ * option's value, the tattoo's number in the list, so typing "5" brought up
+ * Tattoo 10 to 14 and every tattoo whose number has a 5 in it.
+ */
+export function tattooFilter<T extends { label: string }>(opts: readonly T[], text: string): T[] {
+  const q = text.toLowerCase()
+  return q === '' ? [...opts] : opts.filter((o) => o.label.toLowerCase().includes(q))
 }
 
 /** The same rows, each the same tattoo, in the same order: a zone that

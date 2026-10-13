@@ -2,6 +2,8 @@
 -- game's tattoo shops sell for the two MP freemode peds, DLC sets included.
 -- "No cap on tattoos per ped, and yes whatever the game has include DLC sets.
 -- They're all free just like the rest of the locker" (owner, 2026-10-11).
+-- Then, 2026-10-12: "You can just make it max 10 per category" -- at most
+-- TATTOOS_PER_ZONE a body zone in a saved look (br_lib/shared/appearance.lua).
 --
 -- ═══ IDENTIFIERS ONLY ═══
 --
