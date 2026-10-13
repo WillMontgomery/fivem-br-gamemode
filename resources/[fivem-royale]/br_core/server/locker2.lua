@@ -8,7 +8,8 @@
 -- here checks, in this order, the season, the name (Roman letters and digits,
 -- 1 to 24 -- owner, 2026-10-07), the id's shape and that this player owns it,
 -- the appearance's size BEFORE it is decoded and then its form
--- (br_lib/shared/appearance.lua), and a rate. A refusal answers RESULT with
+-- (br_lib/shared/appearance.lua) with at most 10 tattoos a body zone, and a
+-- rate. A refusal answers RESULT with
 -- one reason: season, name, appearance, missing, rate, store or lobby.
 --
 -- ═══ ONE CACHE PER LICENSE ═══
@@ -327,12 +328,26 @@ local function writable(e)
     return e ~= nil and e.loaded and not e.failed
 end
 
---- The appearance, size first, then its form. The canonical string or nil.
+--- The appearance, size first, then its form. The canonical string and the
+--- look, or nil.
 local function appearanceOf(raw)
     if type(raw) ~= 'string' or #raw > A.MAX_BYTES then return nil end
     local a = A.decode(raw)
     if not a then return nil end
-    return A.encode(a)
+    return A.encode(a), a
+end
+
+--- A tattoo's body zone for a sex, off br_lib/config/tattoos.lua, or nil for a
+--- key it does not list for that sex. Indexed once.
+local tatByKey = nil
+local function tattooZone(key, sex)
+    if not tatByKey then
+        tatByKey = {}
+        local cfg = BR.Config.Tattoos
+        for _, row in ipairs(cfg and cfg.list or {}) do tatByKey[row[1]] = row end
+    end
+    local row = tatByKey[key]
+    return row and row[sex == 'f' and 5 or 4] and row[2] or nil
 end
 
 local function isImage(img)
@@ -374,8 +389,11 @@ AddEventHandler(BR.Net.LOCKER2_SAVE, function(d)
     if not writable(e) then return result(src, req, false, 'store') end
     local p = op ~= 'new' and e.peds[d.id] or nil
     if op ~= 'new' and not p then return result(src, req, false, 'missing') end
-    local canon = appearanceOf(d.a)
-    if not canon then return result(src, req, false, 'appearance') end
+    local canon, look = appearanceOf(d.a)
+    -- PAST 10 TATTOOS IN A BODY ZONE (owner, 2026-10-12) is no look to store.
+    -- Only a save is held to it: a ped stored the day there was no cap still
+    -- reads, and the client wears 10 of each zone's.
+    if not canon or A.tattoosOverCap(look, tattooZone) then return result(src, req, false, 'appearance') end
     if not takeToken(e) then return result(src, req, false, 'rate') end
 
     local now = nowMs()

@@ -197,6 +197,11 @@ shared_scripts {
     -- config/peds.lua (above).
     '@br_lib/config/locker2.lua',
     '@br_lib/shared/appearance.lua',
+    -- Its tattoo list (2026-10-11), SHARED since the cap of 10 a body zone
+    -- (owner, 2026-10-12): the client puts the tattoos on, and the server
+    -- refuses a save past the cap, which takes knowing each tattoo's zone.
+    -- Read at call time only, so its place is a reader's.
+    '@br_lib/config/tattoos.lua',
     -- THE FESTIVE CALENDAR (#395, #399): December and January, and the
     -- `brfestive` switch. One answer, BR.Festive.now(), for the Season 2 crates'
     -- festive set and the festive sky; neither owns it. Only the server asks (a
@@ -367,13 +372,8 @@ client_scripts {
     -- Locker v2 (#28, Season 2) and its headshots. AFTER locker.lua for a
     -- reader: Season 1's locker asks BR.LockerV2 at call time (nil-guarded),
     -- and v2 reads BR.Locker.chosen() at call time. Its ticks need the loop
-    -- registry (client/main.lua) and BR.Season (shared), both above.
-    --
-    -- Its tattoo list (2026-10-11) is CLIENT ONLY: the server checks a saved
-    -- look's shape (br_lib/shared/appearance.lua) and never which tattoos it
-    -- names, so the 775 rows load where they are put on and nowhere else.
-    -- Read at call time, so its place beside locker2.lua is a reader's.
-    '@br_lib/config/tattoos.lua',
+    -- registry (client/main.lua) and BR.Season (shared), both above. Its
+    -- tattoo list is in shared_scripts, beside appearance.lua.
     'client/locker2.lua',
     'client/locker2shot.lua',
     -- Whether that ped is a LOBBY ped -- hidden from every other lobby client

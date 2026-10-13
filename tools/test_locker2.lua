@@ -375,8 +375,9 @@ do
     badT({ AR__X = '1' }, 'a set with __')
     badT({ [string.rep('A', 17)] = '1' }, 'a set name past 16')
     badT({ '1' }, 'an array')
-    -- NO CAP (owner, 2026-10-11): every tattoo of the list on the longest look
-    -- there is still fits, and so does the worn record carrying it.
+    -- THE FORMAT HAS NO CAP: every tattoo of the list on the longest look
+    -- there is still fits, and so does the worn record carrying it. The cap of
+    -- 10 a zone (owner, 2026-10-12) is the saver's, below.
     for _, sex in ipairs({ 'm', 'f' }) do
         local all = longest(sex)
         for _, row in ipairs(TAT.list) do A.setTattoo(all, row[1], true) end
@@ -391,6 +392,33 @@ do
     local js = readFile('js-src/br_ddb/src/locker2.js') or ''
     eq(tonumber(js:match('APPEARANCE_MAX = (%d+)')), A.MAX_BYTES,
         'br_ddb stores the same 2048 bytes, so the database takes every tattoo too')
+
+    -- "You can just make it max 10 per category" (owner, 2026-10-12).
+    eq(A.TATTOOS_PER_ZONE, 10, 'max 10 tattoos a body zone')
+    local function zoneOf(key, sex)
+        local r = tatRow(key)
+        return r and r[sex == 'f' and 5 or 4] and r[2] or nil
+    end
+    local function nOf(zone, sex, n)
+        local out = {}
+        for _, r in ipairs(TAT.list) do
+            if #out < n and r[2] == zone and r[sex == 'f' and 5 or 4] then out[#out + 1] = r[1] end
+        end
+        return out
+    end
+    local capped = A.default('f')
+    for _, key in ipairs(nOf('torso', 'f', 10)) do A.setTattoo(capped, key, true) end
+    for _, key in ipairs(nOf('head', 'f', 10)) do A.setTattoo(capped, key, true) end
+    ok(not A.tattoosOverCap(capped, zoneOf), '10 in each of two zones: not over')
+    local _, mOnly = onlyFor('m')
+    local withHis = A.copy(capped)
+    A.setTattoo(withHis, TAT.list[mOnly][1], true)
+    A.setTattoo(withHis, 'TAT_ZZ_001', true)
+    ok(not A.tattoosOverCap(withHis, zoneOf), 'one only the other sex wears, or one no list knows, is not counted')
+    local eleven = A.copy(capped)
+    A.setTattoo(eleven, nOf('torso', 'f', 11)[11], true)
+    ok(A.tattoosOverCap(eleven, zoneOf), 'an 11th in a zone is over')
+    ok(A.validate(eleven) and A.decode(A.encode(eleven)) ~= nil, 'and still reads: the cap is the saver\'s, not the format\'s')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -485,7 +513,7 @@ local function serverWorld(season, withDdb)
     for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
                          'br_lib/config/peds.lua', 'br_lib/shared/season.lua',
                          'br_lib/config/seasons.lua', 'br_lib/config/locker2.lua',
-                         'br_lib/shared/appearance.lua' }) do
+                         'br_lib/shared/appearance.lua', 'br_lib/config/tattoos.lua' }) do
         loadInto(env, f)
     end
     env.BR.Season.strict = true
@@ -893,6 +921,49 @@ do
         if p.id == r.id then back = A.decode(p.a) end
     end
     ok(back and table.concat(A.tattoos(back), ',') == 'TAT_BB_000,TAT_X7_031', 'a new session reads them back')
+
+    -- MAX 10 PER ZONE (owner, 2026-10-12): a save past it is refused, and a
+    -- ped stored the day there was no cap still reads.
+    local function hers(zone, n)
+        local out = {}
+        for _, row in ipairs(TAT.list) do
+            if #out < n and row[2] == zone and row[5] then out[#out + 1] = row[1] end
+        end
+        return out
+    end
+    local ten = A.default('f')
+    for _, key in ipairs(hers('torso', 10)) do A.setTattoo(ten, key, true) end
+    for _, key in ipairs(hers('head', 10)) do A.setTattoo(ten, key, true) end
+    local _, mOnly = onlyFor('m')
+    A.setTattoo(ten, TAT.list[mOnly][1], true)
+    local eleven = A.copy(ten)
+    A.setTattoo(eleven, hers('torso', 11)[11], true)
+    local W3 = serverWorld(2)
+    W3.ddb['license:p1'] = { profile = {}, peds = {
+        ['0abcdefgh13'] = { n = 'Old', a = A.encode(eleven), cr = 1, up = 1 },
+    } }
+    W3.net(NET.LOCKER2_FETCH, 1, {})
+    local listed = W3.last(NET.LOCKER2_STATE).p.peds
+    ok(#listed == 1 and listed[1].a == A.encode(eleven), 'a ped stored with 11 in a zone still reads, as it was')
+    local calls = #W3.ddbCalls
+    W3.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Over', a = A.encode(eleven) })
+    eq(W3.lastResult().reason, 'appearance', 'a save with 11 tattoos in one zone is refused')
+    eq(#W3.ddbCalls, calls, 'before the database is asked anything')
+    W3.advance(2000)
+    W3.net(NET.LOCKER2_SAVE, 1, { req = 2, op = 'update', id = '0abcdefgh13', a = A.encode(eleven) })
+    eq(W3.lastResult().reason, 'appearance', 'and so is an update of the old ped with all 11')
+    W3.advance(2000)
+    W3.net(NET.LOCKER2_SAVE, 1, { req = 3, op = 'new', name = 'Ten', a = A.encode(ten) })
+    local rt = W3.lastResult()
+    ok(rt.ok == true and W3.ddb['license:p1'].peds[rt.id].a == A.encode(ten),
+        '10 in each of two zones is stored, one only he wears not counted against her')
+    -- The server has the list: br_core loads it in shared_scripts.
+    local manifest = readFile(RES .. 'br_core/fxmanifest.lua') or ''
+    local sharedBlock = manifest:match('\nshared_scripts%s*(%b{})') or ''
+    local clientBlock = manifest:match('\nclient_scripts%s*(%b{})') or ''
+    ok(sharedBlock:find("'@br_lib/config/tattoos.lua'", 1, true) ~= nil
+        and not clientBlock:find("'@br_lib/config/tattoos.lua'", 1, true),
+        'br_core loads the tattoo list on both sides, once')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

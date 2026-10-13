@@ -52,10 +52,10 @@
 --   "t":{"AR":"5","FM":"0001"}   is TAT_AR_000, TAT_AR_002 and TAT_FM_012
 --
 -- Hex digit k (0-based) covers numbers 4k..4k+3, bit (nnn % 4) within it. So
--- any number of tattoos fits: every one the game has is under 500 bytes, and
--- the whole appearance stays inside MAX_BYTES with no cap at all. A key means
--- the same tattoo on every build and for both sexes; the client puts on the
--- overlay of the appearance's own sex.
+-- any number of tattoos fits the format: every one the game has is under 500
+-- bytes, and the whole appearance stays inside MAX_BYTES. A key means the same
+-- tattoo on every build and for both sexes; the client puts on the overlay of
+-- the appearance's own sex.
 --
 -- CANONICAL: sets sorted, trailing zero digits dropped, an empty set dropped,
 -- and no `t` at all when nothing is on -- so a look with no tattoos encodes
@@ -63,6 +63,13 @@
 -- or a number this build's list does not know (a set the game build lacks, a
 -- list from a later round) is kept as it is and skipped where tattoos are put
 -- on, never refused.
+--
+-- THE CAP (owner, 2026-10-12): "You can just make it max 10 per category" --
+-- TATTOOS_PER_ZONE in each body zone of the list. It is not the format's: a
+-- look past it still reads (a save from the day there was no cap), and is
+-- held to it where it is put on and edited (client/locker2.lua). A SAVE past
+-- it is refused (tattoosOverCap, server/locker2.lua and the client's own
+-- save), since telling a key's zone needs the list.
 
 BR = BR or {}
 BR.Appearance = {}
@@ -83,6 +90,8 @@ A.NONE = 255
 --- a label number has three digits, so 250 hex digits reach every one.
 A.TATTOO_SET_MAX = 16
 A.TATTOO_HEX_MAX = 250
+--- The most tattoos one body zone takes (THE CAP, above).
+A.TATTOOS_PER_ZONE = 10
 
 local SEXES = { m = true, f = true }
 
@@ -298,7 +307,8 @@ function A.hasTattoo(a, key)
     return d & (1 << (n % 4)) ~= 0
 end
 
---- Put a tattoo on or take it off. Any number may be on.
+--- Put a tattoo on or take it off. The format takes any number; the cap per
+--- zone is held by whoever edits a look (client/locker2.lua).
 --- @param a table
 --- @param key string
 --- @param on boolean
@@ -337,6 +347,25 @@ function A.tattoos(a)
     end
     table.sort(out)
     return out
+end
+
+--- Does any body zone of `a` hold more than TATTOOS_PER_ZONE tattoos?
+--- `zoneOf(key, sex)` is a label key's zone, or nil for a key that is never
+--- put on that sex here (a set no list knows, the other sex's alone): kept in
+--- the look, and not counted.
+--- @param a table
+--- @param zoneOf fun(key: string, sex: string): string|nil
+--- @return boolean
+function A.tattoosOverCap(a, zoneOf)
+    local n = {}
+    for _, key in ipairs(A.tattoos(a)) do
+        local z = zoneOf(key, a.s)
+        if z ~= nil then
+            n[z] = (n[z] or 0) + 1
+            if n[z] > A.TATTOOS_PER_ZONE then return true end
+        end
+    end
+    return false
 end
 
 -- ═══ A STRICT JSON READER ═══
