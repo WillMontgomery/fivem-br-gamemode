@@ -12,7 +12,7 @@ import { play } from '../../audio/cues'
 import Ring from '../../hud/Ring'
 import { BTN, CAT_LABEL, TATTOOS, ZONE_LABEL } from './copy'
 import {
-  TATTOOS_CAT, activeAnchor, anchorId, categoriesOf, needShots, shotKey, tattooCats, tattoosOn, zoneOfCat,
+  TATTOOS_CAT, activeAnchor, anchorId, categoriesOf, needShots, shotKey, tattooCats, zoneOfCat,
 } from './model'
 import { askedKeys, cachedKeys, markAsked, shotFor, useShotCache } from './shots'
 import { askTats, useTats } from './tattooLists'
@@ -211,7 +211,7 @@ export function CustomTab({ edit, disabled }: { edit: Locker2Edit | null | undef
             </div>
           ))}
           {tats !== null && tatCats.length > 0 && (
-            <TattooSection tats={tats} on={tattoosOn(edit)} disabled={disabled} onTouch={toCat} />
+            <TattooSection tats={tats} rows={edit.tats} disabled={disabled} onTouch={toCat} />
           )}
         </SpaceBetween>
       </div>

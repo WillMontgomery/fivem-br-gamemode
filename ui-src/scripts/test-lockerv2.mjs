@@ -27,9 +27,15 @@
  *             picture arrives on its own and is kept, never on the push.
  *   TATTOOS   each sex's list made safe to draw (the body's zones in order,
  *             whole items, a name only if it is one), the section's anchors
- *             only once the list has come, every tattoo on kept however many
- *             (no cap), the words, and the wiring: asked once drawn, each box
- *             a LOCKER2_TAT, the nameless numbered among themselves.
+ *             only once the list has come, Lua's rows made safe to draw (a
+ *             list that starts empty), 10 a zone, Add off at 10, Remove off
+ *             with nothing selected, the words, and the wiring (2026-10-12):
+ *             asked once drawn, no list drawn for a zone with no rows, a row
+ *             an arrow, its name and an arrow, each arrow a LOCKER2_TAT_STEP of
+ *             its row and never the card's select, the selection one row by
+ *             its id, Add a LOCKER2_TAT_ADD of its zone, Remove a
+ *             LOCKER2_TAT_DEL of the selected row, the nameless numbered among
+ *             themselves.
  *
  * And what a unit test cannot see, read from the source and the build:
  *
@@ -52,7 +58,8 @@ import {
   SLIDER_HOLD_MS, activeAnchor, anchorId, canvasImage, categoriesOf, counterText, dataUrlBytes,
   doneSteps, editFor, escapeAction, filterName, followTab, imgOk, nameOk, needShots, openingTab,
   parseLocker2, parseTats, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds, tabOptions,
-  tabsShown, TATTOO_ZONES, tattooCats, tattoosOn, wrapStep, zoneOfCat, zoomFor,
+  tabsShown, TATTOOS_PER_ZONE, TATTOO_ZONES, canAddTattoo, selectedRow, tattooCats, wrapStep, zoneOfCat, zoneRows,
+  zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
   BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, TATTOOS, ZONE_LABEL, rowLabel, tattooFallback, tattooLabels,
@@ -280,14 +287,28 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
   eq('a zone\'s anchor sits one level in; nothing else does',
     [zoneOfCat('tat_head'), zoneOfCat('tat_rleg'), zoneOfCat('tattoos'), zoneOfCat('face'), zoneOfCat('tat_nope')],
     ['head', 'rleg', null, null, null])
-  const many = Array.from({ length: 750 }, (_, k) => k + 1)
-  const p = parseLocker2({ edit: { sex: 'm', rows: [], tats: [...many, 0, -1, 1.5, 'x'] } })
-  eq('envelope: every tattoo on is kept, however many -- no cap', p.edit.tats.length, 750)
-  eq('envelope: none on crosses as {} and is none', parseLocker2({ edit: { sex: 'f', rows: [], tats: {} } }).edit.tats, [])
-  check('the boxes ticked are the ones on', tattoosOn(p.edit).has(750) && !tattoosOn(p.edit).has(751))
+  // THE ROWS (owner, 2026-10-12): "a list, starting empty, with add and remove
+  // buttons ... You can just make it max 10 per category."
+  const p = parseLocker2({ edit: { sex: 'm', rows: [], tats: [
+    { r: 1, z: 'torso', i: 5 }, { r: 2, z: 'torso', i: 9 }, { r: 3, z: 'head', i: 1 },
+    { r: 0, z: 'head', i: 2 }, { r: 4, z: 'nope', i: 3 }, { r: 5, z: 'head', i: 1.5 }, 'x', { r: 6, i: 4 },
+  ] } })
+  eq('envelope: whole tattoo rows kept in Lua\'s order; no id, no zone drawn or no tattoo dropped', p.edit.tats,
+    [{ r: 1, z: 'torso', i: 5 }, { r: 2, z: 'torso', i: 9 }, { r: 3, z: 'head', i: 1 }])
+  eq('envelope: no rows crosses as {} -- the list starts empty',
+    parseLocker2({ edit: { sex: 'f', rows: [], tats: {} } }).edit.tats, [])
+  const torsoRows = zoneRows(p.edit.tats, 'torso')
+  eq('a zone\'s rows, in Lua\'s order, and only its own', [torsoRows.map((r) => r.r), zoneRows(p.edit.tats, 'lleg')], [[1, 2], []])
+  eq('max 10 per zone', TATTOOS_PER_ZONE, 10)
+  eq('Add: lit below 10, off at 10 -- and off once every tattoo of the zone has a row',
+    [canAddTattoo(0, 76), canAddTattoo(9, 76), canAddTattoo(10, 76), canAddTattoo(11, 76), canAddTattoo(3, 3)],
+    [true, true, false, false, false])
+  eq('Remove: off with nothing selected, a row of another zone selected, or one gone',
+    [selectedRow(torsoRows, null), selectedRow(torsoRows, 3), selectedRow(torsoRows, 99)], [null, null, null])
+  eq('Remove: on with a row of the zone selected, which is that row', selectedRow(torsoRows, 2), { r: 2, z: 'torso', i: 9 })
   eq('tattoo words', [TATTOOS, ZONE_LABEL.head, ZONE_LABEL.torso, ZONE_LABEL.larm, ZONE_LABEL.rarm, ZONE_LABEL.lleg,
-    ZONE_LABEL.rleg, tattooFallback(3)],
-  ['Tattoos', 'Head', 'Torso', 'Left arm', 'Right arm', 'Left leg', 'Right leg', 'Tattoo 3'])
+    ZONE_LABEL.rleg, tattooFallback(3), BTN.add, BTN.remove],
+  ['Tattoos', 'Head', 'Torso', 'Left arm', 'Right arm', 'Left leg', 'Right leg', 'Tattoo 3', 'Add', 'Remove'])
   eq('every zone Lua sends has a word', TATTOO_ZONES.every((z) => typeof ZONE_LABEL[z] === 'string'), true)
   // #28 review: the one tattoo the game has no text for (TAT_AW_000) sits last
   // of Torso's hundreds, and read "Tattoo 326". The nameless are numbered
@@ -364,14 +385,33 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
     /useEffect\(\(\) => \{ if \(sex !== null\) askTats\(sex\) \}, \[sex\]\)/.test(tabs))
   check('its anchors follow the row categories, from the list',
     tabs.includes('const cats = [...rowCats, ...tatCats]') && tabs.includes('const tatCats = tattooCats(tats)'))
-  check('the section draws what is on, and a press moves the camera as a row\'s does',
-    tabs.includes('<TattooSection tats={tats} on={tattoosOn(edit)} disabled={disabled} onTouch={toCat} />'))
+  check('the section draws Lua\'s rows, and a press moves the camera as a row\'s does',
+    tabs.includes('<TattooSection tats={tats} rows={edit.tats} disabled={disabled} onTouch={toCat} />'))
   const tat = read(join(SRC, 'screens', 'lockerv2', 'Tattoos.tsx'))
-  check('each box asks Lua to put its tattoo on or take it off, nothing decided here',
-    tat.includes('void fetchNui(CB.LOCKER2_TAT, { i, on: detail.checked })') && tat.includes('checked={on.has(t.i)}'))
-  check('each box\'s name is its zone\'s tattooLabels, a nameless one numbered among the nameless, never a key',
-    tat.includes('{tattooLabels(zone.items).map(([t, label]) => (') && tat.includes('label={label}'))
-  check('a box pressed sends its zone\'s category', tat.includes('onPointerDown={() => onTouch(cat)}'))
+  // "dude why would we use a bajillion check boxes lol" (owner, 2026-10-12).
+  check('no checkbox list', !/checkbox/i.test(tat))
+  check('a zone with no rows draws no list, and no words in its place',
+    tat.includes('{mine.length > 0 && (') && tat.includes('const mine = zoneRows(rows, zone.z)'))
+  check('a row is the left arrow, the tattoo\'s name, the right arrow',
+    /iconName="angle-left"[\s\S]*?onClick=\{\(\) => step\(-1\)\}[\s\S]*?\{label\}[\s\S]*?iconName="angle-right"[\s\S]*?onClick=\{\(\) => step\(1\)\}/
+      .test(tat))
+  check('each arrow asks Lua to step its own row, nothing decided here',
+    tat.includes('void fetchNui(CB.LOCKER2_TAT_STEP, { r: row.r, d })'))
+  check('an arrow\'s press never reaches the card (no select, the focus kept on the arrow)',
+    (tat.match(/<span onClick=\{own\}>/g) ?? []).length === 2 && tat.includes('const own = (e: SyntheticEvent) => e.stopPropagation()'))
+  check('a row\'s name is its zone\'s tattooLabels, a nameless one numbered among the nameless, never a key',
+    tat.includes('new Map(tattooLabels(zone.items).map(([t, label]) => [t.i, label]))')
+    && tat.includes("label={names.get(row.i) ?? ''}"))
+  check('a row is selected by pressing it, one at a time, lit as My peds lights its card',
+    tat.includes('selectionType="single"') && tat.includes('entireCardClickable')
+    && tat.includes('selectedItems={picked ? [picked] : []}') && tat.includes('setSel(row.r)')
+    && tat.includes('const picked = selectedRow(mine, sel)') && (tat.match(/useState</g) ?? []).length === 1)
+  check('Add asks Lua for a row in its zone, and is off at the cap',
+    tat.includes('void fetchNui(CB.LOCKER2_TAT_ADD, { z: zone.z })')
+    && tat.includes('disabled={disabled || !canAddTattoo(mine.length, zone.items.length)}'))
+  check('Remove asks Lua to take out the selected row, and is off with nothing selected',
+    tat.includes('void fetchNui(CB.LOCKER2_TAT_DEL, { r: picked.r })') && tat.includes('disabled={disabled || picked === null}'))
+  check('a press anywhere in a zone sends its category', tat.includes('onPointerDown={() => onTouch(cat)}'))
   check('the list arrives on its own envelope and is kept for the session',
     v2.includes("useNuiEvent('locker2tats', (d) => keepTats(d))")
     && /export function keepTats\(raw: unknown\): void \{\s*const t = parseTats\(raw\)/.test(
@@ -391,7 +431,7 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(
     "'Cancel'", "'Replace'", "'Keep editing'", "'Discard'", "'Save as new'", '`Update ${name}`',
     '`Replace ${name}?`', '`Delete ${name}?`', "'Skin tone'", "'Neck thickness'", "'Shoes'",
     '`${base} opacity`', '`${base} color`', "'Tattoos'", "'Head'", "'Torso'", "'Left arm'", "'Right arm'",
-    "'Left leg'", "'Right leg'", '`Tattoo ${n}`']) {
+    "'Left leg'", "'Right leg'", '`Tattoo ${n}`', "'Add'", "'Remove'"]) {
     const line = copy.split('\n').find((l) => l.includes(s))
     check(`WRITTEN marker beside ${s}`, line !== undefined && line.includes('// WRITTEN (proposal for the owner)'))
   }

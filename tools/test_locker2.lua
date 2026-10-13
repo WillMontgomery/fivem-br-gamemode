@@ -2175,12 +2175,84 @@ local function decoNames(p, sex)
     return table.concat(out, ',')
 end
 
+--- The Tattoos section's rows on the last push: { r, z, i }, zone by zone.
+local function tatRowsIn(W)
+    local m = W.nui(NUI.LOCKER2)
+    return m and m.edit and m.edit.tats or {}
+end
+
+--- One zone's rows, in order.
+local function zoneRowsIn(W, z)
+    local out = {}
+    for _, row in ipairs(tatRowsIn(W)) do
+        if row.z == z then out[#out + 1] = row end
+    end
+    return out
+end
+
+--- A zone's tattoos as the page lists them for a sex, the list asked for
+--- unless the last one sent is that sex's.
+local function zoneItems(W, sex, z)
+    local l = W.nui(NUI.LOCKER2_TATS)
+    if not l or l.sex ~= sex then
+        W.ui(NUICB.LOCKER2_TATS, { sex = sex })
+        l = W.nui(NUI.LOCKER2_TATS)
+    end
+    for _, zone in ipairs(l.zones) do
+        if zone.z == z then
+            local out = {}
+            for k, it in ipairs(zone.items) do out[k] = it.i end
+            return out
+        end
+    end
+    return {}
+end
+
+--- Tattoo `i` put on as the player would: Add in its zone, then the new
+--- row's arrows, the short way round, until it shows `i`. The row's id.
+local function tatOn(W, i)
+    local sex = W.nui(NUI.LOCKER2).edit.sex
+    local z = TAT.list[i][2]
+    local before = #zoneRowsIn(W, z)
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = z })
+    local rows = zoneRowsIn(W, z)
+    if #rows == before then return nil end
+    local row = rows[#rows]
+    local order = zoneItems(W, sex, z)
+    local at, want = 0, 0
+    for k, x in ipairs(order) do
+        if x == row.i then at = k end
+        if x == i then want = k end
+    end
+    local dir = (want - at) % #order <= #order // 2 and 1 or -1
+    for _ = 1, #order do
+        if row.i == i then break end
+        W.ui(NUICB.LOCKER2_TAT_STEP, { r = row.r, d = dir })
+        for _, x in ipairs(zoneRowsIn(W, z)) do
+            if x.r == row.r then row = x end
+        end
+    end
+    return row.i == i and row.r or nil
+end
+
+--- The overlay names of these rows of the list for a sex, sorted, as decoNames
+--- gives a ped's.
+local function overlaysOf(is, sex)
+    local out = {}
+    for _, i in ipairs(is) do out[#out + 1] = TAT.list[i][sex == 'f' and 5 or 4] end
+    table.sort(out)
+    return table.concat(out, ',')
+end
+
 describe('season2.tattoos')
 do
     local W = joined()
     W.ui(NUICB.LOCKER2_OPEN)
     W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
     W.pump(300)
+    -- "a list, starting empty" (owner, 2026-10-12).
+    local m0 = W.nui(NUI.LOCKER2)
+    ok(m0.edit and #m0.edit.tats == 0 and #W.ped().decos == 0, 'a new ped starts with no tattoo rows, and wears none')
     local labels = W.count('GetLabelText')
     eq(labels, 0, 'no name is looked up before the page asks for the list')
     W.ui(NUICB.LOCKER2_TATS, { sex = 'm' })
@@ -2228,43 +2300,115 @@ do
     W.ui(NUICB.LOCKER2_TATS, { sex = 'x' })
     eq(listsSent(), sent, 'a sex that is not one gets nothing')
 
-    -- On and off, at once on the ped, the sex's own overlay.
-    local r1, i1 = tatRow('TAT_AR_000')
-    W.ui(NUICB.LOCKER2_TAT, { i = i1, on = true })
-    eq(decoNames(W.ped(), 'm'), r1[4], 'on puts it on the ped at once, the male overlay')
-    eq(W.ped().decos[1][1], hashOf(r1[3]), 'from its collection')
-    local m = W.nui(NUI.LOCKER2)
-    ok(m.edit.dirty == true and #m.edit.tats == 1 and m.edit.tats[1] == i1, 'the push says it is on; the draft is dirty')
+    -- ADD: "When I click add, create a new row" -- on the zone's first tattoo.
+    local torso = zoneItems(W, 'm', 'torso')
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    local rows = zoneRowsIn(W, 'torso')
+    ok(#rows == 1 and rows[1].i == torso[1], 'Add makes a row on the zone\'s first tattoo', rows[1] and rows[1].i)
+    eq(decoNames(W.ped(), 'm'), overlaysOf({ torso[1] }, 'm'), 'on the preview at once, the male overlay')
+    eq(W.ped().decos[1][1], hashOf(TAT.list[torso[1]][3]), 'from its collection')
+    ok(W.nui(NUI.LOCKER2).edit.dirty == true, 'the draft is dirty')
     W.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
     eq(W.nui(NUI.LOCKER2).tab, 'male', 'so the other tabs are locked, as for any change')
-    -- NO CAP.
-    for idx, row in ipairs(TAT.list) do
-        if row[4] then W.ui(NUICB.LOCKER2_TAT, { i = idx, on = true }) end
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    rows = zoneRowsIn(W, 'torso')
+    ok(#rows == 2 and rows[2].i == torso[2], 'a second Add: the first tattoo no row holds, at the foot')
+    local a, b = rows[1].r, rows[2].r
+    ok(a ~= b, 'each row its own id')
+
+    -- THE ARROWS step, wrap, and pass over what the zone's other rows hold.
+    W.ui(NUICB.LOCKER2_TAT_STEP, { r = a, d = 1 })
+    rows = zoneRowsIn(W, 'torso')
+    ok(rows[1].r == a and rows[1].i == torso[3], 'right from the first passes over the second, which a row holds',
+        rows[1].i)
+    eq(decoNames(W.ped(), 'm'), overlaysOf({ torso[3], torso[2] }, 'm'), 'the preview follows')
+    W.ui(NUICB.LOCKER2_TAT_STEP, { r = a, d = -1 })
+    eq(zoneRowsIn(W, 'torso')[1].i, torso[1], 'left passes over it the other way')
+    W.ui(NUICB.LOCKER2_TAT_STEP, { r = a, d = -1 })
+    eq(zoneRowsIn(W, 'torso')[1].i, torso[#torso], 'left from the first wraps to the last')
+    eq(decoNames(W.ped(), 'm'), overlaysOf({ torso[#torso], torso[2] }, 'm'), 'and the preview with it')
+    W.ui(NUICB.LOCKER2_TAT_STEP, { r = a, d = 1 })
+    rows = zoneRowsIn(W, 'torso')
+    eq(rows[1].i, torso[1], 'right from the last wraps to the first')
+    ok(rows[2].r == b and rows[2].i == torso[2], 'the other row as it was')
+    for _, bad in ipairs({ { r = a, d = 2 }, { r = a, d = 0 }, { r = 99999, d = 1 }, { r = 'x', d = 1 }, { d = 1 } }) do
+        W.ui(NUICB.LOCKER2_TAT_STEP, bad)
     end
-    eq(#W.nui(NUI.LOCKER2).edit.tats, 744, 'every male tattoo on at once: no cap')
-    eq(#W.ped().decos, 744, 'and all of them on the ped')
+    eq(zoneRowsIn(W, 'torso')[1].i, torso[1], 'a step of 2 or 0, or of a row that is not one: refused')
+    -- Every step of a whole lap: the zone's tattoos in the page's order, each
+    -- the male's, and never the one the other row holds.
+    local lap, lapOk = {}, true
+    for _ = 1, #torso - 1 do
+        W.ui(NUICB.LOCKER2_TAT_STEP, { r = a, d = 1 })
+        local i = zoneRowsIn(W, 'torso')[1].i
+        lap[#lap + 1] = i
+        if not TAT.list[i][4] or i == torso[2] then lapOk = false end
+    end
+    local want = {}
+    for k = 3, #torso do want[#want + 1] = torso[k] end
+    want[#want + 1] = torso[1]
+    ok(lapOk and table.concat(lap, ',') == table.concat(want, ','),
+        'a lap of the arrows: every male tattoo of the zone in the page\'s order, but the other row\'s')
+
+    -- REMOVE: "Allow me to select each row and remove if I want to."
     local clears = W.count('ClearPedDecorations')
-    W.ui(NUICB.LOCKER2_TAT, { i = i1, on = false })
-    eq(W.count('ClearPedDecorations'), clears + 1, 'off clears the decorations')
-    eq(#W.ped().decos, 743, 'and puts the rest back')
-    ok(not decoNames(W.ped(), 'm'):find(r1[4], 1, true), 'without that one')
-    -- Refused: nothing changes.
-    local before = #W.nui(NUI.LOCKER2).edit.tats
-    local _, fOnly = onlyFor('f')
-    for _, bad in ipairs({ { i = 0, on = true }, { i = #TAT.list + 1, on = true }, { i = 1.5, on = true },
-                           { i = 'x', on = true }, { i = fOnly, on = true } }) do
-        W.ui(NUICB.LOCKER2_TAT, bad)
+    W.ui(NUICB.LOCKER2_TAT_DEL, { r = a })
+    rows = zoneRowsIn(W, 'torso')
+    ok(#rows == 1 and rows[1].r == b and rows[1].i == torso[2], 'Remove takes that row out, the other kept')
+    eq(W.count('ClearPedDecorations'), clears + 1, 'the decorations cleared')
+    eq(decoNames(W.ped(), 'm'), overlaysOf({ torso[2] }, 'm'), 'and the rest put back, without its tattoo')
+    W.ui(NUICB.LOCKER2_TAT_DEL, { r = a })
+    W.ui(NUICB.LOCKER2_TAT_DEL, { r = 'x' })
+    eq(#zoneRowsIn(W, 'torso'), 1, 'a row already gone, or not one: nothing')
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    rows = zoneRowsIn(W, 'torso')
+    ok(#rows == 2 and rows[2].i == torso[1] and rows[2].r ~= a, 'an Add after it: the first tattoo free again, a new row')
+
+    -- "You can just make it max 10 per category."
+    for _ = 1, 12 do W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' }) end
+    rows = zoneRowsIn(W, 'torso')
+    eq(#rows, 10, 'max 10 per zone: an 11th Add is refused')
+    local seen, dup = {}, false
+    for _, r in ipairs(rows) do
+        if seen[r.i] then dup = true end
+        seen[r.i] = true
     end
-    eq(#W.nui(NUI.LOCKER2).edit.tats, before, 'no row, a fraction, a word or a female-only tattoo on the male tab: refused')
-    -- Save carries them.
+    ok(not dup, 'and no tattoo in two rows')
+    eq(#W.ped().decos, 10, 'ten on the preview')
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    eq(#zoneRowsIn(W, 'head'), 1, 'another zone has ten of its own')
+    eq(#W.ped().decos, 11, 'on the preview too')
+    for _, bad in ipairs({ { z = 'nope' }, { z = 5 }, {} }) do W.ui(NUICB.LOCKER2_TAT_ADD, bad) end
+    eq(#tatRowsIn(W), 11, 'Add in a zone that is not one: refused')
+    local own = true
+    for _, r in ipairs(tatRowsIn(W)) do
+        if not TAT.list[r.i][4] or TAT.list[r.i][2] ~= r.z then own = false end
+    end
+    ok(own, 'every row a male tattoo of its own zone')
+
+    -- THE SAVE'S OWN CHECK: past 10 in a zone, nothing goes to the server.
+    local S = W.BR.LockerV2.state()
+    local extra = nil
+    for _, i in ipairs(torso) do
+        if not seen[i] then
+            extra = i
+            break
+        end
+    end
+    W.BR.Appearance.setTattoo(S.draft.a, TAT.list[extra][1], true)
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Over' })
+    eq(#W.sentTo(NET.LOCKER2_SAVE), 0, 'a look with 11 in a zone is never sent to be saved')
+    W.BR.Appearance.setTattoo(S.draft.a, TAT.list[extra][1], false)
+    -- Save carries the rows' tattoos.
     W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Inked' })
     local s = W.sentTo(NET.LOCKER2_SAVE)[1]
     local sa = s and A.decode(s.a)
-    eq(sa and #A.tattoos(sa), 743, 'Save sends every tattoo on')
+    eq(sa and #A.tattoos(sa), 11, 'Save sends every row\'s tattoo')
     W.net(NET.LOCKER2_RESULT, { req = s.req, ok = true, id = PID, ped = { id = PID, name = 'Inked', a = s.a, up = 9 },
         worn = { k = 'p', id = PID, a = s.a } })
     ok(W.nui(NUI.LOCKER2).edit.dirty == false, 'saved: clean')
-    eq(#A.tattoos(A.decodeWorn(W.kvp['br:locker2:worn']).a), 743, 'and worn with them here')
+    eq(#tatRowsIn(W), 11, 'the rows kept as they were')
+    eq(#A.tattoos(A.decodeWorn(W.kvp['br:locker2:worn']).a), 11, 'and worn with them here')
     -- The camera follows a zone, as it follows a row.
     W.ui(NUICB.LOCKER2_CAT, { cat = 'tat_lleg' })
     eq(W.cams[#W.cams], 'focus:legs', 'a leg zone looks at the legs')
@@ -2274,25 +2418,33 @@ do
     eq(W.cams[#W.cams], 'focus:upper', 'the section itself at the upper body')
     eq(W.nui(NUI.LOCKER2).edit.cat, 'tattoos', 'and its anchor is lit')
 
-    -- Reset takes them off with the rest; the female tab uses her overlays.
+    -- Her list and her overlays on the female tab; Reset takes them off.
     local F = joined()
     F.ui(NUICB.LOCKER2_OPEN)
     F.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
     F.pump(300)
-    local rx, ix = tatRow('TAT_X7_031')
-    F.ui(NUICB.LOCKER2_TAT, { i = ix, on = true })
-    eq(decoNames(F.ped(), 'f'), rx[5], 'the female tab puts on the female overlay')
-    local _, mOnly = onlyFor('m')
-    F.ui(NUICB.LOCKER2_TAT, { i = mOnly, on = true })
-    eq(#F.nui(NUI.LOCKER2).edit.tats, 1, 'and refuses a male-only tattoo')
+    local fhead = zoneItems(F, 'f', 'head')
+    F.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    eq(decoNames(F.ped(), 'f'), overlaysOf({ fhead[1] }, 'f'), 'the female tab: her list, her overlay')
+    local fr = zoneRowsIn(F, 'head')[1].r
+    local hers = true
+    for _ = 1, #fhead do
+        F.ui(NUICB.LOCKER2_TAT_STEP, { r = fr, d = -1 })
+        if not TAT.list[zoneRowsIn(F, 'head')[1].i][5] then hers = false end
+    end
+    ok(hers, 'every step of a lap is a tattoo she has')
+    local before = F.nui(NUI.LOCKER2).edit.tats[1].r
     F.ui(NUICB.LOCKER2_RESET)
     F.pump(300)
     local fm = F.nui(NUI.LOCKER2)
-    ok(fm.edit.dirty == false and #fm.edit.tats == 0 and #F.ped().decos == 0, 'Reset takes the tattoos off too')
+    ok(fm.edit.dirty == false and #fm.edit.tats == 0 and #F.ped().decos == 0, 'Reset takes the rows and the tattoos off')
+    F.ui(NUICB.LOCKER2_TAT_STEP, { r = before, d = 1 })
+    F.ui(NUICB.LOCKER2_TAT_DEL, { r = before })
+    ok(#F.nui(NUI.LOCKER2).edit.tats == 0 and #F.ped().decos == 0, 'and a row from before it is no row at all')
     -- Refused while the ped is held, as every change is.
     F.locked = true
-    F.ui(NUICB.LOCKER2_TAT, { i = ix, on = true })
-    eq(#F.ped().decos, 0, 'nothing while the entrance holds the ped')
+    F.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    ok(#F.nui(NUI.LOCKER2).edit.tats == 0 and #F.ped().decos == 0, 'nothing while the entrance holds the ped')
 end
 
 describe('season2.tattoo_paths')
@@ -2356,11 +2508,23 @@ do
     P.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = '0abcdefgh13' })
     P.pump(300)
     ok(P.ped().model == FEMALE and #P.ped().decos == 0, 'an old save wears none, and takes the last one\'s off')
-    -- 7. Edit opens it with its tattoos ticked.
+    -- 7. Edit opens it with its tattoos as rows, each in its own zone, the
+    -- skipped ones not.
     P.ui(NUICB.LOCKER2_EDIT, { id = PID })
     P.pump(300)
     local tats = P.nui(NUI.LOCKER2).edit.tats
-    eq(#tats, 2, 'Edit shows its two tattoos on, the skipped ones not')
+    local _, iX7 = tatRow('TAT_X7_031')
+    local _, iH4 = tatRow('TAT_H4_000')
+    local got, zoned = {}, true
+    for _, row in ipairs(tats) do
+        got[#got + 1] = row.i
+        if TAT.list[row.i][2] ~= row.z or not row.r then zoned = false end
+    end
+    table.sort(got)
+    eq(table.concat(got, ','), table.concat({ math.min(iX7, iH4), math.max(iX7, iH4) }, ','),
+        'Edit shows its two tattoos as rows, the skipped ones not')
+    ok(zoned, 'each in its own zone, with its id')
+    ok(P.nui(NUI.LOCKER2).edit.dirty == false, 'nothing to save')
     eq(decoNames(P.ped(), 'f'), want, 'and the preview wears them')
     -- 8. A stock ped, picked straight after the tattooed one: none.
     P.ui(NUICB.LOCKER2_TAB, { tab = 'peds' })
@@ -2471,24 +2635,33 @@ do
     ok(D.handle == dh and decoNames(D.ped(), 'f') == want,
         'after a dress in place, the same ped losing its tattoos gets them back', decoNames(D.ped(), 'f'))
 
-    -- 5. A TICK ON notes what the ped carries, and the draft as the look on.
+    -- 5. AN ADD notes what the ped carries, and the draft as the look on.
     local T = joined()
     T.ui(NUICB.LOCKER2_OPEN)
     T.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
     T.pump(300)
-    T.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    local head1 = zoneItems(T, 'f', 'head')[1]
+    local torso = zoneItems(T, 'f', 'torso')
+    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
     T.ped().decos = {}
     T.pump(600)
-    eq(decoNames(T.ped(), 'f'), rX7[5], 'after a tick, the same ped losing the tattoo gets it back')
-    -- 6. A TICK OFF notes it too: one taken off is not mistaken for one lost.
-    T.ui(NUICB.LOCKER2_TAT, { i = iH4, on = true })
-    T.ui(NUICB.LOCKER2_TAT, { i = iH4, on = false })
+    eq(decoNames(T.ped(), 'f'), overlaysOf({ head1 }, 'f'), 'after an Add, the same ped losing the tattoo gets it back')
+    -- 6. A STEP notes it too, and a REMOVE: one taken off is not mistaken for
+    -- one lost.
+    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    T.ui(NUICB.LOCKER2_TAT_STEP, { r = zoneRowsIn(T, 'torso')[1].r, d = 1 })
+    T.ped().decos = {}
+    T.pump(600)
+    eq(decoNames(T.ped(), 'f'), overlaysOf({ head1, torso[2] }, 'f'),
+        'after a step, the same ped losing its tattoos gets the stepped one back')
+    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'larm' })
+    T.ui(NUICB.LOCKER2_TAT_DEL, { r = zoneRowsIn(T, 'larm')[1].r })
     local tc = T.count('ClearPedDecorations')
     T.pump(3000)
-    eq(T.count('ClearPedDecorations'), tc, 'a tattoo taken off is not put back on, nor the rest again')
-    eq(decoNames(T.ped(), 'f'), rX7[5], 'and the other stays on')
+    eq(T.count('ClearPedDecorations'), tc, 'a tattoo removed is not put back on, nor the rest again')
+    eq(decoNames(T.ped(), 'f'), overlaysOf({ head1, torso[2] }, 'f'), 'and the others stay on')
 
-    -- 7. DONE, OR BACK'S DISCARD, after a tick: the worn ped goes back on
+    -- 7. DONE, OR BACK'S DISCARD, after an Add: the worn ped goes back on
     -- without the draft's tattoo.
     local E = joined({ { id = PID, name = 'Ann', a = plainEnc, up = 5 } })
     E.ui(NUICB.LOCKER2_OPEN)
@@ -2496,11 +2669,15 @@ do
     E.pump(300)
     E.ui(NUICB.LOCKER2_EDIT, { id = PID })
     E.pump(300)
-    E.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
-    eq(#E.ped().decos, 1, 'the tick is on the preview')
+    E.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    eq(#E.ped().decos, 1, 'the Add is on the preview')
     E.ui(NUICB.LOCKER2_CLOSE)
     E.pump(600)
     eq(#E.ped().decos, 0, 'closing the page takes the draft\'s tattoo off the worn ped')
+    E.ui(NUICB.LOCKER2_OPEN)
+    E.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    E.pump(300)
+    eq(#E.nui(NUI.LOCKER2).edit.tats, 0, 'and editing it again opens it with none')
 
     -- 8. A MATCH STARTED MID-EDIT plays in the draft, its tattoo included,
     -- through a respawn.
@@ -2510,15 +2687,16 @@ do
     M.pump(300)
     M.ui(NUICB.LOCKER2_EDIT, { id = PID })
     M.pump(300)
-    M.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    M.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
     M.BR.State.me.state = M.BR.PlayerState.ALIVE
     M.pump(300)
     M.handle = M.handle + 1
     M.peds[M.handle] = newPed(FEMALE)
     M.pump(600)
-    eq(decoNames(M.ped(), 'f'), rX7[5], 'a match started mid-edit keeps the draft\'s tattoo through a respawn')
+    eq(decoNames(M.ped(), 'f'), overlaysOf({ head1 }, 'f'),
+        'a match started mid-edit keeps the draft\'s tattoo through a respawn')
 
-    -- 9. A TICK WHILE THE PED IS NOT THE DRAFT'S MODEL -- the Custom tab's
+    -- 9. AN ADD WHILE THE PED IS NOT THE DRAFT'S MODEL -- the Custom tab's
     -- model never streamed, so the stock ped is still on -- puts nothing on it.
     local G = joined()
     G.neverLoad = true
@@ -2528,9 +2706,11 @@ do
     ok(G.ped().model == hashOf(G.BR.PedById(STOCK1).model) and G.nui(NUI.LOCKER2).edit ~= nil,
         'a Custom tab whose model never streamed: its draft over the stock ped')
     local adds, blends = G.count('AddPedDecorationFromHashes'), G.count('SetPedHeadBlendData')
-    G.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    G.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    G.ui(NUICB.LOCKER2_TAT_STEP, { r = zoneRowsIn(G, 'head')[1].r, d = 1 })
     G.pump(2000)
-    ok(G.count('AddPedDecorationFromHashes') == adds and #G.ped().decos == 0, 'a tick puts no tattoo on the stock ped')
+    ok(G.count('AddPedDecorationFromHashes') == adds and #G.ped().decos == 0,
+        'an Add or a step puts no tattoo on the stock ped')
     eq(G.count('SetPedHeadBlendData'), blends, 'nor, later, the custom look')
 
     -- 10. ONE SEX'S OVERLAY LOOKED UP IS NOT THE OTHER'S: the same tattoo on
@@ -2539,24 +2719,24 @@ do
     X.ui(NUICB.LOCKER2_OPEN)
     X.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
     X.pump(300)
-    X.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    ok(tatOn(X, iX7) ~= nil, 'the arrows reach a tattoo deep in its zone')
     eq(decoNames(X.ped(), 'm'), rX7[4], 'the male tab: his overlay')
     X.ui(NUICB.LOCKER2_RESET)
     X.pump(300)
     X.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
     X.pump(300)
-    X.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
+    tatOn(X, iX7)
     eq(decoNames(X.ped(), 'f'), rX7[5], 'then the female tab: hers, not the one looked up for him')
 
     -- 11. brlocker2 SAYS HOW MANY THE LOOK HAS AND HOW MANY THE ENGINE HOLDS:
-    -- the playtest's count for an engine that draws fewer than were ticked.
+    -- the playtest's count for an engine that draws fewer than were added.
     local K = joined()
     K.decoCap = 1
     K.ui(NUICB.LOCKER2_OPEN)
     K.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
     K.pump(300)
-    K.ui(NUICB.LOCKER2_TAT, { i = iX7, on = true })
-    K.ui(NUICB.LOCKER2_TAT, { i = iH4, on = true })
+    K.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    K.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
     local printed = {}
     K.env.print = function(s) printed[#printed + 1] = s end
     K.commands.brlocker2(0, {})
@@ -2564,6 +2744,93 @@ do
     local line = nil
     for _, s in ipairs(printed) do if s:find('tattoos', 1, true) then line = s end end
     eq(line, '  tattoos  2  decorations 1', 'brlocker2: two in the look, one on the ped as the engine says')
+end
+
+describe('season2.tattoo_cap')
+do
+    -- MAX 10 PER ZONE ON LOAD (owner, 2026-10-12): a ped saved the day there
+    -- was no cap -- 12 on her torso and one on her head -- wears and opens
+    -- with the first 10 of the torso in the list's order, and saves no more.
+    local torsoF = {}
+    for i, r in ipairs(TAT.list) do
+        if r[2] == 'torso' and r[5] then torsoF[#torsoF + 1] = i end
+    end
+    local headF = nil
+    for i, r in ipairs(TAT.list) do
+        if r[2] == 'head' and r[5] and not headF then headF = i end
+    end
+    local over = femaleLook()
+    for k = 1, 12 do A.setTattoo(over, TAT.list[torsoF[k]][1], true) end
+    A.setTattoo(over, TAT.list[headF][1], true)
+    local enc = A.encode(over)
+    local first10 = {}
+    for k = 1, 10 do first10[k] = torsoF[k] end
+    local worn = { table.unpack(first10) }
+    worn[#worn + 1] = headF
+
+    -- 1. Worn at the join.
+    local W = clientWorld({ season = 2, v2 = true })
+    W.pump(200)
+    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
+    W.pump(600)
+    eq(decoNames(W.ped(), 'f'), overlaysOf(worn, 'f'), 'the join wears the torso\'s first 10 in the list\'s order, and the head\'s one')
+    W.BR.State.me.state = W.BR.PlayerState.ALIVE
+    W.handle = W.handle + 1
+    W.peds[W.handle] = newPed(FEMALE)
+    W.pump(600)
+    eq(#W.ped().decos, 11, 'and so does a new ped in the match')
+
+    -- 2. Edit: the 10 as rows, in the list's order, and nothing to save.
+    local P = joined({ { id = PID, name = 'Ann', a = enc, up = 5 } })
+    P.ui(NUICB.LOCKER2_OPEN)
+    P.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P.pump(300)
+    local rows = zoneRowsIn(P, 'torso')
+    local got = {}
+    for k, r in ipairs(rows) do got[k] = r.i end
+    eq(table.concat(got, ','), table.concat(first10, ','), 'Edit opens the torso\'s first 10 as rows, in the list\'s order')
+    eq(#zoneRowsIn(P, 'head'), 1, 'and the head\'s one')
+    ok(P.nui(NUI.LOCKER2).edit.dirty == false, 'with nothing to save')
+    eq(#P.ped().decos, 11, 'the preview wears the 11')
+
+    -- 3. ON CHANGE: an 11th refused there too.
+    P.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    eq(#zoneRowsIn(P, 'torso'), 10, 'an 11th torso row refused')
+    ok(P.nui(NUI.LOCKER2).edit.dirty == false, 'and nothing changed')
+
+    -- 4. A change, then Save: the 10, and the change.
+    P.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    P.ui(NUICB.LOCKER2_SAVE, { op = 'update' })
+    local s = P.sentTo(NET.LOCKER2_SAVE)[1]
+    local sa = s and A.decode(s.a)
+    local n = 0
+    for _, key in ipairs(sa and A.tattoos(sa) or {}) do
+        local _, i = tatRow(key)
+        if TAT.list[i][2] == 'torso' then n = n + 1 end
+    end
+    eq(n, 10, 'Save sends the torso\'s 10, never the two it never wore')
+    eq(sa and #A.tattoos(sa), 12, 'and the head\'s two')
+
+    -- 5. RESET, after the change: the rows it opened with, as new rows.
+    local P2 = joined({ { id = PID, name = 'Ann', a = enc, up = 5 } })
+    P2.ui(NUICB.LOCKER2_OPEN)
+    P2.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P2.pump(300)
+    local ids = {}
+    for _, r in ipairs(tatRowsIn(P2)) do ids[r.r] = true end
+    P2.ui(NUICB.LOCKER2_TAT_DEL, { r = zoneRowsIn(P2, 'torso')[1].r })
+    P2.ui(NUICB.LOCKER2_TAT_ADD, { z = 'larm' })
+    ok(P2.nui(NUI.LOCKER2).edit.dirty == true, 'a row removed and one added: dirty')
+    P2.ui(NUICB.LOCKER2_RESET)
+    P2.pump(300)
+    local back, fresh = {}, true
+    for k, r in ipairs(zoneRowsIn(P2, 'torso')) do
+        back[k] = r.i
+        if ids[r.r] then fresh = false end
+    end
+    eq(table.concat(back, ','), table.concat(first10, ','), 'Reset puts back the rows it opened with')
+    ok(fresh and #zoneRowsIn(P2, 'larm') == 0, 'as new rows, the added one gone')
+    ok(P2.nui(NUI.LOCKER2).edit.dirty == false and #P2.ped().decos == 11, 'clean, and the preview with it')
 end
 
 describe('season2.tattoo_season1')
@@ -2675,7 +2942,12 @@ do
     for _, k in ipairs({ 'LOCKER2', 'LOCKER2_SHOT', 'LOCKER2_TATS' }) do
         if not types:find("'" .. NUI[k] .. "'", 1, true) then missing[#missing + 1] = NUI[k] end
     end
-    eq(#keys, 18, 'eighteen callbacks (the tattoo list and a tattoo, 2026-10-11)')
+    eq(#keys, 20, 'twenty callbacks (the tattoo list, 2026-10-11; a tattoo row\'s Add, arrow and Remove, 2026-10-12)')
+    eq(NUICB.LOCKER2_TAT, nil, 'and no checkbox\'s on and off any more')
+    -- The page's cap is this side's (ui-src/src/screens/lockerv2/model.ts).
+    local model = readFile('ui-src/src/screens/lockerv2/model.ts') or ''
+    eq(tonumber(model:match('export const TATTOOS_PER_ZONE = (%d+)')), A.TATTOOS_PER_ZONE,
+        'the page\'s Add stops at the cap Lua holds')
     ok(#missing == 0, 'bridge/types.ts carries every locker2 callback and message name', table.concat(missing, ' '))
     -- And br_ui forwards every callback to br_core.
     local nui = readFile(RES .. 'br_ui/client/nui.lua')

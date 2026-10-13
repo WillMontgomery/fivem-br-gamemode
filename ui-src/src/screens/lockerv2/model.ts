@@ -14,7 +14,8 @@
  */
 
 import type {
-  Locker2Edit, Locker2Payload, Locker2Ped, Locker2Row, Locker2Tattoo, Locker2TatsPayload, Locker2Worn,
+  Locker2Edit, Locker2Payload, Locker2Ped, Locker2Row, Locker2TatRow, Locker2Tattoo, Locker2TatsPayload,
+  Locker2Worn,
 } from '../../bridge/types'
 
 /** The four pages. `peds` is "My peds"; `male` and `female` are the Custom tabs. */
@@ -247,13 +248,14 @@ export function categoriesOf(rows: { cat: string }[]): string[] {
 /** The id an anchor and its section share. */
 export const anchorId = (cat: string): string => `lk2-cat-${cat}`
 
-// ═══ TATTOOS (owner, 2026-10-11) ═══
+// ═══ TATTOOS (owner, 2026-10-11 and 2026-10-12) ═══
 //
-// "No cap on tattoos per ped, and yes whatever the game has include DLC sets.
-// They're all free just like the rest of the locker." A Tattoos section on the
-// Custom tabs after every other category: its own anchor, then one per body
-// zone. Lua sends each sex's list once (`locker2tats`, names from the game's
-// own text) and, on every push, only which are on (`edit.tats`).
+// "whatever the game has include DLC sets. They're all free just like the
+// rest of the locker." A Tattoos section on the Custom tabs after every other
+// category: its own anchor, then one per body zone. Lua sends each sex's list
+// once (`locker2tats`, names from the game's own text) and, on every push, the
+// rows (`edit.tats`): "a list, starting empty, with add and remove buttons ...
+// You can just make it max 10 per category."
 
 /** The body zones, in the order drawn (br_lib/config/tattoos.lua's `zones`). */
 export const TATTOO_ZONES = ['head', 'torso', 'larm', 'rarm', 'lleg', 'rleg'] as const
@@ -297,8 +299,29 @@ export function tattooCats(tats: Locker2TatsPayload | null): string[] {
   return [TATTOOS_CAT, ...tats.zones.map((z) => tattooCat(z.z))]
 }
 
-/** Which tattoos are on, for a quick look-up; any number of them. */
-export const tattoosOn = (edit: Locker2Edit): ReadonlySet<number> => new Set(edit.tats)
+/** "max 10 per category" (owner, 2026-10-12): the most rows a zone takes.
+ *  Lua's A.TATTOOS_PER_ZONE, which tools/test_locker2.lua holds equal to this;
+ *  Lua refuses an 11th whatever the page sends. */
+export const TATTOOS_PER_ZONE = 10
+
+/** A zone's rows, in the order drawn. */
+export const zoneRows = (rows: readonly Locker2TatRow[], z: string): Locker2TatRow[] =>
+  rows.filter((r) => r.z === z)
+
+/** Add is lit below the cap, while the zone has a tattoo no row holds. */
+export const canAddTattoo = (rowCount: number, itemCount: number): boolean =>
+  rowCount < TATTOOS_PER_ZONE && rowCount < itemCount
+
+/**
+ * The selected row, if it is one of these. A selection is a row's own id, so
+ * it follows the row through its arrows, and is no row at all once that row
+ * is gone or the draft is another (Reset, Edit, a tab): Lua never gives an id
+ * twice. Remove is lit only with one.
+ */
+export function selectedRow(rows: readonly Locker2TatRow[], sel: number | null): Locker2TatRow | null {
+  if (sel === null) return null
+  return rows.find((r) => r.r === sel) ?? null
+}
 
 // ═══ HEADSHOTS (contract section 6, with the skeptic's correction 6) ═══
 
@@ -407,8 +430,16 @@ function edit(v: unknown): Locker2Edit | null {
     dirty: e.dirty === true,
     cat: str(e.cat) ? e.cat : null,
     rows: list(e.rows).map(row).filter((r): r is Locker2Row => r !== null),
-    tats: list(e.tats).filter((i): i is number => Number.isInteger(i) && (i as number) > 0),
+    tats: list(e.tats).map(tatRow).filter((r): r is Locker2TatRow => r !== null),
   }
+}
+
+/** A tattoo row whole: a positive integer id and tattoo, in a zone drawn. */
+function tatRow(v: unknown): Locker2TatRow | null {
+  const t = obj(v)
+  const id = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0
+  if (!t || !id(t.r) || !id(t.i) || !str(t.z) || !(TATTOO_ZONES as readonly string[]).includes(t.z)) return null
+  return { r: t.r, z: t.z, i: t.i }
 }
 
 /**

@@ -15,8 +15,8 @@
  * `?season=1` in the address puts the harness on Season 1's locker instead.
  */
 
-import type { CallbackName, Envelope, Locker2Payload, Locker2Row, Locker2Tab } from './types'
-import { wrapStep } from '../screens/lockerv2/model'
+import type { CallbackName, Envelope, Locker2Payload, Locker2Row, Locker2Tab, Locker2TatRow } from './types'
+import { TATTOOS_PER_ZONE, TATTOO_ZONES, wrapStep } from '../screens/lockerv2/model'
 
 type Emit = (env: Envelope) => void
 type Sex = 'm' | 'f'
@@ -109,14 +109,24 @@ function rowsOf(sex: Sex, look: Look): Locker2Row[] {
 const tatsOf = (look: Look): number[] => Object.keys(look).filter((k) => k.startsWith('tat:'))
   .map((k) => Number(k.slice(4))).sort((x, y) => x - y)
 
-/** The harness's tattoo lists: a few per zone, unnamed -- a tattoo's name is
- *  the game's own text, which only the game has -- so each draws its fallback. */
+/** The harness's tattoo lists: a dozen or so per zone (past the cap of 10),
+ *  unnamed -- a tattoo's name is the game's own text, which only the game has
+ *  -- so each draws its fallback. */
 const mockTats = (sex: Sex) => ({
   sex,
-  zones: ['head', 'torso', 'larm', 'rarm', 'lleg', 'rleg'].map((z, zi) => ({
-    z, items: Array.from({ length: sex === 'm' ? 6 : 5 }, (_, n) => ({ i: zi * 10 + n + 1 })),
+  zones: TATTOO_ZONES.map((z, zi) => ({
+    z, items: Array.from({ length: sex === 'm' ? 14 : 12 }, (_, n) => ({ i: zi * 20 + n + 1 })),
   })),
 })
+
+/** A tattoo's zone in mockTats: 20 numbers a zone. */
+const zoneOfTat = (i: number): string => TATTOO_ZONES[Math.floor((i - 1) / 20)] ?? 'head'
+
+/** A look's tattoo rows as Lua opens a look: zone by zone, each in the list's
+ *  order, every row a new id. */
+let tatRowSeq = 0
+const tatRowsOfLook = (look: Look): Locker2TatRow[] => TATTOO_ZONES.flatMap((z) => tatsOf(look)
+  .filter((i) => zoneOfTat(i) === z).slice(0, TATTOOS_PER_ZONE).map((i) => ({ r: ++tatRowSeq, z, i })))
 
 const same = (a: Look, b: Look) => DEFS.every((d) => a[d.k]?.v === b[d.k]?.v && a[d.k]?.t === b[d.k]?.t)
   && tatsOf(a).join() === tatsOf(b).join()
@@ -160,7 +170,9 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
   let loading: string | null = null
   let busy = false
   // The draft: what a Custom tab is showing.
-  let draft: { sex: Sex; editing: string | null; base: Look; look: Look; cat: string | null } | null = null
+  let draft: {
+    sex: Sex; editing: string | null; base: Look; look: Look; cat: string | null; tats: Locker2TatRow[]
+  } | null = null
 
   const seedSaved = () => {
     const mk = (name: string, sex: Sex, hue: number, tweak: Partial<Look>, shot = true): Saved => {
@@ -195,7 +207,7 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         dirty: !same(draft.look, draft.base),
         cat: draft.cat,
         rows: rowsOf(draft.sex, draft.look),
-        tats: tatsOf(draft.look),
+        tats: draft.tats,
       }
       : null,
   })
@@ -204,8 +216,12 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
   const startDraft = (sex: Sex, from: Saved | null) => {
     const base = from ? { ...from.look } : defaultLook()
     // No category, the camera home, as Lua starts a draft.
-    draft = { sex, editing: from?.id ?? null, base, look: { ...base }, cat: null }
+    draft = { sex, editing: from?.id ?? null, base, look: { ...base }, cat: null, tats: tatRowsOfLook(base) }
   }
+
+  /** A zone's tattoos in the list's order, for the draft's sex. */
+  const zoneItems = (z: string): number[] =>
+    mockTats(draft?.sex ?? 'm').zones.find((x) => x.z === z)?.items.map((t) => t.i) ?? []
 
   /** Answer one locker2 callback. Returns false for a name it does not own. */
   function handle(name: CallbackName, data: unknown): boolean {
@@ -273,7 +289,7 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         if (draft && typeof d.cat === 'string' && d.cat !== draft.cat) { draft.cat = d.cat; push() }
         return true
       case 'br/locker2/reset':
-        if (draft) { draft.look = { ...draft.base }; push() }
+        if (draft) { draft.look = { ...draft.base }; draft.tats = tatRowsOfLook(draft.look); push() }
         return true
       case 'br/locker2/save': {
         if (!draft) return true
@@ -341,11 +357,47 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
       case 'br/locker2/tats':
         if (d.sex === 'm' || d.sex === 'f') emit({ k: 'locker2tats', d: mockTats(d.sex) })
         return true
-      case 'br/locker2/tat': {
-        // Any number on, as in Lua: no cap.
-        if (!draft || typeof d.i !== 'number') return true
-        if (d.on === true) draft.look[`tat:${d.i}`] = { v: 1, t: 0 }
-        else delete draft.look[`tat:${d.i}`]
+      // The tattoo rows, as Lua holds them: 10 a zone, no tattoo in two rows
+      // of a zone, the arrows wrapping over the ones other rows hold.
+      case 'br/locker2/tatadd': {
+        if (!draft || typeof d.z !== 'string') return true
+        const z = d.z
+        const rows = draft.tats.filter((x) => x.z === z)
+        const pick = zoneItems(z).find((i) => !rows.some((x) => x.i === i))
+        if (rows.length < TATTOOS_PER_ZONE && pick !== undefined) {
+          draft.look[`tat:${pick}`] = { v: 1, t: 0 }
+          // The page draws each zone's rows in their order; where a zone's
+          // rows sit among the others' does not matter to it.
+          draft.tats.push({ r: ++tatRowSeq, z, i: pick })
+        }
+        push()
+        return true
+      }
+      case 'br/locker2/tatstep': {
+        const row = draft?.tats.find((x) => x.r === d.r)
+        const dir = d.d === 1 || d.d === -1 ? d.d : 0
+        if (!draft || !row || dir === 0) return true
+        const order = zoneItems(row.z)
+        const used = new Set(draft.tats.filter((x) => x.z === row.z && x !== row).map((x) => x.i))
+        const from = order.indexOf(row.i)
+        for (let k = 1; k <= order.length; k++) {
+          const i = order[(((from + dir * k) % order.length) + order.length) % order.length]
+          if (i !== undefined && i !== row.i && !used.has(i)) {
+            delete draft.look[`tat:${row.i}`]
+            draft.look[`tat:${i}`] = { v: 1, t: 0 }
+            row.i = i
+            break
+          }
+        }
+        push()
+        return true
+      }
+      case 'br/locker2/tatdel': {
+        const row = draft?.tats.find((x) => x.r === d.r)
+        if (draft && row) {
+          draft.tats = draft.tats.filter((x) => x !== row)
+          delete draft.look[`tat:${row.i}`]
+        }
         push()
         return true
       }

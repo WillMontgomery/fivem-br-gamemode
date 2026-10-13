@@ -1105,10 +1105,14 @@ export interface Locker2Edit {
    *  as every new draft starts. The anchor lit is always this one. */
   cat: string | null
   rows: Locker2Row[]
-  /** The tattoos on, by their `i` in the sex's Locker2TatsPayload. Any
-   *  number of them (owner, 2026-10-11: "No cap on tattoos per ped"). */
-  tats: number[]
+  /** The Tattoos section's rows, zone by zone in the order drawn. */
+  tats: Locker2TatRow[]
 }
+
+/** One row of the Tattoos section (owner, 2026-10-12): `r` the row's own id,
+ *  which a step keeps and no other row ever has; `z` its zone; `i` its tattoo,
+ *  by its `i` in the sex's Locker2TatsPayload. */
+export interface Locker2TatRow { r: number; z: string; i: number }
 
 export interface Locker2Payload {
   on: boolean
@@ -1771,8 +1775,12 @@ export const CB = {
   LOCKER2_SHOTDONE: 'br/locker2/shotdone',
   /** { sex }: the Tattoos section's list, answered as a `locker2tats`. */
   LOCKER2_TATS:     'br/locker2/tats',
-  /** { i, on }: one tattoo on or off. */
-  LOCKER2_TAT:      'br/locker2/tat',
+  /** { z }: a new tattoo row at the foot of a zone (Add). */
+  LOCKER2_TAT_ADD:  'br/locker2/tatadd',
+  /** { r, d }: a tattoo row's arrow, d = 1 or -1, wrapping. */
+  LOCKER2_TAT_STEP: 'br/locker2/tatstep',
+  /** { r }: Remove, on the selected row. */
+  LOCKER2_TAT_DEL:  'br/locker2/tatdel',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
   MARKET_EQUIP:   'br/market/equip',

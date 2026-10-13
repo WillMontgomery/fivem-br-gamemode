@@ -75,7 +75,8 @@ local S = {
     --- The page.
     open = false,
     tab = nil,
-    --- The custom ped being edited: { sex, a, base, editing, dirty, cat }.
+    --- The custom ped being edited: { sex, a, base, editing, dirty, cat, tats }
+    --- (`tats`: its tattoo rows, see tatRowsOf).
     draft = nil,
     --- A save, rename or delete waiting on the server: its req.
     busy = nil,
@@ -217,6 +218,11 @@ end
 -- appearance's `t` says which are on (br_lib/shared/appearance.lua). Each is
 -- put on with the overlay of the look's own sex, and only where this game
 -- build has its collection. A key the list does not know is skipped.
+--
+-- AT MOST 10 A BODY ZONE (owner, 2026-10-12: "You can just make it max 10 per
+-- category"): a look is worn with the first A.TATTOOS_PER_ZONE of each zone
+-- in the list's order, a draft starts with only those, the page's Add stops
+-- there, and a save past it is refused here and on the server.
 
 --- The list, indexed once: each label key's row, and whether this build has
 --- its collection.
@@ -256,16 +262,46 @@ local function tattooHash(i, sex)
     return h or nil
 end
 
---- The rows of `a`'s tattoos this ped can wear, in the list's order.
+--- A label key's body zone, for a sex that can wear it here; nil otherwise.
+local function tattooZone(key, sex)
+    local i = tattooIndex().byKey[key]
+    return i and tattooFor(i, sex) and BR.Config.Tattoos.list[i][2] or nil
+end
+
+--- The rows of `a`'s tattoos this ped can wear, in the list's order: the
+--- first TATTOOS_PER_ZONE of each zone, and no more.
 local function tattooRows(a)
     local idx = tattooIndex()
-    local out = {}
+    local all = {}
     for _, key in ipairs(A.tattoos(a)) do
         local i = idx.byKey[key]
-        if i and tattooFor(i, a.s) then out[#out + 1] = i end
+        if i and tattooFor(i, a.s) then all[#all + 1] = i end
     end
-    table.sort(out)
+    table.sort(all)
+    local out, perZone = {}, {}
+    for _, i in ipairs(all) do
+        local z = BR.Config.Tattoos.list[i][2]
+        local n = (perZone[z] or 0) + 1
+        if n <= A.TATTOOS_PER_ZONE then
+            perZone[z] = n
+            out[#out + 1] = i
+        end
+    end
     return out
+end
+
+--- `a` with the tattoos past a zone's cap taken off, as tattooRows leaves
+--- them: a saved ped from the day there was no cap, opened to edit. A key that
+--- is never worn here is left as it was.
+local function capTattoos(a)
+    local kept = {}
+    for _, i in ipairs(tattooRows(a)) do kept[i] = true end
+    local idx = tattooIndex()
+    for _, key in ipairs(A.tattoos(a)) do
+        local i = idx.byKey[key]
+        if i and tattooFor(i, a.s) and not kept[i] then A.setTattoo(a, key, false) end
+    end
+    return a
 end
 
 --- Exactly `a`'s tattoos on the ped, and how many went on. A decoration only
@@ -765,6 +801,65 @@ local function catalog(sex)
     return catalogs[sex]
 end
 
+--- The order a zone's arrows step through for a sex -- the page's list, by
+--- the game's name -- and each tattoo's place in it. Built once off the
+--- catalog: { list = { i... }, at = { [i] = place } }.
+local orders = { m = {}, f = {} }
+local function zoneOrder(sex, z)
+    local o = orders[sex][z]
+    if o then return o end
+    o = { list = {}, at = {} }
+    for _, zone in ipairs(catalog(sex).zones) do
+        if zone.z == z then
+            for k, it in ipairs(zone.items) do
+                o.list[k] = it.i
+                o.at[it.i] = k
+            end
+        end
+    end
+    orders[sex][z] = o
+    return o
+end
+
+local function tatZones()
+    local cfg = BR.Config.Tattoos
+    return cfg and cfg.zones or {}
+end
+
+--- THE DRAFT'S TATTOO ROWS (owner, 2026-10-12: "a list, starting empty, with
+--- add and remove buttons"): per body zone, in the order the page draws them,
+--- { [zone] = { { r, i }... } }. `i` is the tattoo's row in the list; `r` the
+--- row's own id, never given twice in a session, so the page's selection
+--- follows a row through its steps and never lands on another draft's. The
+--- look's `t` says which tattoos are on, and these the order the page lists
+--- them in, which the save cannot hold: a look opens with its rows in the
+--- list's order, at most TATTOOS_PER_ZONE a zone (tattooRows).
+local nextTatRow = 0
+local function tatRowsOf(a)
+    local out = {}
+    for _, z in ipairs(tatZones()) do out[z] = {} end
+    for _, i in ipairs(tattooRows(a)) do
+        local rows = out[BR.Config.Tattoos.list[i][2]]
+        if rows then
+            nextTatRow = nextTatRow + 1
+            rows[#rows + 1] = { r = nextTatRow, i = i }
+        end
+    end
+    return out
+end
+
+--- The rows as the page gets them, zone by zone: { r, z, i }, a few bytes
+--- each. The tattoos' names go once, when the page asks (LOCKER2_TATS).
+local function tatRowsOut(d)
+    local out = {}
+    for _, z in ipairs(tatZones()) do
+        for _, row in ipairs(d.tats and d.tats[z] or {}) do
+            out[#out + 1] = { r = row.r, z = z, i = row.i }
+        end
+    end
+    return out
+end
+
 --- A category of the anchor navigation by its id: a row category or one of
 --- the Tattoos section's.
 local function catById(id)
@@ -820,10 +915,8 @@ function V.push()
     local edit = nil
     if S.draft and CUSTOM[S.tab] then
         local rows, cats = rowsFor(S.draft)
-        -- The tattoos on, by their row in the list: a few bytes each. Their
-        -- names go once, when the page asks (LOCKER2_TATS), never on a push.
         edit = { sex = S.draft.sex, editing = S.draft.editing, dirty = S.draft.dirty,
-                 cat = S.draft.cat, cats = cats, rows = rows, tats = tattooRows(S.draft.a) }
+                 cat = S.draft.cat, cats = cats, rows = rows, tats = tatRowsOut(S.draft) }
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2, {
         on = true,
@@ -964,11 +1057,15 @@ end)
 --- starts -- a Custom tab, Create, Edit -- sends the camera home and clears it.
 --- A draft that began on Face with the camera wherever the last one left it
 --- lit Face over the feet, and pressing Face then moved nothing.
+---
+--- A LOOK PAST THE TATTOO CAP (saved the day there was none) starts without
+--- what it never wore, base included: nothing to save until something changes.
 local function startDraft(sex, a, editing)
-    S.draft = { sex = sex, a = A.copy(a), base = A.copy(a), editing = editing, dirty = false,
-                cat = nil }
+    local look = capTattoos(A.copy(a))
+    S.draft = { sex = sex, a = A.copy(look), base = A.copy(look), editing = editing, dirty = false,
+                cat = nil, tats = tatRowsOf(look) }
     if BR.LobbyCam and BR.LobbyCam.unfocus then BR.LobbyCam.unfocus() end
-    dress(GetHashKey(C().models[sex]), A.copy(a), function() V.push() end)
+    dress(GetHashKey(C().models[sex]), A.copy(look), function() V.push() end)
 end
 
 --- Throw the draft away and put the worn ped back.
@@ -1173,6 +1270,8 @@ end
 local function save(data)
     local d = S.draft
     if not d or not d.dirty then return end
+    -- Never past 10 tattoos a body zone, which the server refuses too.
+    if A.tattoosOverCap(d.a, tattooZone) then return end
     local a = A.encode(d.a)
     if not a then return end
     local op = data.op
@@ -1226,6 +1325,7 @@ ACTIONS[BR.NuiCb.LOCKER2_RESET] = function()
     local d = S.draft
     if not d then return end
     d.a = A.copy(d.base)
+    d.tats = tatRowsOf(d.a)
     d.dirty = false
     dress(GetHashKey(C().models[d.sex]), A.copy(d.a))
 end
@@ -1272,27 +1372,112 @@ ACTIONS[BR.NuiCb.LOCKER2_CAT] = function(data)
     if LC and LC.focus and not there then LC.focus(cat.cam) end
 end
 
---- One tattoo on or off: any number at once, all free. On is one more
---- decoration; off is the rest put back, since they only come off together.
-ACTIONS[BR.NuiCb.LOCKER2_TAT] = function(data)
+-- ═══ THE TATTOO ROWS (owner, 2026-10-12) ═══
+--
+-- "How about a list, starting empty, with add and remove buttons. When I click
+-- add, create a new row with a left/right arrow and the title of the tattoo in
+-- between. Allow me to select each row and remove if I want to. You can just
+-- make it max 10 per category." Each zone's rows are the draft's (tatRowsOf);
+-- the page says which row and which way, and every rule is held here: at most
+-- TATTOOS_PER_ZONE rows a zone, never one tattoo in two rows of a zone, the
+-- arrows wrapping through the zone's tattoos for the draft's sex. All free.
+
+--- The row with id `r`, and its zone's rows and its place there.
+local function tatRowById(d, r)
+    for _, z in ipairs(tatZones()) do
+        for k, row in ipairs(d.tats[z] or {}) do
+            if row.r == r then return row, d.tats[z], k end
+        end
+    end
+    return nil
+end
+
+--- The tattoos a zone's rows hold, but `skip`'s.
+local function usedIn(rows, skip)
+    local used = {}
+    for _, row in ipairs(rows) do
+        if row ~= skip then used[row.i] = true end
+    end
+    return used
+end
+
+--- A change to the draft's tattoos, onto the preview at once: one more
+--- decoration for an Add (`added`), and for a step or a Remove the rest put
+--- back, since decorations only come off together.
+local function tatChanged(added)
     local d = S.draft
-    if not d then return end
-    local i = math.tointeger(tonumber(data.i))
-    if not i or not tattooFor(i, d.sex) then return end
-    local key, on = BR.Config.Tattoos.list[i][1], data.on == true
-    if A.hasTattoo(d.a, key) == on then return end
-    A.setTattoo(d.a, key, on)
     touched()
     local ped = PlayerPedId()
     if GetEntityModel(ped) ~= GetHashKey(C().models[d.sex]) then return end
-    if on then
-        local h = tattooHash(i, d.sex)
+    if added then
+        local h = tattooHash(added, d.sex)
         AddPedDecorationFromHashes(ped, h[1], h[2])
         noteDecos(ped, 1)
     else
         noteDecos(ped, tattoos(ped, d.a))
     end
     noteApplied(GetEntityModel(ped), A.copy(d.a), ped)
+end
+
+--- { z }: a new row at the foot of a zone, on the first of its tattoos (the
+--- page's order) no row of the zone holds. Refused at the cap.
+ACTIONS[BR.NuiCb.LOCKER2_TAT_ADD] = function(data)
+    local d = S.draft
+    if not d or type(data.z) ~= 'string' then return end
+    local rows = d.tats[data.z]
+    if not rows or #rows >= A.TATTOOS_PER_ZONE then return end
+    local used = usedIn(rows)
+    local pick = nil
+    for _, i in ipairs(zoneOrder(d.sex, data.z).list) do
+        if not used[i] then
+            pick = i
+            break
+        end
+    end
+    if not pick then return end
+    nextTatRow = nextTatRow + 1
+    rows[#rows + 1] = { r = nextTatRow, i = pick }
+    A.setTattoo(d.a, BR.Config.Tattoos.list[pick][1], true)
+    tatChanged(pick)
+end
+
+--- { r, d }: a row's arrow, d = 1 or -1, wrapping through its zone's
+--- tattoos and over the ones its other rows hold.
+ACTIONS[BR.NuiCb.LOCKER2_TAT_STEP] = function(data)
+    local d = S.draft
+    local r, dir = math.tointeger(tonumber(data.r)), math.tointeger(tonumber(data.d))
+    if not d or not r or (dir ~= 1 and dir ~= -1) then return end
+    local row, rows = tatRowById(d, r)
+    if not row then return end
+    local order = zoneOrder(d.sex, BR.Config.Tattoos.list[row.i][2])
+    local n = #order.list
+    local from = order.at[row.i] or (dir == 1 and 0 or n + 1)
+    local used = usedIn(rows, row)
+    local pick = nil
+    for k = 1, n do
+        local i = order.list[(from - 1 + dir * k) % n + 1]
+        if i ~= row.i and not used[i] then
+            pick = i
+            break
+        end
+    end
+    if not pick then return end
+    A.setTattoo(d.a, BR.Config.Tattoos.list[row.i][1], false)
+    A.setTattoo(d.a, BR.Config.Tattoos.list[pick][1], true)
+    row.i = pick
+    tatChanged(nil)
+end
+
+--- { r }: Remove, on the row the page has selected.
+ACTIONS[BR.NuiCb.LOCKER2_TAT_DEL] = function(data)
+    local d = S.draft
+    local r = math.tointeger(tonumber(data.r))
+    if not d or not r then return end
+    local row, rows, k = tatRowById(d, r)
+    if not row then return end
+    table.remove(rows, k)
+    A.setTattoo(d.a, BR.Config.Tattoos.list[row.i][1], false)
+    tatChanged(nil)
 end
 
 ACTIONS[BR.NuiCb.LOCKER2_WEAR] = function(data)

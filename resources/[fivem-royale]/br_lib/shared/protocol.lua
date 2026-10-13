@@ -1520,8 +1520,9 @@ BR.Nui = {
     -- change. `peds` = { { id, name, up, img? } } with no appearance; `edit`
     -- = { sex, editing, dirty, cat, cats, rows, tats } on a Custom tab, where a
     -- row is { k, cat, kind = 'count', v, n, colors } or { k, cat, kind =
-    -- 'slider', v, min, max, def }, and `tats` the tattoos on, by their `i` in
-    -- LOCKER2_TATS. See br_core/client/locker2.lua.
+    -- 'slider', v, min, max, def }, and `tats` the Tattoos section's rows,
+    -- zone by zone in the order drawn: { r, z, i }, `r` the row's id and `i`
+    -- its tattoo in LOCKER2_TATS. See br_core/client/locker2.lua.
     LOCKER2   = 'locker2',
     -- { id, up?, txd?, url?, img?, save? }: one card's headshot. `txd` and
     -- `url` (nui-img, with a cache-buster) for a shot taken now -- the page
@@ -1707,7 +1708,9 @@ BR.NuiCb = {
     LOCKER2_SHOTDONE = 'br/locker2/shotdone',  -- { id, ok }
     LOCKER2_SHOT     = 'br/locker2/shot',      -- { id, img }: a saved ped's webp
     LOCKER2_TATS     = 'br/locker2/tats',      -- { sex }: the tattoo list, answered as LOCKER2_TATS
-    LOCKER2_TAT      = 'br/locker2/tat',       -- { i, on }: one tattoo on or off
+    LOCKER2_TAT_ADD  = 'br/locker2/tatadd',    -- { z }: a new tattoo row in a zone
+    LOCKER2_TAT_STEP = 'br/locker2/tatstep',   -- { r, d }: a tattoo row's arrow, d = 1 or -1
+    LOCKER2_TAT_DEL  = 'br/locker2/tatdel',    -- { r }: Remove a tattoo row
     -- The guided first run (#261). { run = boolean } for the lobby half,
     -- { game = boolean } for the in-game one, and `done = true` alongside
     -- `game = false` when the last card was DISMISSED rather than abandoned --

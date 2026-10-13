@@ -42,6 +42,8 @@ export const BTN = {
   keepEditing: 'Keep editing', // WRITTEN (proposal for the owner)
   discard: 'Discard',         // WRITTEN (proposal for the owner)
   saveAsNew: 'Save as new',   // WRITTEN (proposal for the owner)
+  add: 'Add',                 // WRITTEN (proposal for the owner): he named "add and remove buttons"
+  remove: 'Remove',           // WRITTEN (proposal for the owner): he named "add and remove buttons"
 } as const
 
 /** "Update <name>", the split Save's menu line while editing a saved ped. */
