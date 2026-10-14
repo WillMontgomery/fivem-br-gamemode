@@ -335,7 +335,10 @@
         const hours = document.getElementById("hours");
         const date = document.getElementById("date");
         const fmt = typeof GetLocale === "function" ? GetLocale("date_format") : "en-US";
-        if (hours) hours.innerText = new Date(2000, 0, 1, h, m).toLocaleTimeString(fmt, { hour: "numeric", minute: "2-digit" });
+        // A plain space before AM/PM: Chromium's newer ICU writes U+202F (a
+        // narrow no-break space) there, which the Ubuntu face may not carry --
+        // CEF 144 would draw the gap in a fallback font, CEF 103 a space (#413).
+        if (hours) hours.innerText = new Date(2000, 0, 1, h, m).toLocaleTimeString(fmt, { hour: "numeric", minute: "2-digit" }).replace(/\u202f/g, " ");
         if (date) date.innerText = "";
     };
 
