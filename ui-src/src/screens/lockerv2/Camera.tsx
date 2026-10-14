@@ -52,7 +52,7 @@ function CamBtn({ label, children, onPress, hold }: {
   const held = useHold(onPress, spinDelay)
   const press = hold ? held : { onClick: () => onPress(0) }
   return (
-    <button type="button" className="plate btn lk2-cam-btn" aria-label={label} title={label} {...press}>
+    <button type="button" className="plate btn lk2-cam-btn" aria-label={label} {...press}>
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">{children}</svg>
     </button>
   )
