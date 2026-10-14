@@ -469,13 +469,19 @@ do
     local e = lastLocal(BR.Nui.EMOTES)
     ok(e ~= nil and e.on == true, 'EMOTES {on=true}')
 
-    -- SYNTHETIC ROWS STAY AFTER THE DANCES.
+    -- SYNTHETIC ROWS STAY AFTER THE DANCES -- where there are any. The Season
+    -- 2 Market (#411, the `market2` row) shows only real items, so a season
+    -- that has it has no placeholder rows at all (tools/test_market2.lua).
     local lastEmote, firstSynth = 0, nil
     for i, it in ipairs(grid.items) do
         if it.kind == 'emote' then lastEmote = i end
         if it.id == 'ped_juggalo' and not firstSynth then firstSynth = i end
     end
-    ok(firstSynth ~= nil and firstSynth > lastEmote, 'the emote items come before SYNTHETIC')
+    if BR.Season.has('market2') then
+        ok(firstSynth == nil and lastEmote > 0, 'the Season 2 Market: the dances, and no SYNTHETIC rows')
+    else
+        ok(firstSynth ~= nil and firstSynth > lastEmote, 'the emote items come before SYNTHETIC')
+    end
 
     -- REPLACE IS FORWARDED ONLY AS A NON-EMPTY STRING.
     local cases = {

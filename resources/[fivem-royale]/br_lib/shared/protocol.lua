@@ -1549,6 +1549,10 @@ BR.Nui = {
     -- neglect: an award pushed from Lua is an award timed against a screen Lua
     -- cannot observe, which is how it went unseen twice.
     XP        = 'xp',
+    -- { balance, currency, items, v2? }. `v2` is true only while the season
+    -- has the `market2` row (#411): the page then draws the Season 2 Market,
+    -- and the grid carries no placeholder kinds and marks this season's items
+    -- `isNew`. Absent on Season 1, whose envelope is unchanged.
     MARKET    = 'market',
     -- The player list. Carries the roster projection AND the report state --
     -- how many reports are left this match, and the categories -- because the

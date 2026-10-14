@@ -162,6 +162,7 @@ NOTES=(
     "test_terminalstrike|Season 2 tools from the sky: Vehicle drop lands an unarmed car near the right player, Airstrike's damage is the server's alone, and both spend nothing when they can't"
     "test_guardprobe|The bodyguard ownership probe is dev-only and Season 2, spawns and logs what it says, and costs nothing until typed"
     "test_locker2|Season 2 Locker: saved peds checked and kept by the server, the ped you left with is the ped you rejoin with, and Season 1's locker unchanged"
+    "test_market2|Season 2 Market: only real items and New on the season's own, a purchase still the server's, and Season 1's Market unchanged"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -969,6 +970,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # for that model in br_core: the cars once the showroom has them, and a box
     # client/loot.lua has built. Its wait-side half is in test_lobbyseq.lua.
     #
+    # test_market2.lua is the Season 2 Market (#411) on br_ui's real
+    # client/market.lua: Season 1's envelope and grid exactly as they were,
+    # Season 2's carrying `v2`, only items the server can resolve (no
+    # placeholder kinds) and New on the dances alone, a brseason switch both
+    # ways, and a purchase forwarded as an id that moves nothing until
+    # MARKET_STATE. The page half is ui-src/scripts/test-marketv2.mjs.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -1035,6 +1043,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_terminalstrike.lua
         tools/test_guardprobe.lua
         tools/test_locker2.lua
+        tools/test_market2.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

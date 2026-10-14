@@ -40,6 +40,19 @@ local PROFILE = { level = 1, xp = 0, needed = 1 }
 --- walking a nil table.
 local function emotesOn() return BR.Config.Emotes ~= nil and BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end
 
+--- Is this machine's Market the Season 2 one? (#411)
+---
+--- Owner, 2026-10-13: "nothing we re-do in the shop should ever show on season
+--- 1." The `market2` row in br_lib/config/seasons.lua, asked like every other
+--- gate. Off, the grid and the MARKET envelope are exactly what they were
+--- before #411, and the page draws screens/Market.tsx. On, the grid drops the
+--- placeholder kinds, marks this season's items New, and the envelope carries
+--- `v2`, which is what makes the page draw screens/MarketV2.tsx.
+---
+--- NIL-SAFE for the same reason as emotesOn: tools/test_client.lua loads this
+--- file without the season module.
+local function market2On() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('market2') == true end
+
 --- The catalogue, from the shared season config.
 ---
 --- MOVED OUT OF THIS FILE, because the list is the part that changes every
@@ -100,6 +113,9 @@ local STATE = { balance = 0, owned = {}, equipped = {}, emotes = {} }
 --- every `default` item outright.
 local function catalogue()
     local out = {}
+    -- THE SEASON 2 MARKET (#411). The push reads the same answer for the
+    -- envelope's `v2` in the same call, and nothing moves the season between.
+    local v2 = market2On()
 
     for _, season in ipairs(BR.Config.Market.seasons) do
         for _, item in ipairs(season.items) do
@@ -152,23 +168,43 @@ local function catalogue()
                     equipped = slot ~= nil,
                     slot     = slot,
                     locked   = not item.purchasable,
+                    -- NEW (#411): "A 'New' badge on this season's items". The
+                    -- dances are what Season 2 brought (their `emotes` row is
+                    -- from 2), and only the Season 2 Market says so. Off, the
+                    -- field is absent rather than false: Season 1's grid is
+                    -- the one it always was.
+                    isNew    = v2 or nil,
                 }
             end
         end
     end
 
-    for _, item in ipairs(SYNTHETIC) do out[#out + 1] = item end
+    -- THE PLACEHOLDER KINDS ARE SEASON 1'S ALONE (#411). Characters and
+    -- Banners have no definitions, and the server refuses every one of them
+    -- ("no such item"); the Season 2 Market shows "only real items", so a tab
+    -- appears only for a kind something can actually be bought or worn from.
+    -- Season 1 keeps them exactly as it always had them.
+    if not v2 then
+        for _, item in ipairs(SYNTHETIC) do out[#out + 1] = item end
+    end
 
     return out
 end
 
 function BR.Market.push()
+    local v2 = market2On()
     TriggerEvent('br:ui:sendLocal', BR.Nui.MARKET, {
         balance  = STATE.balance,
         -- Sent rather than hardcoded in the page, so renaming the currency is
         -- one line in the config instead of a search across two languages.
         currency = BR.Config.Market.currency,
         items    = catalogue(),
+        -- THE SEASON 2 MARKET (#411): present and true only while the
+        -- `market2` row is on, and then the page draws screens/MarketV2.tsx.
+        -- In the grid's own envelope, so the screen and the grid it draws can
+        -- never arrive out of step. Absent on Season 1, whose envelope is the
+        -- one it always was.
+        v2       = v2 or nil,
     })
     BR.Market.pushEmotes()
 end
