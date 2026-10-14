@@ -7,9 +7,10 @@
  */
 
 import type { CallbackName, EnvelopeKind, WireEnvelope } from './types'
-import { ENVELOPE_VERSION } from './types'
+import { CB, ENVELOPE_VERSION } from './types'
 import { admit, createSeqGate, type Refusal } from './envelope'
 import type { BridgeTap } from './coldProbe'
+import { createErrorGate, oneInFlight } from './coalesce'
 
 /** True when running under `npm run dev` in a normal browser. */
 export const isBrowser = !(window as unknown as { invokeNative?: unknown }).invokeNative
@@ -214,6 +215,23 @@ export async function fetchNui<Req = unknown, Res = unknown>(
   timeoutMs = 5000,
 ): Promise<Res | null> {
   if (tap) tap.fetch(name)
+  // THE LOCKER'S DRAG-TO-TURN IS ADDED UP, NOT SENT PER POINTERMOVE (#413).
+  // Both lockers send LOCKER_SPIN on every pointermove, 60 to 240 a second, and
+  // CEF 144 throttles a page that sends that many requests. Here the deltas are
+  // summed and one request is in flight at a time (bridge/coalesce.ts); br_core
+  // adds them up itself (client/locker.lua spinBy), so the ped turns exactly as
+  // far. In the bridge rather than the screens because Season 1's Locker.tsx is
+  // frozen byte for byte (#28). Nobody reads a spin's answer.
+  if (name === CB.LOCKER_SPIN) {
+    spin.add(Number((data as { delta?: unknown } | undefined)?.delta))
+    return null
+  }
+  return request<Res>(name, data, timeoutMs)
+}
+
+const spin = oneInFlight((delta) => request(CB.LOCKER_SPIN, { delta }, 5000))
+
+async function request<Res>(name: CallbackName, data: unknown, timeoutMs: number): Promise<Res | null> {
   // import.meta.env.DEV is replaced with a literal false in a production build,
   // so this whole branch -- and the mock module with it -- is eliminated rather
   // than shipped as a separate chunk. Dynamic imports under the nui:// scheme
@@ -247,6 +265,10 @@ export async function fetchNui<Req = unknown, Res = unknown>(
   }
 }
 
+const ERROR_WINDOW_MS = 60_000
+const errorGate = createErrorGate(10, ERROR_WINDOW_MS)
+let heldTimer: number | null = null
+
 /**
  * Push an error back to Lua so it lands in the F8 console and the server log.
  *
@@ -260,6 +282,27 @@ export function reportError(context: string, err: unknown): void {
   console.error(`[br_ui] ${context}:`, err)
 
   if (isBrowser) return
+  // ONE REQUEST PER ERROR WAS UNBOUNDED, and a fetchNui timeout reports itself,
+  // so under CEF 144's request throttle slow callbacks made reports that made
+  // callbacks slower (#413). The same context and message once a minute, ten
+  // reports a minute at most; what is held back is counted on the next one, or
+  // on one summary when the minute is up (bridge/coalesce.ts). The console line
+  // above is local and stays unconditional.
+  if (!errorGate.admit(`${context}|${message}`, Date.now())) {
+    if (heldTimer === null) {
+      heldTimer = window.setTimeout(() => {
+        heldTimer = null
+        const n = errorGate.takeHeld()
+        if (n > 0) postError('br_ui', `${n} more UI error report(s) held back in the last minute`, '')
+      }, ERROR_WINDOW_MS)
+    }
+    return
+  }
+  const held = errorGate.takeHeld()
+  postError(context, held > 0 ? `${message} (+${held} held back)` : message, stack)
+}
+
+function postError(context: string, message: string, stack: string): void {
   // Deliberately raw fetch, not fetchNui -- if the error sink itself failed we
   // would recurse forever.
   void fetch(`https://${resourceName()}/br/err`, {

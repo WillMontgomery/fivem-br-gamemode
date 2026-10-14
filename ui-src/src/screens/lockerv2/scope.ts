@@ -57,44 +57,21 @@ export function useIslandZoom(): number {
 }
 
 /**
- * DOES THIS ENGINE REPORT A ZOOMED ELEMENT'S BOX IN ITS OWN ZOOMED PX?
- *
- * Chromium before 128 (FiveM's CEF is 103) did: getBoundingClientRect inside
- * `zoom: 2` came back halved, and a `left` written there is doubled on screen,
- * so a read and a write in the same zoom agree. 128 standardized zoom and
- * reports what is drawn. Cloudscape positions its tooltips from one element's
- * box and writes the result into another, so which of the two this engine
- * does decides whether the tooltip's own container must wear the same zoom.
- * Measured once, on a probe, rather than guessed from a version string.
- */
-let legacy: boolean | null = null
-export function legacyZoom(): boolean {
-  if (legacy !== null) return legacy
-  const outer = document.createElement('div')
-  outer.style.cssText = 'position:absolute;visibility:hidden;left:0;top:0;zoom:2'
-  const inner = document.createElement('div')
-  inner.style.cssText = 'width:10px;height:10px'
-  outer.appendChild(inner)
-  document.body.appendChild(outer)
-  legacy = Math.abs(inner.getBoundingClientRect().width - 10) < 0.5
-  outer.remove()
-  return legacy
-}
-
-/**
  * THE TWO THINGS CLOUDSCAPE PUTS IN <body> WEAR THE ISLAND'S ZOOM.
  *
  * The locked tab's hover card and the slider's value are portalled into a
  * fresh <div> on <body>, outside the zoomed island: unzoomed they are drawn at
- * 14 px on a 4K screen beside text twice that size, and on CEF 103 placed from
- * a box measured in the island's px. While the locker is up, every Cloudscape
- * container that appears on <body> is given the island's zoom -- on an engine
- * that measures in zoomed px only, since on one that does not, the zoom would
- * move the card rather than fix it.
+ * 14 px on a 4K screen beside text twice that size, and placed from a box
+ * Cloudscape measures in the island's px. While the locker is up, every
+ * Cloudscape container that appears on <body> is given the island's zoom.
+ *
+ * ON EVERY ENGINE (#413). Cloudscape measures in zoomed px on CEF 144 too
+ * (src/cef/zoomRect.ts), so the card is placed and sized as on CEF 103; this
+ * used to stand down on an engine with standardized zoom, which left the card
+ * in the right place at half size on 4K.
  */
 export function usePortalZoom(z: number): void {
   useEffect(() => {
-    if (!legacyZoom()) return
     const zoomed = new Set<HTMLElement>()
     const take = (el: HTMLElement) => {
       if (el.id === 'root' || zoomed.has(el)) return

@@ -3,6 +3,7 @@ import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
 import DiscordCard from '../ui/DiscordCard'
+import { copyText } from '../ui/clipboard'
 import { play } from '../audio/cues'
 import { escapeHeld } from '../tutorial/lockGuard'
 
@@ -132,21 +133,9 @@ export default function Help({ inline = false, onDone }:
   // boolean is the whole answer and it was already being computed.
   const copy = async () => {
     play('ui.select')
-    let ok = false
-    try {
-      await navigator.clipboard.writeText(SITE)
-      ok = true
-    } catch {
-      // Clipboard permission is not guaranteed inside CEF. execCommand is
-      // deprecated everywhere and still works here, which is exactly the
-      // situation it is kept around for.
-      const el = document.createElement('textarea')
-      el.value = SITE
-      document.body.appendChild(el)
-      el.select()
-      try { ok = document.execCommand('copy') } catch { /* nothing left to try */ }
-      el.remove()
-    }
+    // ui/clipboard.ts: the clipboard API, then a FOCUSED hidden field -- CEF
+    // 144 copies from nothing else, and this one was never focused (#413).
+    const ok = await copyText(SITE)
     if (!ok) return
     // HELD IN A REF, CLEARED BEFORE RESCHEDULING. Without it a second press
     // leaves the first timeout armed, and the label goes back to "Copy link"

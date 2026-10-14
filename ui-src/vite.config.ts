@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { zoomRectEsbuild, zoomRectPlugin } from './scripts/zoom-rect.mjs'
 // Tailwind 3 runs through PostCSS (see postcss.config.js), not a Vite plugin.
 
 // WHY THIS PROJECT LIVES OUTSIDE resources/
@@ -38,7 +39,13 @@ const BUILD_STAMP = process.env.BR_BUILD_STAMP ?? (() => {
 })()
 
 export default defineConfig({
-  plugins: [react()],
+  // zoomRect: Cloudscape measures Locker v2's zoomed island as CEF 103 does,
+  // on CEF 144 too (scripts/zoom-rect.mjs, src/cef/zoomRect.ts, #413). The
+  // esbuild half is for the dev server's pre-bundled dependencies.
+  plugins: [zoomRectPlugin(), react()],
+  optimizeDeps: {
+    esbuildOptions: { plugins: [zoomRectEsbuild()] },
+  },
 
   define: {
     __BUILD_STAMP__: JSON.stringify(BUILD_STAMP),

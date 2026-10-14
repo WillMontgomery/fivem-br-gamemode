@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useUi } from '../store'
 import { play } from '../audio/cues'
+import { copyText } from './clipboard'
 
 /**
  * The invitation to our Discord (owner, 2026-08-30).
@@ -126,40 +127,9 @@ export default function DiscordCard() {
   const invite = url.trim()
 
   const copy = async () => {
-    // WHERE THE FOCUS WAS. The fallback below selects a textarea, which takes
-    // focus off whatever the player was on -- and this project has no
-    // focus-navigation system of its own, so the native DOM order is the whole
-    // of keyboard use here and losing a position in it is not recoverable.
-    const was = document.activeElement as HTMLElement | null
-    let ok = false
-
-    try {
-      // TRIED FIRST AND EXPECTED TO REJECT. NUI is served over https so this is
-      // a secure context and the API exists, but CEF Alloy grants no
-      // clipboard-write permission and asking for it has been an open Cfx.re
-      // request since 2021. It costs one rejected promise, and it is what makes
-      // this card come right on its own the day that changes.
-      await navigator.clipboard.writeText(invite)
-      ok = true
-    } catch {
-      // THE PATH THAT ACTUALLY RUNS. Deprecated everywhere and alive here,
-      // which is exactly the situation execCommand is kept around for -- and it
-      // answers with a BOOLEAN, synchronously, which is the only reason this
-      // card can tell the truth about whether anything was copied.
-      const el = document.createElement('textarea')
-      el.value = invite
-      // FIXED AND TRANSPARENT, NOT `display: none`. An unrendered element
-      // cannot hold a selection at all, and an unpositioned one can scroll the
-      // document -- which matters because the pause menu's root is the thing
-      // that scrolls.
-      el.style.position = 'fixed'
-      el.style.opacity = '0'
-      document.body.appendChild(el)
-      el.select()
-      try { ok = document.execCommand('copy') } catch { ok = false }
-      el.remove()
-      was?.focus?.()
-    }
+    // ui/clipboard.ts: the clipboard API, then a FOCUSED hidden field (CEF 144
+    // copies from nothing else), with the player's focus put back (#413).
+    const ok = await copyText(invite)
 
     if (!ok) {
       // THE ERROR CUE INSTEAD OF THE PRESS CUE, NEVER AFTER IT -- ui/Btn.tsx's
