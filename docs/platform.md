@@ -16,6 +16,44 @@ Tailwind 3**. An unparseable colour is not a fallback — the declaration is
 dropped and the element renders invisible. `ui-src/scripts/check-css.mjs` fails
 the build if any reach the bundle.
 
+**CEF 144 is coming, and both engines have to work until it is everywhere
+(#413).** Cfx is moving FiveM from CEF 103 to 144: Canary first, then every
+channel. What it removes is banned by `ui-src/scripts/check-cef.mjs` (rules in
+`cef-rules.mjs`, proved by `test-cef.mjs`): `alert`/`confirm`/`prompt`,
+mutation events, `execCommand` on an unfocused field, Picture-in-Picture and
+the device APIs, `unload`, URLs built from unescaped data, CSS `zoom` outside
+Locker v2, and any `fx_version` but `cerulean`. Two behaviors changed under
+code that stays:
+
+- **Standardized `zoom`.** On 144 a zoomed element's `getBoundingClientRect` is
+  in screen px; on 103 it was in the element's own. Cloudscape sizes Locker
+  v2's dropdowns from it, so on 144 they drew larger by the zoom (1.5 times at
+  1440p), past the panel. `src/cef/zoomRect.ts` gives Cloudscape the 103 answer on both engines.
+- **Request throttling.** The locker spin sends one request at a time
+  (`bridge/coalesce.ts`) and the error sink caps itself.
+
+Still to see on a Canary client: Ringmaster sign-in in the Admin tab (its
+cookie is cross-site), locker headshots (`nui-img` must allow CORS), the DUI
+prompts on `nui://`, and the `:has()` rules 144 starts applying
+(`node scripts/check-css.mjs br_ui --has` lists them).
+
+**What 144 unlocks, and when.** Not before every client is on 144: Cfx's
+Release channel has shipped it and the F8 `[br_ui] chrome` line says 144 on
+ours. Until then check-css keeps the 103 bans, and `@supports` around new
+syntax is the only safe way to use it. Then, in one change: `target:
+'chrome103'` and `browserslist` to 144, the color bans out of check-css, and
+the way is open to:
+
+- HeroUI 3 and Tailwind 4 (`oklch`, `color-mix`), and `light-dark()`;
+- `:has()`, nesting, container queries, subgrid, `text-wrap: balance`;
+- the popover attribute and anchor positioning (tooltips with no script),
+  `@starting-style` and `transition-behavior` (fading to and from
+  `display: none`), scroll-driven animations, view transitions;
+- `scrollbar-color`/`scrollbar-width` instead of `::-webkit-scrollbar`;
+- `currentCSSZoom`, so Locker v2 can drop `zoomRect.ts`;
+- `Object.groupBy`, `Promise.withResolvers`, `AbortSignal.any`, and
+  WebAssembly, which 144 turns back on.
+
 **`color-scheme: dark` paints the canvas opaque.** Separately from any
 background-color. A component library's dark theme will black out the entire
 game while `html`, `body` and `#root` all correctly report transparent. The fix
