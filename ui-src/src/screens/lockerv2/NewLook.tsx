@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import Icon from '@cloudscape-design/components/icon'
 import Select from '@cloudscape-design/components/select'
 import Spinner from '@cloudscape-design/components/spinner'
@@ -7,6 +7,7 @@ import { CB } from '../../bridge/types'
 import { play } from '../../audio/cues'
 import { useUi } from '../../store'
 import { CARD, SEX_LABEL } from './copy'
+import type { NewPick } from './model'
 
 /**
  * NEW (owner, 2026-10-12): "Let's make the creation flow have 2 options,
@@ -14,11 +15,15 @@ import { CARD, SEX_LABEL } from './copy'
  * itself has a dropdown within to select male or female." Then: "actually
  * lets call the card "Stock GTA Looks" to match our copy."
  *
- * Two cards. Custom is the default: first, lit as the one to press, and the
- * keyboard's (it takes focus); its own dropdown picks the body, and a press
- * anywhere else on the card starts a new custom look of that body -- the core
- * randomized, no extras (LOCKER2_NEW, LockerV2.tsx). Stock GTA Looks opens the
- * stock roster.
+ * Then (2026-10-14): "when I click "custom" or "stock gta looks" it should
+ * have a create button, or not have either card selected by default ... weird
+ * flow. we need to fix that", and "what happened to the alignment of text in
+ * these boxes for the creation flow? also the gender dropdown is suuuuper
+ * wide?". So a press on a card only SELECTS it (lit as the lobby lights a
+ * selected plate); Custom is selected as the view opens; Create, at the foot
+ * (LockerV2.tsx), goes on with the one selected (model.ts createStep). Both
+ * titles stand at the same place, top left, and Custom's Male / Female
+ * dropdown under its title is only as wide as its words.
  */
 
 const SEX_OPTIONS = [
@@ -26,46 +31,44 @@ const SEX_OPTIONS = [
   { value: 'f', label: SEX_LABEL.f },
 ]
 
-/** The body last picked, for the session. */
-let lastSex: 'm' | 'f' = 'm'
-
-export function NewChoice({ blocked, onCustom, onStock }: {
+export function NewChoice({ blocked, pick, sex, onPick, onSex }: {
   blocked: boolean
-  onCustom: (sex: 'm' | 'f') => void
-  onStock: () => void
+  pick: NewPick
+  sex: 'm' | 'f'
+  onPick: (p: NewPick) => void
+  onSex: (s: 'm' | 'f') => void
 }) {
-  const [sex, setSex] = useState<'m' | 'f'>(lastSex)
+  const card = (p: NewPick, title: string) => (
+    <>
+      {/* The card's plate stands behind it rather than around it: a plate
+          clips what it holds, and the dropdown opens past the card. */}
+      <span className={`plate lk2-choice-plate${pick === p ? ' is-active' : ''}`} aria-hidden="true" />
+      <button type="button" role="radio" aria-checked={pick === p} className="btn lk2-choice-main"
+        disabled={blocked} autoFocus={p === pick}
+        onClick={() => { if (pick !== p) { play('ui.select'); onPick(p) } }}>
+        <span className="lk2-choice-title lk2-fit"><span>{title}</span></span>
+      </button>
+    </>
+  )
   return (
-    <div className="lk2-choices">
+    <div className="lk2-choices" role="radiogroup">
       <div className="lk2-choice">
-        {/* The card's plate stands behind it rather than around it: a plate
-            clips what it holds, and the dropdown opens past the card. */}
-        <span className="plate lk2-choice-plate is-active" aria-hidden="true" />
-        <button type="button" className="btn lk2-choice-main" disabled={blocked} autoFocus
-          onClick={() => { play('ui.select'); onCustom(sex) }}>
-          <span className="lk2-choice-title">{CARD.custom}</span>
-        </button>
-        <div className="lk2-choice-sub">
+        {card('custom', CARD.custom)}
+        <div className="lk2-choice-sub" onPointerDown={() => { if (pick !== 'custom') onPick('custom') }}>
           <Select
             selectedOption={SEX_OPTIONS.find((o) => o.value === sex) ?? null}
             options={SEX_OPTIONS}
             expandToViewport={false}
             disabled={blocked}
             onChange={({ detail }) => {
-              const v = detail.selectedOption.value === 'f' ? 'f' : 'm'
               play('ui.select')
-              lastSex = v
-              setSex(v)
+              onSex(detail.selectedOption.value === 'f' ? 'f' : 'm')
             }}
           />
         </div>
       </div>
       <div className="lk2-choice">
-        <span className="plate lk2-choice-plate" aria-hidden="true" />
-        <button type="button" className="btn lk2-choice-main" disabled={blocked}
-          onClick={() => { play('ui.select'); onStock() }}>
-          <span className="lk2-choice-title">{CARD.stock}</span>
-        </button>
+        {card('stock', CARD.stock)}
       </div>
     </div>
   )
@@ -88,7 +91,7 @@ const StockTile = memo(function StockTile({ id, name, worn, loading, locked }: {
         play('ui.select')
         void fetchNui(CB.LOCKER2_WEAR, { k: 's', id })
       }}>
-      <span className="lk2-tile-name">{name}</span>
+      <span className="lk2-tile-name lk2-fit"><span>{name}</span></span>
       {loading ? <Spinner /> : worn ? <Icon name="check" /> : null}
     </button>
   )

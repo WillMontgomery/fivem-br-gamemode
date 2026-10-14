@@ -20,31 +20,43 @@
  *   NAMES     letters, digits and single spaces; no space first; the ends
  *             trimmed when used; 1 to 24.
  *   SAVE      a new look is named; a saved one's dialog has Save (update, with
- *             the name typed) and Save as new; Save is lit for a new look,
- *             and for a saved one only with changes.
- *   EXTRAS    the core always listed, the extras on the look after it, "+
- *             Add" offering the rest; a trash icon takes one off.
- *   SUMMARY   one line a category: the game's name for the item, else `v/n`;
- *             a color chip; Tattoos, how many.
+ *             the name typed), and Save as new only when it was opened from
+ *             My Looks; Save is lit for a new look, and for a saved one only
+ *             with changes.
+ *   EXTRAS    the core always listed, the extras on the look after it in the
+ *             order they were put on, "Add more" offering the rest; a trash
+ *             icon takes one off.
+ *   SUMMARY   one line a category: the item's place in its list (`v/n`) --
+ *             no names unless a category is switched on; a color chip;
+ *             Tattoos, how many.
  *   SWATCHES  hair and makeup colors as swatches, sending the color itself;
- *             "Next color" only for an item with textures.
+ *             an item's own colors a swatch button, never "Next color".
+ *   NEW       a card press selects; Create goes on with the one selected.
+ *   TATTOOS   one list grouped by zone; one "Add more" asking the zone, then
+ *             the tattoo.
  *   HOLD      a held arrow: the press, 400 ms, then quicker to a 50 ms floor.
  *   HISTORY   Undo / Redo, a drag or a hold one step.
  *   SHARE     a push hands back unchanged parts as the same objects.
  *   COPY      a label is OWNER only if it is on the list of his; the rest are
  *             WRITTEN, each with its marker.
  *   CORNERS   every radius token at 0, and the stylesheet squares the rest.
- *   MOCK      the harness plays New, the history, the extras, the palettes,
- *             the face groups and both saves the way the page expects; every
- *             kind of change is one Undo step, undone exactly.
+ *   MOCK      the harness plays New, the history, the extras (in order), the
+ *             palettes, the face groups, a tattoo by zone and tattoo,
+ *             Randomize over the extras, and both saves the way the page
+ *             expects; every kind of change is one Undo step, undone exactly.
  *   RENDERED  the screen's own components, drawn by lockerv2-render.mjs,
  *             pressed through their own handlers and answered by the harness:
  *             a card press wears and marks; New's Custom first, focused and
- *             lit; the walkthrough's ring on Done alone, Done away elsewhere;
- *             the strip, one category at a time, Fine-tune closed, no random
- *             button on a row, "+ Add" outside the scroll box; the camera
- *             cluster right of the panel; every plate the lobby's, lit when
- *             selected; and no word that is not copy.ts's or the look's.
+ *             lit, a card press selecting and Create going on; the
+ *             walkthrough's ring on Done alone, Done away elsewhere; the
+ *             strip, one category at a time, Fine-tune closed, no random
+ *             button on a row, "Add more" outside the scroll box with a menu
+ *             of its own; an item's colors behind a swatch button; the tattoo
+ *             list and its one "Add more"; the camera row and its hints;
+ *             every plate the lobby's, lit when selected; and no word that is
+ *             not copy.ts's or the look's.
+ *   FIT       no text wraps or ends in "...": a line that does not fit is not
+ *             drawn; every border is inside its clip.
  *   WIRING    the screen asks these rules, opens with LOCKER2_OPEN alone,
  *             builds the theme once, draws the preloaded chunk outright, and
  *             subscribes to the fields it draws.
@@ -61,13 +73,14 @@ import { register } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
-  COALESCE_MS, CORE_CATS, EXTRA_CATS, FACE_GROUPS, HISTORY_MAX, HOLD_FIRST_MS, HOLD_MIN_MS, NAME_MAX, OPEN_POPUP,
-  PRIMARY_ROW, SLIDER_HOLD_MS, TATTOOS_PER_ZONE, TATTOO_ZONES,
-  addableExtras, backSteps, canAddTattoo, canvasImage, cleanName, counterText, dataUrlBytes, escapeAction,
-  filterName, followView, groupMoved, holdDelay, holdSteps, imgOk, isExtra, listedCats, nameOk, needShots,
-  newHistory, nextColorShown, panelOf, panelRows, parseLocker2, parsePal, parseTats, popupOpen, record, redoStep,
-  sameTatRows, saveDialogFor, saveEnabled, saveRequest, share, shotKey, shotStorable, sliderShown, summaryOf,
-  swatchOf, swatchRequest, swatchesShown, tattooChoices, tattooFilter, undoStep, wrapStep, zoneRows, zoomFor,
+  COALESCE_MS, CORE_CATS, EXTRA_CATS, FACE_GROUPS, HISTORY_MAX, HOLD_FIRST_MS, HOLD_MIN_MS, NAMED_CATS, NAME_MAX,
+  NEW_DEFAULT, OPEN_POPUP, PRIMARY_ROW, SLIDER_HOLD_MS, TATTOOS_PER_ZONE, TATTOO_ZONES,
+  addZones, addableExtras, backSteps, canAddMore, canAddTattoo, canvasImage, cleanName, counterText, createStep,
+  dataUrlBytes, escapeAction, filterName, followView, groupMoved, holdDelay, holdSteps, imgOk, isExtra, listedCats,
+  nameOk, nameShown, needShots, newHistory, newRowChoices, orderedExtras, panelOf, panelRows, parseLocker2, parsePal,
+  parseTats, popupOpen, record, redoStep, sameTatRows, saveDialogFor, saveEnabled, saveRequest, share, shotKey,
+  shotStorable, sliderShown, summaryOf, swatchOf, swatchRequest, swatchesShown, tatGroups, tattooChoices,
+  tattooFilter, textureFace, textureOf, textureRequest, texturesShown, undoStep, wrapStep, zoneRows, zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
   BTN, CAM, CARD, CAT_LABEL, GROUP_LABEL, MODAL, ROW_LABEL, SEX_LABEL, TITLE, ZONE_LABEL, deleteTitle, rowLabel,
@@ -113,6 +126,10 @@ eq('Back: Stock GTA Looks to New, New to My Looks',
   [backSteps('stock', false, false), backSteps('new', false, false)],
   [[{ do: 'view', to: 'new' }], [{ do: 'view', to: 'home' }]])
 eq('Done on My Looks: close, then the focus', backSteps('home', false, false), [{ do: 'close' }, { do: 'unfocus' }])
+// "when I click "custom" or "stock gta looks" it should have a create button,
+// or not have either card selected by default" (owner, 2026-10-14)
+eq('New: Custom is selected as it opens; Create makes a custom look, or opens the stock roster',
+  [NEW_DEFAULT, createStep('custom'), createStep('stock')], ['custom', { do: 'new' }, { do: 'view', to: 'stock' }])
 eq('Escape: an open dropdown has it first, whatever else is up',
   [escapeAction('edit', true, false, true), escapeAction('home', false, true, true)], ['pass', 'pass'])
 eq('Escape: then an open dialog, alone', [escapeAction('edit', true), escapeAction('home', true, true)], ['modal', 'modal'])
@@ -147,14 +164,19 @@ eq('name: words of letters and digits, one space between, 1 to 24',
 // ── SAVE ─────────────────────────────────────────────────────────────────────
 // "Save updates an existing look; "Save as new" lives in the save dialog"
 const PEDS = [{ id: 'a1', name: 'Nightshift' }, { id: 'b2', name: 'Ranger' }]
-eq('Save on a new look: the name dialog', saveDialogFor(null, PEDS), { kind: 'name' })
-eq('Save on a saved look: its dialog, with its name', saveDialogFor('b2', PEDS), { kind: 'save', id: 'b2', name: 'Ranger' })
-eq('Save on a look deleted from under the edit: a new look again', saveDialogFor('zz', PEDS), { kind: 'name' })
+eq('Save on a new look: the name dialog', [saveDialogFor(null, PEDS, false), saveDialogFor(null, PEDS, true)],
+  [{ kind: 'name' }, { kind: 'name' }])
+// "say I create a new look and save it - why do I have save and save as new?"
+eq('Save on a look opened from My Looks: its dialog, with its name, and Save as new',
+  saveDialogFor('b2', PEDS, true), { kind: 'save', id: 'b2', name: 'Ranger', asNew: true })
+eq('Save on a look made with New and saved once: its name and Save alone, no Save as new',
+  saveDialogFor('b2', PEDS, false), { kind: 'save', id: 'b2', name: 'Ranger', asNew: false })
+eq('Save on a look deleted from under the edit: a new look again', saveDialogFor('zz', PEDS, true), { kind: 'name' })
 eq('the save dialog\'s Save updates that look, with the name typed, cleaned',
-  saveRequest({ kind: 'save', id: 'b2', name: 'Ranger' }, 'update', ' Lone  Ranger '),
+  saveRequest({ kind: 'save', id: 'b2', name: 'Ranger', asNew: true }, 'update', ' Lone  Ranger '),
   { op: 'update', id: 'b2', name: 'Lone Ranger' })
 eq('and its Save as new makes a new look by that name',
-  saveRequest({ kind: 'save', id: 'b2', name: 'Ranger' }, 'new', 'Ranger 2'), { op: 'new', name: 'Ranger 2' })
+  saveRequest({ kind: 'save', id: 'b2', name: 'Ranger', asNew: true }, 'new', 'Ranger 2'), { op: 'new', name: 'Ranger 2' })
 eq('the name dialog only ever saves new', saveRequest({ kind: 'name' }, 'update', 'Night Owl'), { op: 'new', name: 'Night Owl' })
 eq('Save lit: a new look always (never saved), a saved one with changes, never while a write is in flight',
   [saveEnabled(null, false, false), saveEnabled('a1', false, false), saveEnabled('a1', true, false),
@@ -166,11 +188,13 @@ eq('the core, always, in order', CORE_CATS, ['face', 'skin', 'hair', 'top', 'leg
 eq('the extras, today\'s optional rows', EXTRA_CATS,
   ['hat', 'glasses', 'earrings', 'mask', 'vest', 'bag', 'watch', 'bracelet', 'decals', 'accessory', 'makeup', 'tattoos'])
 eq('a new look lists the core and nothing else', listedCats([]), [...CORE_CATS])
-eq('the extras on a look follow the core, in their own order, and only known ones',
-  listedCats(['tattoos', 'hat', 'nope', 'makeup']), [...CORE_CATS, 'hat', 'makeup', 'tattoos'])
-eq('"+ Add" offers every extra not on the look', addableExtras(['hat', 'tattoos']),
+// "cards should be added in the list in the order the player adds them"
+eq('the extras on a look follow the core IN THE ORDER PUT ON, and only known ones, each once',
+  listedCats(['tattoos', 'hat', 'nope', 'makeup', 'hat']), [...CORE_CATS, 'tattoos', 'hat', 'makeup'])
+eq('Lua\'s order is kept as it crosses the bridge', orderedExtras(['earrings', 'tattoos', 7, 'earrings']), ['earrings', 'tattoos'])
+eq('"Add more" offers every extra not on the look', addableExtras(['hat', 'tattoos']),
   EXTRA_CATS.filter((c) => c !== 'hat' && c !== 'tattoos'))
-eq('"+ Add" is empty once all are on', addableExtras([...EXTRA_CATS]), [])
+eq('"Add more" is empty once all are on', addableExtras([...EXTRA_CATS]), [])
 eq('only an extra has a trash icon', [isExtra('hat'), isExtra('tattoos'), isExtra('face'), isExtra('shoes')],
   [true, true, false, false])
 eq('a tattoo zone\'s camera category is the Tattoos panel\'s', [panelOf('tat_torso'), panelOf('hair'), panelOf(null)],
@@ -190,9 +214,12 @@ check('every category has a label', [...CORE_CATS, ...EXTRA_CATS].every((c) => t
     { k: 'c11', cat: 'top', kind: 'count', v: 37, n: 392, colors: 3 },
     { k: 'o4', cat: 'makeup', kind: 'count', v: 1, n: 76, colors: 1, pal: 'makeup', c: 0 },
   ]
-  eq('a summary line: the game\'s name, and the color chip of a palette item',
-    summaryOf('hair', rows, 0), { text: 'Buzz Cut', chip: { pal: 'hair', i: 12 } })
-  eq('no name: its place in the row, never "Top 37"', summaryOf('top', rows, 0), { text: '37/392', chip: null })
+  // "All or nothing on that": the game names some items and not others.
+  eq('no category shows the game\'s names', [...NAMED_CATS], [])
+  eq('a summary line: the item\'s place in its list even where the game names it, and the color chip of a palette item',
+    summaryOf('hair', rows, 0), { text: '9/80', chip: { pal: 'hair', i: 12 } })
+  eq('...and where it does not: never "Top 37"', summaryOf('top', rows, 0), { text: '37/392', chip: null })
+  eq('no caption under a row either', [nameShown(rows[4]), nameShown(rows[5])], [null, null])
   eq('the face: the starting face', summaryOf('face', rows, 0).text, '3/6')
   eq('an item that is none shows no chip (its color is on nothing)', summaryOf('makeup', rows, 0).chip, null)
   eq('Tattoos: how many', summaryOf('tattoos', rows, 4), { text: '4', chip: null })
@@ -217,8 +244,14 @@ check('every category has a label', [...CORE_CATS, ...EXTRA_CATS].every((c) => t
     [swatchOf(hair), swatchOf(hi), swatchOf(top)], [12, 4, null])
   eq('swatches for a palette item with colors, and always for the highlight; none for an overlay of none',
     [swatchesShown(hair), swatchesShown(hi), swatchesShown(lip), swatchesShown(top)], [true, true, false, false])
-  eq('"Next color" only for an item with textures and no palette',
-    [nextColorShown(top), nextColorShown(hair), nextColorShown({ ...top, colors: 1 })], [true, false, false])
+  // "any button showing "next color" should have a button for a color swatch instead"
+  eq('an item\'s own colors (textures) behind a swatch button: an item with more than one and no palette',
+    [texturesShown(top), texturesShown(hair), texturesShown({ ...top, colors: 1 })], [true, false, false])
+  eq('the texture worn: its `c`, else the first; a `c` past its colors is the first',
+    [textureOf({ ...top, c: 2 }), textureOf(top), textureOf({ ...top, c: 9 })], [2, 0, 0])
+  eq('a texture swatch shows its color where Lua sends the item\'s colors, else its place among them',
+    [textureFace({ ...top, sw: ['#111111', '#222222', '#333333'] }, 1), textureFace(top, 1)], [{ color: '#222222' }, { n: 2 }])
+  eq('a texture swatch sends LOCKER2_COLOR { k, c }, 0-based', textureRequest(top, 2), { k: 'c11', c: 2 })
   eq('a swatch sends its color: the item\'s by index (LOCKER2_COLOR), the highlight\'s as its place (LOCKER2_SET)',
     [swatchRequest(hair, 30), swatchRequest(hi, 30)],
     [{ cb: 'color', data: { k: 'c2', c: 30 } }, { cb: 'set', data: { k: 'h1', v: 31 } }])
@@ -311,6 +344,17 @@ eq('row names: the twenty face features', Object.keys(ROW_LABEL).filter((k) => /
     [2, true])
   eq('the nameless numbered among themselves', tattooLabels([{ i: 1 }, { i: 2, name: 'Skull' }, { i: 3 }]).map(([, l]) => l),
     ['Tattoo 1', 'Skull', 'Tattoo 2'])
+  // "starting with a bunch of add buttons is not intuitive ... fix that"
+  const zs = [{ z: 'head', items: [{ i: 1 }] }, { z: 'torso', items: [{ i: 5 }, { i: 7 }, { i: 9 }] }]
+  const full = Array.from({ length: 10 }, (_, k) => ({ r: 20 + k, z: 'torso', i: 100 + k }))
+  eq('one list: the rows grouped under their zones, in the zones\' order, a zone with none not drawn',
+    tatGroups(TATTOO_ZONES, [{ r: 3, z: 'torso', i: 5 }, { r: 4, z: 'head', i: 1 }, { r: 5, z: 'torso', i: 9 }])
+      .map((g) => [g.z, g.rows.map((x) => x.r)]), [['head', [4]], ['torso', [3, 5]]])
+  eq('"Add more" asks the zone: every zone, a full one offered off',
+    [addZones(zs, rows), addZones(zs, full)],
+    [[{ z: 'head', open: true }, { z: 'torso', open: true }], [{ z: 'head', open: true }, { z: 'torso', open: false }]])
+  eq('...then the tattoo: the zone\'s, none a row of it holds', newRowChoices(zs[1].items, rows, 'torso').map((t) => t.i), [7])
+  eq('"Add more" is off once no zone has room', [canAddMore(zs, rows), canAddMore([zs[1]], full)], [true, false])
   eq('every zone has a word', TATTOO_ZONES.every((z) => typeof ZONE_LABEL[z] === 'string'), true)
 }
 {
@@ -340,16 +384,20 @@ eq('row names: the twenty face features', Object.keys(ROW_LABEL).filter((k) => /
     rows: [
       { k: 'c2', cat: 'hair', kind: 'count', v: 3, n: 80, colors: 64, name: 'Bun', pal: 'hair', c: 7 },
       { k: 'c11', cat: 'top', kind: 'count', v: 3, n: 9, colors: 2, name: '', pal: 'paint', c: -1 },
+      { k: 'c4', cat: 'legs', kind: 'count', v: 1, n: 9, colors: 2, c: 1, sw: ['#112233', '#445566'] },
+      { k: 'c6', cat: 'shoes', kind: 'count', v: 1, n: 9, colors: 3, sw: ['#112233', 'red', '#445566'] },
       { k: 'bad', cat: 'face', kind: 'count', v: 'x' }, 'junk',
     ],
   } })
   eq('envelope: {} lists are empty lists, an unknown tab is Stock, a malformed worn is none',
     [p.stock, p.peds, p.tab, p.worn], [[], [], 'stock', null])
-  eq('envelope: the extras on the look, known ones only, in their order', p.edit.extras, ['hat', 'tattoos'])
+  eq('envelope: the extras on the look, known ones only, in Lua\'s order', p.edit.extras, ['tattoos', 'hat'])
   eq('envelope: undo and redo are booleans', [p.edit.undo, p.edit.redo], [true, false])
   eq('envelope: a row\'s name, palette and color only when they are one',
     p.edit.rows.map((r) => [r.k, r.name ?? null, r.pal ?? null, r.c ?? null]),
-    [['c2', 'Bun', 'hair', 7], ['c11', null, null, null]])
+    [['c2', 'Bun', 'hair', 7], ['c11', null, null, null], ['c4', null, null, 1], ['c6', null, null, null]])
+  eq('envelope: an item\'s colors only whole -- one #rrggbb a texture -- else none',
+    p.edit.rows.map((r) => r.sw ?? null), [null, null, ['#112233', '#445566'], null])
   eq('envelope: nothing at all is Season 1, and no extras', [parseLocker2(undefined).on,
     parseLocker2({ edit: { sex: 'm', rows: [] } }).edit.extras], [false, []])
 }
@@ -369,15 +417,15 @@ eq('a look, never a ped, in the dialogs', [MODAL.name, MODAL.rename, MODAL.save,
   // #28 review: "Save as new" was marked OWNER with a quote he never wrote, so
   // it would never have been put to him. A label is his only if it is on this
   // list -- the labels he gave or named on #28 -- and every other is WRITTEN.
-  const OWNER_LABELS = ['Back', 'Custom', 'Delete', 'Done', 'Edit', 'Female', 'Last', 'Male', 'My Looks', 'New', 'Next',
-    'Next color', 'Randomize', 'Redo', 'Rename', 'Reset', 'Save', 'Stock GTA Looks', 'Undo']
+  const OWNER_LABELS = ['Add more', 'Back', 'Create', 'Custom', 'Delete', 'Done', 'Edit', 'Female', 'Last', 'Male',
+    'My Looks', 'New', 'Next', 'Randomize', 'Redo', 'Rename', 'Reset', 'Save', 'Stock GTA Looks', 'Undo']
   const owned = [...new Set(copy.split('\n').filter((l) => l.includes('// OWNER'))
     .map((l) => /'([^']*)'/.exec(l)?.[1] ?? '?'))].sort()
   eq('a label marked OWNER is one he gave or named on #28, and no other', owned, OWNER_LABELS)
   const marked = copy.split('\n').filter((l) => /^\s+\w+: ['`]/.test(l) || /=> `/.test(l))
   const unmarked = marked.filter((l) => !l.includes('// OWNER') && !l.includes('// WRITTEN (proposal for the owner)'))
   check('every label is marked OWNER or WRITTEN', marked.length > 100 && unmarked.length === 0, unmarked.join(' | '))
-  for (const s of ["'Save as new'", "'+ Add'", "'Fine-tune'", "'More'", "'Name your look'", "'Save look'", "'Rename look'",
+  for (const s of ["'Save as new'", "'Fine-tune'", "'More'", "'Name your look'", "'Save look'", "'Rename look'",
     "'Rotate left'", "'Rotate right'", "'Turn around'", "'Zoom in'", "'Zoom out'", "'Reset view'", '`Color ${n}`',
     "'Nose'", "'Eyes and lips'", "'Neck'", "'Skin'", "'Top'", "'Accessory'", "'Tattoos'", "'Cancel'",
     "'Keep editing'", "'Discard'", '`Delete ${name}?`', '`${base} opacity`', '`Tattoo ${n}`']) {
@@ -386,6 +434,8 @@ eq('a look, never a ped, in the dialogs', [MODAL.name, MODAL.rename, MODAL.save,
   }
   eq('the camera buttons\' names', Object.values(CAM),
     ['Rotate left', 'Rotate right', 'Turn around', 'Zoom in', 'Zoom out', 'Reset view'])
+  eq('"Add more" and "Create" as he gave them; "Next color" and "+ Add" gone',
+    [BTN.addMore, BTN.create, 'nextColor' in BTN, 'addExtra' in BTN, 'add' in BTN], ['Add more', 'Create', false, false, false])
 }
 
 // ── CORNERS ("remember our Lobby UI has no rounded edges") ───────────────────
@@ -467,6 +517,42 @@ export async function resolve(spec, ctx, next) {
   check('its trash icon: off the look, and back to none', e.extras.length === 0 && e.rows.find((r) => r.k === 'p0').v === 1)
   h('undo')
   check('and Undo brings it back', last().edit.extras.join() === 'hat')
+  h('extra', { id: 'tattoos', on: true })
+  h('extra', { id: 'earrings', on: true })
+  eq('the extras keep the order they were put on: earrings after tattoos stays after them',
+    last().edit.extras, ['hat', 'tattoos', 'earrings'])
+  {
+    // "the randomize button should randomize those additional categories too,
+    // and add them to the list when it sets them" (owner, 2026-10-14)
+    const seen = new Set()
+    let kept = true
+    let whole = true
+    for (let n = 0; n < 40; n++) {
+      const before = last().edit.extras
+      h('random')
+      const after = last().edit.extras
+      for (const c of after) seen.add(c)
+      const stayed = before.filter((c) => after.includes(c))
+      if (after.slice(0, stayed.length).join() !== stayed.join()) kept = false
+      const rows = last().edit.rows
+      for (const c of after) {
+        if (c === 'tattoos') { if (last().edit.tats.length === 0) whole = false; continue }
+        if (c !== 'makeup' && !rows.some((x) => x.cat === c && x.kind === 'count' && x.v > 1)) whole = false
+      }
+    }
+    check('Randomize puts extras on and takes them off', seen.size >= 6, [...seen].join())
+    check('...each one it puts on wears something, and Tattoos some tattoos', whole)
+    check('...the ones it keeps keep their places, the ones it adds join the end', kept)
+    const before = JSON.stringify(last().edit)
+    h('random')
+    h('undo')
+    const back = last().edit
+    check('...and one Undo puts the whole look back, extras and tattoos with it',
+      JSON.stringify({ ...back, undo: false, redo: false }) === JSON.stringify({ ...JSON.parse(before), undo: false, redo: false }))
+    h('redo')
+  }
+  while (last().edit.extras.length > 0) h('extra', { id: last().edit.extras[0], on: false })
+  h('extra', { id: 'hat', on: true })
   h('color', { k: 'c2', c: 40 })
   check('a swatch sets that color', last().edit.rows.find((r) => r.k === 'c2').c === 40)
   h('set', { k: 'ff3', v: 60 })
@@ -521,6 +607,17 @@ export async function resolve(spec, ctx, next) {
   const look = () => JSON.stringify({ rows: last().edit.rows, tats: last().edit.tats, extras: last().edit.extras })
   const row = (k) => last().edit.rows.find((r) => r.k === k)
   const tat = () => last().edit.tats[0]
+  {
+    const t = () => last().edit.tats
+    h('tatadd', { z: 'torso' })
+    h('tatadd', { z: 'torso', i: 999 })
+    h('tatadd', { z: 'head', i: torso[0] })
+    check('a tattoo is added only by its zone AND a tattoo of that zone', t().length === 0)
+    h('tatadd', { z: 'torso', i: torso[2] })
+    h('tatadd', { z: 'torso', i: torso[2] })
+    eq('...once a zone: the same one twice is refused', t().map((x) => [x.z, x.i]), [['torso', torso[2]]])
+    h('undo')
+  }
   const CHANGES = [
     ['an arrow press', () => h('step', { k: 'c11', d: 1 })],
     ['an arrow held (a step a repeat)', () => { for (let i = 0; i < 12; i++) h('step', { k: 'c4', d: 1 }) }],
@@ -530,17 +627,19 @@ export async function resolve(spec, ctx, next) {
     ['an extra added', () => h('extra', { id: 'hat', on: true })],
     ['an extra removed (its trash icon)', () => h('extra', { id: 'hat', on: false })],
     ['Tattoos added', () => h('extra', { id: 'tattoos', on: true })],
-    ['a tattoo added', () => h('tatadd', { z: 'torso' })],
+    ['a tattoo added', () => h('tatadd', { z: 'torso', i: torso.find((i) => !last().edit.tats.some((t) => t.i === i)) })],
     ['a tattoo changed', () => h('tatset', { r: tat().r, i: torso.find((i) => i !== tat().i) })],
     ['a tattoo removed', () => h('tatdel', { r: tat().r })],
     ['a face group\'s reset', () => h('defaults', { ks: FACE_GROUPS[0].ks })],
+    ['a texture swatch', () => h('color', { k: 'c11', c: (row('c11').c + 1) % row('c11').colors })],
     ['Randomize', () => h('random')],
   ]
   for (const [what, act] of CHANGES) {
     if (what === 'a tattoo changed' || what === 'a tattoo removed') {
-      if (last().edit.tats.length === 0) h('tatadd', { z: 'torso' })
+      if (last().edit.tats.length === 0) h('tatadd', { z: 'torso', i: torso[0] })
     }
     if (what === 'a face group\'s reset') h('set', { k: 'ff0', v: 30 })
+    if (what === 'a texture swatch') while (row('c11').colors < 2) h('step', { k: 'c11', d: 1 })
     const before = look()
     act()
     const after = look()
@@ -665,21 +764,29 @@ export async function resolve(spec, ctx, next) {
 
   // NEW -----------------------------------------------------------------------
   // "custom and "Stock GTA Peds" (custom is the default) and the custom card
-  // itself has a dropdown within to select male or female"
+  // itself has a dropdown within to select male or female"; then (2026-10-14)
+  // "when I click "custom" or "stock gta looks" it should have a create
+  // button, or not have either card selected by default"
   const choices = () => q(cls('lk2-choice'))
+  const cardBtn = (k) => subtree(choices()[k].node).find((n) => n.type === 'button')
+  const create = () => first(csBtn(BTN.create))
   eq('New: two cards, Custom first, then Stock GTA Looks, and not a word more', choices().map((x) => textOf(x.node)),
     ['Custom', 'Stock GTA Looks'])
   const focused = q((n) => n.props.autoFocus === true)
   check('New: Custom is the default -- the one thing focused, its press the keyboard\'s',
     focused.length === 1 && within(focused[0], 'lk2-choice') && textOf(focused[0].node) === 'Custom')
-  check('New: Custom is lit as the default, Stock GTA Looks is not',
-    choices().length === 2 && lit(choices()[0].node) && !lit(choices()[1].node))
+  check('New: Custom is selected as it opens, lit, Stock GTA Looks is not',
+    choices().length === 2 && lit(choices()[0].node) && !lit(choices()[1].node)
+    && cardBtn(0).props['aria-checked'] === true && cardBtn(1).props['aria-checked'] === false)
   const sex = () => subtree(choices()[0].node).find((n) => n.type === 'cs:select')
   eq('New: Custom\'s own dropdown, Male / Female', sex()?.props.options.map((o) => o.label), ['Male', 'Female'])
+  check('New: Create at the foot, beside Back', create() !== undefined && within(q((n) => n === create())[0], 'lk2-foot'))
   check('New: no word on it that is not copy.ts\'s', strayWords().length === 0, strayWords().join(' | '))
+  eq('New: a press on Stock GTA Looks only selects it -- nothing sent, still New', act(() => press(cardBtn(1))), [])
+  check('...and lights it, and not Custom', title() === 'New' && lit(choices()[1].node) && !lit(choices()[0].node))
 
   // STOCK GTA LOOKS ------------------------------------------------------------
-  act(() => press(subtree(choices()[1].node).find((n) => n.type === 'button')))
+  eq('Create, Stock GTA Looks selected: the roster, nothing sent', act(() => press(create())), [])
   const tiles = () => q(cls('lk2-tile'))
   check('Stock GTA Looks: the roster, Back outside the ring, Done away',
     title() === 'Stock GTA Looks' && tiles().map((x) => textOf(x.node)).join() === STOCK.map((s) => s.name).join()
@@ -689,15 +796,16 @@ export async function resolve(spec, ctx, next) {
   act(() => press(first(csBtn('Back'))))
 
   // THE EDITOR ------------------------------------------------------------------
+  act(() => press(cardBtn(0)))
   v.act(() => sex().props.onChange({ detail: { selectedOption: { value: 'f', label: 'Female' } } }))
-  const started = act(() => press(subtree(choices()[0].node).find((n) => n.type === 'button')))
-  check('Custom, Female picked: a new female look (LOCKER2_NEW, numbered), and the editor',
+  check('New: picking Female sends nothing yet', title() === 'New' && q(cls('lk2-editor')).length === 0)
+  const started = act(() => press(create()))
+  check('Create, Custom and Female picked: a new female look (LOCKER2_NEW, numbered), and the editor',
     started[0]?.[0] === 'br/locker2/new' && started[0][1].sex === 'f' && typeof started[0][1].seq === 'number'
     && q(cls('lk2-editor')).length === 1 && L2S().edit?.sex === 'f')
   check('the editor: Back outside the ring, Done away', ring().length === 0 && backIsOut() && awayMarks().length === 1)
   const stripBtns = () => q((n) => n.type === 'cs:button').filter((x) => within(x, 'lk2-strip'))
   eq('the strip: Randomize, Undo, Redo', stripBtns().map((x) => textOf(x.node)), ['Randomize', 'Undo', 'Redo'])
-  eq('Randomize asks for the whole look', act(() => press(stripBtns()[0].node)), [['br/locker2/random', null]])
   const lines = () => q(cls('lk2-line'))
   const lineLabel = (x) => textOf(subtree(x.node).find((n) => hasClass(n, 'lk2-line-label')))
   eq('the list: the core, one line each, nothing else on a new look', lines().map(lineLabel),
@@ -715,6 +823,45 @@ export async function resolve(spec, ctx, next) {
       && lines().filter((x) => lit(x.node)).length === 1 && rowLabels().join() === want.join(), rowLabels().join())
     check(`${CAT_LABEL[cat]}: Randomize is the strip's alone -- no random button on a row`, randoms().length === 1)
     check(`${CAT_LABEL[cat]}: no word that is not copy.ts's or the look's`, strayWords().length === 0, strayWords().join(' | '))
+  }
+  // "All or nothing on that": the harness names most tops and hair, as the
+  // game does, and none of it is drawn.
+  {
+    const named = L2S().edit.rows.filter((r) => r.name !== undefined)
+    const drawn = q(() => true).flatMap((x) => x.node.children.filter((c) => typeof c === 'string'))
+    check(`the game's names, where it has them, are drawn nowhere (${named.length} named rows)`,
+      named.length > 0 && named.every((r) => !drawn.includes(r.name)) && q(cls('lk2-caption')).length === 0)
+    check('every summary line is the item\'s place in its list',
+      lines().slice(1).every((x) => /^\d+\/\d+$/.test(textOf(subtree(x.node).find((n) => hasClass(n, 'lk2-line-text'))))))
+  }
+
+  // AN ITEM'S COLORS: a swatch button, never "Next color".
+  {
+    const topLine = () => lines().find((x) => lineLabel(x) === CAT_LABEL.top)
+    act(() => press(subtree(topLine().node).find((n) => hasClass(n, 'lk2-line-main'))))
+    while (L2S().edit.rows.find((r) => r.k === 'c11').colors < 3) {
+      act(() => press(q((n) => n.props['aria-label'] === BTN.next).find((x) => within(x, 'lk2-panel')).node))
+    }
+    const top = () => L2S().edit.rows.find((r) => r.k === 'c11')
+    const texBtns = () => q(cls('lk2-texbtn'))
+    check('Top: a swatch button for its colors, and no "Next color" anywhere',
+      texBtns().length >= 1 && q((n) => textOf(n) === 'Next color' && n.children.every((c) => typeof c === 'string')).length === 0)
+    const tb = () => texBtns()[0].node
+    check('...wearing the color on (its place, the game having no color for it), named as that color',
+      textOf(tb()) === String(top().c + 1) && tb().props['aria-label'] === `Color ${top().c + 1}` && tb().props['aria-expanded'] === false)
+    act(() => press(tb()))
+    const grid = () => q(cls('lk2-texgrid'))
+    const tiles2 = () => subtree(grid()[0].node).filter((n) => n.type === 'button')
+    check('...which opens the item\'s colors under the row, the one on lit',
+      grid().length === 1 && tb().props['aria-expanded'] === true && tiles2().length === top().colors
+      && tiles2().filter((n) => hasClass(n, 'is-active')).map(textOf).join() === String(top().c + 1))
+    const other = (top().c + 1) % top().colors
+    eq('...and a press on one sends that color, 0-based (LOCKER2_COLOR { k, c })', act(() => press(tiles2()[other])),
+      [['br/locker2/color', { k: 'c11', c: other }]])
+    check('...which the row then wears, the grid still open to try another',
+      top().c === other && grid().length === 1 && textOf(tb()) === String(other + 1))
+    act(() => press(tb()))
+    check('...and the button closes it', grid().length === 0)
   }
 
   // FACE: starting faces, then "Fine-tune", closed until asked for.
@@ -735,12 +882,26 @@ export async function resolve(spec, ctx, next) {
     && groups().every((g) => resets(g).length === 1))
   v.act(() => tune().props.onChange({ detail: { checked: false } }))
 
-  // "+ Add" and the trash icon.
-  const add = () => first((n) => n.type === 'cs:button-dropdown' && textOf(n) === '+ Add')
-  eq('"+ Add": every extra not on the look', add()?.props.items.map((i) => i.id), addableExtras(L2S().edit.extras))
+  // "ADD MORE" and the trash icon. "the plus button is too small. also change
+  // the add button to say "add more"", and "why is the "add" dropdown wider
+  // than it's parent button?"
+  const add = () => q((n) => n.type === 'cs:button' && textOf(n) === BTN.addMore).find((x) => within(x, 'lk2-add'))?.node
+  const menuItems = () => q((n) => n.props.role === 'menuitem')
+  check('"Add more": the lobby\'s button with Cloudscape\'s own plus, saying it opens a menu, closed',
+    add()?.props.iconName === 'add-plus' && add()?.props.ariaHaspopup === 'menu' && add()?.props.ariaExpanded === false
+    && menuItems().length === 0 && q((n) => n.type === 'cs:button-dropdown').filter((x) => within(x, 'lk2-editor')).length === 0)
+  act(() => press(add()))
+  const addMenu = () => q(cls('lk2-menu'))
+  eq('"Add more" opens its menu: every extra not on the look, in order', menuItems().map((x) => textOf(x.node)),
+    addableExtras(L2S().edit.extras).map((c) => CAT_LABEL[c]))
+  check('...in the list\'s column, under the button, inside the box that sizes the button -- so exactly its width',
+    add()?.props.ariaExpanded === true && addMenu().length === 1 && within(addMenu()[0], 'lk2-addmore')
+    && q((n) => n === add())[0].parents.some((p) => hasClass(p, 'lk2-addmore')) && within(addMenu()[0], 'lk2-add'))
+  check('...and the screen leaves Escape to it while it is open (it says so: OPEN_POPUP)',
+    add()?.props.ariaHaspopup !== undefined && add()?.props.ariaExpanded === true)
   {
-    // ITS MENU IS WIDER THAN THE LIST (#28 review): inside the list's scroll
-    // box it was cut off at the list's right edge, and scrolled it sideways.
+    // ITS MENU IS NEVER CUT OFF (#28 review): inside the list's scroll box it
+    // was cut off at the list's right edge, and scrolled it sideways.
     const css = strip(read(join(L2, 'lockerv2.css')))
     const scrollers = new Set([...css.matchAll(/\.br-cs \.([\w-]+) \{([^}]*)\}/g)]
       .filter((m) => /(^|\s|;)overflow(-[xy])?\s*:\s*(auto|scroll|hidden|clip)/.test(m[2])).map((m) => m[1]))
@@ -748,22 +909,100 @@ export async function resolve(spec, ctx, next) {
     const at = q((n) => n === add())[0]
     const box = at ? at.parents.slice(at.parents.findIndex((p) => hasClass(p, 'br-cs')) + 1)
       .filter((p) => String(p.props.className ?? '').split(/\s+/).some((c) => scrollers.has(c) || /^overflow-/.test(c))) : null
-    check('"+ Add" sits in no scroll box below the island, so its menu is not cut off', box !== null && box.length === 0,
+    check('"Add more" sits in no scroll box below the island, so its menu is not cut off', box !== null && box.length === 0,
       (box ?? []).map((p) => p.props.className).join(' | '))
+    check('...its menu a plate\'s width of its box, never set wider (no width, min-width or inline-size of its own)',
+      /\.br-cs \.lk2-menu \{[^}]*\}/.test(css) && !/(^|;|\s)(min-)?(width|inline-size)\s*:/.test(/\.br-cs \.lk2-menu \{([^}]*)\}/.exec(css)?.[1] ?? 'width:'))
   }
-  const added = act(() => add().props.onItemClick({ detail: { id: 'hat' } }))
-  check('"+ Add" Hat: on the look, its line after the core with a trash icon, its panel open',
+  const pickMenu = (label) => act(() => press(menuItems().find((x) => textOf(x.node) === label).node))
+  const added = pickMenu('Hat')
+  check('"Add more" Hat: on the look, its line after the core with a trash icon, its panel open, the menu shut',
     added.some(([cb, d]) => cb === 'br/locker2/extra' && d.id === 'hat' && d.on === true)
     && lines().map(lineLabel).join() === [...CORE_CATS.map((c) => CAT_LABEL[c]), 'Hat'].join()
-    && lit(lines()[6].node) && subtree(lines()[6].node).some((n) => n.props['aria-label'] === BTN.remove))
-  check('...and its line is scrolled into view (the lines scroll; "+ Add" stands below them)',
+    && lit(lines()[6].node) && subtree(lines()[6].node).some((n) => n.props['aria-label'] === BTN.remove)
+    && menuItems().length === 0)
+  check('...and its line is scrolled into view (the lines scroll; "Add more" stands below them)',
     lines()[6].node.el?.scrolled > 0)
   check('no line of the core has a trash icon', lines().slice(0, 6).every((x) => !subtree(x.node).some((n) => n.props['aria-label'] === BTN.remove)))
+  // "adding earrings after adding tattoos should not show tattoos on the bottom of the list"
+  act(() => press(add()))
+  pickMenu('Tattoos')
+  act(() => press(add()))
+  pickMenu('Earrings')
+  eq('extras listed in the order put on: Hat, Tattoos, then Earrings', lines().slice(6).map(lineLabel), ['Hat', 'Tattoos', 'Earrings'])
+  for (const c of ['earrings', 'tattoos']) {
+    act(() => press(subtree(lines().find((x) => lineLabel(x) === CAT_LABEL[c]).node).find((n) => n.props['aria-label'] === BTN.remove)))
+  }
   const trash = subtree(lines()[6].node).find((n) => n.props['aria-label'] === BTN.remove)
   eq('its trash icon takes it off', act(() => press(trash)), [['br/locker2/extra', { id: 'hat', on: false }]])
   check('...and its line is gone', lines().length === 6)
   check('Undo lit after a change, and it asks Lua', stripBtns()[1].node.props.disabled === false
     && act(() => press(stripBtns()[1].node))[0]?.[0] === 'br/locker2/undo')
+  {
+    // "the randomize button should randomize those additional categories too,
+    // and add them to the list when it sets them"
+    let grew = false
+    for (let n = 0; n < 20 && !grew; n++) {
+      const sent = act(() => press(stripBtns()[0].node))
+      if (sent.length !== 1 || sent[0][0] !== 'br/locker2/random') break
+      grew = lines().length > 6 && lines().slice(6).map(lineLabel).join() === L2S().edit.extras.map((c) => CAT_LABEL[c]).join()
+    }
+    check('Randomize asks for the whole look, and the extras it puts on are listed, in its order', grew)
+    while (lines().length > 6) {
+      act(() => press(subtree(lines()[6].node).find((n) => n.props['aria-label'] === BTN.remove)))
+    }
+  }
+
+  // TATTOOS: "starting with a bunch of add buttons is not intuitive,
+  // especially having to use a dropdown to navigate between them. fix that"
+  {
+    act(() => press(add()))
+    pickMenu('Tattoos')
+    const tats = () => first(cls('lk2-tats'))
+    const tatAdds = () => q((n) => n.type === 'cs:button' && textOf(n) === BTN.addMore).filter((x) => within(x, 'lk2-tats'))
+    const newRow = () => q(cls('lk2-tatnew'))
+    const zonePick = () => subtree(newRow()[0].node).find((n) => n.type === 'cs:select')
+    const tatPicks = (x) => subtree(x).filter((n) => n.type === 'cs:select')
+    check('Tattoos, none on: one "Add more", off, and a new row asking the zone alone',
+      tats() !== undefined && tatAdds().length === 1 && tatAdds()[0].node.props.disabled === true
+      && newRow().length === 1 && tatPicks(newRow()[0].node).length === 1
+      && q((n) => n.type === 'cs:attribute-editor').length === 0)
+    eq('...its zones the body\'s six, by name', zonePick().props.options.map((o) => o.label), TATTOO_ZONES.map((z) => ZONE_LABEL[z]))
+    const pickZone = (label) => act(() => zonePick().props.onChange({ detail: { selectedOption: zonePick().props.options.find((o) => o.label === label) } }))
+    const zoneSent = pickZone('Torso')
+    check('a zone picked: the camera goes there, nothing added yet, and the tattoo picker appears',
+      zoneSent.some(([cb, d]) => cb === 'br/locker2/cat' && d.cat === 'tat_torso') && !zoneSent.some(([cb]) => cb === 'br/locker2/tatadd')
+      && tatPicks(newRow()[0].node).length === 2)
+    const tatPick = () => tatPicks(newRow()[0].node)[1]
+    const opt = tatPick().props.options[2]
+    eq('a tattoo picked: LOCKER2_TAT_ADD { z, i }, and the row goes',
+      act(() => tatPick().props.onChange({ detail: { selectedOption: opt } })).filter(([cb]) => cb === 'br/locker2/tatadd'),
+      [['br/locker2/tatadd', { z: 'torso', i: Number(opt.value) }]])
+    const zones = () => q(cls('lk2-tatzone'))
+    const zoneName = (x) => textOf(subtree(x.node).find((n) => hasClass(n, 'lk2-row-label')))
+    check('...and it stands under its zone\'s name; "Add more" lit again',
+      newRow().length === 0 && zones().map(zoneName).join() === 'Torso' && tatAdds()[0].node.props.disabled === false
+      && L2S().edit.tats.length === 1)
+    act(() => press(tatAdds()[0].node))
+    pickZone('Head')
+    act(() => tatPick().props.onChange({ detail: { selectedOption: tatPick().props.options[0] } }))
+    eq('rows grouped under their zones, in the body\'s order, whatever order they were added in', zones().map(zoneName), ['Head', 'Torso'])
+    check('a zone\'s picker leaves out what the zone already has', (() => {
+      act(() => press(tatAdds()[0].node))
+      pickZone('Torso')
+      const have = L2S().edit.tats.filter((t) => t.z === 'torso').map((t) => String(t.i))
+      const ok = tatPick().props.options.every((o) => !have.includes(o.value))
+      act(() => press(subtree(newRow()[0].node).find((n) => n.props['aria-label'] === BTN.remove)))
+      return ok && newRow().length === 0
+    })())
+    const torsoRow = () => q(cls('lk2-tatrow')).find((x) => within(x, 'lk2-tatzone') && x.parents.some((p) => hasClass(p, 'lk2-tatzone') && zoneName({ node: p }) === 'Torso'))
+    const r0 = L2S().edit.tats.find((t) => t.z === 'torso')
+    eq('a row\'s trash icon removes it (LOCKER2_TAT_DEL { r })',
+      act(() => press(subtree(torsoRow().node).find((n) => n.props['aria-label'] === BTN.remove))).filter(([cb]) => cb === 'br/locker2/tatdel'),
+      [['br/locker2/tatdel', { r: r0.r }]])
+    check('Tattoos: no word that is not copy.ts\'s or the look\'s', strayWords().length === 0, strayWords().join(' | '))
+    act(() => press(subtree(lines().find((x) => lineLabel(x) === CAT_LABEL.tattoos).node).find((n) => n.props['aria-label'] === BTN.remove)))
+  }
 
   // Back with changes asks; it does not leave, and it does not end the card.
   const k0 = R.calls.length
@@ -772,14 +1011,26 @@ export async function resolve(spec, ctx, next) {
     R.calls.length === k0 && q((n) => n.type === 'cs:modal' && n.props.visible === true).length === 1)
 
   // THE CAMERA ------------------------------------------------------------------
-  // "those buttons should be closer on the screen to the ped, in like the half
-  // right of center"
+  // "let's put them horizontal and across the bottom of the screen, on the
+  // right half where the ped would be", and "a hover hint would be nice"
   const cluster = first(cls('lk2-cam'))
   const left = String(cluster?.props.style?.left ?? '')
-  check(`the camera cluster stands in the screen's right half, past the panel (left ${left})`,
+  check(`the camera row is centered in the screen's right half, under the ped (${left})`,
     /^\d+(\.\d+)?%$/.test(left) && parseFloat(left) >= 50 && parseFloat(left) <= 80)
+  {
+    const css = strip(read(join(L2, 'lockerv2.css')))
+    const rule = /\n\.lk2-cam \{([^}]*)\}/.exec(css)?.[1] ?? ''
+    check('...a row across the foot of the screen: no column, the bottom set, centered on its left',
+      /bottom:\s*3rem/.test(rule) && !/flex-direction:\s*column/.test(rule) && !/(^|\s|;)top:/.test(rule)
+      && /transform:\s*translateX\(-50%\)/.test(rule))
+    check('...each hint shown only while its button is hovered or focused, on one line',
+      /\.lk2-cam \.lk2-cam-tip \{[^}]*white-space: nowrap;[^}]*opacity: 0;/.test(css)
+      && /\.lk2-cam \.lk2-cam-btn:hover \+ \.lk2-cam-tip,\s*\.lk2-cam \.lk2-cam-btn:focus-visible \+ \.lk2-cam-tip \{[^}]*opacity: 1;/.test(css))
+  }
   const camBtns = subtree(cluster).filter((n) => n.type === 'button')
   eq('the cluster: six buttons, by their names', camBtns.map((n) => n.props['aria-label']), Object.values(CAM))
+  eq('...each with its hover hint, its name, beside it', subtree(cluster).filter((n) => hasClass(n, 'lk2-cam-tip')).map(textOf),
+    Object.values(CAM))
   check('rotate left and right turn while held', camBtns.slice(0, 2).every((n) => typeof n.props.onPointerDown === 'function')
     && camBtns.slice(2).every((n) => n.props.onPointerDown === undefined))
   eq('each button sends its move', camBtns.map((n) => { const k = R.calls.length; press(n); return R.calls.slice(k).map(([cb, d]) => `${cb.split('/').pop()}:${d.op ?? (d.delta < 0 ? 'left' : 'right')}${d.d ?? ''}` ).join() }),
@@ -793,7 +1044,8 @@ export async function resolve(spec, ctx, next) {
   // its own over it.
   {
     const css = strip(read(join(L2, 'lockerv2.css')))
-    const PLATES = ['lk2-card-main', 'lk2-tile', 'lk2-line', 'lk2-choice-plate', 'lk2-face', 'lk2-icon']
+    const PLATES = ['lk2-card-main', 'lk2-tile', 'lk2-line', 'lk2-choice-plate', 'lk2-face', 'lk2-icon', 'lk2-tex',
+      'lk2-texbtn']
     const own = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
       .filter((m) => PLATES.some((p) => new RegExp(`\\.${p}(?![\\w-])[^\\s,]*\\s*(,|$)`).test(m[1].trim())))
       .filter((m) => /(^|;|\s)(background(-image|-color)?|border(-color)?|clip-path)\s*:/.test(m[2]))
@@ -804,6 +1056,49 @@ export async function resolve(spec, ctx, next) {
       /\.br-cs \.plate \{[^}]*--cut-max: [\d.]+em;/.test(css)
       && /\.br-cs \.plate\.is-active \{[^}]*--plate-fill: rgba\(12, 58, 72, 0\.94\);[^}]*--edgec: #22d3ee;/.test(css))
   }
+}
+
+// ── FIT: NO WRAPPING, NO "...", EVERY BORDER DRAWN (owner, 2026-10-14) ───────
+// "text wrapping should not be allowed. if you can't fit the text, don't draw
+// it", and "please put in some change to ensure the borders always draw
+// around everything which should have a border".
+{
+  const css = strip(read(join(L2, 'lockerv2.css')))
+  check('no rule ends text in "..." or lets a row of buttons or words wrap',
+    !/text-overflow:\s*ellipsis/.test(css) && !/flex-wrap:\s*wrap/.test(css.replace(/\.br-cs \.lk2-fit \{[^}]*\}/, '')))
+  check('a .lk2-fit box is one line tall, clips the rest, and moves text that does not fit, whole, onto the clipped line',
+    /\.br-cs \.lk2-fit \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*height: calc\(var\(--fit-lh\) \* 1em\);[^}]*overflow: hidden;/.test(css)
+    && /\.br-cs \.lk2-fit::before \{[^}]*content: '';[^}]*flex: 0 0 0px;/.test(css)
+    && /\.br-cs \.lk2-fit > \* \{[^}]*flex: 0 0 auto;[^}]*white-space: nowrap;/.test(css))
+  check('a button\'s words stay on one line', /\.br-cs \[class\*='awsui_button_'\] \{\s*white-space: nowrap !important;/.test(css))
+  // Every text this screen writes is a .lk2-fit's own: the lines' labels and
+  // summaries, the titles, the names, the row and group labels, the zones,
+  // New's titles and the menu's items.
+  const srcs = [join(SRC, 'screens', 'LockerV2.tsx'), ...['Editor.tsx', 'Rows.tsx', 'Home.tsx', 'NewLook.tsx', 'Tattoos.tsx'].map((f) => join(L2, f))]
+    .map((f) => read(f)).join('\n')
+  const FITTED = ['lk2-line-label', 'lk2-line-sum', 'lk2-title', 'lk2-card-name', 'lk2-tile-name', 'lk2-row-label',
+    'lk2-group-label', 'lk2-choice-title', 'lk2-caption']
+  const bare = FITTED.filter((c) => [...srcs.matchAll(new RegExp(`className=\\{?[\`"]([^\`"]*\\b${c}\\b[^\`"]*)[\`"]`, 'g'))]
+    .some((m) => !/\blk2-fit\b/.test(m[1])) || !srcs.includes(c))
+  check('every label, name and summary of the screen is a .lk2-fit', bare.length === 0, bare.join(', '))
+  check('the menu\'s items are .lk2-fit text', /role="menuitem"[\s\S]{0,200}<span className="lk2-fit">/.test(read(join(L2, 'Editor.tsx'))))
+  // Borders: the clip never shaves an edge, and no clipping box has one on its.
+  check('the screen\'s plates are clipped a pixel outside their box, the bevel kept',
+    /\.br-cs \.plate,\s*\.lk2-cam \.plate \{\s*clip-path: polygon\(\s*-1px -1px,\s*calc\(100% - var\(--cut\)\) -1px,\s*calc\(100% \+ 1px\) var\(--cut\),\s*calc\(100% \+ 1px\) calc\(100% \+ 1px\),\s*var\(--cut\) calc\(100% \+ 1px\),\s*-1px calc\(100% - var\(--cut\)\)\);/.test(css))
+  check('the island keeps 3px of room inside its clip', /\.br-cs\.lk2 \{\s*padding: 3px;\s*\}/.test(css))
+  const boxes = ['lk2-cards', 'lk2-tiles', 'lk2-lines', 'lk2-panel']
+  const tight = boxes.filter((b) => {
+    const body = new RegExp(`\\.br-cs \\.${b} \\{([^}]*)\\}`).exec(css)?.[1] ?? ''
+    return !/overflow-y: auto;/.test(body) || !/margin: -3px/.test(body) || !/padding: 3px [^;]*3px 3px;/.test(body)
+  })
+  check('each scrolling box reaches 3px past its place with 3px of room inside', tight.length === 0, tight.join(', '))
+  // A picker's list in the island's own em: Cloudscape's measured width came
+  // out zoomed twice on the standard zoom model (CEF 144, today's Chrome).
+  check('a tattoo, zone or body picker\'s list is its picker\'s width, its height capped in em',
+    /\.br-cs \.lk2-tats \[class\*='awsui_dropdown_'\]\[class\*='awsui_open_'\],\s*\.br-cs \.lk2-choice-sub \[class\*='awsui_dropdown_'\]\[class\*='awsui_open_'\] \{\s*inline-size: 100% !important;/.test(css)
+    && /\.br-cs \.lk2-tats \[class\*='awsui_dropdown-content_'\],\s*\.br-cs \.lk2-choice-sub \[class\*='awsui_dropdown-content_'\] \{\s*max-block-size: 15em !important;/.test(css))
+  check('a dialog is as wide as what it holds, its buttons on one line',
+    /\.br-cs \[class\*='awsui_dialog_'\] \{\s*inline-size: max-content !important;/.test(css))
 }
 
 // ── WIRING (source) ──────────────────────────────────────────────────────────
@@ -870,9 +1165,12 @@ export async function resolve(spec, ctx, next) {
     whole.length === 0, whole.join(', '))
 
   const ed = read(join(L2, 'Editor.tsx'))
-  check('"+ Add" lists the extras not on the look and puts the one picked on, its panel open',
-    ed.includes('const addable = addableExtras(edit.extras)')
-    && /void fetchNui\(CB\.LOCKER2_EXTRA, \{ id: detail\.id, on: true \}\)\s*setChosen\(detail\.id\)/.test(ed))
+  check('"Add more" lists the extras not on the look and puts the one picked on, its panel open',
+    ed.includes('const addable = addableExtras(edit.extras)') && ed.includes('<AddMore items={addable}')
+    && /void fetchNui\(CB\.LOCKER2_EXTRA, \{ id: cat, on: true \}\)\s*setChosen\(cat\)/.test(ed))
+  check('"Add more"\'s menu closes on Escape and on a press outside it, and the screen leaves it the key',
+    /if \(e\.key === 'Escape'\) setOpen\(false\)/.test(ed) && ed.includes("window.addEventListener('pointerdown', onDown, true)")
+    && ed.includes('ariaHaspopup="menu" ariaExpanded={open}'))
   check('an extra\'s trash icon takes it off', ed.includes('void fetchNui(CB.LOCKER2_EXTRA, { id: cat, on: false })')
     && ed.includes('{extra && <IconBtn icon="remove" label={BTN.remove}'))
   check('the list is the core then the extras on the look', ed.includes('const listed = edit ? listedCats(edit.extras) : []'))
@@ -894,8 +1192,11 @@ export async function resolve(spec, ctx, next) {
     && rows.includes('<IconBtn icon="angle-right" label={BTN.next} disabled={disabled} hold')
     && rows.includes('const held = useHold(onPress, undefined, disabled)'))
   check('a swatch sends its color through swatchRequest; a row draws swatches only when swatchesShown',
-    rows.includes('const req = swatchRequest(row, i)') && rows.includes('swatchesShown(row)')
-    && rows.includes('{nextColorShown(row) && ('))
+    rows.includes('const req = swatchRequest(row, i)') && rows.includes('swatchesShown(row)'))
+  check('an item\'s colors: a swatch button when texturesShown, its grid sending textureRequest; no "Next color" left',
+    rows.includes('const textures = texturesShown(row)') && rows.includes('<TextureButton row={row}')
+    && rows.includes('void fetchNui(CB.LOCKER2_COLOR, textureRequest(row, i))') && !rows.includes('nextColor'))
+  check('a caption only where its category shows names', rows.includes('const caption = nameShown(row)'))
   check('every row is memoized', (rows.match(/= memo\(function /g) ?? []).length >= 3)
   const hold = read(join(L2, 'hold.ts'))
   check('a hold acts on the press, then after holdDelay(1), holdDelay(2) ...; the keyboard acts once',
@@ -907,7 +1208,10 @@ export async function resolve(spec, ctx, next) {
     modals.includes('onChange={({ detail }) => setName(filterName(detail.value))}')
     && modals.includes('const ready = !asksName || nameOk(cleanName(name))')
     && modals.includes('onConfirm(modal, choice, cleanName(name))'))
-  check('"Save as new" is in the save dialog only', /\{m\?\.kind === 'save' && \(\s*<Button disabled=\{!ready\} onClick=\{\(\) => confirm\('new'\)\}>\{BTN\.saveAsNew\}<\/Button>/.test(modals))
+  check('"Save as new" is in the save dialog only, and only for a look opened from My Looks',
+    /\{m\?\.kind === 'save' && m\.asNew && \(\s*<Button disabled=\{!ready\} onClick=\{\(\) => confirm\('new'\)\}>\{BTN\.saveAsNew\}<\/Button>/.test(modals)
+    && v2.includes('setModal(saveDialogFor(editing, peds, opened))')
+    && /if \(a === 'edit'\) \{ setOpened\(true\);/.test(v2) && /setOpened\(false\)\s*setView\('edit'\)\s*ask\(CB\.LOCKER2_NEW, \{ sex \}\)/.test(v2))
   check('dialogs render into the island', modals.includes('getModalRoot={getRoot}'))
 
   const home = read(join(L2, 'Home.tsx'))
@@ -917,9 +1221,11 @@ export async function resolve(spec, ctx, next) {
     && home.includes("{ id: 'rename', text: BTN.rename },") && home.includes("{ id: 'delete', text: BTN.delete },")
     && home.includes('expandToViewport={false}'))
   const nl = read(join(L2, 'NewLook.tsx'))
-  check('New: Custom first and lit, its own Male / Female dropdown; Stock GTA Looks opens the roster',
-    nl.indexOf('CARD.custom') < nl.indexOf('CARD.stock') && nl.includes('plate lk2-choice-plate is-active')
-    && nl.includes('options={SEX_OPTIONS}') && nl.includes("void fetchNui(CB.LOCKER2_WEAR, { k: 's', id })"))
+  check('New: Custom first, its own Male / Female dropdown; a card press selects; Create goes on (LockerV2.tsx)',
+    nl.indexOf("card('custom', CARD.custom)") < nl.indexOf("card('stock', CARD.stock)") && nl.includes("pick === p ? ' is-active' : ''")
+    && nl.includes('options={SEX_OPTIONS}') && nl.includes("void fetchNui(CB.LOCKER2_WEAR, { k: 's', id })")
+    && !/LOCKER2_NEW/.test(nl) && v2.includes('const step = createStep(pick)') && v2.includes('onClick={create}>{BTN.create}</Button>')
+    && v2.includes('setPick(NEW_DEFAULT); setView(\'new\')'))
   const cam = read(join(L2, 'Camera.tsx'))
   check('the camera: rotate is LOCKER_SPIN, held; turn, zoom and reset are LOCKER2_CAM; the wheel zooms',
     cam.includes('void fetchNui(CB.LOCKER_SPIN, { delta })') && cam.includes("cam('turn')")
@@ -928,8 +1234,10 @@ export async function resolve(spec, ctx, next) {
   const tat = read(join(L2, 'Tattoos.tsx'))
   check('a tattoo picker scrolls virtually, filters by name, and opens inside the island',
     tat.includes('virtualScroll') && tat.includes('filteringType="manual"') && tat.includes('expandToViewport={false}'))
-  check('the tattoo zones keep their one rule (tattoos.css)', tat.includes("import './tattoos.css'")
-    && tat.includes('className="lk2-tats awsui-compact-mode"'))
+  check('tattoos: one list grouped by zone, one "Add more", a new row sending LOCKER2_TAT_ADD { z, i } once both are picked',
+    tat.includes('className="lk2-tats awsui-compact-mode"') && tat.includes('const groups = tatGroups(')
+    && (tat.match(/\{BTN\.addMore\}/g) ?? []).length === 1 && tat.includes('void fetchNui(CB.LOCKER2_TAT_ADD, { z, i })')
+    && !/attribute-editor/.test(tat) && !existsSync(join(L2, 'tattoos.css')))
 
   // Every callback the page and the harness name is in bridge/types.ts.
   const types = read(join(SRC, 'bridge', 'types.ts'))
@@ -993,9 +1301,9 @@ if (!existsSync(OUT)) {
       const declsOnlyVars = body.split(';').map((d) => d.trim()).filter(Boolean).every((d) => d.startsWith('--'))
       if (declsOnlyVars) return true
       const parts = sel.split(',').map((s) => s.trim())
-      // THIS SCREEN'S RULES: every selector under the island (`.br-cs `), a
-      // tattoo section (`.lk2-tats `) or the camera cluster (`.lk2-cam`).
-      if (parts.every((s) => /^\.(br-cs|lk2-tats)\s/.test(s) || /^\.lk2-cam\b/.test(s))) { ours++; return true }
+      // THIS SCREEN'S RULES: every selector under the island (`.br-cs `) or
+      // the island itself (`.br-cs.lk2`), or the camera cluster (`.lk2-cam`).
+      if (parts.every((s) => /^\.br-cs\s/.test(s) || s === '.br-cs.lk2' || /^\.lk2-cam\b/.test(s))) { ours++; return true }
       const isGlobal = (s) => /^(html|body|:root)(?![\w-])/.test(subject(s))
         || (/^\*/.test(subject(s)) && !/\.awsui[-_]/.test(s))
       if (parts.some(isGlobal)) { global.push(`${sel.slice(0, 100)} {${body.slice(0, 60)}`); return false }
@@ -1029,7 +1337,8 @@ if (!existsSync(OUT)) {
     // named on its elements, in the chunk's script.
     const chunkJs = existsSync(js) ? read(js) : ''
     for (const cls of ['awsui_button_', 'awsui_variant-normal_', 'awsui_variant-primary_', 'awsui_variant-link_',
-      'awsui_disabled_', 'awsui_labels_', 'awsui_header--text_', 'awsui_remove-button-field-padding']) {
+      'awsui_disabled_', 'awsui_labels_', 'awsui_header--text_', 'awsui_dropdown_', 'awsui_open_', 'awsui_dropdown-content_',
+      'awsui_dialog_']) {
       check(`the chunk still names Cloudscape's ${cls}, which our stylesheet reaches for`, chunkJs.includes(cls))
     }
   }

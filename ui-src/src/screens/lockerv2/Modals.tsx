@@ -12,10 +12,10 @@ export type ModalState =
   /** Save, a new look: "Upon clicking "Save" for any new ped creation, we
    *  should prompt them to name the ped" (owner, #28). */
   | { kind: 'name' }
-  /** Save, a saved look: its name, Save (update) and Save as new -- the save
-   *  flow the owner agreed on 2026-10-13 ("Save as new" is a WRITTEN label,
-   *  copy.ts). */
-  | { kind: 'save'; id: string; name: string }
+  /** Save, a saved look: its name and Save (update) -- and "Save as new"
+   *  only for a look opened from My Looks (`asNew`, model.ts saveDialogFor;
+   *  "Save as new" is a WRITTEN label, copy.ts). */
+  | { kind: 'save'; id: string; name: string; asNew: boolean }
   | { kind: 'rename'; id: string; name: string }
   | { kind: 'delete'; id: string; name: string }
   /** "Clicking "back" should prompt the user about unsaved changes" (owner). */
@@ -31,6 +31,11 @@ export type Choice = 'ok' | 'new'
  * wear the island's zoom and theme and fade with the page. They take no NUI
  * focus of their own -- the locker already holds it -- and Escape closes the
  * dialog alone (LockerV2.tsx's key handler), never the screen behind it.
+ *
+ * EVERY DIALOG IS AS WIDE AS WHAT IT HOLDS (owner, 2026-10-14, of the save
+ * dialog: "why is that box so wide?"): its title, its name box and its
+ * buttons on one line (lockerv2.css), not Cloudscape's fixed widths -- the
+ * save dialog was its medium, 600 px.
  *
  * A NAME is letters, digits and single spaces (owner, 2026-10-12: "we need to
  * allow spaces in the ped names"): filtered as typed (model.ts filterName),
@@ -99,15 +104,14 @@ export function LockerModal({ modal, root, onClose, onConfirm }: {
       getModalRoot={getRoot}
       removeModalRoot={keepRoot}
       closeAriaLabel={cancel}
-      // The save dialog's three buttons on one line.
-      size={m?.kind === 'save' ? 'medium' : 'small'}
+      size="small"
       disableContentPaddings={!asksName}
       header={title}
       footer={(
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
             <Button variant="link" onClick={onClose}>{cancel}</Button>
-            {m?.kind === 'save' && (
+            {m?.kind === 'save' && m.asNew && (
               <Button disabled={!ready} onClick={() => confirm('new')}>{BTN.saveAsNew}</Button>
             )}
             <Button variant="primary" disabled={!ready} onClick={() => confirm('ok')}>{ok}</Button>

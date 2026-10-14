@@ -13,9 +13,18 @@ import { useHold } from './hold'
  *
  *   THE STAGE    everything right of the panel: a drag turns the look, as
  *                Season 1's does (LOCKER_SPIN), and the mouse wheel zooms.
- *   THE CLUSTER  a small vertical stack of icon plates just right of the
- *                ped, about mid-height: rotate left and right (held, they
- *                keep turning), turn around, zoom in, zoom out, reset view.
+ *   THE CLUSTER  rotate left and right (held, they keep turning), turn
+ *                around, zoom in, zoom out, reset view. Then (2026-10-14):
+ *                "camera controls are exactly where I don't want them -
+ *                right on top of where the ped goes, and stacked vertically.
+ *                let's put them horizontal and across the bottom of the
+ *                screen, on the right half where the ped would be." So one
+ *                row of icon plates at the foot of the screen, centered under
+ *                the ped, level with Back and Save.
+ *   THE HINTS    "if I hover over the camera control buttons I should see
+ *                what they're going to do when I press them. a hover hint
+ *                would be nice": each button's name, on a small plate above
+ *                it, while the pointer is on it (or the keyboard's focus).
  *
  * Turning is LOCKER_SPIN, which Lua already has. Turn around, zoom and reset
  * are LOCKER2_CAM, new: in the browser preview the harness only logs them,
@@ -25,8 +34,8 @@ import { useHold } from './hold'
  * the lobby's own (`plate btn`), not Cloudscape's.
  */
 
-/** Where the cluster stands: the left edge, as a share of the screen's width.
- *  One number to tune in game, against where the ped stands. */
+/** Where the cluster stands: its middle, as a share of the screen's width --
+ *  under the ped. One number to tune in game, against where the ped stands. */
 export const CLUSTER_X = '64%'
 
 /** How often the wheel may zoom: one step per notch, not per event. */
@@ -52,9 +61,12 @@ function CamBtn({ label, children, onPress, hold }: {
   const held = useHold(onPress, spinDelay)
   const press = hold ? held : { onClick: () => onPress(0) }
   return (
-    <button type="button" className="plate btn lk2-cam-btn" aria-label={label} {...press}>
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">{children}</svg>
-    </button>
+    <span className="lk2-cam-slot">
+      <button type="button" className="plate btn lk2-cam-btn" aria-label={label} {...press}>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">{children}</svg>
+      </button>
+      <span className="lk2-cam-tip" aria-hidden="true">{label}</span>
+    </span>
   )
 }
 

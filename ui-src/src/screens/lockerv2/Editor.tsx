@@ -1,6 +1,5 @@
 import { memo, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import Button from '@cloudscape-design/components/button'
-import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
 import Spinner from '@cloudscape-design/components/spinner'
 import Toggle from '@cloudscape-design/components/toggle'
 import { fetchNui } from '../../bridge/nui'
@@ -28,7 +27,11 @@ import { TattooSection } from './Tattoos'
  *               Redo. Each asks Lua, which holds the draft and its history.
  *   THE LIST    on the left, it SUMMARIZES the look, one line per category:
  *               the core always, then each extra on the look with a trash
- *               icon, and "+ Add" at its foot for the extras that are not.
+ *               icon, in the order put on, and "Add more" at its foot for the
+ *               extras that are not. A line's summary is the item's place in
+ *               its list; one that does not fit beside its label is not drawn
+ *               (owner, 2026-10-14: "text wrapping should not be allowed. if
+ *               you can't fit the text, don't draw it").
  *   THE PANEL   on the right, ONLY the category pressed: its rows, and the
  *               camera goes there (LOCKER2_CAT, as before). Face is a few
  *               starting faces, the eyes, and "Fine-tune", which shows the
@@ -65,10 +68,12 @@ const Line = memo(function Line({ cat, text, chip, on, extra, disabled, onOpen, 
   return (
     <div ref={self} className={`plate lk2-line${on ? ' is-active' : ''}`}>
       <button type="button" className="btn lk2-line-main" aria-pressed={on} onClick={() => onOpen(cat)}>
-        <span className="lk2-line-label">{CAT_LABEL[cat] ?? ''}</span>
-        <span className="lk2-line-sum">
-          {chip !== null && <span className="lk2-chip" style={{ background: chip }} />}
-          <span className="lk2-line-text">{text}</span>
+        <span className="lk2-line-label lk2-fit"><span>{CAT_LABEL[cat] ?? ''}</span></span>
+        <span className="lk2-line-sum lk2-fit">
+          <span className="lk2-line-fits">
+            {chip !== null && <span className="lk2-chip" style={{ background: chip }} />}
+            <span className="lk2-line-text">{text}</span>
+          </span>
         </span>
       </button>
       {extra && <IconBtn icon="remove" label={BTN.remove} disabled={disabled} onPress={() => onRemove(cat)} />}
@@ -107,7 +112,7 @@ const FaceGroup = memo(function FaceGroup({ id, rows, disabled, onTouch }: {
   return (
     <div className="lk2-group">
       <div className="lk2-group-head">
-        <span className="lk2-group-label">{GROUP_LABEL[id] ?? ''}</span>
+        <span className="lk2-group-label lk2-fit"><span>{GROUP_LABEL[id] ?? ''}</span></span>
         <IconBtn icon="refresh" label={BTN.reset} disabled={disabled || !groupMoved(mine, ks)}
           onPress={() => {
             play('ui.select')
@@ -163,6 +168,60 @@ function Panel({ cat, edit, pal, tune, setTune, disabled, onTouch }: {
   )
 }
 
+/**
+ * "ADD MORE" (owner, 2026-10-14: "the plus button is too small. also change
+ * the add button to say "add more"", and "why is the "add" dropdown wider
+ * than it's parent button?"). The lobby's button with Cloudscape's own plus
+ * at the size of its text, and the editor's own menu of the extras not on the
+ * look -- not Cloudscape's ButtonDropdown, whose menu sizes itself to its
+ * items and a minimum of its own. The menu opens IN THE LIST'S COLUMN, under
+ * the button and exactly its width: the lines above give it the room (they
+ * scroll), so it is never cut off and never measured. A pick, a press outside
+ * it or Escape closes it -- Escape is its own while the button says it is
+ * expanded (model.ts OPEN_POPUP; the screen leaves the key alone).
+ */
+export function AddMore({ items, disabled, onPick }: {
+  items: readonly string[]
+  disabled: boolean
+  onPick: (cat: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  const off = disabled || items.length === 0
+  useEffect(() => { if (off) setOpen(false) }, [off])
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    const onDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Node) || !box.current?.contains(e.target)) setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', onDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onDown, true)
+    }
+  }, [open])
+  return (
+    <div ref={box} className={`lk2-addmore${open ? ' is-open' : ''}`}>
+      <Button iconName="add-plus" fullWidth wrapText={false} disabled={off} ariaHaspopup="menu" ariaExpanded={open}
+        onClick={() => { play('ui.select'); setOpen((o) => !o) }}>
+        {BTN.addMore}
+      </Button>
+      {open && (
+        <div className="lk2-menu thin-scroll" role="menu">
+          {items.map((c) => (
+            <button key={c} type="button" role="menuitem" className="btn lk2-menu-item"
+              onClick={() => { setOpen(false); onPick(c) }}>
+              <span className="lk2-fit"><span>{CAT_LABEL[c] ?? ''}</span></span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Fine-tune stays as the player left it, for the session. */
 let tuneOpen = false
 
@@ -194,6 +253,12 @@ export function Editor({ blocked }: { blocked: boolean }) {
     play('ui.select')
     void fetchNui(CB.LOCKER2_EXTRA, { id: cat, on: false })
   }, [])
+  const onAdd = useCallback((cat: string) => {
+    play('ui.select')
+    void fetchNui(CB.LOCKER2_EXTRA, { id: cat, on: true })
+    setChosen(cat)
+    void fetchNui(CB.LOCKER2_CAT, { cat })
+  }, [])
 
   if (!edit) return <div className="lk2-wait"><Spinner size="large" /></div>
 
@@ -215,11 +280,10 @@ export function Editor({ blocked }: { blocked: boolean }) {
       </div>
       <div className="lk2-cols">
         <div className="lk2-list">
-          {/* THE LINES SCROLL; "+ Add" DOES NOT. Its menu is wider than the
-              list, and inside the scroll box it was cut off at the list's
-              right edge and scrolled the list sideways (#28 review). Below
-              the box it opens over the panel, and stays at the list's foot
-              however many extras there are. */}
+          {/* THE LINES SCROLL; "Add more" DOES NOT. Inside the scroll box
+              its menu was cut off at the list's edge (#28 review); below the
+              box it opens over the list, and stays at the list's foot however
+              many extras there are. */}
           <div className="lk2-lines thin-scroll">
             {listed.map((cat) => {
               const s = summaryOf(cat, edit.rows, edit.tats.length)
@@ -231,20 +295,7 @@ export function Editor({ blocked }: { blocked: boolean }) {
             })}
           </div>
           <div className="lk2-add">
-            <ButtonDropdown
-              disabled={blocked || addable.length === 0}
-              expandToViewport={false}
-              fullWidth
-              items={addable.map((c) => ({ id: c, text: CAT_LABEL[c] ?? '' }))}
-              onItemClick={({ detail }) => {
-                play('ui.select')
-                void fetchNui(CB.LOCKER2_EXTRA, { id: detail.id, on: true })
-                setChosen(detail.id)
-                void fetchNui(CB.LOCKER2_CAT, { cat: detail.id })
-              }}
-            >
-              {BTN.addExtra}
-            </ButtonDropdown>
+            <AddMore items={addable} disabled={blocked} onPick={onAdd} />
           </div>
         </div>
         <div className="lk2-panel thin-scroll">

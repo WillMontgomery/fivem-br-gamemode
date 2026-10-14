@@ -10,16 +10,21 @@
  * builds (bridge/types.ts marks each callback NEW or CHANGED):
  *
  *   * a new custom look (LOCKER2_NEW): the core categories randomized, no
- *     extras; Randomize (LOCKER2_RANDOM) over everything on the look;
+ *     extras; Randomize (LOCKER2_RANDOM): the core, and a random set of the
+ *     extras -- put on with random items, or taken off -- in one step;
  *   * the draft's history (LOCKER2_UNDO / _REDO), run on model.ts's record,
  *     undoStep and redoStep -- a slider's drag or a held arrow one step;
- *   * the extras (LOCKER2_EXTRA): present or not, and pushed as `edit.extras`;
+ *   * the extras (LOCKER2_EXTRA): present or not, pushed as `edit.extras` IN
+ *     THE ORDER PUT ON, and saved so;
  *   * a face group's reset (LOCKER2_DEFAULTS), the starting faces (`shape`);
  *   * the palettes (LOCKER2_PAL, a `locker2pal`) and a swatch's color
- *     (LOCKER2_COLOR { k, c }); the rows' `pal` and `c`;
+ *     (LOCKER2_COLOR { k, c }) -- a palette's, or an item's texture; the
+ *     rows' `pal` and `c` (an item's texture worn too). No `sw`: the game has
+ *     no color for a texture, so its swatches show their places;
  *   * item names (`name`), patchy as the game's shop data is: most tops and
  *     hair, half the legs and shoes, a third of undershirts, no vests, bags
- *     or arms. MADE UP HERE, and only to lay the caption out;
+ *     or arms. MADE UP HERE; the page draws none (model.ts NAMED_CATS);
+ *   * a tattoo added by its zone and its tattoo (LOCKER2_TAT_ADD { z, i });
  *   * the arms following the top -- the game's forced-component data -- for
  *     most tops, the Arms row left as the override. Made up too: the real
  *     table is the game's (GET_FORCED_COMPONENT);
@@ -216,12 +221,12 @@ function rowsOf(sex: Sex, look: Look): Locker2Row[] {
       k: d.k, cat: d.cat, kind: 'count', v: cur.v, n: nOf(d, sex), colors: colorsOf(d, look),
       ...(name !== undefined ? { name } : {}),
       ...(pal !== undefined ? { pal } : {}),
-      ...(pal !== undefined && d.k !== 'h1' ? { c: cur.t } : {}),
+      ...(d.k !== 'h1' && (pal !== undefined || d.colors === 'tex') ? { c: cur.t } : {}),
     }
   })
 }
 
-/** The extras a saved look wears: any of its rows off none, or a tattoo. */
+/** The extras a seeded look wears: any of its rows off none, or a tattoo. */
 function extrasOf(look: Look, tats: Locker2TatRow[]): string[] {
   return EXTRA_CATS.filter((c) => (c === 'tattoos'
     ? tats.length > 0
@@ -236,8 +241,57 @@ function randomRow(look: Look, d: CountDef, sex: Sex, lo = d.none ? 2 : 1) {
   else look[d.k] = { v, t }
 }
 
-/** RANDOMIZE: the core, and every extra on the look; tattoos are left be. */
-function randomize(look: Look, sex: Sex, extras: readonly string[]) {
+/** One extra put on with a random item -- Makeup a random color of each of
+ *  its rows, Tattoos a few random ones -- by Randomize. */
+function randomExtra(s: Snap, c: string, sex: Sex) {
+  if (c === 'tattoos') {
+    const zones = mockTats(sex).zones
+    const n = rand(1, 4)
+    s.tats = []
+    for (let k = 0; k < n; k++) {
+      const zone = zones[rand(0, zones.length - 1)]
+      if (!zone) continue
+      const free = zone.items.filter((t) => !s.tats.some((x) => x.z === zone.z && x.i === t.i))
+      const t = free[rand(0, free.length - 1)]
+      if (t) s.tats.push({ r: ++tatRowSeq, z: zone.z, i: t.i })
+    }
+    return
+  }
+  for (const d of DEFS) {
+    if (d.cat !== c) continue
+    if (d.kind === 'slider') { s.look[d.k] = { v: d.def, t: 0 }; continue }
+    if (c === 'makeup') { s.look[d.k] = { v: rand(1, nOf(d, sex)), t: rand(0, MAKEUP_PAL.length - 1) }; continue }
+    randomRow(s.look, d, sex)
+  }
+}
+
+/** An extra taken off: every row of it back to none, its tattoos gone. */
+function clearExtra(s: Snap, c: string) {
+  for (const x of DEFS) if (x.cat === c) s.look[x.k] = { v: x.kind === 'slider' ? x.def : 1, t: 0 }
+  if (c === 'tattoos') s.tats = []
+}
+
+/** How likely Randomize is to put each extra on. */
+const RANDOM_EXTRA = 0.3
+
+/**
+ * RANDOMIZE THE WHOLE LOOK (owner, 2026-10-14: "the randomize button should
+ * randomize those additional categories too, and add them to the list when it
+ * sets them"): the core, then each extra on or off at random -- one put on
+ * gets a random item, one taken off goes back to none. The extras it keeps
+ * keep their places; the ones it puts on join the end, in a random order.
+ */
+function randomizeAll(s: Snap, sex: Sex) {
+  randomize(s.look, sex)
+  const on: string[] = EXTRA_CATS.filter(() => Math.random() < RANDOM_EXTRA)
+  for (const c of s.extras) if (!on.includes(c)) clearExtra(s, c)
+  const added = on.filter((c) => !s.extras.includes(c)).sort(() => Math.random() - 0.5)
+  s.extras = [...s.extras.filter((c) => on.includes(c)), ...added]
+  for (const c of s.extras) randomExtra(s, c, sex)
+}
+
+/** RANDOMIZE's core: the face, the skin, the hair and the clothes. */
+function randomize(look: Look, sex: Sex) {
   look.shape = { v: rand(1, 6), t: 0 }
   look.e = { v: rand(1, 8), t: 0 }
   look.sk = { v: rand(1, 46), t: 0 }
@@ -248,13 +302,6 @@ function randomize(look: Look, sex: Sex, extras: readonly string[]) {
   look.o2 = { v: rand(1, 34), t: hair }
   look.o1 = sex === 'm' && Math.random() < 0.5 ? { v: rand(2, 30), t: hair } : { v: 1, t: 0 }
   for (const k of ['c11', 'c8', 'c4', 'c6']) randomRow(look, defOf(k) as CountDef, sex)
-  for (const c of extras) {
-    for (const d of DEFS) {
-      if (d.cat !== c || d.kind !== 'count') continue
-      if (c === 'makeup') { look[d.k] = { v: rand(1, nOf(d, sex)), t: rand(0, MAKEUP_PAL.length - 1) }; continue }
-      randomRow(look, d, sex)
-    }
-  }
 }
 
 /** The tattoos on a look, held as rows. */
@@ -392,7 +439,7 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         numbered()
         const sex: Sex = d.sex === 'f' ? 'f' : 'm'
         const look = defaultLook()
-        randomize(look, sex, [])
+        randomize(look, sex)
         tab = sex === 'm' ? 'male' : 'female'
         draft = { sex, editing: null, base: null, snap: { look, extras: [], tats: [] }, cat: null, hist: newHistory() }
         push()
@@ -461,7 +508,7 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         if (draft && typeof d.cat === 'string' && d.cat !== draft.cat) { draft.cat = d.cat; push() }
         return true
       case 'br/locker2/random':
-        if (draft) { const dr = draft; change(null, (s) => randomize(s.look, dr.sex, s.extras)) }
+        if (draft) { const dr = draft; change(null, (s) => randomizeAll(s, dr.sex)) }
         push()
         return true
       case 'br/locker2/undo':
@@ -479,15 +526,15 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         if (add === draft.snap.extras.includes(id)) { push(); return true }
         change(null, (s) => {
           if (add) {
-            s.extras = EXTRA_CATS.filter((c) => c === id || s.extras.includes(c))
+            // At the end: the list keeps the order the extras were put on.
+            s.extras = [...s.extras, id]
             // An item extra goes on as its first item; Makeup and Tattoos
             // open with nothing on, to be chosen.
             const first = DEFS.find((x) => x.cat === id && x.kind === 'count')
             if (first && id !== 'makeup') s.look[first.k] = { v: 2, t: 0 }
           } else {
             s.extras = s.extras.filter((c) => c !== id)
-            for (const x of DEFS) if (x.cat === id) s.look[x.k] = { v: x.kind === 'slider' ? x.def : 1, t: 0 }
-            if (id === 'tattoos') s.tats = []
+            clearExtra(s, id)
           }
         })
         push()
@@ -573,13 +620,15 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         return true
       // The tattoo rows, as Lua holds them: 10 a zone, no tattoo in two rows
       // of a zone, a row's choice only one of its zone's.
+      // CHANGED: { z, i } -- "Add more" asks the zone, then the tattoo.
       case 'br/locker2/tatadd': {
         if (!draft || typeof d.z !== 'string') return true
         const z = d.z
+        const i = d.i
         const rows = draft.snap.tats.filter((x) => x.z === z)
-        const pick = zoneItems(z).find((i) => !rows.some((x) => x.i === i))
-        if (rows.length < TATTOOS_PER_ZONE && pick !== undefined) {
-          change(null, (s) => { s.tats = [...s.tats, { r: ++tatRowSeq, z, i: pick }] })
+        if (rows.length < TATTOOS_PER_ZONE && typeof i === 'number' && zoneItems(z).includes(i)
+          && !rows.some((x) => x.i === i)) {
+          change(null, (s) => { s.tats = [...s.tats, { r: ++tatRowSeq, z, i }] })
         }
         push()
         return true

@@ -37,6 +37,7 @@ export const BTN = {
   done: 'Done',               // OWNER: today's Season 1 label, kept (contract owner call 2)
   back: 'Back',               // OWNER: "Clicking "back" should prompt the user about unsaved changes"
   new: 'New',                 // OWNER: ""New" at the top"
+  create: 'Create',           // OWNER: "it should have a create button"
   save: 'Save',               // OWNER: "Save"
   saveAsNew: 'Save as new',   // WRITTEN (proposal for the owner)
   randomize: 'Randomize',     // OWNER: "they get a randomize button for the whole ped"
@@ -45,16 +46,14 @@ export const BTN = {
   edit: 'Edit',               // OWNER: "edit"
   rename: 'Rename',           // OWNER: "rename"
   delete: 'Delete',           // OWNER: "delete"
-  nextColor: 'Next color',    // OWNER: "we show a button "Next color""
   next: 'Next',               // OWNER: "a next/last button" (the icon's accessible name)
   last: 'Last',               // OWNER: "a next/last button" (the icon's accessible name)
   reset: 'Reset',             // OWNER: "a reset button" (the icon's accessible name)
   cancel: 'Cancel',           // WRITTEN (proposal for the owner)
   keepEditing: 'Keep editing', // WRITTEN (proposal for the owner)
   discard: 'Discard',         // WRITTEN (proposal for the owner)
-  add: 'Add',                 // WRITTEN (proposal for the owner): a tattoo zone's Add
-  addExtra: '+ Add',          // WRITTEN (proposal for the owner): the editor's extras dropdown
-  remove: 'Remove',           // WRITTEN (proposal for the owner): a tattoo row's Remove, and the trash icon's accessible name
+  addMore: 'Add more',        // OWNER: "change the add button to say "add more"" (the extras' menu, and the tattoos')
+  remove: 'Remove',           // WRITTEN (proposal for the owner): the trash icon's accessible name (an extra, a tattoo row)
   more: 'More',               // WRITTEN (proposal for the owner): the card's "..." menu's accessible name
   fineTune: 'Fine-tune',      // WRITTEN (proposal for the owner)
 } as const
@@ -68,7 +67,10 @@ export const MODAL = {
 
 export const deleteTitle = (name: string): string => `Delete ${name}?` // WRITTEN (proposal for the owner)
 
-/** The camera cluster's buttons, by their accessible names (they draw icons). */
+/** The camera cluster's buttons: they draw icons, and each name is its hover
+ *  hint (owner, 2026-10-14: "if I hover over the camera control buttons I
+ *  should see what they're going to do when I press them. a hover hint would
+ *  be nice"). */
 export const CAM = {
   left: 'Rotate left',        // WRITTEN (proposal for the owner)
   right: 'Rotate right',      // WRITTEN (proposal for the owner)

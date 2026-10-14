@@ -8,7 +8,8 @@ import { useNuiEvent } from '../bridge/useNuiEvent'
 import { play } from '../audio/cues'
 import { BTN, TITLE } from './lockerv2/copy'
 import {
-  backSteps, escapeAction, followView, popupOpen, saveDialogFor, saveEnabled, saveRequest, type View,
+  NEW_DEFAULT, backSteps, createStep, escapeAction, followView, popupOpen, saveDialogFor, saveEnabled, saveRequest,
+  type NewPick, type View,
 } from './lockerv2/model'
 import { useAfterPaint, useCloudscapeScope, useIslandZoom, usePortalZoom } from './lockerv2/scope'
 import { keepShot, takeShot } from './lockerv2/shots'
@@ -36,17 +37,19 @@ export { warmTheme } from './lockerv2/scope'
  *
  *   MY LOOKS   the saved looks as cards (lockerv2/Home.tsx); New at the top;
  *              Done closes the locker.
- *   NEW        Custom (the default, with a Male / Female dropdown) and Stock
- *              GTA Looks (lockerv2/NewLook.tsx); Back.
+ *   NEW        Custom (selected as it opens, with a Male / Female dropdown)
+ *              and Stock GTA Looks (lockerv2/NewLook.tsx): a press selects
+ *              one, Create goes on with it; Back.
  *   STOCK      the stock roster, worn on a press; Back to New.
  *   EDITOR     Randomize / Undo / Redo, the summary list and one category's
  *              panel (lockerv2/Editor.tsx); Back, which asks if unsaved, and
- *              Save, which opens the save dialog.
+ *              Save, which opens the save dialog -- with "Save as new" only
+ *              for a look opened from My Looks (model.ts saveDialogFor).
  *
  * THE RIGHT OF THE SCREEN IS STILL THE PED, as in Season 1: the panel and its
  * scrim take the left, a drag anywhere else turns the character, the wheel
- * zooms, and the camera cluster stands just right of the ped
- * (lockerv2/Camera.tsx).
+ * zooms, and the camera buttons stand in a row across the bottom, under the
+ * ped (lockerv2/Camera.tsx).
  *
  * THE ISLAND. Cloudscape draws in px; this interface is in rem. Everything
  * Cloudscape renders sits inside one element zoomed by root px / 14 (contract
@@ -75,6 +78,9 @@ export { warmTheme } from './lockerv2/scope'
  *  this one. */
 let requests = 0
 
+/** The body last picked on New's Custom card, for the session. */
+let lastSex: 'm' | 'f' = 'm'
+
 export default function LockerV2() {
   useCloudscapeScope()
   const z = useIslandZoom()
@@ -92,6 +98,11 @@ export default function LockerV2() {
   const peds = useUi((s) => s.locker2.peds)
 
   const [view, setView] = useState<View>('home')
+  const [pick, setPick] = useState<NewPick>(NEW_DEFAULT)
+  const [sex, setSex] = useState<'m' | 'f'>(lastSex)
+  /** The draft was opened from My Looks with Edit (not made with New): its
+   *  save dialog has "Save as new". */
+  const [opened, setOpened] = useState(false)
   const [modal, setModal] = useState<ModalState | null>(null)
   const [modalRoot, setModalRoot] = useState<HTMLDivElement | null>(null)
 
@@ -175,7 +186,7 @@ export default function LockerV2() {
 
   const onCard = useCallback((p: Locker2Ped, a: CardAction) => {
     play('ui.select')
-    if (a === 'edit') { setView('edit'); ask(CB.LOCKER2_EDIT, { id: p.id }) }
+    if (a === 'edit') { setOpened(true); setView('edit'); ask(CB.LOCKER2_EDIT, { id: p.id }) }
     else if (a === 'rename') setModal({ kind: 'rename', id: p.id, name: p.name })
     else setModal({ kind: 'delete', id: p.id, name: p.name })
     // `ask` and `setView` are this screen's own; nothing else here changes.
@@ -185,14 +196,23 @@ export default function LockerV2() {
     ? peds.find((p) => p.id === editing)?.name ?? null
     : TITLE[view]
 
+  // CREATE, on New: a new custom look of the body picked, or the roster.
+  const create = () => {
+    play('ui.select')
+    const step = createStep(pick)
+    if (step.do === 'view') { setView(step.to); return }
+    setOpened(false)
+    setView('edit')
+    ask(CB.LOCKER2_NEW, { sex })
+  }
+
   let body: React.ReactNode = null
   if (ready) {
     if (view === 'home') body = <Home blocked={blocked} onAction={onCard} />
     else if (view === 'new') {
       body = (
-        <NewChoice blocked={blocked}
-          onCustom={(sex) => { setView('edit'); ask(CB.LOCKER2_NEW, { sex }) }}
-          onStock={() => setView('stock')} />
+        <NewChoice blocked={blocked} pick={pick} sex={sex} onPick={setPick}
+          onSex={(v) => { lastSex = v; setSex(v) }} />
       )
     } else if (view === 'stock') body = <StockList />
     else body = <Editor blocked={blocked} />
@@ -218,10 +238,10 @@ export default function LockerV2() {
           {/* A new look has no name yet: no heading, and the editor's strip
               takes its place. */}
           {title !== null && <div className="lk2-head">
-            <h2 className="lk2-title">{title}</h2>
+            <h2 className="lk2-title lk2-fit"><span>{title}</span></h2>
             {view === 'home' && (
               <Button variant="primary" disabled={blocked}
-                onClick={() => { play('ui.select'); setView('new') }}>
+                onClick={() => { play('ui.select'); setPick(NEW_DEFAULT); setView('new') }}>
                 {BTN.new}
               </Button>
             )}
@@ -248,12 +268,14 @@ export default function LockerV2() {
             ) : (
               <Button onClick={() => back(false)}>{BTN.back}</Button>
             )}
+            {view === 'new' && (
+              <Button variant="primary" disabled={blocked} onClick={create}>{BTN.create}</Button>
+            )}
             {view === 'edit' && (
               <Button variant="primary" disabled={!hasDraft || !saveEnabled(editing, dirty, busy)}
                 onClick={() => {
                   play('ui.select')
-                  const d = saveDialogFor(editing, peds)
-                  setModal(d.kind === 'save' ? { kind: 'save', id: d.id, name: d.name } : { kind: 'name' })
+                  setModal(saveDialogFor(editing, peds, opened))
                 }}>
                 {BTN.save}
               </Button>

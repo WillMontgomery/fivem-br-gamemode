@@ -25,6 +25,65 @@
   border-radius: 0 !important;
 }
 
+/* ── BORDERS THAT ALWAYS DRAW ──────────────────────────────────────────────
+   Owner, 2026-10-14: "please put in some change to ensure the borders always
+   draw around everything which should have a border."
+
+   THE CLIP NEVER SHAVES AN EDGE. The lobby's .plate (index.css) is cut to its
+   bevel by a clip-path on its border box at the box's exact edges, and its
+   1px border is drawn snapped to whole pixels. The island's zoom puts plates
+   on fractional pixels, where the snapped border can fall partly outside the
+   clip and lose a side. So this screen's plates are clipped a pixel outside
+   their box -- every point out by 1px, the bevel's diagonal by 0.7px, still
+   outside the corner line the plate redraws -- and the border is always
+   inside the clip.
+
+   NO CLIPPING BOX HAS A BORDER ON ITS EDGE. The island (it clips its
+   overflow) keeps 3px of room inside -- the most a ring here stands outside
+   its box (a selected swatch's: 2px, 1px out) -- and each scrolling box
+   (the looks, the stock looks, the lines, the panel) reaches 3px past its
+   place with 3px of room inside, so what it holds lines up with what does
+   not scroll and still never touches its clip. */
+.br-cs .plate,
+.lk2-cam .plate {
+  clip-path: polygon(
+    -1px -1px,
+    calc(100% - var(--cut)) -1px,
+    calc(100% + 1px) var(--cut),
+    calc(100% + 1px) calc(100% + 1px),
+    var(--cut) calc(100% + 1px),
+    -1px calc(100% - var(--cut)));
+}
+.br-cs.lk2 {
+  padding: 3px;
+}
+
+/* ── TEXT FITS ON ONE LINE, OR IS NOT DRAWN ────────────────────────────────
+   Owner, 2026-10-14: "text wrapping should not be allowed. if you can't fit
+   the text, don't draw it." A `.lk2-fit` box is one line tall and clips what
+   overflows it. Its text is one unbreakable piece after an empty marker: when
+   it does not fit beside the marker it moves, whole, onto a second line,
+   which is clipped away. Nothing is cut mid-word, and nothing ends in "...".
+   --fit-lh is the line's height, in the box's own em. */
+.br-cs .lk2-fit {
+  --fit-lh: 1.25;
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  height: calc(var(--fit-lh) * 1em);
+  overflow: hidden;
+  line-height: var(--fit-lh);
+}
+.br-cs .lk2-fit::before {
+  content: '';
+  flex: 0 0 0px;
+  height: calc(var(--fit-lh) * 1em);
+}
+.br-cs .lk2-fit > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* ── CLOUDSCAPE'S BUTTONS, AS THE LOBBY'S ──────────────────────────────────
    Cloudscape's own rules carry an id's weight (`:not(#\9)`), so what this
    changes it changes with !important. The type is set on the button and
@@ -58,6 +117,11 @@
 .br-cs [class*='awsui_button_'][class*='awsui_disabled_'] {
   opacity: 0.4 !important;
 }
+/* A button's words stay on one line (owner, 2026-10-14: "text wrapping
+   should not be allowed"). */
+.br-cs [class*='awsui_button_'] {
+  white-space: nowrap !important;
+}
 
 /* A dialog's title is Anton (theme.ts), and Anton is the lobby's capitals
    face. */
@@ -65,6 +129,17 @@
   font-weight: 400 !important;
   letter-spacing: 0.02em !important;
   text-transform: uppercase !important;
+}
+
+/* A DIALOG IS AS WIDE AS WHAT IT HOLDS (owner, 2026-10-14, of the save
+   dialog: "why is that box so wide?"): its title, its name box and its
+   buttons on one line -- never Cloudscape's fixed 320 or 600 px, which
+   either left it wide or broke its three buttons onto two lines. A name box
+   still has room for a name of 24. */
+.br-cs [class*='awsui_dialog_'] {
+  inline-size: max-content !important;
+  min-inline-size: 20em !important;
+  max-inline-size: 40em !important;
 }
 
 /* ── THE FRAME: heading, body, way out ───────────────────────────────────── */
@@ -78,15 +153,12 @@
   flex: 0 0 auto;
 }
 .br-cs .lk2-title {
+  --fit-lh: 1.1;
+  flex: 1 1 auto;
   margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-family: 'Anton', 'Segoe UI', system-ui, sans-serif;
   font-weight: 400;
   font-size: 2.2em;
-  line-height: 1.1;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: #ffffff;
@@ -164,7 +236,8 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 0.5em;
+  margin: -3px;
+  padding: 3px calc(0.5em + 3px) 3px 3px;
 }
 .br-cs .lk2-card {
   position: relative;
@@ -192,13 +265,10 @@
   object-fit: cover;
 }
 .br-cs .lk2-card-name {
-  display: block;
+  --fit-lh: 1.2;
+  box-sizing: content-box;
   padding: 0.55em 0.65em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 600;
-  line-height: 1.2;
 }
 .br-cs .lk2-card-mark {
   position: absolute;
@@ -226,7 +296,12 @@
   background: rgba(6, 8, 14, 0.72);
 }
 
-/* ── NEW ─────────────────────────────────────────────────────────────────── */
+/* ── NEW ─────────────────────────────────────────────────────────────────────
+   Two cards of one size, each title at the same place, top left (owner,
+   2026-10-14: "what happened to the alignment of text in these boxes"). The
+   card's press covers it whole; Custom's Male / Female dropdown stands under
+   its title, above the press, as wide as its words ("the gender dropdown is
+   suuuuper wide"). */
 .br-cs .lk2-choices {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -234,34 +309,31 @@
 }
 .br-cs .lk2-choice {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  min-width: 0;
   min-height: 10em;
 }
-.br-cs .lk2-choice-plate {
+.br-cs .lk2-choice-plate,
+.br-cs .lk2-choice-main {
   position: absolute;
   inset: 0;
 }
-.br-cs .lk2-choice-main,
-.br-cs .lk2-choice-sub {
-  position: relative;
-}
 .br-cs .lk2-choice-main {
   display: flex;
-  align-items: flex-end;
-  flex: 1 1 auto;
-  width: 100%;
+  align-items: flex-start;
   padding: 1em;
 }
 .br-cs .lk2-choice-title {
+  --fit-lh: 1.05;
+  flex: 1 1 auto;
   font-family: 'Anton', 'Segoe UI', system-ui, sans-serif;
   font-size: 1.7em;
-  line-height: 1.05;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 .br-cs .lk2-choice-sub {
-  padding: 0 1em 1em;
+  position: relative;
+  width: 8.5em;
+  margin: calc(2em + 1.7em * 1.05) 1em 1em;
 }
 
 /* ── STOCK GTA LOOKS ─────────────────────────────────────────────────────── */
@@ -273,7 +345,8 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 0.5em;
+  margin: -3px;
+  padding: 3px calc(0.5em + 3px) 3px 3px;
 }
 .br-cs .lk2-tile {
   display: flex;
@@ -287,9 +360,7 @@
   text-align: left;
 }
 .br-cs .lk2-tile-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1 1 auto;
 }
 .br-cs .lk2-tile.is-active {
   color: #22d3ee;
@@ -305,7 +376,6 @@
 }
 .br-cs .lk2-strip {
   display: flex;
-  flex-wrap: wrap;
   gap: 0.5em;
   flex: 0 0 auto;
 }
@@ -315,9 +385,9 @@
   flex: 1 1 auto;
   min-height: 0;
 }
-/* The list: its lines scroll, and "+ Add" stands below them, outside the
-   scroll box, so the menu it opens -- wider than the list -- is not cut off
-   at the list's edge (#28 review). */
+/* The list: its lines scroll, and "Add more" stands below them, outside the
+   scroll box, its menu opening under it in the column; the lines give up the
+   room (#28 review: inside the scroll box the menu was cut off). */
 .br-cs .lk2-list {
   display: flex;
   flex-direction: column;
@@ -332,7 +402,8 @@
   flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 0.35em;
+  margin: -3px -3px 0;
+  padding: 3px calc(0.35em + 3px) 3px 3px;
 }
 .br-cs .lk2-line {
   display: flex;
@@ -353,26 +424,28 @@
   padding: 0.6em 0.75em;
 }
 .br-cs .lk2-line-label {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
+/* The summary takes the room the label leaves, and shows only if it fits
+   there whole (`.lk2-fit`): "Earrings Black ..." was the owner's example. */
 .br-cs .lk2-line-sum {
+  flex: 1 1 0px;
+  justify-content: flex-end;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.9em;
+}
+.br-cs .lk2-line-fits {
   display: flex;
   align-items: center;
   gap: 0.4em;
-  min-width: 0;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 0.9em;
 }
 .br-cs .lk2-line.is-active .lk2-line-sum {
   color: rgba(255, 255, 255, 0.85);
 }
 .br-cs .lk2-line-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .br-cs .lk2-chip {
@@ -383,13 +456,48 @@
 }
 .br-cs .lk2-add {
   flex: 0 0 auto;
-  padding: 0.75em 0.35em 0 0;
+  padding: calc(0.75em - 3px) 0.35em 0 0;
+}
+/* "Add more"'s menu: in the column under its button, its width exactly
+   (owner, 2026-10-14: "why is the "add" dropdown wider than it's parent
+   button?"), a plate's fill and edge. */
+.br-cs .lk2-menu {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.25em;
+  padding: 3px;
+  background: rgba(20, 24, 34, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.br-cs .lk2-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin: 0;
+  padding: 0.5em 0.65em;
+  background: transparent;
+  border: 0;
+  color: #ffffff;
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.br-cs .lk2-menu-item > .lk2-fit {
+  flex: 1 1 auto;
+}
+.br-cs .lk2-menu-item:hover,
+.br-cs .lk2-menu-item:focus-visible {
+  background: rgba(12, 58, 72, 0.94);
+  outline: none;
 }
 .br-cs .lk2-panel {
   flex: 1 1 auto;
   min-width: 0;
   overflow-y: auto;
-  padding-right: 0.5em;
+  margin: -3px;
+  padding: 3px calc(0.5em + 3px) 3px 3px;
 }
 .br-cs .lk2-rows {
   display: flex;
@@ -401,6 +509,9 @@
   flex-direction: column;
   gap: 0.4em;
 }
+.br-cs .lk2-group-label {
+  flex: 1 1 auto;
+}
 .br-cs .lk2-row-label,
 .br-cs .lk2-group-label {
   color: rgba(255, 255, 255, 0.7);
@@ -411,7 +522,6 @@
 }
 .br-cs .lk2-stepper {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 0.4em;
 }
@@ -476,6 +586,38 @@
   cursor: not-allowed;
 }
 
+/* An item's own colors (owner, 2026-10-14: "a button for a color swatch"
+   instead of "Next color"): the button wears the color on -- its swatch, or
+   its place among the item's colors where the game has no color for it --
+   and opens them under the row. */
+.br-cs .lk2-texbtn,
+.br-cs .lk2-tex {
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.br-cs .lk2-texchip {
+  width: 1.15em;
+  height: 1.15em;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+}
+.br-cs .lk2-texgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 2.15em);
+  gap: 0.35em;
+}
+.br-cs .lk2-tex {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.15em;
+  padding: 0;
+  --cut-max: 0.4em;
+}
+.br-cs .lk2-texgrid .lk2-swatch {
+  min-height: 2.15em;
+}
+
 /* The face: the starting faces, then the groups behind Fine-tune. */
 .br-cs .lk2-faces {
   display: grid;
@@ -505,14 +647,60 @@
   gap: 0.5em;
 }
 
-/* ── THE CAMERA CLUSTER (outside the island, in rem) ─────────────────────── */
-.lk2-cam {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+/* ── TATTOOS: one list, grouped under the zones, one "Add more" ──────────── */
+.br-cs .lk2-tats {
   display: flex;
   flex-direction: column;
+  gap: 1em;
+}
+.br-cs .lk2-tatzone {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+.br-cs .lk2-tatrow {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+.br-cs .lk2-tatrow > :not(.lk2-icon):not(.lk2-tatzonepick) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.br-cs .lk2-tatzonepick {
+  flex: 0 0 8.5em;
+}
+
+/* A PICKER'S LIST IS ITS PICKER'S WIDTH, and fits the island. Cloudscape
+   sizes an open list in script from the picker's measured box. A browser on
+   the standard zoom model (Chrome 128 and later, so CEF 144) measures that box
+   already zoomed, and the island's zoom then applies again: the list came out
+   wider than its picker by the zoom (owner, 2026-10-14: "why is the "add"
+   dropdown wider than it's parent button?"), and its height cap past the
+   island's edge. Both are set here in the island's own em, so CEF 103 and 144
+   draw the same thing. */
+.br-cs .lk2-tats [class*='awsui_dropdown_'][class*='awsui_open_'],
+.br-cs .lk2-choice-sub [class*='awsui_dropdown_'][class*='awsui_open_'] {
+  inline-size: 100% !important;
+}
+.br-cs .lk2-tats [class*='awsui_dropdown-content_'],
+.br-cs .lk2-choice-sub [class*='awsui_dropdown-content_'] {
+  max-block-size: 15em !important;
+}
+
+/* ── THE CAMERA CLUSTER (outside the island, in rem) ─────────────────────── */
+/* One row across the foot of the screen, centered under the ped and level
+   with the island's foot (its 3rem padding). */
+.lk2-cam {
+  position: absolute;
+  bottom: 3rem;
+  transform: translateX(-50%);
+  display: flex;
   gap: 0.4rem;
+}
+.lk2-cam .lk2-cam-slot {
+  position: relative;
+  display: flex;
 }
 .lk2-cam .lk2-cam-btn {
   --plate-fill: rgba(32, 36, 50, 0.94);
@@ -532,4 +720,33 @@
   stroke-width: 2;
   stroke-linecap: square;
   stroke-linejoin: miter;
+}
+
+/* A button's hover hint: its name on a small plate above it, while the
+   pointer is on it or the keyboard's focus is (owner, 2026-10-14: "a hover
+   hint would be nice"). One line, never wider than its words. */
+.lk2-cam .lk2-cam-tip {
+  position: absolute;
+  bottom: calc(100% + 0.45rem);
+  left: 50%;
+  padding: 0.3rem 0.55rem;
+  white-space: nowrap;
+  background: rgba(12, 14, 22, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 0.2rem);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.lk2-cam .lk2-cam-btn:hover + .lk2-cam-tip,
+.lk2-cam .lk2-cam-btn:focus-visible + .lk2-cam-tip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition-delay: 150ms;
 }

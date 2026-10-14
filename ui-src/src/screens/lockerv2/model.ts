@@ -3,7 +3,7 @@
  *
  * Every rule the page applies before it draws -- which view it is on, what
  * Back and Escape do and in which order, what a name may hold, which save a
- * dialog makes, which categories the editor lists and what "+ Add" offers,
+ * dialog makes, which categories the editor lists and what "Add more" offers,
  * how a held arrow repeats, what a swatch sends, how a draft's history steps
  * -- lives here, so scripts/test-lockerv2.mjs can load this file with node's
  * type stripping and hold each rule to the owner's words. The components ask;
@@ -47,6 +47,21 @@ export function followView(shown: View, hasDraft: boolean, luaSeq: number | null
   return shown === 'edit' ? 'home' : shown
 }
 
+/**
+ * NEW'S TWO CARDS (owner, 2026-10-14: "when I click "custom" or "stock gta
+ * looks" it should have a create button, or not have either card selected by
+ * default ... we need to fix that"). A press on a card only SELECTS it --
+ * Custom is selected as the view opens -- and Create goes on with the one
+ * selected: a new custom look of the body its dropdown shows (LOCKER2_NEW),
+ * or the stock roster.
+ */
+export type NewPick = 'custom' | 'stock'
+export const NEW_DEFAULT: NewPick = 'custom'
+
+export function createStep(pick: NewPick): { do: 'new' } | { do: 'view'; to: View } {
+  return pick === 'stock' ? { do: 'view', to: 'stock' } : { do: 'new' }
+}
+
 /** One thing Back (or Done, or Escape) does, in order. */
 export type BackStep =
   | { do: 'confirm' }
@@ -74,8 +89,9 @@ export function backSteps(view: View, dirty: boolean, confirmed: boolean): BackS
 
 /**
  * ESCAPE. An open dropdown has it first ('pass': the page leaves the key alone
- * and Cloudscape closes it -- a tattoo picker, a card's "..." menu, "+ Add");
- * then an open dialog closes alone; then it is the view's Back. A walkthrough
+ * and the dropdown closes itself -- a tattoo or zone picker and a card's "..."
+ * menu are Cloudscape's, "Add more"'s menu is the editor's own); then an open
+ * dialog closes alone; then it is the view's Back. A walkthrough
  * card waiting on the locker (#405) holds only the CLOSING: on My Looks Escape
  * is nothing, and the card's Done is the way out; inside, Back still works.
  */
@@ -131,14 +147,20 @@ export function nameOk(n: string): boolean {
 
 export interface SavedLook { id: string; name: string }
 
-/** The dialog Save opens: a new look is named; a saved one shows its name,
- *  with Save (update) and Save as new. A look deleted from under the edit is
- *  a new look again: there is nothing left to update. */
-export type SaveDialog = { kind: 'name' } | { kind: 'save'; id: string; name: string }
+/**
+ * The dialog Save opens. A new look is named, and has Save alone. A saved one
+ * shows its name with Save (update) -- and "Save as new" only when the player
+ * opened it from My Looks with Edit (owner, 2026-10-14: "say I create a new
+ * look and save it - why do I have save and save as new?"): a look made in
+ * this editor and saved once is still his new look, and Save keeps updating
+ * it. A look deleted from under the edit is a new look again: there is
+ * nothing left to update.
+ */
+export type SaveDialog = { kind: 'name' } | { kind: 'save'; id: string; name: string; asNew: boolean }
 
-export function saveDialogFor(editing: string | null, peds: readonly SavedLook[]): SaveDialog {
+export function saveDialogFor(editing: string | null, peds: readonly SavedLook[], opened: boolean): SaveDialog {
   const p = editing !== null ? peds.find((x) => x.id === editing) : undefined
-  return p ? { kind: 'save', id: p.id, name: p.name } : { kind: 'name' }
+  return p ? { kind: 'save', id: p.id, name: p.name, asNew: opened } : { kind: 'name' }
 }
 
 /** Save is lit for a new look always (it has never been saved), for a saved
@@ -176,7 +198,7 @@ export function saveRequest(
 export const CORE_CATS = ['face', 'skin', 'hair', 'top', 'legs', 'shoes'] as const
 
 /**
- * ABSENT UNTIL ADDED, from the one "+ Add" dropdown at the foot of the list,
+ * ABSENT UNTIL ADDED, from the one "Add more" menu at the foot of the list,
  * each with a trash icon to take it off again: today's optional rows, one
  * extra each, and Makeup (makeup, blush, lipstick) and Tattoos as groups.
  */
@@ -185,13 +207,29 @@ export const EXTRA_CATS = [
   'tattoos',
 ] as const
 
-/** The summary list: the core, then the extras on the look in EXTRA_CATS's
- *  order. An extra this page does not know is left out. */
-export function listedCats(extras: readonly string[]): string[] {
-  return [...CORE_CATS, ...EXTRA_CATS.filter((c) => extras.includes(c))]
+const isKnownExtra = (c: unknown): c is string => (EXTRA_CATS as readonly unknown[]).includes(c)
+
+/**
+ * The extras on a look IN THE ORDER THEY WERE PUT ON (owner, 2026-10-14:
+ * "cards should be added in the list in the order the player adds them:
+ * adding earrings after adding tattoos should not show tattoos on the bottom
+ * of the list"): Lua's order, kept -- an extra this page does not know, or
+ * one named twice, left out.
+ */
+export function orderedExtras(raw: readonly unknown[]): string[] {
+  const out: string[] = []
+  for (const c of raw) if (isKnownExtra(c) && !out.includes(c)) out.push(c)
+  return out
 }
 
-/** "+ Add"'s list: every extra not on the look, in order. Empty, it is off. */
+/** The summary list: the core, then the extras on the look in the order they
+ *  were put on. */
+export function listedCats(extras: readonly string[]): string[] {
+  return [...CORE_CATS, ...orderedExtras(extras)]
+}
+
+/** "Add more"'s list: every extra not on the look, in EXTRA_CATS's order.
+ *  Empty, it is off. */
 export function addableExtras(extras: readonly string[]): string[] {
   return EXTRA_CATS.filter((c) => !extras.includes(c))
 }
@@ -211,9 +249,25 @@ export const PRIMARY_ROW: Readonly<Record<string, string>> = {
   decals: 'c10', accessory: 'c7', makeup: 'o4',
 }
 
-/** One summary line's right-hand side: the item's own name where the game
- *  has one, else its place in the row (`12/80`); a color chip where the item
- *  wears a palette color; Tattoos, how many. */
+/**
+ * ITEM NAMES, ALL OR NOTHING (owner, 2026-10-14: "seems you don't have names
+ * for everything that shows on the cards, such as tops which shows 24/392 or
+ * "black tee" for 26/392. All or nothing on that."). The game names some
+ * items and not others -- tops about three in four, legs half, bags none --
+ * so no category shows names: every summary line and every row is the item's
+ * place in its list. A category put in this set shows the game's name for its
+ * item wherever Lua sends one (`name`), on its summary line and under its
+ * counter -- the switch for a category whose names turn out to be whole.
+ */
+export const NAMED_CATS: ReadonlySet<string> = new Set<string>()
+
+/** The game's name for a row's item, where its category shows names. */
+export const nameShown = (r: Locker2CountRow): string | null =>
+  NAMED_CATS.has(r.cat) && r.name !== undefined ? r.name : null
+
+/** One summary line's right-hand side: the item's place in its list
+ *  (`12/80`); a color chip where the item wears a palette color; Tattoos,
+ *  how many. */
 export interface Summary { text: string; chip: { pal: Locker2PalName; i: number } | null }
 
 export function summaryOf(cat: string, rows: readonly Locker2Row[], tatCount: number): Summary {
@@ -223,7 +277,7 @@ export function summaryOf(cat: string, rows: readonly Locker2Row[], tatCount: nu
   if (!r || r.kind !== 'count') return { text: '', chip: null }
   const i = swatchOf(r)
   return {
-    text: r.name ?? counterText(r.v, r.n),
+    text: nameShown(r) ?? counterText(r.v, r.n),
     chip: r.pal !== undefined && i !== null && swatchesShown(r) ? { pal: r.pal, i } : null,
   }
 }
@@ -269,9 +323,31 @@ export function swatchOf(r: Locker2CountRow): number | null {
 export const swatchesShown = (r: Locker2CountRow): boolean =>
   r.pal !== undefined && (r.k === 'h1' || r.colors > 1)
 
-/** A row draws "Next color" (its textures) when it has more than one color
- *  and no palette. */
-export const nextColorShown = (r: Locker2CountRow): boolean => r.pal === undefined && r.colors > 1
+/**
+ * AN ITEM'S OWN COLORS -- its textures -- are a swatch button, not "Next
+ * color" (owner, 2026-10-14: "any button showing "next color" should have a
+ * button for a color swatch instead"): the button wears the color on, and
+ * opens the item's colors as a grid of its own. Drawn for a row with more
+ * than one color and no palette.
+ */
+export const texturesShown = (r: Locker2CountRow): boolean => r.pal === undefined && r.colors > 1
+
+/** The texture worn, 0-based: the row's `c`, else the first. */
+export const textureOf = (r: Locker2CountRow): number =>
+  typeof r.c === 'number' && r.c < r.colors ? r.c : 0
+
+/**
+ * What a texture swatch shows: its color where Lua sends the item's colors
+ * (`sw`, one `#rrggbb` a texture), else its place among them -- the game has
+ * no color for a texture, only its picture.
+ */
+export function textureFace(r: Locker2CountRow, i: number): { color: string } | { n: number } {
+  const c = r.sw?.[i]
+  return c !== undefined ? { color: c } : { n: i + 1 }
+}
+
+/** A texture swatch's press: LOCKER2_COLOR { k, c }, `c` 0-based. */
+export const textureRequest = (r: Locker2CountRow, i: number): { k: string; c: number } => ({ k: r.k, c: i })
 
 /** What a swatch press sends: the highlight is a row of colors, set by its
  *  1-based place (LOCKER2_SET); any other row's color is set by index
@@ -429,7 +505,10 @@ export function wrapStep(v: number, n: number, d: number): number {
 // rest of the locker." Lua sends each sex's list once (`locker2tats`, names
 // from the game's own text) and, on every push, the rows (`edit.tats`): "a
 // list, starting empty, with add and remove buttons ... You can just make it
-// max 10 per category" -- drawn as an attribute editor a zone (Tattoos.tsx).
+// max 10 per category". Then (2026-10-14): "starting with a bunch of add
+// buttons is not intuitive, especially having to use a dropdown to navigate
+// between them. fix that" -- so ONE list, its rows grouped under their zones,
+// and ONE "Add more", which asks the zone and then the tattoo (Tattoos.tsx).
 
 /** The body zones, in the order drawn (br_lib/config/tattoos.lua's `zones`). */
 export const TATTOO_ZONES = ['head', 'torso', 'larm', 'rarm', 'lleg', 'rleg'] as const
@@ -470,9 +549,34 @@ export const TATTOOS_PER_ZONE = 10
 export const zoneRows = (rows: readonly Locker2TatRow[], z: string): Locker2TatRow[] =>
   rows.filter((r) => r.z === z)
 
-/** Add is lit below the cap, while the zone has a tattoo no row holds. */
+/** A zone takes another tattoo below the cap, while it has one no row holds. */
 export const canAddTattoo = (rowCount: number, itemCount: number): boolean =>
   rowCount < TATTOOS_PER_ZONE && rowCount < itemCount
+
+/** The zones "Add more" may put a tattoo in: the list's zones, in order, each
+ *  with its room (a full one is offered off). */
+export function addZones(
+  zones: readonly { z: string; items: readonly unknown[] }[], rows: readonly Locker2TatRow[],
+): { z: string; open: boolean }[] {
+  return zones.map((zone) => ({ z: zone.z, open: canAddTattoo(zoneRows(rows, zone.z).length, zone.items.length) }))
+}
+
+/** "Add more" is lit while some zone has room. */
+export const canAddMore = (zones: readonly { z: string; items: readonly unknown[] }[], rows: readonly Locker2TatRow[]): boolean =>
+  addZones(zones, rows).some((x) => x.open)
+
+/** The tattoos a new row of zone `z` may take: the zone's, none a row of it
+ *  holds. */
+export function newRowChoices<T extends { i: number }>(items: readonly T[], rows: readonly Locker2TatRow[], z: string): T[] {
+  const taken = new Set(zoneRows(rows, z).map((x) => x.i))
+  return items.filter((t) => !taken.has(t.i))
+}
+
+/** The rows grouped under their zones, in the zones' order; a zone with no
+ *  row draws nothing. */
+export function tatGroups(zones: readonly string[], rows: readonly Locker2TatRow[]): { z: string; rows: Locker2TatRow[] }[] {
+  return zones.map((z) => ({ z, rows: zoneRows(rows, z) })).filter((g) => g.rows.length > 0)
+}
 
 /**
  * A row's list: its zone's tattoos in the zone's order, but none another row
@@ -590,11 +694,16 @@ function row(v: unknown): Locker2Row | null {
   const r = obj(v)
   if (!r || !str(r.k) || !str(r.cat) || !num(r.v)) return null
   if (r.kind === 'count' && num(r.n)) {
+    const colors = num(r.colors) ? r.colors : 1
+    // An item's colors, one a texture: whole, or none at all.
+    const sw = list(r.sw)
+    const swOk = sw.length === colors && colors <= 64 && sw.every((c) => typeof c === 'string' && HEX.test(c))
     return {
-      k: r.k, cat: r.cat, kind: 'count', v: r.v, n: r.n, colors: num(r.colors) ? r.colors : 1,
+      k: r.k, cat: r.cat, kind: 'count', v: r.v, n: r.n, colors,
       ...(str(r.name) && r.name !== '' ? { name: r.name } : {}),
       ...(r.pal === 'hair' || r.pal === 'makeup' ? { pal: r.pal } : {}),
       ...(Number.isInteger(r.c) && (r.c as number) >= 0 ? { c: r.c as number } : {}),
+      ...(swOk && r.pal === undefined ? { sw: sw as string[] } : {}),
     }
   }
   if (r.kind === 'slider' && num(r.min) && num(r.max)) {
@@ -617,7 +726,7 @@ function edit(v: unknown): Locker2Edit | null {
     cat: str(e.cat) ? e.cat : null,
     rows: list(e.rows).map(row).filter((r): r is Locker2Row => r !== null),
     tats: list(e.tats).map(tatRow).filter((r): r is Locker2TatRow => r !== null),
-    extras: EXTRA_CATS.filter((c) => list(e.extras).includes(c)),
+    extras: orderedExtras(list(e.extras)),
     undo: e.undo === true,
     redo: e.redo === true,
   }

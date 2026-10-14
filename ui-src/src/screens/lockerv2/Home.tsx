@@ -46,7 +46,7 @@ const LookCard = memo(function LookCard({ ped, src, worn, loading, blocked, onWe
         <span className="lk2-card-shot">
           {src !== null && <img src={src} alt="" />}
         </span>
-        <span className="lk2-card-name">{ped.name}</span>
+        <span className="lk2-card-name lk2-fit"><span>{ped.name}</span></span>
       </button>
       {worn && <span className="lk2-card-mark"><Icon name="check" /></span>}
       {loading && <span className="lk2-card-ring"><Spinner /></span>}

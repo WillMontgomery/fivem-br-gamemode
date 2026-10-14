@@ -1,5 +1,4 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import Button from '@cloudscape-design/components/button'
 import Icon from '@cloudscape-design/components/icon'
 import Slider from '@cloudscape-design/components/slider'
 import { fetchNui } from '../../bridge/nui'
@@ -8,7 +7,8 @@ import type { Locker2CountRow, Locker2PalPayload, Locker2SliderRow } from '../..
 import { play } from '../../audio/cues'
 import { BTN, rowLabel, swatchLabel } from './copy'
 import {
-  SLIDER_HOLD_MS, counterText, nextColorShown, sliderShown, swatchOf, swatchRequest, swatchesShown,
+  SLIDER_HOLD_MS, counterText, nameShown, sliderShown, swatchOf, swatchRequest, swatchesShown, textureFace, textureOf,
+  textureRequest, texturesShown,
 } from './model'
 import { useHold } from './hold'
 
@@ -20,9 +20,11 @@ import { useHold } from './hold'
  * ped. Getting to 39 and clicking next should cycle back through to 1 and vice
  * versa. There should also be a reset button which sets the value back to 1."
  * (owner). With My Looks (2026-10-13): the arrows repeat while held,
- * accelerating; hair and makeup colors are a swatch grid, not "Next color";
- * and an item's own name shows under its counter where the game has one --
- * "never "Top 37" in a dropdown".
+ * accelerating; hair and makeup colors are a swatch grid, not "Next color".
+ * Then (2026-10-14): an item's own colors are a swatch button too ("any
+ * button showing "next color" should have a button for a color swatch
+ * instead"), and no item shows the game's name for it unless its category
+ * does (model.ts NAMED_CATS: "All or nothing on that").
  *
  * THE PAGE NEVER STEPS A VALUE ITSELF. Each press asks Lua (step, set, color),
  * which wraps, applies it to the ped and sends the row back; what is drawn is
@@ -86,9 +88,60 @@ const Swatches = memo(function Swatches({ colors, chosen, disabled, onPick }: {
 })
 
 /**
+ * AN ITEM'S COLORS (its textures): the button wears the color on -- its
+ * swatch where Lua sends the item's colors, else its place among them -- and
+ * opens the item's colors under the row, the one on lit. A press there sends
+ * LOCKER2_COLOR { k, c }; the grid stays open to try another, and the button
+ * closes it.
+ */
+const TextureButton = memo(function TextureButton({ row, open, disabled, onToggle }: {
+  row: Locker2CountRow
+  open: boolean
+  disabled: boolean
+  onToggle: () => void
+}) {
+  const c = textureOf(row)
+  const face = textureFace(row, c)
+  return (
+    <button type="button" className="plate btn lk2-icon lk2-texbtn" aria-label={swatchLabel(c + 1)}
+      aria-expanded={open} aria-disabled={disabled} onClick={() => { if (!disabled) onToggle() }}>
+      {'color' in face ? <span className="lk2-texchip" style={{ background: face.color }} /> : face.n}
+    </button>
+  )
+})
+
+const TextureGrid = memo(function TextureGrid({ row, disabled }: { row: Locker2CountRow; disabled: boolean }) {
+  const on = textureOf(row)
+  return (
+    <div className="lk2-texgrid" role="group">
+      {Array.from({ length: row.colors }, (_, i) => {
+        const face = textureFace(row, i)
+        return 'color' in face ? (
+          <button key={i} type="button" data-plain className={`lk2-swatch${i === on ? ' is-on' : ''}`}
+            style={{ background: face.color }} aria-label={swatchLabel(i + 1)} aria-pressed={i === on}
+            disabled={disabled} onClick={() => pickTexture(row, i)} />
+        ) : (
+          <button key={i} type="button" className={`plate btn lk2-tex${i === on ? ' is-active' : ''}`}
+            aria-label={swatchLabel(i + 1)} aria-pressed={i === on} disabled={disabled}
+            onClick={() => pickTexture(row, i)}>
+            {face.n}
+          </button>
+        )
+      })}
+    </div>
+  )
+})
+
+function pickTexture(row: Locker2CountRow, i: number) {
+  if (i === textureOf(row)) return
+  play('ui.select')
+  void fetchNui(CB.LOCKER2_COLOR, textureRequest(row, i))
+}
+
+/**
  * A counter row: Last / `v/n` / Next, both arrows held to scroll; Reset; the
- * item's name; "Next color" for an item with textures, or its palette's
- * swatches. The highlight is a color and nothing else: swatches alone.
+ * item's colors as a swatch button, or its palette's swatches. The highlight
+ * is a color and nothing else: swatches alone.
  */
 export const CountRow = memo(function CountRow({ row, pal, disabled, onTouch }: {
   row: Locker2CountRow
@@ -97,11 +150,14 @@ export const CountRow = memo(function CountRow({ row, pal, disabled, onTouch }: 
   /** The row was pressed: the camera follows it. */
   onTouch: (cat: string) => void
 }) {
+  const [texOpen, setTexOpen] = useState(false)
   const step = (d: 1 | -1) => {
     play('ui.select')
     void fetchNui(CB.LOCKER2_STEP, { k: row.k, d })
   }
   const name = label(row.k)
+  const caption = nameShown(row)
+  const textures = texturesShown(row)
   const colors = row.pal !== undefined ? pal?.[row.pal] ?? null : null
   const swatches = colors !== null && colors.length > 0 && swatchesShown(row)
   const colorOnly = row.k === 'h1'
@@ -112,7 +168,7 @@ export const CountRow = memo(function CountRow({ row, pal, disabled, onTouch }: 
   }
   return (
     <div className="lk2-row" onPointerDown={() => onTouch(row.cat)}>
-      {name !== null && <div className="lk2-row-label">{name}</div>}
+      {name !== null && <div className="lk2-row-label lk2-fit"><span>{name}</span></div>}
       {!(colorOnly && swatches) && (
         <div className="lk2-stepper">
           <IconBtn icon="angle-left" label={BTN.last} disabled={disabled} hold onPress={() => step(-1)} />
@@ -123,18 +179,14 @@ export const CountRow = memo(function CountRow({ row, pal, disabled, onTouch }: 
               play('ui.select')
               void fetchNui(CB.LOCKER2_SET, { k: row.k, v: 1 })
             }} />
-          {nextColorShown(row) && (
-            <Button disabled={disabled}
-              onClick={() => {
-                play('ui.select')
-                void fetchNui(CB.LOCKER2_COLOR, { k: row.k })
-              }}>
-              {BTN.nextColor}
-            </Button>
+          {textures && (
+            <TextureButton row={row} open={texOpen} disabled={disabled}
+              onToggle={() => { play('ui.select'); setTexOpen((o) => !o) }} />
           )}
         </div>
       )}
-      {row.name !== undefined && <div className="lk2-caption">{row.name}</div>}
+      {caption !== null && <div className="lk2-caption lk2-fit"><span>{caption}</span></div>}
+      {textures && texOpen && <TextureGrid row={row} disabled={disabled} />}
       {swatches && (
         <Swatches colors={colors} chosen={swatchOf(row)} disabled={disabled} onPick={pick} />
       )}
@@ -204,7 +256,7 @@ export const SliderRow = memo(function SliderRow({ row, disabled, onTouch, bare 
   const off = disabled || row.off === true
   return (
     <div className="lk2-row" onPointerDown={() => onTouch(row.cat)}>
-      {name !== null && <div className="lk2-row-label">{name}</div>}
+      {name !== null && <div className="lk2-row-label lk2-fit"><span>{name}</span></div>}
       <div className="lk2-slider">
         <div className="lk2-slider-track">
           <Slider value={shown} min={row.min} max={row.max} step={1}

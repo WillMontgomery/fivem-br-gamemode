@@ -1085,19 +1085,28 @@ export interface Locker2CountRow {
   /** The 1-based position in the row's option list; drawn as `v/n`. */
   v: number
   n: number
-  /** How many colors the current option has. More than one draws "Next
-   *  color" (LOCKER2_COLOR), or a swatch grid when the row has a `pal`. */
+  /** How many colors the current option has (its textures, or its
+   *  palette's). More than one draws a swatch grid when the row has a `pal`,
+   *  else a swatch button that opens the item's own colors (LOCKER2_COLOR
+   *  { k, c }). */
   colors: number
   /** The game's name for the item worn, in the player's language, when the
-   *  shop data has one (GET_SHOP_PED_COMPONENT's label): a caption, never a
-   *  list. Absent for most legs, shoes and undershirts, and for the base
-   *  pieces. */
+   *  shop data has one (GET_SHOP_PED_COMPONENT's label). DRAWN ONLY for a
+   *  category in lockerv2/model.ts NAMED_CATS, which is empty: the game's
+   *  names are patchy, and the owner said all or nothing (2026-10-14). Lua
+   *  may leave it out. */
   name?: string
   /** The palette the row's colors are drawn from: a swatch grid. */
   pal?: Locker2PalName
-  /** The color worn, 0-based in `pal` (the Hair row's hair color, an
-   *  overlay's color). `h1` has none: its own `v` is the color. */
+  /** The color worn, 0-based: in `pal` (the Hair row's hair color, an
+   *  overlay's color), or, CHANGED, the texture worn of an item with no
+   *  palette. `h1` has none: its own `v` is the color. */
   c?: number
+  /** NEW, optional: an item's colors as `#rrggbb`, one a texture, in order --
+   *  what its swatches show. Without it a texture's swatch shows its place
+   *  (1, 2, 3 ...): the game has no color for a texture. Dropped unless it
+   *  has exactly `colors` entries. */
+  sw?: string[]
 }
 export interface Locker2SliderRow {
   k: string
@@ -1127,8 +1136,10 @@ export interface Locker2Edit {
   rows: Locker2Row[]
   /** The Tattoos extra's rows, zone by zone in the order drawn. */
   tats: Locker2TatRow[]
-  /** The extras on the look (EXTRA_CATS), added with "+ Add" or worn when
-   *  the look was opened. The core categories are always there. */
+  /** The extras on the look (EXTRA_CATS), CHANGED: IN THE ORDER THEY WERE
+   *  PUT ON -- "Add more", Randomize, or as the look was saved -- which the
+   *  summary list keeps (owner, 2026-10-14). The core categories are always
+   *  there. */
   extras: string[]
   /** Lua holds the draft's history: there is a step to undo, or to redo. */
   undo: boolean
@@ -1817,8 +1828,9 @@ export const CB = {
   /** { k, v }: a row set outright, in its own `v` (a counter's reset is 1, a
       highlight swatch is its color + 1). */
   LOCKER2_SET:      'br/locker2/set',
-  /** { k }: "Next color". CHANGED: { k, c } sets the row's color to `c`
-      (0-based in its palette), a swatch press. */
+  /** CHANGED: { k, c } sets the row's color to `c`, 0-based -- in its
+      palette, or, for an item with no palette, its texture (a swatch press).
+      The page no longer sends { k } alone ("Next color" is gone). */
   LOCKER2_COLOR:    'br/locker2/color',
   /** { cat }: the camera to that part of the look. Sent on every summary
       line pressed and row touched; Lua moves the camera only if it is not
@@ -1841,7 +1853,10 @@ export const CB = {
   LOCKER2_SHOTDONE: 'br/locker2/shotdone',
   /** { sex }: the Tattoos extra's list, answered as a `locker2tats`. */
   LOCKER2_TATS:     'br/locker2/tats',
-  /** { z }: a new tattoo row at the foot of a zone (Add). */
+  /** CHANGED: { z, i }: a new tattoo row in zone `z` wearing tattoo `i` --
+      "Add more", once the player has picked the zone and the tattoo. Refused
+      past 10 in the zone, for a tattoo the zone already has, or one not of
+      the zone and sex. */
   LOCKER2_TAT_ADD:  'br/locker2/tatadd',
   /** { r, i }: a tattoo row's tattoo, chosen in its list. */
   LOCKER2_TAT_SET:  'br/locker2/tatset',
@@ -1853,14 +1868,18 @@ export const CB = {
   /** NEW. { seq }: leave the editor -- drop the draft (the page has asked
       first if it was unsaved) and wear the worn look again. */
   LOCKER2_LEAVE:    'br/locker2/leave',
-  /** NEW. {}: Randomize -- every category on the look, one undo step. */
+  /** NEW. {}: Randomize -- the core, and a random set of the extras (some
+      put on, some taken off, each put on with a random item, Tattoos with a
+      few random tattoos), the ones put on added to the end of `extras`; the
+      whole of it one undo step (owner, 2026-10-14). */
   LOCKER2_RANDOM:   'br/locker2/random',
   /** NEW. {}: one step back in the draft's history. */
   LOCKER2_UNDO:     'br/locker2/undo',
   /** NEW. {}: one step forward again. */
   LOCKER2_REDO:     'br/locker2/redo',
-  /** NEW. { id, on }: "+ Add" an extra (on, its first item), or its trash
-      icon (off: every row of it back to none, its tattoos gone). */
+  /** NEW. { id, on }: "Add more" an extra (on, its first item, at the END
+      of `extras`), or its trash icon (off: every row of it back to none, its
+      tattoos gone). `extras`' order is saved with the look. */
   LOCKER2_EXTRA:    'br/locker2/extra',
   /** NEW. { ks }: these rows back to their defaults as one undo step -- a
       face group's reset. */
