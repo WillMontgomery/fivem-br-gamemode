@@ -4,6 +4,7 @@ import Button from '@cloudscape-design/components/button'
 import Modal from '@cloudscape-design/components/modal'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import type { MarketItem } from '../../bridge/types'
+import { play } from '../../audio/cues'
 import { BTN, confirmTitle } from './copy'
 import { GOLD_INK } from './look'
 import { Art } from './Card'
@@ -54,8 +55,14 @@ export function BuyConfirm({ item, currency, root, onCancel, onBuy }: {
       footer={(
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
-            <Button variant="link" onClick={onCancel}>{BTN.cancel}</Button>
-            <Button variant="primary" onClick={() => { if (item) onBuy(item) }}>{BTN.buy}</Button>
+            {/* Hover speaks and a press travels, as on every lobby button
+                (market.css `.mk2-act`). */}
+            <span className="mk2-act" onPointerEnter={() => play('ui.hover')}>
+              <Button variant="link" onClick={onCancel}>{BTN.cancel}</Button>
+            </span>
+            <span className="mk2-act" onPointerEnter={() => play('ui.hover')}>
+              <Button variant="primary" onClick={() => { if (item) onBuy(item) }}>{BTN.buy}</Button>
+            </span>
           </SpaceBetween>
         </Box>
       )}

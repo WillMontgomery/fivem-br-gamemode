@@ -61,10 +61,13 @@ export const onWheel = (items: readonly MarketItem[]): number =>
  * A PENDING SWAP THE GRID HAS OVERTAKEN IS DROPPED (#215, Season 1's rule). A
  * new grid can land between the two presses: once the dance waiting to come in
  * is on the wheel, or no longer owned, or the wheel has room again, every
- * "Replace" it would draw is a press that no longer means what it says.
+ * "Replace" it would draw is a press that no longer means what it says. So
+ * does a season that closes the dances (`emotesOn` off): their tab is gone,
+ * and a swap left waiting would come back with them.
  */
-export function swapStale(swapFor: string | null, items: readonly MarketItem[]): boolean {
+export function swapStale(swapFor: string | null, items: readonly MarketItem[], emotesOn: boolean): boolean {
   if (swapFor === null) return false
+  if (!emotesOn) return true
   const pending = items.find((i) => i.id === swapFor)
   return onWheel(items) < WHEEL_SLOTS || !pending || pending.owned !== true || typeof pending.slot === 'number'
 }
@@ -139,6 +142,20 @@ export function buyPress(item: MarketItem, balance: number): 'confirm' | 'refuse
  */
 export function confirmStale(item: MarketItem | undefined, balance: number): boolean {
   return !item || item.owned === true || item.locked === true || balance < item.price
+}
+
+/**
+ * THE CONFIRM ON SCREEN: the item a price press asked about, read from the
+ * latest grid -- or null, when nothing was asked about or the grid has
+ * overtaken it (confirmStale). Never a stale one, not even for the one render
+ * before the press is forgotten.
+ */
+export function confirmShown(
+  confirmId: string | null, items: readonly MarketItem[], balance: number,
+): MarketItem | null {
+  if (confirmId === null) return null
+  const item = items.find((i) => i.id === confirmId)
+  return item === undefined || confirmStale(item, balance) ? null : item
 }
 
 /** The card's art: Season 1's convention, `market/<id>.png`, copied verbatim by

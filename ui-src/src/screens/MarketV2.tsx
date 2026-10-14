@@ -12,7 +12,7 @@ import { useCloudscapeScope, useIslandZoom, usePortalZoom } from './lockerv2/sco
 import { BTN, ON_WHEEL, TAB_LABEL, TITLE } from './marketv2/copy'
 import { BALANCE_PLATE, GOLD_INK, TABS_STYLE, WHEEL_EDGE, tabPlate } from './marketv2/look'
 import {
-  buyPress, confirmStale, onWheel, shownTab, swapStale, tabsFor, WHEEL_SLOTS, type TabKind,
+  buyPress, confirmShown, onWheel, shownTab, swapStale, tabsFor, WHEEL_SLOTS, type TabKind,
 } from './marketv2/model'
 import { Card, type CardHandlers } from './marketv2/Card'
 import { BuyConfirm } from './marketv2/Confirm'
@@ -78,13 +78,14 @@ export default function MarketV2() {
   const wheelFull = wheel >= WHEEL_SLOTS
 
   // A swap the grid has overtaken, or a season that closed the dances, drops.
-  const stale = swapStale(swapFor, market.items)
-  useEffect(() => { if (stale || !emotesOn) setSwapFor(null) }, [stale, emotesOn])
+  const stale = swapStale(swapFor, market.items, emotesOn)
+  useEffect(() => { if (stale) setSwapFor(null) }, [stale])
 
-  const pending = confirmId === null ? undefined : market.items.find((i) => i.id === confirmId)
-  const confirmGone = confirmId !== null && confirmStale(pending, market.balance)
+  // The confirm drawn is the latest grid's item, or none (model.ts
+  // confirmShown); a press the grid has overtaken is then forgotten.
+  const confirming = confirmShown(confirmId, market.items, market.balance)
+  const confirmGone = confirmId !== null && confirming === null
   useEffect(() => { if (confirmGone) setConfirmId(null) }, [confirmGone])
-  const confirming = confirmId !== null && !confirmGone && pending !== undefined ? pending : null
 
   const close = () => { void fetchNui(CB.MARKET_FOCUS, { open: false }) }
 
@@ -186,8 +187,10 @@ export default function MarketV2() {
           tab change, Done or Escape sends { id: null } and the ped goes back.
           Not built in #411 -- emotes and music come later. */}
       <div className="absolute inset-y-0 left-0 w-[50rem] max-w-[64vw] px-[3.5rem] py-[3rem] flex flex-col pointer-events-none">
+        {/* `mk2`: market.css squares every corner in here, the confirm's
+            included (#411: "let's keep 'em cut where they are today"). */}
         <div
-          className="br-cs flex min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto"
+          className="mk2 br-cs flex min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto"
           style={{ zoom: z, fontSize: `calc(1rem / ${z})` }}
         >
           <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flex: '0 0 auto', marginBottom: '1.25em' }}>
@@ -242,7 +245,7 @@ export default function MarketV2() {
                 `[data-tut="market-done"]` and waits on the press, and on CEF
                 103 a box inside a zoomed element is reported in its px. */}
             <span data-tut="market-done" style={{ display: 'inline-block', zoom: 1 / z }}>
-              <span style={{ display: 'inline-block', zoom: z }} onPointerEnter={() => play('ui.hover')}>
+              <span className="mk2-act" style={{ display: 'inline-block', zoom: z }} onPointerEnter={() => play('ui.hover')}>
                 <Button variant="primary" onClick={() => { play('ui.back'); close() }}>
                   <span className="font-display uppercase" style={{ letterSpacing: '0.1em', fontWeight: 400 }}>{BTN.done}</span>
                 </Button>

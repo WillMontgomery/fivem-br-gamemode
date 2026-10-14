@@ -13,26 +13,35 @@
  *             never, the dances only while the season has emotes; the tab
  *             picked kept while it exists, else the first.
  *   CARDS     Season 1's actions, kind for kind and state for state, the
- *             wheel's swap included; the edge equipped, then owned, then rarity.
+ *             wheel's swap included (dropped when the grid overtakes it or the
+ *             season closes the dances); the edge equipped, then owned, then
+ *             rarity.
  *   CONFIRM   a price press opens the confirm or is refused; a confirm the
- *             grid has overtaken closes.
+ *             grid has overtaken is never drawn, and closes.
  *   COPY      every WRITTEN line marked; every Season 1 label word for word.
  *   TUTORIAL  the Market card's Season 2 line on the Season 2 Market only.
  *
  * And what a unit test cannot see, read from the source and the build:
  *
  *   SEASON 1  screens/Market.tsx is byte-for-byte the finished product, and
- *             App.tsx draws it whenever the envelope does not say `v2`.
+ *             App.tsx draws it whenever the envelope does not say `v2`; the
+ *             chunk is not even fetched until it does.
  *   BUY       the screen's one MARKET_BUY is the confirm's Buy; a price press
  *             goes through buyPress; nothing on the screen writes the store.
+ *   NEW       on the card, only where Lua marked `isNew`.
  *   ESCAPE    asks for an open dropdown first, closes the confirm alone, and
  *             holds for a walkthrough card (escapeHeld), in the capture phase.
- *   CORNERS   `is-active` twice: the selected tab's label, the swap's Cancel.
+ *   CORNERS   `is-active` twice: the selected tab's label, the swap's Cancel;
+ *             every other corner in the island square.
+ *   BUTTONS   hover brightens and speaks, a press travels -- the confirm's
+ *             too; a price too dear does none of it.
  *   ANCHOR    Done keeps `data-tut="market-done"`, stepped out of the zoom.
  *   PED       no full-screen fill: a scrim that fades out, a panel at most
  *             64vw, so the lobby character stays in view.
  *   CHUNK     assets/MarketV2.{js,css}; the main bundle never imports a chunk
- *             statically and carries none of Cloudscape.
+ *             statically and carries none of Cloudscape; every stylesheet the
+ *             Market's preload names (its own and the shared Cloudscape one)
+ *             is Cloudscape's scoped rules and the Market's, nothing global.
  *
  * The Lua half (the gate, the grid, the envelope) is tools/test_market2.lua.
  *
@@ -44,7 +53,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  TAB_ORDER, WHEEL_SLOTS, buyPress, cardAction, confirmStale, edgeOf, onWheel, shownTab, swapStale, tabsFor,
+  TAB_ORDER, WHEEL_SLOTS, buyPress, cardAction, confirmShown, confirmStale, edgeOf, onWheel, shownTab, swapStale, tabsFor,
 } from '../src/screens/marketv2/model.ts'
 import { BTN, EQUIPPED, NEW, NOT_FOR_SALE, ON_WHEEL, TAB_LABEL, TITLE, closedLabel, confirmTitle } from '../src/screens/marketv2/copy.ts'
 import { LOBBY_STEPS, bodyFor } from '../src/tutorial/steps.ts'
@@ -113,9 +122,12 @@ eq('cards: the edge is equipped, then owned, then rarity',
   ['equipped', 'owned', 'rarity'])
 const waiting = it('x', 'emote', { owned: true })
 eq('cards: a swap the grid overtakes is dropped (room again, gone, unowned, or already on)',
-  [swapStale('x', [...full, waiting]), swapStale('x', [...full.slice(1), waiting]), swapStale('x', full),
-    swapStale('x', [...full, { ...waiting, owned: false }]), swapStale('x', [...full, { ...waiting, slot: 3 }]), swapStale(null, [])],
+  [swapStale('x', [...full, waiting], true), swapStale('x', [...full.slice(1), waiting], true), swapStale('x', full, true),
+    swapStale('x', [...full, { ...waiting, owned: false }], true), swapStale('x', [...full, { ...waiting, slot: 3 }], true),
+    swapStale(null, [], true)],
   [false, true, true, true, true, false])
+eq('cards: ...and so is one left waiting when the season closes the dances (none waiting, nothing to drop)',
+  [swapStale('x', [...full, waiting], false), swapStale(null, [...full, waiting], false)], [true, false])
 eq('cards: the wheel counts dances with a slot', [onWheel(full), onWheel(S2)], [8, 1])
 
 // ── CONFIRM ──────────────────────────────────────────────────────────────────
@@ -125,6 +137,14 @@ eq('confirm: closes once the grid says owned, closed, gone, or too dear; stays o
   [confirmStale(it('a', 'chute', { owned: true }), 9e9), confirmStale(it('a', 'chute', { locked: true }), 9e9),
     confirmStale(undefined, 9e9), confirmStale(it('a', 'chute'), 999), confirmStale(it('a', 'chute'), 1000)],
   [true, true, true, true, false])
+{
+  const a = it('a', 'chute')
+  eq('confirm: the one drawn is the latest grid\'s item, and never a stale one -- not for a single render',
+    [confirmShown(null, [a], 9e9), confirmShown('a', [a], 1000), confirmShown('a', [a], 999),
+      confirmShown('a', [{ ...a, owned: true }], 9e9), confirmShown('a', [{ ...a, locked: true }], 9e9), confirmShown('a', [], 9e9),
+      confirmShown('a', [{ ...a, price: 1200 }], 1200)],
+    [null, a, null, null, null, null, { ...a, price: 1200 }])
+}
 
 // ── COPY ─────────────────────────────────────────────────────────────────────
 const copy = read(join(SRC, 'screens', 'marketv2', 'copy.ts'))
@@ -175,6 +195,11 @@ check('the layer draws bodyFor(step, the Market\'s card on the Season 2 Market)'
   check('App.tsx never imports the Cloudscape screen itself (it is a chunk)', !/from '\.\/screens\/MarketV2'/.test(app))
   check('and fetches the chunk only once the season has it', app.includes('usePreloadMarketV2(market2On)'))
   const gate = read(join(SRC, 'screens', 'marketv2', 'Gate.tsx'))
+  // #411's review: without the early return, a Season 1 page downloads
+  // MarketV2 and all of Cloudscape at the lobby.
+  check('...and the preload fetches nothing while it is off: Season 1 never downloads Cloudscape',
+    /export function usePreloadMarketV2\(on: boolean\): void \{\s*useEffect\(\(\) => \{\s*if \(!on\) return\s*load\(\)\.catch\([^\n]*\)\s*\}, \[on\]\)\s*\}/.test(strip(gate))
+    && (strip(gate).match(/(?<!function )\bload\(\)/g) ?? []).length === 1)
   check('the screen is loaded as a chunk: lazy(import(\'../MarketV2\'))',
     gate.includes("import('../MarketV2')") && /lazy\(load\)/.test(gate))
   check('a chunk that fails or never loads gives the cursor back',
@@ -202,9 +227,31 @@ check('the layer draws bodyFor(step, the Market\'s card on the Season 2 Market)'
   const cardSrc = parts.find(([f]) => f === 'Card.tsx')?.[1] ?? ''
   check('a card\'s price is that press, and nothing else on a card can buy',
     /case 'buy':[\s\S]*?press = \(\) => h\.onPrice\(item\)/.test(cardSrc) && !/fetchNui/.test(cardSrc))
-  check('the confirm reads the item from the latest grid and closes once it is stale',
-    v2.includes('const pending = confirmId === null ? undefined : market.items.find((i) => i.id === confirmId)')
-    && v2.includes('confirmStale(pending, market.balance)') && v2.includes('if (confirmGone) setConfirmId(null)'))
+  check('the confirm drawn is confirmShown\'s, and a stale one is forgotten',
+    v2.includes('const confirming = confirmShown(confirmId, market.items, market.balance)')
+    && v2.includes('const confirmGone = confirmId !== null && confirming === null')
+    && v2.includes('useEffect(() => { if (confirmGone) setConfirmId(null) }, [confirmGone])')
+    && v2.includes('item={confirming}') && !/confirmStale/.test(v2))
+  check('a swap is dropped by swapStale\'s rule, the season\'s dances included',
+    v2.includes('const stale = swapStale(swapFor, market.items, emotesOn)')
+    && v2.includes('useEffect(() => { if (stale) setSwapFor(null) }, [stale])'))
+
+  // NEW: on the items Lua marks, and nowhere else.
+  const badges = all.flatMap(([f, t]) => [...t.matchAll(/<Badge\b|\{NEW\}/g)].map(() => f))
+  check('New is drawn only on an item Lua marks `isNew`, once, on the card',
+    badges.join(',') === 'Card.tsx,Card.tsx'
+    && cardSrc.includes('{item.isNew === true && <Badge style={NEW_BADGE}>{NEW}</Badge>}'), badges.join(', '))
+
+  // HOVER AND PRESS (index.css `.btn`, check-ui R3: every lobby button
+  // brightens, travels and speaks): `.mk2-act` on every button but a price
+  // the balance cannot cover, which stays still and silent (Season 1's
+  // `btn--off`).
+  check('a card\'s button brightens, travels and speaks -- a price too dear does none of it',
+    cardSrc.includes("<span className={quiet ? undefined : 'mk2-act'} style={{ display: 'block' }} onPointerEnter={() => { if (!quiet) play('ui.hover') }}>"))
+  check('the confirm\'s Cancel and Buy speak on hover and travel on the press, as Done does',
+    /<span className="mk2-act" onPointerEnter=\{\(\) => play\('ui\.hover'\)\}>\s*<Button variant="link" onClick=\{onCancel\}>/.test(confirm)
+    && /<span className="mk2-act" onPointerEnter=\{\(\) => play\('ui\.hover'\)\}>\s*<Button variant="primary" onClick=\{\(\) => \{ if \(item\) onBuy\(item\) \}\}>/.test(confirm)
+    && confirm.includes("import { play } from '../../audio/cues'"))
   const writes = all.filter(([, t]) => /\bsetMarket\b|\bdispatch\(|useUi\.setState|\.getState\(\)\.set/.test(t)).map(([f]) => f)
   check('nothing on the screen writes the store: every number is the server\'s grid', writes.length === 0, writes.join(', '))
 
@@ -232,10 +279,16 @@ check('the layer draws bodyFor(step, the Market\'s card on the Season 2 Market)'
     /if \(a\.do === 'cancel'\) \{\s*return <span className="plate is-active" style=\{cutWrap\(color\)\}>\{button\}<\/span>/.test(cardSrc))
   check('...and a card is a plate at rest', /className="plate"\n/.test(cardSrc) || cardSrc.includes('className="plate"'))
   check('no plate is given --cut directly', !all.some(([, t]) => /--cut'/.test(t) || /'--cut' as/.test(t)))
+  // #411's review: Cloudscape's own 4px radii showed on Done, the confirm and
+  // its buttons. Everything else square means everything in the island,
+  // the confirm included (it renders into the island, getModalRoot).
+  check('...and everything else square: the island is `.mk2`, whose every corner market.css squares',
+    v2.includes('className="mk2 br-cs flex min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto"')
+    && /<div ref=\{setModalRoot\} className="pointer-events-auto" \/>\s*<\/div>\s*<\/div>\s*<BuyConfirm/.test(v2))
 
   // THE WALKTHROUGH'S ANCHOR.
   check('Done keeps the walkthrough\'s anchor, stepped out of the zoom, and closes the Market',
-    /<span data-tut="market-done" style=\{\{ display: 'inline-block', zoom: 1 \/ z \}\}>\s*<span style=\{\{ display: 'inline-block', zoom: z \}\} onPointerEnter=\{\(\) => play\('ui\.hover'\)\}>\s*<Button variant="primary" onClick=\{\(\) => \{ play\('ui\.back'\); close\(\) \}\}>/.test(v2)
+    /<span data-tut="market-done" style=\{\{ display: 'inline-block', zoom: 1 \/ z \}\}>\s*<span className="mk2-act" style=\{\{ display: 'inline-block', zoom: z \}\} onPointerEnter=\{\(\) => play\('ui\.hover'\)\}>\s*<Button variant="primary" onClick=\{\(\) => \{ play\('ui\.back'\); close\(\) \}\}>/.test(v2)
     && v2.includes('const close = () => { void fetchNui(CB.MARKET_FOCUS, { open: false }) }'))
 
   // THE LOBBY CHARACTER STAYS IN VIEW.
@@ -276,34 +329,82 @@ if (!existsSync(OUT)) {
   const statics = [...indexJs.matchAll(/(?:^|[;}\n])\s*import\s*(?:[\w$]+|\{[^}]*\}|\*\s*as\s*[\w$]+)\s*from\s*"([^"]+)"/g)].map((m) => m[1])
   check('the main bundle imports no chunk statically -- Season 1 never loads Cloudscape', statics.length === 0, statics.join(', '))
   check('the main bundle and stylesheet carry none of Cloudscape', !/awsui_[a-z]/.test(indexJs) && !indexCss.includes('awsui'))
-  if (existsSync(css)) {
-    const text = read(css).replace(/\/\*[\s\S]*?\*\//g, '')
-    // The element a selector styles is its last compound: `body[data-x] .awsui_y`
-    // styles a Cloudscape element, `.awsui_y body` would style the page.
+  // EVERY STYLESHEET THE MARKET BRINGS, not only its own (#411's review): the
+  // Cloudscape both Season 2 screens reach is a shared chunk (index2.css,
+  // vite.config.ts), which no other test read. Its names come from the main
+  // bundle's preload list, `__vite__mapDeps([chunk, ...its deps])`, so a
+  // renamed shared chunk is still read.
+  const depFiles = (() => {
+    const m = indexJs.match(/m\.f=(\[[^\]]*\])/)
+    try { return m ? JSON.parse(m[1]) : [] } catch { return [] }
+  })()
+  const preloads = [...indexJs.matchAll(/__vite__mapDeps\(\[([\d,]+)\]\)/g)]
+    .map((m) => m[1].split(',').map((n) => depFiles[Number(n)]))
+  const marketCss = (preloads.find((d) => d[0] === './MarketV2.js') ?? []).filter((f) => /\.css$/.test(f ?? ''))
+  check('the Market\'s preload names its stylesheet and the shared Cloudscape one',
+    marketCss.includes('./MarketV2.css') && marketCss.length >= 2 && marketCss.every((f) => existsSync(join(OUT, f))),
+    marketCss.join(', '))
+  // test-lockerv2.mjs's rule, for every one of them: the element a selector
+  // styles is its last compound, so `body.awsui-x {...}` styles <body> and
+  // counts as global unless all it sets is custom properties (Cloudscape's
+  // base theme); every other rule names a Cloudscape class, or is the
+  // Market's own (`.mk2`, `.mk2-...`).
+  const subject = (s) => s.trim().split(/\s*[\s>+~]\s*(?![^(]*\))(?![^[]*\])/).pop() ?? ''
+  const ours = []
+  for (const f of marketCss) {
+    const p = join(OUT, f)
+    if (!existsSync(p)) continue
+    const text = read(p).replace(/\/\*[\s\S]*?\*\//g, '')
+    const bad = []
     const globals = []
+    let rules = 0
+    const allowed = (sel, body) => {
+      if (/^@keyframes\s+awsui[-_]/.test(sel)) return true
+      if (/^@property\s+--/.test(sel)) return true
+      if (sel.startsWith('@')) return false
+      if (body.split(';').map((d) => d.trim()).filter(Boolean).every((d) => d.startsWith('--'))) return true
+      const parts = sel.split(',')
+      const isGlobal = (s) => /^(html|body|:root)(?![\w-])/.test(subject(s))
+        || (/^\*/.test(subject(s)) && !/\.awsui[-_]|^\.mk2[\s-]/.test(s.trim()))
+      if (parts.some(isGlobal)) { globals.push(sel.slice(0, 80)); return false }
+      if (parts.every((s) => /^\.mk2[\s-]/.test(s.trim()))) { ours.push(`${sel}{${body}}`); return true }
+      return parts.every((s) => /\.awsui[-_]/.test(s))
+    }
     const walk = (t) => {
       let i = 0
       while (i < t.length) {
+        if (/\s/.test(t[i])) { i++; continue }
         const open = t.indexOf('{', i)
+        const semi = t.indexOf(';', i)
+        if (semi !== -1 && (open === -1 || semi < open)) { bad.push(t.slice(i, semi).trim()); i = semi + 1; continue }
         if (open === -1) break
         const sel = t.slice(i, open).trim()
         let depth = 1
         let j = open + 1
         while (j < t.length && depth > 0) { if (t[j] === '{') depth++; else if (t[j] === '}') depth--; j++ }
-        if (/^@(media|supports|container|layer)\b/.test(sel)) walk(t.slice(open + 1, j - 1))
-        else if (!sel.startsWith('@')) {
-          for (const part of sel.split(',')) {
-            const subject = part.trim().split(/\s*[\s>+~]\s*(?![^(]*\))(?![^[]*\])/).pop() ?? ''
-            if (/^(html|body|:root|\*)(?![\w-])/.test(subject)) globals.push(part.trim().slice(0, 80))
-          }
-        }
+        const body = t.slice(open + 1, j - 1)
+        if (/^@(media|supports|container|layer)\b/.test(sel)) walk(body)
+        else { rules++; if (!allowed(sel, body)) bad.push(`${sel.slice(0, 80)} {${body.slice(0, 50)}`) }
         i = j
       }
     }
     walk(text)
-    check('the chunk\'s CSS has no @font-face and styles no html, body, :root or *',
-      !/@font-face/.test(text) && globals.length === 0, globals.slice(0, 3).join('\n          '))
+    check(`${f.slice(2)}: no @font-face, nothing on html, body, :root or *, only Cloudscape's scoped rules and the Market's (${rules} rules)`,
+      rules > 0 && !/@font-face/.test(text) && globals.length === 0 && bad.length === 0,
+      [...globals, ...bad].slice(0, 3).join('\n          '))
   }
+  // The Market's own rules (market.css), as they ship.
+  const own = ours.join('\n')
+  check('market.css ships: every corner in the island square',
+    ours.some((r) => {
+      const m = r.match(/^([^{]*)\{border-radius:\s*0(?:px)?\s*!important;?\}$/)
+      const sel = m ? m[1].split(',').map((s) => s.trim().replace(/::/g, ':')).sort().join(',') : ''
+      return sel === '.mk2 *,.mk2 *:after,.mk2 *:before'
+    }), own)
+  check('...a button brightens on hover and travels on the press, as index.css `.btn` does',
+    /\.mk2-act \[class\*=['"]?awsui_button_['"]?\]:hover:not\(\[class\*=['"]?awsui_disabled_['"]?\]\)\{filter:\s*brightness\(1\.18\)\s*!important;?\}/.test(own)
+    && /\.mk2-act \[class\*=['"]?awsui_button_['"]?\]:active:not\(\[class\*=['"]?awsui_disabled_['"]?\]\)\{transform:\s*translateY\(1px\)\s*scale\(0?\.975\)\s*!important;\s*filter:\s*brightness\(0?\.94\)\s*!important;?\}/.test(own),
+    own)
 }
 
 console.log(`\ntest-marketv2: ${ran - failed}/${ran} passed`)

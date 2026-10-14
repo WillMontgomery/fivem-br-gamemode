@@ -1,3 +1,14 @@
+/* THE SEASON 2 MARKET'S OWN RULES (#411), every one scoped to its island
+   (`.mk2`, MarketV2.tsx) or a `mk2-` class of this screen. The chunk's CSS
+   stays linked once fetched, so nothing here may reach the locker or the
+   lobby (scripts/test-marketv2.mjs reads every rule as it ships).
+
+   THE MY LOOKS RETHEME (#28) puts the lobby's corners and button feel on every
+   Cloudscape island (`.br-cs`) when it lands in the shared theme
+   (ui/cloudscape/theme.ts). The two sections marked SAME AS THE RETHEME are
+   the same declarations on the same elements, so they agree with it -- and go
+   once it has landed. */
+
 /* THE GRID IS THE ONLY THING THAT SCROLLS (#411), as on Season 1's Market:
    the title, the balance, the tabs, the wheel's count and Done stay put.
    Cloudscape's fitHeight tab panel is a flex item as tall as its content
@@ -6,4 +17,31 @@
    height, and the grid's own region (MarketV2.tsx, `.thin-scroll`) scrolls. */
 .mk2-tabs [class*='awsui_tabs-content-active'] {
   min-height: 0;
+}
+
+/* NO ROUNDED EDGES -- SAME AS THE RETHEME. "let's keep 'em cut where they are
+   today" (owner): the selected tab and an emote swap's Cancel are cut (the
+   lobby's `.plate.is-active`, a clip-path), everything else square. Without
+   this, Cloudscape rounds Done, the confirm and its buttons by 4px. */
+.mk2 *,
+.mk2 *::before,
+.mk2 *::after {
+  border-radius: 0 !important;
+}
+
+/* HOVER AND PRESS -- SAME AS THE RETHEME. index.css `.btn`: hover brightens,
+   the press drops 1px and shrinks a little (check-ui R3: a button without
+   them "feels like a web page"). On `.mk2-act`, the wrapper of every card
+   button but a price the balance cannot cover, of Done, and of the
+   confirm's Cancel and Buy. Cloudscape's own rules carry an id's weight
+   (`:not(#\9)`), hence !important. */
+.mk2-act [class*='awsui_button_'] {
+  transition: transform 90ms cubic-bezier(0.22, 1, 0.36, 1), filter 120ms ease !important;
+}
+.mk2-act [class*='awsui_button_']:hover:not([class*='awsui_disabled_']) {
+  filter: brightness(1.18) !important;
+}
+.mk2-act [class*='awsui_button_']:active:not([class*='awsui_disabled_']) {
+  transform: translateY(1px) scale(0.975) !important;
+  filter: brightness(0.94) !important;
 }

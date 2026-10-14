@@ -97,9 +97,12 @@ function Action({ a, item, h }: { a: CardAction; item: MarketItem; h: CardHandle
       press = () => { play('ui.select'); h.onEquip(item) }
       break
   }
+  // HOVER AND PRESS, AS EVERY LOBBY BUTTON (index.css `.btn`, check-ui R3):
+  // it brightens, travels and speaks (`mk2-act`, market.css). A price the
+  // balance cannot cover does none of it, as Season 1's `btn--off`.
   const quiet = a.do === 'buy' && !a.afford
   const button = (
-    <span style={{ display: 'block' }} onPointerEnter={() => { if (!quiet) play('ui.hover') }}>
+    <span className={quiet ? undefined : 'mk2-act'} style={{ display: 'block' }} onPointerEnter={() => { if (!quiet) play('ui.hover') }}>
       <Button fullWidth style={actionStyle(color)} onClick={press}><Label>{label}</Label></Button>
     </span>
   )
