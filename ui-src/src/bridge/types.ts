@@ -1032,16 +1032,22 @@ export interface LockerPayload {
  * read. Lua owns every field; the page renders them and asks through the
  * LOCKER2_* callbacks below, each of which Lua revalidates.
  *
- * NO APPEARANCE CROSSES TO THE PAGE. A saved ped's appearance (`a`) stays in
+ * NO APPEARANCE CROSSES TO THE PAGE. A saved look's appearance (`a`) stays in
  * Lua (the skeptic's correction 8): the page needs a name, a picture and the
- * time it was last saved, and the rows of the ped being edited.
+ * time it was last saved, and the rows of the look being edited.
+ *
+ * "MY LOOKS" (owner, 2026-10-12/13). The page no longer has tabs: it has
+ * views (lockerv2/model.ts View) and asks Lua to start or leave a draft
+ * (LOCKER2_NEW, LOCKER2_EDIT, LOCKER2_LEAVE). Lua still says which of its
+ * old tabs it is on -- `male`/`female` while a draft is up -- and echoes the
+ * page's last numbered request as `tabSeq`.
  */
 export type Locker2Tab = 'peds' | 'stock' | 'male' | 'female'
 
 export interface Locker2Ped {
   /** The server's id for it: base36, `^[0-9a-z]+$`. */
   id: string
-  /** The player's name for it: letters and digits, 1 to 24. */
+  /** The player's name for it: letters, digits and single spaces, 1 to 24. */
   name: string
   /** Last saved, ms. The headshot cache is keyed `id@up`. */
   up: number
@@ -1052,21 +1058,25 @@ export interface Locker2Ped {
   img?: string
 }
 
-/** The ped the player is wearing: a stock id (`s`) or a saved ped (`p`). */
+/** The look the player is wearing: a stock id (`s`) or a saved look (`p`). */
 export interface Locker2Worn { k: 's' | 'p'; id: string }
 
+/** Which of the game's two color palettes a row's colors come from:
+ *  GetPedHairRgbColor's or GetPedMakeupRgbColor's (Locker2PalPayload). */
+export type Locker2PalName = 'hair' | 'makeup'
+
 /**
- * One row of the Custom tabs.
+ * One row of the editor.
  *
  * `k` IS THE APPEARANCE JSON'S OWN NAME FOR THE THING (contract section 1):
  * `c<slot>` a component (1-11), `p<slot>` a prop (0, 1, 2, 6, 7), `o<index>`
- * a head overlay (0-12) with `o<index>op` its opacity and `o<index>col` its
- * color, `ff<index>` a face feature (0-19), `sk` the skin tone, `e` the eyes,
- * and `h0`/`h1` the hair's color and highlight. The page names each one from
- * lockerv2/copy.ts.
+ * a head overlay (0-12) with `o<index>op` its opacity, `ff<index>` a face
+ * feature (0-19), `sk` the skin tone, `e` the eyes, `h1` the hair's
+ * highlight -- and, new with My Looks, `shape`, the starting face. The page
+ * names each one from lockerv2/copy.ts.
  *
- * `cat` is the anchor it sits under: face, hair, makeup, skin, body, headwear,
- * tops, vests, accessories, bags, legs, shoes.
+ * `cat` is the summary line it sits under (lockerv2/model.ts CORE_CATS and
+ * EXTRA_CATS): face, skin, hair, top, legs, shoes, then the extras.
  */
 export interface Locker2CountRow {
   k: string
@@ -1076,8 +1086,18 @@ export interface Locker2CountRow {
   v: number
   n: number
   /** How many colors the current option has. More than one draws "Next
-   *  color", which sends LOCKER2_COLOR. */
+   *  color" (LOCKER2_COLOR), or a swatch grid when the row has a `pal`. */
   colors: number
+  /** The game's name for the item worn, in the player's language, when the
+   *  shop data has one (GET_SHOP_PED_COMPONENT's label): a caption, never a
+   *  list. Absent for most legs, shoes and undershirts, and for the base
+   *  pieces. */
+  name?: string
+  /** The palette the row's colors are drawn from: a swatch grid. */
+  pal?: Locker2PalName
+  /** The color worn, 0-based in `pal` (the Hair row's hair color, an
+   *  overlay's color). `h1` has none: its own `v` is the color. */
+  c?: number
 }
 export interface Locker2SliderRow {
   k: string
@@ -1094,45 +1114,51 @@ export interface Locker2SliderRow {
 }
 export type Locker2Row = Locker2CountRow | Locker2SliderRow
 
-/** The ped being built on a Custom tab. Absent on My peds and Stock. */
+/** The look being edited. Absent on every other view. */
 export interface Locker2Edit {
   sex: 'm' | 'f'
-  /** The saved ped being edited, or null for a new one. */
+  /** The saved look being edited, or null for a new one. */
   editing: string | null
-  /** Unsaved changes: the other tabs lock, and Done asks first. */
+  /** Unsaved changes: Back asks first. A new look is always unsaved. */
   dirty: boolean
-  /** The category the camera is on; null while it is home on the whole ped,
-   *  as every new draft starts. The anchor lit is always this one. */
+  /** The category the camera is on; null while it is home on the whole look,
+   *  as every new draft starts. */
   cat: string | null
   rows: Locker2Row[]
-  /** The Tattoos section's rows, zone by zone in the order drawn. */
+  /** The Tattoos extra's rows, zone by zone in the order drawn. */
   tats: Locker2TatRow[]
+  /** The extras on the look (EXTRA_CATS), added with "+ Add" or worn when
+   *  the look was opened. The core categories are always there. */
+  extras: string[]
+  /** Lua holds the draft's history: there is a step to undo, or to redo. */
+  undo: boolean
+  redo: boolean
 }
 
-/** One row of the Tattoos section (owner, 2026-10-12): `r` the row's own id,
+/** One row of the Tattoos extra (owner, 2026-10-12): `r` the row's own id,
  *  which a choice keeps and no other row ever has; `z` its zone; `i` its tattoo,
  *  by its `i` in the sex's Locker2TatsPayload. */
 export interface Locker2TatRow { r: number; z: string; i: number }
 
 export interface Locker2Payload {
   on: boolean
-  /** The tab Lua is showing the ped for. */
+  /** The tab Lua is showing the ped for: `male`/`female` while a draft is up. */
   tab: Locker2Tab
-  /** The `seq` of the page's last LOCKER2_TAB this push has seen, or null.
-   *  Once it is the page's latest, the page shows `tab`. */
+  /** The `seq` of the page's last numbered request (LOCKER2_NEW, _EDIT,
+   *  _LEAVE) this push has seen, or null. */
   tabSeq?: number | null
-  /** The stock roster: Season 1's peds, by id and name. */
+  /** The stock roster ("Stock GTA Looks"): Season 1's peds, by id and name. */
   stock: { id: string; name: string }[]
-  /** The player's saved peds, oldest first. */
+  /** The player's saved looks, oldest first. */
   peds: Locker2Ped[]
   worn: Locker2Worn | null
-  /** The stock id streaming in, as in Season 1. */
+  /** The stock or saved look streaming in. */
   loading?: string | null
   /** The entrance walk holds the ped: everything is refused. */
   locked?: boolean
   /** A save, rename or delete is waiting on the server. */
   busy?: boolean
-  /** The saved peds are still being fetched: My peds shows the loading
+  /** The saved looks are still being fetched: My Looks shows the loading
    *  indicator until the server's answer arrives (owner, 2026-10-07). */
   fetching?: boolean
   edit?: Locker2Edit | null
@@ -1140,10 +1166,10 @@ export interface Locker2Payload {
 
 /** BR.Nui.LOCKER2_SHOT ('locker2shot'): a headshot is ready as a runtime
  *  texture, at https://nui-img/<txd>/<txd> -- or, with `img` and no `txd`,
- *  the stored picture of the saved ped `id` as last saved at `up`. */
+ *  the stored picture of the saved look `id` as last saved at `up`. */
 export interface Locker2ShotPayload { id: string; up?: number; txd?: string; img?: string }
 
-/** One tattoo the Tattoos section lists: its row in Lua's list, and the
+/** One tattoo the Tattoos extra lists: its row in Lua's list, and the
  *  game's own text for it -- absent where the game has none. */
 export interface Locker2Tattoo { i: number; name?: string }
 
@@ -1154,6 +1180,12 @@ export interface Locker2TatsPayload {
   sex: 'm' | 'f'
   zones: { z: string; items: Locker2Tattoo[] }[]
 }
+
+/** BR.Nui.LOCKER2_PAL ('locker2pal'), NEW WITH MY LOOKS: the game's two
+ *  color palettes as `#rrggbb`, in the game's order, sent once when the page
+ *  asks (LOCKER2_PAL) -- GetPedHairRgbColor and GetPedMakeupRgbColor for
+ *  0 .. GetNumHairColors / GetNumMakeupColors, 64 at most. */
+export interface Locker2PalPayload { hair: string[]; makeup: string[] }
 
 /**
  * LEVEL AND XP.
@@ -1648,10 +1680,12 @@ export type Envelope =
   | { k: 'tutorialnav'; d: { dir: 'next' | 'back' | 'action'; seq: number } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
-  /** Locker v2 (#28): BR.Nui.LOCKER2, BR.Nui.LOCKER2_SHOT and BR.Nui.LOCKER2_TATS. */
+  /** Locker v2 (#28): BR.Nui.LOCKER2, BR.Nui.LOCKER2_SHOT, BR.Nui.LOCKER2_TATS and,
+   *  new with My Looks, BR.Nui.LOCKER2_PAL. */
   | { k: 'locker2';  d: Locker2Payload }
   | { k: 'locker2shot'; d: Locker2ShotPayload }
   | { k: 'locker2tats'; d: Locker2TatsPayload }
+  | { k: 'locker2pal'; d: Locker2PalPayload }
   | { k: 'progress'; d: ProgressPayload }
   | { k: 'market';   d: MarketPayload }
   /** The emote gate (#215): BR.Nui.EMOTES, sent with every Market grid. */
@@ -1758,42 +1792,54 @@ export const CB = {
   LOCKER_FOCUS:   'br/locker/focus',
   /* LOCKER V2 (#28), Season 2 and later. Every one answers {} and is
      revalidated in Lua, which refuses them all while the ped is locked,
-     loading or busy, and refuses `tab` while there are unsaved changes. */
+     loading or busy.
+
+     MY LOOKS (owner, 2026-10-12/13) changed the page's half: the ones marked
+     NEW below are the browser preview's (bridge/mockLocker2.ts plays them)
+     and are not in br_lib/shared/protocol.lua yet -- the wiring round adds
+     them there and to br_ui/client/nui.lua's forwarded list. The ones marked
+     UNUSED are Lua's today and the new screen no longer sends them; they stay
+     so the two halves keep naming the same set until the wiring round
+     retires them. */
   /** The screen is up: push the state, clean and dry the ped. {} */
   LOCKER2_OPEN:     'br/locker2/open',
-  /** Done: discard the draft, wear the worn ped again. {} */
+  /** Done: discard any draft, wear the worn look again. {} */
   LOCKER2_CLOSE:    'br/locker2/close',
-  /** The Custom tab's Reset: the draft back to where it started. {} */
+  /** UNUSED by My Looks (the old Reset). {} */
   LOCKER2_RESET:    'br/locker2/reset',
-  /** { tab, seq }. Create is { tab: 'male', seq }. `seq` counts the page's
-      requests; Lua echoes the last one it saw as the payload's `tabSeq`. */
+  /** UNUSED by My Looks (the old tabs). { tab, seq } */
   LOCKER2_TAB:      'br/locker2/tab',
-  /** { k: 's' | 'p', id }: wear a stock or a saved ped. */
+  /** { k: 's' | 'p', id }: wear a stock or a saved look. */
   LOCKER2_WEAR:     'br/locker2/wear',
-  /** { k, d }: a counter one step, d = 1 or -1, wrapping. */
+  /** { k, d }: a counter one step, d = 1 or -1, wrapping. A held arrow sends
+      one per repeat (lockerv2/model.ts holdDelay). */
   LOCKER2_STEP:     'br/locker2/step',
-  /** { k, v }: a row set outright, in its own `v` (a counter's reset is 1). */
+  /** { k, v }: a row set outright, in its own `v` (a counter's reset is 1, a
+      highlight swatch is its color + 1). */
   LOCKER2_SET:      'br/locker2/set',
-  /** { k }: "Next color". */
+  /** { k }: "Next color". CHANGED: { k, c } sets the row's color to `c`
+      (0-based in its palette), a swatch press. */
   LOCKER2_COLOR:    'br/locker2/color',
-  /** { cat }: the camera to that part of the ped. Sent on every anchor press
-      and row touched; Lua moves the camera only if it is not there. */
+  /** { cat }: the camera to that part of the look. Sent on every summary
+      line pressed and row touched; Lua moves the camera only if it is not
+      there. `cat` is a CORE_CATS or EXTRA_CATS id, or a tattoo zone's. */
   LOCKER2_CAT:      'br/locker2/cat',
-  /** { op: 'new' | 'update' | 'replace', id?, name? }. */
+  /** { op: 'new', name } or { op: 'update', id, name }. CHANGED: an update
+      carries the name typed in the save dialog, and renames as it saves. */
   LOCKER2_SAVE:     'br/locker2/save',
   /** { id, name }. */
   LOCKER2_RENAME:   'br/locker2/rename',
   /** { id }. */
   LOCKER2_DELETE:   'br/locker2/delete',
-  /** { id }: edit a saved ped on the Custom tab of its sex. */
+  /** { id, seq }: edit a saved look. CHANGED: numbered, as LOCKER2_NEW. */
   LOCKER2_EDIT:     'br/locker2/edit',
-  /** { ids }: take headshots for the saved peds with no picture. */
+  /** { ids }: take headshots for the saved looks with no picture. */
   LOCKER2_SHOTS:    'br/locker2/shots',
   /** { id, img }: a headshot, a webp data URL of 8 KB at most, to store. */
   LOCKER2_SHOT:     'br/locker2/shot',
   /** { id, ok }: the page is done with that texture. */
   LOCKER2_SHOTDONE: 'br/locker2/shotdone',
-  /** { sex }: the Tattoos section's list, answered as a `locker2tats`. */
+  /** { sex }: the Tattoos extra's list, answered as a `locker2tats`. */
   LOCKER2_TATS:     'br/locker2/tats',
   /** { z }: a new tattoo row at the foot of a zone (Add). */
   LOCKER2_TAT_ADD:  'br/locker2/tatadd',
@@ -1801,6 +1847,30 @@ export const CB = {
   LOCKER2_TAT_SET:  'br/locker2/tatset',
   /** { r }: Remove, a row's own button. */
   LOCKER2_TAT_DEL:  'br/locker2/tatdel',
+  /** NEW. { sex: 'm' | 'f', seq }: a new custom look, the core categories
+      randomized and no extras (the Custom card). */
+  LOCKER2_NEW:      'br/locker2/new',
+  /** NEW. { seq }: leave the editor -- drop the draft (the page has asked
+      first if it was unsaved) and wear the worn look again. */
+  LOCKER2_LEAVE:    'br/locker2/leave',
+  /** NEW. {}: Randomize -- every category on the look, one undo step. */
+  LOCKER2_RANDOM:   'br/locker2/random',
+  /** NEW. {}: one step back in the draft's history. */
+  LOCKER2_UNDO:     'br/locker2/undo',
+  /** NEW. {}: one step forward again. */
+  LOCKER2_REDO:     'br/locker2/redo',
+  /** NEW. { id, on }: "+ Add" an extra (on, its first item), or its trash
+      icon (off: every row of it back to none, its tattoos gone). */
+  LOCKER2_EXTRA:    'br/locker2/extra',
+  /** NEW. { ks }: these rows back to their defaults as one undo step -- a
+      face group's reset. */
+  LOCKER2_DEFAULTS: 'br/locker2/defaults',
+  /** NEW. {}: the two color palettes, answered once as a `locker2pal`. */
+  LOCKER2_PAL:      'br/locker2/pal',
+  /** NEW. { op: 'turn' | 'zoom' | 'reset', d? }: the camera cluster -- turn
+      around 180, zoom one step in (d = 1) or out (d = -1, and the mouse
+      wheel), back to the category's framing. Rotating is LOCKER_SPIN. */
+  LOCKER2_CAM:      'br/locker2/cam',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
   MARKET_EQUIP:   'br/market/equip',

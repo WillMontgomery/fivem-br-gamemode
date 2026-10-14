@@ -1,43 +1,97 @@
 import type { Theme } from '@cloudscape-design/components/theming'
 
 /**
- * CLOUDSCAPE, IN OUR CLOTHES (#28): "Can we use Cloudscape components for the
- * ped picker, just styled to match our style?" (owner).
+ * CLOUDSCAPE, IN THE LOBBY'S CLOTHES (#28): "we need to tune the visual look
+ * to our buttons to match the rest of our lobby UI. Same for the other
+ * elements of Cloudscape that we're using - colors, click animations, and
+ * gradients aren't quite right. And corners - remember our Lobby UI has no
+ * rounded edges." (owner, 2026-10-13)
  *
- * The contract's five values (section 5) and nothing invented around them:
- * Barlow, the panel #1d1e2b, its edge #33354a, the cyan #22d3ee, and #04222a,
- * the ink that sits on cyan. Every color is a hex or an rgba, because CEF 103
- * drops oklch and color-mix outright (scripts/check-css.mjs).
+ * WHAT THE TOKENS CAN DO, THEY DO HERE: the lobby's colors, taken from its own
+ * buttons (ui/Btn.tsx's VARIANT and index.css's `.plate`), and every radius
+ * Cloudscape lets a theme set at 0 -- test-lockerv2.mjs reads the installed
+ * Cloudscape's token list and fails if one is missing or not 0px. What tokens
+ * cannot do -- the plates' gradient, Anton in capitals, the press travel, the
+ * corners Cloudscape draws without a token -- is lockerv2.css.
+ *
+ * HOVER IS NOT A NEW COLOR. A lobby button brightens under the mouse (a
+ * filter, lockerv2.css) and keeps its colors, so each hover and active token
+ * is its default's. Every color is a hex or an rgba, because CEF 103 drops
+ * oklch and color-mix outright (scripts/check-css.mjs).
  *
  * DARK ONLY. applyMode(Dark) is on <body> while the locker is up, so these are
  * the dark values; the theme and the mode both come off again as it closes.
  */
 
+const BG = '#0b0c12'
 const PANEL = '#1d1e2b'
 const EDGE = '#33354a'
 const CYAN = '#22d3ee'
+const CYAN_EDGE = '#67e8f9'
 const INK = '#04222a'
-const BG = '#0b0c12'
 const TEXT = '#ffffff'
 const DIM = 'rgba(255, 255, 255, 0.58)'
 const BODY = 'rgba(255, 255, 255, 0.70)'
+/** ui/Btn.tsx's `default` plate and edge. */
+const PLATE = 'rgba(32, 36, 50, 0.94)'
+const PLATE_EDGE = 'rgba(255, 255, 255, 0.30)'
+/** index.css's `.plate` fill: what a list line, a card or a tile rests on. */
+const PLATE_DARK = 'rgba(12, 14, 22, 0.97)'
+const SELECTED = 'rgba(12, 58, 72, 0.94)'
+
+/** Every radius token the installed Cloudscape has, at 0. */
+const SQUARE = {
+  borderRadiusActionCardDefault: '0px',
+  borderRadiusActionCardEmbedded: '0px',
+  borderRadiusAlert: '0px',
+  borderRadiusBadge: '0px',
+  borderRadiusButton: '0px',
+  borderRadiusCalendarDayFocusRing: '0px',
+  borderRadiusCardDefault: '0px',
+  borderRadiusCardEmbedded: '0px',
+  borderRadiusChatBubble: '0px',
+  borderRadiusContainer: '0px',
+  borderRadiusControlCircularFocusRing: '0px',
+  borderRadiusControlDefaultFocusRing: '0px',
+  borderRadiusDialog: '0px',
+  borderRadiusDropdown: '0px',
+  borderRadiusDropzone: '0px',
+  borderRadiusFlashbar: '0px',
+  borderRadiusInput: '0px',
+  borderRadiusItem: '0px',
+  borderRadiusPopover: '0px',
+  borderRadiusSideNavigationItem: '0px',
+  borderRadiusSideNavigationItemCollapsed: '0px',
+  borderRadiusStatusIndicator: '0px',
+  borderRadiusSupportPrompt: '0px',
+  borderRadiusTabsFocusRing: '0px',
+  borderRadiusTiles: '0px',
+  borderRadiusToken: '0px',
+  borderRadiusTokenInline: '0px',
+  borderRadiusTutorialPanelItem: '0px',
+} as const
 
 export const LOCKER_THEME: Theme = {
   tokens: {
     fontFamilyBase: "'Barlow', 'Segoe UI', system-ui, sans-serif",
-    fontFamilyHeading: "'Barlow', 'Segoe UI', system-ui, sans-serif",
-    fontFamilyDisplay: "'Barlow', 'Segoe UI', system-ui, sans-serif",
+    fontFamilyHeading: "'Anton', 'Segoe UI', system-ui, sans-serif",
+    fontFamilyDisplay: "'Anton', 'Segoe UI', system-ui, sans-serif",
+
+    ...SQUARE,
+    // The lobby's plates have a one-pixel edge.
+    borderWidthButton: '1px',
 
     // Surfaces.
     colorBackgroundContainerContent: PANEL,
     colorBackgroundContainerHeader: PANEL,
-    colorBackgroundCard: PANEL,
+    colorBackgroundCard: PLATE_DARK,
     colorBackgroundDialog: PANEL,
     colorBackgroundPopover: PANEL,
     colorBackgroundDropdownItemDefault: PANEL,
     colorBackgroundDropdownItemHover: '#26283a',
+    colorBackgroundDropdownItemSelected: SELECTED,
     colorBackgroundInputDefault: BG,
-    colorBackgroundItemSelected: 'rgba(12, 58, 72, 0.94)',
+    colorBackgroundItemSelected: SELECTED,
     colorBackgroundBackdrop: 'rgba(6, 8, 14, 0.72)',
 
     // Edges.
@@ -48,52 +102,54 @@ export const LOCKER_THEME: Theme = {
     colorBorderDialog: EDGE,
     colorBorderPopover: EDGE,
     colorBorderDropdownContainer: EDGE,
-    colorBorderInputDefault: EDGE,
+    colorBorderDropdownItemFocused: CYAN,
+    colorBorderInputDefault: PLATE_EDGE,
     colorBorderInputFocused: CYAN,
     colorBorderItemFocused: CYAN,
     colorBorderItemSelected: CYAN,
-    colorBorderControlDefault: EDGE,
+    colorBorderControlDefault: PLATE_EDGE,
 
-    // The primary button: cyan, with the ink on it.
+    // The primary button: the lobby's Ready up -- cyan, its lighter edge, the
+    // ink on it, in every state.
     colorBackgroundButtonPrimaryDefault: CYAN,
-    colorBackgroundButtonPrimaryHover: '#67e8f9',
-    colorBackgroundButtonPrimaryActive: '#06b6d4',
-    colorBorderButtonPrimaryDefault: CYAN,
-    colorBorderButtonPrimaryHover: '#67e8f9',
-    colorBorderButtonPrimaryActive: '#06b6d4',
+    colorBackgroundButtonPrimaryHover: CYAN,
+    colorBackgroundButtonPrimaryActive: CYAN,
+    colorBackgroundButtonPrimaryDisabled: CYAN,
+    colorBorderButtonPrimaryDefault: CYAN_EDGE,
+    colorBorderButtonPrimaryHover: CYAN_EDGE,
+    colorBorderButtonPrimaryActive: CYAN_EDGE,
+    colorBorderButtonPrimaryDisabled: CYAN_EDGE,
     colorTextButtonPrimaryDefault: INK,
     colorTextButtonPrimaryHover: INK,
     colorTextButtonPrimaryActive: INK,
+    colorTextButtonPrimaryDisabled: INK,
 
-    // The normal button: a plate with a cyan edge, as the market's are.
-    colorBackgroundButtonNormalDefault: 'rgba(24, 28, 40, 0.92)',
-    colorBackgroundButtonNormalHover: 'rgba(12, 58, 72, 0.94)',
-    colorBackgroundButtonNormalActive: 'rgba(12, 58, 72, 0.94)',
-    colorBorderButtonNormalDefault: 'rgba(255, 255, 255, 0.16)',
-    colorBorderButtonNormalHover: CYAN,
-    colorBorderButtonNormalActive: CYAN,
+    // The normal button: the lobby's Locker, Market and Settings plates. A
+    // disabled one is the same plate at the lobby's 40% (lockerv2.css).
+    colorBackgroundButtonNormalDefault: PLATE,
+    colorBackgroundButtonNormalHover: PLATE,
+    colorBackgroundButtonNormalActive: PLATE,
+    colorBackgroundButtonNormalDisabled: PLATE,
+    colorBorderButtonNormalDefault: PLATE_EDGE,
+    colorBorderButtonNormalHover: PLATE_EDGE,
+    colorBorderButtonNormalActive: PLATE_EDGE,
+    colorBorderButtonNormalDisabled: PLATE_EDGE,
     colorTextButtonNormalDefault: TEXT,
-    colorTextButtonNormalHover: CYAN,
-    colorTextButtonNormalActive: CYAN,
+    colorTextButtonNormalHover: TEXT,
+    colorTextButtonNormalActive: TEXT,
+    colorTextButtonNormalDisabled: TEXT,
+    colorTextButtonIconDisabled: DIM,
+    colorTextButtonIconHover: CYAN,
 
-    // The segmented control: the market's tab plates.
-    colorBackgroundSegmentDefault: 'rgba(24, 28, 40, 0.92)',
-    colorBackgroundSegmentHover: 'rgba(12, 58, 72, 0.94)',
-    colorBackgroundSegmentActive: CYAN,
-    colorBackgroundSegmentWrapper: 'rgba(24, 28, 40, 0.92)',
-    colorTextSegmentDefault: BODY,
-    colorTextSegmentHover: CYAN,
-    colorTextSegmentActive: INK,
-    colorBorderSegmentWrapper: EDGE,
-
-    // Sliders, radios, the anchor navigation's line.
+    // Toggles, sliders, radios.
     colorBackgroundSliderRangeDefault: CYAN,
-    colorBackgroundSliderRangeActive: '#67e8f9',
+    colorBackgroundSliderRangeActive: CYAN_EDGE,
     colorBackgroundSliderHandleDefault: CYAN,
-    colorBackgroundSliderHandleActive: '#67e8f9',
+    colorBackgroundSliderHandleActive: CYAN_EDGE,
     colorBackgroundSliderTrackDefault: EDGE,
     colorBackgroundControlChecked: CYAN,
     colorBackgroundControlDefault: BG,
+    colorBackgroundToggleDefault: EDGE,
 
     // Ink.
     colorTextBodyDefault: TEXT,
@@ -104,21 +160,13 @@ export const LOCKER_THEME: Theme = {
     colorTextLabel: BODY,
     colorTextAccent: CYAN,
     colorTextLinkDefault: CYAN,
-    colorTextLinkHover: '#67e8f9',
+    colorTextLinkHover: CYAN_EDGE,
     colorTextInteractiveDefault: BODY,
     colorTextInteractiveHover: CYAN,
     colorTextInteractiveActive: CYAN,
     colorTextDropdownItemDefault: TEXT,
     colorTextDropdownItemHighlighted: CYAN,
     colorTextGroupLabel: DIM,
-
-    // Our plates are cut, not pills: small radii everywhere.
-    borderRadiusButton: '4px',
-    borderRadiusContainer: '4px',
-    borderRadiusDropdown: '4px',
-    borderRadiusInput: '4px',
-    borderRadiusItem: '4px',
-    borderRadiusTiles: '4px',
   },
 }
 

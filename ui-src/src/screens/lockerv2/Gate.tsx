@@ -1,6 +1,7 @@
-import { Component, lazy, Suspense, useEffect, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useEffect, type ComponentType, type ReactNode } from 'react'
 import { fetchNui, reportError } from '../../bridge/nui'
 import { CB } from '../../bridge/types'
+import { sheetLoaded } from './sheet'
 
 /**
  * THE DOOR TO LOCKER V2 (#28), and the one part of it in the main bundle.
@@ -22,14 +23,35 @@ import { CB } from '../../bridge/types'
  *     (LOCKER_FOCUS { open: false }) and reports once, instead of leaving an
  *     invisible screen holding the focus;
  *   * a chunk that never answers does the same after LOAD_MS.
+ *
+ * THE PRELOADED SCREEN IS DRAWN DIRECTLY (the lag report, cause 2). React.lazy
+ * suspends on its first render even when its import has long resolved, and
+ * React 19 then holds the reveal for up to 300 ms: the first open of every
+ * session waited that long on a chunk that was already here. The module the
+ * preload resolved is kept, and the gate renders it outright; Suspense is
+ * only the path for a chunk that has not arrived yet. Once loaded, the chunk's
+ * stylesheet goes off until the locker opens (sheet.ts), and the theme is
+ * built in idle time (scope.ts warmTheme), so the first open builds nothing.
  */
 
 const LOAD_MS = 5000
 
-let loading: Promise<typeof import('../LockerV2')> | null = null
+type Screen = typeof import('../LockerV2')
 
-function load() {
-  if (!loading) loading = import('../LockerV2')
+let loading: Promise<Screen> | null = null
+/** The screen, once its chunk has loaded. */
+let Loaded: ComponentType | null = null
+
+function load(): Promise<Screen> {
+  if (!loading) {
+    loading = import('../LockerV2').then((m) => {
+      Loaded = m.default
+      sheetLoaded()
+      const idle = window.requestIdleCallback ?? ((fn: () => void) => window.setTimeout(fn, 200))
+      idle(() => { m.warmTheme() })
+      return m
+    })
+  }
   return loading
 }
 
@@ -68,6 +90,8 @@ function Waiting() {
 }
 
 export default function LockerV2Gate() {
+  const Ready = Loaded
+  if (Ready) return <Boundary><Ready /></Boundary>
   return (
     <Boundary>
       <Suspense fallback={<Waiting />}>

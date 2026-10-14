@@ -1,78 +1,72 @@
 #!/usr/bin/env node
 /**
- * LOCKER V2'S TESTS (#28): the page's rules, its copy, its wiring, its chunk.
+ * LOCKER V2'S TESTS (#28, "My Looks"): the page's rules, its copy, its theme,
+ * its wiring, the browser harness's half of Lua, and its chunk.
  *
  * src/screens/lockerv2/model.ts decides everything the Season 2 locker does
  * before it draws, and it has no runtime imports, so node's type stripping
- * loads it as-is (the same shape as test-continue-toggle.mjs). copy.ts the
- * same. These hold each rule to the owner's words in #28:
+ * loads it as-is; copy.ts and theme.ts the same. bridge/mockLocker2.ts -- the
+ * stand-in for br_core that the preview runs on, and the reference for the
+ * wiring round -- is driven here too, through a resolver that finds its
+ * extensionless imports. Each block holds one piece of the owner's design
+ * (#28, 2026-10-12/13) and fails when that piece is reverted:
  *
- *   SAVE      the three shapes: plain with nothing saved, Create new / Replace
- *             existing (every saved ped by name) with something saved, and a
- *             split button that updates while editing; lit only while dirty.
- *   SLIDE     d = sign(new - old); the old body leaves toward +d, the new one
- *             arrives from -d.
- *   TABS      My peds only once something is saved (or while the saved peds
- *             load), opening on it if so and on Stock if not; dirty locks every
- *             other tab WITH the hover card, a busy ped locks them without one.
- *   NAMES     letters and digits only, 1 to 24, filtered as typed.
- *   DONE      dirty asks first and does nothing else; then `close`, then
- *             LOCKER_FOCUS { open: false }, in that order. Escape closes an open
- *             dialog alone, and is an open dropdown's own (a tattoo picker,
- *             the Save menu) while one is open.
- *   FOLLOW    the page moves its tab on the press, and shows Lua's once a push
- *             has seen its latest request; it draws a draft only under the
- *             tab of its sex; a slider shows Lua's value once untouched.
- *   CAMERA    every category touch is sent; a new draft lights no anchor.
- *   PICTURES  every image drawn to a canvas is asked for with CORS; a stored
- *             picture arrives on its own and is kept, never on the push.
- *   TATTOOS   each sex's list made safe to draw (the body's zones in order,
- *             whole items, a name only if it is one), the section's anchors
- *             only once the list has come, Lua's rows made safe to draw (a
- *             list that starts empty), 10 a zone, Add off at 10, a row's list
- *             leaving out what the zone's other rows hold, the words, and the
- *             wiring (2026-10-12, "attribute editor"): asked once drawn, one
- *             AttributeEditor a zone under its heading, compact, each item one
- *             row whose one field is a Select of the zone's tattoos by the
- *             game's names, filtered by the name alone, a choice a
- *             LOCKER2_TAT_SET of its row, the
- *             editor's Add a LOCKER2_TAT_ADD of its zone and its own Remove a
- *             LOCKER2_TAT_DEL of that row, no label, no empty-state or helper
- *             text, no cards, arrows or selection, the nameless numbered among
- *             themselves, and the first Remove kept level with its Select.
- *
- * And what a unit test cannot see, read from the source and the build:
- *
- *   WIRED     LockerV2.tsx asks these rules rather than deciding for itself, and
- *             App.tsx picks it only when the season's flag is on.
+ *   FLOW      My Looks / New / Stock GTA Looks / the editor: the view follows
+ *             Lua once a push has seen the page's latest numbered request;
+ *             Back goes one level up, the editor's asks first if unsaved, My
+ *             Looks' is Done (close, then the focus); Escape is an open
+ *             dropdown's, then a dialog's, then Back -- and under a
+ *             walkthrough card it never closes the locker.
+ *   NAMES     letters, digits and single spaces; no space first; the ends
+ *             trimmed when used; 1 to 24.
+ *   SAVE      a new look is named; a saved one's dialog has Save (update, with
+ *             the name typed) and Save as new; Save is lit for a new look,
+ *             and for a saved one only with changes.
+ *   EXTRAS    the core always listed, the extras on the look after it, "+
+ *             Add" offering the rest; a trash icon takes one off.
+ *   SUMMARY   one line a category: the game's name for the item, else `v/n`;
+ *             a color chip; Tattoos, how many.
+ *   SWATCHES  hair and makeup colors as swatches, sending the color itself;
+ *             "Next color" only for an item with textures.
+ *   HOLD      a held arrow: the press, 400 ms, then quicker to a 50 ms floor.
+ *   HISTORY   Undo / Redo, a drag or a hold one step.
+ *   SHARE     a push hands back unchanged parts as the same objects.
+ *   CORNERS   every radius token at 0, and the stylesheet squares the rest.
+ *   MOCK      the harness plays New, the history, the extras, the palettes,
+ *             the face groups and both saves the way the page expects.
+ *   WIRING    the screen asks these rules, opens with LOCKER2_OPEN alone,
+ *             builds the theme once, draws the preloaded chunk outright, and
+ *             subscribes to the fields it draws.
  *   SEASON 1  screens/Locker.tsx is byte-for-byte the finished product.
- *   CHUNK     Cloudscape ships in assets/LockerV2.{js,css} and nowhere in the
- *             main bundle; that CSS is Cloudscape's own scoped rules (.awsui_*
- *             selectors, `--*` properties, awsui keyframes) and nothing global:
- *             no @font-face, no body or html rule, none of global-styles --
- *             but the Tattoos section's one rule, under `.lk2-tats`.
+ *   CHUNK     Cloudscape and this screen's CSS ship in assets/LockerV2.*, the
+ *             CSS all scoped -- nothing global.
  *
  * Run: npm run test:lockerv2   (and as part of npm run build, after vite)
  */
 
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { register } from 'node:module'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
-  SLIDER_HOLD_MS, activeAnchor, anchorId, canvasImage, categoriesOf, counterText, dataUrlBytes,
-  doneSteps, editFor, escapeAction, filterName, followTab, imgOk, nameOk, needShots, openingTab,
-  OPEN_POPUP, parseLocker2, parseTats, popupOpen, saveVariant, shotKey, shotStorable, sliderShown, slideDir, slideEnds,
-  tabOptions, tabsShown, TATTOOS_PER_ZONE, TATTOO_ZONES, canAddTattoo, sameTatRows, tattooCats, tattooChoices,
-  tattooFilter, wrapStep, zoneOfCat, zoneRows, zoomFor,
+  COALESCE_MS, CORE_CATS, EXTRA_CATS, FACE_GROUPS, HISTORY_MAX, HOLD_FIRST_MS, HOLD_MIN_MS, NAME_MAX, OPEN_POPUP,
+  PRIMARY_ROW, SLIDER_HOLD_MS, TATTOOS_PER_ZONE, TATTOO_ZONES,
+  addableExtras, backSteps, canAddTattoo, canvasImage, cleanName, counterText, dataUrlBytes, escapeAction,
+  filterName, followView, groupMoved, holdDelay, holdSteps, imgOk, isExtra, listedCats, nameOk, needShots,
+  newHistory, nextColorShown, panelOf, panelRows, parseLocker2, parsePal, parseTats, popupOpen, record, redoStep,
+  sameTatRows, saveDialogFor, saveEnabled, saveRequest, share, shotKey, shotStorable, sliderShown, summaryOf,
+  swatchOf, swatchRequest, swatchesShown, tattooChoices, tattooFilter, undoStep, wrapStep, zoneRows, zoomFor,
 } from '../src/screens/lockerv2/model.ts'
 import {
-  BTN, CAT_LABEL, LOCKED_TAB, MODAL, ROW_LABEL, TAB_LABEL, TATTOOS, ZONE_LABEL, rowLabel, tattooFallback, tattooLabels,
-  updateLabel,
+  BTN, CAM, CARD, CAT_LABEL, GROUP_LABEL, MODAL, ROW_LABEL, SEX_LABEL, TITLE, ZONE_LABEL, deleteTitle, rowLabel,
+  swatchLabel, tattooFallback, tattooLabels,
 } from '../src/screens/lockerv2/copy.ts'
+import { LOCKER_THEME } from '../src/screens/lockerv2/theme.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(ROOT, 'src')
+const L2 = join(SRC, 'screens', 'lockerv2')
 const OUT = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_ui', 'ui', 'assets')
 
 let failed = 0
@@ -88,92 +82,227 @@ const eq = (label, got, want) => {
   check(label, g === w, `got ${g}\n          want ${w}`)
 }
 const read = (p) => readFileSync(p, 'utf8').replace(/\r\n/g, '\n')
+const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+// ── FLOW ─────────────────────────────────────────────────────────────────────
+// "let's get rid of the top left/right select bar, and move to a new flow"
+eq('view: a push that has seen the latest request follows Lua -- a draft up is the editor',
+  [followView('home', true, 4, 4), followView('new', true, 4, 4)], ['edit', 'edit'])
+eq('view: no draft once Lua has answered takes the editor home (a New Lua refused)',
+  followView('edit', false, 5, 5), 'home')
+eq('view: no draft leaves the other views where they are',
+  [followView('new', false, 5, 5), followView('stock', false, 5, 5)], ['new', 'stock'])
+eq('view: a push older than the latest request is not followed (the press stays)',
+  [followView('edit', false, 4, 5), followView('home', true, 4, 5), followView('home', true, null, 1)],
+  ['edit', 'home', 'home'])
+eq('Back: the editor with changes asks first, and nothing else', backSteps('edit', true, false), [{ do: 'confirm' }])
+eq('Back: the editor once Discard is pressed, or with nothing to lose, leaves',
+  [backSteps('edit', true, true), backSteps('edit', false, false)], [[{ do: 'leave' }], [{ do: 'leave' }]])
+eq('Back: Stock GTA Looks to New, New to My Looks',
+  [backSteps('stock', false, false), backSteps('new', false, false)],
+  [[{ do: 'view', to: 'new' }], [{ do: 'view', to: 'home' }]])
+eq('Done on My Looks: close, then the focus', backSteps('home', false, false), [{ do: 'close' }, { do: 'unfocus' }])
+eq('Escape: an open dropdown has it first, whatever else is up',
+  [escapeAction('edit', true, false, true), escapeAction('home', false, true, true)], ['pass', 'pass'])
+eq('Escape: then an open dialog, alone', [escapeAction('edit', true), escapeAction('home', true, true)], ['modal', 'modal'])
+eq('Escape: then the view\'s Back', ['home', 'new', 'stock', 'edit'].map((v) => escapeAction(v, false)),
+  ['back', 'back', 'back', 'back'])
+// #405: a walkthrough card waiting on the locker holds its CLOSING only.
+eq('Escape under a walkthrough card: My Looks does not close; inside, Back still works',
+  [escapeAction('home', false, true), escapeAction('edit', false, true), escapeAction('stock', false, true)],
+  ['none', 'back', 'back'])
+{
+  const asked = []
+  const root = (hit) => ({ querySelector: (s) => { asked.push(s); return hit ? {} : null } })
+  const SEL = 'button[aria-haspopup][aria-expanded="true"]'
+  eq('a dropdown is open when the screen has a trigger with a popup, expanded; none without a screen',
+    [popupOpen(root(true)), popupOpen(root(false)), popupOpen(null), asked], [true, false, false, [SEL, SEL]])
+  eq('that selector is OPEN_POPUP, and a trigger button only', OPEN_POPUP, SEL)
+}
+
+// ── NAMES ────────────────────────────────────────────────────────────────────
+// "we need to allow spaces in the ped names." (owner, 2026-10-12)
+eq('name: spaces kept, one at a time, none first; everything but letters, digits and spaces dropped',
+  [filterName('Night Owl'), filterName('  Night   Owl_2!'), filterName('Zoë  Q')], ['Night Owl', 'Night Owl2', 'Zo Q'])
+eq('name: a space last is kept while typing, so a second word can follow', filterName('Night '), 'Night ')
+eq('name: capped at 24, spaces counted', [filterName('A '.repeat(20)).length, NAME_MAX], [24, 24])
+eq('name: used with its ends trimmed and doubled spaces made one',
+  [cleanName('  Night  Owl '), cleanName('Night\tOwl')], ['Night Owl', 'Night Owl'])
+eq('name: words of letters and digits, one space between, 1 to 24',
+  [nameOk('Night Owl'), nameOk('A'), nameOk('A'.repeat(24)), nameOk('A'.repeat(25)), nameOk(' Owl'),
+    nameOk('Owl '), nameOk('Night  Owl'), nameOk(''), nameOk('Zoë')],
+  [true, true, true, false, false, false, false, false, false])
 
 // ── SAVE ─────────────────────────────────────────────────────────────────────
+// "Save updates an existing look; "Save as new" lives in the save dialog"
 const PEDS = [{ id: 'a1', name: 'Nightshift' }, { id: 'b2', name: 'Ranger' }]
-eq('Save: nothing saved, nothing edited -> a plain button that asks for a name',
-  saveVariant({ dirty: true, editing: null, peds: [] }), { kind: 'plain', enabled: true })
-eq('Save: saved peds, not editing -> Create new / Replace existing, every ped by name',
-  saveVariant({ dirty: true, editing: null, peds: PEDS }),
-  { kind: 'menu', enabled: true, replace: PEDS })
-eq('Save: editing a saved ped -> the split button, updating that ped by default',
-  saveVariant({ dirty: true, editing: 'b2', peds: PEDS }),
-  { kind: 'split', enabled: true, id: 'b2', name: 'Ranger' })
-eq('Save: editing a ped that is gone -> a new ped again (the menu)',
-  saveVariant({ dirty: true, editing: 'zz', peds: PEDS }).kind, 'menu')
-eq('Save: off while there is nothing to save, in every shape',
-  [saveVariant({ dirty: false, editing: null, peds: [] }).enabled,
-    saveVariant({ dirty: false, editing: null, peds: PEDS }).enabled,
-    saveVariant({ dirty: false, editing: 'a1', peds: PEDS }).enabled], [false, false, false])
-eq('Save menu wording: "Update <name>" and "Save as new"; the owner\'s "Create new" / "Replace existing"',
-  [updateLabel('Ranger'), BTN.saveAsNew, BTN.createNew, BTN.replaceExisting],
-  ['Update Ranger', 'Save as new', 'Create new', 'Replace existing'])
+eq('Save on a new look: the name dialog', saveDialogFor(null, PEDS), { kind: 'name' })
+eq('Save on a saved look: its dialog, with its name', saveDialogFor('b2', PEDS), { kind: 'save', id: 'b2', name: 'Ranger' })
+eq('Save on a look deleted from under the edit: a new look again', saveDialogFor('zz', PEDS), { kind: 'name' })
+eq('the save dialog\'s Save updates that look, with the name typed, cleaned',
+  saveRequest({ kind: 'save', id: 'b2', name: 'Ranger' }, 'update', ' Lone  Ranger '),
+  { op: 'update', id: 'b2', name: 'Lone Ranger' })
+eq('and its Save as new makes a new look by that name',
+  saveRequest({ kind: 'save', id: 'b2', name: 'Ranger' }, 'new', 'Ranger 2'), { op: 'new', name: 'Ranger 2' })
+eq('the name dialog only ever saves new', saveRequest({ kind: 'name' }, 'update', 'Night Owl'), { op: 'new', name: 'Night Owl' })
+eq('Save lit: a new look always (never saved), a saved one with changes, never while a write is in flight',
+  [saveEnabled(null, false, false), saveEnabled('a1', false, false), saveEnabled('a1', true, false),
+    saveEnabled(null, true, true)], [true, false, true, false])
 
-// ── SLIDE ────────────────────────────────────────────────────────────────────
-eq('slide: center tab to the right tab -> d = +1 ("slide out right ... slide in right")',
-  slideDir('stock', 'male'), 1)
-eq('slide: right to left -> d = -1', slideDir('female', 'stock'), -1)
-eq('slide: My peds is leftmost', [slideDir('peds', 'stock'), slideDir('stock', 'peds')], [1, -1])
-eq('slide: the same tab does not move', slideDir('male', 'male'), 0)
-eq('slide: the old body exits toward +d, the new enters from -d',
-  [slideEnds(1), slideEnds(-1)], [{ enter: -1, exit: 1 }, { enter: 1, exit: -1 }])
+// ── EXTRAS ───────────────────────────────────────────────────────────────────
+// "presented with a choice to add customizations for each category"
+eq('the core, always, in order', CORE_CATS, ['face', 'skin', 'hair', 'top', 'legs', 'shoes'])
+eq('the extras, today\'s optional rows', EXTRA_CATS,
+  ['hat', 'glasses', 'earrings', 'mask', 'vest', 'bag', 'watch', 'bracelet', 'decals', 'accessory', 'makeup', 'tattoos'])
+eq('a new look lists the core and nothing else', listedCats([]), [...CORE_CATS])
+eq('the extras on a look follow the core, in their own order, and only known ones',
+  listedCats(['tattoos', 'hat', 'nope', 'makeup']), [...CORE_CATS, 'hat', 'makeup', 'tattoos'])
+eq('"+ Add" offers every extra not on the look', addableExtras(['hat', 'tattoos']),
+  EXTRA_CATS.filter((c) => c !== 'hat' && c !== 'tattoos'))
+eq('"+ Add" is empty once all are on', addableExtras([...EXTRA_CATS]), [])
+eq('only an extra has a trash icon', [isExtra('hat'), isExtra('tattoos'), isExtra('face'), isExtra('shoes')],
+  [true, true, false, false])
+eq('a tattoo zone\'s camera category is the Tattoos panel\'s', [panelOf('tat_torso'), panelOf('hair'), panelOf(null)],
+  ['tattoos', 'hair', null])
+check('every category but Tattoos has a row its summary line reads',
+  [...CORE_CATS, ...EXTRA_CATS].filter((c) => c !== 'tattoos').every((c) => typeof PRIMARY_ROW[c] === 'string'))
+check('every category has a label', [...CORE_CATS, ...EXTRA_CATS].every((c) => typeof CAT_LABEL[c] === 'string'))
 
-// ── TABS ─────────────────────────────────────────────────────────────────────
-eq('tabs: My peds only once something is saved',
-  [tabsShown(0), tabsShown(2)],
-  [['stock', 'male', 'female'], ['peds', 'stock', 'male', 'female']])
-eq('tabs: My peds while the saved peds are still loading (owner, 2026-10-07)',
-  tabsShown(0, true), ['peds', 'stock', 'male', 'female'])
-eq('opening tab: My peds if any are saved, else Stock, and My peds while loading',
-  [openingTab(3), openingTab(0), openingTab(0, true)], ['peds', 'stock', 'peds'])
-eq('tabs: unsaved changes disable every other tab, each with the hover card',
-  tabOptions({ pedCount: 1, current: 'male', dirty: true, blocked: false }),
-  [{ id: 'peds', disabled: true, explained: true },
-    { id: 'stock', disabled: true, explained: true },
-    { id: 'male', disabled: false, explained: false },
-    { id: 'female', disabled: true, explained: true }])
-eq('tabs: no changes -> every tab open',
-  tabOptions({ pedCount: 0, current: 'stock', dirty: false, blocked: false }).map((o) => o.disabled),
-  [false, false, false])
-eq('tabs: a locked, loading or busy ped disables the others with no card',
-  tabOptions({ pedCount: 0, current: 'stock', dirty: false, blocked: true })
-    .map((o) => [o.id, o.disabled, o.explained]),
-  [['stock', false, false], ['male', true, false], ['female', true, false]])
-eq('tab labels are the owner\'s', TAB_LABEL,
-  { peds: 'My peds', stock: 'Stock peds', male: 'Custom (male)', female: 'Custom (female)' })
-eq('the hover card', LOCKED_TAB, 'Save or reset your changes first.')
-
-// ── FOLLOWING LUA (#28 review) ───────────────────────────────────────────────
-// The page moved to Custom (female) on the press; Lua refused it (the male
-// model still streaming in) and the page stayed there, drawing the male rows.
-eq('follow: a push that has seen the latest press is the truth (a refusal goes back)',
-  followTab('female', 'male', 7, 7), 'male')
-eq('follow: a push older than the latest press is not (the slide is not undone mid-flight)',
-  followTab('female', 'male', 6, 7), 'female')
-eq('follow: Edit -- Lua moves to the saved ped\'s tab with no press -- is followed',
-  followTab('peds', 'female', 3, 3), 'female')
-eq('follow: before this opening has asked anything, nothing is followed',
-  [followTab('stock', 'peds', null, -1), followTab('stock', 'peds', 4, -1)], ['stock', 'stock'])
+// ── SUMMARY AND PANELS ───────────────────────────────────────────────────────
 {
-  const male = { sex: 'm', editing: null, dirty: false, cat: null, rows: [] }
-  eq('a draft is drawn only under the Custom tab of its sex',
-    [editFor('female', male), editFor('male', male) === male, editFor('stock', male), editFor('peds', male), editFor('male', null)],
-    [null, true, null, null, null])
+  const rows = [
+    { k: 'shape', cat: 'face', kind: 'count', v: 3, n: 6, colors: 1 },
+    { k: 'e', cat: 'face', kind: 'count', v: 7, n: 31, colors: 1 },
+    { k: 'ff0', cat: 'face', kind: 'slider', v: 20, min: -100, max: 100, def: 0 },
+    { k: 'ff1', cat: 'face', kind: 'slider', v: 0, min: -100, max: 100, def: 0 },
+    { k: 'c2', cat: 'hair', kind: 'count', v: 9, n: 80, colors: 64, name: 'Buzz Cut', pal: 'hair', c: 12 },
+    { k: 'c11', cat: 'top', kind: 'count', v: 37, n: 392, colors: 3 },
+    { k: 'o4', cat: 'makeup', kind: 'count', v: 1, n: 76, colors: 1, pal: 'makeup', c: 0 },
+  ]
+  eq('a summary line: the game\'s name, and the color chip of a palette item',
+    summaryOf('hair', rows, 0), { text: 'Buzz Cut', chip: { pal: 'hair', i: 12 } })
+  eq('no name: its place in the row, never "Top 37"', summaryOf('top', rows, 0), { text: '37/392', chip: null })
+  eq('the face: the starting face', summaryOf('face', rows, 0).text, '3/6')
+  eq('an item that is none shows no chip (its color is on nothing)', summaryOf('makeup', rows, 0).chip, null)
+  eq('Tattoos: how many', summaryOf('tattoos', rows, 4), { text: '4', chip: null })
+  eq('a panel draws its category\'s rows -- never the starting face, never the features (Fine-tune has those)',
+    panelRows(rows, 'face').map((r) => r.k), ['e'])
+  eq('the features grouped by what they are, each once',
+    FACE_GROUPS.flatMap((g) => g.ks).sort(), Array.from({ length: 20 }, (_, i) => `ff${i}`).sort())
+  eq('the groups, in order', FACE_GROUPS.map((g) => g.id), ['nose', 'brows', 'cheeks', 'eyeslips', 'jaw', 'chin', 'neck'])
+  eq('a group\'s reset is lit while one of its sliders is off its default',
+    [groupMoved(rows, ['ff0', 'ff1']), groupMoved(rows, ['ff1'])], [true, false])
+  check('every group has a label', FACE_GROUPS.every((g) => typeof GROUP_LABEL[g.id] === 'string'))
 }
-eq('slider: its own value while touched, Lua\'s once the hold is over (a refused set goes back)',
-  [sliderShown(40, 100, 1000, 1000 + SLIDER_HOLD_MS - 1), sliderShown(40, 100, 1000, 1000 + SLIDER_HOLD_MS + 1)],
-  [40, 100])
 
-// ── THE CAMERA'S ANCHOR (#28 review) ─────────────────────────────────────────
-eq('anchor: Lua\'s category is the one lit', activeAnchor('face'), `#${anchorId('face')}`)
-check('anchor: with the camera home none is lit -- and never "", which Cloudscape reads as "track the window\'s scroll"',
-  activeAnchor(null) === '#' && activeAnchor(null) !== '' && !['face', 'shoes'].some((c) => activeAnchor(null) === `#${anchorId(c)}`))
-
-// ── PICTURES (#28 review) ────────────────────────────────────────────────────
+// ── SWATCHES ─────────────────────────────────────────────────────────────────
+// "hair and makeup colors as a swatch grid instead of "Next color""
 {
-  // An image as a browser loads one: the request goes out when `src` is set,
-  // with whatever `crossOrigin` was by then. Without it a canvas that draws
-  // the image is tainted and toDataURL throws -- every headshot was lost so.
+  const hair = { k: 'c2', cat: 'hair', kind: 'count', v: 9, n: 80, colors: 64, pal: 'hair', c: 12 }
+  const hi = { k: 'h1', cat: 'hair', kind: 'count', v: 5, n: 64, colors: 1, pal: 'hair' }
+  const lip = { k: 'o8', cat: 'makeup', kind: 'count', v: 1, n: 11, colors: 1, pal: 'makeup', c: 0 }
+  const top = { k: 'c11', cat: 'top', kind: 'count', v: 4, n: 392, colors: 3 }
+  eq('the color worn: an item\'s `c`; the highlight is its own value',
+    [swatchOf(hair), swatchOf(hi), swatchOf(top)], [12, 4, null])
+  eq('swatches for a palette item with colors, and always for the highlight; none for an overlay of none',
+    [swatchesShown(hair), swatchesShown(hi), swatchesShown(lip), swatchesShown(top)], [true, true, false, false])
+  eq('"Next color" only for an item with textures and no palette',
+    [nextColorShown(top), nextColorShown(hair), nextColorShown({ ...top, colors: 1 })], [true, false, false])
+  eq('a swatch sends its color: the item\'s by index (LOCKER2_COLOR), the highlight\'s as its place (LOCKER2_SET)',
+    [swatchRequest(hair, 30), swatchRequest(hi, 30)],
+    [{ cb: 'color', data: { k: 'c2', c: 30 } }, { cb: 'set', data: { k: 'h1', v: 31 } }])
+  eq('the palettes: #rrggbb only, 64 at most, nothing else is a palette',
+    [parsePal({ hair: ['#112233', 'red', 7, '#abcdef'], makeup: {} }), parsePal({ hair: [], makeup: [] }),
+      parsePal(null), parsePal({ hair: Array(80).fill('#000000') }).hair.length],
+    [{ hair: ['#112233', '#abcdef'], makeup: [] }, null, null, 64])
+  eq('a swatch\'s name', swatchLabel(12), 'Color 12')
+}
+
+// ── HOLD TO SCROLL ───────────────────────────────────────────────────────────
+// "next/last stays, with hold-to-scroll (a held arrow repeats, accelerating)"
+eq('a held arrow waits 400 ms, then repeats every 160 ms, each quicker',
+  [holdDelay(1), holdDelay(2), holdDelay(3), holdDelay(4)], [400, 160, 136, 116])
+check('the repeats never get quicker than 50 ms, and get there',
+  holdDelay(100) === HOLD_MIN_MS && Array.from({ length: 40 }, (_, i) => holdDelay(i + 1)).every((d, i, a) => i === 0 || d <= a[i - 1])
+  && HOLD_FIRST_MS === 400)
+eq('a tap is one step; held a second, seven; held three, past forty',
+  [holdSteps(100), holdSteps(399), holdSteps(1000), holdSteps(3000) > 40], [1, 1, 7, true])
+
+// ── HISTORY ──────────────────────────────────────────────────────────────────
+// Undo / Redo: "yes" (owner, 2026-10-13). Lua runs these; the mock does too.
+{
+  let h = newHistory()
+  h = record(h, 'A', 'c11', 1000)
+  h = record(h, 'B', 'c11', 1000 + COALESCE_MS - 1) // the same row again: one step
+  h = record(h, 'C', 'c4', 3000)
+  eq('touches of one row closer than the merge window are one step; another row is another',
+    h.past, ['A', 'C'])
+  const u1 = undoStep(h, 'D')
+  eq('Undo: the look before, the present kept for Redo', [u1.value, u1.h.past, u1.h.future], ['C', ['A'], ['D']])
+  const r1 = redoStep(u1.h, u1.value)
+  eq('Redo: forward again', [r1.value, r1.h.past, r1.h.future], ['D', ['A', 'C'], []])
+  const fresh = record(u1.h, 'C', 'p0', 9000)
+  eq('a new change after Undo clears Redo', fresh.future, [])
+  eq('nothing to undo or redo is no step', [undoStep(newHistory(), 'x'), redoStep(newHistory(), 'x')], [null, null])
+  const later = record(record(newHistory(), 'A', 'c11', 0), 'B', 'c11', COALESCE_MS + 1)
+  eq('the same row after the window is a new step', later.past, ['A', 'B'])
+  const blind = record(record(newHistory(), 'A', null, 0), 'B', null, 1)
+  eq('Randomize, an extra, a group\'s reset (no key) never merge', blind.past, ['A', 'B'])
+  let big = newHistory()
+  for (let i = 0; i < HISTORY_MAX + 5; i++) big = record(big, i, null, i)
+  eq('the history keeps the last 50', [big.past.length, big.past[0]], [50, 5])
+  // Undo then a slider drag of the row just undone: a step of its own.
+  const u2 = undoStep(record(newHistory(), 'A', 'ff0', 0), 'B')
+  eq('after Undo, the same row\'s next touch is a new step', record(u2.h, 'A', 'ff0', 10).past, ['A'])
+}
+
+// ── SHARE (the lag report, cause 3) ──────────────────────────────────────────
+{
+  const a = parseLocker2({ on: true, peds: [{ id: 'a', name: 'A', up: 1 }], edit: { sex: 'm', rows: [
+    { k: 'c11', cat: 'top', kind: 'count', v: 1, n: 9, colors: 1 },
+    { k: 'c4', cat: 'legs', kind: 'count', v: 1, n: 9, colors: 1 },
+  ] } })
+  const b = parseLocker2({ on: true, peds: [{ id: 'a', name: 'A', up: 1 }], edit: { sex: 'm', rows: [
+    { k: 'c11', cat: 'top', kind: 'count', v: 2, n: 9, colors: 1 },
+    { k: 'c4', cat: 'legs', kind: 'count', v: 1, n: 9, colors: 1 },
+  ] } })
+  const s = share(a, b)
+  check('a push that changed one row: that row is new, every other part is the same object',
+    s !== a && s.edit.rows[0] !== a.edit.rows[0] && s.edit.rows[0].v === 2 && s.edit.rows[1] === a.edit.rows[1]
+    && s.peds === a.peds && s.stock === a.stock)
+  check('a push that changed nothing is the same object', share(a, parseLocker2(JSON.parse(JSON.stringify(a)))) === a)
+  check('a list that grew is new', share([1, 2], [1, 2, 3]).length === 3)
+}
+
+// ── ROWS, TATTOOS, PICTURES, THE ENVELOPE ────────────────────────────────────
+eq('counter: "12/39"', counterText(12, 39), '12/39')
+eq('counter: 39 then next is 1, and 1 then last is 39', [wrapStep(39, 39, 1), wrapStep(1, 39, -1)], [1, 39])
+eq('slider: its own value while touched, Lua\'s once the hold is over',
+  [sliderShown(40, 100, 1000, 1000 + SLIDER_HOLD_MS - 1), sliderShown(40, 100, 1000, 1000 + SLIDER_HOLD_MS + 1)], [40, 100])
+eq('row names: an overlay\'s opacity is "<row> opacity"; a key with no word gets none',
+  [rowLabel('o2op'), rowLabel('c6'), rowLabel('c99'), rowLabel('o99op')], ['Eyebrows opacity', 'Shoes', null, null])
+eq('row names: the twenty face features', Object.keys(ROW_LABEL).filter((k) => /^ff\d+$/.test(k)).length, 20)
+{
+  const t = parseTats({ sex: 'm', zones: [
+    { z: 'torso', items: [{ i: 5, name: 'Skull' }, { i: 7 }, { i: 0, name: 'bad' }, 'junk'] },
+    { z: 'head', items: [{ i: 1, name: 'Star' }] }, { z: 'nope', items: [{ i: 3 }] },
+  ] })
+  eq('tattoo list: the body\'s zones in order, whole items', [t.zones.map((z) => z.z), t.zones[1].items],
+    [['head', 'torso'], [{ i: 5, name: 'Skull' }, { i: 7 }]])
+  const rows = [{ r: 1, z: 'torso', i: 5 }, { r: 2, z: 'torso', i: 9 }]
+  eq('max 10 a zone; Add off at 10 or once every tattoo has a row',
+    [TATTOOS_PER_ZONE, canAddTattoo(9, 76), canAddTattoo(10, 76), canAddTattoo(3, 3)], [10, true, false, false])
+  eq('a row\'s list leaves out what the zone\'s other rows hold',
+    tattooChoices([{ i: 5 }, { i: 7 }, { i: 9 }], rows, rows[0]).map((x) => x.i), [5, 7])
+  eq('a picker filters by the name alone', tattooFilter([{ value: '15', label: 'Dragon' }, { value: '5', label: 'Tattoo 2' }], '5')
+    .map((o) => o.value), [])
+  eq('a zone\'s rows and its redraw rule', [zoneRows(rows, 'torso').length, sameTatRows(rows, rows.map((r) => ({ ...r })))],
+    [2, true])
+  eq('the nameless numbered among themselves', tattooLabels([{ i: 1 }, { i: 2, name: 'Skull' }, { i: 3 }]).map(([, l]) => l),
+    ['Tattoo 1', 'Skull', 'Tattoo 2'])
+  eq('every zone has a word', TATTOO_ZONES.every((z) => typeof ZONE_LABEL[z] === 'string'), true)
+}
+{
   class StubImage {
     constructor() { this._co = null; this.corsAtRequest = undefined }
     set crossOrigin(v) { this._co = v }
@@ -181,383 +310,322 @@ check('anchor: with the camera home none is lit -- and never "", which Cloudscap
     set src(v) { this._src = v; this.corsAtRequest = this._co }
     get src() { return this._src }
   }
-  const img = canvasImage(new StubImage(), 'https://nui-img/pedmugshot_01/pedmugshot_01?v=1')
   eq('a canvas image is requested WITH CORS: crossOrigin set before src',
-    [img.corsAtRequest, img.src], ['anonymous', 'https://nui-img/pedmugshot_01/pedmugshot_01?v=1'])
+    canvasImage(new StubImage(), 'https://nui-img/x/x?v=1').corsAtRequest, 'anonymous')
+  const SHOT = `data:image/webp;base64,${'A'.repeat(100)}`
+  eq('a picture is a base64 image data URL and nothing else',
+    [imgOk(SHOT), imgOk('https://evil.example/x.png'), imgOk('javascript:alert(1)')], [true, false, false])
+  eq('a shot is stored only as webp within 8 KB',
+    [shotStorable(SHOT), shotStorable(`data:image/webp;base64,${'A'.repeat(11000)}`)], [true, false])
+  eq('data URL size counts decoded bytes', dataUrlBytes('data:image/webp;base64,AAAA'), 3)
+  eq('shots are asked for once, only for looks with no stored or cached picture',
+    needShots([{ id: 'a', up: 1 }, { id: 'b', up: 1, img: SHOT }, { id: 'c', up: 2 }], new Set([shotKey('c', 2)]), new Set()),
+    ['a'])
 }
-
-// ── NAMES ────────────────────────────────────────────────────────────────────
-eq('name: everything but A-Z, a-z and 0-9 is dropped as typed',
-  filterName('Night Owl_2!-ö'), 'NightOwl2')
-eq('name: capped at 24', filterName('A'.repeat(30)).length, 24)
-eq('name: 1 to 24 letters and digits, nothing else',
-  [nameOk(''), nameOk('a'), nameOk('A'.repeat(24)), nameOk('A'.repeat(25)), nameOk('a b'), nameOk('Zoë')],
-  [false, true, true, false, false, false])
-
-// ── DONE AND ESCAPE ──────────────────────────────────────────────────────────
-eq('Done with unsaved changes: the discard prompt, and nothing else',
-  doneSteps(true, false), [{ do: 'confirm' }])
-eq('Done after Discard: close, then the focus', doneSteps(true, true),
-  [{ do: 'close' }, { do: 'unfocus' }])
-eq('Done with nothing to lose: close, then the focus', doneSteps(false, false),
-  [{ do: 'close' }, { do: 'unfocus' }])
-eq('Escape: an open dialog alone, else Done', [escapeAction(true), escapeAction(false)], ['modal', 'done'])
-// #405's review: a walkthrough card waiting on the locker held Escape for the
-// whole screen, so a dialog no longer closed on it. Only Done is held.
-eq('Escape under a walkthrough card: a dialog still closes, Done is held',
-  [escapeAction(true, true), escapeAction(false, true)], ['modal', 'none'])
-// #28 review: Escape in an open tattoo picker brought up "Discard changes?",
-// or with nothing to lose closed the locker. An open dropdown has it first.
-eq('Escape with a dropdown open is the dropdown\'s, whatever else is up',
-  [escapeAction(false, false, true), escapeAction(true, false, true), escapeAction(false, true, true),
-    escapeAction(false, false, false)], ['pass', 'pass', 'pass', 'done'])
 {
-  const asked = []
-  const root = (hit) => ({ querySelector: (s) => { asked.push(s); return hit ? {} : null } })
-  const SEL = 'button[aria-haspopup][aria-expanded="true"]'
-  eq('a dropdown is open when the screen has a trigger with a popup, expanded; none without a screen',
-    [popupOpen(root(true)), popupOpen(root(false)), popupOpen(null), asked], [true, false, false, [SEL, SEL]])
-  // A BUTTON (found in the browser): a Select's filter is an input with
-  // aria-expanded="true" always, left in the page after its picker closes --
-  // on that, Escape would never close the locker again.
-  eq('that selector is OPEN_POPUP, and a trigger button only', OPEN_POPUP, SEL)
-}
-eq('dialog wording', [MODAL.name, MODAL.rename, MODAL.discard, BTN.keepEditing, BTN.discard],
-  ['Name your ped', 'Rename ped', 'Discard changes?', 'Keep editing', 'Discard'])
-
-// ── ROWS ─────────────────────────────────────────────────────────────────────
-eq('counter: "12/39"', counterText(12, 39), '12/39')
-eq('counter: 39 then next is 1, and 1 then last is 39',
-  [wrapStep(39, 39, 1), wrapStep(1, 39, -1), wrapStep(5, 39, 1)], [1, 39, 6])
-eq('"Next color" is the owner\'s button', BTN.nextColor, 'Next color')
-eq('anchors in the contract\'s order; none for a category with no rows; unknown last',
-  categoriesOf([{ cat: 'shoes' }, { cat: 'face' }, { cat: 'zzz' }, { cat: 'hair' }, { cat: 'face' }]),
-  ['face', 'hair', 'shoes', 'zzz'])
-eq('every category named', Object.keys(CAT_LABEL).length, 12)
-eq('row names: an overlay\'s companions are "<row> opacity" and "<row> color"',
-  [rowLabel('o2op'), rowLabel('o1col'), rowLabel('c6'), rowLabel('ff19')],
-  ['Eyebrows opacity', 'Facial hair color', 'Shoes', 'Neck thickness'])
-eq('row names: a key with no word gets none, never the key itself',
-  [rowLabel('c99'), rowLabel('o99op')], [null, null])
-eq('row names: the twenty face features', Object.keys(ROW_LABEL).filter((k) => /^ff\d+$/.test(k)).length, 20)
-
-// ── HEADSHOTS ────────────────────────────────────────────────────────────────
-const SHOT = `data:image/webp;base64,${'A'.repeat(100)}`
-eq('a picture is a base64 image data URL and nothing else',
-  [imgOk(SHOT), imgOk('https://evil.example/x.png'), imgOk('javascript:alert(1)'),
-    imgOk('data:text/html;base64,AAAA'), imgOk(42)], [true, false, false, false, false])
-eq('a shot is stored only as webp within 8 KB',
-  [shotStorable(SHOT), shotStorable(`data:image/webp;base64,${'A'.repeat(11000)}`),
-    shotStorable(`data:image/png;base64,${'A'.repeat(100)}`)], [true, false, false])
-eq('data URL size counts decoded bytes', dataUrlBytes('data:image/webp;base64,AAAA'), 3)
-eq('shots are asked for once, only for peds with no stored or cached picture',
-  needShots([{ id: 'a', up: 1 }, { id: 'b', up: 1, img: SHOT }, { id: 'c', up: 2 }, { id: 'd', up: 3 }],
-    new Set([shotKey('c', 2)]), new Set([shotKey('d', 3)])), ['a'])
-eq('a ped saved again needs a new picture', needShots([{ id: 'c', up: 9 }], new Set([shotKey('c', 2)]), new Set()), ['c'])
-
-// ── THE ENVELOPE ─────────────────────────────────────────────────────────────
-{
-  // An empty Lua list crosses the bridge as {}.
   const p = parseLocker2({ on: true, tab: 'nope', stock: {}, peds: {}, worn: { k: 'x', id: 1 }, edit: {
-    sex: 'f', editing: '', dirty: true, cat: 'hair',
+    sex: 'f', editing: '', dirty: true, cat: 'hair', undo: true, redo: 'yes',
+    extras: ['tattoos', 'nope', 'hat'],
     rows: [
-      { k: 'c6', cat: 'shoes', kind: 'count', v: 3, n: 39, colors: 4 },
-      { k: 'ff0', cat: 'face', kind: 'slider', v: 0, min: -100, max: 100, def: 0 },
-      { k: 'bad', cat: 'face', kind: 'count', v: 'x' },
-      'junk',
+      { k: 'c2', cat: 'hair', kind: 'count', v: 3, n: 80, colors: 64, name: 'Bun', pal: 'hair', c: 7 },
+      { k: 'c11', cat: 'top', kind: 'count', v: 3, n: 9, colors: 2, name: '', pal: 'paint', c: -1 },
+      { k: 'bad', cat: 'face', kind: 'count', v: 'x' }, 'junk',
     ],
   } })
-  eq('envelope: {} lists are empty lists', [p.stock, p.peds], [[], []])
-  eq('envelope: an unknown tab is Stock, a malformed worn is none', [p.tab, p.worn], ['stock', null])
-  eq('envelope: malformed rows dropped, whole rows kept', p.edit.rows.map((r) => r.k), ['c6', 'ff0'])
-  eq('envelope: flags are booleans, editing "" is none',
-    [p.on, p.busy, p.locked, p.fetching, p.edit.editing, p.edit.sex], [true, false, false, false, null, 'f'])
-  eq('envelope: a picture that is not an image data URL is dropped',
-    parseLocker2({ peds: [{ id: 'a', name: 'A', up: 1, img: 'https://x/y.png' }] }).peds, [{ id: 'a', name: 'A', up: 1 }])
-  eq('envelope: nothing at all is Season 1', parseLocker2(undefined).on, false)
-  eq('envelope: a draft with no category is the camera home -- no anchor, never Face by default',
-    parseLocker2({ edit: { sex: 'm', rows: [] } }).edit.cat, null)
-  eq('envelope: tabSeq is Lua\'s echo, null when absent',
-    [parseLocker2({ tabSeq: 3 }).tabSeq, parseLocker2({}).tabSeq], [3, null])
-  eq('envelope: an opacity of none is `off`, the rest are not',
-    parseLocker2({ edit: { sex: 'm', rows: [
-      { k: 'o1op', cat: 'hair', kind: 'slider', v: 100, min: 0, max: 100, def: 100, off: true },
-      { k: 'o2op', cat: 'hair', kind: 'slider', v: 100, min: 0, max: 100, def: 100 },
-    ] } }).edit.rows.map((r) => r.off === true), [true, false])
+  eq('envelope: {} lists are empty lists, an unknown tab is Stock, a malformed worn is none',
+    [p.stock, p.peds, p.tab, p.worn], [[], [], 'stock', null])
+  eq('envelope: the extras on the look, known ones only, in their order', p.edit.extras, ['hat', 'tattoos'])
+  eq('envelope: undo and redo are booleans', [p.edit.undo, p.edit.redo], [true, false])
+  eq('envelope: a row\'s name, palette and color only when they are one',
+    p.edit.rows.map((r) => [r.k, r.name ?? null, r.pal ?? null, r.c ?? null]),
+    [['c2', 'Bun', 'hair', 7], ['c11', null, null, null]])
+  eq('envelope: nothing at all is Season 1, and no extras', [parseLocker2(undefined).on,
+    parseLocker2({ edit: { sex: 'm', rows: [] } }).edit.extras], [false, []])
+}
+eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(Number.NaN)], [2, 1])
+
+// ── COPY ─────────────────────────────────────────────────────────────────────
+eq('the owner\'s words, verbatim', [TITLE.home, BTN.new, CARD.custom, CARD.stock, BTN.randomize, BTN.undo, BTN.redo,
+  SEX_LABEL.m, SEX_LABEL.f, BTN.saveAsNew, BTN.back, BTN.done],
+['My Looks', 'New', 'Custom', 'Stock GTA Looks', 'Randomize', 'Undo', 'Redo', 'Male', 'Female', 'Save as new', 'Back', 'Done'])
+eq('a look, never a ped, in the dialogs', [MODAL.name, MODAL.rename, MODAL.save, MODAL.discard, deleteTitle('Ranger')],
+  ['Name your look', 'Rename look', 'Save look', 'Discard changes?', 'Delete Ranger?'])
+{
+  const copy = read(join(L2, 'copy.ts'))
+  const strings = [...strip(copy).matchAll(/'([^'\n]*)'|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2])
+  const peds = strings.filter((s) => /\bpeds?\b/i.test(s))
+  check('no player-facing word says "ped"', peds.length === 0, peds.join(' | '))
+  for (const s of ["'+ Add'", "'Fine-tune'", "'More'", "'Name your look'", "'Save look'", "'Rename look'",
+    "'Rotate left'", "'Rotate right'", "'Turn around'", "'Zoom in'", "'Zoom out'", "'Reset view'", '`Color ${n}`',
+    "'Nose'", "'Eyes and lips'", "'Neck'", "'Skin'", "'Top'", "'Accessory'", "'Tattoos'", "'Cancel'",
+    "'Keep editing'", "'Discard'", '`Delete ${name}?`', '`${base} opacity`', '`Tattoo ${n}`']) {
+    const line = copy.split('\n').find((l) => l.includes(s))
+    check(`WRITTEN marker beside ${s}`, line !== undefined && line.includes('// WRITTEN (proposal for the owner)'))
+  }
+  eq('the camera buttons\' names', Object.values(CAM),
+    ['Rotate left', 'Rotate right', 'Turn around', 'Zoom in', 'Zoom out', 'Reset view'])
 }
 
-eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(14), zoomFor(Number.NaN)], [2, 1, 1])
-
-// ── TATTOOS (owner, 2026-10-11) ──────────────────────────────────────────────
-// "No cap on tattoos per ped, and yes whatever the game has include DLC sets."
+// ── CORNERS ("remember our Lobby UI has no rounded edges") ───────────────────
 {
-  const t = parseTats({ sex: 'm', zones: [
-    { z: 'torso', items: [{ i: 5, name: 'Skull' }, { i: 7 }, { i: 0, name: 'bad' }, 'junk', { i: 2.5 }, { i: 9, name: '' }] },
-    { z: 'head', items: [{ i: 1, name: 'Star' }] },
-    { z: 'nope', items: [{ i: 3 }] },
-    { z: 'lleg', items: {} },
-    { z: 'head', items: [{ i: 4 }] },
-  ] })
-  eq('tattoo list: the body\'s zones in order; unknown, empty and repeated zones dropped',
-    t.zones.map((z) => z.z), ['head', 'torso'])
-  eq('tattoo list: whole items kept, a name only when it is one', t.zones[1].items, [{ i: 5, name: 'Skull' }, { i: 7 }, { i: 9 }])
-  eq('tattoo list: not a sex, or nothing, is no list', [parseTats({ sex: 'x', zones: [] }), parseTats(null)], [null, null])
-  eq('tattoo anchors: none before the list has come, then the section and each zone it has',
-    [tattooCats(null), tattooCats(t)], [[], ['tattoos', 'tat_head', 'tat_torso']])
-  eq('tattoo anchors: an empty list has none', tattooCats({ sex: 'm', zones: [] }), [])
-  eq('a zone\'s anchor sits one level in; nothing else does',
-    [zoneOfCat('tat_head'), zoneOfCat('tat_rleg'), zoneOfCat('tattoos'), zoneOfCat('face'), zoneOfCat('tat_nope')],
-    ['head', 'rleg', null, null, null])
-  // THE ROWS (owner, 2026-10-12): "a list, starting empty, with add and remove
-  // buttons ... You can just make it max 10 per category."
-  const p = parseLocker2({ edit: { sex: 'm', rows: [], tats: [
-    { r: 1, z: 'torso', i: 5 }, { r: 2, z: 'torso', i: 9 }, { r: 3, z: 'head', i: 1 },
-    { r: 0, z: 'head', i: 2 }, { r: 4, z: 'nope', i: 3 }, { r: 5, z: 'head', i: 1.5 }, 'x', { r: 6, i: 4 },
-  ] } })
-  eq('envelope: whole tattoo rows kept in Lua\'s order; no id, no zone drawn or no tattoo dropped', p.edit.tats,
-    [{ r: 1, z: 'torso', i: 5 }, { r: 2, z: 'torso', i: 9 }, { r: 3, z: 'head', i: 1 }])
-  eq('envelope: no rows crosses as {} -- the list starts empty',
-    parseLocker2({ edit: { sex: 'f', rows: [], tats: {} } }).edit.tats, [])
-  const torsoRows = zoneRows(p.edit.tats, 'torso')
-  eq('a zone\'s rows, in Lua\'s order, and only its own', [torsoRows.map((r) => r.r), zoneRows(p.edit.tats, 'lleg')], [[1, 2], []])
-  eq('max 10 per zone', TATTOOS_PER_ZONE, 10)
-  eq('Add: lit below 10, off at 10 -- and off once every tattoo of the zone has a row',
-    [canAddTattoo(0, 76), canAddTattoo(9, 76), canAddTattoo(10, 76), canAddTattoo(11, 76), canAddTattoo(3, 3)],
-    [true, true, false, false, false])
-  // A ROW'S LIST ("attribute editor", 2026-10-12): the zone's tattoos, but
-  // none another row of the zone holds, so a zone never has one twice.
-  const torsoItems = [{ i: 5 }, { i: 7 }, { i: 9 }, { i: 11 }]
-  eq('a row\'s list: the zone\'s tattoos in order, its own kept, the other row\'s left out',
-    tattooChoices(torsoItems, torsoRows, torsoRows[0]).map((t) => t.i), [5, 7, 11])
-  eq('and the other row\'s list leaves out the first row\'s',
-    tattooChoices(torsoItems, torsoRows, torsoRows[1]).map((t) => t.i), [7, 9, 11])
-  eq('a zone\'s only row is offered every tattoo of the zone',
-    tattooChoices(torsoItems, [torsoRows[0]], torsoRows[0]).map((t) => t.i), [5, 7, 9, 11])
-  // #28 review: Cloudscape's own filter searched each option's value too, the
-  // tattoo's number in the list -- in Left arm (41 to 54) "5" listed Tattoo 5
-  // and Tattoo 10 to 14. The picker filters by the name alone.
-  const larm = Array.from({ length: 14 }, (_, k) => ({ value: String(41 + k), label: `Tattoo ${k + 1}` }))
-  eq('typing a digit finds names with it, never a number in the list',
-    tattooFilter(larm, '5').map((o) => o.label), ['Tattoo 5'])
-  eq('the name, any case, anywhere in it; nothing typed is the whole list', [
-    tattooFilter([{ value: '15', label: 'Dragon' }, { value: '2', label: 'Snake' }, { value: '3', label: 'Old Dragon' }], 'dRAg')
-      .map((o) => o.value),
-    tattooFilter(larm, '').length,
-    tattooFilter(larm, '41').length,
-  ], [['15', '3'], 14, 0])
-  eq('a zone redraws only when a row comes, goes, moves or changes its tattoo', [
-    sameTatRows(torsoRows, torsoRows.map((r) => ({ ...r }))),
-    sameTatRows(torsoRows, [torsoRows[0], { ...torsoRows[1], i: 7 }]),
-    sameTatRows(torsoRows, [torsoRows[0]]),
-    sameTatRows(torsoRows, [torsoRows[1], torsoRows[0]]),
-    sameTatRows(torsoRows, [torsoRows[0], { ...torsoRows[1], r: 8 }]),
-  ], [true, false, false, false, false])
-  eq('tattoo words', [TATTOOS, ZONE_LABEL.head, ZONE_LABEL.torso, ZONE_LABEL.larm, ZONE_LABEL.rarm, ZONE_LABEL.lleg,
-    ZONE_LABEL.rleg, tattooFallback(3), BTN.add, BTN.remove],
-  ['Tattoos', 'Head', 'Torso', 'Left arm', 'Right arm', 'Left leg', 'Right leg', 'Tattoo 3', 'Add', 'Remove'])
-  eq('every zone Lua sends has a word', TATTOO_ZONES.every((z) => typeof ZONE_LABEL[z] === 'string'), true)
-  // #28 review: the one tattoo the game has no text for (TAT_AW_000) sits last
-  // of Torso's hundreds, and read "Tattoo 326". The nameless are numbered
-  // among themselves.
-  const torso = [...Array.from({ length: 325 }, (_, k) => ({ i: k + 1, name: `N${k}` })), { i: 999 }]
-  eq('the one nameless tattoo at the foot of a zone is "Tattoo 1"', tattooLabels(torso).at(-1), [{ i: 999 }, 'Tattoo 1'])
-  eq('nameless ones count only themselves; named ones are the game\'s text',
-    tattooLabels([{ i: 1 }, { i: 2, name: 'Skull' }, { i: 3 }]).map(([t, l]) => `${t.i}:${l}`),
-    ['1:Tattoo 1', '2:Skull', '3:Tattoo 2'])
+  const typings = read(join(ROOT, 'node_modules', '@cloudscape-design', 'components', 'internal', 'generated', 'theming',
+    'index.d.ts'))
+  const radii = [...new Set([...typings.matchAll(/\b(borderRadius[A-Za-z]+)\??:/g)].map((m) => m[1]))]
+  const tokens = LOCKER_THEME.tokens
+  const round = radii.filter((k) => tokens[k] !== '0px')
+  check(`every radius token the installed Cloudscape has is 0px in the theme (${radii.length} tokens)`,
+    radii.length > 20 && round.length === 0, round.join(', '))
+  const css = strip(read(join(L2, 'lockerv2.css')))
+  check('the stylesheet squares what no token reaches: everything in the island, and the slider\'s thumb',
+    /\.br-cs \*,\s*\.br-cs \*::before,\s*\.br-cs \*::after \{\s*border-radius: 0 !important;\s*\}/.test(css)
+    && /\.br-cs input\[type='range'\]::-webkit-slider-thumb \{\s*border-radius: 0 !important;\s*\}/.test(css))
+  eq('the lobby\'s colors: the primary is cyan with the ink on it, the plate is Btn\'s default',
+    [tokens.colorBackgroundButtonPrimaryDefault, tokens.colorTextButtonPrimaryDefault,
+      tokens.colorBackgroundButtonNormalDefault, tokens.colorBorderButtonNormalDefault, tokens.borderWidthButton],
+    ['#22d3ee', '#04222a', 'rgba(32, 36, 50, 0.94)', 'rgba(255, 255, 255, 0.30)', '1px'])
+  check('hover is no new color (the lobby brightens instead)',
+    tokens.colorBackgroundButtonNormalHover === tokens.colorBackgroundButtonNormalDefault
+    && tokens.colorBackgroundButtonPrimaryHover === tokens.colorBackgroundButtonPrimaryDefault)
+  check('the lobby\'s gradient, Anton in capitals, the press travel and the hover brightening, on Cloudscape\'s buttons',
+    css.includes("background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%) !important;")
+    && /text-transform: uppercase !important;/.test(css)
+    && /transform: translateY\(1px\) scale\(0\.975\) !important;\s*filter: brightness\(0\.94\) !important;/.test(css)
+    && /filter: brightness\(1\.18\) !important;/.test(css))
+  const index = read(join(SRC, 'index.css'))
+  check('...which are the lobby\'s own numbers (index.css .plate and .btn)',
+    index.includes('linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.015) 46%)')
+    && index.includes('.btn:active { transform: translateY(1px) scale(0.975); filter: brightness(0.94); }')
+    && index.includes('.btn:hover  { filter: brightness(1.18); }'))
+}
+
+// ── THE HARNESS (bridge/mockLocker2.ts, Lua's stand-in) ──────────────────────
+register('data:text/javascript,' + encodeURIComponent(`
+export async function resolve(spec, ctx, next) {
+  try { return await next(spec, ctx) } catch (e) {
+    if ((spec.startsWith('./') || spec.startsWith('../')) && !/\\.[cm]?[jt]sx?$/.test(spec)) return next(spec + '.ts', ctx)
+    throw e
+  }
+}`))
+{
+  const timers = []
+  globalThis.window = { location: { search: '' }, setTimeout: (fn) => { timers.push(fn); return timers.length } }
+  const flush = () => { while (timers.length) timers.shift()() }
+  const { createLocker2Mock } = await import(pathToFileURL(join(SRC, 'bridge', 'mockLocker2.ts')).href)
+  const sent = []
+  const m = createLocker2Mock([{ id: 'street', name: 'Street' }], (env) => sent.push(env))
+  const last = () => [...sent].reverse().find((e) => e.k === 'locker2')?.d
+  const h = (name, d) => m.handle(`br/locker2/${name}`, d)
+  h('open')
+  check('open: the saved looks are fetched first (the loading marker)', last().fetching === true && last().peds.length === 0)
+  flush()
+  check('then they arrive, with spaces in a name', last().fetching === false && last().peds.some((p) => p.name === 'Ghost Rider'))
+  h('new', { sex: 'f', seq: 7 })
+  let e = last().edit
+  check('New: a female draft, numbered, no extras, unsaved, nothing to undo',
+    last().tab === 'female' && last().tabSeq === 7 && e.sex === 'f' && e.extras.length === 0 && e.dirty && !e.undo && !e.redo)
+  check('the core randomized: every core category has its rows, a starting face, a named or numbered item',
+    CORE_CATS.every((c) => e.rows.some((r) => r.cat === c)) && e.rows.some((r) => r.k === 'shape'))
+  const top0 = e.rows.find((r) => r.k === 'c11').v
+  h('step', { k: 'c11', d: 1 })
+  h('step', { k: 'c11', d: 1 })
+  e = last().edit
+  check('two quick steps of one row: one undo step', e.undo && e.rows.find((r) => r.k === 'c11').v !== top0)
+  h('undo')
+  e = last().edit
+  check('Undo puts the top back, and Redo is lit', e.rows.find((r) => r.k === 'c11').v === top0 && e.redo && !e.undo)
+  h('redo')
+  check('Redo goes forward again', last().edit.rows.find((r) => r.k === 'c11').v !== top0)
+  h('extra', { id: 'hat', on: true })
+  e = last().edit
+  check('+ Add: the hat is on the look, on its first item', e.extras.join() === 'hat' && e.rows.find((r) => r.k === 'p0').v === 2)
+  h('extra', { id: 'hat', on: false })
+  e = last().edit
+  check('its trash icon: off the look, and back to none', e.extras.length === 0 && e.rows.find((r) => r.k === 'p0').v === 1)
+  h('undo')
+  check('and Undo brings it back', last().edit.extras.join() === 'hat')
+  h('color', { k: 'c2', c: 40 })
+  check('a swatch sets that color', last().edit.rows.find((r) => r.k === 'c2').c === 40)
+  h('set', { k: 'ff3', v: 60 })
+  h('defaults', { ks: ['ff3'] })
+  check('a face group\'s reset puts its sliders back', last().edit.rows.find((r) => r.k === 'ff3').v === 0)
+  sent.length = 0
+  h('pal')
+  check('the palettes come once as a locker2pal, 64 colors each',
+    sent.some((x) => x.k === 'locker2pal' && x.d.hair.length === 64 && x.d.makeup.length === 64))
+  h('save', { op: 'new', name: 'Night Owl' })
+  flush()
+  e = last().edit
+  const owl = last().peds.find((p) => p.name === 'Night Owl')
+  check('Save, a new look: saved by name, now the look being edited, nothing unsaved', owl && e.editing === owl.id && !e.dirty)
+  h('step', { k: 'c4', d: 1 })
+  h('save', { op: 'update', id: owl.id, name: 'Night Owl 2' })
+  flush()
+  check('Save, a saved look: updated in place and renamed, no new look',
+    last().peds.filter((p) => p.name.startsWith('Night Owl')).map((p) => p.name).join() === 'Night Owl 2'
+    && !last().edit.dirty)
+  h('step', { k: 'c4', d: 1 })
+  h('save', { op: 'new', name: 'Owl Three' })
+  flush()
+  check('Save as new: a second look, the first untouched',
+    last().peds.some((p) => p.name === 'Owl Three') && last().peds.some((p) => p.name === 'Night Owl 2'))
+  h('leave', { seq: 8 })
+  check('Leave: no draft, numbered', last().edit === null && last().tabSeq === 8)
+  h('edit', { id: owl.id, seq: 9 })
+  check('Edit: the saved look\'s draft, its extras as worn', last().edit?.editing === owl.id && last().tabSeq === 9
+    && last().edit.extras.join() === 'hat')
 }
 
 // ── WIRING (source) ──────────────────────────────────────────────────────────
 {
+  const walk = (d) => readdirSync(d, { withFileTypes: true })
+    .flatMap((x) => (x.isDirectory() ? walk(join(d, x.name)) : [join(d, x.name)]))
   const app = read(join(SRC, 'App.tsx'))
   check('App.tsx renders Season 2\'s locker only when the flag is on, Season 1\'s otherwise',
     app.includes('<Page name="locker" show={focus === \'locker\'}>{locker2On ? <LockerV2Gate /> : <Locker />}</Page>'))
-  check('App.tsx routes the locker2 envelope through the parser',
-    app.includes("useNuiEvent('locker2',  (d) => dispatch().setLocker2(parseLocker2(d)))"))
-  check('App.tsx never imports the Cloudscape screen itself (it is a chunk)',
-    !/from '\.\/screens\/LockerV2'/.test(app))
-  const gate = read(join(SRC, 'screens', 'lockerv2', 'Gate.tsx'))
-  check('the screen is loaded as a chunk: lazy(import(\'../LockerV2\'))',
-    gate.includes("import('../LockerV2')") && /lazy\(load\)/.test(gate))
-  check('a chunk that fails or never loads gives the cursor back',
-    gate.includes('CB.LOCKER_FOCUS, { open: false }') && gate.includes('componentDidCatch') && gate.includes('LOAD_MS'))
+  check('App.tsx routes the locker2 envelope through the parser, and never imports the screen (a chunk)',
+    app.includes("useNuiEvent('locker2',  (d) => dispatch().setLocker2(parseLocker2(d)))")
+    && !/from '\.\/screens\/LockerV2'/.test(app))
+  check('the store shares what a push did not change',
+    read(join(SRC, 'store', 'index.ts')).includes('setLocker2: (locker2) => set((s) => ({ locker2: share(s.locker2, locker2) })),'))
+
+  const gate = read(join(L2, 'Gate.tsx'))
+  check('the chunk is still a lazy import, and a chunk that fails or never loads gives the cursor back',
+    gate.includes("import('../LockerV2')") && /lazy\(load\)/.test(gate)
+    && gate.includes('CB.LOCKER_FOCUS, { open: false }') && gate.includes('componentDidCatch') && gate.includes('LOAD_MS'))
+  check('the preloaded screen is drawn outright -- no Suspense, so no 300 ms reveal hold on the first open',
+    /Loaded = m\.default/.test(gate) && /const Ready = Loaded\s*if \(Ready\) return <Boundary><Ready \/><\/Boundary>/.test(gate))
+  check('once loaded: the sheet goes off, and the theme is built in idle time',
+    gate.includes('sheetLoaded()') && /idle\(\(\) => \{ m\.warmTheme\(\) \}\)/.test(gate))
+  const scope = read(join(L2, 'scope.ts'))
+  check('the theme is generated once a session and only inserted on open -- applyTheme rebuilt it every time',
+    !/\bapplyTheme\b/.test(strip(scope))
+    && /if \(themeCss === null\) themeCss = generateThemeStylesheet\(\{ theme: LOCKER_THEME \}\)/.test(scope)
+    && /node\.textContent = warmTheme\(\)/.test(scope) && /node\.remove\(\)/.test(scope))
+  check('the sheet, the mode and the theme go on and off together',
+    /holdSheet\(true\)\s*applyMode\(Mode\.Dark\)/.test(scope) && /applyMode\(Mode\.Light\)\s*holdSheet\(false\)/.test(scope))
+  const sheet = read(join(L2, 'sheet.ts'))
+  check('sheet.ts is in the main bundle with no imports, and disables the chunk\'s link while no screen is up',
+    !/^import /m.test(sheet) && /l\.disabled = users === 0/.test(sheet))
 
   const v2 = read(join(SRC, 'screens', 'LockerV2.tsx'))
-  for (const fn of ['doneSteps(', 'escapeAction(', 'saveVariant(', 'slideDir(', 'tabOptions(', 'openingTab(', 'slideEnds(',
-    'followTab(', 'editFor(']) {
-    check(`LockerV2.tsx asks model.ts's ${fn.slice(0, -1)}`, v2.includes(fn))
+  for (const fn of ['followView(', 'backSteps(', 'escapeAction(', 'saveDialogFor(', 'saveEnabled(', 'saveRequest(',
+    'useAfterPaint(']) {
+    check(`LockerV2.tsx asks ${fn.slice(0, -1)}`, v2.includes(fn))
   }
-  check('every tab request is numbered', /fetchNui\(CB\.LOCKER2_TAB, \{ tab: t, seq: tabRequests \}\)/.test(v2)
-    && (v2.match(/CB\.LOCKER2_TAB/g) ?? []).length === 1)
-  check('the page follows Lua on every push', /useEffect\(\(\) => \{\s*go\(followTab\(shownTab\.current, st\.tab, st\.tabSeq \?\? null, sent\.current\)\)\s*\}, \[st\]\)/.test(v2))
-  check('no draft is drawn by the tab alone', !/isCustom\(tab\) \? st\.edit/.test(v2))
-
-  const tabs = read(join(SRC, 'screens', 'lockerv2', 'Tabs.tsx'))
-  const toCat = /const toCat = \(cat: string\) => \{([\s\S]*?)\n  \}/.exec(tabs)?.[1] ?? ''
-  check('every category touch is sent; Lua decides whether the camera moves',
-    toCat.includes('fetchNui(CB.LOCKER2_CAT, { cat })') && !/edit\.cat/.test(toCat))
-  check('the anchor lit is activeAnchor(edit.cat)', tabs.includes('activeHref={activeAnchor(edit.cat)}'))
-
-  const rows = read(join(SRC, 'screens', 'lockerv2', 'Rows.tsx'))
-  check('a slider draws sliderShown(...) and is off when Lua says so',
-    rows.includes('value={shown}') && rows.includes('sliderShown(local, row.v, lastTouch.current, Date.now())')
-    && rows.includes("row.off === true"))
-
-  // EVERY IMAGE DRAWN TO A CANVAS GOES THROUGH canvasImage: in any file that
-  // draws one, no image has its src set by hand.
-  const walkSrc = (d) => readdirSync(d, { withFileTypes: true })
-    .flatMap((e) => (e.isDirectory() ? walkSrc(join(d, e.name)) : [join(d, e.name)]))
-  const drawers = walkSrc(SRC).filter((f) => /\.(tsx?)$/.test(f)).filter((f) => read(f).includes('drawImage('))
-  const bare = drawers.filter((f) => {
-    const t = read(f)
-    return /\.src\s*=(?!=)/.test(t) || (t.includes('new Image(') && !t.includes('canvasImage('))
-  })
-  check(`every image drawn to a canvas is asked for with CORS (${drawers.length} file(s) draw one)`,
-    drawers.length > 0 && bare.length === 0, bare.join(', '))
-
-  // A stored picture comes as a locker2shot with `img`, once, and is kept;
-  // the push no longer carries one (it goes out on every press).
-  const shots = read(join(SRC, 'screens', 'lockerv2', 'shots.ts'))
-  check('a stored picture from Lua is kept for the session, and only an image data URL',
-    v2.includes('keepShot(d.id, d.up, d.img)')
-    && /export function keepShot\([\s\S]*?!imgOk\(img\)\) return\s*cache\.set\(shotKey\(id, up\), img\)/.test(shots))
+  const pageFiles = [join(SRC, 'screens', 'LockerV2.tsx'), ...walk(L2).filter((f) => /\.tsx?$/.test(f))]
+  const pageSrc = pageFiles.map((f) => strip(read(f))).join('\n')
+  check('the open sends LOCKER2_OPEN alone: the page never sends LOCKER2_TAB (Lua answered a redundant one with a push)',
+    /useEffect\(\(\) => \{ void fetchNui\(CB\.LOCKER2_OPEN\) \}, \[\]\)/.test(v2) && !pageSrc.includes('CB.LOCKER2_TAB')
+    && !pageSrc.includes('CB.LOCKER2_RESET'))
+  check('New, Edit and Leave are numbered, and the view follows Lua on its draft and its echo',
+    v2.includes('void fetchNui(cb, { ...data, seq: requests })')
+    && v2.includes("ask(CB.LOCKER2_NEW, { sex })") && v2.includes("ask(CB.LOCKER2_EDIT, { id: p.id })")
+    && v2.includes("ask(CB.LOCKER2_LEAVE, {})")
+    && /setView\(\(v\) => followView\(v, hasDraft, tabSeq, sent\.current\)\)\s*\}, \[hasDraft, tabSeq\]\)/.test(v2))
   check('Done awaits `close` before it gives the focus back',
-    /await fetchNui\(CB\.LOCKER2_CLOSE\)[\s\S]{0,120}await fetchNui\(CB\.LOCKER_FOCUS, \{ open: false \}\)/.test(v2))
-  check('the locked tabs carry the hover card as disabledReason',
-    v2.includes('disabledReason: o.explained ? LOCKED_TAB : undefined'))
-  check('Escape is taken in the capture phase', v2.includes("window.addEventListener('keydown', onKey, true)"))
-  // #28 review: the capture-phase handler stopped Escape before a tattoo
-  // picker or the Save menu could close on it.
-  check('Escape asks for an open dropdown on the screen first, and leaves the key alone then',
-    /const act = escapeAction\(live\.current\.modal !== null, escapeHeld\(\), popupOpen\(screen\.current\)\)\s*if \(act === 'pass'\) return\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)/.test(v2)
-    && v2.includes('<div ref={screen} className="interactive fixed inset-0 z-50">')
-    && (v2.match(/e\.stopPropagation\(\)/g) ?? []).length === 1)
-  const CS = join(ROOT, 'node_modules', '@cloudscape-design', 'components')
-  const csRead = (...p) => { const f = join(CS, ...p); return existsSync(f) ? read(f) : '' }
-  const bt = csRead('internal', 'components', 'button-trigger', 'index.js')
-  const bdd = csRead('button-dropdown', 'internal.js')
-  const btn = csRead('button', 'internal.js')
-  check('the installed Cloudscape marks an open Select (and Multiselect) on its trigger button: aria-haspopup, aria-expanded',
-    csRead('select', 'parts', 'trigger.js').includes('React.createElement(ButtonTrigger, { ...triggerProps, id: id, ref: mergedRef, pressed: !!isOpen,')
-    && bt.includes("'aria-expanded': pressed,")
-    && bt.includes("'aria-haspopup': ariaHasPopup !== null && ariaHasPopup !== void 0 ? ariaHasPopup : 'listbox',")
-    && bt.includes('return (React.createElement("button", { ref: ref, ...attributes,'))
-  check('and an open ButtonDropdown (the Save menu) on its trigger button the same way',
-    bdd.includes('ariaExpanded: canBeOpened && isOpen,') && bdd.includes("ariaHaspopup: hasFiltering ? 'dialog' : true,")
-    && btn.includes("'aria-expanded': ariaExpanded,") && btn.includes("'aria-haspopup': ariaHaspopup,")
-    && btn.includes('tag: "button", componentName: "Button"'))
-  check('and a Select\'s filter is an input that is aria-expanded always -- why OPEN_POPUP is a button',
-    /'aria-expanded': true,\s*'aria-haspopup': 'listbox',/.test(csRead('select', 'parts', 'filter.js')))
+    /await fetchNui\(CB\.LOCKER2_CLOSE\)\s*else if \(s\.do === 'unfocus'\) await fetchNui\(CB\.LOCKER_FOCUS, \{ open: false \}\)/.test(v2))
+  check('Back with changes opens the discard prompt, and its Discard goes on',
+    v2.includes("if (steps[0]?.do === 'confirm') { setModal({ kind: 'discard' }); return }")
+    && v2.includes("case 'discard': back(true); break"))
+  check('the save dialog\'s two saves: an update by id, a new look by name',
+    v2.includes("saveRequest(m, choice === 'new' ? 'new' : 'update', name)"))
+  check('Escape: capture phase, an open dropdown first, then the dialog, then Back',
+    /const act = escapeAction\(live\.current\.view, live\.current\.modal !== null, escapeHeld\(\), popupOpen\(screen\.current\)\)\s*if \(act === 'pass'\) return/.test(v2)
+    && v2.includes("window.addEventListener('keydown', onKey, true)"))
+  check('Done (Back inside) keeps the walkthrough\'s anchor in every view', v2.includes('data-tut="locker-done"'))
+  const whole = pageFiles.filter((f) => /useUi\(\(s\) => s\.locker2\)/.test(read(f)))
+  check('no part of the screen subscribes to the whole locker2 push (each reads the fields it draws)',
+    whole.length === 0, whole.join(', '))
 
-  // THE TATTOOS SECTION'S WIRING.
-  check('the Custom tab asks for its sex\'s tattoo list once it is drawn',
-    /useEffect\(\(\) => \{ if \(sex !== null\) askTats\(sex\) \}, \[sex\]\)/.test(tabs))
-  check('its anchors follow the row categories, from the list',
-    tabs.includes('const cats = [...rowCats, ...tatCats]') && tabs.includes('const tatCats = tattooCats(tats)'))
-  check('the section draws Lua\'s rows, and a press moves the camera as a row\'s does',
-    tabs.includes('<TattooSection tats={tats} rows={edit.tats} disabled={disabled} onTouch={toCat} />'))
-  const tat = read(join(SRC, 'screens', 'lockerv2', 'Tattoos.tsx'))
-  // "dude why would we use a bajillion check boxes lol", then "This takes up
-  // wayyyy too much real estate ... perhaps we use the thing that's literally
-  // made for this - attribute editor" (owner, 2026-10-12).
-  check('no checkbox list', !/checkbox/i.test(tat))
-  check('no card list, no row arrows, no selection to keep',
-    !/<Cards|angle-left|angle-right|selectionType|RadioGroup|[sS]elected(Row|R)\b|setSelected|LOCKER2_TAT_STEP/.test(tat)
-    && (tat.match(/useState\b/g) ?? []).length === 2 && tat.includes("const [typed, setTyped] = useState('')"))
-  check('one AttributeEditor a zone, drawn for every zone of the list with that zone\'s rows',
-    (tat.match(/<AttributeEditor\b/g) ?? []).length === 1
-    && tat.includes('<ZoneEditor key={zone.z} zone={zone} rows={zoneRows(rows, zone.z)} disabled={disabled} onTouch={onTouch} />')
-    && tat.includes('items={rows}'))
-  check('under the zone\'s own heading and anchor',
-    /<div id=\{anchorId\(cat\)\} onPointerDown=\{\(\) => onTouch\(cat\)\}>\s*<SpaceBetween size="xs">\s*<Box variant="h5">\{ZONE_LABEL\[zone\.z\] \?\? ''\}<\/Box>\s*<AttributeEditor/
-      .test(tat))
-  check('compact: the section wears Cloudscape\'s compact density, and only the section',
-    tat.includes('className="lk2-tats awsui-compact-mode"')
-    && (read(join(SRC, 'screens', 'LockerV2.tsx')) + tabs).indexOf('awsui-compact-mode') === -1)
-  check('each item\'s one field is a Select, its Remove beside it on one line at every width',
-    /definition=\{\[\{\s*control: \(row: Locker2TatRow\) => \(\s*<TattooPick row=\{row\} rows=\{rows\} opts=\{opts\} byI=\{byI\} disabled=\{disabled\} \/>\s*\),\s*\}\]\}/.test(tat)
-    && /function TattooPick\([\s\S]*?\) \{\s*const \[typed, setTyped\] = useState\(''\)\s*return \(\s*<Select\b/.test(tat)
-    && (tat.match(/<Select\b/g) ?? []).length === 1
-    && tat.includes("const ROW_LAYOUT: readonly AttributeEditorProps.GridLayout[] = [{ rows: [[1]], removeButton: { width: 'auto' } }]")
-    && tat.includes('gridLayout={ROW_LAYOUT}'))
-  check('no label, no empty-state, helper, info or constraint text, no placeholder',
-    !/\blabel\s*:/.test(tat)
-    && !/\b(empty|additionalInfo|i18nStrings|placeholder|filteringPlaceholder|filteringAriaLabel|noMatch|ariaLabel|removeButtonAriaLabel)=/.test(tat)
-    && !/\b(description|info|constraintText|errorText|warningText)\s*:/.test(tat))
-  // #28 review: filteringType="auto" searched each option's value, the
-  // tattoo's number in the list. The page filters by name and hands Cloudscape
-  // the result.
-  check('the Select filters by name as typed (manual, the text from onLoadItems) and opens inside the island, off while the ped is held',
-    tat.includes('filteringType="manual"') && tat.includes('onLoadItems={({ detail }) => setTyped(detail.filteringText)}')
-    && tat.includes('expandToViewport={false}') && tat.includes('disabled={disabled}'))
-  const autoFilters = walkSrc(SRC).filter((f) => /\.tsx?$/.test(f)).filter((f) => /filteringType=["{']*auto/.test(read(f)))
-  check('no Cloudscape filter anywhere searches an option\'s value (no filteringType="auto")',
-    autoFilters.length === 0, autoFilters.join(', '))
-  check('its options are the zone\'s tattoos by the game\'s names, a nameless one numbered among the nameless, never a key',
-    tat.includes('const opts = useMemo(() => tattooLabels(zone.items).map(([t, label]) => ({')
-    && tat.includes('i: t.i, option: { value: String(t.i), label },'))
-  check('a row\'s Select offers none another row of its zone holds, and shows its own',
-    tat.includes('options={tattooFilter(tattooChoices(opts, rows, row).map((o) => o.option), typed)}')
-    && tat.includes('selectedOption={byI.get(row.i) ?? null}'))
-  check('choosing asks Lua to put that tattoo in that row, nothing decided here',
-    /const i = Number\(detail\.selectedOption\.value\)\s*if \(!Number\.isInteger\(i\) \|\| i === row\.i\) return\s*play\('ui\.select'\)\s*void fetchNui\(CB\.LOCKER2_TAT_SET, \{ r: row\.r, i \}\)/
-      .test(tat))
-  check('the editor\'s Add asks Lua for a row in its zone, and is off at the cap',
-    tat.includes('addButtonText={BTN.add}')
-    && /onAddButtonClick=\{\(\) => \{\s*play\('ui\.select'\)\s*void fetchNui\(CB\.LOCKER2_TAT_ADD, \{ z: zone\.z \}\)/.test(tat)
-    && tat.includes('disableAddButton={disabled || !canAddTattoo(rows.length, zone.items.length)}'))
-  check('the editor\'s own Remove asks Lua to take out that row, by its id',
-    tat.includes('removeButtonText={BTN.remove}') && !/customRowActions|isItemRemovable/.test(tat)
-    && /onRemoveButtonClick=\{\(\{ detail \}\) => \{\s*const row = rows\[detail\.itemIndex\]\s*if \(!row \|\| disabled\) return\s*play\('ui\.select'\)\s*void fetchNui\(CB\.LOCKER2_TAT_DEL, \{ r: row\.r \}\)/
-      .test(tat))
-  check('a push redraws a zone only when its rows or its state changed',
-    tat.includes("}, (a, b) => a.zone === b.zone && a.disabled === b.disabled && sameTatRows(a.rows, b.rows))"))
-  check('a press anywhere in a zone sends its category', tat.includes('onPointerDown={() => onTouch(cat)}'))
-  // THE FIRST REMOVE, LEVEL: Cloudscape pads row 1's Remove down by a label's
-  // height; with no label, the section's one rule takes that padding off.
-  const tatCss = read(join(SRC, 'screens', 'lockerv2', 'tattoos.css'))
-  check('the section loads its one rule, which levels the first Remove with its Select',
-    tat.includes("import './tattoos.css'")
-    && /\.lk2-tats \[class\*='awsui_remove-button-field-padding'\] \{\s*padding-block-start: 0 !important;\s*\}/.test(tatCss)
-    && tatCss.replace(/\/\*[\s\S]*?\*\//g, '').match(/\{/g)?.length === 1)
-  const aeCss = read(join(ROOT, 'node_modules', '@cloudscape-design', 'components', 'attribute-editor', 'styles.scoped.css'))
-  check('the installed Cloudscape still pads the first Remove with that class, by a label\'s height',
-    /\.awsui_remove-button-field-padding_\w+:not\(#\\9\) \{\s*padding-block-start: calc\(var\(--space-xxs-\w+, 4px\) \+ var\(--line-height-body-m-\w+, 20px\)\);\s*\}/
-      .test(aeCss))
-  check('the list arrives on its own envelope and is kept for the session',
-    v2.includes("useNuiEvent('locker2tats', (d) => keepTats(d))")
-    && /export function keepTats\(raw: unknown\): void \{\s*const t = parseTats\(raw\)/.test(
-      read(join(SRC, 'screens', 'lockerv2', 'tattooLists.ts'))))
+  const ed = read(join(L2, 'Editor.tsx'))
+  check('"+ Add" lists the extras not on the look and puts the one picked on, its panel open',
+    ed.includes('const addable = addableExtras(edit.extras)')
+    && /void fetchNui\(CB\.LOCKER2_EXTRA, \{ id: detail\.id, on: true \}\)\s*setChosen\(detail\.id\)/.test(ed))
+  check('an extra\'s trash icon takes it off', ed.includes('void fetchNui(CB.LOCKER2_EXTRA, { id: cat, on: false })')
+    && ed.includes('{extra && <IconBtn icon="remove" label={BTN.remove}'))
+  check('the list is the core then the extras on the look', ed.includes('const listed = edit ? listedCats(edit.extras) : []'))
+  check('Randomize, Undo and Redo ask Lua; Undo and Redo lit by the draft\'s history',
+    ed.includes('void fetchNui(CB.LOCKER2_RANDOM)') && ed.includes('disabled={blocked || !edit.undo}')
+    && ed.includes('void fetchNui(CB.LOCKER2_UNDO)') && ed.includes('disabled={blocked || !edit.redo}')
+    && ed.includes('void fetchNui(CB.LOCKER2_REDO)'))
+  check('a line pressed shows its panel and moves the camera', /setChosen\(cat\)\s*void fetchNui\(CB\.LOCKER2_CAT, \{ cat \}\)/.test(ed))
+  check('the face: starting faces, then "Fine-tune", then its groups, each with one reset',
+    ed.includes('<FaceTiles row={shape} disabled={disabled} />') && ed.includes('{BTN.fineTune}')
+    && ed.includes('{tune && FACE_GROUPS.map((g) => (') && ed.includes('void fetchNui(CB.LOCKER2_DEFAULTS, { ks })')
+    && ed.includes('<SliderRow key={r.k} row={r} disabled={disabled} onTouch={onTouch} bare />'))
+  check('the tattoo editors mount only once Tattoos is on and opened',
+    /if \(cat === TATTOOS_CAT\) \{\s*return tats \? <TattooSection/.test(ed) && !/<TattooSection/.test(v2))
+  check('the palettes are asked for when the editor opens', ed.includes('useEffect(() => { askPal() }, [])'))
 
-  const footer = read(join(SRC, 'screens', 'lockerv2', 'Footer.tsx'))
-  check('every Save menu opens inside the island (expandToViewport={false})',
-    (footer.match(/<ButtonDropdown/g) ?? []).length === 2
-    && (footer.match(/expandToViewport=\{false\}/g) ?? []).length === 2)
-  check('Done keeps the tutorial\'s anchor', footer.includes('data-tut="locker-done"'))
-  const modals = read(join(SRC, 'screens', 'lockerv2', 'Modals.tsx'))
-  check('dialogs render into the island (getModalRoot)', modals.includes('getModalRoot={getRoot}'))
+  const rows = read(join(L2, 'Rows.tsx'))
+  check('Last and Next repeat while held', rows.includes('<IconBtn icon="angle-left" label={BTN.last} disabled={disabled} hold')
+    && rows.includes('<IconBtn icon="angle-right" label={BTN.next} disabled={disabled} hold')
+    && rows.includes('const held = useHold(onPress, undefined, disabled)'))
+  check('a swatch sends its color through swatchRequest; a row draws swatches only when swatchesShown',
+    rows.includes('const req = swatchRequest(row, i)') && rows.includes('swatchesShown(row)')
+    && rows.includes('{nextColorShown(row) && ('))
+  check('every row is memoized', (rows.match(/= memo\(function /g) ?? []).length >= 3)
+  const hold = read(join(L2, 'hold.ts'))
+  check('a hold acts on the press, then after holdDelay(1), holdDelay(2) ...; the keyboard acts once',
+    hold.includes('delay: (n: number) => number = holdDelay') && /live\.current\(0\)\s*repeat\(1\)/.test(hold)
+    && /\}, delay\(n\)\)/.test(hold) && hold.includes('if (!disabled && e.detail === 0) live.current(0)'))
 
-  // Every WRITTEN line keeps its marker, so the owner can find each one.
-  const copy = read(join(SRC, 'screens', 'lockerv2', 'copy.ts'))
-  for (const s of ['Save or reset your changes first.', 'Name your ped', 'Rename ped', 'Discard changes?',
-    "'Cancel'", "'Replace'", "'Keep editing'", "'Discard'", "'Save as new'", '`Update ${name}`',
-    '`Replace ${name}?`', '`Delete ${name}?`', "'Skin tone'", "'Neck thickness'", "'Shoes'",
-    '`${base} opacity`', '`${base} color`', "'Tattoos'", "'Head'", "'Torso'", "'Left arm'", "'Right arm'",
-    "'Left leg'", "'Right leg'", '`Tattoo ${n}`', "'Add'", "'Remove'"]) {
-    const line = copy.split('\n').find((l) => l.includes(s))
-    check(`WRITTEN marker beside ${s}`, line !== undefined && line.includes('// WRITTEN (proposal for the owner)'))
-  }
+  const modals = read(join(L2, 'Modals.tsx'))
+  check('the name box filters as typed and confirms the cleaned name',
+    modals.includes('onChange={({ detail }) => setName(filterName(detail.value))}')
+    && modals.includes('const ready = !asksName || nameOk(cleanName(name))')
+    && modals.includes('onConfirm(modal, choice, cleanName(name))'))
+  check('"Save as new" is in the save dialog only', /\{m\?\.kind === 'save' && \(\s*<Button disabled=\{!ready\} onClick=\{\(\) => confirm\('new'\)\}>\{BTN\.saveAsNew\}<\/Button>/.test(modals))
+  check('dialogs render into the island', modals.includes('getModalRoot={getRoot}'))
 
-  // No global-styles CSS anywhere in the page.
-  const walk = (d) => readdirSync(d, { withFileTypes: true })
-    .flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]))
+  const home = read(join(L2, 'Home.tsx'))
+  check('My Looks: a card press wears it; Edit, Rename and Delete in its "..." menu, opening inside the island',
+    home.includes("void fetchNui(CB.LOCKER2_WEAR, { k: 'p', id: p.id })")
+    && /variant="icon"\s*ariaLabel=\{BTN\.more\}/.test(home) && home.includes("{ id: 'edit', text: BTN.edit },")
+    && home.includes("{ id: 'rename', text: BTN.rename },") && home.includes("{ id: 'delete', text: BTN.delete },")
+    && home.includes('expandToViewport={false}'))
+  const nl = read(join(L2, 'NewLook.tsx'))
+  check('New: Custom first and lit, its own Male / Female dropdown; Stock GTA Looks opens the roster',
+    nl.indexOf('CARD.custom') < nl.indexOf('CARD.stock') && nl.includes('lk2-choice is-default')
+    && nl.includes('options={SEX_OPTIONS}') && nl.includes("void fetchNui(CB.LOCKER2_WEAR, { k: 's', id })"))
+  const cam = read(join(L2, 'Camera.tsx'))
+  check('the camera: rotate is LOCKER_SPIN, held; turn, zoom and reset are LOCKER2_CAM; the wheel zooms',
+    cam.includes('void fetchNui(CB.LOCKER_SPIN, { delta })') && cam.includes("cam('turn')")
+    && cam.includes("cam('zoom', 1)") && cam.includes("cam('zoom', -1)") && cam.includes("cam('reset')")
+    && cam.includes("cam('zoom', e.deltaY < 0 ? 1 : -1)") && (cam.match(/ hold onPress=/g) ?? []).length === 2)
+  const tat = read(join(L2, 'Tattoos.tsx'))
+  check('a tattoo picker scrolls virtually, filters by name, and opens inside the island',
+    tat.includes('virtualScroll') && tat.includes('filteringType="manual"') && tat.includes('expandToViewport={false}'))
+  check('the tattoo zones keep their one rule (tattoos.css)', tat.includes("import './tattoos.css'")
+    && tat.includes('className="lk2-tats awsui-compact-mode"'))
+
+  // Every callback the page and the harness name is in bridge/types.ts.
+  const types = read(join(SRC, 'bridge', 'types.ts'))
+  const used = [...new Set([...pageSrc.matchAll(/CB\.(LOCKER2_[A-Z_]+)/g)].map((x) => x[1]))]
+  const missing = used.filter((k) => !new RegExp(`^\\s+${k}:\\s+'br/locker2/`, 'm').test(types))
+  check(`every LOCKER2 callback the page sends is declared (${used.length})`, used.length > 15 && missing.length === 0,
+    missing.join(', '))
+  const mock = read(join(SRC, 'bridge', 'mockLocker2.ts'))
+  const NEW = ['new', 'leave', 'random', 'undo', 'redo', 'extra', 'defaults', 'pal', 'cam']
+  const unplayed = NEW.filter((n) => !mock.includes(`case 'br/locker2/${n}':`))
+  check('the harness plays every new callback', unplayed.length === 0, unplayed.join(', '))
+  check('and its history is model.ts\'s, which the wiring round mirrors in Lua',
+    /draft\.hist = record\(draft\.hist, copySnap\(draft\.snap\), key, Date\.now\(\)\)/.test(mock)
+    && mock.includes('undoStep(draft.hist, copySnap(draft.snap))') && mock.includes('redoStep(draft.hist, copySnap(draft.snap))'))
+
+  // EVERY IMAGE DRAWN TO A CANVAS GOES THROUGH canvasImage.
+  const drawers = walk(SRC).filter((f) => /\.(tsx?)$/.test(f)).filter((f) => read(f).includes('drawImage('))
+  const bare = drawers.filter((f) => { const t = read(f); return /\.src\s*=(?!=)/.test(t) || (t.includes('new Image(') && !t.includes('canvasImage(')) })
+  check(`every image drawn to a canvas is asked for with CORS (${drawers.length} file(s))`, drawers.length > 0 && bare.length === 0,
+    bare.join(', '))
+  const autoFilters = walk(SRC).filter((f) => /\.tsx?$/.test(f)).filter((f) => /filteringType=["{']*auto/.test(read(f)))
+  check('no Cloudscape filter anywhere searches an option\'s value', autoFilters.length === 0, autoFilters.join(', '))
   const globals = walk(SRC).filter((f) => /\.(tsx?|css)$/.test(f))
     .filter((f) => /@cloudscape-design\/global-styles\/[\w-]+\.css/.test(read(f)))
   check('no global-styles stylesheet is imported', globals.length === 0, globals.join(', '))
 }
 
 // ── SEASON 1, UNTOUCHED ──────────────────────────────────────────────────────
-// "The existing Locker experience is our finished Season 1 product - make sure
-// that stays in and remains untouched" (owner, #28). Recorded at 4af6bb48.
 {
   const SEASON1_LOCKER = '1481bce0ecc72672c29e2c38c5b7cac2e3898f4a6e3f88a31c986476c90052e8'
   const got = createHash('sha256').update(read(join(SRC, 'screens', 'Locker.tsx'))).digest('hex')
@@ -573,7 +641,8 @@ if (!existsSync(OUT)) {
   check('assets/LockerV2.js and assets/LockerV2.css are built', existsSync(js) && existsSync(css))
   const indexCss = read(join(OUT, 'index.css'))
   const indexJs = read(join(OUT, 'index.js'))
-  check('the main stylesheet carries none of Cloudscape', !indexCss.includes('awsui'))
+  check('the main stylesheet carries none of Cloudscape, nor this screen\'s rules',
+    !indexCss.includes('awsui') && !indexCss.includes('lk2-'))
   check('the main bundle carries none of Cloudscape', !/awsui_[a-z]/.test(indexJs))
   check('the main bundle loads the chunk by name', indexJs.includes('LockerV2.js'))
 
@@ -581,12 +650,8 @@ if (!existsSync(OUT)) {
     const text = read(css).replace(/\/\*[\s\S]*?\*\//g, '')
     const bad = []
     const global = []
-    const ours = []
+    let ours = 0
     let rules = 0
-    // The element a selector styles is its last compound. `body.awsui-x {...}`
-    // names a Cloudscape class and still styles <body> -- the shape of
-    // global-styles -- so a scoped-looking selector whose subject is the page
-    // itself counts as global unless all it sets is custom properties.
     const subject = (s) => s.trim().split(/\s*[\s>+~]\s*(?![^(]*\))(?![^[]*\])/).pop() ?? ''
     const allowed = (sel, body) => {
       if (/^@font-face/.test(sel)) return false
@@ -595,20 +660,13 @@ if (!existsSync(OUT)) {
       if (sel.startsWith('@')) return false
       const declsOnlyVars = body.split(';').map((d) => d.trim()).filter(Boolean).every((d) => d.startsWith('--'))
       if (declsOnlyVars) return true
-      const parts = sel.split(',')
-      // `*` under a Cloudscape element (`.awsui_icon > svg *`) is scoped; a
-      // bare `*`, or html, body or :root as the subject, is the whole page.
+      const parts = sel.split(',').map((s) => s.trim())
+      // THIS SCREEN'S RULES: every selector under the island (`.br-cs `), a
+      // tattoo section (`.lk2-tats `) or the camera cluster (`.lk2-cam`).
+      if (parts.every((s) => /^\.(br-cs|lk2-tats)\s/.test(s) || /^\.lk2-cam\b/.test(s))) { ours++; return true }
       const isGlobal = (s) => /^(html|body|:root)(?![\w-])/.test(subject(s))
         || (/^\*/.test(subject(s)) && !/\.awsui[-_]/.test(s))
-      if (parts.some(isGlobal)) {
-        global.push(`${sel.slice(0, 100)} {${body.slice(0, 60)}`)
-        return false
-      }
-      // The Tattoos section's own rule (tattoos.css), inside the section only.
-      if (parts.every((s) => /^\.lk2-tats\s/.test(s.trim()))) {
-        ours.push(`${sel} {${body}}`)
-        return true
-      }
+      if (parts.some(isGlobal)) { global.push(`${sel.slice(0, 100)} {${body.slice(0, 60)}`); return false }
       return parts.every((s) => /\.awsui[-_]/.test(s))
     }
     const walkCss = (t) => {
@@ -630,17 +688,18 @@ if (!existsSync(OUT)) {
       }
     }
     walkCss(text)
-    check(`chunk CSS is Cloudscape's scoped rules only, and the Tattoos section's one (${rules} rules)`,
-      rules > 100 && bad.length === 0, bad.slice(0, 5).join('\n          '))
-    check('the Tattoos section\'s one rule ships in the chunk, and no other of ours',
-      ours.length === 1
-      && /^\.lk2-tats \[class\*=['"]?awsui_remove-button-field-padding['"]?\] \{padding-block-start:\s*0(px)?\s*!important;?\}$/.test(ours[0] ?? ''),
-      ours.join('\n          '))
-    check('and the class it takes the padding off is in the chunk, so it still applies',
-      /\.awsui_remove-button-field-padding_\w+:not\(#[^)]*\)\s*\{padding-block-start:/.test(text))
-    check('chunk CSS has no @font-face', !/@font-face/.test(text))
-    check('chunk CSS styles no html, body, :root or * (global-styles\' shape)', global.length === 0,
-      global.slice(0, 3).join('\n          '))
+    check(`chunk CSS is Cloudscape's scoped rules and this screen's, scoped to it (${rules} rules, ${ours} ours)`,
+      rules > 100 && ours > 30 && bad.length === 0, bad.slice(0, 5).join('\n          '))
+    check('chunk CSS has no @font-face, and styles no html, body, :root or bare *',
+      !/@font-face/.test(text) && global.length === 0, global.slice(0, 3).join('\n          '))
+    check('the square corners ship', /\.br-cs \*,\s*\.br-cs \*::?before,\s*\.br-cs \*::?after\s*\{\s*border-radius:\s*0\s*!important/.test(text))
+    // The classes our rules reach for are still the installed Cloudscape's:
+    // named on its elements, in the chunk's script.
+    const chunkJs = existsSync(js) ? read(js) : ''
+    for (const cls of ['awsui_button_', 'awsui_variant-normal_', 'awsui_variant-primary_', 'awsui_variant-link_',
+      'awsui_disabled_', 'awsui_labels_', 'awsui_header--text_', 'awsui_remove-button-field-padding']) {
+      check(`the chunk still names Cloudscape's ${cls}, which our stylesheet reaches for`, chunkJs.includes(cls))
+    }
   }
 }
 

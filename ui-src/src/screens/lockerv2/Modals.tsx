@@ -4,20 +4,25 @@ import Button from '@cloudscape-design/components/button'
 import Input, { type InputProps } from '@cloudscape-design/components/input'
 import Modal from '@cloudscape-design/components/modal'
 import SpaceBetween from '@cloudscape-design/components/space-between'
-import { BTN, MODAL, deleteTitle, replaceTitle } from './copy'
-import { filterName, nameOk } from './model'
+import { BTN, MODAL, deleteTitle } from './copy'
+import { cleanName, filterName, nameOk } from './model'
 
 /** The one dialog that can be up, and what it is about. */
 export type ModalState =
-  /** Name a new ped: "Upon clicking "Save" for any new ped creation, we should
-   *  prompt them to name the ped" (owner, #28). */
+  /** Save, a new look: "Upon clicking "Save" for any new ped creation, we
+   *  should prompt them to name the ped" (owner, #28). */
   | { kind: 'name' }
+  /** Save, a saved look: its name, Save (update) and Save as new ("Save
+   *  updates an existing look; "Save as new" lives in the save dialog",
+   *  owner, 2026-10-13). */
+  | { kind: 'save'; id: string; name: string }
   | { kind: 'rename'; id: string; name: string }
-  /** "Replace existing should confirm before overwriting yes" (owner, #28). */
-  | { kind: 'replace'; id: string; name: string }
   | { kind: 'delete'; id: string; name: string }
   /** "Clicking "back" should prompt the user about unsaved changes" (owner). */
   | { kind: 'discard' }
+
+/** Which of a dialog's confirms was pressed: a save dialog has two. */
+export type Choice = 'ok' | 'new'
 
 /**
  * LOCKER V2'S DIALOGS (#28), one at a time, rendered into the island.
@@ -26,20 +31,24 @@ export type ModalState =
  * wear the island's zoom and theme and fade with the page. They take no NUI
  * focus of their own -- the locker already holds it -- and Escape closes the
  * dialog alone (LockerV2.tsx's key handler), never the screen behind it.
+ *
+ * A NAME is letters, digits and single spaces (owner, 2026-10-12: "we need to
+ * allow spaces in the ped names"): filtered as typed (model.ts filterName),
+ * its ends trimmed when used, and the confirm lit only for one Lua would keep.
  */
 export function LockerModal({ modal, root, onClose, onConfirm }: {
   modal: ModalState | null
   root: HTMLElement | null
   onClose: () => void
-  /** The dialog's confirm, with the name typed when it asks for one. */
-  onConfirm: (m: ModalState, name: string) => void
+  /** A confirm, with the name typed (cleaned) when the dialog asks for one. */
+  onConfirm: (m: ModalState, choice: Choice, name: string) => void
 }) {
   const [name, setName] = useState('')
   const input = useRef<InputProps.Ref>(null)
   useEffect(() => {
     if (!modal) return
-    setName(modal.kind === 'rename' ? filterName(modal.name) : '')
-    if (modal.kind !== 'name' && modal.kind !== 'rename') return
+    setName(modal.kind === 'rename' || modal.kind === 'save' ? filterName(modal.name) : '')
+    if (modal.kind === 'delete' || modal.kind === 'discard') return
     // THE NAME BOX TAKES THE KEYBOARD. The dialog's own focus trap puts focus
     // on its first control as it opens, which is its close button -- so a
     // name typed straight away went nowhere and Enter closed the dialog. Once
@@ -64,11 +73,11 @@ export function LockerModal({ modal, root, onClose, onConfirm }: {
 
   if (!root) return null
 
-  const asksName = m?.kind === 'name' || m?.kind === 'rename'
-  const ready = !asksName || nameOk(name)
-  const confirm = () => {
+  const asksName = m?.kind === 'name' || m?.kind === 'rename' || m?.kind === 'save'
+  const ready = !asksName || nameOk(cleanName(name))
+  const confirm = (choice: Choice) => {
     if (!modal || !ready) return
-    onConfirm(modal, name)
+    onConfirm(modal, choice, cleanName(name))
   }
 
   let title = ''
@@ -76,8 +85,8 @@ export function LockerModal({ modal, root, onClose, onConfirm }: {
   let cancel: string = BTN.cancel
   switch (m?.kind) {
     case 'name': title = MODAL.name; ok = BTN.save; break
+    case 'save': title = MODAL.save; ok = BTN.save; break
     case 'rename': title = MODAL.rename; ok = BTN.rename; break
-    case 'replace': title = replaceTitle(m.name); ok = BTN.replace; break
     case 'delete': title = deleteTitle(m.name); ok = BTN.delete; break
     case 'discard': title = MODAL.discard; ok = BTN.discard; cancel = BTN.keepEditing; break
     default: break
@@ -90,14 +99,18 @@ export function LockerModal({ modal, root, onClose, onConfirm }: {
       getModalRoot={getRoot}
       removeModalRoot={keepRoot}
       closeAriaLabel={cancel}
-      size="small"
+      // The save dialog's three buttons on one line.
+      size={m?.kind === 'save' ? 'medium' : 'small'}
       disableContentPaddings={!asksName}
       header={title}
       footer={(
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
             <Button variant="link" onClick={onClose}>{cancel}</Button>
-            <Button variant="primary" disabled={!ready} onClick={confirm}>{ok}</Button>
+            {m?.kind === 'save' && (
+              <Button disabled={!ready} onClick={() => confirm('new')}>{BTN.saveAsNew}</Button>
+            )}
+            <Button variant="primary" disabled={!ready} onClick={() => confirm('ok')}>{ok}</Button>
           </SpaceBetween>
         </Box>
       )}
@@ -109,7 +122,7 @@ export function LockerModal({ modal, root, onClose, onConfirm }: {
           autoFocus
           ariaLabel={title}
           onChange={({ detail }) => setName(filterName(detail.value))}
-          onKeyDown={({ detail }) => { if (detail.key === 'Enter') confirm() }}
+          onKeyDown={({ detail }) => { if (detail.key === 'Enter') confirm('ok') }}
         />
       )}
     </Modal>

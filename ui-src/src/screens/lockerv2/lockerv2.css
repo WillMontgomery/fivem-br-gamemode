@@ -1,0 +1,508 @@
+/* LOCKER V2'S OWN RULES (#28, "My Looks"), shipped in the LockerV2 chunk beside
+   Cloudscape's CSS, live only while the locker is up (sheet.ts), and every one
+   scoped to the island (`.br-cs`) or a `lk2-` class of this screen.
+
+   "we need to tune the visual look to our buttons to match the rest of our
+   lobby UI ... colors, click animations, and gradients aren't quite right. And
+   corners - remember our Lobby UI has no rounded edges." (owner, 2026-10-13)
+
+   theme.ts sets what Cloudscape's tokens can: the lobby's colors and every
+   radius token at 0. This is the rest, taken from the lobby's own buttons
+   (ui/Btn.tsx, index.css `.plate` and `.btn`): the plates' top-lit gradient,
+   Anton in capitals with 0.1em of tracking, the press travel (1px down, 97.5%)
+   and the hover brightening, and the corners Cloudscape draws without a token.
+
+   Inside the island lengths are in em: one em there is one rem on screen
+   (LockerV2.tsx). The camera cluster stands outside it, in rem. */
+
+/* ── NO ROUNDED EDGES ────────────────────────────────────────────────────── */
+.br-cs *,
+.br-cs *::before,
+.br-cs *::after {
+  border-radius: 0 !important;
+}
+.br-cs input[type='range']::-webkit-slider-thumb {
+  border-radius: 0 !important;
+}
+
+/* ── CLOUDSCAPE'S BUTTONS, AS THE LOBBY'S ──────────────────────────────────
+   Cloudscape's own rules carry an id's weight (`:not(#\9)`), so what this
+   changes it changes with !important. The type is set on the button and
+   everything in it: Cloudscape resets text-transform and letter-spacing on
+   the label inside. */
+.br-cs [class*='awsui_button_'][class*='awsui_variant-normal_'],
+.br-cs [class*='awsui_button_'][class*='awsui_variant-primary_'] {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%) !important;
+  transition: transform 90ms cubic-bezier(0.22, 1, 0.36, 1), filter 120ms ease !important;
+}
+.br-cs [class*='awsui_button_'][class*='awsui_variant-normal_'],
+.br-cs [class*='awsui_button_'][class*='awsui_variant-normal_'] *,
+.br-cs [class*='awsui_button_'][class*='awsui_variant-primary_'],
+.br-cs [class*='awsui_button_'][class*='awsui_variant-primary_'] *,
+.br-cs [class*='awsui_button_'][class*='awsui_variant-link_'],
+.br-cs [class*='awsui_button_'][class*='awsui_variant-link_'] * {
+  font-family: 'Anton', 'Segoe UI', system-ui, sans-serif !important;
+  font-weight: 400 !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+}
+.br-cs [class*='awsui_button_'][class*='awsui_variant-normal_']:hover:not([class*='awsui_disabled_']),
+.br-cs [class*='awsui_button_'][class*='awsui_variant-primary_']:hover:not([class*='awsui_disabled_']) {
+  filter: brightness(1.18) !important;
+}
+.br-cs [class*='awsui_button_'][class*='awsui_variant-normal_']:active:not([class*='awsui_disabled_']),
+.br-cs [class*='awsui_button_'][class*='awsui_variant-primary_']:active:not([class*='awsui_disabled_']) {
+  transform: translateY(1px) scale(0.975) !important;
+  filter: brightness(0.94) !important;
+}
+.br-cs [class*='awsui_button_'][class*='awsui_disabled_'] {
+  opacity: 0.4 !important;
+}
+
+/* A dialog's title is Anton (theme.ts), and Anton is the lobby's capitals
+   face. */
+.br-cs [class*='awsui_header--text_'] {
+  font-weight: 400 !important;
+  letter-spacing: 0.02em !important;
+  text-transform: uppercase !important;
+}
+
+/* ── THE FRAME: heading, body, way out ───────────────────────────────────── */
+.br-cs .lk2-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  min-height: 2.6em;
+  padding-bottom: 1em;
+  flex: 0 0 auto;
+}
+.br-cs .lk2-title {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Anton', 'Segoe UI', system-ui, sans-serif;
+  font-weight: 400;
+  font-size: 2.2em;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #ffffff;
+}
+.br-cs .lk2-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.br-cs .lk2-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  padding-top: 1.5em;
+  flex: 0 0 auto;
+}
+.br-cs .lk2-wait {
+  display: flex;
+  justify-content: center;
+  padding-top: 2em;
+}
+
+/* ── THE LOBBY'S PLATE, FOR THIS SCREEN'S OWN CONTROLS ───────────────────── */
+.br-cs .lk2-card,
+.br-cs .lk2-tile,
+.br-cs .lk2-line,
+.br-cs .lk2-choice,
+.br-cs .lk2-icon,
+.br-cs .lk2-face {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%),
+    rgba(32, 36, 50, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #ffffff;
+}
+.br-cs .lk2-card.is-worn,
+.br-cs .lk2-tile.is-on,
+.br-cs .lk2-line.is-on,
+.br-cs .lk2-choice.is-default {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%),
+    rgba(12, 58, 72, 0.94);
+  border-color: #22d3ee;
+}
+.br-cs .lk2-face.is-on {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%),
+    #22d3ee;
+  border-color: #67e8f9;
+  color: #04222a;
+}
+/* A button that is all of its plate: no box of its own. */
+.br-cs .lk2-card-main,
+.br-cs .lk2-line-main,
+.br-cs .lk2-choice-main {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+/* ── MY LOOKS ────────────────────────────────────────────────────────────── */
+.br-cs .lk2-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-content: start;
+  gap: 0.75em;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.5em;
+}
+.br-cs .lk2-card {
+  position: relative;
+  min-width: 0;
+}
+.br-cs .lk2-card-main {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+.br-cs .lk2-card-shot {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: rgba(6, 8, 14, 0.6);
+}
+.br-cs .lk2-card-shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.br-cs .lk2-card-name {
+  display: block;
+  padding: 0.55em 0.65em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.br-cs .lk2-card-mark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  padding: 0.2em;
+  background: #22d3ee;
+  color: #04222a;
+  pointer-events: none;
+}
+.br-cs .lk2-card-ring {
+  position: absolute;
+  top: 0.4em;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.br-cs .lk2-card-menu {
+  position: absolute;
+  top: 0.2em;
+  right: 0.2em;
+  background: rgba(6, 8, 14, 0.72);
+}
+
+/* ── NEW ─────────────────────────────────────────────────────────────────── */
+.br-cs .lk2-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1em;
+}
+.br-cs .lk2-choice {
+  display: flex;
+  flex-direction: column;
+  min-height: 10em;
+}
+.br-cs .lk2-choice-main {
+  display: flex;
+  align-items: flex-end;
+  flex: 1 1 auto;
+  width: 100%;
+  padding: 1em;
+}
+.br-cs .lk2-choice-title {
+  font-family: 'Anton', 'Segoe UI', system-ui, sans-serif;
+  font-size: 1.7em;
+  line-height: 1.05;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.br-cs .lk2-choice-sub {
+  padding: 0 1em 1em;
+}
+
+/* ── STOCK GTA LOOKS ─────────────────────────────────────────────────────── */
+.br-cs .lk2-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 0.5em;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.5em;
+}
+.br-cs .lk2-tile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  min-width: 0;
+  padding: 0.75em 0.9em;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+.br-cs .lk2-tile-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.br-cs .lk2-tile.is-on {
+  color: #22d3ee;
+}
+
+/* ── THE EDITOR ──────────────────────────────────────────────────────────── */
+.br-cs .lk2-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75em;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.br-cs .lk2-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+  flex: 0 0 auto;
+}
+.br-cs .lk2-cols {
+  display: flex;
+  gap: 1em;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.br-cs .lk2-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  flex: 0 0 36%;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 0.35em;
+}
+.br-cs .lk2-line {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+.br-cs .lk2-line .lk2-icon {
+  border-width: 0 0 0 1px;
+  height: auto;
+}
+.br-cs .lk2-line-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6em;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.6em 0.75em;
+}
+.br-cs .lk2-line-label {
+  flex: 0 0 auto;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.br-cs .lk2-line-sum {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  min-width: 0;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.9em;
+}
+.br-cs .lk2-line.is-on .lk2-line-sum {
+  color: rgba(255, 255, 255, 0.85);
+}
+.br-cs .lk2-line-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.br-cs .lk2-chip {
+  flex: 0 0 auto;
+  width: 0.9em;
+  height: 0.9em;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+}
+.br-cs .lk2-add {
+  padding-top: 0.4em;
+}
+.br-cs .lk2-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 0.5em;
+}
+.br-cs .lk2-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1em;
+}
+.br-cs .lk2-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+.br-cs .lk2-row-label,
+.br-cs .lk2-group-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.85em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.br-cs .lk2-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em;
+}
+.br-cs .lk2-count {
+  min-width: 5.5ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.br-cs .lk2-caption {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.85em;
+}
+.br-cs .lk2-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 2.15em;
+  height: 2.15em;
+  padding: 0;
+}
+.br-cs .lk2-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+.br-cs .lk2-slider-track {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* No -100 and 100 under every slider: the handle says where it is, and a
+   face group has seven of them (Cloudscape draws them as `labels`). */
+.br-cs .lk2-slider [class*='awsui_labels_'] {
+  display: none !important;
+}
+
+/* The palette: every color the game has for the row, the worn one ringed. */
+.br-cs .lk2-swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(1.15em, 1fr));
+  gap: 0.2em;
+}
+.br-cs .lk2-swatch {
+  aspect-ratio: 1 / 1;
+  min-height: 1.15em;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+.br-cs .lk2-swatch:hover {
+  outline: 1px solid #ffffff;
+}
+.br-cs .lk2-swatch.is-on {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid #22d3ee;
+  outline-offset: 1px;
+}
+.br-cs .lk2-swatch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The face: the starting faces, then the groups behind Fine-tune. */
+.br-cs .lk2-faces {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.35em;
+}
+.br-cs .lk2-face {
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-family: 'Anton', 'Segoe UI', system-ui, sans-serif;
+  font-size: 1.25em;
+}
+.br-cs .lk2-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding-top: 0.75em;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.br-cs .lk2-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+}
+
+/* ── THE CAMERA CLUSTER (outside the island, in rem) ─────────────────────── */
+.lk2-cam {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.lk2-cam .lk2-cam-btn {
+  --plate-fill: rgba(32, 36, 50, 0.94);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  color: #ffffff;
+}
+.lk2-cam .lk2-cam-btn svg {
+  width: 1.4rem;
+  height: 1.4rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}

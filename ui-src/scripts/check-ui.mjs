@@ -2929,6 +2929,89 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R38  The Season 2 Locker has no rounded edges (#28, "My Looks").
+//
+// Owner, 2026-10-13: "And corners - remember our Lobby UI has no rounded
+// edges." Cloudscape rounds nearly everything it draws, so the locker's theme
+// (lockerv2/theme.ts) sets its radius tokens to 0 and lockerv2.css squares
+// what no token reaches. This holds the screen's own sources to it:
+//
+//   A RADIUS IN THE SCREEN -- a `border-radius` or `borderRadius` anywhere in
+//     screens/LockerV2.tsx or screens/lockerv2/ that is not 0 (a round chip,
+//     a pill, a softened card);
+//   A RADIUS TOKEN LEFT ROUND -- a `borderRadius...` token in theme.ts that is
+//     not '0px';
+//   THE BLANKET GONE -- lockerv2.css without its rule squaring everything in
+//     the island (`.br-cs *` and its ::before/::after).
+//
+// test-lockerv2.mjs also reads the installed Cloudscape's token list and fails
+// if a radius token is missing from the theme.
+//
+// IT CAN FAIL. Put `border-radius: 50%` on a swatch, set borderRadiusButton to
+// '4px', or drop the `.br-cs *` rule.
+// ---------------------------------------------------------------------------
+{
+  const V2 = join(SRC, 'screens', 'LockerV2.tsx')
+  const inLocker2 = (f) => f === V2 || rel(f).startsWith('src/screens/lockerv2/')
+  for (const f of files.filter(inLocker2)) {
+    const src = stripComments(read(f))
+    for (const m of src.matchAll(/(?:border-radius|borderRadius[A-Za-z]*)\s*:\s*([^;,\n}]+)/g)) {
+      const v = m[1].replace(/!important/, '').trim().replace(/^['"]|['"]$/g, '')
+      if (/^0(px|em|rem|%)?$/.test(v)) continue
+      fail('R38 square-corners', rel(f), `rounds a corner (${m[0].trim()}): the lobby's UI has no rounded edges (#28).`)
+    }
+  }
+  const css = join(SRC, 'screens', 'lockerv2', 'lockerv2.css')
+  if (!existsSync(css) || !/\.br-cs \*,\s*\.br-cs \*::before,\s*\.br-cs \*::after \{\s*border-radius: 0 !important;/.test(stripComments(read(css)))) {
+    fail('R38 square-corners', 'src/screens/lockerv2/lockerv2.css',
+      'missing its `.br-cs *, ::before, ::after { border-radius: 0 !important }` -- Cloudscape rounds what no token reaches (#28).')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R39  The Season 2 Locker opens fast (#28, the lag report of 2026-10-13).
+//
+// "we've got a bit of a slow UI lag when opening Locker v2 - can you smooth
+// that out?" (owner). Measured: 85% of a repeat open was Cloudscape's
+// applyTheme regenerating a 44 KB stylesheet on every mount; the first open
+// waited ~300 ms more on a lazy component that suspended although its chunk
+// was preloaded; and every push redrew the whole screen because it read the
+// whole `locker2` object. Each fix has a shape a later edit could undo:
+//
+//   applyTheme BACK -- any file of the screen calls Cloudscape's applyTheme
+//     (scope.ts builds the sheet once with generateThemeStylesheet);
+//   A WHOLE-PUSH SUBSCRIPTION -- `useUi((s) => s.locker2)` in the screen;
+//   THE GATE SUSPENDING AGAIN -- Gate.tsx no longer renders the module its
+//     preload resolved before it falls back to Suspense;
+//   A CHATTY OPEN -- the screen sending LOCKER2_TAB, which Lua answered with a
+//     full push of its own on every open.
+//
+// IT CAN FAIL. Swap warmTheme for applyTheme in scope.ts, read `s.locker2` in
+// the Editor, or drop `if (Ready) return` from Gate.tsx.
+// ---------------------------------------------------------------------------
+{
+  const V2 = join(SRC, 'screens', 'LockerV2.tsx')
+  const inLocker2 = (f) => f === V2 || rel(f).startsWith('src/screens/lockerv2/')
+  for (const f of files.filter((x) => inLocker2(x) && /\.tsx?$/.test(x))) {
+    const src = stripComments(read(f))
+    if (/\bapplyTheme\s*\(/.test(src)) {
+      fail('R39 locker-open', rel(f), 'calls applyTheme, which rebuilds the 44 KB theme on every open: warmTheme() builds it once (#28 lag).')
+    }
+    if (/useUi\(\s*\(\s*s\s*\)\s*=>\s*s\.locker2\s*\)/.test(src)) {
+      fail('R39 locker-open', rel(f), 'subscribes to the whole `locker2` push, so every press redraws everything: read the fields it draws (#28 lag).')
+    }
+    if (/CB\.LOCKER2_TAB\b/.test(src)) {
+      fail('R39 locker-open', rel(f), 'sends LOCKER2_TAB, which Lua answers with a full push: the open sends LOCKER2_OPEN alone (#28 lag).')
+    }
+  }
+  const gate = join(SRC, 'screens', 'lockerv2', 'Gate.tsx')
+  if (!existsSync(gate) || !/if \(Ready\) return <Boundary><Ready \/><\/Boundary>/.test(stripComments(read(gate)))) {
+    fail('R39 locker-open', 'src/screens/lockerv2/Gate.tsx',
+      'does not draw the preloaded screen outright: React.lazy suspends on the first open and React holds the reveal ~300 ms (#28 lag).')
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

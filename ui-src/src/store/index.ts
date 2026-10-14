@@ -21,6 +21,7 @@ import type {
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 import { chatAfterState } from './chatClear'
+import { share } from '../screens/lockerv2/model'
 import type { ImpactRow } from '../hud/impactRows'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
@@ -1147,7 +1148,10 @@ export const useUi = create<UiState>((set, get) => {
     set({ settings })
   },
   setLocker: (locker) => set({ locker }),
-  setLocker2: (locker2) => set({ locker2 }),
+  // A push that changed one row hands every other part back as the same
+  // object (Locker v2's model.ts share), so the screen's narrow selectors
+  // and memoized rows redraw only what moved (#28, the lag report).
+  setLocker2: (locker2) => set((s) => ({ locker2: share(s.locker2, locker2) })),
   setProgress: (progress) => set({ progress }),
   awardXp: (xpAward) => set({ xpAward }),
   setEarned: (earned) => set({ earned, earnedStaged: false }),

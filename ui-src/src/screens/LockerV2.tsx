@@ -1,42 +1,51 @@
-import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion, type Variants } from 'framer-motion'
-import Box from '@cloudscape-design/components/box'
-import SegmentedControl from '@cloudscape-design/components/segmented-control'
-import Spinner from '@cloudscape-design/components/spinner'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import Button from '@cloudscape-design/components/button'
 import { useUi } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
+import type { Locker2Ped } from '../bridge/types'
 import { useNuiEvent } from '../bridge/useNuiEvent'
 import { play } from '../audio/cues'
-import { LOCKED_TAB, TAB_LABEL } from './lockerv2/copy'
+import { BTN, TITLE } from './lockerv2/copy'
 import {
-  doneSteps, editFor, escapeAction, followTab, isCustom, openingTab, popupOpen, saveVariant, slideDir,
-  slideEnds, tabOptions, tabsShown, type Tab,
+  backSteps, escapeAction, followView, popupOpen, saveDialogFor, saveEnabled, saveRequest, type View,
 } from './lockerv2/model'
-import { useCloudscapeScope, useIslandZoom, usePortalZoom } from './lockerv2/scope'
+import { useAfterPaint, useCloudscapeScope, useIslandZoom, usePortalZoom } from './lockerv2/scope'
 import { keepShot, takeShot } from './lockerv2/shots'
 import { keepTats } from './lockerv2/tattooLists'
-import { CustomTab, PedsTab, StockTab } from './lockerv2/Tabs'
-import { Footer } from './lockerv2/Footer'
-import { LockerModal, type ModalState } from './lockerv2/Modals'
+import { keepPal } from './lockerv2/palette'
+import { CameraStage } from './lockerv2/Camera'
+import { Editor } from './lockerv2/Editor'
+import { Home, type CardAction } from './lockerv2/Home'
+import { NewChoice, StockList } from './lockerv2/NewLook'
+import { LockerModal, type Choice, type ModalState } from './lockerv2/Modals'
 import { escapeHeld } from '../tutorial/lockGuard'
+import './lockerv2/lockerv2.css'
+
+export { warmTheme } from './lockerv2/scope'
 
 /**
- * LOCKER V2 (#28): Season 2's locker. Season 1's is screens/Locker.tsx, the
- * finished product, untouched; App.tsx picks between them on the `locker2`
- * envelope's `on`, which is BR.Season.has('locker2').
+ * LOCKER V2 (#28): Season 2's locker, "My Looks". Season 1's is
+ * screens/Locker.tsx, the finished product, untouched; App.tsx picks between
+ * them on the `locker2` envelope's `on`, which is BR.Season.has('locker2').
  *
- * The owner's picture, in his words: "a segmented control component at the top
- * where they have the options of "Stock peds", "Custom (male)" and "Custom
- * (female)" - any non-selected tab must be disabled while unsaved changes are
- * present. Selecting a disabled tab must show a hover card explaining why it's
- * disabled." Then My peds once anything is saved; the edited ped's name under
- * the control; the body sliding toward the tab picked; Save and Reset pinned
- * where Done sits; and Done asking before it throws changes away.
+ * THE OWNER'S FLOW (2026-10-12/13, recorded on #28): "let's get rid of the
+ * top left/right select bar, and move to a new flow". Four views, each with
+ * its heading at the top and its way out at the bottom left:
+ *
+ *   MY LOOKS   the saved looks as cards (lockerv2/Home.tsx); New at the top;
+ *              Done closes the locker.
+ *   NEW        Custom (the default, with a Male / Female dropdown) and Stock
+ *              GTA Looks (lockerv2/NewLook.tsx); Back.
+ *   STOCK      the stock roster, worn on a press; Back to New.
+ *   EDITOR     Randomize / Undo / Redo, the summary list and one category's
+ *              panel (lockerv2/Editor.tsx); Back, which asks if unsaved, and
+ *              Save, which opens the save dialog.
  *
  * THE RIGHT OF THE SCREEN IS STILL THE PED, as in Season 1: the panel and its
- * scrim take the left, and a drag anywhere else turns the character
- * (LOCKER_SPIN, reused).
+ * scrim take the left, a drag anywhere else turns the character, the wheel
+ * zooms, and the camera cluster stands just right of the ped
+ * (lockerv2/Camera.tsx).
  *
  * THE ISLAND. Cloudscape draws in px; this interface is in rem. Everything
  * Cloudscape renders sits inside one element zoomed by root px / 14 (contract
@@ -44,204 +53,155 @@ import { escapeHeld } from '../tutorial/lockGuard'
  * reaches it. Inside the island lengths are in em -- the island's font size is
  * 1rem / z, so one em there is one rem on screen -- because rem inside a zoom
  * is counted twice. The island clips its overflow: that is the bound
- * Cloudscape's Save menu measures its room against.
+ * Cloudscape's dropdowns measure their room against.
  *
- * LUA OWNS EVERYTHING DRAWN. Rows, the worn ped, the saved list: the page
+ * LUA OWNS EVERYTHING DRAWN. Rows, the worn look, the saved list: the page
  * asks (LOCKER2_* callbacks) and renders what comes back. The one thing it
- * moves ahead of Lua is the tab, so the slide starts on the press; each
- * request is numbered, and once a push says Lua has seen the latest, the page
- * shows Lua's tab (model.ts followTab) -- a refusal takes it back, and Edit's
- * move to the saved ped's tab is followed the same way.
+ * moves ahead of Lua is the view, so the editor opens on the press; each
+ * request that starts or ends a draft is numbered, and once a push says Lua
+ * has seen the latest, Lua's draft decides (model.ts followView).
+ *
+ * IT OPENS FAST (the lag report, #28, 2026-10-13): the theme is built once
+ * and only inserted (scope.ts), the preloaded chunk is drawn without
+ * suspending (Gate.tsx), the chunk's stylesheet is off while the locker is
+ * shut (sheet.ts), the open sends LOCKER2_OPEN alone, the screen subscribes
+ * to the few fields it draws, and the views' bodies mount a frame after the
+ * frame around them (useAfterPaint) so the fade-in plays.
  */
 
-/** The page's LOCKER2_TAB requests, numbered across every opening, so a push
- *  from an earlier opening can never pass for an answer to this one. */
-let tabRequests = 0
-
-/** The slide: transform and opacity only (contract section 5, check-ui R7). */
-const SLIDE: Variants = {
-  enter: (d: -1 | 0 | 1) => ({ x: `${slideEnds(d).enter * 14}%`, opacity: 0 }),
-  center: { x: '0%', opacity: 1 },
-  exit: (d: -1 | 0 | 1) => ({ x: `${slideEnds(d).exit * 14}%`, opacity: 0 }),
-}
+/** The page's numbered requests (LOCKER2_NEW, _EDIT, _LEAVE), across every
+ *  opening, so a push from an earlier opening can never pass for an answer to
+ *  this one. */
+let requests = 0
 
 export default function LockerV2() {
   useCloudscapeScope()
   const z = useIslandZoom()
   usePortalZoom(z)
+  const ready = useAfterPaint()
 
-  const st = useUi((s) => s.locker2)
-  const fetching = st.fetching === true
-  const [tab, setTab] = useState<Tab>(() => openingTab(st.peds.length, fetching))
-  const [dir, setDir] = useState<-1 | 0 | 1>(0)
+  // THE FIELDS THIS FRAME DRAWS, AND NO MORE: a push redraws it only when
+  // one of them moves. The views read their own.
+  const hasDraft = useUi((s) => s.locker2.edit != null)
+  const dirty = useUi((s) => s.locker2.edit?.dirty === true)
+  const editing = useUi((s) => s.locker2.edit?.editing ?? null)
+  const tabSeq = useUi((s) => s.locker2.tabSeq ?? null)
+  const busy = useUi((s) => s.locker2.busy === true)
+  const blocked = useUi((s) => s.locker2.locked === true || s.locker2.loading != null || s.locker2.busy === true)
+  const peds = useUi((s) => s.locker2.peds)
+
+  const [view, setView] = useState<View>('home')
   const [modal, setModal] = useState<ModalState | null>(null)
   const [modalRoot, setModalRoot] = useState<HTMLDivElement | null>(null)
 
-  const shownTab = useRef(tab)
-  /** This opening's latest LOCKER2_TAB; -1 until it has sent one. */
+  /** This opening's latest numbered request; -1 until it has sent one. */
   const sent = useRef(-1)
-  const go = (t: Tab) => {
-    const cur = shownTab.current
-    if (cur === t) return
-    shownTab.current = t
-    setDir(slideDir(cur, t))
-    setTab(t)
-  }
-  const request = (t: Tab) => {
-    tabRequests++
-    sent.current = tabRequests
-    void fetchNui(CB.LOCKER2_TAB, { tab: t, seq: tabRequests })
-  }
-  const ask = (t: Tab) => {
-    go(t)
-    request(t)
+  const ask = (cb: typeof CB.LOCKER2_NEW | typeof CB.LOCKER2_EDIT | typeof CB.LOCKER2_LEAVE,
+    data: Record<string, unknown>) => {
+    requests++
+    sent.current = requests
+    void fetchNui(cb, { ...data, seq: requests })
   }
 
-  // OPEN: Lua pushes the state and cleans and dries the ped ("Physically clean
-  // and dry the ped using natives when they enter the new locker UI", owner),
-  // then shows the ped for the tab this page opens on.
-  useEffect(() => {
-    void (async () => {
-      await fetchNui(CB.LOCKER2_OPEN)
-      request(shownTab.current)
-    })()
-  }, [])
+  // OPEN: LOCKER2_OPEN, and nothing else. Lua pushes the state and cleans and
+  // dries the ped ("Physically clean and dry the ped using natives when they
+  // enter the new locker UI", owner).
+  useEffect(() => { void fetchNui(CB.LOCKER2_OPEN) }, [])
 
-  // LUA'S TAB, once it has seen this page's latest request: a refusal goes
-  // back, Edit goes to the saved ped's Custom tab.
+  // LUA'S DRAFT, once it has seen this page's latest request.
   useEffect(() => {
-    go(followTab(shownTab.current, st.tab, st.tabSeq ?? null, sent.current))
-  }, [st])
-
-  // My peds went away under the player (the last one deleted, or the fetch
-  // answered none): Stock, as the locker would have opened on.
-  const shown = tabsShown(st.peds.length, fetching)
-  useEffect(() => {
-    if (!shown.includes(tab)) ask('stock')
-  })
+    setView((v) => followView(v, hasDraft, tabSeq, sent.current))
+  }, [hasDraft, tabSeq])
 
   // A headshot is ready in Lua: a texture to draw, or a stored picture.
   useNuiEvent('locker2shot', (d) => {
     if (d?.img !== undefined) keepShot(d.id, d.up, d.img)
     else takeShot(d?.id, d?.txd)
   })
-
-  // A sex's tattoo list, the once it is asked for (lockerv2/tattooLists.ts).
+  // A sex's tattoo list, and the color palettes, each the once it is asked for.
   useNuiEvent('locker2tats', (d) => keepTats(d))
+  useNuiEvent('locker2pal', (d) => keepPal(d))
 
-  const edit = editFor(tab, st.edit)
-  const dirty = edit?.dirty === true
-  const busy = st.busy === true
-  const blocked = st.locked === true || !!st.loading || busy
-  const editingName = edit?.editing ? st.peds.find((p) => p.id === edit.editing)?.name ?? null : null
-
-  // DONE, in model.ts's order: ask first if there is anything to lose; then
-  // `close` (Lua discards the draft and puts the worn ped back), and only once
-  // Lua has answered, the cursor back.
-  const done = (confirmed: boolean) => {
-    const steps = doneSteps(dirty, confirmed)
+  // BACK, in model.ts's order: ask first if there is anything to lose; in the
+  // editor LOCKER2_LEAVE; on My Looks `close` (Lua discards any draft and
+  // puts the worn look back), and only once Lua has answered, the cursor back.
+  const back = (confirmed: boolean) => {
+    const steps = backSteps(view, dirty, confirmed)
     if (steps[0]?.do === 'confirm') { setModal({ kind: 'discard' }); return }
     play('ui.back')
     void (async () => {
       for (const s of steps) {
-        if (s.do === 'close') await fetchNui(CB.LOCKER2_CLOSE)
+        if (s.do === 'leave') { setView('home'); ask(CB.LOCKER2_LEAVE, {}) }
+        else if (s.do === 'view') setView(s.to)
+        else if (s.do === 'close') await fetchNui(CB.LOCKER2_CLOSE)
         else if (s.do === 'unfocus') await fetchNui(CB.LOCKER_FOCUS, { open: false })
       }
     })()
   }
 
-  // ESCAPE closes the open dialog alone, else it is Done. Capture phase, so it
-  // is ours before Cloudscape's own handlers or the lobby's pause key see it --
-  // except while a dropdown is open (a tattoo picker, the Save menu): then it
-  // is the dropdown's, and Cloudscape closes it (#28 review).
+  // ESCAPE closes the open dialog alone, else it is the view's Back. Capture
+  // phase, so it is ours before Cloudscape's own handlers or the lobby's pause
+  // key see it -- except while a dropdown is open (a tattoo picker, a card's
+  // menu, "+ Add"): then it is the dropdown's, and Cloudscape closes it.
   const screen = useRef<HTMLDivElement>(null)
-  const live = useRef({ modal, done })
-  live.current = { modal, done }
+  const live = useRef({ modal, back, view })
+  live.current = { modal, back, view }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      const act = escapeAction(live.current.modal !== null, escapeHeld(), popupOpen(screen.current))
+      const act = escapeAction(live.current.view, live.current.modal !== null, escapeHeld(), popupOpen(screen.current))
       if (act === 'pass') return
       e.preventDefault()
       e.stopPropagation()
       if (act === 'modal') { setModal(null); return }
-      if (act === 'done') live.current.done(false)
+      if (act === 'back') live.current.back(false)
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
-  const confirmModal = (m: ModalState, name: string) => {
+  const confirmModal = (m: ModalState, choice: Choice, name: string) => {
     setModal(null)
     play('ui.select')
     switch (m.kind) {
-      case 'name': void fetchNui(CB.LOCKER2_SAVE, { op: 'new', name }); break
+      case 'name': void fetchNui(CB.LOCKER2_SAVE, saveRequest({ kind: 'name' }, 'new', name)); break
+      case 'save': void fetchNui(CB.LOCKER2_SAVE, saveRequest(m, choice === 'new' ? 'new' : 'update', name)); break
       case 'rename': void fetchNui(CB.LOCKER2_RENAME, { id: m.id, name }); break
-      case 'replace': void fetchNui(CB.LOCKER2_SAVE, { op: 'replace', id: m.id }); break
       case 'delete': void fetchNui(CB.LOCKER2_DELETE, { id: m.id }); break
-      case 'discard': done(true); break
+      case 'discard': back(true); break
     }
   }
 
-  // Drag the empty side to turn the ped, exactly as Season 1 does.
-  const dragging = useRef(false)
-  const lastX = useRef(0)
-  const onDown = (e: React.PointerEvent) => {
-    dragging.current = true
-    lastX.current = e.clientX
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* no capture */ }
-  }
-  const onMove = (e: React.PointerEvent) => {
-    if (!dragging.current) return
-    const dx = e.clientX - lastX.current
-    lastX.current = e.clientX
-    if (dx !== 0) void fetchNui(CB.LOCKER_SPIN, { delta: dx * 0.4 })
-  }
-  const onUp = (e: React.PointerEvent) => {
-    dragging.current = false
-    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* already gone */ }
-  }
+  const onCard = useCallback((p: Locker2Ped, a: CardAction) => {
+    play('ui.select')
+    if (a === 'edit') { setView('edit'); ask(CB.LOCKER2_EDIT, { id: p.id }) }
+    else if (a === 'rename') setModal({ kind: 'rename', id: p.id, name: p.name })
+    else setModal({ kind: 'delete', id: p.id, name: p.name })
+    // `ask` and `setView` are this screen's own; nothing else here changes.
+  }, [])
 
-  const options = tabOptions({
-    pedCount: st.peds.length, fetching, current: tab, dirty, blocked,
-  }).map((o) => ({
-    id: o.id,
-    text: TAB_LABEL[o.id],
-    disabled: o.disabled,
-    disabledReason: o.explained ? LOCKED_TAB : undefined,
-  }))
+  const title = view === 'edit'
+    ? peds.find((p) => p.id === editing)?.name ?? null
+    : TITLE[view]
 
-  let body: React.ReactNode
-  if (tab === 'stock') {
-    body = <StockTab st={st} z={z} />
-  } else if (tab === 'peds') {
-    body = fetching
-      ? <div style={{ display: 'flex', justifyContent: 'center', paddingTop: '2em' }}><Spinner size="large" /></div>
-      : (
-        <PedsTab
-          st={st}
-          blocked={blocked}
-          onEdit={(p) => { void fetchNui(CB.LOCKER2_EDIT, { id: p.id }) }}
-          onCreate={() => ask('male')}
-          onRename={(p) => setModal({ kind: 'rename', id: p.id, name: p.name })}
-          onDelete={(p) => setModal({ kind: 'delete', id: p.id, name: p.name })}
-        />
+  let body: React.ReactNode = null
+  if (ready) {
+    if (view === 'home') body = <Home blocked={blocked} onAction={onCard} />
+    else if (view === 'new') {
+      body = (
+        <NewChoice blocked={blocked}
+          onCustom={(sex) => { setView('edit'); ask(CB.LOCKER2_NEW, { sex }) }}
+          onStock={() => setView('stock')} />
       )
-  } else {
-    body = <CustomTab edit={edit} disabled={blocked} />
+    } else if (view === 'stock') body = <StockList />
+    else body = <Editor blocked={blocked} />
   }
 
   return (
     <div ref={screen} className="interactive fixed inset-0 z-50">
-      <div
-        className="absolute inset-0 cursor-ew-resize"
-        onPointerDown={onDown}
-        onPointerMove={onMove}
-        onPointerUp={onUp}
-        onPointerCancel={onUp}
-      />
-      {/* Season 1's scrim, wider for the anchor column: the left for the
-          panel, the rest for the character. */}
+      <CameraStage />
+      {/* Season 1's scrim, wider for the panel: the left for the panel, the
+          rest for the character. */}
       <div
         className="absolute inset-y-0 left-0 w-[56%] pointer-events-none"
         style={{
@@ -249,59 +209,47 @@ export default function LockerV2() {
                     + 'rgba(6,8,14,0.86) 60%, rgba(6,8,14,0) 100%)',
         }}
       />
-      <div className="absolute inset-y-0 left-0 w-[42rem] max-w-[60vw] px-[3.5rem] py-[3rem] flex flex-col pointer-events-none">
+      <div className="absolute inset-y-0 left-0 w-[44rem] max-w-[60vw] px-[3.5rem] py-[3rem] flex flex-col pointer-events-none">
         <div
-          className="br-cs flex min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto"
+          className="br-cs lk2 flex min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto"
           style={{ zoom: z, fontSize: `calc(1rem / ${z})` }}
         >
-          <div style={{ flex: '0 0 auto' }}>
-            <SegmentedControl
-              selectedId={tab}
-              options={options}
-              onChange={({ detail }) => {
-                const t = detail.selectedId as Tab
-                if (t === tab) return
-                play('ui.select')
-                ask(t)
-              }}
-            />
+          {/* A new look has no name yet: no heading, and the editor's strip
+              takes its place. */}
+          {title !== null && <div className="lk2-head">
+            <h2 className="lk2-title">{title}</h2>
+            {view === 'home' && (
+              <Button variant="primary" disabled={blocked}
+                onClick={() => { play('ui.select'); setView('new') }}>
+                {BTN.new}
+              </Button>
+            )}
+          </div>}
+          <div className="lk2-body">{body}</div>
+          <div className="lk2-foot">
+            {/* DONE'S TUTORIAL ANCHOR STEPS OUT OF THE ZOOM. The guided first
+                run draws its ring from `[data-tut="locker-done"]`'s box, and
+                on CEF 103 a box inside a zoomed element is reported in that
+                element's px. So the anchor wears 1/z inside the island -- a
+                true zoom of 1 -- and the button inside it wears z again. It is
+                the way out of every view (Back inside), so the walkthrough's
+                card never loses its target while the player looks around. */}
+            <span data-tut="locker-done" style={{ display: 'inline-block', zoom: 1 / z }}>
+              <span style={{ display: 'inline-block', zoom: z }}>
+                <Button onClick={() => back(false)}>{view === 'home' ? BTN.done : BTN.back}</Button>
+              </span>
+            </span>
+            {view === 'edit' && (
+              <Button variant="primary" disabled={!hasDraft || !saveEnabled(editing, dirty, busy)}
+                onClick={() => {
+                  play('ui.select')
+                  const d = saveDialogFor(editing, peds)
+                  setModal(d.kind === 'save' ? { kind: 'save', id: d.id, name: d.name } : { kind: 'name' })
+                }}>
+                {BTN.save}
+              </Button>
+            )}
           </div>
-          {editingName !== null && (
-            <div style={{ flex: '0 0 auto', paddingTop: '0.75em' }}>
-              <Box variant="h3">{editingName}</Box>
-            </div>
-          )}
-          <div className="relative min-h-0 flex-1 overflow-hidden" style={{ marginTop: '1em' }}>
-            <AnimatePresence initial={false} custom={dir}>
-              <motion.div
-                key={tab}
-                custom={dir}
-                variants={SLIDE}
-                initial="enter"
-                animate="center"
-                exit="exit"
-                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-                className="absolute inset-0 flex flex-col"
-              >
-                {body}
-              </motion.div>
-            </AnimatePresence>
-          </div>
-          <Footer
-            z={z}
-            custom={isCustom(tab)}
-            dirty={dirty}
-            busy={blocked}
-            save={saveVariant({ dirty, editing: edit?.editing ?? null, peds: st.peds })}
-            onDone={() => done(false)}
-            onReset={() => { play('ui.select'); void fetchNui(CB.LOCKER2_RESET) }}
-            onName={() => { play('ui.select'); setModal({ kind: 'name' }) }}
-            onUpdate={(id) => { play('ui.select'); void fetchNui(CB.LOCKER2_SAVE, { op: 'update', id }) }}
-            onReplace={(id) => {
-              const p = st.peds.find((x) => x.id === id)
-              if (p) { play('ui.select'); setModal({ kind: 'replace', id: p.id, name: p.name }) }
-            }}
-          />
           <div ref={setModalRoot} className="pointer-events-auto" />
         </div>
       </div>

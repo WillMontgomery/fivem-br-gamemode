@@ -9,24 +9,24 @@ import { fetchNui } from '../../bridge/nui'
 import { CB } from '../../bridge/types'
 import type { Locker2TatRow, Locker2TatsPayload } from '../../bridge/types'
 import { play } from '../../audio/cues'
-import { BTN, TATTOOS, ZONE_LABEL, tattooLabels } from './copy'
-import {
-  TATTOOS_CAT, anchorId, canAddTattoo, sameTatRows, tattooCat, tattooChoices, tattooFilter, zoneRows,
-} from './model'
+import { BTN, ZONE_LABEL, tattooLabels } from './copy'
+import { canAddTattoo, sameTatRows, tattooCat, tattooChoices, tattooFilter, zoneRows } from './model'
 import './tattoos.css'
 
 /**
- * THE TATTOOS SECTION OF THE CUSTOM TABS (owner, 2026-10-12): "a list,
- * starting empty, with add and remove buttons ... You can just make it max 10
- * per category." Then, of a list of big cards: "This takes up wayyyy too much
- * real estate ... perhaps we use the thing that's literally made for this -
- * attribute editor."
+ * THE TATTOOS EXTRA (owner, 2026-10-12): "a list, starting empty, with add
+ * and remove buttons ... You can just make it max 10 per category." Then, of
+ * a list of big cards: "This takes up wayyyy too much real estate ... perhaps
+ * we use the thing that's literally made for this - attribute editor." With
+ * My Looks it is one of the extras: absent until "+ Add" puts it on the look,
+ * and its panel draws only once it is on and opened (the lag report: the
+ * tattoo editors mount only then).
  *
  * One Cloudscape AttributeEditor per body zone, under the zone's heading. Each
  * item is one row, its one field a Select of the zone's tattoos for this sex
- * by the game's names, filtered by name as typed; its Remove beside it; Add under the
- * rows, off at TATTOOS_PER_ZONE. A row's list never offers what another row of
- * its zone holds, so a zone never has one tattoo twice.
+ * by the game's names, filtered by name as typed; its Remove beside it; Add
+ * under the rows, off at TATTOOS_PER_ZONE. A row's list never offers what
+ * another row of its zone holds, so a zone never has one tattoo twice.
  *
  * As with every row, the page never decides: Add, a choice and Remove each ask
  * Lua (LOCKER2_TAT_ADD, _SET, _DEL), which holds every rule, puts the tattoo on
@@ -38,10 +38,10 @@ import './tattoos.css'
  * `awsui-compact-mode` class, scoped to the section and nothing else in the
  * locker), so a row is a 28 px Select and its Remove, 16 px apart.
  *
- * The Select's list opens inside the island (expandToViewport false), as the
- * Save menu's does (Footer.tsx); while it is open, Escape is its own
- * (LockerV2.tsx). A push -- one per press, and one every 60 ms
- * while a slider is dragged -- re-renders a zone only when its rows changed.
+ * The Select's list opens inside the island (expandToViewport false), as every
+ * dropdown here does; while it is open, Escape is its own (LockerV2.tsx). A
+ * zone's list runs to hundreds, so it scrolls virtually: only the options in
+ * view are drawn. A push re-renders a zone only when its rows changed.
  */
 
 /** The editor's one field and its Remove on one line at every width; no
@@ -72,6 +72,7 @@ function TattooPick({ row, rows, opts, byI, disabled }: {
       filteringType="manual"
       onLoadItems={({ detail }) => setTyped(detail.filteringText)}
       expandToViewport={false}
+      virtualScroll
       disabled={disabled}
       onChange={({ detail }) => {
         const i = Number(detail.selectedOption.value)
@@ -83,11 +84,10 @@ function TattooPick({ row, rows, opts, byI, disabled }: {
   )
 }
 
-/** One zone: its heading, its anchor and its editor. Drawn again only when its
- *  rows or `disabled` change -- `onTouch` is CustomTab's toCat, a new function
- *  each render that always sends the same thing. The editor's own Remove has
- *  no off state: while the ped is held it sends nothing, and Lua refuses every
- *  change then anyway. */
+/** One zone: its heading and its editor. Drawn again only when its rows or
+ *  `disabled` change -- `onTouch` is the editor's stable camera call. The
+ *  editor's own Remove has no off state: while the ped is held it sends
+ *  nothing, and Lua refuses every change then anyway. */
 const ZoneEditor = memo(function ZoneEditor({ zone, rows, disabled, onTouch }: {
   zone: Locker2TatsPayload['zones'][number]
   /** This zone's rows, in Lua's order. */
@@ -103,7 +103,7 @@ const ZoneEditor = memo(function ZoneEditor({ zone, rows, disabled, onTouch }: {
   })), [zone.items])
   const byI = useMemo(() => new Map(opts.map((o) => [o.i, o.option])), [opts])
   return (
-    <div id={anchorId(cat)} onPointerDown={() => onTouch(cat)}>
+    <div onPointerDown={() => onTouch(cat)}>
       <SpaceBetween size="xs">
         <Box variant="h5">{ZONE_LABEL[zone.z] ?? ''}</Box>
         <AttributeEditor
@@ -142,9 +142,8 @@ export function TattooSection({ tats, rows, disabled, onTouch }: {
   onTouch: (cat: string) => void
 }) {
   return (
-    <div id={anchorId(TATTOOS_CAT)} className="lk2-tats awsui-compact-mode">
+    <div className="lk2-tats awsui-compact-mode">
       <SpaceBetween size="s">
-        <Box variant="h4">{TATTOOS}</Box>
         {tats.zones.map((zone) => (
           <ZoneEditor key={zone.z} zone={zone} rows={zoneRows(rows, zone.z)} disabled={disabled} onTouch={onTouch} />
         ))}
