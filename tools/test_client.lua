@@ -6730,6 +6730,55 @@ end
 -- cannot do is prove a browser drew the texture; that is the one part still
 -- left to a human, and it is called out as such in the validation steps.
 
+describe('weapon finishes on Mk II guns (#412)')
+do
+    local function eq(got, want, name)
+        ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+    end
+    -- "A player who paid 5,000 for Gold sees Classic Two-Tone": Mk II guns read
+    -- another tint palette, so each finish carries its Mk II index.
+    -- cosmetics.lua opens a `while true` tint thread at load: recorded, never run.
+    local createThread = Citizen.CreateThread
+    Citizen.CreateThread = function() end
+    loadAll({ 'br_core/client/cosmetics.lua' })
+    Citizen.CreateThread = createThread
+    local tintFor = BR.Cosmetics.weaponTintFor
+    ok(type(tintFor) == 'function', 'BR.Cosmetics.weaponTintFor exists')
+    local finishes, mk2s, plain = {}, {}, nil
+    for _, item in pairs(BR.Config.MarketIndex) do
+        if item.apply and item.apply.weaponTint ~= nil then finishes[#finishes + 1] = item end
+    end
+    for _, w in ipairs(BR.Config.Weapons) do
+        if type(w.name) == 'string' and w.name:find('_MK2$') then mk2s[#mk2s + 1] = w end
+        if w.name == 'WEAPON_PISTOL' then plain = w end
+    end
+    eq(#mk2s, 8, 'eight Mk II guns in the roster')
+    ok(#finishes >= 8 and plain ~= nil, 'the finishes and an ordinary pistol to test with')
+    for _, item in ipairs(finishes) do
+        local a = item.apply
+        ok(math.type(a.weaponTintMk2) == 'integer' and a.weaponTintMk2 >= 0 and a.weaponTintMk2 <= 32,
+            item.id .. ' names a Mk II color (0-32)')
+        eq(tintFor(plain.hash, a), a.weaponTint, item.id .. ' on an ordinary pistol: its ordinary index')
+        for _, w in ipairs(mk2s) do
+            eq(tintFor(w.hash, a), a.weaponTintMk2, ('%s on %s: its Mk II index'):format(item.id, w.id))
+        end
+    end
+    local gold = BR.Config.MarketIndex.wtint_gold.apply
+    eq(tintFor(plain.hash, gold), 2, 'Gold on a Pistol: 2')
+    eq(tintFor(0xBFE256D4, gold), 23, 'Gold on a Pistol Mk II: 23, Metallic Gold')
+    eq(tintFor(0xBFE256D4 - 0x100000000, gold), 23, '...also from the signed hash the game hands back')
+    eq(tintFor(0x12345678, gold), 2, 'a gun the roster does not know keeps the ordinary index')
+    eq(tintFor(0xBFE256D4, { weaponTint = 2 }), 2, 'a finish with no Mk II index falls back to its own')
+    eq(tintFor(plain.hash, {}), nil, 'no finish worn: nothing')
+    -- AND THE TINT LOOP ASKS IT: the loop is a `while true` thread no test
+    -- steps, so its one call is pinned by name.
+    local f = io.open(ROOT .. 'br_core/client/cosmetics.lua', 'rb')
+    local src = f and f:read('a') or ''
+    if f then f:close() end
+    ok(src:find('SetPedWeaponTintIndex(ped, cur, BR.Cosmetics.weaponTintFor(cur, apply) or tint)', 1, true) ~= nil,
+        'the weapon-tint loop sets the index weaponTintFor picks for the gun in hand')
+end
+
 describe('the descent prompt hands the box from the glider to the trail')
 do
     -- THREADS ARE RECORDED RATHER THAN DROPPED. `br:drop:begin` does its real

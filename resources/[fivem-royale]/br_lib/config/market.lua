@@ -363,54 +363,60 @@ BR.Config.Market = {
                 },
 
                 -- ---------------------------------------------- weapon tints ---
+                --
+                -- `weaponTintMk2` (#412): the same finish on a Mk II gun. Mk II
+                -- guns read another palette (0-32), where the ordinary 0-7 are
+                -- other colors -- Gold's 2 is "Classic Two-Tone" there -- so each
+                -- finish names its Mk II color too, from the SET_PED_WEAPON_TINT_INDEX
+                -- reference (citizenfx/natives WEAPON/SetPedWeaponTintIndex.md).
                 {
                     id = 'wtint_normal', name = 'Standard', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 0, rarity = BR.Config.Rarity.COMMON,
                     default = true,
-                    apply = { weaponTint = 0 },
+                    apply = { weaponTint = 0, weaponTintMk2 = 0 }, -- Mk II: Classic Black
                 },
                 {
                     id = 'wtint_green', name = 'Verde', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 900, rarity = BR.Config.Rarity.UNCOMMON,
-                    apply = { weaponTint = 1 },
+                    apply = { weaponTint = 1, weaponTintMk2 = 5 }, -- Mk II: Classic Green
                 },
                 {
                     id = 'wtint_army', name = 'Army', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 900, rarity = BR.Config.Rarity.UNCOMMON,
-                    apply = { weaponTint = 4 },
+                    apply = { weaponTint = 4, weaponTintMk2 = 7 }, -- Mk II: Classic Earth
                 },
                 {
                     id = 'wtint_orange', name = 'Sunset', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 1400, rarity = BR.Config.Rarity.RARE,
-                    apply = { weaponTint = 6 },
+                    apply = { weaponTint = 6, weaponTintMk2 = 15 }, -- Mk II: Bold Orange
                 },
                 {
                     id = 'wtint_lspd', name = 'Bluesteel', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 1400, rarity = BR.Config.Rarity.RARE,
-                    apply = { weaponTint = 5 },
+                    apply = { weaponTint = 5, weaponTintMk2 = 6 }, -- Mk II: Classic Blue
                 },
                 {
                     id = 'wtint_pink', name = 'Fuchsia', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 2200, rarity = BR.Config.Rarity.EPIC,
-                    apply = { weaponTint = 3 },
+                    apply = { weaponTint = 3, weaponTintMk2 = 13 }, -- Mk II: Bold Pink
                 },
                 {
                     id = 'wtint_gold', name = 'Gold', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 5000, rarity = BR.Config.Rarity.LEGENDARY,
-                    apply = { weaponTint = 2 },
+                    apply = { weaponTint = 2, weaponTintMk2 = 23 }, -- Mk II: Metallic Gold
                 },
                 {
                     id = 'wtint_platinum', name = 'Platinum', sub = 'Weapon finish',
                     kind = BR.Config.ItemKind.WEAPON,
                     price = 6500, rarity = BR.Config.Rarity.LEGENDARY,
-                    apply = { weaponTint = 7 },
+                    apply = { weaponTint = 7, weaponTintMk2 = 24 }, -- Mk II: Metallic Platinum
                 },
             },
         },

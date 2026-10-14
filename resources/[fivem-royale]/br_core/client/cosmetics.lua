@@ -323,6 +323,29 @@ end
 
 -- ----------------------------------------------------------- weapon finish ---
 
+--- The tint index for the finish `apply` on the gun `weaponHash`, or nil
+--- with no finish (#412).
+---
+--- MK II GUNS READ ANOTHER PALETTE. SET_PED_WEAPON_TINT_INDEX takes 0-7 on an
+--- ordinary gun (Black, Green, Gold, Pink, Army, LSPD, Orange, Platinum) and
+--- 0-32 on a Mk II, where those same numbers are other colors: a player who
+--- paid for Gold held a "Classic Two-Tone" Mk II. So each finish carries its
+--- Mk II index too (`weaponTintMk2`, config/market.lua), and a Mk II in hand
+--- -- by its name in BR.Config.Weapons -- gets that one.
+--- @param weaponHash integer|nil
+--- @param apply table|nil  the worn finish's apply table
+--- @return integer|nil
+function BR.Cosmetics.weaponTintFor(weaponHash, apply)
+    local tint = apply and apply.weaponTint
+    if type(tint) ~= 'number' then return nil end
+    local byHash = BR.Config and BR.Config.WeaponByHash
+    local w = byHash and weaponHash and byHash[BR.NormHash(weaponHash)]
+    if w and type(w.name) == 'string' and w.name:find('_MK2$') and type(apply.weaponTintMk2) == 'number' then
+        return apply.weaponTintMk2
+    end
+    return tint
+end
+
 --- Weapons are tinted as they come to hand.
 ---
 --- POLLED RATHER THAN HOOKED, and cheaply. There is no "weapon changed" event
@@ -338,13 +361,14 @@ Citizen.CreateThread(function()
     while true do
         Citizen.Wait(500)
 
-        local tint = BR.Cosmetics.get('weapon').weaponTint
+        local apply = BR.Cosmetics.get('weapon')
+        local tint = apply.weaponTint
         if type(tint) == 'number' then
             local ped = PlayerPedId()
             local ok, cur = pcall(GetSelectedPedWeapon, ped)
             if ok and cur and cur ~= 0 and (cur ~= last or tint ~= 0) then
                 last = cur
-                SetPedWeaponTintIndex(ped, cur, tint)
+                SetPedWeaponTintIndex(ped, cur, BR.Cosmetics.weaponTintFor(cur, apply) or tint)
             end
         end
     end
