@@ -3,10 +3,12 @@
  * runtime imports.
  *
  * Every rule the page applies before it draws -- which tabs exist, which tab is
- * shown, what a card's edge and its one action are, when a press asks to buy
- * and when a confirm that is up no longer means what it says -- lives here, so
- * scripts/test-marketv2.mjs can load this file with node's type stripping and
- * hold each rule to the owner's words. MarketV2.tsx asks; it never decides.
+ * shown and in which design, what a card's edge and its one action are, when a
+ * press asks to buy, what a full wheel offers to replace, which dance may be
+ * previewed, and when a dialog that is up no longer means what it says --
+ * lives here, so scripts/test-marketv2.mjs can load this file with node's type
+ * stripping and hold each rule to the owner's words. MarketV2.tsx asks; it
+ * never decides.
  *
  * THE SERVER IS THE AUTHORITY. Nothing here writes a balance or an ownership:
  * a purchase asks (MARKET_BUY, an id), and the answer arrives as a whole new
@@ -53,17 +55,60 @@ export function shownTab(picked: TabKind | null, tabs: readonly TabKind[]): TabK
   return tabs[0] ?? null
 }
 
+/**
+ * THE TAB DESIGNS (#411, owner 2026-10-14: "i also don't know if I like the
+ * current tab designs") -- three, each in the lobby's square-and-cut language,
+ * and one switch to compare them: `?tabs=` in the browser harness and
+ * `brmarkettabs` on a dev box (br_ui/client/market.lua), by name or by number.
+ *
+ *   bar     one joined strip; the selected segment is the lit plate, cut
+ *   rail    bare words on a hairline; a cut cyan blade under the selected one
+ *   folder  index tabs on a cyan line; the selected one opens into the grid
+ *           below it, its top corner cut
+ *
+ * `bar` is the default: it reads as one control at a glance, it is the lobby's
+ * own plate, and its segments share the panel's width, so the row ends where
+ * the grid does.
+ */
+export const TAB_DESIGNS = ['bar', 'rail', 'folder'] as const
+export type TabDesign = typeof TAB_DESIGNS[number]
+export const DEFAULT_TAB_DESIGN: TabDesign = 'bar'
+
+/** The design asked for -- a name, or its number from 1 -- else the default. */
+export function tabDesign(asked: string | null | undefined): TabDesign {
+  const a = String(asked ?? '').trim().toLowerCase()
+  const byName = TAB_DESIGNS.find((d) => d === a)
+  if (byName) return byName
+  const n = a === '' ? NaN : Number(a)
+  return (Number.isInteger(n) ? TAB_DESIGNS[n - 1] : undefined) ?? DEFAULT_TAB_DESIGN
+}
+
 /** The dances on the wheel. */
 export const onWheel = (items: readonly MarketItem[]): number =>
   items.filter((i) => i.kind === 'emote' && typeof i.slot === 'number').length
 
+/** The wheel's count, "8/8", as the owner wrote it (2026-10-14). */
+export const wheelCount = (items: readonly MarketItem[]): string => `${onWheel(items)}/${WHEEL_SLOTS}`
+
 /**
- * A PENDING SWAP THE GRID HAS OVERTAKEN IS DROPPED (#215, Season 1's rule). A
- * new grid can land between the two presses: once the dance waiting to come in
- * is on the wheel, or no longer owned, or the wheel has room again, every
- * "Replace" it would draw is a press that no longer means what it says. So
- * does a season that closes the dances (`emotesOn` off): their tab is gone,
- * and a swap left waiting would come back with them.
+ * THE REPLACE DIALOG'S ROWS (#411, owner 2026-10-14: "the flow of replacing an
+ * emote on the wheel is... really unintuitive. I have nothing telling me what
+ * to do."). Equip on a full wheel opens a dialog that lists the dances on it,
+ * each with its own Replace, in wheel order -- segment 1 first.
+ */
+export function replaceChoices(items: readonly MarketItem[]): MarketItem[] {
+  return items
+    .filter((i) => i.kind === 'emote' && typeof i.slot === 'number')
+    .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
+}
+
+/**
+ * A REPLACE THE GRID HAS OVERTAKEN CLOSES (#215, Season 1's rule). A new grid
+ * can land while the dialog is up: once the dance waiting to come in is on
+ * the wheel, or no longer owned, or the wheel has room again, every Replace
+ * it offers is a press that no longer means what it says. So does a season
+ * that closes the dances (`emotesOn` off): their tab is gone, and a dialog
+ * left up would come back with them.
  */
 export function swapStale(swapFor: string | null, items: readonly MarketItem[], emotesOn: boolean): boolean {
   if (swapFor === null) return false
@@ -81,7 +126,7 @@ export function edgeOf(item: MarketItem): Edge {
 }
 
 /**
- * A CARD'S ONE ACTION, Season 1's three states and the wheel's four (#215):
+ * A CARD'S ONE ACTION, Season 1's three states and the wheel's two (#215):
  *
  *   equipped  a fact, not a button -- every other kind has one slot
  *   equip     owned: put it on
@@ -89,30 +134,25 @@ export function edgeOf(item: MarketItem): Edge {
  *   buy       the price; pressing it asks first (buyPress), and is refused
  *             with the error cue when the balance is short
  *
- * A DANCE IS ONE OF EIGHT, so equipped is a button there: Unequip, or Replace
- * while another dance waits to come in on a full wheel; an owned dance off the
- * wheel is Equip (on a full wheel, the first of the swap's two presses), and
- * Cancel while it is the one waiting -- the press that backs out of the swap.
+ * A DANCE IS ONE OF EIGHT, so equipped is a button there: Unequip. An owned
+ * dance off the wheel is Equip, and on a full wheel (`swap`) that press opens
+ * the replace dialog (replaceChoices) -- not, as on Season 1, the first of two
+ * presses on two different cards, which is the flow the owner could not find
+ * his way through.
  */
 export type CardAction =
   | { do: 'equipped' }
   | { do: 'equip' }
   | { do: 'closed'; season: string | null }
   | { do: 'buy'; afford: boolean }
-  | { do: 'replace' }
   | { do: 'unequip' }
-  | { do: 'cancel' }
   | { do: 'equipDance'; swap: boolean }
 
-export function cardAction(
-  item: MarketItem, balance: number, swapFor: string | null, wheelFull: boolean,
-): CardAction {
+export function cardAction(item: MarketItem, balance: number, wheelFull: boolean): CardAction {
   const owned = item.owned === true
   const equipped = item.equipped === true
   if (item.kind === 'emote') {
-    if (equipped && swapFor !== null && swapFor !== item.id) return { do: 'replace' }
     if (equipped) return { do: 'unequip' }
-    if (owned && swapFor === item.id) return { do: 'cancel' }
     if (owned) return { do: 'equipDance', swap: wheelFull }
   } else if (equipped) {
     return { do: 'equipped' }
@@ -124,10 +164,10 @@ export function cardAction(
 }
 
 /**
- * THE ONE PLACE A PRICE PRESS GOES (#411): "a dialog with the art, name,
- * price, Cancel and Buy. Today one stray click can spend 6,500 Volts." An
- * affordable price opens the confirm, and only the confirm's Buy sends
- * MARKET_BUY. A short balance is refused with the error cue, as on Season 1.
+ * THE ONE PLACE A PRICE PRESS GOES (#411): "Today one stray click can spend
+ * 6,500 Volts." An affordable price opens the confirm, and only the confirm's
+ * Buy sends MARKET_BUY. A short balance is refused with the error cue, as on
+ * Season 1.
  */
 export function buyPress(item: MarketItem, balance: number): 'confirm' | 'refuse' {
   return balance >= item.price ? 'confirm' : 'refuse'
@@ -158,7 +198,37 @@ export function confirmShown(
   return item === undefined || confirmStale(item, balance) ? null : item
 }
 
+/**
+ * MAY THIS DANCE PLAY ON THE LOBBY CHARACTER? (#411, owner 2026-10-14: "let's
+ * have a way for them to preview the emote while in market, but shouldn't work
+ * if they can't afford it".) One the player owns, or one on sale they can pay
+ * for now. br_ui/client/market.lua asks the same of its own copy of the grid
+ * and refuses the rest, so a page that disagreed would still play nothing.
+ */
+export function canPreview(item: MarketItem, balance: number): boolean {
+  if (item.kind !== 'emote') return false
+  if (item.owned === true) return true
+  return item.locked !== true && balance >= item.price
+}
+
+/**
+ * THE PREVIEW PLAYING: the dance a Preview press asked for, while the dances'
+ * tab is the one shown and the latest grid still allows it (canPreview) -- or
+ * null. MarketV2.tsx sends MARKET_PREVIEW each time this changes, so every way
+ * a preview ends (its own press again, another dance's, a tab change, a grid
+ * that took it away) is the same one message.
+ */
+export function previewShown(
+  previewId: string | null, tab: TabKind | null, items: readonly MarketItem[], balance: number,
+): string | null {
+  if (previewId === null || tab !== 'emote') return null
+  const item = items.find((i) => i.id === previewId)
+  return item !== undefined && canPreview(item, balance) ? item.id : null
+}
+
 /** The card's art: Season 1's convention, `market/<id>.png`, copied verbatim by
- *  Vite; a missing file falls back to the monogram. */
+ *  Vite; a missing file falls back to the monogram. A dance has none: "emotes
+ *  shouldn't really have a thumbnail" (owner, 2026-10-14). */
 export const artUrl = (id: string): string => `market/${id}.png`
 export const monogram = (name: string): string => name.slice(0, 2).toUpperCase()
+export const hasArt = (item: MarketItem): boolean => item.kind !== 'emote'

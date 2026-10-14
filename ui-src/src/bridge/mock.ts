@@ -86,9 +86,11 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
   console.info('[mock] fetchNui', name, data)
 
   if (name.startsWith('br/locker2/') && LOCKER2.handle(name, data)) return {} as Res
-  // The Market's three verbs answer at once, as br_ui's callbacks do; the
-  // grid that says what happened follows a moment later.
-  if ((name === 'br/market/buy' || name === 'br/market/equip' || name === 'br/market/unequip')
+  // The Market's verbs answer at once, as br_ui's callbacks do; the grid
+  // that says what happened follows a moment later. A preview has no ped to
+  // dance on here and only answers.
+  if ((name === 'br/market/buy' || name === 'br/market/equip' || name === 'br/market/unequip'
+       || name === 'br/market/preview')
       && MARKET.handle(name, data)) return { ok: true } as Res
 
   if (name === 'br/chat/send') {

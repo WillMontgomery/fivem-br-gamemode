@@ -1328,9 +1328,6 @@ export interface MarketItem {
   locked?: boolean
   /** Which season it came from, for the card's provenance line. */
   season?: string
-  /** SEASON 2 MARKET ONLY (#411): one of this season's items, badged New.
-   *  Lua sends it only while the `market2` row is on. */
-  isNew?: boolean
 }
 
 /** Whether the emote system is on, on this machine (#215, "Scope v2"):
@@ -1659,6 +1656,10 @@ export type Envelope =
   | { k: 'market';   d: MarketPayload }
   /** The emote gate (#215): BR.Nui.EMOTES, sent with every Market grid. */
   | { k: 'emotes';   d: EmotesPayload }
+  /** The Season 2 Market's tab design (#411): BR.Nui.MARKET_TABS, sent by
+   *  `brmarkettabs` on a dev box (and `?tabs=` in the harness). A name or a
+   *  number; screens/marketv2/model.ts tabDesign reads it. */
+  | { k: 'markettabs'; d: { design?: string } }
   /** The music each audible dance is owed (#215): BR.Nui.EMOTE_AUDIO. */
   | { k: 'emoteaudio'; d: EmoteAudioPayload }
   | { k: 'keybinds'; d: { actions: KeybindAction[]; raw?: boolean } }
@@ -1805,6 +1806,9 @@ export const CB = {
   MARKET_EQUIP:   'br/market/equip',
   /** Take a dance off the wheel (#215): { id }. Emote slots only. */
   MARKET_UNEQUIP: 'br/market/unequip',
+  /** { id } a dance on the lobby character, silently, while the Season 2
+   *  Market is open; { id: null } stops it (#411). */
+  MARKET_PREVIEW: 'br/market/preview',
   PLAYERS_FOCUS:  'br/players/focus',
   REPORT_SUBMIT:  'br/report/submit',
   PAUSE_FOCUS:    'br/pause/focus',

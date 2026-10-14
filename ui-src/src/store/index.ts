@@ -184,6 +184,11 @@ export interface UiState {
    *  Lua says otherwise, so a closed gate never flashes either one. Not a
    *  setting: it is not the player's to change. */
   emotesOn: boolean
+  /** THE SEASON 2 MARKET'S TAB DESIGN (#411), from the `markettabs` envelope:
+   *  `brmarkettabs` on a dev box, `?tabs=` in the browser harness. Null is the
+   *  default design (screens/marketv2/model.ts tabDesign). A comparison
+   *  switch, not a setting: no player ever sends it. */
+  marketTabs: string | null
   /** Is the warmup shop's plate up? While it is, the ammo slot shows the
    *  player's Volts instead of being empty (owner, 2026-08-29). Only the
    *  FLAG travels; the figure itself is `market.balance`, which is already
@@ -537,6 +542,8 @@ export interface UiState {
   setMarket: (m: MarketPayload) => void
   /** The emote gate (#215), from the 'emotes' envelope. */
   setEmotesOn: (on: boolean) => void
+  /** The Season 2 Market's tab design (#411), from the 'markettabs' envelope. */
+  setMarketTabs: (design: string | null) => void
   setShopPlate: (up: boolean) => void
   setGunshopMenu: (open: boolean) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
@@ -889,6 +896,7 @@ export const useUi = create<UiState>((set, get) => {
   earnedStaged: false,
   market: { balance: 0, items: [] },
   emotesOn: false,
+  marketTabs: null,
   shopPlate: false,
   gunshopMenu: false,
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
@@ -1152,6 +1160,7 @@ export const useUi = create<UiState>((set, get) => {
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
   setEmotesOn: (emotesOn) => set({ emotesOn }),
+  setMarketTabs: (marketTabs) => set({ marketTabs }),
   setShopPlate: (shopPlate) => set({ shopPlate }),
   setGunshopMenu: (gunshopMenu) => set({ gunshopMenu }),
   setPlayers: (players) => set({ players }),

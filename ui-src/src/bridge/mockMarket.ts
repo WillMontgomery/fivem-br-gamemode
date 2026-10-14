@@ -9,16 +9,19 @@
  * sends, dumped from the Lua (br_lib/config/market.lua and config/emotes.lua)
  * on 2026-10-13, so the screen is laid out against real names, prices and
  * rarities. Season 2 (the default) is the Season 2 Market: `v2`, no
- * placeholder kinds, New on the dances, the Emotes tab on. `?season=1` is
- * Season 1's: its envelope as it always was, the placeholders, no dances.
+ * placeholder kinds, the Emotes tab on. `?season=1` is Season 1's: its
+ * envelope as it always was, the placeholders, no dances.
+ *
+ * `?tabs=bar|rail|folder` (or 1, 2, 3) picks the Season 2 Market's tab design,
+ * as `brmarkettabs` does in game (#411).
  *
  * IT ANSWERS AS THE SERVER DOES: a buy, equip or unequip changes nothing until
  * a whole new grid arrives a moment later -- the page is never written to
  * optimistically, here or in game. A buy the server would refuse (already
  * owned, short, a placeholder, a closed season) answers with nothing new.
  *
- * The owned set starts with a full wheel and a ninth dance off it, so the swap
- * (Equip, then Replace or the cut Cancel) can be reached at once.
+ * The owned set starts with a full wheel and a ninth dance off it, so the
+ * replace dialog (Equip on a full wheel) can be reached at once.
  */
 
 import type { Envelope, MarketItem, MarketPayload } from './types'
@@ -117,7 +120,6 @@ export function createMarketMock(emit: Emit) {
         items.push({
           id: r.id, name: r.name, sub: r.sub, kind: r.kind, price: r.price, rarity: r.rarity, season: r.season,
           owned: owned.has(r.id), equipped: k >= 0, slot: k >= 0 ? k + 1 : undefined, locked: false,
-          isNew: v2 ? true : undefined,
         })
       } else {
         items.push({
@@ -130,9 +132,11 @@ export function createMarketMock(emit: Emit) {
     return v2 ? { balance, currency: 'Volts', items, v2: true } : { balance, currency: 'Volts', items }
   }
 
+  const tabs = new URLSearchParams(window.location.search).get('tabs')
   const push = () => {
     emit({ k: 'market', d: payload() })
     emit({ k: 'emotes', d: { on: emotes } })
+    if (v2 && tabs !== null) emit({ k: 'markettabs', d: { design: tabs } })
   }
   const later = (fn: () => void) => window.setTimeout(() => { fn(); push() }, DELAY_MS)
   const free = () => wheel.indexOf('')
@@ -163,6 +167,7 @@ export function createMarketMock(emit: Emit) {
         })
         return true
       }
+      if (name === 'br/market/preview') return true
       if (name === 'br/market/unequip') {
         later(() => {
           const k = r ? wheel.indexOf(r.id) : -1

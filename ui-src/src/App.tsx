@@ -235,6 +235,8 @@ export default function App() {
   // THE EMOTE GATE (#215, "Scope v2"): sent with every grid. The Market's
   // Emotes tab and the "Music volume" slider render only while it is on.
   useNuiEvent('emotes',   (d) => dispatch().setEmotesOn(d.on === true))
+  // THE SEASON 2 MARKET'S TAB DESIGN (#411): `brmarkettabs` on a dev box.
+  useNuiEvent('markettabs', (d) => dispatch().setMarketTabs(typeof d.design === 'string' ? d.design : null))
   // The warmup shop's plate, which is the ONLY thing that puts a Volts figure
   // on the HUD. A flag, not a balance -- see the envelope's note.
   useNuiEvent('shopplate', (d) => dispatch().setShopPlate(d.show === true))

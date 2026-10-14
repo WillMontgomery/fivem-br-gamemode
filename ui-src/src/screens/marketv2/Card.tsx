@@ -1,12 +1,11 @@
 import { useState, type ReactNode } from 'react'
-import Badge from '@cloudscape-design/components/badge'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import type { MarketItem } from '../../bridge/types'
 import { play } from '../../audio/cues'
-import { BTN, EQUIPPED, NEW, NOT_FOR_SALE, closedLabel } from './copy'
-import { actionColor, actionStyle, cardPlate, cutWrap, edgeColor, NEW_BADGE } from './look'
-import { artUrl, cardAction, edgeOf, monogram, type CardAction } from './model'
+import { BTN, EQUIPPED, NOT_FOR_SALE, amount, closedLabel } from './copy'
+import { ONE_LINE, actionColor, actionStyle, cardPlate, edgeColor, previewStyle } from './look'
+import { artUrl, canPreview, cardAction, edgeOf, hasArt, monogram, type CardAction } from './model'
 
 /**
  * ARTWORK IS OPTIONAL AND ITS ABSENCE IS NOT A BROKEN IMAGE (Season 1's rule):
@@ -40,10 +39,11 @@ export function Art({ item }: { item: MarketItem }) {
   )
 }
 
-/** The lobby's button voice inside a Cloudscape button: Anton, upper case. */
+/** The lobby's button voice inside a Cloudscape button: Anton, upper case,
+ *  and never on two lines. */
 function Label({ children }: { children: ReactNode }) {
   return (
-    <span className="font-display uppercase" style={{ letterSpacing: '0.12em', fontWeight: 400 }}>
+    <span className="font-display uppercase" style={{ ...ONE_LINE, letterSpacing: '0.12em', fontWeight: 400 }}>
       {children}
     </span>
   )
@@ -54,10 +54,10 @@ export interface CardHandlers {
   onPrice: (item: MarketItem) => void
   onEquip: (item: MarketItem) => void
   onUnequip: (item: MarketItem) => void
-  /** Replace the dance on this card with the one waiting (#215). */
-  onReplace: (item: MarketItem) => void
-  /** The swap's first press on a full wheel, and its Cancel (null). */
-  setSwapFor: (id: string | null) => void
+  /** Equip on a full wheel: the replace dialog, for this dance (#411). */
+  onSwap: (item: MarketItem) => void
+  /** Preview pressed: this dance on the lobby character, or off again. */
+  onPreview: (item: MarketItem) => void
 }
 
 /** One action's control. Hover and press speak, as every lobby button does. */
@@ -65,14 +65,14 @@ function Action({ a, item, h }: { a: CardAction; item: MarketItem; h: CardHandle
   const color = actionColor(a)
   if (a.do === 'equipped') {
     return (
-      <div className="font-display uppercase" style={{ textAlign: 'center', letterSpacing: '0.14em', fontSize: '0.8em', padding: '0.35em 0', color }}>
+      <div className="font-display uppercase" style={{ ...ONE_LINE, textAlign: 'center', letterSpacing: '0.14em', fontSize: '0.8em', padding: '0.35em 0', color }}>
         {EQUIPPED}
       </div>
     )
   }
   if (a.do === 'closed') {
     return (
-      <div style={{ textAlign: 'center', padding: '0.35em 0', opacity: 0.55 }}>
+      <div style={{ ...ONE_LINE, textAlign: 'center', padding: '0.35em 0', opacity: 0.55 }}>
         <Box variant="small" color="text-body-secondary">{a.season !== null ? closedLabel(a.season) : NOT_FOR_SALE}</Box>
       </div>
     )
@@ -82,15 +82,13 @@ function Action({ a, item, h }: { a: CardAction; item: MarketItem; h: CardHandle
   let press: () => void
   switch (a.do) {
     case 'buy':
-      label = <span className="font-display tabular-nums">{item.price.toLocaleString()}</span>
+      label = <span className="font-display tabular-nums">{amount(item.price)}</span>
       press = () => h.onPrice(item)
       break
-    case 'replace': label = BTN.replace; press = () => { play('ui.select'); h.onReplace(item) }; break
     case 'unequip': label = BTN.unequip; press = () => { play('ui.select'); h.onUnequip(item) }; break
-    case 'cancel': label = BTN.cancelSwap; press = () => { play('ui.select'); h.setSwapFor(null) }; break
     case 'equipDance':
       label = BTN.equip
-      press = () => { play('ui.select'); if (a.swap) h.setSwapFor(item.id); else h.onEquip(item) }
+      press = () => { play('ui.select'); if (a.swap) h.onSwap(item); else h.onEquip(item) }
       break
     default:
       label = BTN.equip
@@ -101,45 +99,70 @@ function Action({ a, item, h }: { a: CardAction; item: MarketItem; h: CardHandle
   // it brightens, travels and speaks (`mk2-act`, market.css). A price the
   // balance cannot cover does none of it, as Season 1's `btn--off`.
   const quiet = a.do === 'buy' && !a.afford
-  const button = (
+  return (
     <span className={quiet ? undefined : 'mk2-act'} style={{ display: 'block' }} onPointerEnter={() => { if (!quiet) play('ui.hover') }}>
       <Button fullWidth style={actionStyle(color)} onClick={press}><Label>{label}</Label></Button>
     </span>
   )
-  // THE ONE CUT ON A CARD: the emote swap's Cancel, cut today (`plate is-active`).
-  if (a.do === 'cancel') {
-    return <span className="plate is-active" style={cutWrap(color)}>{button}</span>
-  }
-  return button
 }
 
-export function Card({ item, balance, swapFor, wheelFull, h }: {
+/**
+ * PREVIEW (#411): the lobby character plays this dance, silently, while the
+ * Market is open. Pressed again it stops. Spent -- disabled, still and silent
+ * -- on a dance the player neither owns nor can afford (model.ts canPreview),
+ * which br_ui's Lua refuses as well.
+ */
+function Preview({ item, balance, playing, h }: {
+  item: MarketItem; balance: number; playing: boolean; h: CardHandlers
+}) {
+  const able = canPreview(item, balance)
+  return (
+    <span className={able ? 'mk2-act' : undefined} style={{ display: 'block' }} onPointerEnter={() => { if (able) play('ui.hover') }}>
+      <Button
+        fullWidth
+        disabled={!able}
+        style={previewStyle(playing)}
+        onClick={() => { play('ui.select'); h.onPreview(item) }}
+      >
+        <Label>{BTN.preview}</Label>
+      </Button>
+    </span>
+  )
+}
+
+export function Card({ item, balance, wheelFull, previewing, h }: {
   item: MarketItem
   balance: number
-  swapFor: string | null
   wheelFull: boolean
+  /** The dance on the lobby character now, or null. */
+  previewing: string | null
   h: CardHandlers
 }) {
-  const a = cardAction(item, balance, swapFor, wheelFull)
+  const a = cardAction(item, balance, wheelFull)
+  const art = hasArt(item)
   return (
     <div
       // SQUARE: a card is a plate at rest, never `is-active` (#411's corners).
       className="plate"
+      data-mk2-card={item.id}
       style={{
         ...cardPlate(edgeColor(edgeOf(item), item.rarity)),
-        padding: '0.75em', display: 'flex', flexDirection: 'column', gap: '0.5em', minHeight: '11em',
+        padding: '0.75em', display: 'flex', flexDirection: 'column', gap: '0.5em', minWidth: 0,
+        minHeight: art ? '11em' : undefined,
       }}
     >
-      <div style={{ flex: '1 1 auto', minHeight: '5em', display: 'flex' }}>
-        <Art item={item} />
-      </div>
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4em' }}>
-          <span className="tscale" style={{ lineHeight: 1.2 }}>{item.name}</span>
-          {item.isNew === true && <Badge style={NEW_BADGE}>{NEW}</Badge>}
+      {/* "emotes shouldn't really have a thumbnail" (owner, 2026-10-14): a
+          dance's card is its name, Preview and its action. */}
+      {art && (
+        <div style={{ flex: '1 1 auto', minHeight: '5em', display: 'flex' }}>
+          <Art item={item} />
         </div>
-        {item.sub && <Box variant="small" color="text-body-secondary">{item.sub}</Box>}
+      )}
+      <div style={{ minWidth: 0 }}>
+        <div className="tscale" style={{ ...ONE_LINE, lineHeight: 1.2 }}>{item.name}</div>
+        {item.sub && <div style={ONE_LINE}><Box variant="small" color="text-body-secondary">{item.sub}</Box></div>}
       </div>
+      {item.kind === 'emote' && <Preview item={item} balance={balance} playing={previewing === item.id} h={h} />}
       <Action a={a} item={item} h={h} />
     </div>
   )

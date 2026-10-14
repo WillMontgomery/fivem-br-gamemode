@@ -9,20 +9,95 @@
    the same declarations on the same elements, so they agree with it -- and go
    once it has landed. */
 
-/* THE GRID IS THE ONLY THING THAT SCROLLS (#411), as on Season 1's Market:
-   the title, the balance, the tabs, the wheel's count and Done stay put.
-   Cloudscape's fitHeight tab panel is a flex item as tall as its content
-   (min-height: auto), so its wrapper scrolled instead -- the wheel's count with
-   the cards, in the browser's own scrollbar. Let the panel take the wrapper's
-   height, and the grid's own region (MarketV2.tsx, `.thin-scroll`) scrolls. */
-.mk2-tabs [class*='awsui_tabs-content-active'] {
-  min-height: 0;
+/* ═══ THE TABS: THREE DESIGNS (#411) ═══════════════════════════════════════
+   Owner, 2026-10-14: "i also don't know if I like the current tab designs".
+   marketv2/TabStrip.tsx draws one of these, picked by model.ts tabDesign
+   (`?tabs=` in the harness, `brmarkettabs` on a dev box). Each tab is the
+   lobby's `.plate` (index.css): square at rest, and the selected one
+   `is-active` -- the one cut on the row. Every label is Anton, upper case,
+   and on one line; the row never wraps. */
+.mk2-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  position: relative;
+}
+.mk2-tab {
+  --edgec: rgba(255, 255, 255, 0.16);
+  --plate-fill: rgba(24, 28, 40, 0.92);
+  --cut-max: 0.5em;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 0.85em;
+  letter-spacing: 0.13em;
+  line-height: 1.2;
+  padding: 0.7em 1.15em;
+  color: rgba(255, 255, 255, 0.62);
+}
+.mk2-tab:hover { color: #ffffff; }
+.mk2-tab.is-active {
+  --edgec: var(--color-royale-accent);
+  --plate-fill: rgba(12, 58, 72, 0.94);
+  color: #ffffff;
+  z-index: 1;
 }
 
+/* BAR -- one joined strip. The segments share the panel's width and their
+   neighboring edges are one line; the selected segment lights up and is cut.
+   The default (model.ts DEFAULT_TAB_DESIGN). */
+.mk2-tabs--bar .mk2-tab {
+  flex: 1 1 0;
+  min-width: max-content;
+  text-align: center;
+}
+.mk2-tabs--bar .mk2-tab + .mk2-tab { margin-left: -1px; }
+
+/* RAIL -- bare words on a hairline, the selected one white with a cyan blade
+   under it, both ends of the blade cut like a plate's corners. */
+.mk2-tabs--rail { gap: 2.2em; border-bottom: 1px solid rgba(255, 255, 255, 0.14); }
+.mk2-tabs--rail .mk2-tab {
+  font-size: 1em;
+  padding: 0.35em 0 0.75em;
+  background: none;
+  border-color: transparent;
+  clip-path: none;
+  color: rgba(255, 255, 255, 0.5);
+}
+.mk2-tabs--rail .mk2-tab.is-active { color: #ffffff; }
+.mk2-tabs--rail .mk2-tab::before { display: none; }
+.mk2-tabs--rail .mk2-tab::after {
+  top: auto;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  width: auto;
+  height: 0.25em;
+  transform: scaleX(0);
+  transform-origin: center;
+  background: var(--color-royale-accent);
+  clip-path: polygon(0 0, calc(100% - 0.25em) 0, 100% 100%, 0.25em 100%);
+}
+.mk2-tabs--rail .mk2-tab.is-active::after { transform: scaleX(1); }
+
+/* FOLDER -- index tabs standing on a cyan line. The selected one is taller,
+   lit, edged in cyan on three sides, its top corner cut, and it opens into
+   the grid: its base covers the line beneath it. */
+.mk2-tabs--folder { gap: 0.35em; border-bottom: 1px solid var(--color-royale-accent); }
+.mk2-tabs--folder .mk2-tab {
+  border-bottom-width: 0;
+  padding: 0.55em 1.1em;
+}
+.mk2-tabs--folder .mk2-tab.is-active {
+  margin-bottom: -1px;
+  padding: 0.8em 1.25em calc(0.55em + 1px);
+  clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+}
+.mk2-tabs--folder .mk2-tab::before { display: none; }
+
 /* NO ROUNDED EDGES -- SAME AS THE RETHEME. "let's keep 'em cut where they are
-   today" (owner): the selected tab and an emote swap's Cancel are cut (the
-   lobby's `.plate.is-active`, a clip-path), everything else square. Without
-   this, Cloudscape rounds Done, the confirm and its buttons by 4px. */
+   today" (owner): the selected tab is cut (the lobby's `.plate.is-active`, a
+   clip-path), everything else square. Without this, Cloudscape rounds Done,
+   the dialogs and their buttons by 4px. */
 .mk2 *,
 .mk2 *::before,
 .mk2 *::after {
@@ -32,9 +107,9 @@
 /* HOVER AND PRESS -- SAME AS THE RETHEME. index.css `.btn`: hover brightens,
    the press drops 1px and shrinks a little (check-ui R3: a button without
    them "feels like a web page"). On `.mk2-act`, the wrapper of every card
-   button but a price the balance cannot cover, of Done, and of the
-   confirm's Cancel and Buy. Cloudscape's own rules carry an id's weight
-   (`:not(#\9)`), hence !important. */
+   button but a price the balance cannot cover or a Preview that cannot play,
+   of Done, and of the dialogs' buttons. Cloudscape's own rules carry an id's
+   weight (`:not(#\9)`), hence !important. */
 .mk2-act [class*='awsui_button_'] {
   transition: transform 90ms cubic-bezier(0.22, 1, 0.36, 1), filter 120ms ease !important;
 }
