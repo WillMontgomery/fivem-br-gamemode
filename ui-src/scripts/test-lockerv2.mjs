@@ -31,9 +31,20 @@
  *   HOLD      a held arrow: the press, 400 ms, then quicker to a 50 ms floor.
  *   HISTORY   Undo / Redo, a drag or a hold one step.
  *   SHARE     a push hands back unchanged parts as the same objects.
+ *   COPY      a label is OWNER only if it is on the list of his; the rest are
+ *             WRITTEN, each with its marker.
  *   CORNERS   every radius token at 0, and the stylesheet squares the rest.
  *   MOCK      the harness plays New, the history, the extras, the palettes,
- *             the face groups and both saves the way the page expects.
+ *             the face groups and both saves the way the page expects; every
+ *             kind of change is one Undo step, undone exactly.
+ *   RENDERED  the screen's own components, drawn by lockerv2-render.mjs,
+ *             pressed through their own handlers and answered by the harness:
+ *             a card press wears and marks; New's Custom first, focused and
+ *             lit; the walkthrough's ring on Done alone, Done away elsewhere;
+ *             the strip, one category at a time, Fine-tune closed, no random
+ *             button on a row, "+ Add" outside the scroll box; the camera
+ *             cluster right of the panel; every plate the lobby's, lit when
+ *             selected; and no word that is not copy.ts's or the look's.
  *   WIRING    the screen asks these rules, opens with LOCKER2_OPEN alone,
  *             builds the theme once, draws the preloaded chunk outright, and
  *             subscribes to the fields it draws.
@@ -346,8 +357,8 @@ eq('zoom: root px / 14, and 1 for nonsense', [zoomFor(28), zoomFor(Number.NaN)],
 
 // ── COPY ─────────────────────────────────────────────────────────────────────
 eq('the owner\'s words, verbatim', [TITLE.home, BTN.new, CARD.custom, CARD.stock, BTN.randomize, BTN.undo, BTN.redo,
-  SEX_LABEL.m, SEX_LABEL.f, BTN.saveAsNew, BTN.back, BTN.done],
-['My Looks', 'New', 'Custom', 'Stock GTA Looks', 'Randomize', 'Undo', 'Redo', 'Male', 'Female', 'Save as new', 'Back', 'Done'])
+  SEX_LABEL.m, SEX_LABEL.f, BTN.back, BTN.done],
+['My Looks', 'New', 'Custom', 'Stock GTA Looks', 'Randomize', 'Undo', 'Redo', 'Male', 'Female', 'Back', 'Done'])
 eq('a look, never a ped, in the dialogs', [MODAL.name, MODAL.rename, MODAL.save, MODAL.discard, deleteTitle('Ranger')],
   ['Name your look', 'Rename look', 'Save look', 'Discard changes?', 'Delete Ranger?'])
 {
@@ -355,7 +366,18 @@ eq('a look, never a ped, in the dialogs', [MODAL.name, MODAL.rename, MODAL.save,
   const strings = [...strip(copy).matchAll(/'([^'\n]*)'|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2])
   const peds = strings.filter((s) => /\bpeds?\b/i.test(s))
   check('no player-facing word says "ped"', peds.length === 0, peds.join(' | '))
-  for (const s of ["'+ Add'", "'Fine-tune'", "'More'", "'Name your look'", "'Save look'", "'Rename look'",
+  // #28 review: "Save as new" was marked OWNER with a quote he never wrote, so
+  // it would never have been put to him. A label is his only if it is on this
+  // list -- the labels he gave or named on #28 -- and every other is WRITTEN.
+  const OWNER_LABELS = ['Back', 'Custom', 'Delete', 'Done', 'Edit', 'Female', 'Last', 'Male', 'My Looks', 'New', 'Next',
+    'Next color', 'Randomize', 'Redo', 'Rename', 'Reset', 'Save', 'Stock GTA Looks', 'Undo']
+  const owned = [...new Set(copy.split('\n').filter((l) => l.includes('// OWNER'))
+    .map((l) => /'([^']*)'/.exec(l)?.[1] ?? '?'))].sort()
+  eq('a label marked OWNER is one he gave or named on #28, and no other', owned, OWNER_LABELS)
+  const marked = copy.split('\n').filter((l) => /^\s+\w+: ['`]/.test(l) || /=> `/.test(l))
+  const unmarked = marked.filter((l) => !l.includes('// OWNER') && !l.includes('// WRITTEN (proposal for the owner)'))
+  check('every label is marked OWNER or WRITTEN', marked.length > 100 && unmarked.length === 0, unmarked.join(' | '))
+  for (const s of ["'Save as new'", "'+ Add'", "'Fine-tune'", "'More'", "'Name your look'", "'Save look'", "'Rename look'",
     "'Rotate left'", "'Rotate right'", "'Turn around'", "'Zoom in'", "'Zoom out'", "'Reset view'", '`Color ${n}`',
     "'Nose'", "'Eyes and lips'", "'Neck'", "'Skin'", "'Top'", "'Accessory'", "'Tattoos'", "'Cancel'",
     "'Keep editing'", "'Discard'", '`Delete ${name}?`', '`${base} opacity`', '`Tattoo ${n}`']) {
@@ -477,6 +499,313 @@ export async function resolve(spec, ctx, next) {
     && last().edit.extras.join() === 'hat')
 }
 
+// ── UNDO, EVERY KIND OF CHANGE (the harness) ─────────────────────────────────
+// Undo / Redo across every kind of change (#28): each of these is one step,
+// Undo puts the look back exactly as it was, and Redo brings the change back.
+// The review turned a tattoo's Add and a face group's reset into changes that
+// skipped the history, and nothing noticed.
+{
+  const timers = []
+  globalThis.window = { location: { search: '' }, setTimeout: (fn) => { timers.push(fn); return timers.length } }
+  const { createLocker2Mock } = await import(pathToFileURL(join(SRC, 'bridge', 'mockLocker2.ts')).href)
+  const sent = []
+  const m = createLocker2Mock([{ id: 'street', name: 'Street' }], (env) => sent.push(env))
+  const h = (name, d) => m.handle(`br/locker2/${name}`, d)
+  const last = () => [...sent].reverse().find((e) => e.k === 'locker2')?.d
+  h('open')
+  while (timers.length) timers.shift()()
+  h('new', { sex: 'f', seq: 1 })
+  h('tats', { sex: 'f' })
+  const zones = [...sent].reverse().find((e) => e.k === 'locker2tats').d.zones
+  const torso = zones.find((z) => z.z === 'torso').items.map((t) => t.i)
+  const look = () => JSON.stringify({ rows: last().edit.rows, tats: last().edit.tats, extras: last().edit.extras })
+  const row = (k) => last().edit.rows.find((r) => r.k === k)
+  const tat = () => last().edit.tats[0]
+  const CHANGES = [
+    ['an arrow press', () => h('step', { k: 'c11', d: 1 })],
+    ['an arrow held (a step a repeat)', () => { for (let i = 0; i < 12; i++) h('step', { k: 'c4', d: 1 }) }],
+    ['a starting face', () => h('set', { k: 'shape', v: (row('shape').v % row('shape').n) + 1 })],
+    ['a swatch', () => h('color', { k: 'c2', c: (row('c2').c + 7) % 64 })],
+    ['a slider dragged', () => { for (const v of [10, 25, 40, 55]) h('set', { k: 'ff3', v }) }],
+    ['an extra added', () => h('extra', { id: 'hat', on: true })],
+    ['an extra removed (its trash icon)', () => h('extra', { id: 'hat', on: false })],
+    ['Tattoos added', () => h('extra', { id: 'tattoos', on: true })],
+    ['a tattoo added', () => h('tatadd', { z: 'torso' })],
+    ['a tattoo changed', () => h('tatset', { r: tat().r, i: torso.find((i) => i !== tat().i) })],
+    ['a tattoo removed', () => h('tatdel', { r: tat().r })],
+    ['a face group\'s reset', () => h('defaults', { ks: FACE_GROUPS[0].ks })],
+    ['Randomize', () => h('random')],
+  ]
+  for (const [what, act] of CHANGES) {
+    if (what === 'a tattoo changed' || what === 'a tattoo removed') {
+      if (last().edit.tats.length === 0) h('tatadd', { z: 'torso' })
+    }
+    if (what === 'a face group\'s reset') h('set', { k: 'ff0', v: 30 })
+    const before = look()
+    act()
+    const after = look()
+    h('undo')
+    const undone = look()
+    h('redo')
+    check(`Undo / Redo: ${what} is one step, undone exactly and redone`,
+      after !== before && undone === before && look() === after, `changed ${after !== before}, undone ${undone === before}`)
+  }
+}
+
+// ── THE SCREEN, RENDERED (#28 review) ────────────────────────────────────────
+// The review reverted agreed pieces one at a time -- a card press that no
+// longer wore the look, the worn mark, Fine-tune open from the start, the
+// camera under the panel, Custom's focus, Randomize's label, a random button
+// on every row, helper text under Custom -- and the source checks did not
+// notice. So the screen's own components are rendered (lockerv2-render.mjs),
+// pressed through their own handlers, and answered by the browser harness, as
+// the preview runs them.
+{
+  const { loadScreen, fakePage, mount, textOf, hasClass, press } = await import('./lockerv2-render.mjs')
+  const { AWAY_ATTR } = await import('../src/tutorial/progress.ts')
+  const page = fakePage()
+  const Scr = await loadScreen()
+  const R = globalThis.__lk2r
+  const { createLocker2Mock } = await import(pathToFileURL(join(SRC, 'bridge', 'mockLocker2.ts')).href)
+  const env = []
+  const STOCK = [{ id: 'street', name: 'Street' }, { id: 'diver', name: 'Diver' }, { id: 'medic', name: 'Medic' }]
+  const mock = createLocker2Mock(STOCK, (e) => env.push(e))
+  let delivered = 0
+  let handled = 0
+  /** What the page sent goes to the harness, and its answers to the store, until quiet. */
+  const settle = (v) => {
+    for (let n = 0; n < 30; n++) {
+      for (; handled < R.calls.length; handled++) mock.handle(R.calls[handled][0], R.calls[handled][1] ?? {})
+      page.frames()
+      for (; delivered < env.length; delivered++) {
+        const e = env[delivered]
+        if (e.k === 'locker2') R.state = { ...R.state, locker2: share(R.state.locker2, parseLocker2(e.d)) }
+        else if (e.k === 'locker2pal') Scr.keepPal(e.d)
+        else if (e.k === 'locker2tats') Scr.keepTats(e.d)
+      }
+      v.render()
+      if (handled === R.calls.length && delivered === env.length) return
+    }
+  }
+  R.state = { settings: {}, focus: 'locker', tutorialRun: false, tutorialHeading: null, locker2: parseLocker2({ on: true }) }
+  const v = mount(Scr.React, Scr.React.createElement(Scr.LockerV2))
+  settle(v)
+
+  const L2S = () => R.state.locker2
+  const q = (pred) => v.all(pred)
+  const first = (pred) => q(pred)[0]?.node
+  const cls = (c) => (n) => hasClass(n, c)
+  const csBtn = (label) => (n) => n.type === 'cs:button' && textOf(n) === label
+  const within = (x, c) => x.parents.some((p) => hasClass(p, c))
+  const subtree = (n) => [n, ...n.children.filter((c) => typeof c !== 'string').flatMap(subtree)]
+  const plates = (n) => subtree(n).filter((x) => hasClass(x, 'plate'))
+  const lit = (n) => plates(n).some((x) => hasClass(x, 'is-active'))
+  const sentSince = (k) => R.calls.slice(k).map(([cb, d]) => [cb, d])
+  const act = (fn) => { const k = R.calls.length; v.act(fn); const out = sentSince(k); settle(v); return out }
+  const title = () => textOf(first(cls('lk2-title')) ?? { children: [] })
+  const tut = (x) => [x.node, ...x.parents].some((p) => p.props['data-tut'] === 'locker-done')
+  const awayMarks = () => q((n) => String(n.props[AWAY_ATTR] ?? '').split(/\s+/).includes('locker-done'))
+  /** Every word drawn and every accessible name is copy.ts's, or the look's own data. */
+  const COPY = new Set([TITLE, CARD, SEX_LABEL, BTN, MODAL, CAM, CAT_LABEL, GROUP_LABEL, ZONE_LABEL, ROW_LABEL]
+    .flatMap((o) => Object.values(o)))
+  const strayWords = () => {
+    const d = L2S()
+    const data = new Set([...d.peds.map((p) => p.name), ...d.stock.map((p) => p.name)])
+    for (const r of d.edit?.rows ?? []) {
+      if (r.name) data.add(r.name)
+      if (r.kind === 'count') { data.add(counterText(r.v, r.n)); for (let i = 1; i <= r.n; i++) data.add(String(i)) }
+      const l = rowLabel(r.k); if (l) data.add(l)
+    }
+    if (d.edit) for (const c of listedCats(d.edit.extras)) data.add(summaryOf(c, d.edit.rows, d.edit.tats.length).text)
+    const stray = []
+    for (const { node } of q(() => true)) {
+      for (const c of node.children) if (typeof c === 'string' && c.trim() && !COPY.has(c) && !data.has(c)) stray.push(c)
+      for (const a of ['aria-label', 'ariaLabel', 'placeholder', 'title', 'description']) {
+        const s = node.props[a]
+        if (typeof s === 'string' && !COPY.has(s) && !data.has(s) && !/^Color \d+$/.test(s)) stray.push(`${a}=${s}`)
+      }
+    }
+    return stray
+  }
+
+  // MY LOOKS ------------------------------------------------------------------
+  const cards = () => q(cls('lk2-card'))
+  const cardOf = (name) => cards().find((x) => textOf(x.node) === name)
+  check('My Looks: the heading, New at the top, and a card per saved look',
+    title() === 'My Looks' && q(csBtn('New')).length === 1 && L2S().peds.length === 3
+    && cards().map((x) => textOf(x.node)).join() === L2S().peds.map((p) => p.name).join())
+  check('My Looks: no word on it that is not copy.ts\'s or the looks\' own', strayWords().length === 0, strayWords().join(' | '))
+  const pick = L2S().peds[1]
+  const mainOf = (name) => subtree(cardOf(name).node).find((n) => hasClass(n, 'lk2-card-main'))
+  eq('My Looks: pressing a card wears that look, at once', act(() => press(mainOf(pick.name))),
+    [['br/locker2/wear', { k: 'p', id: pick.id }]])
+  const marks = () => q(cls('lk2-card-mark'))
+  check('...and that card, and only it, is marked as worn',
+    marks().length === 1 && within(marks()[0], 'lk2-card') && marks()[0].parents.some((p) => textOf(p) === pick.name)
+    && cards().filter((x) => subtree(x.node).some((n) => hasClass(n, 'lk2-card-mark'))).map((x) => textOf(x.node)).join() === pick.name)
+  eq('...and lit as the lobby lights a selected plate, it alone', cards().map((x) => lit(x.node)),
+    L2S().peds.map((p) => p.id === pick.id))
+  eq('...and pressing the worn card again sends nothing', act(() => press(mainOf(pick.name))), [])
+  const menu = subtree(cardOf(pick.name).node).find((n) => n.type === 'cs:button-dropdown')
+  eq('a card\'s "..." menu: Edit, Rename, Delete', menu?.props.items.map((i) => [i.id, i.text]),
+    [['edit', 'Edit'], ['rename', 'Rename'], ['delete', 'Delete']])
+
+  // THE WALKTHROUGH'S "PRESS DONE" CARD (#28 review) --------------------------
+  // Its ring is on Done, and a press inside the ring ends the card. Back in
+  // every inner view sat inside it, so Back from the editor walked the player
+  // on to "Spending Volts" with the locker still open.
+  const ring = () => q((n) => n.props['data-tut'] === 'locker-done')
+  const ringed = () => ring().flatMap((x) => subtree(x.node).filter((n) => n.type === 'cs:button').map(textOf))
+  check('My Looks: the walkthrough\'s ring is on Done, and on nothing else',
+    ring().length === 1 && ringed().join() === 'Done' && awayMarks().length === 0, `ringed ${ringed().join()}`)
+  const backIsOut = () => q(csBtn('Back')).length === 1 && q(csBtn('Back')).every((x) => !tut(x))
+  act(() => press(first(csBtn('New'))))
+  check('New: Back is outside the ring, and the screen says Done is away (the card waits for it)',
+    title() === 'New' && ring().length === 0 && backIsOut() && awayMarks().length === 1)
+
+  // NEW -----------------------------------------------------------------------
+  // "custom and "Stock GTA Peds" (custom is the default) and the custom card
+  // itself has a dropdown within to select male or female"
+  const choices = () => q(cls('lk2-choice'))
+  eq('New: two cards, Custom first, then Stock GTA Looks, and not a word more', choices().map((x) => textOf(x.node)),
+    ['Custom', 'Stock GTA Looks'])
+  const focused = q((n) => n.props.autoFocus === true)
+  check('New: Custom is the default -- the one thing focused, its press the keyboard\'s',
+    focused.length === 1 && within(focused[0], 'lk2-choice') && textOf(focused[0].node) === 'Custom')
+  check('New: Custom is lit as the default, Stock GTA Looks is not',
+    choices().length === 2 && lit(choices()[0].node) && !lit(choices()[1].node))
+  const sex = () => subtree(choices()[0].node).find((n) => n.type === 'cs:select')
+  eq('New: Custom\'s own dropdown, Male / Female', sex()?.props.options.map((o) => o.label), ['Male', 'Female'])
+  check('New: no word on it that is not copy.ts\'s', strayWords().length === 0, strayWords().join(' | '))
+
+  // STOCK GTA LOOKS ------------------------------------------------------------
+  act(() => press(subtree(choices()[1].node).find((n) => n.type === 'button')))
+  const tiles = () => q(cls('lk2-tile'))
+  check('Stock GTA Looks: the roster, Back outside the ring, Done away',
+    title() === 'Stock GTA Looks' && tiles().map((x) => textOf(x.node)).join() === STOCK.map((s) => s.name).join()
+    && ring().length === 0 && backIsOut() && awayMarks().length === 1)
+  eq('Stock GTA Looks: a press wears it at once', act(() => press(tiles()[2].node)), [['br/locker2/wear', { k: 's', id: 'medic' }]])
+  check('...and it is the one lit', tiles().map((x) => lit(x.node)).join() === 'false,false,true')
+  act(() => press(first(csBtn('Back'))))
+
+  // THE EDITOR ------------------------------------------------------------------
+  v.act(() => sex().props.onChange({ detail: { selectedOption: { value: 'f', label: 'Female' } } }))
+  const started = act(() => press(subtree(choices()[0].node).find((n) => n.type === 'button')))
+  check('Custom, Female picked: a new female look (LOCKER2_NEW, numbered), and the editor',
+    started[0]?.[0] === 'br/locker2/new' && started[0][1].sex === 'f' && typeof started[0][1].seq === 'number'
+    && q(cls('lk2-editor')).length === 1 && L2S().edit?.sex === 'f')
+  check('the editor: Back outside the ring, Done away', ring().length === 0 && backIsOut() && awayMarks().length === 1)
+  const stripBtns = () => q((n) => n.type === 'cs:button').filter((x) => within(x, 'lk2-strip'))
+  eq('the strip: Randomize, Undo, Redo', stripBtns().map((x) => textOf(x.node)), ['Randomize', 'Undo', 'Redo'])
+  eq('Randomize asks for the whole look', act(() => press(stripBtns()[0].node)), [['br/locker2/random', null]])
+  const lines = () => q(cls('lk2-line'))
+  const lineLabel = (x) => textOf(subtree(x.node).find((n) => hasClass(n, 'lk2-line-label')))
+  eq('the list: the core, one line each, nothing else on a new look', lines().map(lineLabel),
+    CORE_CATS.map((c) => CAT_LABEL[c]))
+  const randoms = () => q((n) => textOf(n) === BTN.randomize && n.children.every((c) => typeof c === 'string')
+    || n.props['aria-label'] === BTN.randomize || n.props.ariaLabel === BTN.randomize)
+  const rowLabels = () => q(cls('lk2-row-label')).filter((x) => within(x, 'lk2-panel') && !within(x, 'lk2-group'))
+    .map((x) => textOf(x.node))
+  for (const cat of CORE_CATS) {
+    const line = () => lines().find((x) => lineLabel(x) === CAT_LABEL[cat])
+    const sentNow = act(() => press(subtree(line().node).find((n) => hasClass(n, 'lk2-line-main'))))
+    const want = panelRows(L2S().edit.rows, cat).map((r) => rowLabel(r.k)).filter(Boolean)
+    check(`${CAT_LABEL[cat]}: pressing its line lights it, moves the camera, and shows its rows only`,
+      sentNow.some(([cb, d]) => cb === 'br/locker2/cat' && d.cat === cat) && lit(line().node)
+      && lines().filter((x) => lit(x.node)).length === 1 && rowLabels().join() === want.join(), rowLabels().join())
+    check(`${CAT_LABEL[cat]}: Randomize is the strip's alone -- no random button on a row`, randoms().length === 1)
+    check(`${CAT_LABEL[cat]}: no word that is not copy.ts's or the look's`, strayWords().length === 0, strayWords().join(' | '))
+  }
+
+  // FACE: starting faces, then "Fine-tune", closed until asked for.
+  act(() => press(subtree(lines()[0].node).find((n) => hasClass(n, 'lk2-line-main'))))
+  const faces = () => q(cls('lk2-face'))
+  const shape = () => L2S().edit.rows.find((r) => r.k === 'shape')
+  check('Face: one tile per starting face, the worn one lit',
+    faces().length === shape().n && faces().filter((x) => lit(x.node)).map((x) => textOf(x.node)).join() === String(shape().v))
+  const tune = () => first((n) => n.type === 'cs:toggle')
+  check('Face: "Fine-tune" is there, and off -- the grouped sliders are hidden until it is pressed',
+    tune()?.props.checked === false && textOf(tune()) === 'Fine-tune' && q(cls('lk2-group')).length === 0)
+  v.act(() => tune().props.onChange({ detail: { checked: true } }))
+  const groups = () => q(cls('lk2-group'))
+  const resets = (g) => subtree(g.node).filter((n) => n.props['aria-label'] === BTN.reset)
+  check('Fine-tune: seven groups, by what the features are, one reset each and no other',
+    groups().map((g) => textOf(subtree(g.node).find((n) => hasClass(n, 'lk2-group-label')))).join()
+      === FACE_GROUPS.map((g) => GROUP_LABEL[g.id]).join()
+    && groups().every((g) => resets(g).length === 1))
+  v.act(() => tune().props.onChange({ detail: { checked: false } }))
+
+  // "+ Add" and the trash icon.
+  const add = () => first((n) => n.type === 'cs:button-dropdown' && textOf(n) === '+ Add')
+  eq('"+ Add": every extra not on the look', add()?.props.items.map((i) => i.id), addableExtras(L2S().edit.extras))
+  {
+    // ITS MENU IS WIDER THAN THE LIST (#28 review): inside the list's scroll
+    // box it was cut off at the list's right edge, and scrolled it sideways.
+    const css = strip(read(join(L2, 'lockerv2.css')))
+    const scrollers = new Set([...css.matchAll(/\.br-cs \.([\w-]+) \{([^}]*)\}/g)]
+      .filter((m) => /(^|\s|;)overflow(-[xy])?\s*:\s*(auto|scroll|hidden|clip)/.test(m[2])).map((m) => m[1]))
+    scrollers.add('thin-scroll')
+    const at = q((n) => n === add())[0]
+    const box = at ? at.parents.slice(at.parents.findIndex((p) => hasClass(p, 'br-cs')) + 1)
+      .filter((p) => String(p.props.className ?? '').split(/\s+/).some((c) => scrollers.has(c) || /^overflow-/.test(c))) : null
+    check('"+ Add" sits in no scroll box below the island, so its menu is not cut off', box !== null && box.length === 0,
+      (box ?? []).map((p) => p.props.className).join(' | '))
+  }
+  const added = act(() => add().props.onItemClick({ detail: { id: 'hat' } }))
+  check('"+ Add" Hat: on the look, its line after the core with a trash icon, its panel open',
+    added.some(([cb, d]) => cb === 'br/locker2/extra' && d.id === 'hat' && d.on === true)
+    && lines().map(lineLabel).join() === [...CORE_CATS.map((c) => CAT_LABEL[c]), 'Hat'].join()
+    && lit(lines()[6].node) && subtree(lines()[6].node).some((n) => n.props['aria-label'] === BTN.remove))
+  check('...and its line is scrolled into view (the lines scroll; "+ Add" stands below them)',
+    lines()[6].node.el?.scrolled > 0)
+  check('no line of the core has a trash icon', lines().slice(0, 6).every((x) => !subtree(x.node).some((n) => n.props['aria-label'] === BTN.remove)))
+  const trash = subtree(lines()[6].node).find((n) => n.props['aria-label'] === BTN.remove)
+  eq('its trash icon takes it off', act(() => press(trash)), [['br/locker2/extra', { id: 'hat', on: false }]])
+  check('...and its line is gone', lines().length === 6)
+  check('Undo lit after a change, and it asks Lua', stripBtns()[1].node.props.disabled === false
+    && act(() => press(stripBtns()[1].node))[0]?.[0] === 'br/locker2/undo')
+
+  // Back with changes asks; it does not leave, and it does not end the card.
+  const k0 = R.calls.length
+  v.act(() => press(first(csBtn('Back'))))
+  check('Back with changes asks first: nothing sent, the discard dialog up',
+    R.calls.length === k0 && q((n) => n.type === 'cs:modal' && n.props.visible === true).length === 1)
+
+  // THE CAMERA ------------------------------------------------------------------
+  // "those buttons should be closer on the screen to the ped, in like the half
+  // right of center"
+  const cluster = first(cls('lk2-cam'))
+  const left = String(cluster?.props.style?.left ?? '')
+  check(`the camera cluster stands in the screen's right half, past the panel (left ${left})`,
+    /^\d+(\.\d+)?%$/.test(left) && parseFloat(left) >= 50 && parseFloat(left) <= 80)
+  const camBtns = subtree(cluster).filter((n) => n.type === 'button')
+  eq('the cluster: six buttons, by their names', camBtns.map((n) => n.props['aria-label']), Object.values(CAM))
+  check('rotate left and right turn while held', camBtns.slice(0, 2).every((n) => typeof n.props.onPointerDown === 'function')
+    && camBtns.slice(2).every((n) => n.props.onPointerDown === undefined))
+  eq('each button sends its move', camBtns.map((n) => { const k = R.calls.length; press(n); return R.calls.slice(k).map(([cb, d]) => `${cb.split('/').pop()}:${d.op ?? (d.delta < 0 ? 'left' : 'right')}${d.d ?? ''}` ).join() }),
+    ['spin:left', 'spin:right', 'cam:turn', 'cam:zoom1', 'cam:zoom-1', 'cam:reset'])
+
+  // THE LOBBY'S PLATE, SELECTED BEVELS (#28 review) ---------------------------
+  // In the lobby a selected plate opens its cut corners (index.css
+  // `.plate.is-active`); the locker drew selection as a cyan edge on square
+  // corners. Every plate of this screen's own is the lobby's `.plate`, lit
+  // with `.is-active` -- checked view by view above -- and draws nothing of
+  // its own over it.
+  {
+    const css = strip(read(join(L2, 'lockerv2.css')))
+    const PLATES = ['lk2-card-main', 'lk2-tile', 'lk2-line', 'lk2-choice-plate', 'lk2-face', 'lk2-icon']
+    const own = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+      .filter((m) => PLATES.some((p) => new RegExp(`\\.${p}(?![\\w-])[^\\s,]*\\s*(,|$)`).test(m[1].trim())))
+      .filter((m) => /(^|;|\s)(background(-image|-color)?|border(-color)?|clip-path)\s*:/.test(m[2]))
+    check('the screen\'s plates take their fill, edge and bevel from the lobby\'s .plate, overriding none of it',
+      own.length === 0, own.map((m) => m[1].trim()).join(' | '))
+    check('...whose bevel opens on .is-active (index.css)', read(join(SRC, 'index.css')).includes('.plate.is-active { --cut: var(--cut-max); }'))
+    check('...in the island\'s em, and lit in the lobby\'s selected colors',
+      /\.br-cs \.plate \{[^}]*--cut-max: [\d.]+em;/.test(css)
+      && /\.br-cs \.plate\.is-active \{[^}]*--plate-fill: rgba\(12, 58, 72, 0\.94\);[^}]*--edgec: #22d3ee;/.test(css))
+  }
+}
+
 // ── WIRING (source) ──────────────────────────────────────────────────────────
 {
   const walk = (d) => readdirSync(d, { withFileTypes: true })
@@ -534,7 +863,8 @@ export async function resolve(spec, ctx, next) {
   check('Escape: capture phase, an open dropdown first, then the dialog, then Back',
     /const act = escapeAction\(live\.current\.view, live\.current\.modal !== null, escapeHeld\(\), popupOpen\(screen\.current\)\)\s*if \(act === 'pass'\) return/.test(v2)
     && v2.includes("window.addEventListener('keydown', onKey, true)"))
-  check('Done (Back inside) keeps the walkthrough\'s anchor in every view', v2.includes('data-tut="locker-done"'))
+  check('Done carries the walkthrough\'s anchor (the rendered views above say where it is, and is not)',
+    v2.includes('data-tut="locker-done"') && v2.includes("{ [AWAY_ATTR]: 'locker-done' }"))
   const whole = pageFiles.filter((f) => /useUi\(\(s\) => s\.locker2\)/.test(read(f)))
   check('no part of the screen subscribes to the whole locker2 push (each reads the fields it draws)',
     whole.length === 0, whole.join(', '))
@@ -588,7 +918,7 @@ export async function resolve(spec, ctx, next) {
     && home.includes('expandToViewport={false}'))
   const nl = read(join(L2, 'NewLook.tsx'))
   check('New: Custom first and lit, its own Male / Female dropdown; Stock GTA Looks opens the roster',
-    nl.indexOf('CARD.custom') < nl.indexOf('CARD.stock') && nl.includes('lk2-choice is-default')
+    nl.indexOf('CARD.custom') < nl.indexOf('CARD.stock') && nl.includes('plate lk2-choice-plate is-active')
     && nl.includes('options={SEX_OPTIONS}') && nl.includes("void fetchNui(CB.LOCKER2_WEAR, { k: 's', id })"))
   const cam = read(join(L2, 'Camera.tsx'))
   check('the camera: rotate is LOCKER_SPIN, held; turn, zoom and reset are LOCKER2_CAM; the wheel zooms',

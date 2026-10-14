@@ -20,6 +20,7 @@ import { Home, type CardAction } from './lockerv2/Home'
 import { NewChoice, StockList } from './lockerv2/NewLook'
 import { LockerModal, type Choice, type ModalState } from './lockerv2/Modals'
 import { escapeHeld } from '../tutorial/lockGuard'
+import { AWAY_ATTR } from '../tutorial/progress'
 import './lockerv2/lockerv2.css'
 
 export { warmTheme } from './lockerv2/scope'
@@ -226,19 +227,27 @@ export default function LockerV2() {
             )}
           </div>}
           <div className="lk2-body">{body}</div>
-          <div className="lk2-foot">
-            {/* DONE'S TUTORIAL ANCHOR STEPS OUT OF THE ZOOM. The guided first
-                run draws its ring from `[data-tut="locker-done"]`'s box, and
-                on CEF 103 a box inside a zoomed element is reported in that
-                element's px. So the anchor wears 1/z inside the island -- a
-                true zoom of 1 -- and the button inside it wears z again. It is
-                the way out of every view (Back inside), so the walkthrough's
-                card never loses its target while the player looks around. */}
-            <span data-tut="locker-done" style={{ display: 'inline-block', zoom: 1 / z }}>
-              <span style={{ display: 'inline-block', zoom: z }}>
-                <Button onClick={() => back(false)}>{view === 'home' ? BTN.done : BTN.back}</Button>
+          {/* THE WALKTHROUGH'S "PRESS DONE" CARD rings Done, and a press
+              inside its ring ends the card -- so the ring is on Done alone,
+              on My Looks. Back, the way out of every other view, only goes up
+              a view: inside, the foot says Done is away (AWAY_ATTR), and the
+              card waits for it instead of moving on (#28 review: Back in the
+              editor had walked the player on to the Market card). */}
+          <div className="lk2-foot" {...(view === 'home' ? {} : { [AWAY_ATTR]: 'locker-done' })}>
+            {/* DONE'S ANCHOR STEPS OUT OF THE ZOOM. The ring is drawn from
+                `[data-tut="locker-done"]`'s box, and on CEF 103 a box inside
+                a zoomed element is reported in that element's px. So the
+                anchor wears 1/z inside the island -- a true zoom of 1 -- and
+                the button inside it wears z again. */}
+            {view === 'home' ? (
+              <span data-tut="locker-done" style={{ display: 'inline-block', zoom: 1 / z }}>
+                <span style={{ display: 'inline-block', zoom: z }}>
+                  <Button onClick={() => back(false)}>{BTN.done}</Button>
+                </span>
               </span>
-            </span>
+            ) : (
+              <Button onClick={() => back(false)}>{BTN.back}</Button>
+            )}
             {view === 'edit' && (
               <Button variant="primary" disabled={!hasDraft || !saveEnabled(editing, dirty, busy)}
                 onClick={() => {

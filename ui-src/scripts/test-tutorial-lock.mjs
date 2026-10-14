@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url'
 
 import { LOBBY_STEPS, LOBBY_WAYS_BACK } from '../src/tutorial/steps.ts'
 import { holdsEscape, isLocked, lockCss, lockSelector } from '../src/tutorial/lock.ts'
-import { asRevisited, canGoBack } from '../src/tutorial/progress.ts'
+import { AWAY_ATTR, asRevisited, canGoBack, targetMissing } from '../src/tutorial/progress.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 
@@ -445,6 +445,29 @@ console.log('the keyboard')
   check('Settings opened from the last card is not held', G.escapeHeld?.(), false)
   store.set({ tutorialRun: false, tutorialHeading: null })
   check('no walkthrough, nothing held', G.escapeHeld?.(), false)
+}
+
+// ── A CONTROL THAT IS AWAY IS NOT MISSING (#28 review) ───────────────────────
+// The Locker card's ring is on Done, which Season 2's Locker draws on My Looks
+// only; inside a look the way out is Back, and a press on Back must not end the
+// card. So inside, the Locker says Done is away, and the card waits for it
+// rather than ending the run as "missing" (test-lockerv2.mjs renders the
+// Locker's half: the ring on Done alone, the away mark in every other view).
+{
+  const card = step('locker-inside')
+  check('the Locker card waits on Done', `${card.target}/${card.advance}`, 'locker-done/click')
+  check('a control that is simply not there is missing (the run ends, loudly)',
+    targetMissing(card, false, false, false), true)
+  check('...not while it is on screen', targetMissing(card, true, false, false), false)
+  check('...not while its screen is not up', targetMissing(card, false, true, false), false)
+  check('...and not while the screen says it is away', targetMissing(card, false, false, true), false)
+  check('a card with no control is never missing', targetMissing({ target: undefined }, false, false, false), false)
+  check('the mark is data-tut-away', AWAY_ATTR, 'data-tut-away')
+  const layer = readFileSync(join(SRC, 'tutorial', 'TutorialLayer.tsx'), 'utf8').replace(/\r\n/g, '\n')
+  check('the layer asks targetMissing, with what it measured and the away mark',
+    /const missing = targetMissing\(step, rect !== null, waitingForScreen, away\)/.test(layer)
+    && layer.includes('document.querySelector(`[${AWAY_ATTR}~="${step.target}"]`) !== null')
+    && /if \(rectRef\.current === null && !awayRef\.current\) \{/.test(layer), true)
 }
 
 if (failed) {

@@ -38,13 +38,13 @@ export const BTN = {
   back: 'Back',               // OWNER: "Clicking "back" should prompt the user about unsaved changes"
   new: 'New',                 // OWNER: ""New" at the top"
   save: 'Save',               // OWNER: "Save"
-  saveAsNew: 'Save as new',   // OWNER: ""Save as new" lives in the save dialog"
+  saveAsNew: 'Save as new',   // WRITTEN (proposal for the owner)
   randomize: 'Randomize',     // OWNER: "they get a randomize button for the whole ped"
   undo: 'Undo',               // OWNER: "Undo/Redo"
   redo: 'Redo',               // OWNER: "Undo/Redo"
-  edit: 'Edit',               // OWNER: "Edit / Rename / Delete"
-  rename: 'Rename',           // OWNER: "Edit / Rename / Delete"
-  delete: 'Delete',           // OWNER: "Edit / Rename / Delete"
+  edit: 'Edit',               // OWNER: "edit"
+  rename: 'Rename',           // OWNER: "rename"
+  delete: 'Delete',           // OWNER: "delete"
   nextColor: 'Next color',    // OWNER: "we show a button "Next color""
   next: 'Next',               // OWNER: "a next/last button" (the icon's accessible name)
   last: 'Last',               // OWNER: "a next/last button" (the icon's accessible name)

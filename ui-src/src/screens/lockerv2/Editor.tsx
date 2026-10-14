@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import Button from '@cloudscape-design/components/button'
 import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
 import Spinner from '@cloudscape-design/components/spinner'
@@ -58,8 +58,12 @@ const Line = memo(function Line({ cat, text, chip, on, extra, disabled, onOpen, 
   onOpen: (cat: string) => void
   onRemove: (cat: string) => void
 }) {
+  // A line lit from outside the list -- an extra just put on from "+ Add",
+  // which stands below the scrolling lines -- is scrolled into view.
+  const self = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (on) self.current?.scrollIntoView?.({ block: 'nearest' }) }, [on])
   return (
-    <div className={`lk2-line${on ? ' is-on' : ''}`}>
+    <div ref={self} className={`plate lk2-line${on ? ' is-active' : ''}`}>
       <button type="button" className="btn lk2-line-main" aria-pressed={on} onClick={() => onOpen(cat)}>
         <span className="lk2-line-label">{CAT_LABEL[cat] ?? ''}</span>
         <span className="lk2-line-sum">
@@ -78,7 +82,7 @@ const FaceTiles = memo(function FaceTiles({ row, disabled }: { row: Locker2Count
     <div className="lk2-faces" role="group">
       {Array.from({ length: row.n }, (_, i) => i + 1).map((v) => (
         <button key={v} type="button" disabled={disabled}
-          className={`btn lk2-face${v === row.v ? ' is-on' : ''}`} aria-pressed={v === row.v}
+          className={`plate btn lk2-face${v === row.v ? ' is-active' : ''}`} aria-pressed={v === row.v}
           onClick={() => {
             if (v === row.v) return
             play('ui.select')
@@ -210,15 +214,22 @@ export function Editor({ blocked }: { blocked: boolean }) {
         </Button>
       </div>
       <div className="lk2-cols">
-        <div className="lk2-list thin-scroll">
-          {listed.map((cat) => {
-            const s = summaryOf(cat, edit.rows, edit.tats.length)
-            const chip = s.chip !== null ? pal?.[s.chip.pal][s.chip.i] ?? null : null
-            return (
-              <Line key={cat} cat={cat} text={s.text} chip={chip} on={cat === open} extra={isExtra(cat)}
-                disabled={blocked} onOpen={onOpen} onRemove={onRemove} />
-            )
-          })}
+        <div className="lk2-list">
+          {/* THE LINES SCROLL; "+ Add" DOES NOT. Its menu is wider than the
+              list, and inside the scroll box it was cut off at the list's
+              right edge and scrolled the list sideways (#28 review). Below
+              the box it opens over the panel, and stays at the list's foot
+              however many extras there are. */}
+          <div className="lk2-lines thin-scroll">
+            {listed.map((cat) => {
+              const s = summaryOf(cat, edit.rows, edit.tats.length)
+              const chip = s.chip !== null ? pal?.[s.chip.pal][s.chip.i] ?? null : null
+              return (
+                <Line key={cat} cat={cat} text={s.text} chip={chip} on={cat === open} extra={isExtra(cat)}
+                  disabled={blocked} onOpen={onOpen} onRemove={onRemove} />
+              )
+            })}
+          </div>
           <div className="lk2-add">
             <ButtonDropdown
               disabled={blocked || addable.length === 0}

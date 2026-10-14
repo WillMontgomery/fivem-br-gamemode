@@ -58,7 +58,7 @@ export function IconBtn({ icon, label: aria, disabled, onPress, hold = false }: 
   const held = useHold(onPress, undefined, disabled)
   const press = hold ? held : { onClick: () => { if (!disabled) onPress() } }
   return (
-    <button type="button" className={`btn lk2-icon${disabled ? ' btn--off' : ''}`}
+    <button type="button" className={`plate btn lk2-icon${disabled ? ' btn--off' : ''}`}
       aria-label={aria} aria-disabled={disabled} {...press}>
       <Icon name={icon} />
     </button>

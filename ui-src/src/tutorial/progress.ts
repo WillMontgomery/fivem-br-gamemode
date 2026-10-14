@@ -206,3 +206,30 @@ export function mapGoneTo(steps: readonly Step[], i: number): number | null {
   }
   return null
 }
+
+/**
+ * THE ATTRIBUTE A SCREEN PUTS UP WHILE A CARD'S CONTROL IS AWAY (#28).
+ *
+ * Its value names the `data-tut` targets that are away, space-separated. The
+ * Season 2 Locker's "Press Done" card is about Done, which is on My Looks
+ * only: inside a look the way out is Back, which goes one view up and must not
+ * end the card. So inside, Done is away -- the card and its ring wait, and come
+ * back with Done.
+ */
+export const AWAY_ATTR = 'data-tut-away'
+
+/**
+ * Has a card lost its control -- the run's "missing", which ends it?
+ *
+ * Not while its screen is not up (it has not started), and not while the
+ * screen says the control is away (`AWAY_ATTR`): both wait. Only a control
+ * that is simply not there is missing.
+ */
+export function targetMissing(
+  step: Pick<Step, 'target'> | undefined,
+  found: boolean,
+  waitingForScreen: boolean,
+  away: boolean,
+): boolean {
+  return step !== undefined && step.target !== undefined && !found && !waitingForScreen && !away
+}

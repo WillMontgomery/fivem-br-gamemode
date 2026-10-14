@@ -37,8 +37,11 @@ const LookCard = memo(function LookCard({ ped, src, worn, loading, blocked, onWe
   onAction: (p: Locker2Ped, a: CardAction) => void
 }) {
   return (
-    <div className={`lk2-card${worn ? ' is-worn' : ''}`}>
-      <button type="button" className="btn lk2-card-main" disabled={blocked} aria-pressed={worn}
+    <div className="lk2-card">
+      {/* The card's face is the lobby's plate, and the worn one is lit as the
+          lobby lights a selected plate: its corners open (`is-active`). */}
+      <button type="button" className={`plate btn lk2-card-main${worn ? ' is-active' : ''}`} disabled={blocked}
+        aria-pressed={worn}
         onClick={() => { if (!worn) onWear(ped) }}>
         <span className="lk2-card-shot">
           {src !== null && <img src={src} alt="" />}

@@ -37,7 +37,10 @@ export function NewChoice({ blocked, onCustom, onStock }: {
   const [sex, setSex] = useState<'m' | 'f'>(lastSex)
   return (
     <div className="lk2-choices">
-      <div className="lk2-choice is-default">
+      <div className="lk2-choice">
+        {/* The card's plate stands behind it rather than around it: a plate
+            clips what it holds, and the dropdown opens past the card. */}
+        <span className="plate lk2-choice-plate is-active" aria-hidden="true" />
         <button type="button" className="btn lk2-choice-main" disabled={blocked} autoFocus
           onClick={() => { play('ui.select'); onCustom(sex) }}>
           <span className="lk2-choice-title">{CARD.custom}</span>
@@ -58,6 +61,7 @@ export function NewChoice({ blocked, onCustom, onStock }: {
         </div>
       </div>
       <div className="lk2-choice">
+        <span className="plate lk2-choice-plate" aria-hidden="true" />
         <button type="button" className="btn lk2-choice-main" disabled={blocked}
           onClick={() => { play('ui.select'); onStock() }}>
           <span className="lk2-choice-title">{CARD.stock}</span>
@@ -77,7 +81,7 @@ const StockTile = memo(function StockTile({ id, name, worn, loading, locked }: {
   locked: boolean
 }) {
   return (
-    <button type="button" className={`btn lk2-tile${worn ? ' is-on' : ''}`} disabled={locked}
+    <button type="button" className={`plate btn lk2-tile${worn ? ' is-active' : ''}`} disabled={locked}
       aria-pressed={worn}
       onClick={() => {
         if (worn) return

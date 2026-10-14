@@ -51,7 +51,7 @@ import {
 } from './cardPlacement'
 import { ringBox } from './cardPlacement'
 import {
-  asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, slotsSince,
+  AWAY_ATTR, asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, slotsSince, targetMissing,
 } from './progress'
 import { LOBBY_STEPS, bodyFor, type Step } from './steps'
 
@@ -376,6 +376,9 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // Holding the step's OWN id makes the match exact and the race unrepresentable.
   const [clickedFor, setClickedFor] = useState<string | null>(null)
   const rectRef = useRef<Rect | null>(null)
+  /** Is the screen saying this step's control is away for now? See `AWAY_ATTR`. */
+  const [away, setAway] = useState(false)
+  const awayRef = useRef(false)
   /** The scrolling box that hides part of the anchor, or null. See `clipperOf`. */
   const [clip, setClip] = useState<Rect | null>(null)
   const clipRef = useRef<Rect | null>(null)
@@ -464,6 +467,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     // `rect` and `step` describe two different controls.
     rectRef.current = null
     setRect(null)
+    awayRef.current = false
+    setAway(false)
     setSettledFor(null)
     placedRef.current = null
 
@@ -493,6 +498,16 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         && getComputedStyle(el).visibility === 'visible'
         ? { x: b.left, y: b.top, w: b.width, h: b.height }
         : null
+
+      // AWAY IS NOT MISSING (#28). A screen whose control for this card is
+      // in another of its views says so (`AWAY_ATTR`): the card and its ring
+      // wait for it to come back, instead of ending the run.
+      const nextAway = next === null
+        && document.querySelector(`[${AWAY_ATTR}~="${step.target}"]`) !== null
+      if (awayRef.current !== nextAway) {
+        awayRef.current = nextAway
+        setAway(nextAway)
+      }
 
       // The clip box is measured on the same frame as the rect, so the two can
       // never describe different scroll positions.
@@ -1126,12 +1141,11 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const waitingForMap = step !== undefined
     && step.overMap === true
     && !(frontendUp && frontendReason === 'map')
-  const missing = step !== undefined && step.target !== undefined
-    && rect === null && !waitingForScreen
+  const missing = targetMissing(step, rect !== null, waitingForScreen, away)
   useEffect(() => {
-    if (!missing) return
+    if (!missing || step === undefined) return
     const t = setTimeout(() => {
-      if (rectRef.current === null) {
+      if (rectRef.current === null && !awayRef.current) {
         // NAMED, LOUDLY. Silence here cost a debugging round on 2026-09-04: the
         // first step pointed at a `data-tut` nobody had added, so the run ended
         // 1.2 seconds in and the owner saw the command succeed and NOTHING

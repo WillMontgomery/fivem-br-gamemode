@@ -126,8 +126,8 @@ export function nameOk(n: string): boolean {
   return n.length >= 1 && n.length <= NAME_MAX && /^[A-Za-z0-9]+( [A-Za-z0-9]+)*$/.test(n)
 }
 
-// ═══ SAVING ("Save updates an existing look; "Save as new" lives in the save
-// dialog", owner, 2026-10-13) ═══
+// ═══ SAVING: Save updates an existing look, and "Save as new" lives in the
+// save dialog -- the save flow the owner agreed on 2026-10-13 ═══
 
 export interface SavedLook { id: string; name: string }
 

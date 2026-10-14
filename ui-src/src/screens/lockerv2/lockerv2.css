@@ -112,37 +112,38 @@
   padding-top: 2em;
 }
 
-/* ── THE LOBBY'S PLATE, FOR THIS SCREEN'S OWN CONTROLS ───────────────────── */
-.br-cs .lk2-card,
-.br-cs .lk2-tile,
-.br-cs .lk2-line,
-.br-cs .lk2-choice,
-.br-cs .lk2-icon,
-.br-cs .lk2-face {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%),
-    rgba(32, 36, 50, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+/* ── THE LOBBY'S PLATE, FOR THIS SCREEN'S OWN CONTROLS ─────────────────────
+   A look's card, a stock look, a summary line, New's two cards, a starting
+   face and an icon button are each the lobby's own `.plate` (index.css): its
+   top-lit gradient, its edge, and -- selected, `.is-active` -- the cut
+   corners a selected lobby plate opens (Squads). Only its variables are set
+   here: Btn's default fill and edge, the lobby's selected teal and cyan, and
+   the bevel's size in the island's em (a rem inside the zoom counts twice).
+   #28 review: selection was a cyan edge on square corners. */
+.br-cs .plate {
+  --plate-fill: rgba(32, 36, 50, 0.94);
+  --edgec: rgba(255, 255, 255, 0.3);
+  --cut-max: 0.5em;
   color: #ffffff;
 }
-.br-cs .lk2-card.is-worn,
-.br-cs .lk2-tile.is-on,
-.br-cs .lk2-line.is-on,
-.br-cs .lk2-choice.is-default {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%),
-    rgba(12, 58, 72, 0.94);
-  border-color: #22d3ee;
+.br-cs .plate.is-active {
+  --plate-fill: rgba(12, 58, 72, 0.94);
+  --edgec: #22d3ee;
 }
-.br-cs .lk2-face.is-on {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.015) 46%),
-    #22d3ee;
-  border-color: #67e8f9;
+.br-cs .lk2-card-main,
+.br-cs .lk2-choice-plate {
+  --cut-max: 0.75em;
+}
+/* A starting face's type is 1.25em, so 0.4em of it is the others' 0.5em. */
+.br-cs .lk2-face {
+  --cut-max: 0.4em;
+}
+.br-cs .lk2-face.is-active {
+  --plate-fill: #22d3ee;
+  --edgec: #67e8f9;
   color: #04222a;
 }
-/* A button that is all of its plate: no box of its own. */
-.br-cs .lk2-card-main,
+/* A button inside a plate: no box of its own. */
 .br-cs .lk2-line-main,
 .br-cs .lk2-choice-main {
   background: transparent;
@@ -173,6 +174,10 @@
   display: flex;
   flex-direction: column;
   width: 100%;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
 }
 .br-cs .lk2-card-shot {
   display: block;
@@ -212,10 +217,12 @@
   transform: translateX(-50%);
   pointer-events: none;
 }
+/* Set in from the corner by more than half the worn card's cut (0.75em), so
+   the menu stands clear of the bevel. */
 .br-cs .lk2-card-menu {
   position: absolute;
-  top: 0.2em;
-  right: 0.2em;
+  top: 0.45em;
+  right: 0.45em;
   background: rgba(6, 8, 14, 0.72);
 }
 
@@ -226,9 +233,18 @@
   gap: 1em;
 }
 .br-cs .lk2-choice {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 10em;
+}
+.br-cs .lk2-choice-plate {
+  position: absolute;
+  inset: 0;
+}
+.br-cs .lk2-choice-main,
+.br-cs .lk2-choice-sub {
+  position: relative;
 }
 .br-cs .lk2-choice-main {
   display: flex;
@@ -275,7 +291,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.br-cs .lk2-tile.is-on {
+.br-cs .lk2-tile.is-active {
   color: #22d3ee;
 }
 
@@ -299,12 +315,22 @@
   flex: 1 1 auto;
   min-height: 0;
 }
+/* The list: its lines scroll, and "+ Add" stands below them, outside the
+   scroll box, so the menu it opens -- wider than the list -- is not cut off
+   at the list's edge (#28 review). */
 .br-cs .lk2-list {
   display: flex;
   flex-direction: column;
-  gap: 0.35em;
   flex: 0 0 36%;
   min-width: 0;
+  min-height: 0;
+}
+.br-cs .lk2-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 0.35em;
 }
@@ -340,7 +366,7 @@
   color: rgba(255, 255, 255, 0.62);
   font-size: 0.9em;
 }
-.br-cs .lk2-line.is-on .lk2-line-sum {
+.br-cs .lk2-line.is-active .lk2-line-sum {
   color: rgba(255, 255, 255, 0.85);
 }
 .br-cs .lk2-line-text {
@@ -356,7 +382,8 @@
   border: 1px solid rgba(255, 255, 255, 0.45);
 }
 .br-cs .lk2-add {
-  padding-top: 0.4em;
+  flex: 0 0 auto;
+  padding: 0.75em 0.35em 0 0;
 }
 .br-cs .lk2-panel {
   flex: 1 1 auto;

@@ -12,9 +12,9 @@ export type ModalState =
   /** Save, a new look: "Upon clicking "Save" for any new ped creation, we
    *  should prompt them to name the ped" (owner, #28). */
   | { kind: 'name' }
-  /** Save, a saved look: its name, Save (update) and Save as new ("Save
-   *  updates an existing look; "Save as new" lives in the save dialog",
-   *  owner, 2026-10-13). */
+  /** Save, a saved look: its name, Save (update) and Save as new -- the save
+   *  flow the owner agreed on 2026-10-13 ("Save as new" is a WRITTEN label,
+   *  copy.ts). */
   | { kind: 'save'; id: string; name: string }
   | { kind: 'rename'; id: string; name: string }
   | { kind: 'delete'; id: string; name: string }
