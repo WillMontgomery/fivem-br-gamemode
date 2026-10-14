@@ -423,8 +423,10 @@ export async function resolve(spec, ctx, next) {
   let e = last().edit
   check('New: a female draft, numbered, no extras, unsaved, nothing to undo',
     last().tab === 'female' && last().tabSeq === 7 && e.sex === 'f' && e.extras.length === 0 && e.dirty && !e.undo && !e.redo)
-  check('the core randomized: every core category has its rows, a starting face, a named or numbered item',
-    CORE_CATS.every((c) => e.rows.some((r) => r.cat === c)) && e.rows.some((r) => r.k === 'shape'))
+  check('the core randomized: every core category has its rows and a starting face; the hair and the clothes off their defaults',
+    CORE_CATS.every((c) => e.rows.some((r) => r.cat === c)) && e.rows.some((r) => r.k === 'shape')
+    && e.rows.find((r) => r.k === 'c2').v >= 2
+    && ['c11', 'c4', 'c6', 'sk', 'e'].some((k) => e.rows.find((r) => r.k === k).v > 1))
   const top0 = e.rows.find((r) => r.k === 'c11').v
   h('step', { k: 'c11', d: 1 })
   h('step', { k: 'c11', d: 1 })
