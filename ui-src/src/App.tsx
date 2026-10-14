@@ -20,6 +20,7 @@ import Locker from './screens/Locker'
 import LockerV2Gate, { usePreloadLockerV2 } from './screens/lockerv2/Gate'
 import { parseLocker2 } from './screens/lockerv2/model'
 import Market from './screens/Market'
+import MarketV2Gate, { usePreloadMarketV2 } from './screens/marketv2/Gate'
 import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
@@ -134,6 +135,10 @@ export default function App() {
   // beat re-renders the root, and with it every screen that is up, with nothing
   // changed. 0 for the life of the page unless that switch is on.
   useUi((s) => s.warmTick)
+  // THE SEASON 2 MARKET (#411): in place of Season 1's when the MARKET
+  // envelope says `v2` (BR.Season.has('market2')). Its chunk the same way.
+  const market2On        = useUi((s) => s.market.v2 === true)
+  usePreloadMarketV2(market2On)
 
   useNuiEvent('snapshot', (d) => dispatch().hydrate(d))
   useNuiEvent('state',    (d) => {
@@ -707,9 +712,10 @@ export default function App() {
           the ped are already there, so this screen is a list and a scrim.
           Same focus rule as everything else. */}
       <Page name="locker" show={focus === 'locker'}>{locker2On ? <LockerV2Gate /> : <Locker />}</Page>
-      {/* The market is the third face of the same screen. It has no ped to
-          show, so it takes the whole width. */}
-      <Page name="market" show={focus === 'market'}><Market /></Page>
+      {/* The market is the third face of the same screen. Season 1's has no
+          ped to show, so it takes the whole width; Season 2's (#411) is a
+          panel with the lobby character kept in view beside it. */}
+      <Page name="market" show={focus === 'market'}>{market2On ? <MarketV2Gate /> : <Market />}</Page>
       {/* ONE PANEL, ONE FOCUS SCREEN. This gate used to read `'players' ||
           'playersReport'`, because report mode pushed a second screen purely to
           give up game input for its note field and the panel would otherwise

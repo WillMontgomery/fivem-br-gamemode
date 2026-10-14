@@ -73,6 +73,15 @@ export default defineConfig({
         // recurring source of silent load failures -- the page renders blank
         // with no console error. A battle royale HUD is small enough that
         // splitting buys nothing anyway.
+        //
+        // EXCEPT THE SEASON 2 SCREENS, which are Cloudscape and lazy: Locker
+        // v2 (#28) and the Market (#411) are each a chunk of their own, and
+        // what both reach -- most of Cloudscape -- Rollup puts in a third,
+        // named after its first module: assets/index2.js and index2.css. It is
+        // not a copy of the main bundle, and the main bundle never imports it
+        // (ui-src/scripts/test-marketv2.mjs). A manualChunks function cannot
+        // rename it: a manual chunk takes its unassigned dependencies with it,
+        // React included, and the main bundle then imports all of Cloudscape.
         manualChunks: undefined,
 
         // Stable filenames. fxmanifest lists these, and stable names keep the

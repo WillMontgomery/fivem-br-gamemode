@@ -52,7 +52,7 @@ import {
 import {
   asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, slotsSince,
 } from './progress'
-import { LOBBY_STEPS, type Step } from './steps'
+import { LOBBY_STEPS, bodyFor, type Step } from './steps'
 
 /**
  * THE CARD'S SIZE IS NOT HERE, AND THAT IS THE FIX (#358).
@@ -1203,6 +1203,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const [viewportTick, setViewportTick] = useState(0)
   const uiScale = useUi((st) => st.settings.uiScale)
   const textScale = useUi((st) => st.settings.textScale)
+  // THE SEASON 2 MARKET (#411): its card reads its Season 2 line.
+  const market2 = useUi((st) => st.market.v2 === true)
   const stepId = step?.id
   // THE CARD'S SECOND SECTION, which can change while the card is up: the
   // pickup card's direction arrives with the box of rounds (#405). It changes
@@ -1338,7 +1340,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // VERBATIM. The script's prose goes to the card exactly as written --
         // `{key:…}`, `[[Esc]]` and `~Volts~` are the renderer's to resolve, not
         // this layer's. See the note where `withKeys` used to be.
-        body={step.body}
+        body={bodyFor(step, step.screen === 'market' && market2)}
         // The pickup card's direction takes the section's place while it holds.
         note={note}
         index={i + 1}

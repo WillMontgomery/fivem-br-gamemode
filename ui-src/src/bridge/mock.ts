@@ -11,6 +11,7 @@
 
 import { dispatch } from './nui'
 import { createLocker2Mock } from './mockLocker2'
+import { createMarketMock } from './mockMarket'
 import type {
   CallbackName, ChatMessage, Envelope, ScreenPayload, WireEnvelope,
 } from './types'
@@ -61,30 +62,6 @@ let mockMintSeq = 0
 
 const MOCK_PROGRESS = { level: 14, xp: 2380, needed: 4000 }
 
-const MOCK_MARKET = {
-  balance: 7450,
-  items: [
-    { id: 'ped_juggalo',  name: 'Juggalo',    sub: 'Character',  kind: 'character' as const, price: 1500, rarity: 2 as const },
-    { id: 'ped_clown',    name: 'Clown',      sub: 'Character',  kind: 'character' as const, price: 2500, rarity: 3 as const },
-    { id: 'ped_trooper',  name: 'Trooper',    sub: 'Character',  kind: 'character' as const, price: 4000, rarity: 4 as const, owned: true },
-    { id: 'ped_yeti',     name: 'Yeti',       sub: 'Character',  kind: 'character' as const, price: 9000, rarity: 5 as const },
-    { id: 'ped_diver',    name: 'Diver',      sub: 'Character',  kind: 'character' as const, price: 1500, rarity: 2 as const },
-    { id: 'ped_agent',    name: 'Agent',      sub: 'Character',  kind: 'character' as const, price: 3000, rarity: 3 as const },
-    { id: 'trail_ember',  name: 'Ember',      sub: 'Chute trail', kind: 'trail' as const, price: 800,  rarity: 2 as const },
-    { id: 'trail_void',   name: 'Void',       sub: 'Chute trail', kind: 'trail' as const, price: 2000, rarity: 4 as const },
-    { id: 'trail_gold',   name: 'Bullion',    sub: 'Chute trail', kind: 'trail' as const, price: 6000, rarity: 5 as const },
-    { id: 'ban_storm',    name: 'Stormchaser', sub: 'Banner',    kind: 'banner' as const, price: 1200, rarity: 3 as const },
-    { id: 'ban_first',    name: 'Day One',    sub: 'Banner',     kind: 'banner' as const, price: 0,    rarity: 5 as const, owned: true },
-    { id: 'vd_royale',    name: 'Victory Royale', sub: 'Verdict', kind: 'verdict' as const, price: 0, rarity: 1 as const, owned: true },
-    { id: 'vd_lastone',   name: 'Last One Standing', sub: 'Verdict', kind: 'verdict' as const, price: 3500, rarity: 4 as const },
-    // THE DANCES (#215), one of each state the Emotes tab draws: on the wheel
-    // at segment 1, owned and off the wheel, and for sale at the owner's 250.
-    { id: 'emote_shuffle',       name: 'Shuffle',       sub: 'Dance', kind: 'emote' as const, price: 250, rarity: 1 as const, owned: true, equipped: true, slot: 1 },
-    { id: 'emote_club_groove',   name: 'Groove',        sub: 'Dance', kind: 'emote' as const, price: 250, rarity: 1 as const, owned: true },
-    { id: 'emote_techno_karate', name: 'Techno Karate', sub: 'Dance', kind: 'emote' as const, price: 250, rarity: 1 as const },
-  ],
-}
-
 /** Mirrors br_lib/config/peds.lua closely enough to lay the screen out. */
 const MOCK_PEDS = [
   { id: 'streetguy', name: 'Street' }, { id: 'streetgirl', name: 'Downtown' },
@@ -100,12 +77,19 @@ const MOCK_PEDS = [
 /** Locker v2 (#28): Lua's half, played in bridge/mockLocker2.ts. */
 const LOCKER2 = createLocker2Mock(MOCK_PEDS, emit)
 
+/** The Market (#411): br_ui's and the server's halves, played in bridge/mockMarket.ts. */
+const MARKET = createMarketMock(emit)
+
 /** Stand-in for Lua callbacks while running in a browser. */
 export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promise<Res> {
   // eslint-disable-next-line no-console
   console.info('[mock] fetchNui', name, data)
 
   if (name.startsWith('br/locker2/') && LOCKER2.handle(name, data)) return {} as Res
+  // The Market's three verbs answer at once, as br_ui's callbacks do; the
+  // grid that says what happened follows a moment later.
+  if ((name === 'br/market/buy' || name === 'br/market/equip' || name === 'br/market/unequip')
+      && MARKET.handle(name, data)) return { ok: true } as Res
 
   if (name === 'br/chat/send') {
     const d = data as { channel: ChatMessage['channel']; text: string }
@@ -219,11 +203,6 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
       },
     } as Res
   }
-
-  // Taking a dance off the wheel (#215). Answered so the page's promise
-  // resolves the way br_ui's callback does -- at once, with the real result
-  // arriving later as a new grid (which the harness does not fake).
-  if (name === 'br/market/unequip') return { ok: true } as Res
 
   return {} as Res
 }
@@ -511,11 +490,20 @@ export function startMockDriver(): void {
       ],
     },
   })
-  emit({ k: 'market', d: MOCK_MARKET })
-  // The emote gate (#215), OPEN in the harness so the Emotes tab and the
-  // "Music volume" slider can be looked at in a browser. Lua sends it with
-  // every grid, so it sits beside the market emit.
-  emit({ k: 'emotes', d: { on: true } })
+  // THE GRID AND THE EMOTE GATE (#215, #411), sent together as Lua sends
+  // them: Season 2's by default -- the Season 2 Market, the Emotes tab and the
+  // "Music volume" slider -- and Season 1's with `?season=1`.
+  MARKET.push()
+  // `?market` opens the Market straight away, Season 2's unless `?season=1`.
+  // FROM THE LOBBY, as in game: the match seeded below is left first, so what
+  // shows beside Season 2's panel is where the lobby character stands, not a
+  // HUD in a fight.
+  if (/[?&]market\b/.test(window.location.search)) {
+    window.setTimeout(() => {
+      emit({ k: 'state', d: { state: 'waiting', mode: 'squad', endsAt: 0, serverNow: Date.now() } })
+      emit({ k: 'focus', d: { screen: 'market' } })
+    }, 300)
+  }
 
   emit({
     k: 'snapshot',
@@ -761,9 +749,13 @@ export function startMockDriver(): void {
     { show: true, byPlayer: false, cause: null },
   ]
   let deathAt = 0
-  window.setInterval(() => {
-    emit({ k: 'death', d: DEATHS[deathAt++ % DEATHS.length]! })
-  }, 3500)
+  // NOT UNDER `?market`, which opens from the lobby (#411): nobody dies in the
+  // lobby, and the word would be drawn where the lobby character stands.
+  if (!/[?&]market\b/.test(window.location.search)) {
+    window.setInterval(() => {
+      emit({ k: 'death', d: DEATHS[deathAt++ % DEATHS.length]! })
+    }, 3500)
+  }
 
   // Storm ticks at the same 4 Hz the server would use.
   let radius = 520, edge = -180

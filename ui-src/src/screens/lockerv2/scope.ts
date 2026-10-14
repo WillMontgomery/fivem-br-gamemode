@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useState } from 'react'
 import { applyMode, Mode } from '@cloudscape-design/global-styles'
 import { applyTheme } from '@cloudscape-design/components/theming'
 import { useUi } from '../../store'
-import { LOCKER_THEME } from './theme'
+import { LOCKER_THEME } from '../../ui/cloudscape/theme'
 import { zoomFor } from './model'
 
 /**

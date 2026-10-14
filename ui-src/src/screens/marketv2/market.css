@@ -1,0 +1,9 @@
+/* THE GRID IS THE ONLY THING THAT SCROLLS (#411), as on Season 1's Market:
+   the title, the balance, the tabs, the wheel's count and Done stay put.
+   Cloudscape's fitHeight tab panel is a flex item as tall as its content
+   (min-height: auto), so its wrapper scrolled instead -- the wheel's count with
+   the cards, in the browser's own scrollbar. Let the panel take the wrapper's
+   height, and the grid's own region (MarketV2.tsx, `.thin-scroll`) scrolls. */
+.mk2-tabs [class*='awsui_tabs-content-active'] {
+  min-height: 0;
+}

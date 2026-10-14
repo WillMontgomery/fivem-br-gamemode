@@ -121,3 +121,13 @@ export const LOCKER_THEME: Theme = {
     borderRadiusTiles: '4px',
   },
 }
+
+/*
+ * ONE THEME, SHARED (#411). It moved here from screens/lockerv2/ because the
+ * Season 2 Market wears it too: both screens put it on through
+ * screens/lockerv2/scope.ts's useCloudscapeScope, and nothing else applies a
+ * Cloudscape theme. The My Looks retheme (#28: radius 0, our colors, the
+ * gradients, the click animation) lands in this file, once, for both screens.
+ * What is the Market's alone -- its tabs, cards and badge -- is
+ * screens/marketv2/look.ts.
+ */

@@ -189,6 +189,13 @@ export type Step = {
    * markup, and both are the owner's own allowance.
    */
   body: string
+  /**
+   * The prose instead, while the screen this card waits on is drawn as its
+   * Season 2 version (#411: the Market). Owner, 2026-10-13: ""it may look a
+   * bit empty in here" should change in season 2 - I agree." Season 1 keeps
+   * `body`. See `bodyFor`.
+   */
+  v2Body?: string
   advance: Advance
   /** For `advance: 'screen'` -- the screen whose arrival ends the step. */
   awaitScreen?: string
@@ -614,6 +621,9 @@ export const LOBBY_STEPS: Step[] = [
     target: 'market-done',
     title: 'The Market',
     body: "It may look a bit empty in here for now as we're still working on things.",
+    // THE SEASON 2 MARKET'S LINE (#411): "should change in season 2 - I
+    // agree." The ring on Done is still the focus.
+    v2Body: 'Have a look around, then press **Done**.', // WRITTEN (proposal for the owner)
     advance: 'click',
     screen: 'market',
     live: ['page-market'],
@@ -668,6 +678,14 @@ export const LOBBY_STEPS: Step[] = [
     locked: ['ready'],
   },
 ]
+
+/**
+ * The prose a card shows: `v2Body` while the screen it waits on is its Season 2
+ * version (#411), `body` otherwise -- so Season 1 reads exactly what it did.
+ */
+export function bodyFor(step: Pick<Step, 'body' | 'v2Body'>, v2Screen: boolean): string {
+  return v2Screen && step.v2Body !== undefined ? step.v2Body : step.body
+}
 
 /**
  * Screens the walkthrough does not visit, and the control on each that leads

@@ -1328,6 +1328,9 @@ export interface MarketItem {
   locked?: boolean
   /** Which season it came from, for the card's provenance line. */
   season?: string
+  /** SEASON 2 MARKET ONLY (#411): one of this season's items, badged New.
+   *  Lua sends it only while the `market2` row is on. */
+  isNew?: boolean
 }
 
 /** Whether the emote system is on, on this machine (#215, "Scope v2"):
@@ -1360,6 +1363,10 @@ export interface MarketPayload {
   /** What the currency is called. Sent by Lua so the name lives in one place. */
   currency?: string
   items: MarketItem[]
+  /** THE SEASON 2 MARKET (#411): true only while BR.Season.has('market2'),
+   *  and then App.tsx draws screens/MarketV2.tsx. Absent on Season 1, whose
+   *  envelope is unchanged -- and whose screen is screens/Market.tsx. */
+  v2?: boolean
 }
 
 /** One rebindable action, from br_ui/client/keybinds.lua. */
