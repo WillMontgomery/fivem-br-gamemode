@@ -6,7 +6,7 @@
   "description": "NUI for Blitz Royale. Builds into resources/[fivem-royale]/br_ui/ui, and the Season 2 terminal app into resources/[computer]/cuchi_computer/nui/apps/terminal.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:countdown && npm run test:impacts && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:continuetoggle && npm run test:tutoriallock && npm run test:tutorialgame && npm run test:fade && npm run test:cold && npm run test:lockerv2 && npm run test:marketv2 && npm run test:fit && npm run check:layout && npm run build:terminal",
+    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:countdown && npm run test:impacts && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:continuetoggle && npm run test:tutoriallock && npm run test:tutorialgame && npm run test:fade && npm run test:cold && npm run test:lockerv2 && npm run test:marketv2 && npm run test:fit && npm run check:layout && npm run build:terminal && node scripts/check-css.mjs pages && npm run test:cef && npm run check:cef",
     "build:terminal": "vite build -c vite.terminal.config.ts && node scripts/check-css.mjs terminal && node scripts/check-terminal.mjs && node scripts/test-terminal-model.mjs && node scripts/test-terminal-desktop.mjs",
     "build:check": "node scripts/check-build.mjs",
     "build:only": "vite build",
@@ -14,6 +14,8 @@
     "typecheck": "tsc --noEmit",
     "check:css": "node scripts/check-css.mjs",
     "check:ui": "node scripts/check-ui.mjs",
+    "check:cef": "node scripts/check-cef.mjs",
+    "test:cef": "node scripts/test-cef.mjs",
     "test:envelope": "node scripts/test-envelope.mjs",
     "test:countdown": "node scripts/test-countdown.mjs",
     "test:impacts": "node scripts/test-impacts.mjs",
@@ -33,6 +35,11 @@
     "test:terminal": "node scripts/test-terminal-model.mjs && node scripts/test-terminal-desktop.mjs"
   },
   "//": "Pinned to the HeroUI 2.x line and Tailwind 3.x deliberately. FiveM's CEF is Chrome 103, which cannot parse oklch/oklab/lch/color-mix -- and HeroUI 3 + Tailwind 4 emit those throughout their colour systems. scripts/check-css.mjs fails the build if any reach the bundle.",
+  "//browserslist": "autoprefixer's target. Its defaults alone no longer reach Chrome 103, so the prefixes 103 needs (mask-image) were there by luck; naming 103 makes them certain. Kept with the defaults so the shipped CSS is unchanged. Chrome 103 until every client is on CEF 144 (#413, docs/platform.md).",
+  "browserslist": [
+    "defaults",
+    "chrome 103"
+  ],
   "dependencies": {
     "@cloudscape-design/components": "3.0.1391",
     "@cloudscape-design/global-styles": "1.0.71",
