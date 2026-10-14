@@ -1551,9 +1551,13 @@ BR.Nui = {
     XP        = 'xp',
     -- { balance, currency, items, v2? }. `v2` is true only while the season
     -- has the `market2` row (#411): the page then draws the Season 2 Market,
-    -- and the grid carries no placeholder kinds and marks this season's items
-    -- `isNew`. Absent on Season 1, whose envelope is unchanged.
+    -- and the grid carries no placeholder kinds. Absent on Season 1, whose
+    -- envelope is unchanged.
     MARKET    = 'market',
+    -- { design } the Season 2 Market's tab design (#411), a name or a number:
+    -- sent only by `brmarkettabs`, a dev-box comparison switch, and only while
+    -- the season has `market2`.
+    MARKET_TABS = 'markettabs',
     -- The player list. Carries the roster projection AND the report state --
     -- how many reports are left this match, and the categories -- because the
     -- panel cannot render its own rules and must not invent them.
@@ -1747,6 +1751,11 @@ BR.NuiCb = {
     -- Take a dance off the wheel (#215): { id }. Emote slots only -- every
     -- other kind has a default to fall back to and no un-equip.
     MARKET_UNEQUIP = 'br/market/unequip',
+    -- The Season 2 Market's Preview (#411): { id } plays that dance on the
+    -- lobby character, silently, while the Market is open; { id = nil } stops
+    -- it. br_ui refuses a dance the player neither owns nor can afford and
+    -- hands the rest to br_core (`br:ui:marketPreview`, client/lobbyped.lua).
+    MARKET_PREVIEW = 'br/market/preview',
     -- The player list. FOCUS follows the same push/pop discipline every other
     -- overlay uses; SUBMIT carries the selected targets and their categories.
     PLAYERS_FOCUS = 'br/players/focus',

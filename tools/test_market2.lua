@@ -5,8 +5,14 @@
 -- BR.Season.has('market2') by br_ui/client/market.lua. On, the MARKET envelope
 -- carries `v2` (the page draws screens/MarketV2.tsx), the grid drops the
 -- placeholder kinds the server cannot sell (Characters, Banners -- "only real
--- items"), and the dances, Season 2's items, are marked `isNew`. Off, the
--- envelope and the grid are exactly what they were before #411.
+-- items"), and nothing is marked New (owner, 2026-10-14: "let's not just put
+-- the "new" tag on everything - have some meaning to it. or get rid of it.").
+-- Off, the envelope and the grid are exactly what they were before #411.
+--
+-- AND WHAT ONLY THE SEASON 2 MARKET ANSWERS (#411, 2026-10-14): MARKET_PREVIEW
+-- -- a dance on the lobby character, refused unless owned or affordable,
+-- handed to br_core as `br:ui:marketPreview` (its half is the last block of
+-- tools/test_lobbyseq.lua) -- and `brmarkettabs`, the tab designs' switch.
 --
 -- ═══ WHAT THIS LOADS FOR REAL ═══
 --
@@ -47,8 +53,11 @@ local convars = setmetatable({}, {
         end
     end,
 })
+-- Off, as on the public box, but for the `brmarkettabs` block, which is a dev
+-- command (br_lib/shared/devgate.lua wraps every RegisterCommand).
+local devMode = false
 function GetConvar(name, dflt)
-    if name == 'sv_devMode' or name == 'br_devMode' then return 'false' end
+    if name == 'sv_devMode' or name == 'br_devMode' then return devMode and 'true' or 'false' end
     if convars[name] ~= nil then return convars[name] end
     return dflt
 end
@@ -64,7 +73,8 @@ function RegisterNetEvent() end
 function RegisterNUICallback(name, fn) nuiCbs[name] = fn end
 function TriggerServerEvent(name, ...) toServer[#toServer + 1] = { name = name, args = { ... } } end
 function TriggerEvent(name, ...) toLocal[#toLocal + 1] = { name = name, args = { ... } } end
-function RegisterCommand() end
+local commands = {}
+function RegisterCommand(name, fn) commands[name] = fn end
 
 local function fire(name, ...)
     for _, fn in ipairs(handlers[name] or {}) do fn(...) end
@@ -248,18 +258,15 @@ do
         ok(itemById(g, id) == nil, ('no %s tile'):format(id))
     end
 
-    local dances, newDances, newOthers = 0, 0, {}
+    local dances, extra = 0, {}
     for _, it in ipairs(g.items) do
-        if it.kind == 'emote' then
-            dances = dances + 1
-            if it.isNew == true then newDances = newDances + 1 end
-        elseif it.isNew ~= nil then
-            newOthers[#newOthers + 1] = it.id
+        if it.kind == 'emote' then dances = dances + 1 end
+        for k in pairs(it) do
+            if not S1_FIELDS[k] then extra[#extra + 1] = it.id .. '.' .. tostring(k) end
         end
     end
     ok(dances == #BR.Config.Emotes.order and dances > 0, 'the dances are on the grid', dances)
-    ok(newDances == dances, "every dance -- Season 2's items -- is New", newDances .. '/' .. dances)
-    ok(#newOthers == 0, 'and nothing from before Season 2 is', table.concat(newOthers, ','))
+    ok(#extra == 0, 'and no tile carries New -- or any field a Season 1 tile does not', table.concat(extra, ','))
 
     -- THE REST OF THE GRID IS SEASON 1'S, TILE FOR TILE.
     season1()
@@ -375,6 +382,123 @@ do
     tile = itemById(g, 'chute_crimson')
     ok(tile ~= nil and tile.owned == true and tile.equipped == true and g.balance == 3500,
         "the server's answer is what moves it")
+end
+
+-- ---------------------------------------------------------------------------
+-- THE PREVIEW (#411): "let's have a way for them to preview the emote while in
+-- market, but shouldn't work if they can't afford it" (owner, 2026-10-14).
+-- ---------------------------------------------------------------------------
+
+--- Every `br:ui:marketPreview` raised since the last reset, as its id or 'nil'.
+local function previews()
+    local out = {}
+    for _, e in ipairs(toLocal) do
+        if e.name == 'br:ui:marketPreview' then out[#out + 1] = tostring(e.args[1]) end
+    end
+    return table.concat(out, ',')
+end
+
+describe('the preview')
+do
+    local dance, other = 'emote_shuffle', 'emote_jumper'
+    local price = BR.Config.MarketIndex[dance].price
+    season2()
+    grid({ balance = price, owned = { other }, equipped = {} })
+
+    reset()
+    local answered, okCall = callCb(BR.NuiCb.MARKET_PREVIEW, { id = dance })
+    ok(okCall and answered and answered.ok == true, 'MARKET_PREVIEW answers at once')
+    ok(previews() == dance, 'an affordable dance goes to the lobby ped', previews())
+    ok(#toServer == 0, 'and nothing reaches the server: no record, no music', #toServer)
+
+    reset()
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
+    callCb(BR.NuiCb.MARKET_PREVIEW, {})
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = '' })
+    ok(previews() == other .. ',nil,nil', 'an owned one goes too, and no id is the stop', previews())
+
+    grid({ balance = price - 1, owned = { other }, equipped = {} })
+    reset()
+    answered = callCb(BR.NuiCb.MARKET_PREVIEW, { id = dance })
+    ok(previews() == '' and answered and answered.ok == true,
+        'one the player neither owns nor can afford is refused -- and still answered', previews())
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
+    ok(previews() == other, 'while one they own still plays, at any balance', previews())
+
+    reset()
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = 'chute_crimson' })
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = 'emote_nope' })
+    ok(previews() == '', 'anything but a dance in the catalog is refused', previews())
+
+    -- A CLOSED SEASON'S DANCE: on sale nowhere, so never previewed unowned.
+    local item = BR.Config.MarketIndex[dance]
+    local was = item.purchasable
+    item.purchasable = false
+    grid({ balance = 999999, owned = {}, equipped = {} })
+    reset()
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = dance })
+    ok(previews() == '', 'a dance no longer on sale is refused to a player who does not own it', previews())
+    item.purchasable = was
+
+    -- SEASON 1 NEVER: the callback answers and does nothing at all.
+    season1()
+    grid({ balance = 999999, owned = { other }, equipped = {} })
+    reset()
+    answered = callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
+    callCb(BR.NuiCb.MARKET_PREVIEW, {})
+    ok(previews() == '' and #toServer == 0 and answered and answered.ok == true,
+        'on Season 1 nothing is sent anywhere, the stop included', previews())
+
+    -- ITS OWN ROWS BOTH WAYS: the Season 2 Market with emotes off plays nothing.
+    local rows = BR.Config.Seasons.features
+    season2()
+    rows.emotes.from = 3
+    grid({ balance = 999999, owned = { other }, equipped = {} })
+    reset()
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
+    ok(previews() == '', 'with the emotes row off, nothing plays even on the Season 2 Market', previews())
+    rows.emotes.from = 2
+end
+
+-- ---------------------------------------------------------------------------
+-- THE TAB DESIGNS (#411): `brmarkettabs`, the dev box's comparison switch.
+-- ---------------------------------------------------------------------------
+
+describe('brmarkettabs')
+do
+    local cmd = commands.brmarkettabs
+    ok(type(cmd) == 'function', 'the command is registered')
+    season2()
+    reset()
+    cmd(0, { 'rail' })
+    ok(lastLocal(BR.Nui.MARKET_TABS) == nil, 'off a dev box it is refused by the dev gate and sends nothing')
+    devMode = true
+    for _, c in ipairs({ { '1', 'bar' }, { 'rail', 'rail' }, { '3', 'folder' }, { 'BAR', 'bar' } }) do
+        reset()
+        cmd(0, { c[1] })
+        local d = lastLocal(BR.Nui.MARKET_TABS)
+        ok(d ~= nil and d.design == c[2] and keysOf(d) == 'design',
+            ('brmarkettabs %s sends { design = %s }'):format(c[1], c[2]), d and keysOf(d))
+    end
+    reset()
+    cmd(0, { 'plates' })
+    cmd(0, {})
+    ok(lastLocal(BR.Nui.MARKET_TABS) == nil, 'a design it does not know, or none, sends nothing')
+
+    reset()
+    cmd(0, { '2' })
+    reset()
+    fire('br:ui:ready')
+    local d = lastLocal(BR.Nui.MARKET_TABS)
+    ok(d ~= nil and d.design == 'rail', 'a reloaded page is told the design again', d and d.design)
+
+    season1()
+    reset()
+    cmd(0, { 'folder' })
+    fire('br:ui:ready')
+    ok(lastLocal(BR.Nui.MARKET_TABS) == nil, 'on Season 1 it sends nothing, then or on a reload')
+    season2()
+    devMode = false
 end
 
 -- ---------------------------------------------------------------------------

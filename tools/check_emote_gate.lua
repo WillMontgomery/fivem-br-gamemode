@@ -30,7 +30,9 @@
 --                          replaces the BR.Emotes table
 --   G4 EVERY DOOR ASKS     each discovered entry point calls
 --                          BR.Season.has('emotes') or that file's pinned
---                          nil-safe wrapper
+--                          nil-safe wrapper -- the Season 2 Market's Preview
+--                          (#411) among them: br_ui's MARKET_PREVIEW callback
+--                          and the lobby ped's BR.LobbyPed.preview
 --   G5 NOT VACUOUS         every door the contract names is actually found
 --   G6 THE PAGE            the Music volume slider and the Emotes tab render
 --                          only behind `emotesOn`, in the agreed places --
@@ -139,9 +141,10 @@ local OPEN_PAREN = {
     { pat = "^BR%.Sched%.%a+%(.-'(emotes%.[%w_]+)'", view = 'names', kind = 'loop' },
 }
 
---- br_ui's three Market callbacks. Only in that file.
+--- br_ui's four Market callbacks. Only in that file. MARKET_PREVIEW (#411)
+--- plays a dance on the lobby ped -- an emote door like the rest.
 local NUI_FILE = 'br_ui/client/market.lua'
-local NUI_CBS = { 'MARKET_UNEQUIP', 'MARKET_BUY', 'MARKET_EQUIP' }
+local NUI_CBS = { 'MARKET_UNEQUIP', 'MARKET_BUY', 'MARKET_EQUIP', 'MARKET_PREVIEW' }
 
 --- Named bodies, each to the first `end` at column 0, by file.
 local NAMED = {
@@ -156,6 +159,11 @@ local NAMED = {
     },
     ['br_ui/client/market.lua'] = {
         '^local function catalogue%(', '^function BR%.Market%.pushEmotes%(',
+    },
+    -- The Season 2 Market's Preview on the lobby ped (#411): a dance played
+    -- on this client's ped is an emote door, wherever the file lives.
+    ['br_core/client/lobbyped.lua'] = {
+        '^function BR%.LobbyPed%.preview%(',
     },
 }
 
@@ -494,7 +502,7 @@ local function run(files)
     -- ── G5: the doors the contract names were all found ──────────────────────
     local want = {
         'server:EMOTE_PLAY', 'server:EMOTE_STOP', 'server:MARKET_UNEQUIP', 'client:EMOTE_RECORD',
-        'nui:MARKET_UNEQUIP', 'nui:MARKET_BUY', 'nui:MARKET_EQUIP', 'key:emoteWheel',
+        'nui:MARKET_UNEQUIP', 'nui:MARKET_BUY', 'nui:MARKET_EQUIP', 'nui:MARKET_PREVIEW', 'key:emoteWheel',
         'cmd:bremote', 'cmd:bremotegrant',
         'loop:emotes.play', 'loop:emotes.audio', 'loop:emotes.gate', 'loop:emotes.wheel',
         'loop:emotes.sweep',
@@ -643,6 +651,15 @@ local function goodTree()
             'RegisterNUICallback(BR.NuiCb.MARKET_UNEQUIP, function(data, cb)',
             '    if emotesOn() then end',
             'end)',
+            'RegisterNUICallback(BR.NuiCb.MARKET_PREVIEW, function(data, cb)',
+            '    if market2On() and emotesOn() then end',
+            'end)',
+        }, '\n'),
+        [R .. 'br_core/client/lobbyped.lua'] = table.concat({
+            "local function emotesOn() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end",
+            'function BR.LobbyPed.preview(id)',
+            '    if id == nil or not (emotesOn() and market2On()) then return end',
+            'end',
         }, '\n'),
         ['ui-src/src/screens/Settings.tsx'] = table.concat({
             '<div data-tut="settings-volui">',
@@ -688,6 +705,7 @@ local CFG, SRV, MKT, CLI = R .. 'br_lib/config/emotes.lua', R .. 'br_core/server
 local SEA = R .. 'br_lib/config/seasons.lua'
 local WHL, KEY, UIM = R .. 'br_core/client/emotewheel.lua', R .. 'br_core/client/keybinds.lua',
     R .. 'br_ui/client/market.lua'
+local LPD = R .. 'br_core/client/lobbyped.lua'
 local SET, MTX = 'ui-src/src/screens/Settings.tsx', 'ui-src/src/screens/Market.tsx'
 local MD2, MX2 = 'ui-src/src/screens/marketv2/model.ts', 'ui-src/src/screens/MarketV2.tsx'
 
@@ -746,6 +764,14 @@ local FIXTURES = {
           t[KEY] = row .. '\n' .. def
           return t
       end },
+    { name = 'the Market\'s preview callback that does not ask', want = 'G4',
+      mut = function(t) return edit(t, UIM, '    if market2On() and emotesOn() then end', '    if market2On() then end') end },
+    { name = 'the lobby ped\'s preview that does not ask', want = 'G4',
+      mut = function(t) return edit(t, LPD, 'not (emotesOn() and market2On())', 'not market2On()') end },
+    { name = 'the preview callback gone', want = 'G5',
+      mut = function(t) return edit(t, UIM, 'RegisterNUICallback(BR.NuiCb.MARKET_PREVIEW', 'RegisterNUICallback(BR.NuiCb.MARKET_LOOK') end },
+    { name = 'the lobby ped\'s preview gone', want = 'G5',
+      mut = function(t) return edit(t, LPD, 'function BR.LobbyPed.preview(id)', 'function BR.LobbyPed.look(id)') end },
     { name = 'a missing command', want = 'G5',
       mut = function(t) return edit(t, SRV, "RegisterCommand('bremotegrant'", "RegisterCommand('brother'") end },
     { name = 'a slider placed after another Slider', want = 'G6',

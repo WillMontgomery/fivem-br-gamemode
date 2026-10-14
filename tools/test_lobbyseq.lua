@@ -5388,6 +5388,155 @@ do
     reset()
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE MARKET'S PREVIEW (#411): the dance on this ped, silently, while the
+-- Season 2 Market is open. Owner, 2026-10-14: "let's have a way for them to
+-- preview the emote while in market, but shouldn't work if they can't afford
+-- it" -- br_ui refuses those (tools/test_market2.lua); this is br_core's half:
+-- WHEN it plays, that it plays silently, and that every way it ends ends it.
+-- ═══════════════════════════════════════════════════════════════════════════
+do
+    loadAll({ 'br_lib/config/market.lua', 'br_lib/config/emotes.lua' })
+    -- THE TWO ROWS, MOVED APART: a stub, so each can be shut on its own.
+    local rows = { emotes = true, market2 = true }
+    local realSeason = BR.Season
+    BR.Season = { has = function(id) return rows[id] == true end }
+    local realServer = TriggerServerEvent
+    local sent = {}
+    TriggerServerEvent = function(n) sent[#sent + 1] = n end
+
+    local row, other = BR.Emotes.row('emote_shuffle'), BR.Emotes.row('emote_jumper')
+    local E = BR.Config.Match.lobbyEntrance.emotes
+    local function on(r) return ped.anim ~= nil and ped.anim.dict == r.dict and ped.anim.clip == r.clip end
+    local function asked(r)
+        local _, e = firstOf('anim', function(a) return a.dict == r.dict and a.clip == r.clip end)
+        return e
+    end
+    local function music()
+        for _, e in ipairs(events) do
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.EMOTE_AUDIO then return true end
+        end
+        return false
+    end
+    --- Out of the Market and back to a parked ped with nothing on it.
+    local function fresh()
+        TriggerEvent('br:ui:marketPreview', nil)
+        TriggerEvent('br:ui:focusChanged', 'lobby')
+        pump(200)
+        reset()
+        wearChosenModel()
+        pump(25000)
+        TriggerEvent('br:ui:focusChanged', 'market')
+        order, sent, events = {}, {}, {}
+    end
+
+    -- (1) THE DANCE, ON THE PARKED PED, AND NOTHING ELSE.
+    fresh()
+    ok(not BR.LobbyPed.entering(), 'preview precondition: the entrance is over and parked')
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(300)
+    local a = asked(row)
+    ok(a ~= nil and on(row), 'preview: the Market\'s dance plays on the parked lobby ped')
+    ok(a ~= nil and a.flags == row.flag and a.ms == -1,
+        ('preview: its own clip and flag, looping until stopped (flags %s, ms %s)')
+            :format(tostring(a and a.flags), tostring(a and a.ms)))
+    ok(#sent == 0 and not music(),
+        ('preview: silently -- nothing to the server (%d), no music to the page'):format(#sent))
+
+    -- (2) ANOTHER DANCE TAKES ITS PLACE, BY NAME, NEVER ClearPedTasks.
+    order = {}
+    TriggerEvent('br:ui:marketPreview', other.id)
+    pump(300)
+    ok(on(other) and firstOf('cleartasks') == nil,
+        'preview: another dance takes its place, the first stopped by name -- never ClearPedTasks')
+
+    -- (3) NO ID STOPS IT.
+    TriggerEvent('br:ui:marketPreview', nil)
+    pump(200)
+    ok(ped.anim == nil and firstOf('cleartasks') == nil, 'preview: no id takes it off the ped')
+
+    -- (4) LEAVING THE MARKET STOPS IT -- Done, Escape, anything taking the focus --
+    -- AND COMING BACK DOES NOT BRING IT BACK.
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(300)
+    ok(on(row), 'preview precondition: playing again')
+    TriggerEvent('br:ui:focusChanged', 'lobby')
+    pump(200)
+    ok(ped.anim == nil, 'preview: the Market losing the focus takes it off the ped')
+    TriggerEvent('br:ui:focusChanged', 'market')
+    pump(2000)
+    ok(ped.anim == nil, 'preview: and opening the Market again does not bring it back')
+
+    -- (5) ONLY IN THE MARKET.
+    TriggerEvent('br:ui:focusChanged', 'lobby')
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(1000)
+    ok(asked(row) == nil or not on(row), 'preview: outside the Market it plays nothing')
+
+    -- (6) NEVER ON SEASON 1, NOR WITHOUT EMOTES -- each row on its own.
+    for _, shut in ipairs({ 'market2', 'emotes' }) do
+        fresh()
+        rows[shut] = false
+        TriggerEvent('br:ui:marketPreview', row.id)
+        pump(1000)
+        ok(asked(row) == nil, ('preview: with the %s row shut nothing plays'):format(shut))
+        rows[shut] = true
+    end
+
+    -- (7) A SEASON SWITCH MID-PREVIEW TAKES IT OFF, AND IT STAYS OFF.
+    fresh()
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(300)
+    ok(on(row), 'preview precondition: playing before the switch')
+    rows.market2 = false
+    pump(200)
+    ok(ped.anim == nil, 'preview: a season without the Season 2 Market takes it off at once')
+    rows.market2 = true
+    pump(2000)
+    ok(ped.anim == nil, 'preview: and switching back does not bring it back')
+
+    -- (8) THE STRETCH STANDS ASIDE WHILE IT PLAYS, AND GIVES WAY TO IT.
+    fresh()
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(E.idle.afterMs + 10000)
+    ok(asked(E.idle) == nil and on(row), 'preview: no stretch while the preview plays')
+    fresh()
+    for _ = 1, (E.idle.afterMs + 10000) // 100 do
+        if on(E.idle) then break end
+        pump(100)
+    end
+    ok(on(E.idle), 'preview precondition: the stretch is playing')
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(400)
+    ok(on(row), 'preview: a stretch already playing gives way to it')
+
+    -- (9) NOT DURING THE ENTRANCE: it waits until the ped is parked.
+    TriggerEvent('br:ui:marketPreview', nil)
+    TriggerEvent('br:ui:focusChanged', 'lobby')
+    pump(200)
+    reset()
+    wearChosenModel()
+    TriggerEvent('br:ui:focusChanged', 'market')
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(2000)
+    ok(BR.LobbyPed.entering() and asked(row) == nil, 'preview: nothing touches the ped while it walks in')
+    pump(25000)
+    ok(on(row), 'preview: and it plays once the ped is parked, the Market still open')
+
+    -- (10) LEAVING THE LOBBY TAKES IT OFF.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    pump(200)
+    ok(not on(row), 'preview: a ped that leaves the lobby stops it')
+    BR.State.me.state = BR.PlayerState.LOBBY
+
+    TriggerEvent('br:ui:marketPreview', nil)
+    TriggerEvent('br:ui:focusChanged', 'lobby')
+    pump(200)
+    BR.Season = realSeason
+    TriggerServerEvent = realServer
+    reset()
+end
+
 -- ------------------------------------------------------------------ report ---
 
 if fail > 0 then

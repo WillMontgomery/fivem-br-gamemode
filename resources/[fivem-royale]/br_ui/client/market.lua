@@ -46,8 +46,9 @@ local function emotesOn() return BR.Config.Emotes ~= nil and BR.Season ~= nil an
 --- 1." The `market2` row in br_lib/config/seasons.lua, asked like every other
 --- gate. Off, the grid and the MARKET envelope are exactly what they were
 --- before #411, and the page draws screens/Market.tsx. On, the grid drops the
---- placeholder kinds, marks this season's items New, and the envelope carries
---- `v2`, which is what makes the page draw screens/MarketV2.tsx.
+--- placeholder kinds and the envelope carries `v2`, which is what makes the
+--- page draw screens/MarketV2.tsx -- and the Preview (MARKET_PREVIEW) and the
+--- tab designs (`brmarkettabs`) below answer only then.
 ---
 --- NIL-SAFE for the same reason as emotesOn: tools/test_client.lua loads this
 --- file without the season module.
@@ -116,6 +117,12 @@ local function catalogue()
     -- THE SEASON 2 MARKET (#411). The push reads the same answer for the
     -- envelope's `v2` in the same call, and nothing moves the season between.
     local v2 = market2On()
+    -- NO "NEW" (#411, owner 2026-10-14: "let's not just put the "new" tag on
+    -- everything - have some meaning to it. or get rid of it."). Gone until
+    -- there are items that are new to somebody: it would then be "new since
+    -- your last visit" -- the ids on sale when the player last closed the
+    -- Market, kept with their row, and a tile marked only when its id is not
+    -- among them.
 
     for _, season in ipairs(BR.Config.Market.seasons) do
         for _, item in ipairs(season.items) do
@@ -168,12 +175,6 @@ local function catalogue()
                     equipped = slot ~= nil,
                     slot     = slot,
                     locked   = not item.purchasable,
-                    -- NEW (#411): "A 'New' badge on this season's items". The
-                    -- dances are what Season 2 brought (their `emotes` row is
-                    -- from 2), and only the Season 2 Market says so. Off, the
-                    -- field is absent rather than false: Season 1's grid is
-                    -- the one it always was.
-                    isNew    = v2 or nil,
                 }
             end
         end
@@ -340,6 +341,79 @@ RegisterNUICallback(BR.NuiCb.MARKET_UNEQUIP, function(data, cb)
     if emotesOn() then TriggerServerEvent(BR.Net.MARKET_UNEQUIP, { id = tostring(data and data.id or '') }) end
     cb({ ok = true })
 end)
+
+--- May this dance play on the lobby character? (#411) One the player owns, or
+--- one on sale they can pay for now -- owner, 2026-10-14: "let's have a way
+--- for them to preview the emote while in market, but shouldn't work if they
+--- can't afford it". Read off this file's own copy of the server's answer
+--- (STATE), the page's model.ts canPreview asking the same of the same grid.
+--- @param id string
+--- @return boolean
+local function previewable(id)
+    local item = BR.Config.MarketIndex and BR.Config.MarketIndex[id]
+    if not (item and item.kind == 'emote') then return false end
+    if STATE.owned[id] == true then return true end
+    return item.purchasable == true and STATE.balance >= (tonumber(item.price) or math.huge)
+end
+
+-- THE PREVIEW (#411): the Season 2 Market's Preview press. { id } is a dance
+-- for the lobby character to play, silently, while the Market is open, and
+-- { id = nil } stops it. A dance the player neither owns nor can afford is
+-- refused here, whatever the page sent; the rest go to br_core's lobby ped
+-- (`br:ui:marketPreview`, client/lobbyped.lua), which plays it only while the
+-- Market is on screen and the ped is parked on its mark, and never sends the
+-- server anything -- no record, no music. Only on the Season 2 Market, and
+-- only while the season has emotes: on Season 1 this answers and does
+-- nothing.
+RegisterNUICallback(BR.NuiCb.MARKET_PREVIEW, function(data, cb)
+    if market2On() and emotesOn() then
+        local id = type(data) == 'table' and type(data.id) == 'string' and data.id ~= '' and data.id or nil
+        if id == nil then
+            TriggerEvent('br:ui:marketPreview', nil)
+        elseif previewable(id) then
+            TriggerEvent('br:ui:marketPreview', id)
+        end
+    end
+    cb({ ok = true })
+end)
+
+-- THE TAB DESIGNS (#411). Owner, 2026-10-14: "i also don't know if I like the
+-- current tab designs" -- three to compare, switched here on a dev box (every
+-- console command is dev-only: br_lib/shared/devgate.lua) and with `?tabs=`
+-- in the browser harness. The page owns the designs (marketv2/model.ts
+-- TAB_DESIGNS, the default first); this only names one. Season 2's Market
+-- only: on Season 1 it says so and sends nothing.
+local TAB_DESIGNS = { 'bar', 'rail', 'folder' }
+local tabDesign = nil
+
+local function pushTabs()
+    if tabDesign ~= nil and market2On() then
+        TriggerEvent('br:ui:sendLocal', BR.Nui.MARKET_TABS, { design = tabDesign })
+    end
+end
+
+RegisterCommand('brmarkettabs', function(_, args)
+    if not market2On() then
+        print('[br_ui] brmarkettabs: this box runs the Season 1 Market (market2, br_lib/config/seasons.lua)')
+        return
+    end
+    local a = type(args) == 'table' and tostring(args[1] or ''):lower() or ''
+    local pick = nil
+    for i, name in ipairs(TAB_DESIGNS) do
+        if a == name or a == tostring(i) then pick = name end
+    end
+    if pick == nil then
+        print(('[br_ui] brmarkettabs: %s -- usage: brmarkettabs <1 bar | 2 rail | 3 folder>')
+            :format(tabDesign and ('showing ' .. tabDesign) or 'showing the default (bar)'))
+        return
+    end
+    tabDesign = pick
+    pushTabs()
+    print(('[br_ui] brmarkettabs: the Market tabs are now "%s"'):format(pick))
+end, false)
+
+-- A reloaded page has forgotten the design it was shown; tell it again.
+AddEventHandler('br:ui:ready', pushTabs)
 
 -- BR.Market.award IS GONE, AND IT IS WORTH SAYING WHAT IT WAS.
 --

@@ -355,6 +355,13 @@ end)
 -- it is the ped moving out of the frame the player is looking at.
 local inLocker = false
 
+-- Whether the Market is the screen on top, and the dance its Preview asked
+-- for (#411) -- a row of BR.Config.Emotes -- beside the one on the ped now.
+-- See BR.LobbyPed.preview, at the bottom.
+local inMarket = false
+local previewWant, previewOn = nil, nil
+local previewAskedAt, previewTaskedAt = nil, 0
+
 -- ═══ WHAT THE LAST RUN ACTUALLY TOOK ═══
 --
 -- THE ONLY HONEST SOURCE FOR THE LEAD. The camera used to chase the ped's
@@ -2240,9 +2247,126 @@ AddEventHandler('br:ui:action', function(name)
     end)
 end)
 
+-- ═══ THE MARKET'S PREVIEW (#411) ═══
+--
+-- Owner, 2026-10-14: "let's have a way for them to preview the emote while in
+-- market, but shouldn't work if they can't afford it." And, on #411's
+-- question 4, 2026-10-13: "Silent previews are fine". So the Season 2
+-- Market's Preview plays the dance on this ped -- the lobby character beside
+-- the Market's panel -- and nothing else happens: no EMOTE_PLAY, so no record
+-- and no music for anybody, this player included; it is a TaskPlayAnim on a
+-- lobby ped every other lobby client is already hiding (the latch at the top
+-- of this file). #215's "anywhere except the lobby" is about dancing; this is
+-- a fitting-room mirror, and it keeps #215's other rules: the row's own clip
+-- and flag, full body, and StopAnimTask on that clip -- never ClearPedTasks --
+-- to end it.
+--
+-- br_ui decides WHICH dance may play (owned, or affordable: its own copy of
+-- the server's grid, br_ui/client/market.lua) and hands it over as
+-- `br:ui:marketPreview`. This file decides WHEN: only while the Market is the
+-- screen on top, the ped is parked on its mark in the lobby, and the season
+-- has both the Season 2 Market and emotes -- asked every pass, so a closed
+-- Market, a ready-up, a re-armed entrance or a season switch takes it off the
+-- ped on the next tick. While it plays it is the ped's gesture (`emoting`), so
+-- the stretch and the squad's wait stand aside, and either one already
+-- playing gives way to it.
+
+local PREVIEW_LOAD_MS = 2000   -- a dictionary that will not stream costs the preview, not a wait
+local PREVIEW_RETASK_MS = 1000 -- how often a clip the engine dropped is put back
+
+local function emotesOn() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end
+local function market2On() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('market2') == true end
+
+--- The Market asked for a dance on this ped, or for none (`id` nil). Never on
+--- Season 1: the Season 2 Market and emotes both, or nothing.
+--- @param id string|nil
+function BR.LobbyPed.preview(id)
+    if id == nil or not (emotesOn() and market2On()) then
+        previewWant = nil
+        return
+    end
+    previewWant = (BR.Emotes and BR.Emotes.row and BR.Emotes.row(id)) or nil
+end
+
+AddEventHandler('br:ui:marketPreview', function(id)
+    BR.LobbyPed.preview(type(id) == 'string' and id or nil)
+end)
+
+-- THE PREVIEW ENDS WITH THE MARKET: Done, Escape, or anything else that takes
+-- the focus from it. A second handler beside the locker's, on the same edge.
+AddEventHandler('br:ui:focusChanged', function(top)
+    inMarket = (top == 'market')
+    if not inMarket then previewWant = nil end
+end)
+
+--- Take the preview off the ped: its own clip, by name.
+local function previewOff()
+    local row = previewOn
+    if previewAskedAt ~= nil and RemoveAnimDict then RemoveAnimDict(row.dict) end
+    previewOn, previewAskedAt = nil, nil
+    if StopAnimTask then StopAnimTask(PlayerPedId(), row.dict, row.clip, 8.0) end
+    if emoting == row then emoting, emoteUntil = nil, nil end
+end
+
+--- One pass of the preview, level-based like client/emotes.lua's playback:
+--- make the ped agree with what is wanted. True while the preview holds the
+--- ped, so the parked gestures below leave it alone.
+--- @return boolean
+local function previewStep()
+    if previewWant == nil and previewOn == nil then return false end
+    -- A season that closes either row forgets the preview outright: the page
+    -- that asked for it is not the one that comes back.
+    if not (emotesOn() and market2On()) then previewWant = nil end
+    local want = previewWant
+    if want ~= nil and not (inMarket and parked()) then want = nil end
+
+    -- A DIFFERENT DANCE, OR NONE: off on this pass, the next one on the next
+    -- (a stop and a task in one frame can cancel the stop).
+    if previewOn ~= nil and previewOn ~= want then
+        previewOff()
+        return want ~= nil
+    end
+    if want == nil then return false end
+
+    local ped, now = PlayerPedId(), GetGameTimer()
+    if previewOn ~= nil then
+        if now - previewTaskedAt < PREVIEW_RETASK_MS then return true end
+        previewTaskedAt = now
+        if IsEntityPlayingAnim and isTrue(IsEntityPlayingAnim(ped, want.dict, want.clip, 3)) then return true end
+    end
+
+    if not isTrue(HasAnimDictLoaded(want.dict)) then
+        if previewAskedAt == nil then
+            RequestAnimDict(want.dict)
+            previewAskedAt = now
+        elseif now - previewAskedAt >= PREVIEW_LOAD_MS then
+            print(('[br_core] market preview: "%s" never streamed'):format(tostring(want.dict)))
+            previewWant, previewAskedAt = nil, nil
+            return false
+        end
+        return true
+    end
+
+    -- The stretch or a wait gives way, on this pass; the dance starts on the next.
+    if emoting ~= nil and emoting ~= want then
+        clearEmote()
+        return true
+    end
+
+    -- FULL BODY, LOOPING, UNTIL STOPPED: the row's own flag (1 on every row;
+    -- the config refuses 16, 32 and 1024), -1 because the end is the stop.
+    TaskPlayAnim(ped, want.dict, want.clip, 8.0, -8.0, -1, want.flag or 1, 0.0, false, false, false)
+    if previewAskedAt ~= nil and RemoveAnimDict then RemoveAnimDict(want.dict) end
+    previewOn, previewTaskedAt, previewAskedAt = want, now, nil
+    emoting, emoteUntil = want, nil
+    return true
+end
+
 -- THE PARKED PED. Two emotes live here and they are on different clocks: the
--- stretch is a timer and the wait is a live status.
+-- stretch is a timer and the wait is a live status. The Market's preview,
+-- above, comes first: while it holds the ped, neither starts.
 BR.Loop.register(BR.Loop.TICK, 'lobbyped.emotes', function()
+    if previewStep() then return end
     -- ═══ LEAVING THE LOBBY TAKES THE GESTURE OFF THE PED -- BUT NOT AT ONCE ═══
     --
     -- IT USED TO CLEAR ON THE EDGE, AND THAT WAS THE BUG THE OWNER REPORTED.
