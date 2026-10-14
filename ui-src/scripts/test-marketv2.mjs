@@ -210,6 +210,8 @@ for (const s of ["'Smoke trails'", "'Weapon finishes'", "preview: 'Preview'", "W
   "chute: 'canopy'", "trail: 'smoke trail'", "weapon: 'weapon finish'", '`Buy ${name} ']) {
   check(`OWNER marker beside ${s}`, marked(s, 'OWNER'))
 }
+check('every amount is written en-US: a comma every three digits whatever the machine\'s locale',
+  copy.includes("export const amount = (n: number): string => n.toLocaleString('en-US')"))
 const writtenLines = code.filter((l) => l.includes('// WRITTEN')).length
 check('and no other WRITTEN line in the Market\'s copy (6)', writtenLines === 6, String(writtenLines))
 eq('the owner\'s words, verbatim: the tabs, Preview, the wheel\'s label, the dialogs\' titles',
@@ -361,6 +363,8 @@ check('the layer draws bodyFor(step, the Market\'s card on the Season 2 Market)'
   check('...and the replace dialog\'s too',
     /<span className="mk2-act" onPointerEnter=\{\(\) => play\('ui\.hover'\)\}>\s*<Button variant="link" onClick=\{onCancel\}>/.test(replaceSrc)
     && /<span className="mk2-act" style=\{\{ flex: '0 0 auto' \}\} onPointerEnter=\{\(\) => play\('ui\.hover'\)\}>\s*<Button style=\{actionStyle\(GOLD_INK\)\}/.test(replaceSrc))
+  const bare = all.filter(([, t]) => /toLocaleString\(\)/.test(t)).map(([f]) => f)
+  check('...and nothing on the screen writes a number in the machine\'s locale', bare.length === 0, bare.join(', '))
   const writes = all.filter(([, t]) => /\bsetMarket\b|\bdispatch\(|useUi\.setState|\.getState\(\)\.set/.test(t)).map(([f]) => f)
   check('nothing on the screen writes the store: every number is the server\'s grid', writes.length === 0, writes.join(', '))
 

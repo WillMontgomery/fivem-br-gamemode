@@ -449,7 +449,8 @@ do
     ok(previews() == '' and #toServer == 0 and answered and answered.ok == true,
         'on Season 1 nothing is sent anywhere, the stop included', previews())
 
-    -- ITS OWN ROWS BOTH WAYS: the Season 2 Market with emotes off plays nothing.
+    -- ITS OWN ROWS BOTH WAYS: the Season 2 Market with emotes off plays
+    -- nothing, and neither do the dances on Season 1's Market.
     local rows = BR.Config.Seasons.features
     season2()
     rows.emotes.from = 3
@@ -457,7 +458,13 @@ do
     reset()
     callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
     ok(previews() == '', 'with the emotes row off, nothing plays even on the Season 2 Market', previews())
-    rows.emotes.from = 2
+    rows.emotes.from, rows.market2.from = 2, 3
+    grid({ balance = 999999, owned = { other }, equipped = {} })
+    reset()
+    callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
+    callCb(BR.NuiCb.MARKET_PREVIEW, {})
+    ok(previews() == '', "with the market2 row off, the emotes row's dances preview nothing", previews())
+    rows.market2.from = 2
 end
 
 -- ---------------------------------------------------------------------------
@@ -498,6 +505,10 @@ do
     fire('br:ui:ready')
     ok(lastLocal(BR.Nui.MARKET_TABS) == nil, 'on Season 1 it sends nothing, then or on a reload')
     season2()
+    reset()
+    fire('br:ui:ready')
+    d = lastLocal(BR.Nui.MARKET_TABS)
+    ok(d ~= nil and d.design == 'rail', 'and what it was asked on Season 1 is not kept for later', d and d.design)
     devMode = false
 end
 
