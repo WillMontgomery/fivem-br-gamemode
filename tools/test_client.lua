@@ -24649,8 +24649,14 @@ end
 -- ONE line per cold action. This block pins that half:
 --
 --   * THE LINE: its exact words, Lua's game timers -- when the callback came
---     in, when its first push went out -- and E narrowed to the transport by
---     Lua's own work; for a push with no input, E from when Lua sent it.
+--     in, when the push the page names went out -- and E narrowed to the
+--     transport by Lua's own work; for a push with no input, E from when Lua
+--     sent it.
+--   * THE CALL THE PAGE MEASURED, NOT THE LATEST (#252 round 4's review): a
+--     re-click 800 ms later must not make E 805 ms; the page's `later` counts
+--     back from the newest call, the push is the one the page names by
+--     sequence (never "the first after the call"), and both rings are deep
+--     enough for a report 35 s late in the lobby's three envelopes a second.
 --   * ONE LINE PER REPORT, flattened, '-' for what was not measured.
 --   * DEV MODE ONLY, AND NOTHING STAMPED UNTIL ARMED: no `diag` envelope and
 --     no stamp with dev mode off; dev mode arriving late arms the page.
@@ -24747,40 +24753,105 @@ do
         -- ── AN INPUT AND ITS PUSH ────────────────────────────────────────────
         -- The page's call arrives; br_core's action takes 4 ms and pushes.
         local pushSeq = nil
-        handlers['br:ui:action'] = { function(name)
-            if name ~= BR.NuiCb.LOCKER2_WEAR then return end
-            clock = clock + 4
-            mine(BR.Nui.LOCKER2, { worn = 'p1' })
-            pushSeq = out[#out].s
-            mine(BR.Nui.LOCKER2, { worn = 'p1', loading = false })
-        end }
+        local function wear()
+            handlers['br:ui:action'] = { function(name)
+                if name ~= BR.NuiCb.LOCKER2_WEAR then return end
+                clock = clock + 4
+                mine(BR.Nui.LOCKER2, { worn = 'p1' })
+                pushSeq = out[#out].s
+                mine(BR.Nui.LOCKER2, { worn = 'p1', loading = false })
+            end }
+            nuiCb[BR.NuiCb.LOCKER2_WEAR]({ id = 'p1' }, function() end)
+            handlers['br:ui:action'] = prevAction
+        end
         local callAt = clock
-        nuiCb[BR.NuiCb.LOCKER2_WEAR]({ id = 'p1' }, function() end)
-        handlers['br:ui:action'] = prevAction
+        wear()
         pushes, calls = BR.Ui.coldStamps()
         ok(pushes >= 2 and calls == 1, 'armed, the call and its pushes are stamped', pushes .. '/' .. calls)
 
         clock = clock + 1900
         local line = report(cold, {
             by = 'click', idleS = 312, total = 1837, a = 3, b = 11, c = 1788, d = 35, e = 9,
-            cb = BR.NuiCb.LOCKER2_WEAR, cause = 0, age = 1850,
-            msgs = { { s = 900, k = 'lobby', t = 2 }, { s = pushSeq, k = 'locker2', t = 9 } },
-            detail = 'frame work 5.0 | commit->presented 1818 | long tasks 0 | 3 DOM changes',
+            cb = BR.NuiCb.LOCKER2_WEAR, later = 0, push = { s = pushSeq, k = 'locker2', t = 9 }, cause = 0, age = 1850,
+            detail = 'push->commit 2.0 (locker2 #9) | frame work 5.0 | commit->presented 1818 | long tasks 0',
         })
         has('the line, in its words, with E narrowed by Lua\'s 4 ms of work', line,
             '[br_ui] cold 1837ms after 312s idle: input->handler 3.0, handler->commit 11, commit->rAF 1788,'
             .. ' rAF->next rAF 35, msg arrival lag 5.0 | by click |')
-        has('...Lua\'s game timers: the call in, its first push, the report', line,
-            ('| lua br/locker2/wear in at %d, push #%d (locker2) at +4ms, report in at +1904ms |')
+        has('...Lua\'s game timers: the call in, the push the page named, the report', line,
+            ('| lua br/locker2/wear in at %d, push #%d (locker2) sent at +4ms, report in at +1904ms |')
                 :format(callAt, pushSeq))
-        has('...and the page\'s evidence after it', line, '| frame work 5.0 | commit->presented 1818 |')
+        has('...and the page\'s evidence after it', line, '| push->commit 2.0 (locker2 #9) | frame work 5.0 |')
 
-        -- The page did not see that push among its first: no E from it.
+        -- The owner clicks again 800 ms later, before the first reaction shows.
+        -- The page measured the FIRST call and says one more of its name came
+        -- after it; the line is the first call's, and E its legs (5 ms) -- not
+        -- the 805 ms that "the latest call with that name" made of it.
+        local firstAt = clock
+        wear()
+        local firstPush = pushSeq
+        clock = clock + 800
+        wear()
+        clock = clock + 2200
+        line = report(cold, { by = 'click', idleS = 300, total = 2100, a = 1, b = 6, c = 2000, d = 90, e = 9,
+                              cb = BR.NuiCb.LOCKER2_WEAR, later = 1, push = { s = firstPush, k = 'locker2', t = 9 },
+                              cause = 0, age = 3000, detail = 're-clicked 1x' })
+        has('a re-click: the call the page measured, counted back from the newest', line,
+            ('lua br/locker2/wear in at %d (1 more after it), push #%d (locker2) sent at +4ms, report in at +3008ms |')
+                :format(firstAt, firstPush))
+        has('...and E is that call\'s legs', line, 'msg arrival lag 5.0 |')
+        -- The page named the second push instead: its legs from the first call.
+        line = report(cold, { by = 'click', cb = BR.NuiCb.LOCKER2_WEAR, later = 1,
+                              push = { s = pushSeq, k = 'locker2', t = 813 }, cause = 0, age = 3000, e = 813 })
+        has('...whichever push the page names, by its sequence', line,
+            ('push #%d (locker2) sent at +808ms'):format(pushSeq))
+        has('...E still the legs alone', line, 'msg arrival lag 5.0 |')
+
+        -- A push Lua sent BEFORE the call arrived (the page names the last push
+        -- before a later-task change): the arithmetic holds, the sign says so.
+        mine(BR.Nui.LOCKER2, { worn = 'p0' })
+        local early = out[#out].s
+        clock = clock + 30
+        local lateCall = clock
+        wear()
+        line = report(cold, { by = 'click', cb = BR.NuiCb.LOCKER2_WEAR, later = 0,
+                              push = { s = early, k = 'locker2', t = -20 }, cause = 0, age = 500, e = -20 })
+        has('a push sent before the call: a negative offset', line,
+            ('in at %d, push #%d (locker2) sent at -30ms'):format(lateCall, early))
+        has('...and E the legs (-20 less -30)', line, 'msg arrival lag 10 |')
+
+        -- No push before the change (the page answered from the input alone).
+        line = report(cold, { by = 'click', cb = BR.NuiCb.LOCKER2_WEAR, later = 0, push = nil, cause = 0,
+                              age = 500, e = -1 })
+        has('no push named: no E, and said', line, 'msg arrival lag - | by click | lua br/locker2/wear in at')
+        has('...in words', line, ', no push before the change, report in at')
+
+        -- A push the ring no longer holds: the page's round trip, said as such.
         line = report(cold, { by = 'click', idleS = 40, total = 50, a = 1, b = 2, c = 3, d = 44, e = 2,
-                              cb = BR.NuiCb.LOCKER2_WEAR, cause = 0, age = 60,
-                              msgs = { { s = 1, k = 'lobby', t = 2 } }, detail = '' })
-        has('a push the page did not report is not guessed at', line, 'msg arrival lag - |')
-        has('...and says so', line, 'that push not among the page\'s first')
+                              cb = BR.NuiCb.LOCKER2_WEAR, later = 0, push = { s = 1, k = 'lobby', t = 2 },
+                              cause = 0, age = 60, detail = '' })
+        has('a push not stamped keeps the page\'s round trip, and says so', line,
+            'msg arrival lag 2.0 | by click | lua br/locker2/wear in at')
+        has('...in words', line, 'push #1 not stamped (round trip shown)')
+
+        -- Deep enough: a report 35 s late in the lobby's three pushes a second.
+        clock = clock + 10
+        local deepAt = clock
+        wear()
+        local deepPush = pushSeq
+        for _ = 1, 200 do clock = clock + 166; mine(BR.Nui.LOBBY, { n = 1 }) end
+        line = report(cold, { by = 'click', cb = BR.NuiCb.LOCKER2_WEAR, later = 0,
+                              push = { s = deepPush, k = 'locker2', t = 9 }, cause = 0, age = 33000, e = 9 })
+        has('a push 200 pushes back is still stamped', line,
+            ('in at %d, push #%d (locker2) sent at +4ms'):format(deepAt, deepPush))
+        -- ...and the calls: 16 of a name are kept, newest last.
+        local base = clock
+        for i = 0, 15 do clock = base + i * 10; nuiCb[BR.NuiCb.SFX]({ cue = 'ui.select' }, function() end) end
+        line = report(cold, { by = 'click', cb = BR.NuiCb.SFX, later = 15, cause = 0, age = 1 })
+        has('16 calls of a name are kept: the 16th from the newest is found', line,
+            ('lua %s in at %d (15 more after it)'):format(BR.NuiCb.SFX, base))
+        line = report(cold, { by = 'click', cb = BR.NuiCb.SFX, later = 16, cause = 0, age = 1, e = 3 })
+        has('...the 17th is not', line, ('lua %s not stamped (round trip shown)'):format(BR.NuiCb.SFX))
 
         -- A callback this file never saw: the page's own round trip, said as such.
         line = report(cold, { by = 'click', idleS = 40, total = 50, a = 1, b = 2, c = 3, d = 44, e = 7.5,
@@ -24809,7 +24880,7 @@ do
             '[br_ui] cold - after 61s idle: input->handler 2.0, handler->commit -, commit->rAF -,'
             .. ' rAF->next rAF -, msg arrival lag - | by keydown | lua no call to lua | no change within 15s')
         line = report(cold, { by = 'click\nme', detail = string.rep('x', 2000) .. '\n' })
-        ok(not line:find('[\r\n]') and #line < 700, 'flattened and capped', #line)
+        ok(not line:find('[\r\n]') and #line > 900 and #line < 1100, 'flattened and capped', #line)
         line = report(cold, nil)
         ok(line:find('[br_ui] cold - after 0s idle:', 1, true) == 1, 'even a report with no body', line)
 

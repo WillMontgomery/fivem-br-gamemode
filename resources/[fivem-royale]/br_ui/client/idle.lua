@@ -17,16 +17,26 @@
 --     | by <input or push> | lua <stamps> | <the page's evidence>
 --
 -- The page measures A-D (ui-src/src/bridge/coldProbe.ts says what each mark
--- is; A + B + C + D = the total). This side adds what only Lua knows: the game
--- timer its callback arrived at and the timer of the first push it sent after
--- it, and so E -- the page's round trip with Lua's own work taken out, the two
--- message legs alone. For a change Lua pushed with no input, E is the push's
--- transport and the report's together.
+-- is; A + B + C + D = the total; the commit is the LAST change the action
+-- made, not the first). This side adds what only Lua knows, on the game timer:
+-- when the page's call arrived and when the push the reaction landed with was
+-- sent, and so E -- the page's round trip to that push with Lua's own work in
+-- between taken out: the two message legs alone. For a change Lua pushed with
+-- no input, E is the push's transport and the report's together.
+--
+-- WHICH CALL: the page counts the calls of the same name it made after the one
+-- it measured (`later`: a re-click, a drag's stream), and this side counts
+-- back by it from the newest -- never "the latest call with that name", which
+-- after a re-click is the second click. And WHICH PUSH: the page names it by
+-- sequence, never "the first push after the call", which in the lobby is a
+-- status envelope three times a second.
 --
 -- READING IT: E of seconds is the message path waking late; C or D of seconds
 -- is the first frame after the idle (the compositor and GPU process); A or B
--- without E is the page's own JavaScript. `commit->presented` in the evidence
--- is the frame's presentation time where CEF reports it -- past the last rAF.
+-- without E is the page's own JavaScript, and push->commit in the evidence is
+-- its time from the push to the change. `commit->presented` is the frame's
+-- presentation time -- past the last rAF -- and the self-test in `bruiidle`
+-- says whether CEF reports it at all.
 --
 -- THE SWITCHES, each off by default, each a dev command below; the cold line
 -- keeps printing with them on, which is the A/B:
@@ -34,10 +44,14 @@
 --   bruipaint  a real frame every N ms, at three depths: raster (repaint a dot:
 --              raster and draw in the GPU process), comp (a dot's opacity on
 --              its own layer: draw, no raster), raf (a frame request: the
---              frame clock, no damage). The shallowest one that takes the lag
---              away names the stage that goes cold.
+--              frame clock, no damage -- the clean control). raster and comp
+--              both keep the GPU process's drawing context busy, so if both
+--              take the lag away it is that process's idle cleanup, not raster
+--              against draw.
 --   bruiwarm   every N ms the page re-renders its whole tree with nothing
---              changed: keeps the first action's code compiled. No frame.
+--              changed. Render functions only -- no handler, no dispatch, no
+--              DOM change, no frame -- so a lag that stays with it on does not
+--              clear cold JavaScript.
 --
 -- NO bruiping: the lobby already sends three envelopes a second while it sits
 -- (the server's lobby.status twice, party and squad once), so a keep-alive
@@ -53,10 +67,13 @@ local callback = BR.Ui.callback
 local PAINT_MODES = { raster = true, comp = true, raf = true }
 local PAINT_DEFAULT_MS, PAINT_MIN_MS, PAINT_MAX_MS = 500, 100, 60000
 local WARM_DEFAULT_MS, WARM_MIN_MS, WARM_MAX_MS = 5000, 500, 60000
---- Pushes remembered for a change Lua pushed with no input.
-local SENT_RING = 64
---- Callbacks waiting for their first push; more than this is not one action.
-local OPEN_MAX = 16
+--- Pushes remembered by sequence: the lobby alone sends three a second, and a
+--- report can come 35 s after its push (15 s for the reaction, 15 s for
+--- presentation, 5 s of quiet).
+local SENT_RING = 256
+--- Calls remembered per callback name, newest last: the page counts back from
+--- the newest by `later`.
+local CALLS_KEEP = 16
 --- How long `bruiidle` waits for the page.
 local ASK_MS = 3000
 --- The page's COLD_IDLE_MS, for the command's own words.
@@ -85,9 +102,8 @@ end
 local stamps
 local function freshStamps()
     stamps = {
-        open = {},     -- callback records waiting for the first push after them
-        byName = {},   -- the latest record per callback name
-        sent = {},     -- seq % SENT_RING -> { seq, at, kind }
+        sent = {},     -- seq % SENT_RING -> { seq, at, kind }, reused in place
+        calls = {},    -- callback name -> the game timers its calls arrived at, newest last
     }
 end
 freshStamps()
@@ -98,25 +114,32 @@ local OWN = { [BR.NuiCb.COLD] = true, [BR.NuiCb.IDLE] = true }
 --- What nui.lua calls while the page's probe is armed, and only then.
 local hook = {
     sent = function(s, kind)
-        local now = GetGameTimer()
-        stamps.sent[s % SENT_RING] = { seq = s, at = now, kind = kind }
-        for _, r in ipairs(stamps.open) do r.seq, r.sentAt, r.kind = s, now, kind end
-        if #stamps.open > 0 then stamps.open = {} end
+        local slot = s % SENT_RING
+        local r = stamps.sent[slot]
+        if r then
+            r.seq, r.at, r.kind = s, GetGameTimer(), kind
+        else
+            stamps.sent[slot] = { seq = s, at = GetGameTimer(), kind = kind }
+        end
     end,
     cbIn = function(name)
         if OWN[name] then return end
-        local r = { name = name, at = GetGameTimer() }
-        stamps.byName[name] = r
-        if #stamps.open < OPEN_MAX then stamps.open[#stamps.open + 1] = r end
+        local list = stamps.calls[name]
+        if not list then
+            list = {}
+            stamps.calls[name] = list
+        end
+        list[#list + 1] = GetGameTimer()
+        if #list > CALLS_KEEP then table.remove(list, 1) end
     end,
 }
 
---- For the tests: how many pushes and callbacks are stamped right now.
+--- For the tests: how many pushes and calls are stamped right now.
 function BR.Ui.coldStamps()
     local n = 0
     for _ in pairs(stamps.sent) do n = n + 1 end
     local c = 0
-    for _ in pairs(stamps.byName) do c = c + 1 end
+    for _, list in pairs(stamps.calls) do c = c + #list end
     return n, c
 end
 
@@ -166,6 +189,12 @@ local function ms(v)
     return ('%d'):format(math.floor(v + 0.5))
 end
 
+--- A signed millisecond offset: +12, -3.
+local function signed(v)
+    v = math.floor(v + 0.5)
+    return (v >= 0 and '+%d' or '%d'):format(v)
+end
+
 --- Lua's half of the line, and E narrowed by it.
 --- @return string lua, number e
 local function luaSide(d, now)
@@ -173,6 +202,7 @@ local function luaSide(d, now)
     local cb = type(d.cb) == 'string' and d.cb or ''
     local cause = math.tointeger(tonumber(d.cause) or 0) or 0
     local age = tonumber(d.age) or -1
+    local later = math.tointeger(tonumber(d.later) or 0) or 0
 
     if cause > 0 then
         -- A push with no input: when Lua sent it, and the report's arrival.
@@ -186,26 +216,30 @@ local function luaSide(d, now)
     end
     if cb == '' then return 'no call to lua', -1 end
 
-    local r = stamps.byName[cb]
-    if not r then
+    -- The call the page measured: `later` calls of the same name came after it.
+    local list = stamps.calls[cb]
+    local at = list and later >= 0 and list[#list - later] or nil
+    if not at then
         return ('%s not stamped (round trip shown)'):format(flat(cb, 48)), e
     end
-    if not r.seq then
-        return ('%s in at %d, no push since'):format(flat(cb, 48), r.at), -1
+    local head = ('%s in at %d%s'):format(flat(cb, 48), at,
+        later > 0 and (' (%d more after it)'):format(later) or '')
+
+    -- The push the reaction landed with, by the sequence the page names.
+    local p = type(d.push) == 'table' and d.push or nil
+    local ps = p and math.tointeger(tonumber(p.s) or -1) or -1
+    local pt = p and tonumber(p.t) or nil
+    if ps < 0 or not pt then
+        return head .. (', no push before the change, report in at +%dms'):format(now - at), -1
     end
-    local work = r.sentAt - r.at
-    local seen = nil
-    if type(d.msgs) == 'table' then
-        for _, m in ipairs(d.msgs) do
-            if type(m) == 'table' and tonumber(m.s) == r.seq then seen = tonumber(m.t); break end
-        end
+    local r = stamps.sent[ps % SENT_RING]
+    if not (r and r.seq == ps) then
+        return head .. (', push #%d not stamped (round trip shown), report in at +%dms'):format(ps, now - at), e
     end
-    local text = ('%s in at %d, push #%d (%s) at +%dms, report in at +%dms')
-        :format(flat(cb, 48), r.at, r.seq, flat(r.kind, 24), work, now - r.at)
-    if not seen then
-        return text .. ', that push not among the page\'s first', -1
-    end
-    return text, math.max(0, seen - work)
+    local work = r.at - at
+    return head .. (', push #%d (%s) sent at %sms, report in at +%dms')
+            :format(ps, flat(r.kind, 24), signed(work), now - at),
+        math.max(0, pt - work)
 end
 
 --- The one line, from the page's report.
@@ -216,7 +250,7 @@ local function coldLine(d)
         .. ' rAF->next rAF %s, msg arrival lag %s | by %s | lua %s | %s'):format(
         total == '-' and '-' or (total .. 'ms'), math.floor(tonumber(d.idleS) or 0),
         ms(d.a), ms(d.b), ms(d.c), ms(d.d), ms(e),
-        flat(d.by or '?', 40), lua, flat(d.detail or '', 420))
+        flat(d.by or '?', 40), lua, flat(d.detail or '', 900))
 end
 
 callback(BR.NuiCb.COLD, function(data)

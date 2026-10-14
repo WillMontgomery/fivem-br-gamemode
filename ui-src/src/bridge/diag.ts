@@ -13,18 +13,26 @@
  *
  * THE PROBE'S OWN NODES LIVE OUTSIDE <body> (children of <html>, which still
  * render), and the DOM observer watches <body>: the heartbeat's dot and the
- * Element Timing marker are never activity and never a commit. That is what
- * lets a cold line print with `bruipaint` on, which is the A/B.
+ * Element Timing marker are never a change of the page's and never a commit.
+ * That is what lets a cold line print with `bruipaint` on, which is the A/B.
+ *
+ * WHICH TASK A CHANGE LANDED IN (taskEnd): the controller tags the task an
+ * input or a push runs in and asks taskEnd to clear the tag. The clear is a
+ * MessageChannel message posted from a microtask -- after the push's handlers
+ * have run and queued whatever they queue -- so React's flush (a microtask)
+ * and its deferred render (a message the handlers posted first) both land
+ * while the tag is up, and a timer's tick does not.
  */
 
 import { fetchNui, setBridgeTap, subscribe } from './nui'
 import { CB } from './types'
 import { useUi } from '../store'
 import {
-  createDiag, parseDiag, type DiagEnv, type InputKind, type PageInventory, type PaintMode,
+  createDiag, parseDiag, type DiagEnv, type ListenKind, type PageInventory, type PaintMode,
 } from './coldProbe'
 
-const INPUTS: InputKind[] = ['pointerdown', 'pointerup', 'click', 'keydown']
+/** The inputs, and pointer moves: a move is evidence (a hover repaints before the click), never activity. */
+const HEARD: ListenKind[] = ['pointerdown', 'pointerup', 'click', 'keydown', 'pointermove']
 
 /** One pixel in the corner, at 2-3% black: there for the compositor, not for the player. */
 const DOT_CSS = 'position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none;'
@@ -37,7 +45,7 @@ const memory = (): Memory | undefined => (performance as unknown as { memory?: M
 const MB = 1024 * 1024
 
 function browserEnv(): DiagEnv {
-  const inputs = new Map<InputKind, (e: Event) => void>()
+  const inputs = new Map<ListenKind, (e: Event) => void>()
   let mo: MutationObserver | null = null
   let lto: PerformanceObserver | null = null
   let eto: PerformanceObserver | null = null
@@ -45,6 +53,8 @@ function browserEnv(): DiagEnv {
   let dotEl: HTMLElement | null = null
   let dotMode: PaintMode | null = null
   let dotPhase = false
+  let ends: MessageChannel | null = null
+  const endq: Array<() => void> = []
 
   return {
     now: () => performance.now(),
@@ -56,7 +66,7 @@ function browserEnv(): DiagEnv {
       for (const [k, h] of inputs) window.removeEventListener(k, h, true)
       inputs.clear()
       if (!on) return
-      for (const k of INPUTS) {
+      for (const k of HEARD) {
         const h = (e: Event) => fn(k, e.timeStamp)
         inputs.set(k, h)
         window.addEventListener(k, h, { capture: true, passive: true })
@@ -112,6 +122,17 @@ function browserEnv(): DiagEnv {
       const ch = new MessageChannel()
       ch.port1.onmessage = () => { ch.port1.close(); fn() }
       ch.port2.postMessage(0)
+    },
+    taskEnd(fn) {
+      queueMicrotask(() => {
+        if (ends === null) {
+          const ch = new MessageChannel()
+          ch.port1.onmessage = () => { endq.shift()?.() }
+          ends = ch
+        }
+        endq.push(fn)
+        ends.port2.postMessage(0)
+      })
     },
     // React flushes a store change in a microtask; three hops land after it
     // and after the DOM observer's own callback for what it changed.

@@ -2842,12 +2842,16 @@ for (const name of builtCss) {
 //     never activity and never a commit (a cold line still prints with
 //     `bruipaint` on, which is the A/B);
 //   THE WARM BEAT REACHES THE TREE -- App reads `warmTick`;
+//   A CHANGE IS A PUSH'S ONLY IN ITS TASK -- taskEnd() posts its message from a
+//     microtask (after the push's handlers and whatever they queued), never a
+//     timer that a tick could beat;
 //   DEV MODE ONLY -- br_ui/client/idle.lua's sync() returns before sending
 //     anything when BR.Dev is off.
 //
 // IT CAN FAIL. Append the dot to document.body, call installDiag() after
-// reportEnvironment(), drop `if (tap)` from fetchNui, or send DIAG from idle.lua
-// ahead of its dev() check.
+// reportEnvironment(), drop `if (tap)` from fetchNui, post taskEnd's message
+// straight away or by setTimeout, or send DIAG from idle.lua ahead of its dev()
+// check.
 // ---------------------------------------------------------------------------
 {
   const D = join(SRC, 'bridge', 'diag.ts')
@@ -2881,6 +2885,14 @@ for (const name of builtCss) {
       fail('R37 cold-probe', 'src/bridge/diag.ts',
         'the DOM observer must watch document.body and the dot and the marker must be children of'
         + ' <html>: otherwise the heartbeat is activity and no cold line prints with it on (#252).')
+    }
+    const taskEnd = /taskEnd\(fn\) \{([\s\S]*?)\n    \},/.exec(diag)
+    if (!taskEnd || !/^\s*queueMicrotask\(\(\) => \{/.test(taskEnd[1]) || !/postMessage\(0\)/.test(taskEnd[1])
+        || /setTimeout|requestAnimationFrame/.test(taskEnd[1])) {
+      fail('R37 cold-probe', 'src/bridge/diag.ts',
+        'taskEnd() must post a MessageChannel message from a microtask: a change is a push\'s only when it'
+        + ' lands before that message, which must come after the push\'s handlers and the render they'
+        + ' queued, and before a timer\'s tick (#252).')
     }
     const nui = stripComments(read(N))
     const fetchFn = /export async function fetchNui[\s\S]*?\): Promise<Res \| null> \{\s*([^\n]*)/.exec(nui)
