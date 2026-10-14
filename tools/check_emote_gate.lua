@@ -33,7 +33,9 @@
 --                          nil-safe wrapper
 --   G5 NOT VACUOUS         every door the contract names is actually found
 --   G6 THE PAGE            the Music volume slider and the Emotes tab render
---                          only behind `emotesOn`, in the agreed places
+--                          only behind `emotesOn`, in the agreed places --
+--                          the Emotes tab on both Markets (Season 2's is
+--                          marketv2/model.ts tabsFor, #411)
 --   G7 NO HIDDEN DOOR      an emote door registered where G4 cannot see it --
 --                          indented, or not at column 0 in an emote file --
 --                          fails rather than being skipped
@@ -415,10 +417,12 @@ local function run(files)
     end
 
     -- ── G6: the page ─────────────────────────────────────────────────────────
-    local settings, market
+    local settings, market, model2, screen2
     for _, f in ipairs(files) do
         if endsWith(f.path, 'screens/Settings.tsx') then settings = f end
         if endsWith(f.path, 'screens/Market.tsx') then market = f end
+        if endsWith(f.path, 'screens/marketv2/model.ts') then model2 = f end
+        if endsWith(f.path, 'screens/MarketV2.tsx') then screen2 = f end
     end
     if not settings then
         fail('ui-src/src/screens/Settings.tsx', 0, 'G6', 'not passed to the gate')
@@ -460,6 +464,30 @@ local function run(files)
                 end
                 break
             end
+        end
+    end
+    -- THE SEASON 2 MARKET (#411) draws its tabs from marketv2/model.ts's
+    -- tabsFor, which must keep the dances' tab behind the same `emotesOn`, and
+    -- MarketV2.tsx must hand it the store's emotesOn and nothing else.
+    if not model2 then
+        fail('ui-src/src/screens/marketv2/model.ts', 0, 'G6', 'not passed to the gate')
+    else
+        local t = model2.src
+        local at = t:find('export function tabsFor(items: readonly MarketItem[], emotesOn: boolean): TabKind[] {', 1, true)
+        local body = at and t:match('^[^\n]*\n%s*(return [^\n]*)', at)
+        if not body or not body:find("return TAB_ORDER.filter((k) => (k !== 'emote' || emotesOn) && ", 1, true) then
+            fail(model2.path, 0, 'G6',
+                "tabsFor must keep the Emotes tab behind emotesOn: `return TAB_ORDER.filter((k) => (k !== 'emote' || emotesOn) && ...`")
+        end
+    end
+    if not screen2 then
+        fail('ui-src/src/screens/MarketV2.tsx', 0, 'G6', 'not passed to the gate')
+    else
+        local t = screen2.src
+        local _, calls = t:gsub('tabsFor%(', '')
+        if not t:find('const emotesOn = useUi((s) => s.emotesOn)', 1, true)
+            or not t:find('const tabs = tabsFor(market.items, emotesOn)', 1, true) or calls ~= 1 then
+            fail(screen2.path, 0, 'G6', "the Season 2 Market's tabs must be `tabsFor(market.items, emotesOn)`, once, with the store's emotesOn")
         end
     end
 
@@ -634,6 +662,15 @@ local function goodTree()
             "const EMOTE_TAB = { id: 'emote' as const, label: 'Emotes' }",
             'const tabs = emotesOn ? [...TABS, EMOTE_TAB] : TABS',
         }, '\n'),
+        ['ui-src/src/screens/marketv2/model.ts'] = table.concat({
+            'export function tabsFor(items: readonly MarketItem[], emotesOn: boolean): TabKind[] {',
+            "  return TAB_ORDER.filter((k) => (k !== 'emote' || emotesOn) && items.some((i) => i.kind === k))",
+            '}',
+        }, '\n'),
+        ['ui-src/src/screens/MarketV2.tsx'] = table.concat({
+            'const emotesOn = useUi((s) => s.emotesOn)',
+            'const tabs = tabsFor(market.items, emotesOn)',
+        }, '\n'),
     }
 end
 
@@ -652,6 +689,7 @@ local SEA = R .. 'br_lib/config/seasons.lua'
 local WHL, KEY, UIM = R .. 'br_core/client/emotewheel.lua', R .. 'br_core/client/keybinds.lua',
     R .. 'br_ui/client/market.lua'
 local SET, MTX = 'ui-src/src/screens/Settings.tsx', 'ui-src/src/screens/Market.tsx'
+local MD2, MX2 = 'ui-src/src/screens/marketv2/model.ts', 'ui-src/src/screens/MarketV2.tsx'
 
 local FIXTURES = {
     { name = 'the good tree passes', want = nil },
@@ -718,6 +756,12 @@ local FIXTURES = {
       mut = function(t) return edit(t, MTX, "  { id: 'chute', label: 'Canopies' },", "  { id: 'chute', label: 'Canopies' },\n  { id: 'emote', label: 'Emotes' },") end },
     { name = 'the tabs expression not gated', want = 'G6',
       mut = function(t) return edit(t, MTX, 'emotesOn ? [...TABS, EMOTE_TAB] : TABS', '[...TABS, EMOTE_TAB]') end },
+    { name = 'the Season 2 Market\'s tabsFor not gated', want = 'G6',
+      mut = function(t) return edit(t, MD2, "(k !== 'emote' || emotesOn) && ", '') end },
+    { name = 'the Season 2 Market handing tabsFor true', want = 'G6',
+      mut = function(t) return edit(t, MX2, 'tabsFor(market.items, emotesOn)', 'tabsFor(market.items, true)') end },
+    { name = 'the Season 2 Market\'s model not passed', want = 'G6',
+      mut = function(t) t[MD2] = nil return t end },
     { name = 'an indented handler', want = 'G7',
       mut = function(t) return edit(t, R .. 'br_core/server/market.lua', 'function BR.Market.push(src)\n',
           'function BR.Market.push(src)\n    AddEventHandler(BR.Net.EMOTE_PLAY, function() end)\n') end },

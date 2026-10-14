@@ -3160,7 +3160,7 @@ if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if "${VCL[@]}" tools/check_emote_gate.lua --selftest; then
         vc_lua
         # shellcheck disable=SC2046
-        "${VCL[@]}" tools/check_emote_gate.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) ui-src/src/screens/Settings.tsx ui-src/src/screens/Market.tsx || est_=1
+        "${VCL[@]}" tools/check_emote_gate.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) ui-src/src/screens/Settings.tsx ui-src/src/screens/Market.tsx ui-src/src/screens/MarketV2.tsx ui-src/src/screens/marketv2/model.ts || est_=1
     else echo "${RED}FAIL${RST} check_emote_gate selftest"; est_=1; fi
     # THE PAIR OF RUNS, READ OFF THE ROW rather than written here, so moving
     # emotes to another season moves the runs with it. check_emote_gate.lua's

@@ -301,6 +301,35 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- ITS OWN ROW: the Market follows `market2`, never `emotes` (#411's review).
+-- Both rows say `from = 2` today, so only moving one away from the other shows
+-- which of them the envelope and the grid follow.
+-- ---------------------------------------------------------------------------
+
+describe('market2 is its own row')
+do
+    local rows = BR.Config.Seasons.features
+    local m2From, emFrom = rows.market2.from, rows.emotes.from
+    season2()
+
+    rows.emotes.from = 3 -- the Season 2 Market, and no dances yet
+    local g = grid()
+    ok(g ~= nil and g.v2 == true, 'market2 on, emotes off: the envelope still says v2', g and keysOf(g))
+    ok(kindsOf(g) == 'chute,trail,weapon', 'the real items only, and no dances while their row is off', kindsOf(g))
+
+    rows.emotes.from, rows.market2.from = 2, 3 -- the dances, on Season 1's Market
+    g = grid({ balance = 1000, owned = {}, equipped = {}, emotes = { '', '', '', '', '', '', '', '' } })
+    ok(g ~= nil and g.v2 == nil, "emotes on, market2 off: no v2 -- Season 1's Market", g and keysOf(g))
+    ok(itemById(g, 'ban_storm') ~= nil and itemById(g, 'emote_shuffle') ~= nil,
+        'its placeholders, and the dances the emotes row brings')
+    local marked = {}
+    for _, it in ipairs(g.items) do if it.isNew ~= nil then marked[#marked + 1] = it.id end end
+    ok(#marked == 0, 'with New on nothing, the dances included', table.concat(marked, ','))
+
+    rows.market2.from, rows.emotes.from = m2From, emFrom
+end
+
+-- ---------------------------------------------------------------------------
 -- brseason: THE PAGE FOLLOWS A SWITCH, BOTH WAYS, WITH NO SERVER ROUND TRIP
 -- ---------------------------------------------------------------------------
 
