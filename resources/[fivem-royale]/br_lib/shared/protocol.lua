@@ -1603,6 +1603,12 @@ BR.Nui = {
     -- list, on change only (BR.Net.TERMINAL_IMPACTS, through
     -- client/terminalfx.lua), and an empty one in the lobby.
     IMPACTS     = 'impacts',
+    -- { cold?, paint? = { ms, mode }, warm?, ask? }: the page's cold-action
+    -- probe and the idle A/B switches (#252, round 4). DEV MODE ONLY: sent by
+    -- br_ui/client/idle.lua on the page loading and on a bru* command, never
+    -- on a public box, and anything it leaves out is off. See
+    -- ui-src/src/bridge/coldProbe.ts.
+    DIAG        = 'diag',
 }
 
 --- A HOLE IN A SENTENCE WHERE A KEY BELONGS.
@@ -1671,6 +1677,11 @@ BR.NuiCb = {
     -- br_ui compares that with what it sent and prints one line. See
     -- ui-src/src/bridge/screenReport.ts.
     SCREEN       = 'br/ui/screen',
+    -- The first action after an idle, split into where its seconds went, and
+    -- the page's idle inventory (#252, round 4). Dev mode only: the page sends
+    -- them only once BR.Nui.DIAG has armed it. See br_ui/client/idle.lua.
+    COLD         = 'br/ui/cold',
+    IDLE         = 'br/ui/idle',
     -- Settings. SAVE carries the whole object; Lua writes it to KVP and echoes
     -- it back, so the page never has to believe its own optimistic copy.
     -- FOCUS is separate because the settings screen can be opened from a

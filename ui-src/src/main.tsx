@@ -4,6 +4,7 @@ import { HeroUIProvider } from '@heroui/react'
 import App from './App'
 import { installErrorSinks, isBrowser, reportEnvironment } from './bridge/nui'
 import { installLockGuard } from './tutorial/lockGuard'
+import { installDiag } from './bridge/diag'
 
 // FONTS, SELF-HOSTED. Never a CDN: CEF has no network on a cold boot, and a
 // font that fails to arrive is worse than one that was never asked for -- it
@@ -57,6 +58,11 @@ installErrorSinks()
 // own capture listener on `window`, and the only listener that runs ahead of
 // all of them is one added before them. See tutorial/lockGuard.ts.
 installLockGuard()
+
+// The cold line and the idle switches (#252), BEFORE the environment report:
+// Lua answers that report by arming them (dev mode only), and an envelope with
+// nobody subscribed is dropped. Subscribing is all this does until then.
+installDiag()
 
 // Report what this CEF build can actually render. Colour functions in
 // particular differ enough between CEF versions to make a correct stylesheet

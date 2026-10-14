@@ -2825,6 +2825,98 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R37  The cold line and the idle switches install nothing until a dev-mode
+//      `diag` envelope arms them, and the probe never sees itself (#252,
+//      round 4).
+//
+// test-cold.mjs pins the decisions on a fake browser; only this sees the real
+// one (bridge/diag.ts) and the bridge's taps:
+//
+//   NOTHING AT LOAD -- installDiag() only subscribes to `diag`; no listener,
+//     observer or timer is added outside the env's own on/off functions, and
+//     main.tsx calls it before reportEnvironment(), whose answer arms it;
+//   ONE NULL CHECK WHILE OFF -- nui.ts calls its taps only behind `if (tap)`,
+//     in fetchNui before anything else and in dispatch before the handlers;
+//   THE PROBE NEVER SEES ITSELF -- the observer watches <body> and the dot and
+//     the Element Timing marker are children of <html>, so a heartbeat is
+//     never activity and never a commit (a cold line still prints with
+//     `bruipaint` on, which is the A/B);
+//   THE WARM BEAT REACHES THE TREE -- App reads `warmTick`;
+//   DEV MODE ONLY -- br_ui/client/idle.lua's sync() returns before sending
+//     anything when BR.Dev is off.
+//
+// IT CAN FAIL. Append the dot to document.body, call installDiag() after
+// reportEnvironment(), drop `if (tap)` from fetchNui, or send DIAG from idle.lua
+// ahead of its dev() check.
+// ---------------------------------------------------------------------------
+{
+  const D = join(SRC, 'bridge', 'diag.ts')
+  const N = join(SRC, 'bridge', 'nui.ts')
+  const M = join(SRC, 'main.tsx')
+  const A = join(SRC, 'App.tsx')
+  const I = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_ui', 'client', 'idle.lua')
+  const need = [[D, 'src/bridge/diag.ts'], [N, 'src/bridge/nui.ts'], [M, 'src/main.tsx'], [A, 'src/App.tsx'],
+                [I, 'br_ui/client/idle.lua']]
+  const gone = need.filter(([f]) => !existsSync(f))
+  for (const [, name] of gone) {
+    fail('R37 cold-probe', name, 'file is missing. If it moved, move this rule with it (#252).')
+  }
+  if (gone.length === 0) {
+    const diag = stripComments(read(D))
+    const install = /export function installDiag\(\): void \{([\s\S]*?)\n\}/.exec(diag)
+    if (!install || install[1].replace(/\s+/g, ' ').trim()
+        !== "const diag = createDiag(browserEnv()) subscribe('diag', (d) => diag.apply(parseDiag(d)))") {
+      fail('R37 cold-probe', 'src/bridge/diag.ts',
+        "installDiag() does more than subscribe to `diag`. Nothing may run until Lua's"
+        + ' dev-mode envelope arms it (#252).')
+    }
+    const listen = /listen\(on, fn\) \{([\s\S]*?)\n    \},/.exec(diag)
+    if ((diag.match(/addEventListener\(/g) ?? []).length !== 1 || !listen || !/addEventListener\(/.test(listen[1])
+        || !/if \(!on\) return/.test(listen[1])) {
+      fail('R37 cold-probe', 'src/bridge/diag.ts',
+        'an event listener is added outside the env\'s listen(on, ...), or listen() adds one while off (#252).')
+    }
+    if (!/mo\.observe\(document\.body,/.test(diag) || /document\.body\.appendChild/.test(diag)
+        || (diag.match(/document\.documentElement\.appendChild\(el\)/g) ?? []).length !== 2) {
+      fail('R37 cold-probe', 'src/bridge/diag.ts',
+        'the DOM observer must watch document.body and the dot and the marker must be children of'
+        + ' <html>: otherwise the heartbeat is activity and no cold line prints with it on (#252).')
+    }
+    const nui = stripComments(read(N))
+    const fetchFn = /export async function fetchNui[\s\S]*?\): Promise<Res \| null> \{\s*([^\n]*)/.exec(nui)
+    if (!/let tap: BridgeTap \| null = null/.test(nui) || !fetchFn || fetchFn[1].trim() !== 'if (tap) tap.fetch(name)'
+        || !/if \(tap\) tap\.envelope\(msg\.s, msg\.k\)\s*for \(const fn of set\)/.test(nui)
+        || (nui.match(/tap\./g) ?? []).length !== 2) {
+      fail('R37 cold-probe', 'src/bridge/nui.ts',
+        "the cold line's taps are not `if (tap) tap.fetch(name)` first in fetchNui and"
+        + ' `if (tap) tap.envelope(msg.s, msg.k)` before the handlers. Unarmed, each must cost one'
+        + ' null check; armed, the marks must be when the call left and the envelope landed (#252).')
+    }
+    const main = stripComments(read(M))
+    const iDiag = main.indexOf('installDiag()')
+    if (iDiag < 0 || iDiag > main.indexOf('reportEnvironment()')) {
+      fail('R37 cold-probe', 'src/main.tsx',
+        "installDiag() must run before reportEnvironment(): Lua answers the report with the"
+        + ' `diag` envelope, and one nobody is subscribed to is dropped (#252).')
+    }
+    if (!/useUi\(\(s\) => s\.warmTick\)/.test(stripComments(read(A)))) {
+      fail('R37 cold-probe', 'src/App.tsx',
+        "App no longer reads `warmTick`, so `bruiwarm` re-renders nothing (#252).")
+    }
+    const lua = read(I).split('\n').filter((l) => !/^\s*--/.test(l)).join('\n')
+    const sync = /local function sync\(ask\)([\s\S]*?)\nend/.exec(lua)
+    if (!sync || !/^\s*if not dev\(\) then/.test(sync[1])
+        || sync[1].indexOf('send(BR.Nui.DIAG, {})') > sync[1].indexOf('return false')
+        || !/^local diag = \{ cold = true, paint = nil, warm = nil \}$/m.test(lua)) {
+      fail('R37 cold-probe', 'br_ui/client/idle.lua',
+        "sync() does not open with `if not dev() then` (sending only the all-off envelope"
+        + ' there), or a switch is no longer off by default. The page must hear nothing on a'
+        + ' public box (#252).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

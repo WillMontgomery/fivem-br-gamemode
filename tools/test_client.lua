@@ -24640,6 +24640,256 @@ do
     Citizen.SetTimeout = realSetTimeout
 end
 
+-- ═══ #252 ROUND 4: THE FIRST ACTION AFTER AN IDLE, AND THE SWITCHES ═══
+--
+-- Owner, 2026-10-13: the action and its sound happen at once, "but the UI
+-- reaction itself ... takes several seconds", worse the longer the PC sat. The
+-- page splits the wait (ui-src/src/bridge/coldProbe.ts, pinned by
+-- scripts/test-cold.mjs); br_ui/client/idle.lua adds Lua's stamps and prints
+-- ONE line per cold action. This block pins that half:
+--
+--   * THE LINE: its exact words, Lua's game timers -- when the callback came
+--     in, when its first push went out -- and E narrowed to the transport by
+--     Lua's own work; for a push with no input, E from when Lua sent it.
+--   * ONE LINE PER REPORT, flattened, '-' for what was not measured.
+--   * DEV MODE ONLY, AND NOTHING STAMPED UNTIL ARMED: no `diag` envelope and
+--     no stamp with dev mode off; dev mode arriving late arms the page.
+--   * EVERY SWITCH OFF BY DEFAULT, each one line when it changes, and no
+--     thread or timer of its own.
+--
+-- A FRESH COPY of the bridge, with this file after it as the manifest has it.
+
+describe('#252 round 4 -- the cold line and the idle switches')
+do
+    local nuiCb = {}
+    function RegisterNUICallback(name, fn) nuiCb[name] = fn end
+    local out = {}
+    function SendNUIMessage(m) out[#out + 1] = m end
+    function SetNuiFocus() end
+    function SetNuiFocusKeepInput() end
+    local threads = 0
+    local realThread = Citizen.CreateThread
+    Citizen.CreateThread = function() threads = threads + 1 end
+    local timers = {}
+    local realSetTimeout = Citizen.SetTimeout
+    Citizen.SetTimeout = function(ms, fn) timers[#timers + 1] = { ms = ms, fn = fn } end
+    local realTimer = GetGameTimer
+    local clock = 500000
+    GetGameTimer = function() return clock end
+    local prevDev = BR.Dev
+    BR.Dev = { on = function() return GetConvar('br_devMode', 'false') == 'true' end }
+    local prevAction = handlers['br:ui:action']
+
+    local beforeSend = #(handlers['br:ui:sendLocal'] or {})
+    local beforeReady = #(handlers['br:ui:ready'] or {})
+    local coreName = GetCurrentResourceName
+    GetCurrentResourceName = function() return 'br_ui' end
+    loadAll({ 'br_ui/client/nui.lua' })
+    threads, timers = 0, {}   -- the bridge's own focus watchdog is not this file's
+    loadAll({ 'br_ui/client/idle.lua' })
+    GetCurrentResourceName = coreName
+    local mine = (handlers['br:ui:sendLocal'] or {})[beforeSend + 1]
+    local ready = handlers['br:ui:ready'] or {}
+    local onReady = ready[#ready]
+    ok(#ready == beforeReady + 1 and type(onReady) == 'function', 'idle.lua listens for br:ui:ready')
+    ok(threads == 0 and #timers == 0, 'loading it starts no thread and no timer', threads .. '/' .. #timers)
+    local cold, idle = nuiCb[BR.NuiCb.COLD], nuiCb[BR.NuiCb.IDLE]
+    ok(BR.NuiCb.COLD == 'br/ui/cold' and BR.NuiCb.IDLE == 'br/ui/idle' and BR.Nui.DIAG == 'diag',
+       'the protocol names: br/ui/cold, br/ui/idle and the diag envelope')
+    ok(type(cold) == 'function' and type(idle) == 'function', 'idle.lua registers both through nui.lua\'s wrapper')
+
+    if type(mine) == 'function' and type(onReady) == 'function' and type(cold) == 'function'
+            and type(idle) == 'function' then
+        local function diags()
+            local list = {}
+            for _, m in ipairs(out) do if m.k == BR.Nui.DIAG then list[#list + 1] = m end end
+            return list
+        end
+        local function lastDiag() local d = diags(); return d[#d] end
+        local function cmd(name, ...)
+            local n = #logged
+            commands[name](nil, { ... }, '')
+            return #logged - n, logged[#logged]
+        end
+        local function has(label, line, part)
+            ok(type(line) == 'string' and line:find(part, 1, true) ~= nil, label,
+               ('%s\n       missing: %s'):format(tostring(line), part))
+        end
+        local function report(cb, data)
+            local n, answer = #logged, nil
+            cb(data, function(r) answer = r end)
+            ok(#logged == n + 1, 'one report is exactly one printed line', ('%d line(s)'):format(#logged - n))
+            ok(type(answer) == 'table' and answer.ok == true, '...and the page\'s fetch is answered')
+            return logged[#logged]
+        end
+
+        -- ── DEV MODE OFF: NOTHING ────────────────────────────────────────────
+        mine(BR.Nui.HUD, { state = 'lobby' })
+        nuiCb[BR.NuiCb.SFX]({ cue = 'ui.select' }, function() end)
+        local pushes, calls = BR.Ui.coldStamps()
+        ok(pushes == 0 and calls == 0, 'loaded, nothing is stamped', pushes .. '/' .. calls)
+        onReady()
+        ok(#diags() == 0, 'with dev mode off the page loading sends no diag envelope', #diags())
+        mine(BR.Nui.HUD, { state = 'lobby', hp = 97 })
+        nuiCb[BR.NuiCb.SFX]({ cue = 'ui.select' }, function() end)
+        pushes, calls = BR.Ui.coldStamps()
+        ok(pushes == 0 and calls == 0, '...and still nothing is stamped', pushes .. '/' .. calls)
+
+        -- ── DEV MODE ARRIVING: THE COLD LINE ARMED, EVERY SWITCH OFF ─────────
+        convars.br_devMode = 'true'
+        local d = lastDiag()
+        ok(#diags() == 1 and d.d.cold == true, 'dev mode reaching the client arms the page\'s cold line', #diags())
+        ok(d and d.d.paint == nil and d.d.warm == nil and d.d.ask == nil,
+           '...with every switch off by default')
+        onReady()
+        ok(#diags() == 2 and lastDiag().d.cold == true, 'a reloaded page is armed again')
+
+        -- ── AN INPUT AND ITS PUSH ────────────────────────────────────────────
+        -- The page's call arrives; br_core's action takes 4 ms and pushes.
+        local pushSeq = nil
+        handlers['br:ui:action'] = { function(name)
+            if name ~= BR.NuiCb.LOCKER2_WEAR then return end
+            clock = clock + 4
+            mine(BR.Nui.LOCKER2, { worn = 'p1' })
+            pushSeq = out[#out].s
+            mine(BR.Nui.LOCKER2, { worn = 'p1', loading = false })
+        end }
+        local callAt = clock
+        nuiCb[BR.NuiCb.LOCKER2_WEAR]({ id = 'p1' }, function() end)
+        handlers['br:ui:action'] = prevAction
+        pushes, calls = BR.Ui.coldStamps()
+        ok(pushes >= 2 and calls == 1, 'armed, the call and its pushes are stamped', pushes .. '/' .. calls)
+
+        clock = clock + 1900
+        local line = report(cold, {
+            by = 'click', idleS = 312, total = 1837, a = 3, b = 11, c = 1788, d = 35, e = 9,
+            cb = BR.NuiCb.LOCKER2_WEAR, cause = 0, age = 1850,
+            msgs = { { s = 900, k = 'lobby', t = 2 }, { s = pushSeq, k = 'locker2', t = 9 } },
+            detail = 'frame work 5.0 | commit->presented 1818 | long tasks 0 | 3 DOM changes',
+        })
+        has('the line, in its words, with E narrowed by Lua\'s 4 ms of work', line,
+            '[br_ui] cold 1837ms after 312s idle: input->handler 3.0, handler->commit 11, commit->rAF 1788,'
+            .. ' rAF->next rAF 35, msg arrival lag 5.0 | by click |')
+        has('...Lua\'s game timers: the call in, its first push, the report', line,
+            ('| lua br/locker2/wear in at %d, push #%d (locker2) at +4ms, report in at +1904ms |')
+                :format(callAt, pushSeq))
+        has('...and the page\'s evidence after it', line, '| frame work 5.0 | commit->presented 1818 |')
+
+        -- The page did not see that push among its first: no E from it.
+        line = report(cold, { by = 'click', idleS = 40, total = 50, a = 1, b = 2, c = 3, d = 44, e = 2,
+                              cb = BR.NuiCb.LOCKER2_WEAR, cause = 0, age = 60,
+                              msgs = { { s = 1, k = 'lobby', t = 2 } }, detail = '' })
+        has('a push the page did not report is not guessed at', line, 'msg arrival lag - |')
+        has('...and says so', line, 'that push not among the page\'s first')
+
+        -- A callback this file never saw: the page's own round trip, said as such.
+        line = report(cold, { by = 'click', idleS = 40, total = 50, a = 1, b = 2, c = 3, d = 44, e = 7.5,
+                              cb = 'br/settings/save', cause = 0, age = 60, msgs = {}, detail = '' })
+        has('an unstamped callback keeps the page\'s round trip', line,
+            'msg arrival lag 7.5 | by click | lua br/settings/save not stamped (round trip shown) |')
+
+        -- ── A PUSH WITH NO INPUT ─────────────────────────────────────────────
+        local hudAt = clock
+        mine(BR.Nui.HUD, { state = 'warmup' })
+        local hudSeq = out[#out].s
+        clock = clock + 1850
+        line = report(cold, { by = ('lua hud #%d'):format(hudSeq), idleS = 95, total = 1830, a = -1,
+                              b = 0.4, c = 1800, d = 29.6, e = -1, cb = '', cause = hudSeq, age = 1840,
+                              msgs = {}, detail = 'presented n/a' })
+        has('a push with no input: no input part, E from when Lua sent it', line,
+            ('[br_ui] cold 1830ms after 95s idle: input->handler -, handler->commit 0.4, commit->rAF 1800,'
+             .. ' rAF->next rAF 30, msg arrival lag 10 | by lua hud #%d |'):format(hudSeq))
+        has('...and when Lua sent it, on the game timer', line,
+            ('| lua push #%d (hud) sent at %d, report in at +1850ms |'):format(hudSeq, hudAt))
+
+        -- ── WHAT A DEAD PAGE SAYS, AND ONE LINE ALWAYS ───────────────────────
+        line = report(cold, { by = 'keydown', idleS = 61, total = -1, a = 2, b = -1, c = -1, d = -1, e = -1,
+                              cb = '', cause = 0, age = 15000, msgs = {}, detail = 'no change within 15s' })
+        has('nothing measured is a dash, and a page-only input calls nothing', line,
+            '[br_ui] cold - after 61s idle: input->handler 2.0, handler->commit -, commit->rAF -,'
+            .. ' rAF->next rAF -, msg arrival lag - | by keydown | lua no call to lua | no change within 15s')
+        line = report(cold, { by = 'click\nme', detail = string.rep('x', 2000) .. '\n' })
+        ok(not line:find('[\r\n]') and #line < 700, 'flattened and capped', #line)
+        line = report(cold, nil)
+        ok(line:find('[br_ui] cold - after 0s idle:', 1, true) == 1, 'even a report with no body', line)
+
+        -- ── THE SWITCHES: OFF BY DEFAULT, ONE LINE EACH WAY ──────────────────
+        local n0 = #diags()
+        local lines, said = cmd('bruipaint')
+        ok(lines == 1 and said == '[br_ui] bruipaint off' and #diags() == n0, 'bruipaint, bare: off, and nothing sent', said)
+        lines, said = cmd('bruipaint', 'on')
+        d = lastDiag()
+        ok(lines == 1 and said == '[br_ui] bruipaint on: raster every 500ms', 'bruipaint on logs the change once', said)
+        ok(#diags() == n0 + 1 and d.d.paint.ms == 500 and d.d.paint.mode == 'raster' and d.d.cold == true,
+           '...and tells the page: a raster repaint every 500 ms, the cold line still armed')
+        lines, said = cmd('bruipaint', 'on', '250', 'comp')
+        ok(said == '[br_ui] bruipaint on: comp every 250ms' and lastDiag().d.paint.mode == 'comp',
+           'a period and a mode', said)
+        lines, said = cmd('bruipaint', 'on', '50')
+        ok(#diags() == n0 + 2 and said:find('50 is outside 100-60000 ms', 1, true) ~= nil,
+           'a period out of range is refused and nothing sent', said)
+        lines, said = cmd('bruipaint', 'off')
+        ok(said == '[br_ui] bruipaint off' and lastDiag().d.paint == nil, 'bruipaint off', said)
+        lines, said = cmd('bruipaint', 'off')
+        ok(said == '[br_ui] bruipaint already off' and #diags() == n0 + 3, '...and again changes nothing', said)
+
+        lines, said = cmd('bruiwarm')
+        ok(said == '[br_ui] bruiwarm off', 'bruiwarm, bare: off', said)
+        lines, said = cmd('bruiwarm', 'on')
+        ok(said == '[br_ui] bruiwarm on: every 5000ms' and lastDiag().d.warm == 5000, 'bruiwarm on: every 5 s', said)
+        lines, said = cmd('bruiwarm', 'on', 'fast')
+        ok(said:find('usage: bruiwarm on [ms] | off', 1, true) ~= nil, 'a word that is not a period is refused', said)
+        cmd('bruiwarm', 'off')
+        ok(lastDiag().d.warm == nil, 'bruiwarm off')
+
+        lines, said = cmd('bruicold', 'off')
+        ok(said == '[br_ui] bruicold off' and lastDiag().d.cold == false, 'bruicold off disarms the page', said)
+        mine(BR.Nui.HUD, { state = 'lobby', hp = 99 })
+        pushes, calls = BR.Ui.coldStamps()
+        ok(pushes == 0 and calls == 0, '...and stamps nothing', pushes .. '/' .. calls)
+        cmd('bruicold', 'on')
+        ok(lastDiag().d.cold == true, 'bruicold on arms it again')
+
+        -- ── THE INVENTORY ────────────────────────────────────────────────────
+        timers = {}
+        cmd('bruiidle')
+        d = lastDiag()
+        ok(type(d.d.ask) == 'number' and #timers == 1 and timers[1].ms == 3000,
+           'bruiidle asks the page once and waits 3 s for it')
+        line = report(idle, { text = 'idle 312s | lobby 2.0/s' })
+        ok(line == '[br_ui] idle: idle 312s | lobby 2.0/s', 'the answer is one line', line)
+        local n = #logged
+        timers[1].fn()
+        ok(#logged == n, '...and the wait, answered, says nothing')
+        cmd('bruiidle')
+        n = #logged
+        timers[2].fn()
+        ok(#logged == n + 1 and logged[#logged]:find('did not answer within 3000ms', 1, true) ~= nil,
+           'an unanswered ask says so, once', logged[#logged])
+        ok(threads == 0, 'no switch started a thread', threads)
+
+        -- ── DEV MODE GOING AWAY ──────────────────────────────────────────────
+        cmd('bruipaint', 'on')
+        n0 = #diags()
+        convars.br_devMode = nil
+        d = lastDiag()
+        ok(#diags() == n0 + 1 and d.d.cold == nil and d.d.paint == nil and d.d.warm == nil,
+           'dev mode going away sends one all-off envelope')
+        mine(BR.Nui.HUD, { state = 'lobby', hp = 98 })
+        pushes, calls = BR.Ui.coldStamps()
+        ok(pushes == 0 and calls == 0, '...and stamps nothing after it', pushes .. '/' .. calls)
+        onReady()
+        ok(#diags() == n0 + 1, '...nor arms a page that loads after it')
+    end
+
+    handlers['br:ui:action'] = prevAction
+    BR.Dev = prevDev
+    GetGameTimer = realTimer
+    Citizen.SetTimeout = realSetTimeout
+    Citizen.CreateThread = realThread
+    function SendNUIMessage() end
+end
+
 -- ---------------------------------------------------------------------------
 describe('#399 -- brtc, bare, reads what is on screen')
 -- ---------------------------------------------------------------------------

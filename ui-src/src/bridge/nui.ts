@@ -9,6 +9,7 @@
 import type { CallbackName, EnvelopeKind, WireEnvelope } from './types'
 import { ENVELOPE_VERSION } from './types'
 import { admit, createSeqGate, type Refusal } from './envelope'
+import type { BridgeTap } from './coldProbe'
 
 /** True when running under `npm run dev` in a normal browser. */
 export const isBrowser = !(window as unknown as { invokeNative?: unknown }).invokeNative
@@ -59,6 +60,18 @@ export interface BridgeStats {
 
 export function bridgeStats(): BridgeStats {
   return { seq: seq.last, stale: staleDropped, unheard: unheardDropped }
+}
+
+/**
+ * THE COLD LINE'S TWO TAPS (#252, round 4): when the action's call to Lua went
+ * out, and when each envelope arrived. Null unless a dev-mode `diag` envelope
+ * armed the probe (bridge/diag.ts); until then each envelope and each call
+ * costs one null check.
+ */
+let tap: BridgeTap | null = null
+
+export function setBridgeTap(t: BridgeTap | null): void {
+  tap = t
 }
 
 export function subscribe(kind: EnvelopeKind, fn: Handler): () => void {
@@ -118,6 +131,7 @@ export function dispatch(msg: WireEnvelope): void {
   }
 
   if (msg.k !== 'snapshot') seq.commit(msg.s)
+  if (tap) tap.envelope(msg.s, msg.k)
   for (const fn of set) {
     try {
       fn(msg.d)
@@ -199,6 +213,7 @@ export async function fetchNui<Req = unknown, Res = unknown>(
   data?: Req,
   timeoutMs = 5000,
 ): Promise<Res | null> {
+  if (tap) tap.fetch(name)
   // import.meta.env.DEV is replaced with a literal false in a production build,
   // so this whole branch -- and the mock module with it -- is eliminated rather
   // than shipped as a separate chunk. Dynamic imports under the nui:// scheme

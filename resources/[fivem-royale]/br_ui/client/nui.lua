@@ -36,6 +36,15 @@ local chatChannel = BR.ChatChannel.GLOBAL  -- which channel a chat focus opens i
 --- add it back later is the more expensive mistake.
 local pauseTab = nil
 
+--- The cold line's stamps (#252, round 4): client/idle.lua's, set only while it
+--- has armed the page's probe (dev mode). Nil otherwise, and then send() and
+--- callback() below stamp nothing -- one nil check each.
+local coldHook = nil
+
+BR.Ui = BR.Ui or {}
+--- @param h table|nil  { sent = function(seq, kind), cbIn = function(name) }
+function BR.Ui.setColdHook(h) coldHook = h end
+
 -- ---------------------------------------------------------- what we told ---
 
 --- What this side last TOLD the page, for the screen report (#252).
@@ -180,6 +189,7 @@ local function send(kind, data)
         s = seq,
     })
     noteTold(kind, data, seq)
+    if coldHook then coldHook.sent(seq, kind) end
 
     -- ═══ ONE SOUND PER TOAST, AND THE TOAST MAY NAME ITS OWN ═══
     --
@@ -233,6 +243,10 @@ AddEventHandler('br:ui:sendLocal', function(kind, data)
 end)
 
 exports('send', send)
+-- For client/idle.lua, the one other file in this resource that sends: the
+-- `diag` envelope and its switches (#252). Still this function, so still the
+-- only SendNUIMessage.
+BR.Ui.send = send
 
 -- ----------------------------------------------------------------- focus ---
 
@@ -343,7 +357,6 @@ exports('clearFocus', clearFocus)
 --- For pause.lua's handover to GTA's own menu, which empties this stack and has
 --- to know what was on it to put it back. A copy, so nothing outside this file
 --- can push or pop around applyFocus.
-BR.Ui = BR.Ui or {}
 function BR.Ui.focusStack()
     local out = {}
     for i, s in ipairs(focusStack) do out[i] = s end
@@ -445,6 +458,8 @@ end)
 --- @param fn function  receives (data); may return a table
 local function callback(name, fn)
     RegisterNUICallback(name, function(data, cb)
+        -- The game timer this call arrived at, for the cold line (#252).
+        if coldHook then coldHook.cbIn(name) end
         local ok, res = pcall(fn, data or {})
         if ok then
             cb(res or { ok = true })
@@ -454,6 +469,10 @@ local function callback(name, fn)
         end
     end)
 end
+
+-- client/idle.lua registers the cold line's and the inventory's callbacks
+-- through the same always-resolving wrapper (#252).
+BR.Ui.callback = callback
 
 callback(BR.NuiCb.CLOSE, function()
     clearFocus()

@@ -254,6 +254,13 @@ export interface UiState {
    */
   frontendUp: boolean
   /**
+   * THE KEEP-WARM HEARTBEAT (#252, round 4): `bruiwarm`, dev mode only. App
+   * reads it and nothing else does, so a beat re-renders the whole tree with
+   * nothing changed -- the first action's code paths run without a DOM change.
+   * 0 for the life of the page unless the switch is on.
+   */
+  warmTick: number
+  /**
    * WHICH engine screen is up: the big map, or a menu.
    *
    * The suppression rule -- nothing we draw may sit on top of the engine's own
@@ -492,6 +499,8 @@ export interface UiState {
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
   setFrontendUp: (v: boolean) => void
+  /** One `bruiwarm` beat (bridge/diag.ts). */
+  warmBeat: () => void
   setFrontendReason: (v: 'map' | 'menu') => void
   setTutorialRun: (v: boolean) => void
   setTutorialOffer: (v: boolean) => void
@@ -894,6 +903,7 @@ export const useUi = create<UiState>((set, get) => {
   worldReady: import.meta.env.DEV,
   frontendUp: false,
   frontendReason: 'menu',
+  warmTick: 0,
   tutorialRun: false,
   tutorialOffer: false,
   tutorialChecked: true,
@@ -1019,6 +1029,7 @@ export const useUi = create<UiState>((set, get) => {
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
   setFrontendUp: (frontendUp) => set({ frontendUp }),
+  warmBeat: () => set((s) => ({ warmTick: s.warmTick + 1 })),
   setFrontendReason: (frontendReason) => set({ frontendReason }),
   setTutorialRun: (tutorialRun) => set({ tutorialRun }),
   setTutorialOffer: (tutorialOffer) => set({ tutorialOffer }),

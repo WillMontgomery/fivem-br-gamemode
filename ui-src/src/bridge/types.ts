@@ -1701,6 +1701,18 @@ export type Envelope =
    *
    *  A RAW KIND STRING RATHER THAN A BR.Nui CONSTANT, like `shopplate` above. */
   | { k: 'gunshopmenu'; d: { open: boolean } }
+  /** The cold-action probe and the idle A/B switches (#252, round 4): BR.Nui.DIAG,
+   *  dev mode only. bridge/coldProbe.ts reads it; anything left out is off. */
+  | { k: 'diag'; d: DiagPayload }
+
+/** BR.Nui.DIAG's payload. See br_ui/client/idle.lua. */
+export interface DiagPayload {
+  cold?: boolean
+  paint?: { ms: number; mode: string }
+  warm?: number
+  /** A `bruiidle` request: the page answers CB.IDLE once. */
+  ask?: number
+}
 
 export type EnvelopeKind = Envelope['k']
 
@@ -1826,6 +1838,14 @@ export const CB = {
    * can know. See bridge/screenReport.ts.
    */
   SCREEN:       'br/ui/screen',
+  /**
+   * The first action after an idle, split into where its seconds went, and the
+   * page's idle inventory (#252, round 4). Reported upward, like SCREEN; sent
+   * only once a dev-mode `diag` envelope has armed the probe. br_ui/client/idle.lua
+   * prints both. See bridge/coldProbe.ts.
+   */
+  COLD:         'br/ui/cold',
+  IDLE:         'br/ui/idle',
   /**
    * "This is what --color-hp resolved to."
    *

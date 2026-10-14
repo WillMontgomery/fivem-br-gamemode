@@ -130,6 +130,10 @@ export default function App() {
   // the season has it. Its chunk is fetched the moment it does.
   const locker2On        = useUi((s) => s.locker2.on)
   usePreloadLockerV2(locker2On)
+  // `bruiwarm` (#252, round 4, dev mode only): read for its change alone. Each
+  // beat re-renders the root, and with it every screen that is up, with nothing
+  // changed. 0 for the life of the page unless that switch is on.
+  useUi((s) => s.warmTick)
 
   useNuiEvent('snapshot', (d) => dispatch().hydrate(d))
   useNuiEvent('state',    (d) => {
