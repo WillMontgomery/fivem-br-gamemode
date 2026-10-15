@@ -64,8 +64,8 @@ BR.Config.Seasons = {
         -- #411. Owner, 2026-10-13: "nothing we re-do in the shop should ever
         -- show on season 1." On: br_ui's Season 2 Market (the lobby character
         -- kept in view, tabs only for the kinds with real items, a buy
-        -- confirm, New on this season's items). Off: today's Market and its
-        -- grid, exactly as they were.
+        -- confirm, a Preview of a dance on the lobby character). Off: today's
+        -- Market and its grid, exactly as they were.
         market2 = { from = 2 },
     },
 }

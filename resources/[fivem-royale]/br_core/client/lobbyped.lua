@@ -360,7 +360,7 @@ local inLocker = false
 -- See BR.LobbyPed.preview, at the bottom.
 local inMarket = false
 local previewWant, previewOn = nil, nil
-local previewAskedAt, previewTaskedAt = nil, 0
+local previewAsked, previewAskedAt, previewTaskedAt = nil, nil, 0
 
 -- ═══ WHAT THE LAST RUN ACTUALLY TOOK ═══
 --
@@ -1021,11 +1021,15 @@ end
 --- @param e table       { dict, clip, flags, ms }
 --- @param mine number|nil
 --- @param ms number|nil  override the configured duration; -1 plays it out
+--- @param parkedGesture boolean|nil  the stretch or the squad's wait: yields to the Market's Preview
 --- @return boolean
-local function playEmote(e, mine, ms)
+local function playEmote(e, mine, ms, parkedGesture)
     if not e or not e.dict or not e.clip or not TaskPlayAnim then return false end
     if not ensureDict(e.dict, mine) then return false end
     if mine and token ~= mine then return false end
+    -- THE PREVIEW TOOK THE PED WHILE THIS STREAMED (#411): a task now would
+    -- land on top of the dance, so the stretch or the wait is dropped instead.
+    if parkedGesture and (previewOn ~= nil or (previewWant ~= nil and inMarket)) then return false end
 
     local dur = math.floor(ms or e.ms or 2000)
     TaskPlayAnim(PlayerPedId(), e.dict, e.clip, 8.0, -8.0, dur,
@@ -2268,8 +2272,9 @@ end)
 -- has both the Season 2 Market and emotes -- asked every pass, so a closed
 -- Market, a ready-up, a re-armed entrance or a season switch takes it off the
 -- ped on the next tick. While it plays it is the ped's gesture (`emoting`), so
--- the stretch and the squad's wait stand aside, and either one already
--- playing gives way to it.
+-- the stretch and the squad's wait stand aside, either one already playing
+-- gives way to it, and either one still streaming when it starts is dropped
+-- (playEmote's parkedGesture).
 
 local PREVIEW_LOAD_MS = 2000   -- a dictionary that will not stream costs the preview, not a wait
 local PREVIEW_RETASK_MS = 1000 -- how often a clip the engine dropped is put back
@@ -2299,11 +2304,26 @@ AddEventHandler('br:ui:focusChanged', function(top)
     if not inMarket then previewWant = nil end
 end)
 
+--- Let go of the dictionary the preview asked for, if it asked for one.
+---
+--- THE REQUEST IS NAMED, NOT JUST TIMED (review, 2026-10-14). It used to be a
+--- bare timestamp, cleared only when a dance started or timed out -- so a
+--- Preview stopped, switched or closed while its dictionary streamed left the
+--- timestamp behind: the next dance skipped its own request, waited out the
+--- first one's two seconds and was dropped as "never streamed", and the first
+--- dictionary was never let go of. Now the request carries its dictionary and
+--- previewStep lets it go the moment the dance it was for stops being wanted,
+--- as client/emotes.lua's stopAnim does with its key.
+local function previewRelease()
+    if previewAsked ~= nil and RemoveAnimDict then RemoveAnimDict(previewAsked) end
+    previewAsked, previewAskedAt = nil, nil
+end
+
 --- Take the preview off the ped: its own clip, by name.
 local function previewOff()
     local row = previewOn
-    if previewAskedAt ~= nil and RemoveAnimDict then RemoveAnimDict(row.dict) end
-    previewOn, previewAskedAt = nil, nil
+    previewRelease()
+    previewOn = nil
     if StopAnimTask then StopAnimTask(PlayerPedId(), row.dict, row.clip, 8.0) end
     if emoting == row then emoting, emoteUntil = nil, nil end
 end
@@ -2313,12 +2333,16 @@ end
 --- ped, so the parked gestures below leave it alone.
 --- @return boolean
 local function previewStep()
-    if previewWant == nil and previewOn == nil then return false end
+    if previewWant == nil and previewOn == nil and previewAsked == nil then return false end
     -- A season that closes either row forgets the preview outright: the page
     -- that asked for it is not the one that comes back.
     if not (emotesOn() and market2On()) then previewWant = nil end
     local want = previewWant
     if want ~= nil and not (inMarket and parked()) then want = nil end
+
+    -- A DICTIONARY ASKED FOR A DANCE NO LONGER WANTED is let go of now, so the
+    -- next dance asks for its own (previewRelease).
+    if previewAsked ~= nil and (want == nil or previewAsked ~= want.dict) then previewRelease() end
 
     -- A DIFFERENT DANCE, OR NONE: off on this pass, the next one on the next
     -- (a stop and a task in one frame can cancel the stop).
@@ -2336,12 +2360,13 @@ local function previewStep()
     end
 
     if not isTrue(HasAnimDictLoaded(want.dict)) then
-        if previewAskedAt == nil then
+        if previewAsked == nil then
             RequestAnimDict(want.dict)
-            previewAskedAt = now
+            previewAsked, previewAskedAt = want.dict, now
         elseif now - previewAskedAt >= PREVIEW_LOAD_MS then
             print(('[br_core] market preview: "%s" never streamed'):format(tostring(want.dict)))
-            previewWant, previewAskedAt = nil, nil
+            previewRelease()
+            previewWant = nil
             return false
         end
         return true
@@ -2356,8 +2381,8 @@ local function previewStep()
     -- FULL BODY, LOOPING, UNTIL STOPPED: the row's own flag (1 on every row;
     -- the config refuses 16, 32 and 1024), -1 because the end is the stop.
     TaskPlayAnim(ped, want.dict, want.clip, 8.0, -8.0, -1, want.flag or 1, 0.0, false, false, false)
-    if previewAskedAt ~= nil and RemoveAnimDict then RemoveAnimDict(want.dict) end
-    previewOn, previewTaskedAt, previewAskedAt = want, now, nil
+    previewRelease()
+    previewOn, previewTaskedAt = want, now
     emoting, emoteUntil = want, nil
     return true
 end
@@ -2430,7 +2455,7 @@ BR.Loop.register(BR.Loop.TICK, 'lobbyped.emotes', function()
             local pick = waits.clips[math.random(#waits.clips)]
             Citizen.CreateThread(function()
                 playEmote({ dict = pick.dict, clip = pick.clip, waiting = true,
-                            flags = waits.flags or 0, ms = waits.ms or 4000 }, nil)
+                            flags = waits.flags or 0, ms = waits.ms or 4000 }, nil, nil, true)
             end)
         end
         return
@@ -2456,7 +2481,7 @@ BR.Loop.register(BR.Loop.TICK, 'lobbyped.emotes', function()
     if GetGameTimer() - parkedAt < (e.afterMs or 30000) then return end
 
     idlePlayed = true
-    Citizen.CreateThread(function() playEmote(e, nil) end)
+    Citizen.CreateThread(function() playEmote(e, nil, nil, true) end)
 end)
 
 AddEventHandler('onResourceStop', function(res)

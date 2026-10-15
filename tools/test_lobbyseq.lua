@@ -166,10 +166,18 @@ function ClearPedTasksImmediately() ped.dest = nil ped.anim = nil end
 local animDicts = {}
 local dictsStream = true
 local dictDelayMs = 0
+-- WHAT IS STILL ASKED FOR: a dictionary requested and not yet let go of. The
+-- Market's Preview (#411) releases its own, so a request it abandons shows here.
+local animHeld = {}
 function RequestAnimDict(name)
+    animHeld[name] = true
     if animDicts[name] == nil then
         animDicts[name] = dictsStream and (fakeTime + dictDelayMs) or false
     end
+end
+function RemoveAnimDict(name)
+    animHeld[name] = nil
+    animDicts[name] = nil
 end
 function HasAnimDictLoaded(name)
     local at = animDicts[name]
@@ -611,6 +619,7 @@ local function reset()
     dictDelayMs = 0
     modelDelayMs = 0
     for k in pairs(animDicts) do animDicts[k] = nil end
+    for k in pairs(animHeld) do animHeld[k] = nil end
     BR.Spawn.curtainWanted = false
     BR.State.party = nil
     for c in pairs(liveCams) do liveCams[c] = nil end
@@ -5528,6 +5537,83 @@ do
     pump(200)
     ok(not on(row), 'preview: a ped that leaves the lobby stops it')
     BR.State.me.state = BR.PlayerState.LOBBY
+
+    -- (11) THE LOAD BELONGS TO THE PRESS THAT ASKED FOR IT. A dictionary still
+    -- streaming when its dance stops being wanted -- stopped, another dance,
+    -- the Market closed -- is let go of there and then, and the next dance asks
+    -- for its own (review, 2026-10-14: the first request's clock was left
+    -- behind, the next dance never asked and was dropped as "never streamed").
+    ok(row.dict ~= other.dict, 'preview load precondition: the two dances are two dictionaries')
+    local function loading(r) return animHeld[r.dict] == true end
+    fresh()
+    dictDelayMs = 500
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(150)
+    ok(loading(row) and not on(row), 'preview load precondition: the first dance is still streaming')
+    TriggerEvent('br:ui:marketPreview', nil)
+    pump(200)
+    ok(not loading(row), 'preview load: stopped while it streams, its dictionary is let go of')
+    pump(5000)
+    TriggerEvent('br:ui:marketPreview', other.id)
+    pump(1500)
+    ok(on(other), 'preview load: and a dance pressed afterwards plays')
+
+    fresh()
+    dictDelayMs = 500
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(150)
+    ok(loading(row) and not on(row), 'preview load precondition: the first dance is still streaming when another is pressed')
+    TriggerEvent('br:ui:marketPreview', other.id)
+    pump(1500)
+    ok(on(other) and asked(row) == nil and not loading(row),
+        'preview load: another dance pressed while the first streams plays, the first never does and is let go of')
+
+    fresh()
+    dictDelayMs = 500
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(150)
+    ok(loading(row) and not on(row), 'preview load precondition: the first dance is still streaming when the Market closes')
+    TriggerEvent('br:ui:focusChanged', 'lobby')
+    pump(200)
+    ok(not loading(row), 'preview load: the Market closed while it streams lets it go')
+    pump(5000)
+    TriggerEvent('br:ui:focusChanged', 'market')
+    TriggerEvent('br:ui:marketPreview', other.id)
+    pump(1500)
+    ok(on(other), 'preview load: and a dance pressed in the Market opened again plays')
+
+    fresh()
+    dictsStream = false
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(2500)
+    ok(not on(row) and not loading(row), 'preview load: a dictionary that never streams is given up and let go of')
+    dictsStream = true
+    TriggerEvent('br:ui:marketPreview', other.id)
+    pump(1000)
+    ok(on(other), 'preview load: and the next dance still plays')
+
+    -- (12) A DANCE THE ENGINE DROPPED IS PUT BACK, with nothing pressed.
+    fresh()
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(300)
+    ok(on(row), 'preview precondition: playing before the engine drops it')
+    ped.anim = nil
+    pump(3000)
+    ok(on(row), 'preview: a dance the engine dropped is put back')
+
+    -- (13) A STRETCH STILL STREAMING WHEN THE PREVIEW STARTS DOES NOT LAND ON
+    -- IT: it is dropped, not played over the dance until the next retask.
+    fresh()
+    dictDelayMs = 800
+    for _ = 1, (E.idle.afterMs + 10000) // 100 do
+        if animHeld[E.idle.dict] then break end
+        pump(100)
+    end
+    ok(animHeld[E.idle.dict] and not on(E.idle), 'preview precondition: the stretch is streaming')
+    dictDelayMs = 0
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(900)
+    ok(on(row) and asked(E.idle) == nil, 'preview: a stretch that finishes streaming after it starts is dropped')
 
     TriggerEvent('br:ui:marketPreview', nil)
     TriggerEvent('br:ui:focusChanged', 'lobby')
