@@ -22,20 +22,26 @@ channel. What it removes is banned by `ui-src/scripts/check-cef.mjs` (rules in
 `cef-rules.mjs`, proved by `test-cef.mjs`): `alert`/`confirm`/`prompt`,
 mutation events, `execCommand` on an unfocused field, Picture-in-Picture and
 the device APIs, `unload`, URLs built from unescaped data, CSS `zoom` outside
-Locker v2, and any `fx_version` but `cerulean`. Two behaviors changed under
-code that stays:
+the Season 2 screens' islands (Locker v2, the Market), and any `fx_version`
+but `cerulean`. Two behaviors changed under code that stays:
 
 - **Standardized `zoom`.** On 144 a zoomed element's `getBoundingClientRect` is
   in screen px; on 103 it was in the element's own. Cloudscape sizes Locker
   v2's dropdowns from it, so on 144 they drew larger by the zoom (1.5 times at
   1440p), past the panel. `src/cef/zoomRect.ts` gives Cloudscape the 103 answer on both engines.
+  The Market draws the same with or without it (its dialogs measured alike
+  at 1440p and 4K), and the build stops if a Cloudscape update measures in a
+  way the shim misses.
 - **Request throttling.** The locker spin sends one request at a time
-  (`bridge/coalesce.ts`) and the error sink caps itself.
+  (`bridge/coalesce.ts`), the error sink caps itself, and a Settings slider
+  sends the palette only when it changes.
 
 Still to see on a Canary client: Ringmaster sign-in in the Admin tab (its
 cookie is cross-site), locker headshots (`nui-img` must allow CORS), the DUI
-prompts on `nui://`, and the `:has()` rules 144 starts applying
-(`node scripts/check-css.mjs br_ui --has` lists them).
+prompts on `nui://`, the `:has()` rules 144 starts applying
+(`node scripts/check-css.mjs br_ui --has` lists them), the Locker
+walkthrough's ring inside a scrolled pane (its clip is measured natively), and
+Tab landing on a scroll pane (144 makes scrollers focusable).
 
 **What 144 unlocks, and when.** Not before every client is on 144: Cfx's
 Release channel has shipped it and the F8 `[br_ui] chrome` line says 144 on
