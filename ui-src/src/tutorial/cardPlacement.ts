@@ -269,6 +269,15 @@ export const RING_GAP = 4
 /** The ring's halo, index.css `.tut-ring`'s 0.28rem box-shadow spread. */
 export const RING_HALO_REM = 0.28
 
+/** A click step's second halo, index.css `.tut-ring--click::after`'s inset: the
+ *  ring's widest ink at rest. */
+export const RING_CLICK_HALO_REM = 0.35
+
+/** How far inside the screen the outermost ink stays: a whole pixel, as
+ *  scripts/check-layout.mjs asks of every edge -- on the screen's edge, the
+ *  game's browser cuts it as soon as rounding puts it between two pixels. */
+export const RING_CLEAR = 1
+
 /** The ring's box and clip, as TutorialLayer draws them. */
 export type RingBox = { left: number; top: number; width: number; height: number; clipPath?: string }
 
@@ -283,7 +292,8 @@ export type RingBox = { left: number; top: number; width: number; height: number
  * off the screen on three sides, and the player saw one edge of it. The box is
  * pulled in until its halo is on screen, over the anchor's own edge if it has
  * to be: a ring that overlaps its subject by a few pixels still says which
- * subject; a ring with three sides missing says nothing.
+ * subject; a ring with three sides missing says nothing. "On screen" is its
+ * widest halo (a click step's) a whole pixel inside the edge, RING_CLEAR.
  *
  * THE CLIP IS UNCHANGED IN MEANING (see "MEASURED AGAINST THE ANCHOR" in
  * TutorialLayer): a pane hiding part of the anchor cuts the ring RING_GAP
@@ -291,7 +301,7 @@ export type RingBox = { left: number; top: number; width: number; height: number
  * and the cut is now measured from wherever the box was pulled in to.
  */
 export function ringBox(r: Rect, clip: Rect | null, vw: number, vh: number, rem: number): RingBox {
-  const halo = RING_HALO_REM * rem
+  const halo = Math.max(RING_HALO_REM, RING_CLICK_HALO_REM) * rem + RING_CLEAR
   const left = Math.max(halo, r.x - RING_GAP)
   const top = Math.max(halo, r.y - RING_GAP)
   const right = Math.min(vw - halo, r.x + r.w + RING_GAP)

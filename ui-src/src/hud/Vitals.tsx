@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import Fit from '../ui/Fit'
 
 /**
  * Health and shield, drawn where GTA's own minimap strip used to be.
@@ -153,12 +154,13 @@ export function Fill({ value, colour, segments = 0, num, label, zeroNum }: {
         // instead -- a step under white, over the same heavy shadow.
         //
         // `right` RESERVES THE NUMERAL'S CORNER so the two can never overlap:
-        // 2.4rem covers "100" at 0.88rem Anton plus its 0.375rem inset. The
-        // pill already clips, so a caption that outgrows what is left is cut
-        // off rather than escaping the bar.
-        <span
-          className="micro-label ts absolute left-1.5 top-1/2 leading-none
-                     whitespace-nowrap overflow-hidden"
+        // 2.4rem covers "100" at 0.88rem Anton plus its 0.375rem inset.
+        //
+        // A CAPTION WITH NO ROOM IS NOT DRAWN (ui/Fit.tsx). It was cut by the
+        // pill, so at Interface size 130% the shield's read "SHIE"; now it is
+        // the whole word or nothing, and the numeral and the bar still say it.
+        <Fit
+          className="micro-label ts absolute left-1.5 top-1/2 leading-none"
           style={{
             ['--fs' as string]: '0.62rem',
             right: '2.4rem',
@@ -168,7 +170,7 @@ export function Fill({ value, colour, segments = 0, num, label, zeroNum }: {
           }}
         >
           {label}
-        </span>
+        </Fit>
       )}
       {showNum && (
         <span

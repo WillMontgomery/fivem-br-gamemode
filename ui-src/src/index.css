@@ -1181,13 +1181,16 @@ html, body, #root {
    at most five short rows, is never on the 60fps combat path, and no transform
    closes a gap in normal flow. */
 .notice-row {
-  overflow: hidden;
+  /* Clipped only while it collapses (`--leaving`): at rest the row is its
+     body's height exactly, and a clip there lay on the plate's border. */
+  overflow: visible;
   margin-top: 0.35rem;
   transition: height 260ms cubic-bezier(0.22, 1, 0.36, 1),
               opacity 200ms ease,
               margin-top 260ms cubic-bezier(0.22, 1, 0.36, 1);
   animation: noticeIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
 }
+.notice-row--leaving { overflow: hidden; }
 
 /* ---------------------------------------------------------------------------
    FEEDBACK PRIMITIVES.
@@ -1544,6 +1547,37 @@ html, body, #root {
   pointer-events: none;
   animation: vitalsHit 650ms ease-out both;
 }
+
+/* EVERY SCROLL REGION KEEPS ITS EDGES IN (owner, 2026-10-14: "please put in
+   some change to ensure the borders always draw around everything which
+   should have a border"). `.thin-scroll` is the class every scroll region in
+   the interface wears, and `.pane` a menu's scrolling part (the notice log's
+   has no thin-scroll), so that is where the rule lives: a region pads every
+   side by at least --edge-room, and a card, a chip or a control in it stands
+   that far inside the clip -- never on its edge, where the game's browser
+   cuts a border as soon as a zoom puts the edge between two pixels. Along the
+   scroll too: the first row sits below the top and the last above the end.
+
+   :where() SO A CALL SITE'S OWN PADDING STILL WINS on the sides it sets (a
+   `px-3`, an inline paddingRight): this file is read after Tailwind's
+   utilities, and a plain class here would undo them. 2px is two screen px
+   outside a zoomed island; an island has its own room (below).
+   scripts/check-layout.mjs fails any border closer than a pixel to a clip. */
+:root { --edge-room: 2px; }
+:where(.thin-scroll, .pane) { padding: var(--edge-room); }
+/* A Cloudscape menu or Select list in an island (Locker v2's Save, a tattoo
+   row's Select) is a scroll region too, and its items' edges lay on it -- the
+   highlighted option's ring ran a fraction of a pixel under the list's
+   scrollbar. Cloudscape zeroes the list's padding at an id's weight
+   (`:not(#\9)`), so this needs one as well. */
+#root .br-cs :is([role=menu], [role=listbox]) { padding: var(--edge-room); }
+/* IN AN ISLAND THE ROOM IS 0.3em, the Season 2 Market's GUTTER (look.ts), not
+   2px. An island is zoomed (11/14 at its smallest), and a control there draws
+   its focus ring in the island's px too: 2px less a 1px ring is under a whole
+   screen pixel at that zoom (a tattoo Select's filter, focused as its list
+   opens, at 720p). 0.3em is 0.3 of the root on screen at every zoom, 3.3px at
+   the least -- room for the ring and a pixel more. */
+.br-cs { --edge-room: 0.3em; }
 
 /* Scrollbars inside chat -- CEF shows the default chunky ones otherwise. */
 .thin-scroll::-webkit-scrollbar { width: 6px; }

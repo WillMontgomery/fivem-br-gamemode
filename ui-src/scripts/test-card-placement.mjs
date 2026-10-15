@@ -35,6 +35,7 @@
  * Run: npm run test:cardplacement   (and as part of npm run build)
  */
 
+import { readFileSync } from 'node:fs'
 import {
   place,
   centred,
@@ -45,6 +46,8 @@ import {
   FLOOR_REM,
   CARD_INPUTS,
   ringBox,
+  RING_CLEAR,
+  RING_CLICK_HALO_REM,
   RING_GAP,
   RING_HALO_REM,
 } from '../src/tutorial/cardPlacement.ts'
@@ -341,18 +344,29 @@ checkTrue('opening a crate does NOT re-measure (unnecessary-read guard)',
 // it on every side, off the screen on three. Compared at 1/100 px, as r2 does.
 const ring2 = (b) => Object.fromEntries(Object.entries(b).map(([k, v]) => [k, typeof v === 'number' ? Math.round(v * 100) / 100 : v]))
 check('the ring stands 4 px out and its halo is 0.28rem', [RING_GAP, RING_HALO_REM], [4, 0.28])
+// A click step's halo is the widest ink at rest, and the outermost ink stays a
+// whole pixel inside the screen -- check-layout fails an edge on a clip's edge.
+check('a click halo is 0.35rem, and the ink stays 1 px inside the screen', [RING_CLICK_HALO_REM, RING_CLEAR], [0.35, 1])
+{
+  // The two halos are index.css's: a constant that drifted from the sheet
+  // would pull the ring in by the wrong amount and cut it again.
+  const css = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  const ring = /\.tut-ring\s*\{[^}]*box-shadow:[^;]*?0 0 0 ([\d.]+)rem/.exec(css)
+  const click = /\.tut-ring--click::after\s*\{[^}]*inset:\s*-([\d.]+)rem/.exec(css)
+  check("the halos are index.css's own", [ring && +ring[1], click && +click[1]], [RING_HALO_REM, RING_CLICK_HALO_REM])
+}
 check('an anchor clear of the edges is ringed RING_GAP outside it',
   ringBox({ x: 100, y: 200, w: 300, h: 40 }, null, 1920, 1080, 16),
   { left: 96, top: 196, width: 308, height: 48 })
 check('a full-height anchor flush left is ringed with its halo on screen (1080p)',
   ring2(ringBox({ x: 0, y: 0, w: 608, h: 1080 }, null, 1920, 1080, 16)),
-  { left: 4.48, top: 4.48, width: 607.52, height: 1071.04 })
-check('and at 4K, where the halo is 0.28 of a 28 px root',
+  { left: 6.6, top: 6.6, width: 605.4, height: 1066.8 })
+check('and at 4K, where the click halo is 0.35 of a 28 px root',
   ring2(ringBox({ x: 0, y: 0, w: 1064, h: 2160 }, null, 3840, 2160, 28)),
-  { left: 7.84, top: 7.84, width: 1060.16, height: 2144.32 })
+  { left: 10.8, top: 10.8, width: 1057.2, height: 2138.4 })
 check('an anchor flush right and bottom keeps its halo on screen too',
   ring2(ringBox({ x: 1800, y: 1000, w: 120, h: 80 }, null, 1920, 1080, 16)),
-  { left: 1796, top: 996, width: 119.52, height: 79.52 })
+  { left: 1796, top: 996, width: 117.4, height: 77.4 })
 check('a pane hiding the bottom of the anchor cuts the ring RING_GAP past the pane',
   ringBox({ x: 100, y: 200, w: 300, h: 400 }, { x: 0, y: 150, w: 1920, h: 300 }, 1920, 1080, 16),
   { left: 96, top: 196, width: 308, height: 408, clipPath: 'inset(0px 0px 150px 0px)' })

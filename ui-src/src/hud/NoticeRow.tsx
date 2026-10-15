@@ -114,7 +114,11 @@ export default function NoticeRow({
 
   return (
     <div
-      className="notice-row"
+      // CLIPS ONLY WHILE IT CLOSES (2026-10-14). The row is exactly its body's
+      // height, so a row that clipped all its life clipped the plate's border
+      // on all four sides, flush -- cut as soon as a pixel boundary fell
+      // between them. Only the collapse needs the clip.
+      className={`notice-row${leaving ? ' notice-row--leaving' : ''}`}
       style={{
         height: h == null ? undefined : leaving ? 0 : h,
         opacity: leaving ? 0 : 1,
