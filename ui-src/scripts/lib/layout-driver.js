@@ -41,10 +41,16 @@
       return hit.find(shown) || null
     },
 
-    click(sel, text) {
-      const e = br.find(sel, text)
-      if (!e) throw new Error(`nothing to press: ${sel}${text != null ? ` "${text}"` : ''}`)
-      e.click()
+    /**
+     * Press the first shown `sel` (with `text`, if given) -- once it is there.
+     * A control can still be arriving when the step before has settled (a
+     * tab sliding in, a slow machine), so a press waits for it, up to `ms`,
+     * and the step that asked for it is not done until it has happened
+     * (`drain`, which check-layout.mjs awaits after every step).
+     */
+    click(sel, text, ms = 6000) {
+      return br.later(br.until(() => br.find(sel, text), ms,
+        `something to press: ${sel}${text != null ? ` "${text}"` : ''}`).then((e) => e.click()))
     },
 
     /**
@@ -63,13 +69,28 @@
       for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) fire(t)
     },
 
-    /** Press the innermost shown element under `within` whose text is `text`. */
-    clickText(text, within = 'body') {
-      const root = document.querySelector(within)
-      const hits = root ? [...root.querySelectorAll('*')].filter((e) => norm(e.textContent) === norm(text) && shown(e)) : []
-      const inner = hits.find((e) => !hits.some((o) => o !== e && e.contains(o)))
-      if (!inner) throw new Error(`nothing reads "${text}" in ${within}`)
-      inner.click()
+    /** Press the innermost shown element under `within` whose text is `text`, once it is there. */
+    clickText(text, within = 'body', ms = 6000) {
+      const inner = () => {
+        const root = document.querySelector(within)
+        const hits = root ? [...root.querySelectorAll('*')].filter((e) => norm(e.textContent) === norm(text) && shown(e)) : []
+        return hits.find((e) => !hits.some((o) => o !== e && e.contains(o))) || null
+      }
+      return br.later(br.until(inner, ms, `something reading "${text}" in ${within}`).then((e) => e.click()))
+    },
+
+    /** A press in flight, for `drain`. */
+    pending: [],
+    later(p) {
+      br.pending.push(p)
+      p.catch(() => { /* reported by drain */ })
+      return p
+    },
+    /** Every press a step asked for, done -- or the first that never could be. */
+    async drain() {
+      const all = br.pending
+      br.pending = []
+      await Promise.all(all)
     },
 
     /** Has `text` appeared under `within`? */

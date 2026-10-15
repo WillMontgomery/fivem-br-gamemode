@@ -3,11 +3,14 @@
  * Evaluated as one expression; defines `window.__brProbe()`, which returns
  * every failure of the two rules on what is drawn right now.
  *
- *   EDGE   an element with a visible border, outline or ring (a box-shadow
- *          with a spread and no blur, which is how a ring or an inset border
- *          is drawn) whose drawn box is cut by an ancestor: by overflow other
- *          than visible, by paint containment, or by clip-path -- or by the
- *          screen. Even by one pixel.
+ *   EDGE   an element -- or its ::before or ::after -- with a visible border,
+ *          outline or ring (a box-shadow with a spread and no blur, which is
+ *          how a ring or an inset border is drawn) whose drawn box does not
+ *          stand at least CLEAR (1 px) inside every clip around it: an
+ *          ancestor's overflow other than visible, paint containment or
+ *          clip-path, and the screen. A border ON a clip edge fails as surely
+ *          as one past it: the game's browser rounds a zoomed box either way
+ *          (screens/lockerv2/look.ts), so flush is cut there.
  *
  *            A scroll container is measured as what it is. Along an axis it
  *            scrolls, the edge only has to be inside what scrolling can reach
@@ -17,9 +20,12 @@
  *            box, scrollbar excluded. An outline or a ring is ink, which a
  *            scroll height never counts: one past the content is cut.
  *
- *            An element's OWN clip-path is not counted against it: that is the
- *            plate's chamfer, drawn on purpose and redrawn by its ::before and
- *            ::after. Its ancestors' are.
+ *            An element's OWN clips are not counted against it or its
+ *            ::before and ::after: they are the shape it draws itself in on
+ *            purpose -- the plate's chamfer (clip-path), redrawn by its
+ *            pseudo-elements; the tutorial ring cut where its anchor runs
+ *            under a pane (cut, do not shrink); a spinner's arc, a bordered
+ *            ::after half-hidden by its own overflow. Its ancestors' are.
  *
  *   LINE   any text that is not marked as prose is a single-line label: it may
  *          not wrap to a second line, end in an ellipsis, be cut by any clip,
@@ -27,16 +33,31 @@
  *          text box is the font's whole height and not its ink. Prose is opted
  *          in, never guessed: `data-wrap` on the element or an ancestor, or
  *          `.body-text` (the prose class, index.css). A label hidden by `.fit`
- *          is listed, not failed.
+ *          is listed, not failed...
+ *
+ *   BLANK  ...unless it was the only text a control drew: a button, tab, link
+ *          or menu item whose every word is hidden is a blank box, and fails.
  *
  * WHAT IS DRAWN. checkVisibility with opacity and visibility, a non-empty box,
  * no legacy `clip` (screen-reader-only text), and not wholly clipped away --
  * a box with nothing of it on screen is not drawn, so it cannot be cut.
- * Pseudo-elements have no box the DOM can see; the plate's chamfers are inside
- * its own box, so a cut plate is caught by its border.
+ *
+ * PSEUDO-ELEMENTS have no box the DOM hands out, so an absolutely or fixed
+ * positioned one is placed the way layout places it: its resolved left, top,
+ * width and height from its containing block's padding box, through its
+ * transform. That is how Cloudscape draws a card's border, a selected card's
+ * 2 px edge and a menu's frame. One in the flow with an edge has no box to
+ * place; it is counted in `unplaced`, and the check fails if any appears.
  */
 (() => {
+  /** How far past a clip a label's text may run: sub-pixel layout. */
   const TOL = 0.5
+  /** How far inside every clip an edge must stand, in screen px. */
+  const CLEAR = 1
+  /** Float noise, so an edge exactly CLEAR inside passes. */
+  const EPS = 0.02
+  /** cuts()'s slack for an edge: anything closer than CLEAR to a clip counts. */
+  const EDGE_SLACK = -CLEAR + EPS
   const px = (v) => parseFloat(v) || 0
 
   // CSS ZOOM, AS CEF 103 MEASURES IT. scripts/lib/headless.mjs runs the
@@ -201,7 +222,11 @@
     return [at(0, 0), at(w, 0), at(w, h), at(0, h)]
   }
 
-  /** How far the box sticks out of a convex polygon (0 when inside). */
+  /**
+   * How far the box sticks out of a convex polygon: positive past its edge,
+   * negative by how far inside its nearest corner stands -- an edge measured
+   * against CLEAR needs the distance, not just in-or-out.
+   */
   function outsidePolygon(box, poly) {
     // Orientation of the polygon, so "inside" is the same side of every edge.
     let area = 0
@@ -210,7 +235,7 @@
       area += x1 * y2 - x2 * y1
     }
     const dir = area >= 0 ? 1 : -1
-    let worst = 0
+    let worst = -Infinity
     for (const [px_, py] of [[box.l, box.t], [box.r, box.t], [box.r, box.b], [box.l, box.b]]) {
       for (let i = 0; i < poly.length; i++) {
         const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length]
@@ -226,9 +251,17 @@
 
   /** Every clip between `el` and the screen, nearest first. */
   function clipChain(el) {
+    return chainFrom(el.parentElement, getComputedStyle(el).position)
+  }
+
+  /**
+   * Every clip from `start` out to the screen, for a box positioned `pos`: an
+   * ancestor's overflow cuts an absolutely positioned box only from its
+   * containing block out, and a fixed one only past a transform.
+   */
+  function chainFrom(start, pos) {
     const chain = []
-    let pos = getComputedStyle(el).position
-    for (let a = el.parentElement; a; a = a.parentElement) {
+    for (let a = start; a; a = a.parentElement) {
       const cs = getComputedStyle(a)
       // clip-path cuts everything painted inside it, positioned or not.
       if (cs.clipPath && cs.clipPath !== 'none') chain.push({ el: a, cs, kind: 'clip-path' })
@@ -257,10 +290,33 @@
   }
 
   /**
-   * How far `box` is cut by each clip in `chain` and by the screen, as
-   * [{ by, side, px }], plus whether the box is drawn at all.
+   * Where an overflow clip cuts: the padding box -- or, for `overflow: clip`
+   * on both axes, that box moved out by its `overflow-clip-margin` (from the
+   * box it names), which is how a region that must clip lets the edges of
+   * what sits on its own edge draw (Locker v2's island).
    */
-  function cuts(start, chain) {
+  function clipBox(a, cs) {
+    const p = paddingBox(a)
+    if (cs.overflowX !== 'clip' || cs.overflowY !== 'clip') return p
+    const v = cs.overflowClipMargin || ''
+    const m = px((/(-?[\d.]+)px/.exec(v) || [])[1])
+    let [l, t, r, b] = [m, m, m, m]
+    if (/border-box/.test(v)) {
+      l += px(cs.borderLeftWidth); r += px(cs.borderRightWidth); t += px(cs.borderTopWidth); b += px(cs.borderBottomWidth)
+    } else if (/content-box/.test(v)) {
+      l -= px(cs.paddingLeft); r -= px(cs.paddingRight); t -= px(cs.paddingTop); b -= px(cs.paddingBottom)
+    }
+    return { ...p, l: p.l - l * p.sx, t: p.t - t * p.sy, r: p.r + r * p.sx, b: p.b + b * p.sy }
+  }
+
+  /**
+   * How far `box` reaches past each clip in `chain` and the screen, as
+   * [{ by, side, px }] -- every side that comes within `slack` of a clip's
+   * edge, so px is negative for one inside it by less than -slack -- plus
+   * whether the box is drawn at all. A label's slack is TOL past the edge; an
+   * edge's is EDGE_SLACK, CLEAR inside it.
+   */
+  function cuts(start, chain, slack) {
     const found = []
     // `box` is what the next clip out sees: past a region that scrolls, only
     // the part of the box scrolled into its view, wherever the scroll is.
@@ -275,15 +331,15 @@
     for (const c of chain) {
       if (c.kind === 'clip-path') {
         const poly = clipPolygon(c.el, c.cs, rectOf(c.el))
-        const out = poly ? outsidePolygon(box, poly) : 0
-        if (out > TOL) found.push({ by: c.el, kind: c.kind, side: 'clip-path', px: out })
+        const out = poly ? outsidePolygon(box, poly) : -Infinity
+        if (out > slack) found.push({ by: c.el, kind: c.kind, side: 'clip-path', px: out })
         if (poly) {
           const xs = poly.map((p) => p[0]), ys = poly.map((p) => p[1])
           keep(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys))
         }
         continue
       }
-      const p = paddingBox(c.el)
+      const p = clipBox(c.el, c.cs)
       const a = c.el
       // Down the page: what scrolling reaches, if this box scrolls that way.
       const scrollsY = c.kind === 'overflow' && /auto|scroll/.test(c.cs.overflowY) && a.scrollHeight > a.clientHeight + 1
@@ -294,7 +350,7 @@
       }
       const sides = { left: p.l - box.l, right: box.r - p.r, top: top - box.t, bottom: box.b - bottom }
       for (const [side, d] of Object.entries(sides)) {
-        if (d > TOL) found.push({ by: a, kind: c.kind, side, px: d })
+        if (d > slack) found.push({ by: a, kind: c.kind, side, px: d })
       }
       if (scrollsY) {
         keep(p.l, -Infinity, p.r, Infinity)
@@ -306,7 +362,7 @@
     const vw = window.innerWidth, vh = window.innerHeight
     const screen = { left: -box.l, top: -box.t, right: box.r - vw, bottom: box.b - vh }
     for (const [side, d] of Object.entries(screen)) {
-      if (d > TOL) found.push({ by: null, kind: 'screen', side, px: d })
+      if (d > slack) found.push({ by: null, kind: 'screen', side, px: d })
     }
     keep(0, -Infinity, vw, Infinity)
     if (box.b <= 0 || box.t >= vh) visible = { l: 0, r: 0, t: 0, b: 0 }
@@ -354,28 +410,126 @@
 
   const textOf = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 48)
 
-  function checkEdges(out) {
+  /** One side's finding, in words: cut past the clip, or too close inside it. */
+  function said(f, self) {
+    const by = f.kind === 'screen' ? 'the screen' : `${f.by === self ? 'its own element' : nameOf(f.by)} (${f.kind})`
+    return f.px > EPS
+      ? `${f.side} cut ${f.px.toFixed(1)}px by ${by}`
+      : `${f.side} ${Math.max(0, -f.px).toFixed(1)}px inside ${by}, under ${CLEAR}px`
+  }
+
+  function report(out, el, edge, box, chain, suffix = '') {
+    const { found, drawn: shown } = cuts(box, chain, EDGE_SLACK)
+    if (!shown || found.length === 0) return
+    const worst = found.reduce((a, b) => (b.px > a.px ? b : a))
+    out.push({
+      rule: 'edge',
+      path: pathOf(el) + suffix,
+      text: textOf(el),
+      what: edge.kinds.join('+') + (suffix ? ` (${suffix})` : ''),
+      detail: found.map((f) => said(f, el)).join('; '),
+      px: worst.px,
+    })
+  }
+
+  /** The element a pseudo-element positioned `pos` is placed against, or null for the screen. */
+  function blockOf(el, ecs, pos) {
+    for (let a = el; a && a !== document.documentElement; a = a.parentElement) {
+      const cs = a === el ? ecs : getComputedStyle(a)
+      if (pos === 'fixed' ? establishesFixedBlock(cs) : (cs.position !== 'static' || establishesFixedBlock(cs))) return a
+    }
+    return null
+  }
+
+  /** A box (screen px) through a computed 2D transform about its origin; null if it collapses. */
+  function through(box, border, cs, s) {
+    const t = cs.transform
+    if (!t || t === 'none') return box
+    let m = /^matrix\(([^)]*)\)/.exec(t)
+    let a, b, c, d, e, f
+    if (m) [a, b, c, d, e, f] = m[1].split(',').map(Number)
+    else if ((m = /^matrix3d\(([^)]*)\)/.exec(t))) {
+      const v = m[1].split(',').map(Number);
+      [a, b, c, d, e, f] = [v[0], v[1], v[4], v[5], v[12], v[13]]
+    } else return box
+    const [ox, oy] = (cs.transformOrigin || '0px 0px').split(/\s+/).map(px)
+    const X = border.l + ox * s, Y = border.t + oy * s
+    const pts = [[box.l, box.t], [box.r, box.t], [box.r, box.b], [box.l, box.b]].map(([x, y]) => {
+      const dx = x - X, dy = y - Y
+      return [X + a * dx + c * dy + e * s, Y + b * dx + d * dy + f * s]
+    })
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1])
+    const r = { l: Math.min(...xs), t: Math.min(...ys), r: Math.max(...xs), b: Math.max(...ys) }
+    return r.r - r.l < 1 || r.b - r.t < 1 ? null : r
+  }
+
+  /**
+   * An element's ::before or ::after with an edge, placed as layout places it
+   * (see WHAT IS DRAWN above), and measured against the clips around it --
+   * its host's own clip-path and overflow among them, from its containing
+   * block out. One in the flow cannot be placed and goes in `unplaced`.
+   */
+  function checkPseudo(out, unplaced, el, ecs) {
+    for (const which of ['::before', '::after']) {
+      const cs = getComputedStyle(el, which)
+      if (!cs.content || cs.content === 'none' || cs.content === 'normal' || cs.display === 'none') continue
+      if (cs.visibility !== 'visible' || parseFloat(cs.opacity) === 0) continue
+      const edge = edgeOf(cs)
+      if (!edge) continue
+      const pos = cs.position
+      if (pos !== 'absolute' && pos !== 'fixed') { unplaced.push({ path: pathOf(el) + which, text: textOf(el) }); continue }
+      const z = zoomOf(el)
+      const cb = blockOf(el, ecs, pos)
+      let ox = 0, oy = 0, s = z, cw = window.innerWidth / z, ch = window.innerHeight / z
+      if (cb) {
+        const p = paddingBox(cb)
+        const zc = zoomOf(cb)
+        s = (p.sx * z) / zc
+        ox = p.l
+        oy = p.t
+        cw = (cb.clientWidth * zc) / z
+        ch = (cb.clientHeight * zc) / z
+      }
+      const isPx = (v) => /px$/.test(v)
+      const bs = cs.boxSizing === 'border-box'
+      const w = px(cs.width) + (bs ? 0 : px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderLeftWidth) + px(cs.borderRightWidth))
+      const h = px(cs.height) + (bs ? 0 : px(cs.paddingTop) + px(cs.paddingBottom) + px(cs.borderTopWidth) + px(cs.borderBottomWidth))
+      const left = isPx(cs.left) ? px(cs.left) + px(cs.marginLeft)
+        : isPx(cs.right) ? cw - px(cs.right) - px(cs.marginRight) - w : null
+      const top = isPx(cs.top) ? px(cs.top) + px(cs.marginTop)
+        : isPx(cs.bottom) ? ch - px(cs.bottom) - px(cs.marginBottom) - h : null
+      if (left == null || top == null || !isPx(cs.width) || !isPx(cs.height)) {
+        unplaced.push({ path: pathOf(el) + which, text: textOf(el) })
+        continue
+      }
+      if (w < 1 || h < 1) continue
+      const border = { l: ox + left * s, t: oy + top * s, r: ox + (left + w) * s, b: oy + (top + h) * s }
+      const ink = {
+        l: border.l - edge.out.l * s, t: border.t - edge.out.t * s,
+        r: border.r + edge.out.r * s, b: border.b + edge.out.b * s,
+      }
+      const box = through(ink, border, cs, s)
+      if (!box) continue
+      // The host's own clips -- its clip-path, and its overflow when it is the
+      // containing block -- are the shape it draws itself in, not a cut.
+      const chain = chainFrom(el, pos).filter((c) => c.el !== el)
+      report(out, el, edge, box, chain, which)
+    }
+  }
+
+  function checkEdges(out, unplaced) {
     for (const el of document.body.querySelectorAll('*')) {
       if (el.closest('svg') && el.tagName.toLowerCase() !== 'svg') continue
       const cs = getComputedStyle(el)
+      if (!drawn(el, cs)) continue
+      checkPseudo(out, unplaced, el, cs)
       const edge = edgeOf(cs)
       if (!edge) continue
-      if (!drawn(el, cs)) continue
       const r = rectOf(el)
       if (r.width < 1 || r.height < 1) continue
       const z = zoomOf(el)
       const box = { l: r.left - edge.out.l * z, t: r.top - edge.out.t * z, r: r.right + edge.out.r * z, b: r.bottom + edge.out.b * z }
-      const { found, drawn: shown } = cuts(box, clipChain(el))
-      if (!shown || found.length === 0) continue
-      const worst = found.reduce((a, b) => (b.px > a.px ? b : a))
-      out.push({
-        rule: 'edge',
-        path: pathOf(el),
-        text: textOf(el),
-        what: edge.kinds.join('+'),
-        detail: found.map((f) => `${f.side} ${f.px.toFixed(1)}px by ${f.kind === 'screen' ? 'the screen' : `${nameOf(f.by)} (${f.kind})`}`).join('; '),
-        px: worst.px,
-      })
+      report(out, el, edge, box, clipChain(el))
     }
   }
 
@@ -401,7 +555,26 @@
     return rows.length
   }
 
+  /** What a player presses: a control drawn with no words at all is a blank box. */
+  const CONTROL = 'button, a[href], [role=button], [role=tab], [role=link], [role=menuitem], '
+    + '[role=menuitemradio], [role=menuitemcheckbox], [role=option]'
+
+  /** Does `ctl` draw any text a player can read? */
+  function saysAnything(ctl, range) {
+    const walk = document.createTreeWalker(ctl, NodeFilter.SHOW_TEXT)
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (!/\S/.test(n.data) || !n.parentElement) continue
+      if (n.parentElement.checkVisibility && !n.parentElement.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue
+      if (getComputedStyle(n.parentElement).visibility !== 'visible') continue
+      range.selectNodeContents(n)
+      if ([...range.getClientRects()].some((r) => r.width > 0.5 && r.height > 0.5)) return true
+    }
+    return false
+  }
+
   function checkLabels(out, hidden) {
+    const listed = new Set()
+    const blank = new Set()
     const hosts = new Map()
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
     for (let n = walk.nextNode(); n; n = walk.nextNode()) {
@@ -417,10 +590,17 @@
     for (const [h, nodes] of hosts) {
       const cs = getComputedStyle(h)
       if (!drawn(h, cs)) {
-        // A label the fit rule hid is reported, never failed: that is the rule working.
+        // A label the fit rule hid is reported, never failed: that is the rule
+        // working -- unless it was all a control had to say (BLANK).
         const fit = h.closest('.fit[data-unfit]')
-        if (fit && fit.parentElement && drawn(fit.parentElement, getComputedStyle(fit.parentElement))) {
+        if (fit && fit.parentElement && drawn(fit.parentElement, getComputedStyle(fit.parentElement)) && !listed.has(fit)) {
+          listed.add(fit)
           hidden.push({ path: pathOf(fit), text: textOf(fit) })
+          const ctl = fit.closest(CONTROL)
+          if (ctl && !blank.has(ctl) && drawn(ctl, getComputedStyle(ctl)) && !saysAnything(ctl, range)) {
+            blank.add(ctl)
+            out.push({ rule: 'blank', path: pathOf(ctl), text: textOf(fit), detail: `draws no text: "${textOf(fit)}", its only label, has no room`, px: 0 })
+          }
         }
         continue
       }
@@ -452,7 +632,7 @@
       // Cut by its own box or any clip around it.
       const chain = clipChain(h)
       if (clips(cs.overflowX) || clips(cs.overflowY)) chain.unshift({ el: h, cs, kind: 'overflow' })
-      const { found, drawn: shown } = cuts(box, chain)
+      const { found, drawn: shown } = cuts(box, chain, TOL)
       if (!shown) continue
       for (const f of found) {
         problems.push(`cut ${f.side} ${f.px.toFixed(1)}px by ${f.kind === 'screen' ? 'the screen' : `${f.by === h ? 'its own box' : nameOf(f.by)} (${f.kind})`}`)
@@ -474,8 +654,9 @@
     zooms = new Map()
     const failures = []
     const hidden = []
-    checkEdges(failures)
+    const unplaced = []
+    checkEdges(failures, unplaced)
     checkLabels(failures, hidden)
-    return { failures, hidden }
+    return { failures, hidden, unplaced }
   }
 })()
