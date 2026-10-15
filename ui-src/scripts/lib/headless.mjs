@@ -132,13 +132,30 @@ export function serve(dir, extra = {}) {
   })
 }
 
-/** A DevTools client on one tab. */
+/** How long one DevTools call may take before the browser is taken for dead. */
+const CALL_MS = 60000
+
+/**
+ * A DevTools client on one tab. A browser that goes away fails every call
+ * waiting on it, and a call that never answers fails after CALL_MS: a check
+ * that hung on a crashed browser would hold the build forever, saying nothing.
+ */
 class Tab {
   constructor(ws) {
     this.ws = ws
     this.nextId = 0
     this.pending = new Map()
     this.listeners = []
+    this.gone = null
+    const lost = (why) => {
+      if (this.gone) return
+      this.gone = new Error(`the browser went away (${why})`)
+      for (const { fail } of this.pending.values()) fail(this.gone)
+      this.pending.clear()
+      for (const fn of [...this.listeners]) fn({ method: 'br.gone' })
+    }
+    ws.onclose = () => lost('its connection closed')
+    ws.onerror = () => lost('its connection failed')
     ws.onmessage = (e) => {
       const m = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString())
       if (m.id && this.pending.has(m.id)) {
@@ -150,9 +167,17 @@ class Tab {
   }
 
   send(method, params = {}) {
+    if (this.gone) return Promise.reject(this.gone)
     return new Promise((ok, fail) => {
       const id = ++this.nextId
-      this.pending.set(id, { ok, fail })
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        fail(new Error(`${method} had no answer in ${CALL_MS / 1000} s`))
+      }, CALL_MS)
+      this.pending.set(id, {
+        ok: (v) => { clearTimeout(timer); ok(v) },
+        fail: (e) => { clearTimeout(timer); fail(e) },
+      })
       this.ws.send(JSON.stringify({ id, method, params }))
     })
   }
@@ -169,17 +194,20 @@ class Tab {
 
   /** Load `url` and wait for its load event. */
   async go(url) {
-    const loaded = new Promise((ok) => {
+    const loaded = new Promise((ok, fail) => {
       const fn = (m) => {
-        if (m.method === 'Page.loadEventFired') {
+        if (m.method === 'Page.loadEventFired' || m.method === 'br.gone') {
           this.listeners.splice(this.listeners.indexOf(fn), 1)
-          ok()
+          if (m.method === 'br.gone') fail(this.gone); else ok()
         }
       }
       this.listeners.push(fn)
     })
     await this.send('Page.navigate', { url })
-    await loaded
+    let timer
+    await Promise.race([loaded, new Promise((_, fail) => {
+      timer = setTimeout(() => fail(new Error(`${url} did not load in ${CALL_MS / 1000} s`)), CALL_MS)
+    })]).finally(() => clearTimeout(timer))
   }
 
   async size(width, height) {

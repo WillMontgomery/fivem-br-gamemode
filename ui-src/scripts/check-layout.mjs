@@ -54,7 +54,7 @@
  *   node scripts/check-layout.mjs              every screen, every size
  *   ... --only=market --size=1280x720 --text=1 one corner of it
  *   ... --shots=<dir>                          and a screenshot of each
- *   ... --jobs=N                               N browser windows (cores - 2)
+ *   ... --jobs=N                               N browser windows (cores, 6-12)
  *   ... --dist=<dir>                           a mock build already made
  *
  * Run: npm run check:layout   (and as part of npm run build)
@@ -451,12 +451,14 @@ try {
   // EVERY SCREEN AT EVERY SIZE AND TEXT SIZE IS ONE JOB, and a pool of
   // windows takes them longest first (a walkthrough is dozens of cards), each
   // from a fresh page. `--jobs=N` sets the pool; by default it is the
-  // machine's cores less two, between 2 and 12.
+  // machine's cores, between 6 and 12: a screen spends most of its time
+  // waiting for the page to settle, not computing, so a four-core runner
+  // still gets six windows.
   const jobs = []
   for (const s of chosen) for (const size of sizes) for (const text of texts) jobs.push({ s, size, text })
   jobs.sort((a, b) => (b.s.steps.some((x) => x.walk) ? 1 : 0) - (a.s.steps.some((x) => x.walk) ? 1 : 0))
   const workers = Math.max(1, Math.min(jobs.length,
-    Number(args.jobs) || Math.max(2, Math.min(12, availableParallelism() - 2))))
+    Number(args.jobs) || Math.max(6, Math.min(12, availableParallelism()))))
   const all = []
   let next = 0
   await Promise.all(Array.from({ length: workers }, async () => {
@@ -501,7 +503,17 @@ try {
   for (const h of hidden.values()) {
     console.log(`  hidden (no room)  ${h.screen}  "${h.text}"  ${h.path}  [${h.at.join(' ')}]`)
   }
-  for (const e of errors) console.error(`FAIL could not draw ${e}`)
+  // One cause (a browser gone) can fail every job after it: said once.
+  const byCause = new Map()
+  for (const e of errors) {
+    const cause = e.replace(/^.*?: /, '')
+    if (!byCause.has(cause)) byCause.set(cause, [])
+    byCause.get(cause).push(e)
+  }
+  for (const [cause, list] of byCause) {
+    for (const e of list.slice(0, 3)) console.error(`FAIL could not draw ${e}`)
+    if (list.length > 3) console.error(`FAIL ...and ${list.length - 3} more, all: ${cause}`)
+  }
   for (const g of groups.values()) {
     console.error(`FAIL ${g.rule === 'edge' ? `${g.what} cut` : 'label'}  ${g.screen}  [${g.at.join(' ')}]`)
     console.error(`     ${g.path}${g.text ? `  "${g.text}"` : ''}`)
