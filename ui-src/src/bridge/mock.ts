@@ -12,6 +12,7 @@
 import { dispatch } from './nui'
 import { createLocker2Mock } from './mockLocker2'
 import { createMarketMock } from './mockMarket'
+import { useUi } from '../store'
 import type {
   CallbackName, ChatMessage, Envelope, ScreenPayload, WireEnvelope,
 } from './types'
@@ -112,12 +113,14 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
   // this the browser's Settings button would open nothing at all -- and the
   // difference between "the button is broken" and "the mock does not answer"
   // is not visible from the screen.
-  const FOCUS_CB: Record<string, 'settings' | 'locker' | 'market' | 'pause' | 'admin'> = {
+  const FOCUS_CB: Record<string, 'settings' | 'locker' | 'market' | 'pause' | 'admin' | 'help' | 'players'> = {
     'br/settings/focus': 'settings',
     'br/locker/focus': 'locker',
     'br/market/focus': 'market',
     'br/pause/focus': 'pause',
     'br/admin/focus': 'admin',
+    'br/help/focus': 'help',
+    'br/players/focus': 'players',
   }
   if (FOCUS_CB[name]) {
     const open = (data as { open?: boolean } | undefined)?.open === true
@@ -582,6 +585,16 @@ export function startMockDriver(): void {
   // Re-sent whenever the window changes shape, so dragging the browser wide
   // reproduces an ultrawide -- see mockScreen below.
   startMockScreen()
+
+  // `brEmit(envelope)` from the F12 console sends any envelope Lua could, and
+  // `?still` stops here: the seeded state above with none of the loops below
+  // moving it. scripts/check-layout.mjs drives every screen that way, so
+  // what it measures is the state it asked for and not one a timer chose.
+  // `brStore` is the store, for what the page raises itself and no envelope
+  // carries: a chat line sent (the in-match walkthrough waits on it) and the
+  // lobby's decline card.
+  Object.assign(window, { brEmit: emit, brStore: useUi })
+  if (new URLSearchParams(window.location.search).has('still')) return
 
   // Vitals drift, so the bars and their transitions can be seen working.
   let hp = 82, armour = 45, kills = 3, alive = 23
