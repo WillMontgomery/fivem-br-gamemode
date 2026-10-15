@@ -29,13 +29,19 @@
 --   t    tattoos, OPTIONAL: { "<set>": "<hex>" }; absent is none, which is
 --        every save from before tattoos. See THE TATTOOS below.
 --   f    the starting face, OPTIONAL: an index into BR.Config.Locker2.faces
---        for the look's sex; absent is 0, the one face every look had before
---        My Looks, so an older save is the same face.
+--        for the look's sex, 0..FACE_MAX; absent is 0, the one face every look
+--        had before My Looks, so an older save is the same face.
 --   x    the extras on the look, OPTIONAL and last: ["hat","tattoos"], in the
---        order the player put them on (owner, 2026-10-14), each one of
---        BR.Config.Locker2.extras at most once. Absent on a save from before
---        My Looks; the client then lists the extras that are on, in the
---        extras' own order.
+--        order the player put them on (owner, 2026-10-14), each at most once,
+--        at most EXTRAS_MAX. Absent on a save from before My Looks; the client
+--        then lists the extras that are on, in the extras' own order.
+--
+-- BOTH ARE CHECKED FOR THEIR SHAPE ONLY, never against today's lists (#28
+-- review): the starting faces are a proposal to pick by eye and the extras
+-- can be retired, and a look that named one cut since would stop decoding --
+-- left out of every fetch, its worn record refused. A face past the list is
+-- worn as the first (client/locker2.lua headBlend) and an extra the list does
+-- not know is skipped where the look is edited, as a tattoo is.
 --
 -- Textures stop at 31 because that is all the sync tree carries (5 bits): a
 -- texture above it would show on this machine and nowhere else.
@@ -101,6 +107,9 @@ A.TATTOO_SET_MAX = 16
 A.TATTOO_HEX_MAX = 250
 --- The most tattoos one body zone takes (THE CAP, above).
 A.TATTOOS_PER_ZONE = 10
+--- `f` and `x`'s bounds: shapes, not today's lists (THE FORM, above).
+A.FACE_MAX = 63
+A.EXTRAS_MAX = 32
 
 local SEXES = { m = true, f = true }
 
@@ -170,34 +179,23 @@ end
 local TOP = { v = true, s = true, sk = true, e = true, h = true, ff = true, o = true, c = true, p = true,
               t = true, f = true, x = true }
 
---- How many starting faces a sex has (BR.Config.Locker2.faces).
-local function faceCount(s)
-    local cfg = BR.Config and BR.Config.Locker2
-    local f = cfg and cfg.faces and cfg.faces[s]
-    return type(f) == 'table' and #f or 1
+--- An extra's id: lower-case letters, digits and `_`, a letter first, 1 to 24
+--- (BR.Config.Locker2.extras' own, and safe to write into the JSON as it is).
+local function isExtraId(id)
+    return type(id) == 'string' and #id <= 24 and id:match('^[a-z][a-z0-9_]*$') ~= nil
 end
 
---- The extras a look's `x` may name, as a set.
-local extraSet = nil
-local function extras()
-    if extraSet then return extraSet end
-    local cfg = BR.Config and BR.Config.Locker2
-    local set = {}
-    for _, id in ipairs(cfg and cfg.extras or {}) do set[id] = true end
-    if next(set) ~= nil then extraSet = set end
-    return set
-end
-
---- `x`'s shape: a list of known extras, none twice.
+--- `x`'s shape: a list of extra ids, none twice -- whether or not today's list
+--- has them (THE FORM, above).
 local function validExtras(x)
     if x == nil then return true end
     if type(x) ~= 'table' then return false end
     local n = 0
     for _ in pairs(x) do n = n + 1 end
-    if n ~= #x then return false end
-    local known, seen = extras(), {}
+    if n ~= #x or n > A.EXTRAS_MAX then return false end
+    local seen = {}
     for _, id in ipairs(x) do
-        if type(id) ~= 'string' or not known[id] or seen[id] then return false end
+        if not isExtraId(id) or seen[id] then return false end
         seen[id] = true
     end
     return true
@@ -268,7 +266,7 @@ function A.validate(a)
         if p[1] == -1 and p[2] ~= 0 then return false, 'p' .. A.PROPS[i] end
     end
     if not validTattoos(a.t) then return false, 't' end
-    if a.f ~= nil and not isInt(a.f, 0, faceCount(a.s) - 1) then return false, 'f' end
+    if a.f ~= nil and not isInt(a.f, 0, A.FACE_MAX) then return false, 'f' end
     if not validExtras(a.x) then return false, 'x' end
     return true, nil
 end

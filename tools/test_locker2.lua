@@ -176,14 +176,20 @@ do
     bad(function(a) a.p[1][1] = -2 end, 'a prop below none')
     bad(function(a) a.zz = 1 end, 'a key the schema does not have')
     -- My Looks' two fields (2026-10-13/14): the starting face and the extras.
-    bad(function(a) a.f = 6 end, 'a starting face past the sex\'s six')
+    bad(function(a) a.f = A.FACE_MAX + 1 end, 'a starting face past FACE_MAX')
     bad(function(a) a.f = -1 end, 'a starting face below 0')
     bad(function(a) a.f = 1.0 end, 'a float face')
     bad(function(a) a.x = 1 end, 'extras that are not a list')
-    bad(function(a) a.x = { 'cape' } end, 'an extra that is not one')
+    bad(function(a) a.x = { 'Cape' } end, 'an extra id that is not one\'s shape (capitals)')
+    bad(function(a) a.x = { 'hat"' } end, 'an extra id that would break the JSON')
+    bad(function(a) a.x = { string.rep('a', 25) } end, 'an extra id past 24')
     bad(function(a) a.x = { 'hat', 'hat' } end, 'an extra twice')
     bad(function(a) a.x = { [1] = 'hat', [3] = 'bag' } end, 'extras with a gap')
     bad(function(a) a.x = { hat = true } end, 'extras by name')
+    bad(function(a)
+        a.x = {}
+        for i = 1, A.EXTRAS_MAX + 1 do a.x[i] = 'x' .. i end
+    end, 'more extras than EXTRAS_MAX')
     bad(function(a) a.c[3] = { 0, 0, 0 } end, 'a component with three numbers')
     local a = A.default('m')
     a.c[5][1] = 7
@@ -272,6 +278,22 @@ do
     eq(shared.BR.Config.Locker2.faces.f[1], 21, 'and hers')
     local w = A.decodeWorn(A.encodeWorn({ k = 'p', id = '0abcdefgh12', a = back }))
     ok(w and w.a.f == 5 and #w.a.x == 3, 'the worn record carries both')
+    -- A LOOK FROM ANOTHER DAY'S LISTS STILL READS (#28 review): the starting
+    -- faces are a proposal to trim by eye and an extra can be retired, and a
+    -- look naming one cut since stopped decoding -- left out of every fetch,
+    -- its worn record refused.
+    local L2c = shared.BR.Config.Locker2
+    local keepFaces = L2c.faces.m
+    L2c.faces.m = { 0, 4, 8, 12 }
+    local older = A.default('m')
+    older.f = 5
+    older.x = { 'cape', 'hat' }
+    local olderEnc = A.encode(older)
+    local olderBack = olderEnc and A.decode(olderEnc)
+    ok(olderBack and olderBack.f == 5 and table.concat(olderBack.x, ',') == 'cape,hat',
+        'a face past today\'s four, and an extra today\'s list does not have, encode and decode as they were', olderEnc)
+    ok(A.decodeWorn(A.encodeWorn({ k = 'p', id = '0abcdefgh12', a = older })) ~= nil, 'and the worn record reads')
+    L2c.faces.m = keepFaces
     -- The extras are the page's, in its order (ui-src/src/screens/lockerv2/
     -- model.ts EXTRA_CATS), and every one but Tattoos a category here.
     local model = readFile('ui-src/src/screens/lockerv2/model.ts') or ''
@@ -984,6 +1006,85 @@ do
     local warned = 0
     for _, s in ipairs(W0.printed) do if s:find('in memory', 1, true) then warned = warned + 1 end end
     eq(warned, 1, 'said once')
+end
+
+describe('server.unconfirmed')
+do
+    -- A WRITE THE DATABASE DID NOT CONFIRM (#28 review): ask gives up after
+    -- 6 s and answers store, but the write can still land -- and the cache
+    -- then answered every fetch without it for cacheMs.
+    local L2s = nil
+    local W = serverWorld(2)
+    L2s = W.BR.Config.Locker2
+    W.net(NET.LOCKER2_FETCH, 1, {})
+    W.held = true
+    W.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Slow', a = A.encode(A.default('m')) })
+    W.advance(6000)
+    eq(W.lastResult().reason, 'store', 'no answer in 6 s: store')
+    W.held = false
+    W.flush()
+    local id = next(W.ddb['license:p1'].peds)
+    ok(id ~= nil, 'and the database took the row all the same, late')
+    W.advance(L2s.fetchMs)
+    local reads = #W.ddbCalls
+    W.net(NET.LOCKER2_FETCH, 1, {})
+    eq(#W.ddbCalls, reads + 1, 'so the next fetch reads the database again, well inside cacheMs')
+    local st = W.last(NET.LOCKER2_STATE)
+    ok(st and #st.p.peds == 1 and st.p.peds[1].id == id, 'and lists that look')
+    -- A confirmed write keeps the cache: it IS the record.
+    W.advance(L2s.fetchMs)
+    W.net(NET.LOCKER2_SAVE, 1, { req = 2, op = 'new', name = 'Quick', a = A.encode(A.default('f')) })
+    ok(W.lastResult().ok, 'a write the database confirms')
+    W.advance(L2s.fetchMs)
+    reads = #W.ddbCalls
+    W.net(NET.LOCKER2_FETCH, 1, {})
+    eq(#W.ddbCalls, reads, 'is answered from the cache')
+    eq(#W.last(NET.LOCKER2_STATE).p.peds, 2, 'with it in')
+    -- Every write the same: an error answer from each of them.
+    local nameOf = { pedPut = 'a save', pedRename = 'a rename', pedShot = 'a headshot', pedDelete = 'a delete' }
+    for _, verb in ipairs({ 'pedPut', 'pedRename', 'pedShot', 'pedDelete' }) do
+        W.advance(L2s.fetchMs)
+        W.failNext = verb
+        local req = 10 + #W.ddbCalls
+        if verb == 'pedPut' then
+            W.net(NET.LOCKER2_SAVE, 1, { req = req, op = 'update', id = id, a = A.encode(A.default('m')) })
+        elseif verb == 'pedRename' then
+            W.net(NET.LOCKER2_RENAME, 1, { req = req, id = id, name = 'Renamed' })
+        elseif verb == 'pedShot' then
+            W.net(NET.LOCKER2_SHOT, 1, { req = req, id = id, img = 'data:image/webp;base64,AAAA' })
+        else
+            W.net(NET.LOCKER2_DELETE, 1, { req = req, id = id })
+        end
+        eq(W.lastResult().reason, 'store', nameOf[verb] .. ' the database refused: store')
+        W.advance(L2s.fetchMs)
+        reads = #W.ddbCalls
+        W.net(NET.LOCKER2_FETCH, 1, {})
+        eq(#W.ddbCalls, reads + 1, '...and the next fetch reads again')
+    end
+    -- A READ THAT FAILED is never answered from the cache, however fresh.
+    local F = serverWorld(2)
+    F.net(NET.LOCKER2_FETCH, 1, {})
+    F.advance(L2s.cacheMs)
+    F.failNext = 'lockerFetch'
+    F.net(NET.LOCKER2_FETCH, 1, {})
+    eq(F.last(NET.LOCKER2_STATE).p.store, false, 'a read that fails after one that worked: store false')
+    F.advance(L2s.fetchMs)
+    reads = #F.ddbCalls
+    F.net(NET.LOCKER2_FETCH, 1, {})
+    eq(#F.ddbCalls, reads + 1, 'the next fetch reads again, inside cacheMs of the failed one')
+    eq(F.last(NET.LOCKER2_STATE).p.store, true, 'and works again')
+    -- A LOOK FROM ANOTHER DAY'S LISTS is fetched (#28 review): a face past
+    -- today's list and an extra today's does not have.
+    local C2 = serverWorld(2)
+    C2.BR.Config.Locker2.faces.m = { 0, 4, 8, 12 }
+    local older = A.default('m')
+    older.f, older.x = 5, { 'cape', 'hat' }
+    C2.ddb['license:p1'] = { profile = { locker2 = A.encodeWorn({ k = 'p', id = '0abcdefgh12', a = older }) },
+        peds = { ['0abcdefgh12'] = { n = 'Old', a = A.encode(older), cr = 1, up = 2 } } }
+    C2.net(NET.LOCKER2_FETCH, 1, {})
+    st = C2.last(NET.LOCKER2_STATE)
+    ok(st and #st.p.peds == 1 and st.p.worn and st.p.worn.id == '0abcdefgh12',
+        'a look with face 5 of four and a retired extra is listed, and worn')
 end
 
 describe('server.tattoos')
@@ -2940,21 +3041,20 @@ do
     eq(decoNames(M.ped(), 'f'), overlaysOf({ head1 }, 'f'),
         'a match started mid-edit keeps the draft\'s tattoo through a respawn')
 
-    -- 9. AN ADD WHILE THE PED IS NOT THE DRAFT'S MODEL -- a new look's model
-    -- never streamed, so the stock ped is still on -- puts nothing on it.
+    -- 9. A NEW LOOK WHOSE MODEL NEVER STREAMED leaves no draft over the stock
+    -- ped (#28 review: it stood empty), so an Add after it puts nothing on it.
     local G = joined()
     G.neverLoad = true
     G.ui(NUICB.LOCKER2_OPEN)
     G.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     G.pump(5600)
-    ok(G.ped().model == hashOf(G.BR.PedById(STOCK1).model) and G.nui(NUI.LOCKER2).edit ~= nil,
-        'a new look whose model never streamed: its draft over the stock ped')
+    ok(G.ped().model == hashOf(G.BR.PedById(STOCK1).model) and G.nui(NUI.LOCKER2).edit == nil,
+        'a new look whose model never streamed: the stock ped still on, and no draft')
     local adds, blends = G.count('AddPedDecorationFromHashes'), G.count('SetPedHeadBlendData')
     G.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = zoneItems(G, 'm', 'head')[1] })
-    G.ui(NUICB.LOCKER2_TAT_SET, { r = zoneRowsIn(G, 'head')[1].r, i = zoneItems(G, 'm', 'head')[2] })
     G.pump(2000)
     ok(G.count('AddPedDecorationFromHashes') == adds and #G.ped().decos == 0,
-        'an Add or a choice puts no tattoo on the stock ped')
+        'an Add after it puts no tattoo on the stock ped')
     eq(G.count('SetPedHeadBlendData'), blends, 'nor, later, the custom look')
 
     -- 10. ONE SEX'S OVERLAY LOOKED UP IS NOT THE OTHER'S: the same tattoo on
@@ -3681,6 +3781,246 @@ do
     for _, h in ipairs(W.invokes) do looked[h] = (looked[h] or 0) + 1 end
     ok((looked[0x0368B3A838070348] or 0) == 3, 'switched on, Top\'s three rows are looked up', looked[0x0368B3A838070348])
     eq(looked[0x5D6160275CAEC8DD], nil, 'and nothing else')
+end
+
+describe('mylooks.swaps')
+do
+    -- A DRAFT WHOSE MODEL LANDS AFTER THE PAGE HAS GONE (#28 review: Create,
+    -- then Escape, left the player in the unsaved look, which the watcher
+    -- kept on through the next match).
+    local stockModel = nil
+    local W = joined()
+    stockModel = W.ped().model
+    W.modelDelay = 500
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
+    W.ui(NUICB.LOCKER2_CLOSE)
+    W.pump(2500)
+    eq(W.ped().model, stockModel, 'Create, then Escape while her model streams in: the worn look is back once it lands')
+    ok(draftOf(W) == nil and W.BR.LockerV2.state().applied.a == nil, 'with no draft, and nothing custom left on')
+    eq(W.BR.LockerV2.state().worn.id, STOCK1, 'and the worn look unchanged')
+    local E = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5 } })
+    E.modelDelay = 500
+    E.ui(NUICB.LOCKER2_OPEN)
+    E.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
+    E.ui(NUICB.LOCKER2_CLOSE)
+    E.pump(2500)
+    eq(E.ped().model, stockModel, 'Edit, then Escape while the look streams in: the same')
+    -- A look PICKED, then the page closed while it streams in: that is a wear,
+    -- and it stays on.
+    local K = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5 } })
+    K.modelDelay = 500
+    K.ui(NUICB.LOCKER2_OPEN)
+    K.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
+    K.ui(NUICB.LOCKER2_CLOSE)
+    K.pump(2500)
+    ok(K.ped().model == FEMALE and K.BR.LockerV2.state().worn.id == PID,
+        'a look pressed, then the page closed as it streams in: it goes on and is the worn one')
+    -- A model that never streams: the editor does not stand empty.
+    local N = joined()
+    N.neverLoad = true
+    N.ui(NUICB.LOCKER2_OPEN)
+    N.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
+    N.pump(6000)
+    local m = N.nui(NUI.LOCKER2)
+    ok(m.edit == nil and m.tabSeq == 1, 'her model never streams: no draft, so the page goes back to My Looks')
+    eq(N.notify[#N.notify], 'That character could not be loaded.', 'in Season 1\'s words')
+    N.neverLoad = false
+    N.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 2 })
+    N.pump(300)
+    ok(N.nui(NUI.LOCKER2).edit ~= nil, 'and the next Create is not refused as unsaved')
+end
+
+describe('mylooks.unconfirmed')
+do
+    -- A WRITE THAT FAILED OR WENT UNANSWERED (#28 review): the database can
+    -- still take it, so the next open asks for the looks again.
+    local function reopen(W)
+        W.ui(NUICB.LOCKER2_CLOSE)
+        local f0 = #W.sentTo(NET.LOCKER2_FETCH)
+        W.ui(NUICB.LOCKER2_OPEN)
+        return #W.sentTo(NET.LOCKER2_FETCH) - f0
+    end
+    local W = editing(A.default('m'))
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = PID, name = 'Base' })
+    local s = W.sentTo(NET.LOCKER2_SAVE)[1]
+    W.net(NET.LOCKER2_RESULT, { req = s.req, ok = true, ped = { id = PID, name = 'Base', a = s.a, up = 9 },
+                                worn = { k = 'p', id = PID, a = s.a } })
+    eq(reopen(W), 0, 'a save the server confirmed: the next open asks nothing')
+    W.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 2 })
+    W.pump(300)
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = PID, name = 'Base' })
+    s = W.sentTo(NET.LOCKER2_SAVE)[2]
+    W.net(NET.LOCKER2_RESULT, { req = s.req, ok = false, reason = 'store' })
+    eq(reopen(W), 1, 'a save answered store: the next open asks again')
+    -- Never answered: the page is given back after 10 s, and the list is unsure.
+    local B = editing(A.default('m'))
+    B.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    B.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = PID, name = 'Base' })
+    local sb = B.sentTo(NET.LOCKER2_SAVE)[1]
+    B.pump(10200)
+    eq(B.BR.LockerV2.state().busy, nil, 'unanswered for 10 s: the page is given back')
+    eq(reopen(B), 1, 'and the next open asks again')
+    B.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK1 }, store = true,
+                               peds = { { id = PID, name = 'Base', a = A.encode(A.default('m')), up = 5 } } })
+    B.net(NET.LOCKER2_RESULT, { req = sb.req, ok = true, ped = { id = PID, name = 'Base', a = sb.a, up = 9 } })
+    eq(reopen(B), 1, 'an answer that comes after that, even after a fetch: asked again')
+    B.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = sb.a }, store = true,
+                               peds = { { id = PID, name = 'Base', a = sb.a, up = 9 } } })
+    eq(reopen(B), 0, 'and once answered, not again')
+    -- The boundary of a current answer: refreshMs exactly.
+    local Z = joined()
+    local at = Z.BR.LockerV2.state().stateAt
+    Z.time = at + Z.BR.Config.Locker2.refreshMs - 1
+    eq(reopen(Z), 0, 'an answer a moment short of refreshMs old is current')
+    Z.time = at + Z.BR.Config.Locker2.refreshMs
+    eq(reopen(Z), 1, 'and one exactly refreshMs old is asked for again')
+end
+
+describe('mylooks.oldlists')
+do
+    -- A LOOK FROM ANOTHER DAY'S LISTS (#28 review): a face past today's list
+    -- and an extra the list no longer has. It reads, it is worn, and it opens.
+    local older = A.default('m')
+    older.f, older.x = 5, { 'cape', 'hat' }
+    older.p[1] = { 2, 0 }
+    local W = joined({ { id = PID, name = 'Old', a = A.encode(older), up = 5 } })
+    W.BR.Config.Locker2.faces.m = { 0, 4, 8, 12 }
+    eq(#W.BR.LockerV2.state().peds, 1, 'the card is listed')
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
+    W.pump(300)
+    eq(W.ped().blend[1], 0, 'worn with the first face, its own trimmed away')
+    W.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
+    W.pump(300)
+    local m = W.nui(NUI.LOCKER2)
+    eq(draftOf(W).a.f, nil, 'the draft starts on the first face')
+    ok(rowOf(m, 'shape').v == 1 and rowOf(m, 'shape').n == 4, 'the first of four tiles lit')
+    eq(table.concat(listOf(m.edit.extras), ','), 'hat', 'the retired extra is skipped, the hat listed')
+    eq(m.edit.dirty, false, 'and nothing to save until something changes')
+end
+
+describe('mylooks.mutants')
+do
+    -- What the review's mutation pass found unpinned (#28 review), each a rule
+    -- a player would see broken.
+    local ZERO = hashOf('0')
+    -- An item of more textures than the sync tree carries: 32 colors at most.
+    local X = editing(A.default('m'))
+    X.texCount['11:5'] = 40
+    X.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 6 })
+    eq(rowOf(X.nui(NUI.LOCKER2), 'c11').colors, 32, 'a top of 40 textures shows 32 colors, all the sync carries')
+    X.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = 31 })
+    eq(X.ped().comps[11][2], 31, 'the 32nd is texture 31')
+    X.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = 32 })
+    eq(X.ped().comps[11][2], 31, 'a 33rd is refused')
+    ok(A.encode(draftOf(X).a) ~= nil, 'and the look still saves')
+    -- The top's arms win over its undershirt's; the undershirt's reach the
+    -- preview; a base top over an undershirt that names arms leaves them be.
+    local F = editing(A.default('m'))
+    local a = function() return draftOf(F).a end
+    F.shop['8:12:0'] = 8012
+    F.forced[8012] = { { ZERO, 1, 3 } }
+    F.shop['11:5:0'] = 5001
+    F.forced[5001] = { { ZERO, 7, 3 }, { 8012, 0, 8 } }
+    F.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 6 })
+    ok(a().c[8][1] == 12 and a().c[3][1] == 4, 'a top naming arms and an undershirt that names its own: the top\'s arms', a().c[3][1])
+    F.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 1 })
+    F.ui(NUICB.LOCKER2_SET, { k = 'c8', v = 1 })
+    F.ui(NUICB.LOCKER2_SET, { k = 'c3', v = 3 })
+    F.ui(NUICB.LOCKER2_SET, { k = 'c8', v = 14 })
+    ok(a().c[3][1] == 1 and F.ped().comps[3][1] == 1, 'an undershirt\'s arms go on the preview with it', F.ped().comps[3][1])
+    F.ui(NUICB.LOCKER2_SET, { k = 'c3', v = 3 })
+    F.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 3 })
+    eq(a().c[3][1], 2, 'a base top over an undershirt that names arms: the arms as they are')
+    -- Two arms under one shop hash: the first is the one.
+    local H = editing(A.default('m'))
+    H.shop['3:20:1'], H.shop['3:25:0'] = 7020, 7020
+    H.shop['11:6:0'] = 5006
+    H.forced[5006] = { { 7020, 0, 3 } }
+    H.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 7 })
+    eq(draftOf(H).a.c[3][1], 20, 'two arms under one hash: the first drawable')
+    -- Undo ends the merge window: the next change of that row is its own step.
+    local U = editing(A.default('m'))
+    U.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 40 })
+    U.ui(NUICB.LOCKER2_UNDO)
+    U.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 60 })
+    eq(U.nui(NUI.LOCKER2).edit.undo, true, 'a change of a row just undone is a step of its own')
+    U.ui(NUICB.LOCKER2_UNDO)
+    eq(U.ped().ff[0], 0.0, 'and Undo takes it back')
+    -- The merge window's edge: coalesceMs apart is two steps.
+    local G = editing(A.default('m'))
+    local ms = G.BR.Config.Locker2.coalesceMs
+    G.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 40 })
+    G.time = G.time + ms - 1
+    G.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 50 })
+    G.time = G.time + ms
+    G.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 60 })
+    G.ui(NUICB.LOCKER2_UNDO)
+    eq(G.ped().ff[0], 0.5, 'touches coalesceMs apart are two steps; a moment closer, one')
+    G.ui(NUICB.LOCKER2_UNDO)
+    eq(G.ped().ff[0], 0.0, 'the first two were one')
+    -- Randomize's tattoos: never one twice in a zone, never past ten. Every
+    -- draw the lowest it can be, so a repeat or an eleventh would show.
+    local R = editing(A.default('m'))
+    R.BR.Config.Locker2.random.tattoosMin, R.BR.Config.Locker2.random.tattoosMax = 25, 25
+    R.env.math = setmetatable({ random = function(lo, hi)
+        if lo == nil then return 0 end
+        if hi == nil then return 1 end
+        return lo
+    end }, { __index = math })
+    R.ui(NUICB.LOCKER2_RANDOM)
+    local d = draftOf(R)
+    local capped, once, total = true, true, 0
+    for _, z in ipairs(TAT.zones) do
+        if #d.tats[z] > A.TATTOOS_PER_ZONE then capped = false end
+        local seen = {}
+        for _, r in ipairs(d.tats[z]) do
+            if seen[r.i] then once = false end
+            seen[r.i] = true
+            total = total + 1
+        end
+    end
+    eq(total, 25, 'Randomize asked for 25 tattoos')
+    ok(capped, 'never more than ten a zone')
+    ok(once, 'and never one twice in a zone')
+    -- The extras it puts on join in a random order, not the list's.
+    local x = table.concat(d.a.x or {}, ',')
+    local all = table.concat(R.BR.Config.Locker2.extras, ',')
+    local sorted = {}
+    for _, id in ipairs(d.a.x or {}) do sorted[#sorted + 1] = id end
+    table.sort(sorted)
+    local want = {}
+    for _, id in ipairs(R.BR.Config.Locker2.extras) do want[#want + 1] = id end
+    table.sort(want)
+    ok(x ~= all and table.concat(sorted, ',') == table.concat(want, ','),
+        'every extra put on (each draw 0), shuffled out of the list\'s order', x)
+    -- A look with no change is never saved, as an update or as new.
+    local S0 = editing(A.default('m'))
+    S0.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = PID, name = 'Base' })
+    S0.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Copy' })
+    eq(#S0.sentTo(NET.LOCKER2_SAVE), 0, 'a look with no change is not saved, as an update or as new')
+    -- An item of one color takes no swatch press.
+    local one = A.default('m')
+    one.c[11] = { 7, 2 }
+    local O = joined({ { id = PID, name = 'One', a = A.encode(one), up = 5 } })
+    O.texCount['11:7'] = 1
+    O.ui(NUICB.LOCKER2_OPEN)
+    O.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
+    O.pump(300)
+    eq(rowOf(O.nui(NUI.LOCKER2), 'c11').colors, 1, 'a top of one texture, worn in a texture the game has no more')
+    O.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = 0 })
+    eq(draftOf(O).a.c[11][2], 2, 'an item of one color: a swatch press changes nothing')
+    -- A reset reads 64 keys at most.
+    local D = editing(A.default('m'))
+    D.ui(NUICB.LOCKER2_SET, { k = 'ff3', v = 50 })
+    local ks = {}
+    for i = 1, 64 do ks[i] = 'zz' end
+    ks[65] = 'ff3'
+    D.ui(NUICB.LOCKER2_DEFAULTS, { ks = ks })
+    eq(D.ped().ff[3], 0.5, 'a reset of more than 64 keys stops at the 64th')
 end
 
 -- ═══ THE CAMERA'S FOCUS (client/lobbycam.lua) ═══

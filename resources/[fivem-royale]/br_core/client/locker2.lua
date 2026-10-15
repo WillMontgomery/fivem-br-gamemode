@@ -79,8 +79,10 @@ local S = {
     --- hist } (`tats`: its tattoo rows, see tatRowsOf; `hist`: its Undo and
     --- Redo; `base` nil for a new look).
     draft = nil,
-    --- A save, rename or delete waiting on the server: its req.
+    --- A save, rename or delete waiting on the server: its req. `gaveUp` is
+    --- the one the page was given back from unanswered (BUSY_MS).
     busy = nil,
+    gaveUp = nil,
     --- A stock pick being streamed, and the press that came after it.
     loadingId = nil,
     queued = nil,
@@ -980,7 +982,9 @@ local function byHash(ped, sex, slot, h)
 end
 
 --- What the item in `slot` forces, as { slot, drawable, texture }s: only the
---- slots of forcedSlots, only what the game says is valid.
+--- slots of forcedSlots, only what the game says is valid. `shop` is set when
+--- the item has shop data at all -- a base item has none, and forces nothing
+--- because it says nothing.
 local function forcedOf(ped, sex, slot, d, t)
     local key = slot .. ':' .. d .. ':' .. t
     local hit = forcedCache[sex][key]
@@ -991,6 +995,7 @@ local function forcedOf(ped, sex, slot, d, t)
     local ok = pcall(function()
         local h = GetHashNameForComponent(ped, slot, d, t)
         if noItem(h) then return end
+        out.shop = true
         for i = 0, math.min(16, forcedCount(h)) - 1 do
             local nameHash, enum, ctype = GetForcedComponent(h, i)
             if wanted[ctype] and ctype ~= slot then
@@ -1027,6 +1032,10 @@ local function applyForced(d, ped, changed)
     local top = forcedOf(ped, d.sex, 11, a.c[11][1], a.c[11][2])
     local skip
     if changed == 11 then
+        -- A BASE TOP (no shop data) LEAVES THE ARMS AS THEY ARE (#28's spec):
+        -- the undershirt's arms are not put on in its place either (#28
+        -- review). A shop top that names no arms lets the undershirt's on.
+        if not top.shop then return end
         skip = put(top)
     elseif changed == 8 then
         skip = {}
@@ -1385,13 +1394,21 @@ end
 --- the server read every look and headshot from the database each time). The
 --- join's first apply asks; every write's answer keeps the list current. An
 --- open asks again only when no answer has come (and the last ask is fetchMs
---- old), when the server could not read them, or when the answer is
---- refreshMs old.
+--- old), when the server could not read them, when the answer is refreshMs
+--- old, or when a write failed or went unanswered (`S.stateAt` nil): a write
+--- the database was slow to take can still have landed (#28 review: a save
+--- that timed out hid that look for ten minutes), so the list is read again.
 local function stale()
     local now = GetGameTimer()
     if not S.serverSeen then return S.fetchAt == nil or now - S.fetchAt >= C().fetchMs end
     if S.store == false then return true end
-    return S.stateAt ~= nil and now - S.stateAt >= C().refreshMs
+    return S.stateAt == nil or now - S.stateAt >= C().refreshMs
+end
+
+--- A write that failed or was never answered: what the server holds is
+--- unknown until it is asked again.
+local function writeUnsure()
+    S.stateAt = nil
 end
 
 local function sendWear(rec)
@@ -1445,9 +1462,17 @@ AddEventHandler(BR.Net.LOCKER2_RESULT, function(d)
         end
         return
     end
+    if req ~= nil and req == S.gaveUp then
+        -- An answer after the page was given back (BUSY_MS): whatever it says,
+        -- the list is asked for again at the next open.
+        S.gaveUp = nil
+        writeUnsure()
+        return
+    end
     if req == nil or req ~= S.busy then return end
     local op = S.busyOp
     S.busy, S.busyOp, S.busyAt = nil, nil, nil
+    if d.ok ~= true then writeUnsure() end
     if d.gone == true and A.isPedId(d.id) then
         local _, i = pedById(d.id)
         if i then table.remove(S.peds, i) end
@@ -1506,6 +1531,29 @@ local function applyAll()
     reassertLater(ped, a)
 end
 
+--- A draft's model has landed (`ok`), or never came (`why` 'left': the lobby
+--- was left meanwhile). Two ways it no longer fits the draft (#28 review):
+---
+---   GONE BY THEN -- the page closed while the model streamed in (Create, then
+---     Escape): the look it brought is nobody's, and the watcher kept it on
+---     through the next match. The worn look goes back on. Close's own wear
+---     could not do it: the ped was still the worn one when it asked.
+---   NEVER CAME -- the model did not stream: the editor stood empty, and every
+---     New after it was refused as unsaved. The draft goes, the page follows it
+---     home, and the player is told in Season 1's words.
+local function draftLanded(d, ok, why)
+    if not ok then
+        if S.draft == d then
+            S.draft = nil
+            S.tab = defaultTab()
+            if why ~= 'left' then BR.Notify('That character could not be loaded.', 'warn') end
+        end
+        return
+    end
+    if S.draft == d or S.draft ~= nil then return end
+    if claims() and S.first == 'done' and S.worn and inLobby() then wear(S.worn) end
+end
+
 --- A draft starts on NO category, with the camera home on the whole ped.
 ---
 --- THE CATEGORY THE PAGE LIGHTS IS WHERE THE CAMERA IS (#28 review): `cat` is
@@ -1519,9 +1567,16 @@ end
 local function startDraft(sex, a, editing)
     local look = capTattoos(A.copy(a))
     syncExtras(look)
-    S.draft = newDraft(sex, A.copy(look), A.copy(look), editing)
+    -- A FACE PAST TODAY'S LIST (one trimmed since the save) is the first, as
+    -- it is worn (headBlend); base included, so it is nothing to save.
+    if look.f and not C().faces[sex][look.f + 1] then look.f = nil end
+    local d = newDraft(sex, A.copy(look), A.copy(look), editing)
+    S.draft = d
     if BR.LobbyCam and BR.LobbyCam.unfocus then BR.LobbyCam.unfocus() end
-    dress(modelOfSex(sex), A.copy(look), function() V.push() end)
+    dress(modelOfSex(sex), A.copy(look), function(ok, why)
+        draftLanded(d, ok, why)
+        V.push()
+    end)
 end
 
 --- Throw the draft away and bring the camera home.
@@ -1995,12 +2050,13 @@ ACTIONS[BR.NuiCb.LOCKER2_NEW] = function(data)
     local d = newDraft(sex, A.default(sex), nil, nil)
     S.draft = d
     if BR.LobbyCam and BR.LobbyCam.unfocus then BR.LobbyCam.unfocus() end
-    dress(modelOfSex(sex), A.copy(d.a), function(ok)
+    dress(modelOfSex(sex), A.copy(d.a), function(ok, why)
         if ok and S.draft == d and modelReady(d) then
             randomizeCore(d)
             syncExtras(d.a)
             applyAll()
         end
+        draftLanded(d, ok, why)
         V.push()
     end)
     return false
@@ -2504,6 +2560,8 @@ BR.Loop.register(BR.Loop.TICK, 'locker2.lobby', function()
 
     -- A write the server never answered does not hold the page forever.
     if S.busy and GetGameTimer() - S.busyAt > BUSY_MS then
+        S.gaveUp = S.busy
+        writeUnsure()
         S.busy, S.busyOp, S.busyAt = nil, nil, nil
         BR.Notify(FAILED, 'warn')
         V.push()

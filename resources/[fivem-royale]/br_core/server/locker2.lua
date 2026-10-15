@@ -22,7 +22,9 @@
 -- (#28 lag: every open read every look and headshot again), and only then is
 -- the database read again. A fetch that FAILED leaves every write refused as
 -- `store`, and the next fetch reads again: writing over rows this server
--- could not read is how a player loses one.
+-- could not read is how a player loses one. A WRITE the database did not
+-- confirm (an error, or no answer in 6 s -- it may still land) makes the next
+-- fetch read again too.
 --
 -- ═══ ONE ANSWER PER PLAYER PER fetchMs ═══
 --
@@ -185,6 +187,15 @@ local function result(src, req, ok, reason, extra)
     local out = extra or {}
     out.req, out.ok, out.reason = req, ok, reason
     TriggerClientEvent(BR.Net.LOCKER2_RESULT, src, out)
+end
+
+--- A write the database did not confirm -- an error, or no answer inside
+--- ask's 6 s, which it can still take after: the cache no longer knows the
+--- record, so the next fetch reads it again (#28 review: a save that timed out
+--- and landed was hidden from every fetch for cacheMs). Answered `store`.
+local function unsure(src, req, e)
+    e.fetchAt = nil
+    return result(src, req, false, 'store')
 end
 
 -- ── the worn ped ─────────────────────────────────────────────────────────────
@@ -418,7 +429,7 @@ AddEventHandler(BR.Net.LOCKER2_SAVE, function(d)
                 e.peds[id] = nil
                 return result(src, req, false, 'missing', { id = id, gone = true })
             end
-            return result(src, req, false, 'store')
+            return unsure(src, req, e)
         end
         local ped = e.peds[id] or { id = id }
         ped.name, ped.a, ped.cr, ped.up, ped.img = rec.n, rec.a, rec.cr, rec.up, nil
@@ -449,7 +460,7 @@ AddEventHandler(BR.Net.LOCKER2_RENAME, function(d)
                 e.peds[id] = nil
                 return result(src, req, false, 'missing', { id = id, gone = true })
             end
-            return result(src, req, false, 'store')
+            return unsure(src, req, e)
         end
         p.name, p.up = name, now
         result(src, req, true, nil, { id = id, ped = pedOut(p) })
@@ -470,7 +481,7 @@ AddEventHandler(BR.Net.LOCKER2_DELETE, function(d)
     if not takeToken(e) then return result(src, req, false, 'rate') end
     local id = d.id
     ask('pedDelete', function(ok)
-        if not ok then return result(src, req, false, 'store') end
+        if not ok then return unsure(src, req, e) end
         e.peds[id] = nil
         result(src, req, true, nil, { id = id, gone = true })
     end, lic, id)
@@ -497,7 +508,7 @@ AddEventHandler(BR.Net.LOCKER2_SHOT, function(d)
                 e.peds[id] = nil
                 return result(src, req, false, 'missing', { id = id, gone = true })
             end
-            return result(src, req, false, 'store')
+            return unsure(src, req, e)
         end
         p.img = img
         result(src, req, true, nil, { id = id, ped = pedOut(p) })
