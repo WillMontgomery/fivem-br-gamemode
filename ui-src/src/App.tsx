@@ -4,6 +4,7 @@ import { fetchNui } from './bridge/nui'
 import { CB } from './bridge/types'
 import { play } from './audio/cues'
 import { syncEmoteTracks } from './audio/music'
+import { forgetPalette } from './settings/apply'
 import { useUi } from './store'
 import Hud from './hud/Hud'
 import Chat from './chat/Chat'
@@ -227,7 +228,9 @@ export default function App() {
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
-  useNuiEvent('settings', (d) => dispatch().setSettings(d))
+  // It is also br_core's way to ask for the palette again after a restart of
+  // its own, so the palette goes with it even when unchanged (#413).
+  useNuiEvent('settings', (d) => { forgetPalette(); dispatch().setSettings(d) })
   useNuiEvent('locker',   (d) => dispatch().setLocker(d))
   useNuiEvent('locker2',  (d) => dispatch().setLocker2(parseLocker2(d)))
   useNuiEvent('progress', (d) => dispatch().setProgress(d))

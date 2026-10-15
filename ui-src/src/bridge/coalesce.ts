@@ -1,11 +1,12 @@
 /**
- * NETWORK HYGIENE FOR CEF 144 (#413), the two pure halves; scripts/test-cef.mjs
- * runs both.
+ * NETWORK HYGIENE FOR CEF 144 (#413), the pure halves; scripts/test-cef.mjs
+ * runs each one, and holds bridge/nui.ts and settings/apply.ts to using them.
  *
  * Cfx's note for the CEF 103 -> 144 move: network requests are throttled under
- * heavy volume. Every NUI callback is a request, so the two places this page
- * could send one per event are bounded here rather than left to find the
- * throttle on a player's machine.
+ * heavy volume. Every NUI callback is a request, so the three places this page
+ * could send one per input event are bounded here rather than left to find the
+ * throttle on a player's machine: the locker spin, the error sink, and the
+ * palette a Settings slider re-sent at every step.
  */
 
 /**
@@ -86,6 +87,46 @@ export function createErrorGate(limit = 10, windowMs = 60_000): ErrorGate {
       const n = held
       held = 0
       return n
+    },
+  }
+}
+
+/**
+ * SENT ONLY WHEN IT CHANGED.
+ *
+ * settings/apply.ts reports the resolved palette (the green and the volts
+ * orange) to Lua on every settings apply, and a Settings slider applies at
+ * every step: 100 steps on a volume slider, one request each, at the speed of
+ * the drag, for a value only the colorblind mode can change. Here a value
+ * goes when its key differs from the last one that went.
+ *
+ * Two ways back to sending the same value again, so a dedup never strands a
+ * reader on a stale one:
+ *   - a send that fails or answers nothing (fetchNui's null) forgets it, so
+ *     the next apply retries -- as every apply did before;
+ *   - `forget()`, for the caller that knows a reader needs it again (Lua's
+ *     settings push, which is also br_core's answer after its own restart).
+ */
+export interface ChangeGate<T> {
+  offer(value: T): void
+  forget(): void
+}
+
+export function changesOnly<T>(
+  keyOf: (value: T) => string,
+  send: (value: T) => Promise<unknown>,
+): ChangeGate<T> {
+  let last: string | null = null
+  return {
+    offer(value: T): void {
+      const key = keyOf(value)
+      if (key === last) return
+      last = key
+      const lost = (): void => { if (last === key) last = null }
+      send(value).then((answer) => { if (answer === null || answer === undefined) lost() }, lost)
+    },
+    forget(): void {
+      last = null
     },
   }
 }

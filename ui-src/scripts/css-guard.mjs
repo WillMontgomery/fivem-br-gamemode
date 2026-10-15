@@ -15,10 +15,30 @@
 //     (`feature` is tested against it) -- a block guarded by something else
 //     is no guard for this feature;
 //   - never under `not` or `or`: `@supports not (...)` applies on exactly the
-//     engines that lack the feature, and `(a) or (b)` may apply through `b`.
+//     engines that lack the feature, and `(a) or (b)` may apply through `b`;
+//   - never through a custom property: `(--x: oklch(0 0 0))` is true on CEF
+//     103, because a custom property takes any value (#413 review), so a
+//     `--name: ...` test is dropped from the condition before it is read.
 //
 // Offsets are kept (blanked to spaces, newlines kept) so a later count or
 // position is unchanged.
+
+/** The condition without its `(--name: ...)` tests, which every engine passes. */
+function withoutCustomProps(cond) {
+  let out = cond
+  const re = /\(\s*--[\w-]*\s*:/g
+  let m
+  while ((m = re.exec(out)) !== null) {
+    let depth = 0
+    let end = m.index
+    for (; end < out.length; end++) {
+      if (out[end] === '(') depth++
+      else if (out[end] === ')' && --depth === 0) break
+    }
+    out = out.slice(0, m.index) + ' '.repeat(end + 1 - m.index) + out.slice(end + 1)
+  }
+  return out
+}
 
 export function blankGuarded(css, feature) {
   let out = css
@@ -34,7 +54,7 @@ export function blankGuarded(css, feature) {
       else if ((c === '{' || c === ';') && depth === 0) break
     }
     if (out[i] !== '{') continue
-    const cond = out.slice(m.index + m[0].length, i)
+    const cond = withoutCustomProps(out.slice(m.index + m[0].length, i))
     const flags = feature.flags.replace('g', '')
     const named = new RegExp(feature.source, flags).test(cond)
     if (!named || /\b(?:not|or)\b/i.test(cond)) continue

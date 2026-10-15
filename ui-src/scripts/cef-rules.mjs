@@ -20,20 +20,84 @@
 //                      and may not fire
 //   C8 manifest        secure-context checks may block resources on adamant,
 //                      bodacious or a legacy __resource.lua -> cerulean
-//   C9 zoom-shim       Locker v2's zoom stays measured as on 103
+//   C9 zoom-shim       the Season 2 screens' zoom stays measured as on 103
 //                      (src/cef/zoomRect.ts, scripts/zoom-rect.mjs)
 //
 // Every rule reads code with its comments blanked out (offsets kept, so line
 // numbers stay true), because the reason a rule exists has to be writable
 // next to the code it protects.
 
-/** Comments to spaces, newlines kept. `//` counts only at a line start or after
- *  whitespace, so `https://` in a string is never one. */
+const blankRun = (m) => m.replace(/[^\n]/g, ' ')
+
+/** After one of these (or at the start), a `/` opens a regex, not a division. */
+const REGEX_AFTER = new Set(['', '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '~', '^', '>'])
+
+/**
+ * Comments to spaces, newlines kept, read the way a lexer would: a `//` or
+ * `/*` inside a string, a template or a regex is not a comment (the #413
+ * review hid an alert() after `"see //"`, and one after `"image/*"`).
+ *
+ * Every mistake it can make shows MORE code, never less: a quote it reads
+ * wrongly (JSX text's "Don't") opens a string that ends at the line's end, and
+ * inside a string nothing is blanked. `//` still needs a line start or
+ * whitespace before it, so JSX text's `https://` is never a comment.
+ */
 export function blankComments(text, { html = false } = {}) {
-  const blank = (m) => m.replace(/[^\n]/g, ' ')
-  let out = text.replace(/\/\*[\s\S]*?\*\//g, blank)
-  if (html) out = out.replace(/<!--[\s\S]*?-->/g, blank)
-  return out.replace(/(^|[ \t])\/\/[^\n]*/gm, (m, lead) => lead + blank(m.slice(lead.length)))
+  const src = html ? text.replace(/<!--[\s\S]*?-->/g, blankRun) : text
+  let out = ''
+  let i = 0
+  let prev = ''          // the last significant code character, for regexes
+  const stack = []       // 'tpl' inside a template's text; a number inside ${ }
+  const top = () => stack[stack.length - 1]
+  while (i < src.length) {
+    const c = src[i]
+    const n = src[i + 1]
+    if (top() === 'tpl') {
+      if (c === '\\') { out += src.slice(i, i + 2); i += 2; continue }
+      if (c === '`') { stack.pop(); out += c; i++; prev = '`'; continue }
+      if (c === '$' && n === '{') { stack.push(0); out += '${'; i += 2; prev = '{'; continue }
+      out += c; i++; continue
+    }
+    if (c === '/' && n === '*') {
+      const end = src.indexOf('*/', i + 2)
+      const stop = end === -1 ? src.length : end + 2
+      out += blankRun(src.slice(i, stop)); i = stop; continue
+    }
+    if (c === '/' && n === '/' && (i === 0 || /\s/.test(src[i - 1]))) {
+      const end = src.indexOf('\n', i)
+      const stop = end === -1 ? src.length : end
+      out += blankRun(src.slice(i, stop)); i = stop; continue
+    }
+    if (c === '\'' || c === '"') {
+      let j = i + 1
+      while (j < src.length && src[j] !== c && src[j] !== '\n') j += src[j] === '\\' ? 2 : 1
+      const stop = Math.min(src[j] === c ? j + 1 : j, src.length)
+      out += src.slice(i, stop); i = stop; prev = c; continue
+    }
+    if (c === '`') { stack.push('tpl'); out += c; i++; continue }
+    if (c === '/' && (REGEX_AFTER.has(prev) || /(?:^|[^\w$])(?:return|typeof|case|in|of|void|delete|throw|yield|await)$/.test(out.slice(-16).trimEnd()))) {
+      let j = i + 1
+      let cls = false
+      while (j < src.length && src[j] !== '\n' && (cls || src[j] !== '/')) {
+        if (src[j] === '\\') j++
+        else if (src[j] === '[') cls = true
+        else if (src[j] === ']') cls = false
+        j++
+      }
+      if (src[j] === '/') { out += src.slice(i, j + 1); i = j + 1; prev = '/'; continue }
+    }
+    if (typeof top() === 'number') {
+      if (c === '{') stack[stack.length - 1]++
+      else if (c === '}') {
+        if (top() === 0) { stack.pop(); out += c; i++; prev = ''; continue }
+        stack[stack.length - 1]--
+      }
+    }
+    if (!/\s/.test(c)) prev = /[\w$)\]]/.test(c) ? 'w' : c
+    out += c
+    i++
+  }
+  return out
 }
 
 export function lineOf(text, index) {
@@ -66,6 +130,9 @@ export const ZOOM_ALLOWED = new Map([
     'a tutorial anchor undoes the zoom (1/z, then z inside it): a true zoom of 1, measured alike on 103 and 144'],
   ['ui-src/src/screens/lockerv2/Tabs.tsx',
     'a tutorial anchor undoes the zoom (1/z): a true zoom of 1, measured alike on 103 and 144'],
+  ['ui-src/src/screens/MarketV2.tsx',
+    "the Season 2 Market's island, as Locker v2's (#411): Cloudscape measures through src/cef/zoomRect.ts;"
+      + " Done's tutorial anchor undoes the zoom (1/z, then z inside it), a true zoom of 1 on both engines"],
 ])
 
 export const URL_ALLOWED = new Map([
@@ -90,7 +157,7 @@ const MUTATION_EVENT = /\bDOM(?:NodeInserted(?:IntoDocument)?|NodeRemoved(?:From
 const BLOCKED = [
   [/\b(?:requestPictureInPicture|exitPictureInPicture|pictureInPictureElement|pictureInPictureEnabled|documentPictureInPicture)\b/g,
     'Picture-in-Picture reaches outside the game: disabled in CEF 144, and it throws'],
-  [/\bnavigator\s*\.\s*(?:usb|bluetooth|hid|serial)\b/g,
+  [/\bnavigator\s*(?:\??\.\s*|\[\s*['"`])(?:usb|bluetooth|hid|serial)\b/g,
     'WebUSB, WebBluetooth, WebHID and Serial are blocked in CEF 144'],
   [/\b(?:getUserMedia|webkitGetUserMedia|getDisplayMedia|mediaDevices)\b/g,
     'the microphone and camera are the parent resource\'s only in CEF 144, never a frame\'s -- and voice is pma-voice\'s, in Lua'],
@@ -98,32 +165,65 @@ const BLOCKED = [
     'printing is blocked in CEF 144'],
 ]
 
-const UNLOAD = /addEventListener\(\s*['"]unload['"]|\bonunload\b/g
+const UNLOAD = /addEventListener\(\s*(['"`])unload\1|\bonunload\b/g
 
 const DIALOG_MSG = 'a browser dialog: gone from NUI in CEF 144 (it returns without asking anything).'
   + ' Draw the question in the page -- lockerv2/Modals.tsx is one.'
 
-/** Does `file` declare `name` itself (a local function, binding or parameter)? */
-function declaresLocally(code, name) {
-  const n = name
-  return new RegExp(
-    `\\bfunction\\s+${n}\\b|\\b(?:const|let|var)\\s+${n}\\b|[({,]\\s*${n}\\s*[,)}=:]`
-    + `|^\\s*(?:async\\s+)?${n}\\s*\\([^)]*\\)\\s*[:{]`, 'm',
-  ).test(code)
+/** Where the top-level statement holding `index` starts: the last line at or
+ *  before it that starts in column 0 with code (not a closing bracket). Our
+ *  sources are formatted, so a top-level statement is a column-0 line and
+ *  everything indented under it. */
+function statementStart(code, index) {
+  let at = code.lastIndexOf('\n', index - 1) + 1
+  while (at > 0 && /^(?:[\s})\]]|$)/.test(code.slice(at, at + 1))) at = code.lastIndexOf('\n', at - 2) + 1
+  return at
 }
 
+/**
+ * Does the code declare `name` itself, where the call at `index` sees it?
+ * At module scope (a column-0 const, let, var or function) it covers the file;
+ * anywhere else -- a binding, a parameter, a method -- only the same top-level
+ * statement. A `{ confirm }` parameter of one component no longer excuses a
+ * real confirm() in another (#413 review).
+ */
+function declaresLocally(code, name, index) {
+  const n = name
+  if (new RegExp(`^(?:export\\s+)?(?:(?:async\\s+)?function\\s+${n}\\b|(?:const|let|var)\\s+${n}\\b)`, 'm').test(code)) return true
+  const at = statementStart(code, index)
+  const decl = new RegExp(
+    `\\bfunction\\s+${n}\\b|\\b(?:const|let|var)\\s+${n}\\b|[({,]\\s*${n}\\s*[,)}=:]`
+    + `|^\\s*(?:async\\s+)?${n}\\s*\\([^)]*\\)\\s*[:{]`, 'gm',
+  )
+  for (const d of code.matchAll(decl)) if (statementStart(code, d.index) === at) return true
+  return false
+}
+
+/**
+ * A dialog, however it is reached: `alert (x)`, `confirm?.(x)`, `(0, alert)(x)`,
+ * and on the global object `window.confirm`, `self?.alert` or
+ * `window['prompt']` -- the global ones whether called or not, since a
+ * reference is only ever taken to call it. The #413 review got the first
+ * three and the bracket past the old pattern.
+ */
+const DIALOG = new RegExp([
+  /(?<![\w$.])(alert|confirm|prompt)\s*(?:\?\.\s*)?\(/.source,
+  /(?<![\w$.])(?:window|self|globalThis|top|parent)\s*\??\.\s*(alert|confirm|prompt)\b/.source,
+  /(?<![\w$.])(?:window|self|globalThis|top|parent)\s*(?:\?\.\s*)?\[\s*(['"`])(alert|confirm|prompt)\3\s*\]/.source,
+  /,\s*(alert|confirm|prompt)\s*\)\s*(?:\?\.\s*)?\(/.source,
+].join('|'), 'g')
+
 function dialogFindings(code, file, out, { bundle }) {
-  const re = /(?<![\w$.])(alert|confirm|prompt)\(|\b(?:window|self|globalThis|top|parent)\s*\.\s*(alert|confirm|prompt)\s*\(/g
-  for (const m of code.matchAll(re)) {
-    const name = m[1] ?? m[2]
-    const qualified = m[2] !== undefined
+  for (const m of code.matchAll(DIALOG)) {
+    const name = m[1] ?? m[2] ?? m[4] ?? m[5]
+    const qualified = m[1] === undefined
     const open = m.index + m[0].length - 1
     if (!qualified) {
       // A definition, not a call: `function confirm(`, or `confirm(...) {`.
       if (/\bfunction\s*$/.test(code.slice(Math.max(0, m.index - 12), m.index))) continue
       const close = closeParen(code, open)
       if (close > 0 && /^\s*(?::[^;{=]*)?\{/.test(code.slice(close + 1, close + 40))) continue
-      if (!bundle && declaresLocally(code, name)) continue
+      if (!bundle && declaresLocally(code, name, m.index)) continue
     }
     out.push({ rule: 'C1 dialog', file, line: lineOf(code, m.index), msg: `${name}(): ${DIALOG_MSG}` })
   }
@@ -133,7 +233,9 @@ function execCommandFindings(code, file, out) {
   const lines = code.split('\n')
   const starts = [0]
   for (let i = 0; i < code.length; i++) if (code.charCodeAt(i) === 10) starts.push(i + 1)
-  for (const m of code.matchAll(/\bexecCommand\s*\(/g)) {
+  // Any reference, not only a call: `document['execCommand'](...)` and a
+  // bound copy are the same command (#413 review).
+  for (const m of code.matchAll(/\bexecCommand\b/g)) {
     const at = lineOf(code, m.index) - 1
     // Back to the function this call sits in: the nearest line above it that
     // opens one (a control-flow line ending in `{` does not), 40 lines at most.
@@ -143,20 +245,34 @@ function execCommandFindings(code, file, out) {
       if (/^\s*(?:\}\s*)?(?:if|for|while|switch|catch|else|try|do)\b/.test(l)) continue
       if (/(?:=>|\bfunction\b[^{]*|\)\s*(?::\s*[^{=]+)?)\s*\{\s*$/.test(l)) { from = i; break }
     }
-    if (!/\.focus\s*\(/.test(code.slice(starts[from], m.index))) {
+    const body = code.slice(starts[from], m.index)
+    // THE FIELD THAT IS SELECTED IS THE ONE THAT MUST HAVE FOCUS: a focus on
+    // anything else (document.body) leaves the copy empty on CEF 144.
+    const selected = [...body.matchAll(/([\w$]+)\s*\??\.\s*(?:select|setSelectionRange)\s*\(/g)].pop()?.[1]
+    const focus = selected
+      ? new RegExp(`(?<![\\w$])${selected.replace(/\$/g, '\\$')}\\s*\\??\\.\\s*focus\\s*\\(`)
+      : /\.focus\s*\(/
+    if (!focus.test(body)) {
       out.push({
         rule: 'C3 exec-command', file, line: at + 1,
-        msg: 'document.execCommand with no .focus() before it in the same function: CEF 144 copies only'
+        msg: (selected ? `document.execCommand on \`${selected}\` with no ${selected}.focus() before it`
+          : 'document.execCommand with no .focus() before it') + ' in the same function: CEF 144 copies only'
           + ' from a focused element, and returns false otherwise. Use ui/clipboard.ts copyText().',
       })
     }
   }
 }
 
+/** `zoom:` (CSS, a style object, a type), `.style.zoom`, the property named
+ *  as a string (`style['zoom']`, `setProperty('zoom')`, `{ 'zoom': 2 }`), and
+ *  the shorthand `{ zoom }` (a style object, or Object.assign's) -- the last
+ *  three got past the old pattern in the #413 review. A variable called zoom
+ *  is not one: `const zoom = 2` passes. */
+const ZOOM = /(?<![\w-])zoom\s*:|\.style\s*\??\.\s*zoom\b|(['"`])zoom\1|[{,]\s*zoom\s*(?=[,}])/g
+
 function zoomFindings(code, file, out) {
   if (ZOOM_ALLOWED.has(file)) return
-  const re = /(?<![\w-])zoom\s*:|\.style\s*\.\s*zoom\b|setProperty\(\s*['"]zoom['"]/g
-  for (const m of code.matchAll(re)) {
+  for (const m of code.matchAll(ZOOM)) {
     out.push({
       rule: 'C4 zoom', file, line: lineOf(code, m.index),
       msg: 'CSS zoom: CEF 144 standardized it, and a zoomed element\'s getBoundingClientRect is in screen px'
@@ -267,8 +383,11 @@ export function scanManifests(manifests, legacy) {
       msg: 'a legacy __resource.lua: CEF 144\'s secure-context checks may block its pages. Use an fxmanifest.lua with fx_version \'cerulean\'.' })
   }
   for (const { file, text } of manifests) {
-    // Anchored at a line's start, so a `-- fx_version ...` comment never counts.
-    const m = /^\s*fx_version\s*\(?\s*['"]([\w-]+)['"]/m.exec(text)
+    // Lua comments blanked first, `--[[ ]]` blocks included; then the LAST
+    // fx_version, because a manifest is Lua and a later call wins (the #413
+    // review: a second, adamant line after a cerulean one passed).
+    const code = text.replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, blankRun).replace(/--[^\n]*/g, blankRun)
+    const m = [...code.matchAll(/^\s*fx_version\s*\(?\s*['"]([\w-]+)['"]/gm)].pop()
     if (!m || m[1] !== 'cerulean') {
       out.push({ rule: 'C8 manifest', file, line: m ? lineOf(text, m.index) : 1,
         msg: `fx_version ${m ? `'${m[1]}'` : 'missing'}: CEF 144's secure-context checks may block a resource on`
@@ -278,23 +397,39 @@ export function scanManifests(manifests, legacy) {
   return out
 }
 
-/** C9: the zoom shim is wired: vite.config.ts runs both plugins, the helper
- *  measures through currentCSSZoom, and the built locker carries it. */
-export function checkZoomShim({ viteConfig, helper, lockerBundle }) {
+/**
+ * C9: the zoom shim is wired. vite.config.ts runs both plugins (in `plugins`
+ * and in optimizeDeps' esbuild `plugins`, not merely called somewhere), the
+ * helper measures through currentCSSZoom, and the built br_ui carries it.
+ *
+ * `chunks` is every built br_ui chunk ([{ file, text }], or null before a
+ * build): Cloudscape went from LockerV2.js into the shared index2.js with the
+ * Market (#411), and may move again, so no one file is named. A Cloudscape
+ * call the rewrite missed fails the build itself (zoom-rect.mjs
+ * unrewrittenRects), where module names still exist.
+ */
+export function checkZoomShim({ viteConfig, helper, chunks }) {
   const out = []
   const cfg = blankComments(viteConfig)
-  if (!/\bzoomRectPlugin\(\)/.test(cfg) || !/\bzoomRectEsbuild\(\)/.test(cfg)) {
+  const inBuild = /\bplugins\s*:\s*\[[^\]]*\bzoomRectPlugin\(\)/.test(cfg)
+  const inDeps = /\besbuildOptions\s*:\s*\{[^}]*\bplugins\s*:\s*\[[^\]]*\bzoomRectEsbuild\(\)/.test(cfg)
+  if (!inBuild || !inDeps) {
     out.push({ rule: 'C9 zoom-shim', file: 'ui-src/vite.config.ts', line: 1,
-      msg: 'zoomRectPlugin() and zoomRectEsbuild() must both run: without them Cloudscape sizes Locker v2\'s'
-        + ' dropdowns in screen px on CEF 144 and they draw past the panel (scripts/zoom-rect.mjs).' })
+      msg: 'zoomRectPlugin() in `plugins` and zoomRectEsbuild() in optimizeDeps.esbuildOptions.plugins must both'
+        + ' run: without them Cloudscape sizes the Season 2 screens\' dropdowns in screen px on CEF 144 and they'
+        + ' draw past the panel (scripts/zoom-rect.mjs).' })
   }
   if (!/currentCSSZoom/.test(helper) || !/__brZoomRect/.test(helper)) {
     out.push({ rule: 'C9 zoom-shim', file: 'ui-src/src/cef/zoomRect.ts', line: 1,
       msg: 'the helper must define __brZoomRect and divide by currentCSSZoom where it exists.' })
   }
-  if (lockerBundle !== null && !/__brZoomRect/.test(lockerBundle)) {
-    out.push({ rule: 'C9 zoom-shim', file: 'resources/[fivem-royale]/br_ui/ui/assets/LockerV2.js', line: 1,
-      msg: 'the built locker does not measure through __brZoomRect: rebuild (npm run build).' })
+  if (chunks !== null) {
+    const defines = chunks.some((c) => /['"`]__brZoomRect['"`]/.test(c.text))
+    const calls = chunks.some((c) => /\.__brZoomRect\(\)/.test(c.text))
+    if (!defines || !calls) {
+      out.push({ rule: 'C9 zoom-shim', file: 'resources/[fivem-royale]/br_ui/ui/assets', line: 1,
+        msg: `no built br_ui chunk ${defines ? 'measures through' : 'defines'} __brZoomRect: rebuild (npm run build).` })
+    }
   }
   return out
 }

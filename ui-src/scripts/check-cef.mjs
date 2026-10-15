@@ -75,11 +75,16 @@ findings.push(...scanManifests(
   all.filter((f) => f.endsWith('__resource.lua')).map(rel),
 ))
 
-const locker = join(RES, '[fivem-royale]', 'br_ui', 'ui', 'assets', 'LockerV2.js')
+// Every br_ui chunk, not one named file: Cloudscape moved from LockerV2.js
+// into the shared index2.js when the Market came (#411).
+const built = join(RES, '[fivem-royale]', 'br_ui', 'ui', 'assets')
+const chunks = existsSync(built)
+  ? readdirSync(built).filter((f) => f.endsWith('.js')).map((f) => ({ file: f, text: readFileSync(join(built, f), 'utf8') }))
+  : null
 findings.push(...checkZoomShim({
   viteConfig: readFileSync(join(UI, 'vite.config.ts'), 'utf8'),
   helper: readFileSync(join(UI, 'src', 'cef', 'zoomRect.ts'), 'utf8'),
-  lockerBundle: existsSync(locker) ? readFileSync(locker, 'utf8') : null,
+  chunks,
 }))
 
 if (sources.length < 100 || bundles.length < 3) {

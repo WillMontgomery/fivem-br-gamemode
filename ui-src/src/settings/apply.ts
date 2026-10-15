@@ -2,6 +2,7 @@ import { CB, type SettingsPayload } from '../bridge/types'
 import { setUiVolume } from '../audio/cues'
 import { setMusicVolume } from '../audio/music'
 import { fetchNui } from '../bridge/nui'
+import { changesOnly } from '../bridge/coalesce'
 
 /**
  * Settings -> the document.
@@ -36,6 +37,18 @@ export const DEFAULT_SETTINGS: SettingsPayload = {
   voiceModeSquad: 'nearby',
   volMusic: 0.5,
   gamertag: '',
+}
+
+// Both colors in one post, never one at a time (tools/test_shop.lua reads it).
+const palette = changesOnly(
+  ({ hp, volts }: { hp: string; volts: string }) => `${hp}|${volts}`,
+  ({ hp, volts }) => fetchNui(CB.PALETTE, { hp, volts }),
+)
+
+/** The next apply posts the palette even if it has not changed: Lua's settings
+ *  push asks for it (see applySettings). */
+export function forgetPalette(): void {
+  palette.forget()
 }
 
 export function applySettings(s: SettingsPayload): void {
@@ -83,8 +96,15 @@ export function applySettings(s: SettingsPayload): void {
   // index.css stays the only place a green is written.
   //
   // FIRE AND FORGET. A failed post leaves the prompt on its existing colour,
-  // which is a price in the wrong green rather than no price at all -- and this
-  // runs on every settings apply, so the next one corrects it.
+  // which is a price in the wrong green rather than no price at all -- and the
+  // next settings apply corrects it.
+  //
+  // ONLY WHEN IT CHANGED (#413). A Settings slider applies at every step, and
+  // posting each one sent a drag's worth of identical requests into CEF 144's
+  // throttle. bridge/coalesce.ts changesOnly sends a pair that differs from the
+  // last one sent; a failed post is forgotten, so the next apply retries; and
+  // Lua's own settings push (App.tsx) calls forgetPalette() first, because
+  // that push is also how br_core asks again after a restart of its own.
   //
   // ...AND THE CURRENCY ORANGE ALONGSIDE IT (owner, 2026-08-30: "the volts text
   // should be orange - the same color we show in the market page"). That colour
@@ -98,7 +118,5 @@ export function applySettings(s: SettingsPayload): void {
   const style = getComputedStyle(root)
   const hp = style.getPropertyValue('--color-hp').trim()
   const volts = style.getPropertyValue('--color-royale-accent2').trim()
-  if (hp || volts) {
-    void fetchNui(CB.PALETTE, { hp, volts }).catch(() => {})
-  }
+  if (hp || volts) palette.offer({ hp, volts })
 }
