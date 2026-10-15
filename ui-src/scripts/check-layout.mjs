@@ -82,6 +82,7 @@ import { availableParallelism } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildMock, launch, serve } from './lib/headless.mjs'
+import { FIT_SLACK, UNFIT } from '../src/ui/labelFit.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const uiRoot = resolve(here, '..')
@@ -409,12 +410,21 @@ const settle = (tab, ms) => tab.eval(SETTLE.replace('%MS%', String(ms)))
  * here rests and restarts, so it is held there, paused, for the measurement.
  *
  * AND TWO REAL FRAMES FIRST. SETTLE gives up on a frame after 100 ms, which a
- * loaded machine can take; a ResizeObserver answers only in a frame's
- * rendering steps, so a label ui/labelFit.ts would hide before it was ever
- * painted could be measured in the instant between (a run on a busy box once
- * failed a squad name that way). Here the frames are waited for, not timed.
+ * loaded machine can take. Here the frames are waited for, not timed.
+ *
+ * THEN EVERY FIT HAS ANSWERED, AND THE PROBE RUNS IN THAT SAME INSTANT.
+ * ui/labelFit.ts hides a label from a ResizeObserver, which answers in a
+ * frame's rendering steps after layout and before paint -- so the player never
+ * sees a label it has not judged, but a measurement taken between a layout and
+ * that answer does (a squad name, unmarked and cut 31 px by its own room,
+ * failed runs on a loaded box twice, and passed every other). So a Fit whose mark
+ * disagrees with its own boxes is waited for, a frame at a time, and the probe
+ * runs in the same task as the last look, when every one agrees. One that
+ * never does within MAX_FRAMES is measured as it is, and fails: that is the
+ * rule not working, not timing.
  */
-const READY = `(async () => {
+const MAX_FRAMES = 60
+const MEASURE = `(async () => {
   for (const a of document.getAnimations()) {
     try {
       const t = a.effect && a.effect.getComputedTiming()
@@ -422,8 +432,18 @@ const READY = `(async () => {
     } catch { /* left as it is */ }
   }
   const frame = () => new Promise((r) => requestAnimationFrame(() => r()))
-  await Promise.race([(async () => { await frame(); await frame() })(),
-    new Promise((_, fail) => setTimeout(() => fail(new Error('the page was given no frame in 10 s')), 10000))])
+  const waited = (p) => Promise.race([p, new Promise((_, fail) =>
+    setTimeout(() => fail(new Error('the page was given no frame in 10 s')), 10000))])
+  await waited((async () => { await frame(); await frame() })())
+  // ui/labelFit.ts's own test, judge(): fits(label, room), marked ${UNFIT} when not.
+  const agree = () => [...document.querySelectorAll('.fit')].every((room) => {
+    const label = room.firstElementChild
+    if (!label) return true
+    const fits = label.getBoundingClientRect().width <= room.getBoundingClientRect().width + ${FIT_SLACK}
+    return fits !== room.hasAttribute('${UNFIT}')
+  })
+  for (let i = 0; i < ${MAX_FRAMES} && !agree(); i++) await waited(frame())
+  return window.__brProbe()
 })()`
 
 /**
@@ -446,8 +466,7 @@ async function runScreen(tab, origin, screen, [w, h], ui, text) {
     __br.emit('settings', __br.SETTINGS)`)
   const measure = async (label) => {
     await settle(tab, 60)
-    await tab.eval(READY)
-    const r = await tab.eval('window.__brProbe()')
+    const r = await tab.eval(MEASURE)
     results.push({ screen: label, at: at(`${w}x${h}`, ui, text), ...r })
     if (shots) {
       const img = await tab.send('Page.captureScreenshot', { format: 'png' })
@@ -563,7 +582,7 @@ async function selfCheck(tab, origin) {
     m.style.flex = '0 0 14px'
   })()`)
   await settle(tab, 200)
-  let r = await tab.eval('window.__brProbe()')
+  let r = await tab.eval(MEASURE)
   // The element itself, or one of its pseudo-elements: `#id:nth-of-type(n)::before`.
   const on = (id) => {
     const [el, which = ''] = id.split(/(?=::)/)
@@ -593,7 +612,7 @@ async function selfCheck(tab, origin) {
     document.getElementById('sc-box').remove()
   })()`)
   await settle(tab, 200)
-  r = await tab.eval('window.__brProbe()')
+  r = await tab.eval(MEASURE)
   if (r.hidden.some((h) => h.text === 'Market')) problems.push('a button given its room back did not show its label')
   if (r.failures.some((f) => f.text === 'Market')) problems.push('a button given its room back still failed')
   return problems
