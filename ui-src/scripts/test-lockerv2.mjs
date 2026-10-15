@@ -86,7 +86,7 @@ import {
   BTN, CAM, CARD, CAT_LABEL, GROUP_LABEL, MODAL, ROW_LABEL, SEX_LABEL, TITLE, ZONE_LABEL, deleteTitle, rowLabel,
   swatchLabel, tattooFallback, tattooLabels,
 } from '../src/screens/lockerv2/copy.ts'
-import { LOCKER_THEME } from '../src/screens/lockerv2/theme.ts'
+import { LOCKER_THEME } from '../src/ui/cloudscape/theme.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(ROOT, 'src')
@@ -1285,9 +1285,27 @@ if (!existsSync(OUT)) {
     !indexCss.includes('awsui') && !indexCss.includes('lk2-'))
   check('the main bundle carries none of Cloudscape', !/awsui_[a-z]/.test(indexJs))
   check('the main bundle loads the chunk by name', indexJs.includes('LockerV2.js'))
+  // EVERY FILE THE LOCKER BRINGS, not only its own: since the Season 2 Market
+  // (#411) the Cloudscape both screens reach is a shared chunk (index2.js and
+  // index2.css, vite.config.ts). Named by the main bundle's preload list,
+  // `__vite__mapDeps([chunk, ...its deps])`, as test-marketv2.mjs reads it, so
+  // a renamed shared chunk is still read.
+  const depFiles = (() => {
+    const m = indexJs.match(/m\.f=(\[[^\]]*\])/)
+    try { return m ? JSON.parse(m[1]) : [] } catch { return [] }
+  })()
+  const deps = ([...indexJs.matchAll(/__vite__mapDeps\(\[([\d,]+)\]\)/g)]
+    .map((m) => m[1].split(',').map((n) => depFiles[Number(n)]))
+    .find((d) => d[0] === './LockerV2.js') ?? []).filter((f) => typeof f === 'string')
+  const lockerCss = deps.filter((f) => /\.css$/.test(f))
+  const lockerJs = deps.filter((f) => /\.js$/.test(f))
+  check('the locker\'s preload names its stylesheet, its script and every chunk they share',
+    lockerCss.includes('./LockerV2.css') && lockerJs.includes('./LockerV2.js')
+    && deps.every((f) => existsSync(join(OUT, f))), deps.join(', '))
 
   if (existsSync(css)) {
-    const text = read(css).replace(/\/\*[\s\S]*?\*\//g, '')
+    const text = lockerCss.filter((f) => existsSync(join(OUT, f))).map((f) => read(join(OUT, f))).join('\n')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
     const bad = []
     const global = []
     let ours = 0
@@ -1335,7 +1353,7 @@ if (!existsSync(OUT)) {
     check('the square corners ship', /\.br-cs \*,\s*\.br-cs \*::?before,\s*\.br-cs \*::?after\s*\{\s*border-radius:\s*0\s*!important/.test(text))
     // The classes our rules reach for are still the installed Cloudscape's:
     // named on its elements, in the chunk's script.
-    const chunkJs = existsSync(js) ? read(js) : ''
+    const chunkJs = lockerJs.filter((f) => existsSync(join(OUT, f))).map((f) => read(join(OUT, f))).join('\n')
     for (const cls of ['awsui_button_', 'awsui_variant-normal_', 'awsui_variant-primary_', 'awsui_variant-link_',
       'awsui_disabled_', 'awsui_labels_', 'awsui_header--text_', 'awsui_dropdown_', 'awsui_open_', 'awsui_dropdown-content_',
       'awsui_dialog_']) {

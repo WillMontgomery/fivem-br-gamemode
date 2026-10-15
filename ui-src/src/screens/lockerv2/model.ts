@@ -94,13 +94,27 @@ export function backSteps(view: View, dirty: boolean, confirmed: boolean): BackS
  * dialog closes alone; then it is the view's Back. A walkthrough
  * card waiting on the locker (#405) holds only the CLOSING: on My Looks Escape
  * is nothing, and the card's Done is the way out; inside, Back still works.
+ *
+ * A SCREEN WITH NO VIEWS (the Season 2 Market, #411) names none: there the
+ * last step is 'done', which closes it -- the rule as it stood before My Looks.
  */
 export function escapeAction(
-  view: View, modalOpen: boolean, held = false, popupOpen = false,
-): 'pass' | 'modal' | 'back' | 'none' {
-  if (popupOpen) return 'pass'
-  if (modalOpen) return 'modal'
-  if (view === 'home' && held) return 'none'
+  modalOpen: boolean, held?: boolean, popupOpen?: boolean,
+): 'pass' | 'modal' | 'done' | 'none'
+export function escapeAction(
+  view: View, modalOpen: boolean, held?: boolean, popupOpen?: boolean,
+): 'pass' | 'modal' | 'back' | 'none'
+export function escapeAction(
+  a: View | boolean, b?: boolean, c?: boolean, d?: boolean,
+): 'pass' | 'modal' | 'back' | 'done' | 'none' {
+  if (typeof a === 'boolean') {
+    if (c === true) return 'pass'
+    if (a) return 'modal'
+    return b === true ? 'none' : 'done'
+  }
+  if (d === true) return 'pass'
+  if (b === true) return 'modal'
+  if (a === 'home' && c === true) return 'none'
   return 'back'
 }
 

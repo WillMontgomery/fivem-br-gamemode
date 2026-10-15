@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { fetchNui, reportError } from '../../bridge/nui'
 import { CB } from '../../bridge/types'
+import { sheetLoaded } from '../lockerv2/sheet'
 
 /**
  * THE DOOR TO THE SEASON 2 MARKET (#411), and the one part of it in the main
@@ -25,7 +26,9 @@ const LOAD_MS = 5000
 let loading: Promise<typeof import('../MarketV2')> | null = null
 
 function load() {
-  if (!loading) loading = import('../MarketV2')
+  // Once loaded, its stylesheets go off until a Season 2 screen opens
+  // (lockerv2/sheet.ts).
+  if (!loading) loading = import('../MarketV2').then((m) => { sheetLoaded(); return m })
   return loading
 }
 
