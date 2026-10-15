@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { play } from '../audio/cues'
 import type { Cue } from '../audio/cues'
+import Fit from './Fit'
 
 /**
  * The button.
@@ -94,7 +95,9 @@ export default function Btn({
         color: v.text,
       }}
     >
-      {children}
+      {/* ONE LINE, OR NOT DRAWN (ui/Fit.tsx): a button too narrow for its
+          label shows none of it rather than two lines of it. */}
+      <Fit center>{children}</Fit>
     </button>
   )
 }

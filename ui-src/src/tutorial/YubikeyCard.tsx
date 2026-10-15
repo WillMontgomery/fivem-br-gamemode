@@ -105,7 +105,7 @@ export default function YubikeyCard({ card }: { card: YubikeyCardWords }) {
       >
         {card.title !== '' && <h1 className={`yubikey-card-h1 tut-title${shown}`}>{card.title}</h1>}
         {card.subtitle !== '' && <h3 className={`yubikey-card-h3 tut-title${shown}`}>{card.subtitle}</h3>}
-        <p className={`tut-body${shown}`}>{emphasize(card.text)}</p>
+        <p data-wrap className={`tut-body${shown}`}>{emphasize(card.text)}</p>
         <div className="tut-foot yubikey-card-foot">
           <span className="tut-acts">
             <span className="tut-key">

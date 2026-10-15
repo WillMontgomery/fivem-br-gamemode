@@ -4,6 +4,7 @@ import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import type { MarketItem } from '../bridge/types'
 import Btn from '../ui/Btn'
+import Fit from '../ui/Fit'
 import { play } from '../audio/cues'
 import { escapeHeld } from '../tutorial/lockGuard'
 
@@ -406,7 +407,9 @@ function Card({ item, balance, swapFor, setSwapFor, wheelFull }: CardProps) {
       </div>
 
       <div>
-        <div className="text-[0.88rem] tscale leading-tight">{item.name}</div>
+        {/* ONE LINE, OR NOT DRAWN (ui/Fit.tsx): a name too long for the card
+            used to wrap to a second line and push the card's button down. */}
+        <Fit className="text-[0.88rem] tscale leading-tight">{item.name}</Fit>
         {item.sub && <div className="micro-label mt-0.5">{item.sub}</div>}
       </div>
 

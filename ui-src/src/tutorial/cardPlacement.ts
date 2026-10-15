@@ -262,3 +262,47 @@ export function sameBox(a: CardBox | null, b: CardBox): boolean {
  * the spec has one home.
  */
 export const CARD_INPUTS = ['cardUp', 'stepId', 'note', 'uiScale', 'textScale', 'viewportTick'] as const
+
+/** How far outside its anchor the ring stands (TutorialLayer). */
+export const RING_GAP = 4
+
+/** The ring's halo, index.css `.tut-ring`'s 0.28rem box-shadow spread. */
+export const RING_HALO_REM = 0.28
+
+/** The ring's box and clip, as TutorialLayer draws them. */
+export type RingBox = { left: number; top: number; width: number; height: number; clipPath?: string }
+
+/**
+ * ═══ THE RING, WHOLE ON SCREEN ═══
+ *
+ * Owner, 2026-10-14: "please put in some change to ensure the borders always
+ * draw around everything which should have a border." The ring stands
+ * RING_GAP outside its anchor and its halo further out still, so an anchor
+ * against the screen's edge -- the lobby's menu column, the full height of the
+ * screen and flush with its left, which the first card rings -- put the ring
+ * off the screen on three sides, and the player saw one edge of it. The box is
+ * pulled in until its halo is on screen, over the anchor's own edge if it has
+ * to be: a ring that overlaps its subject by a few pixels still says which
+ * subject; a ring with three sides missing says nothing.
+ *
+ * THE CLIP IS UNCHANGED IN MEANING (see "MEASURED AGAINST THE ANCHOR" in
+ * TutorialLayer): a pane hiding part of the anchor cuts the ring RING_GAP
+ * outside the pane's edge, so an anchor flush with the pane keeps its border,
+ * and the cut is now measured from wherever the box was pulled in to.
+ */
+export function ringBox(r: Rect, clip: Rect | null, vw: number, vh: number, rem: number): RingBox {
+  const halo = RING_HALO_REM * rem
+  const left = Math.max(halo, r.x - RING_GAP)
+  const top = Math.max(halo, r.y - RING_GAP)
+  const right = Math.min(vw - halo, r.x + r.w + RING_GAP)
+  const bottom = Math.min(vh - halo, r.y + r.h + RING_GAP)
+  const box: RingBox = { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) }
+  if (clip === null) return box
+  const cutTop = clip.y > r.y ? clip.y - RING_GAP : top
+  const cutLeft = clip.x > r.x ? clip.x - RING_GAP : left
+  const cutRight = clip.x + clip.w < r.x + r.w ? clip.x + clip.w + RING_GAP : right
+  const cutBottom = clip.y + clip.h < r.y + r.h ? clip.y + clip.h + RING_GAP : bottom
+  box.clipPath = `inset(${Math.max(0, cutTop - top)}px ${Math.max(0, right - cutRight)}px ${
+    Math.max(0, bottom - cutBottom)}px ${Math.max(0, cutLeft - left)}px)`
+  return box
+}

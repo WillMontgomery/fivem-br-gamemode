@@ -3,6 +3,7 @@ import { useUi } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
+import Fit from '../ui/Fit'
 import { play } from '../audio/cues'
 import { SQUAD_SLOT_ID } from '../hud/Hud'
 import { CHAT_COLUMN_ID, CHAT_LOG_MAX_REM } from '../chat/Chat'
@@ -995,10 +996,12 @@ export default function PlayerList() {
                           : ''
 
                     const name = (
-                      <span className="min-w-0 flex-1 truncate text-[0.9rem] tscale leading-tight">
+                      // One line, or not drawn (ui/Fit.tsx): a name too long for
+                      // the row is not drawn rather than ending in an ellipsis.
+                      <Fit className="flex-1 text-[0.9rem] tscale leading-tight">
                         {p.name}
                         {p.you && <span className="micro-label ml-1.5">you</span>}
-                      </span>
+                      </Fit>
                     )
 
                     return (

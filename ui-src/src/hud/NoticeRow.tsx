@@ -58,8 +58,21 @@ export default function NoticeRow({
 
   // Measure before paint, so the row never renders at its natural height for
   // a frame and then jumps to the animated one.
+  // THE ROW'S HEIGHT FOLLOWS ITS BODY FOR AS LONG AS IT IS UP (2026-10-14).
+  // It was read once per message, and the row is a fixed height with its
+  // overflow hidden -- so a body that grew afterwards (the Text size slider
+  // moved mid-match, a font arriving after the first notice) was cut along
+  // its bottom border for the rest of its life. The observer re-reads it on
+  // every change of the body's size; an unchanged height is no render.
   useLayoutEffect(() => {
-    if (bodyRef.current) setH(bodyRef.current.offsetHeight)
+    const body = bodyRef.current
+    if (!body) return
+    const measure = () => setH(body.offsetHeight)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(body)
+    return () => ro.disconnect()
   }, [children])
 
   useEffect(() => {

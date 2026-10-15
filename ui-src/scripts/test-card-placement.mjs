@@ -44,6 +44,9 @@ import {
   MARGIN_REM,
   FLOOR_REM,
   CARD_INPUTS,
+  ringBox,
+  RING_GAP,
+  RING_HALO_REM,
 } from '../src/tutorial/cardPlacement.ts'
 
 let failed = 0
@@ -331,6 +334,34 @@ checkTrue('changing `stuck` does NOT re-measure (unnecessary-read guard)',
   depKey({ ...world, stuck: true }) === depKey(world))
 checkTrue('opening a crate does NOT re-measure (unnecessary-read guard)',
   depKey({ ...world, crates: 3 }) === depKey(world))
+
+// ── THE RING, WHOLE ON SCREEN (owner, 2026-10-14) ──────────────────────────
+// The lobby's menu column is the full height of the screen and flush with its
+// left; the welcome card rings it. Before ringBox the ring stood 4 px outside
+// it on every side, off the screen on three. Compared at 1/100 px, as r2 does.
+const ring2 = (b) => Object.fromEntries(Object.entries(b).map(([k, v]) => [k, typeof v === 'number' ? Math.round(v * 100) / 100 : v]))
+check('the ring stands 4 px out and its halo is 0.28rem', [RING_GAP, RING_HALO_REM], [4, 0.28])
+check('an anchor clear of the edges is ringed RING_GAP outside it',
+  ringBox({ x: 100, y: 200, w: 300, h: 40 }, null, 1920, 1080, 16),
+  { left: 96, top: 196, width: 308, height: 48 })
+check('a full-height anchor flush left is ringed with its halo on screen (1080p)',
+  ring2(ringBox({ x: 0, y: 0, w: 608, h: 1080 }, null, 1920, 1080, 16)),
+  { left: 4.48, top: 4.48, width: 607.52, height: 1071.04 })
+check('and at 4K, where the halo is 0.28 of a 28 px root',
+  ring2(ringBox({ x: 0, y: 0, w: 1064, h: 2160 }, null, 3840, 2160, 28)),
+  { left: 7.84, top: 7.84, width: 1060.16, height: 2144.32 })
+check('an anchor flush right and bottom keeps its halo on screen too',
+  ring2(ringBox({ x: 1800, y: 1000, w: 120, h: 80 }, null, 1920, 1080, 16)),
+  { left: 1796, top: 996, width: 119.52, height: 79.52 })
+check('a pane hiding the bottom of the anchor cuts the ring RING_GAP past the pane',
+  ringBox({ x: 100, y: 200, w: 300, h: 400 }, { x: 0, y: 150, w: 1920, h: 300 }, 1920, 1080, 16),
+  { left: 96, top: 196, width: 308, height: 408, clipPath: 'inset(0px 0px 150px 0px)' })
+check('an anchor flush with the top of its pane keeps its top border',
+  ringBox({ x: 100, y: 150, w: 300, h: 100 }, { x: 0, y: 150, w: 1920, h: 300 }, 1920, 1080, 16),
+  { left: 96, top: 146, width: 308, height: 108, clipPath: 'inset(0px 0px 0px 0px)' })
+check('a pane scrolled past the top of the anchor cuts RING_GAP above the pane',
+  ringBox({ x: 100, y: 100, w: 300, h: 100 }, { x: 0, y: 150, w: 1920, h: 300 }, 1920, 1080, 16),
+  { left: 96, top: 96, width: 308, height: 108, clipPath: 'inset(50px 0px 0px 0px)' })
 
 if (failed) {
   console.error(`\ncard placement: ${failed} of ${ran} case(s) failed`)

@@ -6,7 +6,7 @@
   "description": "NUI for Blitz Royale. Builds into resources/[fivem-royale]/br_ui/ui, and the Season 2 terminal app into resources/[computer]/cuchi_computer/nui/apps/terminal.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:countdown && npm run test:impacts && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:continuetoggle && npm run test:tutoriallock && npm run test:tutorialgame && npm run test:fade && npm run test:cold && npm run test:lockerv2 && npm run test:marketv2 && npm run build:terminal",
+    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:countdown && npm run test:impacts && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:continuetoggle && npm run test:tutoriallock && npm run test:tutorialgame && npm run test:fade && npm run test:cold && npm run test:lockerv2 && npm run test:marketv2 && npm run test:fit && npm run build:terminal",
     "build:terminal": "vite build -c vite.terminal.config.ts && node scripts/check-css.mjs terminal && node scripts/check-terminal.mjs && node scripts/test-terminal-model.mjs && node scripts/test-terminal-desktop.mjs",
     "build:check": "node scripts/check-build.mjs",
     "build:only": "vite build",
@@ -28,6 +28,7 @@
     "test:cold": "node scripts/test-cold.mjs",
     "test:lockerv2": "node scripts/test-lockerv2.mjs",
     "test:marketv2": "node scripts/test-marketv2.mjs",
+    "test:fit": "node scripts/test-fit.mjs",
     "test:terminal": "node scripts/test-terminal-model.mjs && node scripts/test-terminal-desktop.mjs"
   },
   "//": "Pinned to the HeroUI 2.x line and Tailwind 3.x deliberately. FiveM's CEF is Chrome 103, which cannot parse oklch/oklab/lch/color-mix -- and HeroUI 3 + Tailwind 4 emit those throughout their colour systems. scripts/check-css.mjs fails the build if any reach the bundle.",

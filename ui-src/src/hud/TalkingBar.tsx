@@ -1,5 +1,6 @@
 import { useUi } from '../store'
 import VoiceMark from './VoiceMark'
+import Fit from '../ui/Fit'
 
 /**
  * WHO IS SPEAKING, along the bottom of the screen.
@@ -94,9 +95,10 @@ export default function TalkingBar() {
       {/* min-w-0 with the truncate: a flex item defaults to `min-width: auto`,
           which refuses to shrink below its content -- so the line grew straight
           through the 46% cap the moment enough people spoke at once, and the
-          ellipsis this asks for never appeared. */}
-      <span
-        className="ts truncate min-w-0"
+          ellipsis this asks for never appeared. Since 2026-10-14 there is no
+          ellipsis: a line too long for the cap is not drawn (ui/Fit.tsx). */}
+      <Fit
+        className="ts min-w-0"
         style={{
           // 1rem, VIA A VARIABLE, because the spectate hint stacks directly on
           // top of this line and has to know how tall it is to clear it. The
@@ -111,7 +113,7 @@ export default function TalkingBar() {
       >
         <span style={{ fontWeight: 700 }}>Currently Talking:</span>{' '}
         <span style={{ fontWeight: 400 }}>{names.join(', ')}</span>
-      </span>
+      </Fit>
     </div>
   )
 }

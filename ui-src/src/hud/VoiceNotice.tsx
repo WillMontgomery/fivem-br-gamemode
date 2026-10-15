@@ -1,4 +1,5 @@
 import { useUi } from '../store'
+import Fit from '../ui/Fit'
 
 /**
  * WHY YOU ARE HEARING NOBODY, ON THE SCREEN, WHILE IT IS TRUE.
@@ -108,9 +109,10 @@ export default function VoiceNotice() {
       {/* `.ts` with an explicit --fs, and no `tscale` beside it: this element
           declares its own size, and bare tscale multiplies the PARENT's (#159).
           The text shadow is not optional -- this is drawn over the bare world,
-          and the desert at noon is the failing case. */}
-      <span
-        className="ts truncate min-w-0"
+          and the desert at noon is the failing case. One line, or not drawn
+          (ui/Fit.tsx), where it used to end in an ellipsis. */}
+      <Fit
+        className="ts min-w-0"
         style={{
           ['--fs' as string]: '0.95rem',
           lineHeight: 1.5,
@@ -120,7 +122,7 @@ export default function VoiceNotice() {
         }}
       >
         {headline}
-      </span>
+      </Fit>
     </div>
   )
 }

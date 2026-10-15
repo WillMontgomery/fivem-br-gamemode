@@ -49,6 +49,7 @@ import WayBack from './WayBack'
 import {
   BAND, centred, place, sameBox, type CardBox, type Rect,
 } from './cardPlacement'
+import { ringBox } from './cardPlacement'
 import {
   asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, slotsSince,
 } from './progress'
@@ -1286,44 +1287,39 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       {rect !== null && (
         <div
           className={`tut-ring${step.advance === 'click' ? ' tut-ring--click' : ''}`}
-          style={{
-            left: rect.x - 4,
-            top: rect.y - 4,
-            width: rect.w + 8,
-            height: rect.h + 8,
-            // ═══ CUT, DO NOT SHRINK ═══
-            //
-            // The ring keeps the anchor's true size -- shrinking it to the
-            // visible slice would draw a border ACROSS the middle of a list that
-            // continues, which reads as the list ending there. `clip-path`
-            // removes the parts the pane is already hiding and leaves the rest
-            // byte-for-byte as it was, so a fully visible anchor is unchanged
-            // and a scrolled one simply runs off under the header the way its
-            // own content does.
-            //
-            // INSETS ARE RELATIVE TO THIS ELEMENT'S OWN BOX, hence the offsets
-            // against the inflated rect rather than against the anchor.
-            // ═══ MEASURED AGAINST THE ANCHOR, NOT AGAINST THE RING ═══
-            //
-            // The insets used to be computed from the ring's own inflated box,
-            // so an anchor sitting flush against the top of its pane -- which is
-            // exactly what "scrolled to the top" means -- had its top border
-            // clipped away: the border is OUTSIDE the anchor, so the pane's edge
-            // fell 4px inside the ring. Owner, 2026-09-08: "when scrolling to the
-            // top, I expect to see a top border where there is none visible
-            // today. Same for scrolling down."
-            //
-            // Measured from the ANCHOR's edge instead, a flush edge cuts nothing
-            // and keeps its border, and only content genuinely past the pane is
-            // removed. The cost is that the border bleeds 4px over the header at
-            // that one position, which is the trade the owner asked for: he wants
-            // to see where the list begins and ends.
-            clipPath: clip === null ? undefined : `inset(${
-              Math.max(0, clip.y - rect.y)}px ${
-              Math.max(0, (rect.x + rect.w) - (clip.x + clip.w))}px ${
-              Math.max(0, (rect.y + rect.h) - (clip.y + clip.h))}px ${
-              Math.max(0, clip.x - rect.x)}px)`,
-          }}
+          // ═══ CUT, DO NOT SHRINK ═══
+          //
+          // The ring keeps the anchor's true size -- shrinking it to the
+          // visible slice would draw a border ACROSS the middle of a list that
+          // continues, which reads as the list ending there. `clip-path`
+          // removes the parts the pane is already hiding and leaves the rest
+          // byte-for-byte as it was, so a fully visible anchor is unchanged
+          // and a scrolled one simply runs off under the header the way its
+          // own content does.
+          //
+          // ═══ MEASURED AGAINST THE ANCHOR, NOT AGAINST THE RING ═══
+          //
+          // The insets used to be computed from the ring's own inflated box,
+          // so an anchor sitting flush against the top of its pane -- which is
+          // exactly what "scrolled to the top" means -- had its top border
+          // clipped away: the border is OUTSIDE the anchor, so the pane's edge
+          // fell 4px inside the ring. Owner, 2026-09-08: "when scrolling to the
+          // top, I expect to see a top border where there is none visible
+          // today. Same for scrolling down."
+          //
+          // Measured from the ANCHOR's edge instead, a flush edge cuts nothing
+          // and keeps its border, and only content genuinely past the pane is
+          // removed. The cost is that the border bleeds 4px over the header at
+          // that one position, which is the trade the owner asked for: he wants
+          // to see where the list begins and ends.
+          //
+          // ═══ AND NEVER OFF THE SCREEN (2026-10-14) ═══
+          //
+          // An anchor against the screen's edge -- the lobby's full-height menu
+          // column -- is ringed with the ring pulled in until its halo is on
+          // screen, so every side of it draws. cardPlacement.ts ringBox does
+          // all three, and test-card-placement.mjs holds it.
+          style={ringBox(rect, clip, vw, vh, card?.rem ?? 16)}
         />
       )}
       {/* THE HAND (#405), on the control the card is waiting for. The fingertip

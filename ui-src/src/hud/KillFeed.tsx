@@ -1,6 +1,7 @@
 import { FEED_TTL_MS } from '../store'
 import type { FeedEntry } from '../bridge/types'
 import ItemIcon from './ItemIcon'
+import Fit from '../ui/Fit'
 
 /**
  * Elimination feed.
@@ -101,10 +102,13 @@ export default function KillFeed({ entries }: { entries: FeedEntry[] }) {
           >
             {e.killer ? (
               <>
-                <span className="font-semibold truncate max-w-[11rem]"
-                      style={{ color: e.mine ? 'var(--color-royale-accent)' : 'white' }}>
+                {/* A NAME TOO LONG FOR ITS 11rem IS NOT DRAWN (ui/Fit.tsx), where it
+                    used to end in an ellipsis: owner, 2026-10-14, "if you can't
+                    fit the text, don't draw it". */}
+                <Fit inline className="font-semibold max-w-[11rem]"
+                     style={{ color: e.mine ? 'var(--color-royale-accent)' : 'white' }}>
                   {e.killer}
-                </span>
+                </Fit>
 
                 {/* THE WEAPON, NOT AN ARROW. The arrow only ever said
                     "killed", which the row's existence already said. When
@@ -150,17 +154,17 @@ export default function KillFeed({ entries }: { entries: FeedEntry[] }) {
                   </span>
                 )}
 
-                <span className="truncate max-w-[11rem]"
-                      style={{ color: e.died ? 'var(--color-danger)' : 'rgba(255,255,255,0.7)' }}>
+                <Fit inline className="max-w-[11rem]"
+                     style={{ color: e.died ? 'var(--color-danger)' : 'rgba(255,255,255,0.7)' }}>
                   {e.victim}
-                </span>
+                </Fit>
               </>
             ) : (
               <>
-                <span className="font-semibold truncate max-w-[11rem]"
-                      style={{ color: e.died ? 'var(--color-danger)' : 'white' }}>
+                <Fit inline className="font-semibold max-w-[11rem]"
+                     style={{ color: e.died ? 'var(--color-danger)' : 'white' }}>
                   {e.victim}
-                </span>
+                </Fit>
                 <span className="text-white/55">
                   {CAUSE_PHRASE[e.weapon] ?? 'was wasted'}
                 </span>

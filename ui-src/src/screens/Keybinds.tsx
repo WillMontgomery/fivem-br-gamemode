@@ -4,6 +4,7 @@ import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import type { KeybindAction } from '../bridge/types'
 import { play } from '../audio/cues'
+import Fit from '../ui/Fit'
 
 /**
  * Key bindings, rebindable HERE.
@@ -122,6 +123,7 @@ export default function Keybinds() {
           offering controls that silently fail. */}
       {!rawActive && (
         <div
+          data-wrap
           className="plate px-3 py-2 text-[0.8rem] tscale"
           style={{
             ['--edgec' as string]: 'var(--color-danger-edge)',
@@ -199,9 +201,10 @@ function Row({
       className="flex items-center gap-3 px-2 py-1 rounded-sm"
       style={{ background: zebra ? 'rgba(255,255,255,0.035)' : 'transparent' }}
     >
-      <span className="text-[0.82rem] text-white/70 tscale flex-1 min-w-0 truncate">
+      {/* One line, or not drawn (ui/Fit.tsx): no ellipsis. */}
+      <Fit className="text-[0.82rem] text-white/70 tscale flex-1">
         {action.label}
-      </span>
+      </Fit>
 
       <button
         type="button"

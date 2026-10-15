@@ -3,6 +3,7 @@ import { useUi } from '../store'
 import type { SquadMember, SquadPayload } from '../bridge/types'
 import VoiceMark from './VoiceMark'
 import { BountyMark, YubikeyMark } from './YubikeyIcon'
+import Fit from '../ui/Fit'
 
 /**
  * Squad status.
@@ -666,8 +667,9 @@ function Row({ m, talking, silent }: {
                 anchors describing one idea; querySelector returns the topmost
                 plate, which is the one a card pointing at "a squadmate" should
                 mean. */}
-            <span data-tut="squad-name"
-                  className="text-[0.72rem] font-semibold truncate">{m.name}</span>
+            {/* A NAME TOO LONG FOR THE PLATE IS NOT DRAWN (ui/Fit.tsx), where it
+                used to end in an ellipsis (owner, 2026-10-14). */}
+            <Fit inline tut="squad-name" className="text-[0.72rem] font-semibold">{m.name}</Fit>
             {/* NOTHING AT ALL WHEN THE SERVER HAS NOT SAID, which is the same
                 rule the bleed clock below follows. A missing level means the
                 mate's profile has not come back from the database yet -- so the

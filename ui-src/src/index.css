@@ -705,7 +705,57 @@ html, body, #root {
   text-transform: none;
   line-height: 1.5;
   color: var(--color-text-body);
+  /* Prose wraps, even inside a button, whose own words do not (.btn). */
+  white-space: normal;
 }
+
+/* PROSE THAT IS NOT .body-text: a tutorial card's sentences, a caveat in a
+   plate. The mark scripts/check-layout.mjs reads as "this may wrap". */
+[data-wrap] { white-space: normal; }
+
+/* ===========================================================================
+   A LABEL IS ONE LINE, OR IT IS NOT DRAWN (owner, 2026-10-14: "text wrapping
+   should not be allowed. if you can't fit the text, don't draw it").
+
+   `.fit` is the room a label is given and `.fit-in` the label, as wide as its
+   text on one line; ui/labelFit.ts marks the room `data-unfit` while the label is
+   wider than it, and the label is hidden -- whole, never cut, never an
+   ellipsis, never shrunk below its size. VISIBILITY, so the room keeps its
+   box and nothing beside it moves when a label comes and goes. ui/Fit.tsx is
+   the component; `Btn` puts every button's label through it.
+
+   A ONE-TRACK GRID, minmax(0, max-content), AND THAT IS THE WHOLE TRICK. The
+   room asks for its label's full width when there is room (a button still
+   sizes to its words) and for nothing when there is not, so a squeezed row
+   takes the room down to zero and hides the label instead of overflowing --
+   no `min-width: 0` needed on every flex item in between. The label keeps
+   its own width (`justify-self: start`), which is what ui/labelFit.ts measures.
+   No width or min/max width is set here, so a call site's `max-w-[11rem]`
+   is the room's cap (this file is read after Tailwind's utilities).
+
+   CLIPPED ACROSS ONLY. `overflow-x: clip` keeps a hidden label's width out of
+   every scroll region around it (a hidden label still has a box), and
+   `overflow-y: visible` leaves the glyphs whole above and below a tight line
+   height, which `hidden` would cut. Both are Chrome 90.
+
+   At the start of its room unless `.fit--center` (Btn's labels, centered as
+   a button's own text is; a `text-left` row is left alone). `.fit--drop` is a label's secondary part: in a row that runs
+   short it gives up its room before anything beside it, so the detail goes
+   and the name stays. scripts/check-layout.mjs fails a label that wraps or is
+   cut; text that is meant to wrap is prose and says so with `data-wrap`.
+   =========================================================================== */
+.fit {
+  display: grid;
+  grid-template-columns: minmax(0, max-content);
+  white-space: nowrap;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+.fit--center { justify-content: center; }
+.fit--inline { display: inline-grid; vertical-align: bottom; }
+.fit--drop { flex-shrink: 1000; }
+.fit-in { justify-self: start; white-space: nowrap; }
+.fit[data-unfit] > .fit-in { visibility: hidden; }
 
 .interactive {
   pointer-events: auto;
@@ -1052,6 +1102,11 @@ html, body, #root {
   cursor: pointer;
   pointer-events: auto;
   line-height: 1;
+  /* A BUTTON'S WORDS ARE ONE LINE (owner, 2026-10-14: "text wrapping should
+     not be allowed"). A label that cannot fit goes through ui/Fit.tsx and is
+     not drawn; prose inside a button -- a mode tile's sentence -- is
+     `.body-text` or `data-wrap`, which wrap again. */
+  white-space: nowrap;
   transition: transform 90ms var(--ease-out),
               filter 120ms ease,
               clip-path 200ms var(--ease-out);
@@ -1061,9 +1116,14 @@ html, body, #root {
 /* The travel. Down and slightly smaller: the same direction a real key moves,
    which is why it reads as a press rather than as a wobble. */
 .btn:active { transform: translateY(1px) scale(0.975); filter: brightness(0.94); }
+/* THE FOCUS RING IS DRAWN INSIDE THE BUTTON (2026-10-14). It stood 2px
+   outside, where a button flush with a scroll region's edge -- a player chip
+   in the party panel, the first control in a Settings pane -- lost that side
+   of it to the region's clip. Inside its own box it cannot be cut by anything
+   that leaves the button whole. */
 .btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.55);
+  box-shadow: inset 0 0 0 2px rgba(34, 211, 238, 0.55);
 }
 .btn--off { opacity: 0.4; cursor: not-allowed; }
 .btn--off:hover  { filter: none; }

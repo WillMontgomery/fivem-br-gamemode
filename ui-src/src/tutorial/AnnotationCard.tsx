@@ -296,9 +296,11 @@ export default function AnnotationCard(p: CardProps) {
           than asking the eye to follow a line. Two indicators for one fact was
           the mistake underneath the bug. */}
       <div className={`tut-title${landed ? ' tut-in' : ''}`}>{p.title}</div>
-      <p className={`tut-body${landed ? ' tut-in' : ''}`}>{emphasize(p.body)}</p>
+      {/* PROSE, so it wraps (`data-wrap`, scripts/check-layout.mjs). The
+          title above and the count and keys below are labels: one line. */}
+      <p data-wrap className={`tut-body${landed ? ' tut-in' : ''}`}>{emphasize(p.body)}</p>
       {p.note ? (
-        <p className={`tut-body tut-note${landed ? ' tut-in' : ''}`}>{emphasize(p.note)}</p>
+        <p data-wrap className={`tut-body tut-note${landed ? ' tut-in' : ''}`}>{emphasize(p.note)}</p>
       ) : null}
 
       <div className="tut-foot">

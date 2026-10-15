@@ -1,5 +1,6 @@
 import { useUi } from '../store'
 import { KeyCap } from '../ui/KeyCap'
+import Fit from '../ui/Fit'
 
 /**
  * WHO YOU ARE WATCHING, AND WHICH KEYS MOVE YOU ON.
@@ -91,10 +92,12 @@ export default function SpectateHint() {
     >
       {/* THE OWNER'S STRING, VERBATIM AND UPPER CASE: "SPECTATING X". The name
           is the server's -- this client is told one target at a time and never
-          a candidate list -- and it truncates rather than pushing the row wide
-          enough to reach the inventory bar. */}
-      <span
-        className="ts font-display tracking-[0.14em] truncate max-w-[38vw]"
+          a candidate list -- and a line too long for its cap is not drawn
+          (ui/Fit.tsx; owner, 2026-10-14: "if you can't fit the text, don't
+          draw it"), where it used to end in an ellipsis, rather than pushing
+          the row wide enough to reach the inventory bar. */}
+      <Fit
+        className="ts font-display tracking-[0.14em] max-w-[38vw]"
         style={{
           // TWICE WHAT IT WAS. "The 'spectating X' text should be at least 2x
           // larger" -- the owner, 2026-08-22. 0.95 -> 1.9rem, which is exactly
@@ -127,12 +130,12 @@ export default function SpectateHint() {
           // clears the radar on the left (whose right edge is 23vw) by a wide
           // margin. Re-derive it if either neighbour moves.
           //
-          // THE COST, SAID PLAINLY: a long name truncates sooner than it used
-          // to. At text scale 1.15 a 20-character name loses roughly its last
-          // three characters to an ellipsis. Truncating is what this element
-          // already did with names it could not fit, and it is the cheaper of
-          // the two mistakes -- the alternative is a name drawn over the
-          // inventory bar, which is the collision the cap exists to prevent.
+          // THE COST, SAID PLAINLY: a long name runs out of room sooner than
+          // it used to -- at text scale 1.15 a 20-character name no longer
+          // fits, and the line is then not drawn (it ended in an ellipsis
+          // until 2026-10-14). That is the cheaper of the two mistakes -- the
+          // alternative is a name drawn over the inventory bar, which is the
+          // collision the cap exists to prevent.
           ['--fs' as string]: '1.9rem',
           lineHeight: 1.4,
           color: 'var(--color-royale-accent)',
@@ -140,7 +143,7 @@ export default function SpectateHint() {
         }}
       >
         SPECTATING {(spectate.name ?? '').toUpperCase()}
-      </span>
+      </Fit>
 
       <div className="flex items-center gap-3">
         {KEYS.map(({ command, label }) => {
