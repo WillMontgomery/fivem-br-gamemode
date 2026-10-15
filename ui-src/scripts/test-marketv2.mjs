@@ -75,7 +75,7 @@ import {
   BTN, CONFIRM_TITLE, EQUIPPED, KIND_NOUN, NOT_FOR_SALE, REPLACE_TITLE, TAB_LABEL, TITLE, WHEEL_LABEL, amount,
   closedLabel, confirmBody,
 } from '../src/screens/marketv2/copy.ts'
-import { CARD_MIN, FADE, GAP, GUTTER, PANEL_W, SCRIM } from '../src/screens/marketv2/look.ts'
+import { CARD_MIN, FADE, GAP, GUTTER, PANEL_W, PED_CLEAR, SCRIM } from '../src/screens/marketv2/look.ts'
 import { LOBBY_STEPS, bodyFor } from '../src/tutorial/steps.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -461,12 +461,65 @@ check('the layer draws bodyFor(step, the Market\'s card on the Season 2 Market)'
     const bg = String(SCRIM.background)
     const alphas = [...bg.matchAll(/rgba\(6, 8, 14, ([\d.]+)\)/g)].map((m) => Number(m[1]))
     check('the scrim is lighter and ends a short way past the panel: no stop above 0.8, the last clear, its width the panel\'s plus FADE',
-      alphas.length === 3 && Math.max(...alphas) <= 0.8 && alphas[2] === 0 && SCRIM.width === `calc(${PANEL_W} + ${FADE})`
+      alphas.length === 3 && Math.max(...alphas) <= 0.8 && alphas[2] === 0 && SCRIM.width === `min(calc(${PANEL_W} + ${FADE}), ${PED_CLEAR})`
       && /^\d+(\.\d+)?rem$/.test(FADE) && Number.parseFloat(FADE) <= 8, `${bg} / ${String(SCRIM.width)}`)
     check('...and it is the screen\'s only fill: the screen itself draws nothing, the panel is PANEL_W wide',
       !/className="interactive fixed inset-0 z-50"[^>]*style=/.test(v2)
       && v2.includes('<div className="absolute inset-y-0 left-0 pointer-events-none" style={SCRIM} />')
       && v2.includes('style={{ width: PANEL_W }}'))
+  }
+  {
+    // ...AND NOTHING REACHES THE CHARACTER, on any screen at any interface
+    // size (review, 2026-10-14: at 4:3 and 1.3 the fade ran over its left
+    // side). Where the character starts is worked out from the lobby camera
+    // itself, so a camera change re-asks the question: the shoulder, 0.26 m
+    // in from the ped's middle, through a vertical lens of `fov`.
+    const cam = /lobbyCam\s*=\s*\{([^}]*)\}/.exec(read(join(ROOT, '..', 'resources', '[fivem-royale]', 'br_lib', 'config', 'match.lua')))?.[1] ?? ''
+    const num = (k) => Number(new RegExp(`\\b${k}\\s*=\\s*(-?[\\d.]+)`).exec(cam)?.[1] ?? NaN)
+    const [dist, offset, fov] = [num('dist'), num('offset'), num('fov')]
+    const SHOULDER = 0.26
+    const rootFs = /font-size:\s*clamp\((\d+)px,\s*calc\(([\d.]+)vh \* var\(--ui-scale\)\),\s*(\d+)px\)/.exec(read(join(SRC, 'index.css')))
+    // A CSS length of rem, vw, vh and px under min() and calc(), in px.
+    const css = (expr, W, H, rem) => {
+      const toks = expr.match(/\d+(?:\.\d+)?(?:rem|vw|vh|px)|min|calc|[(),+-]/g) ?? []
+      let i = 0
+      const sum = () => {
+        let v = one()
+        while (toks[i] === '+' || toks[i] === '-') { const op = toks[i++]; const r = one(); v = op === '+' ? v + r : v - r }
+        return v
+      }
+      const one = () => {
+        const t = toks[i++]
+        if (t === 'min' || t === 'calc') {
+          i++ // (
+          const args = [sum()]
+          while (toks[i] === ',') { i++; args.push(sum()) }
+          i++ // )
+          return t === 'min' ? Math.min(...args) : args[0]
+        }
+        const m = /^(\d+(?:\.\d+)?)(rem|vw|vh|px)$/.exec(t ?? '')
+        if (!m) return NaN
+        const n = Number(m[1])
+        return m[2] === 'rem' ? n * rem : m[2] === 'vw' ? n * W / 100 : m[2] === 'vh' ? n * H / 100 : n
+      }
+      return sum()
+    }
+    const bad = []
+    let seen = 0
+    for (const [W, H] of [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160], [1440, 900], [1680, 1050], [2560, 1080], [1024, 768], [1280, 1024]]) {
+      for (const scale of [0.8, 1, 1.3]) {
+        const rem = Math.min(Math.max(Number(rootFs?.[1]), Number(rootFs?.[2]) * H / 100 * scale), Number(rootFs?.[3]))
+        const ped = W / 2 + (offset - SHOULDER) / dist / Math.tan((fov / 2) * Math.PI / 180) * H / 2
+        const scrim = css(String(SCRIM.width), W, H, rem)
+        const cards = css(PANEL_W, W, H, rem) - 3 * rem
+        seen++
+        if (!(scrim < ped - 1 && cards < scrim)) {
+          bad.push(`${W}x${H} @${scale}: scrim ends ${scrim.toFixed(0)}px, cards ${cards.toFixed(0)}px, character from ${ped.toFixed(0)}px`)
+        }
+      }
+    }
+    check(`...and ends short of the lobby character on every screen and interface size, past the cards' edge (${seen} cases)`,
+      rootFs !== null && [dist, offset, fov].every(Number.isFinite) && seen === 27 && bad.length === 0, bad.join('\n          '))
   }
 
   // CLOUDSCAPE, AS LOCKER V2 HAS IT.

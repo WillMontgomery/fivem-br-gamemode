@@ -41,11 +41,22 @@ const LIT = 'rgba(12, 58, 72, 0.94)'
  * the panel stops (a narrow screen, a large interface size), and it is lighter
  * throughout. The cards keep their own near-opaque fill, so they read the same
  * over a lighter scrim.
+ *
+ * AND IT NEVER REACHES THE CHARACTER (review, 2026-10-14: at 4:3 with a large
+ * interface size the fade still ran over its left side). PED_CLEAR is where
+ * the scrim must end, on any screen: br_lib/config/match.lua's lobbyCam --
+ * 1.83 m back, aimed 0.58 m to the ped's left, a 50-degree vertical lens --
+ * puts the character's shoulder (0.26 m in from its middle) 18.8vh right of
+ * the screen's middle, and PED_CLEAR stops a little short of that. In vh
+ * because the lens is vertical: a narrower screen brings the character nearer
+ * the panel in vw, never in vh. The cards themselves end 3rem inside the
+ * panel, short of it on every screen from 5:4 out (test-marketv2.mjs).
  */
 export const PANEL_W = 'min(48rem, 64vw)'
 export const FADE = '6rem'
+export const PED_CLEAR = 'calc(50vw + 16vh)'
 export const SCRIM: CSSProperties = {
-  width: `calc(${PANEL_W} + ${FADE})`,
+  width: `min(calc(${PANEL_W} + ${FADE}), ${PED_CLEAR})`,
   background: 'linear-gradient(90deg, rgba(6, 8, 14, 0.80) 0%, '
             + `rgba(6, 8, 14, 0.62) calc(100% - ${FADE} - 6rem), rgba(6, 8, 14, 0) 100%)`,
 }
