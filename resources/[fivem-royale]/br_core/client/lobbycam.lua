@@ -821,11 +821,28 @@ end
 --- The preset the camera is focused on, or nil.
 local focused = nil
 
+-- ═══ THE CAMERA BUTTONS' ZOOM (My Looks, LOCKER2_CAM) ═══
+--
+-- A step of zoom moves the camera along its line to the ped -- the bone it is
+-- focused on, or the ped's middle at home -- and the aim with it, by the same
+-- share, so the ped stays where the menu left room for it and only grows.
+-- Each step is zoomFactor of the distance; a focus, Reset view and unfocus
+-- frame afresh, at no zoom.
+
+--- Steps of zoom in (positive) or out (negative) from the framing.
+local zoomLevel = 0
+
+local function zoomScale()
+    local L2 = BR.Config.Locker2
+    return ((L2 and L2.zoomFactor) or 0.85) ^ zoomLevel
+end
+
 --- Where a preset puts the camera and its aim, for the ped as it stands now.
 --- @param preset string  a key of BR.Config.Locker2.cams
 --- @param ped number|nil  PlayerPedId() by default
+--- @param scale number|nil  the share of the preset's distance (1 by default)
 --- @return number|nil cx, number cy, number cz, number ax, number ay, number az, number fov
-function BR.LobbyCam.focusFrame(preset, ped)
+function BR.LobbyCam.focusFrame(preset, ped, scale)
     local L2 = BR.Config.Locker2
     local P = L2 and L2.cams and L2.cams[preset]
     if not P then return nil end
@@ -838,23 +855,28 @@ function BR.LobbyCam.focusFrame(preset, ped)
     local rx, ry = math.cos(rad), math.sin(rad)
     local side = P.behind and -1.0 or 1.0
     local tx, ty, tz = b.x, b.y, b.z + (P.z or 0.0)
+    local dist = P.dist * (scale or 1.0)
     -- The home shot's screen position, carried to this distance and lens.
     local frac = (C.offset / C.dist) / math.tan(math.rad(C.fov) / 2.0)
-    local off = P.dist * frac * math.tan(math.rad(P.fov) / 2.0)
-    return tx + fx * P.dist * side, ty + fy * P.dist * side, tz,
+    local off = dist * frac * math.tan(math.rad(P.fov) / 2.0)
+    return tx + fx * dist * side, ty + fy * dist * side, tz,
            tx + rx * off * side, ty + ry * off * side, tz,
            P.fov
 end
 
---- Glide to a preset over BR.Config.Locker2.camMs, eased. Only while the lobby
---- camera is up.
---- @param preset string
---- @return boolean
-function BR.LobbyCam.focus(preset)
-    sweepRetired()
-    if not (cam and isTrue(DoesCamExist(cam))) then return false end
-    local cx, cy, cz, ax, ay, az, fov = BR.LobbyCam.focusFrame(preset)
-    if not cx then return false end
+--- The lobby frame, `scale` of the way from the ped's middle.
+local function homeFrame(scale)
+    local C = BR.Config.Match.lobbyCam
+    local p = BR.Config.Match.lobbyPos
+    local cx, cy, cz, ax, ay, az = BR.LobbyCam.lobbyFrame()
+    local px, py, pz = p.x, p.y, p.z + C.aim
+    return px + (cx - px) * scale, py + (cy - py) * scale, pz + (cz - pz) * scale,
+           px + (ax - px) * scale, py + (ay - py) * scale, pz + (az - pz) * scale,
+           C.fov
+end
+
+--- One eased move to a camera at (cx, cy, cz) aimed at (ax, ay, az).
+local function moveTo(cx, cy, cz, ax, ay, az, fov, ms)
     local dest = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
         cx + 0.0, cy + 0.0, cz + 0.0, 0.0, 0.0, 0.0, fov + 0.0, false, 0)
     if not dest or dest == -1 then return false end
@@ -862,21 +884,74 @@ function BR.LobbyCam.focus(preset)
     dropRetiring()
     retiring = cam
     cam = dest
-    SetCamActiveWithInterp(cam, retiring, math.max(1, math.floor(BR.Config.Locker2.camMs or 600)), 1, 1)
+    SetCamActiveWithInterp(cam, retiring, math.max(1, math.floor(ms)), 1, 1)
     RenderScriptCams(true, false, 0, true, true)
-    focused = preset
     return true
 end
 
---- Glide back to the lobby frame, if focused. Safe to call when not.
+--- Glide to a preset over BR.Config.Locker2.camMs, eased. Only while the lobby
+--- camera is up. A focus frames afresh: no zoom.
+--- @param preset string
+--- @return boolean
+function BR.LobbyCam.focus(preset)
+    sweepRetired()
+    if not (cam and isTrue(DoesCamExist(cam))) then return false end
+    local cx, cy, cz, ax, ay, az, fov = BR.LobbyCam.focusFrame(preset)
+    if not cx then return false end
+    if not moveTo(cx, cy, cz, ax, ay, az, fov, BR.Config.Locker2.camMs or 600) then return false end
+    focused = preset
+    zoomLevel = 0
+    return true
+end
+
+--- Glide back to the lobby frame, if focused or zoomed. Safe to call when not.
 --- @param ms number|nil  BR.Config.Locker2.camMs by default
 --- @return boolean
 function BR.LobbyCam.unfocus(ms)
-    if not focused then return false end
+    if not focused and zoomLevel == 0 then return false end
     focused = nil
+    zoomLevel = 0
     if not BR.LobbyCam.active() then return false end
     local L2 = BR.Config.Locker2
     return BR.LobbyCam.glideHome(ms or (L2 and L2.camMs) or 600, true)
+end
+
+--- One step of zoom: in (1) or out (-1), within zoomMin..zoomMax, from the
+--- focus or the lobby frame. False at a limit or with no camera up.
+--- @param d integer
+--- @return boolean
+function BR.LobbyCam.zoom(d)
+    sweepRetired()
+    if not (cam and isTrue(DoesCamExist(cam))) then return false end
+    local L2 = BR.Config.Locker2
+    local z = math.max(L2.zoomMin, math.min(L2.zoomMax, zoomLevel + d))
+    if z == zoomLevel then return false end
+    zoomLevel = z
+    local cx, cy, cz, ax, ay, az, fov
+    if focused then
+        cx, cy, cz, ax, ay, az, fov = BR.LobbyCam.focusFrame(focused, nil, zoomScale())
+    else
+        cx, cy, cz, ax, ay, az, fov = homeFrame(zoomScale())
+    end
+    if not cx then return false end
+    return moveTo(cx, cy, cz, ax, ay, az, fov, L2.zoomMs or 200)
+end
+
+--- Reset view: no zoom, and the preset's framing again (or the lobby frame).
+--- @param preset string|nil
+--- @return boolean
+function BR.LobbyCam.resetView(preset)
+    if preset then return BR.LobbyCam.focus(preset) end
+    zoomLevel = 0
+    focused = nil
+    if not BR.LobbyCam.active() then return false end
+    local L2 = BR.Config.Locker2
+    return BR.LobbyCam.glideHome((L2 and L2.camMs) or 600, true)
+end
+
+--- @return integer  steps of zoom from the framing
+function BR.LobbyCam.zoomed()
+    return zoomLevel
 end
 
 --- @return string|nil
@@ -891,8 +966,9 @@ end
 --- gameplay shot in one frame, which reads as a glitch rather than as the
 --- match starting.
 function BR.LobbyCam.stop()
-    -- A focus does not outlive the camera it moved (#28).
+    -- A focus does not outlive the camera it moved (#28), nor a zoom.
     focused = nil
+    zoomLevel = 0
     -- THE RETIRING CAMERA GOES EVEN IF THE MAIN ONE IS ALREADY GONE, which is
     -- why this is above the early return rather than beside the destroy below.
     -- A flight abandoned mid-move has two live cameras, and the one that is

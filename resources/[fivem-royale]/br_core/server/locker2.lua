@@ -6,7 +6,8 @@
 -- The ped itself is cosmetic and client-only, as in Season 1 (client/locker.lua
 -- says why). What a client cannot be trusted with is the RECORD: every write
 -- here checks, in this order, the season, the name (Roman letters and digits,
--- 1 to 24 -- owner, 2026-10-07), the id's shape and that this player owns it,
+-- 1 to 24 -- owner, 2026-10-07 -- in words one space apart, 2026-10-12), the
+-- id's shape and that this player owns it,
 -- the appearance's size BEFORE it is decoded and then its form
 -- (br_lib/shared/appearance.lua) with at most 10 tattoos a body zone, and a
 -- rate. A refusal answers RESULT with
@@ -16,10 +17,12 @@
 --
 -- A fetch reads the database once (the profile's worn record, then the
 -- player's `ped#` rows) and every write after it updates the cache from the
--- answer, the shape server/market.lua set. A second fetch inside fetchMs is
--- answered from the cache. A fetch that FAILED leaves every write refused as
--- `store`: writing over rows this server could not read is how a player loses
--- one.
+-- answer, the shape server/market.lua set. Every write goes through here, so
+-- the cache IS the record: a later fetch is answered from it for cacheMs
+-- (#28 lag: every open read every look and headshot again), and only then is
+-- the database read again. A fetch that FAILED leaves every write refused as
+-- `store`, and the next fetch reads again: writing over rows this server
+-- could not read is how a player loses one.
 --
 -- ═══ ONE ANSWER PER PLAYER PER fetchMs ═══
 --
@@ -273,7 +276,7 @@ function L.fetch(src, lic)
         end
         return
     end
-    if e.fetchAt and now - e.fetchAt < cfg().fetchMs then
+    if e.loaded and not e.failed and e.fetchAt and now - e.fetchAt < (cfg().cacheMs or cfg().fetchMs) then
         sendState(src, e)
         return
     end
@@ -384,6 +387,10 @@ AddEventHandler(BR.Net.LOCKER2_SAVE, function(d)
         if d.id ~= nil then return result(src, req, false, 'missing') end
     elseif not A.isPedId(d.id) then
         return result(src, req, false, 'missing')
+    -- AN UPDATE MAY RENAME AS IT SAVES (My Looks: the save dialog shows the
+    -- name, and Save keeps what is typed there). No name keeps the old one.
+    elseif op == 'update' and d.name ~= nil and not A.isName(d.name) then
+        return result(src, req, false, 'name')
     end
     local e = cache[lic]
     if not writable(e) then return result(src, req, false, 'store') end
@@ -403,7 +410,7 @@ AddEventHandler(BR.Net.LOCKER2_SAVE, function(d)
         rec = { n = d.name, a = canon, cr = now, up = now }
     else
         id = d.id
-        rec = { n = p.name, a = canon, cr = p.cr, up = now }
+        rec = { n = op == 'update' and d.name or p.name, a = canon, cr = p.cr, up = now }
     end
     ask('pedPut', function(ok, extra)
         if not ok then

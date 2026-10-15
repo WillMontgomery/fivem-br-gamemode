@@ -463,11 +463,6 @@ export function createLocker2Mock(stock: { id: string; name: string }[], emit: E
         tab = homeTab()
         push()
         return true
-      // The old tabs and Reset: My Looks sends neither.
-      case 'br/locker2/tab':
-      case 'br/locker2/reset':
-        push()
-        return true
       case 'br/locker2/wear': {
         const k = d.k === 'p' ? 'p' : 's'
         const id = String(d.id ?? '')

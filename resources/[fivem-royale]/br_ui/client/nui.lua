@@ -647,13 +647,18 @@ for _, name in ipairs({
     BR.NuiCb.LOCKER_PICK, BR.NuiCb.LOCKER_SPIN,
     -- Locker v2 (#28, Season 2), the same split: br_core checks every one
     -- again and decides what it means.
-    BR.NuiCb.LOCKER2_OPEN, BR.NuiCb.LOCKER2_CLOSE, BR.NuiCb.LOCKER2_RESET,
-    BR.NuiCb.LOCKER2_TAB, BR.NuiCb.LOCKER2_WEAR, BR.NuiCb.LOCKER2_STEP,
-    BR.NuiCb.LOCKER2_SET, BR.NuiCb.LOCKER2_COLOR, BR.NuiCb.LOCKER2_CAT,
-    BR.NuiCb.LOCKER2_SAVE, BR.NuiCb.LOCKER2_RENAME, BR.NuiCb.LOCKER2_DELETE,
-    BR.NuiCb.LOCKER2_EDIT, BR.NuiCb.LOCKER2_SHOTS, BR.NuiCb.LOCKER2_SHOTDONE,
-    BR.NuiCb.LOCKER2_SHOT, BR.NuiCb.LOCKER2_TATS, BR.NuiCb.LOCKER2_TAT_ADD,
-    BR.NuiCb.LOCKER2_TAT_SET, BR.NuiCb.LOCKER2_TAT_DEL,
+    BR.NuiCb.LOCKER2_OPEN, BR.NuiCb.LOCKER2_CLOSE, BR.NuiCb.LOCKER2_WEAR,
+    BR.NuiCb.LOCKER2_STEP, BR.NuiCb.LOCKER2_SET, BR.NuiCb.LOCKER2_COLOR,
+    BR.NuiCb.LOCKER2_CAT, BR.NuiCb.LOCKER2_SAVE, BR.NuiCb.LOCKER2_RENAME,
+    BR.NuiCb.LOCKER2_DELETE, BR.NuiCb.LOCKER2_EDIT, BR.NuiCb.LOCKER2_SHOTS,
+    BR.NuiCb.LOCKER2_SHOTDONE, BR.NuiCb.LOCKER2_SHOT, BR.NuiCb.LOCKER2_TATS,
+    BR.NuiCb.LOCKER2_TAT_ADD, BR.NuiCb.LOCKER2_TAT_SET, BR.NuiCb.LOCKER2_TAT_DEL,
+    -- My Looks (2026-10-13/14): a new look, out of the editor, Randomize,
+    -- Undo and Redo, the extras, a face group's reset, the palettes, the
+    -- camera buttons.
+    BR.NuiCb.LOCKER2_NEW, BR.NuiCb.LOCKER2_LEAVE, BR.NuiCb.LOCKER2_RANDOM,
+    BR.NuiCb.LOCKER2_UNDO, BR.NuiCb.LOCKER2_REDO, BR.NuiCb.LOCKER2_EXTRA,
+    BR.NuiCb.LOCKER2_DEFAULTS, BR.NuiCb.LOCKER2_PAL, BR.NuiCb.LOCKER2_CAM,
     -- Rebinding is br_core's: it owns the binding table and the raw-key
     -- reader, and the settings screen is only the page that shows them.
     BR.NuiCb.KEYBIND_SET,

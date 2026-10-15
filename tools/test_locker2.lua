@@ -174,7 +174,16 @@ do
     bad(function(a) a.c[1][2] = 32 end, 'a texture past 31 (the sync carries 5 bits)')
     bad(function(a) a.p[1] = { -1, 1 } end, 'no prop with a texture')
     bad(function(a) a.p[1][1] = -2 end, 'a prop below none')
-    bad(function(a) a.x = 1 end, 'a key the schema does not have')
+    bad(function(a) a.zz = 1 end, 'a key the schema does not have')
+    -- My Looks' two fields (2026-10-13/14): the starting face and the extras.
+    bad(function(a) a.f = 6 end, 'a starting face past the sex\'s six')
+    bad(function(a) a.f = -1 end, 'a starting face below 0')
+    bad(function(a) a.f = 1.0 end, 'a float face')
+    bad(function(a) a.x = 1 end, 'extras that are not a list')
+    bad(function(a) a.x = { 'cape' } end, 'an extra that is not one')
+    bad(function(a) a.x = { 'hat', 'hat' } end, 'an extra twice')
+    bad(function(a) a.x = { [1] = 'hat', [3] = 'bag' } end, 'extras with a gap')
+    bad(function(a) a.x = { hat = true } end, 'extras by name')
     bad(function(a) a.c[3] = { 0, 0, 0 } end, 'a component with three numbers')
     local a = A.default('m')
     a.c[5][1] = 7
@@ -205,9 +214,22 @@ do
     ok(not A.isPedId('ABCDEFGHIJK') and not A.isPedId('profile') and not A.isPedId('0123456789'),
         'upper case, a word and ten characters are not ids')
     ok(A.isName('Bob') and A.isName(string.rep('a', 24)) and A.isName('Z9'), 'names of letters and digits, 1 to 24')
-    ok(not A.isName('') and not A.isName(string.rep('a', 25)) and not A.isName('Bob 1')
+    ok(not A.isName('') and not A.isName(string.rep('a', 25))
         and not A.isName('B\195\179b') and not A.isName('a_b') and not A.isName(5),
-        'never empty, long, spaced, accented, punctuated or a number')
+        'never empty, long, accented, punctuated or a number')
+    -- "we need to allow spaces in the ped names" (owner, 2026-10-12): words one
+    -- space apart, as the page's nameOk and br_ddb's isName say.
+    ok(A.isName('Bob 1') and A.isName('My Night Look') and A.isName(string.rep('a b', 8)),
+        'words one space apart, 24 in all')
+    ok(not A.isName(' Bob') and not A.isName('Bob ') and not A.isName('Bob  1') and not A.isName(' ')
+        and not A.isName(string.rep('ab ', 8) .. 'a') and not A.isName('Bob\t1'),
+        'never a space first, last or doubled, past 24, or a tab')
+    local model = readFile('ui-src/src/screens/lockerv2/model.ts') or ''
+    ok(model:find('/^[A-Za-z0-9]+( [A-Za-z0-9]+)*$/', 1, true) ~= nil and model:find('NAME_MAX = 24', 1, true) ~= nil,
+        'the page\'s nameOk is the same rule')
+    local ddbSrc = readFile('js-src/br_ddb/src/locker2.js') or ''
+    ok(ddbSrc:find('/^(?=.{1,24}$)[A-Za-z0-9]+( [A-Za-z0-9]+)*$/', 1, true) ~= nil,
+        'and br_ddb stores what both allow')
 end
 
 describe('appearance.worn')
@@ -223,6 +245,53 @@ do
     ok(pb and pb.k == 'p' and A.equal(pb.a, A.default('f')), 'a saved ped carries its appearance')
     ok(A.decodeWorn('{"k":"p","id":"0abcdefgh12"}') == nil, 'a saved ped with no appearance is nothing')
     ok(A.decodeWorn('') == nil and A.decodeWorn('{}') == nil, 'nor is an empty record')
+end
+
+describe('appearance.mylooks')
+do
+    -- MY LOOKS' FIELDS (2026-10-13/14): `f` the starting face, `x` the extras
+    -- in the order put on. Both optional: a look of neither is the string it
+    -- always was.
+    local plain = A.encode(A.default('m'))
+    local a = A.default('m')
+    a.f, a.x = 0, {}
+    eq(A.encode(a), plain, 'face 0 and no extras write nothing: an older save is the same string')
+    a.f = 5
+    a.x = { 'tattoos', 'hat', 'earrings' }
+    local enc = A.encode(a)
+    local tail = ',"f":5,"x":["tattoos","hat","earrings"]}'
+    ok(enc ~= nil and enc:sub(-#tail) == tail, 'written last, the extras in order', enc)
+    local back = A.decode(enc)
+    ok(back and back.f == 5 and table.concat(back.x, ',') == 'tattoos,hat,earrings', 'and read back in that order')
+    ok(not A.equal(back, A.default('m')), 'a face and extras are part of the look')
+    local other = A.copy(back)
+    other.x = { 'hat', 'tattoos', 'earrings' }
+    ok(not A.equal(other, back), 'and so is their order')
+    eq(#shared.BR.Config.Locker2.faces.m, 6, 'six starting faces a sex')
+    eq(shared.BR.Config.Locker2.faces.m[1], 0, 'the first his one face before My Looks')
+    eq(shared.BR.Config.Locker2.faces.f[1], 21, 'and hers')
+    local w = A.decodeWorn(A.encodeWorn({ k = 'p', id = '0abcdefgh12', a = back }))
+    ok(w and w.a.f == 5 and #w.a.x == 3, 'the worn record carries both')
+    -- The extras are the page's, in its order (ui-src/src/screens/lockerv2/
+    -- model.ts EXTRA_CATS), and every one but Tattoos a category here.
+    local model = readFile('ui-src/src/screens/lockerv2/model.ts') or ''
+    local function tsList(name)
+        local body = model:match('export const ' .. name .. ' = %[(.-)%]') or ''
+        local out = {}
+        for id in body:gmatch("'([%w_]+)'") do out[#out + 1] = id end
+        return table.concat(out, ',')
+    end
+    local L2 = shared.BR.Config.Locker2
+    eq(table.concat(L2.extras, ','), tsList('EXTRA_CATS'), 'Lua\'s extras are the page\'s, in its order')
+    local core, extras = {}, {}
+    for _, cat in ipairs(L2.categories) do
+        if cat.extra then extras[#extras + 1] = cat.id else core[#core + 1] = cat.id end
+    end
+    extras[#extras + 1] = 'tattoos'
+    eq(table.concat(core, ','), tsList('CORE_CATS'), 'and its core categories, first and in order')
+    eq(table.concat(extras, ','), table.concat(L2.extras, ','), 'each extra a category, Tattoos the section')
+    eq(L2.historyMax, tonumber(model:match('HISTORY_MAX = (%d+)')), 'the history keeps what the page says')
+    eq(L2.coalesceMs, tonumber(model:match('COALESCE_MS = (%d+)')), 'and merges a drag as the page does')
 end
 
 local TAT = shared.BR.Config.Tattoos
@@ -614,12 +683,22 @@ do
     eq(#W.sent, 1, 'and is not answered yet: one answer per player per 5 s')
     W.advance(4000)
     eq(#W.sent, 2, 'it is answered once the 5 s are up')
-    eq(#W.ddbCalls, 2, 'with a fresh read')
+    -- THE RECORD IS READ ONCE AND KEPT (#28 lag: every open read every look
+    -- and headshot again). Every write goes through here, so the cache is the
+    -- record until cacheMs.
+    eq(#W.ddbCalls, 1, 'from the cache: every look is read from the database once')
     -- The cache answers another player of the same license (a second session).
     W.BR.Identity.ofPlayer = function() return { license = 'p1' } end
     W.net(NET.LOCKER2_FETCH, 3, {})
     eq(W.last(NET.LOCKER2_STATE).target, 3, 'another session of that license is answered at once')
-    eq(#W.ddbCalls, 2, 'from the cache')
+    eq(#W.ddbCalls, 1, 'from the cache')
+    eq(W.BR.Config.Locker2.cacheMs, 600000, 'kept ten minutes')
+    W.advance(W.BR.Config.Locker2.cacheMs - 6000)
+    W.net(NET.LOCKER2_FETCH, 3, {})
+    eq(#W.ddbCalls, 1, 'just inside ten minutes: still the cache')
+    W.advance(6000)
+    W.net(NET.LOCKER2_FETCH, 3, {})
+    eq(#W.ddbCalls, 2, 'then the database is read again')
 
     local W1 = serverWorld(1)
     W1.net(NET.LOCKER2_FETCH, 1, {})
@@ -652,7 +731,7 @@ do
     eq(answers(1), 1, 'a hundred asks inside 5 s: one answer so far')
     W.advance(100)
     eq(answers(1), 2, 'and one more when the 5 s are up, however many asked')
-    eq(#W.ddbCalls, 2, 'two reads')
+    eq(#W.ddbCalls, 1, 'one read: the second answer is the cache')
     W.advance(10000)
     eq(answers(1), 2, 'nothing after that unasked')
 
@@ -717,13 +796,29 @@ do
     W.net(NET.LOCKER2_SAVE, 1, { req = 4, op = 'replace', id = id, name = 'Zed', a = enc })
     eq(W.ddb['license:p1'].peds[id].n, 'Bob', 'a replace keeps the name too, whatever it was sent')
 
+    -- MY LOOKS' SAVE (2026-10-13): the dialog shows the look's name, and an
+    -- update saves the name typed there too. Words one space apart.
+    W.advance(2000)
+    W.net(NET.LOCKER2_SAVE, 1, { req = 41, op = 'update', id = id, name = 'Night Bob', a = enc })
+    r = W.lastResult()
+    ok(r.ok == true and r.ped.name == 'Night Bob', 'an update with a name renames as it saves')
+    eq(W.ddb['license:p1'].peds[id].n, 'Night Bob', 'in the row')
+    W.advance(2000)
+    W.net(NET.LOCKER2_SAVE, 1, { req = 42, op = 'update', id = id, name = 'Night  Bob', a = enc })
+    eq(W.lastResult().reason, 'name', 'an update with a bad name is refused name')
+    eq(W.ddb['license:p1'].peds[id].n, 'Night Bob', 'and nothing is written')
+    W.advance(2000)
+    W.net(NET.LOCKER2_SAVE, 1, { req = 43, op = 'new', name = 'My Look', a = enc })
+    ok(W.lastResult().ok and W.lastResult().ped.name == 'My Look', 'a new look named with a space')
+
     -- Refusals, in order.
     local function refused(payload, want, label)
         W.advance(2000)
         W.net(NET.LOCKER2_SAVE, 1, payload)
         eq(W.lastResult().reason, want, label)
     end
-    refused({ req = 5, op = 'new', name = 'Bo b', a = enc }, 'name', 'a name with a space')
+    refused({ req = 5, op = 'new', name = 'Bo  b', a = enc }, 'name', 'a name with two spaces together')
+    refused({ req = 51, op = 'new', name = ' Bob', a = enc }, 'name', 'a name starting with a space')
     refused({ req = 6, op = 'new', name = string.rep('a', 25), a = enc }, 'name', 'a name of 25')
     refused({ req = 7, op = 'new', a = enc }, 'name', 'no name')
     refused({ req = 8, op = 'new', name = 'Bob', id = id, a = enc }, 'missing', 'a new ped with an id')
@@ -781,7 +876,7 @@ do
     W.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Ann', a = A.encode(a) })
     local id = W.lastResult().id
     W.advance(6000)
-    W.net(NET.LOCKER2_RENAME, 1, { req = 2, id = id, name = 'Bad Name' })
+    W.net(NET.LOCKER2_RENAME, 1, { req = 2, id = id, name = 'Bad  Name' })
     eq(W.lastResult().reason, 'name', 'a rename to a bad name')
     W.net(NET.LOCKER2_RENAME, 1, { req = 3, id = id, name = 'Eve' })
     ok(W.lastResult().ok and W.lastResult().ped.name == 'Eve', 'a rename answers the ped renamed')
@@ -865,8 +960,9 @@ do
     W.advance(2000)
     W.net(NET.LOCKER2_SAVE, 1, { req = 3, op = 'new', name = 'Ann', a = A.encode(A.default('m')) })
     eq(W.lastResult().reason, 'store', 'a failed write answers store')
-    -- A later read that fails, after one that worked, stops the writes again.
-    W.advance(6000)
+    -- A later read that fails, after one that worked, stops the writes again
+    -- (one past the cache: inside it nothing is read).
+    W.advance(W.BR.Config.Locker2.cacheMs)
     W.failNext = 'lockerFetch'
     W.net(NET.LOCKER2_FETCH, 1, {})
     W.advance(2000)
@@ -987,6 +1083,7 @@ local function clientWorld(opts)
     opts = opts or {}
     local env = newEnv()
     local W = { time = 1000, log = {}, events = {}, server = {}, kvp = deepCopy(opts.kvp or {}),
+                invalid = {}, texCount = {}, propTex = {}, shop = {}, forced = {}, invokes = {}, drawCount = {},
                 threads = {}, ticks = {}, notify = {}, handlers = {}, commands = {}, cams = {},
                 stops = {}, shots = {}, created = {}, locked = false, entering = false, walking = false,
                 convar = opts.season and tostring(opts.season) or '', listener = nil,
@@ -1053,10 +1150,26 @@ local function clientWorld(opts)
     N.GetPedTextureVariation = function(h, s) return (P(h).comps[s] or { 0, 0 })[2] end
     N.GetPedPropIndex = function(h, s) return P(h).props[s] and P(h).props[s][1] or -1 end
     N.GetPedPropTextureIndex = function(h, s) return P(h).props[s] and P(h).props[s][2] or -1 end
-    N.GetNumberOfPedDrawableVariations = function(_, s) return s == 5 and 10 or (s == 2 and 30 or 40) end
-    N.GetNumberOfPedTextureVariations = function(_, _, d) return (d % 3) + 1 end
+    N.GetNumberOfPedDrawableVariations = function(_, s) return W.drawCount[s] or (s == 5 and 10 or (s == 2 and 30 or 40)) end
+    N.GetNumberOfPedTextureVariations = function(_, s, d) return W.texCount[s .. ':' .. d] or ((d % 3) + 1) end
     N.GetNumberOfPedPropDrawableVariations = function() return 20 end
-    N.GetNumberOfPedPropTextureVariations = function(_, _, d) return (d % 2) + 1 end
+    N.GetNumberOfPedPropTextureVariations = function(_, s, d) return W.propTex[s .. ':' .. d] or ((d % 2) + 1) end
+    -- What the game says it draws: everything but W.invalid's `slot:d` and
+    -- `slot:d:t` (#28: "if the answer is it doesn't draw anything - then
+    -- remove that item from the list entirely").
+    N.IsPedComponentVariationValid = function(_, s, d, t)
+        return (W.invalid[s .. ':' .. d] or W.invalid[s .. ':' .. d .. ':' .. t]) and 0 or 1
+    end
+    -- The shop data: W.shop's `slot:d:t` -> an item's hash, W.forced's hash ->
+    -- { { nameHash, enumValue, componentType }... } (GET_FORCED_COMPONENT).
+    N.GetHashNameForComponent = function(_, s, d, t) return W.shop[s .. ':' .. d .. ':' .. t] or 0 end
+    N.GetShopPedApparelForcedComponentCount = function(h) return #(W.forced[h] or {}) end
+    N.GetForcedComponent = function(h, i)
+        local f = W.forced[h][i + 1]
+        return f[1], f[2], f[3]
+    end
+    N.GetPedHairRgbColor = function(i) return i, (i * 2) % 256, 255 - i end
+    N.GetPedMakeupRgbColor = function(i) return 255 - i, i, (i * 3) % 256 end
     N.GetPedHeadOverlayNum = function() return 10 end
     N.GetNumHairColors = function() return 64 end
     N.GetNumMakeupColors = function() return 64 end
@@ -1131,6 +1244,13 @@ local function clientWorld(opts)
             W.threads[#W.threads + 1] = { co = coroutine.create(fn), at = W.time }
         end,
         Wait = function(ms) coroutine.yield(ms or 0) end,
+        -- Only the item names (off unless BR.Config.Locker2.names says) call
+        -- natives by hash: recorded, and answering none.
+        InvokeNative = function(h, ...)
+            W.invokes[#W.invokes + 1] = h
+            return 0
+        end,
+        ResultAsInteger = function() return 'int' end,
     }
 
     env.BR = { Config = {} }
@@ -1159,6 +1279,8 @@ local function clientWorld(opts)
         focus = function(p) W.cams[#W.cams + 1] = 'focus:' .. p W.focusedCam = p return true end,
         unfocus = function() W.cams[#W.cams + 1] = 'unfocus' W.focusedCam = nil return true end,
         focused = function() return W.focusedCam end,
+        zoom = function(d) W.cams[#W.cams + 1] = 'zoom:' .. d return true end,
+        resetView = function(p) W.cams[#W.cams + 1] = 'reset:' .. tostring(p) W.focusedCam = p return true end,
     }
     loadInto(env, 'br_core/client/locker.lua')
     if opts.v2 then
@@ -1461,6 +1583,30 @@ local function rowOf(msg, k)
     return nil
 end
 
+--- The pushes the page has had, oldest first.
+local function pushes(W)
+    local out = {}
+    for _, e in ipairs(W.events) do
+        if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2 then out[#out + 1] = e.args[2] end
+    end
+    return out
+end
+
+--- A Lua list as it reaches the page: an empty one is a table all the same.
+local function listOf(v) return type(v) == 'table' and v or {} end
+
+--- A world editing a saved look (`a`, the default male look if none), the
+--- page open on it: My Looks' Edit. `peds` are saved beside it.
+local function editing(a, peds)
+    local list = { { id = PID, name = 'Base', a = A.encode(a or A.default('m')), up = 5 } }
+    for _, p in ipairs(peds or {}) do list[#list + 1] = p end
+    local W = joined(list)
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
+    W.pump(300)
+    return W
+end
+
 describe('season2.open')
 do
     local W = joined()
@@ -1483,19 +1629,19 @@ do
     ok(m2.peds[1].name == 'Ann' and m2.peds[1].a == nil, 'the cards carry no appearance')
     eq(m2.peds[1].img, nil, 'and no picture: that goes once, on its own (#28 review)')
     W2.ui(NUICB.LOCKER2_SHOTS, { ids = { PID } })
+    eq(W2.nui(NUI.LOCKER2_SHOT), nil, 'not in the frame the page asked in: it is still revealing (#28 lag)')
+    W2.pump(50)
     local pic = W2.nui(NUI.LOCKER2_SHOT)
     ok(pic and pic.id == PID and pic.up == 5 and pic.img == 'data:image/webp;base64,AA' and pic.txd == nil,
-        'the stored picture, when the page asks for the card')
+        'the stored picture, a frame later')
     -- EVERY PUSH IS PICTURE-FREE, whatever is pressed: a push goes out on every
     -- press, up to one a slider's 60 ms, and saved peds have no limit.
-    W2.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    W2.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     W2.pump(300)
     for i = 1, 5 do W2.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = i * 10 }) end
     local carried = 0
-    for _, e in ipairs(W2.events) do
-        if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2 then
-            for _, c in ipairs(e.args[2].peds or {}) do if c.img ~= nil then carried = carried + 1 end end
-        end
+    for _, e in ipairs(pushes(W2)) do
+        for _, c in ipairs(e.peds or {}) do if c.img ~= nil then carried = carried + 1 end end
     end
     eq(carried, 0, 'no push carries a picture')
     eq(msg.fetching, false, 'once the server has answered, nothing is being fetched')
@@ -1508,12 +1654,85 @@ do
     local f1 = F.nui(NUI.LOCKER2)
     eq(f1.fetching, true, 'before the server answers, the page shows the saved peds loading')
     eq(f1.tab, 'peds', 'on My peds')
-    F.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
-    F.ui(NUICB.LOCKER2_TAB, { tab = 'peds' })
-    eq(F.nui(NUI.LOCKER2).tab, 'peds', 'and My peds can be pressed while it loads')
     F.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK1 }, store = true, peds = {} })
     local f2 = F.nui(NUI.LOCKER2)
     ok(f2.fetching == false and f2.tab == 'stock', 'an answer of none: loaded, and Stock is the tab')
+end
+
+describe('season2.openpath')
+do
+    -- THE OPEN, MEASURED (#28 lag): three full pushes, a database read of every
+    -- look and headshot, and clone headshots one after another, on every open.
+    local img = 'data:image/webp;base64,AA'
+    local W = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5, img = img } })
+    local fetches = #W.sentTo(NET.LOCKER2_FETCH)
+    eq(fetches, 1, 'the join asked for the saved looks once')
+    local before = #pushes(W)
+    W.ui(NUICB.LOCKER2_OPEN)
+    eq(#pushes(W) - before, 1, 'an open is one push')
+    eq(#W.sentTo(NET.LOCKER2_FETCH), fetches, 'and asks the server nothing: the join\'s answer is current')
+    W.ui(NUICB.LOCKER2_CLOSE)
+    W.pump(1000)
+    W.ui(NUICB.LOCKER2_OPEN)
+    eq(#W.sentTo(NET.LOCKER2_FETCH), fetches, 'nor does the next open')
+    W.ui(NUICB.LOCKER2_CLOSE)
+    W.pump(W.BR.Config.Locker2.refreshMs)
+    W.ui(NUICB.LOCKER2_OPEN)
+    eq(#W.sentTo(NET.LOCKER2_FETCH), fetches + 1, 'an answer refreshMs old is asked for again')
+    -- An answer that never came, or a server that could not read them.
+    local N0 = clientWorld({ season = 2, v2 = true })
+    N0.pump(6000)
+    N0.ui(NUICB.LOCKER2_OPEN)
+    eq(#N0.sentTo(NET.LOCKER2_FETCH), 2, 'no answer since the join: the open asks again')
+    N0.ui(NUICB.LOCKER2_CLOSE)
+    N0.ui(NUICB.LOCKER2_OPEN)
+    eq(#N0.sentTo(NET.LOCKER2_FETCH), 2, 'but not twice inside fetchMs')
+    local S0 = clientWorld({ season = 2, v2 = true })
+    S0.pump(200)
+    S0.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK1 }, store = false })
+    S0.pump(500)
+    S0.ui(NUICB.LOCKER2_OPEN)
+    eq(#S0.sentTo(NET.LOCKER2_FETCH), 2, 'a server that could not read them: the open asks again')
+
+    -- HEADSHOTS NEVER HITCH THE OPEN: the stored pictures a frame apart, the
+    -- first clone shotDelayMs after the page asks, the next shotGapMs after.
+    local H = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5 },
+                       { id = '0abcdefgh13', name = 'Eve', a = A.encode(femaleLook()), up = 6, img = img },
+                       { id = '0abcdefgh14', name = 'Zoe', a = A.encode(femaleLook()), up = 7, img = img },
+                       { id = '0abcdefgh15', name = 'Ivy', a = A.encode(femaleLook()), up = 8 } })
+    H.ui(NUICB.LOCKER2_OPEN)
+    local asked = H.time
+    H.ui(NUICB.LOCKER2_SHOTS, { ids = { PID, '0abcdefgh13', '0abcdefgh14', '0abcdefgh15' } })
+    local function sent()
+        local n = 0
+        for _, e in ipairs(H.events) do
+            if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2_SHOT and e.args[2].img then n = n + 1 end
+        end
+        return n
+    end
+    eq(sent(), 0, 'nothing in the frame the page asked in')
+    H.pump(50)
+    eq(sent(), 1, 'one stored picture a frame')
+    H.pump(50)
+    eq(sent(), 2, 'and the next one the frame after')
+    H.pump(H.BR.Config.Locker2.shotDelayMs - 200)
+    eq(#H.created, 0, 'no clone before shotDelayMs')
+    H.pump(300)
+    eq(#H.created, 1, 'then the first')
+    local function taken(id)
+        for _, e in ipairs(H.events) do
+            if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2_SHOT and e.args[2].id == id and e.args[2].txd then
+                return true
+            end
+        end
+        return false
+    end
+    while not taken(PID) and H.time < asked + 5000 do H.pump(50) end
+    H.ui(NUICB.LOCKER2_SHOTDONE, { id = PID, ok = true })
+    local doneAt = H.time
+    while #H.created < 2 and H.time < asked + 10000 do H.pump(50) end
+    ok(#H.created == 2 and H.time - doneAt >= H.BR.Config.Locker2.shotGapMs,
+        'the next clone shotGapMs after the last, however soon the page had its picture', H.time - doneAt)
 end
 
 describe('season2.stock')
@@ -1537,30 +1756,27 @@ end
 
 describe('season2.custom')
 do
-    local W = joined()
+    local W = editing(A.default('m'))
     local BR = W.BR
-    W.ui(NUICB.LOCKER2_OPEN)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
-    W.pump(300)
-    eq(W.ped().model, MALE, 'Custom (male) wears the male freemode ped')
+    eq(W.ped().model, MALE, 'Edit wears the male freemode ped')
     local msg = W.nui(NUI.LOCKER2)
     eq(msg.tab, 'male', 'on its tab')
     ok(msg.edit and msg.edit.sex == 'm' and msg.edit.dirty == false, 'a clean draft, nothing to save')
+    eq(#listOf(msg.edit.extras), 0, 'no extras on the look')
+    eq(rowOf(msg, 'c5'), nil, 'so no Bag row is drawn, nor its list built')
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'bag', on = true })
+    msg = W.nui(NUI.LOCKER2)
     local bag = rowOf(msg, 'c5')
-    ok(bag and bag.n == 10, 'the Bags row lists every bag drawable, parachute packs included',
-        bag and bag.n)
-    local hasBags = false
-    for _, c in ipairs(msg.edit.cats) do if c == 'bags' then hasBags = true end end
-    ok(hasBags, 'and its category is in the anchor navigation')
+    ok(bag and bag.n == 10, 'the Bag extra lists every bag drawable, parachute packs included', bag and bag.n)
+    eq(table.concat(listOf(msg.edit.extras), ','), 'bag', 'and is on the look')
     local top = rowOf(msg, 'c11')
     ok(top and top.kind == 'count' and top.v == 1 and top.n == 39, 'tops count 1/39: a gen9-only drawable skipped',
         top and (top.v .. '/' .. top.n))
+    eq(top.cat, 'top', 'under Top')
     local under = rowOf(msg, 'c8')
     ok(under and under.v == 1 and under.n == 40, 'the undershirt starts on none, first in its row')
-    local hat = rowOf(msg, 'p0')
-    ok(hat and hat.v == 1 and hat.n == 21 and hat.colors == 1, 'a hat: none first, 1/21, no color')
     local brow = rowOf(msg, 'o2')
-    ok(brow and brow.n == 10 and brow.colors == 64, 'eyebrows: no none, and a color')
+    ok(brow and brow.n == 10 and brow.colors == 64 and brow.pal == 'hair', 'eyebrows: no none, the hair palette')
     local beard = rowOf(msg, 'o1')
     ok(beard and beard.n == 11 and beard.v == 1, 'facial hair: none first')
     local nose = rowOf(msg, 'ff0')
@@ -1575,44 +1791,51 @@ do
     eq(W.ped().comps[11][1], 1, 'next puts the next top on the ped')
     msg = W.nui(NUI.LOCKER2)
     ok(msg.edit.dirty == true and rowOf(msg, 'c11').v == 2, 'shows 2/39 and the draft is dirty')
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
-    eq(W.nui(NUI.LOCKER2).tab, 'male', 'with unsaved changes the other tabs are refused')
     W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = -1 })
     W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = -1 })
     eq(rowOf(W.nui(NUI.LOCKER2), 'c11').v, 39, 'previous from 1 wraps to the last')
     eq(W.ped().comps[11][1], 38, 'which is drawable 38, 39 being gen9-only')
     W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
     eq(rowOf(W.nui(NUI.LOCKER2), 'c11').v, 1, 'and next from the last wraps to 1')
+    local before = #pushes(W)
     W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 2 })
     eq(rowOf(W.nui(NUI.LOCKER2), 'c11').v, 1, 'a step of 2 is refused')
+    eq(#pushes(W), before, 'and pushes nothing')
 
-    -- Next color.
+    -- A swatch, never "Next color" (owner, 2026-10-14).
     W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 3 })
     eq(W.ped().comps[11][1], 2, 'set jumps to a position')
-    eq(rowOf(W.nui(NUI.LOCKER2), 'c11').colors, 3, 'drawable 2 has three colors')
+    top = rowOf(W.nui(NUI.LOCKER2), 'c11')
+    ok(top.colors == 3 and top.c == 0 and top.pal == nil, 'drawable 2 has three colors, the first worn, no palette')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = 2 })
+    eq(W.ped().comps[11][2], 2, 'a swatch puts that texture on')
+    eq(rowOf(W.nui(NUI.LOCKER2), 'c11').c, 2, 'and the row says which is worn')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = 3 })
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = -1 })
     W.ui(NUICB.LOCKER2_COLOR, { k = 'c11' })
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11' })
-    eq(W.ped().comps[11][2], 2, 'Next color steps the texture')
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11' })
-    eq(W.ped().comps[11][2], 0, 'and wraps')
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11' })
+    eq(W.ped().comps[11][2], 2, 'past its colors, below 0, or no color at all: refused')
     W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
     eq(W.ped().comps[11][2], 0, 'a new item starts on its first color')
     W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 1 })
     eq(W.ped().comps[11][1], 0, 'reset puts the row back to 1')
     W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 40 })
     eq(W.ped().comps[11][1], 0, 'a position past the end is refused')
-    W.ui(NUICB.LOCKER2_SET, { k = 'c1', v = 2 })
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'c1' })
-    eq(W.ped().comps[1][2], 1, 'a mask of two colors has Next color')
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'mask', on = true })
+    eq(W.ped().comps[1][1], 1, 'Add more\'s Mask puts its first mask on')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c1', c = 1 })
+    eq(W.ped().comps[1][2], 1, 'a mask of two colors has its swatches')
     W.ui(NUICB.LOCKER2_SET, { k = 'c1', v = 1 })
     eq(W.ped().comps[1][2], 0, 'and reset puts its color back too')
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'o2' })
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o2', c = 1 })
     eq(W.ped().ovc[2][2], 1, 'eyebrow color, on the hair palette')
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'c2' })
-    eq(W.ped().hair[1], 1, 'the Hair row\'s Next color is the hair color')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c2', c = 1 })
+    eq(W.ped().hair[1], 1, 'the Hair row\'s swatch is the hair color')
+    local hairRow = rowOf(W.nui(NUI.LOCKER2), 'c2')
+    ok(hairRow.pal == 'hair' and hairRow.c == 1 and hairRow.colors == 64, 'drawn from the hair palette, the one worn')
     W.ui(NUICB.LOCKER2_STEP, { k = 'h1', d = 1 })
     eq(W.ped().hair[2], 1, 'the Highlight row is `h1`, the name the page labels')
+    local hl = rowOf(W.nui(NUI.LOCKER2), 'h1')
+    ok(hl.pal == 'hair' and hl.c == nil, 'its swatches are its own value')
 
     -- Sliders.
     W.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 50 })
@@ -1626,27 +1849,24 @@ do
     W.ui(NUICB.LOCKER2_SET, { k = 'sk', v = 46 })
     eq(W.ped().blend[2], 45, 'skin tone 46/46 is tone 45')
     W.ui(NUICB.LOCKER2_SET, { k = 'c5', v = 2 })
-    eq(W.ped().comps[5][1], 1, 'the Bags row takes a bag')
+    eq(W.ped().comps[5][1], 1, 'the Bag row takes a bag')
     W.ui(NUICB.LOCKER2_SET, { k = 'zz', v = 1 })
 
     -- The camera.
     W.ui(NUICB.LOCKER2_CAT, { cat = 'shoes' })
     eq(W.cams[#W.cams], 'focus:feet', 'Shoes moves the camera to the feet')
-    W.ui(NUICB.LOCKER2_CAT, { cat = 'bags' })
-    eq(W.nui(NUI.LOCKER2).edit.cat, 'bags', 'any category is remembered')
-    eq(W.cams[#W.cams], 'focus:back', 'Bags looks at the back')
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'bag' })
+    eq(W.nui(NUI.LOCKER2).edit.cat, 'bag', 'any category is remembered')
+    eq(W.cams[#W.cams], 'focus:back', 'Bag looks at the back')
     W.ui(NUICB.LOCKER2_CAT, { cat = 'nope' })
     eq(W.cams[#W.cams], 'focus:back', 'an unknown category moves nothing')
 
-    -- Reset.
-    W.ui(NUICB.LOCKER2_RESET)
-    local m3 = W.nui(NUI.LOCKER2)
-    ok(m3.edit.dirty == false and rowOf(m3, 'c11').v == 1 and W.ped().ff[0] == 0.0,
-        'Reset takes the draft back to where it began')
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
+    -- Back, out of the editor.
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 2 })
     W.pump(300)
-    eq(W.nui(NUI.LOCKER2).tab, 'stock', 'with nothing unsaved the tabs are free')
-    eq(W.ped().model, hashOf(BR.PedById(STOCK1).model), 'and Stock wears the worn ped again')
+    local m3 = W.nui(NUI.LOCKER2)
+    ok(m3.edit == nil and m3.tabSeq == 2, 'Leave drops the draft, and says it saw the request')
+    eq(W.ped().model, hashOf(BR.PedById(STOCK1).model), 'and the worn look is put back on')
     eq(W.cams[#W.cams], 'unfocus', 'with the camera home')
 end
 
@@ -1654,29 +1874,27 @@ describe('season2.save')
 do
     local W = joined()
     W.ui(NUICB.LOCKER2_OPEN)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
     W.pump(300)
-    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Ann' })
-    eq(#W.sentTo(NET.LOCKER2_SAVE), 0, 'nothing to save while the draft is clean')
-    W.ui(NUICB.LOCKER2_STEP, { k = 'c4', d = 1 })
-    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'An n' })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c4', v = 2 })
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'An  n' })
     eq(#W.sentTo(NET.LOCKER2_SAVE), 0, 'a bad name is refused here as well')
     W.ui(NUICB.LOCKER2_SAVE, { op = 'update' })
     eq(#W.sentTo(NET.LOCKER2_SAVE), 0, 'update with nothing being edited')
-    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Ann' })
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Night Ann' })
     local s = W.sentTo(NET.LOCKER2_SAVE)[1]
-    ok(s and s.op == 'new' and s.name == 'Ann' and s.id == nil, 'a new save names the ped')
+    ok(s and s.op == 'new' and s.name == 'Night Ann' and s.id == nil, 'a new look is named: words with a space')
     local sent = s and A.decode(s.a)
     ok(sent and sent.s == 'f' and sent.c[4][1] == 1, 'and carries the draft, canonical')
     eq(W.nui(NUI.LOCKER2).busy, true, 'the page is busy')
     W.ui(NUICB.LOCKER2_STEP, { k = 'c4', d = 1 })
     eq(W.ped().comps[4][1], 1, 'and nothing changes while it is')
-    local ped = { id = PID, name = 'Ann', a = s.a, up = 9 }
+    local ped = { id = PID, name = 'Night Ann', a = s.a, up = 9 }
     W.net(NET.LOCKER2_RESULT, { req = s.req, ok = true, id = PID, ped = ped,
         worn = { k = 'p', id = PID, a = s.a } })
     local msg = W.nui(NUI.LOCKER2)
     ok(msg.busy == false and msg.edit.editing == PID and msg.edit.dirty == false,
-        'saved: the draft is now that ped, clean')
+        'saved: the draft is now that look, clean')
     eq(#msg.peds, 1, 'and it is listed')
     eq(A.decodeWorn(W.kvp['br:locker2:worn']).id, PID, 'and worn')
     -- The headshot, off the player's own ped.
@@ -1693,31 +1911,41 @@ do
     ok(up and up.id == PID and up.img == img, 'and uploaded, whichever callback came first')
     W.ui(NUICB.LOCKER2_SHOT, { id = PID, img = img })
     eq(#W.sentTo(NET.LOCKER2_SHOT), 1, 'once')
-    W.net(NET.LOCKER2_RESULT, { req = up.req, ok = true, id = PID, ped = { id = PID, name = 'Ann', a = s.a, up = 9, img = img } })
+    W.net(NET.LOCKER2_RESULT, { req = up.req, ok = true, id = PID, ped = { id = PID, name = 'Night Ann', a = s.a, up = 9, img = img } })
     eq(W.BR.LockerV2.state().peds[1].img, img, 'and kept for the next time the page asks for that card')
 
-    -- Update, and a refusal.
+    -- Update (the save dialog's Save), with the name typed there.
     W.ui(NUICB.LOCKER2_STEP, { k = 'c6', d = 1 })
-    W.ui(NUICB.LOCKER2_SAVE, { op = 'update' })
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = PID })
     local u = W.sentTo(NET.LOCKER2_SAVE)[2]
-    ok(u and u.op == 'update' and u.id == PID and u.name == nil, 'Update saves over the ped being edited')
+    ok(u and u.op == 'update' and u.id == PID and u.name == nil, 'Save updates the look being edited')
     W.net(NET.LOCKER2_RESULT, { req = u.req, ok = false, reason = 'rate' })
     eq(W.notify[#W.notify], 'Something went wrong. Try again.', 'a refusal says so')
     eq(W.nui(NUI.LOCKER2).edit.dirty, true, 'and the changes are still there')
-    W.ui(NUICB.LOCKER2_SAVE, { op = 'replace', id = 'nope' })
-    eq(#W.sentTo(NET.LOCKER2_SAVE), 2, 'replace needs a saved ped')
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = '0abcdefgh99', name = 'Ann' })
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = PID, name = 'Ann  Two' })
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'replace', id = PID })
+    eq(#W.sentTo(NET.LOCKER2_SAVE), 2, 'another look\'s id, a bad name, or an op that is not one: nothing sent')
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'update', id = PID, name = 'Ann Two' })
+    local u2 = W.sentTo(NET.LOCKER2_SAVE)[3]
+    ok(u2 and u2.op == 'update' and u2.id == PID and u2.name == 'Ann Two', 'an update carries the name typed')
+    W.net(NET.LOCKER2_RESULT, { req = u2.req, ok = true, id = PID,
+        ped = { id = PID, name = 'Ann Two', a = u2.a, up = 10 }, worn = { k = 'p', id = PID, a = u2.a } })
+    eq(W.nui(NUI.LOCKER2).peds[1].name, 'Ann Two', 'and the card follows')
+    local saved = A.decode(u2.a)
 
     -- A write the server never answers gives the page back.
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c6', d = 1 })
     W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Eve' })
     W.pump(10500)
     eq(W.nui(NUI.LOCKER2).busy, false, 'after 10 s with no answer the page is not busy')
 
-    -- Close discards and puts the worn ped back.
+    -- Close discards and puts the worn look back.
     W.ui(NUICB.LOCKER2_CLOSE)
     W.pump(300)
     local m4 = W.nui(NUI.LOCKER2)
     eq(m4.edit, nil, 'close discards the draft')
-    eq(W.ped().comps[6][1], 0, 'and the saved look is back on')
+    eq(W.ped().comps[6][1], saved.c[6][1], 'and the saved look is back on')
     eq(W.cams[#W.cams], 'unfocus', 'with the camera home')
 end
 
@@ -1730,15 +1958,15 @@ do
     W.pump(300)
     eq(W.ped().model, FEMALE, 'a card wears its ped')
     eq(W.sentTo(NET.LOCKER2_WEAR)[1].id, PID, 'and the server is told')
-    W.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    W.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     local msg = W.nui(NUI.LOCKER2)
-    ok(msg.tab == 'female' and msg.edit.editing == PID, 'Edit opens it on its own tab')
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'peds' })
-    W.ui(NUICB.LOCKER2_RENAME, { id = PID, name = 'Eve' })
+    ok(msg.tab == 'female' and msg.edit.editing == PID and msg.tabSeq == 1, 'Edit opens it, the request echoed')
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 2 })
+    W.ui(NUICB.LOCKER2_RENAME, { id = PID, name = 'Eve Two' })
     local rn = W.sentTo(NET.LOCKER2_RENAME)[1]
-    ok(rn and rn.name == 'Eve', 'Rename asks the server')
-    W.net(NET.LOCKER2_RESULT, { req = rn.req, ok = true, id = PID, ped = { id = PID, name = 'Eve', a = A.encode(a), up = 6 } })
-    eq(W.nui(NUI.LOCKER2).peds[1].name, 'Eve', 'and the card follows')
+    ok(rn and rn.name == 'Eve Two', 'Rename asks the server, a space and all')
+    W.net(NET.LOCKER2_RESULT, { req = rn.req, ok = true, id = PID, ped = { id = PID, name = 'Eve Two', a = A.encode(a), up = 6 } })
+    eq(W.nui(NUI.LOCKER2).peds[1].name, 'Eve Two', 'and the card follows')
     W.ui(NUICB.LOCKER2_DELETE, { id = PID })
     local dl = W.sentTo(NET.LOCKER2_DELETE)[1]
     W.net(NET.LOCKER2_RESULT, { req = dl.req, ok = true, id = PID, gone = true })
@@ -1749,7 +1977,7 @@ do
     local W2 = joined({ { id = PID, name = 'Ann', a = A.encode(a), up = 5 } })
     W2.ui(NUICB.LOCKER2_OPEN)
     W2.ui(NUICB.LOCKER2_SHOTS, { ids = { PID, 'nope' } })
-    W2.pump(600)
+    W2.pump(1100)
     eq(#W2.created, 1, 'one clone')
     eq(W2.created[1].net, false, 'never networked')
     local shot = W2.nui(NUI.LOCKER2_SHOT)
@@ -1765,7 +1993,7 @@ do
     W3.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
     W3.pump(300)
     W3.ui(NUICB.LOCKER2_SHOTS, { ids = { PID, '0abcdefgh13' } })
-    W3.pump(300)
+    W3.pump(1100)
     eq(#W3.created, 0, 'no clone for the ped being worn')
     eq(W3.shots[1] and W3.shots[1].ped, W3.handle, 'it is shot off the player')
     local stored = nil
@@ -1778,17 +2006,17 @@ end
 describe('season2.refusals')
 do
     local W = joined()
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     eq(W.count('SetPlayerModel'), 1, 'nothing before the page is open')
     W.ui(NUICB.LOCKER2_OPEN)
     W.locked = true
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 2 })
     W.ui(NUICB.LOCKER2_WEAR, { k = 's', id = STOCK2 })
     W.pump(300)
     eq(W.count('SetPlayerModel'), 1, 'nothing while the entrance holds the ped')
     W.locked = false
     W.season(1)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 3 })
     W.pump(300)
     ok(W.ped().model ~= MALE, 'nothing off Season 2')
 end
@@ -1797,7 +2025,7 @@ describe('season2.lifecycle')
 do
     local W = joined()
     W.ui(NUICB.LOCKER2_OPEN)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     W.pump(300)
     W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
     W.fire('br:ui:focusChanged', 'chat')
@@ -1809,7 +2037,7 @@ do
 
     -- A match started mid-edit plays in the preview; the next lobby restores.
     W.ui(NUICB.LOCKER2_OPEN)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 2 })
     W.pump(300)
     W.ui(NUICB.LOCKER2_STEP, { k = 'c4', d = 1 })
     W.BR.State.me.state = W.BR.PlayerState.ALIVE
@@ -1828,87 +2056,89 @@ do
     -- pressing Face never moved the camera.
     local W = joined()
     W.ui(NUICB.LOCKER2_OPEN)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     W.pump(300)
-    eq(W.nui(NUI.LOCKER2).edit.cat, nil, 'a new draft lights no anchor')
+    eq(W.nui(NUI.LOCKER2).edit.cat, nil, 'a new draft lights no category')
     eq(W.cams[#W.cams], 'unfocus', 'with the camera home on the whole ped')
     W.ui(NUICB.LOCKER2_CAT, { cat = 'face' })
     eq(W.cams[#W.cams], 'focus:head', 'Face moves the camera to the head')
     eq(W.nui(NUI.LOCKER2).edit.cat, 'face', 'and lights Face')
-    local moves, pushes = #W.cams, #W.events
+    local moves, events = #W.cams, #W.events
     W.ui(NUICB.LOCKER2_CAT, { cat = 'face' })
     eq(#W.cams, moves, 'Face again: the camera is there already')
-    eq(#W.events, pushes + 1, 'and nothing is pushed (the one event is the press itself)')
+    eq(#W.events, events + 1, 'and nothing is pushed (the one event is the press itself)')
     W.ui(NUICB.LOCKER2_CAT, { cat = 'hair' })
     eq(#W.cams, moves, 'Hair is the same shot of the head: no move')
     eq(W.nui(NUI.LOCKER2).edit.cat, 'hair', 'but Hair is lit')
     W.ui(NUICB.LOCKER2_CAT, { cat = 'shoes' })
     eq(W.cams[#W.cams], 'focus:feet', 'Shoes: the feet')
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'female', seq = 2 })
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 2 })
+    eq(W.cams[#W.cams], 'unfocus', 'Back out of the editor brings the camera home from the feet')
     W.pump(300)
-    eq(W.nui(NUI.LOCKER2).edit.cat, nil, 'Custom (female) after Shoes lights no anchor')
-    eq(W.cams[#W.cams], 'unfocus', 'and brings the camera home from the feet')
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 3 })
+    W.pump(300)
+    eq(W.nui(NUI.LOCKER2).edit.cat, nil, 'and the next new look lights no category')
     -- Edit is a new draft too.
     local P = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5 } })
     P.ui(NUICB.LOCKER2_OPEN)
-    P.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
+    P.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     P.pump(300)
     P.ui(NUICB.LOCKER2_CAT, { cat = 'legs' })
     eq(P.focusedCam, 'legs', 'the camera on the legs')
-    P.ui(NUICB.LOCKER2_TAB, { tab = 'peds', seq = 2 })
+    P.ui(NUICB.LOCKER2_LEAVE, { seq = 2 })
     P.pump(300)
-    P.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 3 })
     P.pump(300)
     local m = P.nui(NUI.LOCKER2)
-    ok(m.tab == 'female' and m.edit.cat == nil, 'Edit: no anchor lit')
+    ok(m.tab == 'female' and m.edit.cat == nil, 'Edit: no category lit')
     eq(P.focusedCam, nil, 'and the camera home')
 end
 
 describe('season2.absent')
 do
-    -- #28 review: Next color and the opacity sliders on an overlay of none
-    -- changed what nobody can see, and made the draft dirty -- the tabs locked
+    -- #28 review: a color and the opacity sliders on an overlay of none
+    -- changed what nobody can see, and made the draft dirty -- the page locked
     -- with nothing on screen to say why.
-    local W = joined()
-    W.ui(NUICB.LOCKER2_OPEN)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
-    W.pump(300)
+    local look = A.default('m')
+    look.x = { 'makeup' }
+    local W = editing(look)
     local m = W.nui(NUI.LOCKER2)
+    eq(table.concat(listOf(m.edit.extras), ','), 'makeup', 'a look saved with Makeup on its list, nothing chosen')
     for _, k in ipairs({ 'o1', 'o4', 'o5', 'o8', 'o10' }) do
-        eq(rowOf(m, k).colors, 1, k .. ' of none: no Next color')
+        eq(rowOf(m, k).colors, 1, k .. ' of none: no swatches')
         eq(rowOf(m, k .. 'op').off, true, k .. ' of none: its opacity is off')
     end
-    eq(rowOf(m, 'o2').colors, 64, 'the eyebrows are never none: they keep Next color')
+    eq(rowOf(m, 'o2').colors, 64, 'the eyebrows are never none: they keep their swatches')
     eq(rowOf(m, 'o2op').off, nil, 'and their opacity')
-    eq(rowOf(m, 'p0').colors, 1, 'no hat, no Next color (as before)')
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'o1' })
+    eq(rowOf(m, 'o4').pal, 'makeup', 'makeup on the makeup palette')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o1', c = 1 })
     W.ui(NUICB.LOCKER2_SET, { k = 'o1op', v = 40 })
     m = W.nui(NUI.LOCKER2)
-    eq(m.edit.dirty, false, 'Next color and opacity on none are refused: nothing to save')
+    eq(m.edit.dirty, false, 'a color and an opacity on none are refused: nothing to save')
     eq(W.ped().ov[1][2], 1.0, 'and nothing reaches the ped')
 
     -- On, then back to none: what the player cannot see is not a change.
     W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = 1 })
     m = W.nui(NUI.LOCKER2)
-    ok(rowOf(m, 'o1').colors == 64 and rowOf(m, 'o1op').off == nil, 'facial hair on: Next color and opacity')
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'o1' })
+    ok(rowOf(m, 'o1').colors == 64 and rowOf(m, 'o1op').off == nil, 'facial hair on: swatches and opacity')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o1', c = 1 })
     W.ui(NUICB.LOCKER2_SET, { k = 'o1op', v = 40 })
     eq(W.nui(NUI.LOCKER2).edit.dirty, true, 'a color and an opacity on it are changes')
     W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = -1 })
     eq(W.nui(NUI.LOCKER2).edit.dirty, false, 'stepped back to none: no change left to save')
 
-    -- A row's reset puts its Next color back too, as a component's always did.
+    -- A row's reset puts its color back too, as a component's always did.
     W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = 1 })
     eq(W.ped().ovc[1][2], 1, 'on again, with the color it had')
     W.ui(NUICB.LOCKER2_SET, { k = 'o1', v = 1 })
     W.ui(NUICB.LOCKER2_STEP, { k = 'o1', d = 1 })
     eq(W.ped().ovc[1][2], 0, 'an overlay reset puts its color back')
-    W.ui(NUICB.LOCKER2_RESET)
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'o2' })
+    W.ui(NUICB.LOCKER2_SET, { k = 'o1', v = 1 })
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o2', c = 1 })
     eq(W.nui(NUI.LOCKER2).edit.dirty, true, 'eyebrow color is a change')
     W.ui(NUICB.LOCKER2_SET, { k = 'o2', v = 1 })
     eq(W.nui(NUI.LOCKER2).edit.dirty, false, 'and the Eyebrows reset takes it back')
-    W.ui(NUICB.LOCKER2_COLOR, { k = 'c2' })
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c2', c = 1 })
     eq(W.nui(NUI.LOCKER2).edit.dirty, true, 'hair color is a change')
     W.ui(NUICB.LOCKER2_SET, { k = 'c2', v = 1 })
     eq(W.nui(NUI.LOCKER2).edit.dirty, false, 'and the Hair reset takes it back')
@@ -1917,28 +2147,36 @@ end
 
 describe('season2.tabseq')
 do
-    -- #28 review: the page moves its tab on the press. A press Lua refused
-    -- (the freemode model still streaming in) left the page on Custom (female)
-    -- with the male draft's rows -- and Save saved a male ped.
-    local W = joined()
+    -- #28 review: the page moves its view on the press. A press Lua refused
+    -- (the freemode model still streaming in) left the page in an editor Lua
+    -- never opened. Every request that starts or ends a draft is numbered, and
+    -- every answer says which it saw.
+    local W = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5 } })
     W.ui(NUICB.LOCKER2_OPEN)
-    eq(W.nui(NUI.LOCKER2).tabSeq, nil, 'an opening has seen no press yet')
+    eq(W.nui(NUI.LOCKER2).tabSeq, nil, 'an opening has seen no request yet')
     W.modelDelay = 300
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 1 })
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'female', seq = 2 })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 2 })
     local m = W.nui(NUI.LOCKER2)
-    eq(m.tab, 'male', 'Custom (female) while the male ped streams in is refused')
-    eq(m.tabSeq, 2, 'and the answer says which press it saw, so the page goes back')
+    ok(m.tab == 'male' and m.edit and m.edit.sex == 'm', 'a female look while the male ped streams in is refused')
+    eq(m.tabSeq, 2, 'and the answer says which request it saw, so the page shows the male one')
     W.pump(500)
     m = W.nui(NUI.LOCKER2)
     ok(m.tab == 'male' and m.edit.sex == 'm' and m.tabSeq == 2, 'the male draft, on its tab')
     W.locked = true
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'stock', seq = 3 })
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 3 })
     m = W.nui(NUI.LOCKER2)
-    ok(m.tab == 'male' and m.tabSeq == 3, 'every refusal says so, the locked ped too')
+    ok(m.edit ~= nil and m.tabSeq == 3, 'every refusal says so -- Back with the ped held keeps the editor')
     W.locked = false
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male', seq = 4 })
-    eq(W.nui(NUI.LOCKER2).tabSeq, 4, 'and a press of the tab already shown')
+    W.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 4 })
+    m = W.nui(NUI.LOCKER2)
+    ok(m.edit.sex == 'm' and m.tabSeq == 4, 'Edit over an unsaved new look is refused, and says so')
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 5 })
+    W.pump(500)
+    W.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 6 })
+    W.pump(500)
+    m = W.nui(NUI.LOCKER2)
+    ok(m.edit.sex == 'f' and m.edit.editing == PID and m.tabSeq == 6, 'then it opens')
     W.ui(NUICB.LOCKER2_CLOSE)
     W.ui(NUICB.LOCKER2_OPEN)
     eq(W.nui(NUI.LOCKER2).tabSeq, nil, 'a new opening starts again')
@@ -1981,14 +2219,14 @@ do
     eq(#X.notify, 0, 'and nothing says it failed')
     eq(X.BR.LockerV2.state().applying, false, 'nor is anything left in flight')
     eq(A.decodeWorn(X.kvp['br:locker2:worn']).id, STOCK1, 'the worn ped is still the one on')
-    -- A Custom tab's draft likewise.
+    -- A new look's draft likewise.
     local Y = joined()
     Y.ui(NUICB.LOCKER2_OPEN)
     Y.modelDelay = 500
-    Y.ui(NUICB.LOCKER2_TAB, { tab = 'female', seq = 1 })
+    Y.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
     Y.BR.State.me.state = Y.BR.PlayerState.WARMUP
     Y.pump(1500)
-    ok(Y.ped().model ~= FEMALE, 'nor is a Custom tab draft ped')
+    ok(Y.ped().model ~= FEMALE, 'nor is a new look\'s ped')
 end
 
 describe('season2.watchstates')
@@ -2087,7 +2325,7 @@ do
     eq(W.cams[#W.cams], 'unfocus', 'with the camera home')
     W.season(2)
     W.pump(300)
-    eq(#W.sentTo(NET.LOCKER2_FETCH), 3, 'back on Season 2 it asks the server again (after the join and the open)')
+    eq(#W.sentTo(NET.LOCKER2_FETCH), 2, 'back on Season 2 it asks the server again (after the join; the open asked nothing)')
 
     -- A switch that lands mid-match waits for the lobby.
     local M = clientWorld({ season = 2, v2 = true })
@@ -2211,20 +2449,15 @@ local function zoneItems(W, sex, z)
     return {}
 end
 
---- Tattoo `i` put on as the player would: Add in its zone, then `i` chosen
---- in the new row's list. The row's id.
+--- Tattoo `i` put on as the player would: "Add more", its zone, then it
+--- (owner, 2026-10-14). The new row's id.
 local function tatOn(W, i)
     local z = TAT.list[i][2]
     local before = #zoneRowsIn(W, z)
-    W.ui(NUICB.LOCKER2_TAT_ADD, { z = z })
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = z, i = i })
     local rows = zoneRowsIn(W, z)
     if #rows == before then return nil end
-    local row = rows[#rows]
-    if row.i ~= i then W.ui(NUICB.LOCKER2_TAT_SET, { r = row.r, i = i }) end
-    for _, x in ipairs(zoneRowsIn(W, z)) do
-        if x.r == row.r then row = x end
-    end
-    return row.i == i and row.r or nil
+    return rows[#rows].i == i and rows[#rows].r or nil
 end
 
 --- The overlay names of these rows of the list for a sex, sorted, as decoNames
@@ -2240,11 +2473,12 @@ describe('season2.tattoos')
 do
     local W = joined()
     W.ui(NUICB.LOCKER2_OPEN)
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     W.pump(300)
     -- "a list, starting empty" (owner, 2026-10-12).
     local m0 = W.nui(NUI.LOCKER2)
-    ok(m0.edit and #m0.edit.tats == 0 and #W.ped().decos == 0, 'a new ped starts with no tattoo rows, and wears none')
+    ok(m0.edit and #listOf(m0.edit.tats) == 0 and #W.ped().decos == 0,
+        'a new look starts with no tattoo rows, and wears none')
     local labels = W.count('GetLabelText')
     eq(labels, 0, 'no name is looked up before the page asks for the list')
     W.ui(NUICB.LOCKER2_TATS, { sex = 'm' })
@@ -2292,21 +2526,33 @@ do
     W.ui(NUICB.LOCKER2_TATS, { sex = 'x' })
     eq(listsSent(), sent, 'a sex that is not one gets nothing')
 
-    -- ADD: "When I click add, create a new row" -- on the zone's first tattoo.
+    -- "ADD MORE" (owner, 2026-10-14: "starting with a bunch of add buttons is
+    -- not intuitive ... fix that"): the zone and the tattoo, picked.
     local torso = zoneItems(W, 'm', 'torso')
-    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    local headFirst = zoneItems(W, 'm', 'head')[1]
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso', i = torso[1] })
     local rows = zoneRowsIn(W, 'torso')
-    ok(#rows == 1 and rows[1].i == torso[1], 'Add makes a row on the zone\'s first tattoo', rows[1] and rows[1].i)
+    ok(#rows == 1 and rows[1].i == torso[1], 'Add makes a row of the tattoo picked', rows[1] and rows[1].i)
     eq(decoNames(W.ped(), 'm'), overlaysOf({ torso[1] }, 'm'), 'on the preview at once, the male overlay')
     eq(W.ped().decos[1][1], hashOf(TAT.list[torso[1]][3]), 'from its collection')
-    ok(W.nui(NUI.LOCKER2).edit.dirty == true, 'the draft is dirty')
-    W.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
-    eq(W.nui(NUI.LOCKER2).tab, 'male', 'so the other tabs are locked, as for any change')
-    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    eq(table.concat(listOf(W.nui(NUI.LOCKER2).edit.extras), ','), 'tattoos', 'and Tattoos is on the look\'s list')
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso', i = torso[2] })
     rows = zoneRowsIn(W, 'torso')
-    ok(#rows == 2 and rows[2].i == torso[2], 'a second Add: the first tattoo no row holds, at the foot')
+    ok(#rows == 2 and rows[2].i == torso[2], 'a second Add: at the foot of its zone')
     local a, b = rows[1].r, rows[2].r
     ok(a ~= b, 'each row its own id')
+    -- What "Add more" never offers is refused here whatever the page sends.
+    local clearsAdd, addsAdd = W.count('ClearPedDecorations'), W.count('AddPedDecorationFromHashes')
+    local _, herOnly = onlyFor('f', 'torso')
+    for _, bad in ipairs({ { z = 'torso', i = torso[1] }, { z = 'head', i = torso[3] }, { z = 'torso', i = herOnly },
+                           { z = 'torso' }, { z = 'torso', i = 0 }, { z = 'torso', i = #TAT.list + 1 },
+                           { z = 'torso', i = 'x' } }) do
+        W.ui(NUICB.LOCKER2_TAT_ADD, bad)
+    end
+    ok(#zoneRowsIn(W, 'torso') == 2 and #zoneRowsIn(W, 'head') == 0,
+        'a tattoo the zone has, another zone\'s, one only she has, or none: refused')
+    ok(W.count('ClearPedDecorations') == clearsAdd and W.count('AddPedDecorationFromHashes') == addsAdd,
+        'and the preview untouched')
 
     -- THE LIST (owner, 2026-10-12: "attribute editor"): a row's tattoo chosen
     -- among its zone's, on the preview at once, the row the same row.
@@ -2325,7 +2571,6 @@ do
     eq(zoneRowsIn(W, 'torso')[1].i, torso[1], 'the tattoo another row of the zone holds: refused, never one in two rows')
     W.ui(NUICB.LOCKER2_TAT_SET, { r = a, i = torso[1] })
     local _, herTorso = onlyFor('f', 'torso')
-    local headFirst = zoneItems(W, 'm', 'head')[1]
     ok(herTorso ~= nil, 'the list has a torso tattoo only she has')
     for _, bad in ipairs({ { r = a, i = headFirst }, { r = a, i = herTorso }, { r = a, i = #TAT.list + 1 },
                            { r = a, i = 0 }, { r = a, i = 'x' }, { r = a }, { r = 99999, i = torso[4] },
@@ -2358,12 +2603,12 @@ do
     W.ui(NUICB.LOCKER2_TAT_DEL, { r = a })
     W.ui(NUICB.LOCKER2_TAT_DEL, { r = 'x' })
     eq(#zoneRowsIn(W, 'torso'), 1, 'a row already gone, or not one: nothing')
-    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso', i = torso[1] })
     rows = zoneRowsIn(W, 'torso')
-    ok(#rows == 2 and rows[2].i == torso[1] and rows[2].r ~= a, 'an Add after it: the first tattoo free again, a new row')
+    ok(#rows == 2 and rows[2].i == torso[1] and rows[2].r ~= a, 'an Add after it: the tattoo free again, a new row')
 
     -- "You can just make it max 10 per category."
-    for _ = 1, 12 do W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' }) end
+    for k = 3, 14 do W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso', i = torso[k] }) end
     rows = zoneRowsIn(W, 'torso')
     eq(#rows, 10, 'max 10 per zone: an 11th Add is refused')
     local seen, dup = {}, false
@@ -2373,10 +2618,12 @@ do
     end
     ok(not dup, 'and no tattoo in two rows')
     eq(#W.ped().decos, 10, 'ten on the preview')
-    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    W.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = headFirst })
     eq(#zoneRowsIn(W, 'head'), 1, 'another zone has ten of its own')
     eq(#W.ped().decos, 11, 'on the preview too')
-    for _, bad in ipairs({ { z = 'nope' }, { z = 5 }, {} }) do W.ui(NUICB.LOCKER2_TAT_ADD, bad) end
+    for _, bad in ipairs({ { z = 'nope', i = headFirst }, { z = 5, i = headFirst }, {} }) do
+        W.ui(NUICB.LOCKER2_TAT_ADD, bad)
+    end
     eq(#tatRowsIn(W), 11, 'Add in a zone that is not one: refused')
     local own = true
     for _, r in ipairs(tatRowsIn(W)) do
@@ -2416,33 +2663,34 @@ do
     eq(W.cams[#W.cams], 'focus:upper', 'the section itself at the upper body')
     eq(W.nui(NUI.LOCKER2).edit.cat, 'tattoos', 'and its anchor is lit')
 
-    -- Her list and her overlays on the female tab; Reset takes them off.
+    -- Her list and her overlays on a female look; Undo takes them off.
     local F = joined()
     F.ui(NUICB.LOCKER2_OPEN)
-    F.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    F.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
     F.pump(300)
     local fhead = zoneItems(F, 'f', 'head')
-    F.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
-    eq(decoNames(F.ped(), 'f'), overlaysOf({ fhead[1] }, 'f'), 'the female tab: her list, her overlay')
+    F.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = fhead[1] })
+    eq(decoNames(F.ped(), 'f'), overlaysOf({ fhead[1] }, 'f'), 'a female look: her list, her overlay')
     local fr = zoneRowsIn(F, 'head')[1].r
     local _, hisHead = onlyFor('m', 'head')
     ok(hisHead ~= nil, 'the list has a head tattoo only he has')
     F.ui(NUICB.LOCKER2_TAT_SET, { r = fr, i = hisHead })
-    eq(zoneRowsIn(F, 'head')[1].i, fhead[1], 'on her tab, one only he has: refused')
+    eq(zoneRowsIn(F, 'head')[1].i, fhead[1], 'on her look, one only he has: refused')
     F.ui(NUICB.LOCKER2_TAT_SET, { r = fr, i = fhead[#fhead] })
     eq(decoNames(F.ped(), 'f'), overlaysOf({ fhead[#fhead] }, 'f'), 'one of her list chosen: her overlay')
     local before = F.nui(NUI.LOCKER2).edit.tats[1].r
-    F.ui(NUICB.LOCKER2_RESET)
-    F.pump(300)
+    F.ui(NUICB.LOCKER2_UNDO)
+    eq(decoNames(F.ped(), 'f'), overlaysOf({ fhead[1] }, 'f'), 'Undo: the choice taken back, on the preview')
+    F.ui(NUICB.LOCKER2_UNDO)
     local fm = F.nui(NUI.LOCKER2)
-    ok(fm.edit.dirty == false and #fm.edit.tats == 0 and #F.ped().decos == 0, 'Reset takes the rows and the tattoos off')
+    ok(#listOf(fm.edit.tats) == 0 and #F.ped().decos == 0, 'Undo again: the row and the tattoo off')
     F.ui(NUICB.LOCKER2_TAT_SET, { r = before, i = fhead[2] })
     F.ui(NUICB.LOCKER2_TAT_DEL, { r = before })
-    ok(#F.nui(NUI.LOCKER2).edit.tats == 0 and #F.ped().decos == 0, 'and a row from before it is no row at all')
+    ok(#listOf(F.nui(NUI.LOCKER2).edit.tats) == 0 and #F.ped().decos == 0, 'and a row undone is no row at all')
     -- Refused while the ped is held, as every change is.
     F.locked = true
-    F.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
-    ok(#F.nui(NUI.LOCKER2).edit.tats == 0 and #F.ped().decos == 0, 'nothing while the entrance holds the ped')
+    F.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = fhead[1] })
+    ok(#listOf(F.nui(NUI.LOCKER2).edit.tats) == 0 and #F.ped().decos == 0, 'nothing while the entrance holds the ped')
 end
 
 describe('season2.tattoo_paths')
@@ -2508,7 +2756,7 @@ do
     ok(P.ped().model == FEMALE and #P.ped().decos == 0, 'an old save wears none, and takes the last one\'s off')
     -- 7. Edit opens it with its tattoos as rows, each in its own zone, the
     -- skipped ones not.
-    P.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     P.pump(300)
     local tats = P.nui(NUI.LOCKER2).edit.tats
     local _, iX7 = tatRow('TAT_X7_031')
@@ -2525,13 +2773,11 @@ do
     ok(P.nui(NUI.LOCKER2).edit.dirty == false, 'nothing to save')
     eq(decoNames(P.ped(), 'f'), want, 'and the preview wears them')
     -- 8. A stock ped, picked straight after the tattooed one: none.
-    P.ui(NUICB.LOCKER2_TAB, { tab = 'peds' })
+    P.ui(NUICB.LOCKER2_LEAVE, { seq = 2 })
     P.pump(300)
     P.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
     P.pump(300)
     eq(decoNames(P.ped(), 'f'), want, 'the tattooed ped worn again')
-    P.ui(NUICB.LOCKER2_TAB, { tab = 'stock' })
-    P.pump(300)
     P.ui(NUICB.LOCKER2_WEAR, { k = 's', id = STOCK2 })
     P.pump(600)
     local adds = P.count('AddPedDecorationFromHashes')
@@ -2543,7 +2789,7 @@ do
     local H = joined({ { id = PID, name = 'Ann', a = enc, up = 5 } })
     H.ui(NUICB.LOCKER2_OPEN)
     H.ui(NUICB.LOCKER2_SHOTS, { ids = { PID } })
-    H.pump(600)
+    H.pump(1100)
     eq(decoNames(H.peds[H.created[1].handle], 'f'), want, 'a card\'s headshot clone wears the tattoos')
     -- 10. A build without a set skips it, in the list and on the ped.
     local B = clientWorld({ season = 2, v2 = true })
@@ -2636,23 +2882,23 @@ do
     -- 5. AN ADD notes what the ped carries, and the draft as the look on.
     local T = joined()
     T.ui(NUICB.LOCKER2_OPEN)
-    T.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    T.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
     T.pump(300)
     local head1 = zoneItems(T, 'f', 'head')[1]
     local torso = zoneItems(T, 'f', 'torso')
-    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = head1 })
     T.ped().decos = {}
     T.pump(600)
     eq(decoNames(T.ped(), 'f'), overlaysOf({ head1 }, 'f'), 'after an Add, the same ped losing the tattoo gets it back')
     -- 6. A CHOICE notes it too, and a REMOVE: one taken off is not mistaken for
     -- one lost.
-    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso', i = torso[1] })
     T.ui(NUICB.LOCKER2_TAT_SET, { r = zoneRowsIn(T, 'torso')[1].r, i = torso[2] })
     T.ped().decos = {}
     T.pump(600)
     eq(decoNames(T.ped(), 'f'), overlaysOf({ head1, torso[2] }, 'f'),
         'after a choice, the same ped losing its tattoos gets the chosen one back')
-    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'larm' })
+    T.ui(NUICB.LOCKER2_TAT_ADD, { z = 'larm', i = zoneItems(T, 'f', 'larm')[1] })
     T.ui(NUICB.LOCKER2_TAT_DEL, { r = zoneRowsIn(T, 'larm')[1].r })
     local tc = T.count('ClearPedDecorations')
     T.pump(3000)
@@ -2665,17 +2911,17 @@ do
     E.ui(NUICB.LOCKER2_OPEN)
     E.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
     E.pump(300)
-    E.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    E.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     E.pump(300)
-    E.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    E.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = head1 })
     eq(#E.ped().decos, 1, 'the Add is on the preview')
     E.ui(NUICB.LOCKER2_CLOSE)
     E.pump(600)
     eq(#E.ped().decos, 0, 'closing the page takes the draft\'s tattoo off the worn ped')
     E.ui(NUICB.LOCKER2_OPEN)
-    E.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    E.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 2 })
     E.pump(300)
-    eq(#E.nui(NUI.LOCKER2).edit.tats, 0, 'and editing it again opens it with none')
+    eq(#listOf(E.nui(NUI.LOCKER2).edit.tats), 0, 'and editing it again opens it with none')
 
     -- 8. A MATCH STARTED MID-EDIT plays in the draft, its tattoo included,
     -- through a respawn.
@@ -2683,9 +2929,9 @@ do
     M.ui(NUICB.LOCKER2_OPEN)
     M.ui(NUICB.LOCKER2_WEAR, { k = 'p', id = PID })
     M.pump(300)
-    M.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    M.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     M.pump(300)
-    M.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    M.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = head1 })
     M.BR.State.me.state = M.BR.PlayerState.ALIVE
     M.pump(300)
     M.handle = M.handle + 1
@@ -2694,17 +2940,17 @@ do
     eq(decoNames(M.ped(), 'f'), overlaysOf({ head1 }, 'f'),
         'a match started mid-edit keeps the draft\'s tattoo through a respawn')
 
-    -- 9. AN ADD WHILE THE PED IS NOT THE DRAFT'S MODEL -- the Custom tab's
-    -- model never streamed, so the stock ped is still on -- puts nothing on it.
+    -- 9. AN ADD WHILE THE PED IS NOT THE DRAFT'S MODEL -- a new look's model
+    -- never streamed, so the stock ped is still on -- puts nothing on it.
     local G = joined()
     G.neverLoad = true
     G.ui(NUICB.LOCKER2_OPEN)
-    G.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    G.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     G.pump(5600)
     ok(G.ped().model == hashOf(G.BR.PedById(STOCK1).model) and G.nui(NUI.LOCKER2).edit ~= nil,
-        'a Custom tab whose model never streamed: its draft over the stock ped')
+        'a new look whose model never streamed: its draft over the stock ped')
     local adds, blends = G.count('AddPedDecorationFromHashes'), G.count('SetPedHeadBlendData')
-    G.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    G.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = zoneItems(G, 'm', 'head')[1] })
     G.ui(NUICB.LOCKER2_TAT_SET, { r = zoneRowsIn(G, 'head')[1].r, i = zoneItems(G, 'm', 'head')[2] })
     G.pump(2000)
     ok(G.count('AddPedDecorationFromHashes') == adds and #G.ped().decos == 0,
@@ -2712,29 +2958,29 @@ do
     eq(G.count('SetPedHeadBlendData'), blends, 'nor, later, the custom look')
 
     -- 10. ONE SEX'S OVERLAY LOOKED UP IS NOT THE OTHER'S: the same tattoo on
-    -- the male tab, then the female.
+    -- a male look, then a female one.
     local X = joined()
     X.ui(NUICB.LOCKER2_OPEN)
-    X.ui(NUICB.LOCKER2_TAB, { tab = 'male' })
+    X.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
     X.pump(300)
     ok(tatOn(X, iX7) ~= nil, 'the list reaches a tattoo deep in its zone')
-    eq(decoNames(X.ped(), 'm'), rX7[4], 'the male tab: his overlay')
-    X.ui(NUICB.LOCKER2_RESET)
+    eq(decoNames(X.ped(), 'm'), rX7[4], 'a male look: his overlay')
+    X.ui(NUICB.LOCKER2_LEAVE, { seq = 2 })
     X.pump(300)
-    X.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    X.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 3 })
     X.pump(300)
     tatOn(X, iX7)
-    eq(decoNames(X.ped(), 'f'), rX7[5], 'then the female tab: hers, not the one looked up for him')
+    eq(decoNames(X.ped(), 'f'), rX7[5], 'then a female one: hers, not the one looked up for him')
 
     -- 11. brlocker2 SAYS HOW MANY THE LOOK HAS AND HOW MANY THE ENGINE HOLDS:
     -- the playtest's count for an engine that draws fewer than were added.
     local K = joined()
     K.decoCap = 1
     K.ui(NUICB.LOCKER2_OPEN)
-    K.ui(NUICB.LOCKER2_TAB, { tab = 'female' })
+    K.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
     K.pump(300)
-    K.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
-    K.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    K.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = zoneItems(K, 'f', 'head')[1] })
+    K.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso', i = zoneItems(K, 'f', 'torso')[1] })
     local printed = {}
     K.env.print = function(s) printed[#printed + 1] = s end
     K.commands.brlocker2(0, {})
@@ -2753,9 +2999,11 @@ do
     for i, r in ipairs(TAT.list) do
         if r[2] == 'torso' and r[5] then torsoF[#torsoF + 1] = i end
     end
-    local headF = nil
+    local headF, headF2 = nil, nil
     for i, r in ipairs(TAT.list) do
-        if r[2] == 'head' and r[5] and not headF then headF = i end
+        if r[2] == 'head' and r[5] then
+            if not headF then headF = i elseif not headF2 then headF2 = i end
+        end
     end
     local over = femaleLook()
     for k = 1, 12 do A.setTattoo(over, TAT.list[torsoF[k]][1], true) end
@@ -2781,7 +3029,7 @@ do
     -- 2. Edit: the 10 as rows, in the list's order, and nothing to save.
     local P = joined({ { id = PID, name = 'Ann', a = enc, up = 5 } })
     P.ui(NUICB.LOCKER2_OPEN)
-    P.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     P.pump(300)
     local rows = zoneRowsIn(P, 'torso')
     local got = {}
@@ -2809,19 +3057,19 @@ do
     A.setTattoo(two, TAT.list[late][1], true)
     local O = joined({ { id = PID, name = 'Ann', a = A.encode(two), up = 5 } })
     O.ui(NUICB.LOCKER2_OPEN)
-    O.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    O.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     O.pump(300)
     local opened = {}
     for k, r in ipairs(zoneRowsIn(O, 'torso')) do opened[k] = r.i end
     eq(table.concat(opened, ','), early .. ',' .. late, 'Edit opens a zone\'s rows in the list\'s order, whatever their keys')
 
     -- 3. ON CHANGE: an 11th refused there too.
-    P.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso' })
+    P.ui(NUICB.LOCKER2_TAT_ADD, { z = 'torso', i = torsoF[11] })
     eq(#zoneRowsIn(P, 'torso'), 10, 'an 11th torso row refused')
     ok(P.nui(NUI.LOCKER2).edit.dirty == false, 'and nothing changed')
 
     -- 4. A change, then Save: the 10, and the change.
-    P.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    P.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = headF2 })
     P.ui(NUICB.LOCKER2_SAVE, { op = 'update' })
     local s = P.sentTo(NET.LOCKER2_SAVE)[1]
     local sa = s and A.decode(s.a)
@@ -2833,25 +3081,29 @@ do
     eq(n, 10, 'Save sends the torso\'s 10, never the two it never wore')
     eq(sa and #A.tattoos(sa), 12, 'and the head\'s two')
 
-    -- 5. RESET, after the change: the rows it opened with, as new rows.
+    -- 5. UNDO, after the change: the rows it opened with, as they were.
     local P2 = joined({ { id = PID, name = 'Ann', a = enc, up = 5 } })
     P2.ui(NUICB.LOCKER2_OPEN)
-    P2.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    P2.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     P2.pump(300)
     local ids = {}
     for _, r in ipairs(tatRowsIn(P2)) do ids[r.r] = true end
     P2.ui(NUICB.LOCKER2_TAT_DEL, { r = zoneRowsIn(P2, 'torso')[1].r })
-    P2.ui(NUICB.LOCKER2_TAT_ADD, { z = 'larm' })
+    local larm = nil
+    for i, r in ipairs(TAT.list) do
+        if r[2] == 'larm' and r[5] and not larm then larm = i end
+    end
+    P2.ui(NUICB.LOCKER2_TAT_ADD, { z = 'larm', i = larm })
     ok(P2.nui(NUI.LOCKER2).edit.dirty == true, 'a row removed and one added: dirty')
-    P2.ui(NUICB.LOCKER2_RESET)
-    P2.pump(300)
-    local back, fresh = {}, true
+    P2.ui(NUICB.LOCKER2_UNDO)
+    P2.ui(NUICB.LOCKER2_UNDO)
+    local back, same = {}, true
     for k, r in ipairs(zoneRowsIn(P2, 'torso')) do
         back[k] = r.i
-        if ids[r.r] then fresh = false end
+        if not ids[r.r] then same = false end
     end
-    eq(table.concat(back, ','), table.concat(first10, ','), 'Reset puts back the rows it opened with')
-    ok(fresh and #zoneRowsIn(P2, 'larm') == 0, 'as new rows, the added one gone')
+    eq(table.concat(back, ','), table.concat(first10, ','), 'two Undos put back the rows it opened with')
+    ok(same and #zoneRowsIn(P2, 'larm') == 0, 'the same rows, the added one gone')
     ok(P2.nui(NUI.LOCKER2).edit.dirty == false and #P2.ped().decos == 11, 'clean, and the preview with it')
 
     -- 6. One only he wears, kept in her look beside her torso's 10, is not
@@ -2862,10 +3114,10 @@ do
     A.setTattoo(his, TAT.list[mOnly][1], true)
     local H = joined({ { id = PID, name = 'Ann', a = A.encode(his), up = 5 } })
     H.ui(NUICB.LOCKER2_OPEN)
-    H.ui(NUICB.LOCKER2_EDIT, { id = PID })
+    H.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
     H.pump(300)
     eq(#zoneRowsIn(H, 'torso'), 10, 'her 10 as rows, his not')
-    H.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head' })
+    H.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = headF })
     H.ui(NUICB.LOCKER2_SAVE, { op = 'update' })
     local hs = H.sentTo(NET.LOCKER2_SAVE)[1]
     ok(hs ~= nil and A.hasTattoo(A.decode(hs.a), TAT.list[mOnly][1]),
@@ -2899,6 +3151,536 @@ do
     F.BR.State.me.state = F.BR.PlayerState.ALIVE
     F.pump(5000)
     eq(F.count('AddPedDecorationFromHashes'), adds, 'and none is put on it later')
+end
+
+-- ═══ SEASON 2: MY LOOKS (owner, 2026-10-12/13/14) ═══
+
+--- The draft Lua holds, for the suites.
+local function draftOf(W) return W.BR.LockerV2.state().draft end
+
+describe('mylooks.new')
+do
+    -- "New" -> Custom -> Create (owner, 2026-10-14): a new custom look, the
+    -- core randomized ("a randomize button for the whole ped"), no extras.
+    math.randomseed(11)
+    local W = joined()
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
+    W.pump(300)
+    local m = W.nui(NUI.LOCKER2)
+    ok(m.tabSeq == 1 and m.tab == 'male' and m.edit and m.edit.sex == 'm', 'a male look, the page\'s request echoed')
+    eq(W.ped().model, MALE, 'on the male freemode ped')
+    ok(m.edit.editing == nil and m.edit.dirty == true, 'never saved, so never clean: Back asks first, Save names it')
+    eq(#listOf(m.edit.extras), 0, 'no extras')
+    ok(m.edit.undo == false and m.edit.redo == false, 'and nothing to undo')
+    local a = draftOf(W).a
+    ok(not A.equal(a, A.default('m')), 'the core randomized, not the defaults')
+    ok(a.c[2][1] ~= 0, 'with hair: never the list\'s first')
+    local spread = true
+    for i = 1, A.FEATURES do
+        if math.abs(a.ff[i]) > 35 or ((i == 19 or i == 20) and a.ff[i] < 0) then spread = false end
+    end
+    ok(spread, 'the face\'s features near the middle')
+    ok(a.e <= 7 and a.h[1] <= 28 and a.h[2] <= 28, 'natural eyes and hair colors')
+    eq(a.o[3][3], a.h[1], 'the eyebrows in the hair\'s color')
+    ok(W.ped().comps[11][1] == a.c[11][1] and W.ped().hair[1] == a.h[1], 'and on the preview')
+    -- Each New is its own look.
+    local looks = { [A.encode(a)] = true }
+    for n = 2, 4 do
+        W.ui(NUICB.LOCKER2_LEAVE, { seq = n * 2 })
+        W.pump(300)
+        W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = n * 2 + 1 })
+        W.pump(300)
+        looks[A.encode(draftOf(W).a)] = true
+    end
+    local distinct = 0
+    for _ in pairs(looks) do distinct = distinct + 1 end
+    eq(distinct, 4, 'four News, four looks')
+    -- A female one: no beard on her.
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 20 })
+    W.pump(300)
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 21 })
+    W.pump(300)
+    ok(W.ped().model == FEMALE and draftOf(W).a.o[2][1] == A.NONE, 'a female look, with no facial hair')
+    -- A second New while one is unsaved: refused (the page asked first).
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 22 })
+    m = W.nui(NUI.LOCKER2)
+    ok(m.edit.sex == 'f' and m.tabSeq == 22, 'another New over an unsaved look is refused, and says so')
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 23 })
+    W.pump(300)
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'x', seq = 24 })
+    m = W.nui(NUI.LOCKER2)
+    ok(m.edit == nil and m.tabSeq == 24, 'a sex that is not one: nothing, and it says so')
+end
+
+describe('mylooks.faces')
+do
+    -- THE STARTING FACES (2026-10-13: "a few starting faces"): the Face
+    -- panel's tiles, the look's `f`.
+    local W = editing(A.default('m'))
+    local row = rowOf(W.nui(NUI.LOCKER2), 'shape')
+    ok(row and row.cat == 'face' and row.v == 1 and row.n == 6, 'six starting faces, the first worn')
+    eq(W.ped().blend[1], 0, 'the first is the one face every look had before')
+    W.ui(NUICB.LOCKER2_SET, { k = 'shape', v = 3 })
+    eq(draftOf(W).a.f, 2, 'a tile sets the look\'s face')
+    eq(W.ped().blend[1], W.BR.Config.Locker2.faces.m[3], 'and the head blend wears it at once')
+    W.ui(NUICB.LOCKER2_SET, { k = 'shape', v = 7 })
+    eq(draftOf(W).a.f, 2, 'a seventh face is refused')
+    local f = A.default('f')
+    f.f = 4
+    local F = editing(f)
+    eq(F.ped().blend[1], F.BR.Config.Locker2.faces.f[5], 'a saved look is worn with its face')
+    eq(rowOf(F.nui(NUI.LOCKER2), 'shape').v, 5, 'and its tile lit')
+end
+
+describe('mylooks.history')
+do
+    -- UNDO AND REDO (owner, 2026-10-13: "yes"), held here, by the page's rules.
+    local W = editing(A.default('m'))
+    local function edit() return W.nui(NUI.LOCKER2).edit end
+    local quiet = #pushes(W)
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 1 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 0 })
+    ok(edit().undo == false and #pushes(W) == quiet, 'a press that changes nothing is no step, and no push')
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    ok(edit().undo == true and edit().redo == false, 'a change can be undone')
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    eq(rowOf(W.nui(NUI.LOCKER2), 'c11').v, 3, 'two steps of one row inside 800 ms')
+    W.ui(NUICB.LOCKER2_UNDO)
+    eq(rowOf(W.nui(NUI.LOCKER2), 'c11').v, 1, 'are one Undo (a held arrow)')
+    eq(W.ped().comps[11][1], 0, 'on the preview too')
+    ok(edit().undo == false and edit().redo == true and edit().dirty == false, 'back where it began: clean, Redo lit')
+    W.ui(NUICB.LOCKER2_REDO)
+    eq(rowOf(W.nui(NUI.LOCKER2), 'c11').v, 3, 'Redo puts it back')
+    ok(edit().redo == false and edit().dirty == true, 'and nothing left to redo')
+    W.pump(900)
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    W.pump(900)
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    W.ui(NUICB.LOCKER2_UNDO)
+    eq(rowOf(W.nui(NUI.LOCKER2), 'c11').v, 4, 'touches further apart are steps of their own')
+    W.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 20 })
+    eq(edit().redo, false, 'a new change clears Redo')
+    W.ui(NUICB.LOCKER2_SET, { k = 'ff1', v = 30 })
+    W.ui(NUICB.LOCKER2_UNDO)
+    ok(W.ped().ff[1] == 0.0 and W.ped().ff[0] == 0.2, 'another row inside 800 ms is another step')
+    W.pump(900)
+    for v = 10, 90, 10 do W.ui(NUICB.LOCKER2_SET, { k = 'ff2', v = v }) end
+    W.ui(NUICB.LOCKER2_UNDO)
+    eq(W.ped().ff[2], 0.0, 'a slider\'s drag is one step')
+    local before = #pushes(W)
+    W.ui(NUICB.LOCKER2_REDO)
+    W.ui(NUICB.LOCKER2_REDO)
+    eq(#pushes(W), before + 1, 'a Redo with nothing to redo pushes nothing')
+    -- At most 50 steps.
+    local H = editing(A.default('m'))
+    for n = 1, 55 do H.ui(NUICB.LOCKER2_SET, { k = 'ff' .. (n % 2), v = n }) end
+    local undone = 0
+    while H.nui(NUI.LOCKER2).edit.undo and undone < 60 do
+        H.ui(NUICB.LOCKER2_UNDO)
+        undone = undone + 1
+    end
+    eq(undone, 50, 'fifty steps are kept')
+    eq(H.ped().ff[0], 4 / 100, 'the oldest ones gone: back to the fifth change, not the first')
+end
+
+describe('mylooks.extras')
+do
+    -- "Add more" (owner, 2026-10-14), in the order put on: "adding earrings
+    -- after adding tattoos should not show tattoos on the bottom of the list".
+    local W = editing(A.default('m'))
+    local function extras() return table.concat(listOf(W.nui(NUI.LOCKER2).edit.extras), ',') end
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'tattoos', on = true })
+    eq(extras(), 'tattoos', 'Tattoos on, with no tattoo yet')
+    eq(#W.ped().decos, 0, 'and none on the preview')
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'earrings', on = true })
+    eq(extras(), 'tattoos,earrings', 'Earrings after it: at the end, not before Tattoos')
+    local ear = rowOf(W.nui(NUI.LOCKER2), 'p2')
+    ok(ear and ear.v == 2 and ear.cat == 'earrings', 'wearing its first item', ear and ear.v)
+    ok(W.ped().props[2] and W.ped().props[2][1] == 0, 'on the preview')
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'hat', on = true })
+    eq(extras(), 'tattoos,earrings,hat', 'and a Hat after that')
+    local before = #pushes(W)
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'hat', on = true })
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'cape', on = true })
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'vest', on = false })
+    eq(#pushes(W), before, 'one already on, one that is not an extra, or one off already: nothing')
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'earrings', on = false })
+    eq(extras(), 'tattoos,hat', 'its trash icon takes Earrings off')
+    eq(rowOf(W.nui(NUI.LOCKER2), 'p2'), nil, 'its row gone')
+    eq(W.ped().props[2], nil, 'and the earrings off the preview')
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'makeup', on = true })
+    eq(extras(), 'tattoos,hat,makeup', 'Makeup on')
+    eq(rowOf(W.nui(NUI.LOCKER2), 'o4').v, 1, 'with nothing chosen yet')
+    W.ui(NUICB.LOCKER2_UNDO)
+    eq(extras(), 'tattoos,hat', 'an extra put on is one Undo')
+    W.ui(NUICB.LOCKER2_REDO)
+    -- Saved in that order, and opened in it.
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Order' })
+    local s = W.sentTo(NET.LOCKER2_SAVE)[1]
+    local sa = s and A.decode(s.a)
+    eq(sa and table.concat(sa.x, ','), 'tattoos,hat,makeup', 'Save keeps the order')
+    local R = editing(sa)
+    eq(table.concat(listOf(R.nui(NUI.LOCKER2).edit.extras), ','), 'tattoos,hat,makeup', 'and Edit opens it so')
+    eq(R.nui(NUI.LOCKER2).edit.dirty, false, 'with nothing to save')
+    -- A look saved before My Looks lists what is on it, in the extras' order.
+    local old = A.default('m')
+    old.p[1] = { 3, 0 }
+    old.c[1] = { 2, 0 }
+    local O = editing(old)
+    eq(table.concat(listOf(O.nui(NUI.LOCKER2).edit.extras), ','), 'hat,mask', 'an older save lists its hat and mask')
+    eq(O.nui(NUI.LOCKER2).edit.dirty, false, 'and is not changed by it')
+    -- A tattoo added lists Tattoos at the end, if it was not on.
+    O.ui(NUICB.LOCKER2_TAT_ADD, { z = 'head', i = zoneItems(O, 'm', 'head')[1] })
+    eq(table.concat(listOf(O.nui(NUI.LOCKER2).edit.extras), ','), 'hat,mask,tattoos', 'a tattoo puts Tattoos on the list')
+    O.ui(NUICB.LOCKER2_EXTRA, { id = 'tattoos', on = false })
+    ok(#listOf(O.nui(NUI.LOCKER2).edit.tats) == 0 and #O.ped().decos == 0, 'and its trash icon takes them all off')
+end
+
+describe('mylooks.random')
+do
+    -- RANDOMIZE (owner, 2026-10-14: "the randomize button should randomize
+    -- those additional categories too, and add them to the list when it sets
+    -- them"), one step of Undo.
+    math.randomseed(5)
+    local start = A.default('m')
+    start.x = { 'earrings', 'hat' }
+    start.p[3] = { 1, 0 }
+    start.p[1] = { 2, 0 }
+    local W = editing(start)
+    local rows = W.BR.Config.Locker2.extras
+    local sawAdd, sawKeep, sawDrop = false, false, false
+    local orderOk, listedOk, undoOk, tatsOk, wornOk = true, true, true, true, true
+    for n = 1, 25 do
+        local d = draftOf(W)
+        local before, bx = A.encode(d.a), table.concat(d.a.x or {}, ',')
+        local prev = d.a.x or {}
+        W.ui(NUICB.LOCKER2_RANDOM)
+        d = draftOf(W)
+        local x = d.a.x or {}
+        local m = W.nui(NUI.LOCKER2)
+        if table.concat(listOf(m.edit.extras), ',') ~= table.concat(x, ',') then listedOk = false end
+        -- The ones it kept first, in their order; the ones it put on after.
+        local kept = {}
+        for _, id in ipairs(prev) do
+            for _, y in ipairs(x) do if y == id then kept[#kept + 1] = id end end
+        end
+        for i, id in ipairs(kept) do
+            if x[i] ~= id then orderOk = false end
+            sawKeep = true
+        end
+        if #x > #kept then sawAdd = true end
+        if #kept < #prev then sawDrop = true end
+        -- Every extra on the list wears something (Makeup may be none); none
+        -- off the list does.
+        for _, id in ipairs(rows) do
+            local on = false
+            for _, y in ipairs(x) do if y == id then on = true end end
+            if id == 'tattoos' then
+                local t = #listOf(m.edit.tats)
+                if on and (t < 1 or t > 4) then tatsOk = false end
+                if not on and t > 0 then tatsOk = false end
+            elseif id ~= 'makeup' then
+                local cat
+                for _, c in ipairs(W.BR.Config.Locker2.categories) do if c.id == id then cat = c end end
+                local r = rowOf(m, cat.rows[1])
+                if on and (not r or r.v == 1) then wornOk = false end
+                if not on and r then wornOk = false end
+            end
+        end
+        W.ui(NUICB.LOCKER2_UNDO)
+        if A.encode(draftOf(W).a) ~= before or table.concat(draftOf(W).a.x or {}, ',') ~= bx then undoOk = false end
+        W.ui(NUICB.LOCKER2_REDO)
+        W.pump(100)
+    end
+    ok(sawAdd and sawKeep and sawDrop, 'over 25 presses it put extras on, kept some and took some off')
+    ok(orderOk, 'the extras it kept keep their places, the ones it put on join the end')
+    ok(listedOk, 'and the page is told every one, in that order')
+    ok(wornOk, 'each extra on wears an item, never none; each off has no row')
+    ok(tatsOk, 'Tattoos on wears one to four tattoos')
+    ok(undoOk, 'one Undo puts the whole look back, extras and all')
+    local d = draftOf(W)
+    local zoned = true
+    for _, z in ipairs(TAT.zones) do
+        for _, r in ipairs(d.tats[z]) do
+            if TAT.list[r.i][2] ~= z or not TAT.list[r.i][4] then zoned = false end
+        end
+    end
+    ok(zoned, 'every tattoo it chose is his, in its own zone')
+    eq(W.count('GetLabelText'), 0, 'and it asked the game for no tattoo\'s name')
+    -- Never bald: two hairstyles, the first none, twenty-five presses.
+    local B = joined()
+    B.drawCount[2] = 2
+    B.ui(NUICB.LOCKER2_OPEN)
+    B.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 1 })
+    B.pump(300)
+    local bald = draftOf(B).a.c[2][1] == 0
+    for _ = 1, 25 do
+        B.ui(NUICB.LOCKER2_RANDOM)
+        if draftOf(B).a.c[2][1] == 0 then bald = true end
+    end
+    ok(not bald, 'New and Randomize always give a hairstyle, never the list\'s first')
+end
+
+describe('mylooks.items')
+do
+    -- "if the answer is it doesn't draw anything - then remove that item from
+    -- the list entirely" (owner, 2026-10-14): only what the game draws is
+    -- listed, so the counts count real items.
+    local W = joined({ { id = PID, name = 'Base', a = A.encode(A.default('m')), up = 5 } })
+    W.invalid['11:3'] = true
+    W.texCount['11:4'] = 0
+    W.invalid['11:5:1'] = true
+    W.propTex['0:2'] = 0
+    W.log = {}
+    W.ui(NUICB.LOCKER2_OPEN)
+    eq(W.count('GetNumberOfPedDrawableVariations') + W.count('IsPedComponentVariationValid'), 0,
+        'nothing is listed when the page opens')
+    W.ui(NUICB.LOCKER2_EDIT, { id = PID, seq = 1 })
+    W.pump(300)
+    local slots = {}
+    for _, l in ipairs(W.log) do
+        local s = l:match('^GetNumberOfPedDrawableVariations%(%d+,(%d+)%)$')
+        if s then slots[#slots + 1] = tonumber(s) end
+    end
+    table.sort(slots)
+    eq(table.concat(slots, ','), '2,3,4,6,8,11', 'the editor lists the core\'s rows alone: hair, arms, legs, shoes, undershirt, top')
+    eq(W.count('GetNumberOfPedPropDrawableVariations'), 0, 'no extra\'s list before it is on the look')
+    local top = rowOf(W.nui(NUI.LOCKER2), 'c11')
+    eq(top.n, 37, '40 tops less gen9-only 39, invalid 3 and textureless 4')
+    local seen = {}
+    for _ = 1, 40 do
+        W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+        seen[W.ped().comps[11][1]] = true
+    end
+    ok(not seen[3] and not seen[4] and not seen[39] and seen[5], 'stepping never lands on one the game would not draw')
+    eq(W.BR.LockerV2.removed('m').c11, 3, 'three tops left out')
+    -- An item's textures: only the ones the game says it draws.
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 4 })
+    eq(W.ped().comps[11][1], 5, 'top 5')
+    local r5 = rowOf(W.nui(NUI.LOCKER2), 'c11')
+    eq(r5.colors, 2, 'its three textures less the invalid one')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = 1 })
+    eq(W.ped().comps[11][2], 2, 'its second color is texture 2')
+    eq(rowOf(W.nui(NUI.LOCKER2), 'c11').c, 1, 'and is the second swatch lit')
+    -- Props by their counts, once the Hat is on.
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'hat', on = true })
+    eq(rowOf(W.nui(NUI.LOCKER2), 'p0').n, 20, 'a hat with no texture is left out (none and 19 hats)')
+    local printed = {}
+    W.env.print = function(s) printed[#printed + 1] = s end
+    W.commands.brlocker2(0, {})
+    W.env.print = function() end
+    local line = nil
+    for _, s in ipairs(printed) do if s:find('dropped', 1, true) then line = s end end
+    ok(line and line:find('c11 3', 1, true) and line:find('p0 1', 1, true), 'brlocker2 says what each row left out', line)
+end
+
+describe('mylooks.forced')
+do
+    -- THE GAME'S FORCED COMPONENTS (#28's game data): a top puts on the arms
+    -- and the undershirt it names, per texture, a jumpsuit its legs and shoes,
+    -- and an undershirt its arms where the top names none. The Arms row stays
+    -- the player's override.
+    local W = editing(A.default('m'))
+    local ZERO = hashOf('0')
+    -- The flat index over a slot's base textures: here a drawable d has
+    -- d % 3 + 1, so index 7 is drawable 4's first.
+    W.shop['11:5:0'], W.shop['11:5:1'] = 5001, 5002
+    W.forced[5001] = { { ZERO, 7, 3 }, { ZERO, 3, 8 } }
+    W.forced[5002] = { { ZERO, 10, 3 }, { ZERO, 3, 8 } }
+    -- A DLC arm, found by its own shop hash: arms 20, texture 1.
+    W.shop['3:20:1'] = 7020
+    -- One native hands a hash back signed and another unsigned: the same item.
+    W.shop['3:22:0'] = 0xF0000001
+    W.shop['11:12:0'] = 5012
+    W.forced[5012] = { { 0xF0000001 - 0x100000000, 0, 3 } }
+    W.shop['11:6:0'] = 5006
+    W.forced[5006] = { { 7020, 0, 3 } }
+    -- An undershirt that names its arms (and one the top forces).
+    W.shop['8:12:0'] = 8012
+    W.forced[8012] = { { ZERO, 1, 3 } }
+    W.shop['11:7:0'] = 5007
+    W.forced[5007] = { { 8012, 0, 8 } }
+    W.shop['8:12:0'] = 8012
+    -- A jumpsuit: its legs and shoes.
+    W.shop['4:8:2'] = 4092
+    W.shop['11:8:0'] = 5008
+    W.forced[5008] = { { 4092, 0, 4 }, { ZERO, 7, 6 } }
+    -- A top whose forced arms the game would not draw.
+    W.shop['11:10:0'] = 5010
+    W.forced[5010] = { { ZERO, 7, 3 } }
+    W.invalid['3:4'] = nil
+
+    local a = function() return draftOf(W).a end
+    W.ui(NUICB.LOCKER2_SET, { k = 'c3', v = 2 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 6 })
+    eq(W.ped().comps[11][1], 5, 'top 5 on')
+    ok(a().c[3][1] == 4 and a().c[3][2] == 0, 'its arms: flat index 7 is arms 4', a().c[3][1])
+    ok(a().c[8][1] == 2 and a().c[8][2] == 0, 'its undershirt: flat index 3 is undershirt 2', a().c[8][1])
+    ok(W.ped().comps[3][1] == 4 and W.ped().comps[8][1] == 2, 'on the preview with it')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'c11', c = 1 })
+    ok(a().c[3][1] == 5 and a().c[3][2] == 1, 'its second color names other arms: per texture', a().c[3][1])
+    W.ui(NUICB.LOCKER2_UNDO)
+    ok(a().c[11][2] == 0 and a().c[3][1] == 4, 'one Undo takes the color and its arms back')
+    W.ui(NUICB.LOCKER2_SET, { k = 'c3', v = 10 })
+    eq(a().c[3][1], 9, 'the Arms row overrides')
+    eq(a().c[11][1], 5, 'and changes no top')
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 7 })
+    ok(a().c[3][1] == 20 and a().c[3][2] == 1, 'a DLC top names DLC arms, found by their own hash')
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 13 })
+    eq(a().c[3][1], 22, 'a hash named signed by one native and unsigned by the other is the same arms')
+    -- An undershirt the top names, and its own arms.
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 8 })
+    ok(a().c[8][1] == 12 and a().c[3][1] == 1, 'a top that names an undershirt: it, and the arms it names')
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 6 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c8', v = 14 })
+    eq(a().c[8][1], 12, 'undershirt 12 picked')
+    eq(a().c[3][1], 4, 'under a top that names arms, its own arms are not put on')
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 1 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c3', v = 3 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c8', v = 1 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c8', v = 14 })
+    eq(a().c[3][1], 1, 'under a top that names none, an undershirt puts its arms on')
+    -- A base top, over no undershirt: the arms as they are.
+    W.ui(NUICB.LOCKER2_SET, { k = 'c8', v = 1 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c3', v = 3 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 2 })
+    eq(a().c[3][1], 2, 'a top with no shop data leaves the arms as they are')
+    -- A jumpsuit.
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 9 })
+    ok(a().c[4][1] == 8 and a().c[4][2] == 2 and a().c[6][1] == 4, 'a jumpsuit puts its legs and shoes on')
+    ok(W.ped().comps[4][1] == 8 and W.ped().comps[6][1] == 4, 'on the preview too')
+    -- One the game would not draw is not put on.
+    W.invalid['3:4'] = true
+    W.ui(NUICB.LOCKER2_SET, { k = 'c8', v = 1 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c3', v = 3 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'c11', v = 11 })
+    eq(a().c[3][1], 2, 'forced arms the game would not draw are left off')
+    W.invalid['3:4'] = nil
+    -- Randomize puts on what its top names.
+    local R = editing(A.default('m'))
+    for d = 0, 38 do R.shop['11:' .. d .. ':0'] = 9000 + d end
+    for d = 0, 38 do R.shop['11:' .. d .. ':1'] = 9000 + d end
+    for d = 0, 38 do R.shop['11:' .. d .. ':2'] = 9000 + d end
+    for d = 0, 38 do R.forced[9000 + d] = { { ZERO, 7, 3 } } end
+    math.randomseed(9)
+    R.ui(NUICB.LOCKER2_RANDOM)
+    eq(draftOf(R).a.c[3][1], 4, 'Randomize\'s top puts its arms on')
+end
+
+describe('mylooks.colors')
+do
+    -- Swatches (owner, 2026-10-14: "any button showing "next color" should
+    -- have a button for a color swatch instead"), and the palettes they draw.
+    local W = editing(A.default('m'))
+    W.ui(NUICB.LOCKER2_EXTRA, { id = 'hat', on = true })
+    W.ui(NUICB.LOCKER2_SET, { k = 'p0', v = 1 })
+    eq(rowOf(W.nui(NUI.LOCKER2), 'p0').colors, 1, 'no hat: one color, no swatches')
+    local before = #pushes(W)
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'p0', c = 0 })
+    eq(#pushes(W), before, 'and a swatch press is refused, pushing nothing')
+    W.ui(NUICB.LOCKER2_SET, { k = 'p0', v = 3 })
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'p0', c = 1 })
+    eq(W.ped().props[0][2], 1, 'a hat of two colors takes its second')
+    eq(rowOf(W.nui(NUI.LOCKER2), 'p0').c, 1, 'the row says so')
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'h1', c = 3 })
+    W.ui(NUICB.LOCKER2_COLOR, { k = 'o2op', c = 3 })
+    eq(W.ped().hair[2], 0, 'the highlight is set by its own value, never a color index; an opacity has none')
+    -- The palettes, once.
+    W.log = {}
+    W.ui(NUICB.LOCKER2_PAL)
+    local pal = W.nui(NUI.LOCKER2_PAL)
+    ok(pal and #pal.hair == 64 and #pal.makeup == 64, 'the page asks for the palettes and gets 64 of each')
+    eq(pal.hair[3], '#0204fd', 'the game\'s colors, as #rrggbb')
+    eq(pal.makeup[1], '#ff0000', 'the makeup palette too')
+    local reads = W.count('GetPedHairRgbColor')
+    W.ui(NUICB.LOCKER2_PAL)
+    eq(W.count('GetPedHairRgbColor'), reads, 'built once: asking again reads nothing')
+    W.locked = true
+    local sent = 0
+    W.ui(NUICB.LOCKER2_PAL)
+    for _, e in ipairs(W.events) do
+        if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2_PAL then sent = sent + 1 end
+    end
+    eq(sent, 3, 'and it changes nothing, so nothing refuses it')
+end
+
+describe('mylooks.defaults')
+do
+    -- A face group's reset (2026-10-13: one reset a group): its sliders back to
+    -- their defaults, one step.
+    local W = editing(A.default('m'))
+    W.ui(NUICB.LOCKER2_SET, { k = 'ff0', v = 50 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'ff1', v = -20 })
+    W.ui(NUICB.LOCKER2_SET, { k = 'ff6', v = 30 })
+    W.pump(900)
+    W.ui(NUICB.LOCKER2_DEFAULTS, { ks = { 'ff0', 'ff1', 'zz', 5, 'c11' } })
+    ok(W.ped().ff[0] == 0.0 and W.ped().ff[1] == 0.0 and W.ped().ff[6] == 0.3, 'its sliders back to 0, the rest kept')
+    eq(draftOf(W).a.c[11][1], 0, 'a key that is no slider is left alone')
+    W.ui(NUICB.LOCKER2_UNDO)
+    ok(W.ped().ff[0] == 0.5 and W.ped().ff[1] == -0.2, 'one Undo puts the group back')
+    local before = #pushes(W)
+    W.ui(NUICB.LOCKER2_DEFAULTS, { ks = { 'ff19' } })
+    W.ui(NUICB.LOCKER2_DEFAULTS, { ks = 'ff0' })
+    eq(#pushes(W), before, 'a group already at its defaults, or no list: nothing pushed')
+end
+
+describe('mylooks.camera')
+do
+    -- The camera buttons (2026-10-14: across the bottom, a hover hint each):
+    -- rotate is Season 1's spin; turn around, zoom and Reset view are
+    -- LOCKER2_CAM.
+    local W = editing(A.default('m'))
+    local h0 = W.ped().h
+    local before = #pushes(W)
+    W.ui(NUICB.LOCKER2_CAM, { op = 'turn' })
+    eq((W.ped().h - h0) % 360, 180.0, 'Turn around turns the look 180 degrees')
+    W.ui(NUICB.LOCKER2_CAM, { op = 'zoom', d = 1 })
+    eq(W.cams[#W.cams], 'zoom:1', 'Zoom in')
+    W.ui(NUICB.LOCKER2_CAM, { op = 'zoom', d = -1 })
+    eq(W.cams[#W.cams], 'zoom:-1', 'Zoom out (and the wheel)')
+    local n = #W.cams
+    W.ui(NUICB.LOCKER2_CAM, { op = 'zoom', d = 3 })
+    W.ui(NUICB.LOCKER2_CAM, { op = 'zoom' })
+    eq(#W.cams, n, 'a zoom of 3 or none: nothing')
+    W.ui(NUICB.LOCKER_SPIN, { delta = 33 })
+    W.ui(NUICB.LOCKER2_CAT, { cat = 'face' })
+    W.ui(NUICB.LOCKER2_CAM, { op = 'reset' })
+    eq(W.ped().h % 360, W.BR.Config.Match.lobbyPos.heading % 360, 'Reset view faces the look to the camera again')
+    eq(W.cams[#W.cams], 'reset:head', 'and frames the category again')
+    eq(#pushes(W) - before, 1, 'the camera pushes nothing (the one push is the category\'s)')
+    W.locked = true
+    local h = W.ped().h
+    W.ui(NUICB.LOCKER2_CAM, { op = 'turn' })
+    W.ui(NUICB.LOCKER2_CAM, { op = 'zoom', d = 1 })
+    ok(W.ped().h == h and W.cams[#W.cams] == 'reset:head', 'nothing while the entrance holds the ped')
+    W.locked = false
+    W.ui(NUICB.LOCKER2_LEAVE, { seq = 2 })
+    W.pump(300)
+    W.ui(NUICB.LOCKER2_CAM, { op = 'reset' })
+    eq(W.cams[#W.cams], 'reset:nil', 'on My Looks Reset view frames the whole look')
+    W.ui(NUICB.LOCKER2_CLOSE)
+    n = #W.cams
+    W.ui(NUICB.LOCKER2_CAM, { op = 'zoom', d = 1 })
+    eq(#W.cams, n, 'and with the page shut, nothing')
+end
+
+describe('mylooks.names')
+do
+    -- ITEM NAMES, OFF (owner, 2026-10-14: "All or nothing on that"): no row
+    -- carries one and none is looked up -- unless a category is switched on.
+    local W = editing(A.default('m'))
+    local named = 0
+    for _, r in ipairs(W.nui(NUI.LOCKER2).edit.rows) do if r.name ~= nil then named = named + 1 end end
+    eq(named, 0, 'no row carries a name')
+    eq(#W.invokes, 0, 'and no shop data is read')
+    eq(#(W.BR.Config.Locker2.names or {}), 0, 'no category is switched on')
+    W.BR.Config.Locker2.names = { 'top' }
+    W.ui(NUICB.LOCKER2_STEP, { k = 'c11', d = 1 })
+    local looked = {}
+    for _, h in ipairs(W.invokes) do looked[h] = (looked[h] or 0) + 1 end
+    ok((looked[0x0368B3A838070348] or 0) == 3, 'switched on, Top\'s three rows are looked up', looked[0x0368B3A838070348])
+    eq(looked[0x5D6160275CAEC8DD], nil, 'and nothing else')
 end
 
 -- ═══ THE CAMERA'S FOCUS (client/lobbycam.lua) ═══
@@ -2962,6 +3744,40 @@ do
     LC.focus('upper')
     LC.stop()
     eq(LC.focused(), nil, 'stop() forgets the focus')
+
+    -- THE CAMERA BUTTONS' ZOOM (My Looks): along the line to the bone, the aim
+    -- with it, so the look keeps its place on screen and only grows.
+    LC.start()
+    LC.focus('head')
+    local function dist(c) return math.sqrt(c.x * c.x + (c.y) ^ 2 + (c.z - 1.65) ^ 2) end
+    ok(LC.zoom(1), 'a step in')
+    local zc = cams[interp[#interp].to]
+    ok(math.abs(dist(zc) - 0.8 * 0.85) < 1e-9, 'brings the camera zoomFactor of its distance closer', dist(zc))
+    ok(math.abs((zc.aim.x / dist(zc)) - (ax / 0.8)) < 1e-9, 'the aim slid with it: the head keeps its place')
+    eq(interp[#interp].ms, 200, 'in zoomMs')
+    for _ = 1, 10 do LC.zoom(1) end
+    eq(LC.zoomed(), 4, 'no closer than zoomMax')
+    ok(not LC.zoom(1), 'a step past it is nothing')
+    for _ = 1, 10 do LC.zoom(-1) end
+    eq(LC.zoomed(), -2, 'no further than zoomMin')
+    LC.focus('feet')
+    eq(LC.zoomed(), 0, 'a new category frames afresh')
+    LC.zoom(1)
+    ok(LC.resetView('head') and LC.zoomed() == 0 and LC.focused() == 'head', 'Reset view: the category\'s framing, no zoom')
+    LC.zoom(1)
+    ok(LC.unfocus() and LC.zoomed() == 0, 'leaving frames the whole look again')
+    ok(LC.zoom(1), 'at home too')
+    local home = cams[interp[#interp].to]
+    local hx, hy, hz = LC.lobbyFrame()
+    local P = env.BR.Config.Match
+    local px, py, pz = P.lobbyPos.x, P.lobbyPos.y, P.lobbyPos.z + P.lobbyCam.aim
+    ok(math.abs(home.x - (px + (hx - px) * 0.85)) < 1e-9 and math.abs(home.y - (py + (hy - py) * 0.85)) < 1e-9
+       and math.abs(home.z - (pz + (hz - pz) * 0.85)) < 1e-9, 'the lobby frame, closer to the ped')
+    ok(LC.unfocus() and LC.zoomed() == 0, 'and a zoomed home is brought back too')
+    LC.zoom(1)
+    LC.stop()
+    eq(LC.zoomed(), 0, 'stop() forgets the zoom')
+    ok(not LC.zoom(1), 'and there is nothing to zoom with the camera down')
     eq(#log, 0, 'never SetCamCoord')
 end
 
@@ -2978,12 +3794,22 @@ do
     for _, k in ipairs(keys) do
         if not types:find("'" .. NUICB[k] .. "'", 1, true) then missing[#missing + 1] = NUICB[k] end
     end
-    for _, k in ipairs({ 'LOCKER2', 'LOCKER2_SHOT', 'LOCKER2_TATS' }) do
+    for _, k in ipairs({ 'LOCKER2', 'LOCKER2_SHOT', 'LOCKER2_TATS', 'LOCKER2_PAL' }) do
         if not types:find("'" .. NUI[k] .. "'", 1, true) then missing[#missing + 1] = NUI[k] end
     end
-    eq(#keys, 20, 'twenty callbacks (the tattoo list, 2026-10-11; a tattoo row\'s Add, choice and Remove, 2026-10-12)')
+    eq(#keys, 27, 'twenty-seven callbacks: My Looks\' nine (2026-10-13/14) and the old tabs\' two retired')
     eq(NUICB.LOCKER2_TAT, nil, 'and no checkbox\'s on and off any more')
     eq(NUICB.LOCKER2_TAT_STEP, nil, 'nor a row\'s arrows')
+    ok(NUICB.LOCKER2_TAB == nil and NUICB.LOCKER2_RESET == nil and not types:find("'br/locker2/tab'", 1, true)
+        and not types:find("'br/locker2/reset'", 1, true), 'nor the old tabs and Reset, on either side')
+    -- And every one the page names, this side answers.
+    local pageCbs = {}
+    for name in types:gmatch("'(br/locker2/[%w]+)'") do pageCbs[#pageCbs + 1] = name end
+    local known = {}
+    for _, v in pairs(NUICB) do known[v] = true end
+    local unknown = {}
+    for _, name in ipairs(pageCbs) do if not known[name] then unknown[#unknown + 1] = name end end
+    ok(#pageCbs >= 27 and #unknown == 0, 'every callback the page names is Lua\'s', table.concat(unknown, ' '))
     -- The page's cap is this side's (ui-src/src/screens/lockerv2/model.ts).
     local model = readFile('ui-src/src/screens/lockerv2/model.ts') or ''
     eq(tonumber(model:match('export const TATTOOS_PER_ZONE = (%d+)')), A.TATTOOS_PER_ZONE,
@@ -3015,8 +3841,9 @@ do
     for _, cat in ipairs(shared.BR.Config.Locker2.categories) do
         if not labeled(catLabels, cat.id) then unlabeled[#unlabeled + 1] = cat.id end
         for _, k in ipairs(cat.rows) do
+            -- The starting face is the Face panel's tiles: numbered, no label.
             local base = k:match('^(o%d+)op$') or k
-            if not labeled(rowLabels, base) then unlabeled[#unlabeled + 1] = k end
+            if k ~= 'shape' and not labeled(rowLabels, base) then unlabeled[#unlabeled + 1] = k end
         end
     end
     ok(#rowLabels > 2 and #catLabels > 2, 'copy.ts has its ROW_LABEL and CAT_LABEL')
@@ -3029,8 +3856,8 @@ do
     for _, z in ipairs(TAT.zones) do
         if not labeled(zoneLabels, z) then unzoned[#unzoned + 1] = z end
     end
-    ok(copy:find("export const TATTOOS = '", 1, true) ~= nil and #unzoned == 0,
-        'the page has a label for the Tattoos section and every zone', table.concat(unzoned, ' '))
+    ok(labeled(catLabels, 'tattoos') and #unzoned == 0,
+        'the page has a label for the Tattoos extra and every zone', table.concat(unzoned, ' '))
     local cats = {}
     for _, c in ipairs(shared.BR.Config.Locker2.tattooCats) do
         cats[#cats + 1] = c.id

@@ -1515,14 +1515,16 @@ BR.Nui = {
     -- every successful swap -- the page never assumes an apply worked, since
     -- a model that fails to stream leaves you wearing the old one.
     LOCKER    = 'locker',
-    -- Locker v2 (#28, Season 2): { on, tab, stock, peds, worn, loading,
-    -- locked, busy, edit }. Sent on ready, on a season change and on every
-    -- change. `peds` = { { id, name, up, img? } } with no appearance; `edit`
-    -- = { sex, editing, dirty, cat, cats, rows, tats } on a Custom tab, where a
-    -- row is { k, cat, kind = 'count', v, n, colors } or { k, cat, kind =
-    -- 'slider', v, min, max, def }, and `tats` the Tattoos section's rows,
+    -- Locker v2 (#28, Season 2), "My Looks": { on, tab, tabSeq, stock, peds,
+    -- worn, loading, locked, busy, fetching, edit }. Sent on ready, on a
+    -- season change and on every change. `peds` = { { id, name, up } } with no
+    -- appearance; `edit` = { sex, editing, dirty, cat, rows, tats, extras,
+    -- undo, redo } while a look is being edited, where a row is { k, cat,
+    -- kind = 'count', v, n, colors, pal?, c?, name? } or { k, cat, kind =
+    -- 'slider', v, min, max, def, off? }, `tats` the Tattoos extra's rows,
     -- zone by zone in the order drawn: { r, z, i }, `r` the row's id and `i`
-    -- its tattoo in LOCKER2_TATS. See br_core/client/locker2.lua.
+    -- its tattoo in LOCKER2_TATS, and `extras` the extras on the look in the
+    -- order they were put on. See br_core/client/locker2.lua.
     LOCKER2   = 'locker2',
     -- { id, up?, txd?, url?, img?, save? }: one card's headshot. `txd` and
     -- `url` (nui-img, with a cache-buster) for a shot taken now -- the page
@@ -1533,6 +1535,9 @@ BR.Nui = {
     -- by body zone, once, when the page asks (br/locker2/tats). `name` is the
     -- game's own text for the tattoo's label, absent where it has none.
     LOCKER2_TATS = 'locker2tats',
+    -- { hair = { '#rrggbb'... }, makeup = { ... } }: the game's two color
+    -- palettes, 64 of each at most, once, when the page asks (br/locker2/pal).
+    LOCKER2_PAL = 'locker2pal',
     -- LEVEL AND XP. WHERE THE BAR IS, and the only envelope allowed to say so.
     -- Every value on it is evaluated by BR.Xp on the server -- from MARKET_STATE
     -- on connect and after a credit, and from MATCH_EARNED at the end of a
@@ -1705,31 +1710,38 @@ BR.NuiCb = {
     LOCKER_PICK  = 'br/locker/pick',
     LOCKER_SPIN  = 'br/locker/spin',
     LOCKER_FOCUS = 'br/locker/focus',
-    -- Locker v2 (#28, Season 2). All forwarded to br_core, which revalidates
-    -- each one and refuses them while the locker is locked, a ped is loading
-    -- or a write is in flight (`tab` also while there are unsaved changes).
-    -- The page still opens and closes focus with LOCKER_FOCUS, and spins the
-    -- ped with LOCKER_SPIN.
+    -- Locker v2 (#28, Season 2), "My Looks". All forwarded to br_core, which
+    -- revalidates each one and refuses them while the locker is locked, a ped
+    -- is loading or a write is in flight (a new or another saved look also
+    -- while there are unsaved changes). The page still opens and closes focus
+    -- with LOCKER_FOCUS, and turns the ped with LOCKER_SPIN.
     LOCKER2_OPEN     = 'br/locker2/open',      -- {}
     LOCKER2_CLOSE    = 'br/locker2/close',     -- {}
-    LOCKER2_RESET    = 'br/locker2/reset',     -- {}: the draft back to where it began
-    LOCKER2_TAB      = 'br/locker2/tab',       -- { tab = 'peds'|'stock'|'male'|'female' }
     LOCKER2_WEAR     = 'br/locker2/wear',      -- { k = 's'|'p', id }
     LOCKER2_STEP     = 'br/locker2/step',      -- { k, d = 1|-1 }
     LOCKER2_SET      = 'br/locker2/set',       -- { k, v }: a count's position, or a slider's value
-    LOCKER2_COLOR    = 'br/locker2/color',     -- { k }: Next color
+    LOCKER2_COLOR    = 'br/locker2/color',     -- { k, c }: the row's color, 0-based: in its palette, or the item's texture
     LOCKER2_CAT      = 'br/locker2/cat',       -- { cat }
-    LOCKER2_SAVE     = 'br/locker2/save',      -- { op, id?, name? }
+    LOCKER2_SAVE     = 'br/locker2/save',      -- { op = 'new', name } or { op = 'update', id, name }
     LOCKER2_RENAME   = 'br/locker2/rename',    -- { id, name }
     LOCKER2_DELETE   = 'br/locker2/delete',    -- { id }
-    LOCKER2_EDIT     = 'br/locker2/edit',      -- { id }
+    LOCKER2_EDIT     = 'br/locker2/edit',      -- { id, seq }
     LOCKER2_SHOTS    = 'br/locker2/shots',     -- { ids }: cards with no image
     LOCKER2_SHOTDONE = 'br/locker2/shotdone',  -- { id, ok }
     LOCKER2_SHOT     = 'br/locker2/shot',      -- { id, img }: a saved ped's webp
     LOCKER2_TATS     = 'br/locker2/tats',      -- { sex }: the tattoo list, answered as LOCKER2_TATS
-    LOCKER2_TAT_ADD  = 'br/locker2/tatadd',    -- { z }: a new tattoo row in a zone
+    LOCKER2_TAT_ADD  = 'br/locker2/tatadd',    -- { z, i }: a new tattoo row in zone z, wearing tattoo i
     LOCKER2_TAT_SET  = 'br/locker2/tatset',    -- { r, i }: a tattoo row's tattoo, chosen in its list
     LOCKER2_TAT_DEL  = 'br/locker2/tatdel',    -- { r }: Remove a tattoo row
+    LOCKER2_NEW      = 'br/locker2/new',       -- { sex = 'm'|'f', seq }: a new custom look, randomized
+    LOCKER2_LEAVE    = 'br/locker2/leave',     -- { seq }: out of the editor, the worn look back on
+    LOCKER2_RANDOM   = 'br/locker2/random',    -- {}: the whole look, extras too, one undo step
+    LOCKER2_UNDO     = 'br/locker2/undo',      -- {}
+    LOCKER2_REDO     = 'br/locker2/redo',      -- {}
+    LOCKER2_EXTRA    = 'br/locker2/extra',     -- { id, on }: an extra put on (last) or taken off
+    LOCKER2_DEFAULTS = 'br/locker2/defaults',  -- { ks }: these sliders back to their defaults
+    LOCKER2_PAL      = 'br/locker2/pal',       -- {}: the palettes, answered as LOCKER2_PAL
+    LOCKER2_CAM      = 'br/locker2/cam',       -- { op = 'turn'|'zoom'|'reset', d? = 1|-1 }
     -- The guided first run (#261). { run = boolean } for the lobby half,
     -- { game = boolean } for the in-game one, and `done = true` alongside
     -- `game = false` when the last card was DISMISSED rather than abandoned --

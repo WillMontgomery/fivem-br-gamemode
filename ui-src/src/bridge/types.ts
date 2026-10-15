@@ -1806,20 +1806,15 @@ export const CB = {
      loading or busy.
 
      MY LOOKS (owner, 2026-10-12/13) changed the page's half: the ones marked
-     NEW below are the browser preview's (bridge/mockLocker2.ts plays them)
-     and are not in br_lib/shared/protocol.lua yet -- the wiring round adds
-     them there and to br_ui/client/nui.lua's forwarded list. The ones marked
-     UNUSED are Lua's today and the new screen no longer sends them; they stay
-     so the two halves keep naming the same set until the wiring round
-     retires them. */
+     NEW below came with it, and br_lib/shared/protocol.lua names every one,
+     br_ui/client/nui.lua forwards every one and br_core/client/locker2.lua
+     answers every one (tools/test_locker2.lua's wire.mirror holds the three
+     to this list). The old tabs' LOCKER2_TAB and LOCKER2_RESET are retired
+     on both sides. */
   /** The screen is up: push the state, clean and dry the ped. {} */
   LOCKER2_OPEN:     'br/locker2/open',
   /** Done: discard any draft, wear the worn look again. {} */
   LOCKER2_CLOSE:    'br/locker2/close',
-  /** UNUSED by My Looks (the old Reset). {} */
-  LOCKER2_RESET:    'br/locker2/reset',
-  /** UNUSED by My Looks (the old tabs). { tab, seq } */
-  LOCKER2_TAB:      'br/locker2/tab',
   /** { k: 's' | 'p', id }: wear a stock or a saved look. */
   LOCKER2_WEAR:     'br/locker2/wear',
   /** { k, d }: a counter one step, d = 1 or -1, wrapping. A held arrow sends

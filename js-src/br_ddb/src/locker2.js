@@ -9,7 +9,8 @@
  *
  *   id   eleven base36 characters: nine of milliseconds, two random, so the
  *        ids sort by creation (br_lib/shared/appearance.lua mints them)
- *   n    the name, letters and digits, 1 to 24 (only its owner sees it)
+ *   n    the name, letters and digits in words one space apart, 1 to 24
+ *        (only its owner sees it)
  *   a    the appearance, its canonical JSON string, 2048 bytes at most
  *   cr   created, epoch ms; up  last written, epoch ms
  *   img  the headshot as a webp data URL, a few KB
@@ -51,9 +52,14 @@ export function isPedId(id) {
   return typeof id === 'string' && id.length === ID_LEN && /^[0-9a-z]+$/.test(id)
 }
 
-/** @param {unknown} n */
+/**
+ * Words of letters and digits one space apart, 1 to 24 in all ("we need to
+ * allow spaces in the ped names", owner, 2026-10-12) -- br_lib/shared/
+ * appearance.lua's A.isName, which the game box checks first.
+ * @param {unknown} n
+ */
 export function isName(n) {
-  return typeof n === 'string' && /^[A-Za-z0-9]{1,24}$/.test(n)
+  return typeof n === 'string' && /^(?=.{1,24}$)[A-Za-z0-9]+( [A-Za-z0-9]+)*$/.test(n)
 }
 
 /** @param {unknown} a */

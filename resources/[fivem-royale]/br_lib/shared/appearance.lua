@@ -26,8 +26,16 @@
 --        parachute packs included (owner, 2026-10-07)
 --   p    props 0, 1, 2, 6, 7: [drawable -1..1023 (-1 is none, with texture 0),
 --        texture 0..31]
---   t    tattoos, OPTIONAL and last: { "<set>": "<hex>" }; absent is none,
---        which is every save from before tattoos. See THE TATTOOS below.
+--   t    tattoos, OPTIONAL: { "<set>": "<hex>" }; absent is none, which is
+--        every save from before tattoos. See THE TATTOOS below.
+--   f    the starting face, OPTIONAL: an index into BR.Config.Locker2.faces
+--        for the look's sex; absent is 0, the one face every look had before
+--        My Looks, so an older save is the same face.
+--   x    the extras on the look, OPTIONAL and last: ["hat","tattoos"], in the
+--        order the player put them on (owner, 2026-10-14), each one of
+--        BR.Config.Locker2.extras at most once. Absent on a save from before
+--        My Looks; the client then lists the extras that are on, in the
+--        extras' own order.
 --
 -- Textures stop at 31 because that is all the sync tree carries (5 bits): a
 -- texture above it would show on this machine and nowhere else.
@@ -59,7 +67,8 @@
 --
 -- CANONICAL: sets sorted, trailing zero digits dropped, an empty set dropped,
 -- and no `t` at all when nothing is on -- so a look with no tattoos encodes
--- exactly as it did before they existed. Only the SHAPE is checked here: a set
+-- exactly as it did before they existed. Likewise no `f` for face 0 and no `x`
+-- for no extras: a look of none of My Looks' fields is the string it was. Only the SHAPE is checked here: a set
 -- or a number this build's list does not know (a set the game build lacks, a
 -- list from a later round) is kept as it is and skipped where tattoos are put
 -- on, never refused.
@@ -159,7 +168,40 @@ local function onlyKeys(t, allowed)
 end
 
 local TOP = { v = true, s = true, sk = true, e = true, h = true, ff = true, o = true, c = true, p = true,
-              t = true }
+              t = true, f = true, x = true }
+
+--- How many starting faces a sex has (BR.Config.Locker2.faces).
+local function faceCount(s)
+    local cfg = BR.Config and BR.Config.Locker2
+    local f = cfg and cfg.faces and cfg.faces[s]
+    return type(f) == 'table' and #f or 1
+end
+
+--- The extras a look's `x` may name, as a set.
+local extraSet = nil
+local function extras()
+    if extraSet then return extraSet end
+    local cfg = BR.Config and BR.Config.Locker2
+    local set = {}
+    for _, id in ipairs(cfg and cfg.extras or {}) do set[id] = true end
+    if next(set) ~= nil then extraSet = set end
+    return set
+end
+
+--- `x`'s shape: a list of known extras, none twice.
+local function validExtras(x)
+    if x == nil then return true end
+    if type(x) ~= 'table' then return false end
+    local n = 0
+    for _ in pairs(x) do n = n + 1 end
+    if n ~= #x then return false end
+    local known, seen = extras(), {}
+    for _, id in ipairs(x) do
+        if type(id) ~= 'string' or not known[id] or seen[id] then return false end
+        seen[id] = true
+    end
+    return true
+end
 
 --- A tattoo set's name: capitals and digits, words joined by one `_` (BUS_F).
 local function isSet(k)
@@ -226,6 +268,8 @@ function A.validate(a)
         if p[1] == -1 and p[2] ~= 0 then return false, 'p' .. A.PROPS[i] end
     end
     if not validTattoos(a.t) then return false, 't' end
+    if a.f ~= nil and not isInt(a.f, 0, faceCount(a.s) - 1) then return false, 'f' end
+    if not validExtras(a.x) then return false, 'x' end
     return true, nil
 end
 
@@ -267,6 +311,20 @@ local function tattoosOf(t)
     return ',"t":{' .. table.concat(out, ',') .. '}'
 end
 
+--- `f` as it is written: ',"f":N', or '' for the first face.
+local function faceOf(f)
+    if f == nil or f == 0 then return '' end
+    return (',"f":%d'):format(f)
+end
+
+--- `x` as it is written: ',"x":["hat",...]' in its order, or '' for none.
+local function extrasOf(x)
+    if x == nil or #x == 0 then return '' end
+    local out = {}
+    for i, id in ipairs(x) do out[i] = '"' .. id .. '"' end
+    return ',"x":[' .. table.concat(out, ',') .. ']'
+end
+
 --- The canonical string, or nil and why when `a` is not an appearance.
 --- @param a table
 --- @return string|nil
@@ -274,9 +332,9 @@ end
 function A.encode(a)
     local ok, why = A.validate(a)
     if not ok then return nil, why end
-    return ('{"v":1,"s":"%s","sk":%d,"e":%d,"h":%s,"ff":%s,"o":%s,"c":%s,"p":%s%s}'):format(
+    return ('{"v":1,"s":"%s","sk":%d,"e":%d,"h":%s,"ff":%s,"o":%s,"c":%s,"p":%s%s%s%s}'):format(
         a.s, a.sk, a.e, ints(a.h), ints(a.ff), overlaysOf(a.o), pairsOf(a.c), pairsOf(a.p),
-        tattoosOf(a.t)), nil
+        tattoosOf(a.t), faceOf(a.f), extrasOf(a.x)), nil
 end
 
 -- ═══ TATTOOS BY LABEL KEY ═══
@@ -495,11 +553,17 @@ function A.isPedId(id)
     return type(id) == 'string' and #id == A.ID_LEN and id:match('^[0-9a-z]+$') ~= nil
 end
 
---- A ped's name: Roman letters and digits only, 1 to 24 (owner, 2026-10-07).
+--- A look's name: Roman letters and digits (owner, 2026-10-07), words of
+--- them one space apart ("we need to allow spaces in the ped names", owner,
+--- 2026-10-12), 1 to 24 in all -- never a space first, last or doubled.
+--- ui-src/src/screens/lockerv2/model.ts nameOk and js-src/br_ddb's isName say
+--- the same.
 --- @param n any
 --- @return boolean
 function A.isName(n)
-    return type(n) == 'string' and #n >= 1 and #n <= 24 and n:match('^[A-Za-z0-9]+$') ~= nil
+    if type(n) ~= 'string' or #n < 1 or #n > 24 then return false end
+    if n:match('^[A-Za-z0-9 ]+$') == nil then return false end
+    return n:sub(1, 1) ~= ' ' and n:sub(-1) ~= ' ' and n:find('  ', 1, true) == nil
 end
 
 local B36 = '0123456789abcdefghijklmnopqrstuvwxyz'

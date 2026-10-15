@@ -2660,8 +2660,13 @@ console.log('\nlocker2: saved peds and the worn ped (#28)')
   }
   check('and no license is no key', pedKey('', PID), null)
   check('names are letters and digits, 1 to 24', [isName('Bob1'), isName('a'.repeat(24)), isName(''),
-    isName('a'.repeat(25)), isName('Bob 1'), isName('Bób'), isName('a_b')],
-  [true, true, false, false, false, false, false])
+    isName('a'.repeat(25)), isName('Bób'), isName('a_b')],
+  [true, true, false, false, false, false])
+  // "we need to allow spaces in the ped names" (owner, 2026-10-12): words one
+  // space apart, never a space first, last or doubled, 24 in all.
+  check('names may be words one space apart', [isName('Bob 1'), isName('My Look Two'), isName('a b'.repeat(8)),
+    isName(' Bob'), isName('Bob '), isName('Bob  1'), isName(' '), isName('ab '.repeat(8) + 'a'), isName('Bob\t1')],
+  [true, true, true, false, false, false, false, false, false])
 
   // ═══ THE WRITES ═══
   const put = pedPutInput(T, LIC, PID, { n: 'Bob', a: A, cr: 5, up: 6 }, true)
@@ -2669,7 +2674,7 @@ console.log('\nlocker2: saved peds and the worn ped (#28)')
   check('as the whole item', put.Item, { pk: LIC, sk: 'ped#' + PID, n: 'Bob', a: A, cr: 5, up: 6 })
   check('an update only where one is',
     pedPutInput(T, LIC, PID, { n: 'Bob', a: A, cr: 5, up: 6 }, false).ConditionExpression, 'attribute_exists(pk)')
-  check('a bad name writes nothing', pedPutInput(T, LIC, PID, { n: 'B b', a: A, cr: 5, up: 6 }, true), null)
+  check('a bad name writes nothing', pedPutInput(T, LIC, PID, { n: 'B  b', a: A, cr: 5, up: 6 }, true), null)
   check('nor an appearance past 2048 bytes',
     pedPutInput(T, LIC, PID, { n: 'Bob', a: A + ' '.repeat(2048), cr: 5, up: 6 }, true), null)
   check('nor one that is not an appearance',

@@ -16,6 +16,13 @@
 -- ONE AT A TIME, AND NOTHING KEPT. Each shot is unregistered, and its clone
 -- deleted, when the page says it has the picture or after shotWaitMs. Any
 -- failure leaves the card plain; nothing is retried.
+--
+-- NEVER IN THE OPEN'S WAY (#28 lag: the first open of a session cloned,
+-- dressed and shot one look after another while My Looks came up). The page
+-- asks once its cards are drawn; a stored picture then goes to it one a
+-- frame, the first clone waits shotDelayMs after the ask, and each next one
+-- shotGapMs after the last. A save's own shot, off the player, goes first and
+-- waits for nothing.
 
 BR = BR or {}
 BR.Locker2Shot = {}
@@ -25,7 +32,9 @@ local isTrue = BR.NativeTruthy
 
 local function C() return BR.Config.Locker2 end
 
---- Waiting: { id, up, a?, save? }. A save shot goes to the front.
+--- Waiting: { id, up, a?, img?, own?, save?, at? }. A save shot goes to the
+--- front; `img` is a stored picture to send, `at` the earliest a clone may be
+--- taken.
 local queue = {}
 --- The shot the page has: { id, handle, clone, save, at }.
 local current = nil
@@ -110,13 +119,26 @@ end
 local function run()
     if running then return end
     running = true
+    -- A thread starts on the next frame: nothing in the one that asked, while
+    -- the page is still revealing.
     Citizen.CreateThread(function()
         while #queue > 0 do
             local job = table.remove(queue, 1)
-            local ok, err = pcall(shoot, job)
-            if not ok then
-                print(('[br_core] locker2: headshot for %s failed (%s)'):format(tostring(job.id), tostring(err)))
-                release()
+            if job.img then
+                send({ id = job.id, up = job.up, img = job.img })
+                Citizen.Wait(0)
+            else
+                local wait = (job.at or 0) - GetGameTimer()
+                if wait > 0 then Citizen.Wait(wait) end
+                local ok, err = pcall(shoot, job)
+                if not ok then
+                    print(('[br_core] locker2: headshot for %s failed (%s)'):format(tostring(job.id), tostring(err)))
+                    release()
+                end
+                -- The next clone, if any, shotGapMs on.
+                for _, j in ipairs(queue) do
+                    if not j.img and not j.save then j.at = math.max(j.at or 0, GetGameTimer() + C().shotGapMs) end
+                end
             end
         end
         running = false
@@ -131,15 +153,19 @@ local function queued(id)
 end
 
 --- Cards with no picture: the stored one when the server has it, else one
---- taken now -- off the player for the ped they are wearing (`own`), off a
---- clone for the rest -- once each.
+--- taken -- off the player for the ped they are wearing (`own`), off a clone
+--- for the rest -- once each. Stored pictures first, a frame apart; the shots
+--- after shotDelayMs.
 --- @param peds table  { { id, up, a, img?, own? } }
 function Shot.request(peds)
+    local at = GetGameTimer() + C().shotDelayMs
+    local stored = 0
     for _, p in ipairs(peds) do
-        if p.img then
-            send({ id = p.id, up = p.up, img = p.img })
-        elseif p.a and not queued(p.id) then
-            queue[#queue + 1] = { id = p.id, up = p.up, a = p.a, own = p.own }
+        if p.img and not queued(p.id) then
+            stored = stored + 1
+            table.insert(queue, stored, { id = p.id, up = p.up, img = p.img })
+        elseif p.a and not p.img and not queued(p.id) then
+            queue[#queue + 1] = { id = p.id, up = p.up, a = p.a, own = p.own, at = at }
         end
     end
     run()

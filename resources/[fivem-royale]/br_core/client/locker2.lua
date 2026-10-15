@@ -30,11 +30,11 @@
 --
 -- ═══ THE PAGE IS PRESENTATION ═══
 --
--- ui-src/src/screens/LockerV2.tsx draws what BR.Nui.LOCKER2 says and sends the
--- br/locker2/* callbacks. Every one is checked again here, and refused while
--- the entrance walk holds the ped (BR.LobbyPed.lockerLocked), while a ped is
--- loading, or while a write is waiting on the server -- `tab` also while there
--- are unsaved changes.
+-- ui-src/src/screens/LockerV2.tsx ("My Looks") draws what BR.Nui.LOCKER2 says
+-- and sends the br/locker2/* callbacks. Every one is checked again here, and
+-- refused while the entrance walk holds the ped (BR.LobbyPed.lockerLocked),
+-- while a ped is loading, or while a write is waiting on the server -- a new
+-- or another saved look also while there are unsaved changes.
 
 BR = BR or {}
 BR.LockerV2 = {}
@@ -75,8 +75,9 @@ local S = {
     --- The page.
     open = false,
     tab = nil,
-    --- The custom ped being edited: { sex, a, base, editing, dirty, cat, tats }
-    --- (`tats`: its tattoo rows, see tatRowsOf).
+    --- The custom look being edited: { sex, a, base, editing, dirty, cat, tats,
+    --- hist } (`tats`: its tattoo rows, see tatRowsOf; `hist`: its Undo and
+    --- Redo; `base` nil for a new look).
     draft = nil,
     --- A save, rename or delete waiting on the server: its req.
     busy = nil,
@@ -174,8 +175,11 @@ end
 -- Putting an appearance on a ped
 -- ---------------------------------------------------------------------------
 
+--- The look's starting face (`f`, an index into BR.Config.Locker2.faces; the
+--- first when absent or past the list), as the head blend's one shape.
 local function headBlend(ped, a)
-    local shape = C().shape[a.s]
+    local faces = C().faces[a.s]
+    local shape = faces[(a.f or 0) + 1] or faces[1]
     SetPedHeadBlendData(ped, shape, shape, 0, a.sk, a.sk, 0, 0.0, 0.0, 0.0, false)
 end
 
@@ -541,15 +545,36 @@ end
 -- ---------------------------------------------------------------------------
 -- The page
 -- ---------------------------------------------------------------------------
+--
+-- ═══ MY LOOKS (owner, 2026-10-12/13/14) ═══
+--
+-- The page has views, not tabs (ui-src/src/screens/lockerv2/model.ts View),
+-- and asks this file to start a draft (LOCKER2_NEW: a new custom look,
+-- randomized; LOCKER2_EDIT: a saved one) and to leave it (LOCKER2_LEAVE). The
+-- draft is the whole look -- its `x` the extras on it, in the order put on --
+-- and its history: every change records the look as it was, Undo puts that
+-- back. Lua still names the tab it shows the ped for (`male`/`female` while a
+-- draft is up) and echoes the page's last numbered request as `tabSeq`.
 
-local CUSTOM = { male = 'm', female = 'f' }
-local TABS = { peds = true, stock = true, male = true, female = true }
+--- Lua's tab for a draft of each sex.
+local CUSTOM = { m = 'male', f = 'female' }
 
 local function catOf(k)
     for _, cat in ipairs(C().categories) do
         for _, rk in ipairs(cat.rows) do
             if rk == k then return cat end
         end
+    end
+    return nil
+end
+
+--- A category by its id: a row category or one of the Tattoos section's.
+local function catById(id)
+    for _, cat in ipairs(C().categories) do
+        if cat.id == id then return cat end
+    end
+    for _, cat in ipairs(C().tattooCats or {}) do
+        if cat.id == id then return cat end
     end
     return nil
 end
@@ -561,9 +586,38 @@ local function propIndex(slot)
     return nil
 end
 
+local function indexOf(list, v)
+    for i, x in ipairs(list) do
+        if x == v then return i end
+    end
+    return nil
+end
+
+--- Is this one of the extras ("Add more"'s list)?
+local function isExtra(id)
+    return type(id) == 'string' and indexOf(C().extras, id) ~= nil
+end
+
+local function modelOfSex(sex) return GetHashKey(C().models[sex]) end
+
+--- Is the ped on screen the draft's freemode ped? Every list, every forced
+--- piece and every apply asks the ped itself.
+local function modelReady(d)
+    return GetEntityModel(PlayerPedId()) == modelOfSex(d.sex)
+end
+
+--- A component row's "none", first in its list: the undershirt's, or an
+--- extra's drawable that draws nothing. nil for a row that has none.
+local function noneOf(slot, sex)
+    if slot == 8 then return C().undershirtNone[sex] end
+    return C().componentNone[slot]
+end
+
 --- What a row key edits, as (kind, a getter, a setter). nil for no such key.
 local function field(k)
-    if k == 'sk' then
+    if k == 'shape' then
+        return 'count', function(a) return a.f or 0 end, function(a, v) a.f = v ~= 0 and v or nil end
+    elseif k == 'sk' then
         return 'count', function(a) return a.sk end, function(a, v) a.sk = v end
     elseif k == 'e' then
         return 'count', function(a) return a.e end, function(a, v) a.e = v end
@@ -621,13 +675,38 @@ local function sliderRange(k)
     return 0, 100, 100
 end
 
---- The option lists, per sex, enumerated off the freemode ped once it is on.
+-- ═══ THE ITEMS (owner, 2026-10-14: "if the answer is it doesn't draw anything
+-- - then remove that item from the list entirely") ═══
+--
+-- A row's list holds only what the game will draw: a drawable this build has
+-- (not gen9-only), with a texture to draw, that IS_PED_COMPONENT_VARIATION_VALID
+-- passes -- and, for a prop, one with a texture. A row with a "none" keeps it
+-- first. So `v/n` counts real items. Each list is built the first time its row
+-- is drawn (a category on the look, never the extras that are not) and kept
+-- for the session; nothing is listed when the page opens.
+
+--- The option lists, per sex, and how many drawables each left out.
 local optionCache = { m = {}, f = {} }
+local removedBy = { m = {}, f = {} }
+
+--- How many drawables each row's list left out for a sex, of the lists built.
+--- @param sex string
+--- @return table
+function V.removed(sex) return removedBy[sex] or {} end
+--- An item's textures, per sex: [k .. ':' .. drawable] = { t... }.
+local texCache = { m = {}, f = {} }
 local missingLogged = {}
 
 local function gen9(ped, slot, d)
     if type(IsPedComponentVariationGen9Exclusive) ~= 'function' then return false end
     return isTrue(IsPedComponentVariationGen9Exclusive(ped, slot, d))
+end
+
+--- Does the game draw this component drawable?
+local function drawableOk(ped, slot, d)
+    if gen9(ped, slot, d) then return false end
+    if GetNumberOfPedTextureVariations(ped, slot, d) <= 0 then return false end
+    return isTrue(IsPedComponentVariationValid(ped, slot, d, 0))
 end
 
 local function range(lo, hi)
@@ -642,14 +721,16 @@ local function options(k, sex)
     local cached = optionCache[sex][k]
     if cached then return cached end
     local ped = PlayerPedId()
-    if GetEntityModel(ped) ~= GetHashKey(C().models[sex]) then return nil end
+    if GetEntityModel(ped) ~= modelOfSex(sex) then return nil end
     local list
-    if k == 'sk' then
+    if k == 'shape' then
+        list = range(0, #C().faces[sex] - 1)
+    elseif k == 'sk' then
         list = range(0, 45)
     elseif k == 'e' then
         list = range(0, 30)
     elseif k == 'h1' then
-        list = range(0, math.min(64, math.max(1, GetNumHairColors())) - 1)
+        list = range(0, math.min(C().paletteMax, math.max(1, GetNumHairColors())) - 1)
     elseif k:match('^o%d+$') then
         local i = tonumber(k:sub(2))
         local n = math.min(255, GetPedHeadOverlayNum(i))
@@ -661,19 +742,25 @@ local function options(k, sex)
         local slot = tonumber(k:sub(2))
         local n = math.min(1024, GetNumberOfPedDrawableVariations(ped, slot))
         list = {}
-        local none = slot == 8 and C().undershirtNone[sex] or nil
+        local none = noneOf(slot, sex)
         if none then list[1] = none end
+        local gone = 0
         for d = 0, n - 1 do
-            if d ~= none and not gen9(ped, slot, d) then
-                list[#list + 1] = d
+            if d ~= none then
+                if drawableOk(ped, slot, d) then list[#list + 1] = d else gone = gone + 1 end
             end
         end
+        removedBy[sex][k] = gone
         if #list == 0 then list[1] = 0 end
     elseif k:match('^p%d+$') then
         local slot = tonumber(k:sub(2))
         local n = math.min(1024, GetNumberOfPedPropDrawableVariations(ped, slot))
         list = { -1 }
-        for d = 0, n - 1 do list[#list + 1] = d end
+        local gone = 0
+        for d = 0, n - 1 do
+            if GetNumberOfPedPropTextureVariations(ped, slot, d) > 0 then list[#list + 1] = d else gone = gone + 1 end
+        end
+        removedBy[sex][k] = gone
     else
         return nil
     end
@@ -681,40 +768,85 @@ local function options(k, sex)
     return list
 end
 
-local function indexOf(list, v)
-    for i, x in ipairs(list) do
-        if x == v then return i end
+--- An item's textures, in order: for a component the ones the game says are
+--- valid, for a prop its count -- 32 at most, all the sync tree carries.
+local function textures(ped, sex, k, d)
+    local key = k .. ':' .. d
+    local cached = texCache[sex][key]
+    if cached then return cached end
+    local slot = tonumber(k:sub(2))
+    local list = {}
+    if k:sub(1, 1) == 'c' then
+        local n = math.min(32, GetNumberOfPedTextureVariations(ped, slot, d))
+        for t = 0, n - 1 do
+            if isTrue(IsPedComponentVariationValid(ped, slot, d, t)) then list[#list + 1] = t end
+        end
+    else
+        local n = math.min(32, GetNumberOfPedPropTextureVariations(ped, slot, d))
+        for t = 0, n - 1 do list[#list + 1] = t end
     end
-    return nil
+    if #list == 0 then list[1] = 0 end
+    texCache[sex][key] = list
+    return list
 end
 
 --- How many colors a row's item has: its textures, or its palette.
 ---
---- AN ITEM THAT IS NOT ON THE PED HAS ONE: no prop, and an overlay of none.
---- Its color shows on nothing, so it gets no Next color, and a press of one
---- would only make the draft differ where nobody can see (#28 review).
---- Appearance.encode writes a none overlay's color and opacity as their
---- defaults for the same reason.
-local function colorsOf(k, a, ped)
-    if k == 'c2' then return math.min(64, GetNumHairColors()) end
+--- AN ITEM THAT IS NOT ON THE PED HAS ONE: no prop, an overlay of none, a
+--- component's none. Its color shows on nothing, so it gets no swatches, and
+--- a press of one would only make the draft differ where nobody can see (#28
+--- review). Appearance.encode writes a none overlay's color and opacity as
+--- their defaults for the same reason.
+local function colorsOf(k, a, ped, sex)
+    if k == 'c2' then return math.min(C().paletteMax, GetNumHairColors()) end
     local n = k:match('^o(%d+)$')
     if n then
         local pal = C().overlayPalette[tonumber(n)]
         if not pal or a.o[tonumber(n) + 1][1] == A.NONE then return 1 end
-        return math.min(64, pal == 1 and GetNumHairColors() or GetNumMakeupColors())
+        return math.min(C().paletteMax, pal == 1 and GetNumHairColors() or GetNumMakeupColors())
     end
     n = k:match('^c(%d+)$')
     if n then
         local slot = tonumber(n)
-        return math.min(32, GetNumberOfPedTextureVariations(ped, slot, a.c[slot][1]))
+        if a.c[slot][1] == noneOf(slot, sex) then return 1 end
+        return #textures(ped, sex, k, a.c[slot][1])
     end
     n = k:match('^p(%d+)$')
     if n then
         local i = propIndex(tonumber(n))
         if not i or a.p[i][1] < 0 then return 1 end
-        return math.min(32, GetNumberOfPedPropTextureVariations(ped, A.PROPS[i], a.p[i][1]))
+        return #textures(ped, sex, k, a.p[i][1])
     end
     return 1
+end
+
+--- Which of the game's two palettes a row's colors come from, or nil.
+local function palOf(k)
+    if k == 'c2' or k == 'h1' then return 'hair' end
+    local n = k:match('^o(%d+)$')
+    local pal = n and C().overlayPalette[tonumber(n)]
+    if pal == 1 then return 'hair' elseif pal == 2 then return 'makeup' end
+    return nil
+end
+
+--- The color a row wears, 0-based: in its palette, or its item's place among
+--- its textures. nil for a row with none (the highlight is its own value).
+local function colorOf(k, a, ped, sex)
+    if k == 'c2' then return a.h[1] end
+    local n = k:match('^o(%d+)$')
+    if n then return C().overlayPalette[tonumber(n)] and a.o[tonumber(n) + 1][3] or nil end
+    n = k:match('^c(%d+)$')
+    if n then
+        local slot = tonumber(n)
+        return (indexOf(textures(ped, sex, k, a.c[slot][1]), a.c[slot][2]) or 1) - 1
+    end
+    n = k:match('^p(%d+)$')
+    if n then
+        local i = propIndex(tonumber(n))
+        if not i or a.p[i][1] < 0 then return nil end
+        return (indexOf(textures(ped, sex, k, a.p[i][1]), a.p[i][2]) or 1) - 1
+    end
+    return nil
 end
 
 --- Is this slider an opacity of an overlay that is none? It moves nothing on
@@ -724,41 +856,374 @@ local function sliderOff(k, a)
     return n ~= nil and a.o[tonumber(n) + 1][1] == A.NONE
 end
 
-local function rowsFor(d)
-    local rows, cats = {}, {}
-    local ped = PlayerPedId()
-    if GetEntityModel(ped) ~= GetHashKey(C().models[d.sex]) then return rows, cats end
-    for _, cat in ipairs(C().categories) do
-        local any = false
-        for _, k in ipairs(cat.rows) do
-            local kind, get = field(k)
-            if kind == 'slider' then
-                local lo, hi, def = sliderRange(k)
-                rows[#rows + 1] = { k = k, cat = cat.id, kind = 'slider', v = get(d.a),
-                                    min = lo, max = hi, def = def, off = sliderOff(k, d.a) or nil }
-                any = true
-            elseif kind == 'count' then
-                local list = options(k, d.sex)
-                if list then
-                    local v = get(d.a)
-                    local pos = indexOf(list, v)
-                    if not pos then
-                        if not missingLogged[k .. '=' .. tostring(v)] then
-                            missingLogged[k .. '=' .. tostring(v)] = true
-                            print(('[br_core] locker2: %s %s is not on this build; shown as 1')
-                                :format(k, tostring(v)))
-                        end
-                        pos = 1
-                    end
-                    rows[#rows + 1] = { k = k, cat = cat.id, kind = 'count', v = pos, n = #list,
-                                        colors = colorsOf(k, d.a, ped) }
-                    any = true
+-- ═══ ITEM NAMES, OFF (owner, 2026-10-14: "All or nothing on that") ═══
+--
+-- The game names an item through its shop data -- GET_HASH_NAME_FOR_COMPONENT
+-- (or _FOR_PROP), the shop struct's label, GetLabelText -- for some items and
+-- not others (tops about three in four, legs half, bags none). So no row
+-- carries a name, and none is looked up, unless its category is in
+-- BR.Config.Locker2.names; the page draws a name only for a category in its
+-- own NAMED_CATS (ui-src/src/screens/lockerv2/model.ts). Both are empty.
+
+local nameCache = { m = {}, f = {} }
+local SHOP_COMPONENT, SHOP_PROP = 0x74C0E2A57EC66760, 0x5D5CAFF661DDF6FC
+local HASH_COMPONENT, HASH_PROP = 0x0368B3A838070348, 0x5D6160275CAEC8DD
+
+--- The game's name for a row's item, or nil.
+local function itemName(ped, sex, k, a)
+    local slot = tonumber(k:match('^[cp](%d+)$') or '')
+    if not slot then return nil end
+    local prop = k:sub(1, 1) == 'p'
+    local d, t
+    if prop then
+        local i = propIndex(slot)
+        if not i or a.p[i][1] < 0 then return nil end
+        d, t = a.p[i][1], a.p[i][2]
+    else
+        d, t = a.c[slot][1], a.c[slot][2]
+    end
+    local key = k .. ':' .. d .. ':' .. t
+    local hit = nameCache[sex][key]
+    if hit ~= nil then return hit or nil end
+    local ok, name = pcall(function()
+        local h = Citizen.InvokeNative(prop and HASH_PROP or HASH_COMPONENT, ped, slot, d, t, Citizen.ResultAsInteger())
+        if not h or h == 0 then return nil end
+        local buf = string.rep('\0', 512)
+        Citizen.InvokeNative(prop and SHOP_PROP or SHOP_COMPONENT, h, buf)
+        if string.unpack('<i4', buf, 9) ~= h then return nil end
+        local gxt = buf:sub(73, 136):match('^[^%z]+')
+        if not gxt then return nil end
+        local s = GetLabelText(gxt)
+        return type(s) == 'string' and s ~= '' and s ~= 'NULL' and s or nil
+    end)
+    name = ok and name or nil
+    nameCache[sex][key] = name or false
+    return name
+end
+
+-- ═══ THE GAME'S FORCED COMPONENTS (#28, the game-data check) ═══
+--
+-- A shop top names what it is worn with, per texture: its arms (about nine
+-- tops in ten), often its undershirt, and a jumpsuit its legs and shoes
+-- (GET_SHOP_PED_APPAREL_FORCED_COMPONENT_COUNT, GET_FORCED_COMPONENT). An
+-- undershirt names its arms. So a top put on -- a step, a set, a color, a
+-- Randomize -- puts those on as the game would: the top's first, then the
+-- undershirt's own where the top named none. An undershirt put on puts on its
+-- arms where the top names none. The Arms row stays the player's: it changes
+-- nothing else, and a top with no shop data (the 16 base tops) leaves the
+-- arms as they are.
+--
+-- A target named by the hash of "0" is a base item, given as a flat index over
+-- the slot's textures, drawable by drawable. Any other is a DLC item, found by
+-- its own shop hash among the slot's (read once per sex and slot).
+
+local forcedCache = { m = {}, f = {} }
+local flatCache = { m = {}, f = {} }
+local hashIndex = { m = {}, f = {} }
+local ZERO = nil
+
+--- A hash as 32 unsigned bits: one native hands it back signed, another may
+--- not, and the two are compared.
+local function h32(h)
+    return math.type(h) == 'integer' and h & 0xFFFFFFFF or h
+end
+
+--- A hash that names no shop item.
+local function noItem(h)
+    ZERO = ZERO or h32(GetHashKey('0'))
+    return h == nil or h == 0 or h32(h) == ZERO
+end
+
+local function forcedCount(h)
+    local fn = GetShopPedApparelForcedComponentCount or GetNumForcedComponents
+    return fn and fn(h) or 0
+end
+
+--- A base item's flat index as its drawable and texture.
+local function decodeFlat(ped, sex, slot, enum)
+    local cum = flatCache[sex][slot]
+    if not cum then
+        cum = {}
+        local total = 0
+        local n = math.min(1024, GetNumberOfPedDrawableVariations(ped, slot))
+        for d = 0, n - 1 do
+            total = total + math.max(0, GetNumberOfPedTextureVariations(ped, slot, d))
+            cum[d + 1] = total
+        end
+        flatCache[sex][slot] = cum
+    end
+    local before = 0
+    for i, upto in ipairs(cum) do
+        if enum < upto then return i - 1, enum - before end
+        before = upto
+    end
+    return nil
+end
+
+--- A DLC item's drawable and texture by its shop hash.
+local function byHash(ped, sex, slot, h)
+    local idx = hashIndex[sex][slot]
+    if not idx then
+        idx = {}
+        local n = math.min(1024, GetNumberOfPedDrawableVariations(ped, slot))
+        for d = 0, n - 1 do
+            for t = 0, math.min(32, GetNumberOfPedTextureVariations(ped, slot, d)) - 1 do
+                local x = GetHashNameForComponent(ped, slot, d, t)
+                if not noItem(x) and idx[h32(x)] == nil then idx[h32(x)] = { d, t } end
+            end
+        end
+        hashIndex[sex][slot] = idx
+    end
+    local hit = idx[h32(h)]
+    if hit then return hit[1], hit[2] end
+    return nil
+end
+
+--- What the item in `slot` forces, as { slot, drawable, texture }s: only the
+--- slots of forcedSlots, only what the game says is valid.
+local function forcedOf(ped, sex, slot, d, t)
+    local key = slot .. ':' .. d .. ':' .. t
+    local hit = forcedCache[sex][key]
+    if hit then return hit end
+    local out = {}
+    local wanted = {}
+    for _, s in ipairs(C().forcedSlots or {}) do wanted[s] = true end
+    local ok = pcall(function()
+        local h = GetHashNameForComponent(ped, slot, d, t)
+        if noItem(h) then return end
+        for i = 0, math.min(16, forcedCount(h)) - 1 do
+            local nameHash, enum, ctype = GetForcedComponent(h, i)
+            if wanted[ctype] and ctype ~= slot then
+                local fd, ft
+                if noItem(nameHash) then
+                    fd, ft = decodeFlat(ped, sex, ctype, enum or 0)
+                else
+                    fd, ft = byHash(ped, sex, ctype, nameHash)
+                end
+                if fd and ft and ft < 32 and isTrue(IsPedComponentVariationValid(ped, ctype, fd, ft)) then
+                    out[#out + 1] = { ctype, fd, ft }
                 end
             end
         end
-        if any then cats[#cats + 1] = cat.id end
+    end)
+    if not ok then out = {} end
+    forcedCache[sex][key] = out
+    return out
+end
+
+--- After the top (11) or the undershirt (8) changed: the pieces they force.
+local function applyForced(d, ped, changed)
+    local a = d.a
+    local function put(list, skip)
+        local done = {}
+        for _, f in ipairs(list) do
+            if not (skip and skip[f[1]]) then
+                a.c[f[1]][1], a.c[f[1]][2] = f[2], f[3]
+                done[f[1]] = true
+            end
+        end
+        return done
     end
-    return rows, cats
+    local top = forcedOf(ped, d.sex, 11, a.c[11][1], a.c[11][2])
+    local skip
+    if changed == 11 then
+        skip = put(top)
+    elseif changed == 8 then
+        skip = {}
+        for _, f in ipairs(top) do skip[f[1]] = true end
+    else
+        return
+    end
+    skip[8], skip[11] = true, true
+    put(forcedOf(ped, d.sex, 8, a.c[8][1], a.c[8][2]), skip)
+end
+
+--- The pieces a row's change forces, when the ped is the draft's.
+local function forcedAfter(d, k)
+    if (k ~= 'c11' and k ~= 'c8') or not modelReady(d) then return end
+    applyForced(d, PlayerPedId(), k == 'c11' and 11 or 8)
+end
+
+-- ═══ THE EXTRAS (owner, 2026-10-13/14) ═══
+
+local function tatZones()
+    local cfg = BR.Config.Tattoos
+    return cfg and cfg.zones or {}
+end
+
+--- Is extra `id` on the look: any of its rows off none, or a tattoo it wears.
+local function extraOn(a, id)
+    if id == 'tattoos' then return #tattooRows(a) > 0 end
+    local cat = catById(id)
+    for _, k in ipairs(cat and cat.rows or {}) do
+        local n = k:match('^c(%d+)$')
+        if n and a.c[tonumber(n)][1] ~= (C().componentNone[tonumber(n)] or 0) then return true end
+        n = k:match('^p(%d+)$')
+        if n and a.p[propIndex(tonumber(n))][1] >= 0 then return true end
+        n = k:match('^o(%d+)$')
+        if n and a.o[tonumber(n) + 1][1] ~= A.NONE then return true end
+    end
+    return false
+end
+
+--- The look's extras in order: its `x`, then any that is on and that `x`
+--- does not name (a look saved before My Looks), in the extras' own order.
+local function extrasOf(a)
+    local out, seen = {}, {}
+    for _, id in ipairs(type(a.x) == 'table' and a.x or {}) do
+        if isExtra(id) and not seen[id] then
+            out[#out + 1] = id
+            seen[id] = true
+        end
+    end
+    for _, id in ipairs(C().extras) do
+        if not seen[id] and extraOn(a, id) then
+            out[#out + 1] = id
+            seen[id] = true
+        end
+    end
+    return out
+end
+
+--- `a.x` made whole: every extra on is listed.
+local function syncExtras(a)
+    local x = extrasOf(a)
+    a.x = #x > 0 and x or nil
+end
+
+-- ═══ THE TATTOO ROWS ═══
+--
+-- "a list, starting empty, with add and remove buttons ... You can just make
+-- it max 10 per category" (owner, 2026-10-12), now one list under the Tattoos
+-- extra (2026-10-14: "starting with a bunch of add buttons is not intuitive
+-- ... fix that"): "Add more" asks the zone and the tattoo. The rows are the
+-- draft's, per body zone, { r, i }: `i` the tattoo's row in the list, `r` the
+-- row's own id, never given twice in a session, so a choice or a Remove the
+-- page sends lands on that row and never on another draft's. The look's `t`
+-- says which tattoos are on, and these the order the page lists them in,
+-- which the save cannot hold: a look opens with its rows in the list's order,
+-- at most TATTOOS_PER_ZONE a zone (tattooRows).
+local nextTatRow = 0
+local function tatRowsOf(a)
+    local out = {}
+    for _, z in ipairs(tatZones()) do out[z] = {} end
+    for _, i in ipairs(tattooRows(a)) do
+        local rows = out[BR.Config.Tattoos.list[i][2]]
+        if rows then
+            nextTatRow = nextTatRow + 1
+            rows[#rows + 1] = { r = nextTatRow, i = i }
+        end
+    end
+    return out
+end
+
+--- The rows as the page gets them, zone by zone: { r, z, i }, a few bytes
+--- each. The tattoos' names go once, when the page asks (LOCKER2_TATS).
+local function tatRowsOut(d)
+    local out = {}
+    for _, z in ipairs(tatZones()) do
+        for _, row in ipairs(d.tats and d.tats[z] or {}) do
+            out[#out + 1] = { r = row.r, z = z, i = row.i }
+        end
+    end
+    return out
+end
+
+--- The tattoos a zone's rows hold, but `skip`'s.
+local function usedIn(rows, skip)
+    local used = {}
+    for _, row in ipairs(rows) do
+        if row ~= skip then used[row.i] = true end
+    end
+    return used
+end
+
+--- A zone's tattoos for a sex, in the list's order. No names: Randomize picks
+--- from these without asking the game for a word.
+local zoneIdCache = { m = {}, f = {} }
+local function zoneIds(sex, z)
+    local hit = zoneIdCache[sex][z]
+    if hit then return hit end
+    local out = {}
+    for i, row in ipairs(BR.Config.Tattoos and BR.Config.Tattoos.list or {}) do
+        if row[2] == z and tattooFor(i, sex) then out[#out + 1] = i end
+    end
+    zoneIdCache[sex][z] = out
+    return out
+end
+
+--- The row with id `r`, and its zone's rows and its place there.
+local function tatRowById(d, r)
+    for _, z in ipairs(tatZones()) do
+        for k, row in ipairs(d.tats[z] or {}) do
+            if row.r == r then return row, d.tats[z], k end
+        end
+    end
+    return nil
+end
+
+--- A new row at the foot of zone `z`, wearing tattoo `i`.
+local function addTatRow(d, z, i)
+    nextTatRow = nextTatRow + 1
+    local rows = d.tats[z]
+    rows[#rows + 1] = { r = nextTatRow, i = i }
+    A.setTattoo(d.a, BR.Config.Tattoos.list[i][1], true)
+end
+
+--- Every row off, and its tattoo with it. A key never worn here (a set no list
+--- knows, the other sex's alone) stays in the look, where it draws nothing.
+local function clearTats(d)
+    for _, z in ipairs(tatZones()) do
+        for _, row in ipairs(d.tats[z] or {}) do
+            A.setTattoo(d.a, BR.Config.Tattoos.list[row.i][1], false)
+        end
+        d.tats[z] = {}
+    end
+end
+
+-- ═══ THE ROWS THE PAGE DRAWS ═══
+
+--- A category's rows, sent while it is on the look: the core always, an
+--- extra once it is listed. So a list is built when its row is first drawn.
+local function rowsFor(d)
+    local rows = {}
+    local ped = PlayerPedId()
+    if GetEntityModel(ped) ~= modelOfSex(d.sex) then return rows end
+    local listed = {}
+    for _, id in ipairs(d.a.x or {}) do listed[id] = true end
+    local named = {}
+    for _, id in ipairs(C().names or {}) do named[id] = true end
+    for _, cat in ipairs(C().categories) do
+        if not cat.extra or listed[cat.id] then
+            for _, k in ipairs(cat.rows) do
+                local kind, get = field(k)
+                if kind == 'slider' then
+                    local lo, hi, def = sliderRange(k)
+                    rows[#rows + 1] = { k = k, cat = cat.id, kind = 'slider', v = get(d.a),
+                                        min = lo, max = hi, def = def, off = sliderOff(k, d.a) or nil }
+                elseif kind == 'count' then
+                    local list = options(k, d.sex)
+                    if list then
+                        local v = get(d.a)
+                        local pos = indexOf(list, v)
+                        if not pos then
+                            if not missingLogged[k .. '=' .. tostring(v)] then
+                                missingLogged[k .. '=' .. tostring(v)] = true
+                                print(('[br_core] locker2: %s %s is not on this build; shown as 1')
+                                    :format(k, tostring(v)))
+                            end
+                            pos = 1
+                        end
+                        rows[#rows + 1] = { k = k, cat = cat.id, kind = 'count', v = pos, n = #list,
+                                            colors = colorsOf(k, d.a, ped, d.sex), pal = palOf(k),
+                                            c = k ~= 'h1' and colorOf(k, d.a, ped, d.sex) or nil,
+                                            name = named[cat.id] and itemName(ped, d.sex, k, d.a) or nil }
+                    end
+                end
+            end
+        end
+    end
+    return rows
 end
 
 --- A tattoo's name: the game's own text for its label key, or nil where the
@@ -801,74 +1266,29 @@ local function catalog(sex)
     return catalogs[sex]
 end
 
---- A zone's tattoos for a sex in the order Add picks from -- the page's list,
---- by the game's name. Built once off the catalog: { i... }.
-local orders = { m = {}, f = {} }
-local function zoneOrder(sex, z)
-    local o = orders[sex][z]
-    if o then return o end
-    o = {}
-    for _, zone in ipairs(catalog(sex).zones) do
-        if zone.z == z then
-            for k, it in ipairs(zone.items) do o[k] = it.i end
+--- THE PALETTES the swatch grids draw (LOCKER2_PAL), built once: the game's
+--- hair and makeup colors as `#rrggbb`, paletteMax of each at most.
+local palettes = nil
+local function palettesOut()
+    if palettes then return palettes end
+    local function list(count, rgb)
+        local out = {}
+        if not rgb then return out end
+        for i = 0, math.min(C().paletteMax, count) - 1 do
+            local r, g, b = rgb(i)
+            out[#out + 1] = ('#%02x%02x%02x'):format(math.tointeger(r) or 0, math.tointeger(g) or 0,
+                math.tointeger(b) or 0)
         end
+        return out
     end
-    orders[sex][z] = o
-    return o
+    palettes = {
+        hair = list(GetNumHairColors(), GetPedHairRgbColor or GetPedHairTintColor),
+        makeup = list(GetNumMakeupColors(), GetPedMakeupRgbColor or GetPedMakeupTintColor),
+    }
+    return palettes
 end
 
-local function tatZones()
-    local cfg = BR.Config.Tattoos
-    return cfg and cfg.zones or {}
-end
-
---- THE DRAFT'S TATTOO ROWS (owner, 2026-10-12: "a list, starting empty, with
---- add and remove buttons"): per body zone, in the order the page draws them,
---- { [zone] = { { r, i }... } }. `i` is the tattoo's row in the list; `r` the
---- row's own id, never given twice in a session, so a choice or a Remove the
---- page sends lands on that row and never on another draft's. The
---- look's `t` says which tattoos are on, and these the order the page lists
---- them in, which the save cannot hold: a look opens with its rows in the
---- list's order, at most TATTOOS_PER_ZONE a zone (tattooRows).
-local nextTatRow = 0
-local function tatRowsOf(a)
-    local out = {}
-    for _, z in ipairs(tatZones()) do out[z] = {} end
-    for _, i in ipairs(tattooRows(a)) do
-        local rows = out[BR.Config.Tattoos.list[i][2]]
-        if rows then
-            nextTatRow = nextTatRow + 1
-            rows[#rows + 1] = { r = nextTatRow, i = i }
-        end
-    end
-    return out
-end
-
---- The rows as the page gets them, zone by zone: { r, z, i }, a few bytes
---- each. The tattoos' names go once, when the page asks (LOCKER2_TATS).
-local function tatRowsOut(d)
-    local out = {}
-    for _, z in ipairs(tatZones()) do
-        for _, row in ipairs(d.tats and d.tats[z] or {}) do
-            out[#out + 1] = { r = row.r, z = z, i = row.i }
-        end
-    end
-    return out
-end
-
---- A category of the anchor navigation by its id: a row category or one of
---- the Tattoos section's.
-local function catById(id)
-    for _, cat in ipairs(C().categories) do
-        if cat.id == id then return cat end
-    end
-    for _, cat in ipairs(C().tattooCats or {}) do
-        if cat.id == id then return cat end
-    end
-    return nil
-end
-
---- My peds while the saved peds are still being fetched, as the page opens:
+--- My Looks while the saved looks are still being fetched, as the page opens:
 --- it holds the loading indicator there until the server answers (owner,
 --- 2026-10-07: "show a loading icon while we wait for the results").
 local function fetching()
@@ -909,16 +1329,18 @@ function V.push()
         peds[#peds + 1] = { id = p.id, name = p.name, up = p.up }
     end
     local edit = nil
-    if S.draft and CUSTOM[S.tab] then
-        local rows, cats = rowsFor(S.draft)
-        edit = { sex = S.draft.sex, editing = S.draft.editing, dirty = S.draft.dirty,
-                 cat = S.draft.cat, cats = cats, rows = rows, tats = tatRowsOut(S.draft) }
+    local d = S.draft
+    if d then
+        edit = { sex = d.sex, editing = d.editing, dirty = d.dirty, cat = d.cat, rows = rowsFor(d),
+                 tats = tatRowsOut(d), extras = d.a.x or {},
+                 undo = #d.hist.past > 0, redo = #d.hist.future > 0 }
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2, {
         on = true,
         tab = S.tab or defaultTab(),
-        -- The page's last `tab` request this answer has seen (see ACTIONS'
-        -- handler): the page follows `tab` once it is its own latest.
+        -- The page's last numbered request this answer has seen (see the
+        -- ACTIONS handler): the page follows Lua's draft once it is its own
+        -- latest.
         tabSeq = S.tabSeq,
         stock = stock,
         peds = peds,
@@ -955,7 +1377,21 @@ local function wornIn(w)
 end
 
 local function fetch()
+    S.fetchAt = GetGameTimer()
     TriggerServerEvent(BR.Net.LOCKER2_FETCH, {})
+end
+
+--- THE SAVED LOOKS ARE ASKED FOR ONCE (#28 lag: every open asked again, and
+--- the server read every look and headshot from the database each time). The
+--- join's first apply asks; every write's answer keeps the list current. An
+--- open asks again only when no answer has come (and the last ask is fetchMs
+--- old), when the server could not read them, or when the answer is
+--- refreshMs old.
+local function stale()
+    local now = GetGameTimer()
+    if not S.serverSeen then return S.fetchAt == nil or now - S.fetchAt >= C().fetchMs end
+    if S.store == false then return true end
+    return S.stateAt ~= nil and now - S.stateAt >= C().refreshMs
 end
 
 local function sendWear(rec)
@@ -966,6 +1402,7 @@ RegisterNetEvent(BR.Net.LOCKER2_STATE)
 AddEventHandler(BR.Net.LOCKER2_STATE, function(d)
     if type(d) ~= 'table' or not claims() then return end
     S.serverSeen = true
+    S.stateAt = GetGameTimer()
     S.store = d.store ~= false
     if type(d.peds) == 'table' then
         local list = {}
@@ -1029,7 +1466,7 @@ AddEventHandler(BR.Net.LOCKER2_RESULT, function(d)
             remember(w)
         end
         if ped and S.draft and op == 'save' then
-            -- A SAVE: the draft is now that saved ped, unchanged.
+            -- A SAVE: the draft is now that saved look, unchanged.
             S.draft.editing = ped.id
             S.draft.base = A.copy(S.draft.a)
             S.draft.dirty = false
@@ -1046,25 +1483,48 @@ end)
 -- The draft
 -- ---------------------------------------------------------------------------
 
---- A new draft starts on NO category, with the camera home on the whole ped.
+--- A draft: the look being edited, where it began (`base`, nil for a new look,
+--- which is never clean), and its history.
+local function newDraft(sex, a, base, editing)
+    return { sex = sex, a = a, base = base, editing = editing, dirty = base == nil, cat = nil,
+             tats = tatRowsOf(a), hist = { past = {}, future = {}, key = nil, at = 0 } }
+end
+
+local function touched()
+    local d = S.draft
+    d.dirty = d.base == nil or not A.equal(d.a, d.base)
+end
+
+--- The whole draft on the ped, in place, when the ped is the draft's.
+local function applyAll()
+    local d = S.draft
+    local ped = PlayerPedId()
+    if not d or GetEntityModel(ped) ~= modelOfSex(d.sex) then return end
+    local a = A.copy(d.a)
+    noteDecos(ped, V.applyTo(ped, a))
+    noteApplied(GetEntityModel(ped), a, ped)
+    reassertLater(ped, a)
+end
+
+--- A draft starts on NO category, with the camera home on the whole ped.
 ---
---- THE ANCHOR THE PAGE LIGHTS IS WHERE THE CAMERA IS (#28 review): `cat` is
+--- THE CATEGORY THE PAGE LIGHTS IS WHERE THE CAMERA IS (#28 review): `cat` is
 --- set only by LOCKER2_CAT, which moves the camera there, and a draft that
---- starts -- a Custom tab, Create, Edit -- sends the camera home and clears it.
---- A draft that began on Face with the camera wherever the last one left it
---- lit Face over the feet, and pressing Face then moved nothing.
+--- starts -- New, Edit -- sends the camera home and clears it.
 ---
 --- A LOOK PAST THE TATTOO CAP (saved the day there was none) starts without
 --- what it never wore, base included: nothing to save until something changes.
+--- A look saved before My Looks starts with its extras listed (syncExtras),
+--- base included, for the same reason.
 local function startDraft(sex, a, editing)
     local look = capTattoos(A.copy(a))
-    S.draft = { sex = sex, a = A.copy(look), base = A.copy(look), editing = editing, dirty = false,
-                cat = nil, tats = tatRowsOf(look) }
+    syncExtras(look)
+    S.draft = newDraft(sex, A.copy(look), A.copy(look), editing)
     if BR.LobbyCam and BR.LobbyCam.unfocus then BR.LobbyCam.unfocus() end
-    dress(GetHashKey(C().models[sex]), A.copy(look), function() V.push() end)
+    dress(modelOfSex(sex), A.copy(look), function() V.push() end)
 end
 
---- Throw the draft away and put the worn ped back.
+--- Throw the draft away and bring the camera home.
 local function discard()
     local had = S.draft ~= nil
     S.draft = nil
@@ -1072,17 +1532,75 @@ local function discard()
     return had
 end
 
-local function touched()
+-- ═══ UNDO AND REDO (owner, 2026-10-13: "yes") ═══
+--
+-- Lua holds the draft, so Lua holds its history, by the page's own rules
+-- (ui-src/src/screens/lockerv2/model.ts record, undoStep, redoStep): a change
+-- records the look as it was; Undo puts that back and keeps the present for
+-- Redo; a new change clears Redo. Touches of one row closer than coalesceMs
+-- are one step -- a slider's drag, a held arrow -- and at most historyMax are
+-- kept. A step is everything one press did: a top's forced arms with the top,
+-- every extra Randomize put on with the rest.
+
+local function copyTats(t)
+    local out = {}
+    for z, rows in pairs(t) do
+        out[z] = {}
+        for k, r in ipairs(rows) do out[z][k] = { r = r.r, i = r.i } end
+    end
+    return out
+end
+
+local function snap(d)
+    return { a = A.copy(d.a), tats = copyTats(d.tats) }
+end
+
+--- Run `fn` on the draft. If the look came out different, the look as it was
+--- is one step of the history (merged with the last one for the same `key`
+--- inside coalesceMs) and the draft is touched. Returns whether it changed.
+local function change(key, fn)
     local d = S.draft
-    d.dirty = not A.equal(d.a, d.base)
+    local before = snap(d)
+    if not fn(d) then
+        d.a, d.tats = before.a, before.tats
+        return false
+    end
+    syncExtras(d.a)
+    if A.encode(before.a) == A.encode(d.a) then return false end
+    local h = d.hist
+    local now = GetGameTimer()
+    if not (key ~= nil and key == h.key and now - h.at < C().coalesceMs) then
+        h.past[#h.past + 1] = before
+        while #h.past > C().historyMax do table.remove(h.past, 1) end
+    end
+    h.future = {}
+    h.key, h.at = key, now
+    touched()
+    return true
+end
+
+--- One step back (`from` the past) or forward (the future): the look put
+--- back whole, and onto the ped.
+local function travel(from, to)
+    local d = S.draft
+    if not d then return false end
+    local s = table.remove(d.hist[from])
+    if not s then return false end
+    local list = d.hist[to]
+    list[#list + 1] = snap(d)
+    d.hist.key, d.hist.at = nil, 0
+    d.a, d.tats = s.a, s.tats
+    touched()
+    applyAll()
+    return true
 end
 
 --- Apply the part of the draft one key changed.
 local function applyKey(k)
     local d = S.draft
     local ped = PlayerPedId()
-    if GetEntityModel(ped) ~= GetHashKey(C().models[d.sex]) then return end
-    if k == 'sk' then
+    if GetEntityModel(ped) ~= modelOfSex(d.sex) then return end
+    if k == 'sk' or k == 'shape' then
         headBlend(ped, d.a)
         features(ped, d.a)
         overlays(ped, d.a)
@@ -1095,6 +1613,11 @@ local function applyKey(k)
         SetPedFaceFeature(ped, i - 1, d.a.ff[i] / 100.0)
     elseif k:match('^o') then
         overlay(ped, d.a, tonumber(k:match('^o(%d+)')) + 1)
+    elseif k == 'c11' or k == 'c8' then
+        -- What the top or undershirt forced went on with it.
+        for slot = 1, A.COMPS do
+            if slot ~= 2 then component(ped, d.a, slot) end
+        end
     elseif k:match('^c') then
         component(ped, d.a, tonumber(k:sub(2)))
     elseif k:match('^p') then
@@ -1117,7 +1640,7 @@ end
 
 local function setRow(k, v)
     local d = S.draft
-    local kind, get, set = field(k)
+    local kind, _, set = field(k)
     if not kind or not catOf(k) then return false end
     v = math.tointeger(tonumber(v))
     if v == nil then return false end
@@ -1131,9 +1654,8 @@ local function setRow(k, v)
     if not list or v < 1 or v > #list then return false end
     set(d.a, list[v])
     -- A RESET PUTS BACK EVERYTHING THE ROW'S BUTTONS CHANGE: the item and its
-    -- Next color -- a component's or a prop's texture, an overlay's color,
-    -- the Hair row's hair color. An opacity is a row of its own, with its own
-    -- reset.
+    -- color -- a component's or a prop's texture, an overlay's color, the Hair
+    -- row's hair color. An opacity is a row of its own, with its own reset.
     local c = k:match('^c(%d+)$')
     if c then d.a.c[tonumber(c)][2] = 0 end
     if k == 'c2' then d.a.h[1] = 0 end
@@ -1144,36 +1666,182 @@ local function setRow(k, v)
     return true
 end
 
-local function nextColor(k)
+--- A swatch's press: the row's color `c`, 0-based -- in its palette, or the
+--- item's `c`th texture (owner, 2026-10-14: "any button showing "next color"
+--- should have a button for a color swatch instead"). Refused for an item
+--- that shows no color, past its colors, or the color already on.
+local function setColor(k, c)
     local d = S.draft
-    if not catOf(k) then return false end
+    if not catOf(k) or math.type(c) ~= 'integer' or c < 0 then return false end
     local ped = PlayerPedId()
-    local n = colorsOf(k, d.a, ped)
-    if n <= 1 then return false end
+    if k == 'h1' or k:match('^o%d+op$') then return false end
+    local n = colorsOf(k, d.a, ped, d.sex)
+    if n <= 1 or c >= n then return false end
     if k == 'c2' then
-        d.a.h[1] = (d.a.h[1] + 1) % n
+        d.a.h[1] = c
         return true
     end
     local o = k:match('^o(%d+)$')
     if o then
-        local i = tonumber(o) + 1
-        d.a.o[i][3] = (d.a.o[i][3] + 1) % n
+        d.a.o[tonumber(o) + 1][3] = c
         return true
     end
-    local c = k:match('^c(%d+)$')
-    if c then
-        local slot = tonumber(c)
-        d.a.c[slot][2] = (d.a.c[slot][2] + 1) % n
+    local slot = tonumber(k:match('^c(%d+)$') or '')
+    if slot then
+        d.a.c[slot][2] = textures(ped, d.sex, k, d.a.c[slot][1])[c + 1]
         return true
     end
     local p = k:match('^p(%d+)$')
-    if p then
-        local i = propIndex(tonumber(p))
-        if not i or d.a.p[i][1] < 0 then return false end
-        d.a.p[i][2] = (d.a.p[i][2] + 1) % n
-        return true
+    local i = p and propIndex(tonumber(p))
+    if not i or d.a.p[i][1] < 0 then return false end
+    d.a.p[i][2] = textures(ped, d.sex, k, d.a.p[i][1])[c + 1]
+    return true
+end
+
+-- ═══ RANDOMIZE (owner, 2026-10-13: "a randomize button for the whole ped";
+-- 2026-10-14: "the randomize button should randomize those additional
+-- categories too, and add them to the list when it sets them") ═══
+
+local function rand(lo, hi)
+    if hi <= lo then return lo end
+    return math.random(lo, hi)
+end
+
+--- A random entry of `list`, from its `from`th on (the first otherwise).
+local function pick(list, from)
+    from = from or 1
+    if #list < from then return list[1] end
+    return list[rand(from, #list)]
+end
+
+--- A count row on a random item, from its list's `from`th on, wearing a
+--- random texture of it.
+local function randomItem(d, ped, k, from)
+    local list = options(k, d.sex)
+    if not list then return end
+    local _, _, set = field(k)
+    local v = pick(list, from)
+    set(d.a, v)
+    local slot = tonumber(k:match('^c(%d+)$') or '')
+    if slot then
+        d.a.c[slot][2] = v == noneOf(slot, d.sex) and 0 or pick(textures(ped, d.sex, k, v))
+        return
     end
-    return false
+    local p = k:match('^p(%d+)$')
+    local i = p and propIndex(tonumber(p))
+    if i then d.a.p[i][2] = v < 0 and 0 or pick(textures(ped, d.sex, k, v)) end
+end
+
+--- RANDOMIZE'S CORE, and a new custom look: a starting face, the eyes, the
+--- skin, the face's features near the middle, a hairstyle and its colors (the
+--- eyebrows and a man's beard in them), and the clothes -- with what the top
+--- forces.
+local function randomizeCore(d)
+    local a, R = d.a, C().random
+    local ped = PlayerPedId()
+    local f = rand(0, #C().faces[d.sex] - 1)
+    a.f = f ~= 0 and f or nil
+    a.e = rand(0, R.naturalEyes - 1)
+    a.sk = rand(0, 45)
+    for i = 1, A.FEATURES do
+        a.ff[i] = rand((i == 19 or i == 20) and 0 or -R.featureSpread, R.featureSpread)
+    end
+    local color = rand(0, R.naturalHair - 1)
+    a.h = { color, rand(0, R.naturalHair - 1) }
+    randomItem(d, ped, 'c2', 2)
+    a.c[2][2] = 0
+    local brows = options('o2', d.sex)
+    if brows then a.o[A.EYEBROWS + 1] = { pick(brows), 100, color } end
+    local beard = options('o1', d.sex)
+    if d.sex == 'm' and beard and rand(0, 1) == 1 then
+        a.o[2] = { pick(beard, 2), 100, color }
+    else
+        a.o[2] = { A.NONE, 100, 0 }
+    end
+    for _, k in ipairs({ 'c11', 'c8', 'c4', 'c6' }) do randomItem(d, ped, k, 1) end
+    applyForced(d, ped, 11)
+end
+
+--- An extra taken off: every row of it back to none, its tattoos gone.
+local function clearExtra(d, id)
+    if id == 'tattoos' then
+        clearTats(d)
+        return
+    end
+    local cat = catById(id)
+    for _, k in ipairs(cat and cat.rows or {}) do
+        local n = k:match('^c(%d+)$')
+        if n then d.a.c[tonumber(n)] = { C().componentNone[tonumber(n)] or 0, 0 } end
+        n = k:match('^p(%d+)$')
+        if n then d.a.p[propIndex(tonumber(n))] = { -1, 0 } end
+        n = k:match('^o(%d+)$')
+        if n then d.a.o[tonumber(n) + 1] = { A.NONE, 100, 0 } end
+    end
+end
+
+--- An extra put on by Randomize: an item of each of its rows (never none),
+--- Makeup a random color of each, Tattoos a few in zones with room.
+local function randomExtra(d, ped, id)
+    local R = C().random
+    if id == 'tattoos' then
+        clearTats(d)
+        for _ = 1, rand(R.tattoosMin, R.tattoosMax) do
+            local open = {}
+            for _, z in ipairs(tatZones()) do
+                local free = {}
+                if #d.tats[z] < A.TATTOOS_PER_ZONE then
+                    local used = usedIn(d.tats[z])
+                    for _, i in ipairs(zoneIds(d.sex, z)) do
+                        if not used[i] then free[#free + 1] = i end
+                    end
+                end
+                if #free > 0 then open[#open + 1] = { z = z, free = free } end
+            end
+            if #open == 0 then break end
+            local pickZ = open[rand(1, #open)]
+            addTatRow(d, pickZ.z, pickZ.free[rand(1, #pickZ.free)])
+        end
+        return
+    end
+    local cat = catById(id)
+    for _, k in ipairs(cat and cat.rows or {}) do
+        local o = k:match('^o(%d+)$')
+        if o then
+            local list = options(k, d.sex)
+            if list then
+                local pal = C().overlayPalette[tonumber(o)]
+                local n = pal and math.min(C().paletteMax, pal == 1 and GetNumHairColors() or GetNumMakeupColors()) or 1
+                d.a.o[tonumber(o) + 1] = { pick(list), 100, rand(0, math.max(1, n) - 1) }
+            end
+        elseif field(k) == 'count' then
+            randomItem(d, ped, k, 2)
+        end
+    end
+end
+
+--- THE WHOLE LOOK: the core, then each extra on (a chance of random.extra) or
+--- off. The extras it keeps keep their places; the ones it puts on join the
+--- end, in a random order; the ones it takes off go back to none.
+local function randomizeAll(d)
+    local ped = PlayerPedId()
+    randomizeCore(d)
+    local on = {}
+    for _, id in ipairs(C().extras) do on[id] = math.random() < C().random.extra end
+    local x = {}
+    for _, id in ipairs(d.a.x or {}) do
+        if on[id] then x[#x + 1] = id else clearExtra(d, id) end
+    end
+    local added = {}
+    for _, id in ipairs(C().extras) do
+        if on[id] and not indexOf(x, id) then added[#added + 1] = id end
+    end
+    for i = #added, 2, -1 do
+        local j = rand(1, i)
+        added[i], added[j] = added[j], added[i]
+    end
+    for _, id in ipairs(added) do x[#x + 1] = id end
+    d.a.x = x
+    for _, id in ipairs(x) do randomExtra(d, ped, id) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1202,15 +1870,17 @@ function V.close()
     V.push()
 end
 
+--- THE OPEN IS ONE PUSH (#28 lag): the state as it is, the ped cleaned, and
+--- the server asked again only when what this side holds is stale.
 local function open()
     S.open = true
     S.draft = nil
     S.tab = defaultTab()
-    -- No `tab` request of this opening has been seen yet.
+    -- No numbered request of this opening has been seen yet.
     S.tabSeq = nil
     V.push()
     cleanAndDry()
-    fetch()
+    if stale() then fetch() end
 end
 
 local function wearStock(id)
@@ -1263,6 +1933,9 @@ local function newReq()
     return nextReq
 end
 
+--- { op = 'new', name } or { op = 'update', id, name }: a new look is named,
+--- an update saves over the look being edited and renames it to the name
+--- typed in the save dialog.
 local function save(data)
     local d = S.draft
     if not d or not d.dirty then return end
@@ -1277,10 +1950,9 @@ local function save(data)
         payload = { op = 'new', name = data.name, a = a }
     elseif op == 'update' then
         if not d.editing or not pedById(d.editing) then return end
-        payload = { op = 'update', id = d.editing, a = a }
-    elseif op == 'replace' then
-        if not A.isPedId(data.id) or not pedById(data.id) then return end
-        payload = { op = 'replace', id = data.id, a = a }
+        if data.id ~= nil and data.id ~= d.editing then return end
+        if data.name ~= nil and not A.isName(data.name) then return end
+        payload = { op = 'update', id = d.editing, name = data.name, a = a }
     else
         return
     end
@@ -1289,76 +1961,191 @@ local function save(data)
     TriggerServerEvent(BR.Net.LOCKER2_SAVE, payload)
 end
 
---- The gestures that change something. Refused while the ped is held by the
---- walk, loading, or waiting on the server.
-local ACTIONS = {}
-
-ACTIONS[BR.NuiCb.LOCKER2_TAB] = function(data)
-    local tab = data.tab
-    if not TABS[tab] or tab == S.tab then return end
-    if S.draft and S.draft.dirty then return end
-    if tab == 'peds' and #S.peds == 0 and not fetching() then return end
-    local sex = CUSTOM[tab]
-    if sex then
-        S.tab = tab
-        startDraft(sex, A.default(sex), nil)
-    else
-        discard()
-        S.tab = tab
-        if S.worn then wear(S.worn) end
+--- The camera buttons (LOCKER2_CAM): turn around, a step of zoom (the
+--- buttons and the wheel), and Reset view -- the look facing the camera again
+--- and the camera back on the category's framing. Turning is Season 1's own
+--- spin (LOCKER_SPIN), which the page sends for the rotate buttons and a drag.
+local function camera(data)
+    local LC = BR.LobbyCam
+    if data.op == 'turn' then
+        BR.Locker.spinBy(180)
+    elseif data.op == 'zoom' then
+        local dz = math.tointeger(tonumber(data.d))
+        if (dz == 1 or dz == -1) and LC and LC.zoom then LC.zoom(dz) end
+    elseif data.op == 'reset' then
+        local home = BR.Config.Match.lobbyPos.heading
+        BR.Locker.spinBy(((home - GetEntityHeading(PlayerPedId()) + 180.0) % 360.0) - 180.0)
+        local cat = S.draft and S.draft.cat and catById(S.draft.cat)
+        if LC and LC.resetView then LC.resetView(cat and cat.cam or nil) end
     end
 end
 
+--- The gestures that change something. Refused while the ped is held by the
+--- walk, loading, or waiting on the server. A handler that returns false
+--- changed nothing, and nothing is pushed.
+local ACTIONS = {}
+
+--- { sex, seq }: a new custom look -- the core randomized, no extras -- on the
+--- freemode ped of that sex. Never clean: it has never been saved.
+ACTIONS[BR.NuiCb.LOCKER2_NEW] = function(data)
+    if S.draft and S.draft.dirty then return end
+    local sex = data.sex
+    if sex ~= 'm' and sex ~= 'f' then return end
+    S.tab = CUSTOM[sex]
+    local d = newDraft(sex, A.default(sex), nil, nil)
+    S.draft = d
+    if BR.LobbyCam and BR.LobbyCam.unfocus then BR.LobbyCam.unfocus() end
+    dress(modelOfSex(sex), A.copy(d.a), function(ok)
+        if ok and S.draft == d and modelReady(d) then
+            randomizeCore(d)
+            syncExtras(d.a)
+            applyAll()
+        end
+        V.push()
+    end)
+    return false
+end
+
+--- { id, seq }: a saved look, to edit.
 ACTIONS[BR.NuiCb.LOCKER2_EDIT] = function(data)
     if S.draft and S.draft.dirty then return end
     local p = pedById(data.id)
     if not p then return end
-    S.tab = p.a.s == 'f' and 'female' or 'male'
+    S.tab = CUSTOM[p.a.s]
     startDraft(p.a.s, p.a, p.id)
+    return false
 end
 
-ACTIONS[BR.NuiCb.LOCKER2_RESET] = function()
-    local d = S.draft
-    if not d then return end
-    d.a = A.copy(d.base)
-    d.tats = tatRowsOf(d.a)
-    d.dirty = false
-    dress(GetHashKey(C().models[d.sex]), A.copy(d.a))
+--- { seq }: out of the editor -- the draft dropped (the page asked first if it
+--- was unsaved) and the worn look put back on.
+ACTIONS[BR.NuiCb.LOCKER2_LEAVE] = function()
+    discard()
+    S.tab = defaultTab()
+    if S.worn then wear(S.worn) end
 end
 
 ACTIONS[BR.NuiCb.LOCKER2_STEP] = function(data)
-    if not S.draft or type(data.k) ~= 'string' then return end
+    local k = data.k
     local delta = math.tointeger(tonumber(data.d))
-    if delta ~= 1 and delta ~= -1 then return end
-    if stepRow(data.k, delta) then
-        touched()
-        applyKey(data.k)
-    end
+    if not S.draft or type(k) ~= 'string' or (delta ~= 1 and delta ~= -1) then return false end
+    local ok = change(k, function(d)
+        if not stepRow(k, delta) then return false end
+        forcedAfter(d, k)
+        return true
+    end)
+    if ok then applyKey(k) end
+    return ok
 end
 
 ACTIONS[BR.NuiCb.LOCKER2_SET] = function(data)
-    if not S.draft or type(data.k) ~= 'string' then return end
-    if setRow(data.k, data.v) then
-        touched()
-        applyKey(data.k)
-    end
+    local k = data.k
+    if not S.draft or type(k) ~= 'string' then return false end
+    local ok = change(k, function(d)
+        if not setRow(k, data.v) then return false end
+        forcedAfter(d, k)
+        return true
+    end)
+    if ok then applyKey(k) end
+    return ok
 end
 
 ACTIONS[BR.NuiCb.LOCKER2_COLOR] = function(data)
-    if not S.draft or type(data.k) ~= 'string' then return end
-    if nextColor(data.k) then
-        touched()
-        applyKey(data.k)
-    end
+    local k = data.k
+    local c = math.tointeger(tonumber(data.c))
+    if not S.draft or type(k) ~= 'string' or not c or not modelReady(S.draft) then return false end
+    local ok = change(k .. ':c', function(d)
+        if not setColor(k, c) then return false end
+        forcedAfter(d, k)
+        return true
+    end)
+    if ok then applyKey(k) end
+    return ok
 end
 
---- The page sends this on every anchor press and every row touched, the same
---- category or not: whether the camera has to move is decided here, off where
---- the camera actually is, never off the page's copy of `cat`.
+ACTIONS[BR.NuiCb.LOCKER2_RANDOM] = function()
+    local d = S.draft
+    if not d or not modelReady(d) then return false end
+    local ok = change(nil, function()
+        randomizeAll(d)
+        return true
+    end)
+    if ok then applyAll() end
+    return ok
+end
+
+ACTIONS[BR.NuiCb.LOCKER2_UNDO] = function()
+    return travel('past', 'future')
+end
+
+ACTIONS[BR.NuiCb.LOCKER2_REDO] = function()
+    return travel('future', 'past')
+end
+
+--- { id, on }: "Add more" puts an extra on at the END of the list, wearing
+--- its first item (Makeup and Tattoos with nothing on yet, to be chosen); its
+--- trash icon takes it off, every row of it back to none.
+ACTIONS[BR.NuiCb.LOCKER2_EXTRA] = function(data)
+    local d = S.draft
+    local id = data.id
+    if not d or not isExtra(id) or not modelReady(d) then return false end
+    local on = data.on == true
+    if on == (indexOf(d.a.x or {}, id) ~= nil) then return false end
+    local ok = change(nil, function()
+        local x = {}
+        for _, e in ipairs(d.a.x or {}) do
+            if e ~= id then x[#x + 1] = e end
+        end
+        if on then
+            x[#x + 1] = id
+            local cat = catById(id)
+            local k = cat and cat.rows and cat.rows[1]
+            if k and k:match('^[cp]%d+$') then
+                local list = options(k, d.sex)
+                local _, _, set = field(k)
+                if list and list[2] then set(d.a, list[2]) end
+            end
+        else
+            clearExtra(d, id)
+        end
+        d.a.x = x
+        return true
+    end)
+    if ok then applyAll() end
+    return ok
+end
+
+--- { ks }: these rows back to their defaults, one step -- a face group's
+--- reset.
+ACTIONS[BR.NuiCb.LOCKER2_DEFAULTS] = function(data)
+    local d = S.draft
+    if not d or type(data.ks) ~= 'table' then return false end
+    local ok = change(nil, function()
+        local any = false
+        for n, k in ipairs(data.ks) do
+            if n > 64 then break end
+            local kind, get, set
+            if type(k) == 'string' then kind, get, set = field(k) end
+            if kind == 'slider' and catOf(k) and not sliderOff(k, d.a) then
+                local _, _, def = sliderRange(k)
+                if get(d.a) ~= def then
+                    set(d.a, def)
+                    any = true
+                end
+            end
+        end
+        return any
+    end)
+    if ok then applyAll() end
+    return ok
+end
+
+--- The page sends this on every summary line pressed and every row touched,
+--- the same category or not: whether the camera has to move is decided here,
+--- off where the camera actually is, never off the page's copy of `cat`.
 ACTIONS[BR.NuiCb.LOCKER2_CAT] = function(data)
-    if not S.draft then return end
+    if not S.draft then return false end
     local cat = catById(data.cat)
-    if not cat then return end
+    if not cat then return false end
     local LC = BR.LobbyCam
     local there = LC and LC.focused and LC.focused() == cat.cam
     -- Nothing to move and nothing to draw: no push either, since every row
@@ -1368,43 +2155,13 @@ ACTIONS[BR.NuiCb.LOCKER2_CAT] = function(data)
     if LC and LC.focus and not there then LC.focus(cat.cam) end
 end
 
--- ═══ THE TATTOO ROWS (owner, 2026-10-12) ═══
---
--- "How about a list, starting empty, with add and remove buttons ... You can
--- just make it max 10 per category." Then, of the page: "perhaps we use the
--- thing that's literally made for this - attribute editor." Each zone's rows
--- are the draft's (tatRowsOf), one an editor's item, its tattoo chosen in a
--- list of the zone's. The page says which row and which tattoo, and every rule
--- is held here: at most TATTOOS_PER_ZONE rows a zone, never one tattoo in two
--- rows of a zone, only the zone's own tattoos for the draft's sex. All free.
-
---- The row with id `r`, and its zone's rows and its place there.
-local function tatRowById(d, r)
-    for _, z in ipairs(tatZones()) do
-        for k, row in ipairs(d.tats[z] or {}) do
-            if row.r == r then return row, d.tats[z], k end
-        end
-    end
-    return nil
-end
-
---- The tattoos a zone's rows hold, but `skip`'s.
-local function usedIn(rows, skip)
-    local used = {}
-    for _, row in ipairs(rows) do
-        if row ~= skip then used[row.i] = true end
-    end
-    return used
-end
-
 --- A change to the draft's tattoos, onto the preview at once: one more
 --- decoration for an Add (`added`), and for a choice or a Remove the rest put
 --- back, since decorations only come off together.
 local function tatChanged(added)
     local d = S.draft
-    touched()
     local ped = PlayerPedId()
-    if GetEntityModel(ped) ~= GetHashKey(C().models[d.sex]) then return end
+    if GetEntityModel(ped) ~= modelOfSex(d.sex) then return end
     if added then
         local h = tattooHash(added, d.sex)
         AddPedDecorationFromHashes(ped, h[1], h[2])
@@ -1415,26 +2172,23 @@ local function tatChanged(added)
     noteApplied(GetEntityModel(ped), A.copy(d.a), ped)
 end
 
---- { z }: a new row at the foot of a zone, on the first of its tattoos (the
---- page's order) no row of the zone holds. Refused at the cap.
+--- { z, i }: "Add more" in the Tattoos extra, once the player has picked the
+--- zone and the tattoo -- a new row at the foot of that zone. Refused at the
+--- zone's cap, for a tattoo a row of the zone holds, or one not of the zone
+--- and the draft's sex. All free.
 ACTIONS[BR.NuiCb.LOCKER2_TAT_ADD] = function(data)
     local d = S.draft
-    if not d or type(data.z) ~= 'string' then return end
-    local rows = d.tats[data.z]
-    if not rows or #rows >= A.TATTOOS_PER_ZONE then return end
-    local used = usedIn(rows)
-    local pick = nil
-    for _, i in ipairs(zoneOrder(d.sex, data.z)) do
-        if not used[i] then
-            pick = i
-            break
-        end
-    end
-    if not pick then return end
-    nextTatRow = nextTatRow + 1
-    rows[#rows + 1] = { r = nextTatRow, i = pick }
-    A.setTattoo(d.a, BR.Config.Tattoos.list[pick][1], true)
-    tatChanged(pick)
+    local z, i = data.z, math.tointeger(tonumber(data.i))
+    if not d or type(z) ~= 'string' or not i then return false end
+    local rows = d.tats[z]
+    if not rows or #rows >= A.TATTOOS_PER_ZONE or not tattooFor(i, d.sex) then return false end
+    if BR.Config.Tattoos.list[i][2] ~= z or usedIn(rows)[i] then return false end
+    local ok = change(nil, function()
+        addTatRow(d, z, i)
+        return true
+    end)
+    if ok then tatChanged(i) end
+    return ok
 end
 
 --- { r, i }: a row's tattoo, chosen in its list -- one of its own zone's for
@@ -1442,27 +2196,35 @@ end
 ACTIONS[BR.NuiCb.LOCKER2_TAT_SET] = function(data)
     local d = S.draft
     local r, i = math.tointeger(tonumber(data.r)), math.tointeger(tonumber(data.i))
-    if not d or not r or not i then return end
+    if not d or not r or not i then return false end
     local row, rows = tatRowById(d, r)
-    if not row or i == row.i or not tattooFor(i, d.sex) then return end
+    if not row or i == row.i or not tattooFor(i, d.sex) then return false end
     local list = BR.Config.Tattoos.list
-    if list[i][2] ~= list[row.i][2] or usedIn(rows, row)[i] then return end
-    A.setTattoo(d.a, list[row.i][1], false)
-    A.setTattoo(d.a, list[i][1], true)
-    row.i = i
-    tatChanged(nil)
+    if list[i][2] ~= list[row.i][2] or usedIn(rows, row)[i] then return false end
+    local ok = change(nil, function()
+        local live = tatRowById(d, r)
+        A.setTattoo(d.a, list[live.i][1], false)
+        A.setTattoo(d.a, list[i][1], true)
+        live.i = i
+        return true
+    end)
+    if ok then tatChanged(nil) end
+    return ok
 end
 
---- { r }: Remove, a row's own button.
+--- { r }: a row's trash icon.
 ACTIONS[BR.NuiCb.LOCKER2_TAT_DEL] = function(data)
     local d = S.draft
     local r = math.tointeger(tonumber(data.r))
-    if not d or not r then return end
-    local row, rows, k = tatRowById(d, r)
-    if not row then return end
-    table.remove(rows, k)
-    A.setTattoo(d.a, BR.Config.Tattoos.list[row.i][1], false)
-    tatChanged(nil)
+    if not d or not r or not tatRowById(d, r) then return false end
+    local ok = change(nil, function()
+        local row, rows, k = tatRowById(d, r)
+        table.remove(rows, k)
+        A.setTattoo(d.a, BR.Config.Tattoos.list[row.i][1], false)
+        return true
+    end)
+    if ok then tatChanged(nil) end
+    return ok
 end
 
 ACTIONS[BR.NuiCb.LOCKER2_WEAR] = function(data)
@@ -1491,6 +2253,11 @@ ACTIONS[BR.NuiCb.LOCKER2_DELETE] = function(data)
     S.busy, S.busyOp, S.busyAt = req, 'delete', GetGameTimer()
     TriggerServerEvent(BR.Net.LOCKER2_DELETE, { req = req, id = data.id })
 end
+
+--- The requests that start or end a draft, which the page numbers.
+local NUMBERED = {
+    [BR.NuiCb.LOCKER2_NEW] = true, [BR.NuiCb.LOCKER2_EDIT] = true, [BR.NuiCb.LOCKER2_LEAVE] = true,
+}
 
 AddEventHandler('br:ui:action', function(name, data)
     if type(name) ~= 'string' or name:sub(1, 11) ~= 'br/locker2/' then return end
@@ -1521,11 +2288,19 @@ AddEventHandler('br:ui:action', function(name, data)
         if BR.Locker2Shot then BR.Locker2Shot.done(data.id) end
         return
     elseif name == BR.NuiCb.LOCKER2_TATS then
-        -- The list the page draws the Tattoos section from, once per sex: it
+        -- The list the page draws the Tattoos extra from, once per sex: it
         -- changes nothing, so nothing refuses it.
         if data.sex == 'm' or data.sex == 'f' then
             TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2_TATS, catalog(data.sex))
         end
+        return
+    elseif name == BR.NuiCb.LOCKER2_PAL then
+        -- The swatch grids' colors, likewise.
+        TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2_PAL, palettesOut())
+        return
+    elseif name == BR.NuiCb.LOCKER2_CAM then
+        -- The camera, never the look: no push, and no draft needed.
+        if S.open and inLobby() and not locked() then camera(data) end
         return
     elseif name == BR.NuiCb.LOCKER2_SHOT then
         local wanted = BR.Locker2Shot ~= nil and BR.Locker2Shot.takeSave(data.id)
@@ -1539,14 +2314,14 @@ AddEventHandler('br:ui:action', function(name, data)
 
     local act = ACTIONS[name]
     if not act then return end
-    -- THE PAGE MOVES ITS TAB ON THE PRESS, BEFORE THIS ANSWERS (#28 review).
-    -- So every `tab` carries the page's own sequence number, and every push
-    -- after it -- the one this handler always makes, refused or not -- says
-    -- which request it has seen. Once that is the page's latest, the page shows
-    -- this file's tab, so a refusal it could not foresee (a model still
-    -- streaming in) takes it back rather than leaving it on a tab Lua never
-    -- switched to.
-    if name == BR.NuiCb.LOCKER2_TAB then S.tabSeq = math.tointeger(data.seq) end
+    -- THE PAGE MOVES ITS VIEW ON THE PRESS, BEFORE THIS ANSWERS (#28 review).
+    -- So every request that starts or ends a draft carries the page's own
+    -- sequence number, and every push after it -- refused or not -- says which
+    -- request it has seen. Once that is the page's latest, the page follows
+    -- this file's draft, so a refusal it could not foresee (a model still
+    -- streaming in) takes it back rather than leaving it in an editor Lua never
+    -- opened.
+    if NUMBERED[name] then S.tabSeq = math.tointeger(data.seq) end
     -- A STOCK PICK WHILE ONE IS LOADING IS REMEMBERED, NOT REFUSED: pressing
     -- four quickly ends on the fourth (Season 1's rule, locker.lua).
     if name == BR.NuiCb.LOCKER2_WEAR and data.k == 's' and S.open and not locked() and not S.busy
@@ -1845,6 +2620,16 @@ RegisterCommand('brlocker2', function(_, args)
     -- the playtest's count for whether every tattoo in the rows is drawn.
     print(('  tattoos  %d  decorations %s'):format(S.applied and S.applied.a and #tattooRows(S.applied.a) or 0,
         tostring(decoCount(PlayerPedId()) or '?')))
+    -- THE ITEMS EACH ROW LEFT OUT (the valid-item filter): the playtest's
+    -- count, per sex, of the drawables the game would draw nothing for.
+    for _, sex in ipairs({ 'm', 'f' }) do
+        local keys = {}
+        for k in pairs(V.removed(sex)) do keys[#keys + 1] = k end
+        table.sort(keys)
+        local parts = {}
+        for _, k in ipairs(keys) do parts[#parts + 1] = ('%s %d'):format(k, V.removed(sex)[k]) end
+        if #parts > 0 then print(('  dropped  %s: %s'):format(sex, table.concat(parts, ', '))) end
+    end
 end, false)
 
 --- The state, for the suites.
