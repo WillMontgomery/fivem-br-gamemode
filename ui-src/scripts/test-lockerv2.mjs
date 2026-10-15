@@ -1326,6 +1326,16 @@ export async function resolve(spec, ctx, next) {
     cam.includes('void fetchNui(CB.LOCKER_SPIN, { delta })') && cam.includes("cam('turn')")
     && cam.includes("cam('zoom', 1)") && cam.includes("cam('zoom', -1)") && cam.includes("cam('reset')")
     && cam.includes("cam('zoom', e.deltaY < 0 ? 1 : -1)") && (cam.match(/ hold onPress=/g) ?? []).length === 2)
+  {
+    // check-cef's C4 lets Camera.tsx say 'zoom' -- LOCKER2_CAM's op, a word on
+    // the wire -- so here its own rule reads the file with those words out,
+    // and finds no CSS zoom (the cluster is outside the island, in rem).
+    const { scanSource } = await import(pathToFileURL(join(ROOT, 'scripts', 'cef-rules.mjs')).href)
+    const ops = cam.replace(/\bcam\('zoom'/g, 'cam(OP').replace("op: 'turn' | 'zoom' | 'reset'", 'op: OP')
+    const css = scanSource(ops, 'ui-src/src/screens/lockerv2/camera-ops.tsx').filter((f) => f.rule === 'C4 zoom')
+    check('the camera: \'zoom\' only as LOCKER2_CAM\'s op, never CSS zoom (check-cef C4 on the rest)',
+      ops !== cam && css.length === 0, css.map((f) => `line ${f.line}`).join(', '))
+  }
   const tat = read(join(L2, 'Tattoos.tsx'))
   check('a tattoo picker scrolls virtually, filters by name, and opens inside the island',
     tat.includes('virtualScroll') && tat.includes('filteringType="manual"') && tat.includes('expandToViewport={false}'))

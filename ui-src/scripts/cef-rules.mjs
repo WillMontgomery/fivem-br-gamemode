@@ -126,10 +126,9 @@ export const ZOOM_ALLOWED = new Map([
     "the Cloudscape island (zoom = root px / 14); Cloudscape measures it through src/cef/zoomRect.ts, which answers as CEF 103 does"],
   ['ui-src/src/screens/lockerv2/scope.ts',
     "the island's portals (hover card, slider tooltip) wear its zoom, measured the same way"],
-  ['ui-src/src/screens/lockerv2/Footer.tsx',
-    'a tutorial anchor undoes the zoom (1/z, then z inside it): a true zoom of 1, measured alike on 103 and 144'],
-  ['ui-src/src/screens/lockerv2/Tabs.tsx',
-    'a tutorial anchor undoes the zoom (1/z): a true zoom of 1, measured alike on 103 and 144'],
+  ['ui-src/src/screens/lockerv2/Camera.tsx',
+    "no CSS zoom at all: 'zoom' here is LOCKER2_CAM's op, a word on the wire (My Looks' camera, #28), and the"
+      + " cluster stands outside the island, in rem -- test-lockerv2.mjs holds it to that with this file's own rule"],
   ['ui-src/src/screens/MarketV2.tsx',
     "the Season 2 Market's island, as Locker v2's (#411): Cloudscape measures through src/cef/zoomRect.ts;"
       + " Done's tutorial anchor undoes the zoom (1/z, then z inside it), a true zoom of 1 on both engines"],
