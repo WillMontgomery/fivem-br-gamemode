@@ -728,6 +728,26 @@
 .br-cs [class*='awsui_dropdown-content_'] {
   max-block-size: 15em !important;
 }
+/* EVERY OPTION STANDS INSIDE ITS LIST (owner, 2026-10-14: "ensure the borders
+   always draw around everything which should have a border"). A list clips
+   what it scrolls, and its options' rings -- a highlighted or a chosen one's
+   2px, the dividers -- lay on its edges, where the game's browser cuts an
+   edge as soon as the zoom puts it between two pixels (check-layout fails an
+   edge within a pixel of a clip). So a list keeps index.css's --edge-room
+   inside it; Cloudscape zeroes its padding at an id's weight, and
+   `:not(#\9)` matches it. A long list is virtual (the tattoo picker): each
+   option is placed absolutely from the list's padding edge, where padding
+   never reaches, so its options take the room themselves -- in from both
+   sides, and down past the top by it, which the list's padding gives back
+   below the last. */
+.br-cs [class*='awsui_options-list_']:not(#\9) {
+  padding: var(--edge-room);
+}
+.br-cs [class*='awsui_options-list_'] > [role=option][class*='awsui_virtual_']:not(#\9) {
+  inset-block-start: calc(var(--border-dropdown-virtual-offset-width-a5kgm3, 2px) + var(--edge-room));
+  inset-inline-start: var(--edge-room);
+  inline-size: calc(100% - 2 * var(--edge-room));
+}
 /* A list's scrollbar is the lobby's thin one (index.css .thin-scroll), not
    the browser's white bar. */
 .br-cs [class*='awsui_dropdown_'] ::-webkit-scrollbar {

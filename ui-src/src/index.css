@@ -1565,18 +1565,14 @@ html, body, #root {
    scripts/check-layout.mjs fails any border closer than a pixel to a clip. */
 :root { --edge-room: 2px; }
 :where(.thin-scroll, .pane) { padding: var(--edge-room); }
-/* A Cloudscape menu or Select list in an island (Locker v2's Save, a tattoo
-   row's Select) is a scroll region too, and its items' edges lay on it -- the
-   highlighted option's ring ran a fraction of a pixel under the list's
-   scrollbar. Cloudscape zeroes the list's padding at an id's weight
-   (`:not(#\9)`), so this needs one as well. */
-#root .br-cs :is([role=menu], [role=listbox]) { padding: var(--edge-room); }
 /* IN AN ISLAND THE ROOM IS 0.3em, the Season 2 Market's GUTTER (look.ts), not
    2px. An island is zoomed (11/14 at its smallest), and a control there draws
    its focus ring in the island's px too: 2px less a 1px ring is under a whole
-   screen pixel at that zoom (a tattoo Select's filter, focused as its list
+   screen pixel at that zoom (a Select's search box, focused as its list
    opens, at 720p). 0.3em is 0.3 of the root on screen at every zoom, 3.3px at
-   the least -- room for the ring and a pixel more. */
+   the least -- room for the ring and a pixel more. Cloudscape's own lists take
+   it in the Locker's sheet (lockerv2.css): this one names no Cloudscape class
+   (test-lockerv2.mjs). */
 .br-cs { --edge-room: 0.3em; }
 
 /* Scrollbars inside chat -- CEF shows the default chunky ones otherwise. */
