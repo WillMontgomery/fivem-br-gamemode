@@ -337,10 +337,10 @@ What keeps it narrow, in code:
   profile, and never `purchases`, which is where bought items live.
 - **No `ringmaster-*` table is queried**, and there is still no `Scan` anywhere.
 - **The server checks every write before br_ddb sees it**: the season, a name of
-  letters and digits (1 to 24), the id's shape and that the player owns it, the
-  appearance's size before it is decoded and then its form, a headshot's type and
-  size (a webp data URL of 8 KB at most), and a rate (six writes, one more every
-  two seconds).
+  letters and digits in words one space apart (1 to 24), the id's shape and that
+  the player owns it, the appearance's size before it is decoded and then its
+  form, a headshot's type and size (a webp data URL of 8 KB at most), and a rate
+  (six writes, one more every two seconds).
 
 **Who else reads these rows.** Ringmaster's player page queries
 `begins_with(sk, 'match#')` and its scoreboard and match ledger scan filtered to
