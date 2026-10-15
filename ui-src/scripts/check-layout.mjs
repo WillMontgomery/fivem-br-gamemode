@@ -81,9 +81,10 @@ const wait = (text, within = 'body', ms = 6000) =>
   `await __br.until(() => __br.has(${JSON.stringify(text)}, ${JSON.stringify(within)}), ${ms}, ${JSON.stringify(text)})`
 const L2 = '[data-page=locker]'
 
-/** A Market tab with more than the grid can show, so it scrolls. */
+/** A Market tab with more than the grid can show, so it scrolls, under the
+ *  catalog's own names (the longest is mockMarket.ts's, Beach Party II). */
 const BIG_MARKET = `__br.emit('market', { balance: 7450, items: Array.from({ length: 22 }, (_, i) => ({
-  id: 'chute_' + i, name: ['Midnight', 'Sunburst', 'Quillon Longest Canopy Name', 'Ash'][i % 4], sub: 'Canopy',
+  id: 'chute_' + i, name: ['Midnight', 'Stormchaser', 'Beach Party II', 'Ash'][i % 4], sub: 'Canopy',
   kind: 'chute', price: 400 + i * 350, rarity: (i % 5) + 1, owned: i % 6 === 1, equipped: i === 0,
   ...(i === 5 ? { locked: true, season: 'Season 1' } : {}) })) })`
 
