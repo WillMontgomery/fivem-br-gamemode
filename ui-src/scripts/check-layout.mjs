@@ -105,6 +105,13 @@ const WARMUP = `__br.emit('state', { state: 'warmup', mode: 'squad', endsAt: Dat
 const FEED = `for (let i = 1; i <= 4; i++) __br.emit('feed', { id: i, killer: i % 2 ? 'Quillon_the_Longest_Name' : 'Kestrel',
   victim: 'Vandal', weapon: 'Carbine Rifle', headshot: i === 2, mine: i === 3 })`
 
+/** Season 2's Market is up once its grid has drawn; a tab is pressed by name. */
+const MK2 = `await __br.until(() => document.querySelector('[data-page=market] .mk2 [role=tab]'), 8000, 'the Season 2 Market')`
+const tab2 = (label) => `__br.click('[data-page=market] [role=tab]', ${JSON.stringify(label)})`
+/** The first price on the grid, which asks before it buys. */
+const BUY2 = `[...document.querySelectorAll('[data-page=market] .mk2 button')]
+  .find((b) => /^[0-9,]+$/.test(b.textContent.trim()) && !b.disabled).click()`
+
 /** The keybinds the mock sends, with rebinding available (`raw`). */
 const RAW_KEYS = `__br.emit('keybinds', { actions: window.brStore.getState().keybinds, raw: true })`
 
@@ -223,14 +230,25 @@ export const SCREENS = [
   },
   { name: 'lobby/tutorial-offer', steps: [lobby(), `__br.emit('tutorial', { run: false, offer: true, offerable: true })`] },
 
-  { name: 'market/canopies', steps: [lobby(), focus('market')] },
-  { name: 'market/canopies-full', steps: [lobby(), BIG_MARKET, focus('market')] },
-  { name: 'market/trails', steps: [lobby(), focus('market'), press('Trails')] },
-  { name: 'market/finishes', steps: [lobby(), focus('market'), press('Finishes')] },
-  { name: 'market/characters', steps: [lobby(), focus('market'), press('Characters')] },
-  { name: 'market/banners', steps: [lobby(), focus('market'), press('Banners')] },
-  { name: 'market/emotes', steps: [lobby(), focus('market'), press('Emotes')] },
-  { name: 'market/emotes-swap', steps: [lobby(), focus('market'), press('Emotes'), press('Equip')] },
+  // Season 1's Market (`?season=1`): the grid as it always was, no dances.
+  { name: 'market1/canopies', query: 'season=1', steps: [lobby(), focus('market')] },
+  { name: 'market1/canopies-full', query: 'season=1', steps: [lobby(), BIG_MARKET, focus('market')] },
+  { name: 'market1/trails', query: 'season=1', steps: [lobby(), focus('market'), press('Trails')] },
+  { name: 'market1/finishes', query: 'season=1', steps: [lobby(), focus('market'), press('Finishes')] },
+  { name: 'market1/characters', query: 'season=1', steps: [lobby(), focus('market'), press('Characters')] },
+  { name: 'market1/banners', query: 'season=1', steps: [lobby(), focus('market'), press('Banners')] },
+  // Season 2's Market (#411), the mock's default: each tab design, each of its
+  // tabs (real items only, so no Characters or Banners), the buy confirm, the
+  // replace dialog on a full wheel, and Preview.
+  { name: 'market2/canopies', steps: [lobby(), focus('market'), MK2] },
+  { name: 'market2/rail', query: 'tabs=rail', steps: [lobby(), focus('market'), MK2] },
+  { name: 'market2/folder', query: 'tabs=folder', steps: [lobby(), focus('market'), MK2] },
+  { name: 'market2/trails', steps: [lobby(), focus('market'), MK2, tab2('Smoke trails')] },
+  { name: 'market2/finishes', steps: [lobby(), focus('market'), MK2, tab2('Weapon finishes')] },
+  { name: 'market2/emotes', steps: [lobby(), focus('market'), MK2, tab2('Emotes')] },
+  { name: 'market2/confirm', steps: [lobby(), focus('market'), MK2, BUY2] },
+  { name: 'market2/replace', steps: [lobby(), focus('market'), MK2, tab2('Emotes'), press('Equip')] },
+  { name: 'market2/preview', steps: [lobby(), focus('market'), MK2, tab2('Emotes'), press('Preview')] },
 
   { name: 'settings/general', steps: [lobby(), focus('settings')] },
   {
@@ -470,7 +488,8 @@ try {
         const limit = new Promise((_, fail) => { timer = setTimeout(() => fail(new Error('took over 90 s')), 90000) })
         all.push(...await Promise.race([runScreen(tab, server.origin, s, size, text), limit]))
       } catch (e) {
-        all.push({ screen: s.name, size: `${size[0]}x${size[1]}`, text, error: e.message, failures: [], hidden: [] })
+        // The first line: a page's error carries its stack after it.
+        all.push({ screen: s.name, size: `${size[0]}x${size[1]}`, text, error: e.message.split(/\r?\n/)[0], failures: [], hidden: [] })
       } finally {
         clearTimeout(timer)
       }
