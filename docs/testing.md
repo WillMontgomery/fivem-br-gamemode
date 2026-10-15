@@ -86,6 +86,7 @@ cache (2026-10-05, one full run, 403 s); the stages that cost are units.
 `secrets` always runs on purpose: it asks git about the whole repository, so
 its input is everything, and it is the gate a stale answer would hurt most.
 The UI bundle's byte comparison is CI's (`npm run build:check`), untouched.
+`npm run build` in `ui-src` also measures the page itself: `scripts/check-layout.mjs` opens every screen in its `SCREENS` list through the browser mock, in headless Edge or Chrome (`BR_UI_BROWSER` names another), at 1280x720, 1920x1080, 2560x1440 and 3840x2160 with the Text size slider at 90, 100 and 115%, and fails any border, outline or ring that an ancestor's overflow, a clip-path or the screen cuts by a pixel, and any label that wraps, ends in an ellipsis or is cut — prose opts out with `data-wrap` (or `.body-text`), a new screen opts in with a `SCREENS` row, it checks its own eyes first on a planted cut, wrap and squeezed button, and `scripts/test-fit.mjs` holds `ui/Fit.tsx`'s rule that a label with no room is hidden, never wrapped or shrunk.
 
 **When it is written.** `vcache.py check` runs once at the start and
 `vcache.py commit` once at the very end, after every gate. Commit stores only
