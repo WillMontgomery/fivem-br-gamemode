@@ -410,9 +410,18 @@
   align-items: stretch;
   flex: 0 0 auto;
 }
+/* An extra's trash icon fills its line's right end, a divider before it. Lit,
+   the line opens its bevel over that end -- the line's own corner, which it
+   redraws -- so the icon has no border of its own for the bevel to cut
+   (check-layout), and the divider is a line of its own, which no bevel
+   reaches. */
 .br-cs .lk2-line .lk2-icon {
-  border-width: 0 0 0 1px;
+  border-width: 0;
   height: auto;
+}
+.br-cs .lk2-line-div {
+  flex: 0 0 1px;
+  background: rgba(255, 255, 255, 0.3);
 }
 .br-cs .lk2-line-main {
   display: flex;
@@ -670,22 +679,94 @@
 .br-cs .lk2-tatzonepick {
   flex: 0 0 8.5em;
 }
+/* THE ROW "Add more" PUTS AT THE FOOT stands on two lines: the zone and its
+   trash icon, then the tattoo's picker under them, as wide as every other
+   row's -- beside the zone it had half that, and the game's longer names had
+   no room (#28 review). */
+.br-cs .lk2-tatnew {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4em;
+}
+.br-cs .lk2-tatnew > .lk2-tatzonepick {
+  grid-column: 1;
+  grid-row: 1;
+  width: 8.5em;
+}
+.br-cs .lk2-tatnew > .lk2-icon {
+  grid-column: 2;
+  grid-row: 1;
+}
+.br-cs .lk2-tatnew > :not(.lk2-icon):not(.lk2-tatzonepick) {
+  grid-column: 1;
+  grid-row: 2;
+}
 
-/* A PICKER'S LIST IS ITS PICKER'S WIDTH, and fits the island. Cloudscape
-   sizes an open list in script from the picker's measured box. A browser on
-   the standard zoom model (Chrome 128 and later, so CEF 144) measures that box
-   already zoomed, and the island's zoom then applies again: the list came out
-   wider than its picker by the zoom (owner, 2026-10-14: "why is the "add"
-   dropdown wider than it's parent button?"), and its height cap past the
-   island's edge. Both are set here in the island's own em, so CEF 103 and 144
-   draw the same thing. */
-.br-cs .lk2-tats [class*='awsui_dropdown_'][class*='awsui_open_'],
-.br-cs .lk2-choice-sub [class*='awsui_dropdown_'][class*='awsui_open_'] {
+/* EVERY CLOUDSCAPE MENU IN THE ISLAND IS SIZED HERE, NEVER BY ITS SCRIPT.
+   Cloudscape sizes an open dropdown in script from the boxes it measures. A
+   browser on the standard zoom model (Chrome 128 and later, so CEF 144)
+   measured them already zoomed, and the island's zoom then applied again: a
+   picker's list came out wider than its picker (owner, 2026-10-14: "why is the
+   "add" dropdown wider than it's parent button?"), a card's "..." menu 57 px
+   wide at 720p, its words broken in half, and 217 px at 1440p (#28 review),
+   and a list's height cap past the island's edge. src/cef/zoomRect.ts now
+   measures for Cloudscape as CEF 103 does (#413); on top of it, every dropdown
+   under the island -- today's and any added -- is sized in the island's own
+   em, so what it draws never rests on a measure, and CEF 103 and 144 draw the
+   same thing (test-lockerv2-menus.mjs measures both):
+     a picker's list   its picker's width;
+     an icon's menu    as wide as its words (a card's "...": the icon is
+                       narrower than any of them);
+     every list        15em tall at most, scrolling past that. */
+.br-cs [class*='awsui_dropdown_'][class*='awsui_open_'] {
   inline-size: 100% !important;
 }
-.br-cs .lk2-tats [class*='awsui_dropdown-content_'],
-.br-cs .lk2-choice-sub [class*='awsui_dropdown-content_'] {
+.br-cs .lk2-card-menu [class*='awsui_dropdown_'][class*='awsui_open_'] {
+  inline-size: max-content !important;
+}
+.br-cs [class*='awsui_dropdown-content_'] {
   max-block-size: 15em !important;
+}
+/* A list's scrollbar is the lobby's thin one (index.css .thin-scroll), not
+   the browser's white bar. */
+.br-cs [class*='awsui_dropdown_'] ::-webkit-scrollbar {
+  width: 6px;
+}
+.br-cs [class*='awsui_dropdown_'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.br-cs [class*='awsui_dropdown_'] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* AN OPTION, AND A PICKER'S CHOICE, ON ONE LINE OR NOT DRAWN, as every label
+   here (`.lk2-fit`'s rule, above): Cloudscape wraps a long option over two
+   lines and ends the picker's label in "...", and the game's longer tattoo
+   names did both -- "Tribal Hammerhead Shark" (#28 review). An option's label
+   is the one piece of its label box, so it moves whole onto a second line,
+   which is clipped; the picker's label is its own box's one piece of text. */
+.br-cs [class*='awsui_label-content_'],
+.br-cs button [class*='awsui_trigger_'] {
+  --fit-lh: 1.43;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: flex-start !important;
+  height: calc(var(--fit-lh) * 1em);
+  overflow: hidden !important;
+  line-height: var(--fit-lh);
+  white-space: nowrap !important;
+  text-overflow: clip !important;
+}
+.br-cs [class*='awsui_label-content_']::before,
+.br-cs button [class*='awsui_trigger_']::before {
+  content: '';
+  flex: 0 0 0px;
+  height: calc(var(--fit-lh) * 1em);
+}
+.br-cs [class*='awsui_label-content_'] > * {
+  flex: 0 0 auto;
+  white-space: nowrap !important;
 }
 
 /* ── THE CAMERA CLUSTER (outside the island, in rem) ─────────────────────── */

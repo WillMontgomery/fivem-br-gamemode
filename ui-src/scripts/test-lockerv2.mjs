@@ -67,6 +67,7 @@
  * Run: npm run test:lockerv2   (and as part of npm run build, after vite)
  */
 
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { register } from 'node:module'
@@ -92,6 +93,21 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(ROOT, 'src')
 const L2 = join(SRC, 'screens', 'lockerv2')
 const OUT = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_ui', 'ui', 'assets')
+
+// A RUN THAT NEVER ENDS FAILS (#28 review: a trash icon broken on purpose kept
+// one of the loops below going for good, and the build with it). The suite
+// runs as a child of itself, given RUN_MS.
+const RUN_MS = 300000
+if (process.env.LK2_TEST_CHILD !== '1') {
+  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
+    stdio: 'inherit', timeout: RUN_MS, env: { ...process.env, LK2_TEST_CHILD: '1' },
+  })
+  if (r.error || r.signal) {
+    console.log(`\ntest-lockerv2: no end after ${RUN_MS / 1000} s -- a loop that never ends (${r.error?.code ?? r.signal})`)
+    process.exit(1)
+  }
+  process.exit(r.status ?? 1)
+}
 
 let failed = 0
 let ran = 0
@@ -135,6 +151,10 @@ eq('Escape: an open dropdown has it first, whatever else is up',
 eq('Escape: then an open dialog, alone', [escapeAction('edit', true), escapeAction('home', true, true)], ['modal', 'modal'])
 eq('Escape: then the view\'s Back', ['home', 'new', 'stock', 'edit'].map((v) => escapeAction(v, false)),
   ['back', 'back', 'back', 'back'])
+// The Season 2 Market (#411) shares it with no views of its own: the last step closes it.
+eq('Escape on a screen with no views (the Market): a dropdown, a dialog, then Done -- held under a card',
+  [escapeAction(false, false, true), escapeAction(true), escapeAction(false), escapeAction(false, true)],
+  ['pass', 'modal', 'done', 'none'])
 // #405: a walkthrough card waiting on the locker holds its CLOSING only.
 eq('Escape under a walkthrough card: My Looks does not close; inside, Back still works',
   [escapeAction('home', false, true), escapeAction('edit', false, true), escapeAction('stock', false, true)],
@@ -551,7 +571,7 @@ export async function resolve(spec, ctx, next) {
       JSON.stringify({ ...back, undo: false, redo: false }) === JSON.stringify({ ...JSON.parse(before), undo: false, redo: false }))
     h('redo')
   }
-  while (last().edit.extras.length > 0) h('extra', { id: last().edit.extras[0], on: false })
+  for (let n = 0; n < 20 && last().edit.extras.length > 0; n++) h('extra', { id: last().edit.extras[0], on: false })
   h('extra', { id: 'hat', on: true })
   h('color', { k: 'c2', c: 40 })
   check('a swatch sets that color', last().edit.rows.find((r) => r.k === 'c2').c === 40)
@@ -639,7 +659,7 @@ export async function resolve(spec, ctx, next) {
       if (last().edit.tats.length === 0) h('tatadd', { z: 'torso', i: torso[0] })
     }
     if (what === 'a face group\'s reset') h('set', { k: 'ff0', v: 30 })
-    if (what === 'a texture swatch') while (row('c11').colors < 2) h('step', { k: 'c11', d: 1 })
+    if (what === 'a texture swatch') for (let n = 0; n < 40 && row('c11').colors < 2; n++) h('step', { k: 'c11', d: 1 })
     const before = look()
     act()
     const after = look()
@@ -784,6 +804,19 @@ export async function resolve(spec, ctx, next) {
   check('New: no word on it that is not copy.ts\'s', strayWords().length === 0, strayWords().join(' | '))
   eq('New: a press on Stock GTA Looks only selects it -- nothing sent, still New', act(() => press(cardBtn(1))), [])
   check('...and lights it, and not Custom', title() === 'New' && lit(choices()[1].node) && !lit(choices()[0].node))
+  // THE DROPDOWN IS CUSTOM'S (#28 review: a pick in it with Stock GTA Looks
+  // selected left Stock selected, and Create opened the roster). A pick in it
+  // selects Custom, however it was opened; so does pressing it.
+  const subBox = () => subtree(choices()[0].node).find((n) => hasClass(n, 'lk2-choice-sub'))
+  v.act(() => sex().props.onChange({ detail: { selectedOption: { value: 'f', label: 'Female' } } }))
+  settle(v)
+  check('New: Female picked with Stock GTA Looks selected: Custom is selected',
+    lit(choices()[0].node) && !lit(choices()[1].node) && cardBtn(0).props['aria-checked'] === true)
+  v.act(() => sex().props.onChange({ detail: { selectedOption: { value: 'm', label: 'Male' } } }))
+  act(() => press(cardBtn(1)))
+  eq('...and pressing the dropdown, with Stock GTA Looks selected, selects Custom too: nothing sent',
+    [act(() => press(subBox())), lit(choices()[0].node), lit(choices()[1].node)], [[], true, false])
+  act(() => press(cardBtn(1)))
 
   // STOCK GTA LOOKS ------------------------------------------------------------
   eq('Create, Stock GTA Looks selected: the roster, nothing sent', act(() => press(create())), [])
@@ -839,7 +872,7 @@ export async function resolve(spec, ctx, next) {
   {
     const topLine = () => lines().find((x) => lineLabel(x) === CAT_LABEL.top)
     act(() => press(subtree(topLine().node).find((n) => hasClass(n, 'lk2-line-main'))))
-    while (L2S().edit.rows.find((r) => r.k === 'c11').colors < 3) {
+    for (let n = 0; n < 40 && L2S().edit.rows.find((r) => r.k === 'c11').colors < 3; n++) {
       act(() => press(q((n) => n.props['aria-label'] === BTN.next).find((x) => within(x, 'lk2-panel')).node))
     }
     const top = () => L2S().edit.rows.find((r) => r.k === 'c11')
@@ -900,6 +933,17 @@ export async function resolve(spec, ctx, next) {
   check('...and the screen leaves Escape to it while it is open (it says so: OPEN_POPUP)',
     add()?.props.ariaHaspopup !== undefined && add()?.props.ariaExpanded === true)
   {
+    // A PRESS OUTSIDE IT SHUTS IT; one inside does not (#28 review: with that
+    // gone the menu stayed open over the list).
+    const down = (target) => { v.act(() => { for (const fn of page.listeners.get('pointerdown') ?? []) fn({ target }) }); settle(v) }
+    const box = addMenu()[0].parents.find((p) => hasClass(p, 'lk2-addmore'))
+    down(box.el)
+    check('a press inside "Add more" keeps its menu open', menuItems().length > 0 && add()?.props.ariaExpanded === true)
+    down(new globalThis.Node())
+    check('...a press anywhere else shuts it', addMenu().length === 0 && add()?.props.ariaExpanded === false)
+    act(() => press(add()))
+  }
+  {
     // ITS MENU IS NEVER CUT OFF (#28 review): inside the list's scroll box it
     // was cut off at the list's right edge, and scrolled it sideways.
     const css = strip(read(join(L2, 'lockerv2.css')))
@@ -948,7 +992,24 @@ export async function resolve(spec, ctx, next) {
       grew = lines().length > 6 && lines().slice(6).map(lineLabel).join() === L2S().edit.extras.map((c) => CAT_LABEL[c]).join()
     }
     check('Randomize asks for the whole look, and the extras it puts on are listed, in its order', grew)
-    while (lines().length > 6) {
+    for (let n = 0; n < 20 && lines().length > 6; n++) {
+      act(() => press(subtree(lines()[6].node).find((n) => n.props['aria-label'] === BTN.remove)))
+    }
+  }
+  {
+    // EVERY EXTRA ON: "Add more" has nothing left to offer, so it is off, and
+    // a press opens nothing (#28 review: it stayed lit and opened an empty menu).
+    for (let n = 0; n < 20 && addableExtras(L2S().edit.extras).length > 0; n++) {
+      act(() => press(add()))
+      const item = menuItems()[0]
+      if (!item) break
+      act(() => press(item.node))
+    }
+    check('every extra on the look: "Add more" is off',
+      addableExtras(L2S().edit.extras).length === 0 && lines().length === 6 + EXTRA_CATS.length && add()?.props.disabled === true)
+    act(() => press(add()))
+    check('...and a press on it opens no menu', addMenu().length === 0 && add()?.props.ariaExpanded === false)
+    for (let n = 0; n < 20 && lines().length > 6; n++) {
       act(() => press(subtree(lines()[6].node).find((n) => n.props['aria-label'] === BTN.remove)))
     }
   }
@@ -1064,8 +1125,11 @@ export async function resolve(spec, ctx, next) {
 // around everything which should have a border".
 {
   const css = strip(read(join(L2, 'lockerv2.css')))
+  // The two rules that wrap are the fit trick's own: .lk2-fit, and the same
+  // trick on Cloudscape's option and picker labels.
   check('no rule ends text in "..." or lets a row of buttons or words wrap',
-    !/text-overflow:\s*ellipsis/.test(css) && !/flex-wrap:\s*wrap/.test(css.replace(/\.br-cs \.lk2-fit \{[^}]*\}/, '')))
+    !/text-overflow:\s*ellipsis/.test(css) && !/flex-wrap:\s*wrap/.test(css.replace(/\.br-cs \.lk2-fit \{[^}]*\}/, '')
+      .replace(/\.br-cs \[class\*='awsui_label-content_'\],\s*\.br-cs button \[class\*='awsui_trigger_'\] \{[^}]*\}/, '')))
   check('a .lk2-fit box is one line tall, clips the rest, and moves text that does not fit, whole, onto the clipped line',
     /\.br-cs \.lk2-fit \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*height: calc\(var\(--fit-lh\) \* 1em\);[^}]*overflow: hidden;/.test(css)
     && /\.br-cs \.lk2-fit::before \{[^}]*content: '';[^}]*flex: 0 0 0px;/.test(css)
@@ -1092,11 +1156,17 @@ export async function resolve(spec, ctx, next) {
     return !/overflow-y: auto;/.test(body) || !/margin: -3px/.test(body) || !/padding: 3px [^;]*3px 3px;/.test(body)
   })
   check('each scrolling box reaches 3px past its place with 3px of room inside', tight.length === 0, tight.join(', '))
-  // A picker's list in the island's own em: Cloudscape's measured width came
-  // out zoomed twice on the standard zoom model (CEF 144, today's Chrome).
-  check('a tattoo, zone or body picker\'s list is its picker\'s width, its height capped in em',
-    /\.br-cs \.lk2-tats \[class\*='awsui_dropdown_'\]\[class\*='awsui_open_'\],\s*\.br-cs \.lk2-choice-sub \[class\*='awsui_dropdown_'\]\[class\*='awsui_open_'\] \{\s*inline-size: 100% !important;/.test(css)
-    && /\.br-cs \.lk2-tats \[class\*='awsui_dropdown-content_'\],\s*\.br-cs \.lk2-choice-sub \[class\*='awsui_dropdown-content_'\] \{\s*max-block-size: 15em !important;/.test(css))
+  // EVERY menu in the island in its own em: Cloudscape's measured width came
+  // out zoomed twice on the standard zoom model (CEF 144, today's Chrome) --
+  // first on the pickers, then on a card's "..." menu (#28 review). What a
+  // browser draws is test-lockerv2-menus.mjs's; this pins the rules' reach.
+  check('every dropdown in the island is its picker\'s width, no narrower scope, its height capped in em',
+    /\.br-cs \[class\*='awsui_dropdown_'\]\[class\*='awsui_open_'\] \{\s*inline-size: 100% !important;/.test(css)
+    && /\.br-cs \[class\*='awsui_dropdown-content_'\] \{\s*max-block-size: 15em !important;/.test(css))
+  check('...but an icon\'s menu (a card\'s "..."), as wide as its words',
+    /\.br-cs \.lk2-card-menu \[class\*='awsui_dropdown_'\]\[class\*='awsui_open_'\] \{\s*inline-size: max-content !important;/.test(css))
+  check('an option and a picker\'s choice on one line or not drawn, never "..."',
+    /\.br-cs \[class\*='awsui_label-content_'\],\s*\.br-cs button \[class\*='awsui_trigger_'\] \{[^}]*flex-wrap: wrap !important;[^}]*overflow: hidden !important;[^}]*text-overflow: clip !important;/.test(css))
   check('a dialog is as wide as what it holds, its buttons on one line',
     /\.br-cs \[class\*='awsui_dialog_'\] \{\s*inline-size: max-content !important;/.test(css))
 }
@@ -1132,6 +1202,31 @@ export async function resolve(spec, ctx, next) {
   const sheet = read(join(L2, 'sheet.ts'))
   check('sheet.ts is in the main bundle with no imports, and disables the chunk\'s link while no screen is up',
     !/^import /m.test(sheet) && /l\.disabled = users === 0/.test(sheet))
+  {
+    // BOTH SEASON 2 SCREENS' SHEETS (#28, #411): Locker v2's, the Market's and
+    // the Cloudscape they share, off while neither screen is up; the page's
+    // own never.
+    const { holdSheet, sheetLoaded } = await import(pathToFileURL(join(L2, 'sheet.ts')).href)
+    const links = ['index.css', 'LockerV2.css', 'MarketV2.css', 'index2.css']
+      .map((f) => ({ href: `https://cfx-nui-br_ui/ui/assets/${f}`, disabled: false }))
+    const was = globalThis.document
+    globalThis.document = { querySelectorAll: () => links }
+    const state = () => links.map((l) => l.disabled)
+    sheetLoaded()
+    const loaded = state()
+    holdSheet(true)
+    const one = state()
+    holdSheet(true)
+    holdSheet(false)
+    const still = state()
+    holdSheet(false)
+    eq('a chunk loaded: the locker\'s, the Market\'s and the shared sheets off, the page\'s own on; on while a screen is up, off once none is',
+      [loaded, one, still, state()],
+      [[false, true, true, true], [false, false, false, false], [false, false, false, false], [false, true, true, true]])
+    globalThis.document = was
+  }
+  check('the Market\'s Gate turns them off once its chunk loads, as the locker\'s does',
+    /import\('\.\.\/MarketV2'\)\.then\(\(m\) => \{ sheetLoaded\(\); return m \}\)/.test(read(join(SRC, 'screens', 'marketv2', 'Gate.tsx'))))
 
   const v2 = read(join(SRC, 'screens', 'LockerV2.tsx'))
   for (const fn of ['followView(', 'backSteps(', 'escapeAction(', 'saveDialogFor(', 'saveEnabled(', 'saveRequest(',

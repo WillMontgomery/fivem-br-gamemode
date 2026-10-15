@@ -116,11 +116,18 @@ const BUY2 = `[...document.querySelectorAll('[data-page=market] .mk2 button')]
 /** The keybinds the mock sends, with rebinding available (`raw`). */
 const RAW_KEYS = `__br.emit('keybinds', { actions: window.brStore.getState().keybinds, raw: true })`
 
-/** Locker v2 open on its saved peds, once its mock has sent them. */
+/** Locker v2 (My Looks, #28) open on its saved looks, once its mock has sent them. */
 const L2_OPEN = ['await __br.lockerV2()', wait('Nightshift', L2)]
-const L2_PICK = [...L2_OPEN, `__br.clickText('Nightshift', '${L2}')`]
-const L2_MALE = [...L2_OPEN, press('Custom (male)'), wait('Skin tone', L2)]
-const L2_DIRTY = [...L2_MALE, `__br.click('${L2} button[aria-label="Next"]')`]
+/** The first card's "..." menu, open. */
+const L2_MENU = [...L2_OPEN, `__br.click('${L2} .lk2-card-menu button')`, wait('Rename', L2)]
+const L2_NEW = [...L2_OPEN, press('New'), wait('Stock GTA Looks', L2)]
+/** A new custom look in the editor: never saved, so Back asks first. */
+const L2_EDIT = [...L2_NEW, press('Create'), wait('Randomize', L2)]
+/** A line of the editor's list pressed: its panel. */
+const line = (label) => `__br.clickText('${label}', '${L2} .lk2-lines')`
+/** A Cloudscape Select: its option, pressed as a mouse does. */
+const option = (label) => `await __br.mouse('${L2} [role=option]', ${JSON.stringify(label)})`
+const L2_TATS = [...L2_EDIT, press('Add more'), `__br.clickText('Tattoos', '${L2} .lk2-menu')`, wait('Add more', `${L2} .lk2-tats`)]
 
 /**
  * EVERY SCREEN THE MOCK CAN SHOW. `steps` run in order in the page, each
@@ -277,21 +284,30 @@ export const SCREENS = [
   { name: 'admin', steps: [lobby(), focus('admin'), 'await __br.wait(1100)'] },
 
   { name: 'locker/season1', query: 'season=1', steps: [lobby(), focus('locker')] },
-  { name: 'locker/peds', steps: L2_OPEN },
-  { name: 'locker/peds-picked', steps: L2_PICK },
-  { name: 'locker/rename', steps: [...L2_PICK, press('Rename')] },
-  { name: 'locker/delete', steps: [...L2_PICK, press('Delete')] },
-  { name: 'locker/stock', steps: [...L2_OPEN, press('Stock peds')] },
-  { name: 'locker/male', steps: L2_MALE },
-  { name: 'locker/female', steps: [...L2_OPEN, press('Custom (female)'), wait('Skin tone', L2)] },
-  { name: 'locker/save-menu', steps: [...L2_DIRTY, press('Save')] },
-  { name: 'locker/name', steps: [...L2_DIRTY, press('Save'), `__br.clickText('Create new', '${L2}')`] },
-  { name: 'locker/discard', steps: [...L2_DIRTY, press('Done')] },
+  // Locker v2 is My Looks (#28): the saved looks, New, Stock GTA Looks, the
+  // editor and its dialogs, and every Cloudscape menu open.
+  { name: 'locker/looks', steps: L2_OPEN },
+  { name: 'locker/card-menu', steps: L2_MENU },
+  { name: 'locker/rename', steps: [...L2_MENU, `__br.clickText('Rename', '${L2} [role=menu]')`, wait('Rename look', L2)] },
+  { name: 'locker/delete', steps: [...L2_MENU, `__br.clickText('Delete', '${L2} [role=menu]')`, wait('Delete Nightshift?', L2)] },
+  { name: 'locker/new', steps: L2_NEW },
+  { name: 'locker/new-sex', steps: [...L2_NEW, `await __br.mouse('${L2} .lk2-choice-sub button')`, wait('Female', `${L2} [role=listbox]`)] },
+  { name: 'locker/stock', steps: [...L2_NEW, `__br.clickText('Stock GTA Looks', '${L2} .lk2-choices')`, press('Create'), wait('Back', L2)] },
+  { name: 'locker/editor', steps: L2_EDIT },
+  { name: 'locker/top', steps: [...L2_EDIT, line('Top')] },
+  { name: 'locker/face', steps: [...L2_EDIT, line('Face'), `__br.clickText('Fine-tune', '${L2} .lk2-panel')`] },
+  { name: 'locker/add-more', steps: [...L2_EDIT, press('Add more')] },
+  { name: 'locker/tattoos', steps: [...L2_TATS, `await __br.mouse('${L2} .lk2-tatzonepick button')`] },
   {
-    name: 'locker/edit-saved', steps: [...L2_PICK, press('Edit'), wait('Skin tone', L2),
-      `__br.click('${L2} button[aria-label="Next"]')`, `__br.click('${L2} button[aria-label="Save"]')`],
+    name: 'locker/tattoo-names', steps: [...L2_TATS, `await __br.mouse('${L2} .lk2-tatzonepick button')`, option('Torso'),
+      `await __br.mouse('${L2} .lk2-tatnew > :not(.lk2-tatzonepick):not(.lk2-icon) button[aria-haspopup]')`],
   },
-  { name: 'locker/tattoos', steps: [...L2_MALE, wait('Left arm', L2), press('Add'), press('Add')] },
+  { name: 'locker/save', steps: [...L2_EDIT, press('Save'), wait('Name your look', L2)] },
+  { name: 'locker/discard', steps: [...L2_EDIT, press('Back'), wait('Discard changes?', L2)] },
+  {
+    name: 'locker/edit-saved', steps: [...L2_MENU, `__br.clickText('Edit', '${L2} [role=menu]')`, wait('Randomize', L2),
+      line('Top'), `__br.click('${L2} .lk2-panel button[aria-label="Next"]')`, press('Save'), wait('Save as new', L2)],
+  },
 
   // ── THE WALKTHROUGHS, card by card ─────────────────────────────────────
   {

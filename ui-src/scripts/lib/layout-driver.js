@@ -47,6 +47,22 @@
       e.click()
     },
 
+    /**
+     * A press as a mouse makes it -- over it, down, up, click -- for controls
+     * that act on more than a click: Cloudscape's Select opens on the press,
+     * and picks the option the pointer was over when it lets go.
+     */
+    async mouse(sel, text) {
+      const e = br.find(sel, text)
+      if (!e) throw new Error(`nothing to press: ${sel}${text != null ? ` "${text}"` : ''}`)
+      const o = { bubbles: true, cancelable: true, button: 0, view: window }
+      const fire = (t) => e.dispatchEvent(t.startsWith('pointer') ? new PointerEvent(t, o) : new MouseEvent(t, o))
+      fire('pointermove')
+      fire('mousemove')
+      await br.wait(50)
+      for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) fire(t)
+    },
+
     /** Press the innermost shown element under `within` whose text is `text`. */
     clickText(text, within = 'body') {
       const root = document.querySelector(within)

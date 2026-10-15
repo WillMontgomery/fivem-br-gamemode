@@ -304,11 +304,26 @@ function randomize(look: Look, sex: Sex) {
   for (const k of ['c11', 'c8', 'c4', 'c6']) randomRow(look, defOf(k) as CountDef, sex)
 }
 
+/** Tattoo names as long as the game's run (#28 review: every tattoo here was
+ *  nameless, so no check ever drew "Tribal Hammerhead Shark" in a picker).
+ *  Every fifth is left nameless, as the game leaves some. The last is longer
+ *  than any picker is wide: a stand-in for the name that has no room, which
+ *  is not drawn. */
+const TAT_NAMES = [
+  'Tribal Hammerhead Shark', 'Grim Reaper Smoking Gun', 'Japanese Warrior and Skull', 'Skull and Sword',
+  'Dragon', 'Love the Game', 'Flaming Cross Over Two Pistols', 'Lady Bird', 'Way of the Gun',
+  'Elaborate Los Muertos', 'Rose', 'Flaming Skull and Crossed Wrenches Over the Vinewood Sign',
+]
+const tatName = (n: number): string | undefined => (n % 5 === 4 ? undefined : TAT_NAMES[n % TAT_NAMES.length])
+
 /** The tattoos on a look, held as rows. */
 const mockTats = (sex: Sex) => ({
   sex,
   zones: TATTOO_ZONES.map((z, zi) => ({
-    z, items: Array.from({ length: sex === 'm' ? 14 : 12 }, (_, n) => ({ i: zi * 20 + n + 1 })),
+    z, items: Array.from({ length: sex === 'm' ? 14 : 12 }, (_, n) => {
+      const name = tatName(zi + n)
+      return name === undefined ? { i: zi * 20 + n + 1 } : { i: zi * 20 + n + 1, name }
+    }),
   })),
 })
 let tatRowSeq = 0

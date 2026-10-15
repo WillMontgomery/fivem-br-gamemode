@@ -76,6 +76,7 @@ const Line = memo(function Line({ cat, text, chip, on, extra, disabled, onOpen, 
           </span>
         </span>
       </button>
+      {extra && <span className="lk2-line-div" aria-hidden="true" />}
       {extra && <IconBtn icon="remove" label={BTN.remove} disabled={disabled} onPress={() => onRemove(cat)} />}
     </div>
   )
@@ -185,9 +186,11 @@ export function AddMore({ items, disabled, onPick }: {
   disabled: boolean
   onPick: (cat: string) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [wanted, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
+  // With nothing left to add, or the page blocked, it is off and never open.
   const off = disabled || items.length === 0
+  const open = wanted && !off
   useEffect(() => { if (off) setOpen(false) }, [off])
   useEffect(() => {
     if (!open) return
@@ -205,7 +208,7 @@ export function AddMore({ items, disabled, onPick }: {
   return (
     <div ref={box} className={`lk2-addmore${open ? ' is-open' : ''}`}>
       <Button iconName="add-plus" fullWidth wrapText={false} disabled={off} ariaHaspopup="menu" ariaExpanded={open}
-        onClick={() => { play('ui.select'); setOpen((o) => !o) }}>
+        onClick={() => { if (off) return; play('ui.select'); setOpen((o) => !o) }}>
         {BTN.addMore}
       </Button>
       {open && (

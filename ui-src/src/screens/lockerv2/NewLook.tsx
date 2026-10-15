@@ -54,6 +54,8 @@ export function NewChoice({ blocked, pick, sex, onPick, onSex }: {
     <div className="lk2-choices" role="radiogroup">
       <div className="lk2-choice">
         {card('custom', CARD.custom)}
+        {/* The dropdown is Custom's: opening it selects Custom, and so does a
+            pick in it, however it was opened (the keyboard presses nothing). */}
         <div className="lk2-choice-sub" onPointerDown={() => { if (pick !== 'custom') onPick('custom') }}>
           <Select
             selectedOption={SEX_OPTIONS.find((o) => o.value === sex) ?? null}
@@ -63,6 +65,7 @@ export function NewChoice({ blocked, pick, sex, onPick, onSex }: {
             onChange={({ detail }) => {
               play('ui.select')
               onSex(detail.selectedOption.value === 'f' ? 'f' : 'm')
+              if (pick !== 'custom') onPick('custom')
             }}
           />
         </div>

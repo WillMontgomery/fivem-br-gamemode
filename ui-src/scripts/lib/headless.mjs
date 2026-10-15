@@ -226,8 +226,11 @@ async function until(fn, ms, what) {
   }
 }
 
-/** Headless Chromium; resolves to { exe, tab(), close }. */
-export async function launch() {
+/**
+ * Headless Chromium; resolves to { exe, tab(), close }. `standardZoom` runs it
+ * on Chromium 128's zoom rule (CEF 144's) instead of CEF 103's.
+ */
+export async function launch({ standardZoom = false } = {}) {
   const exe = findBrowser()
   const profile = mkdtempSync(join(tmpdir(), 'br-ui-browser-'))
   const args = [
@@ -236,14 +239,15 @@ export async function launch() {
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--force-device-scale-factor=1',
     '--window-size=3840,2160', '--mute-audio', '--autoplay-policy=no-user-gesture-required',
-    // CSS `zoom` AS CEF 103 DOES IT. Chromium 128 standardized zoom, and a box
-    // measured inside a zoomed element now comes back in screen px; FiveM's
-    // CEF reports it in the element's own (screens/lockerv2/scope.ts,
-    // legacyZoom). Locker v2's Cloudscape island is zoomed and measures and
-    // places its menus inside it, so on the newer rule they come out the wrong
-    // size, in a browser the game never runs.
-    '--disable-blink-features=StandardizedBrowserZoom',
   ]
+  // CSS `zoom` AS CEF 103 DOES IT. Chromium 128 standardized zoom: a box
+  // measured inside a zoomed element comes back in screen px, where FiveM's
+  // CEF 103 gives the element's own. Locker v2's Cloudscape island is zoomed,
+  // and src/cef/zoomRect.ts answers Cloudscape as CEF 103 would on either
+  // rule (#413). The game runs the old rule until CEF 144 brings the new one,
+  // so every run here is on the old rule but test-lockerv2-menus.mjs's, which
+  // asks for both.
+  if (!standardZoom) args.push('--disable-blink-features=StandardizedBrowserZoom')
   // Linux CI runners refuse Chromium's user-namespace sandbox; the only page
   // this ever loads is our own, from 127.0.0.1.
   if (process.platform === 'linux') args.push('--no-sandbox')

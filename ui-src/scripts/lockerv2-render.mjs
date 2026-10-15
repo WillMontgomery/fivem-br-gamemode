@@ -118,6 +118,8 @@ export function fakePage() {
   globalThis.document = doc
   globalThis.getComputedStyle = () => ({ fontSize: '14px', visibility: 'visible' })
   globalThis.MutationObserver = class { observe() {} disconnect() {} }
+  // A press is told inside from outside by `contains`, on a Node.
+  globalThis.Node ??= class Node {}
   globalThis.window = {
     ...(globalThis.window ?? {}),
     location: { search: '' },
@@ -244,10 +246,14 @@ export function mount(React, element) {
       // The node keeps its element as `el`; a scroll into view is counted.
       for (const [p, ref, node] of refs) {
         if (!els.has(p)) {
-          els.set(p, {
+          // A Node where the page has one, so `instanceof Node` holds; it
+          // contains itself and nothing else.
+          const proto = globalThis.Node ? globalThis.Node.prototype : Object.prototype
+          els.set(p, Object.assign(Object.create(proto), {
             scrolled: 0, querySelector: () => null, scrollIntoView() { this.scrolled++ },
+            contains(t) { return t === this },
             getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),
-          })
+          }))
         }
         node.el = els.get(p)
         if (typeof ref === 'function') ref(node.el); else ref.current = node.el
