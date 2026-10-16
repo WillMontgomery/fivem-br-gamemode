@@ -430,6 +430,7 @@ loadAll({
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/peds.lua',
     'br_core/client/main.lua',      -- the loop registry; must be first
+    'br_core/client/tunekeys.lua',  -- brlobbycam's keys (#404), as the manifest orders it
 })
 
 BR.State = BR.State or {}
@@ -5620,6 +5621,173 @@ do
     pump(200)
     BR.Season = realSeason
     TriggerServerEvent = realServer
+    reset()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- #404. brlobbycam ON THE KEYS
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- "Any manual adjustment commands must allow keyboard input" (owner,
+-- 2026-10-11). How a key steps is tools/test_tunekeys.lua's; what is pinned
+-- here is what the keys move, that the shot follows them without a
+-- SetCamCoord on the rendering camera, and the lobby's NUI focus let go and
+-- taken back -- a focused page takes the keyboard, and the game would read no
+-- key at all.
+
+do
+    reset()
+    local C = BR.Config.Match.lobbyCam
+    local P = BR.Config.Match.lobbyPos
+    local was = {}
+    for k, v in pairs(C) do was[k] = v end
+    local down, claims, text = {}, {}, {}
+    function IsDisabledControlPressed(_, id) return down[id] and 1 or 0 end
+    function DisableControlAction(_, id) claims[id] = (claims[id] or 0) + 1 end
+    for _, n in ipairs({ 'SetTextFont', 'SetTextScale', 'SetTextColour', 'SetTextDropshadow',
+                         'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+                         'BeginTextCommandDisplayText' }) do
+        _G[n] = function() end
+    end
+    local pending = nil
+    function AddTextComponentSubstringPlayerName(s) pending = s end
+    function EndTextCommandDisplayText(x, y) text[#text + 1] = { x = x, y = y, s = pending } end
+    local K = BR.TuneKeys.KEY
+    local round = BR.TuneKeys.round
+
+    -- ONLY THE TOOL'S FRAME CALLBACK RUNS: pump() never steps the frame band,
+    -- and this block is about the keys, not the rest of the lobby's frame.
+    local held = {}
+    for _, e in ipairs(BR.Loop.names()) do
+        if e.band == BR.Loop.FRAME then
+            held[#held + 1] = e.name
+            BR.Loop.setEnabled(e.name, false)
+        end
+    end
+    local function frame(ms)
+        fakeTime = fakeTime + (ms or 50)
+        claims, text = {}, {}
+        BR.Loop.step(BR.Loop.FRAME)
+        local n = liveCamCount()
+        if n > peakCams then peakCams = n end
+    end
+    local function press(keys, ms, step)
+        down = {}
+        for _, k in ipairs(keys) do down[k] = true end
+        local t = 0
+        repeat
+            frame(step or 50)
+            t = t + (step or 50)
+        until t >= (ms or 1)
+        down = {}
+        frame(50)
+    end
+    local function sent(name)
+        for _, e in ipairs(events) do
+            if e.name == name and e.args[1] == 'lobby' then return true end
+        end
+        return false
+    end
+    local function lastCam()
+        local made = nil
+        for _, e in ipairs(order) do if e.kind == 'cammade' then made = e end end
+        return made
+    end
+
+    BR.LobbyCam.stop()
+    BR.LobbyCam.start()
+    ok(BR.LobbyCam.active(), 'brlobbycam: the lobby camera is up')
+
+    events, logged = {}, {}
+    commands['brlobbycam'](0, { 'on' })
+    ok(BR.TuneKeys.on('brlobbycam'), 'brlobbycam on: its keys are on')
+    ok(sent('br:ui:popFocus'), 'on: the lobby lets go of its NUI focus, which would take every key')
+    frame()
+    local all = true
+    for _, id in ipairs({ 27, 172, 173, 174, 175, 10, 11, 178 }) do all = all and (claims[id] or 0) > 0 end
+    ok(all, 'the arrows, the page keys and DELETE are claimed')
+    ok(text[1] and text[1].x > 0.5, 'the numbers drawn on the right, clear of the lobby menu')
+
+    order, peakCams = {}, liveCamCount()
+    press({ K.UP })
+    ok(C.height == round(was.height + 0.01, 2), 'UP: the camera 1 cm higher')
+    local made = lastCam()
+    ok(made and math.abs(made.z - (P.z + C.height)) < 1e-9, 'and the shot is framed there')
+    local _, glide = firstOf('camglide')
+    ok(glide and glide.ms == BR.TuneKeys.REPEAT_MS,
+        'a glide one key-repeat long, so a held key moves it smoothly')
+    press({ K.DEPTH, K.UP })
+    ok(C.dist == round(was.dist + 0.01, 2) and C.height == round(was.height + 0.01, 2),
+        'CTRL + UP: 1 cm further from the ped, and not higher')
+    press({ K.TURN, K.DOWN })
+    ok(C.aim == round(was.aim - 0.01, 2), 'ALT + DOWN: the aim 1 cm lower')
+    press({ K.RIGHT })
+    ok(C.offset == round(was.offset + 0.01, 2), 'RIGHT: the offset')
+    press({ K.BIGGER })
+    ok(C.fov == round(was.fov + 1, 1), 'PAGE UP: a degree wider')
+    press({ K.COARSE, K.SMALLER })
+    ok(C.fov == round(was.fov - 4, 1), 'SHIFT + PAGE DOWN: five degrees narrower')
+    press({ K.COARSE, K.UP }, 1000, 25)
+    ok(C.height == round(was.height + 2.01, 2), 'SHIFT + UP held a second: 20 steps of 10 cm')
+    ok(peakCams <= 2, 'never more than two cameras alive while it moves')
+    local wrote = false
+    for _, l in ipairs(logged) do
+        if l:find('must not write coordinates', 1, true) or l:find('errored', 1, true) then wrote = true end
+    end
+    ok(not wrote, 'and never a SetCamCoord on the rendering camera')
+    frame()
+    ok(text[2] and text[2].s == ('~b~height %.2f~w~   dist %.2f~w~   aim %.2f~w~'):format(C.height, C.dist, C.aim),
+        'the numbers on screen, what UP moves in blue')
+
+    -- PUT AWAY: the lobby's focus back, and the lines to paste.
+    events, logged = {}, {}
+    commands['brlobbycam'](0, { 'off' })
+    ok(sent('br:ui:pushFocus'), 'brlobbycam off: the lobby takes its focus back')
+    local function pasteLines()
+        local out = {}
+        for _, l in ipairs(logged) do
+            if l:match('^        %a+ *= ') then out[#out + 1] = l end
+        end
+        return table.concat(out, '\n')
+    end
+    local fromKeys = pasteLines()
+    ok(fromKeys:find(('height = %.2f,'):format(C.height), 1, true) ~= nil
+        and fromKeys:find(('fov    = %.1f,'):format(C.fov), 1, true) ~= nil,
+        'and the five lines to paste')
+    ok(not BR.TuneKeys.on('brlobbycam'), 'its keys are off')
+    logged = {}
+    commands['brlobbycam'](0, {})
+    ok(pasteLines() == fromKeys, 'the same lines the bare command prints')
+    local h = C.height
+    down = { [K.UP] = true }
+    frame()
+    down = {}
+    ok(next(claims) == nil and C.height == h, 'and the arrows are the player\'s again')
+
+    -- NOT IN THE LOBBY, THE FOCUS IS NOT HANDED BACK: there is no lobby menu
+    -- to hand it to.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    commands['brlobbycam'](0, { 'on' })
+    events = {}
+    commands['brlobbycam'](0, { 'off' })
+    ok(not sent('br:ui:pushFocus'), 'put away outside the lobby: no focus pushed')
+    BR.State.me.state = BR.PlayerState.LOBBY
+
+    -- DELETE: the shipped numbers.
+    commands['brlobbycam'](0, { 'on' })
+    press({ K.RESET })
+    local same = true
+    for k, v in pairs(was) do same = same and C[k] == v end
+    ok(same, 'DELETE: the shipped numbers')
+    commands['brlobbycam'](0, { 'off' })
+
+    -- THE TYPED FORM STILL WORKS.
+    commands['brlobbycam'](0, { 'fov', '40' })
+    ok(C.fov == 40, 'brlobbycam fov 40 still sets it')
+
+    for k, v in pairs(was) do C[k] = v end
+    for _, name in ipairs(held) do BR.Loop.setEnabled(name, true) end
+    BR.LobbyCam.stop()
     reset()
 end
 

@@ -1076,9 +1076,121 @@ AddEventHandler('onResourceStop', function(res)
 end)
 
 -- Re-frame from the console after editing the numbers, without a restart.
+
+--- What the config shipped, for DELETE: the typed form writes the config
+--- table itself.
+local CAM_SHIPPED = {}
+for k, v in pairs(BR.Config.Match.lobbyCam) do CAM_SHIPPED[k] = v end
+
+--- A step of each: /brplate's centimeter (ten with SHIFT), and a degree of
+--- field of view (five).
+local CAM_M   = { fine = 0.01, coarse = 0.10, places = 2, lo = -5.0, hi = 5.0 }
+local CAM_D   = { fine = 0.01, coarse = 0.10, places = 2, lo = 0.3, hi = 20.0 }
+local CAM_FOV = { fine = 1.0, coarse = 5.0, places = 1, lo = 5.0, hi = 120.0 }
+
+--- The five numbers, and the lines for br_lib/config/match.lua's `lobbyCam`
+--- -- one printer for the bare command and the keys.
+local function camReport()
+    local C = BR.Config.Match.lobbyCam
+    print('=== lobby camera ===')
+    for _, k in ipairs({ 'dist', 'height', 'aim', 'offset', 'fov' }) do
+        print(('  %-7s %.2f'):format(k, C[k]))
+    end
+    print(('  active  %s'):format(tostring(BR.LobbyCam.active())))
+    print('  paste into br_lib/config/match.lua, lobbyCam:')
+    print(('        dist   = %.2f,'):format(C.dist))
+    print(('        height = %.2f,'):format(C.height))
+    print(('        aim    = %.2f,'):format(C.aim))
+    print(('        offset = %.2f,'):format(C.offset))
+    print(('        fov    = %.1f,'):format(C.fov))
+    print('  usage: brlobbycam <dist|height|aim|offset|fov> <number>')
+    print('         brlobbycam on | off   the same five on the keys')
+end
+
+--- The shot on the numbers as they are now: a glide one key-repeat long from
+--- where it was, so a held key moves the camera smoothly rather than in
+--- jumps -- and never a SetCamCoord on the rendering camera (the header).
+local function reframe()
+    if BR.LobbyCam.active() then BR.LobbyCam.glideHome(BR.TuneKeys.REPEAT_MS) end
+end
+
+--- `brlobbycam on`: the five numbers on the keys (#404, client/tunekeys.lua).
+--- UP / DOWN raise the camera, CTRL + UP / DOWN take it further from the ped
+--- (/brplate's CTRL is out), ALT + UP / DOWN tilt the aim (/brrocket's ALT
+--- turns), LEFT / RIGHT slide the ped across the screen, PAGE UP / DOWN the
+--- field of view.
+---
+--- THE LOBBY HOLDS NUI FOCUS, AND A FOCUSED PAGE TAKES THE KEYBOARD: the game
+--- reads no key at all while it does. So `on` asks br_ui to let go of the
+--- lobby's focus (the cursor goes with it while the keys are on) and putting
+--- the keys away asks for it back. Anything that pushes the lobby's focus again
+--- -- the pause menu closing, say -- takes the keyboard back with it, and
+--- `brlobbycam on` again releases it.
+---
+--- THE READOUT IS ON THE RIGHT, because the lobby menu covers the left of the
+--- screen and the numbers would be drawn underneath it.
+local function camKeys()
+    local C = BR.Config.Match.lobbyCam
+    BR.TuneKeys.start('brlobbycam', {
+        x = 0.72, y = 0.08,
+        lines = function(k)
+            local v = (k.turn and 'aim') or (k.depth and 'dist') or 'height'
+            local function hi(name) return v == name and '~b~' or '' end
+            return {
+                ('~b~lobby camera~w~  %s'):format(BR.LobbyCam.active() and 'up' or 'down'),
+                ('%sheight %.2f~w~   %sdist %.2f~w~   %saim %.2f~w~')
+                    :format(hi('height'), C.height, hi('dist'), C.dist, hi('aim'), C.aim),
+                ('offset %.2f   fov %.1f'):format(C.offset, C.fov),
+                ('step %.2f m   %.0f deg'):format(k.coarse and CAM_M.coarse or CAM_M.fine,
+                    k.coarse and CAM_FOV.coarse or CAM_FOV.fine),
+            }
+        end,
+        nudge = function(k)
+            if k.v ~= 0 then
+                if k.turn then
+                    C.aim = BR.TuneKeys.nudged(C.aim, k.v, k.coarse, CAM_M)
+                elseif k.depth then
+                    C.dist = BR.TuneKeys.nudged(C.dist, k.v, k.coarse, CAM_D)
+                else
+                    C.height = BR.TuneKeys.nudged(C.height, k.v, k.coarse, CAM_M)
+                end
+            end
+            if k.h ~= 0 then C.offset = BR.TuneKeys.nudged(C.offset, k.h, k.coarse, CAM_M) end
+            if k.s ~= 0 then C.fov = BR.TuneKeys.nudged(C.fov, k.s, k.coarse, CAM_FOV) end
+            reframe()
+            return true
+        end,
+        reset = function()
+            for key, v in pairs(CAM_SHIPPED) do C[key] = v end
+            reframe()
+        end,
+        off = function()
+            if BR.State.me.state == BR.PlayerState.LOBBY then
+                TriggerEvent('br:ui:pushFocus', 'lobby')
+            end
+            camReport()
+        end,
+    })
+    TriggerEvent('br:ui:popFocus', 'lobby')
+    print('[br_core] brlobbycam: on. The lobby\'s cursor is off while the keys are on. The keys:')
+    print('  UP / DOWN          height')
+    print('  CTRL + UP / DOWN   dist, further from the ped')
+    print('  ALT + UP / DOWN    aim, what it looks at')
+    print('  LEFT / RIGHT       offset, the ped across the screen')
+    print('  PAGE UP / DOWN     fov')
+    print('  hold SHIFT         10 cm and 5 degree steps instead of 1 cm and 1')
+    print('  DELETE             the shipped numbers')
+    print('  `brlobbycam off` puts them away and prints what to paste')
+end
+
 RegisterCommand('brlobbycam', function(_, args)
     local C = BR.Config.Match.lobbyCam
     local key, value = args[1], tonumber(args[2])
+    if key == 'on' then return camKeys() end
+    if key == 'off' then
+        if not BR.TuneKeys.stop('brlobbycam') then camReport() end
+        return
+    end
     if key and value and C[key] ~= nil then
         C[key] = value
         print(('[br_core] lobbyCam.%s = %.2f'):format(key, value))
@@ -1086,10 +1198,5 @@ RegisterCommand('brlobbycam', function(_, args)
         BR.LobbyCam.start()
         return
     end
-    print('=== lobby camera ===')
-    for _, k in ipairs({ 'dist', 'height', 'aim', 'offset', 'fov' }) do
-        print(('  %-7s %.2f'):format(k, C[k]))
-    end
-    print(('  active  %s'):format(tostring(BR.LobbyCam.active())))
-    print('  usage: brlobbycam <dist|height|aim|offset|fov> <number>')
+    camReport()
 end, false)
