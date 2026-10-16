@@ -4738,6 +4738,7 @@ end, false)
 ---
 ---   /brshine                  show the current numbers
 ---   /brshine <name> <value>   set one of them, live
+---   /brshine on | off         the same five on the keys (#404)
 ---
 --- It exists for the same reason /brlabel does. The glow has been called "too
 --- bright" once and "not what it was" once (user, 2026-08-06 and 2026-08-09),
@@ -4752,8 +4753,92 @@ local SHINE_TUNABLE = {
     limit    = 'shineOpenLimit',   -- crates you may open before it stops
 }
 
+--- THE SAME FIVE IN THE ORDER THE KEYS STEP THROUGH THEM, each with a step of
+--- its own size: alpha runs 0-255 and the limit is a count of crates, where the
+--- range is meters and the power a fraction of an intensity. `shipped` is the
+--- config's number, for DELETE -- the typed form writes the config table itself.
+local SHINE_ROWS = {
+    { name = 'alpha',    fmt = '%.0f', fine = 1,    coarse = 10,   places = 0, lo = 0, hi = 255 },
+    { name = 'range',    fmt = '%.1f', fine = 0.1,  coarse = 1.0,  places = 1, lo = 0, hi = 50 },
+    { name = 'power',    fmt = '%.2f', fine = 0.01, coarse = 0.10, places = 2, lo = 0, hi = 10 },
+    { name = 'distance', fmt = '%.1f', fine = 1,    coarse = 10,   places = 1, lo = 0, hi = 200 },
+    { name = 'limit',    fmt = '%.0f', fine = 1,    coarse = 10,   places = 0, lo = 0, hi = 1000 },
+}
+for _, r in ipairs(SHINE_ROWS) do
+    r.field = SHINE_TUNABLE[r.name]
+    r.shipped = L[r.field]
+end
+
+--- Which of the five the keys move.
+local shinePick = 1
+
+--- The numbers and the lines for br_lib/config/loot.lua -- one printer for the
+--- typed form and the keys, so what they paste is one thing. ALL FIVE are
+--- pasted: the keys reach `distance` and `limit` as easily as the other three,
+--- and a number tuned and not printed is a measurement lost.
+local function shineReport()
+    print('=== crate shine ===')
+    print(('  color    %d %d %d  (%s)'):format(
+        (L.shineColour or {})[1] or 255, (L.shineColour or {})[2] or 150,
+        (L.shineColour or {})[3] or 30, tostring(L.shineHex)))
+    for _, r in ipairs(SHINE_ROWS) do
+        print(('  %-8s %s'):format(r.name, tostring(L[r.field])))
+    end
+    print('  paste into br_lib/config/loot.lua:')
+    print(('    shineAlpha      = %s,'):format(tostring(L.shineAlpha)))
+    print(('    shineLightRange = %s,'):format(tostring(L.shineLightRange)))
+    print(('    shineLightPower = %s,'):format(tostring(L.shineLightPower)))
+    print(('    shineDistance   = %s,'):format(tostring(L.shineDistance)))
+    print(('    shineOpenLimit  = %s,'):format(tostring(L.shineOpenLimit)))
+    print('  usage: brshine alpha|range|power|distance|limit <value>')
+    print('         brshine on | off   the same five on the keys')
+end
+
+--- `brshine on`: LEFT / RIGHT pick one of the five, UP / DOWN move it
+--- (client/tunekeys.lua). The glow reads all five every frame, so the next
+--- frame shows the step -- with `limit` above the crates opened so far, or
+--- there is no glow to look at.
+local function shineKeys()
+    BR.TuneKeys.start('brshine', {
+        lines = function(k)
+            local out = { '~b~crate shine~w~' }
+            for i, r in ipairs(SHINE_ROWS) do
+                out[#out + 1] = ('%s%-8s ' .. r.fmt .. '~w~')
+                    :format(i == shinePick and '~b~' or '', r.name, tonumber(L[r.field]) or 0)
+            end
+            local r = SHINE_ROWS[shinePick]
+            out[#out + 1] = ('step ' .. r.fmt):format(k.coarse and r.coarse or r.fine)
+            return out
+        end,
+        pick = function(d)
+            shinePick = (shinePick - 1 + d) % #SHINE_ROWS + 1
+        end,
+        nudge = function(k)
+            if k.v == 0 then return false end
+            local r = SHINE_ROWS[shinePick]
+            L[r.field] = BR.TuneKeys.nudged(L[r.field], k.v, k.coarse, r)
+            return true
+        end,
+        reset = function()
+            for _, r in ipairs(SHINE_ROWS) do L[r.field] = r.shipped end
+        end,
+        off = shineReport,
+    })
+    print('[br_core] brshine: on. Stand near a crate. The keys:')
+    print('  LEFT / RIGHT   which number: alpha, range, power, distance, limit')
+    print('  UP / DOWN      move it')
+    print('  hold SHIFT     bigger steps')
+    print('  DELETE         the shipped numbers')
+    print('  `brshine off` puts them away and prints what to paste')
+end
+
 RegisterCommand('brshine', function(_, args)
     local name = tostring(args[1] or '')
+    if name == 'on' then return shineKeys() end
+    if name == 'off' then
+        if not BR.TuneKeys.stop('brshine') then shineReport() end
+        return
+    end
     local value = tonumber(args[2])
     local field = SHINE_TUNABLE[name]
 
@@ -4764,18 +4849,7 @@ RegisterCommand('brshine', function(_, args)
         print(('[br_core] no such shine value: %s'):format(name))
     end
 
-    print('=== crate shine ===')
-    print(('  colour   %d %d %d  (%s)'):format(
-        (L.shineColour or {})[1] or 255, (L.shineColour or {})[2] or 150,
-        (L.shineColour or {})[3] or 30, tostring(L.shineHex)))
-    for k, f in pairs(SHINE_TUNABLE) do
-        print(('  %-8s %s'):format(k, tostring(L[f])))
-    end
-    print('  paste into br_lib/config/loot.lua:')
-    print(('    shineAlpha      = %s,'):format(tostring(L.shineAlpha)))
-    print(('    shineLightRange = %s,'):format(tostring(L.shineLightRange)))
-    print(('    shineLightPower = %s,'):format(tostring(L.shineLightPower)))
-    print('  usage: brshine alpha|range|power|distance|limit <value>')
+    shineReport()
 end, false)
 
 --- Tune the crate label WITHOUT a deploy.

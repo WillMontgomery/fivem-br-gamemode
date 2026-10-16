@@ -1774,6 +1774,88 @@ do
     eq(errored(), nil, 'and no loop errored')
 end
 
+describe('#404: brshine on the keys -- LEFT / RIGHT pick one of the five, UP / DOWN move it')
+do
+    reset()
+    local was = { L.shineAlpha, L.shineLightRange, L.shineLightPower, L.shineDistance, L.shineOpenLimit }
+    logs = {}
+    commands.brshine(0, { 'on' })
+    ok(BR.TuneKeys.on('brshine'), 'brshine on: its keys are on')
+    ok(said('`brshine off` puts them away'), 'and they are printed')
+    keyClaims = {}
+    frame()
+    ok(claimed(), 'the arrows, the page keys and DELETE are claimed')
+
+    press({ KEY.UP })
+    eq(L.shineAlpha, was[1] + 1, 'UP: alpha, the first of the five, up one')
+    press({ KEY.COARSE, KEY.UP })
+    eq(L.shineAlpha, was[1] + 11, 'SHIFT + UP: ten more')
+    eq(math.type(L.shineAlpha), 'integer', 'and still a whole number')
+    press({ KEY.RIGHT }, 500)
+    press({ KEY.UP })
+    eq(L.shineLightRange, BR.TuneKeys.round(was[2] + 0.1, 1), 'RIGHT held: the next one, once -- range, a tenth of a meter')
+    eq(L.shineAlpha, was[1] + 11, 'and alpha stays where it was')
+    press({ KEY.RIGHT })
+    press({ KEY.DOWN }, 1000, 25)
+    eq(L.shineLightPower, BR.TuneKeys.round(was[3] - 0.2, 2), 'power: DOWN held a second, 20 steps of 0.01')
+    press({ KEY.RIGHT })
+    press({ KEY.UP })
+    eq(L.shineDistance, was[4] + 1, 'distance: a meter')
+    press({ KEY.RIGHT })
+    press({ KEY.UP })
+    eq(L.shineOpenLimit, was[5] + 1, 'limit: one crate more')
+    press({ KEY.RIGHT })
+    press({ KEY.UP })
+    eq(L.shineAlpha, was[1] + 12, 'RIGHT past the last: round to alpha')
+    press({ KEY.LEFT })
+    press({ KEY.DOWN }, 1000)
+    eq(L.shineOpenLimit, 0, 'LEFT: the limit again, and never below none')
+    press({ KEY.BIGGER })
+    eq(L.shineOpenLimit, 0, 'the page keys move nothing here')
+    readout = {}
+    frame()
+    eq(#readout, 7, 'on screen: the title, the five and the step')
+    ok(readout[6] and readout[6]:sub(1, 3) == '~b~' and readout[6]:find('limit', 1, true) ~= nil,
+        'the one the keys move in blue', readout[6])
+    ok(readout[2] and readout[2]:sub(1, 3) ~= '~b~' and readout[2]:find('alpha', 1, true) ~= nil,
+        'the others not', readout[2])
+
+    -- PUT AWAY: all five to paste, the same lines the typed form prints.
+    logs = {}
+    commands.brshine(0, { 'off' })
+    local fromKeys = pasteLines()
+    ok(fromKeys:find(('shineAlpha      = %s,'):format(tostring(L.shineAlpha)), 1, true) ~= nil
+        and fromKeys:find(('shineDistance   = %s,'):format(tostring(L.shineDistance)), 1, true) ~= nil
+        and fromKeys:find('shineOpenLimit  = 0,', 1, true) ~= nil,
+        'brshine off: all five lines to paste', fromKeys)
+    ok(not BR.TuneKeys.on('brshine'), 'and its keys are off')
+    logs = {}
+    commands.brshine(0, {})
+    eq(pasteLines(), fromKeys, 'the same lines the typed form prints')
+    keyClaims = {}
+    local before = L.shineAlpha
+    keyDown = { [KEY.UP] = true }
+    frame(50)
+    frame(50)
+    keyDown = {}
+    ok(next(keyClaims) == nil and L.shineAlpha == before, 'and the arrows are the player\'s again')
+
+    -- DELETE: all five as shipped.
+    commands.brshine(0, { 'on' })
+    press({ KEY.RESET })
+    ok(L.shineAlpha == was[1] and L.shineLightRange == was[2] and L.shineLightPower == was[3]
+        and L.shineDistance == was[4] and L.shineOpenLimit == was[5], 'DELETE: all five as shipped')
+    commands.brshine(0, { 'off' })
+
+    -- THE TYPED FORM STILL WORKS.
+    logs = {}
+    commands.brshine(0, { 'power', '0.5' })
+    eq(L.shineLightPower, 0.5, 'brshine power 0.5 still sets it')
+    ok(said('shineLightPower = 0.5,'), 'and prints the line to paste')
+    L.shineLightPower = was[3]
+    eq(errored(), nil, 'and no loop errored')
+end
+
 -- ----------------------------------------------------------------- result ---
 
 print = realPrint
