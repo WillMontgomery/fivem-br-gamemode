@@ -873,7 +873,10 @@ local cmds  = {}
 
 BR.Loop = {
     FRAME = 'frame', TICK = 'tick', SLOW = 'slow',
-    register = function(_, name, fn) loops[name] = fn end,
+    -- A HANDLE IS THE NAME, so /brboard's keys (#404), which come and go with
+    -- `on` and `off`, can be put away again.
+    register = function(_, name, fn) loops[name] = fn return name end,
+    unregister = function(name) if name then loops[name] = nil end end,
 }
 BR.State = { me = { state = BR.PlayerState.LOBBY } }
 
@@ -888,7 +891,8 @@ dui.navigations = {}
 dui.destroyed = 0
 dui.made, dui.deleted = 0, 0
 
-loadAll({ 'br_core/client/board.lua' })
+-- The dev tuning tools' shared keys (#404) first, as the manifest orders them.
+loadAll({ 'br_core/client/tunekeys.lua', 'br_core/client/board.lua' })
 
 local LIC = 'b6f5a1273092df7eb6a8c2a981418f275f2ae3fb'
 local BOARD_URL = 'https://ringmaster.blitz-royale.com/scoreboard?id=' .. LIC
@@ -1650,6 +1654,183 @@ do
 
     B.prop.heading, B.yawDeg = _sv.h, _sv.y
     B.forwardM, B.upM, B.widthM, B.sideM = _sv.f, _sv.u, _sv.w, _sv.s
+end
+
+describe('#404: brboard on the keys -- UP / DOWN up, CTRL fwd, LEFT / RIGHT side, ALT yaw, PAGE w')
+do
+    -- "Any manual adjustment commands must allow keyboard input" (owner,
+    -- 2026-10-11). How a key steps is tools/test_tunekeys.lua's; what brboard's
+    -- keys move is here. The keys, modeled: what is held, what was claimed and
+    -- what was drawn as the readout, on the board's own clock.
+    local down, claims, readout = {}, {}, {}
+    function IsDisabledControlPressed(_, id) return down[id] and 1 or 0 end
+    function DisableControlAction(_, id) claims[id] = (claims[id] or 0) + 1 end
+    for _, n in ipairs({ 'SetTextFont', 'SetTextScale', 'SetTextColour', 'SetTextDropshadow',
+                         'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+                         'BeginTextCommandDisplayText' }) do
+        _G[n] = function() end
+    end
+    local pending = nil
+    function AddTextComponentSubstringPlayerName(s) pending = s end
+    function EndTextCommandDisplayText() readout[#readout + 1] = pending end
+    local K = BR.TuneKeys.KEY
+    local function keyFrame(ms)
+        dui.now = dui.now + (ms or 50)
+        claims, readout = {}, {}
+        if loops['tunekeys.brboard'] then loops['tunekeys.brboard']() end
+    end
+    local function press(keys, ms, step)
+        down = {}
+        for _, k in ipairs(keys) do down[k] = true end
+        local t = 0
+        repeat
+            keyFrame(step or 50)
+            t = t + (step or 50)
+        until t >= (ms or 1)
+        down = {}
+        keyFrame(50)
+    end
+    --- The five, as the bare command's block prints them to paste.
+    local function five(lines)
+        local out = {}
+        for _, l in ipairs(lines or brboard()) do
+            local key, v = l:match('^    (%a+)%s*= ([%-%d%.]+),$')
+            if key then out[key] = tonumber(v) end
+        end
+        return out
+    end
+    local function pasted(lines)
+        local out = {}
+        for _, l in ipairs(lines) do
+            if l:match('^    %a+%s*= [%-%d%.]+,$') then out[#out + 1] = l end
+        end
+        return table.concat(out, '\n')
+    end
+    --- The quad on the prop: its four corners, its center and its top edge.
+    local function quad()
+        frame()
+        local q = { tl = dui.at(0.0, 0.0), tr = dui.at(1.0, 0.0),
+                    bl = dui.at(0.0, 1.0), br = dui.at(1.0, 1.0) }
+        if not (q.tl and q.tr and q.bl and q.br) then return nil end
+        q.c = {}
+        for i = 1, 3 do q.c[i] = (q.tl[i] + q.tr[i] + q.bl[i] + q.br[i]) / 4 end
+        q.w = dist3(q.tl, q.tr)
+        q.ex, q.ey = (q.tr[1] - q.tl[1]) / q.w, (q.tr[2] - q.tl[2]) / q.w
+        return q
+    end
+    local function moved(a, b)
+        return b.c[1] - a.c[1], b.c[2] - a.c[2], b.c[3] - a.c[3]
+    end
+
+    teardownWorld()
+    BR.State.me.state = BR.PlayerState.WARMUP
+    standAtSite()
+    placeTheDisplay()
+    for _ = 1, 30 do tick() end
+    local q0 = quad()
+    ok(q0 ~= nil, 'the board is up')
+    local s0 = five()
+
+    local said = brboard('on')
+    ok(BR.TuneKeys.on('brboard') and loops['tunekeys.brboard'] ~= nil,
+        'brboard on: its keys are on, one frame callback')
+    ok(printed(said, '`brboard off` puts them away'), 'and they are printed')
+    keyFrame()
+    local all = true
+    for _, id in ipairs({ 27, 172, 173, 174, 175, 10, 11, 178 }) do all = all and (claims[id] or 0) > 0 end
+    ok(all, 'the arrows, the page keys and DELETE are claimed')
+    ok(not claims[K.DEPTH] and not claims[K.TURN] and not claims[K.COARSE] and not claims[32],
+        'CTRL, ALT, SHIFT and walking are not')
+    eq(readout[1], '~b~board~w~  prop found', 'the readout says what it is aiming')
+
+    -- UP: one centimeter, straight up, on the next frame.
+    press({ K.UP })
+    local q1 = quad()
+    eq(five().upM, BR.TuneKeys.round(s0.upM + 0.01, 2), 'UP tapped: upM 1 cm more')
+    local dx, dy, dz = moved(q0, q1)
+    ok(near(dz, 0.01, 1e-6) and near(dx, 0.0, 1e-6) and near(dy, 0.0, 1e-6),
+        'and the quad is drawn 1 cm higher, and nowhere else', ('%.4f %.4f %.4f'):format(dx, dy, dz))
+    press({ K.COARSE, K.UP })
+    eq(five().upM, BR.TuneKeys.round(s0.upM + 0.11, 2), 'SHIFT + UP: 10 cm more')
+    press({ K.DOWN }, 1000, 25)
+    eq(five().upM, BR.TuneKeys.round(s0.upM - 0.09, 2), 'DOWN held a second: 20 steps of 1 cm')
+
+    -- CTRL + UP / DOWN: out from the screen, and not up.
+    q1 = quad()
+    press({ K.DEPTH, K.DOWN })
+    local q2 = quad()
+    local f = five()
+    ok(f.forwardM == BR.TuneKeys.round(s0.forwardM - 0.01, 2) and f.upM == BR.TuneKeys.round(s0.upM - 0.09, 2),
+        'CTRL + DOWN: forwardM 1 cm less, and upM as it was')
+    dx, dy, dz = moved(q1, q2)
+    ok(near(math.sqrt(dx * dx + dy * dy), 0.01, 1e-6) and near(dz, 0.0, 1e-6)
+        and near(dx * q1.ex + dy * q1.ey, 0.0, 1e-6),
+        'and the quad 1 cm in toward the prop, square to its face', ('%.4f %.4f %.4f'):format(dx, dy, dz))
+
+    -- LEFT / RIGHT: across it, to the reader's right.
+    press({ K.RIGHT })
+    local q3 = quad()
+    eq(five().sideM, BR.TuneKeys.round(s0.sideM + 0.01, 2), 'RIGHT: sideM 1 cm more')
+    dx, dy, dz = moved(q2, q3)
+    ok(near(dx * q2.ex + dy * q2.ey, 0.01, 1e-6) and near(dz, 0.0, 1e-6),
+        'and the quad 1 cm toward its own right edge, the reader\'s right', ('%.4f %.4f'):format(dx, dy))
+
+    -- ALT + LEFT / RIGHT: the yaw, a degree a step, round past the end.
+    press({ K.TURN, K.RIGHT })
+    local q4 = quad()
+    local yaw1 = BR.TuneKeys.round((s0.yawDeg + 1.0 + 180.0) % 360.0 - 180.0, 1)
+    ok(near(five().yawDeg, yaw1, 0.005), 'ALT + RIGHT: a degree of yaw, round past 180',
+        ('%s -> %s'):format(tostring(s0.yawDeg), tostring(five().yawDeg)))
+    local cross = q3.ex * q4.ey - q3.ey * q4.ex
+    ok(near(math.deg(math.asin(cross)), 1.0, 1e-4), 'and the quad turned a degree counter-clockwise from above',
+        ('%.5f'):format(math.deg(math.asin(cross))))
+    eq(five().sideM, BR.TuneKeys.round(s0.sideM + 0.01, 2), 'and sideM as it was')
+    local before = pasted(brboard())
+    press({ K.TURN, K.UP })
+    eq(pasted(brboard()), before, 'ALT + UP moves nothing')
+
+    -- PAGE UP / DOWN: the width.
+    press({ K.BIGGER })
+    local q5 = quad()
+    eq(five().widthM, BR.TuneKeys.round(s0.widthM + 0.01, 2), 'PAGE UP: widthM 1 cm more')
+    ok(near(q5.w - q4.w, 0.01, 1e-6), 'and the quad 1 cm wider', ('%.4f'):format(q5.w - q4.w))
+
+    keyFrame()
+    eq(readout[2], ('~b~up %.2f~w~ m   fwd %.2f~w~ m   ~b~side %.2f~w~ m')
+        :format(s0.upM - 0.09, s0.forwardM - 0.01, s0.sideM + 0.01),
+        'the numbers on screen, what UP / DOWN and LEFT / RIGHT move in blue')
+    down = { [K.TURN] = true }
+    keyFrame()
+    down = {}
+    ok(readout[3] ~= nil and readout[3]:find('~b~yaw', 1, true) ~= nil
+        and readout[2]:find('~b~', 1, true) == nil, 'and with ALT held, the yaw in blue', readout[3])
+
+    -- PUT AWAY: the block to paste, the same one the bare command prints.
+    local fromKeys = brboard('off')
+    ok(not BR.TuneKeys.on('brboard') and loops['tunekeys.brboard'] == nil,
+        'brboard off: its keys are off, nothing per frame')
+    ok(pasted(fromKeys) ~= '' and pasted(fromKeys) == pasted(brboard()),
+        'and it prints the five lines the bare command prints', pasted(fromKeys))
+    eq(pasted(brboard('off')), pasted(fromKeys), 'and `off` while off answers with them too')
+    local held = quad()
+    down = { [K.UP] = true }
+    keyFrame()
+    down = {}
+    local still = quad()
+    ok(next(claims) == nil and near(still.c[3], held.c[3], 1e-9), 'and the arrows are the player\'s again')
+
+    -- DELETE: the five back to config, and the prop kept.
+    brboard('on')
+    press({ K.RESET })
+    local back = five()
+    ok(back.forwardM == s0.forwardM and back.sideM == s0.sideM and back.upM == s0.upM
+        and back.widthM == s0.widthM and near(back.yawDeg, s0.yawDeg, 0.005), 'DELETE: the five back to config')
+    ok(printed(brboard(), '^  prop   prop_huge_display_02   handle %d+   FOUND at '), 'and the prop still found')
+    brboard('off')
+
+    -- THE TYPED FORM STILL WORKS beside the keys.
+    eq(five(brboard('w', '+0.5')).widthM, BR.TuneKeys.round(s0.widthM + 0.5, 2), 'brboard w +0.5 still nudges')
+    brboard('reset')
 end
 
 describe('/brscoreboard is the same tool under the name he reached for')

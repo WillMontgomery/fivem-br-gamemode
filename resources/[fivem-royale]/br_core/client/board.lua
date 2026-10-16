@@ -698,6 +698,10 @@ end)
 -- EVERY VALUE TAKES AN ABSOLUTE OR A DELTA. `0.65` sets, `+0.05` and `-0.10`
 -- nudge, which is why the parser reads the RAW string before it reads the number.
 --
+-- AND `on` PUTS THE FIVE ON THE KEYS (#404, owner 2026-10-11: "Any manual
+-- adjustment commands must allow keyboard input"). The typed form stays beside
+-- them: `brboard yaw 180` is one line where the keys are twelve presses.
+--
 -- The registration, and why there are two names for it, is at the bottom.
 
 --- "0.65" is a value, "+0.05" and "-0.10" are nudges. Same helper, same spelling,
@@ -744,102 +748,9 @@ local function srcOf(override, configured)
     return 'fallback'
 end
 
-local function runBoardCmd(_, args)
-    local what = tostring(args[1] or ''):lower()
-
-    if what == 'reset' then
-        ovFwd, ovSide, ovUp, ovW, ovYaw = nil, nil, nil, nil, nil
-        ovModel, ovX, ovY, ovZ, ovH = nil, nil, nil, nil, nil
-        -- THE HOLD ON THE PROP GOES WITH THEM. Its model and the site it was
-        -- found from are among the things being reset, and a handle kept from a
-        -- search at an overridden site while the numbers below read the config's
-        -- is the readout lying. The display itself is not touched.
-        forgetProp()
-
-    elseif what == 'prop' then
-        -- AUDITION A MODEL WITHOUT A CONFIG EDIT AND A RESTART. `prop_huge_display_01`
-        -- is the sibling of the one that ships, and this is how it is tried.
-        local name = tostring(args[2] or '')
-        if name == '' then
-            print('[br_core] board: brboard prop <model>')
-        else
-            ovModel = name
-            forgetProp()
-        end
-
-    elseif what == 'here' then
-        -- ═══ THIS NOW MOVES WHERE WE LOOK, NOT WHERE THE PROP STANDS ═══
-        --
-        -- It used to survey a spot to build a prop on. Nothing is built any
-        -- more, so standing next to the display and typing this is how a
-        -- configured coordinate that turns out to be too far off gets corrected:
-        -- the search starts from the player instead.
-        --
-        -- AND IT NO LONGER TAKES HIS HEADING. It cannot -- the prop's facing
-        -- belongs to the ymap and this command has no business rotating a piece
-        -- of the map. `adopt` below reads the real one instead.
-        local p = GetEntityCoords(PlayerPedId())
-        ovX, ovY, ovZ = p.x, p.y, p.z
-        forgetProp()
-
-    elseif what == 'adopt' then
-        -- ═══ WRITE DOWN WHAT THE PROP ACTUALLY IS ═══
-        --
-        -- The one command that turns the open question in config/board.lua into
-        -- a measurement. The heading there was converted from the owner's
-        -- quaternion and ymaps sometimes store the inverse of a rotation, so 135
-        -- and 225 were both defensible from the four numbers alone. This reads
-        -- the answer off the entity the ymap actually produced -- along with its
-        -- true origin, which is also very likely a few centimetres from the
-        -- coordinate anybody transcribes by hand.
-        --
-        -- NOTHING IS WRITTEN TO THE MAP OR TO DISK. It copies INTO the overrides,
-        -- so the block printed below becomes the truth and pasting it into
-        -- config/board.lua is what makes it permanent.
-        if prop and isTrue(DoesEntityExist(prop)) then
-            local c = GetEntityCoords(prop)
-            ovX, ovY, ovZ = c.x, c.y, c.z
-            ovH = GetEntityHeading(prop)
-        else
-            print('[br_core] board: brboard adopt needs the prop to be found '
-                  .. 'first')
-        end
-
-    elseif what == 'fit' then
-        -- ═══ PIN THE MEASUREMENT SO IT CAN BE PASTED ═══
-        --
-        -- forwardM, upM and widthM already come off GET_MODEL_DIMENSIONS while
-        -- the config leaves them nil, so this changes nothing on screen. What it
-        -- changes is the block below: a measured value is only a starting point
-        -- until it is written down, and this is what puts three real numbers
-        -- there to nudge from rather than three nils to wonder about.
-        local f, u, w = fitted()
-        if f then
-            ovFwd, ovUp, ovW = f, u, w
-        else
-            print('[br_core] board: brboard fit needs the prop to be found first')
-        end
-
-    elseif what == 'static' then
-        -- WHAT THE WALL LOOKS LIKE WHEN RINGMASTER IS DOWN, on demand. It is
-        -- also the only way to see the static today, since nothing reports
-        -- health yet (see BR.Board.health above).
-        BR.Board.health(false)
-
-    elseif what == 'live' then
-        BR.Board.health(nil)
-
-    elseif what == 'fwd'  then ovFwd  = nudge(cfgFwd(),  args[2]) or ovFwd
-    elseif what == 'side' then ovSide = nudge(cfgSide(), args[2]) or ovSide
-    elseif what == 'up'   then ovUp   = nudge(cfgUp(),   args[2]) or ovUp
-    elseif what == 'w'    then ovW    = nudge(cfgW(),    args[2]) or ovW
-    elseif what == 'yaw'  then ovYaw  = nudge(cfgYaw(),  args[2]) or ovYaw
-
-    elseif what ~= '' then
-        print('[br_core] board: brboard [fwd|side|up|w|yaw] <value|+delta> | '
-              .. 'prop <model> | here | adopt | fit | static | live | reset')
-    end
-
+--- The readout and the block to paste -- one printer for the typed form and
+--- the keys, so what they paste is one thing.
+local function boardReport()
     -- ═══ THE READOUT, AND EVERY LINE OF IT SEPARATES TWO FAILURES THAT LOOK
     --     THE SAME FROM A CHAIR ═══
     --
@@ -952,6 +863,188 @@ local function runBoardCmd(_, args)
     print(('    upM      = %.2f,'):format(cfgUp()))
     print(('    widthM   = %.2f,'):format(cfgW()))
     print(('    yawDeg   = %.2f,'):format(cfgYaw()))
+end
+
+--- A step of each: /brplate's centimeter (ten with SHIFT), and /brrocket's
+--- degree (fifteen) for the yaw, which goes round rather than stopping.
+local BOARD_M   = { fine = 0.01, coarse = 0.10, places = 2, lo = -20.0, hi = 20.0 }
+local BOARD_W   = { fine = 0.01, coarse = 0.10, places = 2, lo = 0.05, hi = 50.0 }
+local BOARD_YAW = { fine = 1.0, coarse = 15.0, places = 1, wrap = true }
+
+--- `brboard on`: the five numbers on the keys (#404, client/tunekeys.lua), in
+--- /brgunplate's shape -- UP / DOWN the height, CTRL + UP / DOWN out from the
+--- screen (/brplate's CTRL is out), PAGE UP / DOWN the width -- with LEFT /
+--- RIGHT across it, to the reader's right as `side` is, and ALT + LEFT / RIGHT
+--- the yaw (/brrocket's ALT turns). The quad is drawn from these five every
+--- frame, so the next frame shows the step.
+---
+--- A NUDGE STARTS FROM WHAT IS DRAWN, the way the typed delta does: a field the
+--- config leaves to the tape measure moves from the measurement, not from zero.
+---
+--- DELETE PUTS THE FIVE BACK, AND ONLY THE FIVE. `brboard reset` also drops an
+--- auditioned model and a moved site, and neither is on the keys; a key that
+--- quietly let go of the prop being aimed at would be the board vanishing
+--- halfway through lining it up.
+local function boardKeys()
+    BR.TuneKeys.start('brboard', {
+        lines = function(k)
+            -- WHAT THE KEYS DRIVE IS IN BLUE, /brplate's rule: UP / DOWN move
+            -- `up`, or `fwd` with CTRL, and LEFT / RIGHT `side`, or `yaw` with ALT.
+            local function hi(on) return on and '~b~' or '' end
+            local vert = not k.turn
+            return {
+                ('~b~board~w~  %s'):format(prop and 'prop found' or 'no prop'),
+                ('%sup %.2f~w~ m   %sfwd %.2f~w~ m   %sside %.2f~w~ m')
+                    :format(hi(vert and not k.depth), cfgUp(), hi(vert and k.depth), cfgFwd(),
+                            hi(not k.turn), cfgSide()),
+                ('w %.2f m   %syaw %.1f~w~ deg'):format(cfgW(), hi(k.turn), cfgYaw()),
+                ('step %.2f m   %.0f deg'):format(k.coarse and BOARD_M.coarse or BOARD_M.fine,
+                    k.coarse and BOARD_YAW.coarse or BOARD_YAW.fine),
+            }
+        end,
+        nudge = function(k)
+            local moved = false
+            if k.v ~= 0 and not k.turn then
+                if k.depth then
+                    ovFwd = BR.TuneKeys.nudged(cfgFwd(), k.v, k.coarse, BOARD_M)
+                else
+                    ovUp = BR.TuneKeys.nudged(cfgUp(), k.v, k.coarse, BOARD_M)
+                end
+                moved = true
+            end
+            if k.h ~= 0 then
+                if k.turn then
+                    ovYaw = BR.TuneKeys.nudged(cfgYaw(), k.h, k.coarse, BOARD_YAW)
+                else
+                    ovSide = BR.TuneKeys.nudged(cfgSide(), k.h, k.coarse, BOARD_M)
+                end
+                moved = true
+            end
+            if k.s ~= 0 then
+                ovW = BR.TuneKeys.nudged(cfgW(), k.s, k.coarse, BOARD_W)
+                moved = true
+            end
+            return moved
+        end,
+        reset = function() ovFwd, ovSide, ovUp, ovW, ovYaw = nil, nil, nil, nil, nil end,
+        off = boardReport,
+    })
+    print('[br_core] brboard: on. Stand where you can see the board. The keys:')
+    print('  UP / DOWN            up')
+    print('  CTRL + UP / DOWN     fwd, out from the screen')
+    print('  LEFT / RIGHT         side, to the reader\'s right')
+    print('  ALT + LEFT / RIGHT   yaw')
+    print('  PAGE UP / DOWN       w, the width')
+    print('  hold SHIFT           10 cm and 15 degree steps instead of 1 cm and 1')
+    print('  DELETE               the five back to config (the prop and its site stay)')
+    print('  `brboard off` puts them away and prints what to paste')
+end
+
+local function runBoardCmd(_, args)
+    local what = tostring(args[1] or ''):lower()
+
+    if what == 'on' then return boardKeys() end
+    if what == 'off' then
+        -- Put away, its `off` prints the block; already off, it is printed
+        -- anyway, so `off` always answers with it.
+        if not BR.TuneKeys.stop('brboard') then boardReport() end
+        return
+    end
+
+    if what == 'reset' then
+        ovFwd, ovSide, ovUp, ovW, ovYaw = nil, nil, nil, nil, nil
+        ovModel, ovX, ovY, ovZ, ovH = nil, nil, nil, nil, nil
+        -- THE HOLD ON THE PROP GOES WITH THEM. Its model and the site it was
+        -- found from are among the things being reset, and a handle kept from a
+        -- search at an overridden site while the numbers below read the config's
+        -- is the readout lying. The display itself is not touched.
+        forgetProp()
+
+    elseif what == 'prop' then
+        -- AUDITION A MODEL WITHOUT A CONFIG EDIT AND A RESTART. `prop_huge_display_01`
+        -- is the sibling of the one that ships, and this is how it is tried.
+        local name = tostring(args[2] or '')
+        if name == '' then
+            print('[br_core] board: brboard prop <model>')
+        else
+            ovModel = name
+            forgetProp()
+        end
+
+    elseif what == 'here' then
+        -- ═══ THIS NOW MOVES WHERE WE LOOK, NOT WHERE THE PROP STANDS ═══
+        --
+        -- It used to survey a spot to build a prop on. Nothing is built any
+        -- more, so standing next to the display and typing this is how a
+        -- configured coordinate that turns out to be too far off gets corrected:
+        -- the search starts from the player instead.
+        --
+        -- AND IT NO LONGER TAKES HIS HEADING. It cannot -- the prop's facing
+        -- belongs to the ymap and this command has no business rotating a piece
+        -- of the map. `adopt` below reads the real one instead.
+        local p = GetEntityCoords(PlayerPedId())
+        ovX, ovY, ovZ = p.x, p.y, p.z
+        forgetProp()
+
+    elseif what == 'adopt' then
+        -- ═══ WRITE DOWN WHAT THE PROP ACTUALLY IS ═══
+        --
+        -- The one command that turns the open question in config/board.lua into
+        -- a measurement. The heading there was converted from the owner's
+        -- quaternion and ymaps sometimes store the inverse of a rotation, so 135
+        -- and 225 were both defensible from the four numbers alone. This reads
+        -- the answer off the entity the ymap actually produced -- along with its
+        -- true origin, which is also very likely a few centimeters from the
+        -- coordinate anybody transcribes by hand.
+        --
+        -- NOTHING IS WRITTEN TO THE MAP OR TO DISK. It copies INTO the overrides,
+        -- so the block printed below becomes the truth and pasting it into
+        -- config/board.lua is what makes it permanent.
+        if prop and isTrue(DoesEntityExist(prop)) then
+            local c = GetEntityCoords(prop)
+            ovX, ovY, ovZ = c.x, c.y, c.z
+            ovH = GetEntityHeading(prop)
+        else
+            print('[br_core] board: brboard adopt needs the prop to be found '
+                  .. 'first')
+        end
+
+    elseif what == 'fit' then
+        -- ═══ PIN THE MEASUREMENT SO IT CAN BE PASTED ═══
+        --
+        -- forwardM, upM and widthM already come off GET_MODEL_DIMENSIONS while
+        -- the config leaves them nil, so this changes nothing on screen. What it
+        -- changes is the block below: a measured value is only a starting point
+        -- until it is written down, and this is what puts three real numbers
+        -- there to nudge from rather than three nils to wonder about.
+        local f, u, w = fitted()
+        if f then
+            ovFwd, ovUp, ovW = f, u, w
+        else
+            print('[br_core] board: brboard fit needs the prop to be found first')
+        end
+
+    elseif what == 'static' then
+        -- WHAT THE WALL LOOKS LIKE WHEN RINGMASTER IS DOWN, on demand. It is
+        -- also the only way to see the static today, since nothing reports
+        -- health yet (see BR.Board.health above).
+        BR.Board.health(false)
+
+    elseif what == 'live' then
+        BR.Board.health(nil)
+
+    elseif what == 'fwd'  then ovFwd  = nudge(cfgFwd(),  args[2]) or ovFwd
+    elseif what == 'side' then ovSide = nudge(cfgSide(), args[2]) or ovSide
+    elseif what == 'up'   then ovUp   = nudge(cfgUp(),   args[2]) or ovUp
+    elseif what == 'w'    then ovW    = nudge(cfgW(),    args[2]) or ovW
+    elseif what == 'yaw'  then ovYaw  = nudge(cfgYaw(),  args[2]) or ovYaw
+
+    elseif what ~= '' then
+        print('[br_core] board: brboard [fwd|side|up|w|yaw] <value|+delta> | '
+              .. 'prop <model> | here | adopt | fit | static | live | reset | on | off')
+    end
+
+    boardReport()
 end
 
 -- ═══ TWO NAMES, ONE IMPLEMENTATION ═══

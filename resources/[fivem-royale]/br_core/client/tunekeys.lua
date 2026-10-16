@@ -100,15 +100,22 @@ end
 --- `v` moved `d` steps of a number's own size -- `fine`, or `coarse` with SHIFT
 --- held -- rounded to its places, so twenty steps of 0.01 land on 0.20 and not
 --- on 0.19999, and kept inside lo..hi.
+---
+--- A TURN HAS NO ENDS. A row with `wrap` is an angle in degrees and goes round
+--- rather than stopping: a step past 180 comes back in at -179, kept in
+--- -180..180 the way /brrocket's wrapDeg keeps its rotations, so a yaw held
+--- for a full turn ends where it started instead of pinned against a limit.
 --- @param v number
 --- @param d number  how many steps, signed
 --- @param coarse boolean
---- @param row table  { fine, coarse, places, lo, hi }
+--- @param row table  { fine, coarse, places, lo, hi, wrap }
 --- @return number
 function BR.TuneKeys.nudged(v, d, coarse, row)
     local step = coarse and row.coarse or row.fine
-    return BR.TuneKeys.clamp(BR.TuneKeys.round((tonumber(v) or 0.0) + d * step, row.places),
-        row.lo, row.hi)
+    local n = BR.TuneKeys.round((tonumber(v) or 0.0) + d * step, row.places)
+    -- Rounded again: 12.3 + 180 - 180 is 12.300000000000011 in a double.
+    if row.wrap then return BR.TuneKeys.round((n + 180.0) % 360.0 - 180.0, row.places) end
+    return BR.TuneKeys.clamp(n, row.lo, row.hi)
 end
 
 --- One line of the readout: /brplate's `text`, matched call for call.
