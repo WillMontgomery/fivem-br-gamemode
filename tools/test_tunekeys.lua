@@ -5,8 +5,8 @@
 -- "Any manual adjustment commands must allow keyboard input." (owner,
 -- 2026-10-11.) /brlabel, /brshine, /brpropscale, /brgunplate and /brlobbycam
 -- all ride this file, so what is pinned here is what every one of them does
--- with a key: a tap is one step, a hold is twenty a second at any frame rate,
--- SHIFT is the bigger step, a pick and DELETE are once a press, the numbers are
+-- with a key: a tap is one step, a hold is twenty a second at 30, 60 or 144
+-- fps alike and a hitch is not paid back in a burst, SHIFT is the bigger step, a pick and DELETE are once a press, the numbers are
 -- on screen every frame, only the keys it reads are claimed and only while it
 -- is on, and putting it away prints what to paste. Each tool's own suite pins
 -- what its keys move: tools/test_crates_client.lua (the three loot ones),
@@ -169,6 +169,31 @@ do
     eq(T.REPEAT_MS, 50, 'twenty a second')
 end
 
+describe('the tools that count their own repeat step on the same beat')
+do
+    -- /brplate, /brrocket and /brattach predate this file and keep their own
+    -- deadline. Counted from the frame that took the step, theirs rounded up
+    -- to whole frames exactly as this file's did (its header, ON THE BEAT), so
+    -- the two lines that carry it are pinned here in each. /brrocket's is run
+    -- at 60 and 30 fps too, in tools/test_terminalstrike.lua.
+    for _, c in ipairs({
+        { 'br_core/client/revivekey.lua', 'nudgeAt', 'REPEAT_MS' },
+        { 'br_core/client/terminalfx/airstrike.lua', 'nudgeAt', 'ROCKET_REPEAT_MS' },
+        { 'br_core/client/attachtune.lua', 'S.nextAt', 'REPEAT_MS' },
+    }) do
+        local fh = io.open(ROOT .. c[1], 'rb')
+        local src = fh and fh:read('a') or ''
+        if fh then fh:close() end
+        src = src:gsub('%-%-[^\n]*', '')
+        local at, every = c[2]:gsub('%.', '%%.'), c[3]
+        ok(src:find('if now < ' .. at .. ' then return end%s*'
+                .. at .. ' = ' .. at .. ' %+ ' .. every .. '%s*'
+                .. 'if ' .. at .. ' <= now then ' .. at .. ' = now %+ ' .. every .. ' end') ~= nil,
+            c[1]:match('[^/]+$') .. ': the next step is due ' .. every .. ' after this one was, '
+                .. 'or from now when that is past')
+    end
+end
+
 describe('nudged: a step of a number\'s own size, rounded and kept in range')
 do
     local row = { fine = 0.01, coarse = 0.10, places = 2, lo = -1.0, hi = 1.0 }
@@ -218,13 +243,42 @@ do
     hold({ K.SMALLER }, 1)
     ok(t.nudges[5].s == 1 and t.nudges[6].s == -1, 'PAGE UP and PAGE DOWN: the size')
 
-    -- A HOLD IS TWENTY A SECOND, WHATEVER THE FRAME RATE.
+    -- A HOLD IS TWENTY A SECOND, WHATEVER THE FRAME RATE. 40 and 100 fps
+    -- divide 50 ms evenly and pass either way; 60, 30 and 144 are the ones a
+    -- deadline counted from the frame gets wrong (16, 16 and 18).
+    for _, r in ipairs({ { 25, '40 fps' }, { 10, '100 fps' }, { 16, '60 fps (16 ms frames)' },
+                         { 17, '60 fps (17 ms frames)' }, { 33, '30 fps' }, { 7, '144 fps' },
+                         { 20, '50 fps' }, { 40, '25 fps' } }) do
+        t.nudges = {}
+        hold({ K.UP }, 1000, r[1])
+        eq(#t.nudges, 20, ('UP held a second at %s: 20 steps'):format(r[2]))
+    end
     t.nudges = {}
-    hold({ K.UP }, 1000, 25)
-    eq(#t.nudges, 20, 'UP held a second at 40 fps: 20 steps')
+    hold({ K.UP }, 1000, 60)
+    eq(#t.nudges, 17, 'and below 20 fps, one a frame: never two in one')
+
+    -- A HITCH IS NOT PAID BACK IN A BURST: a deadline already behind the clock
+    -- starts again from now.
     t.nudges = {}
-    hold({ K.UP }, 1000, 10)
-    eq(#t.nudges, 20, 'and at 100 fps: the same 20')
+    down = { [K.UP] = true }
+    for _ = 1, 10 do frame(16) end
+    local before = #t.nudges
+    frame(1000)
+    eq(#t.nudges - before, 1, 'a second-long frame mid-hold: one step')
+    local after = #t.nudges
+    for _ = 1, 6 do frame(16) end
+    eq(#t.nudges - after, 1, 'and in the 96 ms after it, one more on the beat, not one a frame')
+    down = {}
+    frame(50)
+
+    -- LET GO AND PRESS AGAIN SOONER THAN A REPEAT: STILL A STEP, because
+    -- letting go clears the wait.
+    t.nudges = {}
+    down = { [K.UP] = true }; frame(16)
+    down = {}; frame(16)
+    down = { [K.UP] = true }; frame(16)
+    down = {}; frame(16)
+    eq(#t.nudges, 2, 'two taps 32 ms apart: two steps')
 
     -- THE MODIFIERS GO WITH THE STEP.
     t.nudges = {}

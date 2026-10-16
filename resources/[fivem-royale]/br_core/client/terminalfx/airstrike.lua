@@ -1123,7 +1123,10 @@ local function rocketKeys()
     end
     local now = GetGameTimer()
     if now < nudgeAt then return end
-    nudgeAt = now + ROCKET_REPEAT_MS
+    -- From when this step was due, not from this frame: client/tunekeys.lua's
+    -- ON THE BEAT, which is what makes the hold twenty a second at 60 fps too.
+    nudgeAt = nudgeAt + ROCKET_REPEAT_MS
+    if nudgeAt <= now then nudgeAt = now + ROCKET_REPEAT_MS end
 
     if ds ~= 0 and turn then
         passSpeed = clampTo(passSpeed + ds * step.mps, 0.0, 50.0)

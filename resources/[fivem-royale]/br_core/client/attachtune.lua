@@ -674,7 +674,10 @@ BR.Loop.register(BR.Loop.FRAME, 'attach.tune', function()
 
     local now = GetGameTimer()
     if now < S.nextAt then return end
-    S.nextAt = now + REPEAT_MS
+    -- From when this step was due, not from this frame: client/tunekeys.lua's
+    -- ON THE BEAT, which is what makes the hold twenty a second at 60 fps too.
+    S.nextAt = S.nextAt + REPEAT_MS
+    if S.nextAt <= now then S.nextAt = now + REPEAT_MS end
 
     S.x = clamp(S.x + dx)
     S.y = clamp(S.y + dy)

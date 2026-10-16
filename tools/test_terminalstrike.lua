@@ -2377,6 +2377,14 @@ do
         ('SHIFT + UP held a second at 40 fps: 20 steps of 10 cm toward the nose (y %.3f)'):format(lk.toff[2]))
     hold({ RK.SHIFT, RK.DOWN }, 1000, 10)
     ok(math.abs(lk.toff[2] - BACK) < 1e-9, 'and held a second at 100 fps: the same 20 back, whatever the frame rate')
+    -- AND WHERE 50 ms DOES NOT DIVIDE INTO FRAMES. A deadline counted from the
+    -- frame that took the step made these 16 a second (client/tunekeys.lua's
+    -- ON THE BEAT).
+    hold({ RK.SHIFT, RK.UP }, 1000, 16)
+    ok(math.abs(lk.toff[2] - (BACK + 2.0)) < 1e-9,
+        ('and at 60 fps: the same 20 toward the nose (y %.3f)'):format(lk.toff[2]))
+    hold({ RK.SHIFT, RK.DOWN }, 1000, 33)
+    ok(math.abs(lk.toff[2] - BACK) < 1e-9, ('and at 30 fps: the same 20 back (y %.3f)'):format(lk.toff[2]))
     hold({ RK.CTRL, RK.UP })
     ok(lk.toff[3] == 0.01 and math.abs(lk.toff[2] - BACK) < 1e-9, 'CTRL + UP: up 1 cm, not along')
     hold({ RK.LEFT })

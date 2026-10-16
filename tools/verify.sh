@@ -163,7 +163,7 @@ NOTES=(
     "test_guardprobe|The bodyguard ownership probe is dev-only and Season 2, spawns and logs what it says, and costs nothing until typed"
     "test_locker2|Season 2 Locker: saved peds checked and kept by the server, the ped you left with is the ped you rejoin with, and Season 1's locker unchanged"
     "test_market2|Season 2 Market: only real items and nothing marked New, Preview only for a dance you own or can afford, a purchase still the server's, and Season 1's Market unchanged"
-    "test_tunekeys|Dev tuning tools' keys: a tap is one step and a hold the same twenty a second at any frame rate, keys claimed only while a tool is on"
+    "test_tunekeys|Dev tuning tools' keys: a tap is one step and a hold the same twenty a second at 30, 60 or 144 fps, keys claimed only while a tool is on"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -980,8 +980,8 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # page half is ui-src/scripts/test-marketv2.mjs.
     #
     # test_tunekeys.lua is the keys the dev tuning tools share (#404), over the
-    # real loop registry: a tap is one step, a hold twenty a second at 40 and at
-    # 100 fps, SHIFT the bigger step, a pick and DELETE once a press, the keys
+    # real loop registry: a tap is one step, a hold twenty a second from 25 to
+    # 144 fps with no burst after a hitch, SHIFT the bigger step, a pick and DELETE once a press, the keys
     # claimed only while a tool is on and given back the next frame, one tool at
     # a time, and the paste line printed however it is put away. What each
     # tool's keys move is in the suites that load its file.

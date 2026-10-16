@@ -1946,6 +1946,40 @@ do
     eq(errored(), nil, 'and no loop errored')
 end
 
+describe('#404: brpropscale on starts on the item nearest you, every time it is turned on')
+do
+    -- The block above stands by the small shield, which is also the first in
+    -- the list, so it cannot tell "nearest" from "first". Here the nearest is
+    -- the shield, and then, walked over, the small one after the shield was
+    -- the last one used.
+    reset()
+    local small, big = BR.Config.ConsumableById.minishield, BR.Config.ConsumableById.shield
+    cd[small.prop], cd[big.prop] = true, true
+    local placed = {}
+    for i, p in ipairs({ { 'minishield', small, 4.0 }, { 'shield', big, 1.0 } }) do
+        nextId = nextId + 1
+        placed[i] = { id = nextId, kind = BR.ItemKind.CONSUMABLE, item = p[1], rarity = R.COMMON,
+                      count = 1, x = p[3], y = 0.0, z = 30.0, prop = p[2].prop }
+        add(placed[i])
+    end
+    frames(10)
+
+    logs = {}
+    commands.brpropscale(0, { 'on' })
+    ok(said('brpropscale: on, at shield'), 'by the shield: on the shield, though the small one is first in the list')
+    commands.brpropscale(0, { 'off' })
+    ped.x = 4.0
+    logs = {}
+    commands.brpropscale(0, { 'on' })
+    ok(said('brpropscale: on, at minishield'), 'walked over to the small one: on it, not on the last one used')
+    commands.brpropscale(0, { 'off' })
+
+    ped.x = 0.0
+    TriggerEvent(BR.Net.LOOT_GONE, { placed[1].id, placed[2].id })
+    frames(3)
+    eq(errored(), nil, 'and no loop errored')
+end
+
 -- ----------------------------------------------------------------- result ---
 
 print = realPrint

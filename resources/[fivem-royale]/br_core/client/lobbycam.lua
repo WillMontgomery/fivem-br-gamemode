@@ -1075,8 +1075,6 @@ AddEventHandler('onResourceStop', function(res)
     BR.LobbyCam.stop()
 end)
 
--- Re-frame from the console after editing the numbers, without a restart.
-
 --- What the config shipped, for DELETE: the typed form writes the config
 --- table itself.
 local CAM_SHIPPED = {}
@@ -1183,6 +1181,7 @@ local function camKeys()
     print('  `brlobbycam off` puts them away and prints what to paste')
 end
 
+-- Re-frame from the console after editing the numbers, without a restart.
 RegisterCommand('brlobbycam', function(_, args)
     local C = BR.Config.Match.lobbyCam
     local key, value = args[1], tonumber(args[2])

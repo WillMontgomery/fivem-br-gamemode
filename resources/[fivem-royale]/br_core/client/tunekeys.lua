@@ -19,6 +19,14 @@
 -- and a hold is a step every REPEAT_MS whatever the frame rate, so a number
 -- measured today comes back tomorrow (/brplate's argument).
 --
+-- ON THE BEAT, NOT A FRAME LATE. A held key's next step is due REPEAT_MS after
+-- the last one was DUE, not after the frame that took it. Counted from the
+-- frame, every gap rounded up to whole frames: 16 steps a second at 60 fps and
+-- at 30, 13 at 25, and twenty only where 50 ms divides into frames. Carrying
+-- the deadline would pay a hitch back in a burst -- a second-long frame owes
+-- twenty steps -- so a deadline already behind the clock starts again from
+-- now. Below 20 fps that is one step a frame, never two.
+--
 -- ONE AT A TIME. Two tools on at once would both move on the same press, so
 -- turning one on puts any other away first -- paste line and all, exactly as
 -- if it had been turned off.
@@ -52,7 +60,7 @@ BR.TuneKeys.KEY = KEY
 local BLOCKED = { 27, 172, 173, 174, 175, 10, 11, 178 }
 BR.TuneKeys.BLOCKED = BLOCKED
 
---- A held key steps this often: 20 a second on any machine.
+--- A held key steps this often: 20 a second at any frame rate from 20 up.
 local REPEAT_MS = 50
 BR.TuneKeys.REPEAT_MS = REPEAT_MS
 
@@ -174,7 +182,10 @@ local function frame(s)
     end
     local now = GetGameTimer()
     if now < s.nudgeAt then return end
-    s.nudgeAt = now + REPEAT_MS
+    -- From when this step was due (ON THE BEAT, the header), unless that is
+    -- already past: the first press, or a hitch.
+    s.nudgeAt = s.nudgeAt + REPEAT_MS
+    if s.nudgeAt <= now then s.nudgeAt = now + REPEAT_MS end
     if spec.nudge(k) then s.moved = true end
 end
 

@@ -2021,7 +2021,10 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.tunekeys', function()
 
     local now = GetGameTimer()
     if now < nudgeAt then return end
-    nudgeAt = now + REPEAT_MS
+    -- From when this step was due, not from this frame: client/tunekeys.lua's
+    -- ON THE BEAT, which is what makes the hold twenty a second at 60 fps too.
+    nudgeAt = nudgeAt + REPEAT_MS
+    if nudgeAt <= now then nudgeAt = now + REPEAT_MS end
 
     -- THE FACE THE PLATE IS ON, AND NOTHING TO NUDGE WITHOUT ONE. A config with
     -- no plate table, or a frame with no plate on screen, says so through the

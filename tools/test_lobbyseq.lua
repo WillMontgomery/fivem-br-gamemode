@@ -5708,6 +5708,14 @@ do
     ok(all, 'the arrows, the page keys and DELETE are claimed')
     ok(text[1] and text[1].x > 0.5, 'the numbers drawn on the right, clear of the lobby menu')
 
+    -- ON AGAIN, IT LETS GO AGAIN. Whatever pushes the lobby's focus back while
+    -- the keys are on takes the keyboard with it, and `on` again is the way to
+    -- hand it back without putting the keys away.
+    events = {}
+    commands['brlobbycam'](0, { 'on' })
+    ok(sent('br:ui:popFocus') and BR.TuneKeys.on('brlobbycam'),
+        'on again while on: the lobby lets go of its focus again, and the keys stay on')
+
     order, peakCams = {}, liveCamCount()
     press({ K.UP })
     ok(C.height == round(was.height + 0.01, 2), 'UP: the camera 1 cm higher')
@@ -5721,6 +5729,16 @@ do
         'CTRL + UP: 1 cm further from the ped, and not higher')
     press({ K.TURN, K.DOWN })
     ok(C.aim == round(was.aim - 0.01, 2), 'ALT + DOWN: the aim 1 cm lower')
+    -- BOTH HELD, ALT WINS, in the step and in the readout alike.
+    local aimWas, distWas = C.aim, C.dist
+    press({ K.TURN, K.DEPTH, K.UP })
+    ok(C.aim == round(aimWas + 0.01, 2) and C.dist == distWas, 'ALT + CTRL + UP: the aim, not the distance')
+    down = { [K.TURN] = true, [K.DEPTH] = true }
+    frame()
+    down = {}
+    ok(text[2] and text[2].s:find('~b~aim', 1, true) ~= nil and text[2].s:find('~b~dist', 1, true) == nil,
+        'and the aim is the one in blue')
+    press({ K.TURN, K.DOWN })
     press({ K.RIGHT })
     ok(C.offset == round(was.offset + 0.01, 2), 'RIGHT: the offset')
     press({ K.BIGGER })
