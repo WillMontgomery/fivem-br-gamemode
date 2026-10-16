@@ -759,35 +759,6 @@ export default function App() {
           matters -- it fires when a step's target has gone, which is a fault,
           and a fault that ALSO stranded somebody outside the queue would be far
           worse than the fault itself. */}
-      {/* The manual, from the lobby. The same component the pause menu
-          embeds, in its own frame. */}
-      <Page name="help" show={focus === 'help'}><Help /></Page>
-
-      {/* ═══ THE GUIDED FIRST RUN (#261) ═══
-
-          HERE AND NOT IN Lobby.tsx, and the reason is the settings half of the
-          walkthrough: those cards have to draw while SETTINGS is the screen on
-          top, not the lobby, so a mount inside the lobby would unmount the
-          sequencer the moment the player did what it asked. `screen` is
-          `s.focus`, which is the same name the steps are scoped by.
-
-          INSIDE THIS ROOT, WHICH IS THE WHOLE OF HOW IT HIDES. The wrapper
-          above already fades everything here on `frontendUp` -- opacity 0,
-          pointer-events off, aria-hidden -- so the big map and the GTA V pause
-          menu take the annotations with them and give them back, with no code
-          of its own (owner, 2026-09-04). It must never be portalled out.
-
-          LAST IN SOURCE ORDER so it paints over the screens it points at.
-
-          NOTHING BUT /brtutorial STARTS IT TODAY. The first-match checkbox and
-          the persisted one-time offer are still to come; they will raise this
-          same flag. */}
-      {/* BOTH ENDINGS RELEASE THE SERVER-SIDE HOLD, and both have to: a player
-          left flagged as in-tutorial is a player matchmaking will never touch
-          again for the life of the connection. `onAbandon` is the one that
-          matters -- it fires when a step's target has gone, which is a fault,
-          and a fault that ALSO stranded somebody outside the queue would be far
-          worse than the fault itself. */}
       {/* ═══ THE IN-GAME HALF (#261) ═══
 
           THE SAME LAYER, A DIFFERENT SCRIPT. It points at the HUD rather than

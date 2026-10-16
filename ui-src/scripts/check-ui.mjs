@@ -3012,6 +3012,45 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R40  Every focus screen is mounted once (#408).
+//
+// App.tsx carried the Help page twice for six weeks: the edit that moved the
+// walkthrough out of the fade (781dfa8) pasted a second copy of the block
+// above it, `<Page name="help">` included. Both drew on /help, one over the
+// other, and nothing looked wrong -- the copies are pixel-identical. Underneath,
+// each armed its own Escape handler (two `ui.back` sounds, two focus pops), its
+// own `page:help` fade, its own `data-tut` anchors for the walkthrough to find
+// and its own `data-page` for the screen report to list.
+//
+// SO EVERY `<Page>` IN App.tsx NAMES ITS SCREEN, AND NO NAME COMES TWICE. A
+// name this cannot read (an expression) fails too: it would be a page the rule
+// had quietly stopped counting. The pause menu's Help tab is not a <Page> and
+// is not counted -- it is the same component in a different frame.
+//
+// IT CAN FAIL. Paste a second `<Page name="help" ...><Help /></Page>` anywhere
+// in App.tsx, or write `name={'help'}`.
+// ---------------------------------------------------------------------------
+{
+  const src = stripComments(read(join(SRC, 'App.tsx')))
+  const seen = new Map()
+  // The opening tag up to its own `>`, stepping over one level of braces so a
+  // `>` inside a prop (`=>`, `a > b`) does not end it early.
+  for (const m of src.matchAll(/<Page\b((?:[^>{]|\{[^{}]*\})*)>/g)) {
+    const named = /\bname="([^"]+)"/.exec(m[1])
+    if (!named) {
+      fail('R40 page-once', 'src/App.tsx', `a <Page> whose name is not a plain string (${m[0].trim()}): this rule cannot tell whether it is mounted twice (#408).`)
+      continue
+    }
+    seen.set(named[1], (seen.get(named[1]) ?? 0) + 1)
+  }
+  for (const [name, n] of seen) {
+    if (n > 1) {
+      fail('R40 page-once', 'src/App.tsx', `mounts <Page name="${name}"> ${n} times: every copy draws, one over the other, and each arms its own Escape and anchors (#408).`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {
