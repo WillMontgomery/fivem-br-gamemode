@@ -242,6 +242,20 @@ native('GetOffsetFromEntityInWorldCoords', function(h, x, y, z)
 end)
 json = { encode = function() return '{}' end, decode = function() return {} end }
 
+-- THE TUNING KEYS (#404): what is held, what was claimed, and the readout's
+-- lines as they were drawn.
+local keyDown, keyClaims, readout = {}, {}, {}
+native('IsDisabledControlPressed', function(_, id) return keyDown[id] and 1 or 0 end)
+native('DisableControlAction', function(_, id) keyClaims[id] = (keyClaims[id] or 0) + 1 end)
+for _, n in ipairs({ 'SetTextFont', 'SetTextScale', 'SetTextColour', 'SetTextDropshadow',
+                     'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+                     'BeginTextCommandDisplayText' }) do
+    native(n, function() end)
+end
+local textNow = nil
+native('AddTextComponentSubstringPlayerName', function(s) textNow = s end)
+native('EndTextCommandDisplayText', function() readout[#readout + 1] = textNow end)
+
 -- THREADS, as coroutines woken by the clock.
 local threads = {}
 Citizen = {
@@ -325,6 +339,7 @@ loadAll({
     -- The Yubikey's art block (#396): what a key on the ground is drawn as.
     'br_lib/config/terminals.lua',
     'br_core/client/main.lua',
+    'br_core/client/tunekeys.lua',
 })
 
 -- The collaborators that are pure native wrappers or another file's state.
@@ -1641,6 +1656,122 @@ do
     eq(CT.art.keyFallbackProp, KEY_STANDIN, 'the art block names the stock USB stick')
     ok(CT.art.keyProp ~= 'prop_cs_usb_drive' and CT.art.keyFallbackProp ~= 'prop_cs_usb_drive',
         'and prop_cs_usb_drive -- no model at all -- is gone from it')
+end
+
+-- =========================================================================
+-- #404: THE LOOT TUNERS ON THE KEYS. "Any manual adjustment commands must
+-- allow keyboard input" (owner, 2026-10-11). How a key steps is
+-- tools/test_tunekeys.lua's; what each tool's keys move is here.
+-- =========================================================================
+
+local KEY = BR.TuneKeys.KEY
+--- `keys` held for `ms` (frames `step` ms apart), then a frame with none.
+local function press(keys, ms, step)
+    keyDown = {}
+    for _, k in ipairs(keys) do keyDown[k] = true end
+    local t = 0
+    repeat
+        frame(step or 50)
+        t = t + (step or 50)
+    until t >= (ms or 1)
+    keyDown = {}
+    frame(50)
+end
+--- Every key the tools claim, claimed this frame?
+local function claimed()
+    for _, id in ipairs({ 27, 172, 173, 174, 175, 10, 11, 178 }) do
+        if (keyClaims[id] or 0) == 0 then return false end
+    end
+    return true
+end
+--- The config lines a printout carried, in order.
+local function pasteLines()
+    local out = {}
+    for _, l in ipairs(logs) do
+        if l:match('^    %a[%w_]* *= ') then out[#out + 1] = l end
+    end
+    return table.concat(out, '\n')
+end
+
+describe('#404: brlabel on the keys -- UP / DOWN lift the crate label, PAGE UP / DOWN size it')
+do
+    reset()
+    local lift0, size0 = L.crateLabelLift, L.crateLabelSize
+    local wood = crateWire({ x = 1.5 })
+    add(wood)
+    frames(15)
+    local box = bodyAt(wood.x, wood.y)
+    local function labelZ()
+        offsets = {}
+        frame()
+        local z = nil
+        for _, o in ipairs(offsets) do if o.h == box then z = o.z end end
+        return z
+    end
+    eq(labelZ(), 0.3 + lift0, 'the label on the lid to start with')
+
+    logs = {}
+    commands.brlabel(0, { 'on' })
+    ok(BR.TuneKeys.on('brlabel'), 'brlabel on: its keys are on')
+    ok(said('`brlabel off` puts them away'), 'and they are printed')
+    keyClaims = {}
+    frame()
+    ok(claimed(), 'the arrows, the page keys and DELETE are claimed')
+    ok(not keyClaims[KEY.COARSE] and not keyClaims[KEY.DEPTH] and not keyClaims[32],
+        'SHIFT, CTRL and walking are not')
+
+    press({ KEY.UP })
+    eq(L.crateLabelLift, BR.TuneKeys.round(lift0 + 0.01, 3), 'UP tapped: 1 cm up')
+    local z = labelZ()
+    ok(z and math.abs(z - (0.3 + lift0 + 0.01)) < 1e-9, 'and the label is drawn there on the next frame', z)
+    press({ KEY.COARSE, KEY.DOWN })
+    eq(L.crateLabelLift, BR.TuneKeys.round(lift0 - 0.09, 3), 'SHIFT + DOWN: 10 cm down')
+    press({ KEY.UP }, 1000, 25)
+    eq(L.crateLabelLift, BR.TuneKeys.round(lift0 + 0.11, 3), 'UP held a second: 20 steps of 1 cm')
+    press({ KEY.BIGGER })
+    eq(L.crateLabelSize, BR.TuneKeys.round(size0 + 0.01, 2), 'PAGE UP: 1 cm wider')
+    press({ KEY.COARSE, KEY.SMALLER })
+    eq(L.crateLabelSize, BR.TuneKeys.round(size0 - 0.09, 2), 'SHIFT + PAGE DOWN: 10 cm narrower')
+    press({ KEY.LEFT })
+    ok(L.crateLabelLift == BR.TuneKeys.round(lift0 + 0.11, 3)
+        and L.crateLabelSize == BR.TuneKeys.round(size0 - 0.09, 2), 'LEFT moves neither')
+    readout = {}
+    frame()
+    eq(readout[2], ('lift %.3f m   size %.2f m   fit %.2f')
+        :format(L.crateLabelLift, L.crateLabelSize, L.crateLabelFit or 0.45), 'the numbers on screen')
+
+    -- PUT AWAY: the lines to paste, the same ones the typed form prints.
+    logs = {}
+    commands.brlabel(0, { 'off' })
+    local fromKeys = pasteLines()
+    ok(fromKeys:find(('crateLabelLift  = %.3f,'):format(L.crateLabelLift), 1, true) ~= nil
+        and fromKeys:find(('crateLabelSize  = %.2f,'):format(L.crateLabelSize), 1, true) ~= nil,
+        'brlabel off: both lines to paste', fromKeys)
+    ok(not BR.TuneKeys.on('brlabel'), 'and its keys are off')
+    logs = {}
+    commands.brlabel(0, { tostring(L.crateLabelLift), tostring(L.crateLabelSize) })
+    eq(pasteLines(), fromKeys, 'the same lines the typed form prints for those numbers')
+    keyClaims = {}
+    local was = L.crateLabelLift
+    keyDown = { [KEY.UP] = true }
+    frame(50)
+    frame(50)
+    keyDown = {}
+    ok(next(keyClaims) == nil and L.crateLabelLift == was, 'and the arrows are the player\'s again')
+
+    -- DELETE: what shipped.
+    commands.brlabel(0, { 'on' })
+    press({ KEY.RESET })
+    ok(L.crateLabelLift == lift0 and L.crateLabelSize == size0, 'DELETE: the shipped lift and size')
+    commands.brlabel(0, { 'off' })
+
+    -- THE TYPED FORM STILL WORKS.
+    logs = {}
+    commands.brlabel(0, { '0.05' })
+    eq(L.crateLabelLift, 0.05, 'brlabel <lift> still sets it')
+    ok(said('crateLabelLift  = 0.050,'), 'and prints the line to paste')
+    L.crateLabelLift, L.crateLabelSize = lift0, size0
+    eq(errored(), nil, 'and no loop errored')
 end
 
 -- ----------------------------------------------------------------- result ---

@@ -354,6 +354,10 @@ shared_scripts {
 client_scripts {
     'client/main.lua',      -- defines the loop registry; must be first
     'client/natives.lua',
+    -- The dev tuning tools' shared keys (#404). Nothing at load but tables; the
+    -- tools that use it (lobbycam.lua, loot.lua, gunshop.lua) reach it when a
+    -- command is typed, and it reaches BR.Loop (main.lua) only then too.
+    'client/tunekeys.lua',
     -- The world override this client is holding, and THE ONLY PLACE THIS CLIENT
     -- WRITES WEATHER. AFTER natives.lua for a reader rather than for the loader
     -- -- natives.lua's clock writer asks BR.World.clockPlan() at call time and

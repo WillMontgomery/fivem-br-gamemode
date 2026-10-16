@@ -4781,8 +4781,9 @@ end, false)
 --- Tune the crate label WITHOUT a deploy.
 ---
 ---   /brlabel                  show the current numbers
----   /brlabel <lift>           metres relative to the lid (negative = down)
----   /brlabel <lift> <size>    ...and the label width in metres
+---   /brlabel <lift>           meters relative to the lid (negative = down)
+---   /brlabel <lift> <size>    ...and the label width in meters
+---   /brlabel on | off         the same two numbers on the keys (#404)
 ---
 --- This exists because the lift has now been guessed twice from outside the
 --- game -- 0.02 floated it, -0.10 sank it into the box -- and each guess cost
@@ -4790,22 +4791,83 @@ end, false)
 --- crate, nudge it until it sits on the plywood, and paste the printed line
 --- into br_lib/config/loot.lua. Client-local and not persisted: it is a ruler,
 --- not a setting.
-RegisterCommand('brlabel', function(_, args)
-    local lift = tonumber(args[1])
-    local size = tonumber(args[2])
-    if lift then L.crateLabelLift = lift end
-    if size then L.crateLabelSize = size end
 
+--- What the config shipped, for DELETE: the typed form writes into the config
+--- table itself, so this is the only copy of where the label started.
+local LABEL_SHIPPED = { lift = L.crateLabelLift, size = L.crateLabelSize }
+--- A step of each: /brplate's centimeter, ten with SHIFT.
+local LABEL_LIFT = { fine = 0.01, coarse = 0.10, places = 3, lo = -2.5, hi = 2.5 }
+local LABEL_SIZE = { fine = 0.01, coarse = 0.10, places = 2, lo = 0.05, hi = 5.0 }
+
+--- The numbers, and with `paste` the two lines for br_lib/config/loot.lua --
+--- one printer for the typed form and the keys, so what they paste is one
+--- thing.
+--- @param paste boolean
+local function labelReport(paste)
     print(('[br_core] crate label: lift %.3f  size %.2f  fit %.2f')
         :format(L.crateLabelLift or 0.0, L.crateLabelSize or 0.0,
                 L.crateLabelFit or 0.45))
-    if lift or size then
+    if paste then
         print(('  paste into br_lib/config/loot.lua:'))
         print(('    crateLabelLift  = %.3f,'):format(L.crateLabelLift or 0.0))
         print(('    crateLabelSize  = %.2f,'):format(L.crateLabelSize or 0.0))
     else
-        print('  usage: brlabel <lift> [size]   (lift is metres, negative = down)')
+        print('  usage: brlabel <lift> [size]   (lift is meters, negative = down)')
+        print('         brlabel on | off        the same two on the keys')
     end
+end
+
+--- `brlabel on`: UP / DOWN lift it, PAGE UP / DOWN size it, the way /brplate
+--- lifts a plate and /brrocket sizes a trail (client/tunekeys.lua). The label
+--- is drawn from these two every frame, so the next frame shows the step.
+local function labelKeys()
+    BR.TuneKeys.start('brlabel', {
+        lines = function(k)
+            return {
+                '~b~crate label~w~',
+                ('lift %.3f m   size %.2f m   fit %.2f')
+                    :format(L.crateLabelLift or 0.0, L.crateLabelSize or 0.0,
+                            L.crateLabelFit or 0.45),
+                ('step %.2f m'):format(k.coarse and LABEL_LIFT.coarse or LABEL_LIFT.fine),
+            }
+        end,
+        nudge = function(k)
+            if k.v ~= 0 then
+                L.crateLabelLift = BR.TuneKeys.nudged(L.crateLabelLift, k.v, k.coarse, LABEL_LIFT)
+            end
+            if k.s ~= 0 then
+                L.crateLabelSize = BR.TuneKeys.nudged(L.crateLabelSize, k.s, k.coarse, LABEL_SIZE)
+            end
+            return k.v ~= 0 or k.s ~= 0
+        end,
+        reset = function()
+            L.crateLabelLift, L.crateLabelSize = LABEL_SHIPPED.lift, LABEL_SHIPPED.size
+        end,
+        off = function() labelReport(true) end,
+    })
+    print('[br_core] brlabel: on. Stand at a crate. The keys:')
+    print('  UP / DOWN        lift')
+    print('  PAGE UP / DOWN   size')
+    print('  hold SHIFT       10 cm steps instead of 1 cm')
+    print('  DELETE           the shipped numbers')
+    print('  `brlabel off` puts them away and prints what to paste')
+end
+
+RegisterCommand('brlabel', function(_, args)
+    local word = tostring(args[1] or '')
+    if word == 'on' then return labelKeys() end
+    if word == 'off' then
+        -- Put away, its `off` prints the paste lines; already off, they are
+        -- printed anyway, so `off` always answers with them.
+        if not BR.TuneKeys.stop('brlabel') then labelReport(true) end
+        return
+    end
+
+    local lift = tonumber(args[1])
+    local size = tonumber(args[2])
+    if lift then L.crateLabelLift = lift end
+    if size then L.crateLabelSize = size end
+    labelReport(lift ~= nil or size ~= nil)
 end, false)
 
 --- Resize a consumable's ground prop WITHOUT a deploy -- the ruler /brlabel is,
