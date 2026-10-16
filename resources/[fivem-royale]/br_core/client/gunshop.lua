@@ -2288,6 +2288,15 @@ local HAND_MS = tonumber(G.handoverMs) or 1400
 --- sits wrong, /brgunclerk hand is the fix rather than another guess.
 local HAND = { x = 0.09, y = 0.02, z = 0.02, rx = 80.0, ry = -100.0, rz = 0.0 }
 
+--- The six as this file ships them, for DELETE on `brgunclerk hand on`'s keys
+--- (#404): the typed form writes HAND itself, so this is the only copy left.
+local HAND_SHIPPED = {}
+for k, v in pairs(HAND) do HAND_SHIPPED[k] = v end
+
+--- The name `brgunclerk hand on` puts its keys under (client/tunekeys.lua). A
+--- handover asks whether they are on, so the name is written once.
+local HAND_KEYS = 'brgunclerk.hand'
+
 --- SKEL_L_Hand. The ID, which GetPedBoneIndex turns into the INDEX that
 --- AttachEntityToEntity actually wants -- a distinction client/squadmates.lua
 --- already records in prose because passing the ID attaches to the wrong bone
@@ -2385,6 +2394,24 @@ local function awaitAnim(dict, budgetMs)
     return isTrue(HasAnimDictLoaded(dict))
 end
 
+--- The gun into his left hand at HAND's six numbers. `brgunclerk hand on`'s
+--- keys call it again on every step, so a gun he is holding moves with them.
+--- @param obj integer
+--- @param ped integer
+local function toHand(obj, ped)
+    local bone = 0
+    if type(GetPedBoneIndex) == 'function' then
+        bone = GetPedBoneIndex(ped, BONE_L_HAND) or 0
+    end
+    -- p9 has no documented effect; softPinning false so it cannot pop off;
+    -- collision FALSE because this is a prop in a hand; isPed false because
+    -- entity1 is an object; rotation order 2; syncRot true so it follows the
+    -- hand.
+    nat(AttachEntityToEntity, obj, ped, bone,
+        HAND.x, HAND.y, HAND.z, HAND.rx, HAND.ry, HAND.rz,
+        false, false, false, false, 2, true)
+end
+
 --- THE CLERK HANDS OVER ONE WEAPON.
 ---
 --- ═══ A GENERATION TOKEN AND A RECORD COMPARISON, BOTH ═══
@@ -2462,17 +2489,7 @@ local function present(store, row)
         presented[store.id] = rec
 
         nat(SetEntityCollision, obj, false, false)
-        local bone = 0
-        if type(GetPedBoneIndex) == 'function' then
-            bone = GetPedBoneIndex(live, BONE_L_HAND) or 0
-        end
-        -- p9 has no documented effect; softPinning false so it cannot pop off;
-        -- collision FALSE because this is a prop in a hand; isPed false because
-        -- entity1 is an object; rotation order 2; syncRot true so it follows the
-        -- hand.
-        nat(AttachEntityToEntity, obj, live, bone,
-            HAND.x, HAND.y, HAND.z, HAND.rx, HAND.ry, HAND.rz,
-            false, false, false, false, 2, true)
+        toHand(obj, live)
 
         if awaitAnim(GIVE_DICT, 1000) then
             nat(TaskPlayAnim, live, GIVE_DICT, GIVE_CLIP, 4.0, -4.0,
@@ -2480,6 +2497,14 @@ local function present(store, row)
         end
 
         Citizen.Wait(HAND_MS)
+
+        -- HELD OUT FOR AS LONG AS `brgunclerk hand on`'S KEYS ARE ON (#404), so
+        -- the six numbers are moved against a gun that is in his hand rather
+        -- than one gone 1.4 s after it appeared. AF_HOLD_LAST_FRAME keeps the
+        -- pose the gesture reached until the ClearPedTasks below.
+        while BR.TuneKeys.on(HAND_KEYS) and presented[store.id] == rec do
+            Citizen.Wait(100)
+        end
 
         -- ONLY THIS THREAD'S OWN RECORD IS CLEANED UP. See `presented`.
         if presented[store.id] ~= rec then return end
@@ -2925,9 +2950,230 @@ end, false)
 --- THE Z IS NEVER TOUCHED. It came out of the ground probe and /brgunshop's
 --- ledger says it is right at every counter visited so far; this command moves
 --- him in the plane and nothing else.
+---
+--- ═══ AND `on` PUTS THEM ON THE KEYS (#404) ═══
+---
+--- Owner, 2026-10-11: "Any manual adjustment commands must allow keyboard
+--- input." `brgunclerk on` is where he stands and `brgunclerk hand on` is the
+--- gun in his hand, each in client/tunekeys.lua's shape; the typed forms stay
+--- beside them, word for word.
+
+--- The clerk's three numbers as the game is running them: a live override,
+--- else the config's.
+---
+--- ALL THREE FALL BACK TO CONFIG, AND THE MIDDLE ONE DID NOT. `clerkRightM`
+--- was written into config/gunshop.lua by C1 and this tool never learned to
+--- read it, so a nudger whose whole job is to refine the owner's numbers
+--- started from a lateral baseline of ZERO while the game shipped 1.0 -- it
+--- reported the wrong figure, nudged from the wrong figure, and printed a
+--- pasteable config line that would have undone C1 the moment he used it.
+--- @return number fwd, number right, number face
+local function clerkNumbers()
+    return clerkFwd   or tonumber(G.clerkOffsetM) or 0.0,
+           clerkRight or tonumber(G.clerkRightM)  or 0.0,
+           clerkFace  or tonumber(G.clerkFaceDeg) or 0.0
+end
+
+--- Stand the clerk at this counter on the three numbers, and say where he is
+--- now -- or why there is nobody to move.
+--- @param store table|nil
+--- @return string  the report's line for him
+local function placeClerk(store)
+    if not store then return '  not at a counter -- the numbers below are still set' end
+    local ped = clerks[store.id]
+    if not (ped and ped ~= 0 and isTrue(DoesEntityExist(ped))) then
+        return ('  %s has no clerk standing'):format(tostring(store.id))
+    end
+    local fwd, lat, face = clerkNumbers()
+    local h   = tonumber(store.heading) or 0.0
+    local rad = math.rad(h)
+    local fx, fy = -math.sin(rad), math.cos(rad)
+    local rx, ry = math.cos(rad), math.sin(rad)
+    local p = GetEntityCoords(ped)
+    -- MOVED IN PLACE RATHER THAN REBUILT. FreezeEntityPosition has to come off
+    -- for the write and go back on after it, or the ped is pinned to where he
+    -- was.
+    nat(FreezeEntityPosition, ped, false)
+    nat(SetEntityCoordsNoOffset, ped,
+        (tonumber(store.x) or 0.0) + fx * fwd + rx * lat,
+        (tonumber(store.y) or 0.0) + fy * fwd + ry * lat,
+        p.z, false, false, false)
+    nat(SetEntityHeading, ped, (h + face) % 360.0)
+    nat(FreezeEntityPosition, ped, true)
+    local np = GetEntityCoords(ped)
+    return ('  %s   now %.2f, %.2f, %.2f   heading %.1f')
+        :format(tostring(store.id), np.x, np.y, np.z, (h + face) % 360.0)
+end
+
+--- The report and the block to paste -- one printer for the typed form and
+--- the keys, so what they paste is one thing.
+--- @param where string  placeClerk's line
+local function clerkReport(where)
+    local fwd, lat, face = clerkNumbers()
+    print('=== gunshop clerk ===')
+    print(where)
+    -- PASTEABLE, AND EVERY LINE STARTS FROM WHAT THE GAME IS ACTUALLY RUNNING.
+    -- All three names exist in br_lib/config/gunshop.lua now -- `clerkRightM`
+    -- landed with C1 -- so what prints here is either a number the owner has
+    -- nudged this session or the number the file already holds, and pasting the
+    -- block back can never quietly zero a field he did not touch.
+    print(('    clerkOffsetM = %.2f,'):format(fwd))
+    print(('    clerkRightM  = %.2f,'):format(lat))
+    print(('    clerkFaceDeg = %.2f,'):format(face))
+end
+
+--- The HAND line, for the typed `hand` and its keys alike.
+local function handReport()
+    print(('  HAND = { x = %.2f, y = %.2f, z = %.2f, rx = %.1f, ry = %.1f, '
+           .. 'rz = %.1f }'):format(HAND.x, HAND.y, HAND.z,
+                                    HAND.rx, HAND.ry, HAND.rz))
+end
+
+--- A step of each: /brplate's centimeter (ten with SHIFT) and /brrocket's
+--- degree (fifteen), the turns going round rather than stopping.
+local CLERK_M  = { fine = 0.01, coarse = 0.10, places = 2, lo = -5.0, hi = 5.0 }
+local HAND_M   = { fine = 0.01, coarse = 0.10, places = 2, lo = -1.0, hi = 1.0 }
+local TURN_DEG = { fine = 1.0, coarse = 15.0, places = 1, wrap = true }
+
+--- `brgunclerk on`: where he stands, on the keys. He moves in the plane and
+--- nothing else, so the arrows are a map of it -- UP / DOWN `fwd` along the
+--- counter's facing (/brrocket's UP / DOWN run along), LEFT / RIGHT `right` --
+--- and ALT + LEFT / RIGHT turns him, /brrocket's yaw. Every step stands him on
+--- the new numbers at once, as the typed form does.
+---
+--- RIGHT IS +right, HIS OWN RIGHT, which is your left as you face him across
+--- the counter. The arrow moves the number the way it points, as in every
+--- other tool, and the number is the one the config is written in.
+local function clerkKeys()
+    BR.TuneKeys.start('brgunclerk', {
+        lines = function(k)
+            local fwd, lat, face = clerkNumbers()
+            local store = tuningStore()
+            local move = k.turn and '' or '~b~'
+            return {
+                ('~b~gunshop clerk~w~  at %s'):format(store and tostring(store.id) or '-'),
+                ('%sfwd %.2f~w~ m   %sright %.2f~w~ m   %sface %.1f~w~ deg')
+                    :format(move, fwd, move, lat, k.turn and '~b~' or '', face),
+                ('step %.2f m   %.0f deg'):format(k.coarse and CLERK_M.coarse or CLERK_M.fine,
+                    k.coarse and TURN_DEG.coarse or TURN_DEG.fine),
+            }
+        end,
+        nudge = function(k)
+            local fwd, lat, face = clerkNumbers()
+            local moved = false
+            if k.v ~= 0 and not k.turn then
+                clerkFwd = BR.TuneKeys.nudged(fwd, k.v, k.coarse, CLERK_M)
+                moved = true
+            end
+            if k.h ~= 0 then
+                if k.turn then
+                    clerkFace = BR.TuneKeys.nudged(face, k.h, k.coarse, TURN_DEG)
+                else
+                    clerkRight = BR.TuneKeys.nudged(lat, k.h, k.coarse, CLERK_M)
+                end
+                moved = true
+            end
+            if moved then placeClerk(tuningStore()) end
+            return moved
+        end,
+        reset = function()
+            clerkFwd, clerkRight, clerkFace = nil, nil, nil
+            placeClerk(tuningStore())
+        end,
+        off = function() clerkReport(placeClerk(tuningStore())) end,
+    })
+    print('[br_core] brgunclerk: on. Stand at a counter. The keys:')
+    print('  UP / DOWN            fwd, along the counter\'s facing (- is back behind it)')
+    print('  LEFT / RIGHT         right, his own right (your left as you face him)')
+    print('  ALT + LEFT / RIGHT   face, his turn off the counter\'s heading')
+    print('  hold SHIFT           10 cm and 15 degree steps instead of 1 cm and 1')
+    print('  DELETE               back to config')
+    print('  `brgunclerk off` puts them away and prints what to paste')
+end
+
+--- The gun he is holding out at this counter, or nil.
+--- @param store table|nil
+--- @return table|nil  its `presented` record
+local function heldGun(store)
+    local rec = store and presented[store.id] or nil
+    if not rec then return nil end
+    if not (rec.obj and rec.obj ~= 0 and isTrue(DoesEntityExist(rec.obj))) then return nil end
+    if not (rec.ped and rec.ped ~= 0 and isTrue(DoesEntityExist(rec.ped))) then return nil end
+    return rec
+end
+
+--- `brgunclerk hand on`: HAND's six on the keys, /brrocket's six exactly --
+--- its trail is an offset in another entity's frame too, so the same key moves
+--- the same axis: LEFT / RIGHT x, UP / DOWN y, CTRL + UP / DOWN z, ALT + UP /
+--- DOWN rx, ALT + LEFT / RIGHT rz, ALT + CTRL + UP / DOWN ry.
+---
+--- A GUN BOUGHT WHILE THEY ARE ON STAYS IN HIS HAND until they are put away
+--- (see present), and every step moves the one he is holding, so the six are
+--- tuned against a gun that is there rather than against the next purchase.
+local function handKeys()
+    BR.TuneKeys.start(HAND_KEYS, {
+        lines = function(k)
+            local store = tuningStore()
+            local function hi(on) return on and '~b~' or '' end
+            local move, turn = not k.turn, k.turn
+            return {
+                ('~b~clerk hand~w~  at %s   %s'):format(store and tostring(store.id) or '-',
+                    heldGun(store) and 'holding a gun' or 'nothing in his hand'),
+                ('%sx %.2f~w~   %sy %.2f~w~   %sz %.2f~w~')
+                    :format(hi(move), HAND.x, hi(move and not k.depth), HAND.y,
+                            hi(move and k.depth), HAND.z),
+                ('%srx %.1f~w~   %sry %.1f~w~   %srz %.1f~w~')
+                    :format(hi(turn and not k.depth), HAND.rx, hi(turn and k.depth), HAND.ry,
+                            hi(turn), HAND.rz),
+                ('step %.2f m   %.0f deg'):format(k.coarse and HAND_M.coarse or HAND_M.fine,
+                    k.coarse and TURN_DEG.coarse or TURN_DEG.fine),
+            }
+        end,
+        nudge = function(k)
+            local moved = false
+            if k.v ~= 0 then
+                local key = k.turn and (k.depth and 'ry' or 'rx') or (k.depth and 'z' or 'y')
+                HAND[key] = BR.TuneKeys.nudged(HAND[key], k.v, k.coarse, k.turn and TURN_DEG or HAND_M)
+                moved = true
+            end
+            if k.h ~= 0 then
+                local key = k.turn and 'rz' or 'x'
+                HAND[key] = BR.TuneKeys.nudged(HAND[key], k.h, k.coarse, k.turn and TURN_DEG or HAND_M)
+                moved = true
+            end
+            local rec = moved and heldGun(tuningStore()) or nil
+            if rec then toHand(rec.obj, rec.ped) end
+            return moved
+        end,
+        reset = function()
+            for key, v in pairs(HAND_SHIPPED) do HAND[key] = v end
+            local rec = heldGun(tuningStore())
+            if rec then toHand(rec.obj, rec.ped) end
+        end,
+        off = handReport,
+    })
+    print('[br_core] brgunclerk hand: on. Buy a gun at a counter; he holds it out until the keys are put away. The keys:')
+    print('  LEFT / RIGHT             x')
+    print('  UP / DOWN                y')
+    print('  CTRL + UP / DOWN         z')
+    print('  ALT + UP / DOWN          rx     ALT + LEFT / RIGHT   rz')
+    print('  ALT + CTRL + UP / DOWN   ry')
+    print('  hold SHIFT               10 cm and 15 degree steps instead of 1 cm and 1')
+    print('  DELETE                   the six this file ships')
+    print('  `brgunclerk hand off` puts them away and prints the HAND line')
+end
+
 RegisterCommand('brgunclerk', function(_, args)
     local what = tostring(args[1] or ''):lower()
     local store = tuningStore()
+
+    if what == 'on' then return clerkKeys() end
+    if what == 'off' then
+        -- Put away, its `off` prints the block; already off, it is printed
+        -- anyway, so `off` always answers with it.
+        if not BR.TuneKeys.stop('brgunclerk') then clerkReport(placeClerk(store)) end
+        return
+    end
 
     if what == 'say' then
         -- AUDITION, BECAUSE NOBODY CAN PROVE WHAT A SPEECH NAME SAYS. See the
@@ -2950,28 +3196,22 @@ RegisterCommand('brgunclerk', function(_, args)
 
     if what == 'hand' then
         local k = tostring(args[2] or ''):lower()
+        if k == 'on' then return handKeys() end
+        if k == 'off' then
+            if not BR.TuneKeys.stop(HAND_KEYS) then handReport() end
+            return
+        end
         if HAND[k] == nil then
             print('[br_core] gunshop: brgunclerk hand [x|y|z|rx|ry|rz] '
-                  .. '<value|+delta>')
+                  .. '<value|+delta> | on | off')
         else
             HAND[k] = nudge(HAND[k], args[3]) or HAND[k]
         end
-        print(('  HAND = { x = %.2f, y = %.2f, z = %.2f, rx = %.1f, ry = %.1f, '
-               .. 'rz = %.1f }'):format(HAND.x, HAND.y, HAND.z,
-                                        HAND.rx, HAND.ry, HAND.rz))
+        handReport()
         return
     end
 
-    -- ALL THREE FALL BACK TO CONFIG, AND THE MIDDLE ONE DID NOT. `clerkRightM`
-    -- was written into config/gunshop.lua by C1 and this tool never learned to
-    -- read it, so a nudger whose whole job is to refine the owner's numbers
-    -- started from a lateral baseline of ZERO while the game shipped 1.0 -- it
-    -- reported the wrong figure, nudged from the wrong figure, and printed a
-    -- pasteable config line that would have undone C1 the moment he used it.
-    local fwd  = clerkFwd   or tonumber(G.clerkOffsetM) or 0.0
-    local lat  = clerkRight or tonumber(G.clerkRightM)  or 0.0
-    local face = clerkFace  or tonumber(G.clerkFaceDeg) or 0.0
-
+    local fwd, lat, face = clerkNumbers()
     if what == 'reset' then
         clerkFwd, clerkRight, clerkFace = nil, nil, nil
         print('[br_core] gunshop: clerk back to config (rebuild to see it)')
@@ -2983,49 +3223,10 @@ RegisterCommand('brgunclerk', function(_, args)
         clerkFace = nudge(face, args[2]) or clerkFace
     elseif what ~= '' then
         print('[br_core] gunshop: brgunclerk [fwd|right|face] <value|+delta> | '
-              .. 'hand ... | say ... | reset')
+              .. 'hand ... | say ... | reset | on | off')
     end
 
-    fwd  = clerkFwd   or tonumber(G.clerkOffsetM) or 0.0
-    lat  = clerkRight or tonumber(G.clerkRightM)  or 0.0
-    face = clerkFace  or tonumber(G.clerkFaceDeg) or 0.0
-
-    print('=== gunshop clerk ===')
-    if store then
-        local ped = clerks[store.id]
-        if ped and ped ~= 0 and isTrue(DoesEntityExist(ped)) then
-            local h   = tonumber(store.heading) or 0.0
-            local rad = math.rad(h)
-            local fx, fy = -math.sin(rad), math.cos(rad)
-            local rx, ry = math.cos(rad), math.sin(rad)
-            local p = GetEntityCoords(ped)
-            -- MOVED IN PLACE RATHER THAN REBUILT. FreezeEntityPosition has to
-            -- come off for the write and go back on after it, or the ped is
-            -- pinned to where he was.
-            nat(FreezeEntityPosition, ped, false)
-            nat(SetEntityCoordsNoOffset, ped,
-                (tonumber(store.x) or 0.0) + fx * fwd + rx * lat,
-                (tonumber(store.y) or 0.0) + fy * fwd + ry * lat,
-                p.z, false, false, false)
-            nat(SetEntityHeading, ped, (h + face) % 360.0)
-            nat(FreezeEntityPosition, ped, true)
-            local np = GetEntityCoords(ped)
-            print(('  %s   now %.2f, %.2f, %.2f   heading %.1f')
-                :format(tostring(store.id), np.x, np.y, np.z, (h + face) % 360.0))
-        else
-            print(('  %s has no clerk standing'):format(tostring(store.id)))
-        end
-    else
-        print('  not at a counter -- the numbers below are still set')
-    end
-    -- PASTEABLE, AND EVERY LINE STARTS FROM WHAT THE GAME IS ACTUALLY RUNNING.
-    -- All three names exist in br_lib/config/gunshop.lua now -- `clerkRightM`
-    -- landed with C1 -- so what prints here is either a number the owner has
-    -- nudged this session or the number the file already holds, and pasting the
-    -- block back can never quietly zero a field he did not touch.
-    print(('    clerkOffsetM = %.2f,'):format(fwd))
-    print(('    clerkRightM  = %.2f,'):format(lat))
-    print(('    clerkFaceDeg = %.2f,'):format(face))
+    clerkReport(placeClerk(store))
 end, false)
 
 -- ---------------------------------------------------------------------------

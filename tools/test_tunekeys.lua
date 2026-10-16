@@ -3,15 +3,15 @@
 -- and modeled controls, the clock and the text natives.
 --
 -- "Any manual adjustment commands must allow keyboard input." (owner,
--- 2026-10-11.) /brlabel, /brshine, /brpropscale, /brgunplate, /brlobbycam and
--- /brboard all ride this file, so what is pinned here is what every one of them does
+-- 2026-10-11.) /brlabel, /brshine, /brpropscale, /brgunplate, /brlobbycam,
+-- /brboard and /brgunclerk all ride this file, so what is pinned here is what every one of them does
 -- with a key: a tap is one step, a hold is twenty a second at 30, 60 or 144
 -- fps alike and a hitch is not paid back in a burst, SHIFT is the bigger step, a pick and DELETE are once a press, the numbers are
 -- on screen every frame, only the keys it reads are claimed and only while it
 -- is on, and putting it away prints what to paste. Each tool's own suite pins
 -- what its keys move: tools/test_crates_client.lua (the three loot ones),
--- tools/test_gunshop.lua (/brgunplate), tools/test_lobbyseq.lua (/brlobbycam),
--- tools/test_board.lua (/brboard).
+-- tools/test_gunshop.lua (/brgunplate, /brgunclerk), tools/test_lobbyseq.lua
+-- (/brlobbycam), tools/test_board.lua (/brboard).
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_tunekeys.lua
 

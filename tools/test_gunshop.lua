@@ -6149,6 +6149,340 @@ do
     end
 
     -- -----------------------------------------------------------------------
+    describe('#404: brgunclerk on the keys -- UP / DOWN fwd, LEFT / RIGHT right, ALT face')
+    -- -----------------------------------------------------------------------
+    do
+        local function eq(got, want, name)
+            ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+        end
+        -- "Any manual adjustment commands must allow keyboard input" (owner,
+        -- 2026-10-11). The keys, modeled as in the brgunplate block: what is
+        -- held, what was claimed and what was drawn, on a clock of their own;
+        -- and his heading, which the shared stub throws away.
+        local clock, down, claims, text = 9000, {}, {}, {}
+        local realTimer, realHeading = GetGameTimer, SetEntityHeading
+        GetGameTimer = function() return clock end
+        IsDisabledControlPressed = function(_, id) return down[id] and 1 or 0 end
+        DisableControlAction = function(_, id) claims[id] = (claims[id] or 0) + 1 end
+        for _, n in ipairs({ 'SetTextFont', 'SetTextScale', 'SetTextColour', 'SetTextDropshadow',
+                             'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+                             'BeginTextCommandDisplayText' }) do
+            _G[n] = function() end
+        end
+        local pending = nil
+        AddTextComponentSubstringPlayerName = function(s) pending = s end
+        EndTextCommandDisplayText = function() text[#text + 1] = pending end
+        local headings = {}
+        SetEntityHeading = function(e, h) headings[e] = h end
+        local K = BR.TuneKeys.KEY
+        local function frame(ms)
+            clock = clock + (ms or 50)
+            claims, text = {}, {}
+            if loops['tunekeys.brgunclerk'] then loops['tunekeys.brgunclerk']() end
+        end
+        local function press(keys, ms, step)
+            down = {}
+            for _, k in ipairs(keys) do down[k] = true end
+            local t = 0
+            repeat
+                frame(step or 50)
+                t = t + (step or 50)
+            until t >= (ms or 1)
+            down = {}
+            frame(50)
+        end
+        local function pasted(lines)
+            local out = {}
+            for _, l in ipairs(lines) do
+                if l:match('^    clerk') then out[#out + 1] = l end
+            end
+            return table.concat(out, '\n')
+        end
+        local function num(lines, key)
+            for _, l in ipairs(lines) do
+                local v = l:match('^    ' .. key .. '%s*= ([%-%d%.]+),$')
+                if v then return tonumber(v) end
+            end
+            return nil
+        end
+
+        walkAway()
+        standAt('pillbox')
+        local st = storeById['pillbox']
+        hush(cmds['brgunclerk'], nil, { 'say', 'SELL' })
+        local clerk = speech[#speech].ped
+        -- Stood on config's numbers by the bare command, the start every step
+        -- below is measured from.
+        hush(cmds['brgunclerk'], nil, {})
+        local at0 = { x = peds[clerk].x, y = peds[clerk].y, z = peds[clerk].z }
+        local h = math.rad(tonumber(st.heading) or 0.0)
+        local fx, fy = -math.sin(h), math.cos(h)
+        local rx, ry = math.cos(h), math.sin(h)
+        local fwd0 = tonumber(G.clerkOffsetM) or 0.0
+        local lat0 = tonumber(G.clerkRightM) or 0.0
+        local face0 = tonumber(G.clerkFaceDeg) or 0.0
+        --- Where he stands now, against where config stood him, along the
+        --- counter's facing and his right.
+        local function offset()
+            local dx, dy = peds[clerk].x - at0.x, peds[clerk].y - at0.y
+            return dx * fx + dy * fy, dx * rx + dy * ry, peds[clerk].z - at0.z
+        end
+
+        local said = grab(cmds['brgunclerk'], nil, { 'on' })
+        ok(BR.TuneKeys.on('brgunclerk') and loops['tunekeys.brgunclerk'] ~= nil,
+            'brgunclerk on: its keys are on, one frame callback')
+        ok(table.concat(said, '\n'):find('`brgunclerk off` puts them away', 1, true) ~= nil,
+            'and they are printed')
+        frame()
+        local all = true
+        for _, id in ipairs({ 27, 172, 173, 174, 175, 10, 11, 178 }) do all = all and (claims[id] or 0) > 0 end
+        ok(all, 'the arrows, the page keys and DELETE are claimed')
+        ok(not claims[K.DEPTH] and not claims[K.TURN] and not claims[K.COARSE] and not claims[32],
+            'CTRL, ALT, SHIFT and walking are not')
+
+        press({ K.UP })
+        local f, r, z = offset()
+        ok(math.abs(f - 0.01) < 1e-9 and math.abs(r) < 1e-9 and math.abs(z) < 1e-9,
+            'UP: he steps 1 cm along the counter\'s facing at once, and not up', ('%.4f %.4f %.4f'):format(f, r, z))
+        press({ K.COARSE, K.DOWN })
+        f = offset()
+        ok(math.abs(f - (-0.09)) < 1e-9, 'SHIFT + DOWN: 10 cm back behind it', f)
+        press({ K.RIGHT }, 1000, 25)
+        f, r = offset()
+        ok(math.abs(r - 0.20) < 1e-9 and math.abs(f - (-0.09)) < 1e-9,
+            'RIGHT held a second: 20 cm to his own right', ('%.4f %.4f'):format(f, r))
+        press({ K.TURN, K.LEFT })
+        local face1 = BR.TuneKeys.round(face0 - 1.0, 1)
+        ok(math.abs(headings[clerk] - ((tonumber(st.heading) or 0.0) + face1) % 360.0) < 1e-9,
+            'ALT + LEFT: turned a degree', headings[clerk])
+        f, r = offset()
+        ok(math.abs(r - 0.20) < 1e-9, 'and not moved', r)
+        press({ K.TURN, K.UP })
+        f = offset()
+        ok(math.abs(f - (-0.09)) < 1e-9, 'ALT + UP moves nothing', f)
+        press({ K.BIGGER })
+        f, r = offset()
+        ok(math.abs(f - (-0.09)) < 1e-9 and math.abs(r - 0.20) < 1e-9, 'nor PAGE UP')
+        frame()
+        ok(text[2] == ('~b~fwd %.2f~w~ m   ~b~right %.2f~w~ m   face %.1f~w~ deg')
+            :format(fwd0 - 0.09, lat0 + 0.20, face1), 'the numbers on screen, what the arrows move in blue', text[2])
+        down = { [K.TURN] = true }
+        frame()
+        down = {}
+        ok(text[2] == ('fwd %.2f~w~ m   right %.2f~w~ m   ~b~face %.1f~w~ deg')
+            :format(fwd0 - 0.09, lat0 + 0.20, face1), 'and with ALT held, the face', text[2])
+
+        -- PUT AWAY: the three lines to paste, the ones the typed form prints.
+        local fromKeys = grab(cmds['brgunclerk'], nil, { 'off' })
+        ok(num(fromKeys, 'clerkOffsetM') == BR.TuneKeys.round(fwd0 - 0.09, 2)
+            and num(fromKeys, 'clerkRightM') == BR.TuneKeys.round(lat0 + 0.20, 2)
+            and num(fromKeys, 'clerkFaceDeg') == face1, 'brgunclerk off: the three lines to paste',
+            pasted(fromKeys))
+        ok(not BR.TuneKeys.on('brgunclerk') and loops['tunekeys.brgunclerk'] == nil,
+            'and its keys are off, nothing per frame')
+        eq(pasted(grab(cmds['brgunclerk'], nil, {})), pasted(fromKeys), 'the same lines the typed form prints')
+        eq(pasted(grab(cmds['brgunclerk'], nil, { 'off' })), pasted(fromKeys), 'and `off` while off answers with them')
+        local was = { offset() }
+        down = { [K.UP] = true }
+        frame()
+        down = {}
+        f = offset()
+        ok(next(claims) == nil and math.abs(f - was[1]) < 1e-9, 'and the arrows are the player\'s again')
+
+        -- DELETE: back to config, and stood there.
+        grab(cmds['brgunclerk'], nil, { 'on' })
+        press({ K.RESET })
+        f, r, z = offset()
+        ok(math.abs(f) < 1e-9 and math.abs(r) < 1e-9 and math.abs(z) < 1e-9
+            and math.abs(headings[clerk] - ((tonumber(st.heading) or 0.0) + face0) % 360.0) < 1e-9,
+            'DELETE: back where config stands him')
+        grab(cmds['brgunclerk'], nil, { 'off' })
+
+        -- THE TYPED FORM STILL WORKS.
+        local typed = grab(cmds['brgunclerk'], nil, { 'fwd', '+0.30' })
+        eq(num(typed, 'clerkOffsetM'), BR.TuneKeys.round(fwd0 + 0.30, 2), 'brgunclerk fwd +0.30 still nudges')
+        hush(cmds['brgunclerk'], nil, { 'reset' })
+
+        GetGameTimer, SetEntityHeading = realTimer, realHeading
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('#404: brgunclerk hand on the keys -- brrocket\'s six, on the gun in his hand')
+    -- -----------------------------------------------------------------------
+    do
+        local function eq(got, want, name)
+            ok(got == want, name, ('got %s, want %s'):format(tostring(got), tostring(want)))
+        end
+        -- THREADS THAT WAIT. The shared stub runs a thread through in one go,
+        -- which is right for a handover that ends; with the hand on the keys it
+        -- must not end, so here a thread is a coroutine and a wait a yield.
+        local clock, down, claims, text = 20000, {}, {}, {}
+        local realTimer, realCitizen, realAttach = GetGameTimer, Citizen, AttachEntityToEntity
+        GetGameTimer = function() return clock end
+        IsDisabledControlPressed = function(_, id) return down[id] and 1 or 0 end
+        DisableControlAction = function(_, id) claims[id] = (claims[id] or 0) + 1 end
+        local pending = nil
+        AddTextComponentSubstringPlayerName = function(s) pending = s end
+        EndTextCommandDisplayText = function() text[#text + 1] = pending end
+        local threads = {}
+        local function run(co)
+            local okr, err = coroutine.resume(co)
+            if not okr then error(err, 0) end
+        end
+        Citizen = {
+            CreateThread = function(fn)
+                local co = coroutine.create(fn)
+                threads[#threads + 1] = co
+                run(co)
+            end,
+            Wait = function() coroutine.yield() end,
+        }
+        local function pump(n)
+            for _ = 1, n or 1 do
+                for i = #threads, 1, -1 do
+                    if coroutine.status(threads[i]) == 'dead' then
+                        table.remove(threads, i)
+                    else
+                        run(threads[i])
+                    end
+                end
+            end
+        end
+        --- Where each attach put the gun, offsets and all.
+        local at = {}
+        AttachEntityToEntity = function(obj, parent, bone, x, y, z, rx, ry, rz)
+            attaches[#attaches + 1] = { obj = obj, parent = parent, bone = bone }
+            at[#at + 1] = { obj = obj, parent = parent, bone = bone,
+                            x = x, y = y, z = z, rx = rx, ry = ry, rz = rz }
+        end
+        local K = BR.TuneKeys.KEY
+        local function frame(ms)
+            clock = clock + (ms or 50)
+            claims, text = {}, {}
+            if loops['tunekeys.brgunclerk.hand'] then loops['tunekeys.brgunclerk.hand']() end
+            pump()
+        end
+        local function press(keys, ms, step)
+            down = {}
+            for _, k in ipairs(keys) do down[k] = true end
+            local t = 0
+            repeat
+                frame(step or 50)
+                t = t + (step or 50)
+            until t >= (ms or 1)
+            down = {}
+            frame(50)
+        end
+        local function hand(lines)
+            local l = lineWith(lines, 'HAND = {')
+            if not l then return nil end
+            local o = {}
+            for key, v in l:gmatch('(%a+) = ([%-%d%.]+)') do o[key] = tonumber(v) end
+            return o
+        end
+
+        walkAway()
+        handlers[BR.Net.GUNSHOP_STOCK]({ stores = {}, full = true })
+        standAt('pillbox')
+        local h0 = hand(grab(cmds['brgunclerk'], nil, { 'hand' }))
+        ok(h0 ~= nil and h0.x ~= nil and h0.rz ~= nil, 'the typed form prints the six', h0 and h0.x)
+
+        grab(cmds['brgunclerk'], nil, { 'on' })
+        local said = grab(cmds['brgunclerk'], nil, { 'hand', 'on' })
+        ok(BR.TuneKeys.on('brgunclerk.hand') and not BR.TuneKeys.on('brgunclerk'),
+            'brgunclerk hand on: its keys are on, and where he stands is put away')
+        ok(lineWith(said, '`brgunclerk hand off` puts them away') ~= nil, 'and they are printed')
+
+        -- A GUN BOUGHT WHILE THEY ARE ON STAYS IN HIS HAND.
+        keys['interact'](true)
+        local nProps, nCleared = #props, #cleared
+        handlers[BR.Net.GUNSHOP_BOUGHT]({ row = 'carbinerifle' })
+        ok(#props == nProps + 1, 'a gun is put in his hand', #props - nProps)
+        local gun = props[#props]
+        for _ = 1, 40 do frame(50) end
+        ok(gun.alive and not gun.detached and #cleared == nCleared,
+            'and two seconds later it is still there, the handover held')
+        frame()
+        ok(text[1] ~= nil and text[1]:find('holding a gun', 1, true) ~= nil, 'the readout says so', text[1])
+
+        -- EVERY STEP MOVES THE GUN HE IS HOLDING.
+        local function last() return at[#at] end
+        local n = #at
+        press({ K.UP })
+        ok(#at == n + 1 and last().obj == gun.obj and last().bone == 40000 + 18905,
+            'UP: the gun he is holding attached again, to the same hand')
+        ok(math.abs(last().y - (h0.y + 0.01)) < 1e-9 and last().x == h0.x and last().z == h0.z,
+            'y 1 cm more, and nothing else', last().y)
+        press({ K.RIGHT })
+        ok(math.abs(last().x - (h0.x + 0.01)) < 1e-9, 'RIGHT: x', last().x)
+        press({ K.DEPTH, K.COARSE, K.DOWN })
+        ok(math.abs(last().z - (h0.z - 0.10)) < 1e-9 and math.abs(last().y - (h0.y + 0.01)) < 1e-9,
+            'CTRL + SHIFT + DOWN: z 10 cm less, y as it was', last().z)
+        press({ K.TURN, K.UP })
+        ok(math.abs(last().rx - BR.TuneKeys.round(h0.rx + 1.0, 1)) < 1e-9, 'ALT + UP: rx a degree', last().rx)
+        press({ K.TURN, K.DEPTH, K.UP })
+        ok(math.abs(last().ry - BR.TuneKeys.round(h0.ry + 1.0, 1)) < 1e-9
+            and math.abs(last().rx - BR.TuneKeys.round(h0.rx + 1.0, 1)) < 1e-9,
+            'ALT + CTRL + UP: ry a degree, rx as it was', last().ry)
+        press({ K.TURN, K.COARSE, K.RIGHT })
+        ok(math.abs(last().rz - BR.TuneKeys.round(h0.rz + 15.0, 1)) < 1e-9
+            and math.abs(last().x - (h0.x + 0.01)) < 1e-9, 'ALT + SHIFT + RIGHT: rz 15 degrees, x as it was',
+            last().rz)
+        n = #at
+        press({ K.BIGGER })
+        eq(#at, n, 'PAGE UP moves nothing')
+        down = { [K.TURN] = true }
+        frame()
+        down = {}
+        ok(text[3] == ('~b~rx %.1f~w~   ry %.1f~w~   ~b~rz %.1f~w~')
+            :format(h0.rx + 1.0, h0.ry + 1.0, h0.rz + 15.0), 'the numbers on screen, ALT\'s in blue', text[3])
+        down = { [K.TURN] = true, [K.DEPTH] = true }
+        frame()
+        down = {}
+        ok(text[3] == ('rx %.1f~w~   ~b~ry %.1f~w~   ~b~rz %.1f~w~')
+            :format(h0.rx + 1.0, h0.ry + 1.0, h0.rz + 15.0), 'and with CTRL too, ry for rx', text[3])
+        ok(gun.alive and not gun.detached, 'and still in his hand')
+
+        -- PUT AWAY: the HAND line, and the handover ends.
+        local fromKeys = hand(grab(cmds['brgunclerk'], nil, { 'hand', 'off' }))
+        ok(fromKeys ~= nil and math.abs(fromKeys.x - (h0.x + 0.01)) < 1e-9
+            and math.abs(fromKeys.rz - (h0.rz + 15.0)) < 1e-9, 'brgunclerk hand off: the HAND line',
+            fromKeys and fromKeys.x)
+        ok(not BR.TuneKeys.on('brgunclerk.hand') and loops['tunekeys.brgunclerk.hand'] == nil,
+            'and its keys are off, nothing per frame')
+        local typed = hand(grab(cmds['brgunclerk'], nil, { 'hand' }))
+        ok(typed ~= nil and typed.y == fromKeys.y and typed.ry == fromKeys.ry, 'the same line the typed form prints')
+        local again = hand(grab(cmds['brgunclerk'], nil, { 'hand', 'off' }))
+        ok(again ~= nil and again.x == fromKeys.x, 'and `hand off` while off answers with it')
+        pump(3)
+        ok(gun.detached and not gun.alive and #cleared == nCleared + 1,
+            'and the gun is taken out of his hand, his task cleared')
+
+        -- WITH THE KEYS OFF, A HANDOVER ENDS AS IT ALWAYS DID.
+        handlers[BR.Net.GUNSHOP_BOUGHT]({ row = 'carbinerifle' })
+        local gun2 = props[#props]
+        pump(3)
+        ok(gun2 ~= gun and not gun2.alive, 'a purchase with the keys off: the gun gone after the handover')
+
+        -- DELETE: the six this file ships.
+        grab(cmds['brgunclerk'], nil, { 'hand', 'on' })
+        press({ K.RESET })
+        local back = hand(grab(cmds['brgunclerk'], nil, { 'hand' }))
+        ok(back.x == h0.x and back.y == h0.y and back.z == h0.z and back.rx == h0.rx
+            and back.ry == h0.ry and back.rz == h0.rz, 'DELETE: the six it shipped with')
+        grab(cmds['brgunclerk'], nil, { 'hand', 'off' })
+        pump(3)
+
+        -- THE TYPED FORM STILL WORKS.
+        local nudged = hand(grab(cmds['brgunclerk'], nil, { 'hand', 'x', '+0.05' }))
+        ok(math.abs(nudged.x - (h0.x + 0.05)) < 1e-9, 'brgunclerk hand x +0.05 still nudges', nudged.x)
+        hush(cmds['brgunclerk'], nil, { 'hand', 'x', tostring(h0.x) })
+
+        Citizen, AttachEntityToEntity, GetGameTimer = realCitizen, realAttach, realTimer
+        walkAway()
+    end
+
+    -- -----------------------------------------------------------------------
     describe('S2: the clerk nudger starts from what the game is running')
     -- -----------------------------------------------------------------------
     do
