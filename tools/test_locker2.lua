@@ -1509,9 +1509,14 @@ do
     ok(locker:find('    if BR.State.me.state ~= BR.PlayerState.LOBBY then return end\n'
         .. '    if BR.LockerV2 and BR.LockerV2.defer() then return end\n    appliedOnce = true', 1, true) ~= nil,
         'the line is the one before appliedOnce = true')
-    local want = 'BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)'
-    ok(readFile(RES .. 'br_core/client/loading.lua'):find('local want = ' .. want, 1, true) ~= nil,
-        'client/loading.lua waits on wantHash or Season 1\'s expression')
+    -- The boot gate splits the expression (#409): wantHash() is asked on every
+    -- pass, and Season 1's half is worked out again only when the model on the
+    -- player changes, the one moment a stored choice can have moved.
+    local loading = readFile(RES .. 'br_core/client/loading.lua')
+    ok(loading:find('local want = BR.LockerV2 and BR.LockerV2.wantHash()\n'
+        .. '        if not want then\n', 1, true) ~= nil
+        and loading:find('s1Want, s1Model = GetHashKey(BR.PedById(BR.Locker.chosen()).model), model', 1, true) ~= nil,
+        'client/loading.lua waits on wantHash first and Season 1\'s model when it says nil')
     -- The entrance splits the same expression (#406): wantHash() is asked on
     -- every poll, and Season 1's half is worked out once and kept, because it
     -- cannot move while the walk waits.

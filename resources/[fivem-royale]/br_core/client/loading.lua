@@ -60,6 +60,11 @@ AddEventHandler('br:ui:ready', function() uiReady = true end)
 --- anyway and the wait would have bought nothing.
 local PED_WAIT_MS = 8000
 
+--- Season 1's character as the model hash the gate waits for, and the model
+--- that was on the player when it was worked out. See lobbyPedPending for why
+--- the second is what decides when it is worked out again (#409).
+local s1Want, s1Model = nil, nil
+
 --- WHY THE CHARACTER IN THE LOBBY SHOT IS NOT READY TO BE LOOKED AT YET.
 ---
 --- Returns the REASON as a string, or nil when the ped is genuinely finished.
@@ -116,9 +121,29 @@ local function lobbyPedPending()
 
     -- The locker is the only thing that decides WHICH character this is, so it
     -- is the only honest source for what we are waiting to see.
+    --
+    -- ONLY THE ANSWER THAT MOVES IS ASKED ON EVERY PASS (#409). wantHash() is
+    -- table reads, and it does move under this screen: nil while the season is
+    -- not known (which reads as Season 1's model), 0 while Locker v2's first
+    -- apply waits on the server, the worn ped's model once it is going on.
+    -- Season 1's half is a kvp read and a hash, and it was worked out ten times
+    -- a second for an answer that changes only when BR.Locker.apply stores a
+    -- new choice -- which it does in the same unbroken block as the
+    -- SetPlayerModel that puts that choice on. So the model on the player
+    -- changing is the one moment Season 1's answer can have moved, and it is
+    -- the moment it is worked out again; a /brlocker typed under this screen is
+    -- followed rather than waited out. client/lobbyped.lua's model wait keeps
+    -- Season 1's answer the same way for the length of a walk (#406).
     if BR.Locker and BR.PedById then
-        local want = BR.LockerV2 and BR.LockerV2.wantHash() or GetHashKey(BR.PedById(BR.Locker.chosen()).model)
-        if GetEntityModel(ped) ~= want then
+        local model = GetEntityModel(ped)
+        local want = BR.LockerV2 and BR.LockerV2.wantHash()
+        if not want then
+            if s1Want == nil or model ~= s1Model then
+                s1Want, s1Model = GetHashKey(BR.PedById(BR.Locker.chosen()).model), model
+            end
+            want = s1Want
+        end
+        if model ~= want then
             return 'the chosen character is not on the player yet'
         end
     end

@@ -13023,6 +13023,91 @@ do
            ('shutdowns=%d'):format(shut.screen))
     end
 
+    -- ====================================================================== --
+    -- What the gate asks on every pass (#409)
+    -- ====================================================================== --
+
+    describe('the gate works Season 1\'s character out once, not ten times a second')
+    do
+        -- SEASON 1'S HALF OF THE ANSWER IS A KVP READ AND A HASH, and the gate
+        -- asked for both on every 100 ms pass for an answer that only moves when
+        -- BR.Locker.apply stores a new choice. Counted here through the two calls
+        -- that cost something: BR.Locker.chosen() (the kvp read) and GetHashKey.
+        local chosenId, chosen, hashed = BR.Config.Peds[1].id, 0, 0
+        join(function()
+            world.pedModel = hashOf('mp_m_freemode_01')
+            BR.Locker = { chosen = function()
+                chosen = chosen + 1
+                return chosenId
+            end }
+            GetHashKey = function(s)
+                hashed = hashed + 1
+                return hashOf(s)
+            end
+        end)
+
+        pump(4000)
+        ok(shut.screen == 0,
+           'precondition: four seconds in, the gate is still waiting on the default ped',
+           ('shutdowns=%d'):format(shut.screen))
+        ok(chosen == 1 and hashed == 1,
+           'and in those four seconds it read the stored character once and hashed it once',
+           ('chosen() %d times, GetHashKey %d times'):format(chosen, hashed))
+
+        -- A NEW CHOICE IS STILL FOLLOWED. The one thing that stores one is
+        -- BR.Locker.apply, and it stores it in the same block as the swap that
+        -- puts it on -- here /brlocker after Season 1's first model never came.
+        -- The gate has to reveal on THAT ped, not sit out its whole bound
+        -- waiting for the old one.
+        chosenId = BR.Config.Peds[2].id
+        world.pedModel = hashOf(BR.Config.Peds[2].model)
+        pump(1500)
+        ok(shut.screen == 1,
+           'a choice stored with its model is followed: the screen comes down on the new ped',
+           ('shutdowns=%d at %d ms'):format(shut.screen, fakeTime))
+        ok(chosen == 2,
+           'and the stored character is read again once, when the model on the player changed',
+           ('chosen() %d times'):format(chosen))
+
+        GetHashKey = function(s) return hashOf(s) end
+    end
+
+    describe('Season 2\'s answer is still asked on every pass, because it moves')
+    do
+        -- wantHash() is table reads, and under this screen it moves: 0 while
+        -- Locker v2's first apply waits on the server, then the worn ped's model.
+        -- A gate that kept its first answer would wait out its whole bound for a
+        -- 0 nothing matches.
+        local v2want, asked, chosen = 0, 0, 0
+        join(function()
+            world.pedModel = hashOf('mp_m_freemode_01')
+            BR.LockerV2 = { wantHash = function()
+                asked = asked + 1
+                return v2want
+            end }
+            BR.Locker = { chosen = function()
+                chosen = chosen + 1
+                return BR.Config.Peds[1].id
+            end }
+        end)
+
+        pump(3000)
+        ok(shut.screen == 0 and asked > 10,
+           'precondition: the gate holds on 0 and keeps asking',
+           ('shutdowns=%d wantHash asked %d times'):format(shut.screen, asked))
+
+        v2want = hashOf('mp_f_freemode_01')
+        world.pedModel = v2want
+        pump(1500)
+        ok(shut.screen == 1,
+           'and comes down on the worn ped once wantHash names it',
+           ('shutdowns=%d'):format(shut.screen))
+        ok(chosen == 0, 'Season 1\'s character is never read while Season 2 answers',
+           ('chosen() %d times'):format(chosen))
+
+        BR.LockerV2 = nil
+    end
+
     -- ------------------------------------------------------------ teardown ---
 
     Citizen         = prev.Citizen
