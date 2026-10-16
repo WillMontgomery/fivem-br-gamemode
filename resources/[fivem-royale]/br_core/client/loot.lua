@@ -4330,11 +4330,131 @@ end
 --- The fields /brboxprompt may set.
 local PROMPT_FIELDS = { x = true, y = true, z = true, rx = true, ry = true, rz = true, size = true }
 
+--- The prompt rows being tuned, printed as the lines to paste -- one printer
+--- for the bare command and the keys. With `paste` it says where they go;
+--- without, how to type them.
+--- @param paste boolean
+local function promptReport(paste)
+    local C = BR.Config.Crates
+    print('=== Season 2 box prompts ===')
+    if paste then print('  paste into the `prompt` table in br_lib/config/crates.lua:') end
+    print(promptLine('shipping', C.prompt.shipping or {}))
+    print(promptLine('gift', C.prompt.gift or {}))
+    if not paste then
+        print('  usage: brboxprompt ship|gift x=<m> y=<m> z=<m> rx=<deg> ry=<deg> rz=<deg> size=<m>')
+        print('         brboxprompt on | off   the box in front of you on the keys')
+    end
+end
+
+--- Both rows as the config shipped them, for DELETE: the typed form writes the
+--- rows themselves, so this is the only copy of where the prompts started.
+local PROMPT_SHIPPED = {}
+do
+    local P = BR.Config.Crates and BR.Config.Crates.prompt
+    for key, row in pairs(type(P) == 'table' and P or {}) do
+        if type(row) == 'table' then
+            local copy = {}
+            for f, v in pairs(row) do copy[f] = v end
+            PROMPT_SHIPPED[key] = copy
+        end
+    end
+end
+
+--- A step of each: /brplate's centimeter (ten with SHIFT) and /brrocket's
+--- degree (fifteen), the turns going round rather than stopping.
+local PROMPT_M    = { fine = 0.01, coarse = 0.10, places = 3, lo = -5.0, hi = 5.0 }
+local PROMPT_SIZE = { fine = 0.01, coarse = 0.10, places = 2, lo = 0.05, hi = 5.0 }
+local PROMPT_DEG  = { fine = 1.0, coarse = 15.0, places = 1, wrap = true }
+
+--- The row the keys move: the one the box in front of you reads, which is how
+--- BR.Crates.prompt picks it -- the gift box its own, every other box the
+--- shipping row. Nil with no Season 2 box prompted (a wooden crate wears
+--- /brlabel's numbers, not these).
+--- @return string|nil key, table|nil row
+local function promptRow()
+    local P = BR.Config.Crates and BR.Config.Crates.prompt
+    if type(P) ~= 'table' or not target or not target.boxKind then return nil, nil end
+    local key = target.boxKind == 'gift' and 'gift' or 'shipping'
+    if type(P[key]) ~= 'table' then return nil, nil end
+    return key, P[key]
+end
+
+--- `brboxprompt on`: the row of the box in front of you on the keys (#404,
+--- client/tunekeys.lua). A label on a surface, so /brplate's shape for where
+--- it sits -- LEFT / RIGHT x, UP / DOWN z (up), CTRL + UP / DOWN y (the
+--- box's forward, /brplate's CTRL is out) -- /brrocket's for how it is turned
+--- -- ALT + UP / DOWN rx, ALT + LEFT / RIGHT rz, ALT + CTRL + UP / DOWN ry --
+--- and PAGE UP / DOWN its size, as in every tool. The prompt is drawn from
+--- the row every frame, so the next frame shows the step.
+---
+--- IT FOLLOWS THE BOX. Walk from a shipping box to a gift box and the keys move
+--- the gift row, the way /brplate follows the face of the ambulance.
+local function promptKeys()
+    BR.TuneKeys.start('brboxprompt', {
+        lines = function(k)
+            local key, r = promptRow()
+            if not r then return { '~b~box prompt~w~  no Season 2 box in front of you' } end
+            local function hi(on) return on and '~b~' or '' end
+            local move, turn = not k.turn, k.turn
+            return {
+                ('~b~box prompt~w~  %s'):format(key),
+                ('%sx %.3f~w~   %sy %.3f~w~   %sz %.3f~w~   size %.2f')
+                    :format(hi(move), r.x or 0.0, hi(move and k.depth), r.y or 0.0,
+                            hi(move and not k.depth), r.z or 0.0, r.size or 0.0),
+                ('%srx %.1f~w~   %sry %.1f~w~   %srz %.1f~w~')
+                    :format(hi(turn and not k.depth), r.rx or 0.0, hi(turn and k.depth), r.ry or 0.0,
+                            hi(turn), r.rz or 0.0),
+                ('step %.2f m   %.0f deg'):format(k.coarse and PROMPT_M.coarse or PROMPT_M.fine,
+                    k.coarse and PROMPT_DEG.coarse or PROMPT_DEG.fine),
+            }
+        end,
+        nudge = function(k)
+            local _, r = promptRow()
+            if not r then return false end
+            local moved = false
+            if k.v ~= 0 then
+                local f = k.turn and (k.depth and 'ry' or 'rx') or (k.depth and 'y' or 'z')
+                r[f] = BR.TuneKeys.nudged(r[f], k.v, k.coarse, k.turn and PROMPT_DEG or PROMPT_M)
+                moved = true
+            end
+            if k.h ~= 0 then
+                local f = k.turn and 'rz' or 'x'
+                r[f] = BR.TuneKeys.nudged(r[f], k.h, k.coarse, k.turn and PROMPT_DEG or PROMPT_M)
+                moved = true
+            end
+            if k.s ~= 0 then
+                r.size = BR.TuneKeys.nudged(r.size, k.s, k.coarse, PROMPT_SIZE)
+                moved = true
+            end
+            return moved
+        end,
+        reset = function()
+            local key, r = promptRow()
+            local was = key and PROMPT_SHIPPED[key]
+            if r and was then
+                for f in pairs(PROMPT_FIELDS) do r[f] = was[f] end
+            end
+        end,
+        off = function() promptReport(true) end,
+    })
+    print('[br_core] brboxprompt: on. Stand at a Season 2 box; the keys move the row it reads. The keys:')
+    print('  LEFT / RIGHT             x, the box\'s right')
+    print('  UP / DOWN                z, up')
+    print('  CTRL + UP / DOWN         y, the box\'s forward')
+    print('  ALT + UP / DOWN          rx     ALT + LEFT / RIGHT   rz')
+    print('  ALT + CTRL + UP / DOWN   ry')
+    print('  PAGE UP / DOWN           size')
+    print('  hold SHIFT               10 cm and 15 degree steps instead of 1 cm and 1')
+    print('  DELETE                   that row as it shipped')
+    print('  `brboxprompt off` puts them away and prints both rows to paste')
+end
+
 --- Move the hold prompt on a Season 2 box, live, and print the line to paste.
 ---
 ---   /brboxprompt                               both rows, as they are
 ---   /brboxprompt ship z=0.48 rx=-5 size=0.42   set any of x y z rx ry rz size
 ---   /brboxprompt gift ...                      the gift box's own row
+---   /brboxprompt on | off                      the box in front of you on the keys (#404)
 ---
 --- Stand at a box looking at its prompt and move it until it sits where it
 --- should; it moves on the next frame. Meters and degrees in the BOX'S OWN
@@ -4348,6 +4468,13 @@ RegisterCommand('brboxprompt', function(_, args)
         return
     end
     local which = tostring(args[1] or ''):lower()
+    if which == 'on' then return promptKeys() end
+    if which == 'off' then
+        -- Put away, its `off` prints both rows; already off, they are printed
+        -- anyway, so `off` always answers with them.
+        if not BR.TuneKeys.stop('brboxprompt') then promptReport(true) end
+        return
+    end
     local key = (which == 'ship' or which == 'shipping') and 'shipping'
         or (which == 'gift' and 'gift') or nil
 
@@ -4370,10 +4497,7 @@ RegisterCommand('brboxprompt', function(_, args)
         return
     end
 
-    print('=== Season 2 box prompts ===')
-    print(promptLine('shipping', C.prompt.shipping or {}))
-    print(promptLine('gift', C.prompt.gift or {}))
-    print('  usage: brboxprompt ship|gift x=<m> y=<m> z=<m> rx=<deg> ry=<deg> rz=<deg> size=<m>')
+    promptReport(false)
 end, false)
 
 --- One configured model's state on this build, for /brboxcheck.

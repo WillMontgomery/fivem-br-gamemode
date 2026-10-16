@@ -1693,6 +1693,186 @@ local function pasteLines()
     return table.concat(out, '\n')
 end
 
+describe('#404: brboxprompt on the keys -- the row of the box in front of you, /brplate\'s and /brrocket\'s keys')
+do
+    reset()
+    propsLanded()
+    local P0 = deep(C.prompt)
+    local w = crateWire({ bt = 3, x = 1.5 })
+    add(w)
+    frames(15)
+    local box = bodyAt(w.x, w.y)
+    --- The label on a box this frame: its center in the box's frame (the
+    --- middle of its four corners, which is the row's x, y, z however it is
+    --- turned), its width and its top edge.
+    local function label(h)
+        offsets = {}
+        frame()
+        local c = {}
+        for _, o in ipairs(offsets) do if o.h == h then c[#c + 1] = o end end
+        if #c ~= 4 then return nil end
+        local q = { x = 0.0, y = 0.0, z = 0.0 }
+        for i = 1, 4 do q.x, q.y, q.z = q.x + c[i].x / 4, q.y + c[i].y / 4, q.z + c[i].z / 4 end
+        local ex, ey, ez = c[2].x - c[1].x, c[2].y - c[1].y, c[2].z - c[1].z
+        q.w = math.sqrt(ex * ex + ey * ey + ez * ez)
+        q.yaw = math.deg(math.atan(ey, ex))
+        return q
+    end
+    local function near(a, b) return a ~= nil and b ~= nil and math.abs(a - b) < 1e-9 end
+    local function rows()
+        local out = {}
+        for _, l in ipairs(logs) do
+            if l:match('^        %a+%s*= { x = ') then out[#out + 1] = l end
+        end
+        return table.concat(out, '\n')
+    end
+    local q0 = label(box)
+    ok(q0 ~= nil and near(q0.z, P0.shipping.z), 'the label at the shipping row to start with')
+
+    logs = {}
+    commands.brboxprompt(0, { 'on' })
+    ok(BR.TuneKeys.on('brboxprompt'), 'brboxprompt on: its keys are on')
+    ok(said('`brboxprompt off` puts them away'), 'and they are printed')
+    keyClaims = {}
+    readout = {}
+    frame()
+    ok(claimed(), 'the arrows, the page keys and DELETE are claimed')
+    ok(not keyClaims[KEY.COARSE] and not keyClaims[KEY.DEPTH] and not keyClaims[KEY.TURN]
+        and not keyClaims[32], 'SHIFT, CTRL, ALT and walking are not')
+    eq(readout[1], '~b~box prompt~w~  shipping', 'the readout names the row the box reads')
+
+    press({ KEY.UP })
+    local q = label(box)
+    ok(near(C.prompt.shipping.z, BR.TuneKeys.round(P0.shipping.z + 0.01, 3)) and near(q.z, C.prompt.shipping.z)
+        and near(q.x, P0.shipping.x) and near(q.y, P0.shipping.y),
+        'UP: 1 cm up, drawn there on the next frame, and nowhere else', q and q.z)
+    press({ KEY.DEPTH, KEY.UP })
+    q = label(box)
+    ok(near(q.y, BR.TuneKeys.round(P0.shipping.y + 0.01, 3)) and near(q.z, C.prompt.shipping.z),
+        'CTRL + UP: 1 cm along the box\'s forward, and not up', q and q.y)
+    press({ KEY.COARSE, KEY.RIGHT })
+    q = label(box)
+    ok(near(q.x, BR.TuneKeys.round(P0.shipping.x + 0.10, 3)), 'SHIFT + RIGHT: 10 cm to the box\'s right', q and q.x)
+    press({ KEY.DOWN }, 1000, 25)
+    eq(C.prompt.shipping.z, BR.TuneKeys.round(P0.shipping.z - 0.19, 3), 'DOWN held a second: 20 steps of 1 cm')
+    press({ KEY.BIGGER })
+    q = label(box)
+    ok(near(q.w, BR.TuneKeys.round(P0.shipping.size + 0.01, 2)), 'PAGE UP: the label 1 cm wider', q and q.w)
+
+    -- THE TURNS: /brrocket's three.
+    press({ KEY.TURN, KEY.RIGHT })
+    q = label(box)
+    eq(C.prompt.shipping.rz, BR.TuneKeys.round(P0.shipping.rz + 1.0, 1), 'ALT + RIGHT: rz a degree')
+    ok(math.abs(q.yaw - (P0.shipping.rz + 1.0)) < 1e-6, 'and the label turned a degree about the box\'s up',
+        q and q.yaw)
+    ok(near(q.x, BR.TuneKeys.round(P0.shipping.x + 0.10, 3)), 'and not moved across')
+    press({ KEY.TURN, KEY.UP })
+    eq(C.prompt.shipping.rx, BR.TuneKeys.round(P0.shipping.rx + 1.0, 1), 'ALT + UP: rx a degree')
+    press({ KEY.TURN, KEY.DEPTH, KEY.COARSE, KEY.DOWN })
+    ok(C.prompt.shipping.ry == BR.TuneKeys.round(P0.shipping.ry - 15.0, 1)
+        and C.prompt.shipping.rx == BR.TuneKeys.round(P0.shipping.rx + 1.0, 1),
+        'ALT + CTRL + SHIFT + DOWN: ry 15 degrees back, rx as it was')
+    ok(C.prompt.shipping.z == BR.TuneKeys.round(P0.shipping.z - 0.19, 3), 'and no turn moved it')
+    readout = {}
+    keyDown = { [KEY.TURN] = true }
+    frame()
+    keyDown = {}
+    eq(readout[3], ('~b~rx %.1f~w~   ry %.1f~w~   ~b~rz %.1f~w~')
+        :format(C.prompt.shipping.rx, C.prompt.shipping.ry, C.prompt.shipping.rz),
+        'the numbers on screen, ALT\'s in blue')
+    readout = {}
+    keyDown = { [KEY.DEPTH] = true }
+    frame()
+    keyDown = {}
+    eq(readout[2], ('~b~x %.3f~w~   ~b~y %.3f~w~   z %.3f~w~   size %.2f')
+        :format(C.prompt.shipping.x, C.prompt.shipping.y, C.prompt.shipping.z, C.prompt.shipping.size),
+        'and with CTRL held, y for z')
+
+    -- A TYPED MILLIMETER IS KEPT: a step lands on 0.825, not 0.83.
+    commands.brboxprompt(0, { 'ship', 'z=0.815' })
+    press({ KEY.UP })
+    eq(C.prompt.shipping.z, 0.825, 'a step from a typed 0.815 is 0.825')
+    commands.brboxprompt(0, { 'ship', ('z=%.3f'):format(BR.TuneKeys.round(P0.shipping.z - 0.19, 3)) })
+
+    -- IT FOLLOWS THE BOX: a gift box in front of you, the gift row.
+    local shipNow = deep(C.prompt.shipping)
+    TriggerEvent(BR.Net.LOOT_GONE, { w.id })
+    local g = crateWire({ bt = 3, bg = 'red', x = 1.5, y = 0.2 })
+    add(g)
+    frames(15)
+    local gbox = bodyAt(g.x, g.y)
+    readout = {}
+    frame()
+    eq(readout[1], '~b~box prompt~w~  gift', 'a gift box in front of you: the gift row')
+    press({ KEY.UP })
+    q = label(gbox)
+    ok(near(q.z, BR.TuneKeys.round(P0.gift.z + 0.01, 3)), 'UP moves the gift box\'s label', q and q.z)
+    eq(C.prompt.shipping.z, shipNow.z, 'and not the shipping row')
+
+    -- NO BOX: nothing to move, and it says so.
+    TriggerEvent(BR.Net.LOOT_GONE, { g.id })
+    frames(5)
+    local giftNow = deep(C.prompt.gift)
+    press({ KEY.UP })
+    readout = {}
+    frame()
+    ok(C.prompt.gift.z == giftNow.z and C.prompt.shipping.z == shipNow.z, 'no box in front of you: UP moves nothing')
+    eq(readout[1], '~b~box prompt~w~  no Season 2 box in front of you', 'and the readout says so')
+
+    -- A WOODEN CRATE wears /brlabel's numbers, so it is no box either.
+    local wood = crateWire({ x = 1.5 })
+    add(wood)
+    frames(15)
+    press({ KEY.UP })
+    readout = {}
+    frame()
+    ok(C.prompt.gift.z == giftNow.z and C.prompt.shipping.z == shipNow.z, 'a wooden crate in front: UP moves no row')
+    eq(readout[1], '~b~box prompt~w~  no Season 2 box in front of you', 'and the readout says so')
+    TriggerEvent(BR.Net.LOOT_GONE, { wood.id })
+    frames(5)
+
+    -- PUT AWAY: both rows to paste, the lines the bare command prints.
+    logs = {}
+    commands.brboxprompt(0, { 'off' })
+    local fromKeys = rows()
+    ok(said('paste into the `prompt` table in br_lib/config/crates.lua:')
+        and fromKeys:find(('shipping = { x = %.3f'):format(shipNow.x), 1, true) ~= nil
+        and fromKeys:find(('z = %.3f, rx = %.1f'):format(giftNow.z, giftNow.rx), 1, true) ~= nil,
+        'brboxprompt off: both rows to paste', fromKeys)
+    ok(not BR.TuneKeys.on('brboxprompt'), 'and its keys are off')
+    logs = {}
+    commands.brboxprompt(0, {})
+    eq(rows(), fromKeys, 'the same lines the bare command prints')
+    logs = {}
+    commands.brboxprompt(0, { 'off' })
+    eq(rows(), fromKeys, 'and `off` while off answers with them')
+    keyClaims = {}
+    keyDown = { [KEY.UP] = true }
+    frame(50)
+    keyDown = {}
+    ok(next(keyClaims) == nil, 'and the arrows are the player\'s again')
+
+    -- DELETE: the row of the box in front of you, as it shipped.
+    local w2 = crateWire({ bt = 3, x = 1.5 })
+    add(w2)
+    frames(15)
+    commands.brboxprompt(0, { 'on' })
+    press({ KEY.RESET })
+    local s, g2 = C.prompt.shipping, C.prompt.gift
+    ok(s.x == P0.shipping.x and s.y == P0.shipping.y and s.z == P0.shipping.z and s.rx == P0.shipping.rx
+        and s.ry == P0.shipping.ry and s.rz == P0.shipping.rz and s.size == P0.shipping.size,
+        'DELETE: the shipping row as it shipped')
+    eq(g2.z, giftNow.z, 'and the gift row left as it was')
+    commands.brboxprompt(0, { 'off' })
+
+    -- THE TYPED FORM STILL WORKS.
+    logs = {}
+    commands.brboxprompt(0, { 'ship', 'z=0.62' })
+    eq(C.prompt.shipping.z, 0.62, 'brboxprompt ship z=0.62 still sets it')
+    eq(errored(), nil, 'and no loop errored')
+    TriggerEvent(BR.Net.LOOT_GONE, { w2.id })
+end
+
 describe('#404: brlabel on the keys -- UP / DOWN lift the crate label, PAGE UP / DOWN size it')
 do
     reset()
