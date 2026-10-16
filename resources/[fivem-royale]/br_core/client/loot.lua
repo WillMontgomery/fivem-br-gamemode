@@ -4842,19 +4842,80 @@ end, false)
 --- trip -- stand at a crate, try a value, and paste the one that feels right
 --- into br_lib/config/loot.lua. Client-local and not persisted, so a restart
 --- puts the configured value back.
-RegisterCommand('brcratehold', function(_, args)
-    local ms = tonumber(args[1])
-    if ms then
-        -- Floored rather than rejected: a hold of zero is a tap, which is the
-        -- exact behaviour #129 exists to remove, and shipping a debug command
-        -- that can reintroduce it is asking for it back.
-        L.chestHoldMs = math.max(100, math.floor(ms))
-        -- Any hold in flight was measured against the old number.
-        clearHold('the hold duration was retuned')
-        lastPrompt.id, lastPrompt.hold = nil, nil
-    end
-    print(('[br_core] crate hold = %dms   (usage: brcratehold <ms>)')
+---
+---   /brcratehold          show it
+---   /brcratehold <ms>     set it
+---   /brcratehold on|off   the same number on the keys (#404)
+
+--- What the config shipped, for DELETE: the typed form writes the config
+--- table itself.
+local HOLD_SHIPPED = L.chestHoldMs
+--- A step: a tenth of a second, a whole one with SHIFT, and never under the
+--- 100 ms the typed form floors at.
+local HOLD_STEP = { fine = 100, coarse = 1000, places = 0, lo = 100, hi = 30000 }
+
+--- Set the hold, for the typed form and the keys alike.
+--- @param ms number
+local function setHold(ms)
+    -- Floored rather than rejected: a hold of zero is a tap, which is the
+    -- exact behavior #129 exists to remove, and shipping a debug command
+    -- that can reintroduce it is asking for it back.
+    L.chestHoldMs = math.max(100, math.floor(ms))
+    -- Any hold in flight was measured against the old number.
+    clearHold('the hold duration was retuned')
+    lastPrompt.id, lastPrompt.hold = nil, nil
+end
+
+--- The number, and with `paste` the line for br_lib/config/loot.lua -- one
+--- printer for the typed form and the keys, so what they paste is one thing.
+--- @param paste boolean
+local function holdReport(paste)
+    print(('[br_core] crate hold = %dms   (usage: brcratehold <ms> | on | off)')
         :format(L.chestHoldMs or 1000))
+    if paste then
+        print('  paste into br_lib/config/loot.lua:')
+        print(('    chestHoldMs     = %d,'):format(L.chestHoldMs or 1000))
+    end
+end
+
+--- `brcratehold on`: the hold on UP / DOWN (#404, client/tunekeys.lua), the
+--- keys /brshine moves a number with. Each step lands at once, so the next
+--- hold on a crate is the new length; one in flight starts again, as it does
+--- for the typed form.
+local function holdKeys()
+    BR.TuneKeys.start('brcratehold', {
+        lines = function(k)
+            return {
+                '~b~crate hold~w~',
+                ('%d ms'):format(L.chestHoldMs or 1000),
+                ('step %d ms'):format(k.coarse and HOLD_STEP.coarse or HOLD_STEP.fine),
+            }
+        end,
+        nudge = function(k)
+            if k.v == 0 then return false end
+            setHold(BR.TuneKeys.nudged(L.chestHoldMs or 1000, k.v, k.coarse, HOLD_STEP))
+            return true
+        end,
+        reset = function() setHold(HOLD_SHIPPED or 1000) end,
+        off = function() holdReport(true) end,
+    })
+    print('[br_core] brcratehold: on. Stand at a crate and hold to open it. The keys:')
+    print('  UP / DOWN    the hold, a tenth of a second a step')
+    print('  hold SHIFT   a second a step')
+    print('  DELETE       the shipped number')
+    print('  `brcratehold off` puts them away and prints what to paste')
+end
+
+RegisterCommand('brcratehold', function(_, args)
+    local word = tostring(args[1] or '')
+    if word == 'on' then return holdKeys() end
+    if word == 'off' then
+        if not BR.TuneKeys.stop('brcratehold') then holdReport(true) end
+        return
+    end
+    local ms = tonumber(args[1])
+    if ms then setHold(ms) end
+    holdReport(ms ~= nil)
 end, false)
 
 --- Tune the CRATE SHINE without a deploy -- the same ruler as /brlabel, for

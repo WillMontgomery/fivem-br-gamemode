@@ -1873,6 +1873,116 @@ do
     TriggerEvent(BR.Net.LOOT_GONE, { w2.id })
 end
 
+describe('#404: brcratehold on the keys -- UP / DOWN the hold, a tenth of a second a step')
+do
+    reset()
+    local hold0 = L.chestHoldMs
+    local w = crateWire({ x = 1.5 })
+    add(w)
+    frames(15)
+    --- Hold the interact key on the crate in front for `ms`, then let go.
+    local function holdFor(ms)
+        frames(2)
+        held = true
+        keyFns.interact(true)
+        frames(math.ceil(ms / 16))
+        held = false
+        keyFns.interact(false)
+        frames(10)
+    end
+
+    logs = {}
+    commands.brcratehold(0, { 'on' })
+    ok(BR.TuneKeys.on('brcratehold'), 'brcratehold on: its keys are on')
+    ok(said('`brcratehold off` puts them away'), 'and they are printed')
+    keyClaims = {}
+    readout = {}
+    frame()
+    ok(claimed(), 'the arrows, the page keys and DELETE are claimed')
+    ok(not keyClaims[KEY.COARSE] and not keyClaims[38] and not keyClaims[51] and not keyClaims[32],
+        'SHIFT, the interact key and walking are not')
+    eq(readout[2], ('%d ms'):format(hold0), 'the hold on screen')
+
+    press({ KEY.UP })
+    eq(L.chestHoldMs, hold0 + 100, 'UP tapped: a tenth of a second longer')
+    press({ KEY.COARSE, KEY.UP })
+    eq(L.chestHoldMs, hold0 + 1100, 'SHIFT + UP: a second more')
+    press({ KEY.DOWN }, 1500, 25)
+    eq(L.chestHoldMs, 100, 'DOWN held 1.5 s: thirty steps down, stopping at 100 ms')
+    press({ KEY.COARSE, KEY.UP })
+    press({ KEY.COARSE, KEY.UP })
+    eq(L.chestHoldMs, 2100, 'SHIFT + UP twice: 2.1 s')
+    press({ KEY.BIGGER })
+    press({ KEY.RIGHT })
+    eq(L.chestHoldMs, 2100, 'PAGE UP and RIGHT move nothing')
+    readout = {}
+    frame()
+    eq(readout[2], '2100 ms', 'the new number on screen')
+
+    -- AND THE CRATE KEEPS TIME BY IT: what the owner tunes it for.
+    holdFor(1300)
+    eq(claimsSent(), 0, 'a 1.3 s hold no longer opens the crate')
+    holdFor(2300)
+    eq(claimsSent(), 1, 'a 2.3 s one does')
+
+    -- A STEP MID-HOLD STARTS IT AGAIN, as the typed form always has: the time
+    -- held so far was measured against the old number.
+    TriggerEvent(BR.Net.LOOT_GONE, { w.id })
+    local w2 = crateWire({ x = 1.5 })
+    add(w2)
+    frames(15)
+    frames(2)
+    held = true
+    keyFns.interact(true)
+    frames(63)
+    press({ KEY.UP })
+    held = true
+    frames(94)
+    held = false
+    keyFns.interact(false)
+    frames(10)
+    eq(claimsSent(), 1, 'UP a second into a hold: 2.5 s held in all opens nothing at 2.2 s')
+    eq(L.chestHoldMs, 2200, 'and the hold is 2.2 s')
+    commands.brcratehold(0, { '2100' })
+    w = w2
+
+    -- PUT AWAY: the line to paste, the one the typed form prints.
+    logs = {}
+    commands.brcratehold(0, { 'off' })
+    local fromKeys = pasteLines()
+    eq(fromKeys, '    chestHoldMs     = 2100,', 'brcratehold off: the line to paste')
+    ok(not BR.TuneKeys.on('brcratehold'), 'and its keys are off')
+    logs = {}
+    commands.brcratehold(0, { '2100' })
+    eq(pasteLines(), fromKeys, 'the same line the typed form prints for that number')
+    logs = {}
+    commands.brcratehold(0, { 'off' })
+    eq(pasteLines(), fromKeys, 'and `off` while off answers with it')
+    keyClaims = {}
+    keyDown = { [KEY.UP] = true }
+    frame(50)
+    frame(50)
+    keyDown = {}
+    ok(next(keyClaims) == nil and L.chestHoldMs == 2100, 'and the arrows are the player\'s again')
+
+    -- DELETE: what shipped.
+    commands.brcratehold(0, { 'on' })
+    press({ KEY.RESET })
+    eq(L.chestHoldMs, hold0, 'DELETE: the shipped hold')
+    commands.brcratehold(0, { 'off' })
+
+    -- THE TYPED FORM STILL WORKS, and still floors.
+    logs = {}
+    commands.brcratehold(0, { '3000' })
+    eq(L.chestHoldMs, 3000, 'brcratehold <ms> still sets it')
+    ok(said('crate hold = 3000ms'), 'and says so')
+    commands.brcratehold(0, { '0' })
+    eq(L.chestHoldMs, 100, 'and a hold of nothing is still 100 ms')
+    L.chestHoldMs = hold0
+    eq(errored(), nil, 'and no loop errored')
+    TriggerEvent(BR.Net.LOOT_GONE, { w.id })
+end
+
 describe('#404: brlabel on the keys -- UP / DOWN lift the crate label, PAGE UP / DOWN size it')
 do
     reset()
