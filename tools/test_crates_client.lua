@@ -1856,6 +1856,96 @@ do
     eq(errored(), nil, 'and no loop errored')
 end
 
+describe('#404: brpropscale on the keys -- LEFT / RIGHT pick the item, PAGE UP / DOWN size it')
+do
+    reset()
+    local small, big = BR.Config.ConsumableById.minishield, BR.Config.ConsumableById.shield
+    local smallWas, bigWas = small.propScale, big.propScale
+    cd[small.prop] = true
+    nextId = nextId + 1
+    local w = { id = nextId, kind = BR.ItemKind.CONSUMABLE, item = 'minishield', rarity = R.COMMON,
+                count = 1, x = 1.0, y = 0.0, z = 30.0, prop = small.prop }
+    add(w)
+    frames(10)
+    local h = bodyAt(w.x, w.y)
+    ok(h and scaledTo[h] == smallWas, 'a small shield on the ground, at its size', h and scaledTo[h])
+    --- Deletes in the log since `from`.
+    local function deletes(from)
+        local n = 0
+        for i = from, #log do if log[i]:find('^delete') then n = n + 1 end end
+        return n
+    end
+
+    logs = {}
+    commands.brpropscale(0, { 'on' })
+    ok(BR.TuneKeys.on('brpropscale'), 'brpropscale on: its keys are on')
+    ok(said('brpropscale: on, at minishield'), 'on the item he is standing by')
+    keyClaims = {}
+    frame()
+    ok(claimed(), 'the arrows, the page keys and DELETE are claimed')
+
+    local mark = #log
+    press({ KEY.BIGGER })
+    eq(small.propScale, BR.TuneKeys.round(smallWas + 0.01, 2), 'PAGE UP: a hundredth bigger')
+    eq(deletes(mark + 1), 1, 'its prop dropped once the key came up')
+    lastSlow = now - 1000
+    frames(10)
+    h = bodyAt(w.x, w.y)
+    ok(h and scaledTo[h] == small.propScale, 'and built again at the new size', h and scaledTo[h])
+
+    mark = #log
+    keyDown = { [KEY.BIGGER] = true }
+    frames(40, 25)
+    eq(deletes(mark + 1), 0, 'held: nothing rebuilt while the size is still moving')
+    keyDown = {}
+    frame(50)
+    eq(small.propScale, BR.TuneKeys.round(smallWas + 0.21, 2), 'a held second: 20 steps')
+    eq(deletes(mark + 1), 1, 'and one rebuild when it is let go')
+    press({ KEY.COARSE, KEY.SMALLER })
+    eq(small.propScale, BR.TuneKeys.round(smallWas + 0.11, 2), 'SHIFT + PAGE DOWN: a tenth smaller')
+    press({ KEY.UP })
+    eq(small.propScale, BR.TuneKeys.round(smallWas + 0.11, 2), 'UP sizes nothing')
+
+    -- RIGHT: THE NEXT ITEM, AND ONLY IT.
+    press({ KEY.RIGHT }, 500)
+    mark = #log
+    press({ KEY.BIGGER })
+    eq(big.propScale, BR.TuneKeys.round((bigWas or 1.0) + 0.01, 2), 'RIGHT held, then PAGE UP: the next item, once')
+    eq(small.propScale, BR.TuneKeys.round(smallWas + 0.11, 2), 'and the small shield stays as it was')
+    eq(deletes(mark + 1), 0, 'with no small shield rebuilt for it')
+    readout = {}
+    frame()
+    eq(readout[2], ('~b~shield~w~   %s   x%.2f'):format(big.label, big.propScale), 'on screen: the item and its size')
+    press({ KEY.RESET })
+    eq(big.propScale, bigWas, 'DELETE: its shipped size')
+
+    -- PUT AWAY: the line for every item changed, the same line the typed form prints.
+    logs = {}
+    commands.brpropscale(0, { 'off' })
+    local fromKeys = pasteLines()
+    eq(fromKeys, ('    propScale = %.2f,'):format(small.propScale), 'brpropscale off: the small shield\'s line, and only it')
+    ok(said(('[br_core] minishield scale = %.2f'):format(small.propScale)), 'named')
+    ok(not BR.TuneKeys.on('brpropscale'), 'and its keys are off')
+    lastSlow = now - 1000
+    frames(10)
+    logs = {}
+    commands.brpropscale(0, { 'minishield', tostring(small.propScale) })
+    eq(pasteLines(), fromKeys, 'the same line the typed form prints for that size')
+    ok(said('(1 prop(s) rebuilding)'), 'and the typed form still rebuilds as it did')
+    keyClaims = {}
+    local before = small.propScale
+    keyDown = { [KEY.BIGGER] = true }
+    frame(50)
+    frame(50)
+    keyDown = {}
+    ok(next(keyClaims) == nil and small.propScale == before, 'and the page keys are the player\'s again')
+
+    small.propScale, big.propScale = smallWas, bigWas
+    TriggerEvent(BR.Net.LOOT_GONE, { w.id })
+    frames(3)
+    eq(errored(), nil, 'and no loop errored')
+end
+
 -- ----------------------------------------------------------------- result ---
 
 print = realPrint

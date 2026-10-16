@@ -4949,6 +4949,7 @@ end, false)
 ---
 ---   /brpropscale                     what every consumable is drawn at
 ---   /brpropscale <itemId> <k>        set one, live, and rebuild its props
+---   /brpropscale on | off            the same on the keys (#404)
 ---
 --- It exists because the number in br_lib/config/loot.lua is a guess and there
 --- is no way to evaluate it except by standing next to one. The owner asked for
@@ -4975,8 +4976,158 @@ local AIRDROP_SCALES = {
     airdrophusk = { key = 'huskScale',  prop = 'huskProp',  label = 'Airdrop husk' },
 }
 
+--- Where an id's scale lives: the table and key it is written to, the file the
+--- paste line names, and its label. nil for an id with no scale.
+--- @param id string
+--- @return table|nil t, string key, string where, string label
+local function scaleSlot(id)
+    local drop = AIRDROP_SCALES[id]
+    if drop and BR.Config.Airdrop then
+        return BR.Config.Airdrop, drop.key, 'br_lib/config/airdrop.lua', drop.label
+    end
+    local c = BR.Config.ConsumableById[id]
+    if c then return c, 'propScale', 'br_lib/config/loot.lua', c.label end
+    return nil
+end
+
+--- Every id the keys step through: the consumables, then the airdrop's three.
+--- @return string[]
+local function scalables()
+    local out = {}
+    for _, c in ipairs(BR.Config.Consumables) do out[#out + 1] = c.id end
+    if BR.Config.Airdrop then
+        for _, id in ipairs({ 'volts', 'airdrop', 'airdrophusk' }) do out[#out + 1] = id end
+    end
+    return out
+end
+
+--- What shipped, for DELETE: the setter writes the config table itself.
+local SCALE_SHIPPED = {}
+for _, id in ipairs(scalables()) do
+    local t, key = scaleSlot(id)
+    SCALE_SHIPPED[id] = t and t[key]
+end
+
+--- Every prop of `id` dropped, to be built again at its new size.
+---
+--- REBUILT, NOT RETUNED IN PLACE. The scale is cached on the entry at spawn,
+--- and loot.props re-queues anything in range that has no prop -- so dropping
+--- the object is the whole of the refresh.
+--- @return integer  how many
+local function rebuildScaled(id)
+    local n = 0
+    for _, e in pairs(entries) do
+        if e.item == id and e.obj then despawn(e) n = n + 1 end
+    end
+    return n
+end
+
+--- One id's size and its line to paste -- the typed form's and the keys', so
+--- the two cannot paste different things.
+--- @param id string
+--- @param rebuilt integer|nil  how many props the typed form rebuilt
+local function scalePaste(id, rebuilt)
+    local t, key, where = scaleSlot(id)
+    local k = tonumber(t[key]) or 1.0
+    print(('[br_core] %s scale = %.2f%s'):format(id, k,
+        rebuilt and ('  (%d prop(s) rebuilding)'):format(rebuilt) or ''))
+    print(('  paste into %s:'):format(where))
+    print(('    %s = %.2f,'):format(key, k))
+end
+
+--- Which id the keys size, and which have been sized and not yet rebuilt.
+local scalePick = nil
+local scaleDirty = {}
+local SCALE_STEP = { fine = 0.01, coarse = 0.10, places = 2, lo = 0.05, hi = 50.0 }
+
+--- The line for every id the session changed from what shipped, or for the
+--- one picked when none was.
+local function scaleOffReport()
+    local any = false
+    for _, id in ipairs(scalables()) do
+        local t, key = scaleSlot(id)
+        if (tonumber(t[key]) or 1.0) ~= (tonumber(SCALE_SHIPPED[id]) or 1.0) then
+            scalePaste(id)
+            any = true
+        end
+    end
+    if not any then scalePaste(scalePick or scalables()[1]) end
+end
+
+--- The scalable item nearest the player, so `on` starts on the thing he is
+--- standing by.
+local function nearestScalable()
+    local p = GetEntityCoords(PlayerPedId())
+    local best, bestD = nil, math.huge
+    for _, e in pairs(entries) do
+        if e.item and e.x and e.y and scaleSlot(e.item) then
+            local d = BR.Dist2(p.x, p.y, e.x, e.y)
+            if d < bestD then best, bestD = e.item, d end
+        end
+    end
+    return best
+end
+
+--- `brpropscale on`: LEFT / RIGHT pick the item, PAGE UP / DOWN size it -- the
+--- page keys size things in every tool (client/tunekeys.lua).
+---
+--- ITS PROPS ARE REBUILT ONCE THE KEY COMES UP, not at every step: a rebuild
+--- is a despawn and a fresh body from the queue, and twenty of those a second
+--- would be a prop that is never there to look at. The number on screen moves
+--- with every step.
+local function scaleKeys()
+    local list = scalables()
+    scalePick = nearestScalable() or scalePick or list[1]
+    local function scaleIndex()
+        for i, id in ipairs(list) do if id == scalePick then return i end end
+        return 1
+    end
+    BR.TuneKeys.start('brpropscale', {
+        lines = function(k)
+            local t, key, _, label = scaleSlot(scalePick)
+            return {
+                ('~b~prop scale~w~   %d/%d'):format(scaleIndex(), #list),
+                ('~b~%s~w~   %s   x%.2f'):format(scalePick, tostring(label),
+                    tonumber(t and t[key]) or 1.0),
+                ('step %.2f'):format(k.coarse and SCALE_STEP.coarse or SCALE_STEP.fine),
+            }
+        end,
+        pick = function(d)
+            scalePick = list[(scaleIndex() - 1 + d) % #list + 1]
+        end,
+        nudge = function(k)
+            if k.s == 0 then return false end
+            local t, key = scaleSlot(scalePick)
+            t[key] = BR.TuneKeys.nudged(tonumber(t[key]) or 1.0, k.s, k.coarse, SCALE_STEP)
+            scaleDirty[scalePick] = true
+            return true
+        end,
+        reset = function()
+            local t, key = scaleSlot(scalePick)
+            t[key] = SCALE_SHIPPED[scalePick]
+            scaleDirty[scalePick] = true
+        end,
+        settle = function()
+            for id in pairs(scaleDirty) do rebuildScaled(id) end
+            scaleDirty = {}
+        end,
+        off = scaleOffReport,
+    })
+    print(('[br_core] brpropscale: on, at %s. The keys:'):format(scalePick))
+    print('  LEFT / RIGHT     which item')
+    print('  PAGE UP / DOWN   its size, rebuilt when you let go')
+    print('  hold SHIFT       0.10 steps instead of 0.01')
+    print('  DELETE           its shipped size')
+    print('  `brpropscale off` puts them away and prints what to paste')
+end
+
 RegisterCommand('brpropscale', function(_, args)
     local id = args[1] and tostring(args[1]) or nil
+    if id == 'on' then return scaleKeys() end
+    if id == 'off' then
+        if not BR.TuneKeys.stop('brpropscale') then scaleOffReport() end
+        return
+    end
     local k  = tonumber(args[2])
 
     if id and k then
@@ -4985,31 +5136,13 @@ RegisterCommand('brpropscale', function(_, args)
         -- confusion this file has burned rounds on.
         k = math.max(0.05, k)
 
-        local drop = AIRDROP_SCALES[id]
-        local c    = BR.Config.ConsumableById[id]
-        local where, field
-        if drop and BR.Config.Airdrop then
-            BR.Config.Airdrop[drop.key] = k
-            where, field = 'br_lib/config/airdrop.lua', drop.key
-        elseif c then
-            c.propScale = k
-            where, field = 'br_lib/config/loot.lua', 'propScale'
-        else
+        local t, key = scaleSlot(id)
+        if not t then
             print(('[br_core] no such scalable item: %s'):format(id))
             return
         end
-
-        -- REBUILT, NOT RETUNED IN PLACE. The scale is cached on the entry at
-        -- spawn, and loot.props re-queues anything in range that has no prop --
-        -- so dropping the object is the whole of the refresh.
-        local n = 0
-        for _, e in pairs(entries) do
-            if e.item == id and e.obj then despawn(e) n = n + 1 end
-        end
-        print(('[br_core] %s scale = %.2f  (%d prop(s) rebuilding)')
-            :format(id, k, n))
-        print(('  paste into %s:'):format(where))
-        print(('    %s = %.2f,'):format(field, k))
+        t[key] = k
+        scalePaste(id, rebuildScaled(id))
         return
     end
 
@@ -5032,6 +5165,7 @@ RegisterCommand('brpropscale', function(_, args)
             :format('chute', 'Cargo canopy', A.chuteScale or 1.0))
     end
     print('  usage: brpropscale <itemId> <scale>   (1.0 = as authored)')
+    print('         brpropscale on | off            the same on the keys')
 end, false)
 
 --- Which prompt glyph actually renders.
