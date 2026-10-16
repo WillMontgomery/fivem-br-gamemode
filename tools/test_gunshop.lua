@@ -3651,13 +3651,17 @@ do
 
     BR.Loop = {
         SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
-        register = function(_, name, fn) loops[name] = fn end,
+        -- A HANDLE IS THE NAME, so the dev tuners' keys (#404), which come and
+        -- go with `on` and `off`, can be put away again.
+        register = function(_, name, fn) loops[name] = fn return name end,
+        unregister = function(name) if name then loops[name] = nil end end,
     }
 
     -- AFTER THE LOOP REGISTRY, which is the manifest's order: client/menu.lua
     -- registers its Escape sampler at load (#371), and client/main.lua is the
     -- first file in br_core.
     assert(loadfile(ROOT .. 'br_core/client/menu.lua'))()
+    assert(loadfile(ROOT .. 'br_core/client/tunekeys.lua'))()
 
     BR.Keys = { on = function(k, fn) keys[k] = fn end, uiScreen = nil }
     BR.Dui = {
@@ -6019,6 +6023,129 @@ do
         ok(drawn[#drawn] ~= nil
             and math.abs(drawn[#drawn].oz - G.signUpM) < 0.001,
             'and reset hands it back to config')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('#404: brgunplate on the keys -- UP / DOWN up, CTRL fwd, PAGE UP / DOWN w')
+    -- -----------------------------------------------------------------------
+    do
+        -- "Any manual adjustment commands must allow keyboard input" (owner,
+        -- 2026-10-11). The keys, modeled: what is held, what was claimed and
+        -- what was drawn, on a clock of their own.
+        local clock, down, claims, text = 5000, {}, {}, {}
+        local realTimer = GetGameTimer
+        GetGameTimer = function() return clock end
+        IsDisabledControlPressed = function(_, id) return down[id] and 1 or 0 end
+        DisableControlAction = function(_, id) claims[id] = (claims[id] or 0) + 1 end
+        for _, n in ipairs({ 'SetTextFont', 'SetTextScale', 'SetTextColour', 'SetTextDropshadow',
+                             'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+                             'BeginTextCommandDisplayText' }) do
+            _G[n] = function() end
+        end
+        local pending = nil
+        AddTextComponentSubstringPlayerName = function(s) pending = s end
+        EndTextCommandDisplayText = function() text[#text + 1] = pending end
+        local K = BR.TuneKeys.KEY
+        local function frame(ms)
+            clock = clock + (ms or 50)
+            claims, text = {}, {}
+            if loops['tunekeys.brgunplate'] then loops['tunekeys.brgunplate']() end
+        end
+        local function press(keys, ms, step)
+            down = {}
+            for _, k in ipairs(keys) do down[k] = true end
+            local t = 0
+            repeat
+                frame(step or 50)
+                t = t + (step or 50)
+            until t >= (ms or 1)
+            down = {}
+            frame(50)
+        end
+        local function plateAt()
+            drawn = {}
+            loops['gunshop.draw']()
+            return drawn[#drawn]
+        end
+        local function pasted(lines)
+            local out = {}
+            for _, l in ipairs(lines) do
+                if l:match('^    sign') then out[#out + 1] = l end
+            end
+            return table.concat(out, '\n')
+        end
+        local up0, fwd0, w0 = tonumber(G.signUpM), tonumber(G.signForwardM), tonumber(G.signWidthM)
+
+        walkAway()
+        standAt('pillbox')
+        local p = plateAt()
+        ok(p ~= nil and math.abs(p.oz - up0) < 1e-9, 'the plate at the config height to start with')
+
+        local said = grab(cmds['brgunplate'], nil, { 'on' })
+        ok(BR.TuneKeys.on('brgunplate') and loops['tunekeys.brgunplate'] ~= nil,
+            'brgunplate on: its keys are on, one frame callback')
+        ok(table.concat(said, '\n'):find('`brgunplate off` puts them away', 1, true) ~= nil,
+            'and they are printed')
+        frame()
+        local all = true
+        for _, id in ipairs({ 27, 172, 173, 174, 175, 10, 11, 178 }) do all = all and (claims[id] or 0) > 0 end
+        ok(all, 'the arrows, the page keys and DELETE are claimed')
+        ok(not claims[K.DEPTH] and not claims[K.COARSE] and not claims[32], 'CTRL, SHIFT and walking are not')
+
+        press({ K.UP })
+        p = plateAt()
+        ok(math.abs(p.oz - (up0 + 0.01)) < 1e-9, 'UP: the plate drawn 1 cm higher on the next frame', p.oz)
+        press({ K.COARSE, K.UP })
+        p = plateAt()
+        ok(math.abs(p.oz - (up0 + 0.11)) < 1e-9, 'SHIFT + UP: 10 cm more', p.oz)
+        press({ K.DEPTH, K.DOWN })
+        p = plateAt()
+        ok(math.abs(p.oy - (fwd0 - 0.01)) < 1e-9 and math.abs(p.oz - (up0 + 0.11)) < 1e-9,
+            'CTRL + DOWN: 1 cm in toward the clerk, and not down', p.oy)
+        press({ K.BIGGER })
+        p = plateAt()
+        ok(math.abs(p.w - (w0 + 0.01)) < 1e-9, 'PAGE UP: 1 cm wider', p.w)
+        press({ K.UP }, 1000, 25)
+        p = plateAt()
+        ok(math.abs(p.oz - (up0 + 0.31)) < 1e-9, 'UP held a second: 20 steps', p.oz)
+        press({ K.LEFT })
+        p = plateAt()
+        ok(math.abs(p.oz - (up0 + 0.31)) < 1e-9 and math.abs(p.oy - (fwd0 - 0.01)) < 1e-9
+            and math.abs(p.w - (w0 + 0.01)) < 1e-9, 'LEFT moves none of them')
+        frame()
+        ok(text[2] == ('~b~up %.2f~w~ m   fwd %.2f~w~ m   w %.2f m'):format(up0 + 0.31, fwd0 - 0.01, w0 + 0.01),
+            'the numbers on screen, what UP moves in blue', text[2])
+        down = { [K.DEPTH] = true }
+        frame()
+        down = {}
+        ok(text[2] == ('up %.2f~w~ m   ~b~fwd %.2f~w~ m   w %.2f m'):format(up0 + 0.31, fwd0 - 0.01, w0 + 0.01),
+            'and with CTRL held, fwd in blue', text[2])
+
+        -- PUT AWAY: the three lines to paste, the same ones the typed form prints.
+        local fromKeys = pasted(grab(cmds['brgunplate'], nil, { 'off' }))
+        ok(fromKeys:find(('signUpM      = %.2f,'):format(up0 + 0.31), 1, true) ~= nil
+            and fromKeys:find(('signForwardM = %.2f,'):format(fwd0 - 0.01), 1, true) ~= nil
+            and fromKeys:find(('signWidthM   = %.2f,'):format(w0 + 0.01), 1, true) ~= nil,
+            'brgunplate off: the three lines to paste', fromKeys)
+        ok(not BR.TuneKeys.on('brgunplate') and loops['tunekeys.brgunplate'] == nil,
+            'and its keys are off, nothing per frame')
+        local typed = pasted(grab(cmds['brgunplate'], nil, {}))
+        ok(typed == fromKeys, 'the same lines the typed form prints', typed)
+        down = { [K.UP] = true }
+        frame()
+        down = {}
+        ok(next(claims) == nil and math.abs(plateAt().oz - (up0 + 0.31)) < 1e-9,
+            'and the arrows are the player\'s again')
+
+        -- DELETE is `reset`: back to config.
+        grab(cmds['brgunplate'], nil, { 'on' })
+        press({ K.RESET })
+        p = plateAt()
+        ok(math.abs(p.oz - up0) < 1e-9 and math.abs(p.oy - fwd0) < 1e-9 and math.abs(p.w - w0) < 1e-9,
+            'DELETE: back to config')
+        grab(cmds['brgunplate'], nil, { 'off' })
+
+        GetGameTimer = realTimer
     end
 
     -- -----------------------------------------------------------------------

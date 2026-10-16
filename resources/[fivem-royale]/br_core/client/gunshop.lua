@@ -2810,12 +2810,81 @@ local function tuningStore()
     return menuStore or candidate
 end
 
+--- The plate's three numbers as the draw uses them: a live override, else
+--- the config's.
+--- @return number fwd, number up, number w
+local function plateNumbers()
+    return plateFwd or tonumber(G.signForwardM) or 0.55,
+           plateUp or tonumber(G.signUpM) or 1.05,
+           plateW or tonumber(G.signWidthM) or 0.55
+end
+
+--- The plate's numbers as config lines -- one printer for the typed form and
+--- the keys, so what they paste is one thing.
+local function plateReport()
+    local fwd, up, wid = plateNumbers()
+    print('=== gunshop plate ===')
+    print(('  plate %s   at %s'):format(plateShown and 'up' or 'down',
+        candidate and tostring(candidate.id) or '-'))
+    -- PASTEABLE, WHICH IS THE POINT. These three lines are the shape they take
+    -- in br_lib/config/gunshop.lua.
+    print(('    signForwardM = %.2f,'):format(fwd))
+    print(('    signUpM      = %.2f,'):format(up))
+    print(('    signWidthM   = %.2f,'):format(wid))
+end
+
+--- A step of each: /brplate's centimeter, ten with SHIFT.
+local PLATE_STEP = { fine = 0.01, coarse = 0.10, places = 2, lo = -2.5, hi = 2.5 }
+local PLATE_W    = { fine = 0.01, coarse = 0.10, places = 2, lo = 0.05, hi = 3.0 }
+
+--- `brgunplate on`: the three numbers on the keys (#404), in /brplate's shape
+--- -- UP / DOWN the height, CTRL + UP / DOWN out from the clerk (its `out`) --
+--- and PAGE UP / DOWN the width, the page keys sizing things in every tool
+--- (client/tunekeys.lua). The plate is drawn from these every frame, so the
+--- next frame shows the step. DELETE is `brgunplate reset`.
+local function plateKeys()
+    BR.TuneKeys.start('brgunplate', {
+        lines = function(k)
+            local fwd, up, wid = plateNumbers()
+            return {
+                ('~b~gunshop plate~w~  %s  at %s'):format(plateShown and 'up' or 'down',
+                    candidate and tostring(candidate.id) or '-'),
+                ('%sup %.2f~w~ m   %sfwd %.2f~w~ m   w %.2f m')
+                    :format(k.depth and '' or '~b~', up, k.depth and '~b~' or '', fwd, wid),
+                ('step %.2f m'):format(k.coarse and PLATE_STEP.coarse or PLATE_STEP.fine),
+            }
+        end,
+        nudge = function(k)
+            local fwd, up, wid = plateNumbers()
+            if k.v ~= 0 and k.depth then
+                plateFwd = BR.TuneKeys.nudged(fwd, k.v, k.coarse, PLATE_STEP)
+            elseif k.v ~= 0 then
+                plateUp = BR.TuneKeys.nudged(up, k.v, k.coarse, PLATE_STEP)
+            end
+            if k.s ~= 0 then plateW = BR.TuneKeys.nudged(wid, k.s, k.coarse, PLATE_W) end
+            return k.v ~= 0 or k.s ~= 0
+        end,
+        reset = function() plateFwd, plateUp, plateW = nil, nil, nil end,
+        off = plateReport,
+    })
+    print('[br_core] brgunplate: on. Stand at a counter. The keys:')
+    print('  UP / DOWN          up')
+    print('  CTRL + UP / DOWN   fwd, out from the clerk')
+    print('  PAGE UP / DOWN     w, the width')
+    print('  hold SHIFT         10 cm steps instead of 1 cm')
+    print('  DELETE             back to config')
+    print('  `brgunplate off` puts them away and prints what to paste')
+end
+
 RegisterCommand('brgunplate', function(_, args)
-    local fwd = plateFwd or tonumber(G.signForwardM) or 0.55
-    local up  = plateUp or tonumber(G.signUpM) or 1.05
-    local wid = plateW or tonumber(G.signWidthM) or 0.55
+    local fwd, up, wid = plateNumbers()
 
     local what = tostring(args[1] or ''):lower()
+    if what == 'on' then return plateKeys() end
+    if what == 'off' then
+        if not BR.TuneKeys.stop('brgunplate') then plateReport() end
+        return
+    end
     if what == 'reset' then
         plateFwd, plateUp, plateW = nil, nil, nil
         print('[br_core] gunshop: plate back to config')
@@ -2826,21 +2895,10 @@ RegisterCommand('brgunplate', function(_, args)
     elseif what == 'w' then
         plateW = nudge(wid, args[2]) or plateW
     elseif what ~= '' then
-        print('[br_core] gunshop: brgunplate [fwd|up|w] <value|+delta> | reset')
+        print('[br_core] gunshop: brgunplate [fwd|up|w] <value|+delta> | reset | on | off')
     end
 
-    fwd = plateFwd or tonumber(G.signForwardM) or 0.55
-    up  = plateUp or tonumber(G.signUpM) or 1.05
-    wid = plateW or tonumber(G.signWidthM) or 0.55
-
-    print('=== gunshop plate ===')
-    print(('  plate %s   at %s'):format(plateShown and 'up' or 'down',
-        candidate and tostring(candidate.id) or '-'))
-    -- PASTEABLE, WHICH IS THE POINT. These three lines are the shape they take
-    -- in br_lib/config/gunshop.lua.
-    print(('    signForwardM = %.2f,'):format(fwd))
-    print(('    signUpM      = %.2f,'):format(up))
-    print(('    signWidthM   = %.2f,'):format(wid))
+    plateReport()
 end, false)
 
 --- ═══ AND THE SAME THING FOR WHERE THE CLERK STANDS ═══
