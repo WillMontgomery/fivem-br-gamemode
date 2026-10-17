@@ -363,6 +363,46 @@ do
     T.stop('list')
 end
 
+describe('a menu on screen has the arrows; the page keys and DELETE still work')
+do
+    -- The gun shop's menu moves its cursor on the arrows through
+    -- IsDisabledControl*, which the claim does not reach, so a DOWN to reach a
+    -- gun was a step of `brgunclerk hand on` too (client/menu.lua,
+    -- BR.Menu.hasArrows). Modeled here as the one question this file asks.
+    local menuUp = true
+    local realMenu = BR.Menu
+    BR.Menu = { hasArrows = function() return menuUp end }
+    local t = tool()
+    T.start('menu', t.spec)
+    hold({ K.UP }, 1)
+    hold({ K.RIGHT }, 1000, 25)
+    hold({ K.TURN, K.LEFT }, 1)
+    eq(#t.nudges, 0, 'UP, RIGHT held a second and ALT + LEFT with a menu up: no step')
+    hold({ K.BIGGER }, 1)
+    ok(#t.nudges == 1 and t.nudges[1].s == 1, 'PAGE UP still steps, which no menu reads')
+    hold({ K.RESET }, 1)
+    eq(t.resets, 1, 'and DELETE still resets')
+    frame()
+    ok((claims[K.UP] or 0) > 0 and (claims[27] or 0) > 0 and #drawn == 2,
+        'the arrows still claimed, so UP opens no phone, and the numbers still drawn')
+    menuUp = false
+    hold({ K.UP }, 1)
+    ok(#t.nudges == 2 and t.nudges[2].v == 1, 'the menu closed: UP steps again')
+    T.stop('menu')
+
+    local p = tool()
+    p.spec.pick = function(d) p.picks[#p.picks + 1] = d end
+    T.start('menulist', p.spec)
+    menuUp = true
+    hold({ K.RIGHT }, 1)
+    eq(#p.picks, 0, 'a pick waits for the menu too')
+    menuUp = false
+    hold({ K.RIGHT }, 1)
+    eq(#p.picks, 1, 'and picks once it is down')
+    T.stop('menulist')
+    BR.Menu = realMenu
+end
+
 describe('a nudge that moved nothing has nothing to settle')
 do
     local t = tool()

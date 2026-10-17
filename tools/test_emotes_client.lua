@@ -641,6 +641,8 @@ do
     ok(wheelObj() and #wheelObj().InstructionalButtons == 0,
         'with its instructional buttons emptied, as every BR.Menu menu')
     ok(BR.Menu.holdsEscape() == true, 'and Escape belongs to it while it is open (#371)')
+    ok(BR.Menu.hasArrows() == false,
+        'but not the arrows: it steers with the look axes, so a tuning tool keeps them (#404)')
     calm()
     ok(not BR.EmoteWheel.isOpen(), 'a release closes it')
 
@@ -704,12 +706,14 @@ do
     local shop = BR.Menu.new('Ammu-Nation')
     ok(shop ~= nil, 'a BR.Menu.new menu can be built in this model')
     shop:Visible(true)
+    ok(BR.Menu.hasArrows() == true, 'a list menu up has the arrows, which it reads (#404)')
     trail = {}
     key(true)
     ok(table.concat(trail, ',') == 'closePanel,clearFocus,menu closed,wheel shown',
         'inventory panel, then the focus stack, then the open menu, then the wheel',
         table.concat(trail, ','))
     ok(shop._visible == false, 'the gun shop menu is down')
+    ok(BR.Menu.hasArrows() == false, 'and with only the wheel up, nothing has the arrows')
     ok(MenuHandler._currentMenu == wheelObj() and MenuHandler.ableToDraw == true,
         "and the wheel is the library's current, drawing menu -- the shop's close "
             .. 'came first, so it did not take the wheel down with it')

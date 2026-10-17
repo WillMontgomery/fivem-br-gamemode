@@ -6405,9 +6405,24 @@ do
         frame()
         ok(text[1] ~= nil and text[1]:find('holding a gun', 1, true) ~= nil, 'the readout says so', text[1])
 
+        -- THE MENU HAS THE ARROWS WHILE IT IS UP. The purchase leaves it open,
+        -- and it reads the arrows through IsDisabledControl*, which the claim
+        -- does not reach: a DOWN to the next row is not a step of the six.
+        ok(lastMenu ~= nil and lastMenu._visible == true, 'the menu is still up after the purchase')
+        local n = #at
+        press({ K.DOWN })
+        press({ K.RIGHT })
+        press({ K.TURN, K.UP })
+        local still = hand(grab(cmds['brgunclerk'], nil, { 'hand' }))
+        ok(#at == n and still.y == h0.y and still.x == h0.x and still.rx == h0.rx,
+            'DOWN, RIGHT and ALT + UP with the menu up move nothing', #at - n)
+        lastMenu:GoBack()
+        ok(lastMenu._visible == false and gun.alive and not gun.detached,
+            'Back closes the menu, and the gun stays in his hand')
+
         -- EVERY STEP MOVES THE GUN HE IS HOLDING.
         local function last() return at[#at] end
-        local n = #at
+        n = #at
         press({ K.UP })
         ok(#at == n + 1 and last().obj == gun.obj and last().bone == 40000 + 18905,
             'UP: the gun he is holding attached again, to the same hand')
@@ -6464,14 +6479,35 @@ do
         pump(3)
         ok(gun2 ~= gun and not gun2.alive, 'a purchase with the keys off: the gun gone after the handover')
 
-        -- DELETE: the six this file ships.
+        -- DELETE: the six this file ships, and the gun he is holding goes back
+        -- to them with the numbers.
         grab(cmds['brgunclerk'], nil, { 'hand', 'on' })
+        handlers[BR.Net.GUNSHOP_BOUGHT]({ row = 'carbinerifle' })
+        local gun3 = props[#props]
+        pump(3)
+        ok(gun3 ~= gun2 and gun3.alive and not gun3.detached, 'bought with the keys on again: held')
+        n = #at
         press({ K.RESET })
+        local a = last()
+        ok(#at == n + 1 and a.obj == gun3.obj and a.x == h0.x and a.y == h0.y and a.z == h0.z
+            and a.rx == h0.rx and a.ry == h0.ry and a.rz == h0.rz,
+            'DELETE: the gun he is holding attached again at the six it shipped with', #at - n)
         local back = hand(grab(cmds['brgunclerk'], nil, { 'hand' }))
         ok(back.x == h0.x and back.y == h0.y and back.z == h0.z and back.rx == h0.rx
-            and back.ry == h0.ry and back.rz == h0.rz, 'DELETE: the six it shipped with')
+            and back.ry == h0.ry and back.rz == h0.rz, 'and the HAND line is those six')
+
+        -- A TURN GOES ROUND: enough SHIFT steps of ry down to pass -180 come
+        -- back in from 180, the way the shared wrap keeps every turn.
+        local steps = math.floor((h0.ry + 180.0) / 15.0) + 1
+        for _ = 1, steps do press({ K.TURN, K.DEPTH, K.COARSE, K.DOWN }) end
+        local ry = last().ry
+        ok(ry > -180.0 and ry <= 180.0 and math.abs((ry - (h0.ry - 15.0 * steps)) % 360.0) < 1e-9,
+            ('ALT + CTRL + SHIFT + DOWN %d times: ry past -180 and round, not stopped or left past it')
+                :format(steps), ry)
+        press({ K.RESET })
         grab(cmds['brgunclerk'], nil, { 'hand', 'off' })
         pump(3)
+        ok(not gun3.alive, 'put away: that gun is gone too')
 
         -- THE TYPED FORM STILL WORKS.
         local nudged = hand(grab(cmds['brgunclerk'], nil, { 'hand', 'x', '+0.05' }))

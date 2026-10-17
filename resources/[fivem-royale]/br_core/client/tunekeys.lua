@@ -31,6 +31,12 @@
 -- turning one on puts any other away first -- paste line and all, exactly as
 -- if it had been turned off.
 --
+-- A MENU ON SCREEN HAS THE ARROWS. The gun shop's menu reads them through
+-- IsDisabledControl*, which a claim does not reach, so while one of our list
+-- menus is up (BR.Menu.hasArrows) the arrows move its cursor and nothing here.
+-- The page keys and DELETE, which no menu reads, still work. Buy, close the
+-- menu, then tune.
+--
 -- NOTHING PER FRAME WHILE OFF. A tool's frame callback is registered when it is
 -- turned on and unregistered when it is put away, so a session that never types
 -- one pays nothing, and the keys are the player's again on the very next frame:
@@ -152,6 +158,9 @@ local function frame(s)
         s = axis(KEY.BIGGER, KEY.SMALLER),
         depth = held(KEY.DEPTH), turn = held(KEY.TURN), coarse = held(KEY.COARSE),
     }
+    -- A MENU ON SCREEN HAS THE ARROWS (the header): read as let go, so neither
+    -- a step nor a pick lands while its cursor is moving.
+    if BR.Menu and BR.Menu.hasArrows and BR.Menu.hasArrows() then k.v, k.h = 0, 0 end
 
     -- DELETE, once a press however long it is held.
     local del = held(KEY.RESET)

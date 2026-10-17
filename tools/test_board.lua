@@ -1804,6 +1804,12 @@ do
     down = {}
     ok(readout[3] ~= nil and readout[3]:find('~b~yaw', 1, true) ~= nil
         and readout[2]:find('~b~', 1, true) == nil, 'and with ALT held, the yaw in blue', readout[3])
+    down = { [K.DEPTH] = true }
+    keyFrame()
+    down = {}
+    eq(readout[2], ('up %.2f~w~ m   ~b~fwd %.2f~w~ m   ~b~side %.2f~w~ m')
+        :format(s0.upM - 0.09, s0.forwardM - 0.01, s0.sideM + 0.01),
+        'and with CTRL held, fwd in blue for up')
 
     -- PUT AWAY: the block to paste, the same one the bare command prints.
     local fromKeys = brboard('off')

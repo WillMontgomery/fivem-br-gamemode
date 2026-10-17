@@ -280,6 +280,10 @@ end
 --- above its own declaration.
 local built = setmetatable({}, { __mode = 'k' })
 
+--- The list menus among them, BR.Menu.new's and not the emote wheel's radial,
+--- for BR.Menu.hasArrows. Weak-keyed for the same reason.
+local lists = setmetatable({}, { __mode = 'k' })
+
 --- A PRICE, IN GOLD, FOR A RIGHT LABEL. See PRICE_HUD above for what "gold"
 --- can and cannot mean on this surface.
 ---
@@ -663,6 +667,7 @@ function BR.Menu.new(title, subtitle, banner)
     -- AND IT IS COUNTED, which is what makes Escape the menu's (#371). See
     -- BR.Menu.holdsEscape below.
     built[menu] = true
+    lists[menu] = true
 
     return menu
 end
@@ -739,6 +744,29 @@ end
 --- @return boolean
 function BR.Menu.up()
     for m in pairs(built) do
+        local seen, vis = pcall(m.Visible, m)
+        if seen and vis == true then return true end
+    end
+    return false
+end
+
+--- DOES ONE OF OUR LIST MENUS HAVE THE ARROWS RIGHT NOW? (#404)
+---
+--- A UIMenu moves its cursor on UP / DOWN / LEFT / RIGHT through
+--- IsDisabledControlJustPressed and IsDisabledControlPressed
+--- (ScaleformUI.lua, UIMenu:ProcessControl), which answer for a key
+--- DisableControlAction has claimed as readily as for a free one. So a dev
+--- tuning tool's claim (client/tunekeys.lua) never took the arrows from the
+--- gun shop: with `brgunclerk hand on`, every DOWN that walked the cursor to a
+--- gun moved HAND as well. client/tunekeys.lua asks this and leaves the arrows
+--- to the menu while it is up.
+---
+--- THE RADIAL IS NOT COUNTED. The emote wheel steers with the look axes
+--- (RadialMenu:ProcessControl reads 12 and 13) and never reads an arrow, so a
+--- wheel on screen takes nothing from a tool. Same live read as BR.Menu.up.
+--- @return boolean
+function BR.Menu.hasArrows()
+    for m in pairs(lists) do
         local seen, vis = pcall(m.Visible, m)
         if seen and vis == true then return true end
     end

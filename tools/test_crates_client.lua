@@ -374,6 +374,10 @@ loadAll({
 local C = BR.Config.Crates
 local L = BR.Config.Loot
 local R = BR.Rarity
+--- The prompt rows as loaded, before any reset() swaps copies into the config:
+--- the very tables client/loot.lua took brboxprompt's shipped numbers from
+--- (#404), which is what the game tunes and the suite otherwise never does.
+local PROMPT_LOADED = { shipping = C.prompt.shipping, gift = C.prompt.gift }
 -- A client whose clock has synced with the server's, which is every client a
 -- few seconds after it connects. The one block that is not says so.
 BR.Clock.synced = true
@@ -1863,6 +1867,31 @@ do
         and s.ry == P0.shipping.ry and s.rz == P0.shipping.rz and s.size == P0.shipping.size,
         'DELETE: the shipping row as it shipped')
     eq(g2.z, giftNow.z, 'and the gift row left as it was')
+
+    -- AND ON THE ROW THE GAME LOADED. Every reset() above swapped fresh tables
+    -- into the config, so the rows stepped so far were never the ones
+    -- client/loot.lua copied its shipped numbers from; in game they always
+    -- are. A shipped "copy" that was the row itself would move with every
+    -- step, and DELETE would put back what was already there.
+    for f, v in pairs(SHIPPED.prompt.shipping) do PROMPT_LOADED.shipping[f] = v end
+    C.prompt.shipping = PROMPT_LOADED.shipping
+    press({ KEY.UP })
+    ok(C.prompt.shipping == PROMPT_LOADED.shipping
+        and C.prompt.shipping.z == BR.TuneKeys.round(P0.shipping.z + 0.01, 3),
+        'UP steps the row loaded at start', C.prompt.shipping.z)
+
+    -- A TURN GOES ROUND: enough SHIFT steps of rz to pass 180 come back in
+    -- from -180, the way the shared wrap keeps every turn.
+    local steps = math.floor((180.0 - P0.shipping.rz) / 15.0) + 1
+    for _ = 1, steps do press({ KEY.TURN, KEY.COARSE, KEY.RIGHT }) end
+    local rz = C.prompt.shipping.rz
+    ok(rz > -180.0 and rz <= 180.0 and math.abs((rz - (P0.shipping.rz + 15.0 * steps)) % 360.0) < 1e-9,
+        ('ALT + SHIFT + RIGHT %d times: rz past 180 and round, not stopped or left past it'):format(steps), rz)
+
+    press({ KEY.RESET })
+    s = C.prompt.shipping
+    ok(s.z == P0.shipping.z and s.rz == P0.shipping.rz and s.x == P0.shipping.x and s.size == P0.shipping.size,
+        'and DELETE puts that row back as it shipped', ('z %s rz %s'):format(tostring(s.z), tostring(s.rz)))
     commands.brboxprompt(0, { 'off' })
 
     -- THE TYPED FORM STILL WORKS.
@@ -1945,6 +1974,21 @@ do
     eq(L.chestHoldMs, 2200, 'and the hold is 2.2 s')
     commands.brcratehold(0, { '2100' })
     w = w2
+
+    -- AND ONLY A STEP DOES. RIGHT and PAGE UP move no number, so a hold they
+    -- land in keeps its time: these open the crate at 2.1 s from the press.
+    frames(2)
+    held = true
+    keyFns.interact(true)
+    frames(63)
+    press({ KEY.RIGHT })
+    press({ KEY.BIGGER })
+    frames(70)
+    held = false
+    keyFns.interact(false)
+    frames(10)
+    eq(claimsSent(), 2, 'RIGHT and PAGE UP a second into a 2.1 s hold: it opens on time')
+    eq(L.chestHoldMs, 2100, 'and the hold is still 2.1 s')
 
     -- PUT AWAY: the line to paste, the one the typed form prints.
     logs = {}

@@ -2500,8 +2500,17 @@ local function present(store, row)
 
         -- HELD OUT FOR AS LONG AS `brgunclerk hand on`'S KEYS ARE ON (#404), so
         -- the six numbers are moved against a gun that is in his hand rather
-        -- than one gone 1.4 s after it appeared. AF_HOLD_LAST_FRAME keeps the
-        -- pose the gesture reached until the ClearPedTasks below.
+        -- than one gone `handoverMs` (2 s as shipped) after it appeared.
+        --
+        -- ⚠ WHETHER HIS ARM STAYS UP PAST HAND_MS IS UNPROVEN. TaskPlayAnim was
+        -- given HAND_MS as its duration, and the timed `2000, 50` uses this
+        -- file cites are gestures that end, so the task may well end there and
+        -- the arm come down with the gun on it, whatever AF_HOLD_LAST_FRAME
+        -- says; until this loop nobody could see the difference, because
+        -- ClearPedTasks ran at that moment. HAND is in the hand bone's frame,
+        -- so numbers tuned on a lowered arm are still right. If the gun drops
+        -- out of sight behind the counter, play the clip at -1 and freeze it at
+        -- HAND_MS (SetEntityAnimCurrentTime, SetEntityAnimSpeed 0).
         while BR.TuneKeys.on(HAND_KEYS) and presented[store.id] == rec do
             Citizen.Wait(100)
         end
@@ -3152,7 +3161,9 @@ local function handKeys()
         end,
         off = handReport,
     })
-    print('[br_core] brgunclerk hand: on. Buy a gun at a counter; he holds it out until the keys are put away. The keys:')
+    -- CLOSE THE MENU FIRST: while it is up the arrows move its cursor and not
+    -- the six (client/tunekeys.lua), and the gun stays in his hand either way.
+    print('[br_core] brgunclerk hand: on. Buy a gun at a counter and close the menu; he holds it out until the keys are put away. The keys:')
     print('  LEFT / RIGHT             x')
     print('  UP / DOWN                y')
     print('  CTRL + UP / DOWN         z')
