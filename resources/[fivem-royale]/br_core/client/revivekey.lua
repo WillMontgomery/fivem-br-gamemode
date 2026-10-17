@@ -533,6 +533,13 @@ end
 --- Is the ruler drawing its own plate right now? Set by /brplate on|off.
 local tuning = false
 
+-- While it is on the emote wheel stays shut, as for every tuning tool
+-- (client/tunekeys.lua, ALT IS THE TOOL'S). Guarded for the suites that load
+-- this file without that one; the game loads it first.
+if BR.TuneKeys and BR.TuneKeys.alsoCount then
+    BR.TuneKeys.alsoCount('brplate', function() return tuning end)
+end
+
 --- The van it has picked, refreshed on the tick band; nil when none is in reach.
 local tuneVeh = nil
 

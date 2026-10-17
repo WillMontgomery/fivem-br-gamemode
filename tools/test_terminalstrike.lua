@@ -2044,7 +2044,9 @@ function IsEntityOnScreen(e)
     call('IsEntityOnScreen')
     return onScreen and C.ents[e] ~= nil and C.ents[e].alive
 end
-loadAll({ 'br_core/client/terminalfx/airstrike.lua' })
+-- client/tunekeys.lua first, as the manifest orders it: brrocket tells it when
+-- the rocket is out, so the emote wheel stays shut (#404).
+loadAll({ 'br_core/client/tunekeys.lua', 'br_core/client/terminalfx/airstrike.lua' })
 local RA = CC.art.rocket
 
 local function radiusBlips()
@@ -2337,6 +2339,7 @@ do
         return false
     end
     ok(commands.brrocket ~= nil, 'brrocket is a command')
+    ok(BR.TuneKeys.hasAlt() == false, 'no rocket out: Left ALT is the emote wheel\'s')
     local loopsBefore = frameLoops()
     commands.brrocket(0, {})
     runThreads()
@@ -2344,6 +2347,8 @@ do
     local so = sm and C.ents[sm.obj]
     local sc = sm and C.ents[sm.carrier]
     ok(so and so.scale == RA.scale and so.alpha ~= 0, 'brrocket: a rocket at the art\'s size')
+    ok(BR.TuneKeys.hasAlt() == true,
+        'out: ALT is its turn key, so the emote wheel stays shut (#404, BR.TuneKeys.hasAlt)')
     ok(sc and sc.alpha == 0 and sc.visible ~= false and sc.scale == nil,
         'its twin at 1x, see-through but not invisible ("in the dark it does have a glow": an invisible one drew no smoke)')
     -- THE PASS: slow enough to watch ("that brrocket flight is far too fast
@@ -2524,6 +2529,7 @@ do
     advance(100, 50)
     keyDown = {}
     ok(next(keyClaims) == nil, 'and the arrows are the player\'s again')
+    ok(BR.TuneKeys.hasAlt() == false, 'and Left ALT the emote wheel\'s')
 
     -- AND OUT AGAIN: where it was left.
     commands.brrocket(0, {})

@@ -37,6 +37,14 @@
 -- The page keys and DELETE, which no menu reads, still work. Buy, close the
 -- menu, then tune.
 --
+-- ALT IS THE TOOL'S, NOT THE EMOTE WHEEL'S. In Season 2 a Left ALT press
+-- opens the emote wheel (client/emotewheel.lua), read off the raw keyboard,
+-- which no claim reaches, so every ALT + arrow turn opened it as well. While
+-- any tool is on the wheel asks hasAlt and stays shut. Any tool, not only the
+-- ones that turn with ALT: which tools read it is not a thing to remember.
+-- /brplate, /brrocket and /brattach keep keys of their own and are counted
+-- through alsoCount.
+--
 -- NOTHING PER FRAME WHILE OFF. A tool's frame callback is registered when it is
 -- turned on and unregistered when it is put away, so a session that never types
 -- one pays nothing, and the keys are the player's again on the very next frame:
@@ -210,6 +218,30 @@ end
 --- @return boolean
 function BR.TuneKeys.on(name)
     return sessions[name] ~= nil
+end
+
+--- [name] = is that tool on? For the tools with keys of their own (alsoCount).
+local others = {}
+
+--- A tool that reads its keys on a loop of its own says how to tell it is on,
+--- once, at load, so hasAlt counts it. ASKED, NOT REMEMBERED: it answers from
+--- the tool's own state every time, so no exit can leave it stuck on.
+--- @param name string  the command, e.g. 'brrocket'
+--- @param isOn function  true while the tool is on
+function BR.TuneKeys.alsoCount(name, isOn)
+    others[name] = isOn
+end
+
+--- DOES A TUNING TOOL HAVE LEFT ALT RIGHT NOW? (#404) True while any tool is
+--- on (the header's ALT IS THE TOOL'S). The emote wheel asks this before it
+--- opens.
+--- @return boolean
+function BR.TuneKeys.hasAlt()
+    if next(sessions) ~= nil then return true end
+    for _, isOn in pairs(others) do
+        if isOn() then return true end
+    end
+    return false
 end
 
 --- Put a tool away: its keys go back to the player on the next frame, a

@@ -254,6 +254,14 @@ local LIMIT = 5.0
 --- nil when idle. While tuning: the vehicle, the six numbers, and the pose.
 local S = nil
 
+-- While it is on, ALT + E / R is its pitch and the emote wheel stays shut
+-- (client/tunekeys.lua, ALT IS THE TOOL'S). The claim on 19 above never
+-- reached the wheel, which reads the raw keyboard. Guarded for the suites
+-- that load this file without that one; the game loads it first.
+if BR.TuneKeys and BR.TuneKeys.alsoCount then
+    BR.TuneKeys.alsoCount('brattach', function() return S ~= nil end)
+end
+
 --- Player states this may run in.
 ---
 --- NOT AN ALLOWLIST OF CONVENIENCE. Every state left out is one where another

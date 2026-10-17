@@ -945,6 +945,13 @@ end
 --- @return table|nil sample, table look
 function F.rocketSample() return sample, look end
 
+-- While it is out, ALT is its turn key and the emote wheel stays shut
+-- (client/tunekeys.lua, ALT IS THE TOOL'S). Guarded for the suites that load
+-- this file without that one; the game loads it first.
+if BR.TuneKeys and BR.TuneKeys.alsoCount then
+    BR.TuneKeys.alsoCount('brrocket', function() return sample ~= nil end)
+end
+
 local function sampleClear()
     if keysLoop then
         BR.Loop.unregister(keysLoop)

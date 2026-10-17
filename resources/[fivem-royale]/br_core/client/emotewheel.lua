@@ -28,10 +28,12 @@
 --
 -- Blocked, silently: a keyboard-owning screen of ours (the pause menu,
 -- players, chat, settings, the market -- Alt never reaches the game under
--- them), GTA's frontend, any map, and everything BR.Emotes.blocked() names.
--- Dismissed, in this order, before it shows: the inventory panel, the focus
--- stack, and every in-game BR.Menu menu. A focus change while it is open
--- closes it -- TAB still opens the inventory over it, and that is a close.
+-- them), GTA's frontend, any map, everything BR.Emotes.blocked() names, and
+-- a dev tuning tool that is on, whose Alt it is then (#404,
+-- BR.TuneKeys.hasAlt). Dismissed, in this order, before it shows: the
+-- inventory panel, the focus stack, and every in-game BR.Menu menu. A focus
+-- change while it is open closes it -- TAB still opens the inventory over it,
+-- and that is a close.
 
 BR = BR or {}
 BR.EmoteWheel = BR.EmoteWheel or {}
@@ -76,6 +78,14 @@ local function frontendUp()
     end
     local n = BR.Native
     return n ~= nil and (n.bigmap == true or n.frontendMap == true or n.fullscreenMap == true)
+end
+
+--- Is a dev tuning tool on? Left Alt is the tool's then: ALT + a key is how
+--- they turn, and every turn opened the wheel as well (#404). One question
+--- for every tool, which client/tunekeys.lua answers.
+--- @return boolean
+local function toolHasAlt()
+    return BR.TuneKeys ~= nil and BR.TuneKeys.hasAlt ~= nil and BR.TuneKeys.hasAlt()
 end
 
 --- Take the wheel down. Through the library's own close-and-clear when the
@@ -127,6 +137,7 @@ BR.Keys.on('emoteWheel', function(pressed)
         if BR.Keys.uiScreen ~= nil and BR.Keys.uiScreen ~= 'inventory' then return end
         if BR.Emotes.blocked() ~= nil then return end
         if frontendUp() then return end
+        if toolHasAlt() then return end
         if not (BR.Menu and BR.Menu.available and BR.Menu.available()) then return end
 
         -- DISMISS, IN THIS ORDER, AND BEFORE THE WHEEL SHOWS. A UIMenu closing
@@ -210,7 +221,7 @@ BR.Loop.register(BR.Loop.FRAME, 'emotes.wheel', function()
     -- What would refuse an open closes an open wheel. blocked() covers a
     -- vehicle: the library leaves the enter control live.
     if not BR.Season.has('emotes') or BR.Emotes.blocked() ~= nil or frontendUp()
-       or BR.Keys.uiOwnsKeyboard then
+       or BR.Keys.uiOwnsKeyboard or toolHasAlt() then
         close()
         return
     end

@@ -345,6 +345,9 @@ BR.Spectate = { watchPoint = function() return watch end }
 BR.State.me.src = 7
 BR.State.me.state = BR.PlayerState.ALIVE
 
+-- The dev tuning tools' keys, as they ship: the wheel stays shut while one is
+-- on (#404). Above menu.lua, as the manifest orders it.
+loadFile('br_core/client/tunekeys.lua')
 loadFile('br_core/client/menu.lua')
 loadFile('br_core/client/emotes.lua')
 loadFile('br_core/client/emotewheel.lua')
@@ -740,6 +743,63 @@ do
     ok(shop._visible == true, 'and stays open')
     ok(radialCalls[1] == 'CLEAR_ALL', "the wheel's movie is cleared by hand", radialCalls[1])
     shop:Visible(false)
+    calm()
+end
+
+describe('1. a dev tuning tool that is on has Left Alt (#404)')
+do
+    -- The tools turn with ALT + a key (client/tunekeys.lua) and the dev box
+    -- runs Season 2, so every turn opened the wheel too: the gun shop's menu
+    -- closed under it, and letting go over a lit segment played a dance. A
+    -- FULL wheel lights segment 1, so a release that reached it would play.
+    local TK = BR.TuneKeys
+    local spec = { lines = function() return {} end, nudge = function() return false end }
+    calm()
+    setWheel(FULL)
+    local shop = BR.Menu.new('Ammu-Nation')
+    shop:Visible(true)
+    TK.start('brgunclerk', spec)
+    trail = {}
+    key(true)
+    ok(not BR.EmoteWheel.isOpen() and #trail == 0,
+        'a tool on: ALT opens nothing and dismisses nothing', table.concat(trail, ','))
+    ok(shop._visible == true and MenuHandler._currentMenu == shop, 'the gun shop menu stays up')
+    fakeTime = fakeTime + 300
+    key(false)
+    ok(#plays() == 0, 'and letting go plays nothing')
+    shop:Visible(false)
+    TK.stop('brgunclerk')
+    key(true)
+    ok(BR.EmoteWheel.isOpen(), 'put away: ALT opens the wheel as before')
+    fakeTime = fakeTime + 300
+    key(false)
+    ok(#plays() == 1 and plays()[1] == FULL[1], 'and letting go plays what is lit', plays()[1])
+    calm()
+
+    -- WHAT WOULD REFUSE AN OPEN CLOSES AN OPEN WHEEL: a tool typed on in F8
+    -- with ALT still held.
+    setWheel(FULL)
+    key(true)
+    ok(BR.EmoteWheel.isOpen(), 'the wheel is up')
+    TK.start('brgunclerk', spec)
+    frame()
+    ok(not BR.EmoteWheel.isOpen(), 'a tool turned on under it closes it')
+    fakeTime = fakeTime + 300
+    key(false)
+    ok(#plays() == 0, 'and the release after that plays nothing')
+    TK.stop('brgunclerk')
+    calm()
+
+    -- /brplate, /brrocket and /brattach keep keys of their own and are
+    -- counted through alsoCount, from their own state.
+    local own = true
+    TK.alsoCount('brrocket', function() return own end)
+    key(true)
+    ok(not BR.EmoteWheel.isOpen(), 'a tool with keys of its own on: the wheel stays shut')
+    own = false
+    key(true)
+    ok(BR.EmoteWheel.isOpen(), 'put away: it opens')
+    TK.alsoCount('brrocket', nil)
     calm()
 end
 

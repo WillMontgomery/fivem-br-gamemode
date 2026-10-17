@@ -357,6 +357,9 @@ client_scripts {
     -- The dev tuning tools' shared keys (#404). Nothing at load but tables; the
     -- tools that use it (lobbycam.lua, loot.lua, gunshop.lua, board.lua) reach
     -- it when a command is typed, and it reaches BR.Loop (main.lua) only then too.
+    -- ABOVE revivekey.lua, attachtune.lua and terminalfx/airstrike.lua, AND THAT
+    -- IS A REAL ORDER: each hands it, at load, how to tell its tool is on, so
+    -- the emote wheel stays shut while one is (BR.TuneKeys.alsoCount).
     'client/tunekeys.lua',
     -- The world override this client is holding, and THE ONLY PLACE THIS CLIENT
     -- WRITES WEATHER. AFTER natives.lua for a reader rather than for the loader

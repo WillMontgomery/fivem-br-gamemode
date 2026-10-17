@@ -403,6 +403,68 @@ do
     BR.Menu = realMenu
 end
 
+describe('ALT is the tool\'s while one is on, not the emote wheel\'s')
+do
+    -- In Season 2 a Left ALT press opens the emote wheel, read off the raw
+    -- keyboard, which the claim does not reach, so every ALT + arrow turn
+    -- opened it as well. client/emotewheel.lua asks hasAlt before it opens;
+    -- test_emotes_client.lua presses the key.
+    eq(T.hasAlt(), false, 'no tool on: ALT is the wheel\'s')
+    local t = tool()
+    T.start('alt', t.spec)
+    eq(T.hasAlt(), true, 'a tool on has it')
+    hold({ K.TURN, K.UP }, 1)
+    ok(T.hasAlt() and #t.nudges == 1 and t.nudges[1].turn == true and t.nudges[1].v == 1,
+        'and turns with it')
+    T.stop('alt')
+    eq(T.hasAlt(), false, 'put away: the wheel\'s again')
+
+    -- A TOOL WITH KEYS OF ITS OWN is counted from its own state, asked every
+    -- time rather than remembered.
+    local own = false
+    T.alsoCount('own', function() return own end)
+    eq(T.hasAlt(), false, 'one with keys of its own, off: not counted')
+    own = true
+    eq(T.hasAlt(), true, 'on: counted')
+    T.start('alt', tool().spec)
+    own = false
+    eq(T.hasAlt(), true, 'one of each on, the own one put away: still the tool\'s')
+    T.stop('alt')
+    eq(T.hasAlt(), false, 'both off: the wheel\'s')
+    T.alsoCount('own', nil)
+end
+
+describe('the tools with keys of their own are counted')
+do
+    -- /brplate, /brrocket and /brattach predate this file and keep their own
+    -- loops, and two of them turn with ALT. Each hands alsoCount its own
+    -- on-state, read through the local it is kept in -- declared ABOVE the
+    -- call, or the closure reads a global nil and the tool is never counted
+    -- (tools/check_forward_locals.lua's trap). /brrocket's is run for real in
+    -- tools/test_terminalstrike.lua.
+    local man = ''
+    local mfh = io.open(ROOT .. 'br_core/fxmanifest.lua', 'rb')
+    if mfh then man = mfh:read('a'):gsub('%-%-[^\n]*', ''); mfh:close() end
+    local tkAt = man:find("'client/tunekeys.lua'", 1, true)
+    for _, c in ipairs({
+        { 'client/revivekey.lua', 'brplate', 'local tuning = ', 'function() return tuning end' },
+        { 'client/terminalfx/airstrike.lua', 'brrocket', 'local sample = ', 'function() return sample ~= nil end' },
+        { 'client/attachtune.lua', 'brattach', 'local S = ', 'function() return S ~= nil end' },
+    }) do
+        local fh = io.open(ROOT .. 'br_core/' .. c[1], 'rb')
+        local src = fh and fh:read('a') or ''
+        if fh then fh:close() end
+        src = src:gsub('%-%-[^\n]*', '')
+        local declAt = src:find(c[3], 1, true)
+        local callAt = src:find(("BR.TuneKeys.alsoCount('%s', %s)"):format(c[2], c[4]), 1, true)
+        ok(declAt ~= nil and callAt ~= nil and declAt < callAt,
+            c[2] .. ': counted from its own state, declared above the call')
+        local fileAt = man:find("'" .. c[1] .. "'", 1, true)
+        ok(tkAt ~= nil and fileAt ~= nil and tkAt < fileAt,
+            c[2] .. ': and the manifest loads client/tunekeys.lua first')
+    end
+end
+
 describe('a nudge that moved nothing has nothing to settle')
 do
     local t = tool()
