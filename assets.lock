@@ -4,11 +4,11 @@
     {
       "name": "br_stream_s2",
       "seasons": {
-        "2": "b07c6afcda094353c2f7bb300a99ef3aa22c7222d401880b4b024e595fbcb599"
+        "2": "c62f568e33cdb0fa4b520adcf46749689696e61064b3ddd8b7b599830234482d"
       },
       "versions": {
-        "b07c6afcda094353c2f7bb300a99ef3aa22c7222d401880b4b024e595fbcb599": {
-          "size": 534319845,
+        "c62f568e33cdb0fa4b520adcf46749689696e61064b3ddd8b7b599830234482d": {
+          "size": 534386677,
           "files": {
             "CREDITS.txt": 2637,
             "audioconfig/duness_game.dat151.rel": 836,
@@ -31,7 +31,7 @@
             "data/handling.meta": 48800,
             "data/vehiclelayouts.meta": 10062,
             "data/vehicles.meta": 103642,
-            "fxmanifest.lua": 1994,
+            "fxmanifest.lua": 2131,
             "sfx/dlc_duness/duness.awc": 2700694,
             "sfx/dlc_duness/duness_npc.awc": 1217310,
             "sfx/dlc_mantis/mantis.awc": 4011968,
@@ -46,6 +46,12 @@
             "sfx/dlc_superwb/gp1wb_npc.awc": 489524,
             "stream/LaptopTerminals.ymap": 4050,
             "stream/LobbyLights.ymap": 1340,
+            "stream/_manifest.ymf": 480,
+            "stream/blitz_flick.ytyp": 587,
+            "stream/blitz_flick_cam.yft": 7853,
+            "stream/blitz_flick_cam_down.ydr": 2086,
+            "stream/blitz_flick_cam_shot.yft": 6723,
+            "stream/blitz_flick_txd.ytd": 33131,
             "stream/blitz_loot_common.ydr": 24992,
             "stream/blitz_loot_common_opened.ydr": 37611,
             "stream/blitz_loot_common_xmas.ydr": 24820,
@@ -83,6 +89,7 @@
             "stream/blitz_lootbox_txd.ytd": 3125579,
             "stream/blitz_seckey.ydr": 111303,
             "stream/blitz_seckey.ytyp": 551,
+            "stream/flick_cameras.ymap": 21543,
             "stream/vehicles/azatoth/azatoth.yft": 7689079,
             "stream/vehicles/azatoth/azatoth.ytd": 816305,
             "stream/vehicles/azatoth/azatoth_hi.yft": 5308207,
