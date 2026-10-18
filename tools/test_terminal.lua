@@ -1782,6 +1782,40 @@ do
     ok(BR.Terminal.row('reboot').squadOnly == true, 'Reboot is squad-only')
 end
 
+describe('Flick (#419): Scan says what the cameras see, in the owner\'s approved words')
+do
+    bootServer()
+    loadAll({ 'br_lib/config/flick.lua' })
+    local copy = BR.Config.Terminals.copy
+    local F = BR.Config.Flick
+    -- APPROVED (owner, 2026-10-18: "Scan's new text looks good"), word for word.
+    local APPROVED = {
+        scan_summary = "Shows opponents near working Flick cameras on your squad's maps for the rest of the match.",
+        scan_summary_solo = "Shows opponents near working Flick cameras on your map for the rest of the match.",
+        scan_what = "Opponents within 75 m of a working Flick camera appear on the maps of everyone in your squad, and opponents in a vehicle within 150 m.\nYour big map shows where the cameras can see.\nA camera that's knocked out stays out for the rest of the match.\nThe marks update every 2 seconds until the match ends.\nA squad running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
+        scan_what_solo = "Opponents within 75 m of a working Flick camera appear on your map, and opponents in a vehicle within 150 m.\nYour big map shows where the cameras can see.\nA camera that's knocked out stays out for the rest of the match.\nThe marks update every 2 seconds until the match ends.\nA player running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
+        scan_description = 'Scan. Their squad sees opponents near Flick cameras for the rest of the match.',
+        scan_description_solo = 'Scan. They see opponents near Flick cameras for the rest of the match.',
+        impact_scan = 'Scan: another squad can see you near Flick cameras.',
+        impact_scan_solo = 'Scan: another player can see you near Flick cameras.',
+    }
+    for k, v in pairs(APPROVED) do eq(copy[k], v, k .. ' is the approved line') end
+    -- THE NUMBERS ON THE PAGE ARE THE ONES THE SERVER SEES BY, as Power
+    -- outage's radius is held to its page.
+    local foot = ('within %d m of a working Flick camera'):format(math.floor(F.rangeM))
+    local veh = ('in a vehicle within %d m'):format(math.floor(F.vehicleRangeM))
+    for _, k in ipairs({ 'scan_what', 'scan_what_solo' }) do
+        ok(copy[k]:find(foot, 1, true) ~= nil, k .. ' says BR.Config.Flick.rangeM', foot)
+        ok(copy[k]:find(veh, 1, true) ~= nil, k .. ' says BR.Config.Flick.vehicleRangeM', veh)
+    end
+    -- NO SEASON HAS SCAN WITHOUT THE CAMERAS, so its lines are replaced, not
+    -- forked: the day the two rows' seasons differ, this fails until Scan's
+    -- lines have a version for the season without them.
+    local S = BR.Config.Seasons.features
+    eq(S.flick.from, S.terminals.from, 'Flick starts with the terminals')
+    eq(S.flick.untilSeason, S.terminals.untilSeason, 'and ends with them')
+end
+
 describe('round 2: "squad" only in a squad match -- the one Lua picker')
 do
     bootServer()

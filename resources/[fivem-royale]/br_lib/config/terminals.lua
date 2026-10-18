@@ -194,9 +194,12 @@ BR.Config.Terminals = {
         -- target): the player who carries it.
         impact_bounty = 'Bounty: every player can see where you are.',
         -- Scan: every opponent of a scanning squad, for the rest of the match
-        -- (not while their own squad is under Ghost).
-        impact_scan = 'Scan: another squad can see where you are.',
-        impact_scan_solo = 'Scan: another player can see where you are.',
+        -- (not while their own squad is under Ghost). Static: never switched
+        -- as a player walks in and out of a Flick camera's sight, which would
+        -- tell them where the coverage ends. APPROVED (owner, 2026-10-18,
+        -- #419: "Scan's new text looks good").
+        impact_scan = 'Scan: another squad can see you near Flick cameras.',
+        impact_scan_solo = 'Scan: another player can see you near Flick cameras.',
         -- Time & weather, for the rest of the match: everyone but the runner,
         -- one row for a time run and one for a weather run.
         impact_time = 'Time & weather: the time of day was changed.',
@@ -648,12 +651,17 @@ BR.Config.Terminals = {
         -- among them -- the same line for a player outside a squad match --
         -- is WRITTEN (2026-10-05, round 2).
 
-        -- Scan (owner's; LIVE)
+        -- Scan (owner's; LIVE). Seen through the Flick cameras since #419:
+        -- scan_summary, scan_what, scan_description and their `_solo` lines
+        -- are APPROVED (owner, 2026-10-18: "Scan's new text looks good"). The
+        -- 75 m and 150 m are BR.Config.Flick.rangeM and vehicleRangeM, and
+        -- tools/test_terminal.lua holds the two together. Flick and terminals
+        -- are both Season 2, so no season has Scan without the cameras.
         scan_name = 'Scan',
-        scan_summary = "Shows every opponent on your squad's maps for the rest of the match.",
-        scan_summary_solo = "Shows every opponent on your map for the rest of the match.",
-        scan_what = "Every opponent still in the match appears on the maps of everyone in your squad.\nThe marks update every 2 seconds until the match ends.\nA squad running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
-        scan_what_solo = "Every opponent still in the match appears on your map.\nThe marks update every 2 seconds until the match ends.\nA player running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
+        scan_summary = "Shows opponents near working Flick cameras on your squad's maps for the rest of the match.",
+        scan_summary_solo = "Shows opponents near working Flick cameras on your map for the rest of the match.",
+        scan_what = "Opponents within 75 m of a working Flick camera appear on the maps of everyone in your squad, and opponents in a vehicle within 150 m.\nYour big map shows where the cameras can see.\nA camera that's knocked out stays out for the rest of the match.\nThe marks update every 2 seconds until the match ends.\nA squad running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
+        scan_what_solo = "Opponents within 75 m of a working Flick camera appear on your map, and opponents in a vehicle within 150 m.\nYour big map shows where the cameras can see.\nA camera that's knocked out stays out for the rest of the match.\nThe marks update every 2 seconds until the match ends.\nA player running Ghost is hidden from the marks while it lasts.\nThe player who runs it gets a bounty for 10 minutes.",
         scan_duration = 'Rest of the match. The bounty lasts 10 minutes.',
         scan_affects = 'Your squad',
         scan_affects_solo = 'You',
@@ -661,8 +669,8 @@ BR.Config.Terminals = {
         scan_notified_solo = 'Everyone in the match',
         scan_risks = "You get a bounty. Everyone in the match is told your name.\nFor 10 minutes your position shows on every player's map.\nThe bounty ends early only if you're eliminated.",
         scan_done = 'Scan is running. You have a bounty for the next 10 minutes.',
-        scan_description = 'Scan. Their squad sees every opponent for the rest of the match.',
-        scan_description_solo = 'Scan. They see every opponent for the rest of the match.',
+        scan_description = 'Scan. Their squad sees opponents near Flick cameras for the rest of the match.',
+        scan_description_solo = 'Scan. They see opponents near Flick cameras for the rest of the match.',
         -- The opponents' and the bounty's names in the pause map's legend.
         scan_blip = 'Opponent',
         bounty_blip = 'Bounty',
