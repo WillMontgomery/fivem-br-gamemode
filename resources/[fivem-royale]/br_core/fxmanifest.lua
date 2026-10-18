@@ -227,6 +227,14 @@ shared_scripts {
     -- nothing at load, so the position is a reader's: beside the season list
     -- that gates it.
     '@br_lib/config/terminals.lua',
+    -- FLICK CAMERAS (#419, Season 2, the `flick` row in config/seasons.lua):
+    -- the numbers, then the cameras themselves -- a generated file
+    -- (tools/flick_cameras.py) -- which both halves read: the server decides
+    -- every down and what Scan sees by them, the client watches and draws by
+    -- them. Neither reads anything at load, so the position is a reader's:
+    -- beside the terminals whose Scan they feed.
+    '@br_lib/config/flick.lua',
+    '@br_lib/config/flick_cameras.lua',
     -- Where the admin console lives. One key, no useful default, and it MUST
     -- precede overrides.lua: that file refuses to boot if a convar names a
     -- BR.Config key that does not exist yet, which is the anti-drift check
@@ -347,6 +355,11 @@ shared_scripts {
     -- by them. LAST, beside props_solve and for its reason: it reads nothing at
     -- load (BR.StormAt, BR.StormZone, BR.Notice and BR.Rng at call time).
     '@br_lib/shared/terminal_solve.lua',
+    -- The Flick cameras' shared rules (#419): the grid, "is this point
+    -- covered", the down rule and the reach rule -- one spelling for both
+    -- sides and the suites. LAST, beside terminal_solve and for its reason:
+    -- it reads nothing at load (BR.Config.Flick at call time).
+    '@br_lib/shared/flick_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)

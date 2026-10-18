@@ -73,6 +73,10 @@ local FILES = {
     'config/storm.lua',
     'config/loot.lua',
     'config/market.lua',
+    -- The Flick cameras (#419): the numbers, and the generated camera list,
+    -- which is counted rather than listed.
+    'config/flick.lua',
+    'config/flick_cameras.lua',
 }
 
 local loadErrors = {}
@@ -107,6 +111,7 @@ BR.Config.ChatScreen = BR.Config.ChatScreen or { tlds = {}, hosts = {}, schemes 
 BR.Config.Storm = BR.Config.Storm or {}
 BR.Config.Loot = BR.Config.Loot or {}
 BR.Config.Market = BR.Config.Market or {}
+BR.Config.Flick = BR.Config.Flick or {}
 BR.Config.Overrides = BR.Config.Overrides or {}
 BR.Config.Overrides.SPEC = BR.Config.Overrides.SPEC or {}
 
@@ -451,6 +456,33 @@ try('Payout', MARKET, 'placementTop', function()
 end)
 try('Payout', MARKET, 'perKill', function() return num(BR.Config.Market.payout.perKill) end)
 try('Payout', MARKET, 'perRevive', function() return num(BR.Config.Market.payout.perRevive) end)
+
+-- ------------------------------------------------------------ Flick cameras --
+--
+-- Season 2's pole cameras that feed Scan (#419): the owner's four numbers of
+-- 2026-10-18 and how many cameras the generated list holds. The list itself
+-- is a COUNT, as the chat screen's are: what the page answers is whether the
+-- list that was meant to land did.
+
+local FLICK = 'br_lib/config/flick.lua'
+
+try('Flick cameras', FLICK, 'rangeM', function()
+    return num(BR.Config.Flick.rangeM) .. 'm from a working camera, on foot'
+end)
+try('Flick cameras', FLICK, 'vehicleRangeM', function()
+    return num(BR.Config.Flick.vehicleRangeM) .. 'm from a working camera, in a vehicle'
+end)
+try('Flick cameras', FLICK, 'voltsEach', function()
+    return num(BR.Config.Flick.voltsEach) .. ' a camera taken down'
+end)
+try('Flick cameras', FLICK, 'voltsMatchMax', function()
+    return num(BR.Config.Flick.voltsMatchMax) .. ' at most a match'
+end)
+try('Flick cameras', 'br_lib/config/flick_cameras.lua', 'cameras', function()
+    local n = #BR.Config.Flick.cameras
+    if n == 0 then return nil end
+    return num(n) .. ' in the generated list'
+end)
 
 -- -------------------------------------------------------------- chat screen --
 --
