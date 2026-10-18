@@ -778,6 +778,14 @@ client_scripts {
     -- particles and the owner's write to a vehicle a rocket hit. A FRAME
     -- callback only while rockets fall.
     'client/terminalfx/airstrike.lua',
+    -- FLICK CAMERAS (#419, Season 2): the watch that reports a camera near this
+    -- player going down, every down camera hidden and its wreck drawn near, the
+    -- Season 1 hides, and the Scan squad's coverage on the big map. AFTER
+    -- client/terminalfx.lua for a reader (Scan's TERMINAL_SCAN is heard by
+    -- both), and after client/main.lua and client/natives.lua because it calls
+    -- BR.Loop.register at load and BR.Native's blips at call time. One SLOW
+    -- callback; a FRAME and a TICK one only while they have work.
+    'client/flick.lua',
     -- The bodyguard ownership probe's client half (#401): a DEV TEST, not the
     -- feature. Whichever client owns the guard reports what survived the move
     -- and applies its group and task again. AFTER client/natives.lua and

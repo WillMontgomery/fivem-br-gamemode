@@ -165,6 +165,7 @@ NOTES=(
     "test_market2|Season 2 Market: only real items and nothing marked New, Preview only for a dance you own or can afford, a purchase still the server's, and Season 1's Market unchanged"
     "test_tunekeys|Dev tuning tools' keys: a tap is one step and a hold the same twenty a second at 30, 60 or 144 fps, keys claimed only while a tool is on"
     "test_flick|Season 2 Flick cameras, server: a camera goes down only through the server's door, pays 2 Volts (30 a match) only to who took it, and Scan sees only what a camera sees"
+    "test_flick_client|Season 2 Flick cameras on screen: one report a camera, every down camera hidden with its wreck near, Season 1's hides, the Scan squad's coverage on the big map only"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -995,6 +996,11 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # explosion paying nobody), who is told of a down, and the privacy property
     # over every Scan payload sent: an opponent no live camera sees is in none.
     #
+    # test_flick_client.lua is its client, over modeled natives: the watch's
+    # finds and its one report a camera, the hides and wrecks a down makes and
+    # every way they go, Season 1's hides a batch a frame, and the Scan
+    # squad's coverage only while the big map is up.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -1064,6 +1070,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_market2.lua
         tools/test_tunekeys.lua
         tools/test_flick.lua
+        tools/test_flick_client.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

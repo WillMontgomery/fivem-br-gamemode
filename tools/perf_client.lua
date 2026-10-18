@@ -20,8 +20,9 @@
 -- plane's doors-open cruise over the mainland, the jump, a match -- and the
 -- match through the things a player does in it: aiming down a scope, pinging,
 -- driving with boost, reviving, talking, standing outside the storm, the emote
--- wheel, going down, spectating and standing at a terminal with a Yubikey. Each
--- phase is measured for a few hundred frames.
+-- wheel, going down, spectating and standing at a terminal with a Yubikey --
+-- and, in Season 2, among the Flick cameras (#419). Each phase is measured for
+-- a few hundred frames.
 --
 -- IN EVERY WORLD A CLIENT CAN STAND IN (see THE WORLDS below): Season 1, Season
 -- 2, Season 2 under the festive sky, and Season 1 reached by a live `brseason 1`
@@ -727,6 +728,8 @@ IMPL.GetEntitySpeed      = function(h)
 end
 IMPL.GetEntityModel      = function(h) local e = W.ents[h] return e and e.model or 0 end
 IMPL.GetEntityHealth     = function(h) return W.ents[h] and 200 or 0 end
+-- Every entity stands upright (#419: a Flick camera the watch reads is up).
+IMPL.GetEntityUprightValue = function(h) return W.ents[h] and 1.0 or 0.0 end
 IMPL.GetEntityMaxHealth  = function() return 200 end
 IMPL.GetPedMaxHealth     = function() return 200 end
 IMPL.GetPedArmour        = function() return 50 end
@@ -2196,6 +2199,8 @@ end
 --- Where the player stood before a scene moved them, so the next scene starts
 --- from the same place.
 local home = nil
+--- The Flick cameras the 'match flick' scene stands (#419), while it lasts.
+local flickEnts = nil
 local function stepTo(x, y, z)
     local p = entPos(W.me)
     home = { x = p.x, y = p.y, z = p.z }
@@ -2538,6 +2543,41 @@ local PHASES = {
                 list = { { kind = 'radius', x = p.x, y = p.y, r = 400.0 } } })
             net(BR.Net.TERMINAL_SKY, { matchId = 1, weather = 'RAIN' })
         end
+    end },
+    -- FLICK CAMERAS (#419), in Season 2's world and no other: the city's
+    -- densest stretch of cameras, each standing in reach of the watch (as many
+    -- as the registry puts within its nearM -- they stand 90 m apart at the
+    -- least), and one of them down with its wreck drawn, as the server sends
+    -- it. Its `after` stands them all up again and takes the cameras away.
+    { id = 'match flick', world = 's2', settle = 60, setup = function()
+        if not serverHas('flick') then return end
+        local cams = BR.Config.Flick.cameras
+        local r = BR.Config.Flick.client.nearM
+        local best, bestN = nil, -1
+        for _, a in ipairs(cams) do
+            local n = 0
+            for _, b in ipairs(cams) do
+                if (a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 <= r * r then n = n + 1 end
+            end
+            if n > bestN then best, bestN = a, n end
+        end
+        flickEnts = {}
+        local downId = nil
+        local model = jenkins(BR.Config.Flick.art.model)
+        for _, c in ipairs(cams) do
+            if (c.x - best.x) ^ 2 + (c.y - best.y) ^ 2 <= (r - 5.0) ^ 2 then
+                flickEnts[#flickEnts + 1] = newEnt('obj', model, c.x, c.y, c.z)
+                if c.id ~= best.id and downId == nil then downId = c.id end
+            end
+        end
+        stepTo(best.x + 2.0, best.y + 2.0, best.z)
+        net(BR.Net.FLICK_DOWN, { matchId = 1, ids = { downId or best.id }, causes = { 'weapon' } })
+    end, after = function()
+        if not serverHas('flick') then return end
+        net(BR.Net.FLICK_DOWN, { matchId = 1, reset = true })
+        for _, h in ipairs(flickEnts or {}) do W.ents[h] = nil end
+        flickEnts = nil
+        stepBack()
     end },
     -- ROUND 5'S TOOLS FROM THE SKY (#396, 2026-10-06), at the same terminal,
     -- in their own world (s2-sky, THE WORLDS above) and no other: each is over
@@ -2922,6 +2962,18 @@ local function playChanges()
         end)
         measureChange('match: festive off', function() brfestive(false) end)
         measureChange('match: festive back on', function() brfestive(true) end)
+        -- THE SCAN SQUAD'S BIG MAP (#419): a Scan push that says flick, and the
+        -- map up -- a circle per live camera, built in batches -- then the map
+        -- closed and every circle taken down. br_ui raises frontendMap.
+        if serverHas('flick') then
+            measureChange('match: the big map with the Flick coverage', function()
+                net(BR.Net.TERMINAL_SCAN, { matchId = 1, list = {}, flick = true })
+                BR.Native.frontendMap = true
+            end)
+            measureChange('match: the big map closed, the coverage down', function()
+                BR.Native.frontendMap = false
+            end)
+        end
     end
     measureChange(m:format(two, one), function() switchTo(one) end)
     measureChange(m:format(one, two), function() switchTo(two) end)
