@@ -210,10 +210,25 @@ touch: every other weight is a curve the owner tuned, and this is a figure the
 owner named and the player was already shown in a toast. Halving it would make
 that toast a lie.
 
-**A player who leaves before the match ends forfeits it**, along with their XP,
-their kills and their placement. That is not special handling — it is the rule
-`resetPlayer` already applies to every per-match counter, and the counter is
-cleared with the rest of them so one airdrop cannot be banked twice.
+**A player who leaves before the match ends keeps it.** Leaving seals their row
+into the match (`BR.Roster.sealLeaver`, #100 and #161), and the sealed row
+carries `voltsPickedUp` into the payout with the rest of their match, as
+`tools/test_roster.lua` pins. Then `resetPlayer` clears the live counter with
+every other per-match one, so one airdrop cannot be banked twice.
+
+### Flick cameras (#419)
+
+**2 Volts to the player who takes a Flick camera down, 30 at most a match**
+(owner, 2026-10-18), Season 2 and later. The same path as the airdrop pile:
+the credit adds to `voltsPickedUp` -- "Volts found in the match" -- and lands
+whole in the match's one atomic ADD, so there is still exactly one writer that
+can increase a balance and no per-camera database write. The cap is by
+account, on the match, so a leave and a rejoin cannot reset it; the 16th camera
+still goes down and pays nothing. Only the player whose own client says it was
+their shot or their car, standing, within reach by the server's own sample, is
+credited; traffic, a bystander's report and an explosion pay nobody. Nothing
+says so at the moment: the Volts are in the verdict's "Volts earned".
+[docs/flick.md](flick.md#the-reward) has the rules.
 
 ### Not paid, on purpose
 

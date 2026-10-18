@@ -251,6 +251,7 @@ Each of these stands on its own:
 | **[Testing](docs/testing.md)** | The suites and gates, when to run them, the rules that keep them honest, and the real bugs each one has caught. |
 | **[Platform constraints](docs/platform.md)** | FiveM and CEF behaviours discovered the hard way — the ones that cost days — and what each one taught. |
 | **[The terminals' contract](docs/terminals.md)** | Season 2's computer terminals: how `br_core` opens the vendored desktop, the state and the one copy block it shows, and how a run gets to the server and back. |
+| **[Flick cameras](docs/flick.md)** | Season 2's pole cameras that feed Scan: the generated registry, how a camera goes down and who the server tells, the 2 Volts each, what Scan sees through them, and the Scan squad's coverage on the big map. |
 | **[Vehicle data overrides](docs/vehicle-data.md)** | Which weapons a vehicle seat accepts, the playtest that proved a resource cannot change it, and the template for folding an add-on vehicle's own `vehiclelayouts.meta` in. |
 
 The moderation half has its own contracts, because two repositories have to agree

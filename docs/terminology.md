@@ -306,6 +306,15 @@ See **[progression.md](progression.md)** for the tuning and the reasoning.
 | **Rolled paint** | Since 2026-08-31, twelve of the thirteen cars no longer wear the colour authored on their row: the server rolls **one colour per row per match** from its own seed (`BR.ShopSolve.paint`) and applies the same number to the display car in the showroom and to the car that comes out of the item, so what a player buys is what they saw. The draw is a **curated 32-entry palette** rather than the full 0–159 index space, because that space is a parts bin and not a spread of colours — a uniform draw over it paints roughly one car in six grey, and chrome and gold read as a cheat rather than a paint job. **The ambulance is excluded** and keeps its authored colour (`randomColour = false`): it has a livery, so colour would not show. The palette is the one place a paint index is written down, and emptying it turns the roll off and returns every car to its row. |
 | **Rolled dirt** | Since 2026-09-01, every showroom car also wears a dirt level the server rolls per row per match (`BR.ShopSolve.dirt`), applied to the display car and to the car that comes out of the item alike — owner: *"can you make vehicles have random dirt levels >20% at the shop? That part should also copy over once they've spawned it."* It is a **second derivation from the same `shopSeed`**, not a second seed, and nothing about dirt travels over the wire. `SET_VEHICLE_DIRT_LEVEL` runs **0.0–15.0, not a percentage**, so ">20%" is **3.0**; the band is **(3.0, 9.0]** — 20% to 60% — with the top of the scale left free because the engine keeps adding dirt as a car is driven, and a car delivered at 15.0 could never look like it had been anywhere. **The ambulance is NOT excluded**, unlike the colour roll: that exemption exists because paint covers a livery, and dirt weathers a livery rather than replacing it. The per-row opt-out is `randomDirt = false` and no shipped row uses it. |
 
+### Flick cameras
+
+See **[flick.md](flick.md)**.
+
+| Term | Meaning |
+|---|---|
+| **Flick camera** | One of Season 2's pole cameras (#419) the placement ymap stands along the roads, a row each in the generated `br_lib/config/flick_cameras.lua` with an id that is never reused. A live one is Scan's eyes: with Flick on, Scan shows an opponent only within 75 m of one, or 150 m in a vehicle. Each client has its own copy of each camera, so only a client sees one break -- it reports "I did it" or "it fell" (`FLICK_REPORT`) and the **server decides** the down, credits 2 Volts to a `me` report from a standing player within reach, and tells who should know. Down for the rest of the match, drawn broken on every client by a model hide and a stand-in wreck. |
+| **Coverage** | Where the live cameras can see: one radius blip per live camera, drawn **on the big map only, for the Scan squad only**, while the map is up. Nobody else ever sees a camera on a map. Not the minimap overlay, which is the storm's. |
+
 ### Voice
 
 | Term | Meaning |

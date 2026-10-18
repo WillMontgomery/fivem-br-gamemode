@@ -404,7 +404,7 @@ fails a row missing a line, and a built row with no server entry.
 | `BR.Net.TERMINAL_OPEN` | S→C | `{ state }` | Open the computer on this terminal. |
 | `BR.Net.TERMINAL_RUN` | C→S | `{ terminalId, functionId, options?, at? }` | Dropped, unanswered, without an open session on that terminal, with a malformed id, or sooner than `runMinIntervalMs` after the last. Options the registry does not allow are answered `bad_option`, and so is a spot (`at = { x, y }`, two finite numbers within 20 km of the map's middle) missing from a run at one (`spot`; round 6, or its `spot.when` holding for the choices sent) or sent with one that takes none (`BR.Terminal.spot`). |
 | `BR.Net.TERMINAL_INFO` | S→C | `{ terminalId, state }` | The open computer's state again, match panel included, every `infoPushMs` (1 s), to that player alone, only while open, never off Season 2. |
-| `BR.Net.TERMINAL_SCAN` | S→C | `{ matchId, list = { { s, x, y, down? } } }` | Scan: every opponent's position, to the scanning squad alone (dead and spectating members included), every `fx.scanPingMs` for the rest of the match. A squad under Ghost is left out. |
+| `BR.Net.TERMINAL_SCAN` | S→C | `{ matchId, list = { { s, x, y, down? } }, flick? }` | Scan: every opponent's position, to the scanning squad alone (dead and spectating members included), every `fx.scanPingMs` for the rest of the match. A squad under Ghost is left out. With Flick on (#419), only the opponents a live camera sees, and `flick = true`: the client draws the coverage ([docs/flick.md](flick.md)). |
 | `BR.Net.TERMINAL_BOUNTY` | S→C | `{ matchId, list = { { s, x, y } } }` | Each live bounty's position (a Contract's too), to everyone in the match outside that bounty's squad, every `fx.bountyPingMs`, and once more, empty, when the last ends. A bounty on a squad under Ghost is left out. |
 | `BR.Net.TERMINAL_IMPACTS` | S→C | `{ list = { { key, text, endsAt?, tail? } } }` | The persistent notices (round 4): this player's whole list, to them alone, when it changes -- a row came or went or its end moved -- on a 1 s pass (`fx.endCheckMs`) and at once after a run's effect. `text` is picked for them (squad or solo); `endsAt` is the server's clock, or `tail` (`impact_until_end`) stands in for it. `client/terminalfx.lua` hands it to br_ui as `BR.Nui.IMPACTS`. |
 | `BR.Net.TERMINAL_EMP` | S→C | `{ matchId, leftMs?, liveMs? }` | EMP (round 4): how long this player's driving stalls from now (absent when every EMP in force spares their squad) and how long any EMP in the match lasts (absent with none). To the whole match when one goes off and when one ends (its time, the match's end, Season 1), and on `br:ready` while one lasts. `client/terminalfx/emp.lua` applies it to the vehicle its own player drives, and (round 7) lays the road speed zones that stop NPC traffic while `liveMs` lasts. |
@@ -1196,6 +1196,16 @@ match -- alive, downed or in the air -- is sent to every member of the squad
 samples. Nobody else is sent it. `client/terminalfx.lua` draws a mark per
 opponent on both maps (`art.scan`, named `scan_blip`), moves it on every push,
 and clears them in the lobby or when the pushes stop.
+
+**Through the Flick cameras** (#419, Season 2, owner 2026-10-18): with the
+`flick` row on, Scan sends **only the opponents a live Flick camera sees** --
+within 75 m of one on foot, 150 m in any seat of a vehicle, flat on the map
+(`BR.Flick.seen`, `server/flick.lua`) -- filtered on the server before the
+payload is built, and TERMINAL_SCAN says `flick = true`, so the squad's client
+draws the cameras' coverage on its big map. A camera knocked out is out of the
+next ping. The bounty, Ghost, Airstrike's rough circles and the static
+`impact_scan` row are unchanged. The whole contract is
+[docs/flick.md](flick.md).
 
 **The bounty**, the owner's spec (2026-10-04) verbatim, on the player who ran
 Scan, after the lobby has read `notice_action`:
