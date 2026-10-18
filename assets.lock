@@ -1664,11 +1664,11 @@
     {
       "name": "br_datacenter",
       "seasons": {
-        "2": "57ec1a287f118ea89ae4af941e083cc301dc7c67fa0ec4bdf6c468b95ba12bab"
+        "2": "52f5700d9168c27de652bae7a8aa353e0c3356c85e4ffd101620bdc64b2fe064"
       },
       "versions": {
-        "57ec1a287f118ea89ae4af941e083cc301dc7c67fa0ec4bdf6c468b95ba12bab": {
-          "size": 79943792,
+        "52f5700d9168c27de652bae7a8aa353e0c3356c85e4ffd101620bdc64b2fe064": {
+          "size": 79940741,
           "files": {
             "README.txt": 100379,
             "brdc_b2int_timecycle.xml": 3822,
@@ -1687,7 +1687,7 @@
             "doors/m8r_teleports.json": 782,
             "fxmanifest.lua": 2637,
             "preflight.allow": 26569,
-            "stream/_manifest.ymf": 2280,
+            "stream/_manifest.ymf": 2044,
             "stream/brdc_b1_col_bldg.ybn": 13601,
             "stream/brdc_b1_roof.ymap": 1638,
             "stream/brdc_b2_ballrack.ydr": 3052,
@@ -1715,8 +1715,6 @@
             "stream/brdc_b2int.ytyp": 9922,
             "stream/brdc_b2int_ext_n.ymap": 1215,
             "stream/brdc_b2int_ext_s.ymap": 1215,
-            "stream/brdc_b2int_milo_n.ymap": 1147,
-            "stream/brdc_b2int_milo_s.ymap": 1146,
             "stream/brdc_b3.ytd": 585116,
             "stream/brdc_b3.ytyp": 1031,
             "stream/brdc_b3_distlodlights_medium.ymap": 1031,
@@ -2048,7 +2046,6 @@
             "stream/brdc_m8_mech2_m.ydr": 46227,
             "stream/brdc_m8_mech2_n.ydr": 59497,
             "stream/brdc_m8_mech2_s.ydr": 50744,
-            "stream/brdc_m8_milo_b1l.ymap": 1139,
             "stream/brdc_m8_racking.ydr": 52972,
             "stream/brdc_m8_racking_net.ydr": 57306,
             "stream/brdc_m8_row_n16.ydr": 66726,
@@ -2074,7 +2071,6 @@
             "stream/brdc_m8r_mech1_tray.ydr": 33938,
             "stream/brdc_m8r_mech2_adm.ydr": 50759,
             "stream/brdc_m8r_mech2_end.ydr": 59414,
-            "stream/brdc_m8r_milo_b1r.ymap": 1139,
             "stream/brdc_perim.ytyp": 2210,
             "stream/brdc_pylon01_lod.ydr": 4697,
             "stream/brdc_reader_g.ydr": 1399,
