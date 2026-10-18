@@ -158,12 +158,13 @@ NOTES=(
     "test_terminal|Season 2 terminals: a run only inside a session the server opened; the computer always gives the keyboard back"
     "test_yubikey|Season 2 Yubikey: one per player, dropped on death and on leaving downed, kept on leaving standing and after the match, one use per squad, terminals live only inside the storm"
     "test_terminalworld|Season 2 terminal functions that change the match's world (storm, sky, clock, lights) spend nothing when they can't run"
-    "test_terminalfx|Season 2 terminal functions: Scan shows the squad every opponent, the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
+    "test_terminalfx|Season 2 terminal functions: Scan shows the squad its opponents (through the Flick cameras too), the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
     "test_terminalstrike|Season 2 tools from the sky: Vehicle drop lands an unarmed car near the right player, Airstrike's damage is the server's alone, and both spend nothing when they can't"
     "test_guardprobe|The bodyguard ownership probe is dev-only and Season 2, spawns and logs what it says, and costs nothing until typed"
     "test_locker2|Season 2 Locker: saved peds checked and kept by the server, the ped you left with is the ped you rejoin with, and Season 1's locker unchanged"
     "test_market2|Season 2 Market: only real items and nothing marked New, Preview only for a dance you own or can afford, a purchase still the server's, and Season 1's Market unchanged"
     "test_tunekeys|Dev tuning tools' keys: a tap is one step and a hold the same twenty a second at 30, 60 or 144 fps, keys claimed only while a tool is on"
+    "test_flick|Season 2 Flick cameras, server: a camera goes down only through the server's door, pays 2 Volts (30 a match) only to who took it, and Scan sees only what a camera sees"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -986,6 +987,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # a time, and the paste line printed however it is put away. What each
     # tool's keys move is in the suites that load its file.
     #
+    # test_flick.lua is #419's Flick cameras on the server, over the REAL
+    # br_lib/shared/flick_solve.lua, server/flick.lua and the Scan of
+    # server/terminalfx.lua: the grid against a brute-force walk, the door's
+    # refusals one at a time in order, the decision and the credit (2 Volts a
+    # camera, the cap by account, a bystander's report then the shooter's, an
+    # explosion paying nobody), who is told of a down, and the privacy property
+    # over every Scan payload sent: an opponent no live camera sees is in none.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -1054,6 +1063,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_locker2.lua
         tools/test_market2.lua
         tools/test_tunekeys.lua
+        tools/test_flick.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

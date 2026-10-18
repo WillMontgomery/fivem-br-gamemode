@@ -67,5 +67,12 @@ BR.Config.Seasons = {
         -- confirm, a Preview of a dance on the lobby character). Off: today's
         -- Market and its grid, exactly as they were.
         market2 = { from = 2 },
+        -- #419. Owner, 2026-10-18: Flick, the pole cameras that feed Scan, is
+        -- Season 2 and later. On: Scan shows an opponent only near a working
+        -- camera, a camera taken down pays Volts, and the Scan squad sees the
+        -- coverage on the big map. Off: Scan exactly as it was, and every
+        -- camera the ymap stands hidden. A row of its own and not
+        -- `terminals`', because the cameras are their own content.
+        flick = { from = 2 },
     },
 }

@@ -1048,6 +1048,14 @@ server_scripts {
     -- (server/damage.lua), the vehicles through the OneSync pool, read at
     -- call time.
     'server/terminalfx/airstrike.lua',
+    -- FLICK CAMERAS (#419, Season 2): this match's cameras, the door a report
+    -- of a camera going down comes through, the credit into voltsPickedUp, who
+    -- is told of a down, the snapshot's view, BR.Flick.seen for Scan, and the
+    -- dev command `brflicksv`. AFTER server/terminalfx.lua, whose Scan asks
+    -- BR.Flick at call time, and server/damage.lua, whose explosionEvent
+    -- handler runs before this file's. Registers its send pass on BR.Sched at
+    -- load.
+    'server/flick.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

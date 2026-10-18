@@ -20,6 +20,11 @@
 --   PART E  the hooks the other files make, pinned by text: the beacon's
 --           bit, the squad panel's glyph, the teammates' blip 58 colour 69.
 --
+-- FLICK (#419) IS OFF FOR EVERY BLOCK BUT ITS OWN: Scan here is Scan as it
+-- was, and the Scan blocks run again with Flick on and a camera where each
+-- opponent stands ('Scan with Flick on'). Flick's own suite is
+-- tools/test_flick.lua.
+--
 -- The airdrop half of Supply drop (BR.Airdrop.call, under the real siting
 -- rules) is tools/test_airdrop.lua's; the inventory half of Max ammo
 -- (BR.Inv.fillAmmo) is tools/test_roster.lua's.
@@ -129,10 +134,13 @@ loadAll({
     'br_lib/shared/season.lua',
     'br_lib/config/seasons.lua',
     'br_lib/config/terminals.lua',
+    'br_lib/config/flick.lua',
+    'br_lib/config/flick_cameras.lua',
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/storm_shape.lua',
     'br_lib/shared/terminal_solve.lua',
     'br_lib/shared/shop_solve.lua',
+    'br_lib/shared/flick_solve.lua',
 })
 -- The currency's name a Volts figure is written with (config/market.lua's).
 BR.Config.Market = { currency = 'Volts' }
@@ -277,8 +285,17 @@ loadAll({
     'br_core/server/terminalfx.lua',
 })
 loadAll(fxFiles('server'))
+loadAll({ 'br_core/server/flick.lua' })
 
 local T = BR.Terminal
+
+--- Flick (#419) off or on at Season 2, by its row: the season gate's own
+--- answer. Off for every block but the ones that say otherwise.
+local FLICK_FROM = BR.Config.Seasons.features.flick.from
+local function flick(on)
+    BR.Config.Seasons.features.flick.from = on and FLICK_FROM or (BR.Config.Seasons.latest + 1)
+end
+flick(false)
 
 -- After the load, so the files' own nil-guards are what the season and the
 -- jobs were registered against; the airdrop and the inventory are the other
@@ -568,6 +585,44 @@ do
     n = #eventsOf(BR.Net.TERMINAL_SCAN, 1)
     jobs['terminal.scan']()
     eq(#eventsOf(BR.Net.TERMINAL_SCAN, 1), n, 'once the match is over, nothing more')
+end
+
+describe('Scan with Flick on (#419): the same squad, seeing only what a camera sees')
+do
+    reset()
+    local m = lobby()
+    local real = BR.Config.Flick.cameras
+    -- ONE CAMERA BESIDE SQUAD B (3 and 4 stand 20 m apart), and none within
+    -- 500 m of the solo player.
+    BR.Config.Flick.cameras = {
+        { id = 1, x = roster[3].pos.x + 5.0, y = roster[3].pos.y - 10.0, z = 30.0, h = 0.0 },
+    }
+    flick(true)
+    local r = runAt(1, 'scan')
+    ok(r and r.ok == true and r.code == 'done', 'Scan runs as ever', r and r.code)
+    local a = lastOf(BR.Net.TERMINAL_SCAN, 1)
+    local ids = {}
+    for _, p in ipairs(a and a.list or {}) do ids[#ids + 1] = p.s end
+    eq(table.concat(ids, ','), '3,4', 'the two opponents by the camera, the downed one too; not the solo player')
+    ok(a and a.flick == true, 'and the push says flick')
+    ok(a.list[2].down == true, 'a downed opponent is still marked down')
+    eq(#eventsOf(BR.Net.TERMINAL_SCAN, 3) + #eventsOf(BR.Net.TERMINAL_SCAN, 5), 0,
+        'still nobody outside the squad is sent a thing')
+    -- THE SOLO PLAYER WALKS UP TO THE CAMERA, AND SQUAD B WALKS AWAY.
+    roster[5].pos = { x = roster[3].pos.x, y = roster[3].pos.y + 30.0, z = 30.0 }
+    roster[3].pos = { x = 1.0, y = 2.0, z = 0.0 }
+    gameMs = gameMs + 2000
+    jobs['terminal.scan']()
+    ids = {}
+    for _, p in ipairs(lastOf(BR.Net.TERMINAL_SCAN, 2).list) do ids[#ids + 1] = p.s end
+    eq(table.concat(ids, ','), '4,5', 'the next push follows who the camera sees now, to the whole squad')
+    -- THE CAMERA KNOCKED OUT: nobody.
+    BR.Flick.devDown(m, 1, gameMs)
+    gameMs = gameMs + 2000
+    jobs['terminal.scan']()
+    eq(#lastOf(BR.Net.TERMINAL_SCAN, 1).list, 0, 'the camera down: nobody, on the next push')
+    flick(false)
+    BR.Config.Flick.cameras = real
 end
 
 -- =========================================================================

@@ -293,6 +293,12 @@ function BR.Broadcast.snapshot(src)
             -- re-sending the cells they already had, not the whole map.
             inv          = BR.Inv and BR.Inv.publicFor(target) or nil,
             loot         = BR.Loot and BR.Loot.viewFor(target) or nil,
+            -- The Flick cameras down in their match that they should hold
+            -- (#419): near them, or all of them for a squad running Scan.
+            -- Their own view too, so a late joiner or a restarted client sees
+            -- every camera near it broken; nil outside a match or off
+            -- Season 2, and the client then holds none.
+            flick        = BR.Flick and BR.Flick.viewFor and BR.Flick.viewFor(target) or nil,
         }
     end
 

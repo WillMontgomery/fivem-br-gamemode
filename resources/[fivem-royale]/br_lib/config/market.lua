@@ -707,8 +707,9 @@ function BR.Config.marketPayout(r)
     earned = earned + (tonumber(r.kills) or 0) * p.perKill
     earned = earned + (tonumber(r.revives) or 0) * p.perRevive
 
-    -- WHAT THEY PICKED UP OFF THE GROUND (#88). An airdrop carries a pile of
-    -- Volts; claiming it increments a counter on the roster entry, and this is
+    -- WHAT THEY FOUND IN THE MATCH (#88): an airdrop carries a pile of Volts,
+    -- and a Flick camera taken down is worth 2 more, 30 at most a match (#419).
+    -- Either increments a counter on the roster entry, and this is
     -- where that counter becomes money -- in the same sum, in the same atomic
     -- write, as everything else this match paid. That is the whole reason it is
     -- here rather than credited at the pickup: this file's promise, four hundred

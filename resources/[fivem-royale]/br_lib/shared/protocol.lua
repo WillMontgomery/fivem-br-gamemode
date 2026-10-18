@@ -1263,9 +1263,12 @@ BR.Net = {
     -- match when one starts or ends (an empty list: the lights back on), and
     -- on br:ready while one lasts (server/terminalfx/power_outage.lua).
     TERMINAL_POWER  = 'br:terminal:power',
-    -- S->C { matchId, list = { { s, x, y, down? } } }. Scan: where every
-    -- opponent of this player's squad is, every scanPingMs for the rest of the
-    -- match. To the scanning squad alone (server/terminalfx.lua).
+    -- S->C { matchId, list = { { s, x, y, down? } }, flick? }. Scan: where
+    -- every opponent of this player's squad is, every scanPingMs for the rest
+    -- of the match. To the scanning squad alone (server/terminalfx.lua). With
+    -- Flick on (#419) the list is only the opponents a live camera sees,
+    -- filtered on the server, and `flick` is true: the client draws the
+    -- coverage on the big map.
     TERMINAL_SCAN   = 'br:terminal:scan',
     -- S->C { matchId, list = { { s, x, y } } }. Where each live bounty is, to
     -- everyone in the match outside that bounty's squad, every bountyPingMs
@@ -1372,6 +1375,31 @@ BR.Net = {
     -- S->C { req, ok, reason?, id?, ped?, gone?, worn? }. One write's answer,
     -- carrying only the ped it changed (and the worn ped when that moved).
     LOCKER2_RESULT  = 'br:locker2:result',
+
+    -- FLICK CAMERAS (#419, Season 2): the pole cameras that feed Scan
+    -- (docs/flick.md). br_core/server/flick.lua decides every down;
+    -- br_core/client/flick.lua only reports one it saw and draws the list.
+    --
+    -- C->S { id, by, cause? }. "This camera near me went down": `by` 'me' when
+    -- this player's own ped or the vehicle they drive damaged it, else
+    -- 'other'; `cause` 'weapon' or 'vehicle'. Taken only through the door in
+    -- server/flick.lua (the season, the shape, a rate, a PLAYING match, a
+    -- player standing or downed, within reach by the server's own sample, a
+    -- camera still up) and silent otherwise. Never answered: the down, if
+    -- any, arrives as FLICK_DOWN.
+    FLICK_REPORT    = 'br:flick:report',
+    -- S->C { matchId, ids = { id... }, causes = { 'weapon'|'vehicle'... } } /
+    -- { matchId, reset = true }. Cameras down in this match, additive -- a
+    -- camera never comes back up inside one -- each with the cause the server
+    -- recorded (the wreck a client draws). To the players whose view is
+    -- within showM of each, to every member of a squad running Scan all of
+    -- them, and on a 1 s pass to whoever comes near. `reset` only from the
+    -- dev tool's `brflick reset`. The snapshot carries the same list as
+    -- `flick`.
+    FLICK_DOWN      = 'br:flick:down',
+    -- S->C '<text>'. One `brflicksv` answer, printed on the F8 of the player
+    -- who typed `brflick`.
+    FLICK_DEV       = 'br:flick:dev',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the

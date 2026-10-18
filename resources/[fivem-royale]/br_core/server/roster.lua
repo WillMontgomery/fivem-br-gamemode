@@ -79,8 +79,9 @@ local function newEntry(src)
         damage     = 0.0,
         placement  = nil,
 
-        -- CURRENCY PICKED UP OFF THE GROUND THIS MATCH (#88). Airdrops carry a
-        -- Volts pile; claiming one adds to this and writes nothing.
+        -- VOLTS FOUND IN THE MATCH (#88): an airdrop's pile, and since #419 a
+        -- Flick camera taken down (server/flick.lua, 2 a camera, 30 at most a
+        -- match). Claiming either adds to this and writes nothing.
         --
         -- IT IS NOT A BALANCE AND MUST NEVER BE READ AS ONE. It is an INPUT to
         -- the payout formula, published once in the match results and added to

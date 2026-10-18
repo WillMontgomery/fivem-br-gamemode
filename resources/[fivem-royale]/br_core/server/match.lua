@@ -1063,10 +1063,11 @@ function BR.Match.publishResults(m)
             downs     = e.downs or 0,
             revives   = e.revives or 0,
             damage    = e.damage or 0.0,
-            -- What they took off the ground rather than earned by playing
-            -- (#88's airdrop Volts). Carried on the row for the same reason
-            -- `died` is: this is the only journey it makes, and the formula that
-            -- reads it should not have to re-derive it from anything.
+            -- What they found rather than earned by playing: #88's airdrop
+            -- Volts and #419's Flick cameras. Carried on the row for the same
+            -- reason `died` is: this is the only journey it makes, and the
+            -- formula that reads it should not have to re-derive it from
+            -- anything.
             voltsPickedUp = e.voltsPickedUp or 0,
             -- And what they spent in it (#293), which until now was recorded
             -- nowhere at all: the debit is a conditional write against the

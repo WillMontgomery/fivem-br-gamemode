@@ -6,8 +6,9 @@
 -- built, registered into BR.Terminal.FUNCTIONS (the contract is that file's
 -- header and docs/terminals.md), and the pushes that keep them on screen.
 --
---   Scan          the scanning squad sees every opponent, for the rest of the
---                 match, and the player who ran it gets a bounty
+--   Scan          the scanning squad sees every opponent -- with Flick on
+--                 (#419), every opponent a live Flick camera sees -- for the
+--                 rest of the match, and the player who ran it gets a bounty
 --   the bounty    the owner's spec, below
 --   Supply drop   one extra airdrop at the airdrop spot nearest the place picked
 --                 on the big map, by the airdrop's own rules (BR.Airdrop.call)
@@ -42,7 +43,9 @@
 -- spec sends them:
 --
 --   TERMINAL_SCAN    the scanning squad, every scanPingMs: each opponent's
---                    position. Nobody else.
+--                    position -- with Flick on, each opponent a live camera
+--                    sees (BR.Flick.seen, server/flick.lua), filtered here
+--                    before the payload is built. Nobody else.
 --   TERMINAL_BOUNTY  everyone in the match OUTSIDE the bounty's squad, every
 --                    bountyPingMs while one is live, and once more, empty,
 --                    when the last one ends. The bounty's squad already sees
@@ -140,24 +143,49 @@ end
 
 -- ------------------------------------------------------------------ Scan ---
 
---- Start a squad's scan in this match: from now to the end of the match.
+-- ═══ SCAN, SEEN THROUGH THE FLICK CAMERAS (#419) ═══
+--
+-- With Flick on, Scan sends only the opponents a live camera sees: within 75 m
+-- of one on foot, 150 m in any seat of a vehicle, flat on the map, so what it
+-- sends is exactly what the squad's coverage circles show (server/flick.lua's
+-- BR.Flick.seen, worked out once a ping). The filter is HERE, before the
+-- payload is built, so a client is never sent a position it should not have,
+-- and TERMINAL_SCAN says `flick = true` so the squad's client draws the
+-- coverage. A camera knocked out is out of the next ping.
+--
+-- THE SEASON IS ASKED HERE AND NOT OF BR.Flick, so a camera file that failed to
+-- load can only make Scan see less, never widen it: Flick on with no BR.Flick
+-- sees nobody. Off, Scan is exactly what it was.
+
+--- Is Scan seen through the cameras, in the season in force?
+--- @return boolean
+local function throughCameras()
+    return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('flick') == true
+end
+
+--- Start a squad's scan in this match: from now to the end of the match. With
+--- Flick on, the squad is sent every camera down so far first: its coverage is
+--- the registry less all of them (BR.Flick.joinScan).
 --- @param m table
 --- @param key string  the squad (BR.TerminalSolve.squadKey)
 --- @param by integer  who ran it
 --- @param now number
 function T.startScan(m, key, by, now)
     fxOf(m).scans[key] = { by = by, at = now }
+    if BR.Flick and BR.Flick.joinScan then BR.Flick.joinScan(m, key) end
     T.pushScans(m)
 end
 
 --- Every opponent of `key` this match has a position for -- but a squad
---- under Ghost.
+--- under Ghost, and, with `seen` (Flick on), one no live camera sees.
+--- @param seen table|nil  [src] = true: BR.Flick.seen's answer
 --- @return table[] { { s, x, y, down } }
-local function opponentsOf(m, key, now)
+local function opponentsOf(m, key, now, seen)
     local out = {}
     BR.Roster.each(function(e) return e.matchId == m.id end, function(src, e)
         local theirs = TS.squadKey(e, src)
-        if MARKED[e.state] and e.pos and theirs ~= key and not hidden(m, theirs, now) then
+        if MARKED[e.state] and e.pos and theirs ~= key and not hidden(m, theirs, now)
+           and (seen == nil or seen[src] == true) then
             out[#out + 1] = { s = src, x = e.pos.x + 0.0, y = e.pos.y + 0.0,
                               down = e.state == BR.PlayerState.DBNO or nil }
         end
@@ -173,8 +201,14 @@ function T.pushScans(m)
     local st = m.terminalFx
     if not st or next(st.scans) == nil then return end
     local now = GetGameTimer()
+    -- Once a ping, not once a squad: who the cameras see, for every squad.
+    local flick = throughCameras()
+    local seen = nil
+    if flick then
+        seen = (BR.Flick and BR.Flick.seen) and BR.Flick.seen(m, now) or {}
+    end
     for key in pairs(st.scans) do
-        local payload = { matchId = m.id, list = opponentsOf(m, key, now) }
+        local payload = { matchId = m.id, list = opponentsOf(m, key, now, seen), flick = flick or nil }
         for _, src in ipairs(T.squadOf(m, key)) do
             TriggerClientEvent(BR.Net.TERMINAL_SCAN, src, payload)
         end
@@ -604,7 +638,10 @@ end
 -- someone (the target)") -- until it ends, and not while their squad is under
 -- Ghost (no map shows them then, so the line would not be true).
 -- AND SCAN: every opponent of a scanning squad, for the rest of the match, but
--- a squad under Ghost while it lasts.
+-- a squad under Ghost while it lasts. WITH FLICK ON TOO, AND STATIC (#419): the
+-- row is not switched on and off as a player walks in and out of a camera's
+-- sight, which would tell every opponent where the coverage ends -- and only
+-- the Scan squad may see that. Its line says "near Flick cameras".
 T.impactSource(function(m, now, add)
     local st = m.terminalFx
     if not st then return end
