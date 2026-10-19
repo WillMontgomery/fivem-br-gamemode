@@ -139,6 +139,8 @@ F.art = {
     hideRadiusM = 1.5,
     -- The Scan squad's coverage on the big map: one circle per live camera.
     -- PLACEHOLDERS for the owner: never the storm's purple, Scan's red or the
-    -- bounty's blue.
-    coverage = { colour = 5, alpha = 50 },
+    -- bounty's blue. "the circles should be barely visible" (owner,
+    -- 2026-10-18): alpha 25 is the faint start, and `brflicktune` prints this
+    -- line with the look he picks on the keys.
+    coverage = { colour = 5, alpha = 25 },
 }

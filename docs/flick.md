@@ -342,7 +342,8 @@ scanning squad, dead and spectating members included -- in a match, on Season
 
 **What**: one radius blip per live camera, `rangeM`, in `art.coverage`'s color
 and alpha (placeholders: never the storm's purple, Scan's red or the bounty's
-blue). No name and off the legend (`BR.Native.blipHiddenOnLegend`): a legend
+blue; "the circles should be barely visible", owner, 2026-10-18, so alpha
+starts at 25 and `brflicktune` is how he picks the look). No name and off the legend (`BR.Native.blipHiddenOnLegend`): a legend
 with hundreds of entries flickers and rebuilds. Overlaps at a junction read
 darker, "seen from two poles". The vehicle range is not drawn.
 
@@ -414,6 +415,7 @@ run on the server as `brflicksv`:
 | `brflick reset` | Every camera in your match up again on the server, and every client's hides lifted (`FLICK_DOWN reset`). A camera a client physically broke stays broken until it streams out; the answer says so |
 | `brflick coverage [off]` | Your big map's coverage without running Scan |
 | `brflick hides` | The model hides this client holds, the downs, wrecks and circles |
+| `brflicktune` | The coverage's look on the keys (#404's shape, `client/tunekeys.lua`), on or off. While on, the big map shows a circle for every working camera with no Scan run; LEFT/RIGHT the blip color (once a press, round GTA's palette 0-85), UP/DOWN the alpha (1 a step), SHIFT 10, DELETE the shipped look, the numbers on screen, every circle restyled at once. Again (or `off`) puts it away and prints the `coverage = { ... }` line to paste into `br_lib/config/flick.lua` |
 
 From the server console a verb about a player takes the player id last:
 `brflicksv list 12`, `brflicksv down 117 12`.
@@ -434,6 +436,7 @@ them.
 | `CreateModelSwap` works on ymap objects | one call per down instead of hide plus wreck | hide plus wreck, as built |
 | `SetBlipDisplay` keeps a radius blip off the radar | coverage could stay up between map opens | built only while the map is up, as built |
 | A script-made `_shot` fragment stands until it is hit | unfrozen, as configured | `art.wreckFrozen.weapon = true` |
+| `brflicktune`'s keys and readout reach it while the big map is up | tune with the map open | tune with it closed and open it to look: every circle is made in the look of the moment |
 
 `CreateModelHideExcludingScriptObjects` and `RemoveModelHide` are the ones the
 laptops' Season 1 hides already rely on (read against the Cfx docs on
@@ -458,4 +461,5 @@ No other line: no camera plate, no blip name, no toast.
 
 **The art**: `art.model` and `art.wreck` are the prop's names (`blitz_flick_cam`,
 `blitz_flick_cam_shot`, `blitz_flick_cam_down`, in the Season 2 drop's
-`br_flick`); `art.coverage` (color 5, alpha 50) is a placeholder for the owner.
+`br_flick`); `art.coverage` (color 5, alpha 25) is a placeholder for the owner,
+who picks it with `brflicktune`.

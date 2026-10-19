@@ -11,7 +11,7 @@
 --   Season 1      every camera the ymap stands hidden while Flick is off here
 --   the coverage  the Scan squad's: a circle per live camera on the big map,
 --                 only while it is up, only while Scan's pushes say `flick`
---   the dev tools `brflick`
+--   the dev tools `brflick`, and `brflicktune`: the coverage's look on the keys
 --
 -- ═══ A MAP OBJECT IS THIS CLIENT'S ALONE ═══
 --
@@ -207,17 +207,23 @@ end
 --- Is the coverage on the big map up? Set by the coverage pass below.
 local showing = false
 
+--- The coverage's look: art.coverage, which `brflicktune` writes live.
+--- @return number color, number alpha
+local function coverageLook()
+    local look = art().coverage or {}
+    return tonumber(look.colour) or 5, tonumber(look.alpha) or 25
+end
+
 --- Bring one camera's coverage circle to what it should be.
 local function applyCircle(id)
     local want, b = showing and on() and downs[id] == nil, circles[id]
     if want and not b then
         local row = FS.row(grid, id)
         if not row then return false end
-        local look = art().coverage or {}
+        local color, alpha = coverageLook()
         -- NO NAME, AND OFF THE LEGEND: hundreds of circles are one thing to the
         -- player, and a legend with hundreds of entries flickers and rebuilds.
-        b = BR.Native.radiusBlip(nil, row.x, row.y, cfg().rangeM or 75.0,
-            look.colour or 5, look.alpha or 50, nil)
+        b = BR.Native.radiusBlip(nil, row.x, row.y, cfg().rangeM or 75.0, color, alpha, nil)
         BR.Native.blipHiddenOnLegend(b, true)
         circles[id] = b
         return true
@@ -541,11 +547,22 @@ end
 local coverage = { at = 0, dev = false }
 local coverageLoop = nil
 
+--- The coverage tuner (`brflicktune`, the dev section): its name on the keys.
+local TUNE = 'brflicktune'
+
+--- A DEV PREVIEW -- `brflick coverage`, or the tuner on -- draws the coverage
+--- with no Scan run. ASKED, NOT REMEMBERED: the tuner is on while its keys are,
+--- so however it is put away (the command, or another tuner turned on) the
+--- preview goes with it.
+local function devPreview()
+    return coverage.dev or (BR.TuneKeys ~= nil and BR.TuneKeys.on(TUNE))
+end
+
 local function coverageArmed()
     if not on() then return false end
     local S = BR.State
     if S and S.me and S.me.state == BR.PlayerState.LOBBY then return false end
-    if coverage.dev then return true end
+    if devPreview() then return true end
     local fx = BR.Config.Terminals and BR.Config.Terminals.fx or {}
     return coverage.at > 0 and GetGameTimer() - coverage.at <= 3 * (fx.scanPingMs or 2000)
 end
@@ -557,7 +574,9 @@ local function coveragePass()
         showing = up
         syncCircles()
     end
-    if not armed and next(circles) == nil and circleQ.head > circleQ.tail then
+    -- A DEV PREVIEW KEEPS ITS CALLBACK through the lobby and a season move:
+    -- nothing would arm it again on the way out (a Scan push arms its own).
+    if not armed and not devPreview() and next(circles) == nil and circleQ.head > circleQ.tail then
         BR.Loop.unregister(coverageLoop)
         coverageLoop = nil
     end
@@ -721,4 +740,111 @@ RegisterCommand('brflick', function(_, args)
     else
         print('[br_core] brflick: brflick [list] | near | down <id|near> | reset | coverage [off] | hides')
     end
+end)
+
+-- ------------------------------------------------------------ the tuner ---
+--
+-- ═══ brflicktune: THE COVERAGE'S LOOK ON THE KEYS ═══
+--
+-- "the circles should be barely visible. give me an in-game adjuster and i'll
+-- tell you what looks good" (owner, 2026-10-18). The shape every tuner shares
+-- (#404, client/tunekeys.lua): the command turns it on, the keys move the look,
+-- and the command again puts it away and prints the config line to paste.
+--
+--   brflicktune [on|off]   bare, it turns the tuner on or off
+--
+-- While it is on, the big map shows a circle for every live camera with no
+-- Scan run (devPreview, as `brflick coverage`), and the keys move the look of
+-- every circle at once:
+--
+--   LEFT / RIGHT   the blip color, once a press, round GTA's palette (0-85)
+--   UP / DOWN      the alpha, 1 a step, 0-255
+--   hold SHIFT     10 a step, for either
+--   DELETE         the shipped look
+--
+-- THE LOOK IS WRITTEN INTO art.coverage ITSELF, as /brshine writes its numbers
+-- into the loot config, so a circle made later -- the map opened again -- is
+-- made in it, and the circles already up are restyled in place: two setters a
+-- circle, no blip made again (a radius blip is the expensive call; its color
+-- and alpha are not). Client-local: a restart puts the config's look back.
+
+--- GTA's blip palette: SET_BLIP_COLOUR takes 0..85, and the keys go round it.
+local PALETTE = 86
+--- The alpha's step: 1, and 10 with SHIFT.
+local ALPHA_STEP = { fine = 1, coarse = 10, places = 0, lo = 0, hi = 255 }
+--- What the config shipped, for DELETE: the tuner writes the config table.
+local SHIPPED = {}
+SHIPPED.color, SHIPPED.alpha = coverageLook()
+
+--- Every circle up brought to the look, in place.
+local function restyle()
+    local color, alpha = coverageLook()
+    for _, b in pairs(circles) do
+        SetBlipColour(b, color)
+        SetBlipAlpha(b, alpha)
+    end
+end
+
+--- Set the look, live: the config's table, then every circle up.
+local function setLook(color, alpha)
+    local a = cfg()
+    a.art = a.art or {}
+    a.art.coverage = a.art.coverage or {}
+    a.art.coverage.colour, a.art.coverage.alpha = color, alpha
+    restyle()
+end
+
+--- The look, and the line for br_lib/config/flick.lua.
+local function tuneReport()
+    local color, alpha = coverageLook()
+    print(('[br_core] brflicktune: color %d, alpha %d'):format(color, alpha))
+    print('  paste into br_lib/config/flick.lua:')
+    print(('    coverage = { colour = %d, alpha = %d },'):format(color, alpha))
+end
+
+local function tuneOn()
+    if not on() then
+        print('[br_core] brflicktune: Flick is Season 2 (brseason 2 first)')
+        return
+    end
+    BR.TuneKeys.start(TUNE, {
+        lines = function(k)
+            local color, alpha = coverageLook()
+            return {
+                '~b~flick coverage~w~',
+                ('color %d'):format(color),
+                ('alpha %d'):format(alpha),
+                ('step %d'):format(k.coarse and ALPHA_STEP.coarse or ALPHA_STEP.fine),
+            }
+        end,
+        pick = function(d)
+            local color, alpha = coverageLook()
+            local n = BR.TuneKeys.held(BR.TuneKeys.KEY.COARSE) and ALPHA_STEP.coarse or ALPHA_STEP.fine
+            setLook(math.floor(color + d * n) % PALETTE, alpha)
+        end,
+        nudge = function(k)
+            if k.v == 0 then return false end
+            local color, alpha = coverageLook()
+            setLook(color, BR.TuneKeys.nudged(alpha, k.v, k.coarse, ALPHA_STEP))
+            return true
+        end,
+        reset = function() setLook(SHIPPED.color, SHIPPED.alpha) end,
+        off = tuneReport,
+    })
+    armCoverage()
+    print('[br_core] brflicktune: on. Open the big map. The keys:')
+    print('  LEFT / RIGHT   the color')
+    print('  UP / DOWN      the alpha')
+    print('  hold SHIFT     10 a step')
+    print('  DELETE         the shipped look')
+    print('  `brflicktune` again puts them away and prints what to paste')
+end
+
+RegisterCommand(TUNE, function(_, args)
+    local word = args and args[1] and tostring(args[1]):lower() or ''
+    if word == 'off' or (word ~= 'on' and BR.TuneKeys.on(TUNE)) then
+        if not BR.TuneKeys.stop(TUNE) then tuneReport() end
+        return
+    end
+    tuneOn()
 end)

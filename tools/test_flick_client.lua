@@ -25,6 +25,11 @@
 --   the coverage  only with `flick` pushes, only while the big map is up, one
 --                 circle per live camera, built in batches, gone when the map
 --                 closes or the pushes stop
+--   the tuner     `brflicktune` on the REAL client/tunekeys.lua: a toggle; the
+--                 big map's circles with no Scan run while it is on; LEFT /
+--                 RIGHT the color and UP / DOWN the alpha on every circle at
+--                 once, SHIFT ten, DELETE the shipped look; the numbers on
+--                 screen; put away, the config line to paste
 --   the file      no scope-gate native
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_flick_client.lua
@@ -186,6 +191,27 @@ local function boot(opts)
     env.TriggerServerEvent = function(ev, d) W.server[#W.server + 1] = { ev = ev, d = d } end
     env.RegisterCommand = function(name, fn) W.commands[name] = fn end
     env.ExecuteCommand = function(line) W.executed[#W.executed + 1] = line end
+    env.SetBlipColour = function(b, c)
+        n('SetBlipColour')
+        if W.blips[b] then W.blips[b].color = c else W.stray = (W.stray or 0) + 1 end
+    end
+    env.SetBlipAlpha = function(b, a)
+        n('SetBlipAlpha')
+        if W.blips[b] then W.blips[b].alpha = a else W.stray = (W.stray or 0) + 1 end
+    end
+    --- THE KEYS (client/tunekeys.lua's): what is held, what was claimed and
+    --- what was drawn as the readout this frame.
+    W.down, W.claims, W.readout = {}, {}, {}
+    env.IsDisabledControlPressed = function(_, id) return W.down[id] and 1 or 0 end
+    env.DisableControlAction = function(_, id) W.claims[id] = (W.claims[id] or 0) + 1 end
+    for _, name in ipairs({ 'SetTextFont', 'SetTextScale', 'SetTextColour', 'SetTextDropshadow',
+                            'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+                            'BeginTextCommandDisplayText' }) do
+        env[name] = function() end
+    end
+    local pendingText = nil
+    env.AddTextComponentSubstringPlayerName = function(s) pendingText = s end
+    env.EndTextCommandDisplayText = function() W.readout[#W.readout + 1] = pendingText end
 
     env.BR = {}
     for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
@@ -195,6 +221,8 @@ local function boot(opts)
     end
     local B = env.BR
     if opts.cameras then B.Config.Flick.cameras = opts.cameras end
+    -- A fixed look for the tuner's arithmetic, whatever the owner ships.
+    if opts.look then B.Config.Flick.art.coverage = opts.look end
     B.Season = {
         has = function(id)
             if id ~= 'flick' then error('asked ' .. tostring(id)) end
@@ -241,6 +269,8 @@ local function boot(opts)
             if W.blips[b] then W.blips[b].offLegend = hidden end
         end,
     }
+    -- client/tunekeys.lua first, as the manifest orders it: `brflicktune`'s keys.
+    assert(loadfile(ROOT .. 'br_core/client/tunekeys.lua', 't', env))()
     assert(loadfile(ROOT .. 'br_core/client/flick.lua', 't', env))()
     W.env, W.B = env, B
 
@@ -732,6 +762,255 @@ do
     W.tick()
     W.drain()
     eq(W.circles(), 3, '`brflick coverage`: the big map\'s coverage without Scan')
+end
+
+-- -------------------------------------------------------------- the tuner ---
+--
+-- "the circles should be barely visible. give me an in-game adjuster and i'll
+-- tell you what looks good" (owner, 2026-10-18). How a key steps is
+-- tools/test_tunekeys.lua's; what brflicktune's keys move is here.
+
+--- One frame of the keys, `ms` on (50 by default).
+local function keyFrame(W, ms)
+    W.now = W.now + (ms or 50)
+    W.claims, W.readout = {}, {}
+    W.frame()
+end
+
+--- Hold `keys` for `ms`, a frame every `step`, then let go for a frame.
+local function press(W, keys, ms, step)
+    W.down = {}
+    for _, k in ipairs(keys) do W.down[k] = true end
+    local t = 0
+    repeat
+        keyFrame(W, step or 50)
+        t = t + (step or 50)
+    until t >= (ms or 1)
+    W.down = {}
+    keyFrame(W, 50)
+end
+
+--- How many circles are up and the look they are drawn in; nil for the look
+--- when two disagree.
+local function circlesLook(W)
+    local n, c, a, same = 0, nil, nil, true
+    for _, b in pairs(W.blips) do
+        n = n + 1
+        if n == 1 then
+            c, a = b.color, b.alpha
+        elseif b.color ~= c or b.alpha ~= a then
+            same = false
+        end
+    end
+    if not same then return n, nil, nil end
+    return n, c, a
+end
+
+--- The last config line printed to paste.
+local function pasted(W)
+    for i = #W.printed, 1, -1 do
+        if W.printed[i]:match('^    coverage = ') then return W.printed[i] end
+    end
+    return nil
+end
+
+local function said(W, s)
+    for _, l in ipairs(W.printed) do
+        if l:find(s, 1, true) then return true end
+    end
+    return false
+end
+
+describe('the tuner: brflicktune is a toggle, and the keys move every circle\'s look at once')
+do
+    local W = boot({ cameras = row(250, 20.0), look = { colour = 5, alpha = 25 } })
+    local T, K = W.B.TuneKeys, W.B.TuneKeys.KEY
+    local look = W.B.Config.Flick.art.coverage
+
+    -- ON: the command alone, and no Scan run.
+    W.net(W.B.Net.FLICK_DOWN, { matchId = 9, ids = { 1, 2 }, causes = { 'weapon', 'weapon' } })
+    W.commands.brflicktune(0, {})
+    ok(T.on('brflicktune') and W.has('frame', 'tunekeys.brflicktune'),
+        '`brflicktune`: its keys are on, one frame callback')
+    ok(W.has('tick', 'flick.coverage'), 'and the coverage armed with no Scan push')
+    ok(said(W, '`brflicktune` again puts them away'), 'the keys printed on the console')
+    W.tick()
+    W.drain()
+    eq(W.circles(), 0, 'the map closed: no circle')
+    W.B.Native.frontendMap = true
+    W.tick()
+    W.drain()
+    local n, c, a = circlesLook(W)
+    eq(n, 248, 'the big map up: a circle for every working camera, none for the two down')
+    ok(c == 5 and a == 25, 'in the shipped look', ('%s %s'):format(tostring(c), tostring(a)))
+
+    keyFrame(W)
+    eq(table.concat(W.readout, ' | '), '~b~flick coverage~w~ | color 5 | alpha 25 | step 1',
+        'the numbers on screen')
+    local all = true
+    for _, id in ipairs(T.BLOCKED) do all = all and (W.claims[id] or 0) > 0 end
+    ok(all, 'the arrows, the page keys and DELETE are claimed')
+    ok(not W.claims[K.COARSE] and not W.claims[K.TURN] and not W.claims[K.DEPTH] and not W.claims[32],
+        'SHIFT, ALT, CTRL and walking are not')
+    W.down = { [K.COARSE] = true }
+    keyFrame(W)
+    W.down = {}
+    eq(W.readout[4], 'step 10', 'with SHIFT held, the step is 10')
+
+    -- UP / DOWN: the alpha, on every circle up, in place.
+    W.calls = {}
+    press(W, { K.UP })
+    n, c, a = circlesLook(W)
+    ok(look.alpha == 26 and n == 248 and a == 26 and c == 5, 'UP tapped: alpha 1 more, on every circle at once',
+        ('%s %s %s'):format(tostring(look.alpha), tostring(c), tostring(a)))
+    eq(W.calls.AddBlipForRadius, nil, 'restyled in place: no circle made again')
+    eq(W.calls.SetBlipAlpha, 248, 'one alpha a circle')
+    press(W, { K.COARSE, K.UP })
+    eq(look.alpha, 36, 'SHIFT + UP: 10 more')
+    press(W, { K.DOWN }, 1000, 25)
+    eq(look.alpha, 16, 'DOWN held a second: twenty steps')
+    press(W, { K.DOWN }, 2000, 25)
+    eq(look.alpha, 0, 'and never under 0')
+    press(W, { K.COARSE, K.UP }, 2000, 25)
+    eq(look.alpha, 255, 'nor over 255')
+    keyFrame(W)
+    eq(W.readout[3], 'alpha 255', 'the alpha on screen')
+
+    -- LEFT / RIGHT: the color, once a press, round the palette.
+    press(W, { K.RIGHT })
+    n, c = circlesLook(W)
+    ok(look.colour == 6 and c == 6, 'RIGHT: the next color, on every circle', tostring(c))
+    press(W, { K.RIGHT }, 1000, 25)
+    eq(look.colour, 7, 'RIGHT held a second: one step, once a press')
+    press(W, { K.COARSE, K.RIGHT })
+    eq(look.colour, 17, 'SHIFT + RIGHT: ten on')
+    press(W, { K.COARSE, K.LEFT })
+    for _ = 1, 7 do press(W, { K.LEFT }) end
+    eq(look.colour, 0, 'SHIFT + LEFT and seven LEFT: color 0')
+    press(W, { K.LEFT })
+    eq(look.colour, 85, 'LEFT past 0: round to 85, the palette\'s last')
+    press(W, { K.RIGHT })
+    eq(look.colour, 0, 'and RIGHT past 85 back to 0')
+    press(W, { K.BIGGER })
+    press(W, { K.SMALLER })
+    ok(look.colour == 0 and look.alpha == 255, 'PAGE UP / DOWN move nothing')
+    keyFrame(W)
+    eq(W.readout[2], 'color 0', 'the color on screen')
+
+    -- A CIRCLE MADE LATER IS MADE IN THE TUNED LOOK: the map closed and opened.
+    W.B.Native.frontendMap = false
+    W.tick()
+    W.drain()
+    eq(W.circles(), 0, 'the map closes: every circle gone')
+    W.B.Native.frontendMap = true
+    W.tick()
+    W.drain()
+    n, c, a = circlesLook(W)
+    ok(n == 248 and c == 0 and a == 255, 'opened again: every circle made in the tuned look')
+
+    -- DELETE: the shipped look, on every circle.
+    press(W, { K.RESET })
+    n, c, a = circlesLook(W)
+    ok(look.colour == 5 and look.alpha == 25 and c == 5 and a == 25, 'DELETE: the shipped look, on every circle')
+
+    -- OFF: the command again, and the line to paste.
+    press(W, { K.RIGHT })
+    press(W, { K.DOWN })
+    W.printed = {}
+    W.commands.brflicktune(0, {})
+    ok(not T.on('brflicktune') and not W.has('frame', 'tunekeys.brflicktune'),
+        '`brflicktune` again: its keys are off, nothing per frame')
+    eq(pasted(W), '    coverage = { colour = 6, alpha = 24 },', 'and the config line to paste')
+    W.tick()
+    W.drain()
+    eq(W.circles(), 0, 'the preview ends with it: no Scan run, no circle, map up or not')
+    W.tick()
+    ok(not W.has('tick', 'flick.coverage'), 'and the coverage callback with them')
+    W.down = { [K.UP] = true }
+    keyFrame(W)
+    keyFrame(W)
+    W.down = {}
+    ok(next(W.claims) == nil and look.alpha == 24, 'and the arrows are the player\'s again')
+
+    W.printed = {}
+    W.commands.brflicktune(0, { 'off' })
+    eq(pasted(W), '    coverage = { colour = 6, alpha = 24 },', '`off` while off answers with the line too')
+    ok(not T.on('brflicktune'), 'and turns nothing on')
+    W.commands.brflicktune(0, { 'on' })
+    W.commands.brflicktune(0, { 'on' })
+    ok(T.on('brflicktune'), '`on` twice stays on')
+
+    -- ANOTHER TUNER PUTS IT AWAY, paste line and all, and the preview with it.
+    W.tick()
+    W.drain()
+    eq(W.circles(), 248, 'on again: the circles')
+    W.printed = {}
+    T.start('other', { lines = function() return {} end, nudge = function() return false end })
+    ok(not T.on('brflicktune') and pasted(W) == '    coverage = { colour = 6, alpha = 24 },',
+        'another tuner turned on puts it away, with the line to paste')
+    W.tick()
+    W.drain()
+    eq(W.circles(), 0, 'and the preview with it')
+    T.stop('other')
+    eq(W.stray, nil, 'and no color or alpha was ever set on a circle that was not up')
+end
+
+describe('the tuner: the config\'s own line, Scan\'s coverage outliving it, Season 2 only, the lobby')
+do
+    -- THE LINE IT PRINTS IS THE LINE IN THE FILE, so pasting it back is a
+    -- one-line swap.
+    local src = readFile(ROOT .. 'br_lib/config/flick.lua') or ''
+    local line = src:match('\n(    coverage = {[^\n]*)')
+    local W = boot({ cameras = row(3, 20.0) })
+    W.commands.brflicktune(0, { 'off' })
+    ok(line ~= nil and pasted(W) == line, 'untouched, it prints br_lib/config/flick.lua\'s line exactly',
+        tostring(pasted(W)))
+
+    -- A SCAN SQUAD'S COVERAGE IS NOT THE TUNER'S TO TAKE DOWN.
+    W.B.Native.frontendMap = true
+    W.net(W.B.Net.TERMINAL_SCAN, { matchId = 9, list = {}, flick = true })
+    W.commands.brflicktune(0, {})
+    W.tick()
+    W.drain()
+    eq(W.circles(), 3, 'scanning, the tuner on: three')
+    W.commands.brflicktune(0, {})
+    W.tick()
+    W.drain()
+    eq(W.circles(), 3, 'the tuner put away: Scan\'s three stay')
+    W.commands.brflick(0, { 'coverage' })
+    W.commands.brflicktune(0, {})
+    W.commands.brflicktune(0, {})
+    W.now = W.now + 3 * W.B.Config.Terminals.fx.scanPingMs + 1
+    W.tick()
+    W.drain()
+    eq(W.circles(), 3, 'nor is `brflick coverage`\'s')
+
+    -- SEASON 2 ONLY: refused on Season 1, and said why.
+    W = boot({ cameras = row(3, 20.0), season = 1 })
+    W.commands.brflicktune(0, {})
+    ok(not W.B.TuneKeys.on('brflicktune') and said(W, 'brseason 2 first'), 'Season 1: refused, and says why')
+
+    -- THE PREVIEW WAITS THROUGH THE LOBBY AND A SEASON MOVE: nothing would arm
+    -- it again on the way out.
+    W = boot({ cameras = row(3, 20.0), me = W.B.PlayerState.LOBBY })
+    W.B.Native.frontendMap = true
+    W.commands.brflicktune(0, {})
+    for _ = 1, 3 do W.tick() W.drain() end
+    eq(W.circles(), 0, 'in the lobby: no circle')
+    ok(W.has('tick', 'flick.coverage'), 'but the preview keeps its callback')
+    W.B.State.me.state = W.B.PlayerState.ALIVE
+    W.tick()
+    W.drain()
+    eq(W.circles(), 3, 'out of the lobby: the circles')
+    W.switch(1)
+    W.tick()
+    W.drain()
+    eq(W.circles(), 0, 'Season 1: gone')
+    W.tick()
+    W.switch(2)
+    W.tick()
+    W.drain()
+    eq(W.circles(), 3, 'Season 2 again, the tuner still on: back')
 end
 
 -- --------------------------------------------------------------- the file ---
