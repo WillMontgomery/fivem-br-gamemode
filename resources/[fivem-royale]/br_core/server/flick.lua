@@ -10,7 +10,8 @@
 --   the decision  a camera up goes down; a `me` report from a standing player
 --                 within reach is credited 2 Volts, 30 at most a match
 --   the reward    into the roster entry's voltsPickedUp, which the match's one
---                 atomic ADD pays at its end -- the airdrop pile's path
+--                 atomic ADD pays at its end -- the airdrop pile's path -- and
+--                 the takedown toast to that player, exactly when credited
 --   who is told   FLICK_DOWN to the players near each down, to every member
 --                 of a squad running Scan all of it, and on a 1 s pass to
 --                 whoever comes near; the snapshot's view for a late joiner
@@ -332,6 +333,11 @@ end
 --- BR.Config.marketPayout, which adds it whole into the match's one atomic ADD:
 --- no new writer of a balance, no per-camera database write
 --- (br_lib/config/market.lua's promise).
+---
+--- THE TAKEDOWN TOAST RIDES THE SAME `n > 0` (owner, 2026-10-18): the player
+--- is thanked exactly when Volts were credited. At the cap `n` is 0, and every
+--- down that pays nobody -- an explosion, a bystander's `other`, a downed
+--- reporter, the dev down, another player's camera -- never reaches here.
 --- @return integer paid, integer total
 local function credit(st, rec, src, e)
     local c = cfg()
@@ -340,7 +346,11 @@ local function credit(st, rec, src, e)
     local n = math.max(0, math.min(c.voltsEach or 2, (c.voltsMatchMax or 30) - had))
     rec.by, rec.name = src, e.name
     st.paid[lic] = had + n
-    if n > 0 then e.voltsPickedUp = (e.voltsPickedUp or 0) + n end
+    if n > 0 then
+        e.voltsPickedUp = (e.voltsPickedUp or 0) + n
+        local text = FS.toast(c.copy, n, BR.Config.Market and BR.Config.Market.currency or nil)
+        if text then BR.Server.notify(src, text, 'success') end
+    end
     return n, had + n
 end
 

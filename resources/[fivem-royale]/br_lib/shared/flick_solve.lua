@@ -17,6 +17,9 @@
 --                                       how far from a camera its reporter may
 --                                       stand, by what the report says
 --   BR.FlickSolve.validId(id)           an id's shape: a whole number 1..9999
+--   BR.FlickSolve.toast(copy, n, currency)
+--                                       the takedown toast's line for the
+--                                       Volts just credited, or nil for none
 --
 -- FLAT (2D) WHEREVER IT SAYS "within": what Scan sends is exactly what the
 -- circles on the big map show, and a player on a roof, in the air or in a
@@ -205,4 +208,36 @@ function FS.reach(by, cause, report)
     if by ~= 'me' then return tonumber(reach.other) or 400.0 end
     if cause == 'vehicle' then return tonumber(reach.vehicle) or 25.0 end
     return tonumber(reach.weapon) or 400.0
+end
+
+--- THE TAKEDOWN TOAST'S LINE, for the Volts just credited, or nil for none.
+---
+--- The owner's two lines (BR.Config.Flick.copy, verbatim) and the figure:
+---
+---     SA Sovereign Citizens Community: Thank you for your service. ~+2 Volts~
+---
+--- THE SENDER BEFORE A COLON because a toast has no title field: the HUD's
+--- notices name what speaks that way ("Scan: ..."), and the chat its sender.
+--- THE FIGURE THROUGH BR.ShopSolve.priceLine, "the only 'N Volts' formatter",
+--- with the currency word the caller passes (BR.Config.Market.currency), and
+--- inside the tilde pair, which ui-src's KeyText paints in the Volts color --
+--- the mark the purchase and balance toasts already wear. The `+` is inside
+--- it: "+2 Volts" is the figure.
+---
+--- NIL FOR NOTHING EARNED, so a caller that sends whatever this returns says
+--- nothing at the cap or for a down that paid nobody.
+--- @param copy table|nil      BR.Config.Flick.copy
+--- @param n number|nil        the Volts just credited
+--- @param currency string|nil BR.Config.Market.currency
+--- @return string|nil
+function FS.toast(copy, n, currency)
+    local amount = math.floor(tonumber(n) or 0)
+    if amount <= 0 or not (BR.ShopSolve and BR.ShopSolve.priceLine) then return nil end
+    local c = type(copy) == 'table' and copy or {}
+    local sender = type(c.sender) == 'string' and c.sender or ''
+    local thanks = type(c.thanks) == 'string' and c.thanks or ''
+    local line = '~+' .. BR.ShopSolve.priceLine(amount, currency) .. '~'
+    if thanks ~= '' then line = thanks .. ' ' .. line end
+    if sender ~= '' then line = sender .. ': ' .. line end
+    return line
 end

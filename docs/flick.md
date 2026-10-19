@@ -15,9 +15,9 @@ Six pieces, a file each. Each knows only its neighbors.
 | Piece | Where | Its job |
 |---|---|---|
 | **The registry** | `br_lib/config/flick_cameras.lua` (generated) | Every camera: `{ id, x, y, z, h, region }`. Read by both sides. |
-| **The numbers** | `br_lib/config/flick.lua` | The ranges, the Volts, the door's rules, the client's watch, the art. |
-| **The shared rules** | `br_lib/shared/flick_solve.lua` (`BR.FlickSolve`) | The grid, "is this point covered", the down rule, the reach rule. One spelling for both sides and the suites. |
-| **The server** | `br_core/server/flick.lua` (`BR.Flick`) | This match's cameras, the report door, the decision, the credit, who is told of a down, the snapshot's view, `BR.Flick.seen` for Scan, the dev verbs. |
+| **The numbers** | `br_lib/config/flick.lua` | The ranges, the Volts, the takedown toast's copy, the door's rules, the client's watch, the art. |
+| **The shared rules** | `br_lib/shared/flick_solve.lua` (`BR.FlickSolve`) | The grid, "is this point covered", the down rule, the reach rule, the takedown toast's line. One spelling for both sides and the suites. |
+| **The server** | `br_core/server/flick.lua` (`BR.Flick`) | This match's cameras, the report door, the decision, the credit and its toast, who is told of a down, the snapshot's view, `BR.Flick.seen` for Scan, the dev verbs. |
 | **The client** | `br_core/client/flick.lua` | Watches the cameras near this player and reports one that went down; shows every down camera broken; the Season 1 hides; the Scan squad's coverage on the big map. Decides nothing. |
 | **Scan** | `br_core/server/terminalfx.lua` | Sends only the opponents a live camera sees ([terminals.md](terminals.md#scan-and-the-bounty)). |
 
@@ -50,6 +50,10 @@ own row and not `terminals` because the cameras are their own content.
 - The coverage is drawn **on the big map only, for the Scan squad only**.
   Nobody sees the cameras on any map otherwise.
 - **2 Volts** a camera taken down, **30 at most a match**.
+- **The takedown toast**: the player credited is told, as if by the "SA
+  Sovereign Citizens Community", "Thank you for your service." with the Volts
+  just earned -- only when Volts are actually credited ([The takedown
+  toast](#the-takedown-toast)).
 - Scan's new copy: "Scan's new text looks good" (the lines are in
   [The copy](#the-copy-and-the-art)).
 
@@ -295,8 +299,37 @@ Volts path the airdrop pile uses.**
   downed (DBNO) reporter downs it and is paid nothing; an explosion pays
   nobody; the reporter's rate and per-match limit; the dev verbs pay nothing;
   Season 1 pays nothing.
-- **What the player is told**: nothing at the moment. The Volts appear in the
+- **What the player is told**: the takedown toast, at once, to them alone,
+  and only when Volts are actually credited. Then the Volts appear in the
   verdict's "Volts earned", which is `marketPayout`'s answer.
+
+### The takedown toast
+
+On screen, in the notice stack, in the success tone:
+
+> SA Sovereign Citizens Community: Thank you for your service. **+2 Volts**
+
+with "+2 Volts" in the Volts color. The owner's words (2026-10-18), verbatim,
+in `BR.Config.Flick.copy`: `sender` "SA Sovereign Citizens Community" and
+`thanks` "Thank you for your service." -- no other word. **A toast has no
+title field** (`ToastPayload` is a sentence, a tone and a lifetime), so the
+sender leads the line before a colon: the closest pattern there is, the HUD
+notices that name what speaks ("Scan: another squad can see you near Flick
+cameras.") and the chat's "name: text". `BR.FlickSolve.toast(copy, n,
+currency)` joins it: the figure is `BR.ShopSolve.priceLine` with
+`BR.Config.Market.currency`, `+` before it, all inside the tilde pair
+ui-src's KeyText paints in the Volts color (the purchase and balance toasts'
+mark). It is what was credited: 2, or what is left under the 30.
+
+**It is sent from `credit`, on the same `n > 0` that adds to
+`voltsPickedUp`**, so it fires exactly when Volts are credited: a `me` shot or
+ram from a standing player, and the shooter's `me` inside the credit window
+after a bystander's `other`. **Silent** at the cap (the 16th camera, or the
+rest of an account's 30 after a rejoin), and for every down that pays nobody:
+an explosion, traffic or a bystander's `other`, another player's camera (a
+duplicate), a downed reporter, a `me` past the credit window, the dev down,
+and Season 1. Keyless, as the airdrop pile's "You collected" toast is, so two
+in a row coalesce into one row with x2.
 
 ## Scan, seen through the cameras
 
@@ -457,7 +490,16 @@ different seasons (the lines are replaced, not forked):
 | `scan_description` / `_solo` | The lobby's `notice_action` | "Scan. Their squad sees opponents near Flick cameras for the rest of the match." / "Scan. They see ..." |
 | `impact_scan` / `_solo` | The HUD, every opponent of a Scan squad | "Scan: another squad can see you near Flick cameras." / "... another player ..." |
 
-No other line: no camera plate, no blip name, no toast.
+And the takedown toast's two lines, the owner's (2026-10-18), in
+`br_lib/config/flick.lua`'s `copy` and held word for word by
+`tools/test_flick.lua` ([The takedown toast](#the-takedown-toast)):
+
+| Key | Who reads it | Line |
+|---|---|---|
+| `copy.sender` | The player credited with a camera: the toast's sender, before a colon | "SA Sovereign Citizens Community" |
+| `copy.thanks` | The same toast, before the Volts earned | "Thank you for your service." |
+
+No other line: no camera plate, no blip name.
 
 **The art**: `art.model` and `art.wreck` are the prop's names (`blitz_flick_cam`,
 `blitz_flick_cam_shot`, `blitz_flick_cam_down`, in the Season 2 drop's

@@ -14,7 +14,10 @@
 --   PART C  the decision and the credit: 2 a camera, the 16th pays 0, the cap
 --           by account across a leave and a rejoin, a bystander's `other` then
 --           the shooter's `me`, two `me`, a downed reporter, the dev down, an
---           explosion -- and the path the Volts take to the match's one ADD.
+--           explosion -- and the path the Volts take to the match's one ADD;
+--           the takedown toast, the owner's words to the letter, sent exactly
+--           when Volts are credited and never at the cap or for a down that
+--           pays nobody.
 --   PART D  who is told: the players near a down and nobody farther, a
 --           spectator by their target, a Scan squad all of it, the 1 s pass,
 --           the snapshot's view, two matches apart.
@@ -189,8 +192,8 @@ BR.Server = {
         table.sort(order, function(a, b) return a.id < b.id end)
         for _, m in ipairs(order) do fn(m) end
     end,
-    notify = function(target, text, tone)
-        notices[#notices + 1] = { target = target, text = text, tone = tone }
+    notify = function(target, text, tone, opts)
+        notices[#notices + 1] = { target = target, text = text, tone = tone, opts = opts }
     end,
     isInMatch = function(st)
         return st == BR.PlayerState.ALIVE or st == BR.PlayerState.DBNO
@@ -637,6 +640,153 @@ do
     eq(m2.flick, nil, 'a new match has no record')
     eq(rep(1, { id = 7, by = 'me', cause = 'weapon' }), 'down', 'every camera is up in it')
     eq(m2.flick.paid['license:1'], 2, 'and its own paid, from nothing')
+end
+
+-- THE TAKEDOWN TOAST (owner, 2026-10-18): from the "SA Sovereign Citizens
+-- Community", "Thank you for your service." and the Volts just earned, in the
+-- Volts color -- only when Volts are actually credited.
+local TOAST = 'SA Sovereign Citizens Community: Thank you for your service. ~+2 Volts~'
+
+--- The toasts this block sent to `src` (every one, with nil).
+local function toastsTo(src)
+    local out = {}
+    for _, n in ipairs(notices) do
+        if src == nil or n.target == src then out[#out + 1] = n end
+    end
+    return out
+end
+
+describe('the toast: the owner\'s words, in config, and the Volts in their color')
+do
+    eq(FC.copy and FC.copy.sender, 'SA Sovereign Citizens Community', 'the sender, verbatim, in config')
+    eq(FC.copy and FC.copy.thanks, 'Thank you for your service.', 'the line, verbatim, in config')
+    local cur = BR.Config.Market.currency
+    eq(FS.toast(FC.copy, 2, cur), TOAST, 'sender, colon, the line, then the figure in the tilde pair')
+    local flat = TOAST:gsub('~', '')
+    eq(flat, 'SA Sovereign Citizens Community: Thank you for your service. +2 Volts', 'as it reads on screen')
+    local rest = flat:gsub('SA Sovereign Citizens Community', '', 1)
+        :gsub('Thank you for your service%.', '', 1):gsub('%+2 Volts', '', 1)
+    ok(rest:match('^[%s:]*$') ~= nil, 'no other word: only the colon and the spaces are left', rest)
+    eq(FS.toast(FC.copy, 0, cur), nil, 'nothing earned: no line')
+    eq(FS.toast(FC.copy, nil, cur), nil, 'no figure: no line')
+    eq(FS.toast(FC.copy, -2, cur), nil, 'a negative figure: no line')
+    eq(FS.toast(FC.copy, 1500, cur), 'SA Sovereign Citizens Community: Thank you for your service. ~+1,500 Volts~',
+        'the figure through priceLine: grouped, the currency word from config')
+    local code = (readFile(ROOT .. 'br_core/server/flick.lua') or ''):gsub('%-%-[^\n]*', '')
+    local solve = (readFile(ROOT .. 'br_lib/shared/flick_solve.lua') or ''):gsub('%-%-[^\n]*', '')
+    ok(not code:find('Sovereign', 1, true) and not code:find('Thank you', 1, true)
+        and not solve:find('Sovereign', 1, true) and not solve:find('Thank you', 1, true)
+        and not solve:find('Volts', 1, true),
+        'no word of it is typed in the server or the solve')
+end
+
+describe('the toast: sent exactly when Volts are credited')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, 'A', CAM.x + 50.0, CAM.y)
+    rep(1, { id = 7, by = 'me', cause = 'weapon' })
+    local t = toastsTo(1)
+    eq(#t, 1, 'a shot that pays: one toast')
+    eq(t[1] and t[1].text, TOAST, 'the owner\'s line with +2 Volts')
+    eq(t[1] and t[1].tone, 'success', 'in the success tone, as the airdrop pile\'s Volts')
+    eq(#toastsTo(nil), 1, 'to the player credited and nobody else')
+
+    reset()
+    m = newMatch(1)
+    player(1, m, 'A', CAM.x + 10.0, CAM.y)
+    rep(1, { id = 7, by = 'me', cause = 'vehicle' })
+    eq(#toastsTo(1), 1, 'a ram that pays: one toast')
+
+    -- A BYSTANDER'S `other`, THEN THE SHOOTER'S `me` INSIDE THE WINDOW: the
+    -- credit is the toast, and the bystander hears nothing.
+    reset()
+    m = newMatch(1)
+    local shooter = player(1, m, 'A', CAM.x + 50.0, CAM.y)
+    player(2, m, 'B', CAM.x + 80.0, CAM.y)
+    rep(2, { id = 7, by = 'other', cause = 'weapon' })
+    eq(#toastsTo(nil), 0, 'the bystander\'s report downs it: no toast')
+    gameMs = gameMs + 200
+    shooter.posAt = gameMs
+    F.report(1, { id = 7, by = 'me', cause = 'weapon' }, gameMs)
+    eq(#toastsTo(1), 1, 'the shooter\'s me inside the window: their toast')
+    eq(#toastsTo(2), 0, 'and none to the bystander')
+
+    -- THE CAP: fifteen cameras, fifteen toasts; the 16th says nothing.
+    reset()
+    m = newMatch(1)
+    local e = player(1, m, 'A', 300.0, -5000.0)
+    for i = 1, 15 do rep(1, { id = 100 + i, by = 'me', cause = 'weapon' }) end
+    eq(#toastsTo(1), 15, 'fifteen cameras credited: fifteen toasts')
+    rep(1, { id = 116, by = 'me', cause = 'weapon' })
+    eq(e.voltsPickedUp, 30, 'the 16th pays nothing')
+    eq(#toastsTo(1), 15, 'and is silent')
+
+    -- ACROSS A LEAVE AND A REJOIN: the account's cap, the toasts with it.
+    reset()
+    m = newMatch(1)
+    player(1, m, 'A', 300.0, -5000.0)
+    for i = 1, 12 do rep(1, { id = 100 + i, by = 'me', cause = 'weapon' }) end
+    roster[1] = nil
+    fire('playerDropped', 1)
+    e = player(11, m, 'A', 300.0, -5000.0)
+    e.license = 'license:1'
+    for i = 13, 20 do rep(11, { id = 100 + i, by = 'me', cause = 'weapon' }) end
+    eq(#toastsTo(11), 3, 'back in with 6 Volts left: three toasts, then silence')
+end
+
+describe('the toast: silent for every down that pays nothing')
+do
+    local function silent(label, setup)
+        reset()
+        local m = newMatch(1)
+        setup(m)
+        eq(#toastsTo(nil), 0, label)
+    end
+    silent('an explosion', function(m)
+        player(1, m, 'A', CAM.x + 30.0, CAM.y)
+        fire('explosionEvent', nil, 1, { posX = CAM.x + 4.0, posY = CAM.y, posZ = CAM.z, explosionType = 0 })
+        rep(1, { id = 7, by = 'me', cause = 'weapon' })
+    end)
+    silent('traffic or a car with no driver (a bystander\'s other)', function(m)
+        player(1, m, 'A', CAM.x + 30.0, CAM.y)
+        rep(1, { id = 7, by = 'other', cause = 'vehicle' })
+    end)
+    silent('a downed reporter', function(m)
+        player(1, m, 'A', CAM.x + 5.0, CAM.y, BR.PlayerState.DBNO)
+        rep(1, { id = 7, by = 'me', cause = 'weapon' })
+    end)
+    silent('the dev down, and a me after it', function(m)
+        player(1, m, 'A', CAM.x + 5.0, CAM.y)
+        F.devDown(m, 7, gameMs)
+        rep(1, { id = 7, by = 'me', cause = 'weapon' })
+    end)
+    silent('a me past the credit window', function(m)
+        player(1, m, 'A', CAM.x + 50.0, CAM.y)
+        player(2, m, 'B', CAM.x + 80.0, CAM.y)
+        rep(2, { id = 7, by = 'other' })
+        gameMs = gameMs + FC.report.creditWindowMs + 100
+        roster[1].posAt = gameMs
+        F.report(1, { id = 7, by = 'me', cause = 'weapon' }, gameMs)
+    end)
+    silent('Flick off', function(m)
+        player(1, m, 'A', CAM.x + 50.0, CAM.y)
+        flickOn(false)
+        rep(1, { id = 7, by = 'me', cause = 'weapon' })
+        flickOn(true)
+    end)
+
+    -- ANOTHER PLAYER'S CAMERA: player 2 takes it and is thanked; player 1,
+    -- beside it, reports it after and hears nothing.
+    reset()
+    local m = newMatch(1)
+    player(1, m, 'A', CAM.x + 50.0, CAM.y)
+    player(2, m, 'B', CAM.x + 60.0, CAM.y)
+    rep(2, { id = 7, by = 'me', cause = 'weapon' })
+    rep(1, { id = 7, by = 'other', cause = 'weapon' })
+    rep(1, { id = 7, by = 'me', cause = 'weapon' })
+    eq(#toastsTo(2), 1, 'the player who took it: one toast')
+    eq(#toastsTo(1), 0, 'another player\'s camera: none')
 end
 
 -- =========================================================================

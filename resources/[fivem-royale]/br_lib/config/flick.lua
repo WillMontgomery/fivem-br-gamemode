@@ -48,6 +48,24 @@ F.vehicleRangeM = 150.0
 F.voltsEach = 2
 F.voltsMatchMax = 30
 
+-- ── the copy ──
+
+-- THE TAKEDOWN TOAST, the owner's words VERBATIM (2026-10-18): to the player
+-- credited with a camera, and only when Volts were actually credited -- never
+-- at the cap, and never for a down that pays nothing. It reads
+--
+--     SA Sovereign Citizens Community: Thank you for your service. +2 Volts
+--
+-- with "+2 Volts" in the Volts color. A toast has no title field, so the
+-- sender leads the line before a colon, as the HUD's notices name what speaks
+-- ("Scan: ...") and the chat its sender. The figure and the currency word are
+-- not copy: BR.ShopSolve.priceLine and BR.Config.Market.currency, through
+-- BR.FlickSolve.toast. tools/test_flick.lua holds both lines word for word.
+F.copy = {
+    sender = 'SA Sovereign Citizens Community',
+    thanks = 'Thank you for your service.',
+}
+
 -- ── the registry's shape ──
 
 -- The grid's cell, in meters: the widest range, so "any live camera within r"

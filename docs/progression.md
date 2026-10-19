@@ -226,9 +226,11 @@ can increase a balance and no per-camera database write. The cap is by
 account, on the match, so a leave and a rejoin cannot reset it; the 16th camera
 still goes down and pays nothing. Only the player whose own client says it was
 their shot or their car, standing, within reach by the server's own sample, is
-credited; traffic, a bystander's report and an explosion pay nobody. Nothing
-says so at the moment: the Volts are in the verdict's "Volts earned".
-[docs/flick.md](flick.md#the-reward) has the rules.
+credited; traffic, a bystander's report and an explosion pay nobody. The
+player credited gets the takedown toast at once, only when Volts are actually
+credited ([docs/flick.md](flick.md#the-takedown-toast)), and the Volts are in
+the verdict's "Volts earned". [docs/flick.md](flick.md#the-reward) has the
+rules.
 
 ### Not paid, on purpose
 
