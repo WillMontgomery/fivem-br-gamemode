@@ -166,6 +166,8 @@ NOTES=(
     "test_tunekeys|Dev tuning tools' keys: a tap is one step and a hold the same twenty a second at 30, 60 or 144 fps, keys claimed only while a tool is on"
     "test_flick|Season 2 Flick cameras, server: a camera goes down only through the server's door, pays 2 Volts (30 a match) only to who took it, and Scan sees only what a camera sees"
     "test_flick_client|Season 2 Flick cameras on screen: one report a camera, every down camera hidden with its wreck near, Season 1's hides, the Scan squad's coverage on the big map only"
+    "test_dcgate|Season 2 data center gate, server: a lane opens only for a standing player at its reader in a match being played, stays open 20 s, and never folds shut on a player or a vehicle"
+    "test_dcgate_client|Season 2 data center gate on screen: the owner's prompt at a reader, one ask a press, the bi-fold folding flat at every frame, posed again as it streams in, nothing per frame away from it"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -1001,6 +1003,19 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # every way they go, Season 1's hides a batch a frame, and the Scan
     # squad's coverage only while the big map is up.
     #
+    # test_dcgate.lua is #420's data center gate on the server, over the REAL
+    # br_lib/shared/dcgate_solve.lua, the generated dcgate_parts.lua and
+    # server/dcgate.lua: the pose and the bi-fold's counter-rotation, the
+    # registry's geometry, the door's refusals one at a time in order, the
+    # 20 s clock held by a player or a vehicle in the lane's box and by
+    # nobody else, a lane folding shut on somebody opening again, and the
+    # vehicle pool read only when a lane is due.
+    #
+    # test_dcgate_client.lua is its client, over a modeled door system: the
+    # doors registered and locked the pack's way, the owner's prompt, the
+    # press, the fold mirrored at every frame, a lane open before the client
+    # came near arriving open, and nothing per frame away from the gate.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -1071,6 +1086,8 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_tunekeys.lua
         tools/test_flick.lua
         tools/test_flick_client.lua
+        tools/test_dcgate.lua
+        tools/test_dcgate_client.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

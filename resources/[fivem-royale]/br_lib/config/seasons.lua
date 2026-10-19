@@ -74,5 +74,10 @@ BR.Config.Seasons = {
         -- camera the ymap stands hidden. A row of its own and not
         -- `terminals`', because the cameras are their own content.
         flick = { from = 2 },
+        -- #420. Owner, 2026-10-19: the data center's main gate opens from its
+        -- readers, Season 2 only. On: the prompt at a lane's reader, the press,
+        -- the lane folding open for 20 seconds. Off: no prompt and nothing
+        -- opens; the gate stays shut and locked, as the map pack kept it.
+        dcgate = { from = 2 },
     },
 }

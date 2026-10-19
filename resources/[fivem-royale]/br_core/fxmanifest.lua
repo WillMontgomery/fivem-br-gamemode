@@ -235,6 +235,13 @@ shared_scripts {
     -- beside the terminals whose Scan they feed.
     '@br_lib/config/flick.lua',
     '@br_lib/config/flick_cameras.lua',
+    -- THE DATA CENTER'S MAIN GATE (#420, Season 2, the `dcgate` row in
+    -- config/seasons.lua): the numbers, then the parts -- a generated file
+    -- (tools/dcgate_parts.py) -- which both halves read: the server decides
+    -- every lane by them, the client poses the gate by them. Neither reads
+    -- anything at load, so the position is a reader's.
+    '@br_lib/config/dcgate.lua',
+    '@br_lib/config/dcgate_parts.lua',
     -- Where the admin console lives. One key, no useful default, and it MUST
     -- precede overrides.lua: that file refuses to boot if a convar names a
     -- BR.Config key that does not exist yet, which is the anti-drift check
@@ -360,6 +367,10 @@ shared_scripts {
     -- sides and the suites. LAST, beside terminal_solve and for its reason:
     -- it reads nothing at load (BR.Config.Flick at call time).
     '@br_lib/shared/flick_solve.lua',
+    -- The data center gate's shared rules (#420): the reader a player is at,
+    -- the lane's box, the fold's pose and the bi-fold's counter-rotation. LAST,
+    -- for flick_solve's reason: it reads nothing at load.
+    '@br_lib/shared/dcgate_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
@@ -786,6 +797,13 @@ client_scripts {
     -- BR.Loop.register at load and BR.Native's blips at call time. One SLOW
     -- callback; a FRAME and a TICK one only while they have work.
     'client/flick.lua',
+    -- THE DATA CENTER'S MAIN GATE (#420, Season 2): the 24 leaves and 3 arms
+    -- registered with the door system and locked, the prompt at a lane's
+    -- reader, the ask, and the fold. AFTER client/main.lua (BR.Loop.register at
+    -- load), client/state.lua (BR.Notify at call time) and client/keybinds.lua
+    -- (BR.Keys.on at load). One SLOW callback; a TICK one only near the gate
+    -- and a FRAME one only while a lane near this client folds.
+    'client/dcgate.lua',
     -- The bodyguard ownership probe's client half (#401): a DEV TEST, not the
     -- feature. Whichever client owns the guard reports what survived the move
     -- and applies its group and task again. AFTER client/natives.lua and
@@ -1064,6 +1082,12 @@ server_scripts {
     -- handler runs before this file's. Registers its send pass on BR.Sched at
     -- load.
     'server/flick.lua',
+    -- THE DATA CENTER'S MAIN GATE (#420, Season 2): this match's lanes, the
+    -- door a press at a reader comes through, the clock that folds a lane shut
+    -- once nobody is in it, the snapshot's view and the dev command
+    -- `brgatesv`. Reads BR.Roster, BR.Server and BR.Broadcast at call time;
+    -- registers its pass on BR.Sched at load.
+    'server/dcgate.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

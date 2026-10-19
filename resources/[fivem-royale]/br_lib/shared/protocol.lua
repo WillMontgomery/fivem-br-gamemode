@@ -1400,6 +1400,25 @@ BR.Net = {
     -- S->C '<text>'. One `brflicksv` answer, printed on the F8 of the player
     -- who typed `brflick`.
     FLICK_DEV       = 'br:flick:dev',
+
+    -- THE DATA CENTER'S MAIN GATE (#420, Season 2): three lanes that open from
+    -- their readers (docs/dcgate.md). br_core/server/dcgate.lua decides every
+    -- lane; br_core/client/dcgate.lua shows the prompt, asks, and animates.
+    --
+    -- C->S { reader }. "Open the lane of the reader I stand at": an index into
+    -- BR.Config.DcGate.parts.readers. Taken only through the door in
+    -- server/dcgate.lua (the season, the shape, a rate, a PLAYING match, a
+    -- standing player, within reach of that reader by the server's own sample,
+    -- a lane not already open) and silent otherwise. Never answered: the lane,
+    -- if it opens, arrives as DCGATE_STATE.
+    DCGATE_USE      = 'br:dcgate:use',
+    -- S->C { matchId, open = { [lane] = boolean } }. Every lane of this match,
+    -- open or shut, whenever one changes; to the whole match. The snapshot
+    -- carries the same as `dcgate`.
+    DCGATE_STATE    = 'br:dcgate:state',
+    -- S->C '<text>'. One `brgatesv` answer, printed on the F8 of the player
+    -- who typed `brgate`.
+    DCGATE_DEV      = 'br:dcgate:dev',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the

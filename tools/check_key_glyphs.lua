@@ -430,6 +430,25 @@ do
     end
 end
 
+do
+    -- THE DATA CENTER GATE'S PROMPT (#420): the owner's "Press E to open the
+    -- gate", whose E is the player's own interact key. GTA's ~INPUT_CONTEXT~
+    -- glyph would draw GTA's context key, not the `brinteract` binding the press
+    -- is read from, so it is a hole like the others -- and never the letter.
+    local gate = readLua('br_core/client/dcgate.lua')
+    if gate then
+        if not gate:find("BR%.KeyToken%('brinteract'%)") then
+            fail('the gate\'s prompt does not name the interact key as a hole',
+                 'a letter goes stale on a rebind, and ~INPUT_CONTEXT~ draws '
+                 .. 'a key the press is not read from')
+        end
+        if gate:find("[Pp]ress E to") or gate:find('INPUT_CONTEXT') then
+            fail('the gate\'s prompt spells E, or GTA\'s context glyph, into its prose',
+                 'the key it names is whatever interact is bound to')
+        end
+    end
+end
+
 -- ═══════════════════════ a hole names a command that actually exists ══════
 
 do
@@ -449,7 +468,8 @@ do
     if registrars then
         for _, rel in ipairs({ 'br_ui/client/players.lua',
                                'br_core/client/natives.lua',
-                               'br_core/client/voice.lua' }) do
+                               'br_core/client/voice.lua',
+                               'br_core/client/dcgate.lua' }) do
             local src = readLua(rel)
             if src then
                 for cmd in src:gmatch("BR%.KeyToken%(%s*'([%w_]+)'%s*%)") do
