@@ -8,7 +8,7 @@
 --     py tools/flick_cameras.py <path to flick_cameras.json>
 -- docs/flick.md says who reads these rows and why.
 --
--- Source: flick_cameras.json, 718 rows, sha256 c5873eec07a55abfb792a3c9fb31e7b9af857f0e4bca4edaffa6fd3767e549b3
+-- Source: flick_cameras.json, 336 rows, sha256 ec340b01b27042d7c370cd51421bfabab7812cdab56efb9e2e0e58921d7596a8
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -30,13 +30,13 @@ BR.Config.Flick.cameras = {
     { id =   13, x =  -335.904, y = -1840.390, z =   22.560, h =  67.2, region = 'arena' },  -- arena_2
     { id =   14, x =  -235.616, y = -1845.862, z =   28.380, h = 187.8, region = 'arena' },  -- arena_3
     { id =   15, x =  -164.790, y = -1947.230, z =   23.380, h =  12.7, region = 'arena' },  -- arena_5
-    { id =   16, x =  -250.562, y = -2191.764, z =    9.320, h = 240.4, region = 'arena' },  -- arena_8
-    { id =   17, x =  -826.807, y = -2295.742, z =    8.550, h =  31.7, region = 'arena_w' },  -- arena_w_3
-    { id =   18, x =  -631.469, y = -2300.902, z =    5.060, h = 125.1, region = 'arena_w' },  -- arena_w_4
-    { id =   19, x =  -728.928, y = -2413.091, z =   13.560, h = 128.6, region = 'arena_w' },  -- arena_w_5
-    { id =   20, x = -2081.919, y =  2292.896, z =   37.740, h = 211.7, region = 'banham' },  -- banham_2
-    { id =   21, x =  -781.823, y =  1672.638, z =  199.220, h = 302.1, region = 'baytree' },  -- baytree_6
-    { id =   22, x =  2009.226, y =  4641.581, z =   40.050, h = 300.0, region = 'braddock' },  -- braddock_7
+    { id =   16, x =  -250.562, y = -2191.764, z =    9.320, h = 240.4, region = 'arena' },  -- arena_6
+    { id =   17, x =  -826.807, y = -2295.742, z =    8.550, h =  31.7, region = 'arena_w' },  -- arena_w_2
+    { id =   18, x =  -631.469, y = -2300.902, z =    5.060, h = 125.1, region = 'arena_w' },  -- arena_w_3
+    { id =   19, x =  -728.928, y = -2413.091, z =   13.560, h = 128.6, region = 'arena_w' },  -- arena_w_4
+    { id =   20, x = -2081.919, y =  2292.896, z =   37.740, h = 211.7, region = 'banham' },  -- banham_1
+    { id =   21, x =  -781.823, y =  1672.638, z =  199.220, h = 302.1, region = 'baytree' },  -- baytree_1
+    { id =   22, x =  2009.226, y =  4641.581, z =   40.050, h = 300.0, region = 'braddock' },  -- braddock_1
     { id =   23, x =   657.240, y = -2708.426, z =    5.220, h = 187.5, region = 'buccaneer' },  -- buccaneer_1
     { id =   24, x =  -616.989, y =  -397.394, z =   33.770, h = 163.5, region = 'burton' },  -- burton_1
     { id =   25, x =  -838.097, y =  -631.392, z =   27.210, h = 218.7, region = 'burton' },  -- burton_4
@@ -52,11 +52,10 @@ BR.Config.Flick.cameras = {
     { id =   35, x =   769.217, y =   -55.110, z =   79.680, h =  43.3, region = 'casino' },  -- casino_5
     { id =   36, x =   892.681, y =  -104.103, z =   77.850, h = 223.2, region = 'casino' },  -- casino_6
     { id =   37, x =   800.653, y =  -188.659, z =   71.930, h =  47.9, region = 'casino' },  -- casino_7
-    { id =   38, x =  2723.306, y =  3422.501, z =   55.440, h =  52.2, region = 'catfish' },  -- catfish_4
+    { id =   38, x =  2723.306, y =  3422.501, z =   55.440, h =  52.2, region = 'catfish' },  -- catfish_2
     { id =   39, x =   226.798, y =  2107.360, z =  115.200, h = 246.9, region = 'chaparral' },  -- chaparral_1
-    { id =   40, x =  -173.412, y =  1895.604, z =  197.130, h = 358.5, region = 'chaparral' },  -- chaparral_4
-    { id =   41, x =  -459.690, y =  2810.275, z =   37.640, h = 290.1, region = 'chaparral_n' },  -- chaparral_n_4
-    { id =   42, x =    97.514, y =  6597.212, z =   30.480, h = 210.0, region = 'cove_n' },  -- cove_n_1
+    { id =   40, x =  -173.412, y =  1895.604, z =  197.130, h = 358.5, region = 'chaparral' },  -- chaparral_2
+    { id =   41, x =  -459.690, y =  2810.275, z =   37.640, h = 290.1, region = 'chaparral_n' },  -- chaparral_n_1
     { id =   43, x =   445.358, y = -1801.345, z =   27.130, h = 215.2, region = 'cypress' },  -- cypress_1
     { id =   44, x =   595.087, y = -1827.322, z =   23.660, h = 150.3, region = 'cypress' },  -- cypress_2
     { id =   45, x =   497.557, y = -1886.774, z =   24.900, h =   8.6, region = 'cypress' },  -- cypress_3
@@ -85,31 +84,27 @@ BR.Config.Flick.cameras = {
     { id =   68, x =   391.550, y = -1105.500, z =   28.420, h = 345.0, region = 'downtown' },  -- downtown_15
     { id =   69, x =  -110.722, y = -1114.053, z =   24.780, h = 307.1, region = 'downtown' },  -- downtown_16
     { id =   70, x =    92.130, y = -1121.785, z =   28.320, h = 258.8, region = 'downtown' },  -- downtown_17
-    { id =   71, x =  2194.946, y =  2852.887, z =   45.880, h = 166.0, region = 'dryfields' },  -- dryfields_9
+    { id =   71, x =  2194.946, y =  2852.887, z =   45.880, h = 166.0, region = 'dryfields' },  -- dryfields_2
     { id =   72, x =  1417.208, y = -1880.751, z =   70.010, h = 337.2, region = 'elburro' },  -- elburro_1
     { id =   73, x =  1318.664, y = -2011.078, z =   46.620, h = 281.6, region = 'elburro' },  -- elburro_2
     { id =   74, x =  1216.353, y = -2076.954, z =   43.290, h =  96.7, region = 'elburro' },  -- elburro_3
-    { id =   75, x =  1055.622, y = -2120.985, z =   31.710, h = 336.9, region = 'elburro' },  -- elburro_5
+    { id =   75, x =  1055.622, y = -2120.985, z =   31.710, h = 336.9, region = 'elburro' },  -- elburro_4
     { id =   76, x =    94.133, y = -2619.279, z =    5.150, h =  80.5, region = 'elysian' },  -- elysian_1
     { id =   77, x =   788.583, y = -2230.841, z =   28.390, h = 249.5, region = 'elysianfields' },  -- elysianfields_1
     { id =   78, x =   917.788, y = -2353.962, z =   29.540, h = 159.8, region = 'elysianfields' },  -- elysianfields_2
     { id =   79, x =   771.669, y = -2436.139, z =   18.970, h = 225.5, region = 'elysianfields' },  -- elysianfields_3
-    { id =   80, x =  1087.960, y =   768.378, z =  152.790, h = 198.7, region = 'fuente_s' },  -- fuente_s_4
-    { id =   81, x =  1305.294, y =  1168.735, z =  105.410, h = 168.0, region = 'fuenteblanca' },  -- fuenteblanca_3
-    { id =   82, x =  2451.906, y =  4941.255, z =   44.040, h = 119.3, region = 'gordo_s' },  -- gordo_s_6
+    { id =   80, x =  1087.960, y =   768.378, z =  152.790, h = 198.7, region = 'fuente_s' },  -- fuente_s_1
+    { id =   81, x =  1305.294, y =  1168.735, z =  105.410, h = 168.0, region = 'fuenteblanca' },  -- fuenteblanca_2
+    { id =   82, x =  2451.906, y =  4941.255, z =   44.040, h = 119.3, region = 'gordo_s' },  -- gordo_s_2
     { id =   83, x =  1801.365, y =  5039.093, z =   57.310, h = 118.7, region = 'grapeseed' },  -- grapeseed_1
-    { id =   84, x =  1693.826, y =  4745.633, z =   40.980, h = 186.2, region = 'grapeseed' },  -- grapeseed_4
-    { id =   85, x =  1919.966, y =  5134.499, z =   43.710, h = 103.7, region = 'grapeseed_n' },  -- grapeseed_n_3
     { id =   86, x =   -67.862, y = -1699.006, z =   28.150, h = 216.7, region = 'grove' },  -- grove_1
     { id =   87, x =   337.824, y = -1729.321, z =   28.440, h =  34.6, region = 'grove' },  -- grove_2
     { id =   88, x =   192.490, y = -1758.316, z =   27.930, h = 118.9, region = 'grove' },  -- grove_3
     { id =   89, x =   -10.108, y = -1852.905, z =   23.750, h =  35.2, region = 'grove' },  -- grove_4
     { id =   90, x =   117.873, y = -1861.395, z =   23.880, h = 230.2, region = 'grove' },  -- grove_5
     { id =   91, x =   -32.443, y = -1989.612, z =   13.080, h =  49.5, region = 'grove' },  -- grove_6
-    { id =   92, x =   640.508, y =  2691.146, z =   39.800, h =  78.4, region = 'harmony' },  -- harmony_4
-    { id =   93, x =   412.130, y =  2662.297, z =   43.020, h =  84.4, region = 'harmony' },  -- harmony_7
-    { id =   94, x =   731.364, y =  2407.523, z =   59.010, h = 112.4, region = 'harmony' },  -- harmony_13
-    { id =   95, x =   239.888, y =  3353.818, z =   37.990, h = 319.0, region = 'harmony_n' },  -- harmony_n_2
+    { id =   92, x =   640.508, y =  2691.146, z =   39.800, h =  78.4, region = 'harmony' },  -- harmony_1
+    { id =   95, x =   239.888, y =  3353.818, z =   37.990, h = 319.0, region = 'harmony_n' },  -- harmony_n_1
     { id =   96, x =   397.512, y =   297.437, z =  102.020, h =  55.8, region = 'hawick' },  -- hawick_1
     { id =   97, x =   573.251, y =   268.026, z =  102.110, h = 326.6, region = 'hawick' },  -- hawick_2
     { id =   98, x =   199.132, y =   223.696, z =  104.550, h = 325.7, region = 'hawick' },  -- hawick_3
@@ -119,19 +114,19 @@ BR.Config.Flick.cameras = {
     { id =  102, x =   682.522, y =   -28.283, z =   82.490, h = 130.0, region = 'hawick' },  -- hawick_7
     { id =  103, x = -1925.775, y =  -220.947, z =   35.040, h =  12.7, region = 'kortz_s' },  -- kortz_s_1
     { id =  104, x = -1754.820, y =  -334.037, z =   44.820, h = 227.9, region = 'kortz_s' },  -- kortz_s_3
-    { id =  105, x = -1913.854, y =  -373.787, z =   48.250, h =  31.6, region = 'kortz_s' },  -- kortz_s_5
-    { id =  106, x = -2043.005, y =  -374.469, z =   10.400, h = 286.8, region = 'kortz_s' },  -- kortz_s_6
-    { id =  107, x = -1823.171, y =  -443.456, z =   42.090, h =  35.1, region = 'kortz_s' },  -- kortz_s_7
-    { id =  108, x = -1695.523, y =  -501.790, z =   36.740, h = 306.5, region = 'kortz_s' },  -- kortz_s_8
-    { id =  109, x = -1766.117, y =  -605.486, z =    9.940, h = 221.0, region = 'kortz_s' },  -- kortz_s_9
+    { id =  105, x = -1913.854, y =  -373.787, z =   48.250, h =  31.6, region = 'kortz_s' },  -- kortz_s_4
+    { id =  106, x = -2043.005, y =  -374.469, z =   10.400, h = 286.8, region = 'kortz_s' },  -- kortz_s_5
+    { id =  107, x = -1823.171, y =  -443.456, z =   42.090, h =  35.1, region = 'kortz_s' },  -- kortz_s_6
+    { id =  108, x = -1695.523, y =  -501.790, z =   36.740, h = 306.5, region = 'kortz_s' },  -- kortz_s_7
+    { id =  109, x = -1766.117, y =  -605.486, z =    9.940, h = 221.0, region = 'kortz_s' },  -- kortz_s_8
     { id =  110, x =   543.450, y = -1382.500, z =   28.440, h = 165.0, region = 'lamesa' },  -- lamesa_1
     { id =  111, x =   796.678, y = -1490.151, z =   26.960, h =   6.8, region = 'lamesa' },  -- lamesa_2
     { id =  112, x =   517.174, y = -1492.061, z =   28.340, h = 333.2, region = 'lamesa' },  -- lamesa_3
-    { id =  113, x =   574.503, y = -1568.147, z =   27.510, h =  35.1, region = 'lamesa' },  -- lamesa_5
-    { id =  114, x =   857.921, y = -1589.205, z =   30.580, h = 170.3, region = 'lamesa' },  -- lamesa_6
-    { id =  115, x =   556.193, y = -1691.844, z =   28.250, h = 220.6, region = 'lamesa' },  -- lamesa_7
-    { id =  116, x =   811.397, y = -1722.017, z =   28.280, h = 339.0, region = 'lamesa' },  -- lamesa_8
-    { id =  117, x =   653.446, y = -1749.451, z =   28.290, h =  69.6, region = 'lamesa' },  -- lamesa_9
+    { id =  113, x =   574.503, y = -1568.147, z =   27.510, h =  35.1, region = 'lamesa' },  -- lamesa_4
+    { id =  114, x =   857.921, y = -1589.205, z =   30.580, h = 170.3, region = 'lamesa' },  -- lamesa_5
+    { id =  115, x =   556.193, y = -1691.844, z =   28.250, h = 220.6, region = 'lamesa' },  -- lamesa_6
+    { id =  116, x =   811.397, y = -1722.017, z =   28.280, h = 339.0, region = 'lamesa' },  -- lamesa_7
+    { id =  117, x =   653.446, y = -1749.451, z =   28.290, h =  69.6, region = 'lamesa' },  -- lamesa_8
     { id =  118, x =  -751.450, y =  -798.500, z =   22.860, h = 345.0, region = 'littleseoul' },  -- littleseoul_1
     { id =  119, x =  -625.800, y =  -858.750, z =   24.010, h = 165.0, region = 'littleseoul' },  -- littleseoul_2
     { id =  120, x =  -846.800, y =  -860.250, z =   18.020, h = 165.0, region = 'littleseoul' },  -- littleseoul_3
@@ -159,9 +154,9 @@ BR.Config.Flick.cameras = {
     { id =  142, x =  1030.537, y =  -593.634, z =   57.820, h = 148.8, region = 'mirrorpark' },  -- mirrorpark_5
     { id =  143, x =  1260.778, y =  -601.232, z =   68.040, h =   3.1, region = 'mirrorpark' },  -- mirrorpark_6
     { id =  144, x =  1024.281, y =  -721.682, z =   56.920, h = 204.9, region = 'mirrorpark' },  -- mirrorpark_7
-    { id =  145, x =  1186.107, y =  -734.305, z =   57.840, h = 348.6, region = 'mirrorpark' },  -- mirrorpark_9
-    { id =  146, x =   881.695, y =  -832.012, z =   42.190, h = 258.8, region = 'mirrorpark' },  -- mirrorpark_10
-    { id =  147, x =   733.000, y =  -839.050, z =   42.450, h = 255.0, region = 'mirrorpark' },  -- mirrorpark_11
+    { id =  145, x =  1186.107, y =  -734.305, z =   57.840, h = 348.6, region = 'mirrorpark' },  -- mirrorpark_8
+    { id =  146, x =   881.695, y =  -832.012, z =   42.190, h = 258.8, region = 'mirrorpark' },  -- mirrorpark_9
+    { id =  147, x =   733.000, y =  -839.050, z =   42.450, h = 255.0, region = 'mirrorpark' },  -- mirrorpark_10
     { id =  148, x =  1146.800, y =  -928.500, z =   48.860, h = 345.0, region = 'mirrorpark_s' },  -- mirrorpark_s_1
     { id =  149, x =   818.259, y =  -997.682, z =   25.250, h = 257.1, region = 'mirrorpark_s' },  -- mirrorpark_s_2
     { id =  150, x =  1002.950, y = -1019.581, z =   41.210, h = 165.0, region = 'mirrorpark_s' },  -- mirrorpark_s_3
@@ -183,26 +178,21 @@ BR.Config.Flick.cameras = {
     { id =  166, x = -1344.446, y = -1009.032, z =    7.150, h = 194.7, region = 'morningwood' },  -- morningwood_15
     { id =  167, x = -1209.619, y = -1147.263, z =    6.700, h = 171.4, region = 'morningwood' },  -- morningwood_16
     { id =  168, x =  1313.371, y = -1601.730, z =   51.550, h =  20.7, region = 'murrieta' },  -- murrieta_1
-    { id =  169, x =  1196.377, y = -1711.880, z =   34.610, h = 101.6, region = 'murrieta' },  -- murrieta_3
-    { id =  170, x =  1393.523, y = -1748.968, z =   64.670, h = 359.1, region = 'murrieta' },  -- murrieta_4
-    { id =  171, x =   975.051, y = -1753.040, z =   30.170, h = 251.2, region = 'murrieta' },  -- murrieta_5
-    { id =  172, x =  1085.097, y = -1770.992, z =   34.850, h = 184.2, region = 'murrieta' },  -- murrieta_6
-    { id =  173, x =  1199.859, y = -1858.520, z =   36.330, h = 188.3, region = 'murrieta' },  -- murrieta_7
-    { id =  174, x =  1093.080, y = -1876.654, z =   35.980, h =  92.6, region = 'murrieta' },  -- murrieta_8
-    { id =  175, x =   955.285, y = -1899.732, z =   30.200, h = 160.8, region = 'murrieta' },  -- murrieta_9
-    { id =  176, x =  1964.647, y =  -933.106, z =   78.100, h = 111.2, region = 'noose_w' },  -- noose_w_6
-    { id =  177, x =  -711.555, y =   997.359, z =  236.880, h = 271.9, region = 'obs_ridge' },  -- obs_ridge_2
-    { id =  178, x =  -190.021, y =  1439.170, z =  288.210, h = 166.2, region = 'observatory' },  -- observatory_2
-    { id =  179, x = -2641.410, y =  1499.688, z =  119.380, h = 216.5, region = 'pacific_r' },  -- pacific_r_2
-    { id =  180, x =   -11.930, y =  6532.750, z =   30.450, h = 300.0, region = 'paleto' },  -- paleto_2
-    { id =  181, x =  -131.263, y =  6448.237, z =   30.550, h = 210.0, region = 'paleto' },  -- paleto_3
-    { id =  182, x =  -143.160, y =  6338.340, z =   30.590, h = 210.0, region = 'paleto' },  -- paleto_7
-    { id =  183, x =  -382.806, y =  6287.158, z =   28.520, h = 104.7, region = 'paleto' },  -- paleto_8
-    { id =  184, x =  -280.335, y =  6217.403, z =   30.510, h = 210.9, region = 'paleto' },  -- paleto_11
-    { id =  185, x =  -414.560, y =  6106.770, z =   30.390, h = 130.0, region = 'paleto' },  -- paleto_14
-    { id =  186, x =  -763.608, y =  5441.112, z =   37.140, h = 263.1, region = 'paleto_f' },  -- paleto_f_5
+    { id =  169, x =  1196.377, y = -1711.880, z =   34.610, h = 101.6, region = 'murrieta' },  -- murrieta_2
+    { id =  170, x =  1393.523, y = -1748.968, z =   64.670, h = 359.1, region = 'murrieta' },  -- murrieta_3
+    { id =  171, x =   975.051, y = -1753.040, z =   30.170, h = 251.2, region = 'murrieta' },  -- murrieta_4
+    { id =  172, x =  1085.097, y = -1770.992, z =   34.850, h = 184.2, region = 'murrieta' },  -- murrieta_5
+    { id =  173, x =  1199.859, y = -1858.520, z =   36.330, h = 188.3, region = 'murrieta' },  -- murrieta_6
+    { id =  174, x =  1093.080, y = -1876.654, z =   35.980, h =  92.6, region = 'murrieta' },  -- murrieta_7
+    { id =  175, x =   955.285, y = -1899.732, z =   30.200, h = 160.8, region = 'murrieta' },  -- murrieta_8
+    { id =  176, x =  1964.647, y =  -933.106, z =   78.100, h = 111.2, region = 'noose_w' },  -- noose_w_2
+    { id =  177, x =  -711.555, y =   997.359, z =  236.880, h = 271.9, region = 'obs_ridge' },  -- obs_ridge_1
+    { id =  178, x =  -190.021, y =  1439.170, z =  288.210, h = 166.2, region = 'observatory' },  -- observatory_1
+    { id =  179, x = -2641.410, y =  1499.688, z =  119.380, h = 216.5, region = 'pacific_r' },  -- pacific_r_1
+    { id =  184, x =  -280.335, y =  6217.403, z =   30.510, h = 210.9, region = 'paleto' },  -- paleto_3
+    { id =  186, x =  -763.608, y =  5441.112, z =   37.140, h = 263.1, region = 'paleto_f' },  -- paleto_f_1
     { id =  187, x =  2700.408, y =  1648.407, z =   23.510, h = 255.8, region = 'palmer' },  -- palmer_1
-    { id =  188, x =  1867.269, y =  2513.445, z =   44.780, h = 150.2, region = 'penitentiary' },  -- penitentiary_12
+    { id =  188, x =  1867.269, y =  2513.445, z =   44.780, h = 150.2, region = 'penitentiary' },  -- penitentiary_2
     { id =  189, x =   -16.003, y =  -450.327, z =   39.420, h = 146.9, region = 'pillbox' },  -- pillbox_1
     { id =  190, x =  -166.780, y =  -453.585, z =   33.040, h = 145.5, region = 'pillbox' },  -- pillbox_2
     { id =  191, x =    56.483, y =  -559.638, z =   32.790, h =  61.8, region = 'pillbox' },  -- pillbox_3
@@ -218,7 +208,7 @@ BR.Config.Flick.cameras = {
     { id =  201, x =  -297.324, y = -1573.621, z =   22.870, h = 134.5, region = 'puertodelsol' },  -- puertodelsol_4
     { id =  202, x =  -394.067, y = -1691.821, z =   17.820, h = 314.3, region = 'puertodelsol' },  -- puertodelsol_5
     { id =  203, x =  -617.526, y = -1795.998, z =   22.620, h = 233.2, region = 'puertodelsol' },  -- puertodelsol_7
-    { id =  204, x =  1267.250, y =  2689.500, z =   36.450, h = 255.0, region = 'redwood' },  -- redwood_3
+    { id =  204, x =  1267.250, y =  2689.500, z =   36.450, h = 255.0, region = 'redwood' },  -- redwood_1
     { id =  205, x = -1087.875, y =   294.423, z =   63.120, h = 341.4, region = 'richman' },  -- richman_1
     { id =  206, x =  -961.984, y =   274.787, z =   68.390, h = 238.7, region = 'richman' },  -- richman_2
     { id =  207, x = -1261.411, y =   268.524, z =   63.370, h = 220.3, region = 'richman' },  -- richman_3
@@ -252,19 +242,11 @@ BR.Config.Flick.cameras = {
     { id =  235, x =  -920.224, y =  -289.596, z =   38.800, h = 283.4, region = 'rockford' },  -- rockford_13
     { id =  236, x = -1080.174, y =  -410.056, z =   35.640, h = 192.6, region = 'rockford' },  -- rockford_14
     { id =  237, x =  -983.403, y =  -452.483, z =   36.730, h = 102.6, region = 'rockford' },  -- rockford_15
-    { id =  238, x =  1041.389, y =  2060.476, z =   50.720, h =  17.0, region = 'route68' },  -- route68_6
-    { id =  239, x =  1878.412, y =  3888.151, z =   31.950, h = 180.5, region = 'sandy' },  -- sandy_2
-    { id =  240, x =  1652.571, y =  3837.513, z =   33.770, h = 119.2, region = 'sandy' },  -- sandy_5
-    { id =  241, x =  1802.401, y =  3805.255, z =   32.490, h =  14.7, region = 'sandy' },  -- sandy_7
-    { id =  242, x =  2043.850, y =  3736.668, z =   31.660, h =  14.9, region = 'sandy' },  -- sandy_13
-    { id =  243, x =  1613.710, y =  3691.461, z =   33.360, h = 284.4, region = 'sandy' },  -- sandy_16
-    { id =  244, x =  1933.580, y =  3656.517, z =   32.490, h = 285.3, region = 'sandy' },  -- sandy_19
-    { id =  245, x =  1807.044, y =  3626.471, z =   33.190, h = 105.3, region = 'sandy' },  -- sandy_21
-    { id =  246, x =  1456.425, y =  3597.792, z =   33.740, h =  95.4, region = 'sandy' },  -- sandy_23
-    { id =  247, x =  1702.497, y =  3521.193, z =   35.300, h = 285.1, region = 'sandy' },  -- sandy_26
-    { id =  248, x =  1830.206, y =  3304.452, z =   41.890, h = 285.1, region = 'sandy' },  -- sandy_33
-    { id =  249, x =  1984.045, y =  3300.895, z =   44.480, h = 289.4, region = 'sandy' },  -- sandy_34
-    { id =  250, x =   920.250, y =  3547.000, z =   32.940, h = 345.0, region = 'senora_w' },  -- senora_w_4
+    { id =  238, x =  1041.389, y =  2060.476, z =   50.720, h =  17.0, region = 'route68' },  -- route68_2
+    { id =  241, x =  1802.401, y =  3805.255, z =   32.490, h =  14.7, region = 'sandy' },  -- sandy_1
+    { id =  242, x =  2043.850, y =  3736.668, z =   31.660, h =  14.9, region = 'sandy' },  -- sandy_2
+    { id =  249, x =  1984.045, y =  3300.895, z =   44.480, h = 289.4, region = 'sandy' },  -- sandy_4
+    { id =  250, x =   920.250, y =  3547.000, z =   32.940, h = 345.0, region = 'senora_w' },  -- senora_w_1
     { id =  251, x =   -88.800, y = -1216.250, z =   27.160, h = 165.0, region = 'strawberry' },  -- strawberry_1
     { id =  252, x =   483.250, y = -1267.200, z =   28.590, h =  75.0, region = 'strawberry' },  -- strawberry_2
     { id =  253, x =   393.397, y = -1273.747, z =   31.730, h = 125.1, region = 'strawberry' },  -- strawberry_3
@@ -283,7 +265,7 @@ BR.Config.Flick.cameras = {
     { id =  266, x =   427.035, y = -1646.816, z =   28.280, h = 327.0, region = 'strawberry' },  -- strawberry_16
     { id =  267, x =   913.993, y = -2450.660, z =   27.550, h = 249.0, region = 'terminal' },  -- terminal_1
     { id =  268, x = -1257.713, y =  2548.667, z =   17.000, h = 300.0, region = 'tongva' },  -- tongva_1
-    { id =  269, x = -1516.428, y =  2161.788, z =   54.430, h = 239.9, region = 'tongva' },  -- tongva_11
+    { id =  269, x = -1516.428, y =  2161.788, z =   54.430, h = 239.9, region = 'tongva' },  -- tongva_4
     { id =  270, x = -1748.215, y =   828.460, z =  141.760, h = 306.7, region = 'ulsa' },  -- ulsa_1
     { id =  271, x = -1022.610, y = -1246.205, z =    5.020, h = 284.7, region = 'vespucci' },  -- vespucci_1
     { id =  272, x = -1238.543, y = -1255.423, z =    4.500, h = 274.6, region = 'vespucci' },  -- vespucci_2
@@ -316,421 +298,57 @@ BR.Config.Flick.cameras = {
     { id =  299, x =  -507.224, y =  -357.204, z =   34.210, h = 248.2, region = 'westvinewood' },  -- westvinewood_12
     { id =  300, x =  -328.070, y =  -363.821, z =   29.320, h = 342.8, region = 'westvinewood' },  -- westvinewood_13
     { id =  301, x = -1310.257, y =  5144.246, z =   60.420, h = 139.5, region = 'altruist' },  -- altruist_1
-    { id =  302, x = -1439.403, y =  5044.702, z =   60.600, h = 110.3, region = 'altruist' },  -- altruist_2
-    { id =  303, x = -1540.496, y =  4937.160, z =   60.730, h = 122.8, region = 'altruist' },  -- altruist_3
     { id =  304, x =  -454.929, y = -1923.419, z =   21.640, h = 157.7, region = 'arena' },  -- arena_4
-    { id =  305, x =  -369.828, y = -2056.317, z =   24.890, h = 229.9, region = 'arena' },  -- arena_6
-    { id =  306, x =  -235.213, y = -2113.927, z =   21.710, h = 269.1, region = 'arena' },  -- arena_7
-    { id =  307, x =  -902.438, y = -1890.916, z =   29.030, h = 166.3, region = 'arena_w' },  -- arena_w_1
-    { id =  308, x =  -756.706, y = -2151.706, z =   13.400, h = 339.0, region = 'arena_w' },  -- arena_w_2
-    { id =  309, x = -2694.031, y =  2311.437, z =   16.910, h = 148.1, region = 'banham' },  -- banham_1
-    { id =  310, x = -2510.896, y =  2280.834, z =   31.920, h =  82.4, region = 'banham' },  -- banham_3
-    { id =  311, x = -2264.482, y =  2257.616, z =   31.860, h = 104.5, region = 'banham' },  -- banham_4
-    { id =  312, x = -2865.794, y =  2157.560, z =   34.620, h = 104.3, region = 'banham_w' },  -- banham_w_1
-    { id =  313, x = -2967.104, y =  2053.387, z =   38.080, h = 147.8, region = 'banham_w' },  -- banham_w_2
-    { id =  314, x = -3002.607, y =  1919.857, z =   27.510, h = 141.7, region = 'banham_w' },  -- banham_w_3
-    { id =  315, x = -2993.316, y =  1634.695, z =   30.300, h = 188.3, region = 'banham_w' },  -- banham_w_4
-    { id =  316, x = -2063.601, y =  1945.914, z =  187.340, h = 340.2, region = 'banhamcanyon' },  -- banhamcanyon_1
-    { id =  317, x = -2168.842, y =  1944.468, z =  189.130, h = 142.7, region = 'banhamcanyon' },  -- banhamcanyon_2
-    { id =  318, x = -2359.605, y =  1896.301, z =  182.510, h =   5.7, region = 'banhamcanyon' },  -- banhamcanyon_3
-    { id =  319, x = -1968.215, y =  1887.812, z =  183.590, h =   1.0, region = 'banhamcanyon' },  -- banhamcanyon_4
-    { id =  320, x = -2260.113, y =  1877.850, z =  183.010, h = 126.7, region = 'banhamcanyon' },  -- banhamcanyon_5
-    { id =  321, x = -2515.735, y =  1853.652, z =  164.740, h = 210.4, region = 'banhamcanyon' },  -- banhamcanyon_6
-    { id =  322, x = -1955.250, y =  1767.000, z =  174.870, h = 255.0, region = 'banhamcanyon' },  -- banhamcanyon_7
-    { id =  323, x = -2493.990, y =  1717.735, z =  154.450, h = 150.4, region = 'banhamcanyon' },  -- banhamcanyon_8
-    { id =  324, x = -2605.337, y =  1664.463, z =  138.210, h = 282.6, region = 'banhamcanyon' },  -- banhamcanyon_9
-    { id =  325, x =  -730.920, y =  1963.483, z =  134.190, h =  44.7, region = 'baytree' },  -- baytree_1
-    { id =  326, x =  -555.160, y =  1868.210, z =  209.800, h = 149.2, region = 'baytree' },  -- baytree_2
-    { id =  327, x =  -788.529, y =  1844.756, z =  163.320, h = 286.0, region = 'baytree' },  -- baytree_3
-    { id =  328, x =  -614.406, y =  1780.156, z =  211.130, h = 300.0, region = 'baytree' },  -- baytree_4
-    { id =  329, x =  -886.689, y =  1757.224, z =  177.110, h = 304.3, region = 'baytree' },  -- baytree_5
-    { id =  330, x =  -789.329, y =  1528.610, z =  223.040, h = 312.0, region = 'baytree' },  -- baytree_7
-    { id =  331, x =  -800.140, y =  1388.035, z =  246.950, h = 161.4, region = 'baytree' },  -- baytree_8
-    { id =  332, x =  -666.406, y =  1339.065, z =  286.470, h = 311.3, region = 'baytree' },  -- baytree_9
-    { id =  333, x =  -780.092, y =  1287.782, z =  258.120, h = 187.3, region = 'baytree' },  -- baytree_10
-    { id =  334, x = -1081.284, y =  1154.372, z =  213.340, h = 104.7, region = 'baytree' },  -- baytree_11
-    { id =  335, x =  2260.225, y =  4988.095, z =   41.460, h = 120.6, region = 'braddock' },  -- braddock_1
-    { id =  336, x =  2344.936, y =  4920.332, z =   41.270, h =  30.0, region = 'braddock' },  -- braddock_2
-    { id =  337, x =  2156.920, y =  4912.726, z =   39.710, h =  30.0, region = 'braddock' },  -- braddock_3
-    { id =  338, x =  2211.910, y =  4733.422, z =   39.260, h =  62.8, region = 'braddock' },  -- braddock_4
-    { id =  339, x =  2073.594, y =  4705.906, z =   39.950, h = 300.0, region = 'braddock' },  -- braddock_5
-    { id =  340, x =  2366.740, y =  4669.530, z =   34.970, h =  29.1, region = 'braddock' },  -- braddock_6
-    { id =  341, x =  1732.266, y = -1298.678, z =   84.640, h = 112.4, region = 'burro_n' },  -- burro_n_1
-    { id =  342, x =  1894.055, y = -1357.908, z =  135.280, h = 322.7, region = 'burro_n' },  -- burro_n_2
-    { id =  343, x =  1579.561, y = -1394.276, z =   79.740, h = 304.3, region = 'burro_n' },  -- burro_n_3
-    { id =  344, x =  1504.776, y = -1469.311, z =   69.190, h = 295.7, region = 'burro_n' },  -- burro_n_4
-    { id =  345, x =  1822.375, y = -1494.918, z =  116.460, h = 163.8, region = 'burro_n' },  -- burro_n_5
+    { id =  308, x =  -756.706, y = -2151.706, z =   13.400, h = 339.0, region = 'arena_w' },  -- arena_w_1
+    { id =  313, x = -2967.104, y =  2053.387, z =   38.080, h = 147.8, region = 'banham_w' },  -- banham_w_1
     { id =  346, x =  -688.481, y =  -463.135, z =   33.750, h = 257.5, region = 'burton' },  -- burton_2
     { id =  347, x =  -373.000, y =  -483.250, z =   24.450, h = 255.0, region = 'burton' },  -- burton_3
     { id =  348, x =  2932.191, y =  3728.010, z =   51.670, h = 149.9, region = 'catfish' },  -- catfish_1
-    { id =  349, x =  2818.584, y =  3528.307, z =   53.230, h = 324.5, region = 'catfish' },  -- catfish_2
-    { id =  350, x =  2665.100, y =  3513.292, z =   52.100, h =  56.6, region = 'catfish' },  -- catfish_3
-    { id =  351, x =  2732.050, y =  3324.476, z =   55.060, h = 320.0, region = 'catfish' },  -- catfish_5
-    { id =  352, x =  2668.500, y =  3207.758, z =   52.270, h = 313.0, region = 'catfish' },  -- catfish_6
-    { id =  353, x =   -36.645, y =  2005.230, z =  174.410, h = 102.6, region = 'chaparral' },  -- chaparral_2
-    { id =  354, x =  -408.408, y =  1897.718, z =  205.930, h =   7.3, region = 'chaparral' },  -- chaparral_3
-    { id =  355, x =   -35.720, y =  1833.240, z =  202.750, h =  45.3, region = 'chaparral' },  -- chaparral_5
-    { id =  356, x =  -301.625, y =  1827.750, z =  199.690, h = 255.0, region = 'chaparral' },  -- chaparral_6
-    { id =  357, x =   126.377, y =  1656.919, z =  227.710, h =  26.6, region = 'chaparral' },  -- chaparral_7
-    { id =  358, x =   156.780, y =  1499.562, z =  237.790, h = 189.5, region = 'chaparral' },  -- chaparral_8
-    { id =  359, x =  -579.556, y =  3013.572, z =   24.440, h =  64.7, region = 'chaparral_n' },  -- chaparral_n_1
-    { id =  360, x =  -471.449, y =  2981.288, z =   25.520, h = 239.8, region = 'chaparral_n' },  -- chaparral_n_2
-    { id =  361, x =  -324.375, y =  2952.500, z =   26.650, h =  75.0, region = 'chaparral_n' },  -- chaparral_n_3
-    { id =  362, x =  -803.344, y =  2752.455, z =   22.980, h =  92.7, region = 'chaparral_n' },  -- chaparral_n_5
-    { id =  363, x = -1027.581, y =  2744.548, z =   23.030, h = 284.7, region = 'chaparral_n' },  -- chaparral_n_6
-    { id =  364, x =  -914.254, y =  2740.889, z =   23.650, h =  68.5, region = 'chaparral_n' },  -- chaparral_n_7
-    { id =  365, x =  -579.698, y =  2716.923, z =   41.260, h = 314.7, region = 'chaparral_n' },  -- chaparral_n_8
-    { id =  366, x = -1164.429, y =  2636.717, z =   15.060, h = 296.6, region = 'chaparral_w' },  -- chaparral_w_1
-    { id =  367, x =  -560.667, y =  2578.301, z =   47.150, h = 358.2, region = 'chaparral_w' },  -- chaparral_w_2
-    { id =  368, x =  -611.112, y =  2464.435, z =   53.430, h =  94.6, region = 'chaparral_w' },  -- chaparral_w_3
-    { id =  369, x =  -727.035, y =  2358.088, z =   66.800, h = 312.0, region = 'chaparral_w' },  -- chaparral_w_4
-    { id =  370, x =  -801.606, y =  2285.362, z =   78.160, h = 314.0, region = 'chaparral_w' },  -- chaparral_w_5
-    { id =  371, x =  -752.183, y =  2194.387, z =   94.250, h = 191.0, region = 'chaparral_w' },  -- chaparral_w_6
-    { id =  372, x =  -817.140, y =  2062.645, z =  116.750, h = 161.3, region = 'chaparral_w' },  -- chaparral_w_7
-    { id =  373, x =   230.703, y =  6545.832, z =   30.660, h =  90.0, region = 'chiliad_n' },  -- chiliad_n_1
-    { id =  374, x =   484.019, y =  6545.034, z =   26.140, h =  55.8, region = 'chiliad_n' },  -- chiliad_n_2
-    { id =  375, x =   429.868, y =  6525.461, z =   26.780, h = 167.8, region = 'chiliad_n' },  -- chiliad_n_3
-    { id =  376, x =   655.608, y =  6507.911, z =   27.200, h =  63.0, region = 'chiliad_n' },  -- chiliad_n_4
-    { id =  377, x = -3162.627, y =  1275.895, z =   11.920, h = 149.6, region = 'chumash' },  -- chumash_1
-    { id =  378, x = -3122.450, y =  1187.370, z =   19.370, h = 340.2, region = 'chumash' },  -- chumash_2
-    { id =  379, x = -3190.964, y =  1130.802, z =    8.760, h = 138.9, region = 'chumash' },  -- chumash_3
-    { id =  380, x = -3139.438, y =   959.629, z =   13.990, h = 161.0, region = 'chumash' },  -- chumash_4
-    { id =  381, x = -3109.305, y =   776.610, z =   18.110, h =  22.4, region = 'chumash' },  -- chumash_5
-    { id =  382, x =  1993.940, y =  2510.756, z =   53.580, h = 128.6, region = 'derrick' },  -- derrick_1
-    { id =  383, x =  1814.310, y =  2423.876, z =   44.690, h = 122.7, region = 'derrick' },  -- derrick_2
-    { id =  384, x =  1871.376, y =  2417.197, z =   53.470, h = 314.5, region = 'derrick' },  -- derrick_3
-    { id =  385, x =  1936.280, y =  2414.688, z =   53.560, h = 140.5, region = 'derrick' },  -- derrick_4
-    { id =  386, x =  1792.975, y =  2281.020, z =   57.490, h = 329.8, region = 'derrick' },  -- derrick_5
-    { id =  387, x =  1887.476, y =  2214.086, z =   53.660, h = 160.2, region = 'derrick' },  -- derrick_6
-    { id =  388, x =  1818.349, y =  2020.308, z =   56.020, h = 357.2, region = 'derrick' },  -- derrick_7
-    { id =  389, x =  2108.379, y =  3281.001, z =   44.890, h = 238.1, region = 'dryfields' },  -- dryfields_1
-    { id =  390, x =  2251.836, y =  3232.429, z =   47.080, h = 173.5, region = 'dryfields' },  -- dryfields_2
-    { id =  391, x =  2287.400, y =  3129.114, z =   46.920, h = 188.5, region = 'dryfields' },  -- dryfields_3
-    { id =  392, x =  2007.132, y =  3112.110, z =   45.960, h = 222.9, region = 'dryfields' },  -- dryfields_4
-    { id =  393, x =  2586.148, y =  3029.872, z =   43.330, h = 127.0, region = 'dryfields' },  -- dryfields_5
-    { id =  394, x =  2169.766, y =  3017.593, z =   44.300, h = 259.8, region = 'dryfields' },  -- dryfields_6
-    { id =  395, x =  2280.529, y =  3013.756, z =   44.850, h = 326.0, region = 'dryfields' },  -- dryfields_7
-    { id =  396, x =  1974.019, y =  2988.114, z =   44.670, h = 267.6, region = 'dryfields' },  -- dryfields_8
-    { id =  397, x =  2482.052, y =  2826.584, z =   47.050, h = 200.0, region = 'dryfields' },  -- dryfields_10
-    { id =  398, x =  2134.292, y =  2723.587, z =   47.650, h = 298.7, region = 'dryfields' },  -- dryfields_11
-    { id =  399, x =  2566.758, y =  2672.979, z =   38.770, h = 185.7, region = 'dryfields' },  -- dryfields_12
-    { id =  400, x =  1277.475, y = -2088.258, z =   44.670, h = 185.0, region = 'elburro' },  -- elburro_4
-    { id =  401, x =  1285.307, y = -2213.689, z =   49.760, h =   7.7, region = 'elburro' },  -- elburro_6
-    { id =  402, x =  1318.384, y = -2347.251, z =   51.750, h = 347.5, region = 'elburro' },  -- elburro_7
-    { id =  403, x =  1546.428, y =   963.053, z =   77.130, h = 321.1, region = 'fuente_s' },  -- fuente_s_1
-    { id =  404, x =  1469.151, y =   817.222, z =   75.920, h = 312.0, region = 'fuente_s' },  -- fuente_s_2
-    { id =  405, x =  1271.971, y =   782.402, z =  102.850, h = 150.7, region = 'fuente_s' },  -- fuente_s_3
-    { id =  406, x =  1376.357, y =   693.779, z =   78.220, h = 306.0, region = 'fuente_s' },  -- fuente_s_5
-    { id =  407, x =  1701.285, y =  1377.293, z =   85.780, h = 154.7, region = 'fuenteblanca' },  -- fuenteblanca_1
-    { id =  408, x =  1634.430, y =  1232.265, z =   84.140, h = 331.1, region = 'fuenteblanca' },  -- fuenteblanca_2
-    { id =  409, x =  1595.150, y =  1092.235, z =   80.350, h = 326.3, region = 'fuenteblanca' },  -- fuenteblanca_4
-    { id =  410, x =  1297.900, y =   985.956, z =  104.870, h = 340.2, region = 'fuenteblanca' },  -- fuenteblanca_5
-    { id =  411, x =  2627.391, y =  5215.233, z =   43.460, h = 181.9, region = 'gordo_s' },  -- gordo_s_1
-    { id =  412, x =  2552.987, y =  5100.714, z =   43.350, h = 268.6, region = 'gordo_s' },  -- gordo_s_2
-    { id =  413, x =  2602.442, y =  5079.513, z =   43.830, h = 359.6, region = 'gordo_s' },  -- gordo_s_3
-    { id =  414, x =  2725.560, y =  5074.422, z =   41.250, h = 352.3, region = 'gordo_s' },  -- gordo_s_4
-    { id =  415, x =  2444.856, y =  5046.882, z =   44.920, h = 215.7, region = 'gordo_s' },  -- gordo_s_5
-    { id =  416, x =  2800.839, y =  4926.837, z =   33.010, h = 201.1, region = 'gordo_s' },  -- gordo_s_7
-    { id =  417, x =  2645.250, y =  4925.738, z =   43.420, h = 358.0, region = 'gordo_s' },  -- gordo_s_8
-    { id =  418, x =  2859.325, y =  4795.855, z =   48.340, h = 189.5, region = 'gordo_s' },  -- gordo_s_9
-    { id =  419, x =  2725.462, y =  4791.859, z =   43.540, h = 177.7, region = 'gordo_s' },  -- gordo_s_10
-    { id =  420, x =  2592.480, y =  4758.085, z =   32.610, h = 298.3, region = 'gordo_s' },  -- gordo_s_11
-    { id =  421, x =  2515.948, y =  4681.552, z =   32.500, h = 300.0, region = 'gordo_s' },  -- gordo_s_12
-    { id =  422, x =  1723.654, y =  4967.499, z =   44.250, h = 104.3, region = 'grapeseed' },  -- grapeseed_2
-    { id =  423, x =  1660.128, y =  4847.350, z =   40.930, h = 352.2, region = 'grapeseed' },  -- grapeseed_3
-    { id =  424, x =  1727.590, y =  4614.909, z =   41.020, h = 211.3, region = 'grapeseed' },  -- grapeseed_5
-    { id =  425, x =  1932.466, y =  4601.425, z =   37.990, h = 267.9, region = 'grapeseed' },  -- grapeseed_6
-    { id =  426, x =  2230.985, y =  5189.989, z =   59.870, h =  50.9, region = 'grapeseed_n' },  -- grapeseed_n_1
-    { id =  427, x =  2045.936, y =  5186.775, z =   50.390, h = 113.3, region = 'grapeseed_n' },  -- grapeseed_n_2
-    { id =  428, x =  2323.372, y =  5075.184, z =   44.550, h = 300.0, region = 'grapeseed_n' },  -- grapeseed_n_4
-    { id =  429, x =  2016.400, y =  5058.856, z =   40.850, h =  26.6, region = 'grapeseed_n' },  -- grapeseed_n_5
-    { id =  430, x =   754.750, y =  2708.000, z =   38.970, h = 255.0, region = 'harmony' },  -- harmony_1
-    { id =  431, x =   875.998, y =  2705.438, z =   39.750, h = 253.2, region = 'harmony' },  -- harmony_2
-    { id =  432, x =   943.582, y =  2702.680, z =   39.330, h = 252.9, region = 'harmony' },  -- harmony_3
-    { id =  433, x =   578.327, y =  2685.703, z =   40.770, h =  82.1, region = 'harmony' },  -- harmony_5
-    { id =  434, x =   506.660, y =  2676.134, z =   41.680, h =  81.1, region = 'harmony' },  -- harmony_6
-    { id =  435, x =   274.639, y =  2623.005, z =   43.550, h =  93.1, region = 'harmony' },  -- harmony_8
-    { id =  436, x =   652.776, y =  2543.566, z =   60.390, h = 184.2, region = 'harmony' },  -- harmony_9
-    { id =  437, x =   361.897, y =  2502.270, z =   43.890, h =  26.6, region = 'harmony' },  -- harmony_10
-    { id =  438, x =   689.609, y =  2484.902, z =   61.870, h = 206.6, region = 'harmony' },  -- harmony_11
-    { id =  439, x =   481.659, y =  2420.133, z =   46.110, h = 217.6, region = 'harmony' },  -- harmony_12
-    { id =  440, x =   337.837, y =  3439.715, z =   34.980, h = 108.0, region = 'harmony_n' },  -- harmony_n_1
-    { id =  441, x =   225.345, y =  3243.435, z =   40.810, h = 160.4, region = 'harmony_n' },  -- harmony_n_3
-    { id =  442, x =   139.080, y =  3148.567, z =   40.500, h = 128.6, region = 'harmony_n' },  -- harmony_n_4
-    { id =  443, x =   215.901, y =  2994.813, z =   41.490, h = 351.0, region = 'harmony_n' },  -- harmony_n_5
-    { id =  444, x =   232.318, y =  2873.046, z =   42.470, h = 352.3, region = 'harmony_n' },  -- harmony_n_6
-    { id =  445, x =   129.949, y =  2869.145, z =   49.140, h = 107.4, region = 'harmony_n' },  -- harmony_n_7
-    { id =  446, x =   -17.421, y =  2837.341, z =   55.210, h = 263.0, region = 'harmony_n' },  -- harmony_n_8
-    { id =  447, x =  -130.013, y =  2833.295, z =   49.540, h =  53.0, region = 'harmony_n' },  -- harmony_n_9
-    { id =  448, x =   248.619, y =  2766.027, z =   42.710, h = 354.6, region = 'harmony_n' },  -- harmony_n_10
-    { id =  449, x =   151.119, y =  2641.361, z =   48.140, h =  38.5, region = 'harmony_n' },  -- harmony_n_11
+    { id =  376, x =   655.608, y =  6507.911, z =   27.200, h =  63.0, region = 'chiliad_n' },  -- chiliad_n_1
+    { id =  378, x = -3122.450, y =  1187.370, z =   19.370, h = 340.2, region = 'chumash' },  -- chumash_1
+    { id =  386, x =  1792.975, y =  2281.020, z =   57.490, h = 329.8, region = 'derrick' },  -- derrick_1
+    { id =  388, x =  1818.349, y =  2020.308, z =   56.020, h = 357.2, region = 'derrick' },  -- derrick_2
+    { id =  393, x =  2586.148, y =  3029.872, z =   43.330, h = 127.0, region = 'dryfields' },  -- dryfields_1
+    { id =  408, x =  1634.430, y =  1232.265, z =   84.140, h = 331.1, region = 'fuenteblanca' },  -- fuenteblanca_1
+    { id =  413, x =  2602.442, y =  5079.513, z =   43.830, h = 359.6, region = 'gordo_s' },  -- gordo_s_1
+    { id =  446, x =   -17.421, y =  2837.341, z =   55.210, h = 263.0, region = 'harmony_n' },  -- harmony_n_2
     { id =  450, x =   663.517, y =  -159.511, z =   47.440, h = 314.8, region = 'hawick' },  -- hawick_8
-    { id =  451, x =  1176.301, y =  1783.387, z =   74.910, h =  28.3, region = 'hills_e' },  -- hills_e_1
-    { id =  452, x =  1264.822, y =  1634.568, z =   88.000, h =   1.9, region = 'hills_e' },  -- hills_e_2
-    { id =  453, x =  1053.855, y =  1625.801, z =  164.930, h = 144.3, region = 'hills_e' },  -- hills_e_3
-    { id =  454, x =  1301.929, y =  1536.378, z =   95.620, h = 167.4, region = 'hills_e' },  -- hills_e_4
-    { id =  455, x =  1037.874, y =  1522.887, z =  172.940, h = 174.7, region = 'hills_e' },  -- hills_e_5
-    { id =  456, x =  1139.696, y =  1427.612, z =  161.990, h = 209.1, region = 'hills_e' },  -- hills_e_6
-    { id =  457, x =  1277.750, y =  1402.750, z =  100.420, h = 345.0, region = 'hills_e' },  -- hills_e_7
-    { id =  458, x =  1224.210, y =  1284.026, z =  142.400, h = 353.3, region = 'hills_e' },  -- hills_e_8
-    { id =  459, x =  1144.359, y =  1150.927, z =  170.730, h = 331.8, region = 'hills_e' },  -- hills_e_9
     { id =  460, x = -2158.885, y =  4461.020, z =   62.320, h = 281.6, region = 'hookies' },  -- hookies_1
-    { id =  461, x = -2287.895, y =  4171.315, z =   38.500, h = 135.3, region = 'hookies' },  -- hookies_2
-    { id =  462, x = -2393.075, y =  3875.135, z =   23.180, h = 144.3, region = 'hookies' },  -- hookies_3
-    { id =  463, x = -2447.802, y =  3744.778, z =   16.460, h = 150.4, region = 'hookies' },  -- hookies_4
-    { id =  464, x =  3436.625, y =  3740.356, z =   30.210, h = 343.2, region = 'humane' },  -- humane_1
-    { id =  465, x = -2256.485, y =   575.877, z =  169.040, h = 279.2, region = 'kortz' },  -- kortz_1
-    { id =  466, x = -2310.350, y =   474.615, z =  173.540, h = 335.7, region = 'kortz' },  -- kortz_2
-    { id =  467, x = -2161.921, y =   453.210, z =  140.590, h = 356.5, region = 'kortz' },  -- kortz_3
     { id =  468, x = -2468.051, y =  -238.099, z =   16.170, h =  47.4, region = 'kortz_s' },  -- kortz_s_2
-    { id =  469, x = -2255.168, y =  -356.512, z =   12.350, h =  65.3, region = 'kortz_s' },  -- kortz_s_4
-    { id =  470, x = -1548.719, y =  2745.258, z =   16.940, h =  36.7, region = 'lagozancudo' },  -- lagozancudo_1
-    { id =  471, x =  1034.051, y = -1496.940, z =   26.630, h = 349.0, region = 'lamesa' },  -- lamesa_4
     { id =  472, x =  1287.383, y =   555.451, z =   79.510, h = 120.0, region = 'landact' },  -- landact_1
     { id =  473, x =  -376.831, y = -1236.409, z =   20.260, h = 152.1, region = 'littleseoul' },  -- littleseoul_16
-    { id =  474, x =  1382.034, y =  -727.892, z =   66.240, h = 225.9, region = 'mirrorpark' },  -- mirrorpark_8
-    { id =  475, x =  1043.225, y =  -896.102, z =   29.590, h = 190.0, region = 'mirrorpark' },  -- mirrorpark_12
     { id =  476, x =  1385.489, y = -1059.211, z =   52.180, h = 302.9, region = 'mirrorpark_s' },  -- mirrorpark_s_4
     { id =  477, x =  1037.885, y = -1217.930, z =   24.680, h = 347.4, region = 'mirrorpark_s' },  -- mirrorpark_s_6
-    { id =  478, x =  2420.877, y =  5777.563, z =   44.560, h = 193.4, region = 'mtgordo_w' },  -- mtgordo_w_1
-    { id =  479, x =  2473.628, y =  5669.102, z =   44.180, h = 189.2, region = 'mtgordo_w' },  -- mtgordo_w_2
-    { id =  480, x =  2530.345, y =  5528.308, z =   43.690, h = 184.9, region = 'mtgordo_w' },  -- mtgordo_w_3
-    { id =  481, x =  2581.347, y =  5368.938, z =   43.450, h = 181.2, region = 'mtgordo_w' },  -- mtgordo_w_4
-    { id =  482, x =  2385.093, y =  5162.247, z =   47.830, h =   1.1, region = 'mtgordo_w' },  -- mtgordo_w_5
-    { id =  483, x =  2967.957, y =  4641.273, z =   51.560, h = 353.5, region = 'mthaan' },  -- mthaan_1
-    { id =  484, x =  2949.377, y =  4474.413, z =   45.380, h = 288.9, region = 'mthaan' },  -- mthaan_2
-    { id =  485, x =  2813.592, y =  4441.291, z =   47.500, h = 181.4, region = 'mthaan' },  -- mthaan_3
-    { id =  486, x =  2859.568, y =  4293.214, z =   49.230, h = 181.6, region = 'mthaan' },  -- mthaan_4
-    { id =  487, x =  2918.365, y =  4112.397, z =   49.600, h = 181.7, region = 'mthaan' },  -- mthaan_5
-    { id =  488, x = -1056.660, y =  2181.758, z =   89.720, h =  49.0, region = 'mtjosiah' },  -- mtjosiah_1
-    { id =  489, x =  -914.741, y =  1957.504, z =  141.220, h =  19.2, region = 'mtjosiah' },  -- mtjosiah_2
-    { id =  490, x = -1437.590, y =  1892.287, z =   74.060, h = 332.8, region = 'mtjosiah' },  -- mtjosiah_3
-    { id =  491, x = -1477.629, y =  1799.192, z =   83.440, h = 316.8, region = 'mtjosiah' },  -- mtjosiah_4
-    { id =  492, x = -1500.878, y =  1619.793, z =  105.990, h =   4.7, region = 'mtjosiah' },  -- mtjosiah_5
-    { id =  493, x =  1042.859, y = -1658.740, z =   29.810, h = 354.7, region = 'murrieta' },  -- murrieta_2
-    { id =  494, x =  2447.063, y =  -105.817, z =   89.510, h = 326.6, region = 'noose' },  -- noose_1
-    { id =  495, x =  2427.577, y =  -251.879, z =   84.460, h = 137.1, region = 'noose' },  -- noose_2
-    { id =  496, x =  2599.000, y =  -346.875, z =   91.880, h = 165.0, region = 'noose' },  -- noose_3
-    { id =  497, x =  2385.045, y =  -353.343, z =   76.380, h = 145.9, region = 'noose' },  -- noose_4
-    { id =  498, x =  2276.745, y =  -383.945, z =   70.070, h = 275.6, region = 'noose' },  -- noose_5
-    { id =  499, x =  2222.873, y =  -531.622, z =   90.590, h = 110.7, region = 'noose' },  -- noose_6
-    { id =  500, x =  2522.003, y =  -572.088, z =   66.000, h =  15.7, region = 'noose' },  -- noose_7
-    { id =  501, x =  2463.915, y =  -671.820, z =   61.170, h = 268.2, region = 'noose' },  -- noose_8
-    { id =  502, x =  2358.268, y =  -694.585, z =   62.370, h =  80.5, region = 'noose' },  -- noose_9
+    { id =  479, x =  2473.628, y =  5669.102, z =   44.180, h = 189.2, region = 'mtgordo_w' },  -- mtgordo_w_1
+    { id =  485, x =  2813.592, y =  4441.291, z =   47.500, h = 181.4, region = 'mthaan' },  -- mthaan_1
+    { id =  495, x =  2427.577, y =  -251.879, z =   84.460, h = 137.1, region = 'noose' },  -- noose_1
     { id =  503, x =  2504.610, y =   661.806, z =  104.060, h =  19.9, region = 'noose_n' },  -- noose_n_1
-    { id =  504, x =  2629.470, y =   613.402, z =   93.930, h = 177.0, region = 'noose_n' },  -- noose_n_2
-    { id =  505, x =  2523.062, y =   479.493, z =  112.310, h = 346.2, region = 'noose_n' },  -- noose_n_3
-    { id =  506, x =  2642.312, y =   412.162, z =   95.500, h = 160.2, region = 'noose_n' },  -- noose_n_4
-    { id =  507, x =  2519.637, y =   319.014, z =  108.850, h = 342.6, region = 'noose_n' },  -- noose_n_5
-    { id =  508, x =  2594.093, y =   154.787, z =   97.010, h = 149.8, region = 'noose_n' },  -- noose_n_6
-    { id =  509, x =  2490.239, y =    67.930, z =   97.190, h = 334.5, region = 'noose_n' },  -- noose_n_7
+    { id =  506, x =  2642.312, y =   412.162, z =   95.500, h = 160.2, region = 'noose_n' },  -- noose_n_2
     { id =  510, x =  2046.438, y =  -671.013, z =   93.940, h = 113.7, region = 'noose_w' },  -- noose_w_1
-    { id =  511, x =  2260.340, y =  -727.641, z =   64.820, h = 103.7, region = 'noose_w' },  -- noose_w_2
-    { id =  512, x =  1846.689, y =  -776.199, z =   78.680, h = 292.4, region = 'noose_w' },  -- noose_w_3
-    { id =  513, x =  2125.776, y =  -840.311, z =   77.410, h = 295.7, region = 'noose_w' },  -- noose_w_4
-    { id =  514, x =  1655.821, y =  -911.587, z =   64.900, h = 287.3, region = 'noose_w' },  -- noose_w_5
-    { id =  515, x =  1841.543, y = -1032.207, z =   77.900, h = 313.6, region = 'noose_w' },  -- noose_w_7
-    { id =  516, x =  1794.017, y = -1174.286, z =   81.920, h = 327.1, region = 'noose_w' },  -- noose_w_8
     { id =  517, x = -2505.141, y =  3599.188, z =   13.450, h = 331.5, region = 'northchum' },  -- northchum_1
-    { id =  518, x = -2575.746, y =  3402.674, z =   12.280, h = 332.4, region = 'northchum' },  -- northchum_2
-    { id =  519, x = -2966.422, y =  3268.660, z =    9.010, h = 211.9, region = 'northchum' },  -- northchum_3
-    { id =  520, x =  -924.728, y =  1124.360, z =  218.560, h =   4.6, region = 'obs_ridge' },  -- obs_ridge_1
-    { id =  521, x =  -855.475, y =   977.654, z =  231.000, h = 212.6, region = 'obs_ridge' },  -- obs_ridge_3
-    { id =  522, x =  -553.427, y =   928.917, z =  242.320, h =  27.8, region = 'obs_ridge' },  -- obs_ridge_4
-    { id =  523, x =  -434.838, y =   893.808, z =  236.380, h =  85.4, region = 'obs_ridge' },  -- obs_ridge_5
-    { id =  524, x =   -24.765, y =  1478.106, z =  275.240, h = 202.4, region = 'observatory' },  -- observatory_1
-    { id =  525, x =  -475.738, y =  1346.876, z =  303.190, h = 117.4, region = 'observatory' },  -- observatory_3
-    { id =  526, x =  -206.119, y =  1316.190, z =  303.390, h = 291.4, region = 'observatory' },  -- observatory_4
-    { id =  527, x =  -279.004, y =  1237.651, z =  314.510, h = 323.6, region = 'observatory' },  -- observatory_5
-    { id =  528, x =  -452.469, y =  1203.002, z =  324.630, h = 248.5, region = 'observatory' },  -- observatory_6
-    { id =  529, x =  -733.761, y =  1164.955, z =  262.090, h = 300.6, region = 'observatory' },  -- observatory_7
-    { id =  530, x =    27.286, y =  1048.271, z =  217.670, h = 240.4, region = 'observatory' },  -- observatory_8
-    { id =  531, x =  -178.750, y =  1037.250, z =  231.360, h =  75.0, region = 'observatory' },  -- observatory_9
-    { id =  532, x =  -318.325, y =  1028.963, z =  232.930, h = 320.5, region = 'observatory' },  -- observatory_10
-    { id =  533, x =  1152.053, y =  2051.915, z =   56.460, h = 120.0, region = 'oilfields' },  -- oilfields_1
-    { id =  534, x =  1120.017, y =  1877.770, z =   65.730, h =   3.1, region = 'oilfields' },  -- oilfields_2
-    { id =  535, x =  1872.322, y =  1847.370, z =   60.690, h =   5.7, region = 'oilfields' },  -- oilfields_3
-    { id =  536, x =  1735.394, y =  1843.824, z =   74.220, h = 339.4, region = 'oilfields' },  -- oilfields_4
-    { id =  537, x =  1718.745, y =  1699.042, z =   79.670, h = 337.9, region = 'oilfields' },  -- oilfields_5
-    { id =  538, x =  1729.281, y =  1536.667, z =   83.380, h = 154.2, region = 'oilfields' },  -- oilfields_6
-    { id =  539, x = -2967.741, y =  1503.461, z =   26.980, h = 146.6, region = 'pacific_r' },  -- pacific_r_1
-    { id =  540, x = -2761.108, y =  1344.203, z =   79.270, h = 130.0, region = 'pacific_r' },  -- pacific_r_3
-    { id =  541, x = -3067.910, y =  1334.529, z =   19.230, h = 145.8, region = 'pacific_r' },  -- pacific_r_4
-    { id =  542, x = -2637.351, y =  1323.094, z =  142.550, h = 340.3, region = 'pacific_r' },  -- pacific_r_5
-    { id =  543, x = -2917.027, y =  1315.424, z =   47.400, h =  11.6, region = 'pacific_r' },  -- pacific_r_6
-    { id =  544, x = -3015.700, y =  1258.560, z =   27.620, h = 145.0, region = 'pacific_r' },  -- pacific_r_7
-    { id =  545, x = -2631.305, y =  1117.760, z =  162.060, h =   1.3, region = 'pacific_r' },  -- pacific_r_8
-    { id =  546, x = -2475.303, y =  1036.628, z =  190.170, h =  64.5, region = 'pacific_r' },  -- pacific_r_9
-    { id =  547, x =   -77.200, y =  6596.850, z =   28.520, h = 293.3, region = 'paleto' },  -- paleto_1
-    { id =  548, x =    50.614, y =  6405.886, z =   30.450, h = 120.0, region = 'paleto' },  -- paleto_4
-    { id =  549, x =  -261.698, y =  6397.668, z =   29.880, h = 281.0, region = 'paleto' },  -- paleto_5
-    { id =  550, x =  -323.716, y =  6356.967, z =   29.360, h = 300.0, region = 'paleto' },  -- paleto_6
-    { id =  551, x =  -244.301, y =  6278.729, z =   30.430, h = 119.0, region = 'paleto' },  -- paleto_9
-    { id =  552, x =  -168.639, y =  6226.639, z =   30.240, h = 300.0, region = 'paleto' },  -- paleto_10
-    { id =  553, x =  -399.150, y =  6192.380, z =   30.520, h = 208.1, region = 'paleto' },  -- paleto_12
-    { id =  554, x =  -235.184, y =  6122.934, z =   30.410, h = 120.0, region = 'paleto' },  -- paleto_13
-    { id =  555, x =  -617.521, y =  6067.900, z =    7.090, h = 129.3, region = 'paleto' },  -- paleto_15
-    { id =  556, x =  -383.298, y =  5967.126, z =   30.730, h = 123.4, region = 'paleto' },  -- paleto_16
-    { id =  557, x =  -667.728, y =  5918.724, z =   15.190, h = 159.4, region = 'paleto_f' },  -- paleto_f_1
-    { id =  558, x =  -710.516, y =  5828.091, z =   16.080, h = 321.3, region = 'paleto_f' },  -- paleto_f_2
-    { id =  559, x =  -763.824, y =  5706.322, z =   19.840, h = 324.8, region = 'paleto_f' },  -- paleto_f_3
-    { id =  560, x =  -803.593, y =  5578.360, z =   29.910, h = 340.2, region = 'paleto_f' },  -- paleto_f_4
-    { id =  561, x =  -869.503, y =  5417.692, z =   34.200, h =  31.5, region = 'paleto_f' },  -- paleto_f_6
-    { id =  562, x = -1098.026, y =  5304.390, z =   48.140, h =  96.6, region = 'paleto_f' },  -- paleto_f_7
-    { id =  563, x =  -890.509, y =  5300.848, z =   78.400, h =  91.2, region = 'paleto_f' },  -- paleto_f_8
-    { id =  564, x =  2765.172, y =  1446.060, z =   23.490, h = 330.0, region = 'palmer' },  -- palmer_2
-    { id =  565, x =  2530.375, y =  1820.592, z =   21.700, h = 346.2, region = 'palomino' },  -- palomino_1
-    { id =  566, x =  1972.738, y =  1732.494, z =   66.710, h = 181.9, region = 'palomino' },  -- palomino_2
-    { id =  567, x =  2551.529, y =  1622.947, z =   28.600, h = 166.1, region = 'palomino' },  -- palomino_3
-    { id =  568, x =  2014.960, y =  1608.078, z =   72.930, h = 185.0, region = 'palomino' },  -- palomino_4
-    { id =  569, x =  2549.607, y =  1520.442, z =   29.820, h = 161.4, region = 'palomino' },  -- palomino_5
-    { id =  570, x =  2072.175, y =  1482.338, z =   74.750, h = 191.6, region = 'palomino' },  -- palomino_6
-    { id =  571, x = -3032.103, y =   666.519, z =   21.310, h =   5.2, region = 'palomino_hw' },  -- palomino_hw_1
-    { id =  572, x = -3003.467, y =   476.606, z =   14.440, h = 341.2, region = 'palomino_hw' },  -- palomino_hw_2
-    { id =  573, x = -3067.991, y =   236.956, z =   13.870, h = 238.3, region = 'palomino_hw' },  -- palomino_hw_3
-    { id =  574, x = -3013.642, y =   232.925, z =   15.140, h = 162.1, region = 'palomino_hw' },  -- palomino_hw_4
-    { id =  575, x = -2711.719, y =   -40.983, z =   14.750, h =  25.7, region = 'palomino_hw' },  -- palomino_hw_5
+    { id =  525, x =  -475.738, y =  1346.876, z =  303.190, h = 117.4, region = 'observatory' },  -- observatory_2
+    { id =  552, x =  -168.639, y =  6226.639, z =   30.240, h = 300.0, region = 'paleto' },  -- paleto_2
+    { id =  556, x =  -383.298, y =  5967.126, z =   30.730, h = 123.4, region = 'paleto' },  -- paleto_4
+    { id =  561, x =  -869.503, y =  5417.692, z =   34.200, h =  31.5, region = 'paleto_f' },  -- paleto_f_2
+    { id =  574, x = -3013.642, y =   232.925, z =   15.140, h = 162.1, region = 'palomino_hw' },  -- palomino_hw_1
     { id =  576, x =  2155.481, y =  1348.119, z =   74.400, h = 212.9, region = 'palomino_s' },  -- palomino_s_1
-    { id =  577, x =  2507.716, y =  1343.424, z =   42.380, h = 139.0, region = 'palomino_s' },  -- palomino_s_2
-    { id =  578, x =  2191.503, y =  1306.225, z =   74.560, h = 211.5, region = 'palomino_s' },  -- palomino_s_3
-    { id =  579, x =  2412.481, y =  1065.588, z =   77.690, h = 196.7, region = 'palomino_s' },  -- palomino_s_4
-    { id =  580, x =  2467.571, y =   975.719, z =   85.060, h = 201.6, region = 'palomino_s' },  -- palomino_s_5
-    { id =  581, x =  2410.023, y =   964.773, z =   86.260, h =  24.9, region = 'palomino_s' },  -- palomino_s_6
-    { id =  582, x =  2545.849, y =   844.112, z =   86.650, h = 193.0, region = 'palomino_s' },  -- palomino_s_7
-    { id =  583, x =  1851.932, y =  2941.073, z =   44.600, h =  91.9, region = 'penitentiary' },  -- penitentiary_1
-    { id =  584, x =  1723.390, y =  2885.262, z =   43.620, h = 105.1, region = 'penitentiary' },  -- penitentiary_2
-    { id =  585, x =  1747.500, y =  2783.750, z =   44.810, h = 255.0, region = 'penitentiary' },  -- penitentiary_3
-    { id =  586, x =  1610.770, y =  2753.438, z =   44.790, h = 300.6, region = 'penitentiary' },  -- penitentiary_4
-    { id =  587, x =  1428.093, y =  2699.532, z =   36.410, h =  99.5, region = 'penitentiary' },  -- penitentiary_5
-    { id =  588, x =  1855.500, y =  2691.750, z =   44.790, h = 345.0, region = 'penitentiary' },  -- penitentiary_6
-    { id =  589, x =  2012.100, y =  2656.923, z =   45.860, h = 114.0, region = 'penitentiary' },  -- penitentiary_7
-    { id =  590, x =  1542.717, y =  2632.930, z =   44.790, h = 147.5, region = 'penitentiary' },  -- penitentiary_8
-    { id =  591, x =  1921.640, y =  2613.367, z =   45.120, h = 257.6, region = 'penitentiary' },  -- penitentiary_9
-    { id =  592, x =  2066.871, y =  2588.894, z =   52.600, h = 144.9, region = 'penitentiary' },  -- penitentiary_10
-    { id =  593, x =  1935.324, y =  2539.856, z =   53.360, h = 278.8, region = 'penitentiary' },  -- penitentiary_11
-    { id =  594, x =  1529.993, y =  2495.697, z =   44.820, h = 167.6, region = 'penitentiary' },  -- penitentiary_13
-    { id =  595, x =  1616.152, y =  2408.205, z =   44.820, h = 222.5, region = 'penitentiary' },  -- penitentiary_14
-    { id =  596, x =  1718.019, y =  2395.152, z =   44.810, h = 264.6, region = 'penitentiary' },  -- penitentiary_15
-    { id =  597, x =  1391.572, y =  6495.952, z =   19.050, h = 244.2, region = 'procopio' },  -- procopio_1
-    { id =  598, x =  1220.273, y =  6473.438, z =   19.910, h =  76.2, region = 'procopio' },  -- procopio_2
-    { id =  599, x =  1656.930, y =  6417.188, z =   28.200, h = 239.9, region = 'procopio' },  -- procopio_3
-    { id =  600, x =  1511.424, y =  6416.525, z =   22.040, h =  53.2, region = 'procopio' },  -- procopio_4
-    { id =  601, x =  1804.205, y =  6380.015, z =   38.410, h = 247.9, region = 'procopio_e' },  -- procopio_e_1
-    { id =  602, x =  2000.061, y =  6254.445, z =   44.920, h = 188.3, region = 'procopio_e' },  -- procopio_e_2
-    { id =  603, x =  2142.251, y =  6086.288, z =   50.460, h = 224.7, region = 'procopio_e' },  -- procopio_e_3
-    { id =  604, x =  2322.986, y =  5924.095, z =   47.620, h = 205.0, region = 'procopio_e' },  -- procopio_e_4
-    { id =  605, x =   780.648, y =  6483.753, z =   23.690, h =  69.0, region = 'procopio_n' },  -- procopio_n_1
-    { id =  606, x =   907.454, y =  6474.388, z =   20.460, h =  72.6, region = 'procopio_n' },  -- procopio_n_2
-    { id =  607, x =  1058.000, y =  6471.750, z =   20.080, h =  75.0, region = 'procopio_n' },  -- procopio_n_3
-    { id =  608, x =  -736.113, y = -1697.196, z =   27.600, h = 259.6, region = 'puertodelsol' },  -- puertodelsol_6
-    { id =  609, x =  -767.222, y = -1823.057, z =   26.470, h = 352.5, region = 'puertodelsol' },  -- puertodelsol_8
-    { id =  610, x =  1012.437, y =  2699.317, z =   38.490, h = 251.3, region = 'redwood' },  -- redwood_1
-    { id =  611, x =  1153.780, y =  2691.492, z =   37.020, h = 251.9, region = 'redwood' },  -- redwood_2
-    { id =  612, x =  1406.344, y =  2342.613, z =   73.240, h = 183.4, region = 'redwood' },  -- redwood_4
-    { id =  613, x =   901.064, y =  2226.637, z =   47.470, h = 231.7, region = 'redwood' },  -- redwood_5
-    { id =  614, x =   972.342, y =  2150.828, z =   47.650, h =  26.6, region = 'redwood' },  -- redwood_6
-    { id =  615, x = -1161.367, y =   993.836, z =  202.160, h = 342.6, region = 'richman_n' },  -- richman_n_1
-    { id =  616, x = -1452.975, y =   881.882, z =  182.250, h = 177.9, region = 'richman_n' },  -- richman_n_2
-    { id =  617, x = -1255.420, y =   863.670, z =  190.000, h = 136.3, region = 'richman_n' },  -- richman_n_3
-    { id =  618, x = -1343.551, y =   760.349, z =  184.370, h = 282.6, region = 'richman_n' },  -- richman_n_4
+    { id =  580, x =  2467.571, y =   975.719, z =   85.060, h = 201.6, region = 'palomino_s' },  -- palomino_s_2
+    { id =  592, x =  2066.871, y =  2588.894, z =   52.600, h = 144.9, region = 'penitentiary' },  -- penitentiary_1
+    { id =  600, x =  1511.424, y =  6416.525, z =   22.040, h =  53.2, region = 'procopio' },  -- procopio_1
+    { id =  602, x =  2000.061, y =  6254.445, z =   44.920, h = 188.3, region = 'procopio_e' },  -- procopio_e_1
     { id =  619, x =  -922.437, y =  -576.774, z =   18.390, h =  96.4, region = 'rockford' },  -- rockford_16
-    { id =  620, x =   657.879, y =  2294.389, z =   50.010, h =  45.3, region = 'route68' },  -- route68_1
-    { id =  621, x =   767.403, y =  2219.608, z =   52.340, h = 272.9, region = 'route68' },  -- route68_2
-    { id =  622, x =   673.555, y =  2176.407, z =   61.180, h =  79.9, region = 'route68' },  -- route68_3
-    { id =  623, x =   558.605, y =  2174.390, z =   73.130, h =  78.7, region = 'route68' },  -- route68_4
-    { id =  624, x =   400.337, y =  2100.590, z =   93.960, h = 108.0, region = 'route68' },  -- route68_5
-    { id =  625, x =   459.807, y =  1781.706, z =  229.370, h =  96.5, region = 'route68' },  -- route68_7
-    { id =  626, x =   663.525, y =  1757.404, z =  189.650, h = 212.6, region = 'route68' },  -- route68_8
-    { id =  627, x =   940.250, y =  1734.234, z =  164.610, h = 264.7, region = 'route68' },  -- route68_9
-    { id =  628, x =   366.853, y =  1729.810, z =  239.010, h = 295.7, region = 'route68' },  -- route68_10
-    { id =  629, x =   818.252, y =  1715.562, z =  172.300, h = 256.8, region = 'route68' },  -- route68_11
-    { id =  630, x =   253.952, y =  1669.808, z =  235.270, h =  72.6, region = 'route68' },  -- route68_12
-    { id =  631, x =  1753.955, y =  3935.699, z =   33.810, h = 273.4, region = 'sandy' },  -- sandy_1
-    { id =  632, x =  1980.486, y =  3878.449, z =   31.140, h = 194.9, region = 'sandy' },  -- sandy_3
-    { id =  633, x =  2305.707, y =  3870.207, z =   33.690, h = 286.4, region = 'sandy' },  -- sandy_4
-    { id =  634, x =  1901.934, y =  3828.744, z =   31.290, h = 195.1, region = 'sandy' },  -- sandy_6
-    { id =  635, x =  2181.338, y =  3797.972, z =   32.450, h = 285.3, region = 'sandy' },  -- sandy_8
-    { id =  636, x =  1710.313, y =  3795.350, z =   33.820, h =  19.0, region = 'sandy' },  -- sandy_9
-    { id =  637, x =  2118.782, y =  3762.444, z =   31.980, h = 284.7, region = 'sandy' },  -- sandy_10
-    { id =  638, x =  1540.723, y =  3743.824, z =   33.400, h = 109.7, region = 'sandy' },  -- sandy_11
-    { id =  639, x =  1763.340, y =  3739.205, z =   32.800, h = 194.7, region = 'sandy' },  -- sandy_12
-    { id =  640, x =  1943.966, y =  3727.079, z =   31.240, h =  14.7, region = 'sandy' },  -- sandy_14
-    { id =  641, x =  1693.332, y =  3698.789, z =   33.090, h = 195.3, region = 'sandy' },  -- sandy_15
-    { id =  642, x =  1451.326, y =  3689.314, z =   32.820, h = 185.5, region = 'sandy' },  -- sandy_17
-    { id =  643, x =  2004.697, y =  3677.639, z =   32.110, h = 105.1, region = 'sandy' },  -- sandy_18
-    { id =  644, x =  1545.969, y =  3634.386, z =   33.460, h =  99.9, region = 'sandy' },  -- sandy_20
-    { id =  645, x =  1880.197, y =  3605.389, z =   33.290, h = 105.1, region = 'sandy' },  -- sandy_22
-    { id =  646, x =  1661.165, y =  3587.543, z =   34.390, h = 194.3, region = 'sandy' },  -- sandy_24
-    { id =  647, x =  1734.890, y =  3585.012, z =   34.150, h = 105.1, region = 'sandy' },  -- sandy_25
-    { id =  648, x =  1415.415, y =  3500.070, z =   34.770, h =  61.8, region = 'sandy' },  -- sandy_27
-    { id =  649, x =  1524.219, y =  3493.888, z =   35.320, h = 245.3, region = 'sandy' },  -- sandy_28
-    { id =  650, x =  1607.112, y =  3473.070, z =   35.520, h =  78.0, region = 'sandy' },  -- sandy_29
-    { id =  651, x =  1761.812, y =  3412.902, z =   37.260, h = 194.7, region = 'sandy' },  -- sandy_30
-    { id =  652, x =  2066.247, y =  3404.811, z =   43.930, h = 173.3, region = 'sandy' },  -- sandy_31
-    { id =  653, x =  1887.524, y =  3324.124, z =   42.710, h = 264.4, region = 'sandy' },  -- sandy_32
-    { id =  654, x =  1902.385, y =  3231.041, z =   44.430, h =  93.1, region = 'sandy' },  -- sandy_35
-    { id =  655, x =  -479.507, y =  5840.644, z =   32.840, h = 132.0, region = 'sawmill' },  -- sawmill_1
-    { id =  656, x =  -559.511, y =  5669.081, z =   37.080, h = 140.0, region = 'sawmill' },  -- sawmill_2
-    { id =  657, x =  -682.008, y =  5529.798, z =   37.030, h = 108.0, region = 'sawmill' },  -- sawmill_3
-    { id =  658, x =  -566.435, y =  5449.742, z =   60.270, h = 219.5, region = 'sawmill' },  -- sawmill_4
-    { id =  659, x =  -637.817, y =  5245.389, z =   73.980, h =  92.8, region = 'sawmill' },  -- sawmill_5
-    { id =  660, x =  2457.232, y =  4593.062, z =   35.860, h = 193.1, region = 'senora_n' },  -- senora_n_1
-    { id =  661, x =  2725.024, y =  4554.400, z =   44.800, h = 354.4, region = 'senora_n' },  -- senora_n_2
-    { id =  662, x =  2494.125, y =  4438.082, z =   34.510, h = 163.8, region = 'senora_n' },  -- senora_n_3
-    { id =  663, x =  2690.719, y =  4379.586, z =   45.530, h = 289.0, region = 'senora_n' },  -- senora_n_4
-    { id =  664, x =  2447.506, y =  4321.641, z =   35.520, h = 330.4, region = 'senora_n' },  -- senora_n_5
-    { id =  665, x =  2589.004, y =  4274.789, z =   41.290, h = 309.3, region = 'senora_n' },  -- senora_n_6
-    { id =  666, x =  2471.817, y =  4185.637, z =   36.110, h = 191.0, region = 'senora_n' },  -- senora_n_7
-    { id =  667, x =  2451.105, y =  4020.230, z =   36.150, h = 317.4, region = 'senora_n' },  -- senora_n_8
-    { id =  668, x =  2953.880, y =  3933.353, z =   50.980, h = 168.9, region = 'senora_n' },  -- senora_n_9
-    { id =  669, x =  2401.453, y =  3923.102, z =   34.850, h = 120.8, region = 'senora_n' },  -- senora_n_10
-    { id =  670, x =  1242.211, y =  3641.074, z =   32.370, h = 267.0, region = 'senora_w' },  -- senora_w_1
-    { id =  671, x =   975.678, y =  3640.375, z =   31.260, h = 253.3, region = 'senora_w' },  -- senora_w_2
-    { id =  672, x =  1328.485, y =  3571.589, z =   33.880, h =   4.6, region = 'senora_w' },  -- senora_w_3
-    { id =  673, x =  1127.250, y =  3544.250, z =   33.620, h = 255.0, region = 'senora_w' },  -- senora_w_5
-    { id =  674, x =   766.254, y =  3537.359, z =   33.050, h = 258.6, region = 'senora_w' },  -- senora_w_6
-    { id =  675, x =   586.600, y =  3518.240, z =   32.960, h = 262.8, region = 'senora_w' },  -- senora_w_7
-    { id =  676, x =   404.507, y =  3514.302, z =   33.320, h = 347.5, region = 'stab' },  -- stab_1
+    { id =  627, x =   940.250, y =  1734.234, z =  164.610, h = 264.7, region = 'route68' },  -- route68_3
+    { id =  630, x =   253.952, y =  1669.808, z =  235.270, h =  72.6, region = 'route68' },  -- route68_4
     { id =  677, x =  2595.311, y =  2528.484, z =   29.510, h = 357.1, region = 'tataviam' },  -- tataviam_1
-    { id =  678, x =  2591.963, y =  2379.356, z =   20.830, h = 336.6, region = 'tataviam' },  -- tataviam_2
-    { id =  679, x =  2567.756, y =  2275.016, z =   18.560, h = 330.4, region = 'tataviam' },  -- tataviam_3
-    { id =  680, x =  2536.665, y =  2133.332, z =   18.560, h = 339.0, region = 'tataviam' },  -- tataviam_4
-    { id =  681, x =  2531.479, y =  2005.916, z =   18.930, h = 343.8, region = 'tataviam' },  -- tataviam_5
+    { id =  681, x =  2531.479, y =  2005.916, z =   18.930, h = 343.8, region = 'tataviam' },  -- tataviam_2
     { id =  682, x =  1234.587, y = -2512.695, z =   41.060, h = 287.7, region = 'terminal' },  -- terminal_2
-    { id =  683, x = -1777.343, y =  2427.952, z =   30.420, h = 285.7, region = 'tongva' },  -- tongva_2
-    { id =  684, x = -1672.214, y =  2420.786, z =   27.730, h = 157.4, region = 'tongva' },  -- tongva_3
-    { id =  685, x = -1369.550, y =  2420.610, z =   27.040, h =  97.3, region = 'tongva' },  -- tongva_4
-    { id =  686, x = -1900.643, y =  2366.591, z =   33.880, h =  89.1, region = 'tongva' },  -- tongva_5
-    { id =  687, x = -1571.510, y =  2342.679, z =   44.640, h =  49.5, region = 'tongva' },  -- tongva_6
-    { id =  688, x = -1344.250, y =  2293.875, z =   41.550, h = 165.0, region = 'tongva' },  -- tongva_7
-    { id =  689, x = -1959.862, y =  2278.435, z =   53.270, h =  94.6, region = 'tongva' },  -- tongva_8
-    { id =  690, x = -1702.359, y =  2248.361, z =   81.340, h = 213.4, region = 'tongva' },  -- tongva_9
-    { id =  691, x = -1338.776, y =  2179.567, z =   51.060, h = 209.1, region = 'tongva' },  -- tongva_10
-    { id =  692, x = -1814.082, y =  2028.006, z =  129.350, h =  79.9, region = 'tongva' },  -- tongva_12
-    { id =  693, x = -1479.303, y =  2007.974, z =   65.240, h =  15.3, region = 'tongva' },  -- tongva_13
-    { id =  694, x = -1798.743, y =  1869.505, z =  148.850, h =   3.4, region = 'tongva' },  -- tongva_14
-    { id =  695, x = -1501.111, y =  1490.548, z =  115.440, h = 326.0, region = 'tongva_v' },  -- tongva_v_1
-    { id =  696, x = -1561.023, y =  1409.869, z =  124.470, h = 296.6, region = 'tongva_v' },  -- tongva_v_2
-    { id =  697, x = -1642.386, y =  1243.010, z =  141.130, h = 338.6, region = 'tongva_v' },  -- tongva_v_3
-    { id =  698, x = -1631.930, y =  1100.847, z =  151.340, h = 337.8, region = 'tongva_v' },  -- tongva_v_4
-    { id =  699, x = -2307.371, y =  1039.241, z =  194.550, h = 289.2, region = 'tongva_v' },  -- tongva_v_5
-    { id =  700, x = -1630.084, y =   996.937, z =  152.000, h = 233.8, region = 'tongva_v' },  -- tongva_v_6
-    { id =  701, x = -2055.823, y =   934.850, z =  182.640, h =  60.9, region = 'tongva_v' },  -- tongva_v_7
-    { id =  702, x = -2028.624, y =   814.290, z =  160.390, h = 337.5, region = 'ulsa' },  -- ulsa_2
-    { id =  703, x = -1876.175, y =   765.367, z =  139.460, h = 116.3, region = 'ulsa' },  -- ulsa_3
-    { id =  704, x = -1965.820, y =   699.837, z =  140.880, h = 100.1, region = 'ulsa' },  -- ulsa_4
-    { id =  705, x = -1949.223, y =   598.724, z =  119.070, h = 146.8, region = 'ulsa' },  -- ulsa_5
-    { id =  706, x = -1975.474, y =   472.556, z =  102.390, h = 170.5, region = 'ulsa' },  -- ulsa_6
-    { id =  707, x = -1951.933, y =   318.876, z =   88.510, h = 172.6, region = 'ulsa' },  -- ulsa_7
-    { id =  708, x =   160.912, y =   931.240, z =  208.920, h = 221.3, region = 'vinehills_e' },  -- vinehills_e_2
-    { id =  709, x =   388.448, y =   922.753, z =  200.660, h = 357.0, region = 'vinehills_e' },  -- vinehills_e_3
-    { id =  710, x =   482.768, y =   878.462, z =  197.410, h = 240.4, region = 'vinehills_e' },  -- vinehills_e_4
-    { id =  711, x =   648.000, y =   790.750, z =  204.150, h = 255.0, region = 'vinehills_e' },  -- vinehills_e_5
-    { id =  712, x =   294.499, y =   783.191, z =  184.520, h = 175.8, region = 'vinehills_e' },  -- vinehills_e_6
-    { id =  713, x =   611.716, y =   656.147, z =  128.050, h = 270.7, region = 'vinehills_e' },  -- vinehills_e_7
-    { id =  714, x =   224.435, y =  1375.362, z =  238.520, h =   4.6, region = 'vinewood' },  -- vinewood_1
-    { id =  715, x =   865.892, y =   976.522, z =  239.690, h =  89.6, region = 'vinewood' },  -- vinewood_2
-    { id =  716, x =   982.787, y =   889.201, z =  208.040, h = 334.1, region = 'vinewood' },  -- vinewood_3
-    { id =  717, x =   778.034, y =   840.631, z =  212.070, h = 134.0, region = 'vinewood' },  -- vinewood_4
-    { id =  718, x =   931.685, y =   802.735, z =  191.090, h = 320.5, region = 'vinewood' },  -- vinewood_5
+    { id =  684, x = -1672.214, y =  2420.786, z =   27.730, h = 157.4, region = 'tongva' },  -- tongva_2
+    { id =  692, x = -1814.082, y =  2028.006, z =  129.350, h =  79.9, region = 'tongva' },  -- tongva_5
+    { id =  719, x =   131.541, y =  6486.209, z =   30.330, h = 120.0, region = 'chiliad_n' },  -- chiliad_n_2
+    { id =  720, x =  1722.870, y =  1731.270, z =   78.390, h = 337.8, region = 'oilfields' },  -- oilfields_1
+    { id =  721, x =   -51.887, y =  6535.618, z =   30.550, h =  31.4, region = 'paleto' },  -- paleto_1
+    { id =  722, x =  -792.339, y = -1772.815, z =   29.940, h =  86.3, region = 'puertodelsol' },  -- puertodelsol_6
+    { id =  723, x =   698.092, y =  2272.832, z =   49.770, h =  52.7, region = 'route68' },  -- route68_1
+    { id =  724, x =  1592.766, y =  3658.613, z =   33.360, h = 105.3, region = 'sandy' },  -- sandy_3
+    { id =  725, x = -1312.022, y =  2166.639, z =   53.900, h = 268.4, region = 'tongva' },  -- tongva_3
 }
