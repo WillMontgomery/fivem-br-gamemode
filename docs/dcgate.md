@@ -22,9 +22,9 @@ Five pieces, a file each.
 | **The client** | `br_core/client/dcgate.lua` | The 27 doors registered and locked, the prompt, the press, the fold. Decides nothing. |
 
 **The server decides every lane.** A client only says "open the lane of the
-reader I stand at"; the server checks that the player is in a match being
-played, standing, and at that reader by its own position sample, then tells
-the whole match. Clients animate.
+reader I stand at"; the server checks that the player is in a match under
+way (the bus still flying, or playing), standing, and at that reader by its
+own position sample, then tells the whole match. Clients animate.
 
 **Season 2 and later**: one row, `dcgate = { from = 2 }` in
 `br_lib/config/seasons.lua`, asked only as `BR.Season.has('dcgate')`. Off, no
@@ -86,7 +86,7 @@ grade under its parts to the highest. Both readers stand outside it.
 
 `client/dcgate.lua`, a TICK callback registered only within `client.promptM`
 of the gate. While this player stands within `readerM` (3 m, flat) and
-`readerZM` of a lane reader, in a match being played, ALIVE, on Season 2, with
+`readerZM` of a lane reader, in a match under way, ALIVE, on Season 2, with
 none of our screens up, and that lane is not open, the notice stack shows,
 sticky and silent:
 
@@ -110,9 +110,13 @@ drop, counted per reason on the match (for `brgate list`), in this order:
 
 1. **season**: the gate on in the season in force.
 2. **shape**: `reader` a whole number naming one of the six lane readers.
-3. **rate**: no sooner than `use.minIntervalMs` (1 s) after this player's last
-   press, and `use.perMatch` (120) a match at most.
-4. **match**: the player is in a match, and it is PLAYING.
+3. **rate**: no sooner than `use.minIntervalMs` (0.5 s) after this player's
+   last press, and `use.perMatch` (120) a match at most. The client asks at
+   most once per `client.askMs` (1 s), twice the server's interval, so network
+   jitter never drops a retry.
+4. **match**: the player is in a match, and it is under way: BUS or PLAYING.
+   A player who jumps early is on the ground, ALIVE, before the match goes
+   live.
 5. **player**: ALIVE, by the roster.
 6. **reach**: by the server's own sample, no older than `use.sampleMaxAgeMs`
    (1 s), within `readerM` flat and `readerZM` of **that** reader, each plus
@@ -127,7 +131,8 @@ match 4`.
 
 ## The clock
 
-`BR.DcGate.pass`, every `lane.checkMs` (500 ms), over the PLAYING matches:
+`BR.DcGate.pass`, every `lane.checkMs` (500 ms), over the matches under way
+(BUS or PLAYING):
 
 - **An open lane past its 20 seconds folds shut**, unless somebody is in it.
 - **A lane still folding shut** (`foldMs` after it started) **opens again** if
@@ -142,8 +147,15 @@ match 4`.
 `lane.sampleMaxAgeMs`, 3 s) is in the box grown by `lane.pedMarginM` (0.5 m);
 **a vehicle** of the match's routing bucket whose center is in the box grown by
 `lane.vehicleMarginM` (2.5 m, a car's half-length, so a bumper under a leaf
-counts). Both from `lane.belowM` under the grade to `lane.aboveM` over it, so
-a helicopter over the gate holds nothing.
+counts) past its ends and `lane.vehicleSideM` (1 m, a car's half-width) past
+its sides: the leaves fold inside the posts, so a car parked beside the lane,
+on the island between two, holds neither. Both from `lane.belowM` under the
+grade to `lane.aboveM` over it, so a helicopter over the gate holds nothing.
+
+A car waiting at the reader inside the inner gate, centered in the lane with
+its driver's window at the pedestal, has its nose about 0.7 m into the inner
+gate's fold (the reader is 1.43 m past it, and the inner gate folds into the
+campus): it holds the lane, as it should.
 
 **Why the server and not client reports.** A closing gate has to know about
 everybody: a player nowhere near a client that could report them, a car nobody
@@ -198,8 +210,16 @@ back runs back from where it is.
   (`AttachEntityToEntity`, bone 0, the kit's offset, with collision) and turned
   **-2 times its lead's turn as the lead stands now** (its heading against its
   placed heading), so it mirrors its lead about the gate line at every frame
-  and lies flat against it at 90. It is unlocked while it rides, and let go and
-  locked again once its lead is shut.
+  and lies flat against it at 90. It is unlocked while it rides, and let go,
+  put back at its placed origin and heading, and locked again once its lead is
+  shut.
+- **The settle.** Once a lane's pose stops, its followers are ridden on until
+  no lead has turned for 5 frames running (at most 300 frames), so a lead the
+  door system eases to its ratio over many frames is tracked all the way, and
+  a shut lane's followers are not let go while their leads still turn. As a
+  backstop, the SLOW pass rides a lane's followers again when one is more than
+  1 degree off -2 times its lead's turn as the lead stands (a lead that moved
+  after the settle).
 - **The arm** rises `armRaiseDeg * ease(pose)` (85 degrees).
 
 How a lead and an arm are moved is `client.drive`:
@@ -212,16 +232,19 @@ How a lead and an arm are moved is `client.drive`:
 ### Away from the gate, and stopping
 
 Away from it nothing is driven: a lane's pose is simply its target, and the
-parts are posed again on the way back. br_core stopping lets every follower
-go and locks every part shut where it was placed, and leaves them registered:
-a gate left locked is the map's resting state.
+parts are posed again on the way back. `client.nearM` is the leaves' own
+draw distance (lodDist 300 m), so no client sees a leaf it is not keeping
+posed. br_core stopping lets every follower go (back at its placed origin and
+heading) and locks every part shut where it was placed, and leaves them
+registered: a gate left locked is the map's resting state.
 
 ### What it costs
 
 Nothing per frame, anywhere, unless a lane near this client is folding. In the
 lobby the SLOW pass calls nothing; without the pack, one model check every ten
 seconds; away from the gate, one position a second. Within `client.nearM`: 27
-physics reads and 3 registration reads a second. Within `client.promptM`: a
+physics reads and 3 registration reads a second, and for each open lane its
+four leads' headings. Within `client.promptM`: a
 TICK reading this player's position. While a lane folds (4 s): about 26
 natives a frame.
 
@@ -247,12 +270,13 @@ All names in `br_lib/shared/protocol.lua`.
 | `foldDeg` | 90 | The kit: theta 0-90, hard stop at 90 |
 | `armRaiseDeg` | 85 | The kit: 85-90 is fully raised; its previews stand it at 85 |
 | `readerM` / `readerZM` | 3 m / 2.5 m | A driver at the pedestal and a player on foot beside it |
-| `use.minIntervalMs` / `perMatch` | 1 s / 120 | The door's rate |
+| `use.minIntervalMs` / `perMatch` | 0.5 s / 120 | The door's rate: half `client.askMs` |
 | `use.sampleMaxAgeMs` / `reachSlackM` | 1 s / 3 m | The presser's sample, and the reach past the client's |
-| `lane.pedMarginM` / `vehicleMarginM` | 0.5 m / 2.5 m | The box grown for a player, and for a car's center |
+| `lane.pedMarginM` / `vehicleMarginM` / `vehicleSideM` | 0.5 m / 2.5 m / 1 m | The box grown for a player, and for a car's center past its ends and its sides |
 | `lane.belowM` / `aboveM` | 1 m / 4.5 m | Under the grade, over it |
 | `lane.checkMs` / `sampleMaxAgeMs` | 500 ms / 3 s | The pass, and the samples it counts |
-| `client.nearM` / `promptM` | 200 m / 15 m | Past the gate's radius: the doors kept posed, the prompt's TICK |
+| `client.nearM` / `promptM` | 300 m / 15 m | Past the gate's radius: the doors kept posed (the leaves' lodDist), the prompt's TICK |
+| `client.askMs` | 1 s | A press asks the server no more often |
 | `client.findRadiusM` / `findsPerPass` | 0.6 m / 9 | The finds |
 | `client.drive`, `ratioDeg`, `ratioSign` | ratio, 90, 1 | How a lead and an arm are moved (the engine questions) |
 
@@ -280,6 +304,7 @@ has its fallback, and `brgate near` prints every read they need.
 | Question | If yes | If no |
 |---|---|---|
 | A locked door held at an open ratio (`DoorSystemSetOpenRatio`, then state 1) stands there | the `ratio` drive as shipped | `brgate drive lead rotate` |
+| The door system snaps a lead to its ratio, or eases it there | either way, the settle rides the followers until the leads stop | |
 | An open ratio of 1.0 turns a lead 90 degrees, the kit's way for `lead_l` | as configured | `ratioDeg.lead` to what `brgate near` reads, or `ratioSign.lead = -1` |
 | The arm (attribute 9) rises by its open ratio | as shipped | `brgate drive arm rotate` (about local +y by -raise, rotation order 2) |
 | A follower attached to a door-system lead moves with it, and is not held shut by its own (unlocked) door entry | as built | make the followers plain props in the pack (the kit's open question for the coordinator) |
@@ -289,11 +314,14 @@ has its fallback, and `brgate near` prints every read they need.
 
 br_datacenter must drop the main gate's 24 leaves and 3 arms from its
 `DOOR_LOCKS` in the same publish (`py tools/dcgate_parts.py ... --locks
-<client.lua>` says how many it still locks). Until it does, both register the
-same names; the pack's one-second loop re-locks only a door whose state is not
-1, which a lane held open is, so the two do not fight, but a pack restart takes
-the registrations (this file registers them again on its next pass near the
-gate).
+<client.lua>` says how many it still locks), and this must not ship before it.
+The two register the same names, and they fight: the pack's one-second loop
+forces shut and re-locks every door whose state is not 1, and a follower
+rides unlocked (state 0), so the pack would snap the followers shut under
+their leads mid-fold (and, with the `rotate` drive, the leads and the arm
+too); its stop handler also removes the registrations. The datacenter repo's
+`blender/campus_integrate/tools/doorlock.py` already leaves the 27 out
+(2026-10-19); the pack has to be built from it and published.
 
 **Not done, for the owner to decide**: the readers stay red when a lane opens
 (the kit has a green twin, `brdc_reader_g`, and green signal cabinets for a

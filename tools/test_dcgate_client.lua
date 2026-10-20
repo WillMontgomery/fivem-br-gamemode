@@ -20,7 +20,8 @@
 --                while a lane folds
 --   the prompt   the owner's words exactly, the key a hole for the player's
 --                own interact key; once, at a reader of a shut lane, in a
---                match being played, standing, on Season 2; down when not
+--                match under way (the bus or playing), standing, on Season 2;
+--                down when not
 --   the press    one DCGATE_USE for the reader the prompt is up for, and not
 --                again within the interval
 --   the fold     a lane the server opens folds open over foldMs and back: the
@@ -33,6 +34,8 @@
 --   streamed in  a lane open before this client came near arrives open, its
 --                followers found and riding; a follower that streams out and
 --                back rides again
+--   the settle   a lead the door system eases is ridden until it stops, open
+--                and shut; one that turns after is found astray and ridden again
 --   the word     DCGATE_STATE, the snapshot, the lobby and Season 1
 --   br_core stopping, and the 'rotate' drive
 --   the file     no scope-gate native, every BOOL read wrapped
@@ -170,6 +173,14 @@ local function boot(opts)
             wrote(o.id, 'rotation')
         end
     end
+    env.SetEntityCoordsNoOffset = function(h, x, y, z)
+        n('SetEntityCoordsNoOffset')
+        local o = W.objects[h]
+        if o then
+            o.x, o.y, o.z = x, y, z
+            wrote(o.id, 'coords')
+        end
+    end
     env.FreezeEntityPosition = function(h, f)
         n('FreezeEntityPosition')
         if W.objects[h] then
@@ -201,7 +212,10 @@ local function boot(opts)
 
     --- THE DOOR SYSTEM: a door by its name's hash, with its model and place, its
     --- state and its open ratio. A lead held at a ratio turns by ratio * 90
-    --- about +z -- the engine honoring the ratio the 'ratio' drive asks of it.
+    --- about +z -- the engine honoring the ratio the 'ratio' drive asks of it:
+    --- at once, or with W.lag set, eased there at most W.lag degrees a frame
+    --- after W.stall frames of not moving at all (W.engine below; a SLOW step
+    --- is sixty frames of it).
     local function doorObject(d)
         for h, o in pairs(W.objects) do
             if o.model == d.model and math.abs(o.x - d.x) < 0.01 and math.abs(o.y - d.y) < 0.01 then
@@ -238,7 +252,28 @@ local function boot(opts)
         d.ratio = r
         wrote(hash, 'ratio')
         local o = doorObject(d)
-        if o and o.kind == 'lead' and not o.frozen then o.h = o.placed + r * 90.0 end
+        if o and o.kind == 'lead' and not o.frozen then
+            local goal = o.placed + r * 90.0
+            if not W.lag then
+                o.h = goal
+            elseif o.goal ~= goal then
+                o.goal, o.wait = goal, W.stall or 0
+            end
+        end
+    end
+    --- One frame of the engine: each lead with a goal turned toward it.
+    function W.engine()
+        if not W.lag then return end
+        for _, o in pairs(W.objects) do
+            if o.goal ~= nil and not o.frozen then
+                if (o.wait or 0) > 0 then
+                    o.wait = o.wait - 1
+                else
+                    local d = o.goal - o.h
+                    if math.abs(d) <= W.lag then o.h = o.goal else o.h = o.h + (d > 0 and W.lag or -W.lag) end
+                end
+            end
+        end
     end
     env.DoorSystemSetDoorState = function(hash, state, req, force)
         n('DoorSystemSetDoorState')
@@ -330,9 +365,17 @@ local function boot(opts)
             if e then e.fn() end
         end
     end
-    function W.slow() W.now = W.now + 1000 step('slow') end
+    function W.slow()
+        W.now = W.now + 1000
+        for _ = 1, 60 do W.engine() end
+        step('slow')
+    end
     function W.tick() W.now = W.now + 100 step('tick') end
-    function W.frame(ms) W.now = W.now + (ms or 16) step('frame') end
+    function W.frame(ms)
+        W.now = W.now + (ms or 16)
+        W.engine()
+        step('frame')
+    end
     function W.frames(k, ms) for _ = 1, k do W.frame(ms) end end
     function W.has(band, name)
         for _, e in pairs(W.loops[band]) do if e.name == name then return true end end
@@ -542,6 +585,9 @@ do
     W.B.State.match.state = W.B.MatchState.ENDED
     W.tick()
     ok(W.notices[#W.notices].clear, 'the match over: down')
+    W.B.State.match.state = W.B.MatchState.BUS
+    W.tick()
+    ok(W.notices[#W.notices].text == W.G.PROMPT_TEXT, 'the bus still flying (this player jumped early and landed): up')
     W.B.State.match.state = W.B.MatchState.PLAYING
     W.tick()
     W.B.Keys.uiScreen = 'inventory'
@@ -671,7 +717,7 @@ do
     near(L.arm.d.ratio, W.C.armRaiseDeg / 90.0, 1e-9, 'the arm raised to armRaiseDeg by its ratio')
     eq(W.wroteTo('lane1') + W.wroteTo('lane3'), 0, 'lanes 1 and 3: nothing written')
     local k = W.settle(20)
-    ok(k <= 4 and not W.has('frame', 'dcgate.fold'), 'the followers ridden a few frames more, then the FRAME goes', k)
+    ok(k <= 6 and not W.has('frame', 'dcgate.fold'), 'the followers ridden a few frames more, then the FRAME goes', k)
     W.slow()
     W.reset()
     W.slow()
@@ -765,6 +811,83 @@ do
     near(mirrorError(W, laneParts(W, 1)), 0.0, 1e-6, 'folded')
 end
 
+describe('a lead the door system eases: the followers ride it all the way, open and shut')
+do
+    local W = boot({ at = FAR, objects = false })
+    W.slow()
+    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { true, false, false } })
+    W.at.x, W.at.y = NEAR.x, NEAR.y
+    W.slow()
+    W.streamIn()
+    W.lag = 1.0
+    W.slow()
+    local L = laneParts(W, 1)
+    local k = W.settle(400)
+    ok(k > 90 and not W.has('frame', 'dcgate.fold'),
+        'streamed in open, the leads easing a degree a frame: ridden until they stopped, then the FRAME goes', k)
+    for _, l in ipairs(L.leads) do
+        near(wrap180(l.o.h - l.r.h), l.r.sense * 90.0, 1e-6, l.r.id .. ' eased all the way open')
+    end
+    near(mirrorError(W, L), 0.0, 1e-6, 'every follower folded flat against its lead, not where its lead began')
+    W.reset()
+    W.slow()
+    eq(#W.writes, 0, 'the next pass writes nothing')
+
+    W.lag = 0.25
+    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, false, false } })
+    local early, worst, frames = 0, 0.0, 0
+    while W.has('frame', 'dcgate.fold') and frames < 2000 do
+        W.frame(16)
+        frames = frames + 1
+        worst = math.max(worst, mirrorError(W, L))
+        for _, f in ipairs(L.follows) do
+            local lead = W.obj(f.lead.id)
+            if f.o.on == nil and math.abs(wrap180(lead.h - f.lead.h)) > 1e-6 then early = early + 1 end
+        end
+    end
+    ok(frames * 16 > W.C.foldMs + 1000, 'shut behind leads that lag a whole second and more: the settle waits', frames)
+    near(worst, 0.0, 1e-6, 'every follower mirrors its lagging lead at every frame')
+    eq(early, 0, 'and none is let go before its lead is shut')
+    local gone = 0
+    for _, f in ipairs(L.follows) do if f.o.on == nil then gone = gone + 1 end end
+    eq(gone, 4, 'then all four are')
+end
+
+describe('a lead that turns after the settle: the next pass finds its followers astray and rides them again')
+do
+    local W = boot({ at = FAR, objects = false })
+    W.slow()
+    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { true, false, false } })
+    W.at.x, W.at.y = NEAR.x, NEAR.y
+    W.slow()
+    W.streamIn()
+    W.lag, W.stall = 3.0, 30
+    W.slow()
+    local L = laneParts(W, 1)
+    W.settle(400)
+    ok(not W.has('frame', 'dcgate.fold'), 'the leads stood still through the settle, so it ended')
+    for _ = 1, 60 do W.engine() end
+    ok(mirrorError(W, L) > 10.0, 'then the engine turned them: the followers are off', mirrorError(W, L))
+    W.slow()
+    W.settle(400)
+    near(mirrorError(W, L), 0.0, 1e-6, 'the next pass rode them again: folded flat')
+    W.reset()
+    W.slow()
+    eq(#W.writes, 0, 'and the pass after writes nothing')
+end
+
+describe('near: as far as a leaf is drawn (its lodDist, 300 m)')
+do
+    local W = boot({ at = { x = P0.center.x, y = P0.center.y + 290.0, z = 45.5 } })
+    W.slow()
+    eq(W.G.counts().near, true, '290 m from the gate\'s middle: its doors kept posed')
+    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
+    ok(W.has('frame', 'dcgate.fold'), 'and a lane opening folds where it is seen')
+    W.at.y = P0.center.y + P0.radius + W.C.client.nearM + 1.0
+    W.slow()
+    eq(W.G.counts().near, false, 'past the leaves\' reach: not')
+end
+
 -- =========================================================================
 -- THE WORD
 -- =========================================================================
@@ -829,7 +952,13 @@ do
     for _, fn in ipairs(W.handlers.onResourceStop or {}) do fn('br_dummy') end
     ok(W.obj('gate.lane1.outer.follow_l').on ~= nil, 'another resource stopping: nothing')
     W.notices = {}
+    -- Mid-fold, the engine has the follower where its lead's knuckle put it.
+    local fr = laneParts(W, 1).follows[1].r
+    local fo = W.obj(fr.id)
+    fo.x, fo.y, fo.h = fo.x + 0.7, fo.y - 0.9, fo.h + 33.0
     for _, fn in ipairs(W.handlers.onResourceStop or {}) do fn('br_core') end
+    ok(fo.x == fr.x and fo.y == fr.y and fo.z == fr.z and fo.h == fr.h,
+        'a follower let go mid-fold is put back where it was placed, not left where the knuckle had it')
     local attached, open = 0, 0
     for _, o in pairs(W.objects) do if o.on then attached = attached + 1 end end
     for _, d in pairs(W.doors) do if d.ratio ~= 0.0 or d.state ~= 1 then open = open + 1 end end

@@ -484,9 +484,15 @@ do
     gameMs = gameMs + 1500
     sample()
     eq(G.use(1, { reader = rd }, gameMs), 'open', 'a good press opens the lane')
-    eq(G.use(1, { reader = rd }, gameMs + 500), 'rate', '3. half a second later: rate')
+    eq(G.use(1, { reader = rd }, gameMs + GC.use.minIntervalMs - 1), 'rate', '3. inside use.minIntervalMs: rate')
+    ok(GC.use.minIntervalMs * 2 <= GC.client.askMs,
+        'the server\'s interval is at most half the client\'s, so jitter never drops a retry a second later')
     G.stateOf(m).lanes[2].open = false
     eq(press(1, { reader = rd }), 'open', 'and a second and a half later it is taken again')
+    G.stateOf(m).lanes[2].open = false
+    gameMs = gameMs + GC.client.askMs - 250
+    sample()
+    eq(G.use(1, { reader = rd }, gameMs), 'open', 'a retry that arrives a quarter second early (jitter): taken')
     G.stateOf(m).lanes[2].open = false
 
     roster[1].matchId = nil
@@ -494,6 +500,11 @@ do
     roster[1].matchId = 1
     m.state = BR.MatchState.WARMUP
     eq(press(1, { reader = rd }), 'match', '4. a match at warmup: match')
+    m.state = BR.MatchState.ENDED
+    eq(press(1, { reader = rd }), 'match', '4. a match that ended: match')
+    m.state = BR.MatchState.BUS
+    eq(press(1, { reader = rd }), 'open', '4. the bus still flying (this player jumped early and landed): taken')
+    G.stateOf(m).lanes[2].open = false
     m.state = BR.MatchState.PLAYING
 
     roster[1].state = BR.PlayerState.DBNO
@@ -524,7 +535,7 @@ do
     eq(st.refused.season, 1, 'every refusal counted on the match: season')
     eq(st.refused.shape, 6, 'shape')
     eq(st.refused.rate, 1, 'rate')
-    eq(st.refused.match, 1, 'match (a press from no match has no match to be counted on)')
+    eq(st.refused.match, 2, 'match (a press from no match has no match to be counted on)')
     eq(st.refused.player, 2, 'player')
     eq(st.refused.reach, 4, 'reach')
     eq(st.refused.open, 1, 'open')
@@ -664,6 +675,33 @@ do
     after(GC.openMs)
     ok(not s.open, 'a car waiting at the reader outside the arm does not hold it')
     eq(GC.lane.vehicleMarginM, 2.5, 'a car\'s half-length')
+    -- One waiting at the out-reader, centered in the lane with its driver's
+    -- window at the pedestal, has its nose under the inner gate's fold.
+    G.open(m, 2, gameMs, 'again')
+    vehicles[501] = { x = OUT2.x - 0.2, y = BOX2.y, z = BOX2.zLow + 0.6, bucket = m.bucket }
+    after(GC.openMs)
+    ok(s.open, 'a car waiting at the reader inside the inner gate, its nose in the inner gate\'s fold: held')
+    -- BESIDE THE LANE: the leaves fold inside the posts.
+    vehicles[501] = nil
+    after(500)
+    G.open(m, 2, gameMs, 'again')
+    local b1 = LANE[1].box
+    local island = ((b1.y + b1.halfWidth) + (BOX2.y - BOX2.halfWidth)) / 2.0
+    vehicles[501] = { x = BOX2.x, y = island, z = BOX2.zLow + 0.6, bucket = m.bucket }
+    after(GC.openMs)
+    ok(not s.open, 'a car parked on the island between lanes 1 and 2 does not hold lane 2')
+    G.open(m, 1, gameMs, 'again')
+    after(GC.openMs)
+    ok(not G.stateOf(m).lanes[1].open, 'nor lane 1')
+    G.open(m, 2, gameMs, 'again')
+    local side = BOX2.y - BOX2.halfWidth
+    vehicles[501] = { x = BOX2.x, y = side - GC.lane.vehicleSideM + 0.1, z = BOX2.zLow + 0.6, bucket = m.bucket }
+    after(GC.openMs)
+    ok(s.open, ('a car whose center is %.1f m beside the lane (its side under a leaf): held'):format(GC.lane.vehicleSideM - 0.1))
+    vehicles[501].y = side - GC.lane.vehicleSideM - 0.1
+    after(500)
+    ok(not s.open, 'farther: not')
+    eq(GC.lane.vehicleSideM, 1.0, 'a car\'s half-width')
 end
 
 describe('the clock: a lane folding shut on somebody opens again, and shuts the moment it is clear')
@@ -722,6 +760,9 @@ do
     m.state = BR.MatchState.ENDED
     after(GC.openMs + 5000)
     ok(G.stateOf(m).lanes[2].open, 'a match that ended is not looked at (it is going away)')
+    m.state = BR.MatchState.BUS
+    after(500)
+    ok(not G.stateOf(m).lanes[2].open, 'the bus still flying: the clock runs, and the lane folds shut')
     m.state = BR.MatchState.PLAYING
     gateOn(false)
     after(500)
@@ -790,6 +831,9 @@ do
     m.state = BR.MatchState.WARMUP
     said = sv(1, 'open 1')
     ok(said:find('a match being played', 1, true) ~= nil, 'not while the match is not being played', said)
+    m.state = BR.MatchState.BUS
+    said = sv(1, 'open 1')
+    ok(said:find('lane 1 open in match 1', 1, true) and G.stateOf(m).lanes[1].open, 'the bus still flying: it is', said)
     m.state = BR.MatchState.PLAYING
     season(1)
     said = sv(1, 'list')

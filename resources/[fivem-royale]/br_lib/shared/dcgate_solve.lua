@@ -80,7 +80,7 @@ function S.leadTurn(sense, pose, foldDeg)
 end
 
 --- THE BI-FOLD: the follower rides its lead's knuckle and turns `turn` times
---- the lead's own turn (the kit: -2, so it stays parallel to the gate line as
+--- the lead's own turn (the kit: -2, so its free end stays on the gate line as
 --- the knuckle swings out and the two halves fold flat at 90). Read from where
 --- the lead REALLY is -- its heading now against its placed heading -- so the
 --- pair stays folded together whatever the lead's drive did.
@@ -146,17 +146,19 @@ function S.readerAt(readers, x, y, z, rM, zM)
     return bestI, best
 end
 
---- Is (x, y, z) in a lane's box, grown by margin across and along it, from
---- below under its grade to above over it?
+--- Is (x, y, z) in a lane's box, grown by margin along it (past its ends) and
+--- by side across it (past its sides; margin when nil), from below under its
+--- grade to above over it?
 --- @param box table  { x, y, ux, uy, halfLength, halfWidth, zLow, zHigh }
 --- @return boolean
-function S.inBox(box, x, y, z, margin, below, above)
+function S.inBox(box, x, y, z, margin, below, above, side)
     if not (finite(x) and finite(y)) then return false end
     local dx, dy = x - box.x, y - box.y
     local along = dx * box.ux + dy * box.uy
     local across = -dx * box.uy + dy * box.ux
     margin = margin or 0
-    if math.abs(along) > box.halfLength + margin or math.abs(across) > box.halfWidth + margin then
+    if side == nil then side = margin end
+    if math.abs(along) > box.halfLength + margin or math.abs(across) > box.halfWidth + side then
         return false
     end
     if finite(z) and (z < box.zLow - (below or 0) or z > box.zHigh + (above or 0)) then

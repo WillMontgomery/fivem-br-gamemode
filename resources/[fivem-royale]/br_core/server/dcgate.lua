@@ -68,6 +68,17 @@ local HOLDS = {
     [BR.PlayerState.DBNO] = true,
 }
 
+--- A match under way: the bus still flying (a player who jumped early is on
+--- the ground before the match goes live) or playing. The readers work, and
+--- the clock runs, in these.
+local UNDER_WAY = {
+    [BR.MatchState.BUS] = true,
+    [BR.MatchState.PLAYING] = true,
+}
+local function underWay(m)
+    return m ~= nil and UNDER_WAY[m.state] == true
+end
+
 --- [n] = the lane's row, built once -- and again only if the registry table
 --- itself is replaced (a suite's fixture).
 local built = { parts = nil, lanes = nil }
@@ -197,8 +208,9 @@ end
 --   2. shape    `reader` a whole number naming a lane reader
 --   3. rate     no sooner than use.minIntervalMs after this player's last
 --               press, and use.perMatch a match at most
---   4. match    the player is in a match, and it is PLAYING: the readers work
---               in a match only (the owner's default, 2026-10-19)
+--   4. match    the player is in a match, and it is under way (BUS or
+--               PLAYING): the readers work in a match only (the owner's
+--               default, 2026-10-19)
 --   5. player   ALIVE, by the roster: a downed player presses nothing
 --   6. reach    by this server's own sample, no older than use.sampleMaxAgeMs,
 --               within readerM (flat) and readerZM of THAT reader, each plus
@@ -238,7 +250,7 @@ function G.use(src, d, now)
     end
 
     local e = BR.Roster.get(src)
-    if not m or not e or e.matchId ~= m.id or m.state ~= BR.MatchState.PLAYING then
+    if not m or not e or e.matchId ~= m.id or not underWay(m) then
         return no('match')
     end
 
@@ -298,8 +310,9 @@ end
 --- WHAT HOLDS THIS LANE OPEN: 'a player' or 'a vehicle', or nil when it is
 --- clear. A player standing or downed in the match whose fresh sample is in
 --- the lane's box grown by lane.pedMarginM; any vehicle of the match's bucket
---- whose center is in it grown by lane.vehicleMarginM. Public so the suites
---- and `brgate list` can ask.
+--- whose center is in it grown by lane.vehicleMarginM past its ends and
+--- lane.vehicleSideM past its sides. Public so the suites and `brgate list`
+--- can ask.
 --- @param m table
 --- @param n integer
 --- @param vehicles table[]|nil  the match's vehicles, { x, y, z }
@@ -321,7 +334,9 @@ function G.holder(m, n, vehicles, now)
     end)
     if who then return who end
     for _, v in ipairs(vehicles or {}) do
-        if GS.inBox(box, v.x, v.y, v.z, L.vehicleMarginM or 2.5, below, above) then return 'a vehicle' end
+        if GS.inBox(box, v.x, v.y, v.z, L.vehicleMarginM or 2.5, below, above, L.vehicleSideM or 1.0) then
+            return 'a vehicle'
+        end
     end
     return nil
 end
@@ -344,7 +359,7 @@ function G.pass(now)
             m.dcgate = nil
             return
         end
-        if m.state ~= BR.MatchState.PLAYING then return end
+        if not underWay(m) then return end
         for _, l in ipairs(parts().lanes or {}) do
             local s = st.lanes[l.lane]
             if s and ((s.open and now >= s.holdUntil) or (not s.open and now < s.closingUntil)) then
@@ -475,7 +490,7 @@ RegisterCommand('brgatesv', function(source, args)
         tell(src, USAGE)
         return
     end
-    if not m or m.state ~= BR.MatchState.PLAYING then
+    if not underWay(m) then
         tell(src, 'that is for a match being played: the readers work in a match only')
         return
     end

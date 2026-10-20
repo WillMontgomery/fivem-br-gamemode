@@ -122,7 +122,7 @@ def kit_of(doc):
             raise Refused('brdc_bifold_follow_%s: attach_rotation %r is not "(0, 0, +-2*theta)"' % (side, rot))
         fturn = 2 if m.group(1) == '+' else -2
         # THE BI-FOLD: the follower turns twice its lead's turn, the other way, so
-        # it stays parallel to the gate line as the knuckle swings out.
+        # its free end stays on the gate line as the knuckle swings out.
         if fturn / lsense != -2:
             raise Refused('the kit\'s %s pair does not counter-rotate: the lead turns %+d theta, the '
                           'follower %+d theta' % (side, lsense, fturn))

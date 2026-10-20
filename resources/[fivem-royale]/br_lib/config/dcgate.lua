@@ -64,8 +64,9 @@ G.readerZM = 2.5
 
 G.use = {
     -- No sooner than this after the player's last press, and at most this many
-    -- a match.
-    minIntervalMs = 1000,
+    -- a match. Half the client's own client.askMs, so network jitter never
+    -- drops a retry the client sent a second after its last.
+    minIntervalMs = 500,
     perMatch = 120,
     -- The server's own position sample, no older than this, and the reach it
     -- allows past the client's: the 4 Hz sample of a car rolling up to the
@@ -79,12 +80,15 @@ G.use = {
 -- The box itself is generated (dcgate_parts.lua: from the arm's beam to the
 -- inner gate's fold, post to post, at grade). A player standing or downed in
 -- the match whose sample is within pedMarginM of it, or any vehicle in the
--- match's routing bucket whose center is within vehicleMarginM -- a car's
--- half-length, so a bumper under a leaf counts -- holds the lane open. Both
--- from belowM under the grade to aboveM over it.
+-- match's routing bucket whose center is within vehicleMarginM of its ends --
+-- a car's half-length, so a bumper under a leaf counts -- and vehicleSideM of
+-- its sides -- a car's half-width: the leaves fold inside the posts, so a car
+-- beside the lane (on the island between two) holds neither -- holds the lane
+-- open. Both from belowM under the grade to aboveM over it.
 G.lane = {
     pedMarginM = 0.5,
     vehicleMarginM = 2.5,
+    vehicleSideM = 1.0,
     belowM = 1.0,
     aboveM = 4.5,
     -- The server's pass over open and closing lanes. Nothing runs while every
@@ -100,11 +104,16 @@ G.lane = {
 G.client = {
     -- Within this of the gate's middle (dcgate_parts.lua's center, past its
     -- radius) the SLOW pass keeps the doors locked and posed as their physics
-    -- streams in. Farther, nothing but the distance is asked.
-    nearM = 200.0,
+    -- streams in, and a lane that changes folds. Farther, nothing but the
+    -- distance is asked. The leaves' lodDist (the gate kit's REPORT: 300 m),
+    -- so no client sees a leaf it is not keeping posed.
+    nearM = 300.0,
     -- Within this past the gate's radius, the TICK callback that shows the
     -- prompt is registered.
     promptM = 15.0,
+    -- A press asks the server no sooner than this after this client's last
+    -- ask (longer than the server's use.minIntervalMs).
+    askMs = 1000,
     -- The finds: the followers (and, with the 'rotate' drive, the leads and the
     -- arm) are found by model at their placed origins, this close, at most this
     -- many a SLOW pass.

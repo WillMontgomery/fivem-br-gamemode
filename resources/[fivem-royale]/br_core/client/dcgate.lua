@@ -83,10 +83,20 @@ local PROMPT_KEY = 'dcgate.reader'
 local PROMPT_TEXT = 'Press ' .. BR.KeyToken('brinteract') .. ' to open the gate'
 G.PROMPT_TEXT = PROMPT_TEXT
 
---- Frames a lane's followers are ridden after its leads stop -- a door the
---- system moves this frame may show it next -- before a shut lane's
---- followers are let go.
-local SETTLE_FRAMES = 3
+--- THE SETTLE: a lane's followers are ridden on after its pose stops, until
+--- no lead has turned for SETTLE_FRAMES frames running, before a shut lane's
+--- followers are let go. A door the system moves this frame shows it next,
+--- and the door system may ease a lead to its ratio over many frames; the
+--- followers track it all the way. SETTLE_MAX_FRAMES caps a lead that never
+--- comes to rest. A follower's attach yaw changing by more than SETTLE_DEG
+--- between frames is its lead still turning.
+local SETTLE_FRAMES = 5
+local SETTLE_MAX_FRAMES = 300
+local SETTLE_DEG = 0.05
+--- THE SLOW PASS'S CHECK on a lane at rest: an attached follower more than
+--- this off -2 times its lead's turn as the lead stands now (a lead the door
+--- system moved after the settle) is ridden again.
+local ASTRAY_DEG = 1.0
 
 -- ------------------------------------------------------------ the state ---
 
@@ -98,10 +108,10 @@ local serverOpen = {}
 local gateMatch = nil
 
 --- Every door: { kind = 'lead'|'follow'|'arm', row, lane, name, hash, model,
---- handle?, applied?, attached?, frozen? }.
+--- handle?, applied?, attached?, frozen?, yaw? (a follower's last attach yaw) }.
 local doors = {}
---- The lanes, in order: { n, row, pose, target, settle, folded, leads, follows,
---- arm, all }.
+--- The lanes, in order: { n, row, pose, target, settle, settled, folded,
+--- leads, follows, arm, all }.
 local lanes = {}
 --- [n] = the lane.
 local laneByN = {}
@@ -123,7 +133,7 @@ local lastAsk = nil
 local function build()
     doors, lanes, laneByN = {}, {}, {}
     for _, row in ipairs(parts().lanes or {}) do
-        local L = { n = row.lane, row = row, pose = 0.0, target = 0.0, settle = 0, folded = false,
+        local L = { n = row.lane, row = row, pose = 0.0, target = 0.0, settle = 0, settled = 0, folded = false,
                     leads = {}, follows = {}, all = {} }
         local function add(kind, r)
             local d = { kind = kind, row = r, lane = L, name = GS.doorName(r.id),
@@ -177,7 +187,7 @@ local function registerDoors()
         if isTrue(IsDoorRegisteredWithSystem(d.hash)) then RemoveDoorFromSystem(d.hash) end
         AddDoorToSystem(d.hash, d.model, d.row.x, d.row.y, d.row.z, false, false, true)
         shut(d)
-        d.applied, d.attached, d.frozen = nil, false, false
+        d.applied, d.attached, d.frozen, d.yaw = nil, false, false, nil
     end
     registered = true
 end
@@ -187,7 +197,7 @@ end
 local function handleOf(d, find)
     local h = d.handle
     if h and isTrue(DoesEntityExist(h)) then return h end
-    d.handle, d.attached, d.frozen = nil, false, false
+    d.handle, d.attached, d.frozen, d.yaw = nil, false, false, nil
     if not find then return nil end
     h = GetClosestObjectOfType(d.row.x, d.row.y, d.row.z, C().findRadiusM or 0.6, d.model,
         false, false, false)
@@ -247,28 +257,48 @@ end
 
 --- A follower on its lead's knuckle, turned -2 times the lead's turn as the
 --- lead stands NOW (BR.DcGateSolve.followerYaw). Unlocked once attached, so
---- the door system does not hold it shut under its lead. True when attached.
+--- the door system does not hold it shut under its lead. True when attached,
+--- and then whether its yaw moved since its last ride (its lead turning).
 local function ride(f, find)
     local lead = f.lane.leads[f.row.lead]
     local lh = lead and handleOf(lead, find)
     local h = lh and handleOf(f, find)
-    if not h then return false end
+    if not h then return false, false end
     local yaw = GS.followerYaw(GetEntityHeading(lh), lead.row.h, f.row.turn)
     AttachEntityToEntity(h, lh, 0, f.row.ox, f.row.oy, f.row.oz, 0.0, 0.0, yaw,
         false, false, true, false, 2, true)
+    local moved = f.yaw == nil or math.abs(GS.wrap180(yaw - f.yaw)) > SETTLE_DEG
+    f.yaw = yaw
     if not f.attached then
         f.attached = true
         DoorSystemSetDoorState(f.hash, 0, false, true)
     end
-    return true
+    return true, moved
 end
 
---- A follower let go of its shut lead and locked shut in its own place.
+--- Is this attached follower off -2 times its lead's turn as the lead stands
+--- now, by more than ASTRAY_DEG? Reads only the lead's heading.
+local function astray(f)
+    if not f.attached or f.yaw == nil then return false end
+    local lead = f.lane.leads[f.row.lead]
+    local lh = lead and handleOf(lead, false)
+    if not lh then return false end
+    local want = GS.followerYaw(GetEntityHeading(lh), lead.row.h, f.row.turn)
+    return math.abs(GS.wrap180(want - f.yaw)) > ASTRAY_DEG
+end
+
+--- A follower let go of its shut lead and locked shut in its own place: put
+--- back at its placed origin and heading as it is let go, so one let go with
+--- its lead still turned (br_core stopping mid-fold) does not stay where the
+--- knuckle left it.
 local function release(f)
-    if f.attached and f.handle and isTrue(DoesEntityExist(f.handle)) then
-        DetachEntity(f.handle, false, true)
+    local h = f.handle
+    if f.attached and h and isTrue(DoesEntityExist(h)) then
+        DetachEntity(h, false, true)
+        SetEntityCoordsNoOffset(h, f.row.x, f.row.y, f.row.z, false, false, false)
+        SetEntityRotation(h, 0.0, 0.0, f.row.h, 2, true)
     end
-    f.attached = false
+    f.attached, f.yaw = false, nil
     shut(f)
 end
 
@@ -278,8 +308,15 @@ local function driveLane(L, find)
     if L.arm then drivePart(L.arm, find) end
 end
 
+--- Every follower of the lane ridden. True when any of them moved: a lead
+--- still turning.
 local function rideLane(L, find)
-    for _, f in ipairs(L.follows) do ride(f, find) end
+    local turning = false
+    for _, f in ipairs(L.follows) do
+        local _, moved = ride(f, find)
+        turning = turning or moved
+    end
+    return turning
 end
 
 local function releaseLane(L)
@@ -305,11 +342,11 @@ end
 
 --- THE FOLD, A FRAME AT A TIME, ONLY WHILE A LANE NEAR THIS CLIENT MOVES. A
 --- lane's pose steps toward its target and every part follows; once there,
---- its followers are ridden SETTLE_FRAMES more (the leads' last turn) and a
---- shut lane's let go. A fold that finished leaves its doors to the SLOW pass
---- (applied cleared), which reads their physics and finds them where they are;
---- the settle after one of the SLOW pass's own poses does not, or the two
---- would hand the lane back and forth for ever.
+--- its followers are ridden on until its leads have stopped turning (THE
+--- SETTLE above) and a shut lane's let go. A fold that finished leaves its
+--- doors to the SLOW pass (applied cleared), which reads their physics and
+--- finds them where they are; the settle after one of the SLOW pass's own
+--- poses does not, or the two would hand the lane back and forth for ever.
 animate = function()
     local now = GetGameTimer()
     local dt = lastFrameAt and (now - lastFrameAt) or 0
@@ -320,11 +357,12 @@ animate = function()
             L.pose = GS.step(L.pose, L.target, dt, cfg().foldMs or 4000)
             driveLane(L, false)
             rideLane(L, false)
-            if L.pose == L.target then L.settle, L.folded = SETTLE_FRAMES, true end
+            if L.pose == L.target then L.settle, L.settled, L.folded = SETTLE_FRAMES, 0, true end
             busy = true
         elseif L.settle > 0 then
             L.settle = L.settle - 1
-            rideLane(L, false)
+            L.settled = L.settled + 1
+            if rideLane(L, false) and L.settled < SETTLE_MAX_FRAMES then L.settle = SETTLE_FRAMES end
             if L.settle == 0 then
                 if L.pose <= 0 then releaseLane(L) end
                 if L.folded then
@@ -359,7 +397,7 @@ local function retarget()
                 end
                 armAnim()
             else
-                L.pose, L.settle, L.folded = t, 0, false
+                L.pose, L.settle, L.settled, L.folded = t, 0, 0, false
             end
         end
     end
@@ -416,12 +454,14 @@ local function setPrompt(idx)
     end
 end
 
---- The reader this player stands at, of a lane not open, in a match being
---- played, standing; nil otherwise.
+--- The reader this player stands at, of a lane not open, in a match under
+--- way (the bus still flying, or playing: a player who jumped early is on
+--- the ground before the match goes live), standing; nil otherwise.
 local function readerHere()
     if not on() then return nil end
     local S = BR.State
-    if not (S and S.match and S.match.state == BR.MatchState.PLAYING and S.me
+    local ms = S and S.match and S.match.state
+    if not ((ms == BR.MatchState.BUS or ms == BR.MatchState.PLAYING) and S.me
             and S.me.state == BR.PlayerState.ALIVE) then
         return nil
     end
@@ -448,13 +488,14 @@ end
 
 -- THE PRESS ASKS, for the reader the prompt is up for and no other; the
 -- server opens the lane, or says nothing. Not while one of our screens holds
--- the keyboard, and not again within use.minIntervalMs.
+-- the keyboard, and not again within client.askMs (longer than the server's
+-- use.minIntervalMs, so network jitter never drops a retry).
 if BR.Keys and BR.Keys.on then
     BR.Keys.on('interact', function(pressed)
         if not pressed or atReader == nil then return end
         if BR.Keys.uiScreen ~= nil then return end
         local now = GetGameTimer()
-        if lastAsk ~= nil and now - lastAsk < ((cfg().use or {}).minIntervalMs or 1000) then return end
+        if lastAsk ~= nil and now - lastAsk < (C().askMs or 1000) then return end
         lastAsk = now
         TriggerServerEvent(BR.Net.DCGATE_USE, { reader = atReader })
     end)
@@ -474,8 +515,9 @@ end
 
 --- NEAR THE GATE, ONCE A SECOND: the registration still standing (a pack that
 --- stopped took it), and every lane that is still posed again where a door's
---- physics streamed in or a follower's copy went -- its leads and arm driven,
---- its followers ridden (found as needed) or let go.
+--- physics streamed in, a follower's copy went, or an attached follower is
+--- off its lead's turn (astray) -- its leads and arm driven, its followers
+--- ridden (found as needed) and settled, or let go.
 local function keepPosed()
     for _, L in ipairs(lanes) do
         if L.leads[1] and not isTrue(IsDoorRegisteredWithSystem(L.leads[1].hash)) then
@@ -489,7 +531,9 @@ local function keepPosed()
             for _, d in ipairs(L.all) do
                 if isTrue(DoorSystemGetIsPhysicsLoaded(d.hash)) then
                     if d.applied ~= L.pose then stale = true end
-                    if d.kind == 'follow' and d.attached and not handleOf(d, false) then stale = true end
+                    if d.kind == 'follow' and d.attached then
+                        if not handleOf(d, false) or (L.pose > 0 and astray(d)) then stale = true end
+                    end
                 else
                     d.applied = nil
                 end
@@ -498,7 +542,7 @@ local function keepPosed()
                 driveLane(L, true)
                 if L.pose > 0 then
                     rideLane(L, true)
-                    L.settle = SETTLE_FRAMES
+                    L.settle, L.settled = SETTLE_FRAMES, 0
                     armAnim()
                 else
                     releaseLane(L)
@@ -518,7 +562,7 @@ end
 --- the way back.
 local function leaveNear()
     for _, L in ipairs(lanes) do
-        L.pose, L.settle, L.folded = L.target, 0, false
+        L.pose, L.settle, L.settled, L.folded = L.target, 0, 0, false
         for _, d in ipairs(L.all) do d.applied = nil end
     end
     if animLoop ~= nil then
@@ -572,7 +616,7 @@ AddEventHandler('onResourceStop', function(name)
     atReader = nil
     if not registered then return end
     for _, L in ipairs(lanes) do
-        L.pose, L.target, L.settle, L.folded = 0.0, 0.0, 0, false
+        L.pose, L.target, L.settle, L.settled, L.folded = 0.0, 0.0, 0, 0, false
         for _, d in ipairs(L.all) do
             if d.kind == 'follow' then
                 release(d)
