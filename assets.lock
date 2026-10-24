@@ -1761,16 +1761,16 @@
     {
       "name": "br_datacenter",
       "seasons": {
-        "2": "a01d169615615328ebd2653d00a9ce0a3f218ebb3040fcdb72002e83a6c535c4"
+        "2": "deb37121b55d4870567eaa875cd03670a86ac65f455d6978ef5c057aed1d59be"
       },
       "versions": {
-        "a01d169615615328ebd2653d00a9ce0a3f218ebb3040fcdb72002e83a6c535c4": {
-          "size": 88035023,
+        "deb37121b55d4870567eaa875cd03670a86ac65f455d6978ef5c057aed1d59be": {
+          "size": 88102870,
           "files": {
-            "README.txt": 134870,
+            "README.txt": 138181,
             "brdc_b2int_timecycle.xml": 3822,
             "brdc_m8_timecycle.xml": 7120,
-            "client.lua": 15156,
+            "client.lua": 12699,
             "doors/b2int_door_table.json": 29311,
             "doors/b2int_teleports.json": 1227,
             "doors/b3_doors.json": 1480,
@@ -1782,9 +1782,9 @@
             "doors/m8_teleports.json": 749,
             "doors/m8r_door_table.json": 35551,
             "doors/m8r_teleports.json": 782,
-            "fxmanifest.lua": 3281,
+            "fxmanifest.lua": 3582,
             "preflight.allow": 27791,
-            "stream/_manifest.ymf": 2268,
+            "stream/_manifest.ymf": 2300,
             "stream/brdc_b1_col_bldg.ybn": 13601,
             "stream/brdc_b1_roof.ymap": 1638,
             "stream/brdc_b2_ballrack.ydr": 3052,
@@ -1848,6 +1848,9 @@
             "stream/brdc_croparm_catch.ydr": 3419,
             "stream/brdc_ext_equip.ytd": 307493,
             "stream/brdc_ext_roof.ytd": 86437,
+            "stream/brdc_flick_sign.ydr": 68379,
+            "stream/brdc_flick_sign.ymap": 1200,
+            "stream/brdc_flick_sign.ytyp": 490,
             "stream/brdc_fnclink_blk.ytd": 1850,
             "stream/brdc_fnclink_blk_f055.ydr": 1543,
             "stream/brdc_fnclink_blk_f085.ydr": 1543,
