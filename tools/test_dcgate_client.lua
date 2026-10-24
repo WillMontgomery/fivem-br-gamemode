@@ -6,41 +6,51 @@
 -- environment of its own over a modeled engine: the gate's 27 map objects (the
 -- leaves and arms, each this client's own copy, which streams out and back), a
 -- door system that registers them by name and turns a lead to the open ratio
--- it is held at, attachments, the three loop bands with the FRAME and TICK
+-- it is held at (and a door that stops hearing it until it is registered
+-- again), attachments, freezing and a car running into a part (a part turned
+-- by hand and not frozen falls), the three loop bands with the FRAME and TICK
 -- callbacks that come and go, the notice stack, the interact key, the season
 -- and the mirror. Each block boots a fresh client.
 --
 --   the doors    nothing without the map pack; with it, all 27 registered
 --                under the pack's names, locally, and locked shut the pack's
---                way; posed as their physics streams in, and a pass with
---                nothing to do writes nothing; a registration a stopped pack
---                took registered again
+--                way; posed as their physics streams in (the arms found and
+--                frozen), and a pass with nothing to do writes nothing; a
+--                registration a stopped pack took registered again
 --   the cost     nothing in the lobby; away from the gate one position a
 --                second and no callback; the TICK only near it, the FRAME only
---                while a lane folds
+--                while a gate folds
 --   the prompt   the owner's words exactly, the key a hole for the player's
---                own interact key; once, at a reader of a shut lane, in a
---                match under way (the bus or playing), standing, on Season 2;
---                down when not
+--                own interact key; once, at a reader of a lane whose cycle is
+--                not running, in a match under way, standing, on Season 2, not
+--                in a trap; down when not
 --   the press    one DCGATE_USE for the reader the prompt is up for, and not
 --                again within the interval
---   the fold     a lane the server opens folds open over foldMs and back: the
---                leads to +-90 by the open ratio, the arm to its raise, each
---                follower on its lead's knuckle and turned -2 times its lead's
---                turn as it stands, so it mirrors its lead at every frame and
---                lies flat against it at 90; unlocked while it rides and let
---                go and locked once its lead is shut; the other lanes left
---                alone; turned back halfway with no jump
---   streamed in  a lane open before this client came near arrives open, its
---                followers found and riding; a follower that streams out and
---                back rides again
+--   the fold     each gate by itself: the outer gate (and its arm) and then
+--                the inner one, as the server's codes say; the leads to +-90 by
+--                the open ratio, each follower on its lead's knuckle mirroring
+--                it at every frame, unlocked while it rides, let go, put back,
+--                frozen and locked once its lead is shut; the other gate and
+--                lanes left alone; turned back halfway with no jump
+--   streamed in  a gate open before this client came near arrives open, its
+--                followers riding; a follower that streams out and back rides
+--                again
 --   the settle   a lead the door system eases is ridden until it stops, open
 --                and shut; one that turns after is found astray and ridden again
---   the word     DCGATE_STATE, the snapshot, the lobby and Season 1
---   br_core stopping, and the 'rotate' drive
+--   the word     DCGATE_STATE, the snapshot (and its poses, for a late joiner),
+--                the lobby and Season 1
+--   the arm      turned by hand and frozen from the moment it is found, in
+--                every pose: a car running into it before the press, during the
+--                cycle or after it knocks nothing loose, and it rises every time
+--   rotate leads the same, frozen in every pose, the followers riding them
+--   read back    a lead or arm off its pose posed again; one still off the next
+--                pass registered again; one where it should be left alone
+--   br_core stopping and `brgate drive`: everything handed back to the door
+--                system, put where it was placed and unfrozen
 --   the file     no scope-gate native, every BOOL read wrapped
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_dcgate_client.lua
+
 
 local realPrint = print
 local realExit = os.exit
@@ -170,6 +180,7 @@ local function boot(opts)
             o.rot = { x = x, y = y, z = z }
             o.h = z
             o.order = order
+            o.handTurned = true
             wrote(o.id, 'rotation')
         end
     end
@@ -183,9 +194,11 @@ local function boot(opts)
     end
     env.FreezeEntityPosition = function(h, f)
         n('FreezeEntityPosition')
-        if W.objects[h] then
-            W.objects[h].frozen = f
-            wrote(W.objects[h].id, 'freeze')
+        local o = W.objects[h]
+        if o then
+            if o.frozen and not f then o.thaws = (o.thaws or 0) + 1 end
+            o.frozen = f
+            wrote(o.id, 'freeze')
         end
     end
     env.AttachEntityToEntity = function(h, to, bone, ox, oy, oz, rx, ry, rz, p9, soft, collision, isPed, order, fixed)
@@ -249,8 +262,11 @@ local function boot(opts)
         n('DoorSystemSetOpenRatio')
         local d = W.doors[hash]
         if not d then return end
-        d.ratio = r
         wrote(hash, 'ratio')
+        -- A DOOR THAT STOPPED HEARING its ratio (deaf) keeps what it had until
+        -- it is registered again.
+        if d.deaf then return end
+        d.ratio = r
         local o = doorObject(d)
         if o and o.kind == 'lead' and not o.frozen then
             local goal = o.placed + r * 90.0
@@ -260,6 +276,14 @@ local function boot(opts)
                 o.goal, o.wait = goal, W.stall or 0
             end
         end
+    end
+    --- A CAR RUNS INTO A PART: a door entity turned by hand (SetEntityRotation)
+    --- has lost its hinge, so one that is not frozen falls; frozen, it is solid.
+    --- True when it fell.
+    function W.hit(id)
+        local o = W.obj(id)
+        if o and not o.frozen and o.handTurned then o.fallen = true end
+        return o ~= nil and o.fallen == true
     end
     --- One frame of the engine: each lead with a goal turned toward it.
     function W.engine()
@@ -444,6 +468,48 @@ local AT_IN2 = { x = IN2.x, y = IN2.y + 1.0, z = IN2.z - 0.2 }
 local NEAR = { x = P0.center.x, y = P0.center.y + P0.radius + 60.0, z = 45.5 }
 local FAR = { x = P0.center.x + 1000.0, y = P0.center.y, z = 45.5 }
 
+--- One gate's parts in a booted client: { leads, follows, arm? }, each
+--- { r, o, d } -- its row, its map object, its door.
+local function gateParts(W, n, which)
+    local out = { leads = {}, follows = {} }
+    local tag = '.' .. which .. '.'
+    for _, lane in ipairs(W.P.lanes) do
+        if lane.lane == n then
+            for _, r in ipairs(lane.leads) do
+                if r.id:find(tag, 1, true) then
+                    out.leads[#out.leads + 1] = { r = r, o = W.obj(r.id), d = W.door(r.id) }
+                end
+            end
+            for _, r in ipairs(lane.follows) do
+                if r.id:find(tag, 1, true) then
+                    out.follows[#out.follows + 1] = { r = r, o = W.obj(r.id), d = W.door(r.id), lead = lane.leads[r.lead] }
+                end
+            end
+            if which == 'outer' then out.arm = { r = lane.arm, o = W.obj(lane.arm.id), d = W.door(lane.arm.id) } end
+        end
+    end
+    return out
+end
+
+--- How far each follower of a gate is from mirroring its lead (degrees), the worst.
+local function mirrorError(W, Gp)
+    local worst = 0.0
+    for _, f in ipairs(Gp.follows) do
+        local lead = W.obj(f.lead.id)
+        local turned = wrap180(lead.h - f.lead.h)
+        local want = f.r.h - turned
+        worst = math.max(worst, math.abs(wrap180(W.worldHeading(f.o) - want)))
+    end
+    return worst
+end
+
+--- The server's word: each lane's code (1 outer open + 2 inner open + 4 busy).
+local function word(W, codes, match)
+    W.net(W.B.Net.DCGATE_STATE, { matchId = match or 1, lanes = codes })
+end
+
+local function poseOf(W, n, which) return W.G.counts().lanes[n][which].pose end
+
 -- =========================================================================
 -- THE DOORS
 -- =========================================================================
@@ -475,11 +541,11 @@ do
     eq(n, 27, 'the 24 leaves and 3 arms')
     local bad = 0
     for _, lane in ipairs(P0.lanes) do
-        local parts = {}
-        for _, r in ipairs(lane.leads) do parts[#parts + 1] = r end
-        for _, r in ipairs(lane.follows) do parts[#parts + 1] = r end
-        parts[#parts + 1] = lane.arm
-        for _, r in ipairs(parts) do
+        local list = {}
+        for _, r in ipairs(lane.leads) do list[#list + 1] = r end
+        for _, r in ipairs(lane.follows) do list[#list + 1] = r end
+        list[#list + 1] = lane.arm
+        for _, r in ipairs(list) do
             local d = W.door(r.id)
             if not (d and d.model == hashOf(r.model) and d.x == r.x and d.y == r.y and d.z == r.z
                     and d.isLocal == true and d.scriptDoor == false and d.ratio == 0.0
@@ -512,15 +578,16 @@ do
     for _ = 1, 5 do W.slow() end
     eq(W.natives, 10, 'in a match, far away: PlayerPedId and GetEntityCoords, once a second')
     ok(not W.has('tick', 'dcgate.prompt') and not W.has('frame', 'dcgate.fold'), 'no TICK, no FRAME')
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
+    word(W, { 0, 5, 0 })
     W.reset()
     W.slow()
-    eq(W.natives, 2, 'a lane opening across the map costs this client nothing')
+    eq(W.natives, 2, 'a gate opening across the map costs this client nothing')
     ok(not W.has('frame', 'dcgate.fold'), 'and folds nothing')
-    eq(W.G.counts().lanes[2].pose, 1.0, 'its pose is simply open, for when this client comes near')
+    eq(poseOf(W, 2, 'outer'), 1.0, 'its pose is simply open, for when this client comes near')
+    eq(poseOf(W, 2, 'inner'), 0.0, 'the other gate of its lane shut')
 end
 
-describe('the doors: posed as their physics streams in; a pass with nothing to do writes nothing')
+describe('the doors: posed as their physics streams in, the arms found and frozen; then only reads')
 do
     local W = boot({ at = FAR, objects = false })
     W.at.x, W.at.y = NEAR.x, NEAR.y
@@ -536,19 +603,37 @@ do
     local shutNow = 0
     for _, d in pairs(W.doors) do if d.state == 1 and d.ratio == 0.0 then shutNow = shutNow + 1 end end
     eq(shutNow, 27, 'streamed in: every door posed shut and locked')
-    ok(#W.writes > 0, 'by writes')
+    local arms = 0
+    for _, lane in ipairs(P0.lanes) do
+        local o = W.obj(lane.arm.id)
+        if o.frozen and o.rot.x == 0.0 and o.rot.y == 0.0 and o.rot.z == lane.arm.h then arms = arms + 1 end
+    end
+    eq(arms, 3, 'each arm found and frozen at its placed rotation, shut, before anybody presses')
+    eq(W.G.counts().frozen, 3, 'and nothing else frozen')
     W.reset()
     W.slow()
     eq(#W.writes, 0, 'the next pass: nothing written')
-    eq(W.calls.DoorSystemGetIsPhysicsLoaded, 27, 'only the reads')
-    eq(W.calls.GetClosestObjectOfType, nil, 'and no search: a shut lane needs no handle')
+    eq(W.calls.DoorSystemGetIsPhysicsLoaded, 27, 'the physics reads')
+    eq(W.calls.DoorSystemGetOpenRatio, 12, 'each lead read back by its open ratio')
+    eq(W.calls.GetEntityRotation, 3, 'each arm by its rotation')
+    eq(W.calls.GetClosestObjectOfType, nil, 'and no search: every handle it needs is held')
 end
 
 -- =========================================================================
 -- THE PROMPT AND THE PRESS
 -- =========================================================================
 
-describe('the prompt: the owner\'s words, once, at a reader of a shut lane')
+--- A spot in lane 2's trap 0.3 m inside its inner gate, beside the inside
+--- reader: within readerM of it.
+local IN_TRAP = (function()
+    local lane = P0.lanes[2]
+    local ix = (lane.leads[3].x + lane.leads[4].x) / 2.0
+    local ox = (lane.leads[1].x + lane.leads[2].x) / 2.0
+    local out = READER['gate.lane2.reader_out']
+    return { x = ix + 0.3 * (ox > ix and 1 or -1), y = out.y, z = out.z - 0.2 }
+end)()
+
+describe('the prompt: the owner\'s words, once, at a reader of a lane whose cycle is not running')
 do
     local W = boot({ at = AT_IN2 })
     eq(W.G.PROMPT_TEXT, 'Press {key:brinteract} to open the gate',
@@ -576,12 +661,18 @@ do
     ok(W.notices[4] and W.notices[4].clear, 'downed: down')
     W.B.State.me.state = W.B.PlayerState.ALIVE
     W.tick()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
+    word(W, { 0, 5, 0 })
     W.tick()
-    ok(W.notices[#W.notices].clear, 'the lane open: down')
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, false, false } })
+    ok(W.notices[#W.notices].clear, 'the lane\'s cycle running (its outer gate open): down')
+    word(W, { 0, 4, 0 })
     W.tick()
-    ok(W.notices[#W.notices].text == W.G.PROMPT_TEXT, 'shut again (or folding shut): up -- a press opens it again')
+    ok(W.notices[#W.notices].clear, 'a gate folding shut mid-cycle: still down -- a press now is not taken')
+    word(W, { 0, 6, 0 })
+    W.tick()
+    ok(W.notices[#W.notices].clear, 'the inner gate open: still down')
+    word(W, { 5, 0, 7 })
+    W.tick()
+    ok(W.notices[#W.notices].text == W.G.PROMPT_TEXT, 'lane 2 idle, whatever the others do: up')
     W.B.State.match.state = W.B.MatchState.ENDED
     W.tick()
     ok(W.notices[#W.notices].clear, 'the match over: down')
@@ -594,6 +685,18 @@ do
     W.tick()
     ok(W.notices[#W.notices].clear, 'one of our screens up: down')
     W.B.Keys.uiScreen = nil
+    W.tick()
+    -- NO READER IN THE TRAP.
+    local out = READER['gate.lane2.reader_out']
+    ok(math.sqrt((IN_TRAP.x - out.x) ^ 2 + (IN_TRAP.y - out.y) ^ 2) < W.C.readerM,
+        'a spot in the trap within readerM of the inside reader')
+    W.at.x, W.at.y, W.at.z = IN_TRAP.x, IN_TRAP.y, IN_TRAP.z
+    W.tick()
+    ok(W.notices[#W.notices].clear, 'standing there, in the trap: no prompt -- no reader in the trap')
+    W.at.x = out.x - 1.0
+    W.tick()
+    ok(W.notices[#W.notices].text == W.G.PROMPT_TEXT, 'a step past the inner gate, at the inside reader: up')
+    W.at.x, W.at.y, W.at.z = AT_IN2.x, AT_IN2.y, AT_IN2.z
     W.tick()
     W.switch(1)
     ok(W.notices[#W.notices].clear and not W.has('tick', 'dcgate.prompt'), 'Season 1: down, and no TICK')
@@ -630,6 +733,12 @@ do
     W.now = W.now + 600
     W.press(true)
     eq(#W.uses(), 2, 'past the interval: asked')
+    word(W, { 0, 5, 0 })
+    W.tick()
+    W.now = W.now + 2000
+    W.press(true)
+    eq(#W.uses(), 2, 'its cycle running: the prompt is down, and nothing is asked')
+    word(W, { 0, 0, 0 })
     W.at.x = IN2.x + 10.0
     W.tick()
     W.now = W.now + 2000
@@ -639,48 +748,21 @@ do
 end
 
 -- =========================================================================
--- THE FOLD
+-- THE FOLD, A GATE AT A TIME
 -- =========================================================================
 
---- The lane 2 parts of a booted client, by role.
-local function laneParts(W, n)
-    local out = { leads = {}, follows = {} }
-    for _, lane in ipairs(W.P.lanes) do
-        if lane.lane == n then
-            for _, r in ipairs(lane.leads) do out.leads[#out.leads + 1] = { r = r, o = W.obj(r.id), d = W.door(r.id) } end
-            for _, r in ipairs(lane.follows) do
-                out.follows[#out.follows + 1] = { r = r, o = W.obj(r.id), d = W.door(r.id), lead = lane.leads[r.lead] }
-            end
-            out.arm = { r = lane.arm, o = W.obj(lane.arm.id), d = W.door(lane.arm.id) }
-        end
-    end
-    return out
-end
-
---- How far each follower is from mirroring its lead (degrees), the worst.
-local function mirrorError(W, L)
-    local worst = 0.0
-    for _, f in ipairs(L.follows) do
-        local lead = W.obj(f.lead.id)
-        local turned = wrap180(lead.h - f.lead.h)
-        local want = f.r.h - turned
-        worst = math.max(worst, math.abs(wrap180(W.worldHeading(f.o) - want)))
-    end
-    return worst
-end
-
-describe('the fold: a lane the server opens folds open over foldMs -- the bi-fold at every frame')
+describe('the fold: inbound -- the outer gate and its arm, then the inner gate, each by itself')
 do
     local W = boot({ at = AT_IN2 })
     W.slow()
     W.slow()
     W.reset()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
-    ok(W.has('frame', 'dcgate.fold'), 'the FRAME callback, now')
-    local L = laneParts(W, 2)
-    eq(W.calls.GetClosestObjectOfType, 9, 'the lane\'s nine parts found first, once')
+    word(W, { 0, 5, 0 })
+    ok(W.has('frame', 'dcgate.fold'), 'the outer gate opening: the FRAME callback, now')
+    local O, I = gateParts(W, 2, 'outer'), gateParts(W, 2, 'inner')
+    eq(W.calls.GetClosestObjectOfType, 4, 'its four leaves found first, once (its arm held since it was first posed)')
     local riding = 0
-    for _, f in ipairs(L.follows) do
+    for _, f in ipairs(O.follows) do
         local lead = W.obj(f.lead.id)
         if f.o.on and W.objects[f.o.on] == lead and f.o.att.bone == 0 and f.o.att.ox == f.r.ox
            and f.o.att.oy == f.r.oy and f.o.att.oz == f.r.oz and f.o.att.rz == 0.0 and f.o.att.collision == true
@@ -688,159 +770,207 @@ do
             riding = riding + 1
         end
     end
-    eq(riding, 4, 'every follower on its lead\'s knuckle, bone 0, at the kit\'s offset, with collision, unlocked')
+    eq(riding, 2, 'each of its followers on its lead\'s knuckle, bone 0, at the kit\'s offset, with collision, unlocked')
     local worstMirror, worstStep, lastH = 0.0, 0.0, nil
-    local lead1 = L.leads[1].o
+    local lead1 = O.leads[1].o
     local frames = 0
-    while W.G.counts().lanes[2].pose < 1.0 and frames < 1000 do
+    while poseOf(W, 2, 'outer') < 1.0 and frames < 1000 do
         W.frame(16)
         frames = frames + 1
-        worstMirror = math.max(worstMirror, mirrorError(W, L))
+        worstMirror = math.max(worstMirror, mirrorError(W, O))
         if lastH then worstStep = math.max(worstStep, math.abs(wrap180(lead1.h - lastH))) end
         lastH = lead1.h
         if frames == 125 then
-            near(wrap180(lead1.h - L.leads[1].r.h), 45.0, 0.5, 'halfway in time (2 s): halfway open, 45')
+            near(wrap180(lead1.h - O.leads[1].r.h), 45.0, 0.5, 'halfway in time (2 s): halfway open, 45')
         end
     end
     near(frames * 16, W.C.foldMs, 32, 'open after foldMs')
     near(worstMirror, 0.0, 1e-6, 'each follower mirrors its lead about the gate line at every frame')
     ok(worstStep < 1.0, 'and the lead turns smoothly: under a degree a frame', worstStep)
-    for _, l in ipairs(L.leads) do
+    for _, l in ipairs(O.leads) do
         near(wrap180(l.o.h - l.r.h), l.r.sense * 90.0, 1e-6, l.r.id .. ' turned ' .. (l.r.sense * 90) .. ', its sense')
         near(l.d.ratio, l.r.sense * 1.0, 1e-9, l.r.id .. ': held at open ratio ' .. l.r.sense)
         eq(l.d.state, 1, l.r.id .. ': held locked there')
     end
-    for _, f in ipairs(L.follows) do
+    for _, f in ipairs(O.follows) do
         local lead = W.obj(f.lead.id)
         near(math.abs(wrap180(W.worldHeading(f.o) - lead.h)), 180.0, 1e-6, f.r.id .. ' lies flat against its lead at 90')
     end
-    near(L.arm.d.ratio, W.C.armRaiseDeg / 90.0, 1e-9, 'the arm raised to armRaiseDeg by its ratio')
-    eq(W.wroteTo('lane1') + W.wroteTo('lane3'), 0, 'lanes 1 and 3: nothing written')
+    local a = O.arm.o
+    ok(a.frozen and a.rot.x == 0.0 and math.abs(a.rot.y + W.C.armRaiseDeg) < 1e-9 and a.rot.z == O.arm.r.h
+        and a.order == 2 and O.arm.d.state == 0,
+        'the arm raised by hand: frozen, about local +y by -raise (order 2), its door let go',
+        ('%s %s %s'):format(a.rot.x, a.rot.y, a.rot.z))
+    eq(W.wroteTo('lane2.inner') + W.wroteTo('lane1') + W.wroteTo('lane3'), 0,
+        'the inner gate and the other lanes: nothing written')
     local k = W.settle(20)
     ok(k <= 6 and not W.has('frame', 'dcgate.fold'), 'the followers ridden a few frames more, then the FRAME goes', k)
     W.slow()
     W.reset()
     W.slow()
     eq(#W.writes, 0, 'open and still: a pass writes nothing')
+
+    -- THE OUTER GATE SHUTS BEHIND THEM (code 4), THEN THE INNER ONE OPENS (6).
+    word(W, { 0, 4, 0 })
+    W.reset()
+    W.settle()
+    for _, l in ipairs(O.leads) do
+        ok(l.d.ratio == 0.0 and l.d.state == 1 and math.abs(wrap180(l.o.h - l.r.h)) < 1e-9, l.r.id .. ': shut and locked')
+    end
+    for _, f in ipairs(O.follows) do
+        local s = f.d.states
+        ok(f.o.on == nil and f.o.detaches == 1 and f.o.frozen == true and f.o.x == f.r.x and f.o.y == f.r.y
+            and f.o.h == f.r.h and s[#s - 1] == 4 and s[#s] == 1,
+            f.r.id .. ': let go once its lead is shut, put back where it was placed, frozen there, and locked')
+    end
+    ok(a.frozen and a.rot.y == 0.0 and a.rot.z == O.arm.r.h and O.arm.d.state == 1,
+        'the arm back down: still frozen, its door locked')
+    eq(W.wroteTo('lane2.inner'), 0, 'the inner gate untouched while the outer one shut')
+    word(W, { 0, 6, 0 })
+    W.reset()
+    local frames2 = W.settle()
+    ok(frames2 * 16 >= W.C.foldMs, 'the inner gate folds open', frames2)
+    for _, l in ipairs(I.leads) do
+        near(wrap180(l.o.h - l.r.h), l.r.sense * 90.0, 1e-6, l.r.id .. ' open')
+    end
+    near(mirrorError(W, I), 0.0, 1e-6, 'its followers folded flat against their leads')
+    eq(W.wroteTo('lane2.outer'), 0, 'the outer gate and its arm untouched while the inner one opened')
+    for _, l in ipairs(O.leads) do
+        ok(math.abs(wrap180(l.o.h - l.r.h)) < 1e-9, l.r.id .. ' still shut')
+    end
+    word(W, { 0, 0, 0 })
+    W.settle()
+    for _, l in ipairs(I.leads) do
+        ok(l.d.ratio == 0.0 and math.abs(wrap180(l.o.h - l.r.h)) < 1e-9, l.r.id .. ': the inner gate shut again')
+    end
+    for _, f in ipairs(I.follows) do
+        ok(f.o.on == nil and f.o.frozen == true, f.r.id .. ': let go and frozen')
+    end
+    -- THE NEXT CYCLE: a follower frozen where it was let go is thawed as it is
+    -- attached again.
+    word(W, { 0, 5, 0 })
+    W.frame(16)
+    for _, f in ipairs(O.follows) do
+        ok(f.o.on ~= nil and f.o.frozen == false and f.o.thaws == 1, f.r.id .. ': unfrozen as it rides its lead again')
+    end
+    W.settle()
+    near(mirrorError(W, O), 0.0, 1e-6, 'and folds flat')
 end
 
-describe('the fold: back shut, the followers let go and locked; turned back halfway with no jump')
+describe('the fold: outbound -- the inner gate first, then the outer and its arm')
 do
     local W = boot({ at = AT_IN2 })
     W.slow()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
+    W.reset()
+    word(W, { 0, 6, 0 })
     W.settle()
-    W.slow()
-    local L = laneParts(W, 2)
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, false, false } })
-    ok(W.has('frame', 'dcgate.fold'), 'shut: it folds back')
-    local worst = 0.0
-    local frames = 0
-    while W.has('frame', 'dcgate.fold') and frames < 1000 do
-        W.frame(16)
-        frames = frames + 1
-        worst = math.max(worst, mirrorError(W, L))
-    end
-    near(worst, 0.0, 1e-6, 'mirrored on the way back too')
-    for _, l in ipairs(L.leads) do
-        ok(l.d.ratio == 0.0 and l.d.state == 1 and math.abs(wrap180(l.o.h - l.r.h)) < 1e-9, l.r.id .. ': shut and locked')
-    end
-    for _, f in ipairs(L.follows) do
-        local s = f.d.states
-        ok(f.o.on == nil and f.o.detaches == 1 and f.d.ratio == 0.0 and s[#s - 1] == 4 and s[#s] == 1,
-            f.r.id .. ': let go once its lead is shut, and locked the pack\'s way')
-    end
-    ok(L.arm.d.ratio == 0.0 and L.arm.d.state == 1, 'the arm down and locked')
-
-    -- TURNED BACK HALFWAY.
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
-    W.frames(90)
-    local mid = wrap180(L.leads[1].o.h - L.leads[1].r.h)
-    ok(mid > 20 and mid < 70, 'part open', mid)
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, false, false } })
-    local last, worstStep = L.leads[1].o.h, 0.0
-    frames = 0
-    while W.has('frame', 'dcgate.fold') and frames < 1000 do
-        W.frame(16)
-        frames = frames + 1
-        worstStep = math.max(worstStep, math.abs(wrap180(L.leads[1].o.h - last)))
-        last = L.leads[1].o.h
-    end
-    ok(worstStep < 1.0, 'turned back: it runs back from where it was, no jump', worstStep)
-    ok(frames * 16 < W.C.foldMs, 'and sooner than a whole fold')
-    ok(math.abs(wrap180(L.leads[1].o.h - L.leads[1].r.h)) < 1e-9 and L.follows[1].o.on == nil, 'shut, let go')
+    local O, I = gateParts(W, 2, 'outer'), gateParts(W, 2, 'inner')
+    for _, l in ipairs(I.leads) do near(wrap180(l.o.h - l.r.h), l.r.sense * 90.0, 1e-6, l.r.id .. ' open first') end
+    ok(O.arm.o.rot.y == 0.0 and O.leads[1].d.ratio == 0.0, 'the outer gate shut and its arm down')
+    eq(W.wroteTo('lane2.outer'), 0, 'and untouched')
+    word(W, { 0, 4, 0 })
+    W.settle()
+    word(W, { 0, 5, 0 })
+    W.settle()
+    ok(math.abs(O.arm.o.rot.y + W.C.armRaiseDeg) < 1e-9 and math.abs(wrap180(O.leads[1].o.h - O.leads[1].r.h) - 90.0) < 1e-6
+        and I.leads[1].d.ratio == 0.0, 'then the outer gate open and its arm up, the inner gate shut')
 end
 
-describe('streamed in: a lane open before this client came near arrives open, its followers riding')
+describe('the fold: turned back halfway, with no jump')
+do
+    local W = boot({ at = AT_IN2 })
+    W.slow()
+    local O = gateParts(W, 2, 'outer')
+    word(W, { 0, 5, 0 })
+    W.frames(90)
+    local mid = wrap180(O.leads[1].o.h - O.leads[1].r.h)
+    ok(mid > 20 and mid < 70, 'part open', mid)
+    word(W, { 0, 5, 0 })
+    word(W, { 0, 4, 0 })
+    local last, worstStep, worstMirror, frames = O.leads[1].o.h, 0.0, 0.0, 0
+    while W.has('frame', 'dcgate.fold') and frames < 1000 do
+        W.frame(16)
+        frames = frames + 1
+        worstStep = math.max(worstStep, math.abs(wrap180(O.leads[1].o.h - last)))
+        worstMirror = math.max(worstMirror, mirrorError(W, O))
+        last = O.leads[1].o.h
+    end
+    ok(worstStep < 1.0, 'turned back: it runs back from where it was, no jump', worstStep)
+    near(worstMirror, 0.0, 1e-6, 'mirrored on the way back too')
+    ok(frames * 16 < W.C.foldMs, 'and sooner than a whole fold')
+    ok(math.abs(wrap180(O.leads[1].o.h - O.leads[1].r.h)) < 1e-9 and O.follows[1].o.on == nil, 'shut, let go')
+end
+
+describe('streamed in: a gate open before this client came near arrives open, its followers riding')
 do
     local W = boot({ at = FAR, objects = false })
     W.slow()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { true, false, false } })
+    word(W, { 6, 0, 0 })
     ok(not W.has('frame', 'dcgate.fold'), 'far away: nothing folds')
     W.at.x, W.at.y = NEAR.x, NEAR.y
     W.slow()
     W.streamIn()
     W.reset()
     W.slow()
-    local L = laneParts(W, 1)
-    for _, l in ipairs(L.leads) do
+    local I, O = gateParts(W, 1, 'inner'), gateParts(W, 1, 'outer')
+    for _, l in ipairs(I.leads) do
         ok(math.abs(wrap180(l.o.h - l.r.h) - l.r.sense * 90.0) < 1e-6, l.r.id .. ' arrives open')
     end
     local riding = 0
-    for _, f in ipairs(L.follows) do
+    for _, f in ipairs(I.follows) do
         if f.o.on then riding = riding + 1 end
     end
-    eq(riding, 4, 'its followers found and riding')
-    near(mirrorError(W, L), 0.0, 1e-6, 'folded flat against their leads')
-    local other = laneParts(W, 2)
-    ok(other.leads[1].d.ratio == 0.0 and other.follows[1].o.on == nil, 'lane 2, shut, posed shut')
+    eq(riding, 2, 'its followers found and riding')
+    near(mirrorError(W, I), 0.0, 1e-6, 'folded flat against their leads')
+    ok(O.leads[1].d.ratio == 0.0 and O.follows[1].o.on == nil and O.arm.o.rot.y == 0.0 and O.arm.o.frozen,
+        'its outer gate, shut, posed shut, its arm down and frozen')
     W.settle(20)
     W.reset()
     W.slow()
     eq(#W.writes, 0, 'the next pass writes nothing')
     -- A FOLLOWER THAT STREAMS OUT AND BACK RIDES AGAIN.
-    W.streamOut('gate.lane1.outer.follow_l')
+    W.streamOut('gate.lane1.inner.follow_l')
     W.reset()
     W.slow()
     eq(#W.writes, 0, 'a follower streamed out: nothing to write to')
-    W.streamIn('gate.lane1.outer.follow_l')
+    W.streamIn('gate.lane1.inner.follow_l')
     W.slow()
     W.settle(20)
-    local f = W.obj('gate.lane1.outer.follow_l')
+    local f = W.obj('gate.lane1.inner.follow_l')
     ok(f and f.on ~= nil, 'the follower that streamed back in rides its lead again')
-    near(mirrorError(W, laneParts(W, 1)), 0.0, 1e-6, 'folded')
+    near(mirrorError(W, gateParts(W, 1, 'inner')), 0.0, 1e-6, 'folded')
 end
 
 describe('a lead the door system eases: the followers ride it all the way, open and shut')
 do
     local W = boot({ at = FAR, objects = false })
     W.slow()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { true, false, false } })
+    word(W, { 5, 0, 0 })
     W.at.x, W.at.y = NEAR.x, NEAR.y
     W.slow()
     W.streamIn()
     W.lag = 1.0
     W.slow()
-    local L = laneParts(W, 1)
+    local O = gateParts(W, 1, 'outer')
     local k = W.settle(400)
     ok(k > 90 and not W.has('frame', 'dcgate.fold'),
         'streamed in open, the leads easing a degree a frame: ridden until they stopped, then the FRAME goes', k)
-    for _, l in ipairs(L.leads) do
+    for _, l in ipairs(O.leads) do
         near(wrap180(l.o.h - l.r.h), l.r.sense * 90.0, 1e-6, l.r.id .. ' eased all the way open')
     end
-    near(mirrorError(W, L), 0.0, 1e-6, 'every follower folded flat against its lead, not where its lead began')
+    near(mirrorError(W, O), 0.0, 1e-6, 'every follower folded flat against its lead, not where its lead began')
     W.reset()
     W.slow()
     eq(#W.writes, 0, 'the next pass writes nothing')
 
     W.lag = 0.25
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, false, false } })
+    word(W, { 4, 0, 0 })
     local early, worst, frames = 0, 0.0, 0
     while W.has('frame', 'dcgate.fold') and frames < 2000 do
         W.frame(16)
         frames = frames + 1
-        worst = math.max(worst, mirrorError(W, L))
-        for _, f in ipairs(L.follows) do
+        worst = math.max(worst, mirrorError(W, O))
+        for _, f in ipairs(O.follows) do
             local lead = W.obj(f.lead.id)
             if f.o.on == nil and math.abs(wrap180(lead.h - f.lead.h)) > 1e-6 then early = early + 1 end
         end
@@ -849,28 +979,28 @@ do
     near(worst, 0.0, 1e-6, 'every follower mirrors its lagging lead at every frame')
     eq(early, 0, 'and none is let go before its lead is shut')
     local gone = 0
-    for _, f in ipairs(L.follows) do if f.o.on == nil then gone = gone + 1 end end
-    eq(gone, 4, 'then all four are')
+    for _, f in ipairs(O.follows) do if f.o.on == nil then gone = gone + 1 end end
+    eq(gone, 2, 'then both are')
 end
 
 describe('a lead that turns after the settle: the next pass finds its followers astray and rides them again')
 do
     local W = boot({ at = FAR, objects = false })
     W.slow()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { true, false, false } })
+    word(W, { 5, 0, 0 })
     W.at.x, W.at.y = NEAR.x, NEAR.y
     W.slow()
     W.streamIn()
     W.lag, W.stall = 3.0, 30
     W.slow()
-    local L = laneParts(W, 1)
+    local O = gateParts(W, 1, 'outer')
     W.settle(400)
     ok(not W.has('frame', 'dcgate.fold'), 'the leads stood still through the settle, so it ended')
     for _ = 1, 60 do W.engine() end
-    ok(mirrorError(W, L) > 10.0, 'then the engine turned them: the followers are off', mirrorError(W, L))
+    ok(mirrorError(W, O) > 10.0, 'then the engine turned them: the followers are off', mirrorError(W, O))
     W.slow()
     W.settle(400)
-    near(mirrorError(W, L), 0.0, 1e-6, 'the next pass rode them again: folded flat')
+    near(mirrorError(W, O), 0.0, 1e-6, 'the next pass rode them again: folded flat')
     W.reset()
     W.slow()
     eq(#W.writes, 0, 'and the pass after writes nothing')
@@ -881,8 +1011,8 @@ do
     local W = boot({ at = { x = P0.center.x, y = P0.center.y + 290.0, z = 45.5 } })
     W.slow()
     eq(W.G.counts().near, true, '290 m from the gate\'s middle: its doors kept posed')
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
-    ok(W.has('frame', 'dcgate.fold'), 'and a lane opening folds where it is seen')
+    word(W, { 0, 5, 0 })
+    ok(W.has('frame', 'dcgate.fold'), 'and a gate opening folds where it is seen')
     W.at.y = P0.center.y + P0.radius + W.C.client.nearM + 1.0
     W.slow()
     eq(W.G.counts().near, false, 'past the leaves\' reach: not')
@@ -892,119 +1022,313 @@ end
 -- THE WORD
 -- =========================================================================
 
-describe('the word: DCGATE_STATE, the snapshot, the lobby, Season 1')
+describe('the word: DCGATE_STATE\'s codes, the snapshot, the lobby, Season 1')
 do
     local W = boot({ at = FAR })
     W.slow()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 4, open = { true, false, true } })
+    word(W, { 5, 0, 6 }, 4)
     local k = W.G.counts()
-    ok(k.lanes[1].target == 1 and k.lanes[2].target == 0 and k.lanes[3].target == 1 and k.match == 4,
-        'the server\'s word: lanes 1 and 3 open in match 4')
-    W.net(W.B.Net.SNAPSHOT, { dcgate = { matchId = 5, open = { false, true, false } } })
+    ok(k.lanes[1].outer.target == 1 and k.lanes[1].inner.target == 0 and k.lanes[1].busy
+        and k.lanes[3].inner.target == 1 and k.lanes[3].outer.target == 0 and k.lanes[2].busy == false and k.match == 4,
+        'the server\'s word: lane 1\'s outer gate and lane 3\'s inner gate open, in match 4')
+    W.net(W.B.Net.SNAPSHOT, { dcgate = { matchId = 5, lanes = { 0, 6, 0 } } })
     k = W.G.counts()
-    ok(k.lanes[1].target == 0 and k.lanes[2].target == 1 and k.match == 5, 'a snapshot replaces it')
+    ok(k.lanes[1].outer.target == 0 and k.lanes[2].inner.target == 1 and k.match == 5, 'a snapshot replaces it')
     W.net(W.B.Net.SNAPSHOT, { flick = {} })
     k = W.G.counts()
-    ok(k.lanes[2].target == 0 and k.match == nil, 'a snapshot with none: every lane shut')
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 6, open = { false, true, false } })
+    ok(k.lanes[2].inner.target == 0 and k.match == nil, 'a snapshot with none: every gate shut')
+    word(W, { 0, 5, 0 }, 6)
     W.B.State.me.state = W.B.PlayerState.LOBBY
     W.slow()
     k = W.G.counts()
-    ok(k.lanes[2].target == 0 and k.match == nil, 'the lobby: every lane shut, the word forgotten')
+    ok(k.lanes[2].outer.target == 0 and k.match == nil, 'the lobby: every gate shut, the word forgotten')
     W.B.State.me.state = W.B.PlayerState.ALIVE
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 7, open = { false, true, false } })
+    word(W, { 0, 5, 0 }, 7)
     W.switch(1)
-    eq(W.G.counts().lanes[2].target, 0, 'Season 1: shut')
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 7, open = { false, true, false } })
-    eq(W.G.counts().lanes[2].target, 0, 'and a word heard on Season 1 opens nothing')
+    eq(W.G.counts().lanes[2].outer.target, 0, 'Season 1: shut')
+    word(W, { 0, 5, 0 }, 7)
+    eq(W.G.counts().lanes[2].outer.target, 0, 'and a word heard on Season 1 opens nothing')
     W.switch(2)
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 7, open = { 'yes', true, 1 } })
+    word(W, { 'yes', 5, 9 }, 7)
     k = W.G.counts()
-    ok(k.lanes[1].target == 0 and k.lanes[2].target == 1 and k.lanes[3].target == 0, 'only `true` opens a lane')
-    -- Season 1 near the gate: the open lane folds shut, and the doors stay locked.
+    ok(k.lanes[1].outer.target == 0 and k.lanes[2].outer.target == 1 and k.lanes[3].outer.target == 0
+        and k.lanes[3].inner.target == 0, 'only a code 0-7 is a lane\'s word')
+    word(W, { 1.5, true, -1 }, 7)
+    k = W.G.counts()
+    ok(k.lanes[1].outer.target == 0 and k.lanes[2].outer.target == 0, 'a fraction, a boolean, a negative: shut')
+    -- Season 1 near an open gate: it folds shut, and the doors stay locked.
     local N = boot({ at = AT_IN2 })
     N.slow()
-    N.net(N.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
+    word(N, { 0, 5, 0 })
     N.settle()
     N.switch(1)
-    ok(N.has('frame', 'dcgate.fold'), 'Season 1 near an open lane: it folds shut')
+    ok(N.has('frame', 'dcgate.fold'), 'Season 1 near an open gate: it folds shut')
     N.settle()
-    local L = laneParts(N, 2)
-    ok(L.leads[1].d.ratio == 0.0 and L.leads[1].d.state == 1 and L.follows[1].o.on == nil, 'shut and locked')
+    local O = gateParts(N, 2, 'outer')
+    ok(O.leads[1].d.ratio == 0.0 and O.leads[1].d.state == 1 and O.follows[1].o.on == nil and O.arm.o.rot.y == 0.0,
+        'shut and locked, its arm down')
     N.reset()
     N.slow()
     ok((N.calls.DoorSystemGetIsPhysicsLoaded or 0) == 27, 'on Season 1 the gate is still kept locked as it streams in')
 end
 
+describe('the snapshot\'s poses: a late joiner near the gate sees each gate where it is')
+do
+    local W = boot({ at = AT_IN2 })
+    W.slow()
+    W.reset()
+    W.net(W.B.Net.SNAPSHOT, { dcgate = { matchId = 3, lanes = { 0, 5, 0 }, poses = { { 0, 0 }, { 0.5, 0 }, { 0, 0 } } } })
+    eq(poseOf(W, 2, 'outer'), 0.5, 'two seconds into the outer gate\'s fold: half open here too')
+    ok(W.has('frame', 'dcgate.fold'), 'and folding on')
+    W.frame(16)
+    local O = gateParts(W, 2, 'outer')
+    near(wrap180(O.leads[1].o.h - O.leads[1].r.h), 45.0, 1.0, 'its leads put half open at once, not from shut')
+    local frames = W.settle()
+    ok(frames * 16 < W.C.foldMs * 0.5 + 200, 'open in the half fold that was left', frames)
+    near(mirrorError(W, O), 0.0, 1e-6, 'its followers folded flat')
+    eq(poseOf(W, 2, 'inner'), 0.0, 'the inner gate shut')
+    -- A CLIENT FOLDING IN STEP KEEPS ITS OWN POSE.
+    local N = boot({ at = AT_IN2 })
+    N.slow()
+    word(N, { 0, 5, 0 })
+    N.frames(60)
+    local mine = poseOf(N, 2, 'outer')
+    N.net(N.B.Net.SNAPSHOT, { dcgate = { matchId = 1, lanes = { 0, 5, 0 }, poses = { { 0, 0 }, { mine + 0.05, 0 }, { 0, 0 } } } })
+    eq(poseOf(N, 2, 'outer'), mine, 'a snapshot a network trip ahead: this client keeps its own pose')
+    N.net(N.B.Net.SNAPSHOT, { dcgate = { matchId = 1, lanes = { 0, 5, 0 }, poses = { { 0, 0 }, { 'x', 7 }, 9 } } })
+    eq(poseOf(N, 2, 'outer'), mine, 'and poses that are not 0-1 are not taken')
+    -- Far away: the pose is simply the target.
+    local F = boot({ at = FAR })
+    F.slow()
+    F.net(F.B.Net.SNAPSHOT, { dcgate = { matchId = 1, lanes = { 0, 4, 0 }, poses = { { 0, 0 }, { 0.6, 0 }, { 0, 0 } } } })
+    eq(poseOf(F, 2, 'outer'), 0.0, 'far away, a gate folding shut: simply shut, for when this client comes near')
+end
+
 -- =========================================================================
--- br_core STOPPING, AND THE 'rotate' DRIVE
+-- THE ARM, AND THE 'rotate' DRIVE: FROZEN IN EVERY POSE
 -- =========================================================================
 
-describe('br_core stopping: the prompt down, every follower let go, every part shut and locked')
+describe('the arm: turned by hand and frozen from the moment it is found -- a car hitting it knocks nothing loose')
+do
+    local W = boot({ at = AT_IN2 })
+    eq(W.C.client.drive.arm, 'rotate', 'the arm is turned by hand by default')
+    W.slow()
+    local A = gateParts(W, 2, 'outer').arm
+    ok(A.o.frozen and A.o.rot.y == 0.0 and A.o.rot.z == A.r.h and A.d.state == 1,
+        'shut, before any press: found, frozen at its placed rotation, its door locked')
+    ok(not W.hit(A.r.id), 'a car drives into it before the press: it stands')
+    for cycle = 1, 10 do
+        word(W, { 0, 5, 0 })
+        W.settle()
+        if not (math.abs(A.o.rot.y + W.C.armRaiseDeg) < 1e-9 and A.o.frozen and A.d.state == 0) then
+            ok(false, 'cycle ' .. cycle .. ': the arm rises, frozen', A.o.rot.y)
+        end
+        if W.hit(A.r.id) then ok(false, 'cycle ' .. cycle .. ': raised, a hit knocks it loose') end
+        word(W, { 0, 4, 0 })
+        W.settle()
+        if not (A.o.rot.y == 0.0 and A.o.rot.z == A.r.h and A.o.frozen and A.d.state == 1) then
+            ok(false, 'cycle ' .. cycle .. ': back down, frozen, locked', A.o.rot.y)
+        end
+        if W.hit(A.r.id) then ok(false, 'cycle ' .. cycle .. ': shut, a hit knocks it loose') end
+        word(W, { 0, 0, 0 })
+        W.slow()
+    end
+    ok(not A.o.fallen, 'ten cycles, hit before, during and after each: it rises every time and never falls')
+    eq(A.o.thaws, nil, 'never unfrozen while this client drives it')
+    -- Streamed out and back: the copy that comes back is the map's, hinged;
+    -- it is found and frozen on the next pass.
+    W.streamOut('gate.lane2.outer_arm')
+    W.slow()
+    W.streamIn('gate.lane2.outer_arm.arm')
+    local fresh = W.obj('gate.lane2.outer_arm.arm')
+    ok(not fresh.frozen, 'streamed back in: the map\'s own copy')
+    W.slow()
+    ok(fresh.frozen and fresh.rot.y == 0.0, 'the next pass: found and frozen, shut')
+end
+
+describe('\'rotate\' leads: frozen in every pose too, the followers riding them just the same')
+do
+    local W = boot({ at = AT_IN2 })
+    W.slow()
+    W.commands.brgate(0, { 'drive', 'lead', 'rotate' })
+    eq(W.C.client.drive.lead, 'rotate', 'the lead switched on this client')
+    W.slow()
+    local O = gateParts(W, 2, 'outer')
+    for _, l in ipairs(O.leads) do
+        ok(l.o.frozen and l.d.state == 1 and l.o.rot.z == l.r.h, l.r.id .. ': shut, found and frozen, its door locked')
+    end
+    word(W, { 0, 5, 0 })
+    W.frames(30)
+    for _, l in ipairs(O.leads) do
+        ok(l.o.frozen == true and l.d.state == 0 and l.o.order == 2, l.r.id .. ': frozen, let go, turned (order 2)')
+    end
+    W.settle()
+    for _, l in ipairs(O.leads) do
+        near(wrap180(l.o.rot.z - l.r.h), l.r.sense * 90.0, 1e-6, l.r.id .. ': turned to its sense by hand')
+    end
+    near(mirrorError(W, O), 0.0, 1e-6, 'the followers ride a lead turned by hand just the same')
+    word(W, { 0, 4, 0 })
+    W.settle()
+    for _, l in ipairs(O.leads) do
+        ok(l.o.frozen and l.d.state == 1 and math.abs(wrap180(l.o.rot.z - l.r.h)) < 1e-9 and l.o.thaws == nil,
+            l.r.id .. ': shut, still frozen, its door locked, never unfrozen')
+        ok(not W.hit(l.r.id), l.r.id .. ': run into, it stands')
+    end
+    for _, f in ipairs(O.follows) do
+        ok(f.o.frozen and not W.hit(f.r.id), f.r.id .. ': let go frozen where it was placed: run into, it stands')
+    end
+end
+
+-- =========================================================================
+-- THE READ-BACK
+-- =========================================================================
+
+describe('the read-back: a lead or arm off its pose is posed again; one still off is registered again')
+do
+    local W = boot({ at = AT_IN2 })
+    W.slow()
+    word(W, { 0, 5, 0 })
+    W.settle()
+    W.slow()
+    W.settle()
+    local O = gateParts(W, 2, 'outer')
+    -- (a) The door system lost a lead's ratio.
+    local L1 = O.leads[1]
+    L1.d.ratio = 0.0
+    W.reset()
+    W.slow()
+    near(L1.d.ratio, L1.r.sense * 1.0, 1e-9, 'a lead whose open ratio reads 0 at pose 1: posed again on the next pass')
+    eq(W.calls.RemoveDoorFromSystem, nil, 'without registering it again')
+    W.settle()
+    W.slow()
+    W.settle()
+    W.reset()
+    W.slow()
+    eq(#W.writes, 0, 'then it reads right, and is left alone')
+    -- (b) A door that does not hear a re-pose: registered again.
+    local L2 = O.leads[2]
+    L2.d.ratio, L2.d.deaf = 0.0, true
+    W.reset()
+    W.slow()
+    eq(W.door(L2.r.id).ratio, 0.0, 'a door that does not hear it: still off after the re-pose')
+    eq(W.calls.RemoveDoorFromSystem, nil, 'not registered again yet')
+    W.settle()
+    W.reset()
+    W.slow()
+    ok(W.calls.RemoveDoorFromSystem == 1 and W.calls.AddDoorToSystem == 1, 'still off on the next pass: its door registered again')
+    near(W.door(L2.r.id).ratio, L2.r.sense * 1.0, 1e-9, 'and posed: it takes')
+    W.settle()
+    W.slow()
+    W.settle()
+    W.reset()
+    W.slow()
+    eq(#W.writes, 0, 'then left alone')
+    -- (c) The arm turned off its pose by something else.
+    local A = O.arm
+    A.o.rot = { x = 0.0, y = 0.0, z = A.r.h }
+    W.reset()
+    W.slow()
+    ok(math.abs(A.o.rot.y + W.C.armRaiseDeg) < 1e-9 and A.o.frozen, 'an arm read back lying down at pose 1: raised again')
+    eq(W.calls.RemoveDoorFromSystem, nil, 'without registering it again')
+    W.settle()
+    W.slow()
+    W.settle()
+    -- (d) One read back the other way round of the same turn is not off.
+    A.o.rot = { x = 180.0, y = 180.0 - W.C.armRaiseDeg, z = A.r.h + 180.0 }
+    W.reset()
+    W.slow()
+    eq(#W.writes, 0, 'the same turn spelled the other way: not off, nothing written')
+end
+
+describe('the read-back: the owner\'s bug -- a \'ratio\' arm hit before the press stays down no longer')
+do
+    local W = boot({ at = AT_IN2 })
+    W.slow()
+    W.commands.brgate(0, { 'drive', 'arm', 'ratio' })
+    W.slow()
+    local A = gateParts(W, 2, 'outer').arm
+    ok(not A.o.frozen and A.o.rot.y == 0.0 and A.d.state == 1, 'switched to ratio: handed back to the door system, shut')
+    word(W, { 0, 5, 0 })
+    W.settle()
+    near(A.d.ratio, W.C.armRaiseDeg / 90.0, 1e-9, 'the lane opens: the arm\'s ratio set')
+    -- The hit: the door system drops the arm's ratio (brgate near read 0.000 at pose 1.00).
+    A.d.ratio = 0.0
+    W.slow()
+    near(A.d.ratio, W.C.armRaiseDeg / 90.0, 1e-9, 'read back at 0.000: set again on the next pass')
+end
+
+-- =========================================================================
+-- br_core STOPPING, AND `brgate drive`
+-- =========================================================================
+
+describe('br_core stopping: everything handed back -- let go, put where it was placed, unfrozen, locked')
 do
     local W = boot({ at = AT_IN2 })
     W.slow()
     W.tick()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { true, true, false } })
+    word(W, { 5, 0, 6 })
     W.frames(60)
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { true, false, false } })
+    word(W, { 5, 0, 4 })
     W.tick()
     for _, fn in ipairs(W.handlers.onResourceStop or {}) do fn('br_dummy') end
     ok(W.obj('gate.lane1.outer.follow_l').on ~= nil, 'another resource stopping: nothing')
     W.notices = {}
     -- Mid-fold, the engine has the follower where its lead's knuckle put it.
-    local fr = laneParts(W, 1).follows[1].r
+    local fr = gateParts(W, 1, 'outer').follows[1].r
     local fo = W.obj(fr.id)
     fo.x, fo.y, fo.h = fo.x + 0.7, fo.y - 0.9, fo.h + 33.0
     for _, fn in ipairs(W.handlers.onResourceStop or {}) do fn('br_core') end
     ok(fo.x == fr.x and fo.y == fr.y and fo.z == fr.z and fo.h == fr.h,
         'a follower let go mid-fold is put back where it was placed, not left where the knuckle had it')
-    local attached, open = 0, 0
-    for _, o in pairs(W.objects) do if o.on then attached = attached + 1 end end
+    local attached, frozen, open = 0, 0, 0
+    for _, o in pairs(W.objects) do
+        if o.on then attached = attached + 1 end
+        if o.frozen then frozen = frozen + 1 end
+    end
     for _, d in pairs(W.doors) do if d.ratio ~= 0.0 or d.state ~= 1 then open = open + 1 end end
     eq(attached, 0, 'no follower attached')
+    eq(frozen, 0, 'nothing left frozen: every part the door system\'s again')
     eq(open, 0, 'every door at ratio 0, locked')
+    local arms = 0
+    for _, lane in ipairs(P0.lanes) do
+        local o = W.obj(lane.arm.id)
+        if o.rot.x == 0.0 and o.rot.y == 0.0 and o.rot.z == lane.arm.h then arms = arms + 1 end
+    end
+    eq(arms, 3, 'every arm at its placed rotation')
     local n = 0
     for _ in pairs(W.doors) do n = n + 1 end
     eq(n, 27, 'and left registered: a gate left locked is the map\'s resting state')
     ok(W.notices[1] and W.notices[1].clear == 'dcgate.reader', 'the prompt taken down')
 end
 
-describe('the \'rotate\' drive: `brgate drive` switches it; frozen and turned by hand, unlocked while it moves')
+describe('`brgate drive`: a kind switched back to ratio is handed back; and the dev verbs')
 do
     local W = boot({ at = AT_IN2 })
     W.slow()
-    W.commands.brgate(0, { 'drive', 'lead', 'rotate' })
-    W.commands.brgate(0, { 'drive', 'arm', 'rotate' })
-    eq(W.C.client.drive.lead, 'rotate', 'the lead switched on this client')
+    word(W, { 0, 5, 0 })
+    W.settle()
+    local A = gateParts(W, 2, 'outer').arm
+    ok(A.o.frozen and A.o.rot.y ~= 0.0, 'the arm up and frozen')
+    W.commands.brgate(0, { 'drive', 'arm', 'ratio' })
+    ok(not A.o.frozen and A.o.rot.y == 0.0 and A.o.rot.z == A.r.h and A.d.ratio == 0.0 and A.d.state == 1,
+        'switched to ratio: put at its placed rotation, unfrozen, shut by the door system')
     W.slow()
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, true, false } })
-    W.frames(30)
-    local L = laneParts(W, 2)
-    for _, l in ipairs(L.leads) do
-        ok(l.o.frozen == true and l.d.state == 0 and l.o.order == 2, l.r.id .. ': frozen, unlocked, turned (order 2)')
-    end
     W.settle()
-    for _, l in ipairs(L.leads) do
-        near(wrap180(l.o.rot.z - l.r.h), l.r.sense * 90.0, 1e-6, l.r.id .. ': turned to its sense by hand')
-    end
-    near(mirrorError(W, L), 0.0, 1e-6, 'the followers ride a lead turned by hand just the same')
-    local a = L.arm.o
-    ok(a.frozen and a.rot.x == 0.0 and math.abs(a.rot.y + W.C.armRaiseDeg) < 1e-9 and a.rot.z == L.arm.r.h,
-        'the arm: about local +y by -raise, under its heading', ('%s %s %s'):format(a.rot.x, a.rot.y, a.rot.z))
-    W.net(W.B.Net.DCGATE_STATE, { matchId = 1, open = { false, false, false } })
-    W.settle()
-    for _, l in ipairs(L.leads) do
-        ok(not l.o.frozen and l.d.state == 1 and math.abs(wrap180(l.o.rot.z - l.r.h)) < 1e-9,
-            l.r.id .. ': shut, let go, locked')
-    end
+    near(A.d.ratio, W.C.armRaiseDeg / 90.0, 1e-9, 'then posed by its ratio on the next pass')
+    ok(not A.o.frozen, 'and left unfrozen')
+    W.commands.brgate(0, { 'drive', 'arm', 'rotate' })
+    W.slow()
+    ok(A.o.frozen and math.abs(A.o.rot.y + W.C.armRaiseDeg) < 1e-9, 'back to rotate: frozen and raised by hand again')
     W.commands.brgate(0, { 'drive', 'lead', 'sideways' })
     ok(W.printed[#W.printed]:find('brgate drive <lead|arm> <ratio|rotate>', 1, true) ~= nil, 'a drive that is not one: the usage')
     W.commands.brgate(0, { 'open', '2' })
     eq(W.executed[#W.executed], 'brgatesv open 2', '`brgate open 2` goes to the server')
+    W.commands.brgate(0, { 'open', '2', 'out' })
+    eq(W.executed[#W.executed], 'brgatesv open 2 out', '`brgate open 2 out`: the inside reader\'s cycle')
     W.commands.brgate(0, { 'near' })
     ok(W.printed[#W.printed - 9] and W.printed[#W.printed - 9]:find('gate.lane2.reader_in', 1, true) ~= nil,
         '`brgate near` names the nearest reader and reads its lane\'s nine parts', W.printed[#W.printed - 9])
+    ok(W.printed[#W.printed - 9]:find('cycle running, outer open', 1, true) ~= nil, 'and its gates', W.printed[#W.printed - 9])
 end
 
 -- --------------------------------------------------------------- the file ---

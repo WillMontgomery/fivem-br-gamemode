@@ -5,13 +5,15 @@
 --   the doors    the 24 bi-fold leaves and 3 crash arms registered with the
 --                door system and locked shut -- in every season, as the
 --                br_datacenter pack kept them -- and each posed as its physics
---                streams in
+--                streams in, read back and posed again when it is off
 --   the prompt   at a lane's reader, "Press E to open the gate" (the owner's
---                words, the E the player's own interact key drawn as a key)
+--                words, the E the player's own interact key drawn as a key),
+--                while that lane's cycle is not running
 --   the ask      interact at a reader: DCGATE_USE, and nothing else
---   the fold     each lane the server says is open, folded open: the leads
---                turn about their post hinges, the followers ride the leads'
---                knuckles and counter-rotate, the arm rises; and back
+--   the fold     each gate the server says is open, folded open: its leads
+--                turn about their post hinges, its followers ride the leads'
+--                knuckles and counter-rotate, and the outer gate's arm rises;
+--                and back. Each lane's two gates fold apart (a sally port)
 --   the dev tools `brgate`
 --
 -- ═══ THE FOLD (the gate kit's kit_gate_doors.json) ═══
@@ -22,26 +24,40 @@
 -- drive` switches it here). A follower is attached to its lead at the knuckle
 -- (AttachEntityToEntity, "not DoorSystemSetOpenRatio": the door system cannot
 -- fold a pair) and turned -2 times its lead's turn as it is now, so the half
--- folds flat; it is unlocked while attached and detached and locked again once
--- its lead is shut. The arm rises with the lane. A lane's pose is one number, 0
--- shut to 1 open (BR.DcGateSolve), moved a whole fold per foldMs; a fold turned
--- back halfway runs back from where it is.
+-- folds flat; it is unlocked while attached, and let go, put back, frozen and
+-- locked again once its lead is shut. The arm rises with the outer gate. A
+-- gate's pose is one number, 0 shut to 1 open (BR.DcGateSolve), moved a whole
+-- fold per foldMs; a fold turned back halfway runs back from where it is.
+--
+-- ═══ A PART TURNED BY HAND STAYS FROZEN (owner, 2026-10-24) ═══
+--
+-- A door entity this file has turned with SetEntityRotation -- a 'rotate'
+-- lead or arm, a follower put back where it was placed -- loses its hinge:
+-- unfrozen, a car running into it knocks it loose. So a 'rotate' part is
+-- frozen the moment it is found and stays frozen in every pose, shut
+-- included, and a follower let go is frozen where it is put back. Frozen, a
+-- part is solid: cars stop against it and it cannot fall. Only br_core
+-- stopping, or `brgate drive` switching a kind to 'ratio', unfreezes them and
+-- hands them back to the door system.
 --
 -- ═══ IDEMPOTENT, WHEREVER THE GATE IS WHEN IT STREAMS IN ═══
 --
--- What a part should show is a function of its lane's pose and nothing else.
+-- What a part should show is a function of its gate's pose and nothing else.
 -- A door whose physics streams in (DoorSystemGetIsPhysicsLoaded) is posed to it
--- on the SLOW pass -- a lane open since before this client came near arrives
--- open, its followers attached as they are found -- and a pass that finds every
--- part already posed calls nothing but the reads.
+-- on the SLOW pass -- a gate open since before this client came near arrives
+-- open, its followers attached as they are found -- and every lead and arm at
+-- rest is read back by its drive's own read (its open ratio, or its
+-- rotation) and posed again when it is off; a pass that finds every part
+-- where it should be calls nothing but the reads.
 --
 -- ═══ WHAT IT COSTS ═══
 --
 -- Nothing per frame, anywhere. Away from the gate the SLOW pass asks one
 -- distance (none in the lobby, none without the map pack); within client.nearM
--- it reads each door's physics once a second; within client.promptM a TICK
--- callback reads this player's position for the prompt; and a FRAME callback
--- exists only while a lane near this client is folding.
+-- it reads each door's physics, and each lead and arm back, once a second;
+-- within client.promptM a TICK callback reads this player's position for the
+-- prompt; and a FRAME callback exists only while a gate near this client is
+-- folding.
 
 BR = BR or {}
 BR.DcGate = BR.DcGate or {}
@@ -77,14 +93,14 @@ end
 -- the shape of client/skydive.lua's "Press {key} to pull your chute!" and the
 -- big map's sticky notice (tools/check_key_glyphs.lua: a key is drawn as a key,
 -- and the key it draws is the real one). Sticky while the player stands at a
--- reader of a shut lane, taken down the moment they are not, and silent: it
--- comes up every time anybody walks to a reader.
+-- reader of a lane whose cycle is not running, taken down the moment they are
+-- not, and silent: it comes up every time anybody walks to a reader.
 local PROMPT_KEY = 'dcgate.reader'
 local PROMPT_TEXT = 'Press ' .. BR.KeyToken('brinteract') .. ' to open the gate'
 G.PROMPT_TEXT = PROMPT_TEXT
 
---- THE SETTLE: a lane's followers are ridden on after its pose stops, until
---- no lead has turned for SETTLE_FRAMES frames running, before a shut lane's
+--- THE SETTLE: a gate's followers are ridden on after its pose stops, until
+--- no lead has turned for SETTLE_FRAMES frames running, before a shut gate's
 --- followers are let go. A door the system moves this frame shows it next,
 --- and the door system may ease a lead to its ratio over many frames; the
 --- followers track it all the way. SETTLE_MAX_FRAMES caps a lead that never
@@ -93,28 +109,44 @@ G.PROMPT_TEXT = PROMPT_TEXT
 local SETTLE_FRAMES = 5
 local SETTLE_MAX_FRAMES = 300
 local SETTLE_DEG = 0.05
---- THE SLOW PASS'S CHECK on a lane at rest: an attached follower more than
+--- THE SLOW PASS'S CHECK on a gate at rest: an attached follower more than
 --- this off -2 times its lead's turn as the lead stands now (a lead the door
 --- system moved after the settle) is ridden again.
 local ASTRAY_DEG = 1.0
+--- THE READ-BACK on a gate at rest: a 'ratio' lead or arm whose open ratio
+--- reads more than REPOSE_RATIO off its gate's pose, or a 'rotate' one whose
+--- rotation reads more than REPOSE_DEG off (or that is not frozen), is posed
+--- again; one still off on the next pass has its door registered again first.
+local REPOSE_RATIO = 0.02
+local REPOSE_DEG = 2.0
+--- A SNAPSHOT'S POSE is taken over only when this client's pose of that gate
+--- is more than this off it (a late joiner, a restart): a client folding in
+--- step with the server, a network trip behind, keeps its own.
+local POSE_JUMP = 0.1
 
 -- ------------------------------------------------------------ the state ---
 
---- The lanes the server says are open in this match: [n] = true. Empty is
---- every lane shut, which is how every match starts: the server says nothing
---- until a lane opens, and the lobby empties it.
-local serverOpen = {}
+--- The server's word for each lane of this match: [n] = { outer, inner, busy }
+--- (BR.DcGateSolve.decode). Empty is every gate shut and no cycle running,
+--- which is how every match starts: the server says nothing until a lane
+--- moves, and the lobby empties it.
+local serverGates = {}
 --- The match the last word was for (nil: none), for `brgate`.
 local gateMatch = nil
 
---- Every door: { kind = 'lead'|'follow'|'arm', row, lane, name, hash, model,
---- handle?, applied?, attached?, frozen?, yaw? (a follower's last attach yaw) }.
+--- Every door: { kind = 'lead'|'follow'|'arm', row, lane, gate, name, hash,
+--- model, handle?, applied?, attached?, frozen?, yaw? (a follower's last
+--- attach yaw), held? (the door state a 'rotate' part was last given), off
+--- (passes running it has read back off its pose) }.
 local doors = {}
---- The lanes, in order: { n, row, pose, target, settle, settled, folded,
---- leads, follows, arm, all }.
+--- The lanes, in order: { n, row, leads ([i] = the door of row.leads[i]),
+--- gates = { outer, inner } }.
 local lanes = {}
 --- [n] = the lane.
 local laneByN = {}
+--- Every gate, in order (lane 1 outer, lane 1 inner, ...): { lane, n, which,
+--- pose, target, settle, settled, folded, adopted, leads, follows, arm?, all }.
+local gates = {}
 
 --- Within client.nearM of the gate this pass.
 local near = false
@@ -130,21 +162,48 @@ local atReader = nil
 --- When this client last asked.
 local lastAsk = nil
 
+--- Every lane's zones (BR.DcGateSolve.zones), built once per registry table.
+local zoneCache, zoneParts = nil, nil
+local function zones()
+    local p = parts()
+    if zoneParts ~= p then zoneCache, zoneParts = GS.zones(p), p end
+    return zoneCache
+end
+
 local function build()
-    doors, lanes, laneByN = {}, {}, {}
+    doors, lanes, laneByN, gates = {}, {}, {}, {}
     for _, row in ipairs(parts().lanes or {}) do
-        local L = { n = row.lane, row = row, pose = 0.0, target = 0.0, settle = 0, settled = 0, folded = false,
-                    leads = {}, follows = {}, all = {} }
-        local function add(kind, r)
-            local d = { kind = kind, row = r, lane = L, name = GS.doorName(r.id),
-                        hash = GetHashKey(GS.doorName(r.id)), model = GetHashKey(r.model) }
+        local L = { n = row.lane, row = row, leads = {}, gates = {} }
+        for _, w in ipairs(GS.GATES) do
+            local Gt = { lane = L, n = row.lane, which = w, pose = 0.0, target = 0.0, settle = 0, settled = 0,
+                         folded = false, adopted = false, leads = {}, follows = {}, all = {} }
+            L.gates[w] = Gt
+            gates[#gates + 1] = Gt
+        end
+        local function add(kind, r, Gt)
+            local d = { kind = kind, row = r, lane = L, gate = Gt, name = GS.doorName(r.id),
+                        hash = GetHashKey(GS.doorName(r.id)), model = GetHashKey(r.model), off = 0 }
             doors[#doors + 1] = d
-            L.all[#L.all + 1] = d
+            Gt.all[#Gt.all + 1] = d
             return d
         end
-        for _, r in ipairs(row.leads or {}) do L.leads[#L.leads + 1] = add('lead', r) end
-        for _, r in ipairs(row.follows or {}) do L.follows[#L.follows + 1] = add('follow', r) end
-        if row.arm then L.arm = add('arm', row.arm) end
+        for i, r in ipairs(row.leads or {}) do
+            local Gt = L.gates[GS.gateOf(r.id) or '']
+            if Gt then
+                local d = add('lead', r, Gt)
+                L.leads[i] = d
+                Gt.leads[#Gt.leads + 1] = d
+            end
+        end
+        for _, r in ipairs(row.follows or {}) do
+            local lead = (row.leads or {})[r.lead]
+            local Gt = lead and L.gates[GS.gateOf(lead.id) or '']
+            if Gt then Gt.follows[#Gt.follows + 1] = add('follow', r, Gt) end
+        end
+        if row.arm then
+            local Gt = L.gates[GS.gateOf(row.arm.id) or '']
+            if Gt then Gt.arm = add('arm', row.arm, Gt) end
+        end
         lanes[#lanes + 1] = L
         laneByN[L.n] = L
     end
@@ -175,25 +234,33 @@ local function shut(d)
     DoorSystemSetOpenRatio(d.hash, 0.0, false, true)
     DoorSystemSetDoorState(d.hash, 4, false, true)
     DoorSystemSetDoorState(d.hash, 1, false, true)
+    d.held = 1
 end
 
---- Every part registered with the door system on this client and locked
---- shut. Local (no door events are sent: the server's word is DCGATE_STATE),
---- under the pack's own names, so a pack that still registers a part and this
---- file hold one door between them, not two. A name already registered is
---- taken back and registered again, as the pack does.
+--- One part registered with the door system on this client, under the
+--- pack's own name, and locked shut. A name already registered is taken back
+--- and registered again, as the pack does.
+local function register(d)
+    if isTrue(IsDoorRegisteredWithSystem(d.hash)) then RemoveDoorFromSystem(d.hash) end
+    AddDoorToSystem(d.hash, d.model, d.row.x, d.row.y, d.row.z, false, false, true)
+    shut(d)
+end
+
+--- Every part registered and locked shut. Local (no door events are sent: the
+--- server's word is DCGATE_STATE), under the pack's own names, so a pack that
+--- still registers a part and this file hold one door between them, not two.
 local function registerDoors()
     for _, d in ipairs(doors) do
-        if isTrue(IsDoorRegisteredWithSystem(d.hash)) then RemoveDoorFromSystem(d.hash) end
-        AddDoorToSystem(d.hash, d.model, d.row.x, d.row.y, d.row.z, false, false, true)
-        shut(d)
-        d.applied, d.attached, d.frozen, d.yaw = nil, false, false, nil
+        register(d)
+        d.applied, d.attached, d.yaw, d.off = nil, false, nil, 0
     end
     registered = true
 end
 
 --- This part's handle: the cached one while it exists, else (when `find`)
 --- the map object of its model at its placed origin. Nil when there is none.
+--- A handle gone takes what this file did to it along: a copy that streams
+--- back in is the map's, hinged and unfrozen.
 local function handleOf(d, find)
     local h = d.handle
     if h and isTrue(DoesEntityExist(h)) then return h end
@@ -212,58 +279,89 @@ local function driveOf(kind)
     return dr[kind] == 'rotate' and 'rotate' or 'ratio'
 end
 
---- Bring a lead or an arm to its lane's pose. True when it is there.
+--- How far a lead or the arm turns at its gate's pose.
+local function partDeg(d)
+    if d.kind == 'lead' then return GS.leadTurn(d.row.sense, d.gate.pose, cfg().foldDeg) end
+    return GS.armRaise(d.gate.pose, cfg().armRaiseDeg)
+end
+
+--- The 'ratio' drive's open ratio for a lead or the arm at its gate's pose.
+local function wantRatio(d)
+    if d.gate.pose <= 0 then return 0.0 end
+    local which = d.kind == 'lead' and 'lead' or 'arm'
+    return GS.ratio(partDeg(d), (C().ratioDeg or {})[which], (C().ratioSign or {})[which])
+end
+
+--- The 'rotate' drive's rotation (x, y, z, order 2) for a lead or the arm.
+local function wantRotation(d)
+    if d.kind == 'lead' then return 0.0, 0.0, d.row.h + partDeg(d) end
+    return GS.armRotation(d.row, partDeg(d))
+end
+
+--- Bring a lead or the arm to its gate's pose. True when it is there.
+---
+--- 'rotate': frozen first (and never unfrozen here), then turned; its door
+--- locked shut while the part is shut and let go while it is turned.
+--- 'ratio': the door system's open ratio, held locked.
 local function drivePart(d, find)
-    local L = d.lane
-    local deg
-    if d.kind == 'lead' then
-        deg = GS.leadTurn(d.row.sense, L.pose, cfg().foldDeg)
-    else
-        deg = GS.armRaise(L.pose, cfg().armRaiseDeg)
-    end
     if driveOf(d.kind) == 'rotate' then
         local h = handleOf(d, find)
         if not h then return false end
-        if L.pose <= 0 then
-            SetEntityRotation(h, 0.0, 0.0, d.row.h, 2, true)
-            FreezeEntityPosition(h, false)
-            d.frozen = false
-            shut(d)
-            return true
-        end
         if not d.frozen then
-            DoorSystemSetDoorState(d.hash, 0, false, true)
             FreezeEntityPosition(h, true)
             d.frozen = true
         end
-        if d.kind == 'lead' then
-            SetEntityRotation(h, 0.0, 0.0, d.row.h + deg, 2, true)
-        else
-            local rx, ry, rz = GS.armRotation(d.row, deg)
-            SetEntityRotation(h, rx, ry, rz, 2, true)
+        local rx, ry, rz = wantRotation(d)
+        SetEntityRotation(h, rx, ry, rz, 2, true)
+        local want = d.gate.pose > 0 and 0 or 1
+        if d.held ~= want then
+            if want == 1 then
+                shut(d)
+            else
+                DoorSystemSetDoorState(d.hash, 0, false, true)
+                d.held = 0
+            end
         end
         return true
     end
-    if L.pose <= 0 then
+    if d.gate.pose <= 0 then
         shut(d)
         return true
     end
-    local which = d.kind == 'lead' and 'lead' or 'arm'
-    local r = GS.ratio(deg, (C().ratioDeg or {})[which], (C().ratioSign or {})[which])
-    DoorSystemSetOpenRatio(d.hash, r, false, true)
+    DoorSystemSetOpenRatio(d.hash, wantRatio(d), false, true)
     DoorSystemSetDoorState(d.hash, 1, false, true)
     return true
 end
 
+--- THE READ-BACK: is this lead or arm off its gate's pose, by its drive's own
+--- read? A 'ratio' part by its open ratio (DoorSystemGetOpenRatio: a part the
+--- door system dropped -- an arm hit before its lane opened read 0.000 at
+--- pose 1); a 'rotate' part by its rotation, or by not being frozen.
+local function offPose(d)
+    if driveOf(d.kind) == 'rotate' then
+        local h = handleOf(d, false)
+        if not h or not d.frozen then return true end
+        local rot = GetEntityRotation(h, 2)
+        local rx, ry, rz = wantRotation(d)
+        return GS.rotationOff(rx, ry, rz, rot.x, rot.y, rot.z) > REPOSE_DEG
+    end
+    return math.abs((DoorSystemGetOpenRatio(d.hash) or 0.0) - wantRatio(d)) > REPOSE_RATIO
+end
+
 --- A follower on its lead's knuckle, turned -2 times the lead's turn as the
---- lead stands NOW (BR.DcGateSolve.followerYaw). Unlocked once attached, so
---- the door system does not hold it shut under its lead. True when attached,
---- and then whether its yaw moved since its last ride (its lead turning).
+--- lead stands NOW (BR.DcGateSolve.followerYaw). Unfrozen as it is attached
+--- (it was frozen where it was let go) and unlocked once attached, so the
+--- door system does not hold it shut under its lead. True when attached, and
+--- then whether its yaw moved since its last ride (its lead turning).
 local function ride(f, find)
     local lead = f.lane.leads[f.row.lead]
     local lh = lead and handleOf(lead, find)
     local h = lh and handleOf(f, find)
     if not h then return false, false end
+    if f.frozen then
+        FreezeEntityPosition(h, false)
+        f.frozen = false
+    end
     local yaw = GS.followerYaw(GetEntityHeading(lh), lead.row.h, f.row.turn)
     AttachEntityToEntity(h, lh, 0, f.row.ox, f.row.oy, f.row.oz, 0.0, 0.0, yaw,
         false, false, true, false, 2, true)
@@ -287,40 +385,56 @@ local function astray(f)
     return math.abs(GS.wrap180(want - f.yaw)) > ASTRAY_DEG
 end
 
---- A follower let go of its shut lead and locked shut in its own place: put
---- back at its placed origin and heading as it is let go, so one let go with
---- its lead still turned (br_core stopping mid-fold) does not stay where the
---- knuckle left it.
+--- A follower let go of its shut lead: put back at its placed origin and
+--- heading as it is let go (so one let go with its lead still turned, br_core
+--- stopping mid-fold, does not stay where the knuckle left it), frozen there
+--- (turned by hand, it would fall to a hit), and locked shut.
 local function release(f)
     local h = f.handle
     if f.attached and h and isTrue(DoesEntityExist(h)) then
         DetachEntity(h, false, true)
         SetEntityCoordsNoOffset(h, f.row.x, f.row.y, f.row.z, false, false, false)
         SetEntityRotation(h, 0.0, 0.0, f.row.h, 2, true)
+        FreezeEntityPosition(h, true)
+        f.frozen = true
     end
     f.attached, f.yaw = false, nil
     shut(f)
 end
 
---- The lane's leads and arm to its pose.
-local function driveLane(L, find)
-    for _, d in ipairs(L.leads) do drivePart(d, find) end
-    if L.arm then drivePart(L.arm, find) end
+--- A part handed back to the door system: a follower let go, then anything
+--- this file froze put at its placed rotation and unfrozen, and locked shut.
+--- For br_core stopping and `brgate drive`.
+local function letGo(d)
+    if d.kind == 'follow' then release(d) end
+    local h = d.handle
+    if d.frozen and h and isTrue(DoesEntityExist(h)) then
+        SetEntityRotation(h, 0.0, 0.0, d.row.h, 2, true)
+        FreezeEntityPosition(h, false)
+    end
+    d.frozen = false
+    shut(d)
 end
 
---- Every follower of the lane ridden. True when any of them moved: a lead
+--- The gate's leads and arm to its pose.
+local function driveGate(Gt, find)
+    for _, d in ipairs(Gt.leads) do drivePart(d, find) end
+    if Gt.arm then drivePart(Gt.arm, find) end
+end
+
+--- Every follower of the gate ridden. True when any of them moved: a lead
 --- still turning.
-local function rideLane(L, find)
+local function rideGate(Gt, find)
     local turning = false
-    for _, f in ipairs(L.follows) do
+    for _, f in ipairs(Gt.follows) do
         local _, moved = ride(f, find)
         turning = turning or moved
     end
     return turning
 end
 
-local function releaseLane(L)
-    for _, f in ipairs(L.follows) do release(f) end
+local function releaseGate(Gt)
+    for _, f in ipairs(Gt.follows) do release(f) end
 end
 
 -- ------------------------------------------------------------- the fold ---
@@ -329,8 +443,8 @@ local animLoop = nil
 local lastFrameAt = nil
 local animate
 
-local function moving(L)
-    return L.pose ~= L.target or L.settle > 0
+local function moving(Gt)
+    return Gt.pose ~= Gt.target or Gt.settle > 0
 end
 
 local function armAnim()
@@ -340,34 +454,34 @@ local function armAnim()
     end
 end
 
---- THE FOLD, A FRAME AT A TIME, ONLY WHILE A LANE NEAR THIS CLIENT MOVES. A
---- lane's pose steps toward its target and every part follows; once there,
---- its followers are ridden on until its leads have stopped turning (THE
---- SETTLE above) and a shut lane's let go. A fold that finished leaves its
---- doors to the SLOW pass (applied cleared), which reads their physics and
---- finds them where they are; the settle after one of the SLOW pass's own
---- poses does not, or the two would hand the lane back and forth for ever.
+--- THE FOLD, A FRAME AT A TIME, ONLY WHILE A GATE NEAR THIS CLIENT MOVES. A
+--- gate's pose steps toward its target and its parts follow; once there, its
+--- followers are ridden on until its leads have stopped turning (THE SETTLE
+--- above) and a shut gate's let go. A fold that finished leaves its doors to
+--- the SLOW pass (applied cleared), which reads their physics and finds them
+--- where they are; the settle after one of the SLOW pass's own poses does
+--- not, or the two would hand the gate back and forth for ever.
 animate = function()
     local now = GetGameTimer()
     local dt = lastFrameAt and (now - lastFrameAt) or 0
     lastFrameAt = now
     local busy = false
-    for _, L in ipairs(lanes) do
-        if L.pose ~= L.target then
-            L.pose = GS.step(L.pose, L.target, dt, cfg().foldMs or 4000)
-            driveLane(L, false)
-            rideLane(L, false)
-            if L.pose == L.target then L.settle, L.settled, L.folded = SETTLE_FRAMES, 0, true end
+    for _, Gt in ipairs(gates) do
+        if Gt.pose ~= Gt.target then
+            Gt.pose = GS.step(Gt.pose, Gt.target, dt, cfg().foldMs or 4000)
+            driveGate(Gt, false)
+            rideGate(Gt, false)
+            if Gt.pose == Gt.target then Gt.settle, Gt.settled, Gt.folded = SETTLE_FRAMES, 0, true end
             busy = true
-        elseif L.settle > 0 then
-            L.settle = L.settle - 1
-            L.settled = L.settled + 1
-            if rideLane(L, false) and L.settled < SETTLE_MAX_FRAMES then L.settle = SETTLE_FRAMES end
-            if L.settle == 0 then
-                if L.pose <= 0 then releaseLane(L) end
-                if L.folded then
-                    L.folded = false
-                    for _, d in ipairs(L.all) do d.applied = nil end
+        elseif Gt.settle > 0 then
+            Gt.settle = Gt.settle - 1
+            Gt.settled = Gt.settled + 1
+            if rideGate(Gt, false) and Gt.settled < SETTLE_MAX_FRAMES then Gt.settle = SETTLE_FRAMES end
+            if Gt.settle == 0 then
+                if Gt.pose <= 0 then releaseGate(Gt) end
+                if Gt.folded then
+                    Gt.folded = false
+                    for _, d in ipairs(Gt.all) do d.applied = nil end
                 end
             end
             busy = true
@@ -379,43 +493,64 @@ animate = function()
     end
 end
 
---- Every lane's target from the server's word, the season and the lobby.
---- Near the gate a lane that must move folds (its handles found first, so the
+--- Every gate's target from the server's word, the season and the lobby.
+--- Near the gate a gate that must move folds (its handles found first, so the
 --- followers ride from the first frame); away from it the pose is simply the
---- target, and the parts are posed as they stream in.
+--- target, and the parts are posed as they stream in. A gate whose pose a
+--- snapshot just set (adopted) folds on from there.
 local function retarget()
     local S = BR.State
     local lobby = S and S.me and S.me.state == BR.PlayerState.LOBBY
-    for _, L in ipairs(lanes) do
-        local t = (on() and not lobby and serverOpen[L.n] == true) and 1.0 or 0.0
-        if t ~= L.target then
-            L.target = t
+    for _, Gt in ipairs(gates) do
+        local word = serverGates[Gt.n]
+        local t = (on() and not lobby and word ~= nil and word[Gt.which] == true) and 1.0 or 0.0
+        if t ~= Gt.target or Gt.adopted then
+            Gt.target, Gt.adopted = t, false
             if near and registered then
-                if L.pose <= 0 and L.settle == 0 then
-                    for _, d in ipairs(L.all) do handleOf(d, true) end
-                    rideLane(L, false)
+                if Gt.pose ~= Gt.target then
+                    if Gt.settle == 0 then
+                        for _, d in ipairs(Gt.all) do handleOf(d, true) end
+                        rideGate(Gt, false)
+                    end
+                    armAnim()
                 end
-                armAnim()
             else
-                L.pose, L.settle, L.settled, L.folded = t, 0, 0, false
+                Gt.pose, Gt.settle, Gt.settled, Gt.folded = t, 0, 0, false
             end
         end
     end
 end
 
---- The server's word gone: every lane shut.
+--- The server's word gone: every gate shut.
 local function clearMatch()
-    serverOpen, gateMatch = {}, nil
+    serverGates, gateMatch = {}, nil
     retarget()
 end
 
 -- --------------------------------------------------------- the server's word ---
 
-local function takeOpen(list)
-    serverOpen = {}
+--- Each lane's code (BR.DcGateSolve.code) taken; anything that is not one is
+--- a lane at rest.
+local function take(list)
+    serverGates = {}
     if type(list) ~= 'table' then return end
     for n in pairs(laneByN) do
-        if list[n] == true then serverOpen[n] = true end
+        local w = GS.decode(list[n])
+        if w then serverGates[n] = w end
+    end
+end
+
+--- A snapshot's poses ([n] = { outer, inner }) taken over where this client's
+--- is more than POSE_JUMP off.
+local function adopt(poses)
+    if type(poses) ~= 'table' then return end
+    for _, Gt in ipairs(gates) do
+        local p = poses[Gt.n]
+        local v = type(p) == 'table' and p[Gt.which == 'outer' and 1 or 2] or nil
+        if type(v) == 'number' and v >= 0.0 and v <= 1.0 and math.abs(v - Gt.pose) > POSE_JUMP then
+            Gt.pose, Gt.adopted, Gt.settle, Gt.settled, Gt.folded = v, true, 0, 0, false
+            for _, d in ipairs(Gt.all) do d.applied = nil end
+        end
     end
 end
 
@@ -423,21 +558,23 @@ RegisterNetEvent(BR.Net.DCGATE_STATE)
 AddEventHandler(BR.Net.DCGATE_STATE, function(d)
     if type(d) ~= 'table' or d.matchId == nil or not on() then return end
     gateMatch = d.matchId
-    takeOpen(d.open)
+    take(d.lanes)
     retarget()
 end)
 
--- A LATE JOINER, A RESTART: the snapshot's word replaces this one. None in it
--- (no match, Season 1), and every lane is shut here.
+-- A LATE JOINER, A RESTART: the snapshot's word replaces this one, and each
+-- gate's pose in it is taken over. None in it (no match, Season 1), and every
+-- gate is shut here.
 RegisterNetEvent(BR.Net.SNAPSHOT)
 AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     local v = type(payload) == 'table' and payload.dcgate or nil
     if type(v) ~= 'table' or v.matchId == nil or not on() then
-        if gateMatch ~= nil or next(serverOpen) ~= nil then clearMatch() end
+        if gateMatch ~= nil or next(serverGates) ~= nil then clearMatch() end
         return
     end
     gateMatch = v.matchId
-    takeOpen(v.open)
+    take(v.lanes)
+    adopt(v.poses)
     retarget()
 end)
 
@@ -454,9 +591,10 @@ local function setPrompt(idx)
     end
 end
 
---- The reader this player stands at, of a lane not open, in a match under
---- way (the bus still flying, or playing: a player who jumped early is on
---- the ground before the match goes live), standing; nil otherwise.
+--- The reader this player stands at, of a lane whose cycle is not running, in
+--- a match under way (the bus still flying, or playing: a player who jumped
+--- early is on the ground before the match goes live), standing, and not in
+--- a trap (no reader in the trap: the owner's); nil otherwise.
 local function readerHere()
     if not on() then return nil end
     local S = BR.State
@@ -468,7 +606,10 @@ local function readerHere()
     if BR.Keys and BR.Keys.uiScreen ~= nil then return nil end
     local p = GetEntityCoords(PlayerPedId())
     local i, r = GS.readerAt(parts().readers, p.x, p.y, p.z, cfg().readerM or 3.0, cfg().readerZM or 2.5)
-    if not i or serverOpen[r.lane] then return nil end
+    if not i then return nil end
+    local w = serverGates[r.lane]
+    if w and w.busy then return nil end
+    if GS.inTrap(zones(), p.x, p.y, p.z, cfg().lane) then return nil end
     return i
 end
 
@@ -487,9 +628,10 @@ local function armPrompt(want)
 end
 
 -- THE PRESS ASKS, for the reader the prompt is up for and no other; the
--- server opens the lane, or says nothing. Not while one of our screens holds
--- the keyboard, and not again within client.askMs (longer than the server's
--- use.minIntervalMs, so network jitter never drops a retry).
+-- server opens the gate that reader stands beyond, or says nothing. Not while
+-- one of our screens holds the keyboard, and not again within client.askMs
+-- (longer than the server's use.minIntervalMs, so network jitter never drops a
+-- retry).
 if BR.Keys and BR.Keys.on then
     BR.Keys.on('interact', function(pressed)
         if not pressed or atReader == nil then return end
@@ -514,10 +656,11 @@ local function viewpoint()
 end
 
 --- NEAR THE GATE, ONCE A SECOND: the registration still standing (a pack that
---- stopped took it), and every lane that is still posed again where a door's
---- physics streamed in, a follower's copy went, or an attached follower is
---- off its lead's turn (astray) -- its leads and arm driven, its followers
---- ridden (found as needed) and settled, or let go.
+--- stopped took it), and every gate at rest posed again where a door's physics
+--- streamed in, a follower's copy went, an attached follower is off its lead's
+--- turn (astray), or a lead or arm reads back off its pose -- its leads and
+--- arm driven, its followers ridden (found as needed) and settled, or let go.
+--- A part read back off twice running has its door registered again first.
 local function keepPosed()
     for _, L in ipairs(lanes) do
         if L.leads[1] and not isTrue(IsDoorRegisteredWithSystem(L.leads[1].hash)) then
@@ -525,33 +668,46 @@ local function keepPosed()
             break
         end
     end
-    for _, L in ipairs(lanes) do
-        if not moving(L) then
-            local stale = false
-            for _, d in ipairs(L.all) do
+    for _, Gt in ipairs(gates) do
+        if not moving(Gt) then
+            local stale, off = false, nil
+            for _, d in ipairs(Gt.all) do
                 if isTrue(DoorSystemGetIsPhysicsLoaded(d.hash)) then
-                    if d.applied ~= L.pose then stale = true end
-                    if d.kind == 'follow' and d.attached then
-                        if not handleOf(d, false) or (L.pose > 0 and astray(d)) then stale = true end
+                    if d.applied ~= Gt.pose then
+                        stale = true
+                    elseif d.kind == 'follow' then
+                        if d.attached and (not handleOf(d, false) or (Gt.pose > 0 and astray(d))) then stale = true end
+                    elseif offPose(d) then
+                        off = off or {}
+                        off[#off + 1] = d
+                    else
+                        d.off = 0
                     end
                 else
-                    d.applied = nil
+                    d.applied, d.off = nil, 0
                 end
             end
+            if off then
+                for _, d in ipairs(off) do
+                    d.off = d.off + 1
+                    if d.off == 2 then register(d) end
+                end
+                stale = true
+            end
             if stale then
-                driveLane(L, true)
-                if L.pose > 0 then
-                    rideLane(L, true)
-                    L.settle, L.settled = SETTLE_FRAMES, 0
+                driveGate(Gt, true)
+                if Gt.pose > 0 then
+                    rideGate(Gt, true)
+                    Gt.settle, Gt.settled = SETTLE_FRAMES, 0
                     armAnim()
                 else
-                    releaseLane(L)
+                    releaseGate(Gt)
                 end
-                for _, d in ipairs(L.all) do
+                for _, d in ipairs(Gt.all) do
                     local ok = true
-                    if d.kind == 'follow' and L.pose > 0 then ok = d.attached end
+                    if d.kind == 'follow' and Gt.pose > 0 then ok = d.attached end
                     if driveOf(d.kind) == 'rotate' and d.kind ~= 'follow' then ok = d.handle ~= nil end
-                    d.applied = ok and L.pose or nil
+                    d.applied = ok and Gt.pose or nil
                 end
             end
         end
@@ -561,9 +717,9 @@ end
 --- Away from the gate: nothing is driven, and everything is posed again on
 --- the way back.
 local function leaveNear()
-    for _, L in ipairs(lanes) do
-        L.pose, L.settle, L.settled, L.folded = L.target, 0, 0, false
-        for _, d in ipairs(L.all) do d.applied = nil end
+    for _, Gt in ipairs(gates) do
+        Gt.pose, Gt.settle, Gt.settled, Gt.folded, Gt.adopted = Gt.target, 0, 0, false, false
+        for _, d in ipairs(Gt.all) do d.applied = nil end
     end
     if animLoop ~= nil then
         BR.Loop.unregister(animLoop)
@@ -577,7 +733,7 @@ BR.Loop.register(BR.Loop.SLOW, 'dcgate.watch', function()
     if was and not seasonOn then clearMatch() end
     local S = BR.State
     local lobby = S and S.me and S.me.state == BR.PlayerState.LOBBY
-    if lobby and (gateMatch ~= nil or next(serverOpen) ~= nil) then clearMatch() end
+    if lobby and (gateMatch ~= nil or next(serverGates) ~= nil) then clearMatch() end
     if not packPresent() then return end
     if not registered then registerDoors() end
     local nowNear, promptNear = false, false
@@ -592,7 +748,7 @@ BR.Loop.register(BR.Loop.SLOW, 'dcgate.watch', function()
     armPrompt(promptNear)
 end)
 
--- The season moved: off Season 2, every lane shut and no prompt.
+-- The season moved: off Season 2, every gate shut and no prompt.
 if BR.Season and BR.Season.onChange then
     BR.Season.onChange(function()
         refreshSeason()
@@ -607,29 +763,19 @@ end
 -- own start; this takes that over).
 if packPresent() then registerDoors() end
 
--- br_core stopping: the prompt down, every follower let go, and every part
--- shut and locked where it was placed -- a gate left locked is the map's
+-- br_core stopping: the prompt down, and every part handed back to the door
+-- system -- every follower let go, anything frozen put where it was placed and
+-- unfrozen, and every part shut and locked: a gate left locked is the map's
 -- resting state, and the registrations are this file's again when it starts.
 AddEventHandler('onResourceStop', function(name)
     if name ~= GetCurrentResourceName() then return end
     if atReader ~= nil then BR.NotifyClear(PROMPT_KEY) end
     atReader = nil
     if not registered then return end
-    for _, L in ipairs(lanes) do
-        L.pose, L.target, L.settle, L.settled, L.folded = 0.0, 0.0, 0, 0, false
-        for _, d in ipairs(L.all) do
-            if d.kind == 'follow' then
-                release(d)
-            elseif d.frozen and d.handle and isTrue(DoesEntityExist(d.handle)) then
-                SetEntityRotation(d.handle, 0.0, 0.0, d.row.h, 2, true)
-                FreezeEntityPosition(d.handle, false)
-                d.frozen = false
-                shut(d)
-            else
-                shut(d)
-            end
-        end
+    for _, Gt in ipairs(gates) do
+        Gt.pose, Gt.target, Gt.settle, Gt.settled, Gt.folded = 0.0, 0.0, 0, 0, false
     end
+    for _, d in ipairs(doors) do letGo(d) end
 end)
 
 -- ------------------------------------------------------------ the suites ---
@@ -641,7 +787,13 @@ function G.counts()
                   match = gateMatch, lanes = {}, attached = 0, frozen = 0, handles = 0,
                   folding = animLoop ~= nil, prompting = promptLoop ~= nil }
     for _, L in ipairs(lanes) do
-        out.lanes[L.n] = { pose = L.pose, target = L.target, open = serverOpen[L.n] == true }
+        local w = serverGates[L.n]
+        local row = { busy = w ~= nil and w.busy == true }
+        for _, which in ipairs(GS.GATES) do
+            local Gt = L.gates[which]
+            row[which] = { pose = Gt.pose, target = Gt.target, open = w ~= nil and w[which] == true }
+        end
+        out.lanes[L.n] = row
     end
     for _, d in ipairs(doors) do
         if d.attached then out.attached = out.attached + 1 end
@@ -654,12 +806,12 @@ end
 -- -------------------------------------------------------------- the dev ---
 --
 --   brgate [list]                     the server's lanes (`brgatesv list`) and
---                                     this client's poses and drives
+--                                     this client's gates, poses and drives
 --   brgate near                       the lane of the nearest reader: each part's
 --                                     door state, physics, open ratio, handle,
---                                     turn and attachment -- the tool for
---                                     docs/dcgate.md's engine questions
---   brgate open|close <lane|all>      through the server (`brgatesv`)
+--                                     frozen, turn and attachment
+--   brgate open <lane|all> [in|out]   through the server (`brgatesv`)
+--   brgate close <lane|all>
 --   brgate drive <lead|arm> <ratio|rotate>   how this client moves them
 
 RegisterNetEvent(BR.Net.DCGATE_DEV)
@@ -667,14 +819,20 @@ AddEventHandler(BR.Net.DCGATE_DEV, function(text)
     print('[br_core] brgate: ' .. tostring(text))
 end)
 
+local function gateWords(L)
+    local w = serverGates[L.n]
+    return ('%s, outer %s %.2f, inner %s %.2f'):format(w and w.busy and 'cycle running' or 'idle',
+        w and w.outer and 'open' or 'shut', L.gates.outer.pose, w and w.inner and 'open' or 'shut', L.gates.inner.pose)
+end
+
 local function devList()
     local k = G.counts()
     local out = {}
     for _, L in ipairs(lanes) do
-        out[#out + 1] = ('lane %d %s, pose %.2f'):format(L.n, serverOpen[L.n] and 'open' or 'shut', L.pose)
+        out[#out + 1] = ('lane %d %s'):format(L.n, gateWords(L))
     end
-    print(('[br_core] brgate: this client: %s; near %s, pack %s, %d handles, %d attached; drive lead %s, arm %s')
-        :format(table.concat(out, '; '), tostring(k.near), tostring(k.present), k.handles, k.attached,
+    print(('[br_core] brgate: this client: %s; near %s, pack %s, %d handles, %d attached, %d frozen; drive lead %s, arm %s')
+        :format(table.concat(out, '; '), tostring(k.near), tostring(k.present), k.handles, k.attached, k.frozen,
             driveOf('lead'), driveOf('arm')))
 end
 
@@ -691,26 +849,29 @@ local function devNear()
     end
     local r = parts().readers[best]
     local L = laneByN[r.lane]
-    print(('[br_core] brgate: %s %.1f m away, lane %d %s here (pose %.2f -> %.2f), pack %s, registered %s')
-        :format(r.id, bestD, r.lane, serverOpen[r.lane] and 'open' or 'shut', L.pose, L.target,
+    print(('[br_core] brgate: %s %.1f m away, lane %d %s (targets %.0f, %.0f), pack %s, registered %s')
+        :format(r.id, bestD, r.lane, gateWords(L), L.gates.outer.target, L.gates.inner.target,
             tostring(present), tostring(registered)))
-    for _, d in ipairs(L.all) do
-        local h = handleOf(d, true)
-        local turn = ''
-        if h then
-            local rot = GetEntityRotation(h, 2)
-            turn = (', rotation %.1f %.1f %.1f (placed heading %.1f, turned %.1f)'):format(rot.x, rot.y, rot.z,
-                d.row.h, GS.wrap180(GetEntityHeading(h) - d.row.h))
+    for _, which in ipairs(GS.GATES) do
+        for _, d in ipairs(L.gates[which].all) do
+            local h = handleOf(d, true)
+            local turn = ''
+            if h then
+                local rot = GetEntityRotation(h, 2)
+                turn = (', rotation %.1f %.1f %.1f (placed heading %.1f, turned %.1f)'):format(rot.x, rot.y, rot.z,
+                    d.row.h, GS.wrap180(GetEntityHeading(h) - d.row.h))
+            end
+            print(('  %s: state %s, physics %s, ratio %.3f, handle %s, frozen %s%s%s'):format(d.row.id,
+                tostring(DoorSystemGetDoorState(d.hash)), tostring(isTrue(DoorSystemGetIsPhysicsLoaded(d.hash))),
+                DoorSystemGetOpenRatio(d.hash) or 0.0, tostring(h), tostring(d.frozen == true), turn,
+                d.kind == 'follow' and (', attached ' .. tostring(h ~= nil and isTrue(IsEntityAttached(h)))) or ''))
         end
-        print(('  %s: state %s, physics %s, ratio %.3f, handle %s%s%s'):format(d.row.id,
-            tostring(DoorSystemGetDoorState(d.hash)), tostring(isTrue(DoorSystemGetIsPhysicsLoaded(d.hash))),
-            DoorSystemGetOpenRatio(d.hash) or 0.0, tostring(h), turn,
-            d.kind == 'follow' and (', attached ' .. tostring(h ~= nil and isTrue(IsEntityAttached(h)))) or ''))
     end
 end
 
---- Switch how this client moves one kind of part: every lane's parts of that
---- kind brought shut the old way first, then posed again the new way.
+--- Switch how this client moves one kind of part: every part of that kind
+--- handed back to the door system first (put where it was placed, unfrozen,
+--- locked shut), then posed again the new way on the next pass.
 local function devDrive(kind, mode)
     if (kind ~= 'lead' and kind ~= 'arm') or (mode ~= 'ratio' and mode ~= 'rotate') then
         print('[br_core] brgate: brgate drive <lead|arm> <ratio|rotate>')
@@ -718,12 +879,8 @@ local function devDrive(kind, mode)
     end
     for _, d in ipairs(doors) do
         if d.kind == kind then
-            if d.frozen and d.handle and isTrue(DoesEntityExist(d.handle)) then
-                SetEntityRotation(d.handle, 0.0, 0.0, d.row.h, 2, true)
-                FreezeEntityPosition(d.handle, false)
-            end
-            d.frozen = false
-            shut(d)
+            letGo(d)
+            d.off = 0
         end
         d.applied = nil
     end
@@ -742,11 +899,12 @@ RegisterCommand('brgate', function(_, args)
     elseif verb == 'near' then
         devNear()
     elseif verb == 'open' or verb == 'close' then
-        ExecuteCommand(('brgatesv %s %s'):format(verb, tostring(args[2] or '')))
+        ExecuteCommand(('brgatesv %s %s%s'):format(verb, tostring(args[2] or ''),
+            args[3] and (' ' .. tostring(args[3])) or ''))
     elseif verb == 'drive' then
         devDrive(args[2] and args[2]:lower() or '', args[3] and args[3]:lower() or '')
     else
-        print('[br_core] brgate: brgate [list] | near | open <lane|all> | close <lane|all> '
+        print('[br_core] brgate: brgate [list] | near | open <lane|all> [in|out] | close <lane|all> '
             .. '| drive <lead|arm> <ratio|rotate>')
     end
 end)

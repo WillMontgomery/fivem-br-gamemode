@@ -1405,16 +1405,18 @@ BR.Net = {
     -- their readers (docs/dcgate.md). br_core/server/dcgate.lua decides every
     -- lane; br_core/client/dcgate.lua shows the prompt, asks, and animates.
     --
-    -- C->S { reader }. "Open the lane of the reader I stand at": an index into
+    -- C->S { reader }. "Open the gate of the reader I stand at": an index into
     -- BR.Config.DcGate.parts.readers. Taken only through the door in
-    -- server/dcgate.lua (the season, the shape, a rate, a PLAYING match, a
-    -- standing player, within reach of that reader by the server's own sample,
-    -- a lane not already open) and silent otherwise. Never answered: the lane,
-    -- if it opens, arrives as DCGATE_STATE.
+    -- server/dcgate.lua (the season, the shape, a rate, a match under way, a
+    -- standing player, within reach of that reader by the server's own sample
+    -- and in no trap, a lane whose cycle is not running) and silent otherwise.
+    -- Never answered: the gate, if it opens, arrives as DCGATE_STATE.
     DCGATE_USE      = 'br:dcgate:use',
-    -- S->C { matchId, open = { [lane] = boolean } }. Every lane of this match,
-    -- open or shut, whenever one changes; to the whole match. The snapshot
-    -- carries the same as `dcgate`.
+    -- S->C { matchId, lanes = { [lane] = code } }. Every lane of this match,
+    -- whenever one changes; to the whole match. A code is 1 (the outer gate
+    -- open) + 2 (the inner gate open) + 4 (its cycle running)
+    -- (BR.DcGateSolve.code). The snapshot carries the same as `dcgate`, with
+    -- each gate's pose.
     DCGATE_STATE    = 'br:dcgate:state',
     -- S->C '<text>'. One `brgatesv` answer, printed on the F8 of the player
     -- who typed `brgate`.

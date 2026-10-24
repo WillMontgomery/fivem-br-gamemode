@@ -3,41 +3,50 @@
 --
 -- The campus's front gate has three lanes (br_lib/config/dcgate_parts.lua),
 -- each a crash arm, an outer bi-fold gate, a trap and an inner bi-fold gate,
--- with a reader at the curb at each end. The whole contract is docs/dcgate.md.
--- This file holds:
+-- with a reader at the curb at each end. Each lane is a sally port. The whole
+-- contract is docs/dcgate.md. This file holds:
 --
---   the lanes     this match's: open or shut, since when, until when -- on the
---                 match, so every match starts with every lane shut, and two
---                 matches at once each have their own
---   the door      DCGATE_USE, a player at a reader asking for its lane, taken
---                 only in its order (below) and silent otherwise
---   the clock     a lane open 20 s folds shut, but not while a player or a
---                 vehicle is in it; a lane folding shut on somebody opens again
+--   the lanes     this match's: each lane's cycle and each of its two gates,
+--                 open or shut and since when -- on the match, so every match
+--                 starts with every lane idle, and two matches at once each
+--                 have their own
+--   the door      DCGATE_USE, a player at a reader asking for the gate that
+--                 reader stands beyond, taken only in its order (below) and
+--                 silent otherwise
+--   the pass      every running cycle moved on by who is where: the sequence
+--                 is br_lib/shared/dcgate_solve.lua's (S.advance), fed here
+--                 from the server's own samples
 --   who is told   DCGATE_STATE to the whole match on every change, and the
---                 snapshot's view for a late joiner or a restarted client
+--                 snapshot's view, with each gate's pose, for a late joiner
+--                 or a restarted client
 --   the dev tools `brgatesv`, typed through `brgate`
 --
--- ═══ THE OWNER'S DECISIONS (2026-10-19) ═══
+-- ═══ THE OWNER'S DECISIONS (2026-10-19, 2026-10-24) ═══
 --
---   * Standing at a lane's reader shows "Press E to open the gate"; pressing
---     it opens that whole lane: both gates and the arm.
---   * The lane stays open 20 seconds, then folds shut, but waits while any
---     player or vehicle is still in the lane.
+--   * Standing at a lane's reader shows "Press E to open the gate". A press at
+--     the outside reader opens only the outer gate and raises the arm; a press
+--     at the inside reader opens only the inner gate.
+--   * The first gate closes about 2 s after its swing area and approach are
+--     clear once someone is in the trap, or 10 s after it opened with nobody
+--     in the trap (the cycle ends). Shut with someone in the trap, the second
+--     gate opens; it closes about 2 s after the trap and its swing are clear.
+--   * No gate ever closes on a player or a vehicle in its swing area. A press
+--     while the lane's cycle runs is not taken. No reader in the trap.
 --   * Server-authoritative per match (its routing bucket); clients animate.
 --   * Season 2 only; the readers work in a match only.
 --
--- ═══ WHO IS IN THE LANE: THE SERVER'S OWN POSITIONS, NOT A CLIENT'S WORD ═══
+-- ═══ WHO IS WHERE: THE SERVER'S OWN POSITIONS, NOT A CLIENT'S WORD ═══
 --
 -- A closing gate has to know about everybody, including the players who are
 -- nowhere near a client that could report them and the cars nobody sits in. A
 -- client report is a claim only about itself (and a modified client could hold
--- a lane open from across the map, or never report the car it parked). The
+-- a gate open from across the map, or never report the car it parked). The
 -- server already has both answers on its own: every player's 4 Hz position
 -- sample (server/roster.lua) and, under OneSync, every vehicle's position and
 -- routing bucket (GetAllVehicles, the pool server/terminalfx/airstrike.lua
--- reads). So the box test runs here, and only for a lane that is due to close
--- or is closing: nothing at all while every lane is shut, and the vehicle pool
--- read once a pass for all of them.
+-- reads). So the zone tests run here, and only for a lane whose cycle runs:
+-- nothing at all while every lane is idle, and the vehicle pool read once a
+-- pass for all of them.
 --
 -- ═══ NO DECISION HERE READS DEV MODE ═══
 --
@@ -53,6 +62,13 @@ local GS = BR.DcGateSolve
 local function cfg() return BR.Config.DcGate end
 local function parts() return BR.Config.DcGate.parts or {} end
 
+--- The sequence's times: { foldMs, closeDelayMs, abandonMs }.
+local function times()
+    local c = cfg()
+    local y = c.cycle or {}
+    return { foldMs = c.foldMs or 4000, closeDelayMs = y.closeDelayMs or 2000, abandonMs = y.abandonMs or 10000 }
+end
+
 --- Is the gate on, in the season in force? On this side BR.Season.has is the
 --- latched season and a few table reads, so the door and the pass ask it as
 --- they go.
@@ -62,7 +78,7 @@ local function on()
 end
 G.on = on
 
---- Who a closing lane waits for: a player standing or downed in it.
+--- Who a gate waits for: a player standing or downed.
 local HOLDS = {
     [BR.PlayerState.ALIVE] = true,
     [BR.PlayerState.DBNO] = true,
@@ -70,7 +86,7 @@ local HOLDS = {
 
 --- A match under way: the bus still flying (a player who jumped early is on
 --- the ground before the match goes live) or playing. The readers work, and
---- the clock runs, in these.
+--- the cycles run, in these.
 local UNDER_WAY = {
     [BR.MatchState.BUS] = true,
     [BR.MatchState.PLAYING] = true,
@@ -79,27 +95,38 @@ local function underWay(m)
     return m ~= nil and UNDER_WAY[m.state] == true
 end
 
---- [n] = the lane's row, built once -- and again only if the registry table
---- itself is replaced (a suite's fixture).
-local built = { parts = nil, lanes = nil }
+--- [n] = the lane's row and [n] = its zones, built once -- and again only if
+--- the registry table itself is replaced (a suite's fixture).
+local built = { parts = nil, lanes = nil, zones = nil }
 
---- @param n integer
---- @return table|nil
-local function laneRow(n)
+local function rebuild()
     local p = parts()
     if built.parts ~= p then
         built.parts = p
         built.lanes = GS.byLane(p)
+        built.zones = GS.zones(p)
     end
+end
+
+--- @param n integer
+--- @return table|nil
+local function laneRow(n)
+    rebuild()
     return built.lanes[n]
 end
+
+--- @return table  [n] = BR.DcGateSolve.laneZones
+local function zones()
+    rebuild()
+    return built.zones
+end
+G.zones = zones
 
 -- -------------------------------------------------------- the match's lanes ---
 
 --- This match's lanes, made on first use and gone with the match:
----   lanes    [n] = { open, at, holdUntil, closingUntil }: open or not, when
----            that last changed, when an open lane may start to close, and
----            until when a shut one is still folding
+---   lanes    [n] = BR.DcGateSolve.newLane(): the cycle's phase, its first
+---            gate, and each gate open or shut since when
 ---   rate     [src] = presses taken this match
 ---   refused  [reason] = presses dropped for it
 --- @param m table
@@ -108,9 +135,7 @@ local function stateOf(m)
     local s = m.dcgate
     if not s then
         s = { lanes = {}, rate = {}, refused = {} }
-        for _, l in ipairs(parts().lanes or {}) do
-            s.lanes[l.lane] = { open = false, at = 0, holdUntil = 0, closingUntil = 0 }
-        end
+        for _, l in ipairs(parts().lanes or {}) do s.lanes[l.lane] = GS.newLane() end
         m.dcgate = s
     end
     return s
@@ -130,74 +155,63 @@ end
 
 -- -------------------------------------------------------------- who is told ---
 
---- Every lane, open or shut: [n] = boolean.
-local function openList(st)
+--- Every lane's code (BR.DcGateSolve.code): [n] = 1 outer open + 2 inner open
+--- + 4 cycle running.
+local function codes(st)
     local out = {}
     for _, l in ipairs(parts().lanes or {}) do
-        local s = st and st.lanes[l.lane]
-        out[l.lane] = s ~= nil and s.open == true
+        out[l.lane] = GS.code(st and st.lanes[l.lane])
     end
     return out
 end
 
-local function payload(m, st)
-    return { matchId = m.id, open = openList(st) }
-end
-
 --- The whole match is told: the gate is one place every player can drive up
---- to, and three booleans are cheaper than deciding who might.
+--- to, and three small numbers are cheaper than deciding who might.
 local function send(m, st)
-    BR.Broadcast.toMatch(m, BR.Net.DCGATE_STATE, payload(m, st))
+    BR.Broadcast.toMatch(m, BR.Net.DCGATE_STATE, { matchId = m.id, lanes = codes(st) })
 end
 
 --- THE SNAPSHOT'S VIEW (BR.Broadcast.snapshot): this player's match's lanes,
---- `{ matchId, open }`, so a late joiner and a restarted client (br:ready
---- raises the snapshot) see an open lane open. Nil outside a match or off
---- Season 2: the client then holds every lane shut.
+--- `{ matchId, lanes, poses }` -- each lane's code, and each gate's pose now
+--- ([n] = { outer, inner }, 0 shut to 1 open, to the hundredth), so a late
+--- joiner and a restarted client (br:ready raises the snapshot) see each gate
+--- where it is. Nil outside a match or off Season 2: the client then holds
+--- every gate shut.
 --- @param src integer
 --- @return table|nil
 function G.viewFor(src)
     if not on() then return nil end
     local m = BR.Server and BR.Server.matchOf and BR.Server.matchOf(src) or nil
     if not m then return nil end
-    return payload(m, m.dcgate)
+    local st, now, fold = m.dcgate, GetGameTimer(), cfg().foldMs or 4000
+    local poses = {}
+    for _, l in ipairs(parts().lanes or {}) do
+        local s = st and st.lanes[l.lane]
+        local function pose(g)
+            return s and math.floor(GS.gatePose(s[g], now, fold) * 100 + 0.5) / 100 or 0.0
+        end
+        poses[l.lane] = { pose('outer'), pose('inner') }
+    end
+    return { matchId = m.id, lanes = codes(st), poses = poses }
 end
 
--- ----------------------------------------------------------- open and shut ---
+-- ------------------------------------------------------------- a cycle ---
 
---- Open a lane: both gates and its arm, for openMs. Public so the suites and
---- the dev verb can open one.
+--- Start a lane's cycle: `first` ('outer' or 'inner') opens. Public so the
+--- suites and the dev verb can start one.
 --- @param m table
 --- @param n integer
+--- @param first string
 --- @param now number
 --- @param why string  for the console line
---- @return boolean  it opened (false: no such lane, or open already)
-function G.open(m, n, now, why)
+--- @return boolean  it started (false: no such lane, or its cycle runs)
+function G.start(m, n, first, now, why)
     local st = stateOf(m)
     local s = st.lanes[n]
-    if not s or s.open then return false end
-    s.open, s.at, s.holdUntil, s.closingUntil = true, now, now + (cfg().openMs or 20000), 0
+    if not s or not GS.press(s, first, now, times()) then return false end
     send(m, st)
-    print(('[br_core] dcgate: lane %d open %s in match %s'):format(n, why, tostring(m.id)))
+    print(('[br_core] dcgate: lane %d %s gate open %s in match %s'):format(n, first, why, tostring(m.id)))
     return true
-end
-
---- Fold a lane shut. It is still folding for foldMs, and the pass opens it
---- again if somebody is in it meanwhile.
-local function shut(m, st, n, s, now, why)
-    local held = now - s.at
-    s.open, s.at, s.closingUntil = false, now, now + (cfg().foldMs or 4000)
-    send(m, st)
-    print(('[br_core] dcgate: lane %d folding shut in match %s (%s, open %.1f s)')
-        :format(n, tostring(m.id), why, held / 1000))
-end
-
---- A lane folding shut on somebody opens again, and closes the moment it is
---- clear: its 20 seconds were had.
-local function reopen(m, st, n, s, now, what)
-    s.open, s.at, s.holdUntil, s.closingUntil = true, now, now, 0
-    send(m, st)
-    print(('[br_core] dcgate: lane %d open again in match %s: %s in it'):format(n, tostring(m.id), what))
 end
 
 -- --------------------------------------------------------------- the door ---
@@ -214,10 +228,11 @@ end
 --   5. player   ALIVE, by the roster: a downed player presses nothing
 --   6. reach    by this server's own sample, no older than use.sampleMaxAgeMs,
 --               within readerM (flat) and readerZM of THAT reader, each plus
---               use.reachSlackM: the client says which reader, the server
---               says whether the player is at it
---   7. open     the lane is not open already (a lane folding shut opens
---               again: that is a press on a shut lane)
+--               use.reachSlackM, and in no lane's trap (no reader in the trap,
+--               the owner's): the client says which reader, the server says
+--               whether the player is at it
+--   7. busy     the lane's cycle is not running: a press during one is not
+--               taken (owner, 2026-10-24)
 --
 -- Each refusal is counted per reason on the match, for `brgate list`.
 
@@ -236,7 +251,9 @@ function G.use(src, d, now)
 
     local idx = type(d) == 'table' and type(d.reader) == 'number' and math.tointeger(d.reader) or nil
     local r = idx and (parts().readers or {})[idx] or nil
-    if not r or not laneRow(r.lane) then return no('shape') end
+    local z = r and zones()[r.lane]
+    local first = z and z.readers[idx]
+    if not r or not laneRow(r.lane) or not first then return no('shape') end
 
     local U = cfg().use or {}
     local last = lastAt[src]
@@ -265,10 +282,10 @@ function G.use(src, d, now)
             (cfg().readerZM or 2.5) + slack) then
         return no('reach')
     end
+    if GS.inTrap(zones(), p.x, p.y, p.z, cfg().lane) then return no('reach') end
 
-    local s = stateOf(m).lanes[r.lane]
-    if not s or s.open then return no('open') end
-    G.open(m, r.lane, now, ('by %s (%d) at %s'):format(tostring(e.name), src, r.id))
+    if GS.busy(stateOf(m).lanes[r.lane]) then return no('busy') end
+    G.start(m, r.lane, first, now, ('by %s (%d) at %s'):format(tostring(e.name), src, r.id))
     return 'open'
 end
 
@@ -278,7 +295,7 @@ AddEventHandler(BR.Net.DCGATE_USE, function(d)
     if src then G.use(src, d, GetGameTimer()) end
 end)
 
--- -------------------------------------------------------- who is in the lane ---
+-- ------------------------------------------------------------- who is where ---
 
 --- The vehicles in these routing buckets, read off the OneSync pool once:
 --- [bucket] = { { x, y, z } }. Every vehicle counts -- a car somebody drives,
@@ -307,51 +324,51 @@ local function vehiclesIn(want)
     return out
 end
 
---- WHAT HOLDS THIS LANE OPEN: 'a player' or 'a vehicle', or nil when it is
---- clear. A player standing or downed in the match whose fresh sample is in
---- the lane's box grown by lane.pedMarginM; any vehicle of the match's bucket
---- whose center is in it grown by lane.vehicleMarginM past its ends and
---- lane.vehicleSideM past its sides. Public so the suites and `brgate list`
---- can ask.
+--- The match's players a gate waits for: standing or downed, with a sample no
+--- older than lane.sampleMaxAgeMs. { { x, y, z } }.
+--- @param m table
+--- @param now number
+--- @return table[]
+local function pedsIn(m, now)
+    local out = {}
+    local maxAge = (cfg().lane or {}).sampleMaxAgeMs or 3000
+    BR.Roster.each(function(e) return e.matchId == m.id end, function(_, e)
+        local p = e.pos
+        if HOLDS[e.state] and type(p) == 'table' and now - (e.posAt or 0) <= maxAge then
+            out[#out + 1] = { x = p.x, y = p.y, z = p.z }
+        end
+    end)
+    return out
+end
+
+--- WHAT IS IN LANE n's ZONES for this match now (BR.DcGateSolve.occupancy):
+--- { trap, outer = { swing, way }, inner = { swing, way } }, each 'a player',
+--- 'a vehicle' or nil. Public so the suites and `brgate list` can ask.
 --- @param m table
 --- @param n integer
 --- @param vehicles table[]|nil  the match's vehicles, { x, y, z }
 --- @param now number
---- @return string|nil
-function G.holder(m, n, vehicles, now)
-    local row = laneRow(n)
-    if not row then return nil end
-    local L = cfg().lane or {}
-    local box, below, above = row.box, L.belowM or 1.0, L.aboveM or 4.5
-    local who = nil
-    BR.Roster.each(function(e) return e.matchId == m.id end, function(_, e)
-        if who then return end
-        local p = e.pos
-        if HOLDS[e.state] and type(p) == 'table' and now - (e.posAt or 0) <= (L.sampleMaxAgeMs or 3000)
-           and GS.inBox(box, p.x, p.y, p.z, L.pedMarginM or 0.5, below, above) then
-            who = 'a player'
-        end
-    end)
-    if who then return who end
-    for _, v in ipairs(vehicles or {}) do
-        if GS.inBox(box, v.x, v.y, v.z, L.vehicleMarginM or 2.5, below, above, L.vehicleSideM or 1.0) then
-            return 'a vehicle'
-        end
-    end
-    return nil
+--- @param peds table[]|nil  the match's players (read here when nil)
+--- @return table|nil
+function G.occupancy(m, n, vehicles, now, peds)
+    local z = zones()[n]
+    if not z then return nil end
+    return GS.occupancy(z, peds or pedsIn(m, now), vehicles, cfg().lane)
 end
 
 -- --------------------------------------------------------------- the pass ---
 
---- THE PASS, every lane.checkMs: an open lane past its time folds shut unless
---- somebody is in it; a lane still folding shut opens again if somebody is. A
---- lane open inside its time, or shut and still, is not looked at; a match off
---- Season 2 forgets its lanes (every client shut them itself); and the vehicle
---- pool is read only when a lane is due. Public so the suites can step it.
+--- THE PASS, every lane.checkMs: every lane whose cycle runs, in a match under
+--- way, moved on by who is in its zones (BR.DcGateSolve.advance), and the
+--- match told once a pass if any of its lanes changed. An idle lane is not
+--- looked at; a match off Season 2 forgets its lanes (every client shut them
+--- itself); a match no longer under way is left as it is (it is going away);
+--- and the vehicle pool is read only while a cycle runs. Public so the suites
+--- can step it.
 --- @param now number
 function G.pass(now)
     if not (BR.Server and BR.Server.eachMatch) then return end
-    local due, buckets = {}, {}
+    local run, buckets = {}, {}
     BR.Server.eachMatch(function(m)
         local st = m.dcgate
         if not st then return end
@@ -362,22 +379,33 @@ function G.pass(now)
         if not underWay(m) then return end
         for _, l in ipairs(parts().lanes or {}) do
             local s = st.lanes[l.lane]
-            if s and ((s.open and now >= s.holdUntil) or (not s.open and now < s.closingUntil)) then
-                due[#due + 1] = { m = m, st = st, n = l.lane, s = s }
+            if GS.busy(s) then
+                run[#run + 1] = { m = m, st = st, n = l.lane, s = s }
                 if m.bucket ~= nil then buckets[m.bucket] = true end
             end
         end
     end)
-    if #due == 0 then return end
+    if #run == 0 then return end
     local cars = vehiclesIn(buckets)
-    for _, d in ipairs(due) do
-        local what = G.holder(d.m, d.n, d.m.bucket ~= nil and cars[d.m.bucket] or nil, now)
-        if d.s.open and not what then
-            shut(d.m, d.st, d.n, d.s, now, 'clear')
-        elseif not d.s.open and what then
-            reopen(d.m, d.st, d.n, d.s, now, what)
+    local peds, changed, order = {}, {}, {}
+    local T = times()
+    for _, r in ipairs(run) do
+        local list = peds[r.m]
+        if not list then
+            list = pedsIn(r.m, now)
+            peds[r.m] = list
+        end
+        local occ = G.occupancy(r.m, r.n, r.m.bucket ~= nil and cars[r.m.bucket] or nil, now, list)
+        local what = occ and GS.advance(r.s, occ, now, T)
+        if what then
+            if not changed[r.m] then
+                changed[r.m] = true
+                order[#order + 1] = r
+            end
+            print(('[br_core] dcgate: lane %d in match %s: %s'):format(r.n, tostring(r.m.id), what))
         end
     end
+    for _, r in ipairs(order) do send(r.m, r.st) end
 end
 
 if BR.Sched and BR.Sched.every then
@@ -396,21 +424,26 @@ end)
 -- Dev mode only (br_lib/shared/devgate.lua wraps every command), Season 2 only,
 -- typed as `brgate` on F8 (client/dcgate.lua) and run here as `brgatesv`:
 --
---   brgatesv [list]            your match's lanes: open or shut, for how long,
---                              what holds an open one, refused presses
---   brgatesv open <lane|all>   open it as a reader would, whoever is where
---   brgatesv close <lane|all>  fold it shut now, as its clock would: it opens
---                              again on anybody in it
+--   brgatesv [list]                    your match's lanes: each cycle, its
+--                                      phase and for how long, who is where,
+--                                      refused presses
+--   brgatesv open <lane|all> [in|out]  start a cycle as that reader would (the
+--                                      outside one by default), whoever is where
+--   brgatesv close <lane|all>          end a cycle: its open gate folds shut as
+--                                      the last, opening again on anybody in
+--                                      its swing or the trap
 --
 -- From the server console, the player id comes last: `brgatesv open 2 12`.
 
-local USAGE = 'brgate [list] | near | open <lane|all> | close <lane|all> | drive <lead|arm> <ratio|rotate>'
+local USAGE = 'brgate [list] | near | open <lane|all> [in|out] | close <lane|all> | drive <lead|arm> <ratio|rotate>'
 
 --- One line on the requester's F8 (or this console), and nowhere else.
 local function tell(src, text)
     print(('[br_core] brgate (client %s): %s'):format(tostring(src), text))
     if src > 0 then TriggerClientEvent(BR.Net.DCGATE_DEV, src, text) end
 end
+
+local OPENING = { first = true, firstShut = true }
 
 local function devList(src, m, now)
     if not m then
@@ -423,19 +456,27 @@ local function devList(src, m, now)
     for _, l in ipairs(parts().lanes or {}) do
         local s = st and st.lanes[l.lane]
         local line
-        if not s or (not s.open and now >= s.closingUntil) then
-            line = 'shut'
-        elseif not s.open then
-            line = 'folding shut'
+        if not GS.busy(s) then
+            line = 'idle'
         else
-            line = ('open %.1f s'):format((now - s.at) / 1000)
-            if now < s.holdUntil then
-                line = line .. (', closes in %.1f s'):format((s.holdUntil - now) / 1000)
-            else
-                if cars == nil then cars = vehiclesIn({ [m.bucket or -1] = true }) end
-                local what = G.holder(m, l.lane, cars[m.bucket or -1], now)
-                line = line .. (what and (', held: ' .. what .. ' in it') or ', closing on the next pass')
+            local g = OPENING[s.phase] and s.first or s.second
+            line = ('%s gate %s %.1f s (%s, %s gate)'):format(g,
+                (s.phase == 'first' or s.phase == 'second') and 'open' or 'folding shut',
+                (now - s.at) / 1000, s.first == 'outer' and 'inbound' or 'outbound',
+                OPENING[s.phase] and 'first' or 'second')
+            if cars == nil then cars = vehiclesIn({ [m.bucket or -1] = true }) end
+            local occ = G.occupancy(m, l.lane, cars[m.bucket or -1], now)
+            local held = {}
+            if occ then
+                if occ.trap then held[#held + 1] = 'the trap: ' .. occ.trap end
+                for _, w in ipairs(GS.GATES) do
+                    local who = occ[w].swing or occ[w].way
+                    if who then
+                        held[#held + 1] = ('the %s %s: %s'):format(w, occ[w].swing and 'swing' or 'approach', who)
+                    end
+                end
             end
+            line = line .. (#held > 0 and (', ' .. table.concat(held, ', ')) or ', all clear')
         end
         out[#out + 1] = ('lane %d %s'):format(l.lane, line)
     end
@@ -499,19 +540,26 @@ RegisterCommand('brgatesv', function(source, args)
         tell(src, ('no lane "%s": 1, 2, 3 or all'):format(tostring(words[1])))
         return
     end
+    local way = words[2] and words[2]:lower() or 'in'
+    if verb == 'open' and way ~= 'in' and way ~= 'out' then
+        tell(src, ('no reader "%s": in (outside, the outer gate first) or out (inside, the inner gate first)')
+            :format(way))
+        return
+    end
+    local first = way == 'out' and 'inner' or 'outer'
     local st = stateOf(m)
     local did = {}
     for _, n in ipairs(lanes) do
-        local s = st.lanes[n]
-        if verb == 'open' and G.open(m, n, now, '(dev)') then
+        if verb == 'open' then
+            if G.start(m, n, first, now, '(dev)') then did[#did + 1] = n end
+        elseif GS.halt(st.lanes[n], now, times()) then
             did[#did + 1] = n
-        elseif verb == 'close' and s and s.open then
-            shut(m, st, n, s, now, 'dev')
-            did[#did + 1] = n
+            print(('[br_core] dcgate: lane %d in match %s: its cycle ending (dev)'):format(n, tostring(m.id)))
         end
     end
+    if verb == 'close' and #did > 0 then send(m, st) end
     tell(src, #did > 0
         and ('lane %s %s in match %s'):format(table.concat(did, ', '),
-            verb == 'open' and 'open' or 'folding shut', tostring(m.id))
-        or ('nothing to %s: %s already'):format(verb, verb == 'open' and 'open' or 'shut'))
+            verb == 'open' and (first .. ' gate open') or 'ending its cycle', tostring(m.id))
+        or ('nothing to %s: %s'):format(verb, verb == 'open' and 'its cycle runs' or 'no cycle runs'))
 end)

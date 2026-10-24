@@ -299,10 +299,10 @@ function BR.Broadcast.snapshot(src)
             -- every camera near it broken; nil outside a match or off
             -- Season 2, and the client then holds none.
             flick        = BR.Flick and BR.Flick.viewFor and BR.Flick.viewFor(target) or nil,
-            -- The data center gate's lanes in their match, open or shut
-            -- (#420), so a late joiner or a restarted client sees an open lane
-            -- open; nil outside a match or off Season 2, and the client then
-            -- holds every lane shut.
+            -- The data center gate's lanes in their match (#420): each lane's
+            -- gates and cycle, and each gate's pose now, so a late joiner or a
+            -- restarted client sees each gate where it is; nil outside a match
+            -- or off Season 2, and the client then holds every gate shut.
             dcgate       = BR.DcGate and BR.DcGate.viewFor and BR.DcGate.viewFor(target) or nil,
         }
     end

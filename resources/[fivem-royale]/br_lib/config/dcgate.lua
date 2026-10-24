@@ -2,18 +2,15 @@
 --
 -- The campus's front gate (#415) has three lanes. Each lane is a crash arm
 -- outside an outer bi-fold gate, a trap, and an inner bi-fold gate, with a red
--- reader at the curb outside the outer gate and inside the inner one. A player
--- at a reader presses interact, and that whole lane opens. The whole contract
--- is docs/dcgate.md.
+-- reader at the curb outside the outer gate and inside the inner one. Each lane
+-- is a sally port: a press at a reader opens the gate nearest it, and the
+-- other opens only once that one has shut behind whoever came into the trap.
+-- The whole contract is docs/dcgate.md.
 --
 -- ═══ THE OWNER'S DECISIONS (2026-10-19) ═══
 --
 --   * Standing at a lane's reader shows the prompt "Press E to open the gate"
 --     (his words; the E is the player's own interact key, drawn as a key).
---     Pressing it opens that whole lane: both bi-fold gates fold open and its
---     crash arm rises.
---   * The lane stays open 20 seconds, then folds shut -- but waits while any
---     player or vehicle is still in the lane.
 --   * The server decides, per match; clients animate.
 --   * The fold: the lead leaf turns 0-90 degrees about its post hinge, and the
 --     follower rides on the lead's free edge and counter-rotates (the gate
@@ -21,7 +18,21 @@
 --   * The gamemode registers, locks and opens the main gate's 24 leaves and 3
 --     arms; br_datacenter stops locking them in the same publish.
 --   * Season 2 only (the `dcgate` row in config/seasons.lua); the readers work
---     in a match only.
+--     in a match only. No reader in the trap.
+--
+-- ═══ THE OWNER'S DECISIONS (2026-10-24): A SALLY PORT, NOT A TIMER ═══
+--
+--   * A press at the outside reader opens only the outer gate and raises the
+--     arm; a press at the inside reader opens only the inner gate.
+--   * The first gate closes about 2 s after its swing area and approach are
+--     clear once someone is in the trap; a first gate nobody has come into the
+--     trap through within 10 s closes, and the cycle ends.
+--   * The first gate fully shut with someone in the trap, the second opens;
+--     it closes about 2 s after the trap and its swing area are clear.
+--   * No gate ever closes on a player or a vehicle in its swing area. A press
+--     while the lane's cycle runs is not taken; a player in the trap with no
+--     cycle running gets nothing.
+--   * The arm is turned by hand ('rotate') and stays frozen in every pose.
 --
 -- THE PARTS THEMSELVES are br_lib/config/dcgate_parts.lua, a file of their own
 -- because it is generated (tools/dcgate_parts.py). This file is the numbers;
@@ -33,14 +44,11 @@ BR.Config.DcGate = BR.Config.DcGate or {}
 
 local G = BR.Config.DcGate
 
--- ── the lane ──
+-- ── the fold ──
 
--- How long a lane stays open before it folds shut. Owner, 2026-10-19.
-G.openMs = 20000
-
--- How long a fold takes, each way: the leads 0 to foldDeg, the arm 0 to
--- armRaiseDeg, together. A reversal mid-fold (a press, or somebody stepping
--- into a closing lane) runs back from where the leaves are.
+-- How long a gate's fold takes, each way: its leads 0 to foldDeg (and the
+-- outer gate's arm 0 to armRaiseDeg), together. A reversal mid-fold (somebody
+-- stepping into a closing gate's swing) runs back from where the leaves are.
 G.foldMs = 4000
 
 -- The lead's fold at fully open. The kit: "theta 0-90, hard stop at 90" (past
@@ -50,6 +58,21 @@ G.foldDeg = 90.0
 -- The crash arm's raise at fully open. The kit: "85-90 deg is fully raised
 -- (test the exact stop)"; its pose previews stand it at 85.
 G.armRaiseDeg = 85.0
+
+-- ── the sally port (owner, 2026-10-24) ──
+--
+-- The sequence is br_lib/shared/dcgate_solve.lua's (S.advance); these are its
+-- times. Every spell is counted from no earlier than the gate standing fully
+-- open (foldMs after it started).
+G.cycle = {
+    -- A gate closes this long after what it waits on is clear: the first gate
+    -- its swing and approach (with someone in the trap), the second the trap
+    -- and its swing. "About 2 s."
+    closeDelayMs = 2000,
+    -- A first gate nobody has come into the trap through this long after it
+    -- opened closes (its swing clear), and the cycle ends.
+    abandonMs = 10000,
+}
 
 -- ── the reader ──
 
@@ -75,25 +98,27 @@ G.use = {
     reachSlackM = 3.0,
 }
 
--- ── the lane's box: who a closing gate waits for ──
+-- ── the zones: who is where ──
 --
--- The box itself is generated (dcgate_parts.lua: from the arm's beam to the
--- inner gate's fold, post to post, at grade). A player standing or downed in
--- the match whose sample is within pedMarginM of it, or any vehicle in the
--- match's routing bucket whose center is within vehicleMarginM of its ends --
--- a car's half-length, so a bumper under a leaf counts -- and vehicleSideM of
--- its sides -- a car's half-width: the leaves fold inside the posts, so a car
--- beside the lane (on the island between two) holds neither -- holds the lane
--- open. Both from belowM under the grade to aboveM over it.
+-- The zones are derived from the generated parts (dcgate_solve.lua's
+-- S.laneZones): the trap between the two gate lines, each gate's swing (its
+-- leaves' fold, and the outer gate's arm) and its way (the swing and the
+-- approach out to its reader), every one post to post at grade. These are the
+-- sizes they are grown by. A player standing or downed in the match whose
+-- sample is within pedMarginM of a zone, or any vehicle in the match's routing
+-- bucket whose center is within vehicleMarginM of its ends -- a car's
+-- half-length, so a bumper under a leaf counts -- and vehicleSideM of its
+-- sides -- a car's half-width: the leaves fold inside the posts, so a car
+-- beside the lane (on the island between two) is in none -- is in it. Both
+-- from belowM under the grade to aboveM over it.
 G.lane = {
     pedMarginM = 0.5,
     vehicleMarginM = 2.5,
     vehicleSideM = 1.0,
     belowM = 1.0,
     aboveM = 4.5,
-    -- The server's pass over open and closing lanes. Nothing runs while every
-    -- lane in every match is shut, and the vehicle pool is read only for a lane
-    -- that is due to close or closing.
+    -- The server's pass over the lanes whose cycle runs. Nothing runs, and the
+    -- vehicle pool is not read, while every lane in every match is idle.
     checkMs = 500,
     -- A player's sample older than this is not counted.
     sampleMaxAgeMs = 3000,
@@ -104,7 +129,7 @@ G.lane = {
 G.client = {
     -- Within this of the gate's middle (dcgate_parts.lua's center, past its
     -- radius) the SLOW pass keeps the doors locked and posed as their physics
-    -- streams in, and a lane that changes folds. Farther, nothing but the
+    -- streams in, and a gate that changes folds. Farther, nothing but the
     -- distance is asked. The leaves' lodDist (the gate kit's REPORT: 300 m),
     -- so no client sees a leaf it is not keeping posed.
     nearM = 300.0,
@@ -125,14 +150,23 @@ G.client = {
     --   'ratio'   the door system's own open ratio, held locked
     --             (DoorSystemSetOpenRatio, then DoorSystemSetDoorState 1): the
     --             engine's way of holding a door ajar
-    --   'rotate'  the handle frozen and turned by SetEntityRotation, the door
-    --             unlocked while it is moved
+    --   'rotate'  the handle frozen from the moment it is found and turned by
+    --             SetEntityRotation, and frozen in every pose, shut included: a
+    --             door entity turned by hand loses its hinge, so unfrozen a hit
+    --             knocks it loose. The door is locked shut while the part is
+    --             shut and let go while it is turned. It goes back to the door
+    --             system only when br_core stops or `brgate drive` switches it
+    --             to 'ratio'.
     --
-    -- `brgate drive <lead|arm> <ratio|rotate>` switches one on this client, for
-    -- the dev box to settle which the engine honors.
-    drive = { lead = 'ratio', arm = 'ratio' },
+    -- The arm is 'rotate' (owner, 2026-10-24: a 'ratio' arm hit before its
+    -- lane opened stayed down; turned by hand it rises every time). The leads
+    -- stay 'ratio'. `brgate drive <lead|arm> <ratio|rotate>` switches one on
+    -- this client.
+    drive = { lead = 'ratio', arm = 'rotate' },
     -- With 'ratio': the angle an open ratio of 1.0 turns the part, and the sign
-    -- that turns it the kit's way. Unverified in game.
+    -- that turns it the kit's way. In game (2026-10-24) a lead held at 1.0
+    -- stands 81 degrees open, not 90: 1.0 is the most the door system can be
+    -- asked, so 81 is the door's own limit, not this number (docs/dcgate.md).
     ratioDeg = { lead = 90.0, arm = 90.0 },
     ratioSign = { lead = 1, arm = 1 },
 }

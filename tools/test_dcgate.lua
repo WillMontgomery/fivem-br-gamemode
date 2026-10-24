@@ -1,5 +1,6 @@
 -- Unit tests for the data center's main gate (#420), the server and the shared
--- rules: three lanes that open from their readers (docs/dcgate.md).
+-- rules: three lanes, each a sally port opened from its readers
+-- (docs/dcgate.md).
 --
 -- This file stands up the REAL br_lib/shared/dcgate_solve.lua, the real
 -- generated registry (br_lib/config/dcgate_parts.lua) and the real
@@ -15,14 +16,20 @@
 --           arm; every follower where its lead's knuckle puts it; each lane's
 --           box holding its gates, their folds and its arm, apart from its
 --           neighbors, with both readers outside it; the sources' hashes.
---   PART C  the door, one refusal at a time in its order, and a press that
---           opens a lane: the whole match told, nobody else.
---   PART D  the clock: 20 s, then shut; held by a player standing or downed,
---           by a vehicle of the match's bucket at the box's grown edge, by
---           nobody else; a lane folding shut on somebody opening again and
---           closing the moment it is clear; the vehicle pool read only when a
---           lane is due; two matches apart; Season 1 and a match not played.
---   PART E  the snapshot's view.
+--   PART B2 the zones derived from the parts (the gate lines, the trap, each
+--           gate's swing and way, the readers' gates) and who is in them; the
+--           sequence, pure, through every transition (inbound, outbound,
+--           abandoned, reopened, the poses, the dev's stop); the wire's code;
+--           the rotation read back.
+--   PART C  the door, one refusal at a time in its order (a press from the
+--           trap and a press during a cycle among them), and a press that
+--           opens only its reader's gate: the whole match told, nobody else.
+--   PART D  the sally port on the server's own samples: inbound on foot,
+--           outbound by car, an abandoned first gate, a car parked in a swing,
+--           a gate reopening on a car, who holds a gate, a player dropped in
+--           the trap, a press at every phase, a match ending mid-cycle, two
+--           matches apart, Season 1.
+--   PART E  the snapshot's view: each gate's pose, for a late joiner.
 --   PART F  the dev command, and the wiring the other files make, by text.
 --
 -- The client is tools/test_dcgate_client.lua's.
@@ -278,10 +285,6 @@ local function after(ms)
     G.pass(gameMs)
 end
 
-local function opens(m)
-    return lastOf(BR.Net.DCGATE_STATE) and lastOf(BR.Net.DCGATE_STATE).open or nil
-end
-
 -- =========================================================================
 -- PART A -- the solve
 -- =========================================================================
@@ -459,6 +462,254 @@ do
 end
 
 -- =========================================================================
+-- PART B2 -- the zones, the sequence and the wire, pure
+-- =========================================================================
+
+local Z = GS.zones(P)
+local Z2 = Z[2]
+local T = { foldMs = GC.foldMs, closeDelayMs = GC.cycle.closeDelayMs, abandonMs = GC.cycle.abandonMs }
+
+--- A point of lane 2: `a` meters along its box from its middle (toward the
+--- inner gate), `c` across it, at a ped's height.
+local function at(a, c, z)
+    return { x = BOX2.x + BOX2.ux * a - BOX2.uy * c, y = BOX2.y + BOX2.uy * a + BOX2.ux * c, z = z or PED_Z }
+end
+local function alongOf(x, y) return (x - BOX2.x) * BOX2.ux + (y - BOX2.y) * BOX2.uy end
+local function acrossOf(x, y) return -(x - BOX2.x) * BOX2.uy + (y - BOX2.y) * BOX2.ux end
+
+-- The places of lane 2, off its zones.
+local A_TRAP = 0.0
+local A_OUT_SWING = (Z2.outer.swing.a0 + Z2.outer.swing.a1) / 2.0
+local A_OUT_WAY = (Z2.outer.way.a0 + Z2.outer.swing.a0) / 2.0
+local A_IN_SWING = (Z2.inner.swing.a0 + Z2.inner.swing.a1) / 2.0
+local A_IN_WAY = (Z2.inner.way.a1 + Z2.inner.swing.a1) / 2.0
+local A_FAR_OUT, A_FAR_IN = -30.0, 30.0
+
+--- An occupancy, by hand: who is in the trap and each gate's swing and way.
+local function occ(t)
+    t = t or {}
+    return {
+        trap = t.trap,
+        outer = { swing = t.outerSwing, way = t.outerWay or t.outerSwing },
+        inner = { swing = t.innerSwing, way = t.innerWay or t.innerSwing },
+    }
+end
+
+describe('the zones: derived from the parts -- gate lines, leaf lengths, the arm, the readers')
+do
+    for n, z in pairs(Z) do
+        local lane = LANE[n]
+        local b = lane.box
+        local function al(p) return (p.x - b.x) * b.ux + (p.y - b.y) * b.uy end
+        local ol = (al(lane.leads[1]) + al(lane.leads[2])) / 2.0
+        local il = (al(lane.leads[3]) + al(lane.leads[4])) / 2.0
+        near(z.line.outer, ol, 1e-9, ('lane %d: the outer line is its outer leads\' hinges'):format(n))
+        near(z.line.inner, il, 1e-9, ('lane %d: the inner line is its inner leads\''):format(n))
+        near(z.trap.a0, ol, 1e-9, ('lane %d: the trap runs from the outer line'):format(n))
+        near(z.trap.a1, il, 1e-9, '...to the inner line')
+        near(z.outer.swing.a1, ol, 1e-9, 'the outer swing meets the trap at the outer line')
+        local leaf = math.sqrt(lane.follows[1].ox ^ 2 + lane.follows[1].oy ^ 2)
+        ok(z.outer.swing.a0 <= ol - leaf + 1e-9, 'it reaches past the leaf\'s length, out toward the arm')
+        ok(z.outer.swing.a0 <= al(lane.arm) - 0.2, 'and past the arm\'s beam: the arm comes down with the outer gate')
+        near(z.inner.swing.a0, il, 1e-9, 'the inner swing meets the trap at the inner line')
+        near(z.inner.swing.a1, il + leaf, 1e-6, 'and reaches the leaf\'s length into the campus')
+        local rin = P.readers[R['gate.lane' .. n .. '.reader_in']]
+        local rout = P.readers[R['gate.lane' .. n .. '.reader_out']]
+        near(z.outer.way.a0, al(rin), 1e-9, 'the outer way runs out to the outside reader')
+        near(z.inner.way.a1, al(rout), 1e-9, 'the inner way out to the inside one')
+        eq(z.readers[R['gate.lane' .. n .. '.reader_in']], 'outer', 'the outside reader opens the outer gate first')
+        eq(z.readers[R['gate.lane' .. n .. '.reader_out']], 'inner', 'the inside reader opens the inner gate first')
+        ok(not GS.inTrap(Z, rin.x, rin.y, rin.z, GC.lane) and not GS.inTrap(Z, rout.x, rout.y, rout.z, GC.lane),
+            ('lane %d: neither reader is in a trap'):format(n))
+        eq(z.all.a0, z.outer.way.a0, 'everything worth looking at, from the outside reader...')
+        eq(z.all.a1, z.inner.way.a1, '...to the inside one')
+    end
+    eq(GS.gateOf('gate.lane1.outer.lead_l'), 'outer', 'a part\'s gate is in its id')
+    eq(GS.gateOf('gate.lane3.inner.follow_r'), 'inner', 'inner')
+    eq(GS.gateOf('gate.lane2.outer_arm.arm'), 'outer', 'the arm is the outer gate\'s')
+    eq(GS.gateOf('gate.lane2.reader_in'), nil, 'a reader is no gate\'s part')
+    ok(GS.inTrap(Z, at(A_TRAP, 0).x, at(A_TRAP, 0).y, PED_Z, GC.lane), 'the trap\'s middle is in a trap')
+    ok(not GS.inTrap(Z, at(A_OUT_SWING, 0).x, at(A_OUT_SWING, 0).y, PED_Z, GC.lane), 'a swing is not')
+    -- Occupancy: each zone by itself, players and vehicles by their margins.
+    local function o(peds, cars) return GS.occupancy(Z2, peds, cars, GC.lane) end
+    local p = at(A_TRAP, 0)
+    local r = o({ p })
+    ok(r.trap == 'a player' and not r.outer.swing and not r.outer.way and not r.inner.swing, 'a player in the trap: the trap')
+    r = o({ at(A_OUT_SWING, 0) })
+    ok(r.outer.swing == 'a player' and r.outer.way == 'a player' and not r.trap, 'in the outer swing: its swing and its way')
+    r = o({ at(A_OUT_WAY, 0) })
+    ok(r.outer.way == 'a player' and not r.outer.swing and not r.trap, 'in the outer approach: its way only')
+    r = o({ at(A_IN_SWING, 0) })
+    ok(r.inner.swing == 'a player' and not r.trap and not r.outer.way, 'in the inner swing: its swing')
+    r = o({ at(A_IN_WAY, 0) })
+    ok(r.inner.way == 'a player' and not r.inner.swing, 'in the inner approach: its way only')
+    r = o({ at(A_FAR_OUT, 0), at(A_FAR_IN, 0) })
+    ok(not r.trap and not r.outer.way and not r.inner.way, 'far off either end: nowhere')
+    r = o(nil, { at(Z2.trap.a0 + GC.lane.vehicleMarginM + 0.1, 0, BOX2.zLow + 0.6) })
+    ok(r.trap == 'a vehicle' and not r.outer.swing, 'a car whose center is past the outer line by more than its half-length: the trap only')
+    r = o(nil, { at(Z2.trap.a0 + GC.lane.vehicleMarginM - 0.1, 0, BOX2.zLow + 0.6) })
+    ok(r.trap == 'a vehicle' and r.outer.swing == 'a vehicle', 'by less: its tail is still in the outer swing')
+    r = o({ at(A_TRAP, BOX2.halfWidth + GC.lane.pedMarginM + 0.1) })
+    ok(not r.trap, 'a player beside the lane, past the posts: not in it')
+    r = o(nil, { at(A_OUT_SWING, -(BOX2.halfWidth + GC.lane.vehicleSideM - 0.1), BOX2.zLow + 0.6) })
+    ok(r.outer.swing == 'a vehicle', ('a car whose center is %.1f m beside the lane (its side under a leaf): in the swing')
+        :format(GC.lane.vehicleSideM - 0.1))
+    r = o(nil, { at(A_OUT_SWING, -(BOX2.halfWidth + GC.lane.vehicleSideM + 0.1), BOX2.zLow + 0.6) })
+    ok(not r.outer.swing and not r.outer.way, 'farther: not')
+    eq(GC.lane.vehicleSideM, 1.0, 'a car\'s half-width')
+    -- THE ARM IS THE OUTER GATE'S, WHATEVER THE BOX: a row whose box stops
+    -- short of the arm still has the arm in its outer swing.
+    local row = {}
+    for k, v in pairs(LANE[2]) do row[k] = v end
+    row.box = {}
+    for k, v in pairs(LANE[2].box) do row.box[k] = v end
+    row.box.halfLength = row.box.halfLength - 1.5
+    local short = GS.laneZones(row, P.readers)
+    local armAt = (LANE[2].arm.x - row.box.x) * row.box.ux + (LANE[2].arm.y - row.box.y) * row.box.uy
+    ok(short.outer.swing.a0 <= armAt, 'a box that stops short of the arm: its beam still in the outer swing')
+    r = o({ at(A_TRAP, 0, BOX2.zHigh + GC.lane.aboveM + 1.0) })
+    ok(not r.trap, 'a player over it (a roof, a helicopter): not in it')
+end
+
+describe('the sequence, pure: inbound, every transition')
+do
+    local s = GS.newLane()
+    eq(GS.code(s), 0, 'a new lane: idle, code 0')
+    ok(GS.press(s, 'outer', 0, T), 'a press at the outside reader starts a cycle')
+    ok(s.phase == 'first' and s.first == 'outer' and s.second == 'inner', 'the outer gate first, the inner second')
+    eq(GS.code(s), 5, 'code 5: the outer gate open, the cycle running')
+    ok(not GS.press(s, 'inner', 10, T), 'a press while it runs: not taken')
+    -- The presser at the reader (the outer way), then into the trap at 1.5 s.
+    eq(GS.advance(s, occ({ outerWay = 'a player' }), 1000, T), nil, 'the presser in its approach: nothing')
+    eq(GS.advance(s, occ({ trap = 'a player' }), 1500, T), nil, 'in the trap, the gate still folding open: nothing')
+    eq(GS.advance(s, occ({ trap = 'a player' }), 5500, T), nil, 'fully open at 4 s, clear 1.5 s since: not yet')
+    ok(GS.advance(s, occ({ trap = 'a player' }), 6000, T) ~= nil and s.phase == 'firstShut',
+        'clear 2 s since it stood fully open: the outer gate folds shut behind them')
+    eq(GS.code(s), 4, 'code 4: no gate open, the cycle running')
+    eq(GS.advance(s, occ({ trap = 'a player' }), 9900, T), nil, 'still folding shut')
+    ok(GS.advance(s, occ({ trap = 'a player' }), 10000, T) ~= nil and s.phase == 'second', 'fully shut, someone in the trap: the inner gate opens')
+    eq(GS.code(s), 6, 'code 6: the inner gate open')
+    eq(GS.advance(s, occ({ innerSwing = 'a player' }), 14000, T), nil, 'walking out through its swing: held')
+    eq(GS.advance(s, occ({}), 14500, T), nil, 'clear')
+    eq(GS.advance(s, occ({}), 16000, T), nil, '1.5 s clear: not yet')
+    ok(GS.advance(s, occ({}), 16500, T) ~= nil and s.phase == 'secondShut', '2 s clear: the inner gate folds shut')
+    ok(GS.advance(s, occ({}), 20500, T) ~= nil and s.phase == 'idle' and GS.code(s) == 0, 'fully shut: idle')
+    ok(s.first == nil and s.second == nil, 'its gates forgotten')
+    ok(GS.press(s, 'inner', 21000, T), 'idle again: a press is taken')
+end
+
+describe('the sequence, pure: outbound, an abandoned first gate, reopening, the poses')
+do
+    local s = GS.newLane()
+    GS.press(s, 'inner', 0, T)
+    ok(s.first == 'inner' and GS.code(s) == 6, 'the inside reader: the inner gate first')
+    GS.advance(s, occ({ trap = 'a vehicle' }), 500, T)
+    GS.advance(s, occ({ trap = 'a vehicle' }), 6000, T)
+    eq(s.phase, 'firstShut', 'the car in the trap: the inner gate shuts behind it')
+    GS.advance(s, occ({ trap = 'a vehicle' }), 10000, T)
+    ok(s.phase == 'second' and GS.code(s) == 5, 'then the outer gate and its arm open')
+    -- A gate never closes on anybody in its swing.
+    GS.advance(s, occ({ outerSwing = 'a vehicle' }), 16000, T)
+    eq(s.phase, 'second', 'the car under the arm: still open at 6 s')
+    GS.advance(s, occ({}), 16500, T)
+    GS.advance(s, occ({}), 18500, T)
+    eq(s.phase, 'secondShut', 'gone 2 s: shutting')
+    ok(GS.advance(s, occ({ outerSwing = 'a player' }), 19000, T) ~= nil and s.phase == 'second',
+        'somebody steps into its swing while it shuts: open again')
+    GS.advance(s, occ({}), 19500, T)
+    GS.advance(s, occ({}), 23000, T)
+    eq(s.phase, 'second', 'and it stands fully open again before its 2 s count')
+    -- Somebody staying in the trap holds the second gate open: it never starts
+    -- to shut while they are there.
+    s = GS.newLane()
+    GS.press(s, 'outer', 0, T)
+    GS.advance(s, occ({ trap = 'a player' }), 500, T)
+    GS.advance(s, occ({ trap = 'a player' }), 6000, T)
+    GS.advance(s, occ({ trap = 'a player' }), 10000, T)
+    eq(s.phase, 'second', 'the inner gate open')
+    local moved = 0
+    for t = 10500, 40000, 500 do
+        if GS.advance(s, occ({ trap = 'a player' }), t, T) then moved = moved + 1 end
+    end
+    eq(moved, 0, 'somebody staying in the trap 30 s: the second gate never starts to shut')
+    GS.advance(s, occ({}), 40500, T)
+    GS.advance(s, occ({}), 42500, T)
+    eq(s.phase, 'secondShut', 'they leave: 2 s later it does')
+
+    -- ABANDONED: nobody comes into the trap.
+    s = GS.newLane()
+    GS.press(s, 'outer', 0, T)
+    GS.advance(s, occ({}), 500, T)
+    GS.advance(s, occ({}), 9500, T)
+    eq(s.phase, 'first', 'nobody in the trap at 9.5 s: still open')
+    ok(GS.advance(s, occ({}), 10000, T) ~= nil and s.phase == 'firstShut', 'at 10 s: it shuts')
+    ok(GS.advance(s, occ({}), 14000, T) ~= nil and s.phase == 'idle' and not s.inner.open,
+        'fully shut with nobody in the trap: the cycle ends, the inner gate never opened')
+    -- Abandoned with a car parked in its swing.
+    s = GS.newLane()
+    GS.press(s, 'outer', 0, T)
+    for t = 500, 30000, 500 do GS.advance(s, occ({ outerSwing = 'a vehicle' }), t, T) end
+    eq(s.phase, 'first', 'a car parked under the arm: open 30 s on')
+    GS.advance(s, occ({}), 30500, T)
+    GS.advance(s, occ({}), 32000, T)
+    eq(s.phase, 'first', 'gone 1.5 s: still open')
+    GS.advance(s, occ({}), 32500, T)
+    eq(s.phase, 'firstShut', 'gone 2 s: it shuts')
+    -- Its approach does not hold an abandoned gate, but it does hold one
+    -- with someone in the trap.
+    s = GS.newLane()
+    GS.press(s, 'outer', 0, T)
+    GS.advance(s, occ({ outerWay = 'a player' }), 500, T)
+    GS.advance(s, occ({ outerWay = 'a player' }), 12500, T)
+    eq(s.phase, 'firstShut', 'standing at the reader, nobody in the trap: it shuts at 10 s (and 2 s clear of its swing)')
+    s = GS.newLane()
+    GS.press(s, 'outer', 0, T)
+    for t = 500, 20000, 500 do GS.advance(s, occ({ trap = 'a player', outerWay = 'a player' }), t, T) end
+    eq(s.phase, 'first', 'someone in the trap and someone in its approach: held for the second')
+
+    -- THE POSES: each gate's pose a function of the time, from where it was.
+    s = GS.newLane()
+    GS.press(s, 'outer', 1000, T)
+    near(GS.gatePose(s.outer, 3000, T.foldMs), 0.5, 1e-9, 'two seconds into the fold: the outer gate half open')
+    eq(GS.gatePose(s.inner, 3000, T.foldMs), 0.0, 'the inner gate shut')
+    GS.advance(s, occ({ trap = 'a player' }), 1500, T)
+    GS.advance(s, occ({ trap = 'a player' }), 7000, T)
+    near(GS.gatePose(s.outer, 8000, T.foldMs), 0.75, 1e-9, 'a second into shutting: three quarters open')
+    GS.advance(s, occ({ outerSwing = 'a player' }), 8000, T)
+    eq(s.phase, 'first', 'reopened')
+    near(GS.gatePose(s.outer, 8000, T.foldMs), 0.75, 1e-9, 'from where it was')
+    near(GS.gatePose(s.outer, 9000, T.foldMs), 1.0, 1e-9, 'and open a second later')
+end
+
+describe('the sequence, pure: the dev\'s stop, and the wire\'s code')
+do
+    local s = GS.newLane()
+    ok(not GS.halt(s, 0, T), 'an idle lane: nothing to stop')
+    GS.press(s, 'outer', 0, T)
+    ok(GS.halt(s, 100, T) and s.phase == 'secondShut' and s.second == 'outer' and not s.outer.open,
+        'its first gate open: it shuts as the last')
+    GS.advance(s, occ({}), 4100, T)
+    eq(s.phase, 'idle', 'and the cycle ends with it')
+    GS.press(s, 'inner', 5000, T)
+    GS.advance(s, occ({ trap = 'a player' }), 5500, T)
+    GS.advance(s, occ({ trap = 'a player' }), 11000, T)
+    eq(s.phase, 'firstShut', 'shutting behind someone')
+    ok(GS.halt(s, 11500, T) and s.phase == 'secondShut' and s.at == 11000, 'stopped while it shuts: it keeps shutting, as the last')
+    ok(GS.advance(s, occ({ trap = 'a player' }), 12000, T) ~= nil and s.phase == 'second' and s.inner.open,
+        'but somebody in the trap opens it again: nobody is shut in')
+    for c = 0, 7 do
+        local d = GS.decode(c)
+        ok(d and d.outer == (c % 2 == 1) and d.inner == (c % 4 >= 2) and d.busy == (c >= 4), 'code ' .. c .. ' reads back')
+    end
+    for _, bad in ipairs({ -1, 8, 2.5, '5', true, 0 / 0 }) do
+        eq(GS.decode(bad), nil, 'not a code: ' .. tostring(bad))
+    end
+    near(GS.rotationOff(0.0, -85.0, 270.0, 0.0, -85.0, -90.0), 0.0, 1e-9, 'the rotation read back: 270 is -90')
+    near(GS.rotationOff(0.0, -85.0, 270.0, 180.0, 95.0, 90.0), 0.0, 1e-9, 'and the other spelling of the same turn is not off')
+    near(GS.rotationOff(0.0, -85.0, 270.0, 0.0, 0.0, 270.0), 85.0, 1e-9, 'an arm lying down when it should stand: 85 off')
+end
+
+-- =========================================================================
 -- PART C -- the door, one refusal at a time, in its order
 -- =========================================================================
 
@@ -481,19 +732,20 @@ do
         eq(press(1, bad.d), 'shape', '2. ' .. bad.label .. ': shape')
     end
     local rd = R['gate.lane2.reader_in']
+    local function idle() G.stateOf(m).lanes[2] = GS.newLane() end
     gameMs = gameMs + 1500
     sample()
-    eq(G.use(1, { reader = rd }, gameMs), 'open', 'a good press opens the lane')
+    eq(G.use(1, { reader = rd }, gameMs), 'open', 'a good press opens the gate')
     eq(G.use(1, { reader = rd }, gameMs + GC.use.minIntervalMs - 1), 'rate', '3. inside use.minIntervalMs: rate')
     ok(GC.use.minIntervalMs * 2 <= GC.client.askMs,
         'the server\'s interval is at most half the client\'s, so jitter never drops a retry a second later')
-    G.stateOf(m).lanes[2].open = false
+    idle()
     eq(press(1, { reader = rd }), 'open', 'and a second and a half later it is taken again')
-    G.stateOf(m).lanes[2].open = false
+    idle()
     gameMs = gameMs + GC.client.askMs - 250
     sample()
     eq(G.use(1, { reader = rd }, gameMs), 'open', 'a retry that arrives a quarter second early (jitter): taken')
-    G.stateOf(m).lanes[2].open = false
+    idle()
 
     roster[1].matchId = nil
     eq(press(1, { reader = rd }), 'match', '4. in no match: match')
@@ -504,7 +756,7 @@ do
     eq(press(1, { reader = rd }), 'match', '4. a match that ended: match')
     m.state = BR.MatchState.BUS
     eq(press(1, { reader = rd }), 'open', '4. the bus still flying (this player jumped early and landed): taken')
-    G.stateOf(m).lanes[2].open = false
+    idle()
     m.state = BR.MatchState.PLAYING
 
     roster[1].state = BR.PlayerState.DBNO
@@ -521,249 +773,382 @@ do
     eq(press(1, { reader = rd }), 'reach', '6. past readerM and the slack, flat: reach')
     player(1, m, IN2.x, IN2.y + GC.readerM + slack - 0.2)
     eq(press(1, { reader = rd }), 'open', 'inside them: taken')
-    G.stateOf(m).lanes[2].open = false
+    idle()
     player(1, m, IN2.x, IN2.y, nil, IN2.z + GC.readerZM + slack + 0.3)
     eq(press(1, { reader = rd }), 'reach', '6. on a roof over it: reach')
     player(1, m, IN2.x, IN2.y + 0.5)
     eq(press(1, { reader = R['gate.lane3.reader_out'] }), 'reach',
         '6. naming another lane\'s reader from this one: reach -- the server says where the player is')
+    -- NO READER IN THE TRAP: a player in it, within reach of the inside
+    -- reader past the inner gate, is at no reader.
+    local inTrap = at(Z2.line.inner - 0.3, acrossOf(OUT2.x, OUT2.y))
+    ok(math.sqrt((inTrap.x - OUT2.x) ^ 2 + (inTrap.y - OUT2.y) ^ 2) < GC.readerM, 'a spot in the trap within readerM of the inside reader')
+    player(1, m, inTrap.x, inTrap.y)
+    eq(press(1, { reader = R['gate.lane2.reader_out'] }), 'reach', '6. from the trap: reach -- no reader in the trap')
 
+    player(1, m, IN2.x, IN2.y + 0.5)
     eq(press(1, { reader = rd }), 'open', 'at the reader again: open')
-    eq(press(1, { reader = rd }), 'open', '7. ...and again while it is open: refused as `open`')
+    eq(press(1, { reader = rd }), 'busy', '7. ...and again while its cycle runs: busy')
     local st = G.stateOf(m)
-    ok(st.lanes[2].open == true and not st.lanes[1].open and not st.lanes[3].open, 'only lane 2 is open')
+    ok(GS.busy(st.lanes[2]) and not GS.busy(st.lanes[1]) and not GS.busy(st.lanes[3]), 'only lane 2 runs')
     eq(st.refused.season, 1, 'every refusal counted on the match: season')
     eq(st.refused.shape, 6, 'shape')
     eq(st.refused.rate, 1, 'rate')
     eq(st.refused.match, 2, 'match (a press from no match has no match to be counted on)')
     eq(st.refused.player, 2, 'player')
-    eq(st.refused.reach, 4, 'reach')
-    eq(st.refused.open, 1, 'open')
+    eq(st.refused.reach, 5, 'reach')
+    eq(st.refused.busy, 1, 'busy')
 end
 
-describe('the door: a press opens the whole lane, and the whole match is told')
+describe('the door: the outside reader opens only the outer gate, the inside only the inner; the match told')
 do
     reset()
     local m = newMatch(1)
     local other = newMatch(2)
-    player(1, m, OUT2.x, OUT2.y - 0.5)
+    player(1, m, IN2.x, IN2.y - 0.5)
     player(2, m, 0.0, 0.0)
     player(3, other, OUT2.x, OUT2.y)
     player(4, nil, OUT2.x, OUT2.y)
-    eq(press(1, { reader = R['gate.lane2.reader_out'] }), 'open', 'the reader inside the inner gate opens it too')
+    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'open', 'the outside reader')
+    local s = G.stateOf(m).lanes[2]
+    ok(s.outer.open and not s.inner.open, 'the outer gate (and its arm) open, the inner gate shut')
     local to = {}
-    for _, s in ipairs(eventsOf(BR.Net.DCGATE_STATE)) do to[s.src] = (to[s.src] or 0) + 1 end
+    for _, e in ipairs(eventsOf(BR.Net.DCGATE_STATE)) do to[e.src] = (to[e.src] or 0) + 1 end
     ok(to[1] == 1 and to[2] == 1, 'everyone in the match is told, once: across the map too')
     ok(to[3] == nil and to[4] == nil, 'nobody in another match or in none')
     local p = lastOf(BR.Net.DCGATE_STATE, 2)
-    ok(p and p.matchId == 1 and p.open[1] == false and p.open[2] == true and p.open[3] == false,
-        'the payload: the match, and every lane open or shut')
-    ok(logs[#logs]:find('lane 2 open by p1 (1) at gate.lane2.reader_out in match 1', 1, true) ~= nil,
+    ok(p and p.matchId == 1 and p.lanes[1] == 0 and p.lanes[2] == 5 and p.lanes[3] == 0,
+        'the payload: the match, and a code a lane (5: the outer gate open, the cycle running)')
+    local n = 0
+    for _ in pairs(p) do n = n + 1 end
+    eq(n, 2, 'and nothing else: matchId and lanes')
+    ok(logs[#logs]:find('lane 2 outer gate open by p1 (1) at gate.lane2.reader_in in match 1', 1, true) ~= nil,
         'one console line', logs[#logs])
     local before = #sent
     eq(press(3, { reader = R['gate.lane2.reader_out'] }), 'open', 'the other match\'s lane 2 is its own')
     eq(#sent - before, 1, 'and only its own player hears of it')
+    local o = G.stateOf(other).lanes[2]
+    ok(o.inner.open and not o.outer.open and o.first == 'inner', 'the inside reader: only the inner gate')
 end
 
 -- =========================================================================
--- PART D -- the clock
+-- PART D -- the sally port, on the server's own samples
 -- =========================================================================
 
-describe('the clock: 20 seconds, then it folds shut; the vehicle pool read only then')
+--- Put a player of the roster at a point of lane 2.
+local function put(src, a, c, z)
+    local p = at(a, c or 0.0, z)
+    roster[src].pos = { x = p.x, y = p.y, z = p.z }
+end
+--- A vehicle of a bucket at a point of lane 2 (its center a car's height up).
+local function car(h, m, a, c)
+    local p = at(a, c or 0.0, BOX2.zLow + 0.6)
+    vehicles[h] = { x = p.x, y = p.y, z = p.z, bucket = m and m.bucket or 0 }
+end
+--- The passes up to `t` ms after `t0`, every lane.checkMs.
+local function runTo(t0, t)
+    while gameMs + GC.lane.checkMs <= t0 + t do after(GC.lane.checkMs) end
+end
+local function code2(src) local p = lastOf(BR.Net.DCGATE_STATE, src) return p and p.lanes[2] end
+
+describe('the sally port: inbound on foot -- outer gate, the trap, outer shut, inner open, inner shut')
 do
     reset()
     local m = newMatch(1)
     player(1, m, IN2.x, IN2.y)
-    eq(GC.openMs, 20000, 'the owner\'s 20 seconds')
-    for _ = 1, 5 do after(500) end
-    eq(poolReads, 0, 'every lane shut: the pass reads nothing')
-    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'open', 'opened')
+    player(2, m, 0.0, 0.0)
+    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'open', 'pressed at the outside reader')
+    local t0 = gameMs
     local s = G.stateOf(m).lanes[2]
-    local opened = s.at
-    after(19000)
-    ok(s.open, '19 s on: still open')
-    eq(poolReads, 0, 'and the pool not read while it is inside its time')
-    gameMs = opened + 19999
-    G.pass(gameMs)
-    ok(s.open, '19.999 s: still open')
-    gameMs = opened + 20000
-    sample()
-    G.pass(gameMs)
-    ok(not s.open, '20 s, nobody in it: folding shut')
-    eq(poolReads, 1, 'the pool read once, for that')
-    local p = lastOf(BR.Net.DCGATE_STATE, 1)
-    ok(p and p.open[2] == false, 'and the match is told')
-    ok(logs[#logs]:find('lane 2 folding shut in match 1 (clear, open 20.0 s)', 1, true) ~= nil, logs[#logs])
-    after(GC.foldMs)
+    eq(code2(2), 5, 'the match told: the outer gate open')
+    put(1, alongOf(IN2.x, IN2.y), 0.0)
+    runTo(t0, 1000)
+    eq(s.phase, 'first', 'standing at the reader, in its approach')
+    put(1, A_TRAP)
+    runTo(t0, 5500)
+    eq(s.phase, 'first', 'in the trap since 1.5 s; the gate fully open at 4 s; 1.5 s since: still open')
+    runTo(t0, 6000)
+    eq(s.phase, 'firstShut', 'about 2 s after it stood open, its swing and approach clear: the outer gate shuts')
+    eq(code2(2), 4, 'the match told')
+    ok(logs[#logs]:find('lane 2 in match 1: outer gate shutting behind a player in the trap', 1, true) ~= nil, logs[#logs])
+    runTo(t0, 9500)
+    eq(s.phase, 'firstShut', 'still folding shut')
+    runTo(t0, 10000)
+    ok(s.phase == 'second' and s.inner.open and not s.outer.open, 'fully shut, a player in the trap: the inner gate opens')
+    eq(code2(2), 6, 'the match told')
+    put(1, A_IN_SWING)
+    runTo(t0, 15000)
+    eq(s.phase, 'second', 'walking out through its swing: held')
+    put(1, A_FAR_IN)
+    runTo(t0, 17000)
+    eq(s.phase, 'second', 'out of it at 15 s, first seen clear at 15.5 s; 1.5 s since: still open')
+    runTo(t0, 17500)
+    eq(s.phase, 'secondShut', 'about 2 s after the trap and its swing are clear: the inner gate shuts')
+    runTo(t0, 21500)
+    ok(s.phase == 'idle' and code2(2) == 0, 'fully shut: the cycle is over, and the match told')
     local reads = poolReads
-    for _ = 1, 4 do after(500) end
-    eq(poolReads, reads, 'shut and still: not looked at again')
+    runTo(t0, 25000)
+    eq(poolReads, reads, 'every lane idle: the pass reads nothing')
 end
 
-describe('the clock: a player in the lane holds it -- standing or downed, not out, not stale')
+describe('the sally port: outbound by car -- inner gate, the trap, inner shut, outer and arm open, outer shut')
 do
     reset()
     local m = newMatch(1)
-    player(1, m, IN2.x, IN2.y)
-    player(2, m, BOX2.x, BOX2.y)
-    press(1, { reader = R['gate.lane2.reader_in'] })
+    player(1, m, OUT2.x, OUT2.y)
+    car(501, m, alongOf(OUT2.x, OUT2.y) - 0.2)
+    eq(press(1, { reader = R['gate.lane2.reader_out'] }), 'open', 'pressed at the inside reader')
+    local t0 = gameMs
     local s = G.stateOf(m).lanes[2]
-    after(GC.openMs)
-    ok(s.open, 'a player standing in the trap: still open at 20 s')
-    after(30000)
-    ok(s.open, 'and 30 s later')
-    roster[2].state = BR.PlayerState.DBNO
-    after(500)
-    ok(s.open, 'downed in it: still held (a leaf does not fold onto a downed player)')
-    roster[2].state = BR.PlayerState.OUT
-    after(500)
-    ok(not s.open, 'out: nobody holds it, it folds')
-    G.open(m, 2, gameMs, 'again')
-    roster[2].state = BR.PlayerState.ALIVE
-    after(GC.openMs)
-    ok(s.open, 'standing again: held')
-    gameMs = gameMs + 500
-    roster[2].posAt = gameMs - GC.lane.sampleMaxAgeMs - 1
-    roster[1].posAt = gameMs
-    G.pass(gameMs)
-    ok(not s.open, 'a sample older than lane.sampleMaxAgeMs holds nothing')
-    G.open(m, 2, gameMs, 'again')
-    roster[2].pos = { x = BOX2.x + BOX2.halfLength + GC.lane.pedMarginM - 0.1, y = BOX2.y, z = PED_Z }
-    after(GC.openMs)
-    ok(s.open, 'a player inside the box\'s grown end: held')
-    roster[2].pos.x = BOX2.x + BOX2.halfLength + GC.lane.pedMarginM + 0.1
-    after(500)
-    ok(not s.open, 'just past it: not')
-    G.open(m, 2, gameMs, 'again')
-    roster[2].pos = { x = BOX2.x, y = BOX2.y, z = BOX2.zHigh + GC.lane.aboveM + 1.0 }
-    after(GC.openMs)
-    ok(not s.open, 'a player over the lane (a roof, a helicopter): not in it')
-    local held = LANE[1].box
-    G.open(m, 2, gameMs, 'again')
-    roster[2].pos = { x = held.x, y = held.y, z = PED_Z }
-    after(GC.openMs)
-    ok(not s.open, 'a player in lane 1 does not hold lane 2')
+    ok(s.inner.open and not s.outer.open and code2(1) == 6, 'only the inner gate opens')
+    runTo(t0, 8000)
+    eq(s.phase, 'first', 'the car waiting at the reader, its nose in the inner gate\'s swing: held open')
+    put(1, A_TRAP)
+    car(501, m, A_TRAP)
+    runTo(t0, 10000)
+    eq(s.phase, 'first', 'in the trap, its swing and approach clear 1.5 s')
+    runTo(t0, 10500)
+    eq(s.phase, 'firstShut', 'clear 2 s: the inner gate shuts behind it')
+    runTo(t0, 14500)
+    ok(s.phase == 'second' and s.outer.open and code2(1) == 5, 'shut: the outer gate and its arm open')
+    car(501, m, A_OUT_SWING)
+    put(1, A_OUT_SWING)
+    runTo(t0, 30000)
+    eq(s.phase, 'second', 'the car stopped under the arm: the outer gate never closes on it')
+    car(501, m, A_FAR_OUT)
+    put(1, A_FAR_OUT)
+    runTo(t0, 32000)
+    eq(s.phase, 'second', 'gone 1.5 s')
+    runTo(t0, 32500)
+    eq(s.phase, 'secondShut', 'gone 2 s: it shuts')
+    runTo(t0, 36500)
+    eq(s.phase, 'idle', 'and the cycle is over')
 end
 
-describe('the clock: a vehicle in the lane holds it -- this match\'s bucket only, by its center grown')
+describe('the sally port: a first gate nobody comes through closes at 10 s, and the cycle ends')
 do
     reset()
     local m = newMatch(1)
     player(1, m, IN2.x, IN2.y)
     press(1, { reader = R['gate.lane2.reader_in'] })
+    local t0 = gameMs
     local s = G.stateOf(m).lanes[2]
-    -- Parked under the arm, nobody in it.
-    vehicles[501] = { x = LANE[2].arm.x, y = BOX2.y, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(GC.openMs)
-    ok(s.open, 'an empty car under the arm: still open')
-    vehicles[501].bucket = 7777
+    put(1, A_FAR_OUT)
+    runTo(t0, 9500)
+    eq(s.phase, 'first', 'nobody in the trap at 9.5 s: open')
+    runTo(t0, 10000)
+    eq(s.phase, 'firstShut', 'at 10 s: shutting')
+    ok(logs[#logs]:find('nobody came into the trap', 1, true) ~= nil, logs[#logs])
+    runTo(t0, 14000)
+    ok(s.phase == 'idle' and not s.inner.open, 'shut with nobody in it: idle, the inner gate never opened')
+    eq(code2(1), 0, 'the match told')
+end
+
+describe('the sally port: a car parked in a swing holds that gate; one driving into a closing gate opens it')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, IN2.x, IN2.y)
+    press(1, { reader = R['gate.lane2.reader_in'] })
+    local t0 = gameMs
+    local s = G.stateOf(m).lanes[2]
+    put(1, A_FAR_OUT)
+    car(9, m, A_OUT_SWING)
+    runTo(t0, 30000)
+    eq(s.phase, 'first', 'an empty car parked under the arm: the outer gate open 30 s on')
+    vehicles[9].bucket = 7777
     coordsRead = {}
-    after(500)
-    ok(not s.open, 'the same car in another routing bucket (another match, the lobby): not this lane\'s')
-    eq(coordsRead[501], nil, 'and its position is not even read: only the match\'s own bucket\'s are')
-    G.open(m, 2, gameMs, 'again')
-    local edge = BOX2.x + BOX2.halfLength
-    vehicles[501] = { x = edge + GC.lane.vehicleMarginM - 0.1, y = BOX2.y, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(GC.openMs)
-    ok(s.open, ('a car whose center is %.1f m past the box (its bumper under a leaf): held'):format(GC.lane.vehicleMarginM - 0.1))
-    vehicles[501].x = edge + GC.lane.vehicleMarginM + 0.1
-    after(500)
-    ok(not s.open, 'farther: not')
-    -- A car waiting at the in-reader is not in the lane.
-    G.open(m, 2, gameMs, 'again')
-    vehicles[501] = { x = IN2.x + 0.5, y = BOX2.y - 1.0, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(GC.openMs)
-    ok(not s.open, 'a car waiting at the reader outside the arm does not hold it')
-    eq(GC.lane.vehicleMarginM, 2.5, 'a car\'s half-length')
-    -- One waiting at the out-reader, centered in the lane with its driver's
-    -- window at the pedestal, has its nose under the inner gate's fold.
-    G.open(m, 2, gameMs, 'again')
-    vehicles[501] = { x = OUT2.x - 0.2, y = BOX2.y, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(GC.openMs)
-    ok(s.open, 'a car waiting at the reader inside the inner gate, its nose in the inner gate\'s fold: held')
-    -- BESIDE THE LANE: the leaves fold inside the posts.
-    vehicles[501] = nil
-    after(500)
-    G.open(m, 2, gameMs, 'again')
+    runTo(t0, 32000)
+    eq(s.phase, 'first', 'the same car in another routing bucket, 1.5 s')
+    runTo(t0, 32500)
+    eq(s.phase, 'firstShut', 'and 2 s: not this match\'s, and the gate shuts')
+    eq(coordsRead[9], nil, 'and its position is not even read: only the match\'s own bucket\'s are')
+    vehicles[9].bucket = m.bucket
+    runTo(t0, 33000)
+    eq(s.phase, 'first', 'back in this match, in its swing while it shuts: open again')
+    eq(code2(1), 5, 'and the match told')
+    ok(logs[#logs]:find('outer gate open again: a vehicle in its swing', 1, true) ~= nil, logs[#logs])
+    -- Inbound through, then a car parked in the inner gate's swing.
+    vehicles[9] = nil
+    put(1, A_TRAP)
+    runTo(t0, 39000)
+    eq(s.phase, 'firstShut', 'a player in the trap: the outer gate shuts behind them')
+    runTo(t0, 43000)
+    eq(s.phase, 'second', 'and the inner one opens')
+    put(1, A_FAR_IN)
+    car(10, m, A_IN_SWING)
+    runTo(t0, 70000)
+    eq(s.phase, 'second', 'an empty car parked in the inner gate\'s swing: open 27 s on')
+    vehicles[10] = nil
+    runTo(t0, 72500)
+    eq(s.phase, 'secondShut', 'driven off: shut 2 s later')
+    -- A CAR DRIVING INTO THE SECOND GATE'S SWING AS IT SHUTS.
+    car(11, m, A_IN_SWING)
+    runTo(t0, 73000)
+    eq(s.phase, 'second', 'a car into the inner gate\'s swing as it shuts: open again')
+    vehicles[11] = nil
+    runTo(t0, 78500)
+    eq(s.phase, 'second', 'it stands fully open (77 s) before its 2 s count')
+    runTo(t0, 79000)
+    eq(s.phase, 'secondShut', 'then shuts')
+    -- Beside the lane, on the island between two: no zone of either.
+    reset()
+    m = newMatch(1)
+    player(1, m, IN2.x, IN2.y)
+    press(1, { reader = R['gate.lane2.reader_in'] })
+    t0 = gameMs
+    s = G.stateOf(m).lanes[2]
+    put(1, A_FAR_OUT)
     local b1 = LANE[1].box
     local island = ((b1.y + b1.halfWidth) + (BOX2.y - BOX2.halfWidth)) / 2.0
-    vehicles[501] = { x = BOX2.x, y = island, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(GC.openMs)
-    ok(not s.open, 'a car parked on the island between lanes 1 and 2 does not hold lane 2')
-    G.open(m, 1, gameMs, 'again')
-    after(GC.openMs)
-    ok(not G.stateOf(m).lanes[1].open, 'nor lane 1')
-    G.open(m, 2, gameMs, 'again')
-    local side = BOX2.y - BOX2.halfWidth
-    vehicles[501] = { x = BOX2.x, y = side - GC.lane.vehicleSideM + 0.1, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(GC.openMs)
-    ok(s.open, ('a car whose center is %.1f m beside the lane (its side under a leaf): held'):format(GC.lane.vehicleSideM - 0.1))
-    vehicles[501].y = side - GC.lane.vehicleSideM - 0.1
-    after(500)
-    ok(not s.open, 'farther: not')
-    eq(GC.lane.vehicleSideM, 1.0, 'a car\'s half-width')
+    vehicles[12] = { x = at(A_OUT_SWING, 0).x, y = island, z = BOX2.zLow + 0.6, bucket = m.bucket }
+    runTo(t0, 12500)
+    eq(s.phase, 'firstShut', 'a car on the island beside the outer gate holds nothing')
 end
 
-describe('the clock: a lane folding shut on somebody opens again, and shuts the moment it is clear')
+describe('the sally port: who holds a gate -- standing or downed, not out, not stale, not over it')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, IN2.x, IN2.y)
+    player(2, m, 0.0, 0.0)
+    press(1, { reader = R['gate.lane2.reader_in'] })
+    local t0 = gameMs
+    local s = G.stateOf(m).lanes[2]
+    put(1, A_FAR_OUT)
+    put(2, A_OUT_SWING)
+    roster[2].state = BR.PlayerState.DBNO
+    runTo(t0, 20000)
+    eq(s.phase, 'first', 'a downed player in its swing: held (a leaf does not fold onto a downed player)')
+    roster[2].state = BR.PlayerState.OUT
+    runTo(t0, 22500)
+    eq(s.phase, 'firstShut', 'out: nobody holds it')
+    roster[2].state = BR.PlayerState.ALIVE
+    runTo(t0, 23000)
+    eq(s.phase, 'first', 'standing again, in its swing: open again')
+    -- Reopened at 23 s: its abandon clock runs from then.
+    local stale = gameMs - GC.lane.sampleMaxAgeMs - 1
+    while gameMs < t0 + 33000 do
+        gameMs = gameMs + 500
+        roster[1].posAt = gameMs
+        roster[2].posAt = stale
+        G.pass(gameMs)
+    end
+    eq(s.phase, 'firstShut', 'a sample older than lane.sampleMaxAgeMs holds nothing: shut 10 s after it reopened')
+    roster[2].posAt = gameMs
+    put(2, A_OUT_SWING, 0, BOX2.zHigh + GC.lane.aboveM + 1.0)
+    runTo(t0, 33500)
+    eq(s.phase, 'firstShut', 'a player over its swing (a roof, a helicopter): not in it')
+    local L1 = LANE[1].box
+    roster[2].pos = { x = L1.x, y = L1.y, z = PED_Z }
+    runTo(t0, 37000)
+    eq(s.phase, 'idle', 'a player in lane 1\'s trap is not in lane 2\'s: lane 2 shut with nobody in its trap, idle')
+end
+
+describe('the sally port: a player dropped in the trap gets nothing, and rides out on somebody else\'s cycle')
+do
+    reset()
+    local m = newMatch(1)
+    player(2, m, 0.0, 0.0)
+    put(2, A_TRAP)
+    for _ = 1, 10 do after(500) end
+    eq(G.stateOf(m).lanes[2].phase, 'idle', 'a player in the trap with no cycle: nothing moves')
+    eq(poolReads, 0, 'and nothing is read')
+    local nearIn = at(Z2.line.inner - 0.3, acrossOf(OUT2.x, OUT2.y))
+    roster[2].pos = { x = nearIn.x, y = nearIn.y, z = PED_Z }
+    eq(press(2, { reader = R['gate.lane2.reader_out'] }), 'reach', 'a press from the trap, by the inside reader: refused')
+    eq(press(2, { reader = R['gate.lane2.reader_in'] }), 'reach', 'and by the outside one')
+    eq(G.stateOf(m).lanes[2].phase, 'idle', 'still idle')
+    -- Somebody presses outside, and walks away.
+    player(1, m, IN2.x, IN2.y)
+    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'open', 'somebody presses at the outside reader')
+    local t0 = gameMs
+    local s = G.stateOf(m).lanes[2]
+    put(1, alongOf(IN2.x, IN2.y))
+    runTo(t0, 8000)
+    eq(s.phase, 'first', 'while they stand at the reader (its approach), the outer gate waits for them')
+    put(1, A_FAR_OUT)
+    runTo(t0, 10500)
+    eq(s.phase, 'firstShut', 'they walk away: the trap holds someone, so it shuts 2 s later')
+    runTo(t0, 14500)
+    eq(s.phase, 'second', 'and the inner gate opens for the player in the trap')
+end
+
+describe('the sally port: a press during a cycle is not taken, at any phase')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, IN2.x, IN2.y)
+    player(2, m, OUT2.x, OUT2.y)
+    press(1, { reader = R['gate.lane2.reader_in'] })
+    local t0 = gameMs
+    local s = G.stateOf(m).lanes[2]
+    eq(press(2, { reader = R['gate.lane2.reader_out'] }), 'busy', 'first gate open: the inside reader is busy')
+    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'busy', 'and the outside one')
+    put(1, A_TRAP)
+    runTo(t0, 7500)
+    eq(s.phase, 'firstShut', 'first gate shutting')
+    eq(press(2, { reader = R['gate.lane2.reader_out'] }), 'busy', 'busy')
+    runTo(t0, 11500)
+    eq(s.phase, 'second', 'second gate open')
+    eq(press(2, { reader = R['gate.lane2.reader_out'] }), 'busy', 'busy')
+    put(1, A_FAR_IN)
+    runTo(t0, 19500)
+    eq(s.phase, 'secondShut', 'second gate shutting')
+    eq(press(2, { reader = R['gate.lane2.reader_out'] }), 'busy', 'still busy until it is fully shut')
+    runTo(t0, 24000)
+    eq(s.phase, 'idle', 'idle')
+    eq(press(2, { reader = R['gate.lane2.reader_out'] }), 'open', 'now taken')
+    ok(s.first == 'inner', 'the inside reader\'s cycle: the inner gate first')
+    ok(not GS.busy(G.stateOf(m).lanes[1]) and not GS.busy(G.stateOf(m).lanes[3]), 'the other lanes never ran')
+end
+
+describe('the sally port: a match ending mid-cycle; two matches apart; Season 1')
 do
     reset()
     local m = newMatch(1)
     player(1, m, IN2.x, IN2.y)
     press(1, { reader = R['gate.lane2.reader_in'] })
+    local t0 = gameMs
     local s = G.stateOf(m).lanes[2]
-    after(GC.openMs)
-    ok(not s.open, 'folding shut')
-    vehicles[9] = { x = BOX2.x, y = BOX2.y, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(1000)
-    ok(s.open, 'a car drives in a second into the fold: open again')
-    local p = lastOf(BR.Net.DCGATE_STATE, 1)
-    ok(p and p.open[2] == true, 'and the match is told')
-    ok(logs[#logs]:find('lane 2 open again in match 1: a vehicle in it', 1, true) ~= nil, logs[#logs])
-    after(10000)
-    ok(s.open, 'held while it is there')
-    vehicles[9] = nil
-    after(500)
-    ok(not s.open, 'gone: shut on the next pass, no new 20 seconds')
-    after(GC.foldMs + 1)
-    vehicles[9] = { x = BOX2.x, y = BOX2.y, z = BOX2.zLow + 0.6, bucket = m.bucket }
-    after(500)
-    ok(not s.open, 'a car that drives up to a gate already shut opens nothing')
-    vehicles[9] = nil
-    G.open(m, 2, gameMs, 'again')
-    after(GC.openMs)
-    ok(not s.open, 'folding shut once more')
-    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'open', 'a press while it folds shut: open again')
-    ok(s.open, 'and it is')
-end
+    put(1, A_FAR_OUT)
+    m.state = BR.MatchState.ENDED
+    local before = #sent
+    runTo(t0, 30000)
+    ok(s.phase == 'first' and #sent == before, 'the match ended mid-cycle: not moved on, nobody told (it is going away)')
+    eq(poolReads, 0, 'and nothing read for it')
+    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'match', 'a press in it: match')
+    matches[1] = nil
+    local m2 = newMatch(2)
+    roster[1].matchId = 2
+    ok(not GS.busy(G.stateOf(m2).lanes[2]), 'the next match: every lane idle')
+    m.state = BR.MatchState.BUS
+    matches[1] = m
+    runTo(gameMs, 2500)
+    eq(s.phase, 'firstShut', 'a match on the bus runs its cycles')
 
-describe('the clock: two matches apart; Season 1; a match not being played')
-do
     reset()
     local a, b = newMatch(1), newMatch(2)
     player(1, a, IN2.x, IN2.y)
     player(2, b, IN2.x, IN2.y)
-    player(3, b, BOX2.x, BOX2.y)
+    player(3, b, 0.0, 0.0)
     press(1, { reader = R['gate.lane2.reader_in'] })
     press(2, { reader = R['gate.lane2.reader_in'] })
-    after(GC.openMs)
-    ok(not G.stateOf(a).lanes[2].open, 'match 1\'s lane 2, empty: shut')
-    ok(G.stateOf(b).lanes[2].open, 'match 2\'s, with its own player in it: held -- the buckets do not mix')
-    roster[3].matchId = 1
-    after(500)
-    ok(G.stateOf(a).lanes[2].open, 'that player moved to match 1 (same spot): now match 1\'s lane is held')
-    ok(not G.stateOf(b).lanes[2].open, 'and match 2\'s is not')
+    t0 = gameMs
+    put(1, A_TRAP)
+    put(2, A_FAR_OUT)
+    put(3, A_FAR_OUT)
+    local reads = poolReads
+    runTo(t0, 500)
+    eq(poolReads - reads, 1, 'two matches\' cycles: the pool read once a pass for both')
+    runTo(t0, 7000)
+    eq(G.stateOf(a).lanes[2].phase, 'firstShut', 'match 1, its player in the trap: shut behind them')
+    eq(G.stateOf(b).lanes[2].phase, 'first', 'match 2, nobody in its trap (the buckets do not mix): still open')
 
     reset()
-    local m = newMatch(1)
+    m = newMatch(1)
     player(1, m, IN2.x, IN2.y)
     press(1, { reader = R['gate.lane2.reader_in'] })
-    m.state = BR.MatchState.ENDED
-    after(GC.openMs + 5000)
-    ok(G.stateOf(m).lanes[2].open, 'a match that ended is not looked at (it is going away)')
-    m.state = BR.MatchState.BUS
-    after(500)
-    ok(not G.stateOf(m).lanes[2].open, 'the bus still flying: the clock runs, and the lane folds shut')
-    m.state = BR.MatchState.PLAYING
     gateOn(false)
     after(500)
     eq(m.dcgate, nil, 'Season 1: the match forgets its lanes (every client shut them itself)')
@@ -774,19 +1159,32 @@ end
 -- PART E -- the snapshot's view
 -- =========================================================================
 
-describe('the snapshot: this player\'s match\'s lanes, nothing outside one or off Season 2')
+describe('the snapshot: each lane\'s code and each gate\'s pose -- for a late joiner')
 do
     reset()
     local m = newMatch(1)
     player(1, m, IN2.x, IN2.y)
     player(2, nil, 0.0, 0.0)
     local v = G.viewFor(1)
-    ok(v and v.matchId == 1 and v.open[1] == false and v.open[2] == false and v.open[3] == false,
-        'in a match with no lane ever opened: every lane shut')
+    ok(v and v.matchId == 1 and v.lanes[1] == 0 and v.lanes[2] == 0 and v.lanes[3] == 0,
+        'in a match with no lane ever used: every lane idle')
+    ok(v.poses[2][1] == 0.0 and v.poses[2][2] == 0.0, 'every gate shut')
     eq(m.dcgate, nil, 'and asking makes no state')
     press(1, { reader = R['gate.lane2.reader_in'] })
+    local t0 = gameMs
+    gameMs = t0 + 2000
     v = G.viewFor(1)
-    ok(v and v.open[2] == true, 'after a press: lane 2 open')
+    ok(v.lanes[2] == 5 and v.poses[2][1] == 0.5 and v.poses[2][2] == 0.0,
+        'a late joiner two seconds into the outer gate\'s fold: code 5, the outer gate half open', v.poses[2][1])
+    put(1, A_TRAP)
+    runTo(t0, 7000)
+    gameMs = t0 + 7000
+    v = G.viewFor(1)
+    ok(v.lanes[2] == 4 and v.poses[2][1] == 0.75, 'a second into shutting behind them: three quarters open', v.poses[2][1])
+    runTo(t0, 12000)
+    v = G.viewFor(1)
+    ok(v.lanes[2] == 6 and v.poses[2][1] == 0.0 and v.poses[2][2] == 0.5, 'then the inner gate half open, the outer shut',
+        ('%s %s'):format(v.poses[2][1], v.poses[2][2]))
     eq(G.viewFor(2), nil, 'in no match: nil')
     gateOn(false)
     eq(G.viewFor(1), nil, 'Season 1: nil')
@@ -812,28 +1210,35 @@ do
         return lastOf(BR.Net.DCGATE_DEV, src) or logs[#logs] or ''
     end
     local said = sv(1, 'open 3')
-    ok(said:find('lane 3 open in match 1', 1, true) and G.stateOf(m).lanes[3].open, '`brgate open 3`', said)
+    ok(said:find('lane 3 outer gate open in match 1', 1, true) and G.stateOf(m).lanes[3].outer.open,
+        '`brgate open 3`: the outside reader\'s cycle', said)
+    said = sv(1, 'open 1 out')
+    ok(said:find('lane 1 inner gate open', 1, true) and G.stateOf(m).lanes[1].inner.open, '`brgate open 1 out`: the inside one\'s', said)
+    said = sv(1, 'open 1 sideways')
+    ok(said:find('no reader "sideways"', 1, true) ~= nil, 'a reader that is not one', said)
     said = sv(1, 'list')
-    ok(said:find('lane 3 open 0.0 s, closes in 20.0 s', 1, true) and said:find('lane 1 shut', 1, true),
+    ok(said:find('lane 3 outer gate open 0.0 s (inbound, first gate)', 1, true) and said:find('lane 2 idle', 1, true),
         '`brgate list`', said)
+    said = sv(1, 'open 3')
+    ok(said:find('nothing to open: its cycle runs', 1, true) ~= nil, 'open on a running cycle: nothing', said)
     said = sv(1, 'close all')
-    ok(said:find('lane 3 folding shut', 1, true) and not G.stateOf(m).lanes[3].open, '`brgate close all`', said)
-    said = sv(1, 'open all')
-    ok(G.stateOf(m).lanes[1].open and G.stateOf(m).lanes[2].open and G.stateOf(m).lanes[3].open, '`brgate open all`')
+    ok(said:find('lane 1, 3 ending its cycle', 1, true) and G.stateOf(m).lanes[3].phase == 'secondShut',
+        '`brgate close all`: each running cycle\'s open gate shuts as the last', said)
+    eq(lastOf(BR.Net.DCGATE_STATE, 1).lanes[3], 4, 'and the match is told')
+    said = sv(1, 'close all')
+    ok(said:find('nothing to close', 1, true) ~= nil, 'nothing left to close', said)
     said = sv(1, 'open 9')
     ok(said:find('no lane "9"', 1, true) ~= nil, 'a lane that is not one', said)
-    G.stateOf(m).lanes[2].holdUntil = gameMs
-    player(2, m, BOX2.x, BOX2.y)
+    sv(1, 'open 2')
+    player(2, m, 0.0, 0.0)
+    put(2, A_TRAP)
     said = sv(1, 'list')
-    ok(said:find('lane 2 open', 1, true) and said:find('held: a player in it', 1, true), 'list says what holds it', said)
-    said = sv(0, 'close 1 1')
-    ok(not G.stateOf(m).lanes[1].open, 'from the console, the player id comes last')
+    ok(said:find('lane 2 outer gate open', 1, true) and said:find('the trap: a player', 1, true), 'list says who is where', said)
+    said = sv(0, 'close 2 1')
+    eq(G.stateOf(m).lanes[2].phase, 'secondShut', 'from the console, the player id comes last')
     m.state = BR.MatchState.WARMUP
     said = sv(1, 'open 1')
     ok(said:find('a match being played', 1, true) ~= nil, 'not while the match is not being played', said)
-    m.state = BR.MatchState.BUS
-    said = sv(1, 'open 1')
-    ok(said:find('lane 1 open in match 1', 1, true) and G.stateOf(m).lanes[1].open, 'the bus still flying: it is', said)
     m.state = BR.MatchState.PLAYING
     season(1)
     said = sv(1, 'list')
@@ -864,6 +1269,10 @@ do
     eq(BR.Net.DCGATE_STATE, 'br:dcgate:state', 'DCGATE_STATE')
     eq(BR.Net.DCGATE_DEV, 'br:dcgate:dev', 'DCGATE_DEV')
     ok(jobs['dcgate.pass'] and jobs['dcgate.pass'].ms == GC.lane.checkMs, 'the pass runs every lane.checkMs')
+    eq(GC.openMs, nil, 'no open time: a gate closes by who is where, not a timer')
+    eq(GC.cycle.closeDelayMs, 2000, 'the owner\'s "about 2 s"')
+    eq(GC.cycle.abandonMs, 10000, 'and his 10 s')
+    eq(GC.client.drive.arm, 'rotate', 'the arm turned by hand by default (owner, 2026-10-24)')
     eq(GC.foldDeg, 90.0, 'the kit\'s fold: 0-90')
     ok(GC.armRaiseDeg >= 85.0 and GC.armRaiseDeg <= 90.0, 'and the arm\'s raise: 85-90')
     ok(not srv:gsub('%-%-[^\n]*', ''):find('BR%.Dev%.on'), 'no decision here reads dev mode')
