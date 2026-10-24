@@ -59,8 +59,8 @@ BR.Config.DevMenu = {
     states = { 'waiting', 'warmup', 'bus', 'playing', 'ended', 'cleanup', 'skip' },
 
     --- The server drops a request that arrives sooner than this after the last
-    --- one it took from the same player. Nothing in the menu sends faster than
-    --- a person can press Enter; this is the floor under a client that does.
-    --- FiveM already refuses a client's server commands past 7 a second.
+    --- one it read from the same player, good or bad. Nothing in the menu
+    --- sends faster than a person can press Enter; this is the floor under a
+    --- client that does.
     minIntervalMs = 250,
 }

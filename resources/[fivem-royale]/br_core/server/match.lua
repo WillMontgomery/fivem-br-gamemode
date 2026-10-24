@@ -504,7 +504,7 @@ function BR.Match.transition(m, state, durationSec)
     -- every HUD counting down to a departure that is not coming, which is the
     -- exact failure shortenWarmupIfFull rebroadcasts to avoid.
     local heldByFreeze = false
-    if state == BR.MatchState.WARMUP and BR.Match.warmupFrozen() then
+    if state == BR.MatchState.WARMUP and BR.Match.warmupFrozen(m) then
         m.endsAt = GetGameTimer() + WARMUP_HOLD_MS
         heldByFreeze = true
     end
@@ -523,7 +523,9 @@ function BR.Match.transition(m, state, durationSec)
     print(('[br_core] match %s: %s -> %s%s'):format(
         BR.MatchTag(m.id), from, state,
         heldByFreeze
-            and ' (HELD by brwarmupfreeze -- `brwarmupfreeze off` releases it)'
+            and (m.warmupFrozen == true
+                 and ' (HELD by the dev menu\'s Warmup pause)'
+                 or ' (HELD by brwarmupfreeze -- `brwarmupfreeze off` releases it)')
             or (secs and (' (%ds)'):format(secs) or '')))
 
     stampClock(m, state)
@@ -1297,7 +1299,7 @@ function BR.Match.shortenWarmupIfFull(m)
     -- setting `shortened` is deliberate: the cut is refused for now rather than
     -- spent, so a lobby that fills during the hold is still cut short the moment
     -- somebody thaws it.
-    if BR.Match.warmupFrozen() then return end
+    if BR.Match.warmupFrozen(m) then return end
 
     if BR.Server.countIn(m) < M.maxPlayers then return end
 
@@ -1343,7 +1345,7 @@ function BR.Match.tutorialHold(m)
 
     if learners > 0 then
         m.tutorialHeld = true
-        if not BR.Match.warmupFrozen() then
+        if not BR.Match.warmupFrozen(m) then
             m.endsAt = GetGameTimer() + WARMUP_HOLD_MS
         end
         return
@@ -1356,7 +1358,7 @@ function BR.Match.tutorialHold(m)
     -- matchmaking should take place and the timer appears for the first time on
     -- their screen" (2026-09-07). The countdown starts here and the page reveals
     -- it on the same edge.
-    if BR.Match.warmupFrozen() then return end
+    if BR.Match.warmupFrozen(m) then return end
 
     m.endsAt = GetGameTimer() + M.warmupSeconds * 1000
     m.shortened = false
@@ -2385,12 +2387,22 @@ end, true)
 --- warmup being held for a day, and the `brstate` readout in server/debug.lua.
 local warmupFrozen = false
 
---- Is warmup currently held by brwarmupfreeze?
---- Read by BR.Match.transition, so a match opening AFTER the freeze inherits it,
---- by shortenWarmupIfFull, so a full lobby cannot cut the hold short, and by
---- `brstate` (server/debug.lua), so a held server says why it is held.
+--- Is warmup held?
+---
+--- WITH NO MATCH, the session's answer: is brwarmupfreeze on. `brstate`
+--- (server/debug.lua) asks that, so a held server says why it is held.
+---
+--- WITH A MATCH, that match's answer: its own pause when one was set
+--- (`m.warmupFrozen`, the dev menu's, true or false), and the session's
+--- otherwise. Read by BR.Match.transition, so a match opening AFTER the freeze
+--- inherits it, by shortenWarmupIfFull, so a full lobby cannot cut the hold
+--- short, and by tutorialHold.
+--- @param m table|nil
 --- @return boolean
-function BR.Match.warmupFrozen() return warmupFrozen end
+function BR.Match.warmupFrozen(m)
+    if m ~= nil and m.warmupFrozen ~= nil then return m.warmupFrozen == true end
+    return warmupFrozen
+end
 
 --- Drop the hold once nobody is connected.
 ---
@@ -2418,16 +2430,35 @@ function BR.Match.thawOnEmptyServer()
         .. 'lobby is not born held')
 end
 
+--- HOLD ONE OPEN WARMUP, OR LET IT GO: the deadline both forms below write,
+--- the console's every-warmup hold and the dev menu's one-match hold (#422).
+--- @param m table   a match in WARMUP
+--- @param thaw boolean
+--- @param now number
+local function holdWarmup(m, thaw, now)
+    if thaw then
+        -- RE-ENTER WARMUP FROM NOW, which is this command's version of the
+        -- storm thaw resuming the phase from wherever the wall is. The pad
+        -- gets a whole ordinary warmup rather than whatever was left of one
+        -- an hour ago, and `shortened` is re-armed so a full lobby is cut
+        -- short again by the rule that was suppressed during the hold.
+        m.endsAt = now + M.warmupSeconds * 1000
+        m.shortened = false
+    else
+        m.endsAt = now + WARMUP_HOLD_MS
+    end
+    BR.Broadcast.state(m, m.state, m.endsAt,
+        { reason = thaw and 'warmupThaw' or 'warmupFreeze' })
+end
+
 --- HOLD EVERY WARMUP, OR LET THEM ALL GO: `brwarmupfreeze`'s whole body below
---- its gate, and the dev menu's Warmup pause row (#422).
+--- its gate.
 ---
---- ═══ EVERY WARMUP, NOT THE ASKER'S, AND THAT IS THE HOLD'S OWN SHAPE ═══
----
---- The hold is a flag of the SESSION -- `warmupFrozen`, which every warmup that
---- opens afterwards inherits -- and not a fact about one match, so it has no
---- "the asker's match" to aim at: the menu holds and thaws the same set the
---- console verb does, and its checkbox reads BR.Match.warmupFrozen(). This is
---- not the latest-match shape #291 is about; nothing here picks a match.
+--- The console's hold is a flag of the SESSION -- `warmupFrozen`, which every
+--- warmup that opens afterwards inherits. It is also every match's word: a
+--- one-match pause the dev menu set is cleared here (`m.warmupFrozen = nil`),
+--- so after `brwarmupfreeze off` no pad anywhere is still held. The dev menu
+--- does not come through here -- see BR.Match.setMatchWarmupFrozen below.
 ---
 --- THE LINES ARE PRINTED HERE, the report and the "next one" note, and the
 --- report is handed back.
@@ -2440,21 +2471,9 @@ function BR.Match.setWarmupFrozen(on)
     local touched = 0
 
     BR.Server.eachMatch(function(m)
+        m.warmupFrozen = nil
         if m.state ~= BR.MatchState.WARMUP then return end
-
-        if thaw then
-            -- RE-ENTER WARMUP FROM NOW, which is this command's version of the
-            -- storm thaw resuming the phase from wherever the wall is. The pad
-            -- gets a whole ordinary warmup rather than whatever was left of one
-            -- an hour ago, and `shortened` is re-armed so a full lobby is cut
-            -- short again by the rule that was suppressed during the hold.
-            m.endsAt = now + M.warmupSeconds * 1000
-            m.shortened = false
-        else
-            m.endsAt = now + WARMUP_HOLD_MS
-        end
-        BR.Broadcast.state(m, m.state, m.endsAt,
-            { reason = thaw and 'warmupThaw' or 'warmupFreeze' })
+        holdWarmup(m, thaw, now)
         touched = touched + 1
     end)
 
@@ -2468,6 +2487,43 @@ function BR.Match.setWarmupFrozen(on)
         print('  (no warmup open yet -- the next one will start frozen)')
     end
     return touched, line
+end
+
+--- HOLD ONE MATCH'S WARMUP, OR LET IT GO: the dev menu's Warmup pause row
+--- (#422).
+---
+--- ═══ ONE MATCH, THE ASKER'S, AND NEVER ANOTHER ═══
+---
+--- Matches run side by side, each in its own routing bucket, and the menu is
+--- pressed by a player standing in one of them -- so this holds that one pad
+--- and leaves every other match, and the session flag, alone. The mark
+--- (`m.warmupFrozen`) dies with the match, so it needs no release of its own.
+---
+--- ═══ ASKED FOR WHAT IT ALREADY IS, IT DOES NOTHING ═══
+---
+--- A thaw is not harmless when nothing is held: it restarts the countdown. The
+--- menu's checkbox can be stale, so a press that asks for the state the match
+--- is already in changes nothing and says so.
+--- @param m table
+--- @param on boolean  true holds, false thaws
+--- @return boolean changed
+--- @return string line
+function BR.Match.setMatchWarmupFrozen(m, on)
+    on = (on == true)
+    local tag = BR.MatchTag(m.id)
+    if BR.Match.warmupFrozen(m) == on then
+        local line = ('warmup already %s (match %s)'):format(on and 'frozen' or 'running', tag)
+        print('[br_core] ' .. line)
+        return false, line
+    end
+
+    m.warmupFrozen = on
+    if m.state == BR.MatchState.WARMUP then holdWarmup(m, not on, GetGameTimer()) end
+    local line = ('warmup %s (match %s)'):format(
+        on and 'FROZEN -- the pad stays open, no departure'
+           or 'THAWED -- the pad counts down and the bus comes', tag)
+    print('[br_core] ' .. line)
+    return true, line
 end
 
 RegisterCommand('brwarmupfreeze', function(_, args)

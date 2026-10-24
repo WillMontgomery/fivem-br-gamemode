@@ -28853,6 +28853,72 @@ do
     ok(BR.Server.matches[B.id] == B, 'and the newer match is still there')
 end
 
+describe('the warmup pause holds one match (#422)')
+do
+    -- ═══ THE DEV MENU'S WARMUP PAUSE HOLDS THE ASKER'S PAD AND NO OTHER ═══
+    --
+    -- `brwarmupfreeze` holds every open warmup and every one that opens after;
+    -- the menu's Warmup pause (BR.Match.setMatchWarmupFrozen) holds the match of
+    -- the player who pressed it. Asked for what the match already is, it does
+    -- nothing -- a thaw of a pad that was never held restarts its countdown.
+    reset()
+    BR.Server.devMode = true
+    local warmupMs = BR.Config.Match.warmupSeconds * 1000
+    join(1, 'A1'); join(2, 'A2'); join(3, 'B1'); join(4, 'B2')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local A = theMatch()
+    BR.Match.transition(A, BR.MatchState.BUS)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local B = BR.Server.matches[BR.Roster.get(3).matchId]
+    BR.Match.transition(A, BR.MatchState.WARMUP)
+    ok(A and B and A ~= B and A.state == BR.MatchState.WARMUP and B.state == BR.MatchState.WARMUP,
+        'fixture: two pads open side by side')
+
+    local aEnds = A.endsAt
+    local changed, line = BR.Match.setMatchWarmupFrozen(B, true)
+    ok(changed == true and B.endsAt > fakeTime + warmupMs, 'B is held: its departure a day out', line)
+    ok(A.endsAt == aEnds, 'A, the other pad, still counts down')
+    ok(BR.Match.warmupFrozen(B) == true and BR.Match.warmupFrozen(A) == false,
+        'B answers held and A does not')
+    ok(BR.Match.warmupFrozen() == false, 'and the session flag -- brwarmupfreeze -- is not set')
+    ok(type(line) == 'string' and line:find(BR.MatchTag(B.id), 1, true) ~= nil,
+        'the line names the match it held', line)
+
+    -- ASKED FOR WHAT IT ALREADY IS: nothing.
+    fakeTime = fakeTime + 1000
+    local c2, l2 = BR.Match.setMatchWarmupFrozen(A, false)
+    ok(c2 == false and A.endsAt == aEnds,
+        'a thaw of a pad that was never held does not restart its countdown', l2)
+
+    -- A FULL LOBBY DOES NOT CUT A HELD PAD SHORT, AND DOES CUT THE OTHER.
+    local bEnds = B.endsAt
+    BR.Match.shortenWarmupIfFull(B)
+    ok(B.endsAt == bEnds, 'the held pad is not cut short')
+
+    -- THE THAW: B counts down from now.
+    local c3 = BR.Match.setMatchWarmupFrozen(B, false)
+    ok(c3 == true and B.endsAt == fakeTime + warmupMs and BR.Match.warmupFrozen(B) == false,
+        'the thaw gives B a whole warmup from now')
+
+    -- A HELD MATCH THAT RETURNS TO WARMUP IS BORN HELD; THE OTHER IS NOT.
+    BR.Match.setMatchWarmupFrozen(A, true)
+    BR.Match.transition(A, BR.MatchState.BUS)
+    BR.Match.transition(A, BR.MatchState.WARMUP)
+    ok(A.endsAt > fakeTime + warmupMs, 'A, forced back to warmup, opens held')
+
+    -- THE CONSOLE IS EVERY MATCH'S WORD, and clears the one-match marks.
+    runCommand('brwarmupfreeze', 'off')
+    ok(BR.Match.warmupFrozen(A) == false and A.warmupFrozen == nil
+        and A.endsAt == fakeTime + warmupMs,
+        '`brwarmupfreeze off` lets every pad go, the one the menu held included')
+end
+
 describe('match.ids')
 do
     -- ═══ THE ID IS A RANDOM 28-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══

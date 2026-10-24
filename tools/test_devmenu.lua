@@ -174,22 +174,34 @@ local function bootServer(opts)
             end
         end,
     }
-    local stormHeld, warmupHeld = false, false
+    -- THE PAUSES ARE PER MATCH: each match carries its own, and the session's
+    -- (the console verbs') answers for a player with no match. The every-match
+    -- console forms are recorded so a test can say the menu never reached them.
     BR.Storm = {
-        isFrozen = function() return stormHeld end,
-        setFrozen = function(on)
-            rec('setFrozen', on)
-            stormHeld = on
-            return 1, on and 'storm FROZEN' or 'storm THAWED'
+        isFrozen = function(m)
+            if m and m.stormFrozen ~= nil then return m.stormFrozen end
+            return opts.sessionStorm == true
         end,
+        setMatchFrozen = function(m, on)
+            rec('setMatchFrozen', m, on)
+            local was = BR.Storm.isFrozen(m)
+            m.stormFrozen = on
+            if was == on then return false, 'storm already ' .. (on and 'frozen' or 'running') end
+            return true, on and 'storm FROZEN' or 'storm THAWED'
+        end,
+        setFrozen = function(on) rec('setFrozen', on) end,
     }
     BR.Match = {
-        warmupFrozen = function() return warmupHeld end,
-        setWarmupFrozen = function(on)
-            rec('setWarmupFrozen', on)
-            warmupHeld = on
-            return 1, on and 'warmup FROZEN' or 'warmup THAWED'
+        warmupFrozen = function(m)
+            if m and m.warmupFrozen ~= nil then return m.warmupFrozen end
+            return opts.sessionWarmup == true
         end,
+        setMatchWarmupFrozen = function(m, on)
+            rec('setMatchWarmupFrozen', m, on)
+            m.warmupFrozen = on
+            return true, on and 'warmup FROZEN' or 'warmup THAWED'
+        end,
+        setWarmupFrozen = function(on) rec('setWarmupFrozen', on) end,
         force = function(s, m)
             rec('force', s, m)
             if opts.forceRefuses then return false, 'no match to dissolve' end
@@ -227,12 +239,37 @@ local function bootServer(opts)
     BR.Airdrop = {
         dropNow = function(m)
             rec('dropNow', m)
+            if opts.dropWaits then
+                return false, 'wait (drop 2, manual -- perMatch is 1 and this ignores it)', 'wait'
+            end
             return false, ('airdrops only run during PLAYING (match %s is %s)')
-                :format(tostring(m and m.id), tostring(m and m.state))
+                :format(tostring(m and m.id), tostring(m and m.state)), nil
+        end,
+    }
+    -- Player 5 stands in the lobby, queued only when a test says so.
+    BR.Lobby = {
+        queuedMode = function(src)
+            return (opts.queued and opts.queued[src]) and 'solo' or nil
         end,
     }
 
     loadAll({ 'br_core/server/devmenu.lua' })
+end
+
+--- The token the server lists player `id` under, opening the menu for `asker`
+--- to get it. The clock moves past the slot that spent.
+local function tokenFor(asker, id)
+    clock = clock + 1000
+    BR.DevMenu.request(asker, { 'open' }, clock)
+    clock = clock + 1000
+    local st
+    for _, x in ipairs(toClient) do
+        if x.target == asker and x.name == 'br:devmenu:state' then st = x.data end
+    end
+    for _, pl in ipairs(st and st.players or {}) do
+        if pl.id == id then return tostring(pl.tok) end
+    end
+    return nil
 end
 
 --- Type a `brdevsv` line as player `src`, through the command FiveM would run.
@@ -331,9 +368,37 @@ do
        'yourself first, then everybody else by id -- and nobody who has left')
     eq(st and st.players[1].name, 'Me~r~',
        'names travel as the roster holds them; the client strips the codes')
+    local toks, distinct = 0, {}
+    for _, p in ipairs(st and st.players or {}) do
+        if math.type(p.tok) == 'integer' and p.tok > 0 and not distinct[p.tok] then
+            toks = toks + 1
+            distinct[p.tok] = true
+        end
+    end
+    eq(toks, 3, 'every player listed carries a token of their own')
     eq(st and st.storm, false, 'the storm is not held')
     eq(st and st.warmup, false, 'nor the warmup')
     eq(#calls, 0, 'open changes nothing')
+
+    -- THE SAME PLAYER KEEPS THEIR TOKEN; A NEW ONE AT THE SAME ID DOES NOT GET IT.
+    local before = st.players[2].tok
+    clock = clock + 1000
+    typed(3, 'brdevsv open')
+    eq(lastState(3).players[2].tok, before, 'a second list names player 1 by the same token')
+    roster[1] = { name = 'Newcomer', state = BR.PlayerState.LOBBY }
+    clock = clock + 1000
+    typed(3, 'brdevsv open')
+    ok(lastState(3).players[2].tok ~= before,
+       'somebody new holding id 1 is a new token -- server ids are recycled, tokens are not')
+
+    -- THE PAUSE BOXES ARE THE ASKER'S MATCH'S, OR THE SESSION'S FROM THE LOBBY.
+    bootServer({ sessionStorm = true })
+    matches.A.stormFrozen = false
+    typed(3, 'brdevsv open')
+    eq(lastState(3).storm, false, 'a match that thawed its own storm shows its own answer')
+    clock = clock + 1000
+    typed(5, 'brdevsv open')
+    eq(lastState(5).storm, true, 'the lobby shows the session\'s')
 end
 
 describe('server: Time -- an hour 0-23 or reset, and nothing else')
@@ -406,38 +471,52 @@ do
     eq(#s, 1, 'skip goes to brskip\'s body')
     ok(s[1] and s[1].args[1] == matches.A, 'with the asker\'s match too')
 
-    -- A PLAYER IN THE LOBBY HAS NO MATCH, and the verb is told so: nil, which
-    -- brforce reads as "form one from the queue" and never as the newest.
+    -- A PLAYER IN THE LOBBY HAS NO MATCH. Not queued, a press is refused:
+    -- brforce from nothing forms a match out of the whole queue, which would
+    -- be everybody else's -- or an empty one.
+    local forced = #callsOf('force')
+    clock = clock + 1000
+    BR.DevMenu.request(5, { 'match', 'warmup' }, clock)
+    eq(#callsOf('force'), forced, 'from the lobby, not queued: brforce is not reached')
+    eq(notices[#notices] and notices[#notices].text, 'no match running',
+       'and the asker is told, in brskip\'s words')
+
+    -- QUEUED, the verb is told so: nil, which brforce reads as "form one from
+    -- the queue" and never as the newest.
+    bootServer({ queued = { [5] = true } })
     clock = clock + 1000
     BR.DevMenu.request(5, { 'match', 'warmup' }, clock)
     local last = callsOf('force')
     last = last[#last]
     ok(last and last.args.n >= 2 and last.args[2] == nil,
-       'from the lobby the match is nil, never somebody else\'s')
+       'queued, the match is nil -- formed from the queue, never somebody else\'s')
 end
 
 describe('server: Give volts -- a connected player, an amount out of the list')
 do
     bootServer()
+    local t1, t3 = tokenFor(3, 1), tokenFor(3, 3)
+    ok(t1 and t3, 'fixture: the list gave tokens for players 1 and 3')
     local bad = {
-        { '9', '1000', 'a target nobody knows' },
-        { '2', '1000', 'a target who has left' },
-        { '0', '1000', 'the console as a target' },
-        { '3', '123', 'an amount the row does not offer' },
-        { '3', '-500', 'a negative amount (brvolts takes those; the menu does not)' },
-        { '3', '1000000', 'a million' },
-        { '3', '', 'no amount' },
-        { 'me', '1000', 'a target that is not a number' },
+        { '0', t1, '1000', 'the console as a target' },
+        { '3', t3, '123', 'an amount the row does not offer' },
+        { '3', t3, '-500', 'a negative amount (brvolts takes those; the menu does not)' },
+        { '3', t3, '1000000', 'a million' },
+        { '3', t3, '', 'no amount' },
+        { 'me', t3, '1000', 'a target that is not a number' },
+        { '3', '', '1000', 'no token' },
+        { '3', 'x', '1000', 'a token that is not a number' },
     }
     for _, b in ipairs(bad) do
         clock = clock + 1000
-        eq(BR.DevMenu.request(3, { 'volts', b[1], b[2] }, clock), 'bad', b[3])
+        eq(BR.DevMenu.request(3, { 'volts', b[1], b[2], b[3] }, clock), 'bad', b[4])
     end
     eq(#callsOf('grantVolts'), 0, 'not one reached the profile write')
+    eq(#notices, 0, 'and none is a toast: no row could have sent them')
 
     for _, n in ipairs(BR.Config.DevMenu.volts) do
         clock = clock + 1000
-        BR.DevMenu.request(3, { 'volts', '1', tostring(n) }, clock)
+        BR.DevMenu.request(3, { 'volts', '1', t1, tostring(n) }, clock)
     end
     local g = callsOf('grantVolts')
     eq(#g, #BR.Config.DevMenu.volts, 'every amount the row offers reaches brvolts\'s own body')
@@ -465,29 +544,68 @@ do
 
     -- ═══ NOT SENT AT ALL: br_ddb down ═══
     bootServer({ voltsUnsent = true })
-    BR.DevMenu.request(3, { 'volts', '3', '1000' }, clock)
+    local mine = tokenFor(3, 3)
+    BR.DevMenu.request(3, { 'volts', '3', mine, '1000' }, clock)
     eq(notices[1] and notices[1].text,
        'brvolts: br_ddb is not started, so there is nothing to write to.',
        'a write that could not be sent says why, the way brvolts does')
 end
 
+describe('server: a give names the player the list showed, or nobody')
+do
+    -- ═══ THE LISTED PLAYER LEFT ═══
+    bootServer()
+    local t1 = tokenFor(3, 1)
+    roster[1] = nil
+    local pushed = #sentTo(3, 'br:devmenu:state')
+    clock = clock + 1000
+    eq(BR.DevMenu.request(3, { 'volts', '1', t1, '1000' }, clock), 'ran',
+       'a give to somebody who has left is a press the row could send')
+    eq(#callsOf('grantVolts'), 0, 'but nothing is granted')
+    eq(notices[1] and notices[1].text, 'player 1 has left', 'the asker is told, as a toast')
+    eq(#sentTo(3, 'br:devmenu:state') - pushed, 1, 'and sent the list as it stands')
+    local ids = {}
+    for i, p in ipairs(lastState(3).players) do ids[i] = p.id end
+    eq(table.concat(ids, ','), '3,5', 'which no longer lists them')
+
+    -- ═══ THE ID WAS RECYCLED: somebody else holds it now ═══
+    bootServer()
+    t1 = tokenFor(3, 1)
+    roster[1] = { name = 'Stranger', state = BR.PlayerState.LOBBY }
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'yubikey', '1', t1 }, clock)
+    eq(#callsOf('devKey'), 0, 'a key is NOT given to whoever holds the id now')
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'volts', '1', t1, '1000' }, clock)
+    eq(#callsOf('grantVolts'), 0, 'and neither are Volts')
+    eq(notices[2] and notices[2].text, 'player 1 has left', 'both refused in words')
+
+    -- ═══ A TOKEN THAT WAS NEVER HANDED OUT ═══
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'volts', '1', '999', '1000' }, clock)
+    eq(#callsOf('grantVolts'), 0, 'a made-up token gives nothing')
+end
+
 describe('server: Give Yubikeys -- the terminal command\'s own grant')
 do
     bootServer()
-    for _, b in ipairs({ '9', '2', '-3', 'x', '' }) do
+    local t5 = tokenFor(3, 5)
+    for _, b in ipairs({ { '-3', t5 }, { 'x', t5 }, { '', t5 }, { '5', '' }, { '5', '-1' } }) do
         clock = clock + 1000
-        eq(BR.DevMenu.request(3, { 'yubikey', b }, clock), 'bad', ('yubikey %q is refused'):format(b))
+        eq(BR.DevMenu.request(3, { 'yubikey', b[1], b[2] }, clock), 'bad',
+           ('yubikey %q %q is refused'):format(b[1], b[2]))
     end
     eq(#callsOf('devKey'), 0, 'none reached the grant')
     clock = clock + 1000
-    BR.DevMenu.request(3, { 'yubikey', '5' }, clock)
+    BR.DevMenu.request(3, { 'yubikey', '5', t5 }, clock)
     local k = callsOf('devKey')
     ok(k[1] and k[1].args[1] == 5 and k[1].args[2] == true,
        'a connected player is GIVEN one (BR.Terminal.devKey, give = true)')
     eq(#notices, 0, 'a key that landed is no toast')
 
     bootServer({ keyRefused = true })
-    BR.DevMenu.request(3, { 'yubikey', '3' }, clock)
+    local t3 = tokenFor(3, 3)
+    BR.DevMenu.request(3, { 'yubikey', '3', t3 }, clock)
     eq(notices[1] and notices[1].text, '3: already holds one',
        'the cap of one is the terminal command\'s refusal, word for word')
 end
@@ -501,23 +619,44 @@ do
         clock = clock + 1000
         eq(BR.DevMenu.request(3, { 'warmup', b }, clock), 'bad', ('warmup %q is refused'):format(b))
     end
-    eq(#callsOf('setFrozen') + #callsOf('setWarmupFrozen'), 0, 'neither pause was touched')
+    eq(#callsOf('setMatchFrozen') + #callsOf('setMatchWarmupFrozen'), 0, 'neither pause was touched')
 
     clock = clock + 1000
     BR.DevMenu.request(3, { 'storm', 'on' }, clock)
-    eq(callsOf('setFrozen')[1] and callsOf('setFrozen')[1].args[1], true,
-       'storm on is brstormfreeze')
+    local sf = callsOf('setMatchFrozen')
+    ok(sf[1] and sf[1].args[1] == matches.A and sf[1].args[2] == true,
+       'storm on freezes THE ASKER\'S MATCH (A), and only it')
+    eq(matches.B.stormFrozen, nil, 'the newer match B is not touched')
     eq(lastState(3) and lastState(3).storm, true, 'and the pushed rows say it is held')
     clock = clock + 1000
     BR.DevMenu.request(3, { 'warmup', 'on' }, clock)
-    eq(callsOf('setWarmupFrozen')[1] and callsOf('setWarmupFrozen')[1].args[1], true,
-       'warmup on is brwarmupfreeze')
+    local wf = callsOf('setMatchWarmupFrozen')
+    ok(wf[1] and wf[1].args[1] == matches.A and wf[1].args[2] == true,
+       'warmup on holds the asker\'s match too')
     eq(lastState(3) and lastState(3).warmup, true, 'and the rows say so')
     clock = clock + 1000
     BR.DevMenu.request(3, { 'storm', 'off' }, clock)
-    eq(callsOf('setFrozen')[2] and callsOf('setFrozen')[2].args[1], false,
-       'storm off is brstormfreeze off')
+    sf = callsOf('setMatchFrozen')
+    ok(sf[2] and sf[2].args[1] == matches.A and sf[2].args[2] == false, 'storm off thaws it')
     eq(lastState(3) and lastState(3).storm, false, 'and the box comes back off')
+    eq(#callsOf('setFrozen') + #callsOf('setWarmupFrozen'), 0,
+       'the console\'s every-match freezes are never reached')
+
+    -- A STALE BOX: the server's answer is the verb's "already", and no toast.
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'storm', 'off' }, clock)
+    eq(#notices, 0, 'asking for the state the match is already in is no refusal')
+    eq(lastState(3) and lastState(3).storm, false, 'and the box says what the match is')
+
+    -- FROM THE LOBBY THERE IS NO MATCH TO PAUSE.
+    clock = clock + 1000
+    BR.DevMenu.request(5, { 'storm', 'on' }, clock)
+    clock = clock + 1000
+    BR.DevMenu.request(5, { 'warmup', 'on' }, clock)
+    eq(#callsOf('setMatchFrozen'), 3, 'a lobby press freezes nothing')
+    eq(#callsOf('setMatchWarmupFrozen'), 1, 'and holds nothing')
+    eq(notices[1] and notices[1].text, 'no match running', 'and says so')
+    eq(lastState(5) and lastState(5).storm, false, 'the box the library flipped is put back')
 end
 
 describe('server: Spawn airdrops -- the asker\'s match, and a refusal said aloud')
@@ -538,6 +677,15 @@ do
     BR.DevMenu.request(3, { 'airdrop' }, clock)
     d = callsOf('dropNow')
     ok(d[2] and d[2].args[1] == matches.A, 'player 3 drops into theirs (A), not the newest')
+
+    -- A `wait` IS NOT A REFUSAL: the drop stays queued and is retried.
+    bootServer({ dropWaits = true })
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'airdrop' }, clock)
+    eq(#notices, 0, 'a drop that waits is no toast')
+    local f8w = sentTo(3, 'br:devmenu:dev')
+    ok(f8w[#f8w] and tostring(f8w[#f8w].data):find('wait (drop 2', 1, true) ~= nil,
+       'it says so on F8')
 end
 
 describe('server: an answer that is a success is no toast')
@@ -564,19 +712,27 @@ do
     local pushed = #sentTo(3, 'br:devmenu:state')
     eq(BR.DevMenu.request(3, { 'storm', 'off' }, clock + gap - 1), 'too-soon',
        'one a millisecond inside the floor is dropped')
-    eq(#callsOf('setFrozen'), 1, 'and did nothing')
+    eq(#callsOf('setMatchFrozen'), 1, 'and did nothing')
     eq(#sentTo(3, 'br:devmenu:state') - pushed, 1,
-       'but the rows are sent back, so a box the library flipped is put right')
+       'but a pause\'s rows are sent back, so a box the library flipped is put right')
     eq(lastState(3) and lastState(3).storm, true, 'still held, as the server has it')
-    eq(BR.DevMenu.request(5, { 'warmup', 'on' }, clock + 1), 'ran',
+    local lines = #sentTo(3, 'br:devmenu:dev') + #sentTo(3, 'br:devmenu:state')
+    eq(BR.DevMenu.request(3, { 'time', '9' }, clock + 2), 'too-soon', 'any other row too soon')
+    eq(BR.DevMenu.request(3, { 'nonsense' }, clock + 3), 'too-soon', 'or a bad line too soon')
+    eq(#sentTo(3, 'br:devmenu:dev') + #sentTo(3, 'br:devmenu:state'), lines,
+       'is dropped without a word: a flood costs nothing to send')
+    eq(BR.DevMenu.request(5, { 'time', '7' }, clock + 1), 'ran',
        'another player is not held by it')
     eq(BR.DevMenu.request(3, { 'storm', 'off' }, clock + gap), 'ran',
        'at the floor, the next is taken')
 
-    -- A BAD REQUEST DOES NOT SPEND THE SLOT: it did nothing.
+    -- A BAD REQUEST SPENDS THE SLOT TOO, so a flood of them is held to the
+    -- same rate -- and to one usage line each.
     local t = clock + 10 * gap
     eq(BR.DevMenu.request(3, { 'time', '99' }, t), 'bad', 'a bad hour')
-    eq(BR.DevMenu.request(3, { 'time', '9' }, t + 1), 'ran', 'is not a press the next one waits behind')
+    eq(BR.DevMenu.request(3, { 'time', '9' }, t + 1), 'too-soon', 'is a press the next one waits behind')
+    eq(BR.DevMenu.request(3, { 'time', '9' }, t + gap), 'ran', 'for the floor, and no longer')
+    t = t + gap
 
     -- A PLAYER WHO LEAVES IS FORGOTTEN.
     eq(BR.DevMenu.request(3, { 'time', '10' }, t + 2), 'too-soon', 'fixture: inside the floor')
@@ -684,10 +840,14 @@ local function modelLibrary()
             return self._Index
         end
     end
+    --- THE LIBRARY'S OWN RULE, line for line (UIMenuListItem:ChangeList): the
+    --- index it is handed is thrown away for 1 whenever the OLD index is past
+    --- the end of the NEW list.
     function UIMenuListItem:ChangeList(list, index)
         self.changes = self.changes + 1
+        if index == nil or index < 1 or index > #list or self._Index > #list then index = 1 end
         self.Items = list
-        self:Index(index or 1)
+        self:Index(index)
     end
 
     UIMenuCheckboxItem = {}
@@ -751,6 +911,10 @@ local function bootClient(opts)
     })
     BR.Config.World = { hour = 12, minute = 0 }
     BR.Config.Market = { currency = 'Volts' }
+    -- What client/state.lua holds: the match's state as last heard, and
+    -- client/keybinds.lua's "is one of our panels up".
+    BR.State = { match = { state = opts.matchState or 'waiting' } }
+    BR.Keys = { uiScreen = nil }
 
     -- THE LOOP REGISTRY, as client/main.lua hands it out: register returns a
     -- handle, unregister marks it dead.
@@ -773,6 +937,16 @@ local function slow()
         if h.band == 'slow' and not h.dead then h.fn(1000) end
     end
 end
+
+--- Run every live TICK pass once.
+local function tick()
+    for _, h in ipairs(passes) do
+        if h.band == 'tick' and not h.dead then h.fn(100) end
+    end
+end
+
+--- The server's answer, as BR.Net.DEVMENU_STATE brings it.
+local function answer(d) events['br:devmenu:state'](d) end
 
 local function liveLoops()
     local n = 0
@@ -894,12 +1068,19 @@ do
         eq(lastExecuted(), 'brdevsv match ' .. s, ('the state row sends %s'):format(s))
     end
 
+    -- THE GIVES WAIT FOR THE SERVER'S LIST: until it lands there is no token.
     local _, vi = row(m, L.volts)
-    m:Press(vi)
-    eq(lastExecuted(), 'brdevsv volts 3 100', 'Give volts goes to the player picked: you, first')
     local _, yi = row(m, L.yubikey)
+    local n0 = #executed
+    m:Press(vi)
     m:Press(yi)
-    eq(lastExecuted(), 'brdevsv yubikey 3', 'and so does Give Yubikeys')
+    eq(#executed, n0, 'before the server has listed anybody, a give sends nothing')
+    answer({ players = { { id = 3, tok = 11, name = 'Me' } }, storm = false, warmup = false })
+    m:Press(vi)
+    eq(lastExecuted(), 'brdevsv volts 3 11 100',
+       'Give volts goes to the player picked -- you, first -- by id and token')
+    m:Press(yi)
+    eq(lastExecuted(), 'brdevsv yubikey 3 11', 'and so does Give Yubikeys')
 
     local st, si = row(m, L.storm)
     m:Press(si)
@@ -925,8 +1106,8 @@ do
     local items = #m.Items
 
     events['br:devmenu:state']({
-        players = { { id = 3, name = 'Me' }, { id = 1, name = '~r~Red~s~Name' },
-                    { id = 7, name = 'Seven~n~' } },
+        players = { { id = 3, tok = 1, name = 'Me' }, { id = 1, tok = 2, name = '~r~Red~s~Name' },
+                    { id = 7, tok = 3, name = 'Seven~n~' } },
         storm = true, warmup = false,
     })
     eq(#m.Items, items, 'no row is added or rebuilt')
@@ -938,12 +1119,16 @@ do
     pl:Index(3)
     local _, yi = row(m, L.yubikey)
     m:Press(yi)
-    eq(lastExecuted(), 'brdevsv yubikey 7', 'the picked player by server id, not by name')
+    eq(lastExecuted(), 'brdevsv yubikey 7 3', 'the picked player by server id and token, not by name')
 
-    -- THE PICK SURVIVES A NEW LIST: player 7 moves to the second place.
-    events['br:devmenu:state']({ players = { { id = 3, name = 'Me' }, { id = 7, name = 'Seven' } },
+    -- THE PICK SURVIVES A SHORTER LIST: player 7 moves to the second place.
+    -- The library's ChangeList alone would put the pick on you -- the old
+    -- index, 3, is past the end of a list of two.
+    events['br:devmenu:state']({ players = { { id = 3, tok = 1, name = 'Me' }, { id = 7, tok = 3, name = 'Seven' } },
                                  storm = false, warmup = true })
     eq(pl:Index(), 2, 'the Player row still points at the same player')
+    m:Press(yi)
+    eq(lastExecuted(), 'brdevsv yubikey 7 3', 'and a give still goes to them')
     eq(row(m, L.storm):Checked(), false, 'a box the server turned off is off')
     eq(row(m, L.warmup):Checked(), true, 'and one it turned on is on')
 
@@ -951,9 +1136,19 @@ do
     local _, si = row(m, L.storm)
     m:Press(si)
     ok(row(m, L.storm):Checked() == true, 'fixture: pressed on')
-    events['br:devmenu:state']({ players = { { id = 3, name = 'Me' } }, storm = false, warmup = true })
+    events['br:devmenu:state']({ players = { { id = 3, tok = 1, name = 'Me' } }, storm = false, warmup = true })
     eq(row(m, L.storm):Checked(), false, 'the server\'s answer puts the box back')
     eq(pl:Index(), 1, 'and a picked player who left falls back to you')
+
+    -- THE PICK FOLLOWS THE TOKEN, NOT THE ID: somebody new at id 7.
+    answer({ players = { { id = 3, tok = 1, name = 'Me' }, { id = 7, tok = 3, name = 'Seven' } } })
+    pl:Index(2)
+    answer({ players = { { id = 3, tok = 1, name = 'Me' }, { id = 7, tok = 9, name = 'Stranger' } } })
+    eq(pl:Index(), 1, 'a new player at the same id is not the one that was picked')
+
+    -- A PLAYER WITH NO TOKEN IS NOT LISTED: a give could not name them.
+    answer({ players = { { id = 3, tok = 1, name = 'Me' }, { id = 4, name = 'NoTok' } } })
+    eq(#pl.Items, 1, 'an entry without a token is left out')
 
     events['br:devmenu:state']('not a table')
     eq(#m.Items, items, 'a malformed answer changes nothing')
@@ -974,10 +1169,71 @@ do
     eq(#menus, 1, 'and opening it again builds nothing new')
     eq(m:Visible(), true, 'the same menu comes back')
     eq(#executed, asked + 1, 'asking the server for the rows again')
+    eq(liveLoops(), 2, 'up, it runs one pass beside the key\'s')
     m:GoBack()
     ok(not BR.DevMenu.up(), 'the library\'s own Back is seen without being told')
     slow()
-    eq(liveLoops(), 0, 'and once the key is mapped, the menu costs no loop at all')
+    tick()
+    eq(liveLoops(), 0, 'and once it is down and the key is mapped, the menu costs no loop at all')
+    cmds.brdev.fn(0, {}, 'brdev')
+    eq(liveLoops(), 1, 'opened again, its pass comes back')
+    cmds.brdev.fn(0, {}, 'brdev')
+    cmds.brdev.fn(0, {}, 'brdev')
+    eq(liveLoops(), 1, 'once, however often it is toggled')
+end
+
+describe('client: the Match state row stands on the match\'s state, and follows it')
+do
+    -- ONE ENTER ON THE ROW MUST NOT DISSOLVE THE MATCH. On `waiting` it would;
+    -- on the state the match is in, it changes nothing.
+    bootClient({ matchState = 'playing' })
+    cmds.brdev.fn(0, {}, 'brdev')
+    local m = devMenu()
+    local L = BR.Config.DevMenu.labels
+    local ms, mi = row(m, L.match)
+    eq(ms.Items[ms._Index], 'playing', 'opened in a playing match, the row says playing')
+    m:Press(mi)
+    eq(lastExecuted(), 'brdevsv match playing', 'so a stray Enter asks for what already is')
+
+    BR.State.match.state = 'ended'
+    tick()
+    eq(ms.Items[ms._Index], 'ended', 'the match moves on, and the row with it')
+
+    -- A STATE THE ROW DOES NOT LIST (none yet) is `waiting`, which with no
+    -- match is brforce's own "no match to dissolve".
+    BR.State.match.state = nil
+    tick()
+    eq(ms._Index, 1, 'no state is the first row')
+
+    -- WHAT THE PLAYER STEPPED TO STAYS, UNTIL THE MATCH MOVES.
+    BR.State.match.state = 'warmup'
+    tick()
+    ms:Index(4)
+    tick()
+    eq(ms._Index, 4, 'a pass with no change leaves the player\'s own choice alone')
+
+    -- AND IT OPENS ON THE STATE AGAIN.
+    cmds.brdev.fn(0, {}, 'brdev')
+    BR.State.match.state = 'bus'
+    cmds.brdev.fn(0, {}, 'brdev')
+    eq(ms.Items[ms._Index], 'bus', 'reopened, the row stands on the state the match is in')
+end
+
+describe('client: one of our panels taking the keyboard puts the menu away')
+do
+    bootClient()
+    cmds.brdev.fn(0, {}, 'brdev')
+    local m = devMenu()
+    BR.Keys.uiScreen = 'inventory'
+    tick()
+    eq(m:Visible(), false, 'the inventory up puts the dev menu down -- the gun shop\'s rule')
+    local asked = #executed
+    cmds.brdev.fn(0, {}, 'brdev')
+    eq(m:Visible(), false, 'and it does not open under one')
+    eq(#executed, asked, 'nor ask the server anything')
+    BR.Keys.uiScreen = nil
+    cmds.brdev.fn(0, {}, 'brdev')
+    eq(m:Visible(), true, 'with the panel gone it opens')
 end
 
 describe('client: another menu goes down first')
@@ -1011,8 +1267,16 @@ end
 
 describe('end to end: what the rows type, the server takes')
 do
+    -- THE SERVER FIRST, for the list and its tokens; then the client, handed
+    -- that list; then back to the same server -- the same tokens -- with every
+    -- line the rows typed.
+    bootServer()
+    typed(3, 'brdevsv open')
+    local listed = lastState(3)
+    local server = BR
     bootClient()
     cmds.brdev.fn(0, {}, 'brdev')
+    answer(listed)
     local m = devMenu()
     local L = BR.Config.DevMenu.labels
     local function pressAll()
@@ -1030,7 +1294,7 @@ do
     local lines = {}
     for _, l in ipairs(executed) do lines[#lines + 1] = l end
 
-    bootServer()
+    BR = server
     local bad = {}
     for _, l in ipairs(lines) do
         clock = clock + 1000
@@ -1041,6 +1305,64 @@ do
     end
     eq(#bad, 0, ('all %d lines the rows can type are taken'):format(#lines), table.concat(bad, '; '))
     ok(#lines > 60, 'and that is every value of every row', #lines)
+end
+
+-- =========================================================================
+-- PART D -- br_ddb's answer about its own tables
+-- =========================================================================
+
+describe('br_ddb/server/tables.lua answers what the bundle decided')
+do
+    -- ═══ THE SAME TWO CONVARS, READ THE SAME WAY, AS src/prefix.js ═══
+    --
+    -- The gives refuse unless br_ddb named the dev- tables as it started. The
+    -- bundle decides that in JS (devConvarsOn: a name in DEV_CONVARS reading
+    -- exactly 'true'); tables.lua answers for it in Lua. Two copies of one
+    -- rule, held together here.
+    local f = io.open('js-src/br_ddb/src/prefix.js', 'r')
+    local js = f and f:read('a') or ''
+    if f then f:close() end
+    local list = js:match("export const DEV_CONVARS = %[([^%]]*)%]") or ''
+    local jsNames = {}
+    for n in list:gmatch("'([^']+)'") do jsNames[#jsNames + 1] = n end
+    ok(#jsNames == 2, 'fixture: prefix.js names its dev convars', list)
+    ok(js:find("getConvar(name, 'false') === 'true'", 1, true) ~= nil,
+       'fixture: and reads each as exactly \'true\', defaulting to \'false\'')
+
+    local g = io.open(ROOT .. 'br_ddb/server/tables.lua', 'r')
+    local lua = g and g:read('a') or ''
+    if g then g:close() end
+    local luaList = lua:match('local DEV_CONVARS = {([^}]*)}') or ''
+    local luaNames = {}
+    for n in luaList:gmatch("'([^']+)'") do luaNames[#luaNames + 1] = n end
+    eq(table.concat(luaNames, ','), table.concat(jsNames, ','),
+       'tables.lua reads the same convars, in the same order')
+    ok(lua:find("GetConvar(name, 'false') == 'true'", 1, true) ~= nil,
+       'the same way')
+
+    -- AND IT ANSWERS: one run per box, the export read back.
+    local function boot(vals)
+        local exported = {}
+        BR = nil
+        function GetConvar(n, d)
+            local v = vals[n]
+            if v == nil then return d end
+            return v
+        end
+        function exports(name, fn) exported[name] = fn end
+        loadAll({ 'br_ddb/server/tables.lua' })
+        exports = nil
+        return exported.devTables and exported.devTables()
+    end
+    eq(boot({}), false, 'a production box: the production tables')
+    eq(boot({ sv_devMode = 'true' }), true, 'sv_devMode on: the dev tables')
+    eq(boot({ br_devMode = 'true' }), true, 'br_devMode on: the dev tables')
+    eq(boot({ br_devMode = 'TRUE' }), false, 'anything but exactly true is not dev mode, as in JS')
+
+    local m = io.open(ROOT .. 'br_ddb/fxmanifest.lua', 'r')
+    local manifest = m and m:read('a') or ''
+    if m then m:close() end
+    ok(manifest:find("'server/tables.lua'", 1, true) ~= nil, 'and br_ddb loads it')
 end
 
 print = realPrint

@@ -16111,6 +16111,92 @@ do
     ok(S.errored() == nil, 'with every match run clean', S.errored())
 end
 
+describe('zone.freeze.one match (#422)')
+do
+    -- ═══ THE DEV MENU'S STORM PAUSE HOLDS THE ASKER'S MATCH AND NO OTHER ═══
+    --
+    -- Matches run side by side, each in its own routing bucket. `brstormfreeze`
+    -- holds every one of them; the menu's Storm pause holds the match of the
+    -- player who pressed it (BR.Storm.setMatchFrozen), and asked for the state
+    -- the match is already in it changes nothing -- a thaw of a storm that was
+    -- never held would re-enter its phase and draw a new destination.
+    local S = newStormServer()
+    local env = S.env
+    env.BR.Server.devMode = true
+    local A = S.match
+    A.stormRng = env.BR.Rng(4242)
+    S.record(2, 0.0, 0.0, 950.0, 150.0, 0.0, 520.0, 1000.0, 60000.0, 2.0)
+    local B = { id = 2, seq = 2, state = env.BR.MatchState.PLAYING,
+                anchor = { x = 0.0, y = 0.0, name = 'Other' }, stormRng = env.BR.Rng(77),
+                stormCarry = {} }
+    B.storm = env.BR.BuildStormRecord(2, 0.0, 0.0, 950.0, 150.0, 0.0, 520.0,
+        S.now, 1000.0, 60000.0, 2.0)
+    S.matches[2] = B
+    env.BR.Server.matches[B.id] = B
+    S.now = S.now + 5000
+    local aLive, bLive = A.storm, B.storm
+
+    local changed, line = env.BR.Storm.setMatchFrozen(A, true)
+    ok(changed == true and A.storm ~= aLive and A.storm.dps == 0.0
+        and A.storm.tWait >= 24 * 3600 * 1000,
+        'A is held: a record that waits a day and does no damage', line)
+    ok(B.storm == bLive, 'B, the other match, is not touched')
+    ok(env.BR.Storm.isFrozen(A) == true and env.BR.Storm.isFrozen(B) == false,
+        'A answers held and B does not')
+    ok(env.BR.Storm.isFrozen() == false, 'and the session flag -- brstormfreeze -- is not set')
+    ok(type(line) == 'string' and line:find(env.BR.MatchTag(A.id), 1, true) ~= nil,
+        'the line names the match it held', line)
+
+    -- ASKED FOR WHAT IT ALREADY IS: nothing, both ways.
+    local held = A.storm
+    local c2 = env.BR.Storm.setMatchFrozen(A, true)
+    ok(c2 == false and A.storm == held, 'holding a held storm again changes nothing')
+    local c3, l3 = env.BR.Storm.setMatchFrozen(B, false)
+    ok(c3 == false and B.storm == bLive,
+        'and a thaw of a storm that was never held does not re-enter its phase', l3)
+
+    -- THE THAW: A runs again, B still untouched.
+    S.now = S.now + 20000
+    local c4 = env.BR.Storm.setMatchFrozen(A, false)
+    ok(c4 == true and A.storm ~= held and A.storm.dps > 0.0, 'the thaw puts A\'s storm back to work')
+    ok(env.BR.Storm.isFrozen(A) == false and B.storm == bLive, 'and still nothing touched B')
+
+    -- THE CONSOLE IS EVERY MATCH'S WORD, and clears the one-match marks.
+    env.BR.Storm.setMatchFrozen(A, true)
+    S.cmds.brstormfreeze(0, { 'off' })
+    ok(env.BR.Storm.isFrozen(A) == false and env.BR.Storm.isFrozen(B) == false
+        and A.stormFrozen == nil,
+        '`brstormfreeze off` thaws every match, the one the menu held included')
+    S.cmds.brstormfreeze(0, {})
+    ok(env.BR.Storm.isFrozen(A) == true and env.BR.Storm.isFrozen(B) == true,
+        'and `brstormfreeze` holds every one, as it always has')
+    local c5 = env.BR.Storm.setMatchFrozen(B, false)
+    ok(c5 == true and env.BR.Storm.isFrozen(B) == false and env.BR.Storm.isFrozen(A) == true,
+        'the menu can then let its own match go and leave the rest held')
+
+    -- A MATCH ENDING LIFTS THE SESSION FLAG; A WALL STILL HELD SAYS SO.
+    env.BR.Storm.thawOnMatchEnd()
+    ok(env.BR.Storm.isFrozen() == false, 'the session flag is down')
+    ok(env.BR.Storm.isFrozen(A) == true and A.storm.dps == 0.0,
+        'and A, whose record is still a held one, still answers held')
+    ok(env.BR.Storm.isFrozen(B) == false, 'B, which the menu had let go, does not')
+
+    -- ═══ A MATCH WITH NO STORM YET IS MARKED, AND STARTS HELD ═══
+    local W = newStormServer()
+    W.roster[1] = nil
+    W.match.storm = nil
+    W.match.anchor = { x = 1000.0, y = -1500.0, name = 'Pad' }
+    W.match.state = W.env.BR.MatchState.WARMUP
+    local c6, l6 = W.env.BR.Storm.setMatchFrozen(W.match, true)
+    ok(c6 == true and W.match.storm == nil, 'on the pad there is nothing to hold yet', l6)
+    W.env.BR.Storm.drawFirstCircle(W.match)
+    W.match.state = W.env.BR.MatchState.PLAYING
+    W.env.BR.Storm.begin(W.match)
+    ok(W.match.storm and W.match.storm.dps == 0.0 and W.match.storm.tWait >= 24 * 3600 * 1000,
+        'and when its storm begins, it begins held')
+    ok(W.env.BR.Storm.isFrozen() == false, 'without the session flag')
+end
+
 print(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     print(('\27[31m%d failed\27[0m'):format(fail))

@@ -2421,6 +2421,13 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     local shopMenu = BR.Gunshop ~= nil and BR.Gunshop.menuUp ~= nil
         and BR.Gunshop.menuUp() == true
 
+    -- ...AND NOT UNDER THE DEV MENU, OR ANY LIST MENU BUILT THROUGH
+    -- client/menu.lua (#422), for the shop's reason: the wheel cycled slots
+    -- underneath it. BR.Menu.hasArrows is the live read of "one of those is
+    -- up" (the emote wheel's radial is not one, and keeps the wheel). Asked
+    -- below only on a frame that scrolled; nil-guarded and failing open, as
+    -- the shop's is.
+
     -- MOUSE WHEEL UP CYCLES DOWNWARD THROUGH THE RING, wrapping past the fist
     -- slot at the bottom to slot 5 at the top.
     --
@@ -2435,6 +2442,7 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- has said this is a scroll the wheel could take. One read a frame, and four
     -- on the frame the wheel turns.
     if not shopMenu and isTrue(IsDisabledControlJustPressed(0, WHEEL_UP))
+       and not (BR.Menu ~= nil and BR.Menu.hasArrows ~= nil and BR.Menu.hasArrows() == true)
        and not isTrue(IsPauseMenuActive())
        and not isTrue(IsPlayerFreeAiming(PlayerId())) then
         local want = inv.active - 1

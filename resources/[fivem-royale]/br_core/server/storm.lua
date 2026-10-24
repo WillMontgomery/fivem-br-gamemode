@@ -378,7 +378,7 @@ end
 local function capFirstHold(m, now, quiet)
     local rec = m.storm
     if not rec or rec.phase ~= 1 then return end
-    if BR.Storm.isFrozen and BR.Storm.isFrozen() then return end
+    if BR.Storm.isFrozen and BR.Storm.isFrozen(m) then return end
     local _, _, _, st, msLeft = BR.StormAt(rec, now)
     if st ~= BR.StormPhase.HOLDING then return end
 
@@ -937,14 +937,15 @@ function BR.Storm.begin(m)
     -- the target it froze under (see brstormfreeze): the wall it holds is the opening
     -- zone, and a target pinned to the opening circle instead would be zone 1's shape
     -- blown up to the whole map's radius, drawn beside it.
-    if BR.Storm.isFrozen and BR.Storm.isFrozen() then
+    if BR.Storm.isFrozen and BR.Storm.isFrozen(m) then
         local now = GetGameTimer()
         local live = m.storm
         m.storm = BR.BuildStormRecord(1, a.x, a.y, r0, live.cx1, live.cy1, live.r1,
             now, 24 * 60 * 60 * 1000, 1000, 0.0, m.stormSeed)
         publish(m)
-        print(('[br_core] storm: match %s starts FROZEN (brstormfreeze is on)')
-            :format(BR.MatchTag(m.id)))
+        print(('[br_core] storm: match %s starts FROZEN (%s is on)')
+            :format(BR.MatchTag(m.id),
+                    m.stormFrozen == true and 'the dev menu\'s Storm pause' or 'brstormfreeze'))
     end
 end
 
@@ -1482,14 +1483,53 @@ end, true)
 --- end, and nothing else in the file needs to know.
 local frozen = false
 
+--- HOLD ONE LIVE STORM WHERE IT STANDS, OR LET IT GO. The record swap both
+--- forms below share: the console's every-match freeze and the dev menu's
+--- one-match freeze (#422).
+--- @param m table   a match with a live storm
+--- @param thaw boolean
+--- @param now number
+local function holdOne(m, thaw, now)
+    local live = m.storm
+    local cx, cy, r, _, _, _, t, g = BR.StormAt(live, now)
+    local phase = live.phase
+    -- THE OUTLINE THE WALL IS STANDING IN, as far as it had morphed -- every
+    -- moving disc and the destination disc it is heading for. Carried into the
+    -- frozen record and out of it again, so neither end of a freeze snaps the
+    -- wall back to the zone it set out from. AND, INTO A FREEZE, HOW FAR A
+    -- CONJOINED ZONE HAD GROWN into its destination (#344): the frozen record keeps
+    -- the target, so a freeze mid-growth neither shrinks the zone back nor grows it
+    -- twice. Not into the thaw, which draws a new destination with a growth of its
+    -- own ahead of it.
+    local mo = BR.StormMorphAt(live, t, (not thaw) and g or nil)
+
+    if thaw then
+        -- Re-enter the phase we were in, from where the wall is now.
+        enterPhase(m, phase, cx, cy, r, now, nil, mo)
+    else
+        -- A day of holding. Long enough that no session outlives it, and
+        -- still a real number rather than an infinity that would poison
+        -- every subtraction the clients do with it.
+        -- THE SEED SURVIVES A FREEZE, so the wall keeps the shape it was
+        -- standing in rather than reverting to a circle for the whole freeze.
+        -- AND SO DOES THE TARGET, so a breakout frozen part way across still
+        -- shows -- and shelters -- the destination it was running to, rather
+        -- than dropping it for the length of the freeze.
+        m.storm = BR.BuildStormRecord(phase, cx, cy, r, live.cx1, live.cy1, live.r1,
+            now, 24 * 60 * 60 * 1000, 1000, 0.0, live.seed, mo)
+        publish(m)
+    end
+end
+
 --- FREEZE EVERY LIVE STORM, OR THAW THEM ALL: `brstormfreeze`'s whole body
---- below its gate, and the dev menu's Storm pause row (#422).
+--- below its gate.
 ---
---- EVERY MATCH, NOT THE ASKER'S, because the freeze is a flag of the session --
---- `frozen`, which a storm that starts afterwards inherits (BR.Storm.begin) --
---- rather than a fact about one match. The menu freezes and thaws the same set
---- the console verb does, and its checkbox reads BR.Storm.isFrozen(). Nothing
---- here picks a match, so it is not the latest-match shape #291 is about.
+--- EVERY MATCH, because the console's freeze is a flag of the session --
+--- `frozen`, which a storm that starts afterwards inherits (BR.Storm.begin).
+--- It is also every match's word: a one-match pause the dev menu set is
+--- cleared here (`m.stormFrozen = nil`), so after `brstormfreeze off` no wall
+--- anywhere is still held. The dev menu does not come through here -- see
+--- BR.Storm.setMatchFrozen below.
 ---
 --- THE LINES ARE PRINTED HERE, the report and the "as soon as one starts"
 --- note, and the report is handed back.
@@ -1502,36 +1542,9 @@ function BR.Storm.setFrozen(on)
     local touched = 0
 
     BR.Server.eachMatch(function(m)
+        m.stormFrozen = nil
         if not m.storm then return end
-        local live = m.storm
-        local cx, cy, r, _, _, _, t, g = BR.StormAt(live, now)
-        local phase = live.phase
-        -- THE OUTLINE THE WALL IS STANDING IN, as far as it had morphed -- every
-        -- moving disc and the destination disc it is heading for. Carried into the
-        -- frozen record and out of it again, so neither end of a freeze snaps the
-        -- wall back to the zone it set out from. AND, INTO A FREEZE, HOW FAR A
-        -- CONJOINED ZONE HAD GROWN into its destination (#344): the frozen record keeps
-        -- the target, so a freeze mid-growth neither shrinks the zone back nor grows it
-        -- twice. Not into the thaw, which draws a new destination with a growth of its
-        -- own ahead of it.
-        local mo = BR.StormMorphAt(live, t, (not thaw) and g or nil)
-
-        if thaw then
-            -- Re-enter the phase we were in, from where the wall is now.
-            enterPhase(m, phase, cx, cy, r, now, nil, mo)
-        else
-            -- A day of holding. Long enough that no session outlives it, and
-            -- still a real number rather than an infinity that would poison
-            -- every subtraction the clients do with it.
-            -- THE SEED SURVIVES A FREEZE, so the wall keeps the shape it was
-            -- standing in rather than reverting to a circle for the whole freeze.
-            -- AND SO DOES THE TARGET, so a breakout frozen part way across still
-            -- shows -- and shelters -- the destination it was running to, rather
-            -- than dropping it for the length of the freeze.
-            m.storm = BR.BuildStormRecord(phase, cx, cy, r, live.cx1, live.cy1, live.r1,
-                now, 24 * 60 * 60 * 1000, 1000, 0.0, live.seed, mo)
-            publish(m)
-        end
+        holdOne(m, thaw, now)
         touched = touched + 1
     end)
 
@@ -1556,11 +1569,64 @@ RegisterCommand('brstormfreeze', function(_, args)
     BR.Storm.setFrozen(not (args[1] == 'off' or args[1] == 'thaw'))
 end, true)
 
---- Is the storm currently held by brstormfreeze?
---- Read by BR.Storm.begin so a match starting AFTER the freeze inherits it
---- rather than quietly running a live storm under a frozen session.
+--- Is the storm held?
+---
+--- WITH NO MATCH, the session's answer: is brstormfreeze on. `brstate` asks
+--- that.
+---
+--- WITH A MATCH, that match's answer: its own pause when one was set
+--- (`m.stormFrozen`, the dev menu's, true or false), and the session's
+--- otherwise. Read by BR.Storm.begin, so a match starting AFTER a freeze
+--- inherits it rather than quietly running a live storm under a frozen session,
+--- and by capFirstHold.
+--- @param m table|nil
 --- @return boolean
-function BR.Storm.isFrozen() return frozen end
+function BR.Storm.isFrozen(m)
+    if m ~= nil and m.stormFrozen ~= nil then return m.stormFrozen == true end
+    return frozen
+end
+
+--- FREEZE ONE MATCH'S STORM, OR THAW IT: the dev menu's Storm pause row (#422).
+---
+--- ═══ ONE MATCH, THE ASKER'S, AND NEVER ANOTHER ═══
+---
+--- Matches run side by side, each in its own routing bucket, and the menu is
+--- pressed by a player standing in one of them. The freeze's own reason for
+--- existing is to "hold ONE match still" (BR.Storm.thawOnMatchEnd's note), so
+--- this holds that one and no other, and leaves the session flag alone. A
+--- match with no storm yet -- warmup, the bus -- is marked, and BR.Storm.begin
+--- starts it frozen. The mark dies with the match.
+---
+--- ═══ ASKED FOR WHAT IT ALREADY IS, IT DOES NOTHING ═══
+---
+--- A thaw is not harmless when nothing is held: it re-enters the phase and
+--- draws a new destination. The menu's checkbox can be stale -- a match ended,
+--- another took over -- so a press that asks for the state the match is
+--- already in changes nothing and says so.
+--- @param m table
+--- @param on boolean  true freezes, false thaws
+--- @return boolean changed
+--- @return string line
+function BR.Storm.setMatchFrozen(m, on)
+    on = (on == true)
+    local tag = BR.MatchTag(m.id)
+    if BR.Storm.isFrozen(m) == on then
+        local line = ('storm already %s (match %s)'):format(on and 'frozen' or 'running', tag)
+        print('[br_core] ' .. line)
+        return false, line
+    end
+
+    m.stormFrozen = on
+    if m.storm then holdOne(m, not on, GetGameTimer()) end
+    local line = ('storm %s (match %s)'):format(
+        on and 'FROZEN -- no phases, no damage, wall stays put'
+           or 'THAWED -- phases and damage resume', tag)
+    print('[br_core] ' .. line)
+    if on and not m.storm then
+        print('  (no live storm yet -- it will freeze as soon as one starts)')
+    end
+    return true, line
+end
 
 --- Drop the freeze at the end of a match.
 ---
@@ -1573,9 +1639,18 @@ function BR.Storm.isFrozen() return frozen end
 ---
 --- Called from BR.Storm.clear, so it rides the teardown every match already
 --- performs rather than needing its own hook.
+---
+--- A WALL STILL HELD KEEPS SAYING SO. With two matches running, lifting the
+--- flag does not thaw the other match's frozen record -- nothing here touches
+--- it -- so that match is marked held on its own (`m.stormFrozen`), and
+--- BR.Storm.isFrozen(m) goes on answering true for a wall that is still a
+--- frozen record. The dev menu's Storm pause box reads that answer.
 function BR.Storm.thawOnMatchEnd()
     if not frozen then return end
     frozen = false
+    BR.Server.eachMatch(function(m)
+        if m.storm and m.stormFrozen == nil then m.stormFrozen = true end
+    end)
     print('[br_core] storm freeze lifted -- the match it was holding has ended')
 end
 

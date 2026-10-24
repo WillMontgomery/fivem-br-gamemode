@@ -67,8 +67,10 @@ local menu = nil
 --- The rows by name, once built.
 local rows = {}
 
---- The players the Player row lists, as the server last sent them: { id, name }.
---- Index i of the row is entry i here.
+--- The players the Player row lists, as the server last sent them:
+--- { id, tok, name }. Index i of the row is entry i here. `tok` is the token a
+--- give sends back with the id (server/devmenu.lua's header): server ids are
+--- recycled, tokens are not.
 local players = {}
 
 --- What the list rows send, index for index with what they show.
@@ -92,10 +94,11 @@ local function shown(name)
     return (s:gsub('[%c~]', ''))
 end
 
---- This player alone, for the Player row before the server has answered.
+--- This player alone, for the Player row before the server has answered. No
+--- token yet, so the two gives send nothing until the answer lands.
 --- @return table
 local function onlyMe()
-    return { { id = GetPlayerServerId(PlayerId()), name = GetPlayerName(PlayerId()) } }
+    return { { id = GetPlayerServerId(PlayerId()), tok = nil, name = GetPlayerName(PlayerId()) } }
 end
 
 --- The Player row's values, out of `players`.
@@ -106,14 +109,41 @@ local function playerNames()
     return out
 end
 
---- The server id the Player row points at, or nil.
---- @return integer|nil
-local function pickedId()
+--- The `players` entry the Player row points at, or nil.
+--- @return table|nil
+local function pickedPlayer()
     local item = rows.player
     if not item then return nil end
     local ok, i = pcall(item.Index, item)
-    local p = ok and players[i] or nil
-    return p and math.tointeger(tonumber(p.id)) or nil
+    return ok and players[i] or nil
+end
+
+--- The player the Player row points at, as the `<id> <token>` a give sends,
+--- or nil.
+--- @return string|nil
+local function picked()
+    local p = pickedPlayer()
+    local id = p and math.tointeger(tonumber(p.id)) or nil
+    local tok = p and math.tointeger(tonumber(p.tok)) or nil
+    if not (id and tok) then return nil end
+    return ('%d %d'):format(id, tok)
+end
+
+--- The Match state row's index for a state, or 1 (`waiting`) for one it does
+--- not list -- the lobby's, or none yet.
+--- @param state any
+--- @return integer
+local function stateIndex(state)
+    for i, s in ipairs(cfg().states) do
+        if s == state then return i end
+    end
+    return 1
+end
+
+--- The match's state, as this client last heard it (client/state.lua).
+--- @return string|nil
+local function matchState()
+    return BR.State and BR.State.match and BR.State.match.state or nil
 end
 
 --- @return string[] values, string[] words
@@ -182,7 +212,11 @@ local function build()
     skies, weatherWords = weatherRows()
     add(m, 'weather', BR.Menu.list(label('weather'), skies, 1))
 
-    add(m, 'match', BR.Menu.list(label('match'), cfg().states, 1))
+    -- THE MATCH STATE ROW STANDS ON THE STATE THE MATCH IS IN, and follows it
+    -- while the menu is up (the follow pass below). Enter on the state it is
+    -- already in changes nothing (BR.Match.transition), so a stray Enter is
+    -- harmless -- where a row left on `waiting` would dissolve the match.
+    add(m, 'match', BR.Menu.list(label('match'), cfg().states, stateIndex(matchState())))
 
     if #players == 0 then players = onlyMe() end
     add(m, 'player', BR.Menu.list(label('player'), playerNames(), 1))
@@ -216,14 +250,14 @@ local function build()
     end
     if rows.volts then
         rows.volts.OnListSelected = function(_, _, i)
-            local id, n = pickedId(), cfg().volts[i]
-            if id and n then ask(('volts %d %d'):format(id, n)) end
+            local who, n = picked(), cfg().volts[i]
+            if who and n then ask(('volts %s %d'):format(who, n)) end
         end
     end
     if rows.yubikey then
         rows.yubikey.Activated = function()
-            local id = pickedId()
-            if id then ask(('yubikey %d'):format(id)) end
+            local who = picked()
+            if who then ask('yubikey ' .. who) end
         end
     end
     if rows.storm then
@@ -251,29 +285,79 @@ function D.up()
 end
 
 --- What the server says the rows are: the players, yourself first, and the two
---- pauses. The Player row keeps pointing at whoever it pointed at, if they are
---- still listed.
+--- pauses. The Player row keeps pointing at whoever it pointed at -- the same
+--- token, not merely the same id -- if they are still listed.
 --- @param d table  BR.Net.DEVMENU_STATE's payload
 function D.apply(d)
     if type(d) ~= 'table' then return end
-    local was = pickedId()
+    local was = pickedPlayer()
+    local wasTok = was and was.tok or nil
 
     local list = {}
     for _, p in ipairs(type(d.players) == 'table' and d.players or {}) do
         local id = type(p) == 'table' and math.tointeger(tonumber(p.id)) or nil
-        if id then list[#list + 1] = { id = id, name = p.name } end
+        local tok = type(p) == 'table' and math.tointeger(tonumber(p.tok)) or nil
+        if id and tok then list[#list + 1] = { id = id, tok = tok, name = p.name } end
     end
     players = (#list > 0) and list or onlyMe()
 
     if rows.player then
         local at = 1
         for i, p in ipairs(players) do
-            if p.id == was then at = i end
+            if wasTok ~= nil and p.tok == wasTok then at = i end
         end
+        -- ⚠ ChangeList IS GIVEN THE INDEX AND THEN TOLD IT AGAIN. The library
+        -- throws the index away and takes 1 whenever the OLD index is past the
+        -- end of the NEW list (UIMenuListItem:ChangeList), so a list that
+        -- shrinks would jump the pick to yourself. Index(at) afterwards is the
+        -- library's own setter and puts it back.
         pcall(rows.player.ChangeList, rows.player, playerNames(), at)
+        pcall(rows.player.Index, rows.player, at)
     end
     if rows.storm then pcall(rows.storm.Checked, rows.storm, d.storm == true) end
     if rows.warmup then pcall(rows.warmup.Checked, rows.warmup, d.warmup == true) end
+end
+
+--- The follow pass's handle while the menu is up, else nil.
+local followPass = nil
+
+--- The match state the Match state row was last put on.
+local followed = nil
+
+--- Put the Match state row on the state the match is in.
+local function followMatch()
+    local s = matchState()
+    followed = s
+    if rows.match then pcall(rows.match.Index, rows.match, stateIndex(s)) end
+end
+
+--- WHILE THE MENU IS UP, AND ONLY THEN. Registered by D.toggle on the way up
+--- and taken out by itself on the first pass that finds the menu down, so a
+--- closed menu costs no loop at all.
+---
+--- ═══ A NUI SCREEN TAKING THE KEYBOARD PUTS THE MENU AWAY ═══
+---
+--- The gun shop's rule (client/gunshop.lua's prompt pass), for its reason: the
+--- menu holds input with DisableAllControlActions and our panels with
+--- SetNuiFocus, and with both up the player reads one while the other takes
+--- their arrow keys. `uiScreen` is br_ui's answer to "is one of our panels up".
+---
+--- ═══ THE MATCH STATE ROW FOLLOWS THE MATCH ═══
+---
+--- When the match moves on -- warmup to the bus, the bus to playing -- the row
+--- moves with it, so it never stands on a state the match has left, where one
+--- Enter would send the match back.
+local function follow()
+    if not D.up() then
+        BR.Loop.unregister(followPass)
+        followPass = nil
+        return
+    end
+    if BR.Keys and BR.Keys.uiScreen ~= nil then
+        pcall(menu.Visible, menu, false)
+        return
+    end
+    if matchState() ~= followed then followMatch() end
 end
 
 --- Open the menu, or put it away. F10 and /brdev both come here.
@@ -282,12 +366,18 @@ function D.toggle()
         pcall(menu.Visible, menu, false)
         return
     end
+    -- Not under one of our panels: the follow pass would only put it away.
+    if BR.Keys and BR.Keys.uiScreen ~= nil then return end
     if not build() then return end
     -- EVERY OTHER MENU GOES DOWN FIRST, through its own close, so the gun
     -- shop's flags come down with its menu -- the emote wheel's rule.
     BR.Menu.closeAll(menu)
+    followMatch()
     ask('open')
     pcall(menu.Visible, menu, true)
+    if not followPass then
+        followPass = BR.Loop.register(BR.Loop.TICK, 'devmenu.follow', follow)
+    end
 end
 
 RegisterNetEvent(BR.Net.DEVMENU_STATE)

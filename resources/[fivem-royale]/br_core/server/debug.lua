@@ -228,6 +228,19 @@ RegisterCommand('brstate', function()
         print('               `brstormfreeze off` releases it, and it lifts')
         print('               itself at the end of the match it is holding.')
     end
+    -- AND ONE MATCH'S OWN, the dev menu's two pauses (#422): a hold on one pad
+    -- or one storm is as much a reason for a held match as the session's, and
+    -- is said the same way -- only when on. Each lasts as long as its match.
+    BR.Server.eachMatch(function(m)
+        if m.warmupFrozen == true then
+            print(('  warmup       HELD in match %s by the dev menu\'s Warmup pause')
+                :format(BR.MatchTag(m.id)))
+        end
+        if m.stormFrozen == true then
+            print(('  storm        HELD in match %s -- no phases, no damage')
+                :format(BR.MatchTag(m.id)))
+        end
+    end)
     print(('  onesync      %s%s'):format(
         tostring(BR.Server.onesync),
         (BR.Server.onesync == 'off' or BR.Server.onesync == '')
@@ -1630,7 +1643,32 @@ end, true)
 --- br-players. This command keeps its console check; the menu reaches the
 --- write through BR.Debug.grantVolts below, behind br_core/server/devmenu.lua's
 --- gate, and only with an amount out of BR.Config.DevMenu.volts.
+---
+--- ⚠ EXCEPT ON A BOX WHERE br_ddb STARTED BEFORE DEV MODE WAS ON. br_ddb picks
+--- its tables once, as it starts; dev mode switched on live afterwards opens
+--- every gate above while br_ddb still writes production's. So the write asks
+--- br_ddb which tables it named -- BR.Debug.productionTables below -- and
+--- refuses unless the answer is the dev ones.
 BR.Debug = BR.Debug or {}
+
+--- WOULD A DEV DOOR'S PROFILE WRITE LAND IN PRODUCTION'S TABLES? (#422)
+---
+--- br_ddb/server/tables.lua answers which family of tables br_ddb named as it
+--- started. Asked by every dev door that writes a stored profile: brvolts and
+--- the dev menu's Give volts (BR.Debug.grantVolts below), and `brterminalsv
+--- key` and the menu's Give Yubikeys (BR.Terminal.devKey, server/terminal.lua).
+---
+--- nil means the write may go ahead: br_ddb is not started, so nothing is
+--- written anywhere, or it named the dev- tables. Anything else is the
+--- sentence that refuses it -- and that includes a br_ddb that cannot say,
+--- because a guess here is a guess about production's rows.
+--- @return string|nil
+function BR.Debug.productionTables()
+    if GetResourceState('br_ddb') ~= 'started' then return nil end
+    local ok, dev = pcall(function() return exports.br_ddb:devTables() end)
+    if ok and dev == true then return nil end
+    return 'br_ddb started outside dev mode, so it writes the production tables -- restart br_ddb'
+end
 
 --- PUT VOLTS ON ONE CONNECTED PLAYER'S ROW: `brvolts`'s whole body below its
 --- gates and its usage line, for both doors above.
@@ -1656,6 +1694,8 @@ function BR.Debug.grantVolts(target, amount, done)
     if GetResourceState('br_ddb') ~= 'started' then
         return false, 'brvolts: br_ddb is not started, so there is nothing to write to.'
     end
+    local production = BR.Debug.productionTables()
+    if production then return false, 'brvolts: ' .. production end
 
     amount = math.floor(amount)
     if amount == 0 then
@@ -1690,8 +1730,10 @@ function BR.Debug.grantVolts(target, amount, done)
             local why = tostring(extra and extra.error or 'no reason given')
             print(('^1[br_core] brvolts: %s was NOT credited %d -- %s^7')
                 :format(license, amount, why))
-            finish(false, ('brvolts: %d was NOT credited %d -- %s')
-                :format(target, amount, why))
+            -- WITHOUT br_ddb's REASON, which stays on this console. It is the
+            -- AWS SDK's raw text, and an access-denied names the account and
+            -- the server's role -- not something to put on a player's screen.
+            finish(false, ('brvolts: %d was NOT credited %d'):format(target, amount))
             return
         end
 

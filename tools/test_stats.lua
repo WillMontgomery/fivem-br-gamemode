@@ -933,6 +933,18 @@ BR.Roster = { get = function(src) return rosterEntries[src] end }
 function GetPlayerName(src) return 'Player' .. tostring(src) end
 function RemoveEventHandler() end
 
+--- br_ddb's one export (br_ddb/server/tables.lua): did it name the dev- tables
+--- as it started? A dev box's br_ddb did, unless a test says otherwise.
+local ddbDevTables = true
+exports = {
+    br_ddb = {
+        devTables = function()
+            if ddbDevTables == 'throw' then error('no such export') end
+            return ddbDevTables
+        end,
+    },
+}
+
 do
     local chunk, err = loadfile(ROOT .. 'br_core/server/debug.lua')
     if not chunk then
@@ -1124,10 +1136,12 @@ do
     got = {}
     BR.Debug.grantVolts(3, 500, done)
     local r2 = askedFor('br:ddb:statsApply')
-    TriggerEvent('br:ddb:statsResult', r2[#r2].args[1], false, { error = 'throttled' })
+    TriggerEvent('br:ddb:statsResult', r2[#r2].args[1], false,
+                 { error = 'AccessDeniedException: arn:aws:sts::123456789012:assumed-role/br-game' })
     ok(got[1] and got[1].ok == false
-       and got[1].line == 'brvolts: 3 was NOT credited 500 -- throttled',
-       'a refused write says so, by server id', got[1] and got[1].line)
+       and got[1].line == 'brvolts: 3 was NOT credited 500',
+       'a refused write says so, by server id -- WITHOUT br_ddb\'s raw reason, which can '
+           .. 'name the AWS account and the server\'s role', got[1] and got[1].line)
 
     got = {}
     BR.Debug.grantVolts(3, 100, done)
@@ -1143,6 +1157,32 @@ do
     local s0, w0 = BR.Debug.grantVolts(9, 1000, done)
     ok(s0 == false and w0 == 'no roster entry for 9',
        'a refusal before the write is returned in brvolts\'s words', w0)
+
+    -- ═══ A br_ddb THAT STARTED OUTSIDE DEV MODE WRITES PRODUCTION'S TABLES ═══
+    --
+    -- It picks its tables once, as it starts. Dev mode switched on live after
+    -- that opens every gate in br_core while br_ddb still writes br-players.
+    -- The write asks br_ddb which tables it named, and refuses unless dev-.
+    ddbDevTables = false
+    local n1 = #askedFor('br:ddb:statsApply')
+    local s1, w1 = BR.Debug.grantVolts(3, 1000, done)
+    ok(s1 == false and #askedFor('br:ddb:statsApply') == n1,
+       'br_ddb on production\'s tables: nothing is written', w1)
+    ok(w1 == 'brvolts: br_ddb started outside dev mode, so it writes the production tables '
+           .. '-- restart br_ddb', 'and it says why', w1)
+    ok(brvolts('3', '500') == nil, 'brvolts from the console is refused the same way')
+
+    ddbDevTables = 'throw'
+    local s2 = BR.Debug.grantVolts(3, 1000, done)
+    ok(s2 == false and #askedFor('br:ddb:statsApply') == n1,
+       'a br_ddb that cannot say is taken as production\'s')
+
+    ddbDevTables = true
+    ok(BR.Debug.productionTables() == nil, 'on the dev tables the write may go ahead')
+    resourceState.br_ddb = 'missing'
+    ok(BR.Debug.productionTables() == nil,
+       'and with br_ddb down there is nothing to refuse: nothing is written anywhere')
+    resourceState.br_ddb = 'started'
 end
 
 -- ---------------------------------------------------------------------------

@@ -1922,6 +1922,13 @@ local function openMenu(store)
     if menuOpen then return end
     if not buildMenu() then return end
 
+    -- EVERY OTHER MENU GOES DOWN FIRST (#422), through its own close. The
+    -- library draws ONE menu: showing this one over the dev menu would make
+    -- this the current menu while the dev menu still counted itself open --
+    -- undrawn, unreachable, and holding Escape away from our pause menu.
+    -- client/devmenu.lua and the emote wheel do the same on their way up.
+    if BR.Menu.closeAll then BR.Menu.closeAll(menu) end
+
     menuOpen  = true
     menuStore = store
     -- APPLIED BEFORE THE MENU IS SHOWN, which is what keeps the description
@@ -2196,9 +2203,14 @@ end)
 --- can reach. The menu's own Select is INPUT_FRONTEND_ACCEPT (Enter), a
 --- different key entirely, so E at an open menu is a press with nothing to do.
 --- Without this line it would fall through to whatever else wants the key.
+---
+--- AND NOT WHILE ANY OTHER MENU OF OURS IS UP EITHER (#422): E at a counter with
+--- the dev menu open would put the shop on top of it. BR.Menu.up is the live
+--- read every menu built through client/menu.lua answers.
 BR.Keys.on('interact', function(pressed)
     if not pressed then return end
     if menuOpen then return end
+    if BR.Menu and BR.Menu.up and BR.Menu.up() then return end
     if not plateShown then return end
     local store = candidate
     if not store then return end

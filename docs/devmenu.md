@@ -39,43 +39,65 @@ in FiveM's key bindings.
 ## The rows
 
 Each row runs the console command's own body, factored out so the command and
-the menu call one piece of code.
+the menu call one piece of code. The two pauses share their command's record
+swap and deadline, but hold one match where the command holds every one.
 
 | Row | Value | Runs | Acts on |
 |---|---|---|---|
 | Time | `00:00`-`23:00`, Reset | `brtime` (`BR.WorldSky.setTime`) | the session's clock override, everyone |
 | Weather | the fifteen weathers, Reset | `brweather` (`BR.WorldSky.setWeather`) | the session's sky override, everyone |
-| Match state | `waiting` `warmup` `bus` `playing` `ended` `cleanup` `skip` | `brforce` (`BR.Match.force`), `brskip` (`BR.Match.skip`) | **the asker's match** |
-| Player | the connected players, yourself first | -- | who the next two give to |
+| Match state | `waiting` `warmup` `bus` `playing` `ended` `cleanup` `skip`; stands on the match's current state and follows it | `brforce` (`BR.Match.force`), `brskip` (`BR.Match.skip`) | **the asker's match** |
+| Player | the connected players, yourself first | -- | who the next two give to, by id and token |
 | Give volts | 100, 500, 1,000, 5,000, 10,000 Volts | `brvolts` (`BR.Debug.grantVolts`) | that player's stored profile |
 | Give Yubikeys | -- | `brterminalsv key give` (`BR.Terminal.devKey`) | that player's stored profile; one at most, Season 2 |
-| Storm pause | on / off | `brstormfreeze` (`BR.Storm.setFrozen`) | every live storm, and the next to start |
-| Warmup pause | on / off | `brwarmupfreeze` (`BR.Match.setWarmupFrozen`) | every open warmup, and the next to open |
+| Storm pause | on / off | `brstormfreeze`'s record swap (`BR.Storm.setMatchFrozen`) | **the asker's match**; a match with no storm yet starts held |
+| Warmup pause | on / off | `brwarmupfreeze`'s deadline (`BR.Match.setMatchWarmupFrozen`) | **the asker's match**; held again if it returns to warmup |
 | Spawn airdrops | -- | `brairdrop now` (`BR.Airdrop.dropNow`) | **the asker's match**; PLAYING only |
 
-**The asker's match, never the newest.** Matches run side by side in their own
-routing buckets, and the console commands aim at `BR.Server.latestMatch()`.
-Match state and Spawn airdrops take `BR.Server.matchOf(asker)`. From the
-lobby, a forced state forms a match from the queue, as `brforce` does with no
-match; `waiting` and `skip` say there is no match. Time, weather and the two
-pauses are one setting for the whole session in their commands, with no match
-to aim at, so the menu does what the command does.
+**The asker's match, never the newest, never every one.** Matches run side by
+side in their own routing buckets, and the console commands aim at
+`BR.Server.latestMatch()` -- or, the two freezes, at every match. Match state,
+Spawn airdrops and both pauses take `BR.Server.matchOf(asker)`. A pause asked
+for the state its match is already in does nothing: a thaw of a storm that was
+never held would re-enter its phase, and of a pad would restart its countdown.
+`brstormfreeze` and `brwarmupfreeze` on the console still hold or release
+every match, and clear the menu's one-match pauses as they do.
+
+From the lobby there is no match. A forced state forms one from the queue, as
+`brforce` does, but only for a player who is queued; otherwise, and for
+`skip` and both pauses, the answer is `no match running`. `waiting` says
+`no match to dissolve`. Time and weather are one override for the whole
+session -- the server sends one sky -- so the menu does what the command does.
 
 A refusal is the command's own sentence (`airdrops only run during PLAYING
 (match … is warmup)`, `1: already holds one`, `no match running`), sent to the
 player who pressed as a warning toast and printed on their F8. A success is a
-line on F8 only. After every answer the server sends the rows back, so a pause
-box the library flipped is put right if the request did not take.
+line on F8 only, and so is an airdrop that `wait`s: it stays queued and is
+retried. After every answer the server sends the rows back, so a pause box the
+library flipped is put right if the request did not take.
+
+**A give names its player by id and token.** Server ids are recycled within
+the minute, so the list the server sends carries a token per player -- a
+number never handed out twice -- and a give sends both. A player who has left,
+or an id somebody else now holds, is refused with `player <id> has left`, and
+the asker is sent the list as it stands.
+
+**The menu closes under our panels.** As at the gun counter, a NUI screen
+taking the keyboard (the inventory, say) puts the menu away, and it does not
+open under one. E at a gun counter does nothing while any of our menus is up,
+and the gun shop's menu closes every other menu before it opens. The scroll
+wheel does not switch slots under it.
 
 ## What the server checks
 
 Every word, against the lists the rows are built from: an hour 0-23 or
 `reset`; a weather of `BR.World.WEATHERS` or `reset`; a state of
-`BR.Config.DevMenu.states`; an amount of `BR.Config.DevMenu.volts`; a target
-that is a connected player who has not left; `on` or `off`. Anything else is a
-request no row could have sent, and it is dropped with the usage line on F8. A
-request inside `minIntervalMs` (250 ms) of the last one taken from that player
-is dropped too, and the rows are sent back so a pause box shows the truth. The server console cannot use `brdevsv`; its commands are the
+`BR.Config.DevMenu.states`; an amount of `BR.Config.DevMenu.volts`; a player
+id and token; `on` or `off`. Anything else is a request no row could have
+sent, and it is dropped with the usage line on F8. Every request read spends
+the player's slot, good or bad; one inside `minIntervalMs` (250 ms) of the last
+is dropped unread, and only a pause's rows are sent back, so a pause box shows
+the truth. The server console cannot use `brdevsv`; its commands are the
 console verbs themselves.
 
 ## The profile store
@@ -88,11 +110,19 @@ names to `dev-br-*` and `dev-ringmaster-*` whenever `sv_devMode` or
 `dev-` tables"). Those are the convars both gates above read, so the menu
 writes `dev-br-players` and never `br-players`. Both rows are on.
 
-The one way round it is outside the menu: br_ddb resolves its prefix once, at
-its own start. Dev mode turned on live and only br_core restarted would leave
-br_ddb on the production tables with the menu's second gate open. `brvolts`
-on the console has the same exposure. Restart the whole server, not one
-resource, to change a box's dev mode.
+**And they ask br_ddb first.** br_ddb resolves its prefix once, at its own
+start, so dev mode turned on live with br_ddb left running would leave it on
+the production tables while every gate in br_core opens. So the two writes --
+`BR.Debug.grantVolts` and `BR.Terminal.devKey`, which `brvolts` and
+`brterminalsv key` share -- ask `BR.Debug.productionTables()` first. It reads
+`br_ddb/server/tables.lua`'s export, which reads the same two convars the
+same way as `prefix.js`, as br_ddb starts. Unless br_ddb named the `dev-`
+tables, or is not running at all (nothing is written then), the give is
+refused: `br_ddb started outside dev mode, so it writes the production
+tables -- restart br_ddb`. A br_ddb that cannot answer counts as production.
+
+One other dev path ends in a profile write without asking: a key put down
+with `bryubikey drop` and picked up is a real pickup, and writes through.
 
 ## Tests
 
@@ -102,8 +132,9 @@ dispatch with the asker's match, refusals as toasts, the pushed rows and the
 rate; the client over the real `client/menu.lua` (the labels in order, no
 descriptions, F10 mapped once and only on dev mode, every row's line, the
 answer applied in place, names stripped of GTA's text codes); and every line
-the rows can type, taken by the server. The verbs' bodies are covered where
-their commands are: `test_roster` (force and skip on a given match),
-`test_airdrop` (`dropNow` on a given match), `test_stats`
-(`grantVolts`'s answers), `test_yubikey` (`devKey`), `test_shared`,
-`test_storm`.
+the rows can type, taken by the server; and `tables.lua` held to `prefix.js`.
+The verbs' bodies are covered where their commands are: `test_roster` (force
+and skip on a given match, the one-match warmup pause), `test_storm` (the
+one-match storm pause), `test_airdrop` (`dropNow` on a given match),
+`test_stats` (`grantVolts`'s answers and the production-tables refusal),
+`test_yubikey` (`devKey`, and the same refusal), `test_shared`.

@@ -1439,6 +1439,11 @@ end
 --- one stands: a player already holding a key is refused, not handed a second.
 --- The season is asked HERE as well as by the command's own door above the
 --- verbs, because the menu does not come through that door.
+---
+--- AND SO ARE THE TABLES. The key is written through to the player's stored
+--- profile, so a br_ddb that started outside dev mode -- and writes
+--- production's rows -- refuses it: BR.Debug.productionTables
+--- (server/debug.lua) has the case. With that file missing it refuses too.
 --- @param target integer  a server id
 --- @param give boolean
 --- @return boolean ok
@@ -1448,6 +1453,10 @@ function T.devKey(target, give)
         return false, ('terminals are Season 2 and this box runs Season %s -- `brseason 2` first')
             :format(tostring(BR.Season.current()))
     end
+    local ask = BR.Debug and BR.Debug.productionTables
+    if not ask then return false, 'server/debug.lua is not loaded' end
+    local production = ask()
+    if production then return false, production end
     local ok, why = BR.Yubikey.devSet(target, give)
     if ok then
         return true, ('%d %s a key'):format(target, give and 'now holds' or 'no longer holds')

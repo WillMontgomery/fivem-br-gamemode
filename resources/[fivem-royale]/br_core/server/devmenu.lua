@@ -15,23 +15,29 @@
 --   Match state     brforce, brskip  BR.Match.force / .skip  server/match.lua
 --   Give volts      brvolts          BR.Debug.grantVolts     server/debug.lua
 --   Give Yubikeys   brterminalsv key BR.Terminal.devKey      server/terminal.lua
---   Storm pause     brstormfreeze    BR.Storm.setFrozen      server/storm.lua
---   Warmup pause    brwarmupfreeze   BR.Match.setWarmupFrozen server/match.lua
+--   Storm pause     brstormfreeze    BR.Storm.setMatchFrozen server/storm.lua
+--   Warmup pause    brwarmupfreeze   BR.Match.setMatchWarmupFrozen
+--                                                            server/match.lua
 --   Spawn airdrops  brairdrop now    BR.Airdrop.dropNow      server/airdrop.lua
+--
+-- The two pauses are the one exception to "the verb's own body": the console
+-- verbs hold EVERY match, and these hold one (below). They share the verbs'
+-- record swap and deadline (holdOne, holdWarmup), not their every-match loop.
 --
 -- A refusal is the verb's own sentence. It goes to the player who pressed, as
 -- a toast through BR.Server.notify -- the notice every refusal in this game
 -- uses -- and to their F8, and to this console.
 --
--- ═══ THE ASKER'S MATCH, NEVER THE NEWEST ═══
+-- ═══ THE ASKER'S MATCH, NEVER THE NEWEST, NEVER EVERY ONE ═══
 --
 -- Matches run side by side, each in its own routing bucket. The console verbs
 -- aim at BR.Server.latestMatch(), which is THE match with one running and
--- somebody else's with two (#291). A press here comes from a player standing
--- in a match, so Match state and Spawn airdrops act on BR.Server.matchOf(asker)
--- and on nothing else. Time and weather are one override for the whole
--- session, and the two pauses are session flags every later match inherits,
--- so those four have no match to aim at and do what their verbs do.
+-- somebody else's with two (#291), or -- the two freezes -- at every match at
+-- once. A press here comes from a player standing in a match, so Match state,
+-- Spawn airdrops and both pauses act on BR.Server.matchOf(asker) and on
+-- nothing else; from the lobby the pauses have no match and say so. Time and
+-- weather are one override for the whole session -- the server sends one sky
+-- -- so those two have no match to aim at and do what their verbs do.
 --
 -- ═══ HOW A PRESS GETS HERE: A STANDARD DEV COMMAND ═══
 --
@@ -59,16 +65,31 @@
 -- br_ddb forces every table it names to `dev-` whenever sv_devMode or
 -- br_devMode is on (js-src/br_ddb/src/prefix.js; DEPLOY.md, "A dev box uses
 -- dev- tables"). Those are the convars both gates above read, so a Volts or a
--- Yubikey given here lands in dev-br-players, never in br-players. See
--- docs/devmenu.md for the one way round that, which is not a menu's to close.
+-- Yubikey given here lands in dev-br-players, never in br-players.
+--
+-- EXCEPT WHERE br_ddb STARTED BEFORE DEV MODE WAS ON: it picks its tables once,
+-- as it starts. So both gives ask br_ddb which tables it named
+-- (BR.Debug.productionTables, server/debug.lua, answered by
+-- br_ddb/server/tables.lua) and refuse unless it is the dev ones.
+--
+-- ═══ A GIVE NAMES ITS PLAYER BY A TOKEN, NOT ONLY BY SERVER ID ═══
+--
+-- The Player row is a list the server sent, and it can be out of date by the
+-- time a row is pressed. Server ids are RECYCLED within the minute (server/
+-- players.lua's note on #172), so a bare id could give Volts or a key to
+-- whoever holds that id NOW. Every player the menu lists carries a token of
+-- their roster entry -- a number that is never handed out twice -- and a give
+-- names both. A token that no longer matches the connected player at that id
+-- is refused in words, and the asker is sent the list as it stands.
 --
 -- ═══ EVERY ARGUMENT IS CHECKED HERE, AGAINST THE SAME LISTS THE ROWS SHOW ═══
 --
 -- An hour 0-23 or `reset`; a weather of BR.World.WEATHERS or `reset`; a state
--- of BR.Config.DevMenu.states; an amount of BR.Config.DevMenu.volts; a target
--- that is a connected player; `on` or `off`. Anything else is a request no row
--- could have sent: it is dropped with the usage line on the asker's F8 and
--- nothing else. So is a request inside minIntervalMs of the last one taken.
+-- of BR.Config.DevMenu.states; an amount of BR.Config.DevMenu.volts; a player
+-- id and token; `on` or `off`. Anything else is a request no row could have
+-- sent: it is dropped with the usage line on the asker's F8 and nothing else.
+-- Every request spends the asker's slot, taken or not, and one inside
+-- minIntervalMs of the last is dropped unread.
 
 BR = BR or {}
 BR.DevMenu = BR.DevMenu or {}
@@ -78,13 +99,31 @@ local D = BR.DevMenu
 --- @return table BR.Config.DevMenu, read at call time
 local function cfg() return BR.Config.DevMenu end
 
---- [src] = GetGameTimer() of the last request taken from that player.
+--- [src] = GetGameTimer() of the last request read from that player.
 local lastAt = {}
 
+--- [roster entry] = its token. WEAK-KEYED, so an entry that has left the
+--- roster and everything else is collected; the token is never reused, so a
+--- stale one can only ever match the entry it was made for.
+local tokOf = setmetatable({}, { __mode = 'k' })
+local nextTok = 0
+
+--- @param e table  a roster entry
+--- @return integer
+local function tokenOf(e)
+    local t = tokOf[e]
+    if not t then
+        nextTok = nextTok + 1
+        t = nextTok
+        tokOf[e] = t
+    end
+    return t
+end
+
 local USAGE = 'usage: brdevsv open | time <0-23|reset> | weather <name|reset> '
-    .. '| match <state|skip> | volts <player id> <amount> | yubikey <player id> '
-    .. '| storm <on|off> | warmup <on|off> | airdrop  (the dev menu, /brdev or F10, '
-    .. 'runs this for you)'
+    .. '| match <state|skip> | volts <player id> <token> <amount> '
+    .. '| yubikey <player id> <token> | storm <on|off> | warmup <on|off> | airdrop  '
+    .. '(the dev menu, /brdev or F10, runs this for you)'
 
 --- IS THIS A DEV BOX, AS br_core STARTED IT? Asked first on every request.
 ---
@@ -122,28 +161,39 @@ local function oneOf(list, v)
     return false
 end
 
---- A connected player's server id out of a request word, or nil.
---- @param word string|nil
---- @return integer|nil
-local function targetOf(word)
-    local n = math.tointeger(tonumber(word))
-    if not n or n <= 0 then return nil end
+--- The player a give names: its id and token words.
+---
+--- Returns the server id when both name the same connected player the list
+--- showed; nil and a sentence when they named somebody who has since left (or
+--- whose id somebody else now holds); nil alone when the words are not an id
+--- and a token at all -- a request no row could have sent.
+--- @param idWord string|nil
+--- @param tokWord string|nil
+--- @return integer|nil id
+--- @return string|nil refusal
+local function targetOf(idWord, tokWord)
+    local n = math.tointeger(tonumber(idWord))
+    local t = math.tointeger(tonumber(tokWord))
+    if not n or n <= 0 or not t or t <= 0 then return nil, nil end
     local e = BR.Roster.get(n)
-    if not e or e.state == BR.PlayerState.LEFT then return nil end
-    return n
+    if not e or e.state == BR.PlayerState.LEFT or tokOf[e] ~= t then
+        return nil, ('player %d has left'):format(n)
+    end
+    return n, nil
 end
 
 --- The players the menu lists, THE ASKER FIRST and then everybody else by
 --- server id -- the owner's "a player picked from a list with yourself first".
 --- Nobody who has left. `name` is the roster's display name; the client strips
---- GTA's text codes from it before a row shows it.
+--- GTA's text codes from it before a row shows it. `tok` is what a give sends
+--- back with the id -- see the header.
 --- @param src integer
---- @return table { { id, name }... }
+--- @return table { { id, tok, name }... }
 function D.players(src)
     local out, others = {}, {}
     BR.Roster.each(function(e) return e.state ~= BR.PlayerState.LEFT end,
         function(id, e)
-            local row = { id = id, name = tostring(e.name or '') }
+            local row = { id = id, tok = tokenOf(e), name = tostring(e.name or '') }
             if id == src then out[1] = row else others[#others + 1] = row end
         end)
     table.sort(others, function(a, b) return a.id < b.id end)
@@ -151,14 +201,16 @@ function D.players(src)
     return out
 end
 
---- What the asker's menu shows: who it can give to, and the two pauses.
+--- What the asker's menu shows: who it can give to, and the two pauses AS
+--- THEY STAND FOR THE ASKER'S MATCH -- or, from the lobby, the session's.
 --- @param src integer
 --- @return table
 function D.state(src)
+    local m = BR.Server.matchOf(src)
     return {
         players = D.players(src),
-        storm   = BR.Storm.isFrozen() == true,
-        warmup  = BR.Match.warmupFrozen() == true,
+        storm   = BR.Storm.isFrozen(m) == true,
+        warmup  = BR.Match.warmupFrozen(m) == true,
     }
 end
 
@@ -203,52 +255,89 @@ ACTIONS.weather = function(_, a, answer)
     return true
 end
 
+--- brskip's own sentence for "there is no match", which is what a lobby press
+--- that needs one is told.
+local NO_MATCH = 'no match running'
+
 ACTIONS.match = function(src, a, answer)
     local s = a[2]
     if not oneOf(cfg().states, s) then return false end
     local m = BR.Server.matchOf(src)
     if s == 'skip' then
         answer(BR.Match.skip(m))
-    else
-        answer(BR.Match.force(s, m))
+        return true
     end
+    -- FROM THE LOBBY, `brforce` FORMS A MATCH OUT OF THE WHOLE QUEUE. That is
+    -- what a tester standing in the queue means by it; one who is not queued
+    -- would be pulling everybody else into a match they are not in -- or,
+    -- with nobody queued, forming an empty one that dissolves on the next
+    -- tick. So a lobby press is taken only from somebody queued. `waiting`
+    -- with no match is brforce's own refusal, below.
+    if not m and s ~= BR.MatchState.WAITING
+        and not (BR.Lobby and BR.Lobby.queuedMode and BR.Lobby.queuedMode(src)) then
+        answer(false, NO_MATCH)
+        return true
+    end
+    answer(BR.Match.force(s, m))
     return true
 end
 
+--- A give's player, or the refusal already answered. False for words no row
+--- could have sent.
+--- @return integer|nil|false
+local function giveTarget(a, answer)
+    local target, refusal = targetOf(a[2], a[3])
+    if target then return target end
+    if not refusal then return false end
+    answer(false, refusal)
+    return nil
+end
+
 ACTIONS.volts = function(_, a, answer)
-    local target = targetOf(a[2])
-    local amount = math.tointeger(tonumber(a[3]))
-    if not target or not oneOf(cfg().volts, amount) then return false end
+    local amount = math.tointeger(tonumber(a[4]))
+    if not oneOf(cfg().volts, amount) then return false end
+    local target = giveTarget(a, answer)
+    if target == false then return false end
+    if not target then return true end
     local sent, why = BR.Debug.grantVolts(target, amount, answer)
     if not sent then answer(false, why) end
     return true
 end
 
 ACTIONS.yubikey = function(_, a, answer)
-    local target = targetOf(a[2])
-    if not target then return false end
+    local target = giveTarget(a, answer)
+    if target == false then return false end
+    if not target then return true end
     answer(BR.Terminal.devKey(target, true))
     return true
 end
 
-ACTIONS.storm = function(_, a, answer)
-    local on = onOff(a[2])
-    if on == nil then return false end
-    local _, line = BR.Storm.setFrozen(on)
-    answer(true, line)
-    return true
+--- A pause: the asker's match and nothing else. From the lobby there is none.
+--- @param set fun(m: table, on: boolean): boolean, string
+local function pause(set)
+    return function(src, a, answer)
+        local on = onOff(a[2])
+        if on == nil then return false end
+        local m = BR.Server.matchOf(src)
+        if not m then
+            answer(false, NO_MATCH)
+            return true
+        end
+        local _, line = set(m, on)
+        answer(true, line)
+        return true
+    end
 end
 
-ACTIONS.warmup = function(_, a, answer)
-    local on = onOff(a[2])
-    if on == nil then return false end
-    local _, line = BR.Match.setWarmupFrozen(on)
-    answer(true, line)
-    return true
-end
+ACTIONS.storm = pause(function(m, on) return BR.Storm.setMatchFrozen(m, on) end)
+ACTIONS.warmup = pause(function(m, on) return BR.Match.setMatchWarmupFrozen(m, on) end)
 
 ACTIONS.airdrop = function(src, _, answer)
-    answer(BR.Airdrop.dropNow(BR.Server.matchOf(src)))
+    local sited, line, outcome = BR.Airdrop.dropNow(BR.Server.matchOf(src))
+    -- A `wait` IS NOT A REFUSAL: the drop stays queued and the tick retries it
+    -- (brairdrop now's own note). Only a refusal, or a drop the storm turned
+    -- down, is a toast.
+    answer(sited or outcome == 'wait', line)
     return true
 end
 
@@ -272,19 +361,22 @@ function D.request(src, args, now)
     end
     if not BR.Roster.get(src) then return 'player' end
 
-    -- A PRESS TOO SOON IS DROPPED, AND THE ROWS ARE SENT ANYWAY: the library
-    -- flips a pause box on the press itself, so a dropped press would leave the
-    -- box saying what the server never did.
+    local verb = type(args[1]) == 'string' and args[1]:lower() or ''
+
+    -- A PRESS TOO SOON IS DROPPED UNREAD. A PAUSE'S ROWS ARE SENT BACK: the
+    -- library flips a pause box on the press itself, so a dropped press would
+    -- leave the box saying what the server never did. Nothing else is sent, so
+    -- a client that floods this costs one comparison a line.
     local last = lastAt[src]
     if last ~= nil and now - last < (cfg().minIntervalMs or 250) then
-        print(('[br_core] dev menu (client %d): dropped, too soon after the last'):format(src))
-        push(src)
+        if verb == 'storm' or verb == 'warmup' then push(src) end
         return 'too-soon'
     end
+    -- EVERY REQUEST READ SPENDS THE SLOT, good or bad, so a flood of bad ones
+    -- is held to the same rate as presses -- and to one usage line each.
+    lastAt[src] = now
 
-    local verb = type(args[1]) == 'string' and args[1]:lower() or ''
     if verb == 'open' then
-        lastAt[src] = now
         push(src)
         return 'open'
     end
@@ -313,7 +405,6 @@ function D.request(src, args, now)
         tell(src, USAGE)
         return 'bad'
     end
-    lastAt[src] = now
     return 'ran'
 end
 

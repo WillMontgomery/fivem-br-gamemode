@@ -279,6 +279,11 @@ BR.Admin = { devTrusted = function() return true end }
 --- server/storm.lua's finalCentre is tools/test_storm.lua's (`server.final`);
 --- here the match carries the answer.
 BR.Storm = { finalCentre = function(m) return m and m.finalStub or nil end }
+--- server/debug.lua's question, asked by T.devKey before a key is written
+--- through to a profile (#422): nil, or why the write would land in
+--- production's tables. tools/test_stats.lua drives the real one.
+local productionTables = nil
+BR.Debug = { productionTables = function() return productionTables end }
 
 loadAll({
     'br_core/server/loot.lua',
@@ -1366,6 +1371,27 @@ do
     ok(okC == false and lineC:find('terminals are Season 2 and this box runs Season 1', 1, true) ~= nil,
        'on Season 1 it refuses, in the command\'s words', lineC)
     season(2)
+
+    -- ═══ A br_ddb ON PRODUCTION'S TABLES IS NOT WRITTEN THROUGH ═══
+    --
+    -- br_ddb picks its tables as it starts; one that started before dev mode
+    -- was switched on writes br-players. The key is refused rather than
+    -- written there -- by the menu, and by `key give` typed in game.
+    sv(1, 'key take')
+    local w0 = #writes
+    productionTables = 'br_ddb started outside dev mode, so it writes the production tables -- restart br_ddb'
+    local okD, lineD = T.devKey(1, true)
+    ok(okD == false and lineD == productionTables and not Y.holds(1) and #writes == w0,
+       'devKey refuses, gives nothing and writes nothing', lineD)
+    sv(1, 'key give')
+    ok(not Y.holds(1) and #writes == w0, '`brterminalsv key give` is refused the same way')
+    productionTables = nil
+    local debug = BR.Debug
+    BR.Debug = nil
+    local okE = T.devKey(1, true)
+    ok(okE == false and not Y.holds(1), 'with server/debug.lua missing it refuses too')
+    BR.Debug = debug
+    sv(1, 'key give')
 
     sent = {}
     sv(1, 'place 100.5 200.25 30 45')

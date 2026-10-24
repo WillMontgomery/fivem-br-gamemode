@@ -1344,13 +1344,15 @@ local function siteNow(m, now)
 end
 
 --- See siteNow above. `true` only when a drop was sited: a `wait` stays queued
---- and is retried, a `phase` was refused by the storm, and the menu says both.
+--- and is retried, a `phase` was refused by the storm. The outcome comes back
+--- as well, so the dev menu can tell a `wait` (no refusal) from the others.
 --- @param m table|nil
 --- @return boolean sited
 --- @return string line
+--- @return string|nil outcome  'sited' | 'wait' | 'phase'; nil when refused
 function BR.Airdrop.dropNow(m)
     local outcome, line = siteNow(m, GetGameTimer())
-    return outcome == 'sited', line
+    return outcome == 'sited', line, outcome
 end
 
 --- Inspect or force a drop.

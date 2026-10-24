@@ -48,6 +48,9 @@ server_scripts {
     -- means nothing either way.
     '@br_lib/shared/devgate.lua',
     'server/debug.lua',
+    -- Which tables the bundle named as it started: br_core's dev gives ask
+    -- before they write a stored profile (#422). See the file.
+    'server/tables.lua',
 }
 
 -- No dependency on br_core or br_ringmaster in either direction. This resource
