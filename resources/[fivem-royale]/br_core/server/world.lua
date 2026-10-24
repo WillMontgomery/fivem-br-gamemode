@@ -313,61 +313,88 @@ local function usageWeather()
     print(stateLine())
 end
 
+--- MOVE THE CLOCK, OR HAND IT BACK: `brtime`'s whole body below its gates.
+---
+--- ONE BODY, TWO DOORS (#422). `brtime` on the server console and the dev
+--- menu's Time row both arrive here, so the parse, the write, the broadcast and
+--- the confirmation are one piece of code rather than a copy that could drift.
+--- The gates stay with each door: the console verb keeps consoleDevOnly, and
+--- br_core/server/devmenu.lua asks dev mode on every request.
+---
+--- THE CLOCK IS THE SESSION'S, NOT A MATCH'S. This override is one record sent
+--- to every client (the header above), so it has no match to aim at -- the menu
+--- moves it for everybody, exactly as the verb does.
+---
+--- THE SUCCESS LINE IS PRINTED HERE and handed back; a refusal is handed back
+--- unprinted, for the door to say its own way.
+--- @param a string|nil @param b string|nil  what `brtime` was given
+--- @return string kind  'set' | 'reset' | 'usage' | 'error'
+--- @return string|nil line  the confirmation, or what was wrong ('error')
+function BR.WorldSky.setTime(a, b)
+    local kind, hour, minute, err = BR.World.parseTime(a, b)
+    if kind == 'error' then return kind, tostring(err) end
+    if kind == 'usage' then return kind, nil end
+
+    local line
+    if kind == 'reset' then
+        BR.World.clearTime()
+        line = ('brtime: reset for everyone -- %02d:%02d in the lobby and warmup, '
+            .. 'the match\'s running time from bus start'):format(BR.World.restHM())
+    else
+        BR.World.setTime(hour, minute)
+        line = ('brtime: %02d:%02d for everyone, and for anyone who joins')
+            :format(hour, minute)
+    end
+    send(-1)
+    print('[br_core] ' .. line)
+    return kind, line
+end
+
+--- SET THE SKY, OR HAND IT BACK: `brweather`'s whole body below its gates, for
+--- the same two doors and on the same terms as BR.WorldSky.setTime above.
+--- @param a string|nil  what `brweather` was given
+--- @return string kind  'set' | 'reset' | 'usage' | 'error'
+--- @return string|nil line  the confirmation, or what was wrong ('error')
+function BR.WorldSky.setWeather(a)
+    local kind, name, err = BR.World.parseWeather(a)
+    if kind == 'error' then return kind, tostring(err) end
+    if kind == 'usage' then return kind, nil end
+
+    local line
+    if kind == 'reset' then
+        BR.World.clearWeather()
+        line = 'brweather: the sky is the storm\'s and the island\'s again'
+    else
+        BR.World.setWeather(name)
+        line = ('brweather: %s for everyone, and for anyone who joins'):format(name)
+    end
+    send(-1)
+    print('[br_core] ' .. line)
+    return kind, line
+end
+
 RegisterCommand('brtime', function(src, args)
     if not consoleDevOnly('brtime', src) then return end
 
-    local kind, hour, minute, err = BR.World.parseTime(args and args[1],
-                                                       args and args[2])
+    local kind, err = BR.WorldSky.setTime(args and args[1], args and args[2])
     if kind == 'error' then
-        print('  ' .. tostring(err))
+        print('  ' .. err)
         usageTime()
-        return
-    end
-    if kind == 'usage' then
+    elseif kind == 'usage' then
         usageTime()
-        return
     end
-
-    if kind == 'reset' then
-        BR.World.clearTime()
-        send(-1)
-        print(('[br_core] brtime: reset for everyone -- %02d:%02d in the lobby '
-            .. 'and warmup, the match\'s running time from bus start')
-            :format(BR.World.restHM()))
-        return
-    end
-
-    BR.World.setTime(hour, minute)
-    send(-1)
-    print(('[br_core] brtime: %02d:%02d for everyone, and for anyone who joins')
-        :format(hour, minute))
 end, RESTRICTED)
 
 RegisterCommand('brweather', function(src, args)
     if not consoleDevOnly('brweather', src) then return end
 
-    local kind, name, err = BR.World.parseWeather(args and args[1])
+    local kind, err = BR.WorldSky.setWeather(args and args[1])
     if kind == 'error' then
-        print('  ' .. tostring(err))
+        print('  ' .. err)
         usageWeather()
-        return
-    end
-    if kind == 'usage' then
+    elseif kind == 'usage' then
         usageWeather()
-        return
     end
-
-    if kind == 'reset' then
-        BR.World.clearWeather()
-        send(-1)
-        print('[br_core] brweather: the sky is the storm\'s and the island\'s again')
-        return
-    end
-
-    BR.World.setWeather(name)
-    send(-1)
-    print(('[br_core] brweather: %s for everyone, and for anyone who joins')
-        :format(name))
 end, RESTRICTED)
 
 -- ═══ brsky: THE FESTIVE MATCH SKY'S CYCLE, SEEN AND FORCED (#399) ═══

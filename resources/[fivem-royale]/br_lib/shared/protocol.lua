@@ -1419,6 +1419,19 @@ BR.Net = {
     -- S->C '<text>'. One `brgatesv` answer, printed on the F8 of the player
     -- who typed `brgate`.
     DCGATE_DEV      = 'br:dcgate:dev',
+
+    -- THE DEV MENU (#422, docs/devmenu.md). Its requests are not net events:
+    -- each is the dev-mode server command `brdevsv`, run by
+    -- br_core/client/devmenu.lua with ExecuteCommand, so devgate.lua's wrap is
+    -- in front of every one. These two are the server's answers.
+    --
+    -- S->C { players = { { id, name }... }, storm, warmup }. What the menu's
+    -- rows show: the connected players with the asker first, and whether the
+    -- storm and the warmup are held. To the asker alone, when the menu opens
+    -- and after every request it takes.
+    DEVMENU_STATE   = 'br:devmenu:state',
+    -- S->C '<text>'. One `brdevsv` answer, printed on the asker's F8.
+    DEVMENU_DEV     = 'br:devmenu:dev',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the

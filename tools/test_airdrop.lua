@@ -3853,6 +3853,47 @@ do
     A.perMatch = realPerMatch
 end
 
+describe('server: BR.Airdrop.dropNow is `brairdrop now` on the match it is given (#422)')
+do
+    -- ═══ THE DEV MENU'S Spawn airdrops ROW ═══
+    --
+    -- `brairdrop now` aims at latestMatch; its body is now siteNow, which the
+    -- dev menu reaches through BR.Airdrop.dropNow with the match of the player
+    -- who pressed. Aimed at the OLDER of two, the newer must get nothing.
+    reset()
+    local older = newMatch(1)
+    BR.Airdrop.begin(older)
+    local newer = newMatch(2)
+    BR.Airdrop.begin(newer)
+    local nPending = #newer.airdrop.pending
+    local nWaiting = #newer.airdrop.waiting
+
+    local sited, line = BR.Airdrop.dropNow(older)
+    eq(sited, true, 'a drop is sited in the match it was given')
+    eq(#older.airdrop.waiting, 1, 'it waits there for a player')
+    ok(#newer.airdrop.pending == nPending and #newer.airdrop.waiting == nWaiting,
+       'and the newer match is untouched')
+    ok(type(line) == 'string' and line:find('^sited %(drop 1') ~= nil,
+       'its line is the one `brairdrop now` prints', line)
+
+    -- ═══ THE REFUSALS ARE THE COMMAND'S OWN SENTENCES ═══
+    local ok1, why1 = BR.Airdrop.dropNow(nil)
+    ok(ok1 == false and why1 == 'no match', 'no match: refused, in the verb\'s words', why1)
+
+    older.state = BR.MatchState.WARMUP
+    local ok2, why2 = BR.Airdrop.dropNow(older)
+    ok(ok2 == false and why2 == ('airdrops only run during PLAYING (match %s is warmup)')
+        :format(BR.MatchTag(older.id)),
+       'outside PLAYING: refused with the sentence /brairdrop prints', why2)
+    eq(#older.airdrop.waiting, 1, 'and nothing more was sited')
+    older.state = BR.MatchState.PLAYING
+
+    local bare = newMatch(3)
+    local ok3, why3 = BR.Airdrop.dropNow(bare)
+    ok(ok3 == false and why3 == 'this match has no airdrop schedule (BR.Config.Airdrop.enabled?)',
+       'a match with no schedule: refused, in the verb\'s words', why3)
+end
+
 describe('server: enabled')
 do
     reset()

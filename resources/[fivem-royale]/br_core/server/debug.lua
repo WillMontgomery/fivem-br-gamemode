@@ -1618,6 +1618,111 @@ end, true)
 --- `brgive`'s reason -- one switch for "this box is not a real match". The
 --- console check is `brprofile`'s, and it is here because this one writes to a
 --- persistent row rather than to a match that is about to end.
+---
+--- ═══ AND THE DEV MENU'S Give volts ROW, WHICH IS NOT THE CONSOLE (#422) ═══
+---
+--- Owner, 2026-10-24: "give volts" in the dev menu, to any player picked from
+--- a list. The console check above was about WHICH ROW gets written, and a dev
+--- box answers that on its own: br_ddb forces every table it names to `dev-`
+--- whenever sv_devMode or br_devMode is on (js-src/br_ddb/src/prefix.js,
+--- DEPLOY.md's "A dev box uses dev- tables"), and those are the same two
+--- convars the menu's own gate reads. So the menu writes dev-br-players, never
+--- br-players. This command keeps its console check; the menu reaches the
+--- write through BR.Debug.grantVolts below, behind br_core/server/devmenu.lua's
+--- gate, and only with an amount out of BR.Config.DevMenu.volts.
+BR.Debug = BR.Debug or {}
+
+--- PUT VOLTS ON ONE CONNECTED PLAYER'S ROW: `brvolts`'s whole body below its
+--- gates and its usage line, for both doors above.
+---
+--- TWO ANSWERS, because the write is a round trip. The return says whether it
+--- was SENT (and why not); `done`, when given, is called exactly once, when
+--- br_ddb answers or the eight seconds run out. Every line this prints on the
+--- console is the one `brvolts` always printed. The line `done` is handed
+--- names the player by server id and never by license or name, because the
+--- menu shows it in a toast.
+--- @param target integer  a server id
+--- @param amount number   floored; 0 is refused
+--- @param done fun(ok: boolean, line: string)|nil
+--- @return boolean sent
+--- @return string|nil why  why it was not sent
+function BR.Debug.grantVolts(target, amount, done)
+    -- THE ROSTER-ENTRY CHECK IS brgive'S, and it answers the same question:
+    -- is this a player the server knows about, rather than a number.
+    if not BR.Roster.get(target) then
+        return false, ('no roster entry for %d'):format(target)
+    end
+
+    if GetResourceState('br_ddb') ~= 'started' then
+        return false, 'brvolts: br_ddb is not started, so there is nothing to write to.'
+    end
+
+    amount = math.floor(amount)
+    if amount == 0 then
+        return false, 'brvolts: 0 grants nothing. Say what you mean.'
+    end
+
+    local byKind = BR.Identity.ofPlayer(target)
+    local license = byKind and byKind.license
+        and BR.Identity.qualified('license', byKind.license)
+    if not license then
+        return false, ('brvolts: %d has no license, so there is no row to write.')
+            :format(target)
+    end
+
+    local req = BR.Server.nextDbgReq or 1
+    BR.Server.nextDbgReq = req + 1
+
+    -- The handle, not the function -- brprofile's note applies here too: passing
+    -- the function to RemoveEventHandler silently removes nothing.
+    local ref
+    local answered = false
+    local function finish(ok, line)
+        if done then done(ok, line) end
+    end
+
+    ref = AddEventHandler('br:ddb:statsResult', function(gotReq, ok, extra)
+        if gotReq ~= req or answered then return end
+        answered = true
+        if ref then RemoveEventHandler(ref) end
+
+        if not ok then
+            local why = tostring(extra and extra.error or 'no reason given')
+            print(('^1[br_core] brvolts: %s was NOT credited %d -- %s^7')
+                :format(license, amount, why))
+            finish(false, ('brvolts: %d was NOT credited %d -- %s')
+                :format(target, amount, why))
+            return
+        end
+
+        -- THE CACHE IS TOLD THE SAME WAY A PAYOUT TELLS IT, so the lobby's
+        -- balance moves without a reconnect. `xpEarned` is 0: this granted
+        -- Volts and nothing else, and inventing XP here would put a level-up
+        -- animation on a console command.
+        TriggerEvent('br:market:credited', license, 0, amount)
+
+        print(('[br_core] brvolts: %s %+d Volts (%s) -- run brprofile to read '
+               .. 'the row back'):format(license, amount,
+                                         GetPlayerName(target) or '?'))
+        finish(true, ('brvolts: %d %+d Volts'):format(target, amount))
+    end)
+
+    SetTimeout(8000, function()
+        if answered then return end
+        answered = true
+        if ref then RemoveEventHandler(ref) end
+        print(('^3[br_core] brvolts: no answer from br_ddb for %s -- the write '
+               .. 'may or may not have landed^7'):format(license))
+        finish(false, ('brvolts: no answer from br_ddb for %d -- the write may '
+               .. 'or may not have landed'):format(target))
+    end)
+
+    -- ONE FIELD. Every other key in this table would be a claim about a match
+    -- that did not happen; see the note above and src/stats.js.
+    TriggerEvent('br:ddb:statsApply', req, license, { balance = amount })
+    return true, nil
+end
+
 RegisterCommand('brvolts', function(src, args)
     if tonumber(src) ~= 0 then
         print('  brvolts is server-console only -- it writes a stored profile.')
@@ -1635,75 +1740,8 @@ RegisterCommand('brvolts', function(src, args)
         return
     end
 
-    -- THE ROSTER-ENTRY CHECK IS brgive'S, and it answers the same question:
-    -- is this a player the server knows about, rather than a number.
-    if not BR.Roster.get(target) then
-        print(('  no roster entry for %d'):format(target))
-        return
-    end
-
-    if GetResourceState('br_ddb') ~= 'started' then
-        print('  brvolts: br_ddb is not started, so there is nothing to write to.')
-        return
-    end
-
-    amount = math.floor(amount)
-    if amount == 0 then
-        print('  brvolts: 0 grants nothing. Say what you mean.')
-        return
-    end
-
-    local byKind = BR.Identity.ofPlayer(target)
-    local license = byKind and byKind.license
-        and BR.Identity.qualified('license', byKind.license)
-    if not license then
-        print(('  brvolts: %d has no license, so there is no row to write.')
-            :format(target))
-        return
-    end
-
-    local req = BR.Server.nextDbgReq or 1
-    BR.Server.nextDbgReq = req + 1
-
-    -- The handle, not the function -- brprofile's note applies here too: passing
-    -- the function to RemoveEventHandler silently removes nothing.
-    local ref
-    local answered = false
-
-    ref = AddEventHandler('br:ddb:statsResult', function(gotReq, ok, extra)
-        if gotReq ~= req or answered then return end
-        answered = true
-        if ref then RemoveEventHandler(ref) end
-
-        if not ok then
-            print(('^1[br_core] brvolts: %s was NOT credited %d -- %s^7')
-                :format(license, amount,
-                        tostring(extra and extra.error or 'no reason given')))
-            return
-        end
-
-        -- THE CACHE IS TOLD THE SAME WAY A PAYOUT TELLS IT, so the lobby's
-        -- balance moves without a reconnect. `xpEarned` is 0: this granted
-        -- Volts and nothing else, and inventing XP here would put a level-up
-        -- animation on a console command.
-        TriggerEvent('br:market:credited', license, 0, amount)
-
-        print(('[br_core] brvolts: %s %+d Volts (%s) -- run brprofile to read '
-               .. 'the row back'):format(license, amount,
-                                         GetPlayerName(target) or '?'))
-    end)
-
-    SetTimeout(8000, function()
-        if answered then return end
-        answered = true
-        if ref then RemoveEventHandler(ref) end
-        print(('^3[br_core] brvolts: no answer from br_ddb for %s -- the write '
-               .. 'may or may not have landed^7'):format(license))
-    end)
-
-    -- ONE FIELD. Every other key in this table would be a claim about a match
-    -- that did not happen; see the note above and src/stats.js.
-    TriggerEvent('br:ddb:statsApply', req, license, { balance = amount })
+    local sent, why = BR.Debug.grantVolts(target, amount, nil)
+    if not sent then print('  ' .. why) end
 end, RESTRICTED)
 
 --- Pose a match-end award at a connected player without writing anything.

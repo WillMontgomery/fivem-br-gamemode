@@ -1482,13 +1482,22 @@ end, true)
 --- end, and nothing else in the file needs to know.
 local frozen = false
 
-RegisterCommand('brstormfreeze', function(_, args)
-    if not BR.Server.devMode then
-        print('  brstormfreeze is dev-mode only (br_devMode true)')
-        return
-    end
-
-    local thaw = (args[1] == 'off' or args[1] == 'thaw')
+--- FREEZE EVERY LIVE STORM, OR THAW THEM ALL: `brstormfreeze`'s whole body
+--- below its gate, and the dev menu's Storm pause row (#422).
+---
+--- EVERY MATCH, NOT THE ASKER'S, because the freeze is a flag of the session --
+--- `frozen`, which a storm that starts afterwards inherits (BR.Storm.begin) --
+--- rather than a fact about one match. The menu freezes and thaws the same set
+--- the console verb does, and its checkbox reads BR.Storm.isFrozen(). Nothing
+--- here picks a match, so it is not the latest-match shape #291 is about.
+---
+--- THE LINES ARE PRINTED HERE, the report and the "as soon as one starts"
+--- note, and the report is handed back.
+--- @param on boolean  true freezes, false thaws
+--- @return integer touched  how many live storms moved
+--- @return string line
+function BR.Storm.setFrozen(on)
+    local thaw = (on ~= true)
     local now = GetGameTimer()
     local touched = 0
 
@@ -1527,13 +1536,24 @@ RegisterCommand('brstormfreeze', function(_, args)
     end)
 
     frozen = not thaw
-    print(('[br_core] storm %s (%d match%s)'):format(
+    local line = ('storm %s (%d match%s)'):format(
         thaw and 'THAWED -- phases and damage resume'
              or 'FROZEN -- no phases, no damage, wall stays put',
-        touched, touched == 1 and '' or 'es'))
+        touched, touched == 1 and '' or 'es')
+    print('[br_core] ' .. line)
     if not thaw and touched == 0 then
         print('  (no live storm yet -- it will freeze as soon as one starts)')
     end
+    return touched, line
+end
+
+RegisterCommand('brstormfreeze', function(_, args)
+    if not BR.Server.devMode then
+        print('  brstormfreeze is dev-mode only (br_devMode true)')
+        return
+    end
+
+    BR.Storm.setFrozen(not (args[1] == 'off' or args[1] == 'thaw'))
 end, true)
 
 --- Is the storm currently held by brstormfreeze?

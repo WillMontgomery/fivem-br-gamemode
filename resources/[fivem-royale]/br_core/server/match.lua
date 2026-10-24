@@ -2203,18 +2203,80 @@ end)
 -- Admin
 -- --------------------------------------------------------------------------
 
---- The instance admin commands operate on: the newest one, or -- for brforce
---- from nothing -- a fresh instance formed from whoever is queued (falling
---- back to nobody, which is the honest outcome of forcing a match no one
---- asked for).
+--- A fresh instance formed from whoever is queued (falling back to nobody,
+--- which is the honest outcome of forcing a match no one asked for). brforce's
+--- path from nothing.
 --- @return table
-local function debugTarget()
-    local m = BR.Server.latestMatch()
-    if m then return m end
+local function formFromQueue()
     local mode  = BR.Lobby.dominantMode()
     local parts = BR.Lobby.ids()
     BR.Lobby.clear()
     return BR.Match.create(mode, parts)
+end
+
+--- PUT ONE MATCH IN A STATE: `brforce`'s whole body, and the dev menu's Match
+--- state row (#422).
+---
+--- ═══ THE MATCH IS THE CALLER'S, AND THAT IS WHY THIS TAKES ONE ═══
+---
+--- `brforce` aims at BR.Server.latestMatch(), which is THE match with one
+--- running -- every dev session -- and somebody else's with two (#291's note
+--- on latestMatch). The dev menu is pressed by a player standing IN a match,
+--- in its routing bucket, so it passes that player's own match and never the
+--- newest one. The console verb passes the newest, as it always has.
+---
+--- NIL MEANS NO MATCH, and each state reads that the way `brforce` always
+--- did: WAITING has nothing to dissolve, and every other state forms a fresh
+--- instance out of the queue -- formFromQueue above, never the newest match.
+---
+--- THE SUCCESS LINE IS PRINTED HERE, BEFORE THE TRANSITION, so the console
+--- reads in the order it always has (the transition prints its own lines
+--- after it); a refusal is handed back unprinted.
+--- @param target string|nil  a BR.MatchState value
+--- @param m table|nil        the match to act on
+--- @return boolean ok
+--- @return string line  the confirmation, or why nothing happened
+function BR.Match.force(target, m)
+    if target == BR.MatchState.WAITING then
+        -- WAITING is no longer an instance state: forcing it dissolves the
+        -- match outright, which is what the command was for.
+        if not m then return false, 'no match to dissolve' end
+        local line = ('admin dissolved match %s (was %s)')
+            :format(BR.MatchTag(m.id), m.state)
+        print('[br_core] ' .. line)
+        BR.Match.destroy(m)
+        return true, line
+    end
+
+    for _, v in pairs(BR.MatchState) do
+        if v == target then
+            m = m or formFromQueue()
+            local line = ('admin forced match %s: %s -> %s')
+                :format(BR.MatchTag(m.id), m.state, v)
+            print('[br_core] ' .. line)
+            BR.Match.transition(m, v)
+            return true, line
+        end
+    end
+    return false, ('unknown state: %s'):format(tostring(target))
+end
+
+--- END ONE MATCH'S CURRENT TIMED STATE NOW: `brskip`'s whole body, and the
+--- Match state row's `skip` (#422). The match is the caller's, for
+--- BR.Match.force's reason above.
+--- @param m table|nil
+--- @return boolean ok
+--- @return string line  the confirmation, or why nothing happened
+function BR.Match.skip(m)
+    if not m then return false, 'no match running' end
+    if m.endsAt > 0 then
+        m.endsAt = GetGameTimer()
+        local line = ('admin skipped to the end of match %s\'s %s')
+            :format(BR.MatchTag(m.id), m.state)
+        print('[br_core] ' .. line)
+        return true, line
+    end
+    return false, ('%s has no timer to skip'):format(m.state)
 end
 
 RegisterCommand('brforce', function(_, args)
@@ -2227,46 +2289,14 @@ RegisterCommand('brforce', function(_, args)
         return
     end
 
-    if target == BR.MatchState.WAITING then
-        -- WAITING is no longer an instance state: forcing it dissolves the
-        -- newest match outright, which is what the command was for.
-        local m = BR.Server.latestMatch()
-        if m then
-            print(('[br_core] admin dissolved match %s (was %s)')
-                :format(BR.MatchTag(m.id), m.state))
-            BR.Match.destroy(m)
-        else
-            print('  no match to dissolve')
-        end
-        return
-    end
-
-    for _, v in pairs(BR.MatchState) do
-        if v == target then
-            local m = debugTarget()
-            print(('[br_core] admin forced match %s: %s -> %s')
-                :format(BR.MatchTag(m.id), m.state, v))
-            BR.Match.transition(m, v)
-            return
-        end
-    end
-    print(('  unknown state: %s'):format(target))
+    local ok, line = BR.Match.force(target, BR.Server.latestMatch())
+    if not ok then print('  ' .. line) end
 end, true)
 
 RegisterCommand('brskip', function()
     -- Ends the newest match's current timed state immediately.
-    local m = BR.Server.latestMatch()
-    if not m then
-        print('  no match running')
-        return
-    end
-    if m.endsAt > 0 then
-        m.endsAt = GetGameTimer()
-        print(('[br_core] admin skipped to the end of match %s\'s %s')
-            :format(BR.MatchTag(m.id), m.state))
-    else
-        print(('  %s has no timer to skip'):format(m.state))
-    end
+    local ok, line = BR.Match.skip(BR.Server.latestMatch())
+    if not ok then print('  ' .. line) end
 end, true)
 
 --- HOLD THE MATCH IN WARMUP. Dev mode only.
@@ -2388,13 +2418,24 @@ function BR.Match.thawOnEmptyServer()
         .. 'lobby is not born held')
 end
 
-RegisterCommand('brwarmupfreeze', function(_, args)
-    if not BR.Server.devMode then
-        print('  brwarmupfreeze is dev-mode only (br_devMode true)')
-        return
-    end
-
-    local thaw = (args[1] == 'off' or args[1] == 'thaw')
+--- HOLD EVERY WARMUP, OR LET THEM ALL GO: `brwarmupfreeze`'s whole body below
+--- its gate, and the dev menu's Warmup pause row (#422).
+---
+--- ═══ EVERY WARMUP, NOT THE ASKER'S, AND THAT IS THE HOLD'S OWN SHAPE ═══
+---
+--- The hold is a flag of the SESSION -- `warmupFrozen`, which every warmup that
+--- opens afterwards inherits -- and not a fact about one match, so it has no
+--- "the asker's match" to aim at: the menu holds and thaws the same set the
+--- console verb does, and its checkbox reads BR.Match.warmupFrozen(). This is
+--- not the latest-match shape #291 is about; nothing here picks a match.
+---
+--- THE LINES ARE PRINTED HERE, the report and the "next one" note, and the
+--- report is handed back.
+--- @param on boolean  true holds, false thaws
+--- @return integer touched  how many open warmups moved
+--- @return string line
+function BR.Match.setWarmupFrozen(on)
+    local thaw = (on ~= true)
     local now = GetGameTimer()
     local touched = 0
 
@@ -2418,11 +2459,22 @@ RegisterCommand('brwarmupfreeze', function(_, args)
     end)
 
     warmupFrozen = not thaw
-    print(('[br_core] warmup %s (%d match%s)'):format(
+    local line = ('warmup %s (%d match%s)'):format(
         thaw and 'THAWED -- the pad counts down and the bus comes'
              or 'FROZEN -- the pad stays open, no departure',
-        touched, touched == 1 and '' or 'es'))
+        touched, touched == 1 and '' or 'es')
+    print('[br_core] ' .. line)
     if not thaw and touched == 0 then
         print('  (no warmup open yet -- the next one will start frozen)')
     end
+    return touched, line
+end
+
+RegisterCommand('brwarmupfreeze', function(_, args)
+    if not BR.Server.devMode then
+        print('  brwarmupfreeze is dev-mode only (br_devMode true)')
+        return
+    end
+
+    BR.Match.setWarmupFrozen(not (args[1] == 'off' or args[1] == 'thaw'))
 end, true)

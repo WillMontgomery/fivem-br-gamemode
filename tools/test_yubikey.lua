@@ -1351,6 +1351,22 @@ do
     sv(0, 'key 1 give')
     eq(Y.holds(1), true, 'the server console names a player')
 
+    -- ═══ THE SAME GRANT, AS THE DEV MENU'S Give Yubikeys ROW CALLS IT (#422) ═══
+    --
+    -- `key give|take` is T.devKey now, and the menu calls it directly: the
+    -- command's own door (the season, above the verbs) is not in front of it,
+    -- so it asks the season itself.
+    local okA, lineA = T.devKey(1, true)
+    ok(okA == false and lineA == '1: already holds one', 'devKey keeps the cap of one, in the command\'s words', lineA)
+    sv(1, 'key take')
+    local okB, lineB = T.devKey(1, true)
+    ok(okB == true and lineB == '1 now holds a key' and Y.holds(1), 'and gives one to a player who holds none', lineB)
+    season(1)
+    local okC, lineC = T.devKey(1, true)
+    ok(okC == false and lineC:find('terminals are Season 2 and this box runs Season 1', 1, true) ~= nil,
+       'on Season 1 it refuses, in the command\'s words', lineC)
+    season(2)
+
     sent = {}
     sv(1, 'place 100.5 200.25 30 45')
     local sites = lastOf(BR.Net.TERMINAL_SITES)

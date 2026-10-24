@@ -946,6 +946,52 @@ function BR.Menu.separator(text, mainColor)
     return sep
 end
 
+--- A ROW WITH A VALUE THE ARROWS STEP THROUGH: `< 21:00 >`. The dev menu's
+--- (#422), and the library's UIMenuListItem with nothing of ours on it.
+---
+--- CONSTRUCTED HERE FOR BR.Menu.item's REASON, not to decide anything about the
+--- row: a caller that named UIMenuListItem would be a second file that throws
+--- when the library is not deployed. nil when it is absent or refuses.
+---
+--- THE VALUES ARE STRINGS and the movie draws them as GTA text, so a value that
+--- a PLAYER wrote -- a name -- must have its `~` codes taken out by the caller
+--- before it gets here. The index is 1-based and wraps at both ends, which is
+--- the library's own behavior. Left/right move it (OnListChanged); Enter fires
+--- OnListSelected, which is where a caller acts.
+--- @param text string
+--- @param values string[]
+--- @param index integer|nil
+--- @return table|nil
+function BR.Menu.list(text, values, index)
+    if not BR.Menu.available() then return nil end
+    if type(UIMenuListItem) ~= 'table' then return nil end
+    local ok, item = pcall(UIMenuListItem.New, tostring(text or ''),
+                           type(values) == 'table' and values or {},
+                           tonumber(index) or 1, '')
+    if not ok or type(item) ~= 'table' then return nil end
+    return item
+end
+
+--- A ROW THAT IS ON OR OFF. The dev menu's two pauses (#422), and the library's
+--- UIMenuCheckboxItem with nothing of ours on it -- see BR.Menu.list for why it
+--- is constructed here at all.
+---
+--- ⚠ THE LIBRARY FLIPS THE BOX ITSELF, on Enter, BEFORE it fires
+--- OnCheckboxChanged (UIMenu:SelectItem). So the box shows what the player
+--- asked for, not what happened: a caller whose request can be refused puts
+--- the box back from its own answer, with `Checked(bool)`.
+--- @param text string
+--- @param checked boolean|nil
+--- @return table|nil
+function BR.Menu.checkbox(text, checked)
+    if not BR.Menu.available() then return nil end
+    if type(UIMenuCheckboxItem) ~= 'table' then return nil end
+    local ok, item = pcall(UIMenuCheckboxItem.New, tostring(text or ''),
+                           checked == true, 0, '')
+    if not ok or type(item) ~= 'table' then return nil end
+    return item
+end
+
 --- A DESCRIPTION, SET WITHOUT TRAMPLING THE ONE THE PLAYER IS READING.
 ---
 --- ═══ THERE IS ONE GXT KEY FOR THE WHOLE MENU ═══

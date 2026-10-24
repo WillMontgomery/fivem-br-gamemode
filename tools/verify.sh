@@ -168,6 +168,7 @@ NOTES=(
     "test_flick_client|Season 2 Flick cameras on screen: one report a camera, every down camera hidden with its wreck near, Season 1's hides, the Scan squad's coverage on the big map only"
     "test_dcgate|Season 2 data center gate, server: a lane opens only for a standing player at its reader in a match under way, stays open 20 s, and never folds shut on a player or a vehicle"
     "test_dcgate_client|Season 2 data center gate on screen: the owner's prompt at a reader, one ask a press, the bi-fold folding flat at every frame, posed again as it streams in, nothing per frame away from it"
+    "test_devmenu|Dev menu (F10, /brdev): only on a dev-mode server, every request checked, each row runs its console command on the asker's own match"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
@@ -1016,6 +1017,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # press, the fold mirrored at every frame, a lane open before the client
     # came near arriving open, and nothing per frame away from the gate.
     #
+    # test_devmenu.lua is #422's dev menu: server/devmenu.lua's `brdevsv`
+    # behind the REAL devgate.lua -- refused whole without dev mode, every
+    # word checked against the config the rows are built from, each row sent
+    # to its console verb's own body with the asker's match -- and
+    # client/devmenu.lua over the REAL client/menu.lua: the owner's labels,
+    # F10 mapped only once dev mode reads on, the exact line each row types,
+    # and every one of those lines taken by the server.
+    #
     # test_rarity.lua is the voice-defaults argument applied to color (#392): one
     # constant written in Lua, in CSS and in the built bundle, compared as text
     # because text is all they share. The page showed two rarity palettes
@@ -1088,6 +1097,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_flick_client.lua
         tools/test_dcgate.lua
         tools/test_dcgate_client.lua
+        tools/test_devmenu.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

@@ -371,6 +371,11 @@ shared_scripts {
     -- the lane's box, the fold's pose and the bi-fold's counter-rotation. LAST,
     -- for flick_solve's reason: it reads nothing at load.
     '@br_lib/shared/dcgate_solve.lua',
+    -- The dev menu (#422): the owner's labels, its key, and the lists both
+    -- halves read -- the client builds its rows out of them and the server takes
+    -- nothing that is not in them. LAST, for the reason above: a table, read at
+    -- call time.
+    '@br_lib/config/devmenu.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
@@ -628,6 +633,11 @@ client_scripts {
     -- same four names client/ambheal.lua, client/shop.lua and
     -- client/revivekey.lua list, all of which are above.
     'client/gunshop.lua',
+    -- The dev menu (#422): F10 and /brdev, the gun shop's UI over the console
+    -- verbs. AFTER client/menu.lua (BR.Menu, at call time) and client/main.lua
+    -- (it registers one SLOW pass at load, which maps the key on a dev box and
+    -- takes itself out). Every press runs the server's `brdevsv`.
+    'client/devmenu.lua',
     -- EMOTES (#215, "Scope v2"): the server's dance records, this player's own
     -- playback and its cancels, and the music each record is owed at this
     -- distance. Reads BR.Inv (inventory.lua) and BR.Keys (keybinds.lua), both
@@ -1154,6 +1164,12 @@ server_scripts {
     -- nothing running until it is typed. Reads BR.Server.notify and
     -- BR.Season at call time only.
     'server/guardprobe.lua',
+    -- The dev menu's door (#422): `brdevsv`, dev mode by the devgate wrap and
+    -- by BR.Server.devMode, on every request. Every row runs a console verb's
+    -- own body -- BR.WorldSky (world.lua), BR.Match (match.lua), BR.Storm
+    -- (storm.lua), BR.Airdrop (airdrop.lua), BR.Debug (debug.lua) and
+    -- BR.Terminal (terminal.lua), all above and all read at call time.
+    'server/devmenu.lua',
 }
 
 dependency 'br_lib'

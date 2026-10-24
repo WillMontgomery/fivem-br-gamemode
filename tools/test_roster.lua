@@ -28799,6 +28799,60 @@ do
                               tostring(seen[2] and seen[2].seq)))
 end
 
+describe('match.force and match.skip take the match they are given (#422)')
+do
+    -- ═══ THE DEV MENU'S Match state ROW ACTS ON THE ASKER'S MATCH ═══
+    --
+    -- `brforce` and `brskip` aim at latestMatch; their bodies are now
+    -- BR.Match.force and BR.Match.skip, which the dev menu calls with the
+    -- match of the player who pressed. With two live, the OLDER one is the
+    -- case that proves it: aimed at it, the newer must not move.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A1'); join(2, 'A2'); join(3, 'B1'); join(4, 'B2')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local A = theMatch()
+    BR.Match.transition(A, BR.MatchState.BUS)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local B = BR.Server.matches[BR.Roster.get(3).matchId]
+    ok(A and B and A ~= B and BR.Server.latestMatch() == B,
+        'fixture: two matches, B the newer')
+
+    local bEnds = B.endsAt
+    fakeTime = fakeTime + 1000
+    local ok1, line1 = BR.Match.skip(A)
+    ok(ok1 == true and A.endsAt == fakeTime, 'skip(A) ends A\'s timed state now',
+        ('%s %s'):format(tostring(ok1), tostring(line1)))
+    ok(B.endsAt == bEnds, 'and leaves the newer match alone')
+    ok(type(line1) == 'string' and line1:find(BR.MatchTag(A.id), 1, true) ~= nil,
+        'its line names the match it acted on', line1)
+
+    local ok2, line2 = BR.Match.skip(nil)
+    ok(ok2 == false and line2 == 'no match running', 'skip with no match says so, brskip\'s words',
+        tostring(line2))
+
+    local count = 0
+    for _ in pairs(BR.Server.matches) do count = count + 1 end
+    local ok3, line3 = BR.Match.force('nope', A)
+    local after = 0
+    for _ in pairs(BR.Server.matches) do after = after + 1 end
+    ok(ok3 == false and line3 == 'unknown state: nope' and after == count,
+        'an unknown state is refused in brforce\'s words, and forms nothing', tostring(line3))
+    local ok4, line4 = BR.Match.force(BR.MatchState.WAITING, nil)
+    ok(ok4 == false and line4 == 'no match to dissolve', 'waiting with no match dissolves nothing',
+        tostring(line4))
+
+    local ok5 = BR.Match.force(BR.MatchState.WAITING, A)
+    ok(ok5 == true and BR.Server.matches[A.id] == nil, 'force(waiting, A) dissolves A')
+    ok(BR.Server.matches[B.id] == B, 'and the newer match is still there')
+end
+
 describe('match.ids')
 do
     -- ═══ THE ID IS A RANDOM 28-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══

@@ -1096,6 +1096,55 @@ do
     ok(seen == nil, 'a refused write leaves the cache alone')
 end
 
+describe('brvolts.shared (#422)')
+do
+    -- ═══ brvolts's BODY IS BR.Debug.grantVolts, AND THE DEV MENU CALLS IT TOO ═══
+    --
+    -- The menu's Give volts row is not the server console, so it reaches the
+    -- write through this function rather than the command -- and it shows the
+    -- answer in a TOAST. So `done` is asserted here: called once, with a line
+    -- that names the player by server id and never by license or by name.
+    online[3] = { 'license:aaaaaaaa' }
+    rosterEntries[3] = { state = 'WARMUP' }
+
+    local got = {}
+    local function done(okd, line) got[#got + 1] = { ok = okd, line = line } end
+
+    local before = #askedFor('br:ddb:statsApply')
+    local sent, why = BR.Debug.grantVolts(3, 1000, done)
+    ok(sent == true and why == nil, 'a good grant is sent')
+    local req = askedFor('br:ddb:statsApply')[before + 1]
+    ok(req and req.args[3].balance == 1000, 'through the same write brvolts makes')
+    TriggerEvent('br:ddb:statsResult', req.args[1], true, {})
+    fireTimers()
+    ok(#got == 1, 'done is called once, the timer after the answer adding nothing', #got)
+    ok(got[1] and got[1].ok == true and got[1].line == 'brvolts: 3 +1000 Volts',
+       'with a line naming the player by server id', got[1] and got[1].line)
+
+    got = {}
+    BR.Debug.grantVolts(3, 500, done)
+    local r2 = askedFor('br:ddb:statsApply')
+    TriggerEvent('br:ddb:statsResult', r2[#r2].args[1], false, { error = 'throttled' })
+    ok(got[1] and got[1].ok == false
+       and got[1].line == 'brvolts: 3 was NOT credited 500 -- throttled',
+       'a refused write says so, by server id', got[1] and got[1].line)
+
+    got = {}
+    BR.Debug.grantVolts(3, 100, done)
+    fireTimers()
+    ok(got[1] and got[1].ok == false and got[1].line:find('no answer from br_ddb for 3', 1, true),
+       'and a write nobody answered says that', got[1] and got[1].line)
+
+    for _, g in ipairs(got) do
+        ok(not g.line:find('license', 1, true) and not g.line:find('Player3', 1, true),
+           'no line done is handed carries a license or a name', g.line)
+    end
+
+    local s0, w0 = BR.Debug.grantVolts(9, 1000, done)
+    ok(s0 == false and w0 == 'no roster entry for 9',
+       'a refusal before the write is returned in brvolts\'s words', w0)
+end
+
 -- ---------------------------------------------------------------------------
 describe('the tutorial reward (#261)')
 -- ---------------------------------------------------------------------------

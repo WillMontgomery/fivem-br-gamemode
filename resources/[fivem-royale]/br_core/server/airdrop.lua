@@ -1291,6 +1291,68 @@ local function explainWaiting(m, w, now)
     end
 end
 
+--- WHY /brairdrop CANNOT ACT ON THIS MATCH, or nil when it can. Every verb of
+--- the command asks it first, and so does BR.Airdrop.dropNow below.
+--- @param m table|nil
+--- @return string|nil
+local function cannotDrop(m)
+    if not m then return 'no match' end
+    if m.state ~= BR.MatchState.PLAYING then
+        return ('airdrops only run during PLAYING (match %s is %s)')
+            :format(BR.MatchTag(m.id), tostring(m.state))
+    end
+    if not m.airdrop then
+        return 'this match has no airdrop schedule (BR.Config.Airdrop.enabled?)'
+    end
+    return nil
+end
+
+--- SITE A DROP NOW: `brairdrop now`'s whole body, and the dev menu's Spawn
+--- airdrops row (#422).
+---
+--- THE MATCH IS THE CALLER'S. `brairdrop` aims at BR.Server.latestMatch(), the
+--- one match of a dev session; the dev menu passes the asker's own match, so a
+--- second match running beside it is never the one that gets the drop (#291's
+--- note on latestMatch).
+---
+--- EVERYTHING BELOW THE REFUSAL IS THE `now` VERB'S, unchanged -- the
+--- manufactured entry, the real siting rules, `perMatch` ignored -- and its
+--- long note stays where it was, in the command.
+--- @param m table|nil
+--- @param now number
+--- @return string|nil outcome  trySite's: 'sited' | 'wait' | 'phase'; nil when refused
+--- @return string line  what the command prints, or why nothing was sited
+local function siteNow(m, now)
+    local why = cannotDrop(m)
+    if why then return nil, why end
+    local st = m.airdrop
+    local p = st.pending[1]
+    local forced = false
+    if not p then
+        p = { n = nextDropNumber(st), dueAt = now, checkedAt = 0 }
+        table.insert(st.pending, 1, p)
+        forced = true
+    end
+    p.checkedAt = 0
+    p.dueAt = now
+    local outcome = trySite(m, p, now)
+    if outcome ~= 'wait' then table.remove(st.pending, 1) end
+    return outcome, ('%s (drop %d, %s)'):format(outcome, p.n,
+        forced and ('manual -- perMatch is %d and this ignores it')
+                    :format(math.tointeger(A.perMatch or 1) or 1)
+               or 'the drop this match already had scheduled')
+end
+
+--- See siteNow above. `true` only when a drop was sited: a `wait` stays queued
+--- and is retried, a `phase` was refused by the storm, and the menu says both.
+--- @param m table|nil
+--- @return boolean sited
+--- @return string line
+function BR.Airdrop.dropNow(m)
+    local outcome, line = siteNow(m, GetGameTimer())
+    return outcome == 'sited', line
+end
+
 --- Inspect or force a drop.
 ---
 ---   brairdrop              what this match's schedule is doing
@@ -1322,17 +1384,9 @@ end
 --- threshold is the problem and not the players.
 RegisterCommand('brairdrop', function(_, args)
     local m = BR.Server.latestMatch()
-    if not m then
-        print('  no match')
-        return
-    end
-    if m.state ~= BR.MatchState.PLAYING then
-        print(('  airdrops only run during PLAYING (match %s is %s)')
-            :format(BR.MatchTag(m.id), tostring(m.state)))
-        return
-    end
-    if not m.airdrop then
-        print('  this match has no airdrop schedule (BR.Config.Airdrop.enabled?)')
+    local why = cannotDrop(m)
+    if why then
+        print('  ' .. why)
         return
     end
 
@@ -1422,22 +1476,12 @@ RegisterCommand('brairdrop', function(_, args)
     -- qualifies right now the manufactured entry stays in the queue and the tick
     -- retries it on `retryEveryMs`, so a manual request that could not be
     -- honoured this second is not silently thrown away.
+    --
+    -- THE BODY IS siteNow, ABOVE THE COMMAND, which the dev menu's Spawn
+    -- airdrops row reaches too (#422) through BR.Airdrop.dropNow.
     if arg == 'now' then
-        local p = st.pending[1]
-        local forced = false
-        if not p then
-            p = { n = nextDropNumber(st), dueAt = now, checkedAt = 0 }
-            table.insert(st.pending, 1, p)
-            forced = true
-        end
-        p.checkedAt = 0
-        p.dueAt = now
-        local outcome = trySite(m, p, now)
-        if outcome ~= 'wait' then table.remove(st.pending, 1) end
-        print(('  %s (drop %d, %s)'):format(outcome, p.n,
-            forced and ('manual -- perMatch is %d and this ignores it')
-                        :format(math.tointeger(A.perMatch or 1) or 1)
-                   or 'the drop this match already had scheduled'))
+        local _, line = siteNow(m, now)
+        print('  ' .. line)
         return
     end
 

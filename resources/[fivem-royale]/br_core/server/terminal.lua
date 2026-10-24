@@ -1431,6 +1431,34 @@ local function tell(src, text)
     if src > 0 then TriggerClientEvent(BR.Net.TERMINAL_DEV, src, text) end
 end
 
+--- A KEY GIVEN OR TAKEN BY HAND, AND THE SENTENCE THAT SAYS SO: `brterminalsv
+--- key give|take`'s body, and the dev menu's Give Yubikeys row (#422).
+---
+--- BR.Yubikey.devSet is the grant -- Y.give with the same profile write, the
+--- same push and the same first-pickup card as a real pickup -- and the cap of
+--- one stands: a player already holding a key is refused, not handed a second.
+--- The season is asked HERE as well as by the command's own door above the
+--- verbs, because the menu does not come through that door.
+--- @param target integer  a server id
+--- @param give boolean
+--- @return boolean ok
+--- @return string line
+function T.devKey(target, give)
+    if not on() then
+        return false, ('terminals are Season 2 and this box runs Season %s -- `brseason 2` first')
+            :format(tostring(BR.Season.current()))
+    end
+    local ok, why = BR.Yubikey.devSet(target, give)
+    if ok then
+        return true, ('%d %s a key'):format(target, give and 'now holds' or 'no longer holds')
+    end
+    return false, ('%d: %s'):format(target,
+        why == 'holding' and 'already holds one'
+        or why == 'none' and 'holds none'
+        or why == 'loading' and 'their profile has not been read yet'
+        or tostring(why))
+end
+
 --- The facts a dev session opens with: a key and nothing against it, unless
 --- the words say otherwise. `volts=<n>` is the balance its runs spend (round
 --- 2's costs); without it, the player's real balance as it opens. Either way
@@ -1604,16 +1632,8 @@ RegisterCommand('brterminalsv', function(source, args)
 
     elseif verb == 'key' then
         local give = (words[1] or 'give'):lower() ~= 'take'
-        local ok, why = BR.Yubikey.devSet(target, give)
-        if ok then
-            tell(src, ('%d %s a key'):format(target, give and 'now holds' or 'no longer holds'))
-        else
-            tell(src, ('%d: %s'):format(target,
-                why == 'holding' and 'already holds one'
-                or why == 'none' and 'holds none'
-                or why == 'loading' and 'their profile has not been read yet'
-                or tostring(why)))
-        end
+        local _, line = T.devKey(target, give)
+        tell(src, line)
 
     elseif verb == 'reset' then
         -- ANOTHER USE BY THE SAME PLAYER IN THE SAME MATCH (round 6, owner
