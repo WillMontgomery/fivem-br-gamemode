@@ -348,6 +348,12 @@ end
 --- center within L.vehicleMarginM past its ends (a car's half-length, so a
 --- bumper under a leaf counts) and L.vehicleSideM past its sides (its
 --- half-width); both from L.belowM under the grade to L.aboveM over it.
+---
+--- THE TRAP HOLDS PLAYERS ONLY (the owner's "the trap holds someone"): a car
+--- left or wrecked in a trap would otherwise hold that lane's second gate open
+--- and refuse its readers for the rest of the match. A driver counts by their
+--- own sample. Vehicles still count in every swing and way, so no gate closes
+--- on a car.
 --- @param z table  S.laneZones
 --- @param peds table[]|nil  { x, y, z }: the match's players who hold a gate
 --- @param vehicles table[]|nil  { x, y, z }: the match's vehicles
@@ -364,16 +370,17 @@ function S.occupancy(z, peds, vehicles, L)
     for _, v in ipairs(vehicles or {}) do
         if S.inBox(z.all, v.x, v.y, v.z, vm, below, above, vs) then V[#V + 1] = v end
     end
-    local function held(box)
+    local function held(box, playersOnly)
         for _, p in ipairs(P) do
             if S.inBox(box, p.x, p.y, p.z, pm, below, above) then return 'a player' end
         end
+        if playersOnly then return nil end
         for _, v in ipairs(V) do
             if S.inBox(box, v.x, v.y, v.z, vm, below, above, vs) then return 'a vehicle' end
         end
         return nil
     end
-    local out = { trap = held(z.trap) }
+    local out = { trap = held(z.trap, true) }
     for _, g in ipairs(S.GATES) do
         out[g] = { swing = held(z[g].swing), way = held(z[g].way) }
     end
@@ -400,8 +407,9 @@ end
 --   secondShut  the second gate folding shut. Anybody in its swing or the trap
 --               -> second, open again. Fully shut -> idle
 --
--- A gate never closes on a player or a vehicle in its swing; a press while the
--- cycle runs (any phase but idle) is not taken. A clear spell is counted from
+-- "Someone in the trap" is a player (S.occupancy): an empty car there holds
+-- nothing. A gate never closes on a player or a vehicle in its swing; a press
+-- while the cycle runs (any phase but idle) is not taken. A clear spell is counted from
 -- when its zone went clear but never from before the gate was fully open, so a
 -- gate always stands fully open for closeDelayMs before it starts back.
 --

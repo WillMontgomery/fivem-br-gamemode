@@ -298,9 +298,9 @@ end)
 -- ------------------------------------------------------------- who is where ---
 
 --- The vehicles in these routing buckets, read off the OneSync pool once:
---- [bucket] = { { x, y, z } }. Every vehicle counts -- a car somebody drives,
---- one left parked, a wreck, traffic -- because a leaf folds onto all of them
---- alike.
+--- [bucket] = { { x, y, z } }. Every vehicle counts in a swing or a way -- a
+--- car somebody drives, one left parked, a wreck, traffic -- because a leaf
+--- folds onto all of them alike. Not in the trap: that holds players only.
 --- @param want table  [bucket] = true
 --- @return table
 local function vehiclesIn(want)
@@ -343,7 +343,8 @@ end
 
 --- WHAT IS IN LANE n's ZONES for this match now (BR.DcGateSolve.occupancy):
 --- { trap, outer = { swing, way }, inner = { swing, way } }, each 'a player',
---- 'a vehicle' or nil. Public so the suites and `brgate list` can ask.
+--- 'a vehicle' or nil (the trap a player or nil: an empty car there holds
+--- nothing). Public so the suites and `brgate list` can ask.
 --- @param m table
 --- @param n integer
 --- @param vehicles table[]|nil  the match's vehicles, { x, y, z }

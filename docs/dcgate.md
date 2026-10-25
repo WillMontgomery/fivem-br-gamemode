@@ -129,8 +129,12 @@ a bumper under a leaf counts) along the lane and `lane.vehicleSideM` (1 m, a
 car's half-width) across it: the leaves fold inside the posts, so a car parked
 beside the lane, on the island between two, is in none. Both from
 `lane.belowM` under the grade to `lane.aboveM` over it, so a helicopter over
-the gate is in nothing. **Every vehicle counts**, driven or not: a car left
-parked in a swing holds that gate open for as long as it is there.
+the gate is in nothing. **Every vehicle counts in a swing or a way**, driven
+or not: a car left parked in a swing holds that gate open for as long as it is
+there. **The trap holds players only** (the owner's "the trap holds
+someone"): a driver counts by their own sample, and an empty or wrecked car
+left in a trap holds nothing, so it cannot keep that lane's second gate open
+and its readers refusing for the rest of the match.
 
 ## A press
 
@@ -266,6 +270,16 @@ what caught the owner's bug: an arm driven into before the press read ratio
 0.000 at pose 1.00, and nothing read it back. A pass that finds every part
 where it should be calls nothing but the reads.
 
+**What the read-back cannot promise for a `ratio` part.** The old fold sent
+the arm's open ratio every frame for its whole 4 s, and the arm still read
+0.000: a part a car has hit may not hear its ratio at all, so posing it again
+does not help, and only the registration on the second pass might (not yet
+seen in game). If it does not, that part is posed again every pass for as long
+as it is off, which costs a few calls a second and does nothing. The leads are
+`ratio` and locked shut as the arm was when it broke; if a lead driven into
+before the press stays shut, `brgate drive lead rotate` is the fallback (it
+also folds the leaves flat at 90).
+
 ### The fold
 
 Each gate folds by itself. When a gate near this client changes, its parts are
@@ -297,7 +311,7 @@ How a lead and the arm are moved is `client.drive`:
 | Drive | How |
 |---|---|
 | `ratio` (the leads) | The door system's own open ratio, held locked: `DoorSystemSetOpenRatio(sign * deg / ratioDeg)` then state 1. The engine's way of holding a door ajar. |
-| `rotate` (the arm) | The handle frozen the moment it is found and turned by `SetEntityRotation` (order 2; the arm about its local +y by -raise), **frozen in every pose, shut included**, never unfrozen while this client drives it. Its door is locked shut while the part is shut and let go (state 0) while it is turned. |
+| `rotate` (the arm) | The handle frozen the moment it is found and turned by `SetEntityRotation` (order 2; the arm about its local +y by -raise), **frozen in every pose, shut included**, never unfrozen while this client drives it. Its door is locked shut while the part is shut and let go (state 0) while it is turned, and it is frozen again on every drive, after that change of state: the freeze is the engine's, and this file's flag cannot see it cleared. |
 
 **Why frozen in every pose.** A door entity turned by `SetEntityRotation`
 loses its hinge (owner, 2026-10-24: with the old hand drive, which unfroze the
@@ -383,7 +397,7 @@ for the server's verbs:
 | Command | Does |
 |---|---|
 | `brgate` / `brgate list` | This client's gates, poses, handles, frozen parts and drives, then the server's (`brgatesv list`): each lane idle or its phase, which gate, for how long, inbound or outbound, who is in its zones, and the refused presses by reason |
-| `brgate near` | The lane of the nearest reader: its gates, and each part's door state, physics, open ratio, handle, frozen, rotation and turn against its placed heading, and whether a follower is attached |
+| `brgate near` | The lane of the nearest reader: its gates, and each part's door state, physics, open ratio, handle, frozen (the engine's own read), rotation and turn against its placed heading, and whether a follower is attached |
 | `brgate open <lane\|all> [in\|out]` | Start a cycle as that reader would (the outside one by default), whoever is where (`brgatesv open`) |
 | `brgate close <lane\|all>` | End a cycle: its open gate folds shut as the last, opening again on anybody in its swing or the trap |
 | `brgate drive <lead\|arm> <ratio\|rotate>` | How this client moves them, until it restarts: each part of that kind handed back to the door system first |
@@ -402,6 +416,7 @@ From the server console a verb about a player takes the player id last:
 | The arm rises by its open ratio | Not after a hit before the press (ratio 0.000 at pose 1.00) | the arm is `rotate`; the read-back catches a `ratio` part the door system dropped |
 | A door entity turned by hand keeps its hinge | No: unfrozen, a hit knocks it off | every part turned by hand stays frozen |
 | A frozen part turned by `SetEntityRotation` reads back the rotation it was given | not yet seen | the read-back accepts either Euler spelling of a turn; `brgate near` prints it |
+| A change of a door's state, or its registration, clears its object's freeze | not yet seen | every hand-turned part is frozen after either, and `brgate near` prints the engine's own freeze (`IsEntityPositionFrozen`) |
 | A follower attached to a frozen lead (`brgate drive lead rotate`) moves with it | not yet seen | the followers ride the lead's heading as it stands |
 | A follower frozen where it was let go and unfrozen as it is attached again rides as before | not yet seen | the next round's check |
 

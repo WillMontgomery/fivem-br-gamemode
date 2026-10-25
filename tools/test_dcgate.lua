@@ -26,7 +26,8 @@
 --           opens only its reader's gate: the whole match told, nobody else.
 --   PART D  the sally port on the server's own samples: inbound on foot,
 --           outbound by car, an abandoned first gate, a car parked in a swing,
---           a gate reopening on a car, who holds a gate, a player dropped in
+--           a gate reopening on a car, an empty car left in the trap (the trap
+--           holds players only), who holds a gate, a player dropped in
 --           the trap, a press at every phase, a match ending mid-cycle, two
 --           matches apart, Season 1.
 --   PART E  the snapshot's view: each gate's pose, for a late joiner.
@@ -546,9 +547,14 @@ do
     r = o({ at(A_FAR_OUT, 0), at(A_FAR_IN, 0) })
     ok(not r.trap and not r.outer.way and not r.inner.way, 'far off either end: nowhere')
     r = o(nil, { at(Z2.trap.a0 + GC.lane.vehicleMarginM + 0.1, 0, BOX2.zLow + 0.6) })
-    ok(r.trap == 'a vehicle' and not r.outer.swing, 'a car whose center is past the outer line by more than its half-length: the trap only')
+    ok(not r.trap and not r.outer.swing and not r.inner.swing,
+        'an empty car past the outer line by more than its half-length: in nothing -- the trap holds players only')
     r = o(nil, { at(Z2.trap.a0 + GC.lane.vehicleMarginM - 0.1, 0, BOX2.zLow + 0.6) })
-    ok(r.trap == 'a vehicle' and r.outer.swing == 'a vehicle', 'by less: its tail is still in the outer swing')
+    ok(not r.trap and r.outer.swing == 'a vehicle', 'by less: its tail is still in the outer swing')
+    r = o({ at(A_TRAP, 0) }, { at(A_TRAP, 0, BOX2.zLow + 0.6) })
+    eq(r.trap, 'a player', 'a car in the trap with its driver: the driver holds it')
+    r = o(nil, { at(A_TRAP, 0, BOX2.zLow + 0.6) })
+    eq(r.trap, nil, 'the same car, empty: holds nothing')
     r = o({ at(A_TRAP, BOX2.halfWidth + GC.lane.pedMarginM + 0.1) })
     ok(not r.trap, 'a player beside the lane, past the posts: not in it')
     r = o(nil, { at(A_OUT_SWING, -(BOX2.halfWidth + GC.lane.vehicleSideM - 0.1), BOX2.zLow + 0.6) })
@@ -603,10 +609,10 @@ do
     local s = GS.newLane()
     GS.press(s, 'inner', 0, T)
     ok(s.first == 'inner' and GS.code(s) == 6, 'the inside reader: the inner gate first')
-    GS.advance(s, occ({ trap = 'a vehicle' }), 500, T)
-    GS.advance(s, occ({ trap = 'a vehicle' }), 6000, T)
-    eq(s.phase, 'firstShut', 'the car in the trap: the inner gate shuts behind it')
-    GS.advance(s, occ({ trap = 'a vehicle' }), 10000, T)
+    GS.advance(s, occ({ trap = 'a player' }), 500, T)
+    GS.advance(s, occ({ trap = 'a player' }), 6000, T)
+    eq(s.phase, 'firstShut', 'the driver in the trap: the inner gate shuts behind the car')
+    GS.advance(s, occ({ trap = 'a player' }), 10000, T)
     ok(s.phase == 'second' and GS.code(s) == 5, 'then the outer gate and its arm open')
     -- A gate never closes on anybody in its swing.
     GS.advance(s, occ({ outerSwing = 'a vehicle' }), 16000, T)
@@ -1004,6 +1010,44 @@ do
     vehicles[12] = { x = at(A_OUT_SWING, 0).x, y = island, z = BOX2.zLow + 0.6, bucket = m.bucket }
     runTo(t0, 12500)
     eq(s.phase, 'firstShut', 'a car on the island beside the outer gate holds nothing')
+end
+
+describe('the sally port: an empty car left in the trap holds nothing -- the trap holds players')
+do
+    reset()
+    local m = newMatch(1)
+    player(1, m, IN2.x, IN2.y)
+    car(31, m, A_TRAP)
+    eq(press(1, { reader = R['gate.lane2.reader_in'] }), 'open', 'pressed outside, an empty car parked in the trap')
+    local t0 = gameMs
+    local s = G.stateOf(m).lanes[2]
+    put(1, A_TRAP)
+    runTo(t0, 10000)
+    eq(s.phase, 'second', 'the presser walks into the trap: outer shut behind them, inner open')
+    put(1, A_FAR_IN)
+    runTo(t0, 16500)
+    eq(s.phase, 'secondShut', 'they walk out: the inner gate shuts 2 s after they are clear, the car notwithstanding')
+    runTo(t0, 20500)
+    ok(s.phase == 'idle' and code2(1) == 0, 'and the cycle ends')
+    player(2, m, IN2.x, IN2.y)
+    eq(press(2, { reader = R['gate.lane2.reader_in'] }), 'open', 'the next press is taken')
+    -- Abandoned with the car still there: the cycle ends, the inner gate never opens.
+    t0 = gameMs
+    put(2, A_FAR_OUT)
+    runTo(t0, 10000)
+    eq(s.phase, 'firstShut', 'nobody walks in: at 10 s the outer gate shuts')
+    runTo(t0, 14000)
+    ok(s.phase == 'idle' and not s.inner.open, 'and the cycle ends; the inner gate never opened for the empty car')
+    -- A car driven into the trap: its driver holds it.
+    player(3, m, IN2.x, IN2.y)
+    press(3, { reader = R['gate.lane2.reader_in'] })
+    t0 = gameMs
+    car(32, m, A_TRAP + 3.0)
+    put(3, A_TRAP + 3.0)
+    runTo(t0, 10000)
+    eq(s.phase, 'second', 'a car driven into the trap: its driver counts, the inner gate opens')
+    runTo(t0, 40000)
+    eq(s.phase, 'second', 'and stays open while the driver waits in the trap')
 end
 
 describe('the sally port: who holds a gate -- standing or downed, not out, not stale, not over it')

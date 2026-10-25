@@ -8,7 +8,8 @@
 -- door system that registers them by name and turns a lead to the open ratio
 -- it is held at (and a door that stops hearing it until it is registered
 -- again), attachments, freezing and a car running into a part (a part turned
--- by hand and not frozen falls), the three loop bands with the FRAME and TICK
+-- by hand and not frozen falls; and, as the worst case, a door state change or
+-- a registration that clears a freeze), the three loop bands with the FRAME and TICK
 -- callbacks that come and go, the notice stack, the interact key, the season
 -- and the mirror. Each block boots a fresh client.
 --
@@ -41,7 +42,9 @@
 --                the lobby and Season 1
 --   the arm      turned by hand and frozen from the moment it is found, in
 --                every pose: a car running into it before the press, during the
---                cycle or after it knocks nothing loose, and it rises every time
+--                cycle or after it knocks nothing loose, and it rises every time;
+--                frozen after every change of its door's state, so an engine
+--                that clears a freeze then leaves nothing loose either
 --   rotate leads the same, frozen in every pose, the followers riding them
 --   read back    a lead or arm off its pose posed again; one still off the next
 --                pass registered again; one where it should be left alone
@@ -222,6 +225,7 @@ local function boot(opts)
         end
     end
     env.IsEntityAttached = function(h) n('IsEntityAttached') return (W.objects[h] and W.objects[h].on) and 1 or 0 end
+    env.IsEntityPositionFrozen = function(h) n('IsEntityPositionFrozen') return (W.objects[h] and W.objects[h].frozen) and 1 or 0 end
 
     --- THE DOOR SYSTEM: a door by its name's hash, with its model and place, its
     --- state and its open ratio. A lead held at a ratio turns by ratio * 90
@@ -238,10 +242,19 @@ local function boot(opts)
         return nil
     end
     W.doorObject = doorObject
+    --- THE WORST CASE FOR A FREEZE (W.thaws): a change of a door's state, or
+    --- its registration, clears the engine's freeze on its object -- not seen
+    --- in game, and not ruled out.
+    local function thaw(d)
+        if not W.thaws then return end
+        local o = doorObject(d)
+        if o then o.frozen = false end
+    end
     env.AddDoorToSystem = function(hash, model, x, y, z, p5, scriptDoor, isLocal)
         n('AddDoorToSystem')
         W.doors[hash] = { model = model, x = x, y = y, z = z, p5 = p5, scriptDoor = scriptDoor,
                           isLocal = isLocal, state = 0, ratio = 0.0, states = {} }
+        thaw(W.doors[hash])
         wrote(hash, 'add')
     end
     env.RemoveDoorFromSystem = function(hash)
@@ -305,6 +318,7 @@ local function boot(opts)
         if not d then return end
         d.state = state
         d.states[#d.states + 1] = state
+        thaw(d)
         wrote(hash, 'state')
     end
     env.DoorSystemGetDoorState = function(hash) n('DoorSystemGetDoorState') return W.doors[hash] and W.doors[hash].state or -1 end
@@ -1177,6 +1191,75 @@ do
     for _, f in ipairs(O.follows) do
         ok(f.o.frozen and not W.hit(f.r.id), f.r.id .. ': let go frozen where it was placed: run into, it stands')
     end
+end
+
+describe('the freeze is the engine\'s, not a flag: a door state change or a registration that clears it leaves nothing loose')
+do
+    local W = boot({ at = AT_IN2 })
+    W.thaws = true
+    W.slow()
+    W.commands.brgate(0, { 'drive', 'lead', 'rotate' })
+    W.slow()
+    local O = gateParts(W, 2, 'outer')
+    local function parts()
+        local out = { O.arm }
+        for _, l in ipairs(O.leads) do out[#out + 1] = l end
+        return out
+    end
+    for _, p in ipairs(parts()) do
+        ok(p.o.frozen and not W.hit(p.r.id), p.r.id .. ': shut, its door locked after it was frozen: still frozen, it stands')
+    end
+    for cycle = 1, 3 do
+        word(W, { 0, 5, 0 })
+        W.frames(10)
+        for _, p in ipairs(parts()) do
+            if not p.o.frozen or W.hit(p.r.id) then ok(false, ('cycle %d: %s frozen as it opens'):format(cycle, p.r.id)) end
+        end
+        W.settle()
+        for _, p in ipairs(parts()) do
+            if not p.o.frozen or W.hit(p.r.id) then ok(false, ('cycle %d: %s frozen open'):format(cycle, p.r.id)) end
+        end
+        word(W, { 0, 4, 0 })
+        W.settle()
+        for _, p in ipairs(parts()) do
+            if not p.o.frozen or W.hit(p.r.id) then ok(false, ('cycle %d: %s frozen shut'):format(cycle, p.r.id)) end
+        end
+        for _, f in ipairs(O.follows) do
+            if not f.o.frozen or W.hit(f.r.id) then ok(false, ('cycle %d: %s frozen where it was let go'):format(cycle, f.r.id)) end
+        end
+        word(W, { 0, 0, 0 })
+        W.slow()
+    end
+    local fallen = 0
+    for _, o in pairs(W.objects) do if o.fallen then fallen = fallen + 1 end end
+    eq(fallen, 0, 'three cycles, every part hit open and shut: nothing knocked loose')
+    -- Its door registered again (the read-back's last resort): frozen after it.
+    word(W, { 0, 5, 0 })
+    W.settle()
+    W.slow()
+    W.settle()
+    O.arm.o.rot = { x = 0.0, y = 0.0, z = O.arm.r.h }
+    W.slow()
+    W.settle()
+    O.arm.o.rot = { x = 0.0, y = 0.0, z = O.arm.r.h }
+    W.reset()
+    W.slow()
+    eq(W.calls.AddDoorToSystem, 1, 'an arm off its pose twice: its door registered again')
+    ok(O.arm.o.frozen and not W.hit(O.arm.r.id), 'and it is frozen after the registration, not before it')
+    W.settle()
+    -- `brgate near` reads the engine's freeze.
+    W.commands.brgate(0, { 'near' })
+    local line = nil
+    for i = #W.printed, 1, -1 do
+        if W.printed[i]:find(O.arm.r.id .. ':', 1, true) then line = W.printed[i] break end
+    end
+    ok(line ~= nil and line:find('frozen true', 1, true) ~= nil, '`brgate near` prints the arm frozen by the engine\'s own read', line)
+    O.arm.o.frozen = false
+    W.commands.brgate(0, { 'near' })
+    for i = #W.printed, 1, -1 do
+        if W.printed[i]:find(O.arm.r.id .. ':', 1, true) then line = W.printed[i] break end
+    end
+    ok(line:find('frozen false', 1, true) ~= nil, 'and an arm the engine let go of as not frozen, whatever this file thinks', line)
 end
 
 -- =========================================================================

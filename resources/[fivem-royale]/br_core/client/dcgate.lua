@@ -35,8 +35,10 @@
 -- lead or arm, a follower put back where it was placed -- loses its hinge:
 -- unfrozen, a car running into it knocks it loose. So a 'rotate' part is
 -- frozen the moment it is found and stays frozen in every pose, shut
--- included, and a follower let go is frozen where it is put back. Frozen, a
--- part is solid: cars stop against it and it cannot fall. Only br_core
+-- included, and a follower let go is frozen where it is put back. It is
+-- frozen again on every drive and after every change of its door's state
+-- (this file's flag is not the engine's freeze). Frozen, a part is solid:
+-- cars stop against it and it cannot fall. Only br_core
 -- stopping, or `brgate drive` switching a kind to 'ratio', unfreezes them and
 -- hands them back to the door system.
 --
@@ -300,19 +302,16 @@ end
 
 --- Bring a lead or the arm to its gate's pose. True when it is there.
 ---
---- 'rotate': frozen first (and never unfrozen here), then turned; its door
---- locked shut while the part is shut and let go while it is turned.
+--- 'rotate': its door locked shut while the part is shut and let go while it
+--- is turned; then frozen (never unfrozen here) and turned. Frozen on every
+--- call and after any change of its door's state: d.frozen is only this
+--- file's flag, and a door state change or a registration may clear the
+--- engine's freeze.
 --- 'ratio': the door system's open ratio, held locked.
 local function drivePart(d, find)
     if driveOf(d.kind) == 'rotate' then
         local h = handleOf(d, find)
         if not h then return false end
-        if not d.frozen then
-            FreezeEntityPosition(h, true)
-            d.frozen = true
-        end
-        local rx, ry, rz = wantRotation(d)
-        SetEntityRotation(h, rx, ry, rz, 2, true)
         local want = d.gate.pose > 0 and 0 or 1
         if d.held ~= want then
             if want == 1 then
@@ -322,6 +321,10 @@ local function drivePart(d, find)
                 d.held = 0
             end
         end
+        FreezeEntityPosition(h, true)
+        d.frozen = true
+        local rx, ry, rz = wantRotation(d)
+        SetEntityRotation(h, rx, ry, rz, 2, true)
         return true
     end
     if d.gate.pose <= 0 then
@@ -387,19 +390,24 @@ end
 
 --- A follower let go of its shut lead: put back at its placed origin and
 --- heading as it is let go (so one let go with its lead still turned, br_core
---- stopping mid-fold, does not stay where the knuckle left it), frozen there
---- (turned by hand, it would fall to a hit), and locked shut.
+--- stopping mid-fold, does not stay where the knuckle left it), locked shut,
+--- and frozen there after its lock (turned by hand, it would fall to a hit;
+--- frozen last, so no change of its door's state can clear it).
 local function release(f)
     local h = f.handle
-    if f.attached and h and isTrue(DoesEntityExist(h)) then
+    local live = h and isTrue(DoesEntityExist(h))
+    local put = f.attached and live
+    if put then
         DetachEntity(h, false, true)
         SetEntityCoordsNoOffset(h, f.row.x, f.row.y, f.row.z, false, false, false)
         SetEntityRotation(h, 0.0, 0.0, f.row.h, 2, true)
-        FreezeEntityPosition(h, true)
-        f.frozen = true
     end
     f.attached, f.yaw = false, nil
     shut(f)
+    if live and (put or f.frozen) then
+        FreezeEntityPosition(h, true)
+        f.frozen = true
+    end
 end
 
 --- A part handed back to the door system: a follower let go, then anything
@@ -856,6 +864,9 @@ local function devNear()
         for _, d in ipairs(L.gates[which].all) do
             local h = handleOf(d, true)
             local turn = ''
+            -- The engine's own freeze where it can be read, not this file's flag.
+            local frozen = d.frozen == true
+            if h and type(IsEntityPositionFrozen) == 'function' then frozen = isTrue(IsEntityPositionFrozen(h)) end
             if h then
                 local rot = GetEntityRotation(h, 2)
                 turn = (', rotation %.1f %.1f %.1f (placed heading %.1f, turned %.1f)'):format(rot.x, rot.y, rot.z,
@@ -863,7 +874,7 @@ local function devNear()
             end
             print(('  %s: state %s, physics %s, ratio %.3f, handle %s, frozen %s%s%s'):format(d.row.id,
                 tostring(DoorSystemGetDoorState(d.hash)), tostring(isTrue(DoorSystemGetIsPhysicsLoaded(d.hash))),
-                DoorSystemGetOpenRatio(d.hash) or 0.0, tostring(h), tostring(d.frozen == true), turn,
+                DoorSystemGetOpenRatio(d.hash) or 0.0, tostring(h), tostring(frozen), turn,
                 d.kind == 'follow' and (', attached ' .. tostring(h ~= nil and isTrue(IsEntityAttached(h)))) or ''))
         end
     end
