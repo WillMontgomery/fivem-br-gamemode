@@ -224,6 +224,10 @@ local function bootServer(opts)
         'br_lib/config/vehicles.lua',
         'br_lib/config/devmenu.lua',
     })
+    -- THE GAME'S OWN MODEL TABLE, AS THE MANIFEST LOADS IT FOR THE SERVER ALONE
+    -- (#426's review): the spawn's trees and sizes. `noModels` is a manifest
+    -- that lost the line.
+    if not opts.noModels then loadAll({ 'br_lib/config/vehicle_models.lua' }) end
 
     -- THREE MATCHES, AND THE ASKER IS NOT IN THE NEWEST. Player 3 stands in
     -- match A; match B is newer; player 5 is in the lobby.
@@ -875,10 +879,13 @@ do
     eq(table.concat(BR.Config.DevMenu.vehicleTypes, ','),
        'automobile,bike,boat,heli,plane,submarine,trailer',
        'the seven trees: the platform\'s eight less `train`')
+    -- EACH TREE, FOR A MODEL THE GAME'S DATA DOES NOT HAVE: an add-on is taken
+    -- at the client's word (a model of the base game is held to its own tree,
+    -- below).
     for _, t in ipairs(BR.Config.DevMenu.vehicleTypes) do
         clock = clock + 1000
-        eq(BR.DevMenu.request(3, { 'vehicle', 'adder', t }, clock), 'ran',
-           ('`%s` is taken'):format(t))
+        eq(BR.DevMenu.request(3, { 'vehicle', 'myaddon', t }, clock), 'ran',
+           ('`%s` is taken for an add-on'):format(t))
         eq(created[#created] and created[#created].vtype, t, '... and built as that tree')
     end
 
@@ -900,6 +907,173 @@ do
     eq(BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock + 1), 'too-soon',
        'a second press inside the floor is dropped')
     eq(#created, n + 1, 'and one vehicle was built, not two')
+end
+
+describe('server: Vehicle spawner -- a model of the base game, only as its own tree')
+do
+    -- #426's review: every client checks the tree as the vehicle reaches it
+    -- and builds a STAND-IN for a model of another type -- `adder plane` is a
+    -- Cargo Plane -- and the automobile tree checks nothing, so `seashark
+    -- automobile` is a jetski built as a car. In a bucket the whole match
+    -- shares. The rows never send a wrong tree, so a line that does was typed.
+    bootServer()
+    local wrong = {
+        { 'seashark', 'automobile', 'a jetski asked for as a car' },
+        { 'adder', 'plane', 'a car asked for as a plane -- a Cargo Plane on every client' },
+        { 'adder', 'heli', '... or as a heli -- a Buzzard2' },
+        { 'hydra', 'heli', 'a plane asked for as a heli' },
+        { 'blimp', 'plane', 'a blimp asked for as a plane: the platform builds one as a heli' },
+        { 'kosatka', 'boat', 'a submarine asked for as a boat' },
+        { 'tanker', 'automobile', 'a trailer asked for as a car' },
+        { 'bmx', 'automobile', 'a bicycle asked for as a car' },
+        { 'Seashark', 'automobile', 'and a name in capitals is the same model' },
+    }
+    for _, w in ipairs(wrong) do
+        clock = clock + 1000
+        eq(BR.DevMenu.request(3, { 'vehicle', w[1], w[2] }, clock), 'bad', w[3])
+    end
+    eq(#created, 0, 'not one reached the server setter')
+    eq(#notices, 0, 'and none is a toast: no row could have sent it')
+    ok(said('| vehicle <model> <type>'), 'the usage line, as for any line no row sends')
+
+    -- EACH AS ITS OWN TREE IS TAKEN -- the odd kinds above all, which no single
+    -- native names.
+    local right = {
+        { 'seashark', 'boat' }, { 'adder', 'automobile' }, { 'hydra', 'plane' },
+        { 'blimp', 'heli' }, { 'kosatka', 'submarine' }, { 'tanker', 'trailer' },
+        { 'bmx', 'bike' }, { 'stromberg', 'automobile' }, { 'apc', 'automobile' },
+        { 'blazer5', 'automobile' },
+    }
+    for _, r in ipairs(right) do
+        clock = clock + 1000
+        eq(BR.DevMenu.request(3, { 'vehicle', r[1], r[2] }, clock), 'ran',
+           ('%s as %s is taken'):format(r[1], r[2]))
+        eq(created[#created] and created[#created].vtype, r[2], '... and built so')
+    end
+
+    -- THE TABLE BY NAME, FOR EVERY MODEL IT HAS, the way the door asks it: the
+    -- name hashed as the platform hashes it -- signed, as GetHashKey answers --
+    -- and found under its row's tree. In capitals too.
+    local strays = {}
+    for _, v in ipairs(BR.Config.VehicleModels) do
+        if BR.Vehicles.modelTree(v.name) ~= v.tree
+            or BR.Vehicles.modelTree(v.name:upper()) ~= v.tree then
+            strays[#strays + 1] = v.name
+        end
+    end
+    eq(#strays, 0, ('all %d models of the base game answer their own tree')
+        :format(#BR.Config.VehicleModels), table.concat(strays, ', '))
+    eq(BR.Vehicles.modelTree('myaddon'), nil, 'and a model the table does not have, none')
+
+    -- THE SPAWN REFUSES ONE TOO, for brcar and for any caller that skipped the
+    -- door's check: in its own words, before anything is built.
+    local n = #created
+    local made, why, kind = BR.Vehicles.spawnInFront(3, 'adder', 'plane')
+    eq(made, nil, 'BR.Vehicles.spawnInFront builds no adder as a plane')
+    eq(kind, 'tree', 'and says the tree is why')
+    eq(why, 'the game builds adder as automobile, not plane', 'in these words')
+    eq(#created, n, 'having reached no server setter')
+
+    -- AND A SERVER WHOSE MANIFEST LOST THE TABLE REFUSES EVERY SPAWN, AND SAYS
+    -- WHY. Read as "no row", every model would be an add-on: every tree at the
+    -- asker's word and every plane on top of them, with nothing to say so.
+    bootServer({ noModels = true })
+    clock = clock + 1000
+    eq(BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock), 'ran',
+       'with no model table the press is still read')
+    eq(#created, 0, 'but nothing is built')
+    eq(notices[#notices] and notices[#notices].text,
+       'config/vehicle_models.lua is not loaded, so no model can be checked',
+       'and the toast says what is missing')
+end
+
+describe('server: Vehicle spawner -- a wide one put down clear of the asker, none into the ground')
+do
+    -- #426's review: the center went 5 m out, a quarter turn across, so a
+    -- model's width points at the asker -- and 76 of the game's models reached
+    -- to within half a meter of them, or past. Now a model the table has goes
+    -- out to its reach plus three meters, never under five, and up by what of
+    -- it reaches more than a meter below its origin. The asker faces north
+    -- from 100, 200, 30.
+    bootServer()
+    local function spawn(model, tree)
+        clock = clock + 1000
+        BR.DevMenu.request(3, { 'vehicle', model, tree }, clock)
+        return created[#created]
+    end
+    local function near(a, b) return a ~= nil and b ~= nil and math.abs(a - b) < 1e-6 end
+
+    local c = spawn('cargoplane', 'plane')
+    ok(c ~= nil and near(c.x, 100.0) and near(c.y, 200.0 + 48.9 + 3.0),
+       'the Cargo Plane -- 48.9 m to its wingtip -- lands 51.9 m out',
+       c and ('%.2f, %.2f'):format(c.x, c.y))
+    ok(c ~= nil and near(c.z, 30.0 + 6.6 - 1.0),
+       'and 5.6 m up: 6.6 m of it is below its origin, and the asker\'s is 1 m '
+       .. 'above the ground', c and ('%.2f'):format(c.z))
+
+    c = spawn('hydra', 'plane')
+    ok(c ~= nil and near(c.y, 208.7) and near(c.z, 30.6),
+       'a Hydra 8.7 m out and 0.6 m up', c and ('%.2f, %.2f'):format(c.y, c.z))
+
+    c = spawn('adder', 'automobile')
+    ok(c ~= nil and near(c.y, 205.0) and near(c.z, 30.0),
+       'an Adder where every car always went: 5 m, at the asker\'s height')
+
+    c = spawn('arbitergt', 'automobile')
+    ok(c ~= nil and near(c.y, 205.0) and near(c.z, 30.0),
+       'a model the data has no box for goes 5 m too')
+
+    c = spawn('myaddon', 'plane')
+    ok(c ~= nil and near(c.y, 205.0) and near(c.z, 30.0),
+       'and an add-on, which the table does not have, 5 m -- the one guess left')
+
+    -- THE DISTANCE TURNS WITH THE ASKER. Heading 90 is west, counter-clockwise
+    -- from north, so out is -X.
+    pedHeading[1003] = 90.0
+    c = spawn('cargoplane', 'plane')
+    ok(c ~= nil and near(c.x, 100.0 - 51.9) and near(c.y, 200.0),
+       'facing west, the Cargo Plane lands 51.9 m west', c and ('%.2f, %.2f'):format(c.x, c.y))
+    pedHeading[1003] = nil
+
+    -- EVERY MODEL OF THE BASE GAME, as its own tree: never nearer than five
+    -- meters, nothing of it within three of the asker, its bottom never under
+    -- the asker's feet -- and one that fits exactly where it always went.
+    local bad = {}
+    for _, v in ipairs(BR.Config.VehicleModels) do
+        local made = BR.Vehicles.spawnInFront(3, v.name, v.tree)
+        if not made then
+            bad[#bad + 1] = v.name .. ' (not built)'
+        else
+            local d = math.sqrt((made.x - 100.0) ^ 2 + (made.y - 200.0) ^ 2)
+            local reach, below = v.reach or 0.0, v.below or 0.0
+            local fits = reach + 3.0 <= 5.0
+            if d < 5.0 - 1e-9 or d - reach < 3.0 - 1e-9
+                or made.z - below < 29.0 - 1e-9
+                or (fits and math.abs(d - 5.0) > 1e-9)
+                or (below <= 1.0 and math.abs(made.z - 30.0) > 1e-9) then
+                bad[#bad + 1] = ('%s (%.2f m out, %.2f up)'):format(v.name, d, made.z - 30.0)
+            end
+        end
+    end
+    eq(#bad, 0, ('all %d models of the base game are put down clear')
+        :format(#BR.Config.VehicleModels), table.concat(bad, ', '))
+end
+
+describe('server: Vehicle spawner -- the spawn asks dev mode itself')
+do
+    -- #426's review: BR.Vehicles.spawnInFront is public and asks no allowlist,
+    -- so it holds dev mode to `true` on its own, as the door does -- whatever a
+    -- third caller forgot. tools/verify.sh pins the two callers it has.
+    bootServer()
+    for _, dm in ipairs({ false, 1, 'true' }) do
+        BR.Server.devMode = dm
+        local n = #created
+        local made, why, kind = BR.Vehicles.spawnInFront(3, 'adder', 'automobile')
+        ok(made == nil and kind == 'devmode' and #created == n,
+           ('dev mode %s: nothing is built'):format(tostring(dm)), tostring(why))
+    end
+    BR.Server.devMode = true
+    ok(BR.Vehicles.spawnInFront(3, 'adder', 'automobile') ~= nil, 'dev mode `true`: built')
 end
 
 describe('server: Vehicle spawner -- brcar\'s spawn, in front of the asker, in their bucket')
@@ -2182,6 +2356,28 @@ do
     sp:Key('back')
     eq(devMenu():Visible(), true, 'and the next Escape goes back, as it should')
 
+    -- EVERY KEY THAT CLOSES THE BOX HOLDS THE MENU OFF FOR AS LONG AS IT IS
+    -- DOWN (#426's review). Escape reads as 177 and as 199, and a box closed
+    -- with either still down keeps Back off however many frames pass -- each
+    -- of the two on its own, as Enter's 201 is above.
+    for _, key in ipairs({ 177, 199 }) do
+        if not sp:Visible() then sp = intoSpawner() end
+        sp:Press(bi)
+        kbd.state, kbd.result = 2, ''
+        keyHeld[key] = true
+        frame(); frame(); frame(); frame()
+        eq(sp.Controls.Back.Enabled, false,
+           ('%d still down four frames on: Back stays off'):format(key))
+        sp:Key('back')
+        eq(sp:Visible(), true, '... and the spawner stays')
+        keyHeld[key], keyUp[key] = nil, true
+        frame()
+        keyUp[key] = nil
+        frame(); frame()
+        eq(sp.Controls.Back.Enabled, true, ('%d up two frames: Back is the menu\'s again')
+            :format(key))
+    end
+
     -- WHAT IS REFUSED, AND WHAT IS NOTHING.
     bootClient()
     sp = intoSpawner()
@@ -2287,6 +2483,26 @@ do
     BR.Keys.uiScreen = nil
     tick()
     eq(liveLoops(), 1, 'and with it down, its pass is gone; the key\'s remains')
+
+    -- A SWITCH THAT THROWS IS PUT RIGHT (#426's review). The library raises
+    -- SwitchInProgress before the part that can throw, and while it is up no
+    -- ScaleformUI menu in the game reads a key -- so the spawner puts it down.
+    bootClient()
+    sp = intoSpawner()
+    local realSwitch = MenuHandler.SwitchTo
+    MenuHandler.SwitchTo = function()
+        BreadcrumbsHandler.SwitchInProgress = true
+        error('the library threw half way through a switch')
+    end
+    local _, si = row(sp, 'Super')
+    local pressed = pcall(sp.Press, sp, si)
+    MenuHandler.SwitchTo = realSwitch
+    ok(pressed, 'a switch that throws does not throw out of the press')
+    eq(BreadcrumbsHandler.SwitchInProgress, false, 'and SwitchInProgress is down again')
+    eq(sp:Visible(), true, 'with the spawner still up')
+    sp:Press(si)
+    eq(subMenu('Super') and subMenu('Super'):Visible(), true,
+       'so the next press switches -- with the flag left up the library would ignore it')
 end
 
 -- =========================================================================

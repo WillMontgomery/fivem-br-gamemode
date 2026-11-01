@@ -101,16 +101,27 @@
 -- believe to be armed, allow them to be spawned here". So `vehicle <model>
 -- <type>` runs BR.Vehicles.spawnInFront -- `brcar`'s own spawn, factored out
 -- of the verb -- for the asker: the server setter, five meters in front of
--- them, in their routing bucket. And it runs it for ANY model. brcar's
--- allowlist pre-check is brcar's and stays in brcar; here a Hydra is a Hydra.
+-- them or as far as a wide one needs, in their routing bucket. And it runs it
+-- for ANY model. brcar's allowlist pre-check is brcar's and stays in brcar;
+-- here a Hydra is a Hydra.
 --
--- THE SERVER CANNOT TELL WHAT A MODEL IS. There is no server native that says
--- whether a name is a vehicle, or which sync tree it needs, so both come from
--- the client -- IsModelInCdimage, IsModelAVehicle and the IsThisModelA*
--- natives (client/devmenu.lua) -- and what is checked here is their SHAPE: a
--- plain model word, and one of the seven trees the platform builds. A wrong
--- tree is the asker's own car built wrong; the platform does not check one
--- against the model either (brcar's note).
+-- THE SERVER CANNOT ASK THE GAME WHAT A MODEL IS. There is no server native
+-- that says whether a name is a vehicle, or which sync tree it needs, so both
+-- come from the client -- IsModelInCdimage, IsModelAVehicle and the
+-- IsThisModelA* natives (client/devmenu.lua) -- and what is checked first is
+-- their SHAPE: a plain model word, and one of the seven trees the platform
+-- builds.
+--
+-- AND THEN THE TREE, AGAINST THE GAME'S OWN DATA (#426's review). A wrong
+-- tree is not the asker's own car built wrong: every client checks the tree
+-- as the vehicle reaches it and builds a stand-in for a model of another type
+-- -- `adder plane` is a Cargo Plane -- in a bucket the whole warmup pad or
+-- match shares (VEHICLE_TYPES' note in server/vehicles.lua). So a model
+-- config/vehicle_models.lua has, which is every vehicle of the base game,
+-- must be asked for as the tree the game builds it as. The rows always do,
+-- so a line that names another tree was typed, and it is dropped like any
+-- other request no row could have sent. Only a model that table does not
+-- have, an add-on, is taken at the client's word.
 --
 -- NOT FROM THE LOBBY, which is the one place this differs from brcar. Every
 -- lobby player stands frozen on the one lobby mark, in one shared bucket, so a
@@ -380,6 +391,9 @@ ACTIONS.vehicle = function(src, a, answer)
     local model = cfg().modelWord(a[2])
     local vtype = a[3]
     if not model or not oneOf(cfg().vehicleTypes, vtype) then return false end
+    -- A MODEL OF THE BASE GAME, ONLY AS ITS OWN TREE (the header).
+    local own = BR.Vehicles.modelTree(model)
+    if own ~= nil and own ~= vtype then return false end
 
     -- THE LOBBY BUCKET, ASKED THE WAY server/roster.lua PICKS IT: a LOBBY
     -- player, or one with no match, is in the lobby's. A player on the way home

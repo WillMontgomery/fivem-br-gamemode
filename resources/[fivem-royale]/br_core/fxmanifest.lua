@@ -836,9 +836,10 @@ server_scripts {
     -- at load time -- and incident_build after combat_solve (in shared_scripts
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
-    -- ONE OF TWO config/*.lua THIS RESOURCE LOADS SERVER-SIDE (the other is
-    -- config/allowlist.lua, beside server/guild.lua, only because no client
-    -- script reads it), and both exceptions are
+    -- ONE OF THREE config/*.lua THIS RESOURCE LOADS SERVER-SIDE (the others are
+    -- config/allowlist.lua, beside server/guild.lua, and
+    -- config/vehicle_models.lua, beside server/vehicles.lua, each only because
+    -- no client script reads it), and all three exceptions are
     -- deliberate: every other config file is in shared_scripts above and goes
     -- to clients with them. This one is the domain and shortener lists, and a
     -- player holding those knows exactly which host still gets through. Read
@@ -1146,6 +1147,12 @@ server_scripts {
     -- BR.Evidence and BR.Inv at call time only, so nothing above it is needed at
     -- load.
     'server/strip.lua',
+    -- Every base-game vehicle model's sync tree and size, generated from the
+    -- game's own data (tools/vehicle_models.py, #426), for server/vehicles.lua's
+    -- spawn -- brcar's, and the dev menu's vehicle spawner. Loaded into this
+    -- server state alone because no client script reads it: the client asks
+    -- the game itself. Read at call time, so the order is a reader's.
+    '@br_lib/config/vehicle_models.lua',
     -- The third anticheat detector: a networked vehicle the gamemode refuses,
     -- caught in the server-side `entityCreating` before the entity exists.
     -- AFTER incident.lua for a reader rather than for the loader -- it raises

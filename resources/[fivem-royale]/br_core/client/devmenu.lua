@@ -404,8 +404,10 @@ end
 ---
 --- Every vehicle in the game's own data comes out right this way -- its 921
 --- models, types and classes, game build 3717 (DurtyFree's vehicles.json).
---- AN ADD-ON OF AN ODD TYPE IN AN ODD CLASS CAN COME OUT WRONG, and what the
---- game does with a tree that is not the model's is not measured here.
+--- AN ADD-ON OF AN ODD TYPE IN AN ODD CLASS CAN COME OUT WRONG, and a tree that
+--- is not the model's gets a stand-in built in its place on every client
+--- (server/vehicles.lua's VEHICLE_TYPES note). For a model of the base game the
+--- server holds the tree to config/vehicle_models.lua's and drops any other.
 --- @param hash integer
 --- @param class integer|nil
 --- @return string
@@ -627,7 +629,8 @@ local function className(c)
 end
 
 --- Every vehicle the game has, by class. ONCE: the first open of the spawner
---- pays for it -- three reads a model -- and nothing after does.
+--- pays for it -- four natives a model: GetHashKey, GetVehicleClassFromName,
+--- GetDisplayNameFromVehicleModel and GetLabelText -- and nothing after does.
 ---
 --- A CLASS WITH NO VEHICLES HAS NO ENTRY, so it gets no row; and neither does
 --- a class config/devmenu.lua leaves out. A model whose name is not a model

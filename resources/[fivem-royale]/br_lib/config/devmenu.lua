@@ -81,8 +81,9 @@ BR.Config.DevMenu = {
     --- THE PLATFORM BUILDS AN EIGHTH, `train`, AND IT IS LEFT OUT ON PURPOSE.
     --- The server setter fills a train's creation and position and none of the
     --- nodes a train runs on -- "Its not possible to spawn trains using
-    --- CREATE_VEHICLE_SERVER_SETTER" (Cfx, forum.cfx.re/t/5217679, 2025-08-25)
-    --- -- so a request naming one is a request no row sends.
+    --- CREATE_VEHICLE_SERVER_SETTER" (Ehbw, answering on the Cfx.re forum,
+    --- forum.cfx.re/t/5217679, 2025-08-25) -- so a request naming one is a
+    --- request no row sends.
     vehicleTypes = { 'automobile', 'bike', 'boat', 'heli', 'plane', 'submarine', 'trailer' },
 
     --- The vehicle classes the spawner lists no row for, by the game's class

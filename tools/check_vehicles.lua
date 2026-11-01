@@ -604,6 +604,126 @@ if not unruledName['insurgent'] then
          .. 'list, so the dev menu shows the turret truck as unarmed (#427)')
 end
 
+-- ---------------------------- every base-game model (#426's review) --
+--
+-- config/vehicle_models.lua is generated from the game's own vehicle data
+-- (tools/vehicle_models.py) and the server's spawn reads it twice: a model of
+-- the base game is built only as its row's tree, and put down clear of the
+-- player by its row's size. A WRONG HASH THERE IS A MODEL THE SPAWN TAKES FOR
+-- AN ADD-ON -- its tree at the asker's word, a Cargo Plane put down on top of
+-- them -- with nothing anywhere to say so. So every row is held to its name
+-- here, as the refused rows are, and to the shape the spawn reads.
+local MODEL_TREES = {
+    automobile = true, bike = true, boat = true, heli = true,
+    plane = true, submarine = true, trailer = true, train = true,
+}
+local models, modelTrees, modelByName = 0, 0, {}
+do
+    local chunk = loadfile(ROOT .. 'config/vehicle_models.lua')
+    if not chunk then
+        fail('config/vehicle_models.lua would not load')
+    else
+        chunk()
+    end
+    local modelHash = {}
+    -- A REAL DISTANCE: the spawn adds `reach` to one and takes `below` off a
+    -- height, so a NaN, a negative or a string would put a car anywhere.
+    local function meters(x)
+        return math.type(x) == 'float' and x == x and x >= 0 and x < 1000
+    end
+    for _, v in ipairs(BR.Config.VehicleModels or {}) do
+        models = models + 1
+        if type(v.name) ~= 'string' or not v.name:match('^[a-z0-9_]+$') then
+            fail('a base-game model row has no lower-case model name: %s',
+                 tostring(v.name))
+            goto nextModel
+        end
+        if modelByName[v.name] then fail('base-game model %q is listed twice', v.name) end
+        modelByName[v.name] = v
+        if v.hash ~= joaat(v.name) then
+            fail('base-game model %s: hash is 0x%08X, should be 0x%08X',
+                 v.name, v.hash or 0, joaat(v.name))
+        end
+        if v.hash and modelHash[v.hash] then
+            fail('base-game models %q and %q share hash 0x%08X', v.name,
+                 modelHash[v.hash], v.hash)
+        end
+        if v.hash then modelHash[v.hash] = v.name end
+        if not MODEL_TREES[v.tree] then
+            fail('base-game model %s: tree %q is not one the server setter builds',
+                 v.name, tostring(v.tree))
+        elseif v.tree ~= 'automobile' then
+            modelTrees = modelTrees + 1
+        end
+        -- BOTH SIZES OR NEITHER: a model the data has no box for has neither.
+        if (v.reach == nil) ~= (v.below == nil) then
+            fail('base-game model %s has one size and not the other', v.name)
+        elseif v.reach ~= nil and not (meters(v.reach) and meters(v.below)) then
+            fail('base-game model %s: reach %s and below %s are not distances in meters',
+                 v.name, tostring(v.reach), tostring(v.below))
+        end
+        if v.armed ~= nil and v.armed ~= true then
+            fail('base-game model %s: armed is %s -- true or absent', v.name, tostring(v.armed))
+        end
+        ::nextModel::
+    end
+    -- AN EMPTY TABLE IS EVERY MODEL AN ADD-ON, which is every check above
+    -- passing over nothing. The game has had over seven hundred cars alone
+    -- since long before this file.
+    if models < 700 then
+        fail('config/vehicle_models.lua has %d models -- it was generated from '
+             .. 'a partial dump, or emptied', models)
+    end
+end
+
+-- ----------------------- the Armed set, held to the game's data (#426's review) --
+--
+-- The dev menu marks a vehicle "Armed" when BR.Config.IsArmedVehicle says so,
+-- out of config/vehicles.lua's rows and its #427 list. THE CHECKS ABOVE CANNOT
+-- TELL WHETHER THAT SET IS RIGHT: drop Mogul's mark, mark the Dodo, take the
+-- Nightshark out of the #427 list or put the Adder in it, and every one of them
+-- still passes. The game's own data can tell: its `armed` rows (a vehicle
+-- weapon listed, a searchlight, a radar and a water cannon aside) are the
+-- expected set -- 125 when it was generated -- and the marked set must be
+-- exactly that. Every model the table has is asked, in both hash forms, and
+-- so is every name config/vehicles.lua marks, so a mark on a model the game
+-- does not have is found as well.
+do
+    local expected, missing, extra = 0, {}, {}
+    for name, v in pairs(modelByName) do
+        local want = v.armed == true
+        if want then expected = expected + 1 end
+        local got = BR.Config.IsArmedVehicle(v.hash) == true
+        if got ~= (BR.Config.IsArmedVehicle(signed32(v.hash)) == true) then
+            fail('%s reads as armed from one hash form and not the other', name)
+        end
+        if want and not got then missing[#missing + 1] = name end
+        if got and not want then extra[#extra + 1] = name end
+    end
+    for _, list in ipairs({ BR.Config.RefusedVehicles or {}, BR.Config.ArmedUnruledVehicles or {} }) do
+        for _, v in ipairs(list) do
+            if type(v.name) == 'string' and modelByName[v.name] == nil
+               and v.hash and BR.Config.IsArmedVehicle(v.hash) then
+                extra[#extra + 1] = v.name .. ' (no such model in the game\'s data)'
+            end
+        end
+    end
+    table.sort(missing)
+    table.sort(extra)
+    if #missing > 0 then
+        fail('%d model(s) the game\'s data arms are NOT marked Armed: %s',
+             #missing, table.concat(missing, ', '))
+    end
+    if #extra > 0 then
+        fail('%d model(s) marked Armed that the game\'s data does not arm: %s',
+             #extra, table.concat(extra, ', '))
+    end
+    if expected == 0 and models > 0 then
+        fail('config/vehicle_models.lua marks no model armed -- the expected set '
+             .. 'is empty, so the marked one cannot be held to it')
+    end
+end
+
 -- A class net with no classes in it is the whole third signal switched off, and
 -- switched off silently: every ruling would still come out of the model table
 -- and every test of the model table would still pass.
@@ -679,9 +799,10 @@ if fails == 0 then
     io.write(('\27[32mok\27[0m   %d refused vehicle hashes match their names; %d '
         .. 'resolve from both signed and unsigned (%d have the top bit set); '
         .. '%d class-net exemptions; %d strip-exempt; %d armed (%d rows, %d '
-        .. 'with no ruling yet)\n')
+        .. 'with no ruling yet), the game data\'s set exactly; %d base-game '
+        .. 'models, %d of them not automobiles\n')
         :format(checked, signedChecked, topBit, exempt, stripExempt,
-                armedRows + unruled, armedRows, unruled))
+                armedRows + unruled, armedRows, unruled, models, modelTrees))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end

@@ -19,7 +19,8 @@ volts, give Yubikeys, Storm pause, warmup pause, spawn airdrops"*
 | **Which vehicles are armed** | `br_lib/config/vehicles.lua` (`BR.Config.IsArmedVehicle`) | The vehicle spawner's "Armed" mark, out of the refused-vehicle table. Rules on nothing. |
 | **The client** | `br_core/client/devmenu.lua` | The menu, built once through `BR.Menu` (`client/menu.lua`), the vehicle spawner's menus, built the first time each opens, the key, and one `brdevsv` line per press. Decides nothing. |
 | **The server** | `br_core/server/devmenu.lua` (`BR.DevMenu`) | The door, `brdevsv`: the gate, the checks, the rate, and the console verb each row runs. |
-| **The spawn** | `br_core/server/vehicles.lua` (`BR.Vehicles.spawnInFront`) | `brcar`'s own server-side spawn, which the vehicle spawner runs too. |
+| **The spawn** | `br_core/server/vehicles.lua` (`BR.Vehicles.spawnInFront`) | `brcar`'s own server-side spawn, which the vehicle spawner runs too. Dev mode only, and called from those two places only. |
+| **The game's own models** | `br_lib/config/vehicle_models.lua` (`BR.Config.VehicleModels`), written by `tools/vehicle_models.py` | Every base-game vehicle model: its hash, the sync tree it has to be built as, how far it reaches across and below its origin, and whether the game's data arms it. The spawn's tree check and placement; `check_vehicles.lua`'s expected Armed set. Server only. |
 
 ## Who
 
@@ -119,7 +120,8 @@ streams -- and the class and the name are read off each model's model info, so
 nothing is loaded to list it. Read once, the first time the spawner opens;
 each class's menu is built the first time it opens; all of it is kept.
 **Trains get no row** (class 21): the server setter cannot build a train
-(Cfx, [forum.cfx.re/t/5217679](https://forum.cfx.re/t/createvehicleserversetter-serverside-spawned-vehicles-despawning/5217679),
+(Ehbw, answering on the Cfx.re forum,
+[forum.cfx.re/t/5217679](https://forum.cfx.re/t/createvehicleserversetter-serverside-spawned-vehicles-despawning/5217679),
 2025-08-25: "Its not possible to spawn trains using
 CREATE_VEHICLE_SERVER_SETTER").
 
@@ -168,14 +170,53 @@ client with `<name> cannot be spawned`, as a warning toast and on F8.
 
 **The server** takes a model name of letters, digits, `_` and `-` (64 at
 most, lower-cased) and one of `BR.Config.DevMenu.vehicleTypes`, and runs
-`brcar`'s spawn for the asker: `CreateVehicleServerSetter`, five meters in
-front of them, a quarter turn across, in their routing bucket. **Any model**:
-`brcar`'s allowlist pre-check is `brcar`'s and stays in `brcar`, which still
-refuses what it always refused. A success is a line on F8 (`adder (0xB779A091)
-as automobile, netId …, bucket …`); a refusal is `brcar`'s own sentence as a
+`brcar`'s spawn for the asker: `CreateVehicleServerSetter`, in front of them,
+a quarter turn across, in their routing bucket. **Any model**: `brcar`'s
+allowlist pre-check is `brcar`'s and stays in `brcar`, which still refuses
+what it always refused. A success is a line on F8 (`adder (0xB779A091) as
+automobile, netId …, bucket …`); a refusal is `brcar`'s own sentence as a
 toast -- `no ped for <id> yet …`, `the engine refused to create <model>`,
 `the platform refused to create <model> as a <type>` -- or `<model> was
 created and is already gone, or its handle never resolved`.
+
+**The tree is held to the model** (#426's review). The server setter does
+not check it, but every client does as the vehicle reaches it
+(`gta-net-five`'s `netSyncTree.cpp`): a model that is not a vehicle is not
+created, a heli, boat, bike, submarine, trailer, plane or train tree holding
+a model of another type gets a stand-in (a Buzzard2, a Dinghy2, a Sanchez, a
+Submersible, a Tanker, a Cargo Plane, a Freight), and the automobile tree
+checks nothing. So `vehicle adder plane` would be a Cargo Plane in a bucket
+the whole match shares. Every model of the base game is in
+`config/vehicle_models.lua` with the tree the game builds it as, and a
+request naming another is dropped like any line no row could have sent --
+the rows never send one. Only a model that table does not have, an add-on, is
+taken at the client's word.
+
+**Where it lands, by its size.** Turned a quarter across, a vehicle's width
+points at the asker, and at five meters nearly every plane and helicopter, the
+blimps, the Kosatka and the Tug reached them -- the Cargo Plane's wing reaches
+48.9 m from its center. So a model the table has goes out to its reach plus
+three meters, never under five, and one whose bottom sits more than a meter
+below its origin (the asker's own origin is a meter above the ground) goes in
+higher by the difference, so it is not put into the ground: the Cargo Plane
+lands 51.9 m out and 5.6 m up, a Hydra 8.7 m out, an Adder at five meters, as
+every car did.
+An add-on goes five meters out at the asker's height. **Why the table and not
+the client's measure:** the server already needs the table for the tree, its
+sizes are the game's own figures for every model, and nothing more is taken
+from the client; `GetModelDimensions` documents nothing about a model that
+is not loaded, and could not be tried here without a game running.
+
+**The table** is written from the game's own vehicle data (DurtyFree's
+`vehicles.json`, game build 3717), never by hand:
+
+    py tools/vehicle_models.py <path to vehicles.json>          write it
+    py tools/vehicle_models.py <path to vehicles.json> --check  is it current?
+
+921 models: 710 automobile, 67 bike, 22 boat, 35 heli, 43 plane, 4 submarine,
+29 trailer, 11 train; 125 armed. A name the game's hash does not come from is
+refused, and nothing is written. The manifest loads it into the server alone;
+without it the spawn refuses every model and says the table is not loaded.
 
 **Where it works.** Everywhere `brcar` does -- the warmup pad, the plane and
 the drop, the match, downed or out -- but **not from the lobby**, which answers
@@ -192,13 +233,19 @@ left on the platform's default orphan mode, so it is collected once no player
 has it in scope, and it may vanish on its own (citizenfx/fivem#2623, open).
 It is not seated: it lands in front of you, as `brcar`'s does.
 
+**The spawn is dev mode's alone.** `BR.Vehicles.spawnInFront` builds any
+model with no allowlist, so it refuses unless `BR.Server.devMode == true`
+whatever its caller checked, and `tools/verify.sh` pins its callers to
+`brcar` and this row: a third fails the build.
+
 ## What the server checks
 
 Every word, against the lists the rows are built from: an hour 0-23 or
 `reset`; a weather of `BR.World.WEATHERS` or `reset`; a state of
 `BR.Config.DevMenu.states`; an amount of `BR.Config.DevMenu.volts`; a player
 id and token; `on` or `off`; a model name (`BR.Config.DevMenu.modelWord`) and
-a sync tree of `BR.Config.DevMenu.vehicleTypes` -- `train` is not one. Anything
+a sync tree of `BR.Config.DevMenu.vehicleTypes` -- `train` is not one -- that
+is, for a model of the base game, the tree the game builds it as. Anything
 else is a request no row could have sent, and it is dropped with the usage
 line on F8. Every request read spends
 the player's slot, good or bad; one inside `minIntervalMs` (250 ms) of the last
@@ -240,17 +287,23 @@ descriptions, F10 mapped once and only on dev mode, every row's line, the
 answer applied in place, names stripped of GTA's text codes); and every line
 the rows can type, taken by the server; and `tables.lua` held to `prefix.js`.
 The vehicle spawner runs the **real** `server/vehicles.lua` over modeled
-natives -- the server setter's arguments, the position, the routing bucket,
-any model while `brcar` still refuses, every refusal and the lobby -- and the
-client over a modeled `GetAllVehicleModels`: the class rows, names, fallback,
-sort, rows that share a name told apart by model, and Armed marks from the
-table and the unruled list, the tree every kind of model is asked as, the
-keyboard and the keys that close it, and the library's trail back through the
-submenus. The verbs' bodies are covered where their commands are:
-`test_roster` (force and skip on a given match, the one-match warmup pause,
-and `brcar` itself), `test_storm` (the one-match storm pause), `test_airdrop`
+natives and the real `config/vehicle_models.lua` -- the server setter's
+arguments, the position, the routing bucket, any model while `brcar` still
+refuses, every refusal and the lobby; a model of the base game only as its
+own tree and an add-on as any; every one of the 921 put down clear by its
+size; the spawn's own dev-mode test; a server without the table refusing --
+and the client over a modeled `GetAllVehicleModels`: the class rows, names,
+fallback, sort, rows that share a name told apart by model, and Armed marks
+from the table and the unruled list, the tree every kind of model is asked
+as, the keyboard and every key that closes it, and the library's trail back
+through the submenus, a switch that throws included. The verbs' bodies are
+covered where their commands are: `test_roster` (force and skip on a given
+match, the one-match warmup pause, and `brcar` itself, every failure line
+under it), `test_storm` (the one-match storm pause), `test_airdrop`
 (`dropNow` on a given match), `test_stats` (`grantVolts`'s answers and the
 production-tables refusal), `test_yubikey` (`devKey`, and the same refusal),
 `test_shared`. `tools/check_vehicles.lua` holds the `armed` marks to their
 rule, row by row, and the unruled list to its names, clear of every row, with
-every ruling on its models what it was.
+every ruling on its models what it was; re-derives every hash in
+`config/vehicle_models.lua`; and holds the marked set to exactly the 125
+models the game's data arms, naming any it misses or adds.

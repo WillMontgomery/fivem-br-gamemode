@@ -2451,6 +2451,45 @@ if [ -f "$vehfile_" ]; then
         echo "     a refused model this verb let through."
         boundary=1
     fi
+
+    # AND ITS SPAWN HAS TWO CALLERS, PINNED (#426's review). BR.Vehicles.spawnInFront
+    # is brcar's own spawn, factored out so the dev menu's vehicle spawner runs
+    # the same code -- and it is PUBLIC and asks NO allowlist: a Hydra goes
+    # through. Each caller stands its own gate in front of it: brcar the console
+    # and the pre-check above, server/devmenu.lua dev mode at the door, on every
+    # request. A third caller would spawn any model behind whatever that caller
+    # happened to check, so the callers are an allowlist rather than a count,
+    # the way the raw command door's are. spawnInFront refuses outside dev mode
+    # on its own as well; this is what says so before that is ever leaned on.
+    #
+    # COMMENTS ARE DROPPED FIRST, so prose about the spawn is not a caller --
+    # and then ANY MENTION counts, not only a call, because
+    # `local spawn = BR.Vehicles.spawnInFront` is a caller under a new name.
+    # vehicles.lua holds the definition and brcar's call, after brcar's
+    # registration; server/devmenu.lua holds the vehicle row's.
+    SPAWNERS_="br_core/server/devmenu.lua:1 br_core/server/vehicles.lua:2"
+    spawn_now_=$(grep -rlF 'spawnInFront' "resources/[fivem-royale]" --include=*.lua 2>/dev/null \
+                 | sort | while IFS= read -r f_; do
+        n_=$(sed 's/--.*$//' "$f_" | grep -oF 'spawnInFront' | wc -l | tr -d ' ')
+        [ "$n_" -gt 0 ] && echo "${f_#"resources/[fivem-royale]/"}:$n_"
+    done | tr '\n' ' ' | sed 's/ $//')
+    brcarline_=$(grep -nF "RegisterCommand('brcar'" "$vehfile_" | head -1 | cut -d: -f1)
+    spawncall_=$(sed 's/--.*$//' "$vehfile_" | grep -nF 'spawnInFront' \
+                 | grep -vF 'function BR.Vehicles.spawnInFront(' | head -1 | cut -d: -f1)
+    if [ "$spawn_now_" != "$SPAWNERS_" ]; then
+        echo "${RED}FAIL${RST} BR.Vehicles.spawnInFront is named by '${spawn_now_}'"
+        echo "     Expected exactly '${SPAWNERS_}' (file:mentions outside comments)."
+        echo "     It spawns ANY model in front of a player with no allowlist, and"
+        echo "     its two callers -- brcar and the dev menu's vehicle row -- each"
+        echo "     gate it themselves. A new caller is a new spawn door: review it"
+        echo "     as one, then add it here."
+        boundary=1
+    elif [ -z "$brcarline_" ] || [ -z "$spawncall_" ] || [ "$spawncall_" -lt "$brcarline_" ]; then
+        echo "${RED}FAIL${RST} the spawnInFront call in $vehfile_ is not brcar's"
+        echo "     The file's one call must sit below RegisterCommand('brcar', ...),"
+        echo "     behind the console gate and the allowlist pre-check."
+        boundary=1
+    fi
 fi
 
 # THE ANTICHEAT'S OWN READOUT AND ITS TEST LEVER, narrowed the same way and for
@@ -2879,6 +2918,7 @@ fi
 if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
     echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
+    echo "${GRN}ok${RST}   brcar's spawn, BR.Vehicles.spawnInFront, has two callers: brcar and the dev menu's vehicle row"
     echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
     echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky and the clock each have one writer"
     echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"

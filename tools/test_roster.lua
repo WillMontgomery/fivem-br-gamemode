@@ -414,6 +414,10 @@ for _, f in ipairs({
     -- nil -- which reads exactly like a clean table. The fxmanifest says the
     -- same thing beside the same line.
     'br_lib/config/vehicles.lua',
+    -- Every base-game vehicle model's tree and size (#426): brcar's spawn
+    -- refuses every model without it, as it would on a box whose manifest lost
+    -- the line.
+    'br_lib/config/vehicle_models.lua',
     'br_lib/config/loot.lua',
     -- THE PUMP'S NUMBERS, FOR THE REPAIR KIT (#228). server/inventory.lua's
     -- use tick grants slices of BR.Config.Fuel.healthMax, and its completion
@@ -5556,6 +5560,119 @@ do
         ok(entityBucket[veh] == 0,
             'a target in bucket 0 still has the car put in bucket 0',
             ('entity %s'):format(tostring(entityBucket[veh])))
+    end
+
+    -- ═══ THE LINES UNDER EACH FAILURE, WHICH ARE THIS VERB'S OWN (#426's review) ═══
+    --
+    -- The sentence above each refusal comes back from BR.Vehicles.spawnInFront;
+    -- the lines brcar prints under some of them are brcar's, and nothing
+    -- asserted them: the 'zero' lines, the platform's own error under a
+    -- 'threw', the 'setter' lines and the heading's guard each survived being
+    -- broken. Substring assertions, for the reason the block above gives.
+    do
+        -- THE ENGINE ANSWERED 0: a name that is no vehicle in this build is
+        -- the likeliest cause, and the line says so.
+        printed = {}
+        createFail = true
+        runCommand('brcar', '1')
+        createFail = false
+        ok(printedSaying('the engine refused to create granger') ~= nil,
+            'a 0 from the engine says the engine refused')
+        ok(printedSaying('The likeliest cause is that the name is not a vehicle in this') ~= nil
+            and printedSaying('typo gets this far and no further') ~= nil,
+            'and what usually causes it')
+
+        -- THE PLATFORM THREW: its own words go under brcar's line, because
+        -- they are the only account of a refusal neither check foresaw.
+        printed = {}
+        SETTER_TYPES.automobile = nil
+        runCommand('brcar', '1')
+        SETTER_TYPES.automobile = true
+        ok(printedSaying('the platform refused to create granger as a automobile') ~= nil,
+            'a throwing create says the platform refused it')
+        ok(printedSaying('CREATE_VEHICLE_SERVER_SETTER: Invalid entity type automobile') ~= nil,
+            'and prints the platform\'s own error under it')
+
+        -- NO SERVER SETTER IN THIS RUNTIME: the native that makes the verb work.
+        printed = {}
+        local savedSetter = CreateVehicleServerSetter
+        CreateVehicleServerSetter = nil
+        local n = #created
+        runCommand('brcar', '1')
+        CreateVehicleServerSetter = savedSetter
+        ok(#created == n and printedSaying('CreateVehicleServerSetter is not available') ~= nil,
+            'a runtime with no server setter creates nothing and says so')
+        ok(printedSaying('That native is what makes this verb work at all') ~= nil
+            and printedSaying('every match here runs in a routing bucket. See #212.') ~= nil,
+            'and why the RPC is no substitute')
+
+        -- A HEADING THAT THROWS is a stale ped handle, not a dead verb: the car
+        -- goes north of the player, as if the heading had read 0.
+        local savedHeading = GetEntityHeading
+        GetEntityHeading = function() error('Tried to access invalid entity') end
+        n = #created
+        local okCall = pcall(runCommand, 'brcar', '1')
+        GetEntityHeading = savedHeading
+        local c = created[#created]
+        ok(okCall and #created == n + 1, 'a heading that throws still builds the car',
+            ('%s, %d vs %d'):format(tostring(okCall), #created, n + 1))
+        ok(c ~= nil and math.abs(c.x - 100.0) < 0.001 and math.abs(c.y - 205.0) < 0.001
+                    and math.abs(c.heading - 90.0) < 0.001,
+            'north of the player and turned across, as heading 0 puts it',
+            c and ('%.2f, %.2f, %.1f'):format(c.x, c.y, c.heading) or 'nothing created')
+    end
+
+    -- ═══ THE TREE, HELD TO THE MODEL (#426's review) ═══
+    --
+    -- Every client builds a stand-in for a model in the wrong tree, so `brcar 1
+    -- granger heli` would have been a Buzzard2 out of the verb that spawns only
+    -- what the gamemode tolerates. The spawn refuses it now, and brcar prints
+    -- the spawn's sentence.
+    do
+        local n = #created
+        printed = {}
+        runCommand('brcar', '1', 'dinghy')
+        ok(#created == n, 'a boat asked for as the default automobile is built as nothing',
+            ('%d vs %d'):format(#created, n))
+        ok(printedSaying('the game builds dinghy as boat, not automobile') ~= nil,
+            'and the line names the tree it needed')
+        printed = {}
+        runCommand('brcar', '1', 'granger', 'heli')
+        ok(#created == n and printedSaying('the game builds granger as automobile, not heli') ~= nil,
+            'nor is a car asked for as a heli -- every client would build a Buzzard2')
+    end
+
+    -- ═══ A WIDE ONE IS PUT DOWN CLEAR, AND NONE INTO THE GROUND (#426's review) ═══
+    --
+    -- The Tug is a boat the allowlist tolerates, 5.2 m to its widest side and
+    -- 4.0 m below its origin (config/vehicle_models.lua): out to its reach plus
+    -- three meters, and up by what reaches more than a meter below the ped's
+    -- origin. The granger, which fits, went where it always went (above).
+    do
+        runCommand('brcar', '1', 'tug', 'boat')
+        local c = created[#created]
+        ok(c ~= nil and c.hash == GetHashKey('tug')
+                    and math.abs(c.x - 100.0) < 0.001 and math.abs(c.y - 208.2) < 0.001,
+            'the Tug lands 8.2 m out, so three meters stand between it and the player',
+            c and ('%.2f, %.2f'):format(c.x, c.y) or 'nothing created')
+        ok(c ~= nil and math.abs(c.z - 33.0) < 0.001,
+            'and 3 m up, so its keel is at the player\'s feet rather than under them',
+            c and ('%.2f'):format(c.z) or 'nothing created')
+    end
+
+    -- ═══ AND THE SPAWN ASKS DEV MODE ITSELF (#426's review) ═══
+    --
+    -- brcar's own gate reads dev mode for truth; the spawn holds it to `true`,
+    -- as the dev menu's door does. A dev mode that is merely truthy gets past
+    -- the verb and no further.
+    do
+        BR.Server.devMode = 1
+        local n = #created
+        printed = {}
+        runCommand('brcar', '1')
+        ok(#created == n and printedSaying('this spawn is dev-mode only') ~= nil,
+            'a truthy dev mode that is not `true` builds nothing, and says so')
+        BR.Server.devMode = true
     end
 
     -- --------------------------- and the detector is untouched by any of it ---

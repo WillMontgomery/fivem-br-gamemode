@@ -1909,9 +1909,18 @@ end
 --- platform's side; the verb lowercases before it looks, so `Automobile` works
 --- at the console and `automobile` is what is passed.
 ---
---- IT IS NOT CHECKED AGAINST THE MODEL by the platform: the type selects which
---- sync tree is built and nothing cross-references it against vehicles.meta. So
---- this list bounds what can be ASKED FOR, not what is correct.
+--- THE SERVER SETTER DOES NOT CHECK IT AGAINST THE MODEL, AND EVERY CLIENT DOES
+--- -- BY SWAPPING THE MODEL. The type selects which sync tree the server builds,
+--- and nothing on the server cross-references it against vehicles.meta. Each
+--- client checks it as it applies the creation node (gta-net-five,
+--- netSyncTree.cpp, CVehicleCreationDataNode__CanApply): a model that is not a
+--- vehicle is not created at all; a heli, boat, bike, submarine, trailer, plane
+--- or train tree holding a model of another type gets a stand-in instead -- a
+--- Buzzard2, a Dinghy2, a Sanchez, a Submersible, a Tanker, a Cargo Plane, a
+--- Freight; and the automobile tree's check is commented out, so anything is
+--- built in it as asked. So this list bounds what can be ASKED FOR. What is
+--- correct for a model of the base game is config/vehicle_models.lua's (#426),
+--- and spawnInFront below refuses any other.
 local VEHICLE_TYPES = {
     'automobile', 'bike', 'boat', 'heli', 'plane',
     'submarine', 'trailer', 'train',
@@ -1928,12 +1937,59 @@ for _, t in ipairs(VEHICLE_TYPES) do VEHICLE_TYPE[t] = true end
 --- for by name.
 local DEFAULT_TYPE = 'automobile'
 
---- How far in front of the target player the vehicle lands, in metres.
+--- How far in front of the target player the vehicle lands, in meters.
 ---
 --- FAR ENOUGH NOT TO LAND ON THEM. A vehicle created at a ped's own coordinates
 --- leaves the engine to resolve the intersection, and it resolves it by throwing
 --- one of the two.
 local SPAWN_AHEAD_M = 5.0
+
+--- ...OR FURTHER, FOR ONE WIDER THAN A CAR (#426): its center goes out far
+--- enough to leave this much between the player and the nearest part of it.
+--- Turned a quarter across, a vehicle's width points at the player. A car
+--- reaches about a meter either side of its center and still lands at
+--- SPAWN_AHEAD_M; a Hydra's wing reaches 5.7 m and a Cargo Plane's 48.9, and
+--- at 5 m both landed on whoever asked.
+local SPAWN_CLEAR_M = 3.0
+
+--- How far a standing ped's origin is above the ground under it. A model whose
+--- bottom sits further below its own origin than this would go INTO the ground
+--- at the player's height, so it goes in higher by the difference -- a Cargo
+--- Plane by 5.6 m, a Kosatka by 7 -- and anything car-sized exactly where it
+--- always went.
+local PED_ORIGIN_ABOVE_GROUND_M = 1.0
+
+--- config/vehicle_models.lua's rows by normalized hash, built the first time a
+--- spawn asks. The table is data loaded once with the resource; nothing
+--- replaces it while it runs.
+local modelRows
+
+--- What the game's own data says about a model (#426): its row of
+--- config/vehicle_models.lua, or nil for a model that table does not have --
+--- an add-on, or a name that is no model at all.
+--- @param model string
+--- @return table|nil row    { name, hash, tree, reach, below, armed }
+--- @return boolean loaded   false when config/vehicle_models.lua is not loaded
+local function modelRow(model)
+    local list = BR.Config and BR.Config.VehicleModels
+    if type(list) ~= 'table' then return nil, false end
+    if modelRows == nil then
+        modelRows = {}
+        for _, v in ipairs(list) do modelRows[BR.NormHash(v.hash)] = v end
+    end
+    return modelRows[BR.NormHash(GetHashKey(model))], true
+end
+
+--- The sync tree the game builds a model as (#426): config/vehicle_models.lua's,
+--- or nil for a model that table does not have -- an add-on, whose tree only
+--- the client that asked can read off the game. server/devmenu.lua drops a
+--- request naming any other tree; spawnInFront refuses one.
+--- @param model string
+--- @return string|nil
+function BR.Vehicles.modelTree(model)
+    local row = modelRow(model)
+    return row and row.tree or nil
+end
 
 --- PUT ONE IN FRONT OF A PLAYER, IN THEIR ROUTING BUCKET: brcar's own spawn,
 --- after brcar's rule (#426).
@@ -1946,7 +2002,7 @@ local SPAWN_AHEAD_M = 5.0
 --- allowlist pre-check stayed in the verb, where it was and where
 --- tools/verify.sh looks for it.
 ---
---- ═══ IT ASKS NOTHING ABOUT THE MODEL, AND THAT IS ITS CALLERS' TO OWN ═══
+--- ═══ IT ASKS NO RULING ABOUT THE MODEL, AND THAT IS ITS CALLERS' TO OWN ═══
 ---
 --- No allowlist: a Hydra goes through. brcar asks the ruling before it gets
 --- here; the only other caller is server/devmenu.lua's `vehicle` row -- dev
@@ -1959,27 +2015,69 @@ local SPAWN_AHEAD_M = 5.0
 --- vehicle came from, and neither excuses this one. Whether a dev menu vehicle
 --- should be excused is the owner's open question on #426.
 ---
---- EVERYTHING brcar's NOTE BELOW SAYS ABOUT THE SPAWN IS TRUE OF THIS: the
---- server setter and why (#212), the type that is not checked against the
---- model, 5 m ahead and a quarter turn across, the bucket copied from the
---- player because the setter leaves it in 0, the guarded natives, the
---- normalized DoesEntityExist, the default orphan mode and
+--- ═══ WHAT IT DOES ASK, AND WHY (#426's review) ═══
+---
+--- DEV MODE, though both doors ask it first. This is a public function that
+--- builds any model with no allowlist; tools/verify.sh pins its callers to
+--- brcar and server/devmenu.lua, and this is what still holds if a third one
+--- ever gets round that.
+---
+--- THE TREE, against the game's own data. A tree that is not the model's is
+--- not the asker's car built wrong -- every client swaps the model for a
+--- stand-in (VEHICLE_TYPES above), so `adder plane` is a Cargo Plane in a
+--- bucket the whole warmup pad or match shares, and `brcar <id> adder heli`
+--- would be a Buzzard2 out of the verb that only spawns what the gamemode
+--- tolerates. A model config/vehicle_models.lua has -- every vehicle of the
+--- base game -- is built only as its own tree. One it does not have is an
+--- add-on, and the caller's word stands.
+---
+--- AND THE SIZE, from the same row: out to its reach plus SPAWN_CLEAR_M, and up
+--- by however far its bottom sits below its origin past
+--- PED_ORIGIN_ABOVE_GROUND_M. An add-on goes SPAWN_AHEAD_M, at the player's
+--- height, as everything did before.
+---
+--- EVERYTHING ELSE brcar's NOTE BELOW SAYS ABOUT THE SPAWN IS TRUE OF THIS: the
+--- server setter and why (#212), the quarter turn across, the bucket copied
+--- from the player because the setter leaves it in 0, the guarded natives,
+--- the normalized DoesEntityExist, the default orphan mode and
 --- citizenfx/fivem#2623.
 ---
 --- IT PRINTS NOTHING. It answers what it built, or why it did not: `why` is the
---- sentence brcar has always printed for that refusal, and `kind` lets brcar
---- print the lines it adds under some of them. The dev menu sends the asker a
---- line of its own.
+--- sentence brcar prints for that refusal, and `kind` lets brcar print the
+--- lines it adds under some of them. The dev menu sends the asker a line of
+--- its own.
 --- @param target integer   the player it goes in front of
 --- @param model string     the model's name
 --- @param vtype string     the sync tree; the caller has checked it is one the
----                         platform builds
+---                         platform builds, and a model of the base game is
+---                         refused as any but its own
 --- @return table|nil made  { veh, hash, netId, x, y, z, heading, bucket,
 ---                         bucketNote, exists }
 --- @return string|nil why
---- @return string|nil kind    'ped' | 'setter' | 'coords' | 'threw' | 'zero'
+--- @return string|nil kind    'devmode' | 'table' | 'tree' | 'ped' | 'setter'
+---                            | 'coords' | 'threw' | 'zero'
 --- @return string|nil detail  the platform's own error, for 'threw'
 function BR.Vehicles.spawnInFront(target, model, vtype)
+    -- DEV MODE, EQUAL TO true -- the dev menu door's own test, so a truthy
+    -- string or a 1 is not dev mode here either.
+    if not (BR.Server and BR.Server.devMode == true) then
+        return nil, 'this spawn is dev-mode only (br_devMode true)', 'devmode'
+    end
+
+    -- THE TABLE IS REQUIRED, NOT OPTIONAL. Read as "no row" when it is missing,
+    -- every model would be an add-on: every tree taken at the asker's word and
+    -- every plane put down on top of them -- with nothing to say the check had
+    -- gone. A manifest that lost the line refuses every spawn and says why.
+    local row, loaded = modelRow(model)
+    if not loaded then
+        return nil, 'config/vehicle_models.lua is not loaded, so no model can be checked',
+            'table'
+    end
+    if row and row.tree ~= vtype then
+        return nil, ('the game builds %s as %s, not %s'):format(model, row.tree, vtype),
+            'tree'
+    end
+
     -- THE PED, NOT THE PLAYER -- brcar's note on its own check. brcar asks
     -- before its rule and so never fails here; the dev menu has only this.
     local e = BR.Roster and BR.Roster.get and BR.Roster.get(target)
@@ -2002,18 +2100,28 @@ function BR.Vehicles.spawnInFront(target, model, vtype)
         return nil, ('no coordinates for %d'):format(target), 'coords'
     end
 
-    -- IN FRONT OF THEM, TURNED ACROSS. GTA's heading is degrees clockwise from
-    -- north, so the forward vector is (-sin, cos) -- and the vehicle is set a
-    -- quarter turn off that, so what faces the player is a door.
+    -- IN FRONT OF THEM, TURNED ACROSS. GTA's heading is degrees
+    -- counter-clockwise from north, so the forward vector is (-sin, cos) -- and
+    -- the vehicle is set a quarter turn off that, so what faces the player is a
+    -- door.
     local heading = 0.0
     if GetEntityHeading then
         local okH, h = pcall(GetEntityHeading, ped)
         heading = okH and tonumber(h) or 0.0
     end
+
+    -- AS FAR OUT AS IT IS WIDE, AND NOT INTO THE GROUND (the constants above).
+    local ahead, lift = SPAWN_AHEAD_M, 0.0
+    if row and row.reach then
+        ahead = math.max(SPAWN_AHEAD_M, row.reach + SPAWN_CLEAR_M)
+    end
+    if row and row.below then
+        lift = math.max(0.0, row.below - PED_ORIGIN_ABOVE_GROUND_M)
+    end
     local rad = math.rad(heading)
-    local x = p.x - math.sin(rad) * SPAWN_AHEAD_M
-    local y = p.y + math.cos(rad) * SPAWN_AHEAD_M
-    local z = p.z
+    local x = p.x - math.sin(rad) * ahead
+    local y = p.y + math.cos(rad) * ahead
+    local z = p.z + lift
 
     -- NORMALIZED BEFORE IT IS TESTED, because this is a handle and the platform
     -- answers 0 for failure -- and 0 is truthy. `if veh then` reports a success
@@ -2161,9 +2269,12 @@ end
 --- automobile/bike/boat/heli/plane/submarine/trailer/train, case-sensitive, and
 --- an unrecognised value THROWS rather than answering 0 -- so it is taken as an
 --- optional argument, defaulted, and the call is guarded like everything else
---- here. It selects which sync tree is built and is NOT validated against the
---- model, so a mismatch is the caller's to get right; the readout says which
---- one was used.
+--- here. It selects which sync tree is built. The server setter does not check
+--- it against the model; every client does, and builds a stand-in in place of
+--- a mismatched model (VEHICLE_TYPES above) -- so spawnInFront refuses a model
+--- of the base game asked for as anything but the tree the game builds it as
+--- (config/vehicle_models.lua, #426), and only an add-on's is the caller's to
+--- get right. The readout says which one was used.
 ---
 --- ═══ IT SPAWNS BESIDE A PLAYER, WHICH IS NOW A CHOICE RATHER THAN A LIMIT ═══
 ---
@@ -2276,9 +2387,9 @@ RegisterCommand('brcar', function(src, args)
     if not VEHICLE_TYPE[vtype] then
         print(('  %s is not a vehicle type the platform knows'):format(vtype))
         print(('  It must be one of: %s'):format(table.concat(VEHICLE_TYPES, ', ')))
-        print('  It picks which sync tree the server builds, and it is NOT')
-        print('  checked against the model -- so it has to match what the model')
-        print('  actually is (vehicles.meta), not what you would like it to be.')
+        print('  It picks which sync tree the server builds, so it has to match')
+        print('  what the model actually is (vehicles.meta), not what you would')
+        print('  like it to be.')
         return
     end
 
@@ -2311,9 +2422,12 @@ RegisterCommand('brcar', function(src, args)
     end
 
     -- THE SPAWN IS BR.Vehicles.spawnInFront, ABOVE (#426). Everything from
-    -- the setter check to the readout's facts moved there unchanged, so the
-    -- dev menu's vehicle spawner runs the same piece of code; the rule above
-    -- stays here, and so does every line this verb prints.
+    -- the setter check to the readout's facts moved there, so the dev menu's
+    -- vehicle spawner runs the same piece of code, and #426's review gave it
+    -- the tree and the size from config/vehicle_models.lua -- a model of the
+    -- base game asked for as another tree is refused there, in its own words,
+    -- printed below. The rule above stays here, and so does every line this
+    -- verb prints.
     local made, failed, kind, detail = BR.Vehicles.spawnInFront(target, model, vtype)
     if not made then
         print('  ' .. tostring(failed))
