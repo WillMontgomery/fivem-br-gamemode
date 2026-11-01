@@ -1935,6 +1935,164 @@ local DEFAULT_TYPE = 'automobile'
 --- one of the two.
 local SPAWN_AHEAD_M = 5.0
 
+--- PUT ONE IN FRONT OF A PLAYER, IN THEIR ROUTING BUCKET: brcar's own spawn,
+--- after brcar's rule (#426).
+---
+--- Owner, 2026-11-01, of the dev menu's vehicle spawner: "remember this needs
+--- to be a server-side entity" -- and "For any that you believe to be armed,
+--- allow them to be spawned here". So the menu spawns the way `brcar` spawns,
+--- and it spawns anything. The spawn is factored out of the verb so both doors
+--- run one piece of code -- the dev menu's rule since #422 -- and the verb's
+--- allowlist pre-check stayed in the verb, where it was and where
+--- tools/verify.sh looks for it.
+---
+--- ═══ IT ASKS NOTHING ABOUT THE MODEL, AND THAT IS ITS CALLERS' TO OWN ═══
+---
+--- No allowlist: a Hydra goes through. brcar asks the ruling before it gets
+--- here; the only other caller is server/devmenu.lua's `vehicle` row -- dev
+--- mode, on every request -- which is meant to spawn what brcar refuses. What
+--- the server setter builds raises `serverEntityCreated`, which nothing in
+--- this resource listens to, so the creation detector at the top of this file
+--- never sees it (it never saw brcar's either). A player DRIVING a refused one
+--- in a match is still sampled by the occupancy detector above, and
+--- client/vehrefuse.lua still puts them out of it: neither knows where a
+--- vehicle came from, and neither excuses this one. Whether a dev menu vehicle
+--- should be excused is the owner's open question on #426.
+---
+--- EVERYTHING brcar's NOTE BELOW SAYS ABOUT THE SPAWN IS TRUE OF THIS: the
+--- server setter and why (#212), the type that is not checked against the
+--- model, 5 m ahead and a quarter turn across, the bucket copied from the
+--- player because the setter leaves it in 0, the guarded natives, the
+--- normalized DoesEntityExist, the default orphan mode and
+--- citizenfx/fivem#2623.
+---
+--- IT PRINTS NOTHING. It answers what it built, or why it did not: `why` is the
+--- sentence brcar has always printed for that refusal, and `kind` lets brcar
+--- print the lines it adds under some of them. The dev menu sends the asker a
+--- line of its own.
+--- @param target integer   the player it goes in front of
+--- @param model string     the model's name
+--- @param vtype string     the sync tree; the caller has checked it is one the
+---                         platform builds
+--- @return table|nil made  { veh, hash, netId, x, y, z, heading, bucket,
+---                         bucketNote, exists }
+--- @return string|nil why
+--- @return string|nil kind    'ped' | 'setter' | 'coords' | 'threw' | 'zero'
+--- @return string|nil detail  the platform's own error, for 'threw'
+function BR.Vehicles.spawnInFront(target, model, vtype)
+    -- THE PED, NOT THE PLAYER -- brcar's note on its own check. brcar asks
+    -- before its rule and so never fails here; the dev menu has only this.
+    local e = BR.Roster and BR.Roster.get and BR.Roster.get(target)
+    local ped = e and e.ped
+    if not ped or ped == 0 then
+        return nil, ('no ped for %d yet -- connected but not spawned, or OneSync is off')
+            :format(target), 'ped'
+    end
+
+    if not CreateVehicleServerSetter then
+        return nil, 'CreateVehicleServerSetter is not available in this runtime.', 'setter'
+    end
+
+    -- GUARDED, WHICH brcar's READ WAS NOT. A ped handle that went stale since
+    -- the roster sampled it makes GetEntityCoords throw rather than answer, and
+    -- a throw here is a dev menu press answered by nobody. A throw is "no
+    -- coordinates", which is what it means.
+    local okP, p = pcall(GetEntityCoords, ped)
+    if not okP or not p then
+        return nil, ('no coordinates for %d'):format(target), 'coords'
+    end
+
+    -- IN FRONT OF THEM, TURNED ACROSS. GTA's heading is degrees clockwise from
+    -- north, so the forward vector is (-sin, cos) -- and the vehicle is set a
+    -- quarter turn off that, so what faces the player is a door.
+    local heading = 0.0
+    if GetEntityHeading then
+        local okH, h = pcall(GetEntityHeading, ped)
+        heading = okH and tonumber(h) or 0.0
+    end
+    local rad = math.rad(heading)
+    local x = p.x - math.sin(rad) * SPAWN_AHEAD_M
+    local y = p.y + math.cos(rad) * SPAWN_AHEAD_M
+    local z = p.z
+
+    -- NORMALIZED BEFORE IT IS TESTED, because this is a handle and the platform
+    -- answers 0 for failure -- and 0 is truthy. `if veh then` reports a success
+    -- that did not happen and then prints a netId for nothing.
+    --
+    -- GUARDED, BECAUSE A BAD TYPE THROWS. The callers' checks should have
+    -- caught every one of those, so reaching the failure branch here means the
+    -- platform refused for a reason neither knows about -- which is exactly the
+    -- case that has to say so rather than disappear.
+    local hash = GetHashKey(model)
+    local okCreate, raw = pcall(CreateVehicleServerSetter,
+        hash, vtype, x, y, z, heading + 90.0)
+    if not okCreate then
+        return nil, ('the platform refused to create %s as a %s'):format(model, vtype),
+            'threw', tostring(raw)
+    end
+
+    local veh = math.tointeger(tonumber(raw)) or 0
+    if veh == 0 then
+        return nil, ('the engine refused to create %s'):format(model), 'zero'
+    end
+
+    -- ═══ EVERY NATIVE FROM HERE DOWN IS GUARDED, AND #212 IS WHY ═══
+    --
+    -- This is the stretch that killed the verb. `makeEntityFunction` natives
+    -- THROW on a handle the server cannot resolve rather than answering a
+    -- default, and the old code called four of them bare -- so one bad handle
+    -- took the whole handler down between creating the car and saying anything
+    -- about it. The car existed and the console was told nothing.
+    --
+    -- The server setter returns a real entity, so none of these SHOULD throw
+    -- now. `should` is the word that put this verb in the issue tracker once
+    -- already: what the guard buys is that the next platform surprise costs a
+    -- printed line instead of a silent verb.
+    local function ask(fn, ...)
+        if not fn then return nil, 'native not available in this runtime' end
+        local okCall, v = pcall(fn, ...)
+        if not okCall then return nil, tostring(v) end
+        return v, nil
+    end
+
+    -- THE BUCKET, COPIED FROM THE PLAYER RATHER THAN RE-DERIVED. roster.lua owns
+    -- the rule that picks it -- lobby, warmup pad, or the match's own -- and a
+    -- second copy of that rule here would be a second copy to keep right.
+    --
+    -- THE SETTER PUTS IT IN BUCKET 0 AND MATCHES DO NOT RUN THERE, so this is
+    -- not a refinement: a car that stays in 0 is invisible to the person who
+    -- asked for it, which is half of what "brcar does nothing" meant.
+    local bucket = math.tointeger(tonumber(
+        (ask(GetPlayerRoutingBucket, tostring(target)))))
+    local bucketNote
+    if bucket == nil then
+        bucketNote = 'UNKNOWN -- could not read the player\'s bucket'
+    else
+        -- ZERO IS A REAL BUCKET AND IT IS TRUTHY, so this is an explicit nil
+        -- test rather than `if bucket then`. Setting 0 on an entity already in
+        -- 0 is a no-op; NOT setting it because 0 looked falsy would be the bug.
+        local _, err = ask(SetEntityRoutingBucket, veh, bucket)
+        bucketNote = err and ('FAILED (' .. err .. ')') or tostring(bucket)
+    end
+
+    local netId = math.tointeger(tonumber((ask(NetworkGetNetworkIdFromEntity, veh)))) or 0
+
+    -- DID IT ACTUALLY APPEAR? `DoesEntityExist` is the one entity native the
+    -- platform does NOT build with makeEntityFunction -- it is hand-written and
+    -- answers false rather than throwing -- so it is the only honest answer
+    -- available here, and it is normalized through didHit for this file's
+    -- fifth-time reason: a FiveM BOOL hands Lua 1 on some builds, and 0 is
+    -- truthy, so `if DoesEntityExist(v) then` is true for a car that is not
+    -- there.
+    local exists = didHit((ask(DoesEntityExist, veh)))
+
+    return {
+        veh = veh, hash = hash, netId = netId,
+        x = x, y = y, z = z, heading = heading + 90.0,
+        bucket = bucket, bucketNote = bucketNote, exists = exists,
+    }, nil, nil, nil
+end
+
 --- PUT A VEHICLE IN THE WORLD WITHOUT A TRAINER. Console only, dev mode only.
 ---
 ---   brcar <serverId> [model]    spawn a vehicle in front of that player
@@ -2152,112 +2310,34 @@ RegisterCommand('brcar', function(src, args)
         return
     end
 
-    if not CreateVehicleServerSetter then
-        print('  CreateVehicleServerSetter is not available in this runtime.')
-        print('  That native is what makes this verb work at all: server-side')
-        print('  CreateVehicle is an RPC whose handle cannot be bucketed, and')
-        print('  every match here runs in a routing bucket. See #212.')
+    -- THE SPAWN IS BR.Vehicles.spawnInFront, ABOVE (#426). Everything from
+    -- the setter check to the readout's facts moved there unchanged, so the
+    -- dev menu's vehicle spawner runs the same piece of code; the rule above
+    -- stays here, and so does every line this verb prints.
+    local made, failed, kind, detail = BR.Vehicles.spawnInFront(target, model, vtype)
+    if not made then
+        print('  ' .. tostring(failed))
+        if kind == 'setter' then
+            print('  That native is what makes this verb work at all: server-side')
+            print('  CreateVehicle is an RPC whose handle cannot be bucketed, and')
+            print('  every match here runs in a routing bucket. See #212.')
+        elseif kind == 'threw' then
+            print(('    %s'):format(tostring(detail)))
+        elseif kind == 'zero' then
+            print('  The likeliest cause is that the name is not a vehicle in this')
+            print('  game build -- the server does not validate the model, so a')
+            print('  typo gets this far and no further.')
+        end
         return
     end
-
-    local p = GetEntityCoords(ped)
-    if not p then
-        print(('  no coordinates for %d'):format(target))
-        return
-    end
-
-    -- IN FRONT OF THEM, TURNED ACROSS. GTA's heading is degrees clockwise from
-    -- north, so the forward vector is (-sin, cos) -- and the vehicle is set a
-    -- quarter turn off that, so what faces the player is a door.
-    local heading = 0.0
-    if GetEntityHeading then heading = tonumber(GetEntityHeading(ped)) or 0.0 end
-    local rad = math.rad(heading)
-    local x = p.x - math.sin(rad) * SPAWN_AHEAD_M
-    local y = p.y + math.cos(rad) * SPAWN_AHEAD_M
-    local z = p.z
-
-    -- NORMALISED BEFORE IT IS TESTED, because this is a handle and the platform
-    -- answers 0 for failure -- and 0 is truthy. `if veh then` reports a success
-    -- that did not happen and then prints a netId for nothing.
-    --
-    -- GUARDED, BECAUSE A BAD TYPE THROWS. The check above should have caught
-    -- every one of those, so reaching the failure branch here means the
-    -- platform refused for a reason this verb does not know about -- which is
-    -- exactly the case that has to print rather than disappear.
-    local okCreate, raw = pcall(CreateVehicleServerSetter,
-        hash, vtype, x, y, z, heading + 90.0)
-    if not okCreate then
-        print(('  the platform refused to create %s as a %s'):format(model, vtype))
-        print(('    %s'):format(tostring(raw)))
-        return
-    end
-
-    local veh = math.tointeger(tonumber(raw)) or 0
-    if veh == 0 then
-        print(('  the engine refused to create %s'):format(model))
-        print('  The likeliest cause is that the name is not a vehicle in this')
-        print('  game build -- the server does not validate the model, so a')
-        print('  typo gets this far and no further.')
-        return
-    end
-
-    -- ═══ EVERY NATIVE FROM HERE DOWN IS GUARDED, AND #212 IS WHY ═══
-    --
-    -- This is the stretch that killed the verb. `makeEntityFunction` natives
-    -- THROW on a handle the server cannot resolve rather than answering a
-    -- default, and the old code called four of them bare -- so one bad handle
-    -- took the whole handler down between creating the car and saying anything
-    -- about it. The car existed and the console was told nothing.
-    --
-    -- The server setter returns a real entity, so none of these SHOULD throw
-    -- now. `should` is the word that put this verb in the issue tracker once
-    -- already: what the guard buys is that the next platform surprise costs a
-    -- printed line instead of a silent verb.
-    local function ask(fn, ...)
-        if not fn then return nil, 'native not available in this runtime' end
-        local okCall, v = pcall(fn, ...)
-        if not okCall then return nil, tostring(v) end
-        return v, nil
-    end
-
-    -- THE BUCKET, COPIED FROM THE PLAYER RATHER THAN RE-DERIVED. roster.lua owns
-    -- the rule that picks it -- lobby, warmup pad, or the match's own -- and a
-    -- second copy of that rule here would be a second copy to keep right.
-    --
-    -- THE SETTER PUTS IT IN BUCKET 0 AND MATCHES DO NOT RUN THERE, so this is
-    -- not a refinement: a car that stays in 0 is invisible to the person who
-    -- asked for it, which is half of what "brcar does nothing" meant.
-    local bucket = math.tointeger(tonumber(
-        (ask(GetPlayerRoutingBucket, tostring(target)))))
-    local bucketNote
-    if bucket == nil then
-        bucketNote = 'UNKNOWN -- could not read the player\'s bucket'
-    else
-        -- ZERO IS A REAL BUCKET AND IT IS TRUTHY, so this is an explicit nil
-        -- test rather than `if bucket then`. Setting 0 on an entity already in
-        -- 0 is a no-op; NOT setting it because 0 looked falsy would be the bug.
-        local _, err = ask(SetEntityRoutingBucket, veh, bucket)
-        bucketNote = err and ('FAILED (' .. err .. ')') or tostring(bucket)
-    end
-
-    local netId = math.tointeger(tonumber((ask(NetworkGetNetworkIdFromEntity, veh)))) or 0
-
-    -- DID IT ACTUALLY APPEAR? `DoesEntityExist` is the one entity native the
-    -- platform does NOT build with makeEntityFunction -- it is hand-written and
-    -- answers false rather than throwing -- so it is the only honest answer
-    -- available here, and it is normalised through didHit for this file's
-    -- fifth-time reason: a FiveM BOOL hands Lua 1 on some builds, and 0 is
-    -- truthy, so `if DoesEntityExist(v) then` is true for a car that is not
-    -- there.
-    local exists = didHit((ask(DoesEntityExist, veh)))
 
     print(('[br_core] brcar: %s (0x%08X) as %s -> %s (%d)')
-        :format(model, BR.NormHash(hash), vtype, e.name or '?', target))
+        :format(model, BR.NormHash(made.hash), vtype, e.name or '?', target))
     print(('  at       %.1f, %.1f, %.1f   bucket %s')
-        :format(x, y, z, bucketNote))
+        :format(made.x, made.y, made.z, made.bucketNote))
     print(('  handle   %d   netId %d   exists %s')
-        :format(veh, netId, tostring(exists)))
-    if not exists then
+        :format(made.veh, made.netId, tostring(made.exists)))
+    if not made.exists then
         print('  ^ THE SERVER DOES NOT SEE IT. It was created and is already')
         print('    gone, or the handle never resolved. Nothing below is true.')
         return

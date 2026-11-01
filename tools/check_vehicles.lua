@@ -101,6 +101,9 @@ local seenName, seenHash = {}, {}
 --- duplicate-name check as well.
 local refusedWhy = {}
 local checked, topBit, signedChecked = 0, 0, 0
+--- #426: the rows IsArmedVehicle says yes for, counted for the report line, and
+--- by name for the anchors after the loop.
+local armedRows, armedName = 0, {}
 
 for _, v in ipairs(BR.Config.RefusedVehicles or {}) do
     checked = checked + 1
@@ -234,9 +237,80 @@ for _, v in ipairs(BR.Config.RefusedVehicles or {}) do
             fail('%s is %q in the table but VehicleRefusalFor answers %q',
                  v.name, tostring(v.why), tostring(ruling))
         end
+
+        -- ═══ #426: `armed`, THE DEV MENU'S "Armed" MARK ═══
+        --
+        -- DATA, NOT A RULING -- and the check just above is what proves it: a
+        -- FLIES row is refused for flight whether it carries the marker or not,
+        -- because `ruling` is held to `v.why` on every row that is not
+        -- disarmed. What is checked here is the marker itself and its one
+        -- reader, in both hash forms for the reason everything above is.
+        --
+        -- ONLY ON A FLIES ROW, and true or absent -- keepRefused's two rules,
+        -- for keepRefused's reasons. An ARMED or TANK row is armed already, so
+        -- the field there would be a no-op that reads like a decision; and a
+        -- `false` reads as "considered and unarmed" when it is the same as not
+        -- writing it.
+        if v.armed ~= nil and v.armed ~= true then
+            fail('%s has armed = %s -- it is true or it is absent',
+                 v.name, tostring(v.armed))
+        end
+        if v.armed ~= nil and v.why ~= BR.Config.VehicleRefusal.FLIES then
+            fail('%s carries `armed` but is %q, not FLIES -- an ARMED or TANK '
+                 .. 'row is armed already, so the field is dead and reads like '
+                 .. 'a decision', v.name, tostring(v.why))
+        end
+        local wantArmed = v.why == BR.Config.VehicleRefusal.ARMED
+            or v.why == BR.Config.VehicleRefusal.TANK
+            or v.armed == true
+        if BR.Config.IsArmedVehicle(v.hash) ~= wantArmed then
+            fail('%s is %q%s but IsArmedVehicle says %s', v.name,
+                 tostring(v.why), v.armed and ' and marked armed' or '',
+                 tostring(BR.Config.IsArmedVehicle(v.hash)))
+        end
+        if BR.Config.IsArmedVehicle(signed32(v.hash)) ~= wantArmed then
+            fail('%s answers IsArmedVehicle differently from its SIGNED hash '
+                 .. '0x%08X -- this is the form GetHashKey hands the client',
+                 v.name, v.hash)
+        end
+        -- EVERY MODEL THE #322 RULING DRIVES WITH THE GUN OFF IS ARMED. Today
+        -- that is true by construction -- the disarmed set is ARMED rows -- and
+        -- this is what says so the day the two are written apart.
+        if BR.Config.IsDisarmedVehicle(v.hash) and not BR.Config.IsArmedVehicle(v.hash) then
+            fail('%s is driven with its gun held off (IsDisarmedVehicle) but '
+                 .. 'IsArmedVehicle says it has none', v.name)
+        end
+        if wantArmed then
+            armedRows = armedRows + 1
+            armedName[v.name] = true
+        end
     end
 
     ::continue::
+end
+
+-- ------------------------------------------------- #426, the armed marks --
+--
+-- THE LOOP PROVES THE ROWS AGREE WITH THE FUNCTION. It cannot notice a marker
+-- that was deleted, which turns a Hydra in the dev menu into a row with nothing
+-- on it -- the same silence the caracara anchor below guards against, one field
+-- along. So the aircraft nobody could mistake are named, and so are three that
+-- carry nothing: a Maverick's searchlight is in the game's weapon data and is
+-- not a weapon, and `titan` -- the Battle Bus -- is unarmed (its armed sister is
+-- `titan2`, which is in no row).
+for _, n in ipairs({ 'hydra', 'lazer', 'buzzard', 'savage', 'hunter', 'akula',
+                     'oppressor2' }) do
+    if not seenName[n] then
+        fail('`%s` is not in the refused table at all', n)
+    elseif not armedName[n] then
+        fail('`%s` is not marked armed. It flies and carries guns; without '
+             .. '`armed = true` the dev menu shows it as unarmed.', n)
+    end
+end
+for _, n in ipairs({ 'maverick', 'titan', 'cargoplane' }) do
+    if armedName[n] then
+        fail('`%s` is marked armed and carries no weapon', n)
+    end
 end
 
 -- ------------------------------------------------------- #322, in the whole --
@@ -299,6 +373,13 @@ do
              .. 'model table, which is enumerated; class 19 is the catch-all '
              .. 'for military hardware nobody wrote down and converting it '
              .. 'makes an unknown tank drivable.')
+    end
+    -- AND IT IS NOT "ARMED" EITHER (#426). The mark reads the table and only
+    -- the table: class 19 means military, not armed -- ClassNetExempt names
+    -- five unarmed models in it.
+    if BR.Config.IsArmedVehicle(UNLISTED) then
+        fail('an unlisted model reads as armed. IsArmedVehicle answers from '
+             .. 'the rows; the class net is not a statement about weapons.')
     end
 end
 
@@ -510,8 +591,8 @@ if fails == 0 then
     -- The number on this line is what tells those apart.
     io.write(('\27[32mok\27[0m   %d refused vehicle hashes match their names; %d '
         .. 'resolve from both signed and unsigned (%d have the top bit set); '
-        .. '%d class-net exemptions; %d strip-exempt\n')
-        :format(checked, signedChecked, topBit, exempt, stripExempt))
+        .. '%d class-net exemptions; %d strip-exempt; %d armed\n')
+        :format(checked, signedChecked, topBit, exempt, stripExempt, armedRows))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end

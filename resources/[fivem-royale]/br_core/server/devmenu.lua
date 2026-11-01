@@ -19,6 +19,8 @@
 --   Warmup pause    brwarmupfreeze   BR.Match.setMatchWarmupFrozen
 --                                                            server/match.lua
 --   Spawn airdrops  brairdrop now    BR.Airdrop.dropNow      server/airdrop.lua
+--   Vehicle spawner brcar            BR.Vehicles.spawnInFront
+--                                                            server/vehicles.lua
 --
 -- The two pauses are the one exception to "the verb's own body": the console
 -- verbs hold EVERY match, and these hold one (below). They share the verbs'
@@ -86,10 +88,40 @@
 --
 -- An hour 0-23 or `reset`; a weather of BR.World.WEATHERS or `reset`; a state
 -- of BR.Config.DevMenu.states; an amount of BR.Config.DevMenu.volts; a player
--- id and token; `on` or `off`. Anything else is a request no row could have
--- sent: it is dropped with the usage line on the asker's F8 and nothing else.
--- Every request spends the asker's slot, taken or not, and one inside
--- minIntervalMs of the last is dropped unread.
+-- id and token; `on` or `off`; a model name by BR.Config.DevMenu.modelWord and
+-- a sync tree of BR.Config.DevMenu.vehicleTypes. Anything else is a request no
+-- row could have sent: it is dropped with the usage line on the asker's F8 and
+-- nothing else. Every request spends the asker's slot, taken or not, and one
+-- inside minIntervalMs of the last is dropped unread.
+--
+-- ═══ THE VEHICLE SPAWNER (#426): brcar's SPAWN, WITHOUT brcar's RULE ═══
+--
+-- Owner, 2026-11-01: "can you also add to our dev menu a vehicle spawner
+-- menu? remember this needs to be a server-side entity ... For any that you
+-- believe to be armed, allow them to be spawned here". So `vehicle <model>
+-- <type>` runs BR.Vehicles.spawnInFront -- `brcar`'s own spawn, factored out
+-- of the verb -- for the asker: the server setter, five meters in front of
+-- them, in their routing bucket. And it runs it for ANY model. brcar's
+-- allowlist pre-check is brcar's and stays in brcar; here a Hydra is a Hydra.
+--
+-- THE SERVER CANNOT TELL WHAT A MODEL IS. There is no server native that says
+-- whether a name is a vehicle, or which sync tree it needs, so both come from
+-- the client -- IsModelInCdimage, IsModelAVehicle and the IsThisModelA*
+-- natives (client/devmenu.lua) -- and what is checked here is their SHAPE: a
+-- plain model word, and one of the seven trees the platform builds. A wrong
+-- tree is the asker's own car built wrong; the platform does not check one
+-- against the model either (brcar's note).
+--
+-- NOT FROM THE LOBBY, which is the one place this differs from brcar. Every
+-- lobby player stands frozen on the one lobby mark, in one shared bucket, so a
+-- car spawned there would sit in every lobby player's character shot. The
+-- answer is the menu's own lobby sentence, `no match running`. Everywhere
+-- else -- the warmup pad, the plane and the drop, the match, downed or out --
+-- it is brcar's rule: in front of whoever asked, in whatever bucket they are
+-- in. In warmup and in a match the match's vehicle rules still hold:
+-- client/vehrefuse.lua puts a player out of a refused vehicle, and
+-- server/vehicles.lua's occupancy detector counts a driver in one. Neither is
+-- excused for a dev menu car; that is the owner's open question on #426.
 
 BR = BR or {}
 BR.DevMenu = BR.DevMenu or {}
@@ -122,7 +154,8 @@ end
 
 local USAGE = 'usage: brdevsv open | time <0-23|reset> | weather <name|reset> '
     .. '| match <state|skip> | volts <player id> <token> <amount> '
-    .. '| yubikey <player id> <token> | storm <on|off> | warmup <on|off> | airdrop  '
+    .. '| yubikey <player id> <token> | storm <on|off> | warmup <on|off> | airdrop '
+    .. '| vehicle <model> <type>  '
     .. '(the dev menu, /brdev or F10, runs this for you)'
 
 --- IS THIS A DEV BOX, AS br_core STARTED IT? Asked first on every request.
@@ -338,6 +371,39 @@ ACTIONS.airdrop = function(src, _, answer)
     -- (brairdrop now's own note). Only a refusal, or a drop the storm turned
     -- down, is a toast.
     answer(sited or outcome == 'wait', line)
+    return true
+end
+
+--- Vehicle spawner (#426): `vehicle <model> <type>`, brcar's spawn for the
+--- asker. See the header for why it is any model, and why not from the lobby.
+ACTIONS.vehicle = function(src, a, answer)
+    local model = cfg().modelWord(a[2])
+    local vtype = a[3]
+    if not model or not oneOf(cfg().vehicleTypes, vtype) then return false end
+
+    -- THE LOBBY BUCKET, ASKED THE WAY server/roster.lua PICKS IT: a LOBBY
+    -- player, or one with no match, is in the lobby's. A player on the way home
+    -- from a match still carries its id and is already LOBBY.
+    local e = BR.Roster.get(src)
+    if (e and e.state == BR.PlayerState.LOBBY) or BR.Server.matchOf(src) == nil then
+        answer(false, NO_MATCH)
+        return true
+    end
+
+    local made, why = BR.Vehicles.spawnInFront(src, model, vtype)
+    if not made then
+        answer(false, why)
+        return true
+    end
+    -- A CAR THE SERVER CANNOT SEE IS NOT A SUCCESS -- brcar's readout says the
+    -- same, in capitals.
+    if not made.exists then
+        answer(false, ('%s was created and is already gone, or its handle never resolved')
+            :format(model))
+        return true
+    end
+    answer(true, ('%s (0x%08X) as %s, netId %d, bucket %s')
+        :format(model, BR.NormHash(made.hash), vtype, made.netId, made.bucketNote))
     return true
 end
 

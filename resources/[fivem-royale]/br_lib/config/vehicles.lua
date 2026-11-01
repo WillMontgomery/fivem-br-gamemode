@@ -122,6 +122,33 @@ BR.Config.VehicleRefusal = {
 --- GROUPED BY REASON RATHER THAN ALPHABETICALLY, because the groups are the two
 --- halves of the owner's rule and a reader checking the rule against the list
 --- should be able to see each half whole.
+---
+--- ═══ `armed = true`: A FLIGHT ROW THAT ALSO CARRIES WEAPONS (#426) ═══
+---
+--- A row has one `why`, and for anything that flies it is FLIES -- so a Hydra
+--- and a Maverick read the same here, and nothing in this table said which of
+--- the two carries guns. The dev menu's vehicle spawner has to. Owner,
+--- 2026-11-01: "For any that you believe to be armed, allow them to be spawned
+--- here, but put a note on their row in red that says "Armed"". So a flight row
+--- whose model is armed says so, in a field of its own.
+---
+--- IT IS DATA, AND NO RULING READS IT. IsAllowedVehicle, IsDisarmedVehicle and
+--- VehicleRefusalFor never look at it, so every row refuses exactly as it did --
+--- tools/check_vehicles.lua asserts the ruling row by row, marker or none.
+--- BR.Config.IsArmedVehicle, below, is its one reader. It goes on FLIES rows
+--- only: an ARMED or TANK row is armed already, and the field there would be a
+--- no-op that reads like a decision -- `keepRefused`'s objection, the other way
+--- round.
+---
+--- WHICH ROWS, AND FROM WHAT. The game's own vehicle data names a model's
+--- vehicle weapons, and a flight row is marked when it names one: DurtyFree's
+--- dump of it (github.com/DurtyFree/gta-v-data-dumps, vehicles.json, the
+--- `Weapons` of each model, game build 3717), on the footing the Arena War block
+--- below states -- a weapon that is a workshop fitting counts, because on a
+--- FiveM server a mod slot is one SetVehicleMod away. A searchlight is in that
+--- data and is not a weapon, so it marks nothing (the Buzzard2's, the
+--- Maverick's). A bomb bay is a mod the data does not list at all, so an
+--- aircraft whose only weapon is a bomb bay is not marked.
 local F = BR.Config.VehicleRefusal.FLIES
 local A = BR.Config.VehicleRefusal.ARMED
 local T = BR.Config.VehicleRefusal.TANK
@@ -130,51 +157,51 @@ BR.Config.RefusedVehicles = {
     -- Fixed-wing. `titan` is the Battle Bus -- see the header.
     { name = 'alkonost',      why = F, hash = 0xEA313705 },
     { name = 'alphaz1',       why = F, hash = 0xA52F6866 },
-    { name = 'avenger',       why = F, hash = 0x81BD2ED0 },
-    { name = 'avenger2',      why = F, hash = 0x18606535 },
+    { name = 'avenger',       why = F, hash = 0x81BD2ED0, armed = true },
+    { name = 'avenger2',      why = F, hash = 0x18606535, armed = true },
     { name = 'besra',         why = F, hash = 0x6CBD1D6D },
     { name = 'blimp',         why = F, hash = 0xF7004C86 },
     { name = 'blimp2',        why = F, hash = 0xDB6B4924 },
     { name = 'blimp3',        why = F, hash = 0xEDA4ED97 },
-    { name = 'bombushka',     why = F, hash = 0xFE0A508C },
+    { name = 'bombushka',     why = F, hash = 0xFE0A508C, armed = true },
     { name = 'cargoplane',    why = F, hash = 0x15F27762 },
     { name = 'cuban800',      why = F, hash = 0xD9927FE3 },
     { name = 'dodo',          why = F, hash = 0xCA495705 },
     { name = 'duster',        why = F, hash = 0x39D6779E },
     { name = 'howard',        why = F, hash = 0xC3F25753 },
-    { name = 'hydra',         why = F, hash = 0x39D6E83F },
+    { name = 'hydra',         why = F, hash = 0x39D6E83F, armed = true },
     { name = 'jet',           why = F, hash = 0x3F119114 },
-    { name = 'lazer',         why = F, hash = 0xB39B0AE6 },
+    { name = 'lazer',         why = F, hash = 0xB39B0AE6, armed = true },
     { name = 'luxor',         why = F, hash = 0x250B0C5E },
     { name = 'luxor2',        why = F, hash = 0xB79F589E },
     { name = 'mammatus',      why = F, hash = 0x97E55D11 },
-    { name = 'microlight',    why = F, hash = 0x96E24857 },
+    { name = 'microlight',    why = F, hash = 0x96E24857, armed = true },
     { name = 'miljet',        why = F, hash = 0x09D80F93 },
-    { name = 'mogul',         why = F, hash = 0xD35698EF },
-    { name = 'molotok',       why = F, hash = 0x5D56F01B },
+    { name = 'mogul',         why = F, hash = 0xD35698EF, armed = true },
+    { name = 'molotok',       why = F, hash = 0x5D56F01B, armed = true },
     { name = 'nimbus',        why = F, hash = 0xB2CF7250 },
-    { name = 'nokota',        why = F, hash = 0x3DC92356 },
-    { name = 'pyro',          why = F, hash = 0xAD6065C0 },
-    { name = 'raiju',         why = F, hash = 0x0E4C8C4D },
-    { name = 'rogue',         why = F, hash = 0xC5DD6967 },
-    { name = 'seabreeze',     why = F, hash = 0xE8983F9F },
+    { name = 'nokota',        why = F, hash = 0x3DC92356, armed = true },
+    { name = 'pyro',          why = F, hash = 0xAD6065C0, armed = true },
+    { name = 'raiju',         why = F, hash = 0x0E4C8C4D, armed = true },
+    { name = 'rogue',         why = F, hash = 0xC5DD6967, armed = true },
+    { name = 'seabreeze',     why = F, hash = 0xE8983F9F, armed = true },
     { name = 'shamal',        why = F, hash = 0xB79C1BF5 },
-    { name = 'starling',      why = F, hash = 0x9A9EB7DE },
-    { name = 'streamer216',   why = F, hash = 0x0B706A72 },
-    { name = 'strikeforce',   why = F, hash = 0x64DE07A1 },
+    { name = 'starling',      why = F, hash = 0x9A9EB7DE, armed = true },
+    { name = 'streamer216',   why = F, hash = 0x0B706A72, armed = true },
+    { name = 'strikeforce',   why = F, hash = 0x64DE07A1, armed = true },
     { name = 'stunt',         why = F, hash = 0x81794C70 },
     { name = 'titan',         why = F, hash = 0x761E2AD3 },
-    { name = 'tula',          why = F, hash = 0x3E2E4F8A },
+    { name = 'tula',          why = F, hash = 0x3E2E4F8A, armed = true },
     { name = 'velum',         why = F, hash = 0x9C429B6A },
     { name = 'velum2',        why = F, hash = 0x403820E8 },
     { name = 'vestra',        why = F, hash = 0x4FF77E37 },
-    { name = 'volatol',       why = F, hash = 0x1AAD0DED },
+    { name = 'volatol',       why = F, hash = 0x1AAD0DED, armed = true },
 
     -- Rotary.
-    { name = 'akula',         why = F, hash = 0x46699F47 },
-    { name = 'annihilator',   why = F, hash = 0x31F0B376 },
-    { name = 'annihilator2',  why = F, hash = 0x11962E49 },
-    { name = 'buzzard',       why = F, hash = 0x2F03547B },
+    { name = 'akula',         why = F, hash = 0x46699F47, armed = true },
+    { name = 'annihilator',   why = F, hash = 0x31F0B376, armed = true },
+    { name = 'annihilator2',  why = F, hash = 0x11962E49, armed = true },
+    { name = 'buzzard',       why = F, hash = 0x2F03547B, armed = true },
     { name = 'buzzard2',      why = F, hash = 0x2C75F0DD },
     { name = 'cargobob',      why = F, hash = 0xFCFCB68B },
     { name = 'cargobob2',     why = F, hash = 0x60A7EA10 },
@@ -183,30 +210,30 @@ BR.Config.RefusedVehicles = {
     { name = 'conada',        why = F, hash = 0xE384DD25 },
     { name = 'frogger',       why = F, hash = 0x2C634FBD },
     { name = 'frogger2',      why = F, hash = 0x742E9AC0 },
-    { name = 'havok',         why = F, hash = 0x89BA59F5 },
-    { name = 'hunter',        why = F, hash = 0xFD707EDE },
+    { name = 'havok',         why = F, hash = 0x89BA59F5, armed = true },
+    { name = 'hunter',        why = F, hash = 0xFD707EDE, armed = true },
     { name = 'maverick',      why = F, hash = 0x9D0450CA },
     { name = 'polmav',        why = F, hash = 0x1517D4D9 },
-    { name = 'savage',        why = F, hash = 0xFB133A17 },
-    { name = 'seasparrow',    why = F, hash = 0xD4AE63D9 },
-    { name = 'seasparrow2',   why = F, hash = 0x494752F7 },
-    { name = 'seasparrow3',   why = F, hash = 0x5F017E6B },
+    { name = 'savage',        why = F, hash = 0xFB133A17, armed = true },
+    { name = 'seasparrow',    why = F, hash = 0xD4AE63D9, armed = true },
+    { name = 'seasparrow2',   why = F, hash = 0x494752F7, armed = true },
+    { name = 'seasparrow3',   why = F, hash = 0x5F017E6B, armed = true },
     { name = 'skylift',       why = F, hash = 0x3E48BF23 },
     { name = 'supervolito',   why = F, hash = 0x2A54C47D },
     { name = 'supervolito2',  why = F, hash = 0x9C5E5644 },
     { name = 'swift',         why = F, hash = 0xEBC24DF2 },
     { name = 'swift2',        why = F, hash = 0x4019CB4C },
-    { name = 'valkyrie',      why = F, hash = 0xA09E15FD },
-    { name = 'valkyrie2',     why = F, hash = 0x5BFA5C4B },
+    { name = 'valkyrie',      why = F, hash = 0xA09E15FD, armed = true },
+    { name = 'valkyrie2',     why = F, hash = 0x5BFA5C4B, armed = true },
     { name = 'volatus',       why = F, hash = 0x920016F1 },
 
     -- Flies AND is armed. Filed under flight because that is the half a player
     -- would notice first: an Oppressor Mk II over the final circle is a problem
     -- long before it fires anything.
-    { name = 'deluxo',        why = F, hash = 0x586765FB },
-    { name = 'oppressor',     why = F, hash = 0x34B82784 },
-    { name = 'oppressor2',    why = F, hash = 0x7B54A9D3 },
-    { name = 'thruster',      why = F, hash = 0x58CDAF30 },
+    { name = 'deluxo',        why = F, hash = 0x586765FB, armed = true },
+    { name = 'oppressor',     why = F, hash = 0x34B82784, armed = true },
+    { name = 'oppressor2',    why = F, hash = 0x7B54A9D3, armed = true },
+    { name = 'thruster',      why = F, hash = 0x58CDAF30, armed = true },
 
     -- Stays on the ground (or under water) and carries a gun.
     --
@@ -704,6 +731,34 @@ function BR.Config.IsDisarmedVehicle(hash)
     -- above them files them under flight "because that is the half a player
     -- would notice first", which is a true sentence either way.
     return v.keepRefused ~= true
+end
+
+--- Does this model carry built-in weapons, as far as this file knows? (#426)
+---
+--- The dev menu's "Armed" mark, and nothing else: it changes no ruling, and
+--- nothing that refuses, ejects or files asks it. Three kinds of row say yes:
+---
+---   ARMED          every one -- the models IsDisarmedVehicle names, which the
+---                  #322 ruling drives with the gun held off, and the seven
+---                  `keepRefused` keeps refusing;
+---   TANK           every one: the owner named tanks a category of their own,
+---                  and a tank has built-in weapons (BR.Config.VehicleRefusal's
+---                  own note);
+---   FLIES + armed  the aircraft, and the things that fly, that carry guns as
+---                  well -- see `armed` above the table.
+---
+--- A MODEL IN NO ROW IS NOT ARMED HERE, whatever it is. The class net is not
+--- asked: class 19 means "military", not "has a gun" (ClassNetExempt has the
+--- five that prove it). And the table is a deny-list, so an armed car nobody
+--- wrote down reads as unarmed -- this file's standing limit, not a new one.
+--- @param hash integer|nil  a model hash, signed or not
+--- @return boolean
+function BR.Config.IsArmedVehicle(hash)
+    if hash == nil then return false end
+    local v = BR.Config.RefusedVehicleByHash[BR.NormHash(hash)]
+    if v == nil then return false end
+    local R = BR.Config.VehicleRefusal
+    return v.why == R.ARMED or v.why == R.TANK or v.armed == true
 end
 
 --- The whole ruling on one vehicle, from whatever signals the caller can get.

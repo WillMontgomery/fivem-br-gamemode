@@ -46,11 +46,47 @@
 -- values beside them are data -- hours, the engine's weather names, the match
 -- states as the console spells them, players' names, Volts amounts -- and the
 -- rows carry no descriptions.
+--
+-- ═══ THE VEHICLE SPAWNER (#426) ═══
+--
+-- Owner, 2026-11-01: "can you also add to our dev menu a vehicle spawner
+-- menu? remember this needs to be a server-side entity. include spawn by name
+-- and have a category selection submenu with a list of all vehicles in each
+-- category. For any that you believe to be armed, allow them to be spawned
+-- here, but put a note on their row in red that says "Armed""
+--
+--   Vehicle spawner   the last row, opening a menu of its own:
+--     Spawn by name   GTA's on-screen keyboard, titled with the row's label
+--     <a class>       one row per vehicle class the game has vehicles in,
+--                     named as the game names it, each opening a menu of
+--                     every vehicle in that class by its in-game name
+--
+-- THE LISTS ARE THE GAME'S. GetAllVehicleModels is every vehicle archetype the
+-- game registered -- the base game, every DLC, and any vehicle a resource
+-- streams -- and GetVehicleClassFromName and GetDisplayNameFromVehicleModel
+-- read a model's model info, so nothing is requested or loaded to list one.
+-- Read once, the first time the spawner opens; each class's menu is built the
+-- first time it opens; all of it is kept. Trains get no row: the server setter
+-- cannot build one (config/devmenu.lua's vehicleClassesLeftOut).
+--
+-- "ARMED" IS config/vehicles.lua's, through BR.Config.IsArmedVehicle, so the
+-- menu and the gamemode's own rulings read one list. In GTA's red: a right
+-- label is a GTA text command, so its color is a token naming an index into
+-- the engine's palette (BR.Menu.red) -- never the project's cyan or gold.
+--
+-- THE SERVER CANNOT TELL WHAT A MODEL IS, so this side does. A row or a typed
+-- name is asked for only when IsModelInCdimage and IsModelAVehicle say this
+-- game has it as a vehicle, and the request names the sync tree the
+-- IsThisModelA* natives make it (syncTree, below). The spawn is the server's,
+-- brcar's own: server/devmenu.lua's `vehicle`.
 
 BR = BR or {}
 BR.DevMenu = BR.DevMenu or {}
 
 local D = BR.DevMenu
+
+--- 0 IS TRUTHY IN LUA AND A FIVEM BOOL NATIVE MAY ANSWER 1 OR 0.
+local isTrue = BR.NativeBool
 
 --- @return table BR.Config.DevMenu, read at call time
 local function cfg() return BR.Config.DevMenu end
@@ -75,6 +111,25 @@ local players = {}
 
 --- What the list rows send, index for index with what they show.
 local hourWords, weatherWords = {}, {}
+
+--- Every menu this file built: the one menu, the Vehicle spawner and the
+--- class menus (#426). [menu] = true. D.up and the put-away walk it.
+local mine = {}
+
+--- The Vehicle spawner's menu, once built, and the class menus by class
+--- number, each once built.
+local spawner = nil
+local classMenus = {}
+
+--- The vehicles, read once: { classes = { { class, name, vehicles }... } },
+--- each class's vehicles { model, hash, class, name, key, armed } sorted by
+--- name. nil until the spawner first opens.
+local catalog = nil
+
+--- GTA's on-screen keyboard, while Spawn by name has it up and until its keys
+--- settle (SPAWN BY NAME, below): { menu, closed, quiet }. Else nil.
+local kb = nil
+local kbPass = nil
 
 --- Ask the server: one `brdevsv` line, run as this player.
 --- @param line string
@@ -188,6 +243,506 @@ local function add(m, key, item)
     pcall(m.AddItem, m, item)
 end
 
+--- Is `v` one of `list`?
+--- @param list table @param v any
+--- @return boolean
+local function oneOf(list, v)
+    for _, x in ipairs(list or {}) do
+        if x == v then return true end
+    end
+    return false
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SUBMENUS ARE THE LIBRARY'S, AND SO IS THE TRAIL BACK (#426)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A row opens its menu through the library's own UIMenu:SwitchTo, and Back
+-- in it is the library's own UIMenu:GoBack -- so Escape walks back one menu at
+-- a time, as in every Rockstar menu, and nothing here reads a key. The way
+-- back is the library's BreadcrumbsHandler: SwitchTo pushes the menu it opens,
+-- and GoBack shows the one before it, or closes everything at the first.
+--
+-- ⚠ THAT TRAIL OUTLIVES A CLOSE, AND A STALE ONE OPENS SOMEBODY ELSE'S MENU.
+-- UIMenu:Visible(false) -- the close the toggle, the gun shop and the emote
+-- wheel all use (BR.Menu.closeAll) -- leaves the trail where it was, and
+-- Visible(true) pushes a menu only onto an EMPTY trail. So:
+--
+--   * the gun shop closed by walking away leaves [gun shop]; the dev menu
+--     opened next would sit on it, and Back from the Vehicle spawner would
+--     open the GUN SHOP;
+--   * the dev menu put away inside a class menu leaves [dev menu, spawner,
+--     class]; Escape at the gun counter or the emote wheel opened next would
+--     walk back into the Vehicle spawner.
+--
+-- Two lines close both. The trail is cleared before the dev menu shows, so it
+-- starts there; and every menu of this file clears it when it closes for any
+-- reason that is not the library's own switch -- SwitchTo and GoBack set
+-- SwitchInProgress around the menu they hide, and every other close leaves it
+-- false. A trail one deep was always harmless -- Back at one deep closes
+-- whatever is up -- which is why the gun shop's single menu never showed any
+-- of this.
+
+--- Is the library half way through showing one menu in place of another?
+--- @return boolean
+local function switching()
+    return type(BreadcrumbsHandler) == 'table'
+        and BreadcrumbsHandler.SwitchInProgress == true
+end
+
+--- Empty the library's trail. See above.
+local function forgetTrail()
+    if type(BreadcrumbsHandler) ~= 'table'
+        or type(BreadcrumbsHandler.Clear) ~= 'function' then return end
+    pcall(BreadcrumbsHandler.Clear, BreadcrumbsHandler)
+end
+
+--- Count a menu as this file's, and give it the close that tidies the trail.
+--- @param m table
+local function adopt(m)
+    mine[m] = true
+    m.OnMenuClose = function()
+        if not switching() then forgetTrail() end
+    end
+end
+
+--- Show `to` in place of `from`, through the library's own switch.
+---
+--- ⚠ 1 AND false, AND BOTH ARE LOAD-BEARING. MenuHandler:SwitchTo reads an
+--- undefined global (`newer`) whenever the selection it is handed is above 1,
+--- so anything else throws -- 1 keeps the menu on the row it was left on. And
+--- `inheritOldMenuParams` defaults to true at UIMenu:SwitchTo, where it rebuilds
+--- the new menu and copies the old one's settings over it; every menu here
+--- came out of BR.Menu.new with the same ones.
+---
+--- A SWITCH THAT THROWS IS PUT RIGHT. It raises SwitchInProgress first, and
+--- the library reads no key from any menu while that is up -- so a throw
+--- between the two would leave every ScaleformUI menu in the game deaf.
+--- @param from table @param to table
+local function switchTo(from, to)
+    if type(from) ~= 'table' or type(to) ~= 'table' then return end
+    local ok = pcall(from.SwitchTo, from, to, 1, false)
+    if not ok and type(BreadcrumbsHandler) == 'table' then
+        BreadcrumbsHandler.SwitchInProgress = false
+    end
+end
+
+--- The menu of this file on screen, or nil. A live read of the library's own
+--- answer, never a flag of ours -- see D.up.
+--- @return table|nil
+local function shownMenu()
+    for m in pairs(mine) do
+        local ok, vis = pcall(m.Visible, m)
+        if ok and vis == true then return m end
+    end
+    return nil
+end
+
+--- Put away whichever of this file's menus is up. Its own close tidies the
+--- trail (adopt).
+local function putAway()
+    local m = shownMenu()
+    if m then pcall(m.Visible, m, false) end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- WHAT A MODEL IS, ASKED OF THE GAME (#426)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- A native that says yes -- asked only if this build has it, never allowed
+--- to throw, and normalized (isTrue).
+--- @param fn function|nil @param ... any
+--- @return boolean
+local function says(fn, ...)
+    if type(fn) ~= 'function' then return false end
+    local ok, v = pcall(fn, ...)
+    return ok and isTrue(v)
+end
+
+--- A model's vehicle class, 0-22, or nil. Read off the model info, so the
+--- model need not be loaded -- vMenu's spawner lists every vehicle the same way.
+--- @param hash integer
+--- @return integer|nil
+local function classOf(hash)
+    if type(GetVehicleClassFromName) ~= 'function' then return nil end
+    local ok, c = pcall(GetVehicleClassFromName, hash)
+    return ok and math.tointeger(tonumber(c)) or nil
+end
+
+--- THE SYNC TREE THE SERVER BUILDS A MODEL AS, worked out from the model.
+---
+--- CreateVehicleServerSetter takes the tree as its second argument and does
+--- not check it against the model -- its own documentation: "the same type as
+--- the `type` field in vehicles.meta". The trees are the game's network-object
+--- classes, and each vehicles.meta type is one of them (the client's
+--- GET_VEHICLE_TYPE asks a vehicle for exactly that):
+---
+---   car, quad, amphibious car or quad, submarine car   automobile
+---   motorbike, bicycle                                  bike
+---   boat, jetski                                        boat
+---   helicopter, blimp                                   heli
+---   plane                                               plane
+---   submarine                                           submarine
+---   trailer                                             trailer
+---   train                                               train
+---
+--- THE NATIVES NAME MOST OF THEM AND NOT ALL. IS_THIS_MODEL_A_CAR is a car and
+--- not an amphibious one, and IS_THIS_MODEL_A_QUADBIKE a quad and not an
+--- amphibious one, so the two amphibious natives are asked beside them;
+--- IS_THIS_MODEL_A_BIKE answers for bicycles too; a jetski is a boat, which
+--- IS_THIS_MODEL_A_BOAT answers for -- the jetski native is that answer plus a
+--- flag, and its old name, _IS_THIS_MODEL_A_SUBMERSIBLE, is wrong: it does not
+--- see a submarine. A blimp, a submarine, a submarine car and a trailer have
+--- no native at all. So what none of them claims goes by its class, which in
+--- this game build puts each kind in one place:
+---
+---   14 Boats                   the four submarines         submarine
+---   15 Helicopters, 16 Planes  the three blimps            heli
+---   11 Utility, 19 Military    every trailer -- 28, and
+---                              the Anti-Aircraft Trailer   trailer
+---   anything else              the Stromberg and Toreador  automobile
+---
+--- Every vehicle in the game's own data comes out right this way -- its 921
+--- models, types and classes, game build 3717 (DurtyFree's vehicles.json).
+--- AN ADD-ON OF AN ODD TYPE IN AN ODD CLASS CAN COME OUT WRONG, and what the
+--- game does with a tree that is not the model's is not measured here.
+--- @param hash integer
+--- @param class integer|nil
+--- @return string
+local function syncTree(hash, class)
+    if says(IsThisModelATrain, hash) then return 'train' end
+    if says(IsThisModelAHeli, hash) then return 'heli' end
+    if says(IsThisModelAPlane, hash) then return 'plane' end
+    if says(IsThisModelABoat, hash) then return 'boat' end
+    if says(IsThisModelABicycle, hash) or says(IsThisModelABike, hash) then
+        return 'bike'
+    end
+    if says(IsThisModelACar, hash) or says(IsThisModelAQuadbike, hash)
+        or says(IsThisModelAnAmphibiousCar, hash)
+        or says(IsThisModelAnAmphibiousQuadbike, hash) then
+        return 'automobile'
+    end
+    if class == 14 then return 'submarine' end
+    if class == 15 or class == 16 then return 'heli' end
+    if class == 11 or class == 19 then return 'trailer' end
+    return 'automobile'
+end
+
+--- The client's one refusal (config/devmenu.lua's cannotSpawn), as a warning
+--- toast and on F8 -- the server's refusals arrive the same two ways.
+--- @param what string  the name, as typed or as the row has it
+local function cannot(what)
+    local fmt = tostring(cfg().cannotSpawn or '%s')
+    local ok, text = pcall(string.format, fmt, shown(what))
+    if not ok then text = fmt end
+    print('[br_core] brdev: ' .. text)
+    if BR.Notify then BR.Notify(text, 'warn') end
+end
+
+--- Ask the server for one: `vehicle <model> <tree>`. Only for a vehicle this
+--- game has, and only as a tree the server takes -- a train is neither asked
+--- for nor listed.
+--- @param model string  a model word (config/devmenu.lua's modelWord)
+--- @param hash integer
+--- @param class integer|nil  the row's class; asked of the game when nil
+local function request(model, hash, class)
+    if not (says(IsModelInCdimage, hash) and says(IsModelAVehicle, hash)) then
+        cannot(model)
+        return
+    end
+    local tree = syncTree(hash, class or classOf(hash))
+    if not oneOf(cfg().vehicleTypes, tree) then
+        cannot(model)
+        return
+    end
+    ask(('vehicle %s %s'):format(model, tree))
+end
+
+--- What the keyboard handed back. Spaces round it are dropped and an empty
+--- answer is nothing at all, the same as Escape.
+--- @param typed any
+local function spawnByName(typed)
+    local text = tostring(typed or ''):match('^%s*(.-)%s*$') or ''
+    if text == '' then return end
+    local model = cfg().modelWord(text)
+    if not model then
+        cannot(text)
+        return
+    end
+    request(model, GetHashKey(model), nil)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SPAWN BY NAME: GTA'S KEYBOARD OVER THE OPEN MENU (#426)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- WHILE IT IS UP, THE MENU READS NO KEY. UIMenu:ProcessControl returns before
+-- it reads one whenever UpdateOnscreenKeyboard() is 0 -- "still editing" --
+-- so typing moves no cursor and presses no row; the menu goes on drawing under
+-- the box.
+--
+-- OUR OWN KEY LAYER IS THE OTHER READER, and the library knows nothing of it.
+-- client/keybinds.lua reads the keyboard raw, so typing `titan` would also
+-- have been T (chat), I, T, A and N. BR.Keys.setExternalScreen is that layer's
+-- door for a screen it cannot see (the terminals' computer is the other): the
+-- raw reads stop, Escape is the screen's and not our pause menu's, and the
+-- keys are adopted rather than fired when it ends.
+--
+-- ⚠ AND THE KEY THAT CLOSES THE BOX IS STILL DOWN WHEN IT HAS GONE. The menu
+-- reads Select on the PRESS of Enter and Back on the RELEASE of Escape
+-- (UIMenu:ProcessControl), and the box swallows only what reaches it while it
+-- is up -- so the Enter that confirms can be read as a fresh Select, opening
+-- the keyboard again (the library's own example waits 250 ms after one for
+-- exactly this), and the Escape that cancels can be read as Back on its way
+-- up, closing the Vehicle spawner. So the menu's Select and Back are switched
+-- off (its Controls.Select / Controls.Back) from the moment the box opens
+-- until both keys have been up for KB_SETTLE_FRAMES frames -- an edge of the
+-- keyboard rather than a guess at how long a press lasts.
+--
+-- ESCAPE ON THE BOX: UpdateOnscreenKeyboard() answers 2, canceled, nothing
+-- is asked for, and the spawner is left as it was, on Spawn by name.
+
+--- The text entry the box's title is drawn from: DisplayOnscreenKeyboard takes
+--- a text LABEL, not a string, so the row's own label is registered under this
+--- key as the box opens.
+local KB_TITLE = 'BR_DEVMENU_BYNAME'
+
+--- The keyboard's name to the key layer while it is up (BR.Keys.externalScreen).
+local KB_SCREEN = 'devmenu.keyboard'
+
+--- The keys that close the box and also drive the menu: 201 (accept, Enter) is
+--- its Select; 177 (cancel) and 199 (pause) are its Back -- Escape is both.
+local KB_KEYS = { 201, 177, 199 }
+
+--- How many frames running those keys must read up before the menu has them
+--- back. Two, because the library's own loop is a thread of its own and may
+--- run before this pass in the frame a key comes up.
+local KB_SETTLE_FRAMES = 2
+
+--- Switch a menu's Select and Back off, or back on.
+--- @param m table|nil @param off boolean
+local function hold(m, off)
+    local c = type(m) == 'table' and m.Controls or nil
+    if type(c) ~= 'table' then return end
+    for _, k in ipairs({ 'Select', 'Back' }) do
+        if type(c[k]) == 'table' then c[k].Enabled = not off end
+    end
+end
+
+--- Is a key that closes the box still down, or coming up this frame?
+--- @return boolean
+local function keysDown()
+    for _, k in ipairs(KB_KEYS) do
+        if says(IsDisabledControlPressed, 0, k)
+            or says(IsDisabledControlJustReleased, 0, k) then
+            return true
+        end
+    end
+    return false
+end
+
+--- THE FRAME PASS, WHILE THE BOX IS UP AND UNTIL ITS KEYS SETTLE, and only
+--- then: registered by openKeyboard, taken out by itself.
+local function keyboardPass()
+    local k = kb
+    if not k then
+        BR.Loop.unregister(kbPass)
+        kbPass = nil
+        return
+    end
+    if not k.closed then
+        local ok, status = pcall(UpdateOnscreenKeyboard)
+        status = ok and math.tointeger(tonumber(status)) or -1
+        if status == 0 then return end
+        -- 1 is confirmed, 2 canceled, 3 failed, -1 gone without either.
+        -- The result is only there on the pass that reads 1.
+        k.closed = true
+        if BR.Keys and BR.Keys.setExternalScreen then BR.Keys.setExternalScreen(nil) end
+        if status == 1 then
+            local okR, typed = pcall(GetOnscreenKeyboardResult)
+            spawnByName(okR and typed or nil)
+        end
+    end
+    if keysDown() then
+        k.quiet = 0
+        return
+    end
+    k.quiet = k.quiet + 1
+    if k.quiet < KB_SETTLE_FRAMES then return end
+    hold(k.menu, false)
+    kb = nil
+    BR.Loop.unregister(kbPass)
+    kbPass = nil
+end
+
+--- Spawn by name: the box, titled with the row's label. One at a time.
+--- @param m table  the menu the row was pressed in
+local function openKeyboard(m)
+    if kb then return end
+    pcall(AddTextEntry, KB_TITLE, label('byName'))
+    -- 0 IS ONSCREEN_KEYBOARD_ENGLISH, the default: a model name is ASCII.
+    local ok = pcall(DisplayOnscreenKeyboard, 0, KB_TITLE, '', '', '', '', '',
+                     cfg().modelMaxLen or 64)
+    if not ok then return end
+    kb = { menu = m, closed = false, quiet = 0 }
+    hold(m, true)
+    if BR.Keys and BR.Keys.setExternalScreen then BR.Keys.setExternalScreen(KB_SCREEN) end
+    if not kbPass then
+        kbPass = BR.Loop.register(BR.Loop.FRAME, 'devmenu.keyboard', keyboardPass)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE CLASSES AND THEIR VEHICLES, READ ONCE (#426)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- A vehicle's in-game name, or its model name when the game has none -- an
+--- add-on with no text entry, or the dock and prop trailers the game never
+--- named. GTA's text codes come out (`shown`): the row draws it as GTA text.
+--- @param hash integer @param model string
+--- @return string
+local function vehicleName(hash, model)
+    local okD, key = pcall(GetDisplayNameFromVehicleModel, hash)
+    if okD and type(key) == 'string' and key ~= '' and key ~= 'CARNOTFOUND' then
+        local okT, text = pcall(GetLabelText, key)
+        if okT and type(text) == 'string' and text ~= 'NULL' then
+            local s = shown(text)
+            if s ~= '' then return s end
+        end
+    end
+    return model
+end
+
+--- A vehicle class as the game names it: GetLabelText('VEH_CLASS_' .. n).
+--- The number, when this build has no name for it.
+--- @param c integer
+--- @return string
+local function className(c)
+    local ok, text = pcall(GetLabelText, 'VEH_CLASS_' .. c)
+    if ok and type(text) == 'string' and text ~= 'NULL' then
+        local s = shown(text)
+        if s ~= '' then return s end
+    end
+    return tostring(c)
+end
+
+--- Every vehicle the game has, by class. ONCE: the first open of the spawner
+--- pays for it -- three reads a model -- and nothing after does.
+---
+--- A CLASS WITH NO VEHICLES HAS NO ENTRY, so it gets no row; and neither does
+--- a class config/devmenu.lua leaves out. A model whose name is not a model
+--- word (config/devmenu.lua's modelWord) is left out too: no request could
+--- name it.
+--- @return table
+local function scan()
+    if catalog then return catalog end
+    local names = {}
+    if type(GetAllVehicleModels) == 'function' then
+        local ok, list = pcall(GetAllVehicleModels)
+        if ok and type(list) == 'table' then names = list end
+    end
+    local leftOut = {}
+    for _, c in ipairs(cfg().vehicleClassesLeftOut or {}) do leftOut[c] = true end
+    local armed = BR.Config.IsArmedVehicle
+    local byClass = {}
+    for _, raw in ipairs(names) do
+        local model = cfg().modelWord(raw)
+        if model then
+            local hash = GetHashKey(model)
+            local c = classOf(hash)
+            if c and not leftOut[c] then
+                local list = byClass[c]
+                if not list then
+                    list = {}
+                    byClass[c] = list
+                end
+                local name = vehicleName(hash, model)
+                list[#list + 1] = {
+                    model = model, hash = hash, class = c, name = name,
+                    key = name:lower(),
+                    armed = armed ~= nil and armed(hash) == true,
+                }
+            end
+        end
+    end
+    -- BY NAME, then by model so two vehicles the game names alike (four
+    -- Avengers) keep one order between sessions.
+    local classes = {}
+    for c, list in pairs(byClass) do
+        table.sort(list, function(a, b)
+            if a.key ~= b.key then return a.key < b.key end
+            return a.model < b.model
+        end)
+        classes[#classes + 1] = { class = c, name = className(c), vehicles = list }
+    end
+    table.sort(classes, function(a, b) return a.class < b.class end)
+    catalog = { classes = classes }
+    return catalog
+end
+
+--- One class's menu: a row per vehicle, by name, the armed ones marked. Built
+--- the first time it opens, then kept.
+--- @param k table  a scan() class
+--- @return table|nil
+local function buildClass(k)
+    local m = classMenus[k.class]
+    if m then return m end
+    -- THE BAR IS THE DEV MENU'S AND THE STRIP SAYS WHERE YOU ARE: the class,
+    -- in the game's words. No banner art, as on the one menu.
+    m = BR.Menu.new(label('title'), k.name, nil)
+    if not m then return nil end
+    local red = BR.Menu.red(label('armed'))
+    for _, v in ipairs(k.vehicles) do
+        local item = BR.Menu.item(v.name, v.armed and red or nil)
+        if item then
+            item.Activated = function() request(v.model, v.hash, v.class) end
+            pcall(m.AddItem, m, item)
+        end
+    end
+    -- AN EMPTY MENU IS NOT SHOWN -- build()'s guard, for its reason.
+    if #m.Items == 0 then return nil end
+    adopt(m)
+    classMenus[k.class] = m
+    return m
+end
+
+--- @param from table  the menu the class row is in
+--- @param k table
+local function openClass(from, k)
+    local m = buildClass(k)
+    if m then switchTo(from, m) end
+end
+
+--- The Vehicle spawner's menu: Spawn by name, then a row per class. Built --
+--- and the vehicles read -- the first time it opens, then kept.
+--- @return boolean built
+local function buildSpawner()
+    if spawner then return true end
+    local m = BR.Menu.new(label('title'), label('vehicles'), nil)
+    if not m then return false end
+    local byName = BR.Menu.item(label('byName'))
+    if byName then
+        byName.Activated = function(from) openKeyboard(from or m) end
+        pcall(m.AddItem, m, byName)
+    end
+    for _, k in ipairs(scan().classes) do
+        local item = BR.Menu.item(k.name)
+        if item then
+            item.Activated = function(from) openClass(from or m, k) end
+            pcall(m.AddItem, m, item)
+        end
+    end
+    if #m.Items == 0 then return false end
+    adopt(m)
+    spawner = m
+    return true
+end
+
+--- @param from table  the one menu
+local function openSpawner(from)
+    if buildSpawner() then switchTo(from, spawner) end
+end
+
 --- Build the one menu, once.
 --- @return boolean built
 local function build()
@@ -225,6 +780,9 @@ local function build()
     add(m, 'storm', BR.Menu.checkbox(label('storm'), false))
     add(m, 'warmup', BR.Menu.checkbox(label('warmup'), false))
     add(m, 'airdrop', BR.Menu.item(label('airdrop')))
+    -- THE VEHICLE SPAWNER (#426), a row that opens a menu of its own. Its
+    -- menus are built the first time it opens, not here.
+    add(m, 'vehicles', BR.Menu.item(label('vehicles')))
 
     -- AN EMPTY MENU IS NOT SHOWN: UIMenu:Visible(true) on one asserts. The gun
     -- shop's guard, for its reason.
@@ -269,19 +827,22 @@ local function build()
     if rows.airdrop then
         rows.airdrop.Activated = function() ask('airdrop') end
     end
+    if rows.vehicles then
+        rows.vehicles.Activated = function(from) openSpawner(from or m) end
+    end
 
+    adopt(m)
     menu = m
     return true
 end
 
---- Is the dev menu on screen? A live read of the library's own answer, never a
---- flag of ours -- BR.Menu.up's reason: every close the library or another
---- menu makes is then seen without being told.
+--- Is the dev menu on screen -- the one menu, the Vehicle spawner or a class
+--- menu? A live read of the library's own answer, never a flag of ours --
+--- BR.Menu.up's reason: every close the library or another menu makes is then
+--- seen without being told.
 --- @return boolean
 function D.up()
-    if not menu then return false end
-    local ok, vis = pcall(menu.Visible, menu)
-    return ok and vis == true
+    return shownMenu() ~= nil
 end
 
 --- What the server says the rows are: the players, yourself first, and the two
@@ -354,16 +915,17 @@ local function follow()
         return
     end
     if BR.Keys and BR.Keys.uiScreen ~= nil then
-        pcall(menu.Visible, menu, false)
+        putAway()
         return
     end
     if matchState() ~= followed then followMatch() end
 end
 
---- Open the menu, or put it away. F10 and /brdev both come here.
+--- Open the menu, or put it away -- whichever of its menus is up. F10 and
+--- /brdev both come here.
 function D.toggle()
     if D.up() then
-        pcall(menu.Visible, menu, false)
+        putAway()
         return
     end
     -- Not under one of our panels: the follow pass would only put it away.
@@ -372,6 +934,10 @@ function D.toggle()
     -- EVERY OTHER MENU GOES DOWN FIRST, through its own close, so the gun
     -- shop's flags come down with its menu -- the emote wheel's rule.
     BR.Menu.closeAll(menu)
+    -- AND THE LIBRARY'S TRAIL STARTS HERE, so Back from a submenu comes back to
+    -- this menu and never to one somebody else left (#426; the note above
+    -- `switching`).
+    forgetTrail()
     followMatch()
     ask('open')
     pcall(menu.Visible, menu, true)
@@ -407,5 +973,11 @@ end)
 
 AddEventHandler('onClientResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
-    if D.up() then pcall(menu.Visible, menu, false) end
+    if D.up() then putAway() end
+    -- A BOX LEFT UP WOULD HAVE NOBODY READING IT. FORCE_CLOSE_TEXT_INPUT_BOX,
+    -- not CANCEL_ONSCREEN_KEYBOARD, which its own documentation says leaves the
+    -- box half torn down.
+    if kb and not kb.closed and type(ForceCloseTextInputBox) == 'function' then
+        pcall(ForceCloseTextInputBox)
+    end
 end)

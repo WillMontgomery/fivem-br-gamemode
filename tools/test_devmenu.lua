@@ -33,6 +33,19 @@
 -- (test_shared, test_roster, test_storm, test_airdrop, test_stats,
 -- test_yubikey); here they are stubs that record what they were asked.
 --
+-- ═══ THE VEHICLE SPAWNER (#426) IS THE EXCEPTION, AND ITS SPAWN IS REAL ═══
+--
+-- Owner, 2026-11-01: "remember this needs to be a server-side entity". The
+-- body is brcar's spawn, BR.Vehicles.spawnInFront, and it is loaded for real
+-- -- br_core/server/vehicles.lua over the natives it calls, modeled the way
+-- tools/test_roster.lua models them for brcar -- so the server setter's
+-- arguments, the position in front of the asker and the routing bucket are
+-- asserted on what the native was handed. On the client: the rows built from
+-- a modeled GetAllVehicleModels (classes, names, the model-name fallback, the
+-- sort, the Armed marks, the left-out class), the sync tree every kind of
+-- model is asked as, GTA's keyboard over the open menu (and the keys that
+-- close it), and the library's trail back through the submenus.
+--
 -- Run via tools/verify.sh, or directly:  lua tools/test_devmenu.lua
 
 local realPrint = print
@@ -90,6 +103,31 @@ local function words(line)
     return out
 end
 
+--- GetHashKey, as FiveM hands it to Lua on either side: Jenkins one-at-a-time
+--- over the LOWER-CASED name, and SIGNED. The signed form is the one a model
+--- hash arrives in, and the one BR.Config.IsArmedVehicle has to normalize
+--- (BR.NormHash's reason) -- a stub answering unsigned would prove nothing.
+--- @param s string
+--- @return integer
+local function hashOf(s)
+    local h = 0
+    s = tostring(s):lower()
+    for i = 1, #s do
+        h = (h + s:byte(i)) & 0xFFFFFFFF
+        h = (h + (h << 10)) & 0xFFFFFFFF
+        h = (h ~ (h >> 6)) & 0xFFFFFFFF
+    end
+    h = (h + (h << 3)) & 0xFFFFFFFF
+    h = (h ~ (h >> 11)) & 0xFFFFFFFF
+    h = (h + (h << 15)) & 0xFFFFFFFF
+    if h >= 0x80000000 then h = h - 0x100000000 end
+    return h
+end
+if hashOf('rhino') ~= 0x2EA68690 or hashOf('adder') ~= -1216765807 then
+    realPrint('\27[31mhashOf is broken\27[0m')
+    os.exit(1)
+end
+
 -- =========================================================================
 -- PART A -- the server
 -- =========================================================================
@@ -97,8 +135,23 @@ end
 local svCommands, toClient, notices, calls, convars, roster, matches, clock
 local onDropped
 
+--- The vehicle spawner's natives (#426): what the server setter was handed,
+--- where each entity and player stands in routing buckets, and where each
+--- ped is and which way it faces.
+local created, entityBucket, playerBucket, pedPos, pedHeading, nextVeh
+
+--- The eight trees the platform builds -- CREATE_VEHICLE_SERVER_SETTER
+--- throws on anything else, and so does the stub (tools/test_roster.lua's
+--- reason: a stub that cannot fail the way the platform fails certifies a
+--- broken caller).
+local SETTER_TYPES = {
+    automobile = true, bike = true, boat = true, heli = true,
+    plane = true, submarine = true, trailer = true, train = true,
+}
+
 --- A fresh server: the real gate, the real config, the real door; every verb
---- body it calls is a recorder.
+--- body it calls is a recorder -- but the vehicle spawner's, which is the real
+--- br_core/server/vehicles.lua over modeled natives.
 local function bootServer(opts)
     opts = opts or {}
     BR = nil
@@ -106,6 +159,42 @@ local function bootServer(opts)
     convars = { sv_devMode = (opts.convar == false) and 'false' or 'true' }
     clock = 100000
     onDropped = nil
+
+    -- ═══ THE SPAWN'S NATIVES, AS tools/test_roster.lua MODELS THEM FOR brcar ═══
+    created, entityBucket, nextVeh = {}, {}, 500
+    -- Player 3 stands in match A's bucket, facing north at 100, 200, 30;
+    -- player 1 in match B's; player 5 in the lobby's.
+    playerBucket = { [1] = 1002, [3] = 1001, [5] = 0 }
+    pedPos = { [1001] = { 10.0, 20.0, 5.0 }, [1003] = { 100.0, 200.0, 30.0 },
+               [1005] = { -50.0, -60.0, 70.0 } }
+    pedHeading = {}
+    function GetHashKey(s) return hashOf(s) end
+    function CreateVehicleServerSetter(hash, vtype, x, y, z, heading)
+        created[#created + 1] = { hash = hash, vtype = vtype, x = x, y = y, z = z,
+                                  heading = heading }
+        if not SETTER_TYPES[vtype] or opts.createThrows then
+            error(('CREATE_VEHICLE_SERVER_SETTER: Invalid entity type %s'):format(tostring(vtype)))
+        end
+        if opts.createFail then return 0 end
+        nextVeh = nextVeh + 1
+        return nextVeh
+    end
+    if opts.noSetter then CreateVehicleServerSetter = nil end
+    -- A FIVEM BOOL: 1 and 0, and 0 is truthy (test_roster's reason).
+    function DoesEntityExist(h)
+        if h == nil or h == 0 or opts.vanish then return 0 end
+        return 1
+    end
+    function GetEntityCoords(ped)
+        if opts.coordsThrow then error('Tried to access invalid entity') end
+        local p = pedPos[ped]
+        return p and { x = p[1], y = p[2], z = p[3] } or nil
+    end
+    function GetEntityHeading(ped) return pedHeading[ped] or 0.0 end
+    function GetPlayerRoutingBucket(src) return playerBucket[tonumber(src)] end
+    function SetEntityRoutingBucket(ent, bucket) entityBucket[ent] = bucket end
+    function GetEntityRoutingBucket(ent) return entityBucket[ent] end
+    function NetworkGetNetworkIdFromEntity(ent) return ent + 1000 end
 
     function GetGameTimer() return clock end
     function GetCurrentResourceName() return 'br_core' end
@@ -131,6 +220,8 @@ local function bootServer(opts)
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/shared/world.lua',
+        'br_lib/shared/geo.lua',
+        'br_lib/config/vehicles.lua',
         'br_lib/config/devmenu.lua',
     })
 
@@ -141,10 +232,10 @@ local function bootServer(opts)
         B = { id = 0xB2, seq = 2, state = 'warmup' },
     }
     roster = {
-        [1] = { name = 'Alpha', state = BR.PlayerState.ALIVE, matchId = 0xB2 },
+        [1] = { name = 'Alpha', state = BR.PlayerState.ALIVE, matchId = 0xB2, ped = 1001 },
         [2] = { name = 'Bravo', state = BR.PlayerState.LEFT,  matchId = 0xA1 },
-        [3] = { name = 'Me~r~', state = BR.PlayerState.ALIVE, matchId = 0xA1 },
-        [5] = { name = 'Echo',  state = BR.PlayerState.LOBBY },
+        [3] = { name = 'Me~r~', state = BR.PlayerState.ALIVE, matchId = 0xA1, ped = 1003 },
+        [5] = { name = 'Echo',  state = BR.PlayerState.LOBBY, ped = 1005 },
     }
 
     local function rec(name, ...)
@@ -173,7 +264,10 @@ local function bootServer(opts)
                 if not pred or pred(e) then fn(src, e) end
             end
         end,
+        -- server/vehicles.lua schedules its sample pass on this at load.
+        sampleIntervalMs = function() return 250 end,
     }
+    BR.Sched = { every = function() end }
     -- THE PAUSES ARE PER MATCH: each match carries its own, and the session's
     -- (the console verbs') answers for a player with no match. The every-match
     -- console forms are recorded so a test can say the menu never reached them.
@@ -253,7 +347,10 @@ local function bootServer(opts)
         end,
     }
 
-    loadAll({ 'br_core/server/devmenu.lua' })
+    -- THE REAL SPAWN (#426), BEFORE THE DOOR: server/vehicles.lua answers for
+    -- BR.Vehicles at call time, and its own playerDropped handler is the one
+    -- the door's replaces in this harness.
+    loadAll({ 'br_core/server/vehicles.lua', 'br_core/server/devmenu.lua' })
 end
 
 --- The token the server lists player `id` under, opening the menu for `asker`
@@ -316,10 +413,11 @@ do
     bootServer({ convar = false })
     for _, line in ipairs({ 'open', 'time 21', 'weather RAIN', 'match warmup',
                             'volts 3 1000', 'yubikey 3', 'storm on', 'warmup on',
-                            'airdrop' }) do
+                            'airdrop', 'vehicle hydra plane' }) do
         typed(3, 'brdevsv ' .. line)
     end
     eq(#calls, 0, 'with dev mode off, not one verb body is reached')
+    eq(#created, 0, 'and no vehicle is built (#426)')
     eq(#toClient, 0, 'nothing is sent to anybody')
     eq(#notices, 0, 'and nobody is shown anything')
     ok(said('brdevsv is dev-mode only'), 'the wrap says on this console which gate closed')
@@ -332,7 +430,10 @@ do
     bootServer({ devMode = false })
     typed(3, 'brdevsv storm on')
     typed(3, 'brdevsv open')
+    clock = clock + 1000
+    typed(3, 'brdevsv vehicle adder automobile')
     eq(#calls, 0, 'a dev mode switched on live is not dev mode to the menu')
+    eq(#created, 0, 'and builds no vehicle')
     eq(#toClient, 0, 'and it answers nobody')
 
     -- ═══ `== true`, NEVER TRUTHINESS ═══
@@ -743,6 +844,222 @@ do
        'and a source that left and came back starts clean')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE VEHICLE SPAWNER, SERVER HALF (#426)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+describe('server: Vehicle spawner -- a model word and a sync tree, and nothing else')
+do
+    bootServer()
+    local long = ('a'):rep(65)
+    local bad = {
+        { {}, 'no model at all' },
+        { { 'adder' }, 'a model and no tree' },
+        { { 'adder', 'hovercraft' }, 'a tree the platform does not build' },
+        { { 'freight', 'train' }, 'a train: the platform knows the word and cannot build one' },
+        { { 'adder', 'Automobile' }, 'a tree in the wrong case' },
+        { { 'add!er', 'automobile' }, 'a model that is not a model word' },
+        { { 'adder;brcar', 'automobile' }, 'or one carrying a second command' },
+        { { long, 'automobile' }, 'a model longer than the keyboard takes' },
+    }
+    for _, b in ipairs(bad) do
+        clock = clock + 1000
+        local args = { 'vehicle' }
+        for _, w in ipairs(b[1]) do args[#args + 1] = w end
+        eq(BR.DevMenu.request(3, args, clock), 'bad', b[2])
+    end
+    eq(#created, 0, 'not one of them reached the server setter')
+    eq(#notices, 0, 'and none is a toast: no row could have sent them')
+    ok(said('| vehicle <model> <type>'), 'the usage line names the verb')
+
+    eq(table.concat(BR.Config.DevMenu.vehicleTypes, ','),
+       'automobile,bike,boat,heli,plane,submarine,trailer',
+       'the seven trees: the platform\'s eight less `train`')
+    for _, t in ipairs(BR.Config.DevMenu.vehicleTypes) do
+        clock = clock + 1000
+        eq(BR.DevMenu.request(3, { 'vehicle', 'adder', t }, clock), 'ran',
+           ('`%s` is taken'):format(t))
+        eq(created[#created] and created[#created].vtype, t, '... and built as that tree')
+    end
+
+    -- GTA HASHES A NAME LOWER-CASED, so `Lazer` -- registered that way -- is
+    -- the model `lazer` is. The server reads it lower-cased as well.
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'LAZER', 'plane' }, clock)
+    eq(created[#created] and created[#created].hash, hashOf('lazer'),
+       'a name in capitals is the same model')
+    local f8 = sentTo(3, 'br:devmenu:dev')
+    ok(f8[#f8] and tostring(f8[#f8].data):find('lazer (0x', 1, true) ~= nil,
+       'and its line names it as it is hashed', f8[#f8] and f8[#f8].data)
+
+    -- THE RATE HOLDS IT LIKE ANY ROW: a second press inside the floor builds
+    -- nothing.
+    local n = #created
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock)
+    eq(BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock + 1), 'too-soon',
+       'a second press inside the floor is dropped')
+    eq(#created, n + 1, 'and one vehicle was built, not two')
+end
+
+describe('server: Vehicle spawner -- brcar\'s spawn, in front of the asker, in their bucket')
+do
+    bootServer()
+    clock = clock + 1000
+    eq(BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock), 'ran',
+       'a vehicle row\'s press is taken')
+    local c = created[1]
+    ok(c ~= nil and c.hash == hashOf('adder'),
+       'THE SERVER SETTER builds it -- "this needs to be a server-side entity"')
+    eq(c and c.vtype, 'automobile', 'as the tree the row named, in the second argument')
+    ok(c ~= nil and math.abs(c.x - 100.0) < 0.001 and math.abs(c.y - 205.0) < 0.001,
+       'five meters in front of the asker, who faces north',
+       c and ('%.2f, %.2f'):format(c.x, c.y))
+    eq(c and c.z, 30.0, 'at their height')
+    ok(c ~= nil and math.abs(c.heading - 90.0) < 0.001,
+       'turned a quarter across them, a door toward them')
+    eq(entityBucket[501], 1001, 'IN THE ASKER\'S ROUTING BUCKET -- the setter leaves it in 0')
+    eq(#notices, 0, 'a vehicle that was built is no toast')
+    local f8 = sentTo(3, 'br:devmenu:dev')
+    local line = f8[#f8] and tostring(f8[#f8].data) or ''
+    ok(line:find('adder (0xB779A091) as automobile', 1, true) ~= nil,
+       'the asker\'s F8 says what was built: the model, its hash, its tree', line)
+    ok(line:find('netId 1501', 1, true) ~= nil and line:find('bucket 1001', 1, true) ~= nil,
+       'and its network id and bucket', line)
+    ok(lastState(3) ~= nil, 'and the rows are pushed after it, as after every answer')
+    ok(said('dev menu: Player3 (3) -- vehicle adder automobile'),
+       'this console says who asked for what')
+
+    -- THE OFFSET TURNS WITH THEM (brcar's own check, through this door).
+    pedHeading[1003] = 90.0
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock)
+    local east = created[#created]
+    ok(east ~= nil and math.abs(east.x - 95.0) < 0.001 and math.abs(east.y - 200.0) < 0.001,
+       'facing east, it lands five meters east', east and ('%.2f, %.2f'):format(east.x, east.y))
+    ok(east ~= nil and math.abs(east.heading - 180.0) < 0.001, 'and turned with them')
+    pedHeading[1003] = nil
+
+    -- ANOTHER ASKER, THEIR OWN BUCKET: player 1 is in match B's.
+    clock = clock + 1000
+    BR.DevMenu.request(1, { 'vehicle', 'adder', 'automobile' }, clock)
+    eq(entityBucket[nextVeh], 1002, 'player 1\'s goes in player 1\'s bucket')
+    ok(math.abs(created[#created].x - 10.0) < 0.001 and math.abs(created[#created].y - 25.0) < 0.001,
+       'in front of player 1')
+
+    -- BUCKET 0 IS A REAL BUCKET AND IT IS TRUTHY (brcar's reason).
+    playerBucket[3] = 0
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock)
+    eq(entityBucket[nextVeh], 0, 'an asker in bucket 0 still has it set to 0')
+    playerBucket[3] = 1001
+
+    -- ═══ ANY MODEL: "For any that you believe to be armed, allow them to be
+    --     spawned here" ═══
+    --
+    -- brcar refuses every one of these. The door does not: its spawn has no
+    -- allowlist in it, and the refusal stayed in the verb.
+    for _, m in ipairs({ { 'hydra', 'plane' }, { 'buzzard', 'heli' },
+                         { 'rhino', 'automobile' }, { 'kosatka', 'submarine' },
+                         { 'trailersmall2', 'trailer' }, { 'blimp', 'heli' } }) do
+        local n = #created
+        clock = clock + 1000
+        BR.DevMenu.request(3, { 'vehicle', m[1], m[2] }, clock)
+        ok(#created == n + 1 and created[#created].hash == hashOf(m[1]),
+           ('%s is built (%s)'):format(m[1], m[2]))
+    end
+    -- AND brcar KEEPS ITS OWN RULE: "brcar keeps its own rule (tolerated
+    -- models only)", through the same spawn.
+    local n = #created
+    svCommands.brcar.fn(0, { '3', 'hydra' }, 'brcar 3 hydra')
+    eq(#created, n, 'brcar itself still refuses a Hydra')
+    ok(said('REFUSED hydra'), 'and says so, as it always has')
+    svCommands.brcar.fn(0, { '3', 'adder' }, 'brcar 3 adder')
+    eq(#created, n + 1, 'and still builds what it tolerates, through spawnInFront')
+    ok(said('[br_core] brcar: adder (0xB779A091) as automobile -> Me~r~ (3)'),
+       'with its own readout, word for word')
+    eq(entityBucket[nextVeh], 1001, 'in the target\'s bucket')
+end
+
+describe('server: Vehicle spawner -- refused in brcar\'s words, and from the lobby in the menu\'s')
+do
+    --- One press as player `src`; the toast it drew, or nil.
+    local function press(src, model, tree)
+        clock = clock + 1000
+        local before = #notices
+        BR.DevMenu.request(src, { 'vehicle', model, tree }, clock)
+        local n = notices[#notices]
+        return (#notices > before) and n or nil
+    end
+
+    -- THE LOBBY: every lobby player stands on the one mark, in one bucket.
+    bootServer()
+    local n = press(5, 'adder', 'automobile')
+    eq(#created, 0, 'nothing is built from the lobby')
+    eq(n and n.text, 'no match running', 'and the asker is told, in the menu\'s own lobby words')
+    ok(n and n.target == 5 and n.tone == 'warn', 'as a warning toast, to them')
+    local f8 = sentTo(5, 'br:devmenu:dev')
+    eq(f8[#f8] and f8[#f8].data, 'no match running', 'and on their F8')
+    ok(lastState(5) ~= nil, 'and the rows are pushed after it')
+
+    -- ON THE WAY HOME FROM A MATCH: LOBBY, still carrying the match's id.
+    roster[3].state = BR.PlayerState.LOBBY
+    n = press(3, 'adder', 'automobile')
+    eq(#created, 0, 'a player going home is in the lobby, whatever id they carry')
+    eq(n and n.text, 'no match running', 'and is told the same')
+    roster[3].state = BR.PlayerState.ALIVE
+
+    -- EVERYWHERE ELSE IS brcar's: the warmup pad, the plane, a downed player.
+    for _, st in ipairs({ BR.PlayerState.WARMUP, BR.PlayerState.BUS,
+                          BR.PlayerState.GLIDE, BR.PlayerState.DBNO,
+                          BR.PlayerState.OUT }) do
+        roster[3].state = st
+        local before = #created
+        press(3, 'adder', 'automobile')
+        eq(#created, before + 1, ('a player in state %s gets one in front of them'):format(st))
+    end
+    roster[3].state = BR.PlayerState.ALIVE
+
+    -- NO PED YET: connected, spawned nowhere.
+    bootServer()
+    roster[3].ped = nil
+    n = press(3, 'adder', 'automobile')
+    eq(#created, 0, 'no ped, no vehicle -- rather than one at 0, 0, 0')
+    eq(n and n.text, 'no ped for 3 yet -- connected but not spawned, or OneSync is off',
+       'in brcar\'s words')
+
+    -- A PED THE SERVER CANNOT READ: the native throws, and is caught.
+    bootServer({ coordsThrow = true })
+    local okCall = pcall(function() n = press(3, 'adder', 'automobile') end)
+    ok(okCall, 'a throwing position read does not take the door down')
+    eq(n and n.text, 'no coordinates for 3', 'it is answered, in brcar\'s words')
+
+    -- NO SERVER SETTER IN THIS RUNTIME.
+    bootServer({ noSetter = true })
+    n = press(3, 'adder', 'automobile')
+    eq(n and n.text, 'CreateVehicleServerSetter is not available in this runtime.',
+       'a runtime without the native says so')
+
+    -- THE PLATFORM THROWS.
+    bootServer({ createThrows = true })
+    okCall = pcall(function() n = press(3, 'adder', 'automobile') end)
+    ok(okCall, 'a throwing create is caught, not propagated -- #212')
+    eq(n and n.text, 'the platform refused to create adder as a automobile',
+       'and answered in brcar\'s words')
+
+    -- THE ENGINE ANSWERS 0.
+    bootServer({ createFail = true })
+    n = press(3, 'adder', 'automobile')
+    eq(n and n.text, 'the engine refused to create adder', 'a handle of 0 is a refusal')
+    eq(entityBucket[0], nil, 'and 0 is not mistaken for a handle -- nothing was done to entity 0')
+
+    -- BUILT, AND ALREADY GONE: DoesEntityExist answers 0, and 0 is truthy.
+    bootServer({ vanish = true })
+    n = press(3, 'adder', 'automobile')
+    eq(n and n.text, 'adder was created and is already gone, or its handle never resolved',
+       'a vehicle the server cannot see is not reported as built')
+end
+
 -- =========================================================================
 -- PART B -- the client
 -- =========================================================================
@@ -756,6 +1073,51 @@ local clientDev
 --- the library's own order, so a test presses the rows the way a player does.
 local function modelLibrary()
     menus = {}
+
+    -- ═══ THE TRAIL BACK, AND THE MENU THAT IS CURRENT (#426) ═══
+    --
+    -- BreadcrumbsHandler and MenuHandler as far as a switch, a Back and a close
+    -- reach them, line for line where it matters: Visible(true) pushes a menu
+    -- only onto an EMPTY trail, Visible(false) leaves the trail alone, GoBack
+    -- at one deep closes and clears, deeper it shows the one before -- and
+    -- MenuHandler:SwitchTo reads the undefined global `newer` whenever the
+    -- selection it is handed is above 1, so a caller that hands it one throws
+    -- here as it would in the game.
+    BreadcrumbsHandler = { breadcrumbs = {}, SwitchInProgress = false }
+    function BreadcrumbsHandler:Count() return #self.breadcrumbs end
+    function BreadcrumbsHandler:CurrentDepth() return #self.breadcrumbs end
+    function BreadcrumbsHandler:PreviousMenu() return self.breadcrumbs[#self.breadcrumbs - 1] end
+    function BreadcrumbsHandler:Forward(m) table.insert(self.breadcrumbs, { menu = m }) end
+    function BreadcrumbsHandler:Clear() self.breadcrumbs = {} end
+    function BreadcrumbsHandler:Backwards() table.remove(self.breadcrumbs, #self.breadcrumbs) end
+
+    MenuHandler = { _currentMenu = nil }
+    function MenuHandler:SwitchTo(current, new, sel, inherit)
+        assert(current ~= nil, 'The menu you\'re switching from cannot be null')
+        assert(current == self._currentMenu, 'The menu you\'re switching from must be opened')
+        assert(new ~= nil, 'The menu you\'re switching to cannot be null')
+        assert(new ~= current, 'You cannot switch a menu to itself')
+        assert(not new:Visible(), 'The menu you\'re switching to is already open!')
+        if BreadcrumbsHandler.SwitchInProgress then return end
+        BreadcrumbsHandler.SwitchInProgress = true
+        if sel == nil then sel = 1 end
+        if inherit then new.inherited = (new.inherited or 0) + 1 end
+        if sel > 1 then
+            local max = #newer.Items -- `newer` is nil: the library's own bug
+            new._cur = math.min(sel, max)
+        end
+        current:Visible(false)
+        new:Visible(true)
+        BreadcrumbsHandler:Forward(new)
+        BreadcrumbsHandler.SwitchInProgress = false
+    end
+    function MenuHandler:CloseAndClearHistory()
+        if self._currentMenu ~= nil and self._currentMenu:Visible() then
+            self._currentMenu:Visible(false)
+        end
+        BreadcrumbsHandler:Clear()
+    end
+
     UIMenu = {}
     UIMenu.__index = UIMenu
     function UIMenu.New(title, subTitle, x, y, glare, txd, txn)
@@ -763,6 +1125,8 @@ local function modelLibrary()
             Title = title, SubTitle = subTitle, TxtDictionary = txd, TxtName = txn,
             Items = {}, InstructionalButtons = { 'select', 'back' },
             _mouse = true, _edge = true, _visible = false, _cur = 1,
+            Controls = { Back = { Enabled = true }, Select = { Enabled = true },
+                         Up = { Enabled = true }, Down = { Enabled = true } },
             OnMenuClose = function() end,
         }, UIMenu)
         menus[#menus + 1] = m
@@ -776,14 +1140,49 @@ local function modelLibrary()
     function UIMenu:Visible(v)
         if v ~= nil then
             local was = self._visible
-            if v == true then assert(#self.Items > 0, 'UIMenu is empty') end
-            self._visible = v
-            if was == true and v == false then self.OnMenuClose(self) end
+            if v == true then
+                if was then return self._visible end
+                assert(#self.Items > 0, 'UIMenu is empty')
+                self._visible = true
+                MenuHandler._currentMenu = self
+                if BreadcrumbsHandler:Count() == 0 then BreadcrumbsHandler:Forward(self) end
+            else
+                self._visible = false
+                MenuHandler._currentMenu = nil
+                if was == true then self.OnMenuClose(self) end
+            end
         end
         return self._visible
     end
     function UIMenu:CurrentItem() return self.Items[self._cur] end
-    function UIMenu:GoBack() if self._visible then self:Visible(false) end end
+    function UIMenu:SwitchTo(new, sel, inherit)
+        assert(new ~= nil, 'cannot switch to a null menu')
+        if sel == nil then sel = 1 end
+        if inherit == nil then inherit = true end
+        MenuHandler:SwitchTo(self, new, sel, inherit)
+    end
+    function UIMenu:GoBack()
+        if BreadcrumbsHandler:CurrentDepth() == 1 then
+            MenuHandler:CloseAndClearHistory()
+            BreadcrumbsHandler:Clear()
+        else
+            BreadcrumbsHandler.SwitchInProgress = true
+            local prev = BreadcrumbsHandler:PreviousMenu()
+            BreadcrumbsHandler:Backwards()
+            self:Visible(false)
+            if prev ~= nil then prev.menu:Visible(true) end
+            BreadcrumbsHandler.SwitchInProgress = false
+        end
+    end
+    --- A key reaching the menu, as UIMenu:ProcessControl reads it: nothing at
+    --- all while GTA's keyboard is up or a switch is under way, and Back and
+    --- Select only while their Controls are on.
+    function UIMenu:Key(name)
+        if not self._visible then return end
+        if UpdateOnscreenKeyboard() == 0 or BreadcrumbsHandler.SwitchInProgress then return end
+        if name == 'back' and self.Controls.Back.Enabled then self:GoBack() end
+        if name == 'select' and self.Controls.Select.Enabled then self:Press(self._cur) end
+    end
     --- Enter on row `i`, as UIMenu:SelectItem does it.
     function UIMenu:Press(i)
         self._cur = i
@@ -865,18 +1264,163 @@ local function modelLibrary()
     end
 
     UIMenuSeparatorItem = {}
-    MenuHandler = {}
     BadgeStyle = { NONE = 0 }
     SColor = {}
     function SColor.FromHudColor(n) return { hud = n } end
     function SColor.FromArgb(a, r, g, b) return { a = a, r = r, g = g, b = b } end
 end
 
+-- ═══ THE GAME'S VEHICLES, AS THE NATIVES WILL ANSWER FOR THEM (#426) ═══
+--
+-- { name as the game registered it, class, kind, gameName, its text }.
+--
+-- THE KIND IS WHICH IsThisModelA* NATIVES SAY YES, and the answers are the
+-- documented ones: a car is a car and not an amphibious one, a quad likewise;
+-- IS_THIS_MODEL_A_BIKE says yes to a bicycle as well; a jetski is a boat with
+-- a flag; and a blimp, a submarine, a submarine car and a trailer have no
+-- native that says yes to them. Every answer is 1 or 0 -- a FiveM BOOL -- so
+-- a bare truth test would read every model as a train.
+--
+-- AND THE AWKWARD ONES ON PURPOSE: names registered in capitals (`Lazer`,
+-- `BLIMP`, `BMX`, `Dinghy`); two vehicles the game names alike (the
+-- Avengers); a vehicle with no text (`docktrailer`) and an add-on with no
+-- entry at all (`myaddon`, whose name sorts against a capitalized one); a
+-- label carrying GTA's text codes; trains, in class 21; and no Compacts at
+-- all. Armed or not is config/vehicles.lua's say, never this table's.
+local VEHICLES = {
+    { 'adder',         7,  'car',      'ADDER',        'Adder' },
+    { 'zentorno',      7,  'car',      'ZENTORNO',     'Zentorno' },
+    { 'scramjet',      7,  'car',      'SCRAMJET',     'Scramjet' },
+    { 'vigilante',     7,  'car',      'VIGILANTE',    'Vigilante' },
+    { 'caracara2',     9,  'car',      'CARACARA2',    'Caracara 4x4' },
+    { 'insurgent2',    9,  'car',      'INSURGENT2',   'Insurgent' },
+    { 'blazer',        9,  'quad',     'BLAZER',       'Blazer' },
+    { 'blazer5',       9,  'amphquad', 'BLAZER5',      'Blazer Aqua' },
+    { 'technical2',    9,  'amphcar',  'TECHNICAL2',   'Technical Aqua' },
+    { 'bati',          8,  'bike',     'BATI',         'Bati 801' },
+    { 'oppressor2',    8,  'bike',     'OPPRESSOR2',   'Oppressor Mk II' },
+    { 'chimera',       8,  'quad',     'CHIMERA',      'Chimera' },
+    { 'BMX',           13, 'bicycle',  'BMX',          'BMX' },
+    { 'Dinghy',        14, 'boat',     'DINGHY',       'Dinghy' },
+    { 'seashark',      14, 'jetski',   'SEASHARK',     'Seashark' },
+    { 'kosatka',       14, 'sub',      'KOSATKA',      'Kosatka' },
+    { 'submersible',   14, 'sub',      'SUBMERS',      'Submersible' },
+    { 'maverick',      15, 'heli',     'MAVERICK',     'Maverick' },
+    { 'buzzard',       15, 'heli',     'BUZZARD',      'Buzzard Attack Chopper' },
+    { 'Lazer',         16, 'plane',    'LAZER',        'P-996 LAZER' },
+    { 'BLIMP',         16, 'blimp',    'blimp',        'Atomic Blimp' },
+    { 'avenger2',      16, 'plane',    'AVENGER',      'Avenger' },
+    { 'avenger',       16, 'plane',    'AVENGER',      'Avenger' },
+    { 'stromberg',     5,  'subcar',   'STROMBERG',    'Stromberg' },
+    { 'toreador',      5,  'subcar',   'TOREADOR',     'Toreador' },
+    { 'trailers',      11, 'trailer',  'TRAILERS',     'Trailer' },
+    { 'docktrailer',   11, 'trailer',  'DOCKTRAILER',  nil },
+    { 'tractor',       11, 'car',      'TRACTOR',      'Tractor' },
+    { 'rhino',         19, 'car',      'RHINO',        'Rhino Tank' },
+    -- AN AMPHIBIOUS CAR IN THE CLASS TRAILERS LIVE IN: only its own native
+    -- keeps it off the trailer tree.
+    { 'apc',           19, 'amphcar',  'APC',          'APC' },
+    { 'trailersmall2', 19, 'trailer',  'TRAILERSMALL2', 'Anti-Aircraft Trailer' },
+    { 'barracks',      19, 'car',      'BARRACKS',     'Barracks' },
+    { 'freight',       21, 'train',    'FREIGHT',      'Freight Train' },
+    { 'metrotrain',    21, 'train',    'METROTRAIN',   'Metro' },
+    { 'myaddon',       6,  'car',      nil,            nil },
+    { 'brokenlabel',   6,  'car',      'BROKEN',       '~r~Red~s~ Rocket' },
+}
+
+--- What each kind answers yes to.
+local KIND_SAYS = {
+    car      = { Car = true },
+    quad     = { Quadbike = true },
+    amphcar  = { AnAmphibiousCar = true },
+    amphquad = { AnAmphibiousQuadbike = true },
+    bike     = { Bike = true },
+    bicycle  = { Bike = true, Bicycle = true },
+    boat     = { Boat = true },
+    jetski   = { Boat = true, Jetski = true },
+    heli     = { Heli = true },
+    plane    = { Plane = true },
+    train    = { Train = true },
+}
+
+--- The game's class names, GetLabelText('VEH_CLASS_' .. n).
+local CLASS_TEXT = {
+    [0] = 'Compacts', [5] = 'Sports Classics', [6] = 'Sports', [7] = 'Super',
+    [8] = 'Motorcycles', [9] = 'Off-road', [11] = 'Utility', [13] = 'Cycles',
+    [14] = 'Boats', [15] = 'Helicopters', [16] = 'Planes', [19] = 'Military',
+    [21] = 'Trains',
+}
+
+--- The modeled game, per boot: the vehicles by hash, the models taken out of
+--- it since, how often it was asked for its list, GTA's keyboard, the text
+--- entries, the keys held and coming up, the key layer's screens and the
+--- toasts this client raised.
+local vehByHash, gone, scans, kbd, textEntries, keyHeld, keyUp, screens, toasts
+
 local function bootClient(opts)
     opts = opts or {}
     BR = nil
     executed, mappings, cmds, passes, events, consoleLines = {}, {}, {}, {}, {}, {}
     clientDev = (opts.dev == nil) and true or opts.dev
+
+    vehByHash, gone, scans = {}, {}, 0
+    for _, v in ipairs(VEHICLES) do vehByHash[hashOf(v[1])] = v end
+    kbd = { state = -1, result = nil, opened = {} }
+    textEntries, keyHeld, keyUp, screens, toasts = {}, {}, {}, {}, {}
+
+    function GetHashKey(s) return hashOf(s) end
+    if opts.noModelList then
+        GetAllVehicleModels = nil
+    else
+        function GetAllVehicleModels()
+            scans = scans + 1
+            local out = {}
+            for i, v in ipairs(VEHICLES) do out[i] = v[1] end
+            return out
+        end
+    end
+    function GetVehicleClassFromName(h) local v = vehByHash[h]; return v and v[2] or 0 end
+    function GetDisplayNameFromVehicleModel(h)
+        local v = vehByHash[h]
+        return v and v[4] or 'CARNOTFOUND'
+    end
+    function GetLabelText(key)
+        local c = tostring(key):match('^VEH_CLASS_(%d+)$')
+        if c then return CLASS_TEXT[tonumber(c)] or 'NULL' end
+        for _, v in ipairs(VEHICLES) do
+            if v[4] == key and v[5] then return v[5] end
+        end
+        return 'NULL'
+    end
+    local function yes(h, word)
+        local v = vehByHash[h]
+        return (v and not gone[h] and KIND_SAYS[v[3]] and KIND_SAYS[v[3]][word]) and 1 or 0
+    end
+    for _, word in ipairs({ 'Car', 'Quadbike', 'AnAmphibiousCar', 'AnAmphibiousQuadbike',
+                            'Bike', 'Bicycle', 'Boat', 'Jetski', 'Heli', 'Plane', 'Train' }) do
+        local name = (word:sub(1, 2) == 'An') and ('IsThisModel' .. word) or ('IsThisModelA' .. word)
+        _G[name] = function(h) return yes(h, word) end
+    end
+    function IsModelInCdimage(h) return (vehByHash[h] and not gone[h]) and 1 or 0 end
+    function IsModelAVehicle(h) return (vehByHash[h] and not gone[h]) and 1 or 0 end
+
+    -- GTA'S KEYBOARD: 0 while it is up, then 1, 2 or 3.
+    --
+    -- AND WHATEVER WAS TYPED, IN EVERY STATE. The documentation says the
+    -- result is NULL unless the box reads 1; a caller leaning on that would
+    -- ask for a name the player canceled with Escape on a build where it is
+    -- not, so the model hands the text back regardless.
+    function AddTextEntry(k, v) textEntries[k] = v end
+    function DisplayOnscreenKeyboard(kind, title, desc, default, c1, c2, c3, maxLen)
+        kbd.opened[#kbd.opened + 1] = { kind = kind, title = title, default = default,
+                                        maxLen = maxLen }
+        kbd.state = 0
+    end
+    function UpdateOnscreenKeyboard() return kbd.state end
+    function GetOnscreenKeyboardResult() return kbd.result end
+    function ForceCloseTextInputBox() kbd.state = -1; kbd.forced = true end
+    function IsDisabledControlPressed(_, c) return keyHeld[c] and 1 or 0 end
+    function IsDisabledControlJustReleased(_, c) return keyUp[c] and 1 or 0 end
 
     function GetConvar(n, d)
         if n == 'br_devMode' then return clientDev and 'true' or 'false' end
@@ -897,6 +1441,7 @@ local function bootClient(opts)
 
     if opts.noLibrary then
         UIMenu, UIMenuItem, UIMenuListItem, UIMenuCheckboxItem, SColor, MenuHandler = nil, nil, nil, nil, nil, nil
+        BreadcrumbsHandler = nil
     else
         modelLibrary()
     end
@@ -906,15 +1451,23 @@ local function bootClient(opts)
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/shared/world.lua',
+        'br_lib/shared/geo.lua',
         'br_lib/shared/shop_solve.lua',
+        'br_lib/config/vehicles.lua',
         'br_lib/config/devmenu.lua',
     })
+    -- client/state.lua's notice, recorded.
+    BR.Notify = function(text, tone) toasts[#toasts + 1] = { text = text, tone = tone } end
     BR.Config.World = { hour = 12, minute = 0 }
     BR.Config.Market = { currency = 'Volts' }
     -- What client/state.lua holds: the match's state as last heard, and
     -- client/keybinds.lua's "is one of our panels up".
     BR.State = { match = { state = opts.matchState or 'waiting' } }
-    BR.Keys = { uiScreen = nil }
+    -- ...and its door for a screen it cannot see, recorded ('none' for nil).
+    BR.Keys = {
+        uiScreen = nil,
+        setExternalScreen = function(name) screens[#screens + 1] = name or 'none' end,
+    }
 
     -- THE LOOP REGISTRY, as client/main.lua hands it out: register returns a
     -- handle, unregister marks it dead.
@@ -945,6 +1498,21 @@ local function tick()
     end
 end
 
+--- Run every live FRAME pass once.
+local function frame()
+    for _, h in ipairs(passes) do
+        if h.band == 'frame' and not h.dead then h.fn(16) end
+    end
+end
+
+--- Is a pass by this name live?
+local function passLive(name)
+    for _, h in ipairs(passes) do
+        if h.name == name and not h.dead then return true end
+    end
+    return false
+end
+
 --- The server's answer, as BR.Net.DEVMENU_STATE brings it.
 local function answer(d) events['br:devmenu:state'](d) end
 
@@ -956,10 +1524,23 @@ local function liveLoops()
     return n
 end
 
---- The dev menu, once it has been built.
+--- The dev menu, once it has been built: the one titled so with no subtitle.
+--- Its submenus carry the same title, and their own subtitle (#426).
 local function devMenu()
     for _, m in ipairs(menus or {}) do
-        if m.Title == BR.Config.DevMenu.labels.title then return m end
+        if m.Title == BR.Config.DevMenu.labels.title and (m.SubTitle or '') == '' then
+            return m
+        end
+    end
+    return nil
+end
+
+--- A dev submenu by its subtitle -- the Vehicle spawner, or a class (#426).
+local function subMenu(subtitle)
+    for _, m in ipairs(menus or {}) do
+        if m.Title == BR.Config.DevMenu.labels.title and m.SubTitle == subtitle then
+            return m
+        end
     end
     return nil
 end
@@ -972,7 +1553,47 @@ local function row(m, text)
     return nil, nil
 end
 
+--- A menu's row labels, joined.
+local function rowTexts(m)
+    local out = {}
+    for i, it in ipairs(m and m.Items or {}) do out[i] = it._text end
+    return table.concat(out, '|')
+end
+
+--- The library's trail: 'Dev menu' for the one menu, a submenu by its
+--- subtitle, and 'other' for a menu that is not the dev menu's.
+local function trail()
+    local out = {}
+    for i, b in ipairs(BreadcrumbsHandler and BreadcrumbsHandler.breadcrumbs or {}) do
+        local mm = b.menu
+        if mm == devMenu() then out[i] = 'Dev menu'
+        elseif mm.Title == BR.Config.DevMenu.labels.title then out[i] = mm.SubTitle
+        else out[i] = 'other' end
+    end
+    return table.concat(out, ' > ')
+end
+
 local function lastExecuted() return executed[#executed] end
+
+--- /brdev, then the Vehicle spawner row, the way a player gets there.
+--- @return table|nil spawner, table|nil the one menu
+local function intoSpawner()
+    if not BR.DevMenu.up() then cmds.brdev.fn(0, {}, 'brdev') end
+    local m = devMenu()
+    local _, vi = row(m, BR.Config.DevMenu.labels.vehicles)
+    if vi then m:Press(vi) end
+    return subMenu(BR.Config.DevMenu.labels.vehicles), m
+end
+
+--- A class from the spawner -- Back to it first when a class is up.
+--- @return table|nil the class's menu
+local function intoClass(sp, name)
+    local cur = MenuHandler._currentMenu
+    if cur ~= nil and cur ~= sp then cur:GoBack() end
+    local _, ci = row(sp, name)
+    if ci then sp:Press(ci) end
+    return subMenu(name)
+end
 
 describe('client: /brdev and F10, and neither off a dev box')
 do
@@ -1013,13 +1634,13 @@ do
 
     local L = BR.Config.DevMenu.labels
     local want = { L.time, L.weather, L.match, L.player, L.volts, L.yubikey,
-                   L.storm, L.warmup, L.airdrop }
+                   L.storm, L.warmup, L.airdrop, L.vehicles }
     local got = {}
     for i, it in ipairs(m and m.Items or {}) do got[i] = it._text end
     eq(table.concat(got, '|'), table.concat(want, '|'), 'the rows, in order, in his words')
     eq(table.concat(want, '|'),
-       'Time|Weather|Match state|Player|Give volts|Give Yubikeys|Storm pause|Warmup pause|Spawn airdrops',
-       'which are exactly these')
+       'Time|Weather|Match state|Player|Give volts|Give Yubikeys|Storm pause|Warmup pause|Spawn airdrops|Vehicle spawner',
+       'which are exactly these -- the Vehicle spawner last (#426)')
     local described = 0
     for _, it in ipairs(m and m.Items or {}) do
         if (it._Description or '') ~= '' then described = described + 1 end
@@ -1261,6 +1882,369 @@ do
     ok(said('ScaleformUI is not in this Lua state'), 'it says why on F8')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE VEHICLE SPAWNER, CLIENT HALF (#426)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+describe('client: Vehicle spawner -- a row, and a menu built the first time it opens')
+do
+    bootClient()
+    cmds.brdev.fn(0, {}, 'brdev')
+    local m = devMenu()
+    local L = BR.Config.DevMenu.labels
+    eq(scans, 0, 'opening the dev menu reads no vehicles')
+    eq(#menus, 1, 'and builds none of the spawner\'s menus')
+
+    local sp = intoSpawner()
+    ok(sp ~= nil, 'the Vehicle spawner row opens a menu')
+    eq(sp and sp:Visible(), true, 'shown')
+    eq(m:Visible(), false, 'in place of the one menu')
+    ok(BR.DevMenu.up(), 'and the dev menu counts as up')
+    eq(sp and sp.Title, 'Dev menu', 'the bar is the dev menu\'s; the strip says where you are')
+    eq(sp and sp._mouse, false, 'built through BR.Menu.new: no mouse')
+    eq(sp and #sp.InstructionalButtons, 0, 'no buttons')
+    eq(sp and sp.inherited, nil,
+       'switched to without the library rebuilding it from the one menu')
+    eq(rowTexts(sp),
+       'Spawn by name|Sports Classics|Sports|Super|Motorcycles|Off-road|Utility|'
+       .. 'Cycles|Boats|Helicopters|Planes|Military',
+       'Spawn by name, then a row per class the game has vehicles in -- in its '
+       .. 'class order, in its words')
+    ok(row(sp, 'Compacts') == nil, 'a class with no vehicles has no row')
+    ok(row(sp, 'Trains') == nil, 'and Trains has none: the server setter cannot build a train')
+    local described = 0
+    for _, it in ipairs(sp and sp.Items or {}) do
+        if (it._Description or '') ~= '' then described = described + 1 end
+    end
+    eq(described, 0, 'no row carries a description')
+    eq(scans, 1, 'the game was asked for its vehicles once')
+    eq(trail(), 'Dev menu > Vehicle spawner', 'and Back has the way to the one menu')
+
+    -- BACK, AND IN AGAIN: nothing read or built twice.
+    sp:Key('back')
+    eq(m:Visible(), true, 'Back is the one menu')
+    local built = #menus
+    intoSpawner()
+    eq(subMenu(L.vehicles), sp, 'the same spawner comes back')
+    eq(#menus, built, 'nothing new is built')
+    eq(scans, 1, 'and the vehicles are not read again')
+    eq(liveLoops(), 2, 'and it costs no pass of its own -- the menu\'s and the key\'s')
+
+    -- A CLIENT WITH NO VEHICLE LIST still has Spawn by name.
+    bootClient({ noModelList = true })
+    sp = intoSpawner()
+    eq(rowTexts(sp), 'Spawn by name', 'no list: no class rows, and the menu still opens')
+end
+
+describe('client: a class lists every vehicle in it, by its in-game name, the armed ones in red')
+do
+    bootClient()
+    local L = BR.Config.DevMenu.labels
+    local sp = intoSpawner()
+    local RED = BR.Menu.red(L.armed)
+    eq(RED, '~HC_6~Armed~s~',
+       'the mark: "Armed", in HUD_COLOUR_RED -- an index into the engine\'s palette')
+
+    local planes = intoClass(sp, 'Planes')
+    ok(planes ~= nil and planes:Visible(), 'a class row opens its menu')
+    eq(planes and planes.SubTitle, 'Planes', 'the strip names the class')
+    eq(trail(), 'Dev menu > Vehicle spawner > Planes', 'and Back has the way out')
+    eq(rowTexts(planes), 'Atomic Blimp|Avenger|Avenger|P-996 LAZER',
+       'every vehicle in the class, by its in-game name, sorted by it')
+    eq(planes and planes.Items[1]._right, nil,
+       'the Atomic Blimp carries nothing: it flies, and is unarmed')
+    eq(planes and planes.Items[2]._right, RED, 'an Avenger carries "Armed", in red')
+    eq(planes and planes.Items[4]._right, RED, 'and so does the Lazer')
+    -- TWO OF A NAME KEEP ONE ORDER: by model.
+    planes:Press(2)
+    eq(lastExecuted(), 'brdevsv vehicle avenger plane', 'the first Avenger is `avenger`')
+    planes:Press(3)
+    eq(lastExecuted(), 'brdevsv vehicle avenger2 plane', 'and the second `avenger2`')
+
+    local sports = intoClass(sp, 'Sports')
+    eq(rowTexts(sports), 'myaddon|Red Rocket',
+       'no name in the game: the model\'s; GTA\'s codes taken out of a label; '
+       .. 'sorted without regard to case')
+
+    local util = intoClass(sp, 'Utility')
+    eq(rowTexts(util), 'docktrailer|Tractor|Trailer', 'a vehicle the game never named, by its model')
+
+    local mil = intoClass(sp, 'Military')
+    eq(rowTexts(mil), 'Anti-Aircraft Trailer|APC|Barracks|Rhino Tank', 'Military, by name')
+    eq(mil and mil.Items[1]._right, RED, 'an ARMED row is armed')
+    eq(mil and mil.Items[3]._right, nil,
+       'the Barracks is military and carries nothing: the class says nothing about guns')
+    eq(mil and mil.Items[4]._right, RED, 'and a tank is armed')
+
+    local off = intoClass(sp, 'Off-road')
+    eq(rowTexts(off), 'Blazer|Blazer Aqua|Caracara 4x4|Insurgent|Technical Aqua', 'Off-road, by name')
+    eq(off and off.Items[2]._right, nil,
+       'the Blazer Aqua is in no row of config/vehicles.lua, so it is not marked')
+    eq(off and off.Items[3]._right, nil, 'the Caracara 4x4 is unarmed')
+    eq(off and off.Items[4]._right, RED, '`insurgent2` is an ARMED row, and marked')
+
+    -- BUILT ONCE.
+    local built = #menus
+    local again = intoClass(sp, 'Planes')
+    eq(again, planes, 'a class opened again is the same menu')
+    eq(#menus, built, 'nothing new is built')
+end
+
+describe('client: every row asks for its model, as the sync tree the game says it is')
+do
+    bootClient()
+    local L = BR.Config.DevMenu.labels
+    local sp = intoSpawner()
+    local RED = BR.Menu.red(L.armed)
+    local want = {
+        adder = 'automobile', zentorno = 'automobile', scramjet = 'automobile',
+        vigilante = 'automobile', caracara2 = 'automobile', insurgent2 = 'automobile',
+        tractor = 'automobile', rhino = 'automobile', barracks = 'automobile',
+        myaddon = 'automobile', brokenlabel = 'automobile',
+        blazer = 'automobile', chimera = 'automobile',   -- quads
+        blazer5 = 'automobile',                           -- amphibious quad
+        technical2 = 'automobile', apc = 'automobile',    -- amphibious cars
+        stromberg = 'automobile', toreador = 'automobile', -- submarine cars: no native
+        bati = 'bike', oppressor2 = 'bike', bmx = 'bike',  -- a bicycle is a bike
+        dinghy = 'boat', seashark = 'boat',                -- a jetski is a boat
+        kosatka = 'submarine', submersible = 'submarine',  -- no native: Boats
+        maverick = 'heli', buzzard = 'heli',
+        blimp = 'heli',                                    -- no native: Planes
+        lazer = 'plane', avenger = 'plane', avenger2 = 'plane',
+        trailers = 'trailer', docktrailer = 'trailer',     -- no native: Utility
+        trailersmall2 = 'trailer',                         -- ...and Military
+    }
+    local armedWant = {
+        scramjet = true, vigilante = true, insurgent2 = true, technical2 = true,
+        oppressor2 = true, kosatka = true, buzzard = true, lazer = true,
+        avenger = true, avenger2 = true, stromberg = true, toreador = true,
+        rhino = true, trailersmall2 = true, apc = true,
+    }
+    local got, armedGot, asked, armedCount = {}, {}, 0, 0
+    for ci = 2, #sp.Items do
+        local cm = intoClass(sp, sp.Items[ci]._text)
+        for i, it in ipairs(cm and cm.Items or {}) do
+            local n = #executed
+            cm:Press(i)
+            local w = words(executed[#executed] or '')
+            if #executed == n + 1 and w[2] == 'vehicle' then
+                asked = asked + 1
+                got[w[3]] = w[4]
+                if it._right == RED then
+                    armedGot[w[3]] = true
+                    armedCount = armedCount + 1
+                elseif it._right ~= nil then
+                    armedGot[w[3]] = 'another label'
+                end
+            end
+        end
+    end
+    eq(asked, 34, 'every vehicle but the two trains has a row, and every row asks')
+    for model, tree in pairs(want) do
+        eq(got[model], tree, ('%s is asked for as %s'):format(model, tree))
+    end
+    eq(armedCount, 15, 'fifteen rows are marked')
+    for model in pairs(armedWant) do
+        eq(armedGot[model], true, ('%s is marked Armed'):format(model))
+    end
+    ok(got.lazer ~= nil and got.Lazer == nil and got.bmx ~= nil and got.blimp ~= nil,
+       'names the game registered in capitals are asked for lower-cased')
+    eq(#toasts, 0, 'and none of it was refused')
+
+    -- A MODEL GONE SINCE THE LIST WAS READ (its resource stopped): not asked.
+    gone[hashOf('adder')] = true
+    local super = intoClass(sp, 'Super')
+    local n = #executed
+    super:Press(1)
+    eq(#executed, n, 'a model this game no longer has is not asked for')
+    eq(toasts[#toasts] and toasts[#toasts].text, 'adder cannot be spawned', 'it is refused, by name')
+    eq(toasts[#toasts] and toasts[#toasts].tone, 'warn', 'as a warning toast')
+    ok(said('[br_core] brdev: adder cannot be spawned'), 'and on F8')
+end
+
+describe('client: Spawn by name -- GTA\'s keyboard over the open menu')
+do
+    bootClient()
+    local L = BR.Config.DevMenu.labels
+    local sp = intoSpawner()
+    local _, bi = row(sp, L.byName)
+    eq(bi, 1, 'Spawn by name is the spawner\'s first row')
+    local n = #executed
+
+    sp:Press(bi)
+    eq(#kbd.opened, 1, 'it opens GTA\'s on-screen keyboard')
+    local o = kbd.opened[1] or {}
+    eq(textEntries[o.title], 'Spawn by name',
+       'titled with the row\'s own label, through a text entry -- the box takes a label')
+    eq(o.maxLen, 64, 'as long as a model name may be')
+    eq(o.kind, 0, 'the English keyboard: a model name is ASCII')
+    eq(o.default, '', 'and empty')
+    eq(screens[#screens], 'devmenu.keyboard',
+       'the key layer is told a screen it cannot see has the keyboard -- typing '
+       .. '`titan` is not T, I, T, A and N')
+    eq(sp.Controls.Select.Enabled, false, 'the menu\'s Select is off')
+    eq(sp.Controls.Back.Enabled, false, 'and its Back')
+    ok(passLive('devmenu.keyboard'), 'and a frame pass runs while the box is up')
+
+    -- WHILE TYPING, THE MENU READS NO KEY.
+    frame(); frame()
+    sp:Key('select')
+    sp:Key('back')
+    eq(#kbd.opened, 1, 'Enter reaching the menu under the box opens no second box')
+    eq(sp:Visible(), true, 'and Escape takes nothing back')
+    sp:Press(bi)
+    eq(#kbd.opened, 1, 'one box at a time')
+    eq(#executed, n, 'and nothing is asked while it is up')
+
+    -- CONFIRMED, WITH ENTER STILL DOWN.
+    kbd.state, kbd.result = 1, '  Adder '
+    keyHeld[201] = true
+    frame()
+    eq(lastExecuted(), 'brdevsv vehicle adder automobile',
+       'the name typed is asked for: trimmed, lower-cased, as the tree the game says')
+    eq(#executed, n + 1, 'once')
+    eq(screens[#screens], 'none', 'the key layer has the keyboard back as the box goes')
+    eq(sp.Controls.Select.Enabled, false, 'but while Enter is still down, Select stays off')
+    sp:Key('select')
+    eq(#kbd.opened, 1, '-- so the Enter that confirmed does not open the box again')
+    keyHeld[201], keyUp[201] = nil, true
+    frame()
+    eq(sp.Controls.Select.Enabled, false, 'nor on the frame Enter comes up')
+    keyUp[201] = nil
+    frame()
+    eq(sp.Controls.Select.Enabled, false,
+       'nor after one quiet frame: the library\'s loop is a thread of its own')
+    frame()
+    eq(sp.Controls.Select.Enabled, true, 'two, and the menu has Select back')
+    eq(sp.Controls.Back.Enabled, true, 'and Back')
+    ok(not passLive('devmenu.keyboard'), 'and the pass is gone')
+    eq(#executed, n + 1, 'still one request')
+
+    -- ESCAPE ON THE BOX: canceled, nothing asked, and the spawner stays.
+    sp:Press(bi)
+    eq(#kbd.opened, 2, 'opened again')
+    kbd.state, kbd.result = 2, 'rhino'
+    keyHeld[177] = true
+    frame()
+    eq(#executed, n + 1, 'a canceled box asks for nothing -- not even what was typed')
+    eq(screens[#screens], 'none', 'and gives the keyboard back')
+    keyHeld[177], keyUp[177] = nil, true
+    sp:Key('back')
+    eq(sp:Visible(), true,
+       'the Escape that canceled is not also Back on its way up -- the spawner stays')
+    keyUp[177] = nil
+    frame(); frame()
+    eq(sp.Controls.Back.Enabled, true, 'once it is up, Back is the menu\'s again')
+    sp:Key('back')
+    eq(devMenu():Visible(), true, 'and the next Escape goes back, as it should')
+
+    -- WHAT IS REFUSED, AND WHAT IS NOTHING.
+    bootClient()
+    sp = intoSpawner()
+    n = #executed
+    local function typeIt(text, status)
+        sp:Press(1)
+        kbd.state, kbd.result = status or 1, text
+        frame(); frame(); frame()
+    end
+    typeIt('adderr')
+    eq(toasts[#toasts] and toasts[#toasts].text, 'adderr cannot be spawned',
+       'a name the game has no vehicle by is refused, as typed')
+    eq(toasts[#toasts] and toasts[#toasts].tone, 'warn', 'as a warning toast')
+    ok(said('[br_core] brdev: adderr cannot be spawned'), 'and on F8')
+    typeIt('add er')
+    eq(toasts[#toasts] and toasts[#toasts].text, 'add er cannot be spawned',
+       'and so is one that is not a model name at all')
+    typeIt('~r~zz')
+    eq(toasts[#toasts] and toasts[#toasts].text, 'zz cannot be spawned',
+       'with GTA\'s codes taken out of what is echoed')
+    typeIt('freight')
+    eq(toasts[#toasts] and toasts[#toasts].text, 'freight cannot be spawned',
+       'a train, by name: the server setter cannot build one')
+    eq(#executed, n, 'not one of them was asked for')
+    local t = #toasts
+    typeIt('   ')
+    typeIt('adder', 3)
+    typeIt('adder', -1)
+    eq(#toasts, t, 'an empty name, a failed box and one gone without an answer are nothing')
+    eq(#executed, n, 'and ask nothing')
+    typeIt('Kosatka')
+    eq(lastExecuted(), 'brdevsv vehicle kosatka submarine', 'a submarine, by name, as a submarine')
+    typeIt('BLIMP')
+    eq(lastExecuted(), 'brdevsv vehicle blimp heli', 'a blimp, as a heli')
+
+    -- BR_CORE STOPPING WITH THE BOX UP: it is closed, not left with nobody
+    -- reading it.
+    sp:Press(1)
+    events['onClientResourceStop']('br_core')
+    ok(kbd.forced == true, 'FORCE_CLOSE_TEXT_INPUT_BOX takes the box down')
+    ok(not BR.DevMenu.up(), 'and the menu goes')
+end
+
+describe('client: Back walks the library\'s trail, and a dev menu put away leaves none')
+do
+    bootClient()
+    local sp, m = intoSpawner()
+    local cls = intoClass(sp, 'Super')
+    eq(trail(), 'Dev menu > Vehicle spawner > Super', 'three deep')
+    cls:Key('back')
+    eq(sp:Visible(), true, 'Back from a class is the spawner')
+    eq(trail(), 'Dev menu > Vehicle spawner', 'one off the trail')
+    sp:Key('back')
+    eq(m:Visible(), true, 'Back from the spawner is the one menu')
+    eq(trail(), 'Dev menu', 'two')
+    m:Key('back')
+    ok(not BR.DevMenu.up(), 'and Back from the one menu closes it')
+    eq(trail(), '', 'leaving no trail')
+
+    -- F10 INSIDE A CLASS.
+    sp = intoSpawner()
+    intoClass(sp, 'Boats')
+    cmds.brdev.fn(0, {}, 'brdev')
+    ok(not BR.DevMenu.up(), 'F10 in a class menu puts the dev menu away')
+    eq(trail(), '', 'and its trail with it')
+    cmds.brdev.fn(0, {}, 'brdev')
+    eq(devMenu():Visible(), true, 'F10 again is the one menu, not the class it was left in')
+    eq(trail(), 'Dev menu', 'on a trail of its own')
+
+    -- ANOTHER MENU OPENING OVER A CLASS -- the gun counter's, through closeAll.
+    sp = intoSpawner()
+    intoClass(sp, 'Boats')
+    local other = BR.Menu.new('', '', nil)
+    other:AddItem(BR.Menu.item('Carbine Rifle'))
+    BR.Menu.closeAll(other)
+    other:Visible(true)
+    ok(not BR.DevMenu.up(), 'another menu opening puts the dev menu away')
+    eq(trail(), 'other', 'and the trail is that menu\'s alone')
+    other:Key('back')
+    eq(other:Visible(), false, 'its Escape closes it')
+    ok(not BR.DevMenu.up(), '-- and does not walk back into the Vehicle spawner')
+
+    -- A TRAIL SOMEBODY ELSE LEFT: the gun counter walked away from.
+    bootClient()
+    local shop = BR.Menu.new('', '', nil)
+    shop:AddItem(BR.Menu.item('Carbine Rifle'))
+    shop:Visible(true)
+    shop:Visible(false)
+    eq(trail(), 'other', 'fixture: a close by Visible(false) leaves its trail')
+    sp, m = intoSpawner()
+    eq(trail(), 'Dev menu > Vehicle spawner', 'the dev menu starts its own')
+    sp:Key('back')
+    eq(m:Visible(), true, 'Back from the spawner is the dev menu')
+    eq(shop:Visible(), false, 'and never the gun shop somebody walked away from')
+
+    -- ONE OF OUR PANELS TAKING THE KEYBOARD, DEEP IN A CLASS.
+    sp = intoSpawner()
+    intoClass(sp, 'Cycles')
+    BR.Keys.uiScreen = 'inventory'
+    tick()
+    ok(not BR.DevMenu.up(), 'the inventory puts a class menu away too -- the gun shop\'s rule')
+    eq(trail(), '', 'and the trail')
+    BR.Keys.uiScreen = nil
+    tick()
+    eq(liveLoops(), 1, 'and with it down, its pass is gone; the key\'s remains')
+end
+
 -- =========================================================================
 -- PART C -- the client's own lines, typed into the server
 -- =========================================================================
@@ -1291,20 +2275,41 @@ do
         end
     end
     pressAll()
+    -- AND THE VEHICLE SPAWNER'S (#426): pressAll's last root row opened it.
+    -- Every vehicle row of every class, and a name typed at Spawn by name.
+    local sp = subMenu(L.vehicles)
+    local vehicleLines = 0
+    for ci = 2, #(sp and sp.Items or {}) do
+        local cm = intoClass(sp, sp.Items[ci]._text)
+        for i = 1, #(cm and cm.Items or {}) do
+            cm:Press(i)
+            vehicleLines = vehicleLines + 1
+        end
+    end
+    MenuHandler._currentMenu:GoBack()
+    sp:Press(1)
+    kbd.state, kbd.result = 1, 'Lazer'
+    frame()
     local lines = {}
     for _, l in ipairs(executed) do lines[#lines + 1] = l end
+    eq(lines[#lines], 'brdevsv vehicle lazer plane', 'fixture: the typed name was asked for')
 
     BR = server
-    local bad = {}
+    local bad, built, refusedVehicles = {}, #created, 0
     for _, l in ipairs(lines) do
         clock = clock + 1000
         local w = words(l)
         table.remove(w, 1)
+        local toasted = #notices
         local got = BR.DevMenu.request(3, w, clock)
         if got ~= 'ran' and got ~= 'open' then bad[#bad + 1] = l .. ' -> ' .. got end
+        if w[1] == 'vehicle' and #notices > toasted then refusedVehicles = refusedVehicles + 1 end
     end
     eq(#bad, 0, ('all %d lines the rows can type are taken'):format(#lines), table.concat(bad, '; '))
-    ok(#lines > 60, 'and that is every value of every row', #lines)
+    ok(#lines > 90, 'and that is every value of every row, every vehicle among them', #lines)
+    eq(vehicleLines, 34, 'fixture: thirty-four vehicle rows were pressed')
+    eq(#created - built, vehicleLines + 1, 'and every vehicle line built one vehicle')
+    eq(refusedVehicles, 0, 'with no refusal among them')
 end
 
 -- =========================================================================
