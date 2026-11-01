@@ -667,12 +667,25 @@ local function scan()
     end
     -- BY NAME, then by model so two vehicles the game names alike (four
     -- Avengers) keep one order between sessions.
+    --
+    -- AND TWO OF A NAME IN ONE LIST ARE TOLD APART BY THEIR MODEL (#426):
+    -- `Avenger (avenger3)`. Four rows that all read "Avenger" are a list
+    -- nobody can pick one from. Alike means alike regardless of case --
+    -- the key the list is sorted on -- so "BMX" and "Bmx" are told apart too.
+    -- A name alone in its list stays as the game wrote it; another class's
+    -- list is another list. The model is data, as a row's name is: no word of
+    -- ours is added.
     local classes = {}
     for c, list in pairs(byClass) do
         table.sort(list, function(a, b)
             if a.key ~= b.key then return a.key < b.key end
             return a.model < b.model
         end)
+        local alike = {}
+        for _, v in ipairs(list) do alike[v.key] = (alike[v.key] or 0) + 1 end
+        for _, v in ipairs(list) do
+            if alike[v.key] > 1 then v.name = ('%s (%s)'):format(v.name, v.model) end
+        end
         classes[#classes + 1] = { class = c, name = className(c), vehicles = list }
     end
     table.sort(classes, function(a, b) return a.class < b.class end)

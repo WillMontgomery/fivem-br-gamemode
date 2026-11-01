@@ -1282,11 +1282,14 @@ end
 -- a bare truth test would read every model as a train.
 --
 -- AND THE AWKWARD ONES ON PURPOSE: names registered in capitals (`Lazer`,
--- `BLIMP`, `BMX`, `Dinghy`); two vehicles the game names alike (the
--- Avengers); a vehicle with no text (`docktrailer`) and an add-on with no
+-- `BLIMP`, `BMX`, `Dinghy`); vehicles the game names alike in one class
+-- (three Avengers, two Speedo Customs, two Trailers in Utility, and `BMX`
+-- beside an add-on `Bmx`) and a name shared across two classes (a Trailer in
+-- Military); a vehicle with no text (`docktrailer`) and an add-on with no
 -- entry at all (`myaddon`, whose name sorts against a capitalized one); a
 -- label carrying GTA's text codes; trains, in class 21; and no Compacts at
--- all. Armed or not is config/vehicles.lua's say, never this table's.
+-- all. Armed or not is config/vehicles.lua's say, never this table's -- its
+-- rows and its list of armed models with no ruling yet (#427).
 local VEHICLES = {
     { 'adder',         7,  'car',      'ADDER',        'Adder' },
     { 'zentorno',      7,  'car',      'ZENTORNO',     'Zentorno' },
@@ -1294,6 +1297,13 @@ local VEHICLES = {
     { 'vigilante',     7,  'car',      'VIGILANTE',    'Vigilante' },
     { 'caracara2',     9,  'car',      'CARACARA2',    'Caracara 4x4' },
     { 'insurgent2',    9,  'car',      'INSURGENT2',   'Insurgent' },
+    { 'insurgent',     9,  'car',      'INSURGENT',    'Insurgent Pick-Up' },
+    { 'speedo4',       12, 'car',      'SPEEDO4',      'Speedo Custom' },
+    { 'speedo5',       12, 'car',      'SPEEDO5',      'Speedo Custom' },
+    { 'bmx2',          13, 'bicycle',  'BMX2',         'Bmx' },
+    { 'avenger3',      16, 'plane',    'AVENGER',      'Avenger' },
+    { 'tanker',        11, 'trailer',  'TANKER',       'Trailer' },
+    { 'mytrailer',     19, 'trailer',  'MYTRAILER',    'Trailer' },
     { 'blazer',        9,  'quad',     'BLAZER',       'Blazer' },
     { 'blazer5',       9,  'amphquad', 'BLAZER5',      'Blazer Aqua' },
     { 'technical2',    9,  'amphcar',  'TECHNICAL2',   'Technical Aqua' },
@@ -1346,9 +1356,9 @@ local KIND_SAYS = {
 --- The game's class names, GetLabelText('VEH_CLASS_' .. n).
 local CLASS_TEXT = {
     [0] = 'Compacts', [5] = 'Sports Classics', [6] = 'Sports', [7] = 'Super',
-    [8] = 'Motorcycles', [9] = 'Off-road', [11] = 'Utility', [13] = 'Cycles',
-    [14] = 'Boats', [15] = 'Helicopters', [16] = 'Planes', [19] = 'Military',
-    [21] = 'Trains',
+    [8] = 'Motorcycles', [9] = 'Off-road', [11] = 'Utility', [12] = 'Vans',
+    [13] = 'Cycles', [14] = 'Boats', [15] = 'Helicopters', [16] = 'Planes',
+    [19] = 'Military', [21] = 'Trains',
 }
 
 --- The modeled game, per boot: the vehicles by hash, the models taken out of
@@ -1907,7 +1917,7 @@ do
        'switched to without the library rebuilding it from the one menu')
     eq(rowTexts(sp),
        'Spawn by name|Sports Classics|Sports|Super|Motorcycles|Off-road|Utility|'
-       .. 'Cycles|Boats|Helicopters|Planes|Military',
+       .. 'Vans|Cycles|Boats|Helicopters|Planes|Military',
        'Spawn by name, then a row per class the game has vehicles in -- in its '
        .. 'class order, in its words')
     ok(row(sp, 'Compacts') == nil, 'a class with no vehicles has no row')
@@ -1949,17 +1959,25 @@ do
     ok(planes ~= nil and planes:Visible(), 'a class row opens its menu')
     eq(planes and planes.SubTitle, 'Planes', 'the strip names the class')
     eq(trail(), 'Dev menu > Vehicle spawner > Planes', 'and Back has the way out')
-    eq(rowTexts(planes), 'Atomic Blimp|Avenger|Avenger|P-996 LAZER',
-       'every vehicle in the class, by its in-game name, sorted by it')
+    eq(rowTexts(planes),
+       'Atomic Blimp|Avenger (avenger)|Avenger (avenger2)|Avenger (avenger3)|'
+       .. 'P-996 LAZER',
+       'every vehicle in the class, by its in-game name, sorted by it -- and the '
+       .. 'three the game names alike told apart by their model')
     eq(planes and planes.Items[1]._right, nil,
        'the Atomic Blimp carries nothing: it flies, and is unarmed')
     eq(planes and planes.Items[2]._right, RED, 'an Avenger carries "Armed", in red')
-    eq(planes and planes.Items[4]._right, RED, 'and so does the Lazer')
-    -- TWO OF A NAME KEEP ONE ORDER: by model.
+    eq(planes and planes.Items[4]._right, RED,
+       'the third Avenger too: no row names it, the game\'s data arms it (#427) -- '
+       .. 'the model in its name leaves the mark where it was')
+    eq(planes and planes.Items[5]._right, RED, 'and so does the Lazer')
+    -- TWO OF A NAME KEEP ONE ORDER: by model, and say which.
     planes:Press(2)
-    eq(lastExecuted(), 'brdevsv vehicle avenger plane', 'the first Avenger is `avenger`')
+    eq(lastExecuted(), 'brdevsv vehicle avenger plane', '`Avenger (avenger)` is `avenger`')
     planes:Press(3)
-    eq(lastExecuted(), 'brdevsv vehicle avenger2 plane', 'and the second `avenger2`')
+    eq(lastExecuted(), 'brdevsv vehicle avenger2 plane', 'and `Avenger (avenger2)` is `avenger2`')
+    planes:Press(4)
+    eq(lastExecuted(), 'brdevsv vehicle avenger3 plane', 'and `Avenger (avenger3)` is `avenger3`')
 
     local sports = intoClass(sp, 'Sports')
     eq(rowTexts(sports), 'myaddon|Red Rocket',
@@ -1967,21 +1985,40 @@ do
        .. 'sorted without regard to case')
 
     local util = intoClass(sp, 'Utility')
-    eq(rowTexts(util), 'docktrailer|Tractor|Trailer', 'a vehicle the game never named, by its model')
+    eq(rowTexts(util), 'docktrailer|Tractor|Trailer (tanker)|Trailer (trailers)',
+       'a vehicle the game never named, by its model; two Trailers, told apart')
+
+    local vans = intoClass(sp, 'Vans')
+    eq(rowTexts(vans), 'Speedo Custom (speedo4)|Speedo Custom (speedo5)',
+       'two Speedo Customs, told apart')
+    eq(vans and vans.Items[1]._right, RED, 'and both armed, by the game\'s data (#427)')
+    eq(vans and vans.Items[2]._right, RED, '...both of them')
+
+    local cycles = intoClass(sp, 'Cycles')
+    eq(rowTexts(cycles), 'BMX (bmx)|Bmx (bmx2)',
+       'names alike but for case are alike: each keeps its own spelling, and says its model')
 
     local mil = intoClass(sp, 'Military')
-    eq(rowTexts(mil), 'Anti-Aircraft Trailer|APC|Barracks|Rhino Tank', 'Military, by name')
+    eq(rowTexts(mil), 'Anti-Aircraft Trailer|APC|Barracks|Rhino Tank|Trailer',
+       'Military, by name -- its Trailer alone in its own list, so plain, whatever '
+       .. 'Utility has')
     eq(mil and mil.Items[1]._right, RED, 'an ARMED row is armed')
     eq(mil and mil.Items[3]._right, nil,
        'the Barracks is military and carries nothing: the class says nothing about guns')
     eq(mil and mil.Items[4]._right, RED, 'and a tank is armed')
+    eq(mil and mil.Items[5]._right, nil, 'and an unarmed trailer is not')
 
     local off = intoClass(sp, 'Off-road')
-    eq(rowTexts(off), 'Blazer|Blazer Aqua|Caracara 4x4|Insurgent|Technical Aqua', 'Off-road, by name')
-    eq(off and off.Items[2]._right, nil,
-       'the Blazer Aqua is in no row of config/vehicles.lua, so it is not marked')
+    eq(rowTexts(off),
+       'Blazer|Blazer Aqua|Caracara 4x4|Insurgent|Insurgent Pick-Up|Technical Aqua',
+       'Off-road, by name')
+    eq(off and off.Items[2]._right, RED,
+       'the Blazer Aqua is in no row, and the game\'s data arms it: marked (#427)')
     eq(off and off.Items[3]._right, nil, 'the Caracara 4x4 is unarmed')
-    eq(off and off.Items[4]._right, RED, '`insurgent2` is an ARMED row, and marked')
+    eq(off and off.Items[4]._right, RED,
+       '`insurgent2` -- the Insurgent -- is an ARMED row, and marked as the row says')
+    eq(off and off.Items[5]._right, RED,
+       '`insurgent` -- the Pick-Up, with the turret -- is marked by the game\'s data')
 
     -- BUILT ONCE.
     local built = #menus
@@ -2001,24 +2038,31 @@ do
         vigilante = 'automobile', caracara2 = 'automobile', insurgent2 = 'automobile',
         tractor = 'automobile', rhino = 'automobile', barracks = 'automobile',
         myaddon = 'automobile', brokenlabel = 'automobile',
+        insurgent = 'automobile', speedo4 = 'automobile', speedo5 = 'automobile',
         blazer = 'automobile', chimera = 'automobile',   -- quads
         blazer5 = 'automobile',                           -- amphibious quad
         technical2 = 'automobile', apc = 'automobile',    -- amphibious cars
         stromberg = 'automobile', toreador = 'automobile', -- submarine cars: no native
-        bati = 'bike', oppressor2 = 'bike', bmx = 'bike',  -- a bicycle is a bike
+        bati = 'bike', oppressor2 = 'bike',
+        bmx = 'bike', bmx2 = 'bike',                       -- a bicycle is a bike
         dinghy = 'boat', seashark = 'boat',                -- a jetski is a boat
         kosatka = 'submarine', submersible = 'submarine',  -- no native: Boats
         maverick = 'heli', buzzard = 'heli',
         blimp = 'heli',                                    -- no native: Planes
-        lazer = 'plane', avenger = 'plane', avenger2 = 'plane',
+        lazer = 'plane', avenger = 'plane', avenger2 = 'plane', avenger3 = 'plane',
         trailers = 'trailer', docktrailer = 'trailer',     -- no native: Utility
-        trailersmall2 = 'trailer',                         -- ...and Military
+        tanker = 'trailer',
+        trailersmall2 = 'trailer', mytrailer = 'trailer',  -- ...and Military
     }
+    -- THE TABLE'S ARMED, TANK AND MARKED FLIGHT ROWS, AND THE ARMED MODELS
+    -- WITH NO RULING YET (#427): blazer5, insurgent, avenger3, speedo4, speedo5.
     local armedWant = {
         scramjet = true, vigilante = true, insurgent2 = true, technical2 = true,
         oppressor2 = true, kosatka = true, buzzard = true, lazer = true,
         avenger = true, avenger2 = true, stromberg = true, toreador = true,
         rhino = true, trailersmall2 = true, apc = true,
+        blazer5 = true, insurgent = true, avenger3 = true, speedo4 = true,
+        speedo5 = true,
     }
     local got, armedGot, asked, armedCount = {}, {}, 0, 0
     for ci = 2, #sp.Items do
@@ -2039,11 +2083,11 @@ do
             end
         end
     end
-    eq(asked, 34, 'every vehicle but the two trains has a row, and every row asks')
+    eq(asked, 41, 'every vehicle but the two trains has a row, and every row asks')
     for model, tree in pairs(want) do
         eq(got[model], tree, ('%s is asked for as %s'):format(model, tree))
     end
-    eq(armedCount, 15, 'fifteen rows are marked')
+    eq(armedCount, 20, 'twenty rows are marked')
     for model in pairs(armedWant) do
         eq(armedGot[model], true, ('%s is marked Armed'):format(model))
     end
@@ -2307,7 +2351,7 @@ do
     end
     eq(#bad, 0, ('all %d lines the rows can type are taken'):format(#lines), table.concat(bad, '; '))
     ok(#lines > 90, 'and that is every value of every row, every vehicle among them', #lines)
-    eq(vehicleLines, 34, 'fixture: thirty-four vehicle rows were pressed')
+    eq(vehicleLines, 41, 'fixture: forty-one vehicle rows were pressed')
     eq(#created - built, vehicleLines + 1, 'and every vehicle line built one vehicle')
     eq(refusedVehicles, 0, 'with no refusal among them')
 end

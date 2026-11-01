@@ -105,9 +105,13 @@ by name**, then one row per vehicle class the game has vehicles in, named as
 the game names it (`GetLabelText('VEH_CLASS_' .. n)`), in the game's class
 order. A class opens a menu of every vehicle in it, by its in-game name
 (`GetLabelText` of `GetDisplayNameFromVehicleModel`), or its model name when
-the game has none, sorted by name without regard to case. Each submenu wears
-the dev menu's bar with its own name in the strip under it, and the library's
-own Back walks back one menu at a time.
+the game has none, sorted by name without regard to case. **Two or more rows in
+one class that would show the same name** (case aside) each show the name
+followed by the model -- `Avenger (avenger3)`, `Speedo Custom (speedo4)` --
+sorted by model; a name alone in its class stays as the game wrote it, and the
+"Armed" mark is unaffected. Each submenu wears the dev menu's bar with its own
+name in the strip under it, and the library's own Back walks back one menu at
+a time.
 
 **The lists are the game's.** `GetAllVehicleModels` is every vehicle archetype
 the game registered -- the base game, every DLC, and any vehicle a resource
@@ -121,11 +125,16 @@ CREATE_VEHICLE_SERVER_SETTER").
 
 **"Armed"** is a right-hand label in GTA's red (`~HC_6~`, HUD_COLOUR_RED --
 an index into the engine's palette, never the project's cyan or gold), on the
-models `BR.Config.IsArmedVehicle` names: every ARMED row of the refused-vehicle
-table (which includes every model `IsDisarmedVehicle` names), every TANK row,
-and every FLIES row marked `armed = true` -- the aircraft and fliers whose
-model the game's vehicle data gives a weapon. A model the table does not name
-is not marked, whatever it is.
+models `BR.Config.IsArmedVehicle` names -- 125 of them: every ARMED row of the
+refused-vehicle table (which includes every model `IsDisarmedVehicle` names),
+every TANK row, every FLIES row marked `armed = true` -- the aircraft and
+fliers whose model the game's vehicle data gives a weapon -- and the 31 armed
+models no row names (`BR.Config.ArmedUnruledVehicles`: the Insurgent Pick-Up,
+the Nightshark, the Speedo Customs, the Terrorbyte, the Weaponized Conada and
+the rest). That last list is data and **rules on nothing**: a match treats
+those vehicles exactly as before -- the fliers refused as aircraft by the type
+and class nets, the rest driven with their guns live -- until the owner rules
+on them in #427. A vehicle in neither the table nor the list is not marked.
 
 **Spawn by name** opens GTA's on-screen keyboard, titled with the row's label.
 While it is up the menu reads no key (ScaleformUI's `ProcessControl` stands
@@ -234,12 +243,14 @@ The vehicle spawner runs the **real** `server/vehicles.lua` over modeled
 natives -- the server setter's arguments, the position, the routing bucket,
 any model while `brcar` still refuses, every refusal and the lobby -- and the
 client over a modeled `GetAllVehicleModels`: the class rows, names, fallback,
-sort and Armed marks, the tree every kind of model is asked as, the keyboard
-and the keys that close it, and the library's trail back through the
+sort, rows that share a name told apart by model, and Armed marks from the
+table and the unruled list, the tree every kind of model is asked as, the
+keyboard and the keys that close it, and the library's trail back through the
 submenus. The verbs' bodies are covered where their commands are:
 `test_roster` (force and skip on a given match, the one-match warmup pause,
 and `brcar` itself), `test_storm` (the one-match storm pause), `test_airdrop`
 (`dropNow` on a given match), `test_stats` (`grantVolts`'s answers and the
 production-tables refusal), `test_yubikey` (`devKey`, and the same refusal),
 `test_shared`. `tools/check_vehicles.lua` holds the `armed` marks to their
-rule, row by row.
+rule, row by row, and the unruled list to its names, clear of every row, with
+every ruling on its models what it was.

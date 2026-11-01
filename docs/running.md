@@ -463,7 +463,7 @@ non-zero on any failure:
 | `tests` | over 10,000 assertions across 35 suites; the ordered inventory must name every `tools/test_*.lua` file |
 | `scope gate` | OneSync scope-limited natives banned from client gameplay code |
 | `weapon table` | every weapon hash re-derived from its name, and every slot weapon's icon present in both the source and the built bundle |
-| `vehicle table` | every refused-vehicle hash re-derived from its name, signed and unsigned; the `armed` marks only on flight rows, and the dev menu's armed set held to them (#426) |
+| `vehicle table` | every refused-vehicle hash re-derived from its name, signed and unsigned; the `armed` marks only on flight rows, and the dev menu's armed set held to them (#426); the armed models with no ruling yet re-derived too, clear of every row, every ruling on them unchanged (#427) |
 | `POI siting` | spacing, water, no-loot zones, distance to roads — and the 23 ambulance spawns held to the same rules |
 | `map boundary` | the surveyed ring is simple and closed, and every POI and ambulance spawn is inside it |
 | `spectator microphone` | a spectator is muted at both session-start sites and unmuted once on stop |

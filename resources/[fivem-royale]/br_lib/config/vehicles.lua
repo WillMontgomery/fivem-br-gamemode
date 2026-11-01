@@ -733,29 +733,104 @@ function BR.Config.IsDisarmedVehicle(hash)
     return v.keepRefused ~= true
 end
 
+--- Armed models with NO RULING YET: in no row of the refused table, and armed
+--- by the game's own vehicle data. (#427)
+---
+--- Owner, 2026-11-01, of the dev menu's vehicle spawner: "For any that you
+--- believe to be armed ... put a note on their row in red that says "Armed"".
+--- ANY, not only the ones a row already names. Every model here is one the
+--- game's vehicle data gives a vehicle weapon (DurtyFree's dump of it,
+--- vehicles.json, game build 3717 -- the same source and footing as `armed`
+--- above the table), and every name was checked against the hash that data
+--- records for it, so none is a guess at a spelling.
+---
+--- ⚠ IT IS DATA, AND IT RULES ON NOTHING. BR.Config.IsArmedVehicle is its one
+--- reader; IsAllowedVehicle, IsDisarmedVehicle and VehicleRefusalFor never
+--- look at it, so a match treats every model here exactly as it did -- the
+--- five that fly refused as aircraft by the type and class nets, the rest
+--- driven with their guns live. Whether each should be refused or driven with
+--- the gun held off is the owner's ruling to make, on #427; until he does,
+--- this list is only the dev menu's red mark. tools/check_vehicles.lua holds
+--- every hash to its name, keeps the list clear of every row of the table,
+--- and asserts that every ruling on these models is what it was.
+---
+--- `insurgent` IS HERE BECAUSE IT IS THE INSURGENT PICK-UP. The game's data
+--- gives it the turret seat and the turret; `insurgent2` -- the plain armored
+--- Insurgent, refused above as ARMED -- has no turret seat. The table has the
+--- two the other way round, the shape #322 found in the Caracaras; #427 settles
+--- the pair, and the ARMED row above is left exactly as it is meanwhile.
+BR.Config.ArmedUnruledVehicles = {
+    -- Fly, and carry guns. No row at all: the type and class nets refuse them
+    -- as aircraft, and the table does not name them.
+    { name = 'avenger3',     hash = 0xE68D8190 },  -- Avenger: cannon, minigun, missiles
+    { name = 'avenger4',     hash = 0xFBDEAC32 },  -- Avenger: cannon, minigun, missiles
+    { name = 'conada2',      hash = 0x9D1D9872 },  -- Weaponized Conada: minigun, missiles
+    { name = 'duster2',      hash = 0x05071B2D },  -- Duster 300-H: minigun
+    { name = 'titan2',       hash = 0x3329757E },  -- Titan 250 D: 25, 40 and 105 mm
+
+    -- On the ground or the water, and armed -- allowed in a match today.
+    { name = 'ardent',       hash = 0x097E5533 },  -- Ardent: machine gun
+    { name = 'blazer5',      hash = 0xA1355F67 },  -- Blazer Aqua: cannon
+    { name = 'boxville5',    hash = 0x28AD20E1 },  -- Armored Boxville: turret
+    { name = 'buffalo4',     hash = 0xDB0C9B04 },  -- Buffalo STX: machine gun
+    { name = 'champion',     hash = 0xC972A155 },  -- Champion: machine gun
+    { name = 'comet4',       hash = 0x5D1903F9 },  -- Comet Safari: machine gun
+    { name = 'deity',        hash = 0x5B531351 },  -- Deity: machine gun
+    { name = 'dinghy5',      hash = 0xC58DA34A },  -- Weaponized Dinghy: .50 turret
+    { name = 'granger2',     hash = 0xF06C29C7 },  -- Granger 3600LX: machine gun
+    { name = 'jb7002',       hash = 0x177DA45C },  -- JB 700W: machine gun
+    { name = 'jubilee',      hash = 0x1B8165D3 },  -- Jubilee: machine gun
+    { name = 'limo2',        hash = 0xF92AEC4D },  -- Turreted Limo: turret
+    { name = 'menacer',      hash = 0x79DD18AE },  -- Menacer: turret, minigun, machine gun
+    { name = 'mule4',        hash = 0x73F4110E },  -- Mule Custom: machine gun, missiles, grenade launcher
+    { name = 'nightshark',   hash = 0x19DD9ED1 },  -- Nightshark: machine gun
+    { name = 'paragon2',     hash = 0x546D8EEE },  -- Paragon R (Armored): machine gun
+    { name = 'patriot3',     hash = 0xD80F4A44 },  -- Patriot Mil-Spec: machine gun
+    { name = 'pounder2',     hash = 0x6290F15B },  -- Pounder Custom: minigun, missiles, barrage, grenade launcher
+    { name = 'revolter',     hash = 0xE78CC3D9 },  -- Revolter: machine gun
+    { name = 'savestra',     hash = 0x35DED0DD },  -- Savestra: machine gun
+    { name = 'speedo4',      hash = 0x0D17099D },  -- Speedo Custom: machine gun, turrets
+    { name = 'speedo5',      hash = 0xFD546A18 },  -- Speedo Custom: machine gun, turrets
+    { name = 'terbyte',      hash = 0x897AFC65 },  -- Terrorbyte: missiles
+    { name = 'trailerlarge', hash = 0x5993F939 },  -- Mobile Operations Center: cannon
+    { name = 'viseris',      hash = 0xE8A8BA94 },  -- Viseris: machine gun
+
+    -- The Insurgent Pick-Up -- see `insurgent` above.
+    { name = 'insurgent',    hash = 0x9114EADA },  -- Insurgent Pick-Up: turret
+}
+
+--- The same list keyed by NORMALIZED hash, for BR.NormHash's stated reason.
+BR.Config.ArmedUnruledByHash = {}
+for _, v in ipairs(BR.Config.ArmedUnruledVehicles) do
+    BR.Config.ArmedUnruledByHash[BR.NormHash(v.hash)] = v
+end
+
 --- Does this model carry built-in weapons, as far as this file knows? (#426)
 ---
 --- The dev menu's "Armed" mark, and nothing else: it changes no ruling, and
---- nothing that refuses, ejects or files asks it. Three kinds of row say yes:
+--- nothing that refuses, ejects or files asks it. Four kinds of model say yes:
 ---
----   ARMED          every one -- the models IsDisarmedVehicle names, which the
+---   ARMED          every row -- the models IsDisarmedVehicle names, which the
 ---                  #322 ruling drives with the gun held off, and the seven
 ---                  `keepRefused` keeps refusing;
----   TANK           every one: the owner named tanks a category of their own,
+---   TANK           every row: the owner named tanks a category of their own,
 ---                  and a tank has built-in weapons (BR.Config.VehicleRefusal's
 ---                  own note);
 ---   FLIES + armed  the aircraft, and the things that fly, that carry guns as
----                  well -- see `armed` above the table.
+---                  well -- see `armed` above the table;
+---   ArmedUnruledVehicles  armed by the game's data with no ruling yet (#427).
 ---
---- A MODEL IN NO ROW IS NOT ARMED HERE, whatever it is. The class net is not
---- asked: class 19 means "military", not "has a gun" (ClassNetExempt has the
---- five that prove it). And the table is a deny-list, so an armed car nobody
---- wrote down reads as unarmed -- this file's standing limit, not a new one.
+--- A MODEL IN NONE OF THOSE IS NOT ARMED HERE, whatever it is. The class net
+--- is not asked: class 19 means "military", not "has a gun" (ClassNetExempt
+--- has the five that prove it). A vehicle added to the game after the data
+--- was read is in neither list, and reads as unarmed until somebody adds it.
 --- @param hash integer|nil  a model hash, signed or not
 --- @return boolean
 function BR.Config.IsArmedVehicle(hash)
     if hash == nil then return false end
-    local v = BR.Config.RefusedVehicleByHash[BR.NormHash(hash)]
+    local key = BR.NormHash(hash)
+    if BR.Config.ArmedUnruledByHash[key] ~= nil then return true end
+    local v = BR.Config.RefusedVehicleByHash[key]
     if v == nil then return false end
     local R = BR.Config.VehicleRefusal
     return v.why == R.ARMED or v.why == R.TANK or v.armed == true

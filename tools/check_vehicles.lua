@@ -517,6 +517,93 @@ for _, v in ipairs(BR.Config.StripExemptVehicles or {}) do
     ::nextStripExempt::
 end
 
+-- ------------------------------------------ #427: armed, no ruling yet --
+--
+-- THE THIRD SIDE LIST, and the only one that changes nothing the gamemode
+-- does: armed models no row names, kept for the dev menu's "Armed" mark
+-- (BR.Config.ArmedUnruledVehicles). A wrong hash here costs a red word in a
+-- dev menu rather than a ruling -- so the assertions that matter most are the
+-- two that keep it that way. It is in NO ROW of the table, and EVERY RULING the
+-- model table makes on every model in it is what it was before the list
+-- existed: allowed, refused by no row, not disarmed, in both hash forms. (The
+-- type and class nets, which refuse the five that fly, never read the list and
+-- are not asked here.) A list somebody wired into IsAllowedVehicle,
+-- VehicleRefusalFor or IsDisarmedVehicle fails here, model by model, long
+-- before #427 is ruled on.
+local unruled, unruledName, unruledHash = 0, {}, {}
+for _, v in ipairs(BR.Config.ArmedUnruledVehicles or {}) do
+    unruled = unruled + 1
+
+    if type(v.name) ~= 'string' or v.name == '' then
+        fail('an armed-unruled row has no name to hash')
+        goto nextUnruled
+    end
+
+    if unruledName[v.name] then
+        fail('duplicate armed-unruled name %q', v.name)
+    end
+    unruledName[v.name] = true
+
+    do
+        local want = joaat(v.name)
+        if v.hash ~= want then
+            fail('armed-unruled %s: hash is 0x%08X, should be 0x%08X',
+                 v.name, v.hash or 0, want)
+        end
+    end
+
+    -- IN NO ROW. A model the table already rules on is armed or not by its
+    -- row; here it would be a second, unruled statement about it.
+    if seenName[v.name] then
+        fail('%q is in BOTH the refused table and the armed-unruled list. The '
+             .. 'list is for armed models NO row names; a row already says '
+             .. 'what the gamemode does with it.', v.name)
+    end
+
+    if v.hash then
+        if seenHash[v.hash] then
+            fail('armed-unruled %s shares hash 0x%08X with refused row %q',
+                 v.name, v.hash, seenHash[v.hash])
+        end
+        if unruledHash[v.hash] then
+            fail('armed-unruled %q and %q share hash 0x%08X', v.name,
+                 unruledHash[v.hash], v.hash)
+        end
+        unruledHash[v.hash] = v.name
+
+        for _, h in ipairs({ v.hash, signed32(v.hash) }) do
+            if not BR.Config.IsArmedVehicle(h) then
+                fail('armed-unruled %s reads as unarmed from 0x%08X', v.name,
+                     h & 0xFFFFFFFF)
+            end
+            -- AND NO RULING CHANGED.
+            if not BR.Config.IsAllowedVehicle(h) then
+                fail('armed-unruled %s is REFUSED by IsAllowedVehicle -- the list '
+                     .. 'rules on nothing until #427 does', v.name)
+            end
+            if BR.Config.VehicleRefusalFor(h) ~= nil then
+                fail('armed-unruled %s is refused by VehicleRefusalFor (%q) -- the '
+                     .. 'list rules on nothing until #427 does', v.name,
+                     tostring(BR.Config.VehicleRefusalFor(h)))
+            end
+            if BR.Config.IsDisarmedVehicle(h) then
+                fail('armed-unruled %s reads as DISARMED -- the list rules on '
+                     .. 'nothing until #427 does', v.name)
+            end
+        end
+    end
+
+    ::nextUnruled::
+end
+
+-- THE INSURGENT PICK-UP IS THE ONE THE TABLE HAS BACKWARDS. `insurgent` is
+-- the Pick-Up with the turret; until #427 settles the pair, this list is
+-- where its mark comes from.
+if not unruledName['insurgent'] then
+    fail('`insurgent` -- the Insurgent Pick-Up -- is not in the armed-unruled '
+         .. 'list, so the dev menu shows the turret truck as unarmed (#427)')
+end
+
 -- A class net with no classes in it is the whole third signal switched off, and
 -- switched off silently: every ruling would still come out of the model table
 -- and every test of the model table would still pass.
@@ -591,8 +678,10 @@ if fails == 0 then
     -- The number on this line is what tells those apart.
     io.write(('\27[32mok\27[0m   %d refused vehicle hashes match their names; %d '
         .. 'resolve from both signed and unsigned (%d have the top bit set); '
-        .. '%d class-net exemptions; %d strip-exempt; %d armed\n')
-        :format(checked, signedChecked, topBit, exempt, stripExempt, armedRows))
+        .. '%d class-net exemptions; %d strip-exempt; %d armed (%d rows, %d '
+        .. 'with no ruling yet)\n')
+        :format(checked, signedChecked, topBit, exempt, stripExempt,
+                armedRows + unruled, armedRows, unruled))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end
