@@ -200,7 +200,7 @@ NOTES=(
     "test_configreport|Settings report on six fake servers: finds the server name, never shows the license key"
     "dev gate on console commands|Typed commands are off on the public server but for a few; keybinds and /brleave work"
     "dev gate on net events|No request a player's game sends the server is allowed just because dev mode is on"
-    "season gates|Every season-gated feature is on the one list, only the season module reads br_season, and only brseason switches it"
+    "season gates|Every season-gated feature is on the one list, only the season module reads br_season, only brseason switches the season or sets a feature, and only br_core's start boots it"
     "emote gate|Every way into emotes asks the season, and every emote test passes in Seasons 1 and 2"
     "branch-switch invariant|Switching the server to another branch can never swap out the console's control script"
     "incident surface|The anti-cheat opens a case only for cheat signs, never for warmup fights or teammates"
@@ -3172,9 +3172,13 @@ fi
 # in every season, a row nothing asks gates nothing, a `from` past `latest` is a
 # feature an unset box never runs, an untilSeason at or before its `from` is a
 # feature no season has, and a second reader of br_season decides on its own
-# unvalidated copy -- and a second WRITER of the season in force: only the
-# dev-mode brseason may switch it. tools/check_seasons.lua fails each one (S1-S6), and its
-# self-test runs first for the reason the net-event gate's does.
+# unvalidated copy -- and a second WRITER: only the dev-mode brseason may switch
+# the season in force or set a feature on or off whatever the season (#425),
+# and only br_core's start may boot it, which re-latches it and clears every
+# setting. A way in spelled so no rule can read it -- bracket-indexed, called
+# with `:`, aliased -- fails too (#425's review); a name built at run time
+# cannot be caught by reading text. tools/check_seasons.lua fails each one
+# (S1-S9), and its self-test runs first for the reason the net-event gate's does.
 section 'season gates'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if vc_begin 'season gates' 'list:resources/[fivem-royale]:.lua'; then

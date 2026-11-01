@@ -103,7 +103,9 @@ BR.SeasonSwitch = BR.SeasonSwitch or {}
 local staged = nil
 
 --- The features `brseason <id> on|off|auto` takes (#425), in the order a bare
---- `brseason` lists them. Each is a row of br_lib/config/seasons.lua.
+--- `brseason` lists them. Each is a row of br_lib/config/seasons.lua. Not
+--- crates2: both loot.lua files cache its answer against the season number,
+--- so a setting would never reach it (BR.Season.onChange says more).
 local SETTABLE = { 'locker2' }
 local settable = {}
 for _, id in ipairs(SETTABLE) do settable[id] = true end

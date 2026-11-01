@@ -170,8 +170,10 @@ does not assume the latest, which is only the server's answer to an unset
 
 `verify.sh`'s *season gates* fails an id with no row, a row nothing asks about, a
 `from` past `latest`, any file but `br_lib/shared/season.lua` that reads
-`br_season`, and any file but `br_core/server/season.lua` that switches the
-season or sets a feature.
+`br_season`, any file but `br_core/server/season.lua` that switches the
+season or sets a feature, any file but `br_core/server/main.lua` that boots
+it, and `BR.Season` written any way but `BR.Season.<name>`, a nil check or a
+truth test (bracket-indexed, called with `:`, or aliased).
 
 **On a dev box, `brseason` switches without a restart** (owner, 2026-10-04:
 "That was my only real intended use case for faster-than-restart switching").

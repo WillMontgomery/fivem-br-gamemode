@@ -763,6 +763,30 @@ do
         'every row is Season 1\'s again')
 end
 
+describe('season.setFeature: one spelling, sorted by id')
+do
+    -- br_seasonFeatures is compared AS TEXT (a follower's move, expect()'s
+    -- wait), so it must come out the same whatever order a table's hash walks
+    -- its ids in. Twenty-six rows set in reverse, on and off by turns: a walk
+    -- that came out sorted by chance is one in 26!, so without the sort this
+    -- fails on every run.
+    local ids = { 'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india',
+                  'juliett', 'kilo', 'lima', 'mike', 'november', 'oscar', 'papa', 'quebec', 'romeo',
+                  'sierra', 'tango', 'uniform', 'victor', 'whiskey', 'xray', 'yankee', 'zulu' }
+    local feats = {}
+    for _, id in ipairs(ids) do feats[id] = { from = 1 } end
+    local wire = {}
+    local server = state({ registry = { latest = 2, features = feats }, cfg = { br_season = '1' }, wire = wire })
+    local client = state({ registry = { latest = 2, features = feats }, wire = wire })
+    server.S.boot()
+    for i = #ids, 1, -1 do server.S.setFeature(ids[i], i % 2 == 1) end
+    local want = {}
+    for i, id in ipairs(ids) do want[i] = id .. (i % 2 == 1 and '=on' or '=off') end
+    eq(wire.br_seasonFeatures, table.concat(want, ','), 'twenty-six settings, set in reverse: sorted by id, exactly')
+    ok(client.S.has('alpha') == true and client.S.has('bravo') == false and client.S.has('zulu') == false,
+        'and a follower reads every one back')
+end
+
 describe('season.setFeature: has() asks a setting only past its own checks')
 do
     local reg = {
@@ -1357,13 +1381,36 @@ do
         'a switch and a setting staged together')
     st.destroy(2)
     ok(st.S.current() == 1 and st.S.has('locker2') == false, 'one of two matches torn down: neither applies')
+    -- What the switch's own market push sees, to tell which landed first.
+    local sawAtPush = nil
+    local push = st.env.BR.Market.push
+    st.env.BR.Market.push = function(src)
+        if sawAtPush == nil then sawAtPush = { season = st.S.current(), set = st.S.settings().locker2 } end
+        push(src)
+    end
     st.destroy(3)
+    st.env.BR.Market.push = push
     ok(st.S.current() == 2 and st.S.has('locker2') == true, 'the last teardown applies both')
     ok(st.wire.br_seasonServed == '2' and st.wire.br_seasonFeatures == 'locker2=on', 'both replicated')
     ok(#st.switched() == 1 and #featureSent(st) == 1, 'every client told once of each')
     ok(featureSent(st)[1].payload.by == 'Will (#3)' and st.switched()[1].payload.by == 'Ana (#5)',
         'each naming who staged it')
     ok(st.SW.staged() == nil and next(st.SW.stagedSettings()) == nil, 'nothing is left staged')
+    -- THE SWITCH FIRST, THEN THE SETTING.
+    ok(sawAtPush ~= nil and sawAtPush.season == 2 and sawAtPush.set == nil,
+        'the switch applies first: its market push sees Season 2, with locker2 not yet set')
+    local iSw, iSet, pSw, pSet
+    for i, ev in ipairs(st.out) do
+        if ev.event == st.Net.SEASON_SWITCHED then iSw = iSw or i end
+        if ev.event == st.Net.SEASON_FEATURE then iSet = iSet or i end
+    end
+    for i, line in ipairs(st.printed) do
+        if line:find('switched this server to Season 2', 1, true) then pSw = pSw or i end
+        if line:find('set locker2 on', 1, true) then pSet = pSet or i end
+    end
+    ok(iSw ~= nil and iSet ~= nil and iSw < iSet and pSw ~= nil and pSet ~= nil and pSw < pSet,
+        'then the setting: every client and the console hear the switch first',
+        ('%s %s %s %s'):format(tostring(iSw), tostring(iSet), tostring(pSw), tostring(pSet)))
 
     -- A STAGED SETTING ALONE LANDS AT THE TEARDOWN TOO.
     st.clear()

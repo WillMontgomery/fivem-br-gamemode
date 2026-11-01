@@ -66,8 +66,8 @@
 -- call -- the emote wheel asked sixty times a second. Owner, 2026-10-04:
 -- "let's also be efficient in how we're checking. That could turn out to be a
 -- lot of repeated checks." So it holds the value too, read once as this file
--- loads and AGAIN ONLY WHEN IT CHANGES -- and the settings beside it, under
--- the same rules, so every client and resource answers what the server does:
+-- loads and AGAIN ONLY WHEN IT CHANGES -- and the settings beside it, the
+-- same way:
 --
 --   * AddConvarChangeListener (Cfx, apiset shared; added to FiveM 2024-10-13,
 --     citizen-scripting-core's ConsoleScriptFunctions.cpp), one on each name.
@@ -87,6 +87,14 @@
 --     do -- POLL_TRIES times at most either way -- and nowhere else.
 --
 -- Every re-read takes both names, and onChange's followers hear either move.
+--
+-- WITH THE LISTENER -- every FiveM since 2024-10 -- every client and resource
+-- answers what the server does. WITHOUT IT THERE IS ONE GAP (#425's review):
+-- expect() is br_core's alone, since its client is what hears SEASON_FEATURE,
+-- and `br:season:changed` is the season number's, so another resource's copy
+-- -- br_ui's -- does not see a setting move until the season itself next
+-- moves, or that resource restarts. br_ui asks no row `brseason` can set
+-- today (emotes and market2; locker2 is the only one).
 --
 -- So has() is a few table reads wherever it is asked, and the rule above
 -- still holds: NOTHING may call has() or pick() while a file loads and keep
@@ -518,8 +526,13 @@ end
 --- season -- client/loot.lua's crate bodies, client/season.lua's
 --- `br:season:changed` -- so it re-derives once per move instead of asking per
 --- frame. A move of the feature settings alone (#425) is told too, with `now`
---- and `before` the same season: a follower asks has() again, it never keys
---- an answer on the number. Never called on br_core's server, whose season
+--- and `before` the same season, so a follower that must hear a setting asks
+--- has() again rather than comparing the number. NOT EVERY ONE DOES: crates2's
+--- answer is cached against the season NUMBER on both sides -- crates2On in
+--- client/loot.lua, which its follower here (followSeason) asks, and
+--- crates2On in server/loot.lua -- so a setting would never reach it, and that
+--- is why crates2 is not a feature `brseason` sets (SETTABLE in
+--- br_core/server/season.lua). Never called on br_core's server, whose season
 --- moves only by boot() or switch(), and whose followers are named in
 --- br_core/server/season.lua.
 --- @param fn function

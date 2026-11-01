@@ -26,6 +26,15 @@
 --     on or off whatever the season, for `brseason locker2 on`; a call
 --     anywhere else is a feature that leaves its season on a box where nobody
 --     typed the command -- prod included.
+--   * A SECOND BOOT. BR.Season.boot re-reads br_season and re-latches, and
+--     clears every feature setting as it does (#425's review); br_core's
+--     server/main.lua calls it once, as br_core starts. A call anywhere else
+--     moves the season, or drops a setting, with no command typed.
+--   * A WAY IN THAT NO RULE CAN READ (#425's review). The rules above read
+--     names as written. `local S = BR.Season; S.setFeature(...)`,
+--     `BR.Season['setFeature'](...)`, `BR.Season:switch(2)` and
+--     `GetConvar(BR.Season['FEATURES'], '')` each reach a writer or a convar
+--     under a spelling none of them looks for, and every one used to pass.
 --
 -- ═══ THE RULES ═══
 --
@@ -45,10 +54,27 @@
 --                    the dev-mode `brseason` (and defined by the module)
 --   S7 ONE SETTER    BR.Season.setFeature is named only by
 --                    br_core/server/season.lua too (and defined by the module)
+--   S8 ONE BOOT      BR.Season.boot is named only by br_core/server/main.lua
+--                    (and defined by the module)
+--   S9 PLAIN NAMES   outside the module BR.Season is written `BR.Season.<name>`,
+--                    with no space or line break in it, or compared with nil,
+--                    or tested for truth (`BR.Season and`, `BR.Season then`,
+--                    `not BR.Season`) -- never bracket-indexed (BR['Season']
+--                    included), called with `:`, or assigned, passed or
+--                    returned bare -- so S1 and S4 to S8 read every way in
 --
 -- READS TEXT, NOT A PARSE TREE, with the same lexer as tools/check_emote_gate.lua
 -- so prose that QUOTES a pattern is never read as code. The registry itself is
 -- LOADED, in a sandbox, so S3 judges the numbers the game will see.
+--
+-- ═══ WHAT READING TEXT CANNOT CATCH ═══
+--
+-- A name BUILT at run time. S9 refuses every bracket on BR.Season, so
+-- `BR.Season['set' .. 'Feature']` is caught; but a name built by concatenation
+-- anywhere else -- `BR['Sea' .. 'son']` -- or held in a variable, or reached
+-- through an alias of BR itself (`local B = BR; B.Season.switch(2)`), _G or
+-- rawget, never appears as text, and no rule that reads text can catch it.
+-- That is review's to see.
 --
 -- Run standalone:  lua tools/check_seasons.lua <file.lua>...
 --                  lua tools/check_seasons.lua --selftest
@@ -56,6 +82,7 @@
 local REGISTRY = 'br_lib/config/seasons.lua'
 local MODULE = 'br_lib/shared/season.lua'
 local SWITCHER = 'br_core/server/season.lua'
+local BOOTER = 'br_core/server/main.lua'
 
 -- ---------------------------------------------------------------------------
 -- Reading Lua without parsing Lua (tools/check_emote_gate.lua's lexer)
@@ -276,6 +303,64 @@ local function run(files)
                         fail(f.path, i, 'S7', 'names BR.Season.setFeature -- only ' .. SWITCHER
                             .. ' (the dev-mode brseason) sets a feature whatever the season; prod follows the season')
                     end
+                    -- S8: the latch is made once, as br_core starts.
+                    if not endsWith(f.path, BOOTER) and code[i]:find('BR%.Season%.boot%f[^%w_]') then
+                        fail(f.path, i, 'S8', 'names BR.Season.boot -- only ' .. BOOTER
+                            .. ' boots the season, once, as br_core starts; another call re-latches it and clears every feature setting')
+                    end
+                end
+            end
+
+            -- S9: every way in is spelled so the rules above can read it. The
+            -- whole file at once, because a name can be split over lines.
+            if not isModule then
+                local text = table.concat(code, '\n')
+                local function lineOf(pos)
+                    local _, n = text:sub(1, pos):gsub('\n', '')
+                    return n + 1
+                end
+                local pos = 1
+                while true do
+                    local s, e = text:find('%f[%w_]BR%s*%.%s*Season%f[^%w_]', pos)
+                    if not s then break end
+                    pos = e + 1
+                    local why = nil
+                    if text:sub(s, e) ~= 'BR.Season' then
+                        why = 'BR.Season spelled with a space or a line break in it -- write BR.Season, so every rule here can read it'
+                    elseif text:find('^%.[%a_]', e + 1) then
+                        -- BR.Season.<name>: the rules above read the name.
+                        why = nil
+                    -- The next three come before the `not` below, which would
+                    -- otherwise let `not BR.Season['switch'](2)` through: it
+                    -- still makes the call.
+                    elseif text:find('^%s*%.', e + 1) or text:find('^%.%s', e + 1) then
+                        why = 'BR.Season . <name> with a space or a line break -- write BR.Season.<name>, so every rule here can read it'
+                    elseif text:find('^%s*%[', e + 1) then
+                        why = 'BR.Season bracket-indexed -- a name in a string or a variable is one no rule here can read'
+                    elseif text:find('^%s*:', e + 1) then
+                        why = 'BR.Season called with `:` -- write BR.Season.<name>(...), so every rule here can read it'
+                    elseif text:find('^%s*[~=]=%s*nil%f[^%w_]', e + 1) or text:find('^%s*and%f[^%w_]', e + 1)
+                           or text:find('^%s*then%f[^%w_]', e + 1)
+                           or text:sub(math.max(1, s - 16), s - 1):find('%f[%w_]not%s*$') then
+                        -- Compared with nil, or tested for truth: the table goes nowhere.
+                        why = nil
+                    else
+                        why = 'BR.Season used bare -- assigned, passed or returned, it reaches every door and write under a name no rule here can read'
+                    end
+                    if why then fail(f.path, lineOf(s), 'S9', why) end
+                end
+                -- ...and BR['Season'] is the same table, bracket-indexed one
+                -- step up: a bracket in code (the code view), around the
+                -- string 'Season' (the names view, column for column).
+                local named = table.concat(names, '\n')
+                pos = 1
+                while true do
+                    local s, e = text:find('%f[%w_]BR%s*%[', pos)
+                    if not s then break end
+                    pos = e + 1
+                    if named:find('^BR%s*%[%s*([\'"])Season%1%s*%]', s) then
+                        fail(f.path, lineOf(s), 'S9', "BR['Season'] -- write BR.Season.<name>, so every rule here can read it")
+                    end
                 end
             end
         end
@@ -313,26 +398,42 @@ local function goodTree()
             '    features = {',
             '        emotes = { from = 2 },',
             '        oldmap = { from = 1, untilSeason = 3 },',
+            '        crates2 = { from = 2 },',
             '    },',
             '}',
         }, '\n'),
         [R .. MODULE] = table.concat({
+            'BR.Season = BR.Season or {}',
             "BR.Season.CONVAR = 'br_season'",
             'function BR.Season.has(id)',
             "    local raw = GetConvar('br_season', '')",
             'end',
+            'function BR.Season.boot() local S = BR.Season return S end',
         }, '\n'),
         [R .. 'br_core/server/season.lua'] = table.concat({
             '-- BR.Season.switch(n) in a comment is prose here too',
             'local now = BR.Season.switch(target)',
             'if not BR.Season.setFeature(id, value) then return end',
         }, '\n'),
+        [R .. 'br_core/server/main.lua'] = table.concat({
+            'local seasonLines = BR.Season.boot()',
+        }, '\n'),
         [R .. 'br_core/server/emotes.lua'] = table.concat({
             "-- GetConvar('br_season') and BR.Season.has(x) in a comment are prose",
-            "-- and so are BR.Season.switch(1) and BR.Season.setFeature('emotes', true)",
+            "-- and so are BR.Season.switch(1), BR.Season.setFeature('emotes', true),",
+            "-- BR.Season.boot(), local S = BR.Season and BR.Season['switch'](2)",
             "if not BR.Season.has('emotes') then return end",
             "local on = BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has(\"emotes\")",
             "if not (BR.Season and BR.Season.has and BR.Season.has( 'oldmap' )) then return end",
+            -- The nil checks the tree makes (client/loot.lua, client/airdrop.lua,
+            -- server/dcgate.lua, client/dcgate.lua): S9 lets every one through.
+            "on = BR.Season ~= nil and BR.Season.has('crates2')",
+            'local s = BR.Season and BR.Season.current and BR.Season.current() or nil',
+            'if BR.Season and BR.Season.onChange then BR.Season.onChange(follow) end',
+            'print((\'season %s\'):format(tostring(BR.Season and BR.Season.current and BR.Season.current())))',
+            'return BR.Season ~= nil and BR.Season.current ~= nil and BR.Season.current() ~= nil',
+            'if not BR.Season or not BR.Season.has then return end',
+            "print('BR.Season[1] and BR[\"Season\"] in a string are prose')",
         }, '\n'),
     }
 end
@@ -403,7 +504,39 @@ local FIXTURES = {
     { name = 'the feature setter aliased outside brseason', want = 'S7',
       mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
           "local sf = BR.Season.setFeature\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'a second boot', want = 'S8',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "BR.Season.boot()\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'the boot aliased outside main.lua', want = 'S8',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "local b = BR.Season.boot\nif not BR.Season.has('emotes') then return end") end },
 }
+
+-- S9: every spelling of a way in that S1 and S4 to S8 cannot read (#425's
+-- review), each one line added to an otherwise good file.
+for _, fx in ipairs({
+    { 'BR.Season aliased', "local S = BR.Season; S.setFeature('locker2', true)" },
+    { 'the setter bracket-indexed', "BR.Season['setFeature'](...)" },
+    { 'the switch bracket-indexed, spaced', 'BR.Season [ "switch" ](2)' },
+    { 'a convar name bracket-indexed', "GetConvar(BR.Season['FEATURES'],'')" },
+    { 'a name built by concatenation, in a bracket', "BR.Season['set' .. 'Feature']('locker2', true)" },
+    { 'a bracket after not', "local _ = not BR.Season['switch'](2)" },
+    { 'a method call', 'BR.Season:switch(2)' },
+    { 'a method call after not', 'local _ = not BR.Season:switch(2)' },
+    { 'the name split over lines', "BR.Season\n    .setFeature('emotes', true)" },
+    { 'a space in the spelling', 'BR . Season.switch(1)' },
+    { 'a space before the name', 'BR.Season. switch(1)' },
+    { 'a space before the dot, after not', 'local _ = not BR.Season .switch(2)' },
+    { 'BR bracket-indexed', "BR['Season'].switch(1)" },
+    { 'passed bare', 'follow(BR.Season)' },
+    { 'returned bare', 'return BR.Season' },
+    { 'kept with or', 'local S = BR.Season or {}' },
+    { 'kept in a table', 'local t = { season = BR.Season }' },
+}) do
+    FIXTURES[#FIXTURES + 1] = { name = fx[1], want = 'S9',
+        mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+            fx[2] .. "\nif not BR.Season.has('emotes') then return end") end }
+end
 
 local function asFiles(tree)
     local files = {}
@@ -435,7 +568,7 @@ local function selftest()
         end
     end
     if bad == 0 then
-        io.write(('ok   %d selftest fixtures: S1-S7 each fire on a broken tree, and a good one passes\n')
+        io.write(('ok   %d selftest fixtures: S1-S9 each fire on a broken tree, and a good one passes\n')
             :format(#FIXTURES))
     end
     return bad
@@ -468,5 +601,5 @@ if #findings > 0 then
     end
     os.exit(1)
 end
-io.write(('ok   %d gated feature(s), latest Season %d, %d BR.Season.has call(s), each a listed id; only %s reads br_season, and only %s switches it or sets a feature\n')
-    :format(sum.rows, sum.latest or 0, sum.asks, MODULE, SWITCHER))
+io.write(('ok   %d gated feature(s), latest Season %d, %d BR.Season.has call(s), each a listed id; only %s reads br_season, only %s switches it or sets a feature, only %s boots it, and every BR.Season is spelled plainly\n')
+    :format(sum.rows, sum.latest or 0, sum.asks, MODULE, SWITCHER, BOOTER))
