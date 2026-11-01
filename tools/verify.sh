@@ -3027,7 +3027,8 @@ fi
 # RegisterKeyMapping, so `+brinteract`, `brslot3` and `brmap` are console
 # commands in exactly the sense `brshop` is -- and they are also E, 3 and M.
 # Gating them would not cost the public box a diagnostic, it would cost it the
-# keyboard. `brleave` is the fourth: a documented, bindable, player-facing verb.
+# keyboard. `brleave` is the fourth: a documented, player-facing verb -- typed,
+# never a key (#428).
 #
 # ANYTHING ELSE REACHING FOR THIS DOOR IS A COMMAND WALKING AROUND THE GATE,
 # which is why the consumers are an allowlist rather than a count.

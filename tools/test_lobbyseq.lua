@@ -392,7 +392,9 @@ end
 function TriggerServerEvent() end
 local commands = {}
 function RegisterCommand(n, fn) commands[n] = fn end
-function RegisterKeyMapping() end
+--- Every key mapping the loaded files ask FiveM for, by command (#428).
+local keyMapped = {}
+function RegisterKeyMapping(cmd) keyMapped[#keyMapped + 1] = cmd end
 local kvp = {}
 function SetResourceKvp(k, v) kvp[k] = v end
 function GetResourceKvpString(k) return kvp[k] end
@@ -645,6 +647,21 @@ end
 --- wait is satisfied.
 local function wearChosenModel()
     ped.model = GetHashKey(BR.PedById(BR.Locker.chosen()).model)
+end
+
+-- ═══ /brleave IS A COMMAND AND NEVER A KEY (#428) ═══
+--
+-- Owner, 2026-11-01: "brleave is good to stay as a command but absolutely zero
+-- keybinds for that". FiveM's key bindings listed "Royale: Leave the current
+-- match" from 0a475cea until then.
+
+do
+    ok(type(commands.brleave) == 'function', '/brleave is still a command')
+    local mapped = {}
+    for _, cmd in ipairs(keyMapped) do
+        if tostring(cmd):lower():find('leave', 1, true) then mapped[#mapped + 1] = tostring(cmd) end
+    end
+    ok(#mapped == 0, 'no key is mapped to leaving a match: ' .. table.concat(mapped, ', '))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

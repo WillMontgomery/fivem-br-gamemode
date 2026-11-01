@@ -1753,11 +1753,15 @@ function BR.Spawn.leaveMatch(leaveParty)
     return true
 end
 
---- A COMMAND rather than a button, by design: mid-match the HUD never holds
---- NUI focus (that rule is what keeps players able to move and shoot), so
---- there is nothing on screen to click. A console/chat command plus a
---- bindable key in Pause > Settings > Key Bindings costs no focus at all.
---- Unbound by default -- a mispressed key must not be able to forfeit a match.
+--- A COMMAND, typed into chat or F8: mid-match the HUD never holds NUI focus
+--- (that rule is what keeps players able to move and shoot), so the pause
+--- menu's Leave button and this are the two ways out, and neither costs focus.
+---
+--- NO KEY, EVER (#428). Owner, 2026-11-01: "brleave is good to stay as a
+--- command but absolutely zero keybinds for that". A RegisterKeyMapping put
+--- "Royale: Leave the current match" in FiveM's own key bindings from
+--- 0a475cea, from before the pause menu had its button; it is gone, and
+--- tools/test_lobbyseq.lua fails one coming back.
 ---
 --- The party survives this door. Typing /brleave says nothing about the people
 --- you are queued with; the pause menu's button says so on its own confirm
@@ -1766,10 +1770,8 @@ end
 --- is not obvious from the paragraph above. br_lib/shared/devgate.lua gates
 --- every command in the project behind dev mode (owner, 2026-08-31), and this
 --- is a PLAYER's verb, not a diagnostic: it is documented in docs/running.md as
---- `/brleave`, it is offered in Pause > Settings > Key Bindings, and the pause
---- menu's own Leave button is the same door. Gating it would delete a shipped
---- feature from the public box and leave a bindable key in the settings screen
---- that does nothing when pressed.
+--- `/brleave`, and the pause menu's own Leave button is the same door. Gating
+--- it would delete a shipped feature from the public box.
 ---
 --- A local rather than the expression inline, because a statement STARTING with
 --- `(` is Lua's oldest ambiguity: the parser joins it to the previous line as a
@@ -1778,7 +1780,6 @@ local bindCommand = (BR.Dev and BR.Dev.rawCommand) or RegisterCommand
 bindCommand('brleave', function()
     BR.Spawn.leaveMatch(false)
 end, false)
-RegisterKeyMapping('brleave', 'Royale: Leave the current match', 'keyboard', '')
 
 Citizen.CreateThread(function()
     -- The one thread outside the loop registry: it runs once at startup and
