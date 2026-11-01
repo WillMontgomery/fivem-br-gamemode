@@ -2641,6 +2641,49 @@ do
     eq(J.kvp['br:locker:ped'], nil, 'and Season 1\'s kvp untouched')
 end
 
+-- ═══ THE GATE SHUT WHILE A SWAP STREAMS (#425 review) ═══
+--
+-- swap() asked only whether the lobby was left once its model had streamed,
+-- so `brseason locker2 off` landing mid-stream still put v2's look on: Locker
+-- v2 off, Season 1's first apply long spent, and nothing left to take it off.
+
+describe('season1.settingmidswap')
+do
+    local W = clientWorld({ season = 1, v2 = true })
+    W.fire('br:ui:ready')
+    W.pump(600)
+    local s1 = hashOf(W.BR.PedById(W.BR.Locker.chosen()).model)
+    W.setting('locker2=on')
+    W.pump(200)
+    W.modelDelay = 800
+    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    W.pump(150)
+    ok(W.BR.LockerV2.state().applying == true, 'v2\'s worn look is still streaming')
+    W.setting('')
+    W.pump(3000)
+    local S = W.BR.LockerV2.state()
+    eq(W.ped().model, s1, 'auto lands mid-stream on Season 1: Season 1\'s ped stays on')
+    ok(S.applying == false and S.dressed ~= true, 'and the swap let go without dressing the ped')
+
+    -- Off and on again inside one stream: the look on in the end is the worn one.
+    local O = clientWorld({ season = 1, v2 = true })
+    O.fire('br:ui:ready')
+    O.pump(600)
+    O.setting('locker2=on')
+    O.pump(200)
+    O.modelDelay = 800
+    O.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    O.pump(150)
+    O.setting('')
+    O.pump(200)
+    O.setting('locker2=on')
+    O.pump(200)
+    O.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    O.pump(3000)
+    eq(O.ped().model, FEMALE, 'off then on inside one stream: v2\'s worn look ends up on')
+    ok(O.BR.LockerV2.state().applying == false, 'with nothing left streaming')
+end
+
 describe('season2.stocklist')
 do
     -- Season 1 drops a model this build does not have; the Stock tab is that

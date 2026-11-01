@@ -443,10 +443,14 @@ local function swap(hash, a, cb, keep)
             if cb then cb(false) end
             return
         end
-        -- THE LOBBY WAS LEFT WHILE THE MODEL STREAMED IN (up to 5 s): no swap
-        -- (see inLobby). The worn ped goes back on at the next lobby arrival;
-        -- `left` tells a caller this was no failure to load.
-        if not inLobby() then
+        -- THE LOBBY WAS LEFT, OR LOCKER V2 WENT OFF, WHILE THE MODEL STREAMED
+        -- IN (up to 5 s): no swap (see inLobby). The worn ped goes back on at
+        -- the next lobby arrival. A gate shut mid-stream (`brseason locker2
+        -- off` or `auto`, #425) leaves the ped as gateOff found it: landing
+        -- here would put a Locker v2 look on with Locker v2 off, and nothing
+        -- would take it off again. `left` tells a caller this was no failure
+        -- to load.
+        if not inLobby() or not claims() then
             SetModelAsNoLongerNeeded(hash)
             S.applying = false
             S.want = GetEntityModel(PlayerPedId())
