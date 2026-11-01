@@ -10,14 +10,16 @@
 --
 --   BR.LockerV2.defer()     at its first lobby tick: hold your first apply?
 --                           Yes while the season is still unknown (at most
---                           unknownWaitMs) and on Season 2.
+--                           unknownWaitMs) and while Locker v2 is on --
+--                           Season 2, or `brseason locker2 on` (#425).
 --   BR.LockerV2.wantHash()  client/loading.lua and client/lobbyped.lua: which
---                           model are we waiting to see? nil off Season 2, so
---                           Season 1 asks its own chosen() as it always did.
+--                           model are we waiting to see? nil while it is off,
+--                           so Season 1 asks its own chosen() as it always did.
 --
 -- This file never writes Season 1's kvp ('br:locker:ped'), reads its choice
 -- only through BR.Locker.chosen(), and calls BR.Locker.apply(nil) only when a
--- live `brseason` takes a client from Season 2 back to Season 1.
+-- live `brseason` shuts Locker v2 under a client: a switch back to Season 1,
+-- or `brseason locker2 off|auto` (#425).
 --
 -- ═══ THE APPLY IS THE PREVIEW, AS IN SEASON 1 ═══
 --
@@ -2407,9 +2409,10 @@ AddEventHandler('br:ui:ready', function()
     V.push()
 end)
 
--- A SEASON CHANGE IS TOLD TO THE PAGE FROM THE LOBBY. The page only draws the
--- locker there, and a switch can land mid-match (perf_client's worlds switch
--- in every phase), where nothing here should cost a thing.
+-- A SEASON CHANGE IS TOLD TO THE PAGE FROM THE LOBBY, and so is a `brseason
+-- locker2` setting (#425), which BR.Season.onChange hears too. The page only
+-- draws the locker there, and a switch can land mid-match (perf_client's
+-- worlds switch in every phase), where nothing here should cost a thing.
 BR.Season.onChange(function()
     S.repush = true
 end)
@@ -2423,7 +2426,7 @@ local unknownSince = nil
 --- Should Season 1's locker hold its first apply? While the season is unknown
 --- (unknownWaitMs at most, so a Season 1 client never waits on a Season 2
 --- question for long) and while Locker v2 is on -- and, once v2 HAS been on
---- this session (a live `brseason` back to Season 1), while the entrance holds
+--- this session (a live `brseason` that shut it), while the entrance holds
 --- the ped, as every other change waits. A client that was only ever on
 --- Season 1 never reaches that last clause.
 --- @return boolean
@@ -2467,9 +2470,10 @@ local function firstApply()
     V.push()
 end
 
---- Live `brseason` back to Season 1: the page closes, the camera comes home,
---- and -- in the lobby, once the entrance has let go of the ped -- Season 1's
---- ped goes back on if this one is not it.
+--- Locker v2 shut under a live client -- `brseason 1`, or `brseason locker2
+--- off|auto` (#425): the page closes, the camera comes home, and -- in the
+--- lobby, once the entrance has let go of the ped -- Season 1's ped goes back
+--- on if this one is not it.
 local function gateOff()
     S.open = false
     discard()

@@ -169,8 +169,9 @@ does not assume the latest, which is only the server's answer to an unset
    load.
 
 `verify.sh`'s *season gates* fails an id with no row, a row nothing asks about, a
-`from` past `latest`, and any file but `br_lib/shared/season.lua` that reads
-`br_season`.
+`from` past `latest`, any file but `br_lib/shared/season.lua` that reads
+`br_season`, and any file but `br_core/server/season.lua` that switches the
+season or sets a feature.
 
 **On a dev box, `brseason` switches without a restart** (owner, 2026-10-04:
 "That was my only real intended use case for faster-than-restart switching").
@@ -178,9 +179,10 @@ It is a dev command, so a box without dev mode refuses it and prod stays
 restart-only; `br_season` itself is never touched, so the next `br_core` start
 reads it as always.
 
-- `brseason` — the season in force, where it came from, and any staged switch
+- `brseason` — the season in force, where it came from, Locker v2's setting, and anything staged
 - `brseason <n>` — switch to Season n (1 to `latest`)
-- `brseason reset` — back to the season `br_core` started on
+- `brseason reset` — back to the season `br_core` started on, and Locker v2 back to auto
+- `brseason locker2 on|off|auto` — Locker v2 on or off whatever the season, or following it again (below)
 
 With no match running it applies at once. While any match is running —
 warmup to cleanup — it is staged and applied when the last one is torn down to
@@ -197,6 +199,22 @@ follow. One thing cannot: GTA has no way to withdraw a key mapping, so after a
 switch away from Season 2 the emote wheel's row stays in GTA's own key-binding
 list, and pressing it does nothing. Nor can licensed assets (below): a switch
 whose season runs a different set warns and names the resources.
+
+**`brseason locker2` turns one feature on or off, whatever the season** (#425;
+owner, 2026-11-01: "can you also dispatch a way for me to turn on locker v2 in
+season 1 with a dev command?"). `on` puts Locker v2 on for every player on the
+box whatever season it runs, `off` puts it off, and `auto` hands it back to the
+season, as `brfestive auto` hands the festive months back to the date. Only
+`locker2` is taken for now; any other feature is refused. It keeps a switch's
+timing: at once with no match running, otherwise staged until the last match
+is torn down. A staged switch and a staged setting land together, a later
+`brseason locker2` replaces a staged one, and naming the setting in force drops
+it. A switch keeps the setting; `brseason reset` and a `br_core` restart put it
+back to auto. The server replicates it as `br_seasonFeatures`, which nothing
+should set by hand, every client follows it as it follows `br_seasonServed`,
+and every F8 says who set what. In the lobby the locker page, the saved looks
+and the ped follow at once; mid-match they wait for the lobby. A box where
+nobody typed it, prod included, runs every feature by its season alone.
 
 ### Licensed assets: the private bucket and `assets.lock` (#391)
 
@@ -598,7 +616,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brstormhitch [reset [ms]\|stop\|rows]` | client | `reset`, play a hold and a sweep, then `/brstormhitch`: a plain summary — what the storm map sent while the storm moved (the old zone's fade writes, and any clips added or removed for a picture drawn mid-sweep), the worst frame and how many frames went over 16.7 ms, and a one-line verdict. `rows` adds the detail: which storm/map/network/UI paths ran before each long frame. Opt-in and dormant outside a capture |
 | `brstormbisect <normal\|mapoff\|mapfreeze\|walloff> [ms]` | client | Runtime A/B for #350 and #344. Each mode starts a fresh hitch capture while changing only local rendering: remove the custom map fill, keep it resident but send it nothing (no fade, no redraw), or suppress the shaped 3D wall. `normal` restores shipping behavior |
 | `brconfig` | server | The config values that most often explain odd behaviour |
-| `brseason`, `brseason <n>`, `brseason reset` | server, dev mode | Switch the season this box runs without restarting `br_core` (#388); see *The season a box runs*. At once with no match running, otherwise staged until the last match is torn down to the lobby. Bare, it prints the season in force, where it came from (`br_season`, the latest by default, or a `brseason` override) and any staged switch. Dev mode plus restricted |
+| `brseason`, `brseason <n>`, `brseason reset`, `brseason locker2 on\|off\|auto` | server, dev mode | Switch the season this box runs without restarting `br_core` (#388), or put Locker v2 on or off for everyone whatever the season, or back to following it (#425); see *The season a box runs*. At once with no match running, otherwise staged until the last match is torn down to the lobby. Bare, it prints the season in force, where it came from (`br_season`, the latest by default, or a `brseason` override), Locker v2's setting and anything staged. A switch keeps the setting; `reset` puts it back to auto as it goes back to the startup season. Dev mode plus restricted |
 | `brfestive [on\|off\|auto]` | server, dev mode | Force the festive months on or off for testing, or hand them back to the server's date — December and January — for the Season 2 festive crates (#395) **and the festive sky** (#399), which ask one calendar. Bare, it prints the answer, where it came from and what the date says. **The sky moves at once, for everyone**: on Season 2 and later the clear sky is XMAS with snow on the ground everywhere -- the lobby island, warmup and the match, after a storm exit too -- the bus keeps its overcast cover for the island swap (no snow on the ground under it, as under the storm's thunder: the ground is white exactly while the sky is a snow weather), and every client blends to it over `BR.Config.World.festiveBlendSec` (10 s). **In a match the clear sky cycles** (owner, 2026-10-06): from the moment the match goes PLAYING, SNOW, SNOWLIGHT, XMAS and BLIZZARD, drawn by the server for the whole match, never the same one twice in a row, each held 180-300 s and blended in over 30 s (`BR.Config.Festive.cycle`); the storm's thunder, `brweather` and Time & weather's weather still outrank it, leaving the storm comes back to the weather the match is on, and the cycle stops with the match. Turned on mid-match, a PLAYING match starts its cycle at once; turned off, it stops. `brsky` shows and forces it. On Season 1 the sky never turns festive, and it says so. **The crates move at once too** (round 5, #396): every crate and husk already on the ground -- every running match's and the warmup pad's, its four permanent crates included -- is restyled festive or plain now and re-announced to each player once (`BR.Loot.refestive`, the walk a `brseason` switch uses), and a running match takes the new answer as its own; then the next match's layout (at its warmup), warmup-pad crates as they are stocked, and `brbox` crates take it. A `brbox` crate keeps the look it was asked for, and an airdrop still falling lands in the match's new answer. The real calendar turning (December 1, February 1) still restyles nothing already laid out: only this command does. Dev mode plus restricted |
 | `brsky`, `brsky <snow\|snowlight\|xmas\|blizzard>`, `brsky next` | server, dev mode | The festive match sky's cycle (#399). Bare, it prints every cycling match: the weather, how long it has held, when it turns, its turn count and its seed, which replays the match's sky up to the first `brsky <weather>` -- or why nothing cycles (the festive sky is off, or no festive match has gone PLAYING yet). With a weather it shows that one now in every PLAYING match, with a fresh 180-300 s hold, and each player in the match is told once, as for a turn; `next` turns every PLAYING match's cycle now. A finished match's sky is left alone. Everything prints to the server console. Dev mode plus restricted, as `brfestive` |
 | `bremotegrant`, `bremotegrant <player name\|#id> <emoteId\|all>` | server console only | Hand a player one dance, or every dance they do not own, without charging Volts (#215). Bare, it lists the catalogue. Takes an **exact** name (case-insensitive, spaces allowed) or `#serverId`; a partial name only lists candidates, because there is no revoke. `all` grants one at a time and stops if the id changes hands. Exempt from the dev gate and gated by the season instead (emotes are Season 2+, #388): it prints the season and does nothing while emotes are off |

@@ -677,6 +677,183 @@ do
         'a client cannot switch anything: it never booted')
 end
 
+-- =========================================================================
+-- one feature, whatever the season (#425)
+-- =========================================================================
+--
+-- Owner, 2026-11-01: "can you also dispatch a way for me to turn on locker v2
+-- in season 1 with a dev command?" `brseason locker2 on|off|auto` sets one row
+-- on or off whatever the season, or hands it back to the season. The module's
+-- half: BR.Season.setFeature, its one write on br_core's server; the settings
+-- replicated as br_seasonFeatures; has() answering a setting ahead of the
+-- season on both sides of the wire, and only past its own checks. Every wrong
+-- answer here is a legal one too: a setting that leaked past a restart, or one
+-- a client followed and the server did not, logs nothing.
+
+describe('season.setFeature')
+do
+    -- A STATE THAT NEVER BOOTED SETS NOTHING: a client, or a server before
+    -- br_core's start.
+    local st = state()
+    local okS, why = st.S.setFeature('locker2', true)
+    ok(okS == nil and why == 'not booted', 'a state that never booted sets nothing, and says why', why)
+    eq(st.wire.br_seasonFeatures, nil, 'and replicates nothing')
+
+    -- BOOT WRITES IT EMPTY, and every answer is the season's.
+    st = state({ cfg = { br_season = '1' } })
+    st.S.boot()
+    eq(st.wire.br_seasonFeatures, '', 'boot replicates br_seasonFeatures, empty')
+    eq(next(st.S.settings()), nil, 'and holds no setting')
+    eq(st.S.has('locker2'), false, 'Season 1: locker2 is off, as the season has it')
+
+    -- ON, OFF AND AUTO.
+    local okOn = st.S.setFeature('locker2', true)
+    eq(okOn, true, 'setFeature(id, true) sets a feature on')
+    eq(st.S.has('locker2'), true, 'Season 1 with locker2 set on: has() answers on')
+    eq(st.wire.br_seasonFeatures, 'locker2=on', 'replicated as locker2=on')
+    eq(st.S.settings().locker2, true, 'and settings() says so')
+    eq(st.S.has('emotes'), false, 'every other row is still the season\'s')
+    eq(st.S.current(), 1, 'and the season did not move')
+    eq(st.wire.br_seasonServed, '1', 'nor br_seasonServed')
+    st.S.switch(2)
+    eq(st.S.has('locker2'), true, 'a switch keeps the setting')
+    eq(st.wire.br_seasonFeatures, 'locker2=on', 'and writes nothing of it')
+    st.S.setFeature('locker2', false)
+    eq(st.S.has('locker2'), false, 'Season 2 with locker2 set off: off')
+    eq(st.wire.br_seasonFeatures, 'locker2=off', 'replicated as locker2=off')
+    eq(st.S.has('emotes'), true, 'emotes are still Season 2\'s')
+    st.S.setFeature('locker2', nil)
+    eq(st.S.has('locker2'), true, 'auto (nil) in Season 2: on, the season\'s answer again')
+    eq(st.wire.br_seasonFeatures, '', 'the replicated value is empty again')
+    eq(st.S.settings().locker2, nil, 'with no setting in force')
+    st.S.switch(1)
+    eq(st.S.has('locker2'), false, 'and a switch to Season 1 shuts it, as the season says')
+
+    -- ANY ROW, ONE SPELLING: sorted by id, joined by commas.
+    st.S.setFeature('snow', false)
+    st.S.setFeature('emotes', true)
+    eq(st.wire.br_seasonFeatures, 'emotes=on,snow=off', 'several settings: sorted, one spelling')
+
+    -- REFUSED: no such row, or not a setting -- and nothing moves.
+    local before = st.wire.br_seasonFeatures
+    for _, bad in ipairs({
+        { id = 'locker', on = true, why = 'no such feature' },
+        { id = 'emote', on = false, why = 'no such feature' },
+        { id = 2, on = true, why = 'no such feature' },
+        { id = 'a=b', on = true, why = 'no such feature' },
+        { on = true, why = 'no such feature' },
+        { id = 'locker2', on = 1, why = 'not a setting' },
+        { id = 'locker2', on = 'on', why = 'not a setting' },
+    }) do
+        local o, w = st.S.setFeature(bad.id, bad.on)
+        ok(o == nil and w == bad.why and st.wire.br_seasonFeatures == before and st.S.settings().locker2 == nil,
+            ('setFeature(%s, %s) is refused as %s, and nothing moves'):format(tostring(bad.id), tostring(bad.on), bad.why),
+            ('%s %s'):format(tostring(o), tostring(w)))
+    end
+    local wrote = {}
+    eq(st.S.setFeature('locker2', true, function(name, value) wrote[name] = value end), true,
+        'setFeature(id, on, set) takes a setter')
+    eq(wrote.br_seasonFeatures, 'emotes=on,locker2=on,snow=off', 'and writes every setting through it, as switch(n, set) does')
+
+    -- THE NEXT br_core START CLEARS EVERY ONE.
+    st.S.boot()
+    eq(next(st.S.settings()), nil, 'the next br_core start holds no setting')
+    eq(st.wire.br_seasonFeatures, '', 'and replicates br_seasonFeatures empty over the last run\'s')
+    ok(st.S.has('locker2') == false and st.S.has('emotes') == false and st.S.has('snow') == false,
+        'every row is Season 1\'s again')
+end
+
+describe('season.setFeature: has() asks a setting only past its own checks')
+do
+    local reg = {
+        latest = 3,
+        features = {
+            fromTwo   = { from = 2 },
+            removed   = { from = 1, untilSeason = 2 },
+            floatFrom = { from = 2.0 },
+            textTill  = { from = 1, untilSeason = 'x' },
+        },
+    }
+    local st = state({ registry = reg, cfg = { br_season = '1' } })
+    st.S.boot()
+    st.S.setFeature('fromTwo', true)
+    eq(st.S.has('fromTwo'), true, 'on in a season before the row\'s `from`')
+    st.S.switch(3)
+    st.S.setFeature('removed', true)
+    eq(st.S.has('removed'), true, 'on in a season the row took it away from')
+    st.S.setFeature('fromTwo', false)
+    eq(st.S.has('fromTwo'), false, 'off in a season that has it')
+    st.S.setFeature('floatFrom', true)
+    st.S.setFeature('textTill', true)
+    ok(st.S.has('floatFrom') == false and st.S.has('textTill') == false,
+        'a row whose numbers are not whole numbers stays off, set on or not')
+
+    -- AN ID WITH NO ROW: refused by the setter, and off -- raised under
+    -- strict -- however a follower came to read it.
+    local wire = { br_seasonServed = '1', br_seasonFeatures = 'ghost=on,fromTwo=on' }
+    local cl = state({ registry = reg, wire = wire })
+    eq(cl.S.settings().ghost, true, 'a follower holds what the wire says, a row or not')
+    eq(cl.S.has('ghost'), false, 'and an id with no row is still off')
+    eq(cl.S.has('fromTwo'), true, 'while a row set on is on')
+    cl.S.strict = true
+    ok(not pcall(cl.S.has, 'ghost'), 'under strict an id with no row still raises, set or not')
+
+    -- AN UNKNOWN SEASON SHUTS EVERY GATE, SETTING OR NOT.
+    cl.S.strict = false
+    wire.br_seasonServed = 'x'
+    ok(cl.S.current() == nil and cl.S.has('fromTwo') == false and cl.S.has('removed') == false,
+        'an unknown season shuts a row set on', tostring(cl.S.current()))
+    eq(cl.S.settings().fromTwo, true, 'and keeps the setting for when a season lands')
+    wire.br_seasonServed = '1'
+    eq(cl.S.has('fromTwo'), true, 'which opens it again')
+end
+
+describe('season.setFeature: both sides of the wire')
+do
+    -- A SETTING LEFT FROM AN EARLIER br_core RUN on this FXServer: a client
+    -- reads it as it loads, and holds it with no season to answer it in.
+    local wire = { br_seasonFeatures = 'locker2=on' }
+    local server = state({ cfg = { br_season = '1' }, wire = wire })
+    local client = state({ wire = wire })
+    ok(client.S.current() == nil and client.S.has('locker2') == false,
+        'no season yet: locker2 is shut, though the wire says on')
+    -- THE NEXT START CLEARS IT.
+    server.S.boot()
+    eq(client.S.current(), 1, 'br_core starts on Season 1 and the client reads it')
+    eq(client.S.settings().locker2, nil, 'and the setting the earlier run left is gone: boot wrote it empty')
+    ok(server.S.has('locker2') == false and client.S.has('locker2') == false, 'locker2 is off on both sides, as Season 1 has it')
+
+    -- EACH SETTING ON BOTH SIDES, AND A SWITCH UNDER IT.
+    local heard = {}
+    client.S.onChange(function(now, before) heard[#heard + 1] = { now = now, before = before } end)
+    server.S.setFeature('locker2', true)
+    ok(server.S.has('locker2') == true and client.S.has('locker2') == true, 'set on: on, on both sides')
+    ok(#heard == 1 and heard[1].now == 1 and heard[1].before == 1,
+        'onChange hears a setting move alone, the season the same: (1, 1)', #heard)
+    server.S.setFeature('locker2', true)
+    eq(#heard, 1, 'the same setting written again is no move')
+    server.S.switch(2)
+    ok(server.S.has('locker2') == true and client.S.has('locker2') == true, 'Season 2 under it: still on')
+    server.S.setFeature('locker2', false)
+    ok(server.S.has('locker2') == false and client.S.has('locker2') == false, 'set off in Season 2: off, on both sides')
+    ok(server.S.has('emotes') == true and client.S.has('emotes') == true, 'and nothing else moved')
+    server.S.setFeature('locker2', nil)
+    ok(server.S.has('locker2') == true and client.S.has('locker2') == true, 'auto in Season 2: on, the season\'s')
+    server.S.switch(1)
+    ok(server.S.has('locker2') == false and client.S.has('locker2') == false, 'auto in Season 1: off, the season\'s')
+    local n, why = client.S.setFeature('locker2', true)
+    ok(n == nil and why == 'not booted' and client.S.has('locker2') == false and wire.br_seasonFeatures == '',
+        'a client cannot set anything: it never booted')
+
+    -- WHAT THE WIRE SAYS IS ALL A CLIENT RUNS: an entry that is not
+    -- `<id>=on|off` is no setting.
+    wire.br_seasonFeatures = 'locker2=yes,emotes=on, snow = off ,=on,x,,'
+    ok(client.S.has('locker2') == false and client.S.has('emotes') == true and client.S.settings().snow == nil,
+        'garbled entries are skipped and follow the season; a good one beside them is read')
+    wire.br_seasonFeatures = ''
+    ok(client.S.has('emotes') == false and next(client.S.settings()) == nil, 'and empty is none')
+end
+
 --- A br_core server with `brseason` loaded the way the game loads it: the
 --- protocol, devgate.lua's wrap in front of RegisterCommand, the season module
 --- and its list, then server/season.lua -- over a match registry, a roster and
@@ -780,8 +957,12 @@ do
     st.run(3, '1')
     st.run(0, 'reset')
     st.run(0)
+    st.run(3, 'locker2', 'off')
+    st.run(0, 'locker2', 'off')
     eq(st.S.current(), LATEST, 'with dev mode off nothing switches')
+    ok(st.S.has('locker2') == true and next(st.S.settings()) == nil, 'and no feature is set (#425)')
     eq(st.wire.br_seasonServed, tostring(LATEST), 'nothing new is replicated')
+    eq(st.wire.br_seasonFeatures, '', 'not even a setting')
     eq(#st.out, 0, 'no client is told anything, and no F8 answered')
     eq(#st.pushed, 0, 'no market state is pushed')
     eq(st.SW.staged(), nil, 'and nothing is staged')
@@ -828,7 +1009,7 @@ do
     st.clear()
     st.run(3)
     local f8 = st.f8(3)
-    ok(#f8 == 3 and f8[1] == ('brseason: Season 1 in force -- brseason override; br_core started on Season %d (br_season is not set: the latest)'):format(LATEST),
+    ok(#f8 == 4 and f8[1] == ('brseason: Season 1 in force -- brseason override; br_core started on Season %d (br_season is not set: the latest)'):format(LATEST),
         'a bare brseason typed in F8 is answered in that F8: Season 1, an override, and the startup season', f8[1])
 
     st.clear()
@@ -999,6 +1180,235 @@ do
 end
 
 -- =========================================================================
+-- brseason locker2 on|off|auto (#425)
+-- =========================================================================
+
+--- The SEASON_FEATURE messages a command server has sent.
+local function featureSent(st)
+    local out = {}
+    for _, e in ipairs(st.out) do
+        if e.event == st.Net.SEASON_FEATURE then out[#out + 1] = e end
+    end
+    return out
+end
+
+describe('brseason locker2: no match running sets it at once')
+do
+    -- A SEASON 1 BOX, the owner's ask.
+    local st = commandServer({ cfg = { br_season = '1' } })
+    st.roster[3] = { name = 'Will' }
+    st.roster[5] = { name = 'Ana' }
+
+    st.run(0)
+    ok(st.said('[br_core] brseason: locker2 auto -- it follows the season, which has it on from Season 2') ~= nil,
+        'bare: locker2 follows the season, and which seasons have it', st.printed[2])
+    ok(st.said('[br_core] brseason: usage: brseason | brseason <1-' .. LATEST .. '> | brseason reset | brseason locker2 on|off|auto') ~= nil,
+        'and the usage names it')
+
+    st.clear()
+    st.run(3, 'locker2', 'on')
+    eq(st.S.has('locker2'), true, 'brseason locker2 on, Season 1, no match running: on at once')
+    eq(st.S.current(), 1, 'the season does not move')
+    eq(st.wire.br_seasonFeatures, 'locker2=on', 'the setting is replicated')
+    eq(st.wire.br_seasonServed, '1', 'and the season is not')
+    local sent = featureSent(st)
+    ok(#sent == 1 and sent[1].target == -1, 'every client is told, once', #sent)
+    local p = sent[1] and sent[1].payload or {}
+    ok(p.id == 'locker2' and p.to == 'on' and p.by == 'Will (#3)' and type(p.settings) == 'table'
+        and p.settings.locker2 == true,
+        'with the feature, the setting, who set it, and every setting now in force')
+    ok(st.said('[br_core] brseason: Will (#3) set locker2 on for this server, whatever the season (was auto)') ~= nil,
+        'the console says who set it, and what it was', st.printed[1])
+    ok(#st.switched() == 0 and #st.pushed == 0, 'no switch is sent, and no market pushed: Locker v2 has nothing to push')
+    eq(next(st.SW.stagedSettings()), nil, 'nothing is left staged')
+
+    st.clear()
+    st.run(3)
+    local f8 = st.f8(3)
+    ok(#f8 == 4 and f8[2] == 'brseason: locker2 on -- for this server, whatever the season',
+        'a bare brseason shows the setting in force', f8[2])
+
+    st.clear()
+    st.run(3, 'locker2', 'on')
+    ok(#featureSent(st) == 0 and st.f8(3)[1] == 'brseason: locker2 is already on',
+        'naming the setting in force sets nothing', st.f8(3)[1])
+
+    -- A SWITCH KEEPS IT.
+    st.clear()
+    st.run(0, '2')
+    ok(st.S.current() == 2 and st.S.has('locker2') == true and st.wire.br_seasonFeatures == 'locker2=on',
+        'brseason 2 keeps the setting')
+    st.run(0, '1')
+    eq(st.S.has('locker2'), true, 'and so does brseason 1')
+
+    -- OFF AND AUTO.
+    st.clear()
+    st.run(5, 'locker2', 'off')
+    st.run(0, '2')
+    ok(st.S.has('locker2') == false and st.wire.br_seasonFeatures == 'locker2=off',
+        'brseason locker2 off: off, even on Season 2')
+    ok(st.said('[br_core] brseason: Ana (#5) set locker2 off for this server, whatever the season (was on)') ~= nil,
+        'naming who set it, and what it was')
+    st.clear()
+    st.run(0, 'locker2', 'auto')
+    ok(st.S.has('locker2') == true and st.wire.br_seasonFeatures == '', 'brseason locker2 auto: Season 2\'s answer, on')
+    ok(st.said('[br_core] brseason: the server console set locker2 back to auto for this server: it follows the season (was off)') ~= nil,
+        'and says it follows the season again', st.printed[1])
+    sent = featureSent(st)
+    ok(#sent == 1 and sent[1].payload.to == 'auto' and next(sent[1].payload.settings) == nil,
+        'every client is told, with no setting left in force')
+
+    -- RESET PUTS IT BACK TO AUTO WITH THE STARTUP SEASON.
+    st.run(0, 'locker2', 'on')
+    st.run(0, '1')
+    st.clear()
+    st.run(0, 'reset')
+    ok(st.S.current() == 1 and st.S.has('locker2') == false and next(st.S.settings()) == nil,
+        'brseason reset on the startup season: the season stays, the setting goes back to auto')
+    ok(st.said('brseason: Season 1 is already in force') ~= nil
+        and st.said('set locker2 back to auto for this server') ~= nil, 'and says both')
+    st.run(0, '2')
+    st.run(0, 'locker2', 'off')
+    st.clear()
+    st.run(0, 'reset')
+    ok(st.S.current() == 1 and next(st.S.settings()) == nil and #st.switched() == 1 and #featureSent(st) == 1,
+        'and from Season 2 with locker2 off: Season 1 and auto, each told once')
+    st.clear()
+    st.run(0, 'reset')
+    ok(#featureSent(st) == 0 and st.said('locker2') == nil,
+        'a reset with nothing set says nothing of the feature')
+end
+
+describe('brseason locker2: refusals')
+do
+    local st = commandServer({ cfg = { br_season = '1' } })
+    for _, words in ipairs({ { 'emotes', 'on' }, { 'market2', 'off' }, { 'nope', 'auto' }, { 'crates2', 'x' } }) do
+        st.clear()
+        st.run(0, words[1], words[2])
+        ok(#st.printed == 1 and st.said(('brseason: "%s" is not a feature brseason sets -- only locker2'):format(words[1])) ~= nil
+            and #st.out == 0 and next(st.S.settings()) == nil and next(st.SW.stagedSettings()) == nil,
+            ('brseason %s %s is refused in one line, and nothing moves'):format(words[1], words[2]), st.printed[1])
+    end
+    for _, words in ipairs({ { 'locker2' }, { 'locker2', 'maybe' }, { 'locker2', '1' } }) do
+        st.clear()
+        st.run(0, table.unpack(words))
+        ok(#st.printed == 1 and st.said('brseason: usage: brseason locker2 on|off|auto') ~= nil
+            and #st.out == 0 and next(st.S.settings()) == nil,
+            ('brseason %s is refused with its usage'):format(table.concat(words, ' ')), st.printed[1])
+    end
+    st.clear()
+    st.run(4, 'emotes', 'on')
+    local f8 = st.f8(4)
+    ok(#f8 == 1 and f8[1]:find('"emotes" is not a feature brseason sets', 1, true) ~= nil,
+        'a refusal typed in F8 is answered in that F8', f8[1])
+    st.clear()
+    st.run(0, 'LOCKER2', 'ON')
+    eq(st.S.has('locker2'), true, 'the feature and the setting are read in any case')
+
+    -- A LIST THAT LOST THE ROW: said, and nothing sent.
+    local gone = commandServer({ registry = { latest = 2, features = { emotes = { from = 2 } } } })
+    gone.run(0, 'locker2', 'on')
+    ok(gone.said('[br_core] brseason: locker2 cannot be set -- no such feature') ~= nil and #featureSent(gone) == 0
+        and gone.wire.br_seasonFeatures == '', 'a row the list no longer has is said so, and nothing is sent')
+end
+
+describe('brseason locker2: staged while a match runs, applied at the teardown')
+do
+    local st = commandServer({ cfg = { br_season = '1' } })
+    st.roster[3] = { name = 'Will' }
+    st.roster[5] = { name = 'Ana' }
+    st.match(1, st.MS.PLAYING)
+
+    st.run(3, 'locker2', 'on')
+    ok(st.S.has('locker2') == false and st.wire.br_seasonFeatures == '' and #featureSent(st) == 0,
+        'typed mid-match: nothing moves, nothing is replicated, nobody is told')
+    local s = st.SW.stagedSettings().locker2
+    ok(s ~= nil and s.to == 'on' and s.by == 'Will (#3)', 'it is staged, naming who')
+    eq(st.f8(3)[1], 'brseason: 1 match running -- locker2 on is staged, and applies when the last one is torn down to the lobby',
+        'and the F8 says when it applies')
+    st.clear()
+    st.run(0)
+    ok(st.said('brseason: locker2 auto -- it follows the season') ~= nil
+        and st.said('brseason: no switch staged') ~= nil
+        and st.said('brseason: locker2 on staged by Will (#3), for when the last of 1 running match is torn down to the lobby') ~= nil,
+        'a bare brseason shows the setting in force and the one staged')
+
+    -- A LATER COMMAND REPLACES IT; ONE NAMING THE SETTING IN FORCE DROPS IT.
+    st.clear()
+    st.run(5, 'locker2', 'off')
+    s = st.SW.stagedSettings().locker2
+    ok(s and s.to == 'off' and s.by == 'Ana (#5)', 'a second command replaces the staged value')
+    ok((st.f8(5)[1] or ''):find('locker2 off is staged, replacing the one staged before', 1, true) ~= nil,
+        'and says so', st.f8(5)[1])
+    st.clear()
+    st.run(0, 'locker2', 'auto')
+    eq(st.SW.stagedSettings().locker2, nil, 'naming the setting in force (auto) drops the staged one')
+    ok(st.said('brseason: locker2 is already auto -- the staged setting is dropped') ~= nil, 'and says so')
+    st.destroy(1)
+    ok(st.S.has('locker2') == false and #featureSent(st) == 0, 'and the teardown applies nothing')
+
+    -- A STAGED SWITCH AND A STAGED SETTING WAIT SIDE BY SIDE AND LAND TOGETHER.
+    st.clear()
+    st.match(2, st.MS.WARMUP)
+    st.match(3, st.MS.BUS)
+    st.run(3, 'locker2', 'on')
+    st.run(5, '2')
+    ok(st.SW.staged() ~= nil and st.SW.staged().season == 2 and st.SW.stagedSettings().locker2 ~= nil,
+        'a switch and a setting staged together')
+    st.destroy(2)
+    ok(st.S.current() == 1 and st.S.has('locker2') == false, 'one of two matches torn down: neither applies')
+    st.destroy(3)
+    ok(st.S.current() == 2 and st.S.has('locker2') == true, 'the last teardown applies both')
+    ok(st.wire.br_seasonServed == '2' and st.wire.br_seasonFeatures == 'locker2=on', 'both replicated')
+    ok(#st.switched() == 1 and #featureSent(st) == 1, 'every client told once of each')
+    ok(featureSent(st)[1].payload.by == 'Will (#3)' and st.switched()[1].payload.by == 'Ana (#5)',
+        'each naming who staged it')
+    ok(st.SW.staged() == nil and next(st.SW.stagedSettings()) == nil, 'nothing is left staged')
+
+    -- A STAGED SETTING ALONE LANDS AT THE TEARDOWN TOO.
+    st.clear()
+    st.match(4, st.MS.ENDED)
+    st.run(0, 'locker2', 'off')
+    st.destroy(4)
+    ok(st.S.has('locker2') == false and #featureSent(st) == 1 and #st.switched() == 0,
+        'a setting staged alone is applied at the teardown, and no switch is sent')
+
+    -- A STAGED RESET: the startup season, and every setting back to auto.
+    st.clear()
+    st.match(5, st.MS.CLEANUP)
+    st.run(3, 'reset')
+    s = st.SW.stagedSettings().locker2
+    ok(st.SW.staged() ~= nil and st.SW.staged().reset == true and s ~= nil and s.to == 'auto' and s.reset == true,
+        'brseason reset mid-match stages the startup season and locker2 back to auto')
+    ok((st.f8(3)[2] or '') == 'brseason: 1 match running -- locker2 auto (reset) is staged, and applies when the last one is torn down to the lobby',
+        'and the F8 says so for each', st.f8(3)[2])
+    st.destroy(5)
+    ok(st.S.current() == 1 and st.S.has('locker2') == false and next(st.S.settings()) == nil,
+        'the teardown applies both: Season 1, locker2 following it')
+
+    -- A LATER SETTING REPLACES THE RESET'S, for that feature alone.
+    st.run(0, '2')
+    st.run(0, 'locker2', 'off')
+    st.match(6, st.MS.PLAYING)
+    st.run(0, 'reset')
+    st.run(0, 'locker2', 'on')
+    st.destroy(6)
+    ok(st.S.current() == 1 and st.S.has('locker2') == true and st.S.settings().locker2 == true,
+        'reset, then locker2 on: the season resets, and the later setting wins')
+
+    -- A RESET WITH THE FEATURE ALREADY AUTO DROPS A STAGED SETTING.
+    st.run(0, 'locker2', 'auto')
+    st.match(7, st.MS.PLAYING)
+    st.run(0, 'locker2', 'on')
+    st.clear()
+    st.run(0, 'reset')
+    ok(st.SW.stagedSettings().locker2 == nil and st.said('brseason: locker2 is already auto -- the staged setting is dropped') ~= nil,
+        'reset with locker2 auto in force drops its staged setting')
+    st.destroy(7)
+    ok(st.S.has('locker2') == false and #featureSent(st) == 0, 'and the teardown sets nothing')
+end
+
+-- =========================================================================
 -- brseason and licensed assets (#391)
 -- =========================================================================
 --
@@ -1067,7 +1477,7 @@ do
     st.clear()
     st.run(3)
     f8 = st.f8(3)
-    ok(#f8 == 5 and f8[4] == WARN1, 'a bare brseason repeats the warning while the sets differ', #f8)
+    ok(#f8 == 6 and f8[5] == WARN1, 'a bare brseason repeats the warning while the sets differ', #f8)
 
     -- Back to the installed season: the sets agree, nothing is said.
     st.clear()
@@ -1076,7 +1486,7 @@ do
     ok(st.said('licensed') == nil, 'and the installed season warns about nothing')
     st.clear()
     st.run(3)
-    eq(#st.f8(3), 3, 'nor does a bare brseason on it')
+    eq(#st.f8(3), 4, 'nor does a bare brseason on it')
 
     -- Staged: warned when typed, since that is when somebody is reading.
     local stg = licensedServer(RECORD)
@@ -1239,6 +1649,99 @@ do
     eq(#cl.printed, before, 'and anything but text is ignored')
 end
 
+describe('brseason locker2: every client is told, and follows the replicated value (#425)')
+do
+    local srvWire, cliWire = {}, {}
+    local srv = commandServer({ wire = srvWire, cfg = { br_season = '1' } })
+    local cl = followClient(cliWire)
+    local function land() for k, v in pairs(srvWire) do cliWire[k] = v end end
+    land()
+    ok(cl.S.current() == 1 and cl.S.has('locker2') == false, 'a Season 1 client: locker2 off, as the season has it')
+
+    -- THE MESSAGE BEFORE THE VALUE.
+    srv.run(3, 'locker2', 'on')
+    cl.deliver(cl.Net.SEASON_FEATURE, featureSent(srv)[1].payload)
+    ok(cl.said('[br_core] brseason: P3 (#3) set locker2 on for this server, whatever the season'),
+        'every F8 is told who set what', cl.printed[#cl.printed])
+    eq(cl.S.has('locker2'), false, 'the message alone moves nothing: the client runs what it reads')
+    land()
+    ok(cl.S.has('locker2') == true and srv.S.has('locker2') == true, 'the value landing turns it on, on both sides')
+    eq(#cl.changes(), 0, 'and raises no br:season:changed: the season number did not move')
+
+    -- THE VALUE BEFORE THE MESSAGE.
+    srv.clear()
+    srv.run(0, 'locker2', 'auto')
+    land()
+    eq(cl.S.has('locker2'), false, 'auto on Season 1: off again the moment the value lands')
+    cl.deliver(cl.Net.SEASON_FEATURE, featureSent(srv)[1].payload)
+    ok(cl.said('[br_core] brseason: the server console set locker2 back to auto for this server: it follows the season'),
+        'and the F8 line after it', cl.printed[#cl.printed])
+    eq(cl.S.has('locker2'), false, 'which moves nothing more')
+
+    -- A SWITCH UNDER A SETTING: the number moves, the setting stays.
+    srv.run(0, 'locker2', 'off')
+    land()
+    srv.run(0, '2')
+    land()
+    ok(cl.S.current() == 2 and cl.S.has('locker2') == false and cl.S.has('emotes') == true,
+        'Season 2 with locker2 off: off, and every other row Season 2\'s')
+    eq(#cl.changes(), 1, 'the switch, and only the switch, raises br:season:changed')
+
+    -- GARBAGE prints nothing and moves nothing.
+    local before = #cl.printed
+    cl.deliver(cl.Net.SEASON_FEATURE, 'x')
+    cl.deliver(cl.Net.SEASON_FEATURE, { id = 'locker2', to = 'maybe', by = 'x' })
+    cl.deliver(cl.Net.SEASON_FEATURE, { id = 'a b', to = 'on', by = 'x' })
+    cl.deliver(cl.Net.SEASON_FEATURE, { to = 'on', by = 'x' })
+    cl.deliver(cl.Net.SEASON_FEATURE, nil)
+    ok(#cl.printed == before and cl.S.has('locker2') == false, 'a malformed message prints nothing and moves nothing')
+end
+
+describe('brseason locker2: a runtime without the listener waits for the setting it was told of')
+do
+    local now = 0
+    local threads = {}
+    local citizen = {
+        CreateThread = function(fn) threads[#threads + 1] = { co = coroutine.create(fn), wake = now } end,
+        Wait = function(ms) coroutine.yield(ms) end,
+    }
+    local function run(ms)
+        local stop = now + ms
+        while now < stop do
+            now = now + 50
+            for i = #threads, 1, -1 do
+                local t = threads[i]
+                if t.wake <= now then
+                    local okT, wait = coroutine.resume(t.co)
+                    assert(okT, wait)
+                    if coroutine.status(t.co) == 'dead' then table.remove(threads, i)
+                    else t.wake = now + (wait or 0) end
+                end
+            end
+        end
+    end
+
+    local wire = { br_seasonServed = '1' }
+    local cl = followClient(wire, { listener = false, citizen = citizen })
+    run(100)
+    ok(cl.S.follows() == 'poll' and #threads == 0, 'no listener, a season known at load: nothing re-reads')
+
+    -- THE MESSAGE FIRST.
+    cl.deliver(cl.Net.SEASON_FEATURE, { id = 'locker2', to = 'on', by = 'x', settings = { locker2 = true } })
+    eq(#threads, 1, 'SEASON_FEATURE before its value starts the re-read')
+    run(1000)
+    eq(cl.S.has('locker2'), false, 'which goes on while the value has not landed')
+    wire.br_seasonFeatures = 'locker2=on'
+    run(600)
+    ok(cl.S.has('locker2') == true and #threads == 0, 'finds it when it does, then stops')
+
+    -- THE VALUE FIRST: the message's own re-read finds it, and no thread starts.
+    wire.br_seasonFeatures = ''
+    cl.deliver(cl.Net.SEASON_FEATURE, { id = 'locker2', to = 'auto', by = 'x', settings = {} })
+    ok(cl.S.has('locker2') == false and #threads == 0,
+        'with the value already there, the message moves it at once and nothing polls')
+end
+
 -- =========================================================================
 -- the client's copy: held, re-read only when it moves (owner, 2026-10-04)
 -- =========================================================================
@@ -1251,17 +1754,22 @@ do
     local wire = { br_seasonServed = '2' }
     local client = state({ wire = wire })
     local after = client.reads
-    eq(after, 1, 'the module reads br_seasonServed once as it loads')
+    eq(after, 2, 'the module reads br_seasonServed and br_seasonFeatures once each as it loads')
     for _ = 1, 1000 do client.S.has('emotes') end
     for _ = 1, 1000 do client.S.current() end
     for _ = 1, 1000 do client.S.pick({ [1] = 'one', [2] = 'two' }) end
-    eq(client.reads, after, 'and three thousand questions after that read it no more')
+    eq(client.reads, after, 'and three thousand questions after that read neither again')
     wire.br_seasonServed = '1'
-    eq(client.reads, after + 1, 'a value that lands is read once, off the listener')
+    eq(client.reads, after + 2, 'a value that lands is read once, off the listener -- both names, once each')
     eq(client.S.has('emotes'), false, 'and answered from then on')
-    eq(client.reads, after + 1, 'without reading it again')
+    eq(client.reads, after + 2, 'without reading it again')
+    wire.br_seasonFeatures = 'emotes=on'
+    eq(client.reads, after + 4, 'a setting that lands is read the same way, off its own listener')
+    eq(client.S.has('emotes'), true, 'and answered from then on')
+    for _ = 1, 1000 do client.S.has('emotes') end
+    eq(client.reads, after + 4, 'without reading it again either')
     wire.br_unrelated = 'x'
-    eq(client.reads, after + 1, 'another convar moving reads nothing')
+    eq(client.reads, after + 4, 'another convar moving reads nothing')
 end
 
 describe('season.copy: onChange hears every move, the first arrival included')
@@ -1387,7 +1895,7 @@ do
     reads = cl.reads
     run(10 * 60 * 1000)
     eq(#threads, 0, 'a value that never lands stops being re-read')
-    ok(cl.reads - reads <= 241, 'after two minutes of it at most', cl.reads - reads)
+    ok(cl.reads - reads <= 2 * 241, 'after two minutes of it at most (both names a pass)', cl.reads - reads)
     eq(cl.S.current(), 2, 'and the client keeps the season it reads')
 end
 

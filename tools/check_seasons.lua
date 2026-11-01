@@ -22,6 +22,10 @@
 --     without a restart, and the owner's rule is that only the dev-mode
 --     `brseason` does that (prod is restart-only); a call anywhere else is a
 --     season that changes under a running box with no command typed.
+--   * A SECOND SETTER of a feature (#425). BR.Season.setFeature turns one row
+--     on or off whatever the season, for `brseason locker2 on`; a call
+--     anywhere else is a feature that leaves its season on a box where nobody
+--     typed the command -- prod included.
 --
 -- ═══ THE RULES ═══
 --
@@ -32,12 +36,15 @@
 --                    { from = <n>, untilSeason = <m>? } and nothing else, with
 --                    1 <= n <= latest and m > n
 --   S4 ONE READER    no file but br_lib/shared/season.lua names br_season (or
---                    br_seasonServed) in code or in a string, or reaches it as
---                    BR.Season.CONVAR or BR.Season.SERVED
+--                    br_seasonServed, or br_seasonFeatures -- each has it in
+--                    its name) in code or in a string, or reaches one as
+--                    BR.Season.CONVAR, BR.Season.SERVED or BR.Season.FEATURES
 --   S5 ONE DOOR      BR.Season.has is only ever CALLED (or nil-checked) -- never
 --                    aliased or passed along, where S1 could not see the id
 --   S6 ONE SWITCH    BR.Season.switch is named only by br_core/server/season.lua,
 --                    the dev-mode `brseason` (and defined by the module)
+--   S7 ONE SETTER    BR.Season.setFeature is named only by
+--                    br_core/server/season.lua too (and defined by the module)
 --
 -- READS TEXT, NOT A PARSE TREE, with the same lexer as tools/check_emote_gate.lua
 -- so prose that QUOTES a pattern is never read as code. The registry itself is
@@ -226,7 +233,8 @@ local function run(files)
                 end
                 -- ...nor reaches it through the module's own names for it.
                 if not isModule and (code[i]:find('BR%.Season%.CONVAR%f[^%w_]')
-                                     or code[i]:find('BR%.Season%.SERVED%f[^%w_]')) then
+                                     or code[i]:find('BR%.Season%.SERVED%f[^%w_]')
+                                     or code[i]:find('BR%.Season%.FEATURES%f[^%w_]')) then
                     fail(f.path, i, 'S4', "reads the season convar through BR.Season's name for it -- ask BR.Season.current() or has()")
                 end
 
@@ -262,6 +270,11 @@ local function run(files)
                     if not endsWith(f.path, SWITCHER) and code[i]:find('BR%.Season%.switch%f[^%w_]') then
                         fail(f.path, i, 'S6', 'names BR.Season.switch -- only ' .. SWITCHER
                             .. ' (the dev-mode brseason) moves the season in force; prod is restart-only')
+                    end
+                    -- S7: and a feature leaves its season only through it.
+                    if not endsWith(f.path, SWITCHER) and code[i]:find('BR%.Season%.setFeature%f[^%w_]') then
+                        fail(f.path, i, 'S7', 'names BR.Season.setFeature -- only ' .. SWITCHER
+                            .. ' (the dev-mode brseason) sets a feature whatever the season; prod follows the season')
                     end
                 end
             end
@@ -312,10 +325,11 @@ local function goodTree()
         [R .. 'br_core/server/season.lua'] = table.concat({
             '-- BR.Season.switch(n) in a comment is prose here too',
             'local now = BR.Season.switch(target)',
+            'if not BR.Season.setFeature(id, value) then return end',
         }, '\n'),
         [R .. 'br_core/server/emotes.lua'] = table.concat({
             "-- GetConvar('br_season') and BR.Season.has(x) in a comment are prose",
-            '-- and so is BR.Season.switch(1)',
+            "-- and so are BR.Season.switch(1) and BR.Season.setFeature('emotes', true)",
             "if not BR.Season.has('emotes') then return end",
             "local on = BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has(\"emotes\")",
             "if not (BR.Season and BR.Season.has and BR.Season.has( 'oldmap' )) then return end",
@@ -365,6 +379,12 @@ local FIXTURES = {
     { name = 'a reader through the module\'s constant', want = 'S4',
       mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
           "local raw = GetConvar(BR.Season.CONVAR, '')\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'a reader of the features name', want = 'S4',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "local set = GetConvar('br_seasonFeatures', '')\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'a reader through the features constant', want = 'S4',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "local set = GetConvar(BR.Season.FEATURES, '')\nif not BR.Season.has('emotes') then return end") end },
     { name = 'the door aliased', want = 'S5',
       mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
           "local has = BR.Season.has\nif not BR.Season.has('emotes') then return end") end },
@@ -377,6 +397,12 @@ local FIXTURES = {
     { name = 'the switch aliased outside brseason', want = 'S6',
       mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
           "local sw = BR.Season.switch\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'a second caller of the feature setter', want = 'S7',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "BR.Season.setFeature('emotes', true)\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'the feature setter aliased outside brseason', want = 'S7',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "local sf = BR.Season.setFeature\nif not BR.Season.has('emotes') then return end") end },
 }
 
 local function asFiles(tree)
@@ -409,7 +435,7 @@ local function selftest()
         end
     end
     if bad == 0 then
-        io.write(('ok   %d selftest fixtures: S1-S6 each fire on a broken tree, and a good one passes\n')
+        io.write(('ok   %d selftest fixtures: S1-S7 each fire on a broken tree, and a good one passes\n')
             :format(#FIXTURES))
     end
     return bad
@@ -442,5 +468,5 @@ if #findings > 0 then
     end
     os.exit(1)
 end
-io.write(('ok   %d gated feature(s), latest Season %d, %d BR.Season.has call(s), each a listed id; only %s reads br_season, and only %s switches it\n')
+io.write(('ok   %d gated feature(s), latest Season %d, %d BR.Season.has call(s), each a listed id; only %s reads br_season, and only %s switches it or sets a feature\n')
     :format(sum.rows, sum.latest or 0, sum.asks, MODULE, SWITCHER))

@@ -1196,6 +1196,13 @@ BR.Net = {
     -- printed in every F8 console, and the client re-reads its season off the
     -- replicated value -- never off this payload (br_core/client/season.lua).
     SEASON_SWITCHED = 'br:season:switched',
+    -- S->C { id, to, by, settings }. To everybody, the moment a `brseason <id>
+    -- on|off|auto` is applied (#425), on a switch's timing: `to` is 'on', 'off'
+    -- or 'auto', and `settings` every feature set on or off now, [id] =
+    -- boolean. Printed in every F8 console; the client re-reads the setting
+    -- off the replicated value -- never off this payload, whose `settings`
+    -- only tells a runtime with no convar listener what to wait for.
+    SEASON_FEATURE  = 'br:season:feature',
     -- S->C '<text>'. One `brseason` answer, to the player who typed it alone,
     -- printed in their F8 console and nowhere else.
     SEASON_RESULT   = 'br:season:result',
