@@ -54,6 +54,22 @@
 -- Anybody who later reads a locked door or an ejected ped as proof of anything
 -- has misread this paragraph. The lock is a state a client set on itself.
 --
+-- ═══ ONE VEHICLE IT LEAVES ALONE: ONE THE DEV MENU SPAWNED (#426) ═══
+--
+-- The owner, 2026-11-01: "yes exempt dev menu vehicles, and put me in the
+-- driver seat". The server hangs a replicated state bag on each vehicle the dev
+-- menu builds (BR.Config.DevMenu.vehicleStateKey), and this file neither ejects
+-- anybody from one nor holds its gun off -- whoever sits in it. See
+-- `devMenuHint` and `exempt`.
+--
+-- THE HINT IS ADVISORY FOR THIS FILE'S OWN REASON. A client can write state on
+-- an entity it owns, so a cheat could hang it on a stolen Buzzard, and that
+-- changes nothing: skipping this file is what a cheat already does by not
+-- running it. The server never reads the hint. Its detectors ask a record the
+-- server keeps in memory, which only a server started in dev mode can put
+-- anything in (server/vehicles.lua) -- so on the public box no vehicle is
+-- exempt, and the Buzzard is filed against there as it always was.
+--
 -- ═══ BEFORE THE SEAT, OR AFTER IT? BOTH, AND THE ORDER IS THE POINT ═══
 --
 -- `GetVehiclePedIsEntering` answers while the ped is playing the entry
@@ -361,7 +377,10 @@ local stat = { asked = 0, cached = 0, rejected = 0, ejected = 0,
                -- all: no such native, or a handle that threw. It is the number
                -- that tells a silent build from a match of ordinary cars, which
                -- is the one thing this process cannot infer. See PROBE_TRIES.
-               armedSilent = 0 }
+               armedSilent = 0,
+               -- #426: passes that left a dev menu vehicle alone. See
+               -- `devMenuHint`.
+               devMenu = 0 }
 
 --- Why this gamemode refuses this vehicle, or nil.
 ---
@@ -408,6 +427,32 @@ local function refusalFor(veh)
     end
 
     return why, model
+end
+
+--- Did the server hang the dev menu's hint on this vehicle? (#426)
+---
+--- THE OWNER, 2026-11-01: "yes exempt dev menu vehicles". A vehicle the dev
+--- menu spawned carries a replicated state bag the server set as it built it
+--- (BR.Config.DevMenu.vehicleStateKey), and this file neither ejects anybody
+--- from it nor holds its gun off -- whoever sits in it.
+---
+--- A HINT, ADVISORY LIKE THE REST OF THIS FILE. A client can write state on an
+--- entity it owns, so a cheat could hang it on a stolen Buzzard -- and gains
+--- nothing by it, because skipping this file is what a cheat already does by
+--- not running it. Nothing on the server reads it: its detectors ask their own
+--- record, which only a dev-mode server can hold anything in
+--- (server/vehicles.lua), so the Buzzard is still filed against there.
+---
+--- READ ONLY WHERE IT CHANGES SOMETHING: for a vehicle this pass is about to
+--- empty or to hold the gun off in. An ordinary car -- nearly every one -- never
+--- pays for it.
+--- @param veh integer
+--- @return boolean
+local function devMenuHint(veh)
+    local key = BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey
+    if not key or type(Entity) ~= 'function' then return false end
+    local ok, v = pcall(function() return Entity(veh).state[key] end)
+    return ok and v == true
 end
 
 -- ---------------------------------------------------------------------------
@@ -1438,6 +1483,19 @@ local function enabled()
     return st == BR.PlayerState.ALIVE or st == BR.PlayerState.WARMUP
 end
 
+--- Leave a dev menu vehicle alone (#426; see `devMenuHint`).
+---
+--- NOBODY IS BEING EJECTED, and the trigger hold is TOLD that this vehicle's
+--- gun is not held off. Telling it is the point: `mustHold` holds every
+--- vehicle no pass has decided about, so a pass that only returned would
+--- leave the gun held for the whole sitting.
+--- @param ped integer @param veh integer @param model integer|nil
+local function exempt(ped, veh, model)
+    clearPending()
+    decide(ped, veh, model, false, false, nil)
+    stat.devMenu = stat.devMenu + 1
+end
+
 BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- ═══ THE PROBE IS CLEARED WHEREVER THE PENDING EJECTION IS ═══
     --
@@ -1467,7 +1525,9 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- ZERO IS EXPLICIT BECAUSE `0` IS TRUTHY IN LUA. `if entering then` is true
     -- for a player standing in a field.
     if entering ~= 0 then
-        if refusalFor(entering) ~= nil then
+        -- A DEV MENU VEHICLE IS LET IN (#426). The hint is read only for a
+        -- vehicle this would refuse.
+        if refusalFor(entering) ~= nil and not devMenuHint(entering) then
             reject(ped, entering, false, GetGameTimer())
             return
         end
@@ -1500,7 +1560,21 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- Buzzard with a gunner in the back is being used.
     local why, model = refusalFor(veh)
     if why ~= nil then
+        -- A DEV MENU VEHICLE IS NOT EMPTIED (#426), and its gun is not held.
+        if devMenuHint(veh) then
+            exempt(ped, veh, model)
+            return
+        end
         reject(ped, veh, true, GetGameTimer())
+        return
+    end
+
+    -- NOR IS AN ALLOWED ONE'S GUN HELD OFF (#426) -- a dev menu Technical, an
+    -- Insurgent -- where this pass would hold it. Asked of the authored table
+    -- first, which is a table read, and after #329's probe only of a vehicle the
+    -- engine calls armed, so an ordinary car never reads the hint.
+    if BR.Config.IsDisarmedVehicle(model) and devMenuHint(veh) then
+        exempt(ped, veh, model)
         return
     end
 
@@ -1536,6 +1610,10 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- GUN is held off and can never touch the set that is EMPTIED. See the section
     -- above `seatOf` for which native answers which question and what it costs.
     local armed, turret, pending = engineProbe(ped, veh, model)
+    if (armed or turret) and devMenuHint(veh) then
+        exempt(ped, veh, model)
+        return
+    end
     local hash = disarm(ped, veh, model, armed, turret)
 
     -- `disarm`'s own gate, asked again rather than returned from it: one table

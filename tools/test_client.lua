@@ -9761,6 +9761,91 @@ do
     sent, stripped = {}, {}
 end
 
+describe('a dev menu vehicle\'s gun is not taken out of the hand either -- #426')
+do
+    -- The owner, 2026-11-01: "yes exempt dev menu vehicles" -- not disarmed.
+    -- The server hangs a state bag on what the dev menu builds, and the strip
+    -- leaves the hand alone in a vehicle carrying it: a gun seat
+    -- `isMountedWeapon` cannot see, as the firetruck's, with the native silent.
+    -- That the SERVER never trusts the bag is test_roster's and
+    -- test_ringmaster's; this is the client's half.
+    local chunk = assert(loadfile('resources/[fivem-royale]/br_lib/config/devmenu.lua'))
+    chunk()
+    local KEY = BR.Config.DevMenu.vehicleStateKey
+    local ORDINARY = 42
+    local CONJURED = 0x11111111
+    local bags = {}
+    local realEntity = Entity
+    Entity = function(h)
+        return { state = setmetatable({}, { __index = function(_, k)
+            return (bags[h] or {})[k]
+        end }) }
+    end
+
+    local function reports()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_STRIPPED then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+    local function strips(hash)
+        local n = 0
+        for _, h in ipairs(stripped) do if h == hash then n = n + 1 end end
+        return n
+    end
+    local function tickIn(veh, held)
+        inVehicle, vehicle = true, veh
+        vehModel = ORDINARY
+        vehWeapon = nil
+        pedWeapon = held
+        sent, stripped = {}, {}
+        fakeTime = fakeTime + 5000
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    bags = { [77] = { [KEY] = true } }
+    tickIn(77, CONJURED)
+    ok(strips(CONJURED) == 0, 'the gun in a dev menu vehicle is not taken out of the hand')
+    ok(#reports() == 0, 'and nothing is reported about it')
+
+    -- THE SAME HAND IN A VEHICLE WITHOUT IT is stripped and reported as ever.
+    bags = {}
+    tickIn(77, CONJURED)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'the same gun in a vehicle with no hint is stripped and reported')
+
+    -- ONLY `true` IS THE HINT.
+    bags = { [77] = { [KEY] = 'true' } }
+    tickIn(77, CONJURED)
+    ok(strips(CONJURED) == 1, 'a bag holding anything but true is no hint')
+
+    -- ON FOOT, with the vehicle beside them still carrying it: no exemption.
+    bags = { [77] = { [KEY] = true } }
+    inVehicle, vehicle = false, 77
+    vehWeapon, pedWeapon = nil, CONJURED
+    sent, stripped = {}, {}
+    fakeTime = fakeTime + 5000
+    BR.Loop.step(BR.Loop.TICK)
+    ok(strips(CONJURED) == 1 and #reports() == 1, 'on foot, a hinted vehicle nearby exempts nothing')
+
+    -- Leave the world as this block found it.
+    Entity = realEntity
+    inVehicle, vehicle = false, 0
+    vehModel = ORDINARY
+    vehWeapon, pedWeapon = nil, nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.Loop.step(BR.Loop.TICK)
+    sent, stripped = {}, {}
+end
+
 describe('sitting in a disarmed vehicle files nothing -- #322')
 do
     -- ═══ WHY THIS BLOCK EXISTS AT ALL ═══

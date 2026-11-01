@@ -1411,6 +1411,27 @@ local function seatedInDisarmedVehicle(src)
     return BR.Vehicles.inDisarmedVehicle(s and s.ped, s) == true
 end
 
+--- Is this player sitting, by the server's own record, in a vehicle the dev
+--- menu spawned? (#426)
+---
+--- THAT GUN IS LIVE. The owner, 2026-11-01: "yes exempt dev menu vehicles" --
+--- not ejected from, not disarmed, filed against by nobody. So what it fires
+--- is neither refused nor canceled nor counted here: a hit lands as the
+--- engine applies it, the way the world's own damage does. Asked before
+--- `seatedInDisarmedVehicle` at each of the three events, because a dev menu
+--- Technical is both, and the #322 answer would cancel it.
+---
+--- THE RECORD, NEVER THE HINT: BR.Vehicles.inDevMenuVehicle reads the server's
+--- own list, which only a dev-mode server can hold anything in. A build
+--- without server/vehicles.lua answers no.
+--- @param src integer
+--- @return boolean
+local function seatedInDevMenuVehicle(src)
+    if not (BR.Vehicles and BR.Vehicles.inDevMenuVehicle) then return false end
+    local s = BR.Roster.get(src)
+    return BR.Vehicles.inDevMenuVehicle(s and s.ped) == true
+end
+
 AddEventHandler('weaponDamageEvent', function(sender, data)
     if recording > 0 then record(sender, data) end
     if type(data) ~= 'table' then return end
@@ -1456,6 +1477,14 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
             -- and note that a hit on the sender's OWN ped is still never
             -- refused, whatever the hash says.
             handleEnvironmental(shooter, env, data)
+            return
+        end
+        -- A DEV MENU VEHICLE'S OWN GUN (#426): left to the engine, like the
+        -- world's, and nobody's case. See `seatedInDevMenuVehicle`. Only for a
+        -- hash in no row of ours -- a carbine of ours fired from the same seat
+        -- is validated as ever -- and only on the server's own record.
+        if seatedInDevMenuVehicle(shooter) then
+            BR.Damage.devMenuGunEvents = (BR.Damage.devMenuGunEvents or 0) + 1
             return
         end
         -- Falls through to the loop below, where it is refused as NO_WEAPON
@@ -1963,6 +1992,9 @@ AddEventHandler('startProjectileEvent', function(sender, data)
 
     local src = tonumber(sender)
     if not src or src == 0 then return end
+    -- A DEV MENU VEHICLE'S LAUNCH IS RELAYED AS ANY OTHER (#426), first: a dev
+    -- menu Technical is a disarmed model too, and the next line would cancel it.
+    if seatedInDevMenuVehicle(src) then return end
     if not seatedInDisarmedVehicle(src) then return end
 
     BR.Damage.vehicleGunProjectiles = (BR.Damage.vehicleGunProjectiles or 0) + 1
@@ -2126,6 +2158,23 @@ local function vehicleGunBlast(owner, ev)
     return seatedInDisarmedVehicle(owner)
 end
 
+--- Is this explosion a dev menu vehicle's gun going off? (#426)
+---
+--- The same types as `vehicleGunBlast`, for the same reason, and the same
+--- limit: a gun whose shell borrows a type our arsenal makes takes the
+--- ordinary path. From a sender the server's own record seats in a vehicle
+--- the dev menu spawned (`seatedInDevMenuVehicle`), and nobody else.
+--- @param owner integer
+--- @param ev table
+--- @return boolean
+local function devMenuGunBlast(owner, ev)
+    local tags = cfg.vehicleGunExplosions
+    if tags == nil then return false end
+    local tag = math.tointeger(tonumber(ev.explosionType))
+    if tag == nil or tags[tag] == nil then return false end
+    return seatedInDevMenuVehicle(owner)
+end
+
 AddEventHandler('explosionEvent', function(sender, ev)
     if type(ev) ~= 'table' then return end
     local owner = tonumber(sender)
@@ -2135,6 +2184,14 @@ AddEventHandler('explosionEvent', function(sender, ev)
     -- declines to claim -- cancelling those would be this file deciding the
     -- world may not have weather.
     if not owner or owner == 0 then return end
+
+    -- ═══ A DEV MENU VEHICLE'S GUN GOING OFF (#426) ═══
+    --
+    -- Drawn on every screen and nobody's case: the owner exempted those
+    -- vehicles, and this is the third of the three events its gun raises.
+    -- Asked first, because a dev menu Technical is a disarmed model as well and
+    -- the next block would cancel it.
+    if devMenuGunBlast(owner, ev) then return end
 
     -- ═══ A DISARMED SEAT'S GUN GOING OFF (#322, second round) ═══
     --

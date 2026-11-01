@@ -336,9 +336,16 @@ local function vehicleGun(src, h, rec, now)
     -- sitting in, which no server-side native can ask -- and keeps it on their
     -- roster entry so a forged one reaches nobody else. Without the entry the
     -- answer is the authored model table's, exactly as it was before.
+    --
+    -- AND A VEHICLE THE DEV MENU SPAWNED (#426), whatever its model: the owner
+    -- exempted those -- "yes exempt dev menu vehicles" -- so its gun in a hand
+    -- is nobody's case either. The server's own record answers, which only a
+    -- dev-mode server can hold anything in; the client's hint is never read.
     local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
     rec.vehAt  = now
     rec.vehAns = BR.Vehicles.inDisarmedVehicle(e and e.ped, e)
+        or (BR.Vehicles.inDevMenuVehicle ~= nil
+            and BR.Vehicles.inDevMenuVehicle(e and e.ped) == true)
     return rec.vehAns
 end
 

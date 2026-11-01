@@ -123,16 +123,38 @@
 -- other request no row could have sent. Only a model that table does not
 -- have, an add-on, is taken at the client's word.
 --
--- NOT FROM THE LOBBY, which is the one place this differs from brcar. Every
--- lobby player stands frozen on the one lobby mark, in one shared bucket, so a
--- car spawned there would sit in every lobby player's character shot. The
--- answer is the menu's own lobby sentence, `no match running`. Everywhere
--- else -- the warmup pad, the plane and the drop, the match, downed or out --
--- it is brcar's rule: in front of whoever asked, in whatever bucket they are
--- in. In warmup and in a match the match's vehicle rules still hold:
--- client/vehrefuse.lua puts a player out of a refused vehicle, and
--- server/vehicles.lua's occupancy detector counts a driver in one. Neither is
--- excused for a dev menu car; that is the owner's open question on #426.
+-- NOT FROM THE LOBBY. Every lobby player stands frozen on the one lobby mark,
+-- in one shared bucket, so a car spawned there would sit in every lobby
+-- player's character shot. The answer is the menu's own lobby sentence,
+-- `no match running`.
+--
+-- ═══ EXEMPT, AND YOU IN THE DRIVER'S SEAT (#426) ═══
+--
+-- The owner, 2026-11-01, answering the open question: "yes exempt dev menu
+-- vehicles, and put me in the driver seat". And: "you're doing these spawn
+-- checks server-side, yeah?" -- yes; every decision below is this server's.
+--
+-- EXEMPT: what this row builds is recorded, once the spawn has built it, by
+-- BR.Vehicles.exemptDevMenuVehicle -- this file is its one caller, and
+-- tools/verify.sh pins it here -- and from then on nobody is filed against
+-- for sitting in it or for its gun, and the client's vehrefuse.lua neither
+-- ejects anybody from it nor holds its gun off. The record is server memory,
+-- written only on a server that started in dev mode; server/vehicles.lua, above
+-- its occupancy detector, has the whole of it. brcar's vehicles are not in it.
+--
+-- SEATED: the asker is put in the driving seat by this server, through the
+-- platform's own SetPedIntoVehicle -- an RPC its owning client (theirs) runs --
+-- once a client holds the vehicle, and tried until the vehicle's own driving
+-- seat says they are in it, for SEAT_WINDOW_MS. An NPC the platform put in the
+-- seat is deleted first; another player in it ends the try. The vehicle still
+-- lands clear of them by its size first, as spawnInFront places it. See `the
+-- seat` below for the sources.
+--
+-- SO ONLY WHERE A SEAT IS FOR: ALIVE and WARMUP, the two states a player takes
+-- a vehicle in -- client/vehrefuse.lua's gate. In the plane and the drop the
+-- gamemode is carrying them, and a seat would pull them off the bus mid-flight;
+-- downed or out, nobody drives. Those are refused before anything is built, in
+-- one sentence of this file's own (NOT_SEATABLE).
 
 BR = BR or {}
 BR.DevMenu = BR.DevMenu or {}
@@ -385,8 +407,153 @@ ACTIONS.airdrop = function(src, _, answer)
     return true
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE SEAT (#426): "put me in the driver seat"
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- HOW, AND THE SOURCES. SetPedIntoVehicle is one of the platform's server RPC
+-- natives -- `context_rpc 'SET_PED_INTO_VEHICLE'` in citizenfx/fivem's
+-- ext/natives/rpc_spec_natives.lua -- so the server calls it and the client that
+-- OWNS THE PED runs it: the asker's own. That client turns the vehicle's object
+-- id into a handle as the call arrives and does not wait for it
+-- (code/components/gta-net-five/src/ClientRPC.cpp: only an entity still being
+-- created through an RPC waits; one the server setter made does not), so a call
+-- that lands before the vehicle has reached the asker's machine does nothing.
+-- Qbox's qbx.spawnVehicle (Qbox-project/qbx_core, modules/lib.lua) is the same
+-- server setter and the same native, and it waits for a client to have the car
+-- before it seats anybody. So this waits until a client OWNS the vehicle
+-- (NetworkGetEntityOwner), calls the RPC, and calls it again every
+-- SEAT_POLL_MS until the vehicle's own driving seat -- the live read the
+-- occupancy detector trusts, not the ped's #4006 answer -- names the asker, for
+-- SEAT_WINDOW_MS at most.
+--
+-- AN NPC IN THE DRIVING SEAT. The Cfx.re forum has a server setter vehicle
+-- turning up with an ambient driver who drives it off (forum.cfx.re/t/4936285,
+-- 2022; forum.cfx.re/t/4947251, where Cfx.re's Linden said in 2024 that it was
+-- fixed in commit 631484ec). Whatever build this runs on, a driving seat
+-- holding a ped that is not a player's (IsPedAPlayer, a server native) is
+-- emptied by deleting that ped, and the asker is seated on a later pass. A
+-- PLAYER in it ends the try: nobody is pulled out of a seat for this.
+--
+-- WHEN IT CANNOT: the vehicle never reaches a client, it is gone, or somebody
+-- else is driving it. The vehicle stays where it landed, and the asker is told
+-- once (SEAT_FAILED). A seat that stops making sense on the way -- the asker
+-- died, boarded, left, or asked for another vehicle -- is dropped without a
+-- word; nothing was promised for that.
+
+--- The player states the vehicle row is taken in. See the header.
+local SEATABLE = {
+    [BR.PlayerState.ALIVE]  = true,
+    [BR.PlayerState.WARMUP] = true,
+}
+
+--- This file's sentence for a press in any other state but the lobby's.
+local NOT_SEATABLE = 'only in warmup, or alive in a match'
+
+--- This file's sentence for a seat that could not be taken. `%s` is the model.
+local SEAT_FAILED = '%s was built, but you could not be put in it'
+
+--- How often a pending seat is tried. The roster's own sample rate.
+local SEAT_POLL_MS = 250
+
+--- How long a seat is tried for: Qbox waits five seconds for a client to own a
+--- car it seats somebody in, and so does this.
+local SEAT_WINDOW_MS = 5000
+
+--- [asker] = { veh, model, untilMs }. One each: a second vehicle replaces the
+--- first, which stays where it landed.
+local seating = {}
+
+--- The scheduler job, while anything is waiting to be seated.
+local seatJob = nil
+
+--- A FiveM BOOL, by the shared policy: 1 and true are yes, and 0 -- truthy in
+--- Lua -- is no.
+local isTrue = BR.NativeBool
+
+--- @param veh integer @return boolean
+local function stillThere(veh)
+    if not DoesEntityExist then return false end
+    local ok, v = pcall(DoesEntityExist, veh)
+    return ok and isTrue(v)
+end
+
+--- Who is in the driving seat, by the vehicle's own seats. 0 for nobody.
+--- @param veh integer @return integer
+local function driverOf(veh)
+    if not GetPedInVehicleSeat then return 0 end
+    local ok, p = pcall(GetPedInVehicleSeat, veh, -1)
+    return ok and math.tointeger(tonumber(p)) or 0
+end
+
+--- Is this ped a player's? A read that fails says yes: a player is never
+--- deleted on a guess.
+--- @param ped integer @return boolean
+local function playersPed(ped)
+    if not IsPedAPlayer then return true end
+    local ok, v = pcall(IsPedAPlayer, ped)
+    return not ok or isTrue(v)
+end
+
+--- Has the vehicle reached a client yet? An owner is a player's server id; -1
+--- is nobody.
+--- @param veh integer @return boolean
+local function onAClient(veh)
+    if not NetworkGetEntityOwner then return false end
+    local ok, o = pcall(NetworkGetEntityOwner, veh)
+    o = ok and math.tointeger(tonumber(o)) or nil
+    return o ~= nil and o > 0
+end
+
+--- One try at one asker's seat.
+--- @return string  'wait' | 'done' | 'failed' | 'dropped'
+local function seatOne(src, s, now)
+    local e = BR.Roster.get(src)
+    if not e or not SEATABLE[e.state] or not e.ped or e.ped == 0 then
+        return 'dropped'
+    end
+    if not stillThere(s.veh) then return 'failed' end
+    local driver = driverOf(s.veh)
+    if driver == e.ped then return 'done' end
+    if now >= s.untilMs then return 'failed' end
+    if driver ~= 0 then
+        if playersPed(driver) then return 'failed' end
+        pcall(DeleteEntity, driver)
+        return 'wait'
+    end
+    if not onAClient(s.veh) then return 'wait' end
+    pcall(SetPedIntoVehicle, e.ped, s.veh, -1)
+    return 'wait'
+end
+
+--- The pass, every SEAT_POLL_MS while anybody is waiting, and gone after.
+local function seatPass()
+    local now = GetGameTimer()
+    for src, s in pairs(seating) do
+        local r = seatOne(src, s, now)
+        if r ~= 'wait' then
+            seating[src] = nil
+            if r == 'failed' then refuse(src, SEAT_FAILED:format(s.model)) end
+        end
+    end
+    if next(seating) == nil and seatJob ~= nil then
+        BR.Sched.cancel(seatJob)
+        seatJob = nil
+    end
+end
+
+--- Seat the asker in what the row just built.
+--- @param src integer @param veh integer @param model string
+local function seatAsker(src, veh, model)
+    seating[src] = { veh = veh, model = model, untilMs = GetGameTimer() + SEAT_WINDOW_MS }
+    if seatJob == nil then
+        seatJob = BR.Sched.every(SEAT_POLL_MS, 'devmenu.seat', seatPass)
+    end
+end
+
 --- Vehicle spawner (#426): `vehicle <model> <type>`, brcar's spawn for the
---- asker. See the header for why it is any model, and why not from the lobby.
+--- asker, exempt, with them in it. See the header for why it is any model, and
+--- in which states.
 ACTIONS.vehicle = function(src, a, answer)
     local model = cfg().modelWord(a[2])
     local vtype = a[3]
@@ -403,6 +570,11 @@ ACTIONS.vehicle = function(src, a, answer)
         answer(false, NO_MATCH)
         return true
     end
+    -- AND ONLY WHERE A SEAT IS FOR (the header), before anything is built.
+    if not (e and SEATABLE[e.state]) then
+        answer(false, NOT_SEATABLE)
+        return true
+    end
 
     local made, why = BR.Vehicles.spawnInFront(src, model, vtype)
     if not made then
@@ -416,6 +588,10 @@ ACTIONS.vehicle = function(src, a, answer)
             :format(model))
         return true
     end
+    -- EXEMPT, THEN SEATED: the record first, so the asker is never at its
+    -- wheel for a sample before it is exempt.
+    BR.Vehicles.exemptDevMenuVehicle(made.veh, made.hash, src)
+    seatAsker(src, made.veh, model)
     answer(true, ('%s (0x%08X) as %s, netId %d, bucket %s')
         :format(model, BR.NormHash(made.hash), vtype, made.netId, made.bucketNote))
     return true
@@ -497,5 +673,9 @@ end, false)
 
 AddEventHandler('playerDropped', function()
     local src = tonumber(source)
-    if src then lastAt[src] = nil end
+    if src then
+        lastAt[src] = nil
+        -- A SEAT FOR SOMEBODY WHO LEFT is nobody's: the id is handed out again.
+        seating[src] = nil
+    end
 end)

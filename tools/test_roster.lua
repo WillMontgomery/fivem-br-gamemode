@@ -255,6 +255,10 @@ function CreateVehicleServerSetter(hash, vtype, x, y, z, heading)
     end
     if createFail then return 0 end
     nextVehicle = nextVehicle + 1
+    -- THE HANDLE AND THE MODEL IT ANSWERS FOR, signed as GetEntityModel
+    -- reports it (#426): a record keyed on the handle is checked against both.
+    created[#created].veh = nextVehicle
+    vehModel[nextVehicle] = (hash >= 0x80000000) and (hash - 0x100000000) or hash
     return nextVehicle
 end
 
@@ -5626,20 +5630,59 @@ do
     --
     -- Every client builds a stand-in for a model in the wrong tree, so `brcar 1
     -- granger heli` would have been a Buzzard2 out of the verb that spawns only
-    -- what the gamemode tolerates. The spawn refuses it now, and brcar prints
-    -- the spawn's sentence.
+    -- what the gamemode tolerates. The spawn refuses one that is TYPED, and
+    -- brcar prints the spawn's sentence.
     do
         local n = #created
         printed = {}
-        runCommand('brcar', '1', 'dinghy')
-        ok(#created == n, 'a boat asked for as the default automobile is built as nothing',
+        runCommand('brcar', '1', 'dinghy', 'automobile')
+        ok(#created == n, 'a boat typed as an automobile is built as nothing',
             ('%d vs %d'):format(#created, n))
         ok(printedSaying('the game builds dinghy as boat, not automobile') ~= nil,
             'and the line names the tree it needed')
         printed = {}
         runCommand('brcar', '1', 'granger', 'heli')
         ok(#created == n and printedSaying('the game builds granger as automobile, not heli') ~= nil,
-            'nor is a car asked for as a heli -- every client would build a Buzzard2')
+            'nor is a car typed as a heli -- every client would build a Buzzard2')
+    end
+
+    -- ═══ AND WITH NO TYPE TYPED, THE MODEL'S OWN TREE (#426) ═══
+    --
+    -- config/vehicle_models.lua knows every model of the base game, so `brcar 1
+    -- dinghy` is a boat rather than a refusal for not being the automobile
+    -- nobody asked for. A model the table does not have -- an add-on -- is
+    -- built as an automobile, as every one used to be.
+    do
+        local n = #created
+        runCommand('brcar', '1', 'dinghy')
+        ok(#created == n + 1 and created[#created].vtype == 'boat'
+                and created[#created].hash == GetHashKey('dinghy'),
+            'a dinghy with no type is built as a boat',
+            created[#created] and tostring(created[#created].vtype) or 'nothing')
+        runCommand('brcar', '1', 'bati')
+        ok(#created == n + 2 and created[#created].vtype == 'bike',
+            'a Bati as a bike',
+            created[#created] and tostring(created[#created].vtype) or 'nothing')
+        runCommand('brcar', '1', 'myaddon')
+        ok(#created == n + 3 and created[#created].vtype == 'automobile',
+            'and an add-on the table has never heard of as an automobile',
+            created[#created] and tostring(created[#created].vtype) or 'nothing')
+        printed = {}
+        runCommand('brcar', '1')
+        ok(printedSaying('as automobile') ~= nil,
+            'the default model, granger, still goes as the automobile it is')
+        printed = {}
+        runCommand('brcar')
+        ok(printedSaying("defaults: granger, the model's own tree (automobile for an add-on)") ~= nil,
+            'and the usage line says where the type comes from')
+
+        -- NONE OF IT IS THE DEV MENU'S EXEMPTION: "dev menu vehicles".
+        local any = false
+        for i = n + 1, #created do
+            local veh = created[i].veh
+            if veh and BR.Vehicles.isDevMenuVehicle(veh) then any = true end
+        end
+        ok(not any, 'and nothing brcar builds is in the dev menu\'s record')
     end
 
     -- ═══ A WIDE ONE IS PUT DOWN CLEAR, AND NONE INTO THE GROUND (#426's review) ═══
@@ -12318,6 +12361,69 @@ do
     runCommand('brdamage')
     ok(printedSaying('vehicle guns:') ~= nil,
         'brdamage prints what a disarmed seat\'s gun got to the server')
+
+    -- ═══ A DEV MENU VEHICLE'S GUN IS LIVE, AND NOBODY'S CASE (#426) ═══
+    --
+    -- The owner: "yes exempt dev menu vehicles" -- not disarmed, filed against
+    -- by nobody. A dev menu Technical is a #322 model as well, so each of the
+    -- three events is asked about the dev menu FIRST, or the backstop above
+    -- would cancel its gun. The record is the server's, written as the dev
+    -- menu's row writes it, on a dev-mode server.
+    do
+        local savedDev = BR.Server.devMode
+        BR.Server.devMode = true
+
+        pair('technical')
+        ok(BR.Vehicles.exemptDevMenuVehicle(7, GetHashKey('technical'), 1),
+            'fixture: the Technical is one the dev menu spawned')
+        local events0 = BR.Damage.vehicleGunEvents or 0
+        local proj0   = BR.Damage.vehicleGunProjectiles or 0
+        local blasts0 = BR.Damage.vehicleGunBlasts or 0
+        hit(MOUNTED, { CAR })
+        launch(MOUNTED)
+        blastOf(32)
+        ok(cancels == 0,
+            'its gun\'s hit, its launch and its blast are canceled nowhere',
+            tostring(cancels))
+        ok((BR.Damage.vehicleGunEvents or 0) == events0
+           and (BR.Damage.vehicleGunProjectiles or 0) == proj0
+           and (BR.Damage.vehicleGunBlasts or 0) == blasts0,
+            'and none of them is counted as a disarmed seat\'s gun')
+
+        -- AT A PLAYER, TWICE: the bar for NO_WEAPON is two, and nothing is
+        -- announced, because nothing was refused.
+        fired = {}
+        local refused0 = BR.Damage.refusals or 0
+        hit(MOUNTED, { 1002 })
+        hit(MOUNTED, { 1002 })
+        ok(cancels == 0 and #firedOf('br:ringmaster:refusal') == 0
+           and (BR.Damage.refusals or 0) == refused0,
+            'two hits on a player from it are refused nowhere and announced to nobody',
+            ('%d cancels, %d announced'):format(cancels, #firedOf('br:ringmaster:refusal')))
+
+        -- A WEAPON OF OURS FROM THE SAME SEAT IS JUDGED AS EVER.
+        local devEvents0 = BR.Damage.devMenuGunEvents or 0
+        hit(CARBINE, { CAR })
+        ok((BR.Damage.devMenuGunEvents or 0) == devEvents0,
+            'a carbine of ours from that seat is not the car\'s gun')
+
+        -- THE SAME TECHNICAL, OUT OF THE RECORD, IS A #322 ONE AGAIN.
+        fire('entityRemoved', nil, 7)
+        pair('technical')
+        hit(MOUNTED, { CAR })
+        ok(cancels == 1,
+            'once the platform removed it, a Technical under that handle is canceled again',
+            tostring(cancels))
+
+        -- AND A SERVER THAT DID NOT START IN DEV MODE CANNOT RECORD ONE.
+        BR.Server.devMode = false
+        pair('technical')
+        BR.Vehicles.exemptDevMenuVehicle(7, GetHashKey('technical'), 1)
+        hit(MOUNTED, { CAR })
+        ok(cancels == 1, 'off a dev box the backstop holds whatever was asked',
+            tostring(cancels))
+        BR.Server.devMode = savedDev
+    end
 
     CancelEvent = realCancel
 end
@@ -25599,6 +25705,63 @@ do
         ok(#extra == 0,
             'the offender receives nothing a player in an ordinary car does not',
             #extra > 0 and table.concat(extra, ', ') or 'nothing extra')
+    end
+
+    -- ═══ A VEHICLE THE DEV MENU SPAWNED IS NOBODY'S CASE (#426) ═══
+    --
+    -- The owner, 2026-11-01: "yes exempt dev menu vehicles". The record is the
+    -- server's, in memory, written by BR.Vehicles.exemptDevMenuVehicle (the dev
+    -- menu's vehicle row is its one caller; here it is called as that row would,
+    -- on a dev-mode server) -- and the detector skips what is in it.
+    do
+        local savedDev = BR.Server.devMode
+        BR.Server.devMode = true
+        local base = heliMatch().counted
+        ok(BR.Vehicles.exemptDevMenuVehicle(7, GetHashKey('buzzard'), 1),
+            'fixture: the Buzzard at the wheel is one the dev menu spawned')
+        run(6000)
+        ok(BR.Vehicles.stats().counted == base,
+            'six seconds at a dev menu Buzzard\'s wheel count nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        ok(BR.Vehicles.stats().dwelling == 0, 'and are not even a dwell')
+
+        -- GONE IS GONE: the platform removes it, and the record forgets it.
+        fire('entityRemoved', nil, 7)
+        ok(not BR.Vehicles.isDevMenuVehicle(7), 'a removed vehicle leaves the record')
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'so a Buzzard under the same handle is counted like any other',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+
+        -- THE HINT IS NOT THE RECORD. A client can hang the state bag on a
+        -- vehicle it owns; the server never reads it, so a Buzzard that
+        -- carries it and is not in the record files exactly as before.
+        local realEntity = Entity
+        local bag = { [8] = { brDevMenuVehicle = true } }
+        Entity = function(h)
+            return { state = setmetatable({}, {
+                __index = function(_, k) return (bag[h] or {})[k] end }) }
+        end
+        base = heliMatch().counted
+        setModel(8, 'buzzard')
+        stepOut(7)
+        drive(1, 8)
+        run(3500)
+        Entity = realEntity
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'a Buzzard carrying only the client\'s hint is counted',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+
+        -- AND A SERVER THAT DID NOT START IN DEV MODE HOLDS NONE.
+        BR.Server.devMode = false
+        base = heliMatch().counted
+        ok(BR.Vehicles.exemptDevMenuVehicle(7, GetHashKey('buzzard'), 1) == false,
+            'with dev mode off the record refuses it')
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'and the Buzzard is counted as on the public box',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+        BR.Server.devMode = savedDev
     end
 end
 

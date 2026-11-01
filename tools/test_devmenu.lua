@@ -140,6 +140,13 @@ local onDropped
 --- ped is and which way it faces.
 local created, entityBucket, playerBucket, pedPos, pedHeading, nextVeh
 
+--- The seat and the exemption (#426): each vehicle's seats, which client owns
+--- it (-1 is none, as the platform answers), the state bags set on it, what
+--- SetPedIntoVehicle and DeleteEntity were asked, the scheduler's jobs by name,
+--- vehicles the platform has stopped answering for, and the server's
+--- `entityRemoved` handler.
+local seats, owners, bags, seatCalls, deleted, jobs, gone, onRemoved
+
 --- The eight trees the platform builds -- CREATE_VEHICLE_SERVER_SETTER
 --- throws on anything else, and so does the stub (tools/test_roster.lua's
 --- reason: a stub that cannot fail the way the platform fails certifies a
@@ -177,13 +184,57 @@ local function bootServer(opts)
         end
         if opts.createFail then return 0 end
         nextVeh = nextVeh + 1
+        created[#created].veh = nextVeh
         return nextVeh
     end
     if opts.noSetter then CreateVehicleServerSetter = nil end
     -- A FIVEM BOOL: 1 and 0, and 0 is truthy (test_roster's reason).
     function DoesEntityExist(h)
-        if h == nil or h == 0 or opts.vanish then return 0 end
+        if h == nil or h == 0 or opts.vanish or gone[h] then return 0 end
         return 1
+    end
+    -- THE MODEL A HANDLE ANSWERS FOR, signed as the platform reports it -- and
+    -- `created[i].hash` can be changed under a handle to stand for one the
+    -- platform reused.
+    function GetEntityModel(h)
+        for _, c in ipairs(created) do
+            if c.veh == h then return c.hash end
+        end
+        return 0
+    end
+
+    -- ═══ THE SEAT (#426): seats, owners, the RPC, NPCs, and the state bag ═══
+    seats, owners, bags, seatCalls, deleted, jobs, gone = {}, {}, {}, {}, {}, {}, {}
+    onRemoved = nil
+    function GetPedInVehicleSeat(veh, seat) return (seats[veh] or {})[seat] or 0 end
+    function NetworkGetEntityOwner(veh) return owners[veh] or -1 end
+    -- The players' peds are 1001, 1003 and 1005; anything else is an NPC. A
+    -- FiveM BOOL again.
+    function IsPedAPlayer(ped) return (ped == 1001 or ped == 1003 or ped == 1005) and 1 or 0 end
+    -- THE RPC, RECORDED. `opts.seatTakes` makes the asker's client do it.
+    function SetPedIntoVehicle(ped, veh, seat)
+        seatCalls[#seatCalls + 1] = { ped = ped, veh = veh, seat = seat }
+        if opts.seatTakes then
+            seats[veh] = seats[veh] or {}
+            seats[veh][seat] = ped
+        end
+    end
+    function DeleteEntity(ent)
+        deleted[#deleted + 1] = ent
+        for _, s in pairs(seats) do
+            for k, p in pairs(s) do if p == ent then s[k] = nil end end
+        end
+    end
+    -- A STATE BAG, as Entity(h).state:set(key, value, replicated) sets it.
+    function Entity(h)
+        local mt = { __index = function(_, k) return (bags[h] or {})[k] end }
+        local state = setmetatable({}, mt)
+        rawset(state, 'set', function(_, k, v, replicated)
+            bags[h] = bags[h] or {}
+            bags[h][k] = v
+            bags[h]['$replicated:' .. k] = replicated
+        end)
+        return { state = state }
     end
     function GetEntityCoords(ped)
         if opts.coordsThrow then error('Tried to access invalid entity') end
@@ -209,6 +260,7 @@ local function bootServer(opts)
     function RegisterNetEvent() end
     function AddEventHandler(name, fn)
         if name == 'playerDropped' then onDropped = fn end
+        if name == 'entityRemoved' then onRemoved = fn end
     end
     function TriggerClientEvent(name, target, data)
         toClient[#toClient + 1] = { name = name, target = target, data = data }
@@ -271,7 +323,15 @@ local function bootServer(opts)
         -- server/vehicles.lua schedules its sample pass on this at load.
         sampleIntervalMs = function() return 250 end,
     }
-    BR.Sched = { every = function() end }
+    -- JOBS BY NAME, so a test runs the seat's pass when it means to, and can
+    -- see it go: `cancel` takes it out.
+    BR.Sched = {
+        every = function(ms, name, fn)
+            jobs[name] = { ms = ms, fn = fn }
+            return { name = name }
+        end,
+        cancel = function(h) if h then jobs[h.name] = nil end end,
+    }
     -- THE PAUSES ARE PER MATCH: each match carries its own, and the session's
     -- (the console verbs') answers for a player with no match. The every-match
     -- console forms are recorded so a test can say the menu never reached them.
@@ -1076,6 +1136,196 @@ do
     ok(BR.Vehicles.spawnInFront(3, 'adder', 'automobile') ~= nil, 'dev mode `true`: built')
 end
 
+describe('server: Vehicle spawner -- what it builds is exempt, on the server\'s own record')
+do
+    -- #426, the owner, 2026-11-01: "yes exempt dev menu vehicles". The server
+    -- holds the truth in memory; the client gets a hint. The detectors that
+    -- honor the record are driven in test_roster against the real roster.
+    bootServer()
+    clock = clock + 1000
+    eq(BR.DevMenu.request(3, { 'vehicle', 'hydra', 'plane' }, clock), 'ran', 'a Hydra, from the row')
+    local hydra = created[#created] and created[#created].veh
+    ok(hydra ~= nil and BR.Vehicles.isDevMenuVehicle(hydra),
+       'is in the server\'s record of dev menu vehicles')
+    eq(bags[hydra] and bags[hydra].brDevMenuVehicle, true, 'and carries the clients\' hint')
+    eq(bags[hydra] and bags[hydra]['$replicated:brDevMenuVehicle'], true,
+       'replicated, so every client sees it')
+
+    -- A MODEL WITH THE TOP BIT SET, whose hash GetHashKey answers SIGNED: the
+    -- record keeps it the way the engine's own model read is compared.
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock)
+    local topBit = created[#created] and created[#created].veh
+    ok(hashOf('adder') < 0, 'fixture: the Adder\'s hash arrives signed')
+    ok(topBit ~= nil and BR.Vehicles.isDevMenuVehicle(topBit),
+       'and an Adder from the row is in the record all the same')
+
+    -- brcar'S VEHICLES ARE NOT THE DEV MENU'S: "dev menu vehicles".
+    svCommands.brcar.fn(0, { '3', 'adder' }, 'brcar 3 adder')
+    local adder = created[#created] and created[#created].veh
+    ok(adder ~= nil and adder ~= hydra and not BR.Vehicles.isDevMenuVehicle(adder),
+       'an Adder brcar built through the same spawn is not in it')
+    eq(bags[adder], nil, 'and carries no hint')
+
+    -- GONE IS GONE: the platform says so, and frees the handle for another.
+    ok(onRemoved ~= nil, 'the record listens for entityRemoved')
+    onRemoved(hydra)
+    ok(not BR.Vehicles.isDevMenuVehicle(hydra), 'and a removed vehicle leaves it')
+
+    -- A HANDLE THE PLATFORM HANDED ON IS NOT THE VEHICLE.
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'buzzard', 'heli' }, clock)
+    local b = created[#created]
+    b.hash = hashOf('adder')
+    ok(not BR.Vehicles.isDevMenuVehicle(b.veh),
+       'a handle that now names another model is not exempt')
+    b.hash = hashOf('buzzard')
+    ok(not BR.Vehicles.isDevMenuVehicle(b.veh), '-- it was forgotten, not set aside')
+
+    -- SWEPT AT EVERY WRITE, for a removal the event never brought.
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'rhino', 'automobile' }, clock)
+    local rhino = created[#created].veh
+    ok(BR.Vehicles.isDevMenuVehicle(rhino), 'fixture: a Rhino in the record')
+    gone[rhino] = true
+    clock = clock + 1000
+    BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock)
+    gone[rhino] = nil
+    ok(not BR.Vehicles.isDevMenuVehicle(rhino),
+       'a vehicle that went without a word is swept out at the next spawn')
+
+    -- ONLY A SERVER THAT STARTED IN DEV MODE CAN HOLD ONE: the writer refuses
+    -- anything else, and the door and the spawn in front of it refuse first.
+    bootServer({ devMode = false })
+    eq(BR.Vehicles.exemptDevMenuVehicle(501, hashOf('adder'), 3), false,
+       'with dev mode off the writer records nothing')
+    ok(not BR.Vehicles.isDevMenuVehicle(501), '-- the record is empty')
+    eq(BR.DevMenu.request(3, { 'vehicle', 'adder', 'automobile' }, clock + 1000), 'off',
+       'and the row never reaches it')
+    eq(#created, 0, 'having built nothing')
+    for _, dm in ipairs({ 1, 'true' }) do
+        BR.Server.devMode = dm
+        eq(BR.Vehicles.exemptDevMenuVehicle(501, hashOf('adder'), 3), false,
+           ('nor with a dev mode that is %s rather than true'):format(tostring(dm)))
+    end
+end
+
+describe('server: Vehicle spawner -- and the asker is put in the driving seat')
+do
+    -- #426, the owner: "put me in the driver seat". The platform's
+    -- SetPedIntoVehicle, an RPC the asker's own client runs, once a client holds
+    -- the vehicle, until the vehicle's own seat says so -- five seconds at most.
+    local function seatRun() local j = jobs['devmenu.seat']; if j then j.fn() end end
+    local function pressFor(model, tree)
+        clock = clock + 1000
+        BR.DevMenu.request(3, { 'vehicle', model, tree }, clock)
+        return created[#created] and created[#created].veh
+    end
+    local FAILED = '%s was built, but you could not be put in it'
+
+    -- SEATED.
+    bootServer({ seatTakes = true })
+    local v = pressFor('hydra', 'plane')
+    ok(jobs['devmenu.seat'] ~= nil, 'a seat pass is scheduled')
+    eq(jobs['devmenu.seat'] and jobs['devmenu.seat'].ms, 250, 'at the roster\'s rate')
+    ok(BR.Vehicles.isDevMenuVehicle(v), 'with the vehicle already exempt')
+    seatRun()
+    eq(#seatCalls, 0,
+       'nobody is seated in a vehicle no client holds yet -- the RPC would land on nothing')
+    owners[v] = 3
+    seatRun()
+    eq(#seatCalls, 1, 'once a client holds it, the RPC goes')
+    ok(seatCalls[1] and seatCalls[1].ped == 1003 and seatCalls[1].veh == v
+       and seatCalls[1].seat == -1, 'the asker\'s ped, into this vehicle\'s driving seat')
+    seatRun()
+    eq(jobs['devmenu.seat'], nil, 'and once that seat names the asker, the pass is gone')
+    eq(#notices, 0, 'with no toast: sitting in it says so')
+    eq(#seatCalls, 1, 'and no second RPC')
+
+    -- A CALL THAT LANDED ON NOTHING IS MADE AGAIN.
+    bootServer()
+    v = pressFor('adder', 'automobile')
+    owners[v] = 3
+    seatRun(); seatRun(); seatRun()
+    eq(#seatCalls, 3, 'until the seat is taken, the RPC goes again every pass')
+
+    -- THE VEHICLE NEVER REACHES A CLIENT: five seconds, then the asker is told.
+    bootServer({ seatTakes = true })
+    v = pressFor('hydra', 'plane')
+    clock = clock + 4999
+    seatRun()
+    ok(jobs['devmenu.seat'] ~= nil and #notices == 0, 'still waiting just under five seconds')
+    clock = clock + 1
+    seatRun()
+    eq(#seatCalls, 0, 'a vehicle no client ever held gets no RPC')
+    eq(notices[#notices] and notices[#notices].text, FAILED:format('hydra'),
+       'and at five seconds the asker is told, once')
+    ok(notices[#notices] and notices[#notices].tone == 'warn', 'as a warning toast')
+    eq(jobs['devmenu.seat'], nil, 'and the pass is gone')
+    ok(BR.Vehicles.isDevMenuVehicle(v), 'the vehicle stays where it landed, still exempt')
+
+    -- AN NPC AT THE WHEEL: deleted, and the asker seated on a later pass.
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    owners[v] = 3
+    seats[v] = { [-1] = 7777 }
+    seatRun()
+    eq(deleted[1], 7777, 'an NPC in the driving seat is deleted')
+    eq(#seatCalls, 0, 'and nobody is seated on the same pass')
+    seatRun()
+    eq(#seatCalls, 1, 'the asker is, on the next')
+    seatRun()
+    eq(jobs['devmenu.seat'], nil, 'and that is the end of it')
+    eq(#notices, 0, 'with nothing to say')
+
+    -- A PLAYER AT THE WHEEL: nobody is pulled out of a seat for this.
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    owners[v] = 1
+    seats[v] = { [-1] = 1001 }
+    seatRun()
+    eq(#deleted, 0, 'a player in the driving seat is never deleted')
+    eq(#seatCalls, 0, 'nor seated over')
+    eq(notices[#notices] and notices[#notices].text, FAILED:format('adder'),
+       'and the asker is told they could not be put in it')
+
+    -- GONE BEFORE THE SEAT.
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    gone[v] = true
+    seatRun()
+    eq(notices[#notices] and notices[#notices].text, FAILED:format('adder'),
+       'a vehicle gone before the seat is told the same way')
+
+    -- NO LONGER SOMEBODY A SEAT IS FOR: dropped without a word.
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    owners[v] = 3
+    roster[3].state = BR.PlayerState.DBNO
+    seatRun()
+    ok(#seatCalls == 0 and #notices == 0 and jobs['devmenu.seat'] == nil,
+       'an asker downed on the way is not seated, and is told nothing')
+    roster[3].state = BR.PlayerState.ALIVE
+
+    -- LEFT.
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    owners[v] = 3
+    source = 3
+    onDropped()
+    source = nil
+    seatRun()
+    eq(#seatCalls, 0, 'an asker who left is seated in nothing')
+
+    -- A SECOND VEHICLE REPLACES THE FIRST: the newer one is the one wanted.
+    bootServer({ seatTakes = true })
+    local first = pressFor('adder', 'automobile')
+    local second = pressFor('zentorno', 'automobile')
+    owners[first], owners[second] = 3, 3
+    seatRun()
+    ok(#seatCalls == 1 and seatCalls[1].veh == second, 'the asker goes in the newer one')
+end
+
 describe('server: Vehicle spawner -- brcar\'s spawn, in front of the asker, in their bucket')
 do
     bootServer()
@@ -1183,14 +1433,25 @@ do
     eq(n and n.text, 'no match running', 'and is told the same')
     roster[3].state = BR.PlayerState.ALIVE
 
-    -- EVERYWHERE ELSE IS brcar's: the warmup pad, the plane, a downed player.
-    for _, st in ipairs({ BR.PlayerState.WARMUP, BR.PlayerState.BUS,
+    -- ONLY WHERE A SEAT IS FOR (#426, "put me in the driver seat"): the warmup
+    -- pad and alive in a match. In the plane or the drop the gamemode is
+    -- carrying them; downed or out, nobody drives -- refused before anything
+    -- is built, in the row's own sentence.
+    for _, st in ipairs({ BR.PlayerState.WARMUP, BR.PlayerState.ALIVE }) do
+        roster[3].state = st
+        local before = #created
+        press(3, 'adder', 'automobile')
+        eq(#created, before + 1, ('a player in state %s gets one'):format(st))
+    end
+    for _, st in ipairs({ BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
                           BR.PlayerState.GLIDE, BR.PlayerState.DBNO,
                           BR.PlayerState.OUT }) do
         roster[3].state = st
         local before = #created
-        press(3, 'adder', 'automobile')
-        eq(#created, before + 1, ('a player in state %s gets one in front of them'):format(st))
+        n = press(3, 'adder', 'automobile')
+        eq(#created, before, ('a player in state %s gets none'):format(st))
+        eq(n and n.text, 'only in warmup, or alive in a match',
+           ('and is told where a vehicle can be had (%s)'):format(st))
     end
     roster[3].state = BR.PlayerState.ALIVE
 

@@ -3976,6 +3976,119 @@ do
     end
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('a vehicle the dev menu spawned (#426)')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The owner, 2026-11-01: "yes exempt dev menu vehicles". The server hangs a
+-- state bag on what the dev menu builds (BR.Config.DevMenu.vehicleStateKey,
+-- read here from the real config), and this file neither ejects anybody from
+-- it nor holds its gun off -- whoever sits in it. A hint, read only where it
+-- would change something. That the SERVER never reads it is test_roster's.
+do
+    load('br_lib/config/devmenu.lua')
+    local KEY = BR.Config.DevMenu.vehicleStateKey
+    ok(KEY == 'brDevMenuVehicle', 'fixture: the key is the config\'s', tostring(KEY))
+
+    local bags, bagReads = {}, 0
+    local realEntity = Entity
+    Entity = function(h)
+        return { state = setmetatable({}, { __index = function(_, k)
+            bagReads = bagReads + 1
+            return (bags[h] or {})[k]
+        end }) }
+    end
+    local function frames(n)
+        for _ = 1, n do BR.Loop.step(BR.Loop.FRAME) end
+    end
+
+    -- A DEV MENU BUZZARD: let in at the door, and not put out of the seat.
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    bags = { [10] = { [KEY] = true } }
+    entering = 10
+    tick()
+    ok(#acts == 0 and #notices == 0, 'climbing into a dev menu Buzzard is not refused',
+       ('%d acts'):format(#acts))
+    entering, myVeh = 0, 10
+    tick(5)
+    ok(did('leave') == 0 and did('clear') == 0 and did('lock') == 0 and #notices == 0,
+       'nor is anybody put out of it, or told anything')
+    ok(V.stats().devMenu >= 1, 'and the pass counts it', V.stats().devMenu)
+    acts = {}
+    frames(5)
+    ok(did('ctl') == 0, 'and its trigger is held on no frame', did('ctl'))
+
+    -- ITS GUN: a dev menu Technical -- a #322 model -- keeps its gun.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    bags = { [10] = { [KEY] = true } }
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick(3)
+    ok(did('disable') == 0, 'a dev menu Technical\'s gun is not switched off', did('disable'))
+    acts = {}
+    frames(5)
+    ok(did('ctl') == 0, 'nor its trigger held', did('ctl'))
+
+    -- AND ONE ONLY THE ENGINE CALLS ARMED (#329) keeps its gun too.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    bags = { [10] = { [KEY] = true } }
+    myVeh = 10
+    vehArmed[10] = true
+    gunBool, gunHash = true, SEAT_GUN
+    tick(3)
+    ok(did('disable') == 0, 'nor is the gun of a car only the engine calls armed',
+       did('disable'))
+    acts = {}
+    frames(5)
+    ok(did('ctl') == 0, 'and nothing is held', did('ctl'))
+
+    -- THE SAME VEHICLES WITHOUT THE HINT ARE RULED ON AS EVER.
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    bags = {}
+    myVeh = 10
+    tick()
+    ok(did('leave') == 1, 'a Buzzard with no hint is emptied', did('leave'))
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(did('disable') == 1, 'and a Technical with none has its gun switched off',
+       did('disable'))
+
+    -- ONLY `true` IS THE HINT: a bag holding anything else is none.
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    bags = { [10] = { [KEY] = 'true' } }
+    myVeh = 10
+    tick()
+    ok(did('leave') == 1, 'a hint that is not `true` is no hint', did('leave'))
+
+    -- READ ONLY WHERE IT CHANGES SOMETHING: an ordinary car never pays for it.
+    reset()
+    spawn(10, ADDER, 7, 'automobile')
+    myVeh = 10
+    bagReads = 0
+    tick(5)
+    ok(bagReads == 0, 'driving an ordinary car never reads the hint', bagReads)
+
+    -- NO STATE BAGS AT ALL (an older runtime, a harness): nothing is exempt.
+    Entity = nil
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    myVeh = 10
+    local errors0 = gateErrors()
+    tick()
+    ok(did('leave') == 1 and gateErrors() == errors0,
+       'without Entity the Buzzard is emptied, and nothing throws',
+       ('%d leave, %s new errors'):format(did('leave'), tostring(gateErrors() - errors0)))
+    Entity = realEntity
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

@@ -18,8 +18,9 @@ volts, give Yubikeys, Storm pause, warmup pause, spawn airdrops"*
 | **The words and the lists** | `br_lib/config/devmenu.lua` (`BR.Config.DevMenu`) | The labels, the key, the Volts amounts, the match states, and the vehicle spawner's sync trees, left-out class and model-name rule. Read by both sides. |
 | **Which vehicles are armed** | `br_lib/config/vehicles.lua` (`BR.Config.IsArmedVehicle`) | The vehicle spawner's "Armed" mark, out of the refused-vehicle table. Rules on nothing. |
 | **The client** | `br_core/client/devmenu.lua` | The menu, built once through `BR.Menu` (`client/menu.lua`), the vehicle spawner's menus, built the first time each opens, the key, and one `brdevsv` line per press. Decides nothing. |
-| **The server** | `br_core/server/devmenu.lua` (`BR.DevMenu`) | The door, `brdevsv`: the gate, the checks, the rate, and the console verb each row runs. |
+| **The server** | `br_core/server/devmenu.lua` (`BR.DevMenu`) | The door, `brdevsv`: the gate, the checks, the rate, the console verb each row runs, and the vehicle spawner's seat. |
 | **The spawn** | `br_core/server/vehicles.lua` (`BR.Vehicles.spawnInFront`) | `brcar`'s own server-side spawn, which the vehicle spawner runs too. Dev mode only, and called from those two places only. |
+| **The exemption** | `br_core/server/vehicles.lua` (`BR.Vehicles.exemptDevMenuVehicle`), and a state bag for `client/vehrefuse.lua` | The server's in-memory record of what the vehicle spawner built, which the vehicle detectors skip, and the hint that stops the client's ejection and gun hold. A dev box only. |
 | **The game's own models** | `br_lib/config/vehicle_models.lua` (`BR.Config.VehicleModels`), written by `tools/vehicle_models.py` | Every base-game vehicle model: its hash, the sync tree it has to be built as, how far it reaches across and below its origin, and whether the game's data arms it. The spawn's tree check and placement; `check_vehicles.lua`'s expected Armed set. Server only. |
 
 ## Who
@@ -57,7 +58,7 @@ swap and deadline, but hold one match where the command holds every one.
 | Storm pause | on / off | `brstormfreeze`'s record swap (`BR.Storm.setMatchFrozen`) | **the asker's match**; a match with no storm yet starts held |
 | Warmup pause | on / off | `brwarmupfreeze`'s deadline (`BR.Match.setMatchWarmupFrozen`) | **the asker's match**; held again if it returns to warmup |
 | Spawn airdrops | -- | `brairdrop now` (`BR.Airdrop.dropNow`) | **the asker's match**; PLAYING only |
-| Vehicle spawner | a menu: Spawn by name, then a row per vehicle class | `brcar`'s spawn (`BR.Vehicles.spawnInFront`), any model | **the asker**: in front of them, in their bucket; not from the lobby. See [The vehicle spawner](#the-vehicle-spawner) |
+| Vehicle spawner | a menu: Spawn by name, then a row per vehicle class | `brcar`'s spawn (`BR.Vehicles.spawnInFront`), any model | **the asker**: in front of them, in their bucket, then in its driving seat; exempt from the match's vehicle rules; only in warmup or alive in a match. See [The vehicle spawner](#the-vehicle-spawner) |
 
 **The asker's match, never the newest, never every one.** Matches run side by
 side in their own routing buckets, and the console commands aim at
@@ -218,20 +219,67 @@ is not loaded, and could not be tried here without a game running.
 refused, and nothing is written. The manifest loads it into the server alone;
 without it the spawn refuses every model and says the table is not loaded.
 
-**Where it works.** Everywhere `brcar` does -- the warmup pad, the plane and
-the drop, the match, downed or out -- but **not from the lobby**, which answers
-`no match running`: every lobby player stands on the one lobby mark in one
-shared bucket, so a car there would sit in every lobby player's shot. In warmup
-and in a match the match's vehicle rules still hold: `client/vehrefuse.lua`
-puts a player out of a refused vehicle, and the occupancy detector in
-`server/vehicles.lua` counts a driver in one and files on the second. A dev
-menu vehicle is not excused from either; that is an open question on #426.
+**Where it works: in warmup, or alive in a match.** **Not from the lobby**,
+which answers `no match running`: every lobby player stands on the one lobby
+mark in one shared bucket, so a car there would sit in every lobby player's
+shot. And not in the plane or the drop, downed or out, which answer `only in
+warmup, or alive in a match` before anything is built: in the plane and the
+drop the gamemode is carrying you, and a seat would pull you off the bus
+mid-flight; downed or out, nobody drives. These are `client/vehrefuse.lua`'s
+own two states, the ones a player takes a vehicle in.
+
+**What it builds is exempt** (owner, 2026-11-01: *"yes exempt dev menu
+vehicles, and put me in the driver seat"*). Nobody is put out of it, its gun
+is not held off, and nobody is filed against for it, whoever sits in it:
+
+- **The server holds the truth.** Once the spawn has built it, the row
+  records the vehicle in `server/vehicles.lua`'s in-memory record
+  (`BR.Vehicles.exemptDevMenuVehicle`), keyed on the server's own handle and
+  checked against the model it built, since the platform reuses handles. It
+  is pruned when the platform removes the entity (`entityRemoved`) and swept
+  of dead entries at every write. The occupancy detector skips a vehicle in
+  it (no dwell, no count, no case), and `server/damage.lua` and
+  `server/strip.lua` leave its gun alone: a hit, a launch or a blast of a
+  vehicle-gun type from somebody seated in it is neither refused, canceled
+  nor counted, and its gun in a hand is no strip case. A carbine of ours
+  fired from the same seat is judged as ever.
+- **Only a dev box can hold one.** The writer refuses unless
+  `BR.Server.devMode == true`, and so does the spawn before it, behind a
+  door that asks the same. `tools/verify.sh` pins the writer to this row.
+  `brcar`'s vehicles are never in the record.
+- **The client gets a hint.** The writer also sets a replicated state bag on
+  the vehicle (`BR.Config.DevMenu.vehicleStateKey`, `brDevMenuVehicle`), and
+  `client/vehrefuse.lua`, which is advisory, neither ejects anybody from a
+  vehicle carrying it nor holds its gun off; `client/inventory.lua`'s strip
+  leaves the gun the engine puts in a hand there. Each reads the hint only
+  where it would otherwise act. **No server code reads it**: a client can
+  write state on an entity it owns, so a cheat could hang it on a stolen
+  Buzzard -- and gain nothing, since skipping the advisory ejector and the
+  strip is what a cheat already does by not running them, and the server
+  still files.
+
+**You are put in the driver's seat.** The server calls the platform's own
+`SetPedIntoVehicle`, an RPC your client runs, once a client holds the
+vehicle (`NetworkGetEntityOwner`), and again every 250 ms until the
+vehicle's own driving seat names you, for five seconds at most. An NPC the
+platform put in the driving seat is deleted first; another player in it ends
+the try. If the seat cannot be taken -- the vehicle never reaches a client,
+it is gone, or somebody else is driving -- the vehicle stays where it landed,
+still exempt, and you are told once: `<model> was built, but you could not
+be put in it`. If you die, board or leave on the way, the seat is dropped
+without a word. Sources: `rpc_spec_natives.lua` declares
+`SET_PED_INTO_VEHICLE` a context RPC, which `ServerRPC.cpp` sends to the
+ped's owner; `ClientRPC.cpp` resolves a server-setter vehicle at once
+without waiting for it, which is why this waits for an owner and checks the
+seat; Qbox's `qbx.spawnVehicle` (`qbx_core`, `modules/lib.lua`) seats the
+same way. The NPC: forum.cfx.re/t/4936285 and /t/4947251, where Cfx.re's
+Linden called it fixed in commit 631484ec (2024).
 
 **What a server-side vehicle does that a trainer's does not.** It is
 `POPTYPE_MISSION` and nobody owns it until a client in range takes it; it is
 left on the platform's default orphan mode, so it is collected once no player
 has it in scope, and it may vanish on its own (citizenfx/fivem#2623, open).
-It is not seated: it lands in front of you, as `brcar`'s does.
+`brcar`'s is not seated: it lands in front of the player it names.
 
 **The spawn is dev mode's alone.** `BR.Vehicles.spawnInFront` builds any
 model with no allowlist, so it refuses unless `BR.Server.devMode == true`
@@ -291,15 +339,26 @@ natives and the real `config/vehicle_models.lua` -- the server setter's
 arguments, the position, the routing bucket, any model while `brcar` still
 refuses, every refusal and the lobby; a model of the base game only as its
 own tree and an add-on as any; every one of the 921 put down clear by its
-size; the spawn's own dev-mode test; a server without the table refusing --
-and the client over a modeled `GetAllVehicleModels`: the class rows, names,
+size; the spawn's own dev-mode test; a server without the table refusing;
+the states a vehicle is had in; the record (written by this row and not by
+`brcar`, pruned on removal, forgetting a reused handle, swept at every write,
+empty off a dev box) and its replicated hint; and the seat (not before a
+client holds the vehicle, the RPC until the seat says so, an NPC deleted, a
+player never, five seconds and one sentence, dropped quietly when the asker
+dies or leaves, a second vehicle replacing the first) -- and the client over
+a modeled `GetAllVehicleModels`: the class rows, names,
 fallback, sort, rows that share a name told apart by model, and Armed marks
 from the table and the unruled list, the tree every kind of model is asked
 as, the keyboard and every key that closes it, and the library's trail back
 through the submenus, a switch that throws included. The verbs' bodies are
 covered where their commands are: `test_roster` (force and skip on a given
 match, the one-match warmup pause, and `brcar` itself, every failure line
-under it), `test_storm` (the one-match storm pause), `test_airdrop`
+under it and its default tree; and the exemption at the detectors: the
+occupancy detector skipping a recorded vehicle and filing one that carries
+only the hint, and a recorded vehicle's gun canceled and refused nowhere),
+`test_ringmaster` (its gun in a hand is no strip case), `test_vehrefuse`
+(the client's hint: let in, not emptied, its gun not held, the hint read
+only where it changes something), `test_storm` (the one-match storm pause), `test_airdrop`
 (`dropNow` on a given match), `test_stats` (`grantVolts`'s answers and the
 production-tables refusal), `test_yubikey` (`devKey`, and the same refusal),
 `test_shared`. `tools/check_vehicles.lua` holds the `armed` marks to their

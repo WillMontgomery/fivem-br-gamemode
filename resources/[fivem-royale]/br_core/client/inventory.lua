@@ -2088,6 +2088,31 @@ local function inStripExemptVehicle()
     return exempt ~= nil and exempt[m] ~= nil
 end
 
+--- Is this ped sitting in a vehicle the dev menu spawned? (#426)
+---
+--- The owner, 2026-11-01: "yes exempt dev menu vehicles" -- not disarmed. Its
+--- gun is live, so when the engine puts it in a hand -- a gun seat
+--- `isMountedWeapon` cannot see, as the Caracara's -- there is nothing to take
+--- back out. Read off the hint the server hangs on that vehicle
+--- (BR.Config.DevMenu.vehicleStateKey), as client/vehrefuse.lua reads it.
+---
+--- A HINT A CLIENT CAN FORGE, and that buys a cheat nothing: this strip is a
+--- tripwire it steps around by not running it, and the server's own record of
+--- dev menu vehicles -- never this bag -- is what server/strip.lua and
+--- server/damage.lua ask. LAST IN THE CHAIN BELOW and cheap for the same
+--- reason `inStripExemptVehicle` is: only a ped seated in something, about to
+--- be stripped, ever reads it.
+--- @return boolean
+local function inDevMenuVehicle()
+    if not inVehicle() then return false end
+    local key = BR.Config and BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey
+    if not key or type(Entity) ~= 'function' then return false end
+    local pok, veh = pcall(GetVehiclePedIsIn, PlayerPedId(), false)
+    if not pok or veh == nil or veh == 0 then return false end
+    local ok, v = pcall(function() return Entity(veh).state[key] end)
+    return ok and v == true
+end
+
 --- Tell the server a weapon it never issued was taken out of this ped's hand.
 ---
 --- WHAT THIS IS AND IS NOT. It is a report of something that already happened;
@@ -2184,11 +2209,15 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
             -- could not see the hose -- the native it asks has no opinion about
             -- that seat -- so the model is asked instead. It is the owner's
             -- ruling and the wider of the two; see `inStripExemptVehicle`.
+            --
+            -- NOR ANYTHING IN A VEHICLE THE DEV MENU SPAWNED (#426), whose gun
+            -- the owner exempted; see `inDevMenuVehicle`.
             local allowed = h == BR.NormHash(UNARMED)
                 or h == BR.NormHash(BR.Config.Gadgets.PARACHUTE)
                 or (wantHash ~= nil and h == wantHash)
                 or isMountedWeapon(h)
                 or inStripExemptVehicle()
+                or inDevMenuVehicle()
             if not allowed then
                 RemoveWeaponFromPed(ped, held)
                 applied = nil          -- force the active slot back on

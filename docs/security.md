@@ -488,6 +488,22 @@ of the truncation budget. "Simply file an incident" asks for what `priorFor`
 already does for every producer, so this costs the console nothing new and the
 case the same two writes.
 
+**One exemption, and only a dev box can hold it (#426).** The owner,
+2026-11-01: *"yes exempt dev menu vehicles"*. A vehicle the dev menu's
+vehicle spawner built is filed against by nobody, whoever sits in it: the
+occupancy detector skips it, and the weapon-damage and strip detectors leave
+its gun alone. It is an entity rather than a model -- the Hydra the dev menu
+built is exempt and the one beside it is not -- so it is not in
+`br_lib/config/vehicles.lua`. The truth is a record `br_core/server/vehicles.lua`
+keeps **in server memory**, written by the dev menu's row alone
+(`tools/verify.sh` pins the writer) and only when `BR.Server.devMode == true`,
+which the spawn before it requires too: on the public box it is empty. The
+client is told by a replicated state bag, which steers only advisory client
+code -- `client/vehrefuse.lua`'s ejection and gun hold, `client/inventory.lua`'s
+strip; **no server code reads it**, because a client can write state on an
+entity it owns. A cheat that hangs it on a stolen Buzzard skips an
+ejector it was not running anyway, and is filed against as before.
+
 **What it can see depends on `sv_entityLockdown`, and the two are partly
 substitutes rather than complements.** The platform validates a client's
 clone-create *before* raising `entityCreating` — a rejected entity is deleted and

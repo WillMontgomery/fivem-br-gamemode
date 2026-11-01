@@ -107,6 +107,18 @@
 -- list. A rescue HELICOPTER would need the exemption, and
 -- BR.Config.VehicleRefusalFor is still the one place to put it.
 --
+-- ═══ ONE EXEMPTION EXISTS, AND ONLY A DEV BOX CAN HOLD ONE (#426) ═══
+--
+-- The owner, 2026-11-01, of the dev menu's vehicle spawner: "yes exempt dev
+-- menu vehicles, and put me in the driver seat". A vehicle that row built is
+-- filed against by nobody, whoever sits in it. It is not a model and not a
+-- person: it is one entity, in a record this server keeps in memory and
+-- writes from one place, and nothing a client sends can add to it. Every write
+-- needs BR.Server.devMode to be `true`, and so does the spawn before it, so on
+-- a server that did not start in dev mode the record is empty and every
+-- vehicle is ruled on as this file says. The section above the occupancy
+-- detector has the whole of it.
+--
 -- ═══ NOTHING HERE TOUCHES THE PLAYER, AND NOTHING HERE CANCELS ═══
 --
 -- `CancelEvent()` is available in this handler and is deliberately never called.
@@ -477,6 +489,13 @@ end
 --- precisely what an admin testing with vMenu does, so the exemption would
 --- silence this path for the only group that can reach it easily.
 ---
+--- THE ONE EXEMPTION THERE IS IS A VEHICLE, NOT A PERSON (#426): one the dev
+--- menu spawned, on a server that started in dev mode -- "yes exempt dev menu
+--- vehicles". Nobody's account is in it, an admin's included; whoever sits in
+--- that vehicle is skipped, and the same person in any other vehicle is not.
+--- The section above the occupancy detector says how it stays off a real
+--- match.
+---
 --- @param src integer
 --- @param e table      the player's roster entry; caller has checked LIVE
 --- @param why string   a BR.Config.VehicleRefusal value
@@ -764,7 +783,10 @@ end)
 -- ejection -- so the day a rescue vehicle needs an exemption there is one
 -- function to put it in and no second copy to find. That function is
 -- BR.Config.VehicleRefusalFor. It stayed one place when the third caller
--- arrived, which is the only test that claim has ever had.
+-- arrived, which is the only test that claim has ever had. The dev menu's
+-- vehicles (#426, next section) are the one exemption that is NOT there, and
+-- for a reason: they are entities, not models. A Hydra the dev menu built is
+-- exempt and the Hydra beside it is not, so no ruling on a model could say it.
 --
 -- IT SAMPLES ALIVE PLAYERS IN A MATCH ONLY, which is narrower than the creation
 -- detector's LIVE (alive OR warmup), and that is a stated limit rather than an
@@ -772,6 +794,143 @@ end)
 -- is ALIVE; widening that filter would change which players can be credited a
 -- roadkill, which is a different feature's behaviour. A warmup player in a
 -- refused aircraft is caught only if a client created it.
+
+-- ---------------------------------------------------------------------------
+-- The one exemption: a vehicle the dev menu spawned (#426)
+-- ---------------------------------------------------------------------------
+--
+-- THE OWNER, 2026-11-01, answering whether a dev menu vehicle should be
+-- excused from the match's vehicle rules: "yes exempt dev menu vehicles, and
+-- put me in the driver seat". And, of where the checks are made: "you're doing
+-- these spawn checks server-side, yeah?" They are, and this is where.
+--
+-- ═══ WHAT IT EXEMPTS ═══
+--
+-- A vehicle in this record is filed against by nobody, whoever sits in it. The
+-- occupancy detector below skips it: no dwell, no count, no case. Its gun is
+-- live, so server/damage.lua and server/strip.lua ask
+-- BR.Vehicles.inDevMenuVehicle (below) and leave what it fires alone -- not
+-- refused, not canceled, not counted -- where a #322 vehicle's gun is
+-- canceled and excused. The creation detector above never saw it -- the
+-- server setter raises no `entityCreating` -- so nothing there needed
+-- changing. On the client a hint (below) stops the ejection and the held-off
+-- gun, which is the rest of what the owner asked.
+--
+-- ═══ THE SERVER HOLDS THE TRUTH, IN MEMORY, AND NO CLIENT WRITES IT ═══
+--
+-- Written by BR.Vehicles.exemptDevMenuVehicle alone, which the dev menu's
+-- vehicle row calls once a spawn has built something, and which nothing else
+-- calls: tools/verify.sh pins it there, as it pins spawnInFront's callers.
+-- brcar's vehicles are NOT in it -- the owner said dev menu vehicles, and
+-- brcar builds only what the gamemode tolerates anyway. Keyed on the server's
+-- own entity handle and checked against the model the row built, because the
+-- platform reuses handles: a handle that names another model now is
+-- forgotten, not exempted. Pruned when the platform removes the entity
+-- (`entityRemoved`), and swept of dead entries at every write.
+--
+-- ═══ AND IT CANNOT REACH A REAL MATCH ═══
+--
+-- The writer refuses unless BR.Server.devMode is `true`. Its one caller runs
+-- only after BR.Vehicles.spawnInFront built something, which it refuses to do
+-- unless the same is true, behind a door (server/devmenu.lua) that asks it
+-- again. On a server that did not start in dev mode the record is empty and
+-- stays empty, and every vehicle is ruled on as the sections around this one
+-- say.
+--
+-- ═══ THE CLIENT'S HINT IS ONLY A HINT ═══
+--
+-- The writer also sets a replicated state bag on the vehicle
+-- (BR.Config.DevMenu.vehicleStateKey). client/vehrefuse.lua, which is
+-- advisory, neither ejects from nor holds the gun off in a vehicle carrying
+-- it, and client/inventory.lua's strip leaves its gun in a hand. NOTHING ON
+-- THIS SIDE READS IT. A client can write state on an entity it owns, so a
+-- cheat could hang the hint on a stolen Buzzard -- and would gain nothing by
+-- it: skipping the advisory ejector and the strip is what a cheat already does
+-- by not running them, and the detectors here ask this record and nothing
+-- else.
+
+--- [server entity handle] = { model = the unsigned hash it was built as,
+---                            by = the asker's server id }
+local devMenuVehicles = {}
+
+--- Is this a vehicle the dev menu spawned -- and still that vehicle?
+--- @param veh integer|nil
+--- @return boolean
+local function devMenuVehicle(veh)
+    local rec = veh and devMenuVehicles[veh]
+    if rec == nil then return false end
+    -- THE HANDLE ALONE IS NOT THE VEHICLE: the platform hands a freed one to
+    -- the next entity. A model that is not the one built is another vehicle.
+    local model = modelOf(veh)
+    if model == nil or BR.NormHash(model) ~= rec.model then
+        devMenuVehicles[veh] = nil
+        return false
+    end
+    return true
+end
+
+--- Record a vehicle the dev menu spawned, and hang the clients' hint on it.
+---
+--- THE DEV MENU'S VEHICLE ROW CALLS THIS, AND NOTHING ELSE MAY: see the
+--- section above, and tools/verify.sh.
+--- @param veh integer   the server handle spawnInFront answered
+--- @param hash integer  the model hash it built
+--- @param by integer    the player who asked
+--- @return boolean recorded
+function BR.Vehicles.exemptDevMenuVehicle(veh, hash, by)
+    if not (BR.Server and BR.Server.devMode == true) then return false end
+    local v = math.tointeger(tonumber(veh))
+    local h = math.tointeger(tonumber(hash))
+    if v == nil or v == 0 or h == nil then return false end
+    -- SWEPT AT EVERY WRITE, so a removal the event never brought costs one
+    -- entry until the next spawn rather than one for the life of the server.
+    for k in pairs(devMenuVehicles) do
+        local okE, there = pcall(DoesEntityExist, k)
+        if not (okE and didHit(there)) then devMenuVehicles[k] = nil end
+    end
+    devMenuVehicles[v] = { model = BR.NormHash(h), by = by }
+    local key = BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey
+    if key and Entity then
+        pcall(function() Entity(v).state:set(key, true, true) end)
+    end
+    return true
+end
+
+--- Is this vehicle in the record? For the readout and the suites; the
+--- detectors ask `devMenuVehicle` directly.
+--- @param veh integer|nil
+--- @return boolean
+function BR.Vehicles.isDevMenuVehicle(veh)
+    return devMenuVehicle(veh)
+end
+
+--- Is this ped sitting -- in any seat, by the vehicle's own seats, which is
+--- the citizenfx/fivem#4006 workaround -- in a vehicle the dev menu spawned?
+---
+--- server/damage.lua and server/strip.lua ask this BEFORE they ask
+--- BR.Vehicles.inDisarmedVehicle: a dev menu vehicle's gun is live and left
+--- alone, where a #322 vehicle's is canceled. The record answers, never the
+--- client's hint; a ped on foot, or in any other vehicle, is not in one.
+---
+--- AN EMPTY RECORD ASKS NO NATIVE. It is empty on every server that did not
+--- start in dev mode, so there this costs a table read and the seat read
+--- server/damage.lua budgets once per event stays once. A dev box with a dev
+--- menu vehicle in the world pays a second seat read on a hash in no row of
+--- ours, and nothing else.
+--- @param ped integer|nil
+--- @return boolean
+function BR.Vehicles.inDevMenuVehicle(ped)
+    if next(devMenuVehicles) == nil then return false end
+    local veh = BR.Vehicles.ridingIn(ped)
+    return veh ~= nil and devMenuVehicle(veh)
+end
+
+-- GONE IS GONE: the platform says when it removes an entity, and a handle it
+-- frees is one it will hand out again.
+AddEventHandler('entityRemoved', function(entity)
+    local v = math.tointeger(tonumber(entity))
+    if v then devMenuVehicles[v] = nil end
+end)
 
 --- Who is sitting out a dwell, and in what.
 ---
@@ -807,6 +966,10 @@ local function occupancySample(src, e, veh, now)
     -- and a ped the server could not resolve all land here, and all three mean
     -- the same thing: whatever dwell was running is over and does not resume.
     if veh == nil then seat[src] = nil return end
+
+    -- A VEHICLE THE DEV MENU SPAWNED IS NO OCCUPANCY AT ALL (#426, the section
+    -- above): whatever it is and whoever drives it, no dwell and no count.
+    if devMenuVehicle(veh) then seat[src] = nil return end
 
     local license = BR.Roster.licenseOf and BR.Roster.licenseOf(src) or nil
     local rec = seat[src]
@@ -1244,6 +1407,13 @@ end
 --- gamemode switched the gun off in. A Buzzard, a Rhino and every model refused
 --- by the class net answer false: those are still ejected, so nobody is sitting
 --- in one to be excused.
+---
+--- A VEHICLE THE DEV MENU SPAWNED IS NOT ONE OF THESE (#426), whatever its
+--- model, because its gun is NOT held off: the owner exempted those vehicles
+--- and the client's hint stops the hold. Answering yes here would have
+--- server/damage.lua CANCEL what that gun hits -- which is the ruling's
+--- disarm, not the exemption -- so both files that file cases ask
+--- BR.Vehicles.inDevMenuVehicle first and leave that gun alone.
 ---
 --- ═══ ASKED THROUGH `ridingIn`, WHICH IS THE #4006 WORKAROUND ═══
 ---
@@ -1928,13 +2098,14 @@ local VEHICLE_TYPES = {
 local VEHICLE_TYPE = {}
 for _, t in ipairs(VEHICLE_TYPES) do VEHICLE_TYPE[t] = true end
 
---- What `brcar` builds when nobody names a type.
+--- What `brcar` builds when nobody names a type AND config/vehicle_models.lua
+--- does not know the model -- an add-on.
 ---
---- THE ONE THAT MATCHES DEFAULT_MODEL, and the one that matches almost every
---- model the allowlist tolerates. config/vehicles.lua refuses everything that
---- flies, so `heli` and `plane` are unreachable through this verb by
---- construction; `boat`, `bike` and the rest are reachable and have to be asked
---- for by name.
+--- A MODEL THE TABLE KNOWS IS BUILT AS ITS OWN TREE (#426): `brcar 1 dinghy` is
+--- a boat, where it used to be refused for not being the automobile nobody
+--- asked for. A type that is typed is still held to the model (spawnInFront).
+--- This is the tree almost every model the allowlist tolerates has, and the
+--- only guess there is for one the table has never seen.
 local DEFAULT_TYPE = 'automobile'
 
 --- How far in front of the target player the vehicle lands, in meters.
@@ -2011,9 +2182,11 @@ end
 --- this resource listens to, so the creation detector at the top of this file
 --- never sees it (it never saw brcar's either). A player DRIVING a refused one
 --- in a match is still sampled by the occupancy detector above, and
---- client/vehrefuse.lua still puts them out of it: neither knows where a
---- vehicle came from, and neither excuses this one. Whether a dev menu vehicle
---- should be excused is the owner's open question on #426.
+--- client/vehrefuse.lua still puts them out of it -- unless the dev menu built
+--- it. The owner answered that question on 2026-11-01, "yes exempt dev menu
+--- vehicles", and the dev menu's row records what it built AFTER this returns
+--- (BR.Vehicles.exemptDevMenuVehicle, above the occupancy detector). This
+--- function exempts nothing, so brcar's vehicles are ruled on as ever.
 ---
 --- ═══ WHAT IT DOES ASK, AND WHY (#426's review) ═══
 ---
@@ -2312,7 +2485,9 @@ end
 --- that would file, so there is no exemption to grant. An allowed model is an
 --- ordinary car. And a refused vehicle somebody DRIVES is caught by the
 --- occupancy detector above regardless of how it got into the world -- including
---- one this verb had put there, if the pre-check were ever wrong.
+--- one this verb had put there, if the pre-check were ever wrong. The dev
+--- menu's exemption (#426) is not this verb's: what brcar builds is never in
+--- that record, and tools/verify.sh pins the record's one writer elsewhere.
 ---
 --- If a refused model is genuinely wanted in a match, the change is a reviewed
 --- row in config/vehicles.lua, not a back door in a debug verb.
@@ -2369,10 +2544,13 @@ RegisterCommand('brcar', function(src, args)
 
     local target = tonumber(args and args[1])
     local model  = tostring((args and args[2]) or DEFAULT_MODEL):lower()
-    local vtype  = tostring((args and args[3]) or DEFAULT_TYPE):lower()
+    -- NO TYPE TYPED: THE MODEL'S OWN TREE (#426), or DEFAULT_TYPE for a model
+    -- config/vehicle_models.lua does not have.
+    local vtype  = tostring((args and args[3]) or BR.Vehicles.modelTree(model)
+        or DEFAULT_TYPE):lower()
     if not target then
-        print(('  usage: brcar <serverId> [model] [type]   defaults: %s, %s')
-            :format(DEFAULT_MODEL, DEFAULT_TYPE))
+        print(('  usage: brcar <serverId> [model] [type]   defaults: %s, the '
+            .. 'model\'s own tree (%s for an add-on)'):format(DEFAULT_MODEL, DEFAULT_TYPE))
         print('    Spawns in front of that player, in their routing bucket.')
         print('    Only models config/vehicles.lua tolerates -- brvehicles reads')
         print('    the other side of the same allowlist.')

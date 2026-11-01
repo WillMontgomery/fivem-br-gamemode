@@ -2598,6 +2598,12 @@ local function newTimelineWorld(opts)
     -- say so. The real BR.Vehicles.ridingIn is the citizenfx/fivem#4006 workaround
     -- and is driven against the real server/vehicles.lua in tools/test_shared.lua.
     S.ridingIn, S.ridingInAsks = {}, 0
+    -- WHO IS SITTING IN A VEHICLE THE DEV MENU SPAWNED (#426), keyed on the
+    -- ped for the same reason. The real BR.Vehicles.inDevMenuVehicle answers
+    -- out of the server's own record and is driven in tools/test_roster.lua;
+    -- what is asserted here is that strip.lua asks it, and only about a hash
+    -- we issue nobody.
+    S.inDevMenu = {}
     BRs.Vehicles = {
         inDisarmedVehicle = function(ped)
             -- COUNTED, because the cost of asking is part of the contract: a
@@ -2606,6 +2612,9 @@ local function newTimelineWorld(opts)
             -- send, and the real answer is up to ten natives.
             S.inDisarmedAsks = S.inDisarmedAsks + 1
             return S.inDisarmed[ped] == true
+        end,
+        inDevMenuVehicle = function(ped)
+            return S.inDevMenu[ped] == true
         end,
         ridingIn = function(ped)
             S.ridingInAsks = S.ridingInAsks + 1
@@ -2788,6 +2797,14 @@ local function newTimelineWorld(opts)
         local seated = (yes ~= false)
         S.inDisarmed[e and e.ped] = seated
         S.ridingIn[e and e.ped] = seated and (2000 + src) or nil
+    end
+
+    --- This player is sitting in a vehicle the dev menu spawned (#426) -- one
+    --- the #322 ruling does not disarm, so `inDisarmed` says no.
+    function W.seatedInDevMenu(src)
+        local e = S.roster[src]
+        S.inDevMenu[e and e.ped] = true
+        S.ridingIn[e and e.ped] = 2000 + src
     end
 
     --- This player is sitting in a vehicle NOBODY HAS SAID IS DISARMED -- the
@@ -5049,6 +5066,39 @@ do
         'twenty reports inside one window cost ONE seat read',
         ('%d -> %d'):format(asksBefore, W.S.inDisarmedAsks))
     ok(#W.S.incidents == 0, 'and still open no case', #W.S.incidents)
+end
+
+describe('strip.a-dev-menu-vehicles-gun-is-nobodys-case')
+do
+    -- #426, the owner: "yes exempt dev menu vehicles" -- filed against by
+    -- nobody, whoever sits in it. Its gun is live, so the engine puts it in a
+    -- hand and the client's strip reports it; a model the #322 ruling never
+    -- disarmed (a Buzzard, a Hydra) is excused all the same, by the server's
+    -- own record.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:dev', 'Dev')
+    W.seatedInDevMenu(1)
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0,
+        'a hash we issue nobody, stripped from somebody in a dev menu vehicle, '
+            .. 'opens no case', #W.S.incidents)
+    ok(W.BR.Strip.stats().vehicleGuns == 2,
+        'and is counted as the car\'s own gun', W.BR.Strip.stats().vehicleGuns)
+
+    -- A WEAPON OF OURS FROM THE SAME SEAT IS FILED AS IT IS ON FOOT.
+    local W2 = newTimelineWorld()
+    W2.startMatch(8, 1000)
+    W2.join(2, 8, 'license:dev2', 'Dev2')
+    W2.seatedInDevMenu(2)
+    W2.carrying(2, {})
+    W2.at(4000); W2.strip(2, CARBINE)
+    W2.at(5000); W2.strip(2, CARBINE)
+    ok(#W2.S.incidents == 1,
+        'a weapon this gamemode issues, from a dev menu vehicle, still opens a case',
+        #W2.S.incidents)
 end
 
 describe('strip.the-seat-excuses-the-cars-gun-and-nothing-else')

@@ -18200,6 +18200,63 @@ do
             tostring(pok) .. ' ' .. tostring(ans))
     end
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- BR.Vehicles.inDevMenuVehicle -- AM I SITTING IN ONE THE DEV MENU BUILT (#426)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "yes exempt dev menu vehicles": the server's own record, in memory, which
+    -- server/damage.lua and server/strip.lua ask before the #322 question.
+    -- Through `ridingIn`, so the #4006 workaround holds here too.
+    do
+        local S = newVehicleServer()
+        local V = S.env.BR.Vehicles
+        local HYDRA = 0x39D6E83F
+        local ADDER2 = 0xB779A091
+        S.env.BR.Server = { devMode = true }
+
+        -- AN EMPTY RECORD ASKS NO NATIVE, which is every public server.
+        local asks = 0
+        local realAsk = S.env.GetVehiclePedIsIn
+        S.env.GetVehiclePedIsIn = function(...) asks = asks + 1; return realAsk(...) end
+        S.ents[60] = { exists = true, model = HYDRA }
+        S.lastVeh[900] = 60
+        S.seats[60] = { [-1] = 900 }
+        ok(V.inDevMenuVehicle(900) == false and asks == 0,
+            'with nothing in the record nobody is in one, and no seat is read', asks)
+
+        ok(V.exemptDevMenuVehicle(60, HYDRA, 1) == true, 'fixture: the Hydra is recorded')
+        ok(V.inDevMenuVehicle(900) == true, 'its driver is in one')
+        S.seats[60] = { [2] = 900 }
+        ok(V.inDevMenuVehicle(900) == true, 'and so is a passenger')
+        S.seats[60] = {}
+        ok(V.inDevMenuVehicle(900) == false,
+            'a player who got out is not, whatever the ped says (#4006)')
+
+        -- THE HYDRA BESIDE IT, which the dev menu did not build.
+        S.ents[61] = { exists = true, model = HYDRA }
+        S.lastVeh[901] = 61
+        S.seats[61] = { [-1] = 901 }
+        ok(V.inDevMenuVehicle(901) == false, 'a Hydra it did not build is not one')
+
+        -- A HANDLE HANDED ON.
+        S.seats[60] = { [-1] = 900 }
+        S.ents[60] = { exists = true, model = ADDER2 }
+        ok(V.inDevMenuVehicle(900) == false, 'a handle that names another model is not one')
+
+        -- ON FOOT, AND NOBODY.
+        ok(V.inDevMenuVehicle(902) == false and V.inDevMenuVehicle(0) == false
+           and V.inDevMenuVehicle(nil) == false, 'on foot, ped 0 and nil are in none')
+
+        -- AND IT IS NOT THE #322 SET: a dev menu Hydra's gun is live, not held.
+        S.ents[62] = { exists = true, model = HYDRA }
+        S.lastVeh[903] = 62
+        S.seats[62] = { [-1] = 903 }
+        V.exemptDevMenuVehicle(62, HYDRA, 1)
+        ok(V.inDevMenuVehicle(903) == true and V.inDisarmedVehicle(903) == false,
+            'a dev menu Hydra is in a dev menu vehicle and NOT in a disarmed one')
+        S.env.GetVehiclePedIsIn = realAsk
+    end
+
     -- An ordinary car costs nothing and files nothing. This is every vehicle in
     -- every match under Option A, so it is the path that must stay silent.
     do
