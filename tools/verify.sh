@@ -2589,31 +2589,43 @@ br_core/server/vehicles.lua: function BR.Vehicles.exemptDevMenuVehicle(veh, hash
     # still one mention. So that line is pinned, and in server code `Entity(`
     # appears on the writer's set alone, and GetStateBagValue and
     # AddStateBagChangeHandler nowhere -- the other two ways to read the bag.
+    # `Entity` taken as a value (`local E = Entity`) is a touch too, and so is
+    # any of the three in a server JS file (#426's last look).
     HINTSV_="br_core/server/vehicles.lua: local key = BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey"
     SVBAGS_="br_core/server/vehicles.lua: pcall(function() Entity(v).state:set(key, true, true) end)"
     hintsv_now_=$(lines_ 'vehicleStateKey' | grep '^[^/]*/server/')
-    svbags_now_=$(for f_ in "resources/[fivem-royale]"/*/server/*.lua "resources/[fivem-royale]"/*/server/*/*.lua; do
-                      [ -f "$f_" ] || continue
-                      sed 's/--.*$//' "$f_" \
-                          | grep -E '(^|[^_[:alnum:]])Entity[[:space:]]*\(|GetStateBagValue|AddStateBagChangeHandler' \
-                          | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-                                -e "s|^|${f_#"resources/[fivem-royale]/"}: |"
-                  done)
+    svbags_now_=$({ for f_ in "resources/[fivem-royale]"/*/server/*.lua "resources/[fivem-royale]"/*/server/*/*.lua; do
+                        [ -f "$f_" ] || continue
+                        sed 's/--.*$//' "$f_" \
+                            | grep -E '(^|[^_[:alnum:]])Entity[[:space:]]*\(|=[[:space:]]*Entity[[:space:]]*($|[,;)}])|GetStateBagValue|AddStateBagChangeHandler' \
+                            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                                  -e "s|^|${f_#"resources/[fivem-royale]/"}: |"
+                    done
+                    for f_ in "resources/[fivem-royale]"/*/server/*.js "resources/[fivem-royale]"/*/dist/server*.js; do
+                        [ -f "$f_" ] || continue
+                        grep -o -E '.{0,40}((^|[^_[:alnum:]])Entity[[:space:]]*\(|GetStateBagValue|AddStateBagChangeHandler).{0,40}' "$f_" \
+                            | sed -e "s|^|${f_#"resources/[fivem-royale]/"}: |"
+                    done; })
     if [ "$hintkey_now_" != "$HINTKEY_" ] || [ "$hintbag_now_" != "$HINTBAG_" ] \
-       || [ "$hintsv_now_" != "$HINTSV_" ] || [ "$svbags_now_" != "$SVBAGS_" ]; then
+       || [ "$hintsv_now_" != "$HINTSV_" ]; then
         echo "${RED}FAIL${RST} the dev menu vehicle hint is named by '${hintkey_now_}' / '${hintbag_now_}'"
         echo "     Expected '${HINTKEY_}' / '${HINTBAG_}',"
-        echo "     on the server only as '${HINTSV_#*: }',"
-        echo "     and an entity's state touched by server code only as:"
-        echo "       ${SVBAGS_}"
-        if [ "$svbags_now_" != "$SVBAGS_" ]; then
-            echo "     Server code touching one now:"
-            printf '%s\n' "${svbags_now_:-(nothing)}" | sed 's/^/       /'
-        fi
+        echo "     and on the server only as '${HINTSV_#*: }'."
         echo "     A client can write that state bag on an entity it owns: only the"
         echo "     advisory client files it steers (vehrefuse.lua, inventory.lua's"
         echo "     strip) may read it, and only the record's writer may name it on"
         echo "     the server."
+        boundary=1
+    fi
+    if [ "$svbags_now_" != "$SVBAGS_" ]; then
+        echo "${RED}FAIL${RST} server code touches an entity's state bag outside the one reviewed line:"
+        printf '%s\n' "${svbags_now_:-(nothing)}" | sed 's/^/       /'
+        echo "     The one reviewed line is"
+        echo "       ${SVBAGS_}"
+        echo "     A client can write the state bag of an entity it owns, so server code"
+        echo "     may never trust one it reads, and may never read the dev menu vehicle"
+        echo "     hint at all (#426). A new line that does neither: review it, then add"
+        echo "     it to SVBAGS_ in tools/verify.sh exactly as printed above, one per line."
         boundary=1
     fi
 fi
