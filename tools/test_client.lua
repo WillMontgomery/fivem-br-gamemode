@@ -1233,6 +1233,9 @@ loadAll({
     -- BR.NormHash at LOAD time to build its hash-keyed lookups, and loading it
     -- any earlier keys every row on nil.
     'br_lib/config/vehicles.lua',
+    -- The game's vehicle weapons (#426's second review), for the same strip: a
+    -- dev menu vehicle's gun is excused for these and no other weapon.
+    'br_lib/config/vehicle_weapons.lua',
     -- The catalogue, for the descent block at the bottom: what `trail_ember`
     -- resolves to is the first of the four things the smoke-trail prompt is
     -- made of, and BR.Config.MarketIndex is where that answer lives.
@@ -9450,7 +9453,7 @@ do
 
     local CONJURED = 0x11111111            -- in no table this gamemode has
     local CARBINE  = 0x83BF0278            -- WEAPON_CARBINERIFLE, issued
-    -- VEHICLE_WEAPON_PLAYER_BUZZARD. A real mounted-gun hash, and the point of
+    -- VEHICLE_WEAPON_PLAYER_LAZER. A real mounted-gun hash, and the point of
     -- using a real one is that it is in none of this gamemode's tables either --
     -- so it is indistinguishable from CONJURED to every check except the new one.
     local MOUNTED  = 0xE2822A29
@@ -9764,16 +9767,31 @@ end
 describe('a dev menu vehicle\'s gun is not taken out of the hand either -- #426')
 do
     -- The owner, 2026-11-01: "yes exempt dev menu vehicles" -- not disarmed.
-    -- The server hangs a state bag on what the dev menu builds, and the strip
-    -- leaves the hand alone in a vehicle carrying it: a gun seat
-    -- `isMountedWeapon` cannot see, as the firetruck's, with the native silent.
-    -- That the SERVER never trusts the bag is test_roster's and
-    -- test_ringmaster's; this is the client's half.
+    -- The server hangs a state bag on what the dev menu builds, and on a dev
+    -- box the strip leaves a vehicle's own gun in the hand in a vehicle
+    -- carrying it: a gun seat `isMountedWeapon` cannot see, as the firetruck's,
+    -- with the native silent. Its own gun ALONE, and on a dev box ALONE (#426's
+    -- second review): a trainer's weapon in the same seat is stripped and
+    -- reported, and off a dev box the hint is not read. That the SERVER never
+    -- trusts the bag is test_roster's and test_ringmaster's; this is the
+    -- client's half.
     local chunk = assert(loadfile('resources/[fivem-royale]/br_lib/config/devmenu.lua'))
     chunk()
     local KEY = BR.Config.DevMenu.vehicleStateKey
     local ORDINARY = 42
+    -- VEHICLE_WEAPON_PLAYER_BUZZARD, a row of config/vehicle_weapons.lua.
+    local VEH_GUN  = 0x46B89C8E
+    -- In no table this gamemode has, nor the game's vehicle weapons: a
+    -- trainer's.
     local CONJURED = 0x11111111
+    ok(BR.Config.VehicleWeaponByHash[VEH_GUN] == 'VEHICLE_WEAPON_PLAYER_BUZZARD'
+       and BR.Config.VehicleWeaponByHash[CONJURED] == nil,
+       'fixture: one hash is a vehicle weapon of the game\'s, the other is nobody\'s')
+    -- A DEV BOX: BR.Dev.on() is devgate.lua's, read off the replicated
+    -- br_devMode; stubbed here to answer `devBox`.
+    local devBox = true
+    local realDev = BR.Dev
+    BR.Dev = { on = function() return devBox end }
     local bags = {}
     local realEntity = Entity
     Entity = function(h)
@@ -9812,31 +9830,47 @@ do
     })
 
     bags = { [77] = { [KEY] = true } }
-    tickIn(77, CONJURED)
-    ok(strips(CONJURED) == 0, 'the gun in a dev menu vehicle is not taken out of the hand')
+    tickIn(77, VEH_GUN)
+    ok(strips(VEH_GUN) == 0, 'a vehicle\'s gun in a dev menu vehicle is not taken out of the hand')
     ok(#reports() == 0, 'and nothing is reported about it')
+
+    -- A TRAINER'S WEAPON IN THE SAME SEAT IS NO VEHICLE'S (#426's second review).
+    tickIn(77, CONJURED)
+    ok(strips(CONJURED) == 1 and #reports() == 1 and reports()[1] == CONJURED,
+        'a trainer\'s weapon in a dev menu vehicle is stripped and reported')
 
     -- THE SAME HAND IN A VEHICLE WITHOUT IT is stripped and reported as ever.
     bags = {}
-    tickIn(77, CONJURED)
-    ok(strips(CONJURED) == 1 and #reports() == 1,
+    tickIn(77, VEH_GUN)
+    ok(strips(VEH_GUN) == 1 and #reports() == 1,
         'the same gun in a vehicle with no hint is stripped and reported')
 
     -- ONLY `true` IS THE HINT.
     bags = { [77] = { [KEY] = 'true' } }
-    tickIn(77, CONJURED)
-    ok(strips(CONJURED) == 1, 'a bag holding anything but true is no hint')
+    tickIn(77, VEH_GUN)
+    ok(strips(VEH_GUN) == 1, 'a bag holding anything but true is no hint')
 
     -- ON FOOT, with the vehicle beside them still carrying it: no exemption.
     bags = { [77] = { [KEY] = true } }
     inVehicle, vehicle = false, 77
-    vehWeapon, pedWeapon = nil, CONJURED
+    vehWeapon, pedWeapon = nil, VEH_GUN
     sent, stripped = {}, {}
     fakeTime = fakeTime + 5000
     BR.Loop.step(BR.Loop.TICK)
-    ok(strips(CONJURED) == 1 and #reports() == 1, 'on foot, a hinted vehicle nearby exempts nothing')
+    ok(strips(VEH_GUN) == 1 and #reports() == 1, 'on foot, a hinted vehicle nearby exempts nothing')
+
+    -- OFF A DEV BOX THE HINT IS NOT READ (#426's second review): a cheat that
+    -- hung it on a vehicle it took would otherwise keep the strip quiet for
+    -- every honest player in it, and the server would file against them.
+    devBox = false
+    bags = { [77] = { [KEY] = true } }
+    tickIn(77, VEH_GUN)
+    ok(strips(VEH_GUN) == 1 and #reports() == 1,
+        'with dev mode off, a vehicle\'s gun in a hinted vehicle is stripped and reported')
+    devBox = true
 
     -- Leave the world as this block found it.
+    BR.Dev = realDev
     Entity = realEntity
     inVehicle, vehicle = false, 0
     vehModel = ORDINARY
@@ -9894,7 +9928,7 @@ do
     -- WEAPON_ASSAULTRIFLE: a row of OUR arsenal, and not in this player's
     -- slots. The weapon a trainer is actually worth granting.
     local RIFLE     = 0xBFEFFF6D
-    -- VEHICLE_WEAPON_PLAYER_BUZZARD: a real mounted-gun hash, in none of this
+    -- VEHICLE_WEAPON_PLAYER_LAZER: a real mounted-gun hash, in none of this
     -- gamemode's tables, so only the equality can tell it from CONJURED.
     local MOUNTED   = 0xE2822A29
 

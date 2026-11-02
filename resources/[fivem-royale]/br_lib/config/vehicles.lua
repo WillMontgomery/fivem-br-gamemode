@@ -65,12 +65,13 @@
 -- NOBODY IS EXEMPT FROM THIS TABLE, AND ONE VEHICLE AT A TIME CAN BE (#426).
 -- The owner, 2026-11-01, of the dev menu's vehicle spawner: "yes exempt dev
 -- menu vehicles, and put me in the driver seat". A vehicle that row built is
--- not ejected from, not disarmed and filed against by nobody, whoever sits in
--- it -- and NOTHING IN THIS FILE SAYS SO, because it is not a model: the Hydra
--- the dev menu built is exempt and the Hydra beside it is not. The record is
--- br_core/server/vehicles.lua's, kept in server memory and written only on a
--- server that started in dev mode, whose spawn refuses without it too -- so on
--- the public box it is empty and every row below rules exactly as written.
+-- not ejected from, not disarmed and filed against by nobody for itself or
+-- its own gun, whoever sits in it -- and NOTHING IN THIS FILE SAYS SO, because
+-- it is not a model: the Hydra the dev menu built is exempt and the Hydra
+-- beside it is not. The record is br_core/server/vehicles.lua's, kept in
+-- server memory and written only on a server that started in dev mode, whose
+-- spawn refuses without it too -- so on the public box it is empty and every
+-- row below rules exactly as written.
 --
 -- ═══ THE BATTLE BUS IS ON THIS LIST, ON PURPOSE, AND IT IS SAFE ═══
 --

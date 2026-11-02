@@ -243,6 +243,75 @@ do
     BR.Sched.step(fakeTime)
 end
 
+describe('a name taken again before the sweep (#426)')
+do
+    -- A canceled job's entry waits for the next pass to sweep it, and the name
+    -- used to stay taken until then. server/devmenu.lua's seat pass cancels its
+    -- own job when its last asker is seated and the next request starts a new
+    -- one, so a request inside that window threw "duplicate job name": the
+    -- vehicle was built, and nobody was answered or seated. The review's repro
+    -- first, then the rest of what a dead entry must not do.
+    local function rowsNamed(name)
+        local n, row = 0, nil
+        for _, r in ipairs(BR.Sched.stats()) do
+            if r.name == name then n, row = n + 1, r end
+        end
+        return n, row
+    end
+
+    local oldRuns, newRuns, lateRuns = 0, 0, 0
+    local hOld
+    hOld = BR.Sched.every(250, 't.reuse', function()
+        oldRuns = oldRuns + 1
+        BR.Sched.cancel(hOld)   -- as the seat pass does when `seating` empties
+    end)
+    fakeTime = 65000
+    BR.Sched.step(fakeTime)
+    ok(oldRuns == 1, 'the job that cancels itself ran')
+
+    local took, hNew = pcall(BR.Sched.every, 250, 't.reuse', function() newRuns = newRuns + 1 end)
+    ok(took, 'a name canceled inside a pass can be taken before the next pass', tostring(hNew))
+
+    fakeTime = 65050
+    BR.Sched.step(fakeTime)
+    ok(newRuns == 1 and oldRuns == 1, 'the next pass runs the new job and not the dead one',
+        ('new=%d old=%d'):format(newRuns, oldRuns))
+    fakeTime = 65300
+    BR.Sched.step(fakeTime)
+    ok(newRuns == 2, 'and the one after: the sweep took the dead entry, never the live one',
+        ('new=%d'):format(newRuns))
+
+    local dup = pcall(BR.Sched.every, 250, 't.reuse', function() end)
+    ok(not dup, 'a live name is still refused')
+
+    -- Canceled outside any pass and taken again at once: the shape of
+    -- server/ringmaster.lua's ensureJob, which swaps its snapshot job when the
+    -- console asks for a new interval. Until the sweep both entries sit in the
+    -- list, the dead one first.
+    BR.Sched.cancel(hNew)
+    local again, hLate = pcall(BR.Sched.every, 500, 't.reuse', function() lateRuns = lateRuns + 1 end)
+    ok(again, 'a name canceled outside a pass can be taken at once', tostring(hLate))
+
+    local n, row = rowsNamed('t.reuse')
+    ok(n == 1 and row.intervalMs == 500, 'stats list the live job alone',
+        ('rows=%d interval=%s'):format(n, row and tostring(row.intervalMs) or '-'))
+
+    ok(BR.Sched.setEnabled('t.reuse', false), 'setEnabled finds the name')
+    fakeTime = 65600
+    BR.Sched.step(fakeTime)
+    ok(lateRuns == 0, 'and turned off the live job, not the dead one ahead of it',
+        ('late=%d'):format(lateRuns))
+    ok(newRuns == 2, 'the canceled job never ran again')
+
+    BR.Sched.setEnabled('t.reuse', true)
+    fakeTime = 66100
+    BR.Sched.step(fakeTime)
+    ok(lateRuns == 1, 'turned back on, it runs', ('late=%d'):format(lateRuns))
+
+    if again then BR.Sched.cancel(hLate) end
+    BR.Sched.step(fakeTime)
+end
+
 describe('stats')
 do
     BR.Sched.resetStats()

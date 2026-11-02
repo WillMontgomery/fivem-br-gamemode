@@ -679,7 +679,7 @@ function BR.Loop.bench(name, iterations, rounds, waitFn)
     local target, targetBand
     for band, list in pairs(registry) do
         for _, e in ipairs(list) do
-            if e.name == name then target, targetBand = e, band end
+            if e.name == name and not e.dead then target, targetBand = e, band end
         end
     end
     if not target then return nil end
@@ -731,7 +731,7 @@ function BR.Loop.ab(name, blocks, blockFrames, waitFn)
     local target, targetBand
     for band, list in pairs(registry) do
         for _, e in ipairs(list) do
-            if e.name == name then target, targetBand = e, band end
+            if e.name == name and not e.dead then target, targetBand = e, band end
         end
     end
     if not target then return nil end
@@ -770,7 +770,9 @@ function BR.Loop.names()
     local out = {}
     for band, list in pairs(registry) do
         for _, e in ipairs(list) do
-            out[#out + 1] = { name = e.name, band = band }
+            if not e.dead then   -- unregistered, so gone, if not swept yet
+                out[#out + 1] = { name = e.name, band = band }
+            end
         end
     end
     table.sort(out, function(a, b) return a.name < b.name end)
@@ -891,7 +893,12 @@ end
 function BR.Loop.setEnabled(name, enabled)
     for _, list in pairs(registry) do
         for _, e in ipairs(list) do
-            if e.name == name then
+            -- The live one. An unregistered callback waits for the sweep under
+            -- its name -- until `on all`, under `off all` -- and switching that
+            -- entry reported the name found and changed nothing that runs. So
+            -- every lookup by name here passes over a dead entry, as
+            -- BR.Loop.register does (#426; BR.Sched had the same hole).
+            if e.name == name and not e.dead then
                 e.enabled = enabled and true or false
                 if enabled then
                     e.suspended   = false
@@ -916,20 +923,22 @@ function BR.Loop.stats()
     local out = {}
     for band, list in pairs(registry) do
         for _, e in ipairs(list) do
-            out[#out + 1] = {
-                name      = e.name,
-                band      = band,
-                calls     = e.calls,
-                stalls    = e.stalls,
-                -- Averaged over the STALLS, never over the calls. The old
-                -- totalMs/calls is what printed 0.000 beside a 55ms peak.
-                avgStallMs = e.stalls > 0 and (e.totalMs / e.stalls) or 0.0,
-                totalMs   = e.totalMs,
-                peakMs    = e.peakMs,
-                errors    = e.errors,
-                enabled   = e.enabled,
-                suspended = e.suspended,
-            }
+            if not e.dead then   -- unregistered, so gone, if not swept yet
+                out[#out + 1] = {
+                    name      = e.name,
+                    band      = band,
+                    calls     = e.calls,
+                    stalls    = e.stalls,
+                    -- Averaged over the STALLS, never over the calls. The old
+                    -- totalMs/calls is what printed 0.000 beside a 55ms peak.
+                    avgStallMs = e.stalls > 0 and (e.totalMs / e.stalls) or 0.0,
+                    totalMs   = e.totalMs,
+                    peakMs    = e.peakMs,
+                    errors    = e.errors,
+                    enabled   = e.enabled,
+                    suspended = e.suspended,
+                }
+            end
         end
     end
     table.sort(out, function(a, b) return a.totalMs > b.totalMs end)

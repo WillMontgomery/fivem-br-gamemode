@@ -492,17 +492,29 @@ case the same two writes.
 2026-11-01: *"yes exempt dev menu vehicles"*. A vehicle the dev menu's
 vehicle spawner built is filed against by nobody, whoever sits in it: the
 occupancy detector skips it, and the weapon-damage and strip detectors leave
-its gun alone. It is an entity rather than a model -- the Hydra the dev menu
-built is exempt and the one beside it is not -- so it is not in
-`br_lib/config/vehicles.lua`. The truth is a record `br_core/server/vehicles.lua`
-keeps **in server memory**, written by the dev menu's row alone
-(`tools/verify.sh` pins the writer) and only when `BR.Server.devMode == true`,
-which the spawn before it requires too: on the public box it is empty. The
-client is told by a replicated state bag, which steers only advisory client
-code -- `client/vehrefuse.lua`'s ejection and gun hold, `client/inventory.lua`'s
-strip; **no server code reads it**, because a client can write state on an
-entity it owns. A cheat that hangs it on a stolen Buzzard skips an
-ejector it was not running anyway, and is filed against as before.
+its own gun alone -- a vehicle weapon of the game's
+(`br_lib/config/vehicle_weapons.lua`), never a trainer's weapon fired or held
+in the same seat, which is refused and filed as it is anywhere. It is an
+entity rather than a model -- the Hydra the dev menu built is exempt and the
+one beside it is not -- so it is not in `br_lib/config/vehicles.lua`. The
+truth is a record `br_core/server/vehicles.lua` keeps **in server memory**,
+written by the dev menu's row alone (`tools/verify.sh` pins the writer, the
+one write and the lines) and only when `BR.Server.devMode == true`, which the
+spawn before it requires too: on the public box it is empty.
+
+**The client's hint is read on a dev box and nowhere else.** The client is told
+by a replicated state bag, which steers only advisory client code --
+`client/vehrefuse.lua`'s ejection and gun hold, `client/inventory.lua`'s strip;
+**no server code reads it**, because a client can write state on an entity it
+owns. That last fact is also why the clients read it only while `BR.Dev.on()`
+-- `br_devMode`, which the server replicates and no client can set for
+another. Without that gate the bag was a hole on the public box, and not in the
+cheat's own client: `sv_entityLockdown relaxed` lets a client own an ambient
+Buzzard, and one that hung the hint on it made **every honest client** that
+climbed in after stay in and keep the gun -- while the server, whose record is
+empty, filed against each of them. Off a dev box the hint is not read at all.
+On a dev box a forged hint still fools the clients that read it, and that is
+all it does: the server files from its own record.
 
 **What it can see depends on `sv_entityLockdown`, and the two are partly
 substitutes rather than complements.** The platform validates a client's

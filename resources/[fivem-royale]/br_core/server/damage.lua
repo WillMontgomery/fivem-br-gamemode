@@ -1415,9 +1415,10 @@ end
 --- menu spawned? (#426)
 ---
 --- THAT GUN IS LIVE. The owner, 2026-11-01: "yes exempt dev menu vehicles" --
---- not ejected from, not disarmed, filed against by nobody. So what it fires
---- is neither refused nor canceled nor counted here: a hit lands as the
---- engine applies it, the way the world's own damage does. Asked before
+--- not ejected from, not disarmed, filed against by nobody. So what its own
+--- gun fires -- a vehicle weapon, `vehicleWeapon` below -- is neither refused
+--- nor canceled here: a hit lands as the engine applies it, the way the
+--- world's own damage does. Asked before
 --- `seatedInDisarmedVehicle` at each of the three events, because a dev menu
 --- Technical is both, and the #322 answer would cancel it.
 ---
@@ -1430,6 +1431,29 @@ local function seatedInDevMenuVehicle(src)
     if not (BR.Vehicles and BR.Vehicles.inDevMenuVehicle) then return false end
     local s = BR.Roster.get(src)
     return BR.Vehicles.inDevMenuVehicle(s and s.ped) == true
+end
+
+--- Is this a vehicle's own weapon? (#426's second review)
+---
+--- A DEV MENU VEHICLE'S GUN IS EXCUSED FOR THESE AND NOTHING ELSE: the vehicle
+--- weapons in the game's own data, the searchlight, the radar and the water
+--- cannon among them (config/vehicle_weapons.lua). It used to be any weapon
+--- in no row of ours, so a trainer's carbine fired from that seat was nobody's
+--- case either; now it is refused and filed as it is anywhere. EVERY MODEL'S
+--- weapons, not the seat's own model's: an add-on that mounts a gun of the
+--- base game is still excused, and a gun the data never listed costs a case
+--- on a dev box. Asked BEFORE `seatedInDevMenuVehicle` at each event, so a
+--- hash that is no vehicle's never pays for the seat.
+---
+--- A build without the set excuses nothing, and neither does a hash that is
+--- not a whole number.
+--- @param h number|nil
+--- @return boolean
+local function vehicleWeapon(h)
+    local set = BR.Config.VehicleWeaponByHash
+    h = type(h) == 'number' and math.tointeger(h) or nil
+    if set == nil or h == nil then return false end
+    return set[BR.NormHash(h)] ~= nil
 end
 
 AddEventHandler('weaponDamageEvent', function(sender, data)
@@ -1481,9 +1505,10 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         end
         -- A DEV MENU VEHICLE'S OWN GUN (#426): left to the engine, like the
         -- world's, and nobody's case. See `seatedInDevMenuVehicle`. Only for a
-        -- hash in no row of ours -- a carbine of ours fired from the same seat
-        -- is validated as ever -- and only on the server's own record.
-        if seatedInDevMenuVehicle(shooter) then
+        -- vehicle's own weapon (`vehicleWeapon`, asked first) -- a carbine of
+        -- ours fired from the same seat is validated as ever, and a trainer's
+        -- is refused below -- and only on the server's own record.
+        if vehicleWeapon(data.weaponType) and seatedInDevMenuVehicle(shooter) then
             BR.Damage.devMenuGunEvents = (BR.Damage.devMenuGunEvents or 0) + 1
             return
         end
@@ -1994,7 +2019,9 @@ AddEventHandler('startProjectileEvent', function(sender, data)
     if not src or src == 0 then return end
     -- A DEV MENU VEHICLE'S LAUNCH IS RELAYED AS ANY OTHER (#426), first: a dev
     -- menu Technical is a disarmed model too, and the next line would cancel it.
-    if seatedInDevMenuVehicle(src) then return end
+    -- Its own gun's launch, that is (`vehicleWeapon`): a trainer's launcher in
+    -- the same seat goes on to the rule below like anybody's.
+    if vehicleWeapon(h) and seatedInDevMenuVehicle(src) then return end
     if not seatedInDisarmedVehicle(src) then return end
 
     BR.Damage.vehicleGunProjectiles = (BR.Damage.vehicleGunProjectiles or 0) + 1

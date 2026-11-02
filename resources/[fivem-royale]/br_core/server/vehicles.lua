@@ -2571,6 +2571,17 @@ RegisterCommand('brcar', function(src, args)
         return
     end
 
+    -- NOT AS A TRAIN (#426's second review), typed or the model's own tree. The
+    -- platform takes the tree, and the server setter fills none of the nodes a
+    -- train runs on (config/devmenu.lua quotes the forum answer), so what it
+    -- would build is no train anybody can use. The dev menu lists no train and
+    -- its server takes no `train`; this verb refuses one the same way.
+    if vtype == 'train' then
+        print('  a train cannot be built this way: the server setter fills none')
+        print('  of the nodes a train runs on.')
+        return
+    end
+
     local e = BR.Roster and BR.Roster.get and BR.Roster.get(target)
     if not e then
         print(('  no roster entry for %d'):format(target))

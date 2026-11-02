@@ -474,7 +474,7 @@ local CARACARA2 = 0xAF966F3C
 --- A vehicle weapon hash. Any non-zero number: what the file does with it is
 --- pass it back to the engine untouched, which is the property asserted.
 local SEAT_GUN = 0x1D6FDE47
---- VEHICLE_WEAPON_PLAYER_BUZZARD: a REAL mounted-gun hash, and in no row of
+--- VEHICLE_WEAPON_PLAYER_LAZER: a REAL mounted-gun hash, and in no row of
 --- BR.Config.WeaponByHash. That is the whole property the hand path tests for,
 --- so it is a published hash rather than an invented one.
 local ENGINE_GUN = 0xE2822A29
@@ -1344,7 +1344,7 @@ do
 end
 
 do
-    -- THE HASH GOES BACK AS THE ENGINE GAVE IT. VEHICLE_WEAPON_PLAYER_BUZZARD
+    -- THE HASH GOES BACK AS THE ENGINE GAVE IT. VEHICLE_WEAPON_PLAYER_LAZER
     -- has the top bit set, so the engine reports it NEGATIVE. It is normalized
     -- to be looked up and handed back raw -- the reason `mountedWeaponOf` gives
     -- for its own hash: a rewrite on the way from the engine to the engine can
@@ -3982,9 +3982,16 @@ describe('a vehicle the dev menu spawned (#426)')
 --
 -- The owner, 2026-11-01: "yes exempt dev menu vehicles". The server hangs a
 -- state bag on what the dev menu builds (BR.Config.DevMenu.vehicleStateKey,
--- read here from the real config), and this file neither ejects anybody from
--- it nor holds its gun off -- whoever sits in it. A hint, read only where it
--- would change something. That the SERVER never reads it is test_roster's.
+-- read here from the real config), and on a dev box this file neither ejects
+-- anybody from it nor holds its gun off -- whoever sits in it. A hint, read
+-- only where it would change something. That the SERVER never reads it is
+-- test_roster's; that it is not read off a dev box is the block below.
+--
+-- A DEV BOX: BR.Dev.on() is devgate.lua's, read off the replicated
+-- br_devMode, and stubbed here to answer `devBox`.
+local devBox = true
+local realDev = BR.Dev
+BR.Dev = { on = function() return devBox end }
 do
     load('br_lib/config/devmenu.lua')
     local KEY = BR.Config.DevMenu.vehicleStateKey
@@ -4088,6 +4095,81 @@ do
        ('%d leave, %s new errors'):format(did('leave'), tostring(gateErrors() - errors0)))
     Entity = realEntity
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('the dev menu\'s hint is not read off a dev box (#426\'s second review)')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A client can write state on an entity it owns, and `sv_entityLockdown
+-- relaxed` lets one own an ambient Buzzard. A cheat that hung the hint on one
+-- gained nothing for itself -- but every HONEST client that climbed in after
+-- stayed in, kept the gun, and was filed against by a server whose record was
+-- empty. So with dev mode off the hint is read by nobody: every vehicle below
+-- carries it, and every one is ruled on as though it did not.
+do
+    local KEY = BR.Config.DevMenu.vehicleStateKey
+    local bags, bagReads = {}, 0
+    local realEntity = Entity
+    Entity = function(h)
+        return { state = setmetatable({}, { __index = function(_, k)
+            bagReads = bagReads + 1
+            return (bags[h] or {})[k]
+        end }) }
+    end
+    local function frames(n)
+        for _ = 1, n do BR.Loop.step(BR.Loop.FRAME) end
+    end
+    devBox = false
+
+    -- AT THE DOOR.
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    bags = { [10] = { [KEY] = true } }
+    entering = 10
+    tick()
+    ok(did('clear') == 1 and #notices == 1,
+       'a hinted Buzzard is refused at the door, and the player told',
+       ('%d clear, %d notices'):format(did('clear'), #notices))
+
+    -- IN THE SEAT.
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    bags = { [10] = { [KEY] = true } }
+    myVeh = 10
+    tick()
+    ok(did('leave') == 1, 'and anybody in its seat is put out', did('leave'))
+    ok(V.stats().devMenu == 0, 'with no dev menu vehicle counted', V.stats().devMenu)
+
+    -- ITS GUN: a hinted Technical's is switched off, and its trigger held.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    bags = { [10] = { [KEY] = true } }
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(did('disable') == 1, 'a hinted Technical\'s gun is switched off', did('disable'))
+    acts = {}
+    frames(3)
+    ok(did('ctl') > 0, 'and its trigger held', did('ctl'))
+
+    -- AND ONE ONLY THE ENGINE CALLS ARMED (#329).
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    bags = { [10] = { [KEY] = true } }
+    myVeh = 10
+    vehArmed[10] = true
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(did('disable') == 1, 'and so is the gun of a hinted car only the engine calls armed',
+       did('disable'))
+
+    -- NOT EVEN ASKED: off a dev box the bag is not read at all.
+    ok(bagReads == 0, 'and the bag was never read', bagReads)
+
+    devBox = true
+    Entity = realEntity
+end
+BR.Dev = realDev
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then

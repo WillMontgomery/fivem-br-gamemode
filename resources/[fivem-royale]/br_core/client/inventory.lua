@@ -2088,7 +2088,8 @@ local function inStripExemptVehicle()
     return exempt ~= nil and exempt[m] ~= nil
 end
 
---- Is this ped sitting in a vehicle the dev menu spawned? (#426)
+--- Is this hash a dev menu vehicle's own gun, in the hand of somebody sitting
+--- in one? (#426)
 ---
 --- The owner, 2026-11-01: "yes exempt dev menu vehicles" -- not disarmed. Its
 --- gun is live, so when the engine puts it in a hand -- a gun seat
@@ -2096,16 +2097,33 @@ end
 --- back out. Read off the hint the server hangs on that vehicle
 --- (BR.Config.DevMenu.vehicleStateKey), as client/vehrefuse.lua reads it.
 ---
---- A HINT A CLIENT CAN FORGE, and that buys a cheat nothing: this strip is a
---- tripwire it steps around by not running it, and the server's own record of
---- dev menu vehicles -- never this bag -- is what server/strip.lua and
---- server/damage.lua ask. LAST IN THE CHAIN BELOW and cheap for the same
---- reason `inStripExemptVehicle` is: only a ped seated in something, about to
---- be stripped, ever reads it.
+--- ITS OWN GUN, NOT ANY GUN (#426's second review). The hash must be one of
+--- the game's vehicle weapons (config/vehicle_weapons.lua), asked first and for
+--- one index: a trainer's weapon in the same hand is stripped and reported as
+--- it is anywhere, and never pays for the seat. The note above
+--- `isMountedWeapon` turns down a list of VEHICLE_WEAPON_ hashes as the way to
+--- excuse everybody's mounted gun; this list only narrows an excuse the owner
+--- gave, and a gun it misses costs a report on a dev box.
+---
+--- AND ON A DEV BOX ALONE (#426's second review). A client can write state on
+--- an entity it owns, so a cheat could hang the hint on a refused vehicle it
+--- took -- and then every honest client in it would keep the gun the engine
+--- gives it, the strip would stay quiet, and server/strip.lua, which asks the
+--- server's own record and never this bag, would file against them. So the
+--- hint is believed only while BR.Dev.on(): the replicated br_devMode, which
+--- no client sets for another. On a dev box a forged one still fools the
+--- clients that read it, and nothing else.
+---
+--- LAST IN THE CHAIN BELOW and cheap for the same reason `inStripExemptVehicle`
+--- is: only a ped seated in something, about to be stripped, ever reads it.
+--- @param h integer|nil  the held hash, normalized
 --- @return boolean
-local function inDevMenuVehicle()
+local function devMenuVehicleGun(h)
+    local guns = BR.Config and BR.Config.VehicleWeaponByHash
+    if guns == nil or h == nil or guns[h] == nil then return false end
+    if not (BR.Dev and BR.Dev.on and BR.Dev.on() == true) then return false end
     if not inVehicle() then return false end
-    local key = BR.Config and BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey
+    local key = BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey
     if not key or type(Entity) ~= 'function' then return false end
     local pok, veh = pcall(GetVehiclePedIsIn, PlayerPedId(), false)
     if not pok or veh == nil or veh == 0 then return false end
@@ -2210,14 +2228,15 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
             -- that seat -- so the model is asked instead. It is the owner's
             -- ruling and the wider of the two; see `inStripExemptVehicle`.
             --
-            -- NOR ANYTHING IN A VEHICLE THE DEV MENU SPAWNED (#426), whose gun
-            -- the owner exempted; see `inDevMenuVehicle`.
+            -- NOR A VEHICLE'S OWN GUN IN A VEHICLE THE DEV MENU SPAWNED (#426),
+            -- whose gun the owner exempted -- on a dev box, and that gun alone;
+            -- see `devMenuVehicleGun`.
             local allowed = h == BR.NormHash(UNARMED)
                 or h == BR.NormHash(BR.Config.Gadgets.PARACHUTE)
                 or (wantHash ~= nil and h == wantHash)
                 or isMountedWeapon(h)
                 or inStripExemptVehicle()
-                or inDevMenuVehicle()
+                or devMenuVehicleGun(h)
             if not allowed then
                 RemoveWeaponFromPed(ped, held)
                 applied = nil          -- force the active slot back on

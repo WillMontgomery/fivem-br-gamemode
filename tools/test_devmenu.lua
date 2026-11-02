@@ -142,10 +142,9 @@ local created, entityBucket, playerBucket, pedPos, pedHeading, nextVeh
 
 --- The seat and the exemption (#426): each vehicle's seats, which client owns
 --- it (-1 is none, as the platform answers), the state bags set on it, what
---- SetPedIntoVehicle and DeleteEntity were asked, the scheduler's jobs by name,
---- vehicles the platform has stopped answering for, and the server's
---- `entityRemoved` handler.
-local seats, owners, bags, seatCalls, deleted, jobs, gone, onRemoved
+--- SetPedIntoVehicle and DeleteEntity were asked, vehicles the platform has
+--- stopped answering for, and the server's `entityRemoved` handler.
+local seats, owners, bags, seatCalls, deleted, gone, onRemoved
 
 --- The eight trees the platform builds -- CREATE_VEHICLE_SERVER_SETTER
 --- throws on anything else, and so does the stub (tools/test_roster.lua's
@@ -204,7 +203,7 @@ local function bootServer(opts)
     end
 
     -- ═══ THE SEAT (#426): seats, owners, the RPC, NPCs, and the state bag ═══
-    seats, owners, bags, seatCalls, deleted, jobs, gone = {}, {}, {}, {}, {}, {}, {}
+    seats, owners, bags, seatCalls, deleted, gone = {}, {}, {}, {}, {}, {}
     onRemoved = nil
     function GetPedInVehicleSeat(veh, seat) return (seats[veh] or {})[seat] or 0 end
     function NetworkGetEntityOwner(veh) return owners[veh] or -1 end
@@ -224,6 +223,14 @@ local function bootServer(opts)
         for _, s in pairs(seats) do
             for k, p in pairs(s) do if p == ent then s[k] = nil end end
         end
+    end
+    -- WHAT A PED SITS IN, by the seats above: the seat is dropped for an asker
+    -- who got into something after the press (#426's second review).
+    function GetVehiclePedIsIn(ped)
+        for veh, s in pairs(seats) do
+            for _, p in pairs(s) do if p == ped then return veh end end
+        end
+        return 0
     end
     -- A STATE BAG, as Entity(h).state:set(key, value, replicated) sets it.
     function Entity(h)
@@ -323,15 +330,12 @@ local function bootServer(opts)
         -- server/vehicles.lua schedules its sample pass on this at load.
         sampleIntervalMs = function() return 250 end,
     }
-    -- JOBS BY NAME, so a test runs the seat's pass when it means to, and can
-    -- see it go: `cancel` takes it out.
-    BR.Sched = {
-        every = function(ms, name, fn)
-            jobs[name] = { ms = ms, fn = fn }
-            return { name = name }
-        end,
-        cancel = function(h) if h then jobs[h.name] = nil end end,
-    }
+    -- THE REAL SCHEDULER (#426's second review). A stub that took a job out
+    -- the moment it was canceled hid "duplicate job name": the real one keeps
+    -- the dead entry until the next pass sweeps it, and a vehicle asked for in
+    -- between was built and never answered. A test steps it (stepJobs) and asks
+    -- it what is live (liveJob).
+    loadAll({ 'br_lib/shared/sched.lua' })
     -- THE PAUSES ARE PER MATCH: each match carries its own, and the session's
     -- (the console verbs') answers for a player with no match. The every-match
     -- console forms are recorded so a test can say the menu never reached them.
@@ -415,6 +419,29 @@ local function bootServer(opts)
     -- BR.Vehicles at call time, and its own playerDropped handler is the one
     -- the door's replaces in this harness.
     loadAll({ 'br_core/server/vehicles.lua', 'br_core/server/devmenu.lua' })
+    -- The occupancy sample it schedules at load is tools/test_roster.lua's to
+    -- drive; this harness steps the seat's pass.
+    BR.Sched.setEnabled('vehicles.roadkill', false)
+end
+
+--- The scheduler's live job of this name, as /brperf lists it, or nil.
+local function liveJob(name)
+    for _, j in ipairs(BR.Sched.stats()) do
+        if j.name == name then return j end
+    end
+    return nil
+end
+
+--- One scheduler pass, each a second after the last on a clock of its own, so
+--- every live job is due; a job that threw is a harness error, not a quiet
+--- miss.
+local stepAt = 0
+local function stepJobs()
+    stepAt = stepAt + 1000
+    BR.Sched.step(stepAt)
+    for _, j in ipairs(BR.Sched.stats()) do
+        if j.errors > 0 then error(('job %s threw: %s'):format(j.name, consoleLines[#consoleLines]), 2) end
+    end
 end
 
 --- The token the server lists player `id` under, opening the menu for `asker`
@@ -1215,7 +1242,7 @@ do
     -- #426, the owner: "put me in the driver seat". The platform's
     -- SetPedIntoVehicle, an RPC the asker's own client runs, once a client holds
     -- the vehicle, until the vehicle's own seat says so -- five seconds at most.
-    local function seatRun() local j = jobs['devmenu.seat']; if j then j.fn() end end
+    local seatRun = stepJobs
     local function pressFor(model, tree)
         clock = clock + 1000
         BR.DevMenu.request(3, { 'vehicle', model, tree }, clock)
@@ -1226,8 +1253,8 @@ do
     -- SEATED.
     bootServer({ seatTakes = true })
     local v = pressFor('hydra', 'plane')
-    ok(jobs['devmenu.seat'] ~= nil, 'a seat pass is scheduled')
-    eq(jobs['devmenu.seat'] and jobs['devmenu.seat'].ms, 250, 'at the roster\'s rate')
+    ok(liveJob('devmenu.seat') ~= nil, 'a seat pass is scheduled')
+    eq(liveJob('devmenu.seat') and liveJob('devmenu.seat').intervalMs, 250, 'at the roster\'s rate')
     ok(BR.Vehicles.isDevMenuVehicle(v), 'with the vehicle already exempt')
     seatRun()
     eq(#seatCalls, 0,
@@ -1238,7 +1265,7 @@ do
     ok(seatCalls[1] and seatCalls[1].ped == 1003 and seatCalls[1].veh == v
        and seatCalls[1].seat == -1, 'the asker\'s ped, into this vehicle\'s driving seat')
     seatRun()
-    eq(jobs['devmenu.seat'], nil, 'and once that seat names the asker, the pass is gone')
+    eq(liveJob('devmenu.seat'), nil, 'and once that seat names the asker, the pass is gone')
     eq(#notices, 0, 'with no toast: sitting in it says so')
     eq(#seatCalls, 1, 'and no second RPC')
 
@@ -1254,14 +1281,14 @@ do
     v = pressFor('hydra', 'plane')
     clock = clock + 4999
     seatRun()
-    ok(jobs['devmenu.seat'] ~= nil and #notices == 0, 'still waiting just under five seconds')
+    ok(liveJob('devmenu.seat') ~= nil and #notices == 0, 'still waiting just under five seconds')
     clock = clock + 1
     seatRun()
     eq(#seatCalls, 0, 'a vehicle no client ever held gets no RPC')
     eq(notices[#notices] and notices[#notices].text, FAILED:format('hydra'),
        'and at five seconds the asker is told, once')
     ok(notices[#notices] and notices[#notices].tone == 'warn', 'as a warning toast')
-    eq(jobs['devmenu.seat'], nil, 'and the pass is gone')
+    eq(liveJob('devmenu.seat'), nil, 'and the pass is gone')
     ok(BR.Vehicles.isDevMenuVehicle(v), 'the vehicle stays where it landed, still exempt')
 
     -- AN NPC AT THE WHEEL: deleted, and the asker seated on a later pass.
@@ -1275,7 +1302,7 @@ do
     seatRun()
     eq(#seatCalls, 1, 'the asker is, on the next')
     seatRun()
-    eq(jobs['devmenu.seat'], nil, 'and that is the end of it')
+    eq(liveJob('devmenu.seat'), nil, 'and that is the end of it')
     eq(#notices, 0, 'with nothing to say')
 
     -- A PLAYER AT THE WHEEL: nobody is pulled out of a seat for this.
@@ -1303,7 +1330,7 @@ do
     owners[v] = 3
     roster[3].state = BR.PlayerState.DBNO
     seatRun()
-    ok(#seatCalls == 0 and #notices == 0 and jobs['devmenu.seat'] == nil,
+    ok(#seatCalls == 0 and #notices == 0 and liveJob('devmenu.seat') == nil,
        'an asker downed on the way is not seated, and is told nothing')
     roster[3].state = BR.PlayerState.ALIVE
 
@@ -1324,6 +1351,104 @@ do
     owners[first], owners[second] = 3, 3
     seatRun()
     ok(#seatCalls == 1 and seatCalls[1].veh == second, 'the asker goes in the newer one')
+
+    -- A PRESS IN THE TICK AFTER A SEAT (#426's second review, reproduced). The
+    -- pass that seats the last asker cancels its own job and the next press
+    -- starts one under the same name; before the scheduler had swept the dead
+    -- entry, that threw "duplicate job name" -- the vehicle built and exempt,
+    -- and no answer, no seat, a script error.
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    owners[v] = 3
+    seatRun()
+    seatRun()
+    ok(liveJob('devmenu.seat') == nil and #seatCalls == 1,
+       'fixture: seated, and the pass has canceled itself; nothing has swept it')
+    clock = clock + 1000
+    local pressed, answer = pcall(BR.DevMenu.request, 3, { 'vehicle', 'zentorno', 'automobile' }, clock)
+    ok(pressed and answer == 'ran', 'a press before the next pass is answered', tostring(answer))
+    local f8 = sentTo(3, 'br:devmenu:dev')
+    ok(f8[#f8] and tostring(f8[#f8].data):find('zentorno', 1, true) ~= nil,
+       "with its line in the asker's F8", f8[#f8] and tostring(f8[#f8].data))
+    ok(liveJob('devmenu.seat') ~= nil, 'and starts the pass again')
+    local z = created[#created].veh
+    owners[z] = 3
+    seatRun()
+    ok(#seatCalls == 2 and seatCalls[2].veh == z, 'which puts the asker in the second one')
+
+    -- ═══ MOVED ON SINCE THE PRESS (#426's second review) ═══
+    --
+    -- The warp can land seconds late, and must not pull the asker back: the
+    -- asker pressed at 100, 200, 30.
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    pedPos[1003] = { 110.5, 200.0, 30.0 }
+    owners[v] = 3
+    seatRun()
+    ok(#seatCalls == 0 and #notices == 0 and liveJob('devmenu.seat') == nil,
+       'an asker 10.5 m from where they pressed is not seated, and is told nothing')
+
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    pedPos[1003] = { 100.0, 209.5, 30.0 }
+    owners[v] = 3
+    seatRun()
+    eq(#seatCalls, 1, 'one 9.5 m off still is')
+
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    seats[900] = { [-1] = 1003 }
+    owners[v] = 3
+    seatRun()
+    ok(#seatCalls == 0 and #notices == 0 and liveJob('devmenu.seat') == nil,
+       'an asker who got behind the wheel of something else is left at it, and told nothing')
+
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    seats[900] = { [2] = 1003 }
+    owners[v] = 3
+    seatRun()
+    ok(#seatCalls == 0 and #notices == 0, 'and so is one who got in the back of something')
+
+    bootServer({ seatTakes = true })
+    seats[900] = { [-1] = 1003 }
+    v = pressFor('adder', 'automobile')
+    owners[v] = 3
+    seatRun()
+    eq(#seatCalls, 1, 'one who pressed from the wheel of another car is moved out of it: that was the ask')
+
+    bootServer({ seatTakes = true })
+    v = pressFor('cargoplane', 'plane')
+    seats[v] = { [0] = 1003 }
+    pedPos[1003] = { 100.0, 251.9, 30.0 }
+    owners[v] = 3
+    seatRun()
+    eq(#seatCalls, 1, 'one who walked to it and got in its back is moved to its wheel, however far that was')
+
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    pedPos[1003] = nil
+    owners[v] = 3
+    seatRun()
+    ok(#seatCalls == 0 and #notices == 0, 'and one whose position cannot be read is not warped on a guess')
+
+    bootServer({ seatTakes = true })
+    v = pressFor('adder', 'automobile')
+    pedPos[1003] = { 100.0, 200.0, 40.5 }
+    owners[v] = 3
+    seatRun()
+    ok(#seatCalls == 0 and #notices == 0, 'nor one 10.5 m above where they pressed')
+
+    -- MOVED ON, WITH THE FIVE SECONDS UP AS WELL: still nothing said. The
+    -- asker left the seat behind, and being told it could not be taken would
+    -- be about something they no longer wanted.
+    bootServer({ seatTakes = true })
+    v = pressFor('hydra', 'plane')
+    pedPos[1003] = { 120.0, 200.0, 30.0 }
+    clock = clock + 5000
+    seatRun()
+    ok(#seatCalls == 0 and #notices == 0 and liveJob('devmenu.seat') == nil,
+       'an asker who walked off is not told at five seconds either')
 end
 
 describe('server: Vehicle spawner -- brcar\'s spawn, in front of the asker, in their bucket')

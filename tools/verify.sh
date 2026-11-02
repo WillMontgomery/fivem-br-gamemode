@@ -2454,15 +2454,30 @@ if [ -f "$vehfile_" ]; then
 
     # WHO NAMES A WORD, FILE BY FILE (#426): every mention outside a comment,
     # as `file:count` relative to resources/[fivem-royale], sorted -- for the
-    # three pins below. COMMENTS ARE DROPPED FIRST, so prose is not a caller;
-    # then ANY MENTION counts, not only a call, because a local alias is a
-    # caller under a new name.
+    # pins below. COMMENTS ARE DROPPED FIRST, so prose is not a caller; then ANY
+    # MENTION counts, not only a call, because a local alias is a caller under
+    # a new name.
     mentions_() {
         grep -rlF "$1" "resources/[fivem-royale]" --include=*.lua 2>/dev/null \
             | sort | while IFS= read -r f_; do
             n_=$(sed 's/--.*$//' "$f_" | grep -oF "$1" | wc -l | tr -d ' ')
             [ "$n_" -gt 0 ] && echo "${f_#"resources/[fivem-royale]/"}:$n_"
         done | tr '\n' ' ' | sed 's/ $//'
+    }
+
+    # AND THE LINES THEMSELVES (#426's second review): every code line naming a
+    # word, as `file: line` with its indent trimmed, in file order and then line
+    # order. A count can hold while what it counts changes -- brcar calling a
+    # public wrapper that names the spawn once, the hint's key hoisted out of the
+    # one function that needs it -- so the boundary's own lines are pinned word
+    # for word.
+    lines_() {
+        grep -rlF "$1" "resources/[fivem-royale]" --include=*.lua 2>/dev/null \
+            | sort | while IFS= read -r f_; do
+            sed 's/--.*$//' "$f_" | grep -F "$1" \
+                | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                      -e "s|^|${f_#"resources/[fivem-royale]/"}: |"
+        done
     }
 
     # AND ITS SPAWN HAS TWO CALLERS, PINNED (#426's review). BR.Vehicles.spawnInFront
@@ -2475,27 +2490,38 @@ if [ -f "$vehfile_" ]; then
     # the way the raw command door's are. spawnInFront refuses outside dev mode
     # on its own as well; this is what says so before that is ever leaned on.
     #
-    # `local spawn = BR.Vehicles.spawnInFront` is a caller under a new name, so
-    # every mention counts (`mentions_`). vehicles.lua holds the definition and
-    # brcar's call, after brcar's registration; server/devmenu.lua holds the
-    # vehicle row's.
-    SPAWNERS_="br_core/server/devmenu.lua:1 br_core/server/vehicles.lua:2"
-    spawn_now_=$(mentions_ 'spawnInFront')
+    # THREE LINES AND NO OTHER (#426's second review): the definition, brcar's
+    # call and the vehicle row's. A count of mentions let a public wrapper
+    # through -- `function BR.Vehicles.spawnAny(...) return
+    # BR.Vehicles.spawnInFront(...) end` below brcar, brcar calling that, and
+    # any file calling it too -- because the wrapper's one mention stood in for
+    # brcar's. And brcar's call sits INSIDE brcar's handler, between its
+    # registration and the `end` that closes it.
+    SPAWNLINES_="br_core/server/devmenu.lua: local made, why = BR.Vehicles.spawnInFront(src, model, vtype)
+br_core/server/vehicles.lua: function BR.Vehicles.spawnInFront(target, model, vtype)
+br_core/server/vehicles.lua: local made, failed, kind, detail = BR.Vehicles.spawnInFront(target, model, vtype)"
+    spawn_now_=$(lines_ 'spawnInFront')
     brcarline_=$(grep -nF "RegisterCommand('brcar'" "$vehfile_" | head -1 | cut -d: -f1)
-    spawncall_=$(sed 's/--.*$//' "$vehfile_" | grep -nF 'spawnInFront' \
-                 | grep -vF 'function BR.Vehicles.spawnInFront(' | head -1 | cut -d: -f1)
-    if [ "$spawn_now_" != "$SPAWNERS_" ]; then
-        echo "${RED}FAIL${RST} BR.Vehicles.spawnInFront is named by '${spawn_now_}'"
-        echo "     Expected exactly '${SPAWNERS_}' (file:mentions outside comments)."
+    brcarend_=$(awk -v s="${brcarline_:-0}" 'NR > s && /^end/ { print NR; exit }' "$vehfile_")
+    spawncall_=$(sed 's/--.*$//' "$vehfile_" \
+                 | grep -nF 'local made, failed, kind, detail = BR.Vehicles.spawnInFront(' \
+                 | head -1 | cut -d: -f1)
+    if [ "$spawn_now_" != "$SPAWNLINES_" ]; then
+        echo "${RED}FAIL${RST} BR.Vehicles.spawnInFront is named outside comments by:"
+        printf '%s\n' "$spawn_now_" | sed 's/^/       /'
+        echo "     Expected exactly these three lines:"
+        printf '%s\n' "$SPAWNLINES_" | sed 's/^/       /'
         echo "     It spawns ANY model in front of a player with no allowlist, and"
         echo "     its two callers -- brcar and the dev menu's vehicle row -- each"
-        echo "     gate it themselves. A new caller is a new spawn door: review it"
-        echo "     as one, then add it here."
+        echo "     gate it themselves. A new caller, an alias or a wrapper is a new"
+        echo "     spawn door: review it as one, then add its line here."
         boundary=1
-    elif [ -z "$brcarline_" ] || [ -z "$spawncall_" ] || [ "$spawncall_" -lt "$brcarline_" ]; then
+    elif [ -z "$brcarline_" ] || [ -z "$brcarend_" ] || [ -z "$spawncall_" ] \
+         || [ "$spawncall_" -lt "$brcarline_" ] || [ "$spawncall_" -gt "$brcarend_" ]; then
         echo "${RED}FAIL${RST} the spawnInFront call in $vehfile_ is not brcar's"
-        echo "     The file's one call must sit below RegisterCommand('brcar', ...),"
-        echo "     behind the console gate and the allowlist pre-check."
+        echo "     It must sit inside RegisterCommand('brcar', ...), between the"
+        echo "     registration and the end of that handler -- behind the console"
+        echo "     gate and the allowlist pre-check."
         boundary=1
     fi
 
@@ -2505,30 +2531,85 @@ if [ -f "$vehfile_" ]; then
     # second caller would be a second way to switch the vehicle anticheat off
     # for a vehicle. The dev menu's vehicle row is the one place it is called,
     # after a spawn only dev mode allows; vehicles.lua holds the definition.
+    # Pinned by its two lines, as the spawn is.
     #
     # The hint it hangs on the vehicle (BR.Config.DevMenu.vehicleStateKey, the
     # state bag 'brDevMenuVehicle') can be written by any CLIENT on an entity it
     # owns, so it is read by the two advisory client files it steers --
-    # client/vehrefuse.lua's ejection and gun hold, client/inventory.lua's strip
-    # -- and by nothing on the server: the writer names the key to set it,
-    # config names it once, and a server file that read it would let a client
-    # exempt itself.
-    EXEMPTERS_="br_core/server/devmenu.lua:1 br_core/server/vehicles.lua:1"
+    # client/vehrefuse.lua's ejection and gun hold, client/inventory.lua's strip,
+    # each only on a dev box -- and by nothing on the server: the writer names
+    # the key to set it, config names it once, and a server file that read it
+    # would let a client exempt itself.
+    EXEMPTLINES_="br_core/server/devmenu.lua: BR.Vehicles.exemptDevMenuVehicle(made.veh, made.hash, src)
+br_core/server/vehicles.lua: function BR.Vehicles.exemptDevMenuVehicle(veh, hash, by)"
     HINTKEY_="br_core/client/inventory.lua:1 br_core/client/vehrefuse.lua:1 br_core/server/vehicles.lua:1 br_lib/config/devmenu.lua:1"
     HINTBAG_="br_lib/config/devmenu.lua:1"
-    exempt_now_=$(mentions_ 'exemptDevMenuVehicle')
+    exempt_now_=$(lines_ 'exemptDevMenuVehicle')
     hintkey_now_=$(mentions_ 'vehicleStateKey')
     hintbag_now_=$(mentions_ 'brDevMenuVehicle')
-    if [ "$exempt_now_" != "$EXEMPTERS_" ]; then
-        echo "${RED}FAIL${RST} BR.Vehicles.exemptDevMenuVehicle is named by '${exempt_now_}'"
-        echo "     Expected exactly '${EXEMPTERS_}' (file:mentions outside comments)."
+    if [ "$exempt_now_" != "$EXEMPTLINES_" ]; then
+        echo "${RED}FAIL${RST} BR.Vehicles.exemptDevMenuVehicle is named outside comments by:"
+        printf '%s\n' "$exempt_now_" | sed 's/^/       /'
+        echo "     Expected exactly these two lines:"
+        printf '%s\n' "$EXEMPTLINES_" | sed 's/^/       /'
         echo "     A vehicle it records is filed against by nobody. The dev menu's"
         echo "     vehicle row, after a dev-mode spawn, is its one caller."
         boundary=1
     fi
-    if [ "$hintkey_now_" != "$HINTKEY_" ] || [ "$hintbag_now_" != "$HINTBAG_" ]; then
+
+    # THE RECORD ITSELF HAS ONE WRITE (#426's second review). The pin above holds
+    # who CALLS the writer; `devMenuVehicles` is the table it writes, a local of
+    # vehicles.lua, and a second line there putting a vehicle in it -- an
+    # `entityCreated` handler, say -- would exempt vehicles no pin covers. So the
+    # table is only ever declared, indexed or walked (pairs, next) -- no alias --
+    # and exactly one of its indexes is assigned anything but nil: the writer's.
+    RECWRITE_='devMenuVehicles[v] = { model = BR.NormHash(h), by = by }'
+    recwrites_=$(sed 's/--.*$//' "$vehfile_" \
+                 | grep -E 'devMenuVehicles[[:space:]]*\[[^]]*\][[:space:]]*=[^=]' \
+                 | grep -vE '=[[:space:]]*nil([^_[:alnum:]]|$)' \
+                 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    recother_=$(sed 's/--.*$//' "$vehfile_" | grep -F 'devMenuVehicles' \
+                | sed -E -e 's/devMenuVehicles[[:space:]]*\[//g' \
+                         -e 's/(pairs|next)\(devMenuVehicles\)//g' \
+                         -e 's/^[[:space:]]*local devMenuVehicles = \{\}[[:space:]]*$//' \
+                | grep -F 'devMenuVehicles')
+    if [ "$recwrites_" != "$RECWRITE_" ] || [ -n "$recother_" ]; then
+        echo "${RED}FAIL${RST} the dev menu's record (devMenuVehicles, $vehfile_) is written by:"
+        printf '%s\n' "${recwrites_:-(nothing)}" | sed 's/^/       /'
+        [ -n "$recother_" ] && printf '%s\n' "$recother_" | sed 's/^/       and named as: /'
+        echo "     Expected one write, '${RECWRITE_}', in"
+        echo "     BR.Vehicles.exemptDevMenuVehicle -- and the table only declared,"
+        echo "     indexed or walked. A vehicle in it is filed against by nobody."
+        boundary=1
+    fi
+
+    # AND THE HINT'S KEY IS NAMED ON THE SERVER IN ONE LINE, THE WRITER'S, AND NO
+    # SERVER FILE READS AN ENTITY'S STATE (#426's second review). A count let
+    # the key be hoisted to file scope and read again elsewhere in vehicles.lua:
+    # still one mention. So that line is pinned, and in server code `Entity(`
+    # appears on the writer's set alone, and GetStateBagValue and
+    # AddStateBagChangeHandler nowhere -- the other two ways to read the bag.
+    HINTSV_="br_core/server/vehicles.lua: local key = BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey"
+    SVBAGS_="br_core/server/vehicles.lua: pcall(function() Entity(v).state:set(key, true, true) end)"
+    hintsv_now_=$(lines_ 'vehicleStateKey' | grep '^[^/]*/server/')
+    svbags_now_=$(for f_ in "resources/[fivem-royale]"/*/server/*.lua "resources/[fivem-royale]"/*/server/*/*.lua; do
+                      [ -f "$f_" ] || continue
+                      sed 's/--.*$//' "$f_" \
+                          | grep -E '(^|[^_[:alnum:]])Entity[[:space:]]*\(|GetStateBagValue|AddStateBagChangeHandler' \
+                          | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                                -e "s|^|${f_#"resources/[fivem-royale]/"}: |"
+                  done)
+    if [ "$hintkey_now_" != "$HINTKEY_" ] || [ "$hintbag_now_" != "$HINTBAG_" ] \
+       || [ "$hintsv_now_" != "$HINTSV_" ] || [ "$svbags_now_" != "$SVBAGS_" ]; then
         echo "${RED}FAIL${RST} the dev menu vehicle hint is named by '${hintkey_now_}' / '${hintbag_now_}'"
-        echo "     Expected '${HINTKEY_}' / '${HINTBAG_}'."
+        echo "     Expected '${HINTKEY_}' / '${HINTBAG_}',"
+        echo "     on the server only as '${HINTSV_#*: }',"
+        echo "     and an entity's state touched by server code only as:"
+        echo "       ${SVBAGS_}"
+        if [ "$svbags_now_" != "$SVBAGS_" ]; then
+            echo "     Server code touching one now:"
+            printf '%s\n' "${svbags_now_:-(nothing)}" | sed 's/^/       /'
+        fi
         echo "     A client can write that state bag on an entity it owns: only the"
         echo "     advisory client files it steers (vehrefuse.lua, inventory.lua's"
         echo "     strip) may read it, and only the record's writer may name it on"
@@ -2963,8 +3044,8 @@ fi
 if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
     echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
-    echo "${GRN}ok${RST}   brcar's spawn, BR.Vehicles.spawnInFront, has two callers: brcar and the dev menu's vehicle row"
-    echo "${GRN}ok${RST}   the dev menu vehicle exemption has one writer, and its client hint is read by the advisory client files alone"
+    echo "${GRN}ok${RST}   brcar's spawn, BR.Vehicles.spawnInFront, has two callers, line for line: brcar and the dev menu's vehicle row"
+    echo "${GRN}ok${RST}   the dev menu vehicle exemption has one writer and one write, and no server code reads its client hint"
     echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
     echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky and the clock each have one writer"
     echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"

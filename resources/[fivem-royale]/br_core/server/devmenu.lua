@@ -440,6 +440,14 @@ end
 -- once (SEAT_FAILED). A seat that stops making sense on the way -- the asker
 -- died, boarded, left, or asked for another vehicle -- is dropped without a
 -- word; nothing was promised for that.
+--
+-- AND THE ASKER MAY HAVE MOVED ON (#426's second review). The warp can land
+-- seconds after the press, and one that late would pull somebody back to it --
+-- out of a car they are driving, even. So the seat is dropped, without a word
+-- too, for an asker who has got into anything since the press but the vehicle
+-- built for them, or who stands more than SEAT_STRAY_M from where they pressed.
+-- The vehicle they pressed from does not count: asking for one from the seat of
+-- another is asking to be moved out of it.
 
 --- The player states the vehicle row is taken in. See the header.
 local SEATABLE = {
@@ -460,8 +468,12 @@ local SEAT_POLL_MS = 250
 --- car it seats somebody in, and so does this.
 local SEAT_WINDOW_MS = 5000
 
---- [asker] = { veh, model, untilMs }. One each: a second vehicle replaces the
---- first, which stays where it landed.
+--- How far from where they pressed an asker may stand and still be seated.
+local SEAT_STRAY_M = 10.0
+
+--- [asker] = { veh, model, untilMs, at, from }: where they stood and what they
+--- sat in as they pressed. One each: a second vehicle replaces the first, which
+--- stays where it landed.
 local seating = {}
 
 --- The scheduler job, while anything is waiting to be seated.
@@ -505,6 +517,28 @@ local function onAClient(veh)
     return o ~= nil and o > 0
 end
 
+--- Where this ped stands, or nil.
+--- @param ped integer @return table|nil  x, y, z
+local function standsAt(ped)
+    if not GetEntityCoords then return nil end
+    local ok, c = pcall(GetEntityCoords, ped)
+    if not ok or c == nil then return nil end
+    return c
+end
+
+--- Has the asker moved on since the press (the header)? A position that cannot
+--- be read says yes: nobody is warped on a guess.
+--- @param ped integer @param s table  their seat @return boolean
+local function movedOn(ped, s)
+    local riding = BR.Vehicles.ridingIn(ped)
+    if riding ~= nil and riding == s.veh then return false end
+    if riding ~= nil and riding ~= s.from then return true end
+    local at = standsAt(ped)
+    if at == nil or s.at == nil then return true end
+    local dx, dy, dz = at.x - s.at.x, at.y - s.at.y, at.z - s.at.z
+    return dx * dx + dy * dy + dz * dz > SEAT_STRAY_M * SEAT_STRAY_M
+end
+
 --- One try at one asker's seat.
 --- @return string  'wait' | 'done' | 'failed' | 'dropped'
 local function seatOne(src, s, now)
@@ -515,6 +549,7 @@ local function seatOne(src, s, now)
     if not stillThere(s.veh) then return 'failed' end
     local driver = driverOf(s.veh)
     if driver == e.ped then return 'done' end
+    if movedOn(e.ped, s) then return 'dropped' end
     if now >= s.untilMs then return 'failed' end
     if driver ~= 0 then
         if playersPed(driver) then return 'failed' end
@@ -542,10 +577,14 @@ local function seatPass()
     end
 end
 
---- Seat the asker in what the row just built.
---- @param src integer @param veh integer @param model string
-local function seatAsker(src, veh, model)
-    seating[src] = { veh = veh, model = model, untilMs = GetGameTimer() + SEAT_WINDOW_MS }
+--- Seat the asker in what the row just built, from where they stand now.
+--- @param src integer @param ped integer @param veh integer @param model string
+local function seatAsker(src, ped, veh, model)
+    seating[src] = { veh = veh, model = model, untilMs = GetGameTimer() + SEAT_WINDOW_MS,
+                     at = standsAt(ped), from = BR.Vehicles.ridingIn(ped) }
+    -- A NEW JOB UNDER THE NAME THE LAST PASS JUST GAVE UP: the scheduler frees
+    -- a name as it is canceled, not when the entry is swept (#426's second
+    -- review; br_lib/shared/sched.lua).
     if seatJob == nil then
         seatJob = BR.Sched.every(SEAT_POLL_MS, 'devmenu.seat', seatPass)
     end
@@ -591,7 +630,7 @@ ACTIONS.vehicle = function(src, a, answer)
     -- EXEMPT, THEN SEATED: the record first, so the asker is never at its
     -- wheel for a sample before it is exempt.
     BR.Vehicles.exemptDevMenuVehicle(made.veh, made.hash, src)
-    seatAsker(src, made.veh, model)
+    seatAsker(src, e.ped, made.veh, model)
     answer(true, ('%s (0x%08X) as %s, netId %d, bucket %s')
         :format(model, BR.NormHash(made.hash), vtype, made.netId, made.bucketNote))
     return true

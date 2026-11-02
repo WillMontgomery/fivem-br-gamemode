@@ -422,6 +422,9 @@ for _, f in ipairs({
     -- refuses every model without it, as it would on a box whose manifest lost
     -- the line.
     'br_lib/config/vehicle_models.lua',
+    -- And every vehicle weapon in the game's data (#426's second review): the
+    -- only weapons a dev menu vehicle's gun is excused for.
+    'br_lib/config/vehicle_weapons.lua',
     'br_lib/config/loot.lua',
     -- THE PUMP'S NUMBERS, FOR THE REPAIR KIT (#228). server/inventory.lua's
     -- use tick grants slices of BR.Config.Fuel.healthMax, and its completion
@@ -5683,6 +5686,27 @@ do
             if veh and BR.Vehicles.isDevMenuVehicle(veh) then any = true end
         end
         ok(not any, 'and nothing brcar builds is in the dev menu\'s record')
+    end
+
+    -- ═══ NOT AS A TRAIN (#426's second review) ═══
+    --
+    -- The table gives a train its own tree, and the server setter cannot build
+    -- one a train can run as: brcar refuses the tree, typed or the model's own,
+    -- as the dev menu does.
+    do
+        local n = #created
+        printed = {}
+        runCommand('brcar', '1', 'freight')
+        ok(#created == n and printedSaying('a train cannot be built this way') ~= nil,
+            'a Freight with no type is built as nothing, and the line says why')
+        printed = {}
+        runCommand('brcar', '1', 'metrotrain', 'train')
+        ok(#created == n and printedSaying('a train cannot be built this way') ~= nil,
+            'nor a metro train typed as one')
+        printed = {}
+        runCommand('brcar', '1', 'myaddon', 'train')
+        ok(#created == n and printedSaying('a train cannot be built this way') ~= nil,
+            'nor an add-on asked for as one')
     end
 
     -- ═══ A WIDE ONE IS PUT DOWN CLEAR, AND NONE INTO THE GROUND (#426's review) ═══
@@ -11819,7 +11843,7 @@ do
     -- server/vehicles.lua, seats and all, because the wiring is the fault: the
     -- pure function was already right and being asked the wrong question.
     local PISTOL   = 0x1B06D571
-    local MOUNTED  = 0xE2822A29    -- VEHICLE_WEAPON_PLAYER_BUZZARD: in no row
+    local MOUNTED  = 0xE2822A29    -- VEHICLE_WEAPON_PLAYER_LAZER: in no row
     local CARBINE  = 0x83BF0278    -- WEAPON_CARBINERIFLE: one of OURS
 
     local function twoAlive()
@@ -12046,7 +12070,7 @@ do
     --
     -- AND EACH PAIRED WITH WHAT IT MUST NOT TOUCH: the same thing from a player
     -- on foot, our own weapons from the same seat, ramming, a car going off.
-    local MOUNTED = 0xE2822A29    -- VEHICLE_WEAPON_PLAYER_BUZZARD: in no row
+    local MOUNTED = 0xE2822A29    -- VEHICLE_WEAPON_PLAYER_LAZER: in no row
     local CARBINE = 0x83BF0278    -- WEAPON_CARBINERIFLE: one of OURS
     local GRENADE = 0x93E220BD    -- WEAPON_GRENADE: one of OURS
     local RAMMED  = GetHashKey('WEAPON_RAMMED_BY_CAR')
@@ -12385,6 +12409,11 @@ do
         ok(cancels == 0,
             'its gun\'s hit, its launch and its blast are canceled nowhere',
             tostring(cancels))
+        -- AS THE ENGINE SENDS IT: the hash has the top bit set, so it arrives
+        -- signed, and is the same vehicle weapon (#426's second review).
+        hit(MOUNTED - 0x100000000, { CAR })
+        ok(cancels == 0, 'nor is its hit with the hash signed, as the engine reports it',
+            tostring(cancels))
         ok((BR.Damage.vehicleGunEvents or 0) == events0
            and (BR.Damage.vehicleGunProjectiles or 0) == proj0
            and (BR.Damage.vehicleGunBlasts or 0) == blasts0,
@@ -12406,6 +12435,46 @@ do
         hit(CARBINE, { CAR })
         ok((BR.Damage.devMenuGunEvents or 0) == devEvents0,
             'a carbine of ours from that seat is not the car\'s gun')
+
+        -- ═══ A TRAINER'S WEAPON IS NO VEHICLE'S (#426's second review) ═══
+        --
+        -- The excuse is for a vehicle's own weapon (config/vehicle_weapons.lua),
+        -- not any hash in no row of ours. In a dev menu Buzzard -- no #322
+        -- model -- the Buzzard's own gun at a player is refused nowhere, and a
+        -- trainer's, twice, is refused and announced as it is from anywhere.
+        local TRAINER    = 0x11111111    -- in no row of ours, in no vehicle's
+        local BUZZARD_MG = 0x46B89C8E    -- VEHICLE_WEAPON_PLAYER_BUZZARD
+        pair('buzzard')
+        ok(BR.Vehicles.exemptDevMenuVehicle(7, GetHashKey('buzzard'), 1),
+            'fixture: a Buzzard the dev menu spawned')
+        fired = {}
+        local devEventsB = BR.Damage.devMenuGunEvents or 0
+        hit(BUZZARD_MG, { 1002 })
+        hit(BUZZARD_MG, { 1002 })
+        ok(cancels == 0 and #firedOf('br:ringmaster:refusal') == 0
+           and (BR.Damage.devMenuGunEvents or 0) == devEventsB + 2,
+            'its own gun at a player, twice, is refused nowhere',
+            ('%d cancels, %d announced'):format(cancels, #firedOf('br:ringmaster:refusal')))
+        hit(TRAINER, { 1002 })
+        hit(TRAINER, { 1002 })
+        ok(#firedOf('br:ringmaster:refusal') == 1
+           and (BR.Damage.devMenuGunEvents or 0) == devEventsB + 2,
+            'a trainer\'s weapon from the same seat, twice, is refused and announced',
+            ('%d announced'):format(#firedOf('br:ringmaster:refusal')))
+
+        -- FROM A DEV MENU TECHNICAL, a #322 model too, that weapon meets the
+        -- backstop as from any Technical: the dev menu's check is asked first
+        -- and lets it go on.
+        pair('technical')
+        BR.Vehicles.exemptDevMenuVehicle(7, GetHashKey('technical'), 1)
+        local eventsT = BR.Damage.vehicleGunEvents or 0
+        local projT   = BR.Damage.vehicleGunProjectiles or 0
+        hit(TRAINER, { CAR })
+        launch(TRAINER)
+        ok(cancels == 2 and (BR.Damage.vehicleGunEvents or 0) == eventsT + 1
+           and (BR.Damage.vehicleGunProjectiles or 0) == projT + 1,
+            'a trainer\'s weapon from a dev menu Technical: its hit and its launch are canceled',
+            tostring(cancels))
 
         -- THE SAME TECHNICAL, OUT OF THE RECORD, IS A #322 ONE AGAIN.
         fire('entityRemoved', nil, 7)

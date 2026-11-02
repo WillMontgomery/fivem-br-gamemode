@@ -2494,6 +2494,9 @@ local function newTimelineWorld(opts)
         -- precisely the drift the cases below exist to catch. It loads AFTER
         -- geo.lua because it calls BR.NormHash at load time.
         'br_lib/config/vehicles.lua',
+        -- THE GAME'S VEHICLE WEAPONS (#426's second review), real for the same
+        -- reason: a dev menu vehicle's gun is excused for these and no other.
+        'br_lib/config/vehicle_weapons.lua',
         'br_lib/shared/evidence_buf.lua',
         -- THE REAL DOMAIN AND SHORTENER LISTS, for the reason the weapon table
         -- and the refusal words are real: a stub would let the chat cases below
@@ -2601,9 +2604,9 @@ local function newTimelineWorld(opts)
     -- WHO IS SITTING IN A VEHICLE THE DEV MENU SPAWNED (#426), keyed on the
     -- ped for the same reason. The real BR.Vehicles.inDevMenuVehicle answers
     -- out of the server's own record and is driven in tools/test_roster.lua;
-    -- what is asserted here is that strip.lua asks it, and only about a hash
-    -- we issue nobody.
-    S.inDevMenu = {}
+    -- what is asserted here is that strip.lua asks it -- COUNTED -- and only
+    -- about a vehicle weapon's hash (#426's second review).
+    S.inDevMenu, S.inDevMenuAsks = {}, 0
     BRs.Vehicles = {
         inDisarmedVehicle = function(ped)
             -- COUNTED, because the cost of asking is part of the contract: a
@@ -2614,6 +2617,7 @@ local function newTimelineWorld(opts)
             return S.inDisarmed[ped] == true
         end,
         inDevMenuVehicle = function(ped)
+            S.inDevMenuAsks = S.inDevMenuAsks + 1
             return S.inDevMenu[ped] == true
         end,
         ridingIn = function(ped)
@@ -5074,19 +5078,43 @@ do
     -- nobody, whoever sits in it. Its gun is live, so the engine puts it in a
     -- hand and the client's strip reports it; a model the #322 ruling never
     -- disarmed (a Buzzard, a Hydra) is excused all the same, by the server's
-    -- own record.
+    -- own record. ITS OWN GUN, THAT IS (#426's second review): a vehicle weapon
+    -- of the game's, config/vehicle_weapons.lua -- not any hash we issue nobody.
+    local VEH_GUN = 0x46B89C8E    -- VEHICLE_WEAPON_PLAYER_BUZZARD
     local W = newTimelineWorld()
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:dev', 'Dev')
     W.seatedInDevMenu(1)
 
-    W.at(4000); W.strip(1, CONJURED)
-    W.at(5000); W.strip(1, CONJURED)
+    W.at(4000); W.strip(1, VEH_GUN)
+    W.at(5000); W.strip(1, VEH_GUN)
     ok(#W.S.incidents == 0,
-        'a hash we issue nobody, stripped from somebody in a dev menu vehicle, '
+        'a vehicle weapon, stripped from somebody in a dev menu vehicle, '
             .. 'opens no case', #W.S.incidents)
     ok(W.BR.Strip.stats().vehicleGuns == 2,
         'and is counted as the car\'s own gun', W.BR.Strip.stats().vehicleGuns)
+
+    -- ONE SEAT READ A WINDOW, AS THE DISARMED SEAT'S IS.
+    local asks = W.S.inDevMenuAsks
+    W.at(6000)
+    for _ = 1, 20 do W.strip(1, VEH_GUN) end
+    ok(W.S.inDevMenuAsks == asks + 1, 'twenty of them inside one window cost one read of that seat',
+        ('%d -> %d'):format(asks, W.S.inDevMenuAsks))
+
+    -- A TRAINER'S WEAPON FROM THE SAME SEAT IS NO VEHICLE'S, and is filed as it
+    -- is on foot -- the hash asked first, so it never costs the seat.
+    local WT = newTimelineWorld()
+    WT.startMatch(9, 1000)
+    WT.join(3, 9, 'license:dev3', 'Dev3')
+    WT.seatedInDevMenu(3)
+    WT.at(4000); WT.strip(3, CONJURED)
+    WT.at(5000); WT.strip(3, CONJURED)
+    ok(#WT.S.incidents == 1,
+        'a trainer\'s weapon, stripped from somebody in a dev menu vehicle, opens a case',
+        #WT.S.incidents)
+    ok(WT.BR.Strip.stats().vehicleGuns == 0 and WT.S.inDevMenuAsks == 0,
+        'and was never asked about the seat',
+        ('%d excused, %d asks'):format(WT.BR.Strip.stats().vehicleGuns, WT.S.inDevMenuAsks))
 
     -- A WEAPON OF OURS FROM THE SAME SEAT IS FILED AS IT IS ON FOOT.
     local W2 = newTimelineWorld()

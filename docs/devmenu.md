@@ -20,8 +20,9 @@ volts, give Yubikeys, Storm pause, warmup pause, spawn airdrops"*
 | **The client** | `br_core/client/devmenu.lua` | The menu, built once through `BR.Menu` (`client/menu.lua`), the vehicle spawner's menus, built the first time each opens, the key, and one `brdevsv` line per press. Decides nothing. |
 | **The server** | `br_core/server/devmenu.lua` (`BR.DevMenu`) | The door, `brdevsv`: the gate, the checks, the rate, the console verb each row runs, and the vehicle spawner's seat. |
 | **The spawn** | `br_core/server/vehicles.lua` (`BR.Vehicles.spawnInFront`) | `brcar`'s own server-side spawn, which the vehicle spawner runs too. Dev mode only, and called from those two places only. |
-| **The exemption** | `br_core/server/vehicles.lua` (`BR.Vehicles.exemptDevMenuVehicle`), and a state bag for `client/vehrefuse.lua` | The server's in-memory record of what the vehicle spawner built, which the vehicle detectors skip, and the hint that stops the client's ejection and gun hold. A dev box only. |
+| **The exemption** | `br_core/server/vehicles.lua` (`BR.Vehicles.exemptDevMenuVehicle`), and a state bag for `client/vehrefuse.lua` | The server's in-memory record of what the vehicle spawner built, which the vehicle detectors skip, and the hint that stops the client's ejection and gun hold. A dev box only, on both sides. |
 | **The game's own models** | `br_lib/config/vehicle_models.lua` (`BR.Config.VehicleModels`), written by `tools/vehicle_models.py` | Every base-game vehicle model: its hash, the sync tree it has to be built as, how far it reaches across and below its origin, and whether the game's data arms it. The spawn's tree check and placement; `check_vehicles.lua`'s expected Armed set. Server only. |
+| **The game's vehicle weapons** | `br_lib/config/vehicle_weapons.lua` (`BR.Config.VehicleWeapons`, `BR.Config.VehicleWeaponByHash`), written by the same tool | Every vehicle weapon the game's data lists on any model, the searchlight, the radar and the water cannon among them. The only weapons a dev menu vehicle's gun is excused for. Shared: the client's strip asks it too. |
 
 ## Who
 
@@ -218,6 +219,12 @@ is not loaded, and could not be tried here without a game running.
 29 trailer, 11 train; 125 armed. A name the game's hash does not come from is
 refused, and nothing is written. The manifest loads it into the server alone;
 without it the spawn refuses every model and says the table is not loaded.
+The same run writes `config/vehicle_weapons.lua`: the 166 vehicle weapons the
+data lists on any model, each with its hash, joaat of its name. **Neither is
+edited by hand, and a hand edit fails the build** (#426's second review): each
+file's header carries an FNV-1a of its body -- every byte from `BR = BR or {}`
+on -- and `tools/check_vehicles.lua` recomputes it, so a tree, a size, an
+armed flag or a weapon changed by hand is caught without the dump.
 
 **Where it works: in warmup, or alive in a match.** **Not from the lobby**,
 which answers `no match running`: every lobby player stands on the one lobby
@@ -239,24 +246,37 @@ is not held off, and nobody is filed against for it, whoever sits in it:
   is pruned when the platform removes the entity (`entityRemoved`) and swept
   of dead entries at every write. The occupancy detector skips a vehicle in
   it (no dwell, no count, no case), and `server/damage.lua` and
-  `server/strip.lua` leave its gun alone: a hit, a launch or a blast of a
-  vehicle-gun type from somebody seated in it is neither refused, canceled
-  nor counted, and its gun in a hand is no strip case. A carbine of ours
-  fired from the same seat is judged as ever.
+  `server/strip.lua` leave its own gun alone: a hit or a launch of a vehicle
+  weapon (`config/vehicle_weapons.lua`, every model's, so an add-on mounting
+  a gun of the base game is covered), or a blast of a type Rockstar's data
+  gives only to vehicle guns, from somebody seated in it is neither refused
+  nor canceled, and a vehicle weapon in a hand there is no strip case. The
+  weapon is asked before the seat. **Its own gun, not any gun** (#426's second
+  review): a carbine of ours fired from the same seat is judged as ever, and a
+  trainer's weapon -- in no row of ours and no vehicle's -- is refused and
+  filed, and stripped and reported, as it is anywhere. In a dev menu
+  Technical, a #322 model too, the trainer's hit and launch meet the disarmed
+  seat's backstop like anybody's.
 - **Only a dev box can hold one.** The writer refuses unless
   `BR.Server.devMode == true`, and so does the spawn before it, behind a
   door that asks the same. `tools/verify.sh` pins the writer to this row.
   `brcar`'s vehicles are never in the record.
-- **The client gets a hint.** The writer also sets a replicated state bag on
-  the vehicle (`BR.Config.DevMenu.vehicleStateKey`, `brDevMenuVehicle`), and
+- **The client gets a hint, and believes it on a dev box alone.** The writer
+  also sets a replicated state bag on the vehicle
+  (`BR.Config.DevMenu.vehicleStateKey`, `brDevMenuVehicle`), and on a dev box
   `client/vehrefuse.lua`, which is advisory, neither ejects anybody from a
   vehicle carrying it nor holds its gun off; `client/inventory.lua`'s strip
-  leaves the gun the engine puts in a hand there. Each reads the hint only
-  where it would otherwise act. **No server code reads it**: a client can
-  write state on an entity it owns, so a cheat could hang it on a stolen
-  Buzzard -- and gain nothing, since skipping the advisory ejector and the
-  strip is what a cheat already does by not running them, and the server
-  still files.
+  leaves a vehicle weapon the engine puts in a hand there. Each reads the
+  hint only where it would otherwise act, and only while `BR.Dev.on()` --
+  `br_devMode`, which the server replicates and no client sets for another.
+  **No server code reads it**: a client can write state on an entity it
+  owns. And that is why the clients ask dev mode first (#426's second
+  review): `sv_entityLockdown relaxed` lets a client own an ambient Buzzard,
+  and a cheat that hung the hint on one made every honest client that got in
+  after stay in and keep the gun, while the server -- its record empty --
+  filed against them. Off a dev box the hint is not read. On a dev box a
+  forged one still fools the clients that read it, and that is all: the
+  server files from its own record.
 
 **You are put in the driver's seat.** The server calls the platform's own
 `SetPedIntoVehicle`, an RPC your client runs, once a client holds the
@@ -267,7 +287,16 @@ the try. If the seat cannot be taken -- the vehicle never reaches a client,
 it is gone, or somebody else is driving -- the vehicle stays where it landed,
 still exempt, and you are told once: `<model> was built, but you could not
 be put in it`. If you die, board or leave on the way, the seat is dropped
-without a word. Sources: `rpc_spec_natives.lua` declares
+without a word -- and so it is if you have moved on (#426's second review):
+got into anything since the press but the vehicle built for you (the one you
+pressed from does not count: asking from a seat is asking to be moved), or
+gone more than 10 m from where you pressed, or your position cannot be read.
+The warp can land seconds after the press, and must not pull you back to it.
+The pass is a scheduler job that cancels itself when nobody is left to seat,
+and the next press starts it again under the same name -- which `BR.Sched`
+now allows the moment a job is canceled, not one sweep later (a press in that
+tick used to throw `duplicate job name`, after the vehicle was built).
+Sources: `rpc_spec_natives.lua` declares
 `SET_PED_INTO_VEHICLE` a context RPC, which `ServerRPC.cpp` sends to the
 ped's owner; `ClientRPC.cpp` resolves a server-setter vehicle at once
 without waiting for it, which is why this waits for an owner and checks the
@@ -284,7 +313,15 @@ has it in scope, and it may vanish on its own (citizenfx/fivem#2623, open).
 **The spawn is dev mode's alone.** `BR.Vehicles.spawnInFront` builds any
 model with no allowlist, so it refuses unless `BR.Server.devMode == true`
 whatever its caller checked, and `tools/verify.sh` pins its callers to
-`brcar` and this row: a third fails the build.
+`brcar` and this row, line for line: a third, an alias or a wrapper fails the
+build, and so does `brcar`'s call outside `brcar`'s handler. It pins the
+record the same way -- one writer, one line that puts a vehicle in it -- and
+no server code may touch an entity's state but the writer's one `set`.
+
+**`brcar` builds no train** (#426's second review). Its type defaults to the
+model's own tree, and a train's is `train`, which the server setter cannot
+build a working train in; `brcar` refuses that tree, typed or not, as the
+dev menu does.
 
 ## What the server checks
 

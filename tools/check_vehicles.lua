@@ -724,6 +724,96 @@ do
     end
 end
 
+-- ------------------------- every vehicle weapon (#426's second review) --
+--
+-- config/vehicle_weapons.lua is the one set a dev menu vehicle's gun is excused
+-- for, on both sides: server/damage.lua, server/strip.lua and
+-- client/inventory.lua. A WRONG HASH THERE IS A VEHICLE'S GUN NOBODY IS EXCUSED
+-- FOR, and an extra one is a trainer's weapon somebody is. So every row is held
+-- to its name, as the models are, and the index those three ask to the rows.
+local vehWeapons = 0
+do
+    local chunk = loadfile(ROOT .. 'config/vehicle_weapons.lua')
+    if not chunk then
+        fail('config/vehicle_weapons.lua would not load')
+    else
+        chunk()
+    end
+    local byName, byHash = {}, {}
+    for _, w in ipairs(BR.Config.VehicleWeapons or {}) do
+        vehWeapons = vehWeapons + 1
+        if type(w.name) ~= 'string' or not w.name:match('^VEHICLE_WEAPON_[A-Z0-9_]+$') then
+            fail('a vehicle weapon row has no VEHICLE_WEAPON_ name: %s', tostring(w.name))
+            goto nextWeapon
+        end
+        if byName[w.name] then fail('vehicle weapon %s is listed twice', w.name) end
+        byName[w.name] = true
+        if w.hash ~= joaat(w.name) then
+            fail('vehicle weapon %s: hash is 0x%08X, should be 0x%08X',
+                 w.name, w.hash or 0, joaat(w.name))
+        end
+        if w.hash and byHash[w.hash] then
+            fail('vehicle weapons %s and %s share hash 0x%08X', w.name, byHash[w.hash], w.hash)
+        end
+        if w.hash then byHash[w.hash] = w.name end
+        ::nextWeapon::
+    end
+    -- THE INDEX IS THE ROWS AND NOTHING MORE: a hash put into it by hand would
+    -- be excused with no row to say so.
+    local index = BR.Config.VehicleWeaponByHash or {}
+    for h, name in pairs(index) do
+        if byHash[h] ~= name then
+            fail('BR.Config.VehicleWeaponByHash holds 0x%08X (%s), and no row does',
+                 math.tointeger(h) or 0, tostring(name))
+        end
+    end
+    for h, name in pairs(byHash) do
+        if index[h] ~= name then
+            fail('vehicle weapon %s is not in BR.Config.VehicleWeaponByHash', name)
+        end
+    end
+    -- THE THREE THAT ARE NOT GUNS ARE IN IT, and so the set is not empty: a dump
+    -- that lost its weapons would excuse nothing, and say nothing about it.
+    for _, n in ipairs({ 'VEHICLE_WEAPON_SEARCHLIGHT', 'VEHICLE_WEAPON_RADAR',
+                         'VEHICLE_WEAPON_WATER_CANNON' }) do
+        if not byName[n] then fail('config/vehicle_weapons.lua has no %s', n) end
+    end
+end
+
+-- -------------- neither generated file is edited by hand (#426's second review) --
+--
+-- Every check above holds a generated file to itself or to config/vehicles.lua,
+-- so a row changed by hand in both places -- Mogul unmarked in the model table
+-- and in the Armed set, say -- passes them all. tools/vehicle_models.py writes an
+-- FNV-1a (32-bit) of each file's body, every byte from `BR = BR or {}` to the
+-- end, into its header; this recomputes it, so a hand edit fails here without
+-- the dump. Line ends are read as LF, which is what .gitattributes checks a .lua
+-- out as.
+local function fnv1a(s)
+    local h = 0x811C9DC5
+    for i = 1, #s do
+        h = ((h ~ s:byte(i)) * 0x01000193) & 0xFFFFFFFF
+    end
+    return h
+end
+for _, rel in ipairs({ 'config/vehicle_models.lua', 'config/vehicle_weapons.lua' }) do
+    local f = io.open(ROOT .. rel, 'rb')
+    local text = f and f:read('a') or ''
+    if f then f:close() end
+    text = text:gsub('\r\n', '\n')
+    local said = text:match('\n%-%- Body FNV%-1a 0x(%x%x%x%x%x%x%x%x):')
+    local at = text:find('\nBR = BR or {}\n', 1, true)
+    if said == nil or at == nil then
+        fail('%s has no body checksum -- tools/vehicle_models.py did not write it', rel)
+    else
+        local got = fnv1a(text:sub(at + 1))
+        if got ~= tonumber(said, 16) then
+            fail('%s was edited by hand: its body hashes to 0x%08X, its header says 0x%s '
+                 .. '-- run tools/vehicle_models.py on the dump again', rel, got, said)
+        end
+    end
+end
+
 -- A class net with no classes in it is the whole third signal switched off, and
 -- switched off silently: every ruling would still come out of the model table
 -- and every test of the model table would still pass.
@@ -800,9 +890,10 @@ if fails == 0 then
         .. 'resolve from both signed and unsigned (%d have the top bit set); '
         .. '%d class-net exemptions; %d strip-exempt; %d armed (%d rows, %d '
         .. 'with no ruling yet), the game data\'s set exactly; %d base-game '
-        .. 'models, %d of them not automobiles\n')
+        .. 'models, %d of them not automobiles; %d vehicle weapons; both generated '
+        .. 'bodies as the tool wrote them\n')
         :format(checked, signedChecked, topBit, exempt, stripExempt,
-                armedRows + unruled, armedRows, unruled, models, modelTrees))
+                armedRows + unruled, armedRows, unruled, models, modelTrees, vehWeapons))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end

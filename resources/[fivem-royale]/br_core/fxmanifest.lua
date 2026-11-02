@@ -65,6 +65,13 @@ shared_scripts {
     -- like a clean one. It reads BR.Config.Bus.model nowhere, so config/map.lua
     -- may sit either side of it.
     '@br_lib/config/vehicles.lua',
+    -- Every vehicle weapon in the game's own data (tools/vehicle_models.py,
+    -- #426's second review): the only weapons a dev menu vehicle's gun is
+    -- excused for. SHARED, where config/vehicle_models.lua is the server's
+    -- alone, because client/inventory.lua's strip asks it as well as
+    -- server/damage.lua and server/strip.lua. Its hashes are unsigned literals,
+    -- so it needs nothing at load.
+    '@br_lib/config/vehicle_weapons.lua',
     '@br_lib/config/loot.lua',
     -- The four permanent crates on the warmup island (owner, 2026-09-04): the
     -- surveyed coordinates, the authored rarity ladder, and the roll that

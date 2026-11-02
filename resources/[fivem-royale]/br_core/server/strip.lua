@@ -74,7 +74,8 @@ local MIN_INTERVAL_MS = 900
 ---   the count      { matchId, count, reports, at } -- what has been counted, how
 ---                  many announcements it has produced, and when the throttle
 ---                  window opened.
----   one memo       { vehAt, vehAns } for `vehicleGun`, one seat read per window.
+---   two memos      { vehAt, vehAns } and { devAt, devAns } for `vehicleGun`:
+---                  at most one read of each seat question per window.
 ---
 --- BOUNDED BY WHO IS CONNECTED. Cleared on disconnect and rebuilt when the
 --- player's match changes, exactly as server/damage.lua's refusal record is.
@@ -269,6 +270,11 @@ end
 ---      a bare `GetVehiclePedIsIn` would excuse everybody who had ever driven a
 ---      Technical, for the rest of the match.
 ---
+--- OR, IN PLACE OF THE SECOND, a vehicle the dev menu spawned (#426) -- and
+--- there the hash must also be a vehicle's own weapon, one of the game's
+--- (config/vehicle_weapons.lua), since that vehicle's gun is live and nothing
+--- about the seat narrows what is in the hand (#426's second review).
+---
 --- ═══ WHAT IT COSTS, SAID OUT LOUD ═══
 ---
 --- Somebody granting themselves a hash in no table of ours, while seated in one
@@ -295,7 +301,7 @@ end
 --- FIRST: this is a seat read and that is a walk of five slots.
 --- @param src integer
 --- @param h integer|nil  a normalised hash
---- @param rec table     this player's record, for the one-per-window memo
+--- @param rec table     this player's record, for the one-per-window memos
 --- @param now integer
 --- @return boolean
 local function vehicleGun(src, h, rec, now)
@@ -322,31 +328,43 @@ local function vehicleGun(src, h, rec, now)
     -- got out of the car, and the failure is in the direction of the honest
     -- player: an excuse that outlives the seat by half a second rather than a
     -- case filed the moment they stepped out.
-    if rec.vehAt ~= nil and now - rec.vehAt < MIN_INTERVAL_MS then
-        return rec.vehAns
+    if rec.vehAt == nil or now - rec.vehAt >= MIN_INTERVAL_MS then
+        -- THE ROSTER'S SAMPLED PED, NOT GetPlayerPed(src). server/roster.lua's
+        -- own note: GET_PLAYER_PED takes a STRING, and the numeric key answered
+        -- 0 for every player once already. A 0 here would read as on foot, which
+        -- files the case -- safe, but safe by accident.
+        --
+        -- THE ENTRY GOES WITH THE PED SINCE #329. That function reads this
+        -- player's own armament report -- the engine's answer about the vehicle
+        -- they are sitting in, which no server-side native can ask -- and keeps
+        -- it on their roster entry so a forged one reaches nobody else. Without
+        -- the entry the answer is the authored model table's, exactly as it was
+        -- before.
+        local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
+        rec.vehAt  = now
+        rec.vehAns = BR.Vehicles.inDisarmedVehicle(e and e.ped, e)
     end
+    if rec.vehAns then return true end
 
-    -- THE ROSTER'S SAMPLED PED, NOT GetPlayerPed(src). server/roster.lua's own
-    -- note: GET_PLAYER_PED takes a STRING, and the numeric key answered 0 for
-    -- every player once already. A 0 here would read as on foot, which files the
-    -- case -- safe, but safe by accident.
-    --
-    -- THE ENTRY GOES WITH THE PED SINCE #329. That function reads this player's
-    -- own armament report -- the engine's answer about the vehicle they are
-    -- sitting in, which no server-side native can ask -- and keeps it on their
-    -- roster entry so a forged one reaches nobody else. Without the entry the
-    -- answer is the authored model table's, exactly as it was before.
-    --
-    -- AND A VEHICLE THE DEV MENU SPAWNED (#426), whatever its model: the owner
-    -- exempted those -- "yes exempt dev menu vehicles" -- so its gun in a hand
-    -- is nobody's case either. The server's own record answers, which only a
-    -- dev-mode server can hold anything in; the client's hint is never read.
-    local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
-    rec.vehAt  = now
-    rec.vehAns = BR.Vehicles.inDisarmedVehicle(e and e.ped, e)
-        or (BR.Vehicles.inDevMenuVehicle ~= nil
-            and BR.Vehicles.inDevMenuVehicle(e and e.ped) == true)
-    return rec.vehAns
+    -- AND A VEHICLE THE DEV MENU SPAWNED (#426), whatever its model -- for ITS
+    -- OWN GUN and nothing else (#426's second review). The owner exempted those
+    -- vehicles, "yes exempt dev menu vehicles", so a vehicle weapon in a hand
+    -- there is nobody's case; a trainer's weapon in the same hand is no
+    -- vehicle's, and is filed as it is anywhere. THE HASH FIRST: one index into
+    -- the game's own vehicle weapons (config/vehicle_weapons.lua, server/
+    -- damage.lua's `vehicleWeapon` has why it is every model's), so a trainer's
+    -- weapon never costs the seat. Then the seat, memoized as the one above
+    -- is, on the server's own record, which only a dev-mode server can hold
+    -- anything in; the client's hint is never read.
+    local guns = BR.Config.VehicleWeaponByHash
+    if guns == nil or guns[h] == nil then return false end
+    if not BR.Vehicles.inDevMenuVehicle then return false end
+    if rec.devAt == nil or now - rec.devAt >= MIN_INTERVAL_MS then
+        local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
+        rec.devAt  = now
+        rec.devAns = BR.Vehicles.inDevMenuVehicle(e and e.ped) == true
+    end
+    return rec.devAns
 end
 
 -- THE SITTING FOLD THAT WAS HERE, AND WHY IT IS NOT (#330, review 2026-09-21).

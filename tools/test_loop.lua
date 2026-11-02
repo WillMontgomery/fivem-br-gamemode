@@ -1236,6 +1236,53 @@ do
             table.concat(notKept, ', ')))
 end
 
+describe('a name taken again before the sweep (#426)')
+do
+    -- Under `off all` nothing is swept until `on all`, so a callback unregistered
+    -- and registered again while paused leaves its dead entry in the list ahead
+    -- of the live one. register always passed over it; setEnabled, names, stats,
+    -- bench and ab did not, so `brloop disable` reported the name found and left
+    -- the live one running, and /brperf listed both. The server scheduler had
+    -- the same hole (test_sched.lua).
+    clearAll()
+    BR.Loop.step(BR.Loop.FRAME)   -- sweep what earlier blocks left
+    local old, new, gone = 0, 0, 0
+    local hOld = BR.Loop.register(BR.Loop.FRAME, 't.reuse', function() old = old + 1 end)
+    local hGone = BR.Loop.register(BR.Loop.FRAME, 't.reuse.gone', function() gone = gone + 1 end)
+    BR.Loop.pauseAll(true)
+    BR.Loop.unregister(hOld)
+    BR.Loop.unregister(hGone)
+    local hNew = BR.Loop.register(BR.Loop.FRAME, 't.reuse', function() new = new + 1 end)
+    BR.Loop.step(BR.Loop.FRAME)   -- paused, so nothing is swept
+
+    local rows, listed = 0, 0
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 't.reuse' or s.name == 't.reuse.gone' then rows = rows + 1 end
+    end
+    for _, n in ipairs(BR.Loop.names()) do
+        if n.name == 't.reuse' or n.name == 't.reuse.gone' then listed = listed + 1 end
+    end
+    ok(rows == 1 and listed == 1, 'stats and names list the live callback alone',
+        ('stats %d, names %d'):format(rows, listed))
+
+    local function frame() fakeTime = fakeTime + 16 end
+    ok(BR.Loop.bench('t.reuse.gone', 4, 2, frame) == nil and BR.Loop.ab('t.reuse.gone', 1, 2, frame) == nil,
+        'bench and ab find nothing under a name whose callback is gone')
+    ok(gone == 0, 'and never call it', ('called %d'):format(gone))
+
+    ok(BR.Loop.setEnabled('t.reuse', false), 'setEnabled finds the name')
+    BR.Loop.pauseAll(false)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(new == 0 and old == 0, 'and switched off the live callback, not the dead one ahead of it',
+        ('new %d, old %d'):format(new, old))
+    BR.Loop.setEnabled('t.reuse', true)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(new == 1 and old == 0, 'switched back on, it runs; the dead one never does',
+        ('new %d, old %d'):format(new, old))
+    BR.Loop.unregister(hNew)
+    BR.Loop.step(BR.Loop.FRAME)
+end
+
 describe('one protected pass (round 9)')
 do
     -- #393 round 9: while stall capture is off, a pass runs its callbacks under ONE

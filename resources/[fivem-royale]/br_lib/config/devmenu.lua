@@ -92,12 +92,14 @@ BR.Config.DevMenu = {
     vehicleClassesLeftOut = { 21 },
 
     --- The state bag the server sets on a vehicle the spawner built (#426):
-    --- THE CLIENT'S HINT, and nothing more. client/vehrefuse.lua neither
+    --- THE CLIENT'S HINT, and nothing more, and believed on a dev box alone
+    --- (BR.Dev.on(), #426's second review). There client/vehrefuse.lua neither
     --- ejects from nor holds the gun off in a vehicle carrying it, and
-    --- client/inventory.lua's strip leaves its gun in a hand -- the owner's
-    --- "yes exempt dev menu vehicles". The truth is the server's own
-    --- record (BR.Vehicles.exemptDevMenuVehicle, in server memory), and no
-    --- server code reads this: a client can write state on an entity it owns.
+    --- client/inventory.lua's strip leaves its own gun -- a vehicle weapon --
+    --- in a hand: the owner's "yes exempt dev menu vehicles". The truth is the
+    --- server's own record (BR.Vehicles.exemptDevMenuVehicle, in server
+    --- memory), and no server code reads this: a client can write state on an
+    --- entity it owns, which is also why no client believes it off a dev box.
     vehicleStateKey = 'brDevMenuVehicle',
 
     --- The longest model name the keyboard takes and the server reads -- the

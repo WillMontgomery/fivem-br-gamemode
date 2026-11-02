@@ -10,12 +10,15 @@
 -- of the player; and tools/check_vehicles.lua, which re-derives every hash
 -- and holds config/vehicles.lua's "Armed" set to the `armed` rows. A model
 -- with no row -- an add-on -- is one the server takes the asker's word for.
+-- The game's vehicle weapons are config/vehicle_weapons.lua, from the same run.
 --
 -- To change a row, run the tool again on a newer dump:
 --     py tools/vehicle_models.py <path to vehicles.json>
 -- docs/devmenu.md says why the server needs it.
 --
 -- Source: vehicles.json, 921 models (710 automobile, 67 bike, 22 boat, 35 heli, 43 plane, 4 submarine, 29 trailer, 11 train), 125 armed, sha256 cbb3912a3fc3f97c452d5d51f06a78049151e91fe8597541a6f62ae4ea552911
+-- Body FNV-1a 0xD76C5CD9: every byte from `BR = BR or {}` to the end, which
+-- tools/check_vehicles.lua recomputes -- so a row changed by hand fails there.
 
 BR = BR or {}
 BR.Config = BR.Config or {}

@@ -58,17 +58,23 @@
 --
 -- The owner, 2026-11-01: "yes exempt dev menu vehicles, and put me in the
 -- driver seat". The server hangs a replicated state bag on each vehicle the dev
--- menu builds (BR.Config.DevMenu.vehicleStateKey), and this file neither ejects
--- anybody from one nor holds its gun off -- whoever sits in it. See
--- `devMenuHint` and `exempt`.
+-- menu builds (BR.Config.DevMenu.vehicleStateKey), and on a dev box this file
+-- neither ejects anybody from one nor holds its gun off -- whoever sits in it.
+-- See `devMenuHint` and `exempt`.
 --
--- THE HINT IS ADVISORY FOR THIS FILE'S OWN REASON. A client can write state on
--- an entity it owns, so a cheat could hang it on a stolen Buzzard, and that
--- changes nothing: skipping this file is what a cheat already does by not
--- running it. The server never reads the hint. Its detectors ask a record the
--- server keeps in memory, which only a server started in dev mode can put
--- anything in (server/vehicles.lua) -- so on the public box no vehicle is
--- exempt, and the Buzzard is filed against there as it always was.
+-- THE HINT IS BELIEVED ON A DEV BOX AND NOWHERE ELSE (#426's second review),
+-- and the reason is not the cheat's own client. A client can write state on an
+-- entity it owns, and `sv_entityLockdown relaxed` lets one own an ambient
+-- Buzzard; skipping this file is what a cheat already does, so the hint buys it
+-- nothing for itself. What it bought was EVERY HONEST CLIENT that got in after:
+-- each read the hint, stayed in, kept the gun -- and the server, which never
+-- reads the hint and files from a record of its own that only a server started
+-- in dev mode can put anything in (server/vehicles.lua), filed against each of
+-- them. So `devMenuHint` answers no unless BR.Dev.on(): br_devMode, which the
+-- server replicates and no client sets for another. On the public box the hint
+-- is never read, and the Buzzard empties as it always did. On a dev box a
+-- forged hint still fools the clients that read it, and that is all it does:
+-- the server files from its own record.
 --
 -- ═══ BEFORE THE SEAT, OR AFTER IT? BOTH, AND THE ORDER IS THE POINT ═══
 --
@@ -433,15 +439,17 @@ end
 ---
 --- THE OWNER, 2026-11-01: "yes exempt dev menu vehicles". A vehicle the dev
 --- menu spawned carries a replicated state bag the server set as it built it
---- (BR.Config.DevMenu.vehicleStateKey), and this file neither ejects anybody
---- from it nor holds its gun off -- whoever sits in it.
+--- (BR.Config.DevMenu.vehicleStateKey), and on a dev box this file neither
+--- ejects anybody from it nor holds its gun off -- whoever sits in it.
 ---
---- A HINT, ADVISORY LIKE THE REST OF THIS FILE. A client can write state on an
---- entity it owns, so a cheat could hang it on a stolen Buzzard -- and gains
---- nothing by it, because skipping this file is what a cheat already does by
---- not running it. Nothing on the server reads it: its detectors ask their own
---- record, which only a dev-mode server can hold anything in
---- (server/vehicles.lua), so the Buzzard is still filed against there.
+--- ONLY ON A DEV BOX: NO UNLESS BR.Dev.on() (the header, and #426's second
+--- review). A client can write state on an entity it owns, so a cheat could
+--- hang the hint on a Buzzard it took; it gains nothing for itself, but every
+--- honest client that climbed in after would stay in and keep the gun while
+--- the server, which never reads the hint, filed against them from its own
+--- record. br_devMode is replicated by the server, and no client sets it for
+--- another. On a dev box a forged hint still fools the clients that read it;
+--- the server still files from its record (server/vehicles.lua).
 ---
 --- READ ONLY WHERE IT CHANGES SOMETHING: for a vehicle this pass is about to
 --- empty or to hold the gun off in. An ordinary car -- nearly every one -- never
@@ -449,6 +457,7 @@ end
 --- @param veh integer
 --- @return boolean
 local function devMenuHint(veh)
+    if not (BR.Dev and BR.Dev.on and BR.Dev.on() == true) then return false end
     local key = BR.Config.DevMenu and BR.Config.DevMenu.vehicleStateKey
     if not key or type(Entity) ~= 'function' then return false end
     local ok, v = pcall(function() return Entity(veh).state[key] end)

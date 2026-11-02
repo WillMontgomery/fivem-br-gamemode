@@ -69,8 +69,15 @@ function BR.Sched.every(intervalMs, name, fn)
     if type(fn) ~= 'function' then
         error(('BR.Sched.every: "%s" needs a function'):format(tostring(name)), 2)
     end
+    -- A canceled job is gone at once (BR.Sched.cancel), though its entry waits
+    -- in `jobs` for the next pass to sweep it. Counting that entry here made
+    -- "cancel, then register the same name" throw for up to a tick: devmenu's
+    -- seat pass cancels itself when its last asker is seated, so a vehicle asked
+    -- for inside that window was built and exempted, then lost its answer and its
+    -- seat to "duplicate job name" (#426). BR.Loop.register passes over a dead
+    -- entry for the same reason, and so does every lookup by name below.
     for _, j in ipairs(jobs) do
-        if j.name == name then
+        if j.name == name and not j.dead then
             error(('BR.Sched.every: duplicate job name "%s"'):format(name), 2)
         end
     end
@@ -94,7 +101,8 @@ function BR.Sched.every(intervalMs, name, fn)
     return job
 end
 
---- Stop a job. Takes effect immediately; the entry is swept after the pass.
+--- Stop a job. Takes effect immediately, and so does freeing its name: a new
+--- job may take the name before the next pass sweeps the dead entry.
 function BR.Sched.cancel(handle)
     if handle then handle.dead = true end
 end
@@ -104,7 +112,9 @@ end
 --- @return boolean found
 function BR.Sched.setEnabled(name, enabled)
     for _, j in ipairs(jobs) do
-        if j.name == name then
+        -- The live job: a canceled one awaiting the sweep under the same name
+        -- would report found and change nothing that runs.
+        if j.name == name and not j.dead then
             j.enabled = enabled and true or false
             if enabled then
                 j.suspended, j.consecutive = false, 0
@@ -119,17 +129,19 @@ end
 function BR.Sched.stats()
     local out = {}
     for _, j in ipairs(jobs) do
-        out[#out + 1] = {
-            name       = j.name,
-            intervalMs = j.interval,
-            calls      = j.calls,
-            avgMs      = j.calls > 0 and (j.totalMs / j.calls) or 0.0,
-            totalMs    = j.totalMs,
-            peakMs     = j.peakMs,
-            errors     = j.errors,
-            enabled    = j.enabled,
-            suspended  = j.suspended,
-        }
+        if not j.dead then   -- canceled, so gone, if not swept yet
+            out[#out + 1] = {
+                name       = j.name,
+                intervalMs = j.interval,
+                calls      = j.calls,
+                avgMs      = j.calls > 0 and (j.totalMs / j.calls) or 0.0,
+                totalMs    = j.totalMs,
+                peakMs     = j.peakMs,
+                errors     = j.errors,
+                enabled    = j.enabled,
+                suspended  = j.suspended,
+            }
+        end
     end
     table.sort(out, function(a, b) return a.totalMs > b.totalMs end)
     return out
@@ -178,6 +190,8 @@ function BR.Sched.step(nowMs)
         end
     end
 
+    -- By each entry's own flag, never by name, so a live job registered under a
+    -- canceled one's name is left where it is.
     if swept then
         for i = #jobs, 1, -1 do
             if jobs[i].dead then table.remove(jobs, i) end
