@@ -176,6 +176,8 @@ function BR.Inv.publicFor(src)
         local s = inv.slots[i]
         local w = (s and s.kind == BR.ItemKind.WEAPON)
             and BR.Config.WeaponById[s.item] or nil
+        local c = (s and s.kind == BR.ItemKind.CONSUMABLE)
+            and BR.Config.ConsumableById[s.item] or nil
         slots[i] = s and {
             id     = s.item,
             label  = BR.LootLabel(s),
@@ -188,6 +190,14 @@ function BR.Inv.publicFor(src)
             -- and mirroring it into TypeScript by hand is a table that goes
             -- stale the first time someone adds a gun.
             pool   = w and w.ammo or nil,
+            -- WHAT IS LEFT IN A JERRY CAN (#217), 0..1 of a can, for the gauge
+            -- on its plate: on every can's slot -- a whole one sends 1, a can a
+            -- dev verb gave with no fill included -- and on no other slot.
+            -- Rounded to a thousandth; the server keeps the exact number on the
+            -- slot. It moves on the wire when a pour ends and at every other
+            -- push, never per slice.
+            fill   = (c and c.refuel)
+                and math.floor(BR.JerryCanSolve.fillOf(s) * 1000 + 0.5) / 1000 or nil,
         } or false
     end
 
@@ -788,12 +798,22 @@ function BR.Inv.give(src, stack, opts)
 
         local before = left
 
+        -- A JERRY CAN NEVER JOINS ANOTHER (#217), whatever its `maxStack`
+        -- says: each can carries its own `fill`, and two cans merged into one
+        -- slot would be one fill for both -- a half-used can topped up into a
+        -- whole one. So a `refuel` row skips the top-up and takes a slot of
+        -- its own; carryMax 1 means that never comes up in play, and this
+        -- keeps it so if the number moves.
+        local c = stack.kind == BR.ItemKind.CONSUMABLE
+            and BR.Config.ConsumableById[stack.item] or nil
+        local ownSlot = c ~= nil and c.refuel == true
+
         -- Top up existing stacks first, lowest slot first, so a player who
         -- picks up their eighth bandage does not open a second stack while
         -- the first has room.
         for i = 1, SLOTS do
             local s = inv.slots[i]
-            if left > 0 and s and s.item == stack.item and s.count < max then
+            if left > 0 and not ownSlot and s and s.item == stack.item and s.count < max then
                 -- `space`, not `room`: `room` is the WHOLE INVENTORY's headroom
                 -- and it is still live here. Two different numbers under one
                 -- name inside one function is how a global cap quietly becomes
@@ -809,9 +829,13 @@ function BR.Inv.give(src, stack, opts)
             local free = freeSlot(inv)
             if not free then break end
             local move = math.min(max, left)
+            -- `fill` RIDES ALONG, as a weapon's `clip` does below: what is left
+            -- in a jerry can (#217), nil on every other stack. Without it a can
+            -- put down part-used would come back whole.
             inv.slots[free] = {
                 item = stack.item, kind = stack.kind,
                 rarity = stack.rarity, count = move,
+                fill = stack.fill,
             }
             left = left - move
         end
@@ -851,6 +875,7 @@ function BR.Inv.give(src, stack, opts)
             inv.slots[at] = {
                 item = stack.item, kind = stack.kind,
                 rarity = stack.rarity, count = math.min(max, left),
+                fill = stack.fill,   -- a jerry can's, as in the new slot above
             }
             BR.Inv.push(src, opts)
             return true, released(displaced), nil
@@ -1714,11 +1739,13 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     --
     -- ═══ THE SERVER NAMES THE CAR. THE CLIENT IS NOT ASKED WHICH ONE ═══
     --
-    -- INV_USE carries a SLOT and nothing else -- there is no vehicle in the
-    -- message and there must not be, because "repair the car I say I am in" is
-    -- a client repairing any car on the map. BR.Vehicles.drivenNetId answers
-    -- from the server's own reads of its own ped, and it answers nil for a
-    -- player on foot, a passenger, and a vehicle the platform does not network.
+    -- INV_USE names no vehicle for the kit, and must not, because "repair the
+    -- car I say I am in" is a client repairing any car on the map. (The one
+    -- vehicle it can carry, `n`, is a jerry can's (#217) -- read in that branch
+    -- below and nowhere else, and bounded there by the server's own reads.)
+    -- BR.Vehicles.drivenNetId answers from the server's own reads of its own
+    -- ped, and it answers nil for a player on foot, a passenger, and a vehicle
+    -- the platform does not network.
     --
     -- THE ANSWER IS KEPT ON THE CHANNEL, not just used and dropped. The tick
     -- loop compares against it every pass, so the kit is spent on the car it was
@@ -1786,6 +1813,32 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         end
     end
 
+    -- ═══ A JERRY CAN IS RULED ON BY ITS OWN FILE, AND THIS IS THE ONE PLACE
+    --     `n` IS READ (#217) ═══
+    --
+    --   "would only be useable at the gascap of a vehicle ... fueling should
+    --    not be able to start while in motion."     -- owner, 2026-08-22
+    --
+    -- A pourer is on foot, so there is no seat to name the car by: the client
+    -- names it, as INV_USE's `n`, and server/jerrycan.lua re-derives every claim
+    -- in that from its own reads -- the season, the can in hand, the car in this
+    -- match's bucket and ledger with room in its tank, the pourer on foot inside
+    -- its footprint, both of them standing still, and nobody else pouring into
+    -- it. BR.JerryCan.judge has the order. THE SAME `refuel` SHAPE as `shopCar`
+    -- and `repairVeh` above: this file branches on the field and knows nothing
+    -- else about fuel.
+    --
+    -- EVERY REFUSAL IS SILENT and spends nothing, like a mis-pressed kit. The
+    -- channel below is the pour's, and its length is the plan's: a partial pour
+    -- takes its share of a full can's `useMs`. Nil-guarded on the module, in the
+    -- kit's shape: a build without server/jerrycan.lua refuses every can.
+    local pour, ms = nil, c.useMs
+    if c.refuel then
+        if not (BR.JerryCan and BR.JerryCan.rule) then return end
+        pour, ms = BR.JerryCan.rule(src, slot, d.n)
+        if not pour then return end   -- silent; nothing spent
+    end
+
     -- ═══ THE COMPLETION SPENDS IT, LIKE EVERYTHING ELSE IN THIS FILE (#228) ═══
     --
     --   "when using it the inventory item visually goes away immediately and
@@ -1841,8 +1894,8 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     inv.using = {
         slot   = slot,
         item   = s.item,
-        ms     = c.useMs,
-        endsAt = GetGameTimer() + c.useMs,
+        ms     = ms,
+        endsAt = GetGameTimer() + ms,
         -- (`struckBy`, absent until somebody interrupts it: written by
         -- BR.Inv.struck from inside the server's own hit (#366), and read by
         -- the tick loop's damage-cancel.)
@@ -1856,8 +1909,15 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         -- rather than a per-tick delta.
         veh        = netId,
         vehGranted = 0.0,
+        -- A jerry can's pour (#217): server/jerrycan.lua's claim itself, the
+        -- same table, so the tick's step and the reconcile job agree on whose
+        -- pour this is. Nil on every other channel.
+        pour       = pour,
     }
     BR.Inv.push(src)
+    -- AND ITS START GOES TO THE MATCH ONLY NOW, with the channel open and its
+    -- bar on the pourer's screen: every client hangs the can on their hand.
+    if pour then BR.JerryCan.begin(src, pour) end
 end)
 
 -- The ammo report. Decrease-only, see the header.
@@ -2342,6 +2402,15 @@ end
 -- the repair kit's driving-seat rule (#361). The last note in this header says
 -- why.
 --
+-- AND ONE ITEM IS NEVER DEBITED BY ITS COMPLETION AT ALL: THE JERRY CAN (#217).
+-- Each slice moves fuel out of the can and into the tank -- the can's `fill`
+-- falls by exactly what the ledger took -- and the can leaves the bag only when
+-- it is empty, however the pour ended. So a can is not "spent" by a completion
+-- or "kept" by a cancel the way a kit is: a full can into a nearly full car
+-- completes with most of the can left, and a cancel keeps exactly what was not
+-- poured. Its branch, below the damage-cancel, returns before everything else
+-- in a pass; server/jerrycan.lua has the rest.
+--
 -- ONE ITEM BRIEFLY DIVERGED AND THE OWNER REVERSED IT (#228, 2026-09-03): the
 -- repair kit was debited at the keypress, which meant the slot emptied the
 -- instant the bar appeared. "Any other consumable doesn't get removed until the
@@ -2495,6 +2564,36 @@ BR.Sched.every(250, 'inv.use', function()
             if L.useCancelOnDamage and not (c and c.ignoresDamage)
                 and u.struckBy ~= nil then
                 BR.Inv.cancelUse(src, 'Interrupted.')
+                return
+            end
+
+            -- ═══ A JERRY CAN'S POUR IS STEPPED BY ITS OWN FILE (#217) ═══
+            --
+            -- BELOW THE DAMAGE-CANCEL, so an enemy's hit still ends a pour with
+            -- the ordinary 'Interrupted.' and the can keeps what it did not pour
+            -- (server/jerrycan.lua's reconcile job releases the car on this same
+            -- pass). ABOVE EVERYTHING ELSE, AND IT ALWAYS RETURNS: a can has no
+            -- partial effect on the ped, no seat rule and no completion debit --
+            -- BR.JerryCan.step slices the fuel, writes the can's `fill` and
+            -- re-checks every rule of the press, and has released the car itself
+            -- by the time it answers 'done' or 'cancel'. What is left here is the
+            -- one rule this file owns, the slot: an empty can leaves the bag,
+            -- whichever way the pour ended, and a can with fuel left in it stays
+            -- for the next car. `s` is the slot-identity guard's, proved above.
+            if c and c.refuel then
+                local verdict = (BR.JerryCan and BR.JerryCan.step)
+                    and BR.JerryCan.step(src, e, u, s, now) or 'cancel'
+                if verdict == 'run' then return end
+                if BR.JerryCanSolve.empty(BR.JerryCanSolve.fillOf(s)) then
+                    s.count = s.count - 1
+                    if s.count <= 0 then inv.slots[u.slot] = false end
+                end
+                if verdict == 'done' then
+                    inv.using = nil
+                    BR.Inv.push(src)
+                else
+                    BR.Inv.cancelUse(src)
+                end
                 return
             end
 

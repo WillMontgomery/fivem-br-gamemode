@@ -344,7 +344,7 @@ BR.Net = {
     -- `pool` drops the whole reserve of that ammunition and leaves the loaded
     -- magazine in the gun. A payload naming both takes the pool branch.
     INV_DROP        = 'br:inv:drop',
-    INV_USE         = 'br:inv:use',          -- C->S  { slot }
+    INV_USE         = 'br:inv:use',          -- C->S  { slot, n? } -- n: a vehicle netId, read only for a refuel row (#217)
     INV_SELECT      = 'br:inv:select',       -- C->S  { slot }
     -- The server owns the inventory but cannot write a ped: it decides the
     -- consumable landed and TELLS the client to apply it, exactly as the storm
@@ -743,8 +743,11 @@ BR.Net = {
     -- SERVER-SIDE (in a match, alive, in that vehicle, in the driver's seat, at
     -- a station), and how much fuel it is worth comes from the wall clock
     -- rather than from how many of these arrived -- BR.FuelSolve.grantMs. This
-    -- is the only message in the gamemode that can make a resource go UP, which
-    -- is why it is the one with the most checks behind it.
+    -- was the only message in the gamemode that could make a resource go UP,
+    -- which is why it is the one with the most checks behind it. SINCE #217
+    -- THERE ARE TWO: INV_USE for a jerry can pours fuel into a car too, behind
+    -- the press checks in server/jerrycan.lua (BR.JerryCan.judge) -- and what
+    -- it adds comes out of the can, so it moves fuel rather than making it.
     FUEL_PUMP       = 'br:fuel:pump',
     -- S->C  { n = netId, c = cue } -- "play this cue from that car".
     --
@@ -763,6 +766,27 @@ BR.Net = {
     -- the wire never carries a GTA sound-set name and a client cannot ask for
     -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
     FUEL_SFX        = 'br:fuel:sfx',
+    -- S->C  { id, n, p, ms, hold? } -- "a jerry can is pouring into car `n`"
+    -- (#217, Season 2). `id` is the pour's (from 1, per br_core server run),
+    -- `p` the pourer's server id, `ms` the milliseconds left in it as of
+    -- sending -- 0 is the end -- and `hold` true on the hold message alone.
+    --
+    -- THREE MOMENTS, ALL server/jerrycan.lua's: the START, as the press is
+    -- accepted (`hold` false); the HOLD, on the first slice that does not
+    -- finish the pour, sent beside the server's freeze; and the END, on every
+    -- way a pour ends. A start or a hold makes or refreshes the record for
+    -- that `id` with a deadline of its arrival plus `ms` plus
+    -- BR.Config.Fuel.jerryCan.releaseGraceMs, and an end or the deadline lets
+    -- it go -- so a client that missed the end still lets go by itself.
+    --
+    -- TO EVERY ROSTER ENTRY IN THE POUR'S MATCH, in any state -- spectators and
+    -- the downed see the can in the pourer's hand too -- and to nobody outside
+    -- it. What each client does with it is client/jerrycan.lua's: the can in
+    -- the pourer's hand (a LOCAL prop), the engine held off by whoever drives
+    -- the car or, with nobody driving, owns it, and the release. Clients never
+    -- freeze the car; the server's FreezeEntityPosition does, and clients only
+    -- ever unfreeze.
+    FUEL_CAN        = 'br:fuel:can',
 
     -- S->C  { n = netId, r = health points } -- "here is another slice of the
     -- repair kit you are holding, for that car". #228.

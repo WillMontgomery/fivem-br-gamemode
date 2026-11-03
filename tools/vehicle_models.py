@@ -12,7 +12,7 @@ its bounding box and the vehicle weapons its data lists.
 WHAT IT WRITES. resources/[fivem-royale]/br_lib/config/vehicle_models.lua, the
 one table that says what the server knows about a model without asking a
 client (BR.Config.VehicleModels): one row per model, in name order,
-`{ name, hash, tree, reach, below, armed }`.
+`{ name, hash, tree, reach, below, front, rear, armed, jerryFills }`.
 
   * name   the model name, lower case: what GetHashKey hashes.
   * hash   the game's own hash for it, which must be joaat(name) -- a name the
@@ -27,12 +27,23 @@ client (BR.Config.VehicleModels): one row per model, in name order,
            wider side, in meters rounded UP to a tenth -- the side a spawn turned
            a quarter across puts toward the player.
   * below  how far its bottom sits below its origin, in meters rounded UP.
-           Both are left out for a model the data has no bounding box for.
+  * front  how far it reaches ahead of its origin along its length, and
+  * rear   how far behind it, both in meters rounded UP (#217): the Season 2
+           jerry can's server bound is the footprint these two and `reach`
+           describe, in the vehicle's own frame.
+           All four sizes are left out for a model the data has no bounding
+           box for, and are never written one without the others.
   * armed  true when the data lists a vehicle weapon on it -- a searchlight, a
            radar and a water cannon are not weapons -- except on the one model
            whose listed weapon its own model does not carry: `insurgent2`, the
            plain Insurgent (UNARMED, below). tools/check_vehicles.lua holds
            config/vehicles.lua's "Armed" set to exactly these.
+  * jerryFills  true when a jerry can fills its tank whole rather than adding a
+           quarter (#217): the game's own quad bikes (its QUADBIKE and
+           AMPHIBIOUS_QUADBIKE types, the three trikes among them), dirt bikes
+           and dune buggies (JERRY_LAYOUTS) -- the RC Bandito aside (JERRY_NOT).
+           True or absent, like `armed`. tools/check_vehicles.lua holds these
+           rows to the owner's 26, by name.
 
 AND resources/[fivem-royale]/br_lib/config/vehicle_weapons.lua (#426's second
 review): every vehicle weapon the data lists on any model, the searchlight, the
@@ -49,8 +60,10 @@ a weapon changed by hand fails there without the dump.
 Anything malformed is refused whole and nothing is written: a model with no
 name, a name that is not a model word, a type this table has no tree for, a
 hash that is not the name's, a name or a hash twice, a bounding box that is not
-six finite numbers, or a weapon that is not a VEHICLE_WEAPON_ name. So is a
-dump in which the UNARMED override's reason no longer holds -- see there.
+six finite numbers, a layout that is not a name, or a weapon that is not a
+VEHICLE_WEAPON_ name. So is a dump in which the UNARMED override's reason no
+longer holds, or in which the RC Bandito is no longer in the jerry can's rule
+for JERRY_NOT to leave it out of -- see each.
 """
 
 import argparse
@@ -112,6 +125,32 @@ UNARMED = {'insurgent2'}
 #: not read has a single `stub` bone instead (`ignus2` is one), and a skeleton
 #: like that proves nothing about where a gun would go.
 SKELETON = 'chassis'
+
+#: The Season 2 jerry can (#217) FILLS the tank of these and adds a quarter of
+#: one to anything else. Owner, 2026-08-22: "for 4wheelers/buggies/dirtbikes it
+#: should fill the tank completely"; on 2026-11-02 he picked the 26 models of
+#: the game's own quad, dirt-bike and dune-buggy groups from a list. THE RULE IS
+#: THE GAME'S GROUPING: its quad-bike types (the three trikes -- Chimera,
+#: Rampant Rocket, Stryder -- are typed as quads), its two dirt-bike layouts and
+#: its five dune-buggy layouts. A rule on layouts alone would be wrong both
+#: ways: the trikes share their layouts with road bikes (ratbike, wolfsbane and
+#: seventeen sport bikes).
+JERRY_TYPES = {'QUADBIKE', 'AMPHIBIOUS_QUADBIKE'}
+JERRY_LAYOUTS = {
+    'LAYOUT_BIKE_DIRT', 'LAYOUT_BIKE_MANCHEZ2',                       # dirt bikes
+    'LAYOUT_LOW_DUNE', 'LAYOUT_LOW_DUNE3', 'LAYOUT_LOW_BFINJECTION',   # dune buggies
+    'LAYOUT_STD_OUTLAW', 'LAYOUT_LOW_VAGRANT',
+}
+
+#: In the jerry can's rule and not one of the owner's 26, and so not
+#: `jerryFills`, by name. One: `rcbandito`, the RC Bandito, a remote-control toy
+#: car in a dune-buggy layout (LAYOUT_LOW_DUNE, beside the Bifta and the Dune
+#: Buggy). The owner's 26 do not name it.
+#:
+#: CHECKED ON EVERY RUN, LIKE UNARMED: a dump that no longer puts it in the rule
+#: -- or no longer has it -- leaves an exclusion that excludes nothing, and is
+#: refused whole, with nothing written.
+JERRY_NOT = {'rcbandito'}
 
 
 def joaat(s):
@@ -176,7 +215,7 @@ def rows_of(doc):
     """The rows, checked, in name order, or raises ValueError naming the first fault."""
     if not isinstance(doc, list) or not doc:
         raise ValueError('not a list of vehicle models')
-    out, names, hashes, overridden = [], set(), set(), set()
+    out, names, hashes, overridden, excepted = [], set(), set(), set(), set()
     for i, v in enumerate(doc, 1):
         if not isinstance(v, dict):
             raise ValueError('entry %d is not an object' % i)
@@ -210,6 +249,8 @@ def rows_of(doc):
                 raise ValueError('%s: a bounding box that is not six numbers' % name)
             row['reach'] = tenth_up(max(abs(mn['X']), abs(mx['X'])))
             row['below'] = tenth_up(max(0.0, -mn['Z']))
+            row['front'] = tenth_up(max(0.0, mx['Y']))
+            row['rear'] = tenth_up(max(0.0, -mn['Y']))
         weapons = v.get('Weapons') or []
         if not isinstance(weapons, list):
             raise ValueError('%s: weapons %r is not a list' % (name, weapons))
@@ -219,6 +260,14 @@ def rows_of(doc):
                 overridden.add(name)
             else:
                 row['armed'] = True
+        layout = v.get('LayoutId')
+        if layout is not None and not isinstance(layout, str):
+            raise ValueError('%s: layout %r is not a name' % (name, layout))
+        if typ in JERRY_TYPES or layout in JERRY_LAYOUTS:
+            if name in JERRY_NOT:
+                excepted.add(name)
+            else:
+                row['jerryFills'] = True
         out.append(row)
     # AN OVERRIDE THAT OVERRODE NOTHING IS STALE TOO: the dump no longer has the
     # model, or no longer gives it a weapon. Either way nothing checks it now.
@@ -226,6 +275,15 @@ def rows_of(doc):
     if stale:
         raise ValueError('%s: the data gives it no weapon to override, or does not have '
                          'it -- its UNARMED override is stale' % ', '.join(stale))
+    # AND AN EXCLUSION THAT EXCLUDED NOTHING (#217): the dump no longer puts the
+    # model in a quad type, a dirt-bike layout or a dune-buggy layout, or no
+    # longer has it. Either way the reason written beside JERRY_NOT is no longer
+    # what the data says, and a table written from it would be a guess.
+    stale = sorted(JERRY_NOT - excepted)
+    if stale:
+        raise ValueError('%s: the data puts it in no quad type, dirt-bike layout or '
+                         'dune-buggy layout, or does not have it -- its JERRY_NOT '
+                         'exclusion is stale' % ', '.join(stale))
     out.sort(key=lambda r: r['name'])
     return out
 
@@ -296,28 +354,36 @@ def render(rows, digest):
     for r in rows:
         trees[r['tree']] = trees.get(r['tree'], 0) + 1
     armed = sum(1 for r in rows if r.get('armed'))
+    jerry = sum(1 for r in rows if r.get('jerryFills'))
     header = [
         "-- Every base-game vehicle model (#426): WRITTEN BY tools/vehicle_models.py",
         "-- FROM THE GAME'S OWN VEHICLE DATA, NOT EDITED. One row per model the game",
         "-- registers: its name and the game's hash for it; the sync tree",
         "-- CreateVehicleServerSetter has to build it as; how far it reaches across",
-        "-- its width (`reach`) and below its origin (`below`), in meters rounded up;",
-        "-- and `armed` where the data lists a vehicle weapon on it, the plain",
-        "-- Insurgent (`insurgent2`) aside: its model has no gun (the tool's UNARMED).",
+        "-- its width (`reach`), below its origin (`below`), ahead of it (`front`) and",
+        "-- behind it (`rear`), in meters rounded up; `armed` where the data lists a",
+        "-- vehicle weapon on it, the plain Insurgent (`insurgent2`) aside: its model",
+        "-- has no gun (the tool's UNARMED); and `jerryFills` where a jerry can fills",
+        "-- the tank whole (#217): the game's quads, dirt bikes and dune buggies, the",
+        "-- RC Bandito -- a remote-control toy in a buggy layout -- left out (JERRY_NOT).",
         "--",
         "-- What reads it, and nothing else does: server/vehicles.lua's spawn, which",
         "-- builds a model the game has only as its own tree and puts a big one clear",
-        "-- of the player; and tools/check_vehicles.lua, which re-derives every hash",
-        "-- and holds config/vehicles.lua's \"Armed\" set to the `armed` rows. A model",
-        "-- with no row -- an add-on -- is one the server takes the asker's word for.",
-        "-- The game's vehicle weapons are config/vehicle_weapons.lua, from the same run.",
+        "-- of the player; the Season 2 jerry can (server/jerrycan.lua, #217), which",
+        "-- bounds a pourer by the footprint and fills a `jerryFills` tank whole; and",
+        "-- tools/check_vehicles.lua, which re-derives every hash, holds",
+        "-- config/vehicles.lua's \"Armed\" set to the `armed` rows and the `jerryFills`",
+        "-- rows to the owner's 26. A model with no row -- an add-on -- is one the",
+        "-- server takes the asker's word for. The game's vehicle weapons are",
+        "-- config/vehicle_weapons.lua, from the same run.",
         "--",
         "-- To change a row, run the tool again on a newer dump:",
         "--     py tools/vehicle_models.py <path to vehicles.json>",
         "-- docs/devmenu.md says why the server needs it.",
         "--",
-        "-- Source: vehicles.json, %d models (%s), %d armed, sha256 %s" % (
-            len(rows), ', '.join('%d %s' % (trees[t], t) for t in sorted(trees)), armed, digest),
+        "-- Source: vehicles.json, %d models (%s), %d armed, %d a jerry can fills, sha256 %s" % (
+            len(rows), ', '.join('%d %s' % (trees[t], t) for t in sorted(trees)), armed, jerry,
+            digest),
     ]
     lines = [
         "BR = BR or {}",
@@ -330,9 +396,12 @@ def render(rows, digest):
         tree = "tree = '%s'" % r['tree']
         rest = []
         if 'reach' in r:
-            rest.append('reach = %4.1f, below = %3.1f' % (r['reach'], r['below']))
+            rest.append('reach = %4.1f, below = %3.1f, front = %4.1f, rear = %4.1f'
+                        % (r['reach'], r['below'], r['front'], r['rear']))
         if r.get('armed'):
             rest.append('armed = true')
+        if r.get('jerryFills'):
+            rest.append('jerryFills = true')
         if rest:
             tree = (tree + ',').ljust(len("tree = 'automobile',"))
             lines.append('    { name = %s hash = 0x%08X, %s %s },'

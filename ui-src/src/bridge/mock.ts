@@ -491,7 +491,6 @@ export function startMockDriver(): void {
         // real state but not the one being reviewed.
         { group: 'Comms', command: 'brptt', label: 'Push to talk', key: 'N', default: 'N' },
         { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'Escape', default: 'F1' },
-        { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', default: '' },
       ],
     },
   })

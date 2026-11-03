@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
 import type { InvPayload, InvSlot } from '../bridge/types'
+import FuelGauge from './FuelGauge'
 import ItemIcon, { FistIcon } from './ItemIcon'
 
 /**
@@ -126,6 +127,13 @@ function Slot({
               {slot.label}
             </span>
           </div>
+          {/* A JERRY CAN'S FILL (#217), down the right inner edge: from below
+              the corner a held plate's bevel cuts (0.75rem) to above the count
+              corner, whose 0.95rem numeral stands 1.425rem tall. So it clears
+              the slot number, the band, the progress bar and the pips. A can
+              never shows a count, since cans never stack, but the gauge stands
+              clear of the corner rather than counting on that. */}
+          <FuelGauge slot={slot} className="top-[0.9rem] bottom-[1.5rem] right-[0.2rem]" />
           {/* A weapon shows its magazine, everything else its stack. Both were
               missing before -- a weapon with clip 24 and count 1 fell through
               the count > 1 test and showed no number at all. */}

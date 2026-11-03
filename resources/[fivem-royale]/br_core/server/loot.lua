@@ -387,6 +387,18 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from, standZ)
         -- carry it, because it is an input to an arbitration the server makes
         -- alone and a client has no use for it and no right to it.
         carried = stack.carried,
+        -- WHAT IS LEFT IN A JERRY CAN (#217), 0..1 of a can, or nil for a whole
+        -- one. It travels the way `clip` does, because a can put down part-used
+        -- and picked up again must come back as it went: without this a drop
+        -- or a death box would hand back a FULL can, which is the one way left
+        -- to make fuel out of nothing. A crate's spill (the full can
+        -- BR.JerryCan.extraFor rolled), INV_DROP through BR.Inv.take and the
+        -- death box through dropAll all arrive here, and the last two hand over
+        -- the slot table itself, so this one line covers all three.
+        -- SERVER-SIDE ONLY, like `carried`: the ground prop is a can whatever is
+        -- in it, and the fill reaches a client only on its own slot
+        -- (BR.Inv.publicFor).
+        fill = stack.fill,
         x = x, y = y, z = z,
         -- GROUND A PED WAS MEASURED ON, or nil. Unlike `dropped` below -- which
         -- is on every entry born mid-match and means nothing about height --
@@ -1156,6 +1168,13 @@ local function openChest(m, item)
         item.contents = item.contents or {}
         item.contents[#item.contents + 1] = extra
     end
+    -- AND A SEASON 2 JERRY CAN, SOMETIMES (#217): the same shape on a stream of
+    -- its own -- BR.JerryCan.extraFor has the odds and the containers it never
+    -- rolls for -- so the key, when there is one, still comes first and nothing
+    -- else in the box moves. Nil-guarded the same way: a deployment without
+    -- server/jerrycan.lua opens every crate exactly as before.
+    local can = BR.JerryCan and BR.JerryCan.extraFor and BR.JerryCan.extraFor(m, item) or nil
+    if can then item.contents = item.contents or {}; item.contents[#item.contents + 1] = can end
     scatter(m, item)
     toHusk(m, item)
     if item.airdrop and BR.Airdrop and BR.Airdrop.opened then

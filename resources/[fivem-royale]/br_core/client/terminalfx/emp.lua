@@ -34,6 +34,11 @@
 --                ends, in the lobby, off Season 2 and as br_core stops.
 --                Whoever wrote the hold undoes it (wave C's review): the
 --                undriveable and no-auto-start flags are this machine's copy.
+--   SHARED       the hold is counted in client/enginehold.lua, beside the
+--                jerry can's (#217), which stops an engine with these same two
+--                latches while it pours: a car either one still holds on this
+--                machine is not freed by the other letting go, and a spared
+--                driver getting into a car mid-pour does not free it either.
 --
 -- NEVER AN AIRCRAFT OR A BICYCLE: nobody may fly here (client/vehrefuse.lua
 -- ejects them), and a stalled aircraft in the air would fall on whoever is
@@ -108,22 +113,14 @@ local REASSERT_MS = { 250, 1000 }
 --- some EMP in this match lasts until `liveUntil`. Nil: none.
 local stallUntil, liveUntil = nil, nil
 
---- The vehicles this client has written the hold to and not yet undone, by
---- network id.
-local wrote = {}
+-- The vehicles this client has written the hold to and not yet undone are
+-- BR.EngineHold's 'emp' holds (client/enginehold.lua, #217): one count with
+-- the jerry can's pour, so neither frees a car the other still holds here.
 
---- The vehicle behind a network id here, or 0 when it is not in scope.
---- @param netId integer
---- @return integer
-local function netVeh(netId)
-    local okX, has = pcall(NetworkDoesNetworkIdExist, netId)
-    if not okX or not isTrue(has) then return 0 end
-    local ok, veh = pcall(NetworkGetEntityFromNetworkId, netId)
-    veh = ok and math.tointeger(tonumber(veh)) or 0
-    if veh == 0 then return 0 end
-    local okE, exists = pcall(DoesEntityExist, veh)
-    if not okE or not isTrue(exists) then return 0 end
-    return veh
+--- Has this client a hold written to any vehicle?
+--- @return boolean
+local function holding()
+    return #BR.EngineHold.list('emp') > 0
 end
 
 --- The vehicle this player is in the DRIVER'S SEAT of, and its network id; 0
@@ -156,35 +153,12 @@ local function running(veh)
     return ok and isTrue(on)
 end
 
---- Engine off at once, no auto-start, undriveable -- remembered as this
---- client's write, to be undone however it ends.
-local function stall(netId, veh)
-    wrote[netId] = true
-    pcall(SetVehicleEngineOn, veh, false, true, true)
-    pcall(SetVehicleUndriveable, veh, true)
-end
-
---- Driveable, free to start -- and started, for this player in its seat.
---- @param veh integer
---- @param mine boolean  this player is driving it
-local function free(veh, mine)
-    pcall(SetVehicleUndriveable, veh, false)
-    if mine then
-        pcall(SetVehicleEngineOn, veh, true, false, false)
-    else
-        pcall(SetVehicleEngineOn, veh, running(veh), true, false)
-    end
-end
-
---- Undo this client's hold on one vehicle. Out of scope (0): no copy here to
---- undo -- the one it comes back with is fresh.
---- @param netId integer
---- @param drivingIt boolean
-local function undo(netId, drivingIt)
-    wrote[netId] = nil
-    local veh = netVeh(netId)
-    if veh ~= 0 then free(veh, drivingIt) end
-end
+-- THE STALL, THE FREE AND THE UNDO ARE client/enginehold.lua's NOW (#217),
+-- moved there unchanged: engine off at once, no auto-start, undriveable --
+-- remembered as this client's write, to be undone however it ends -- and
+-- driveable, free to start, and started for this player in its seat. Out of
+-- scope there is no copy here to undo, and the one it comes back with is
+-- fresh. What changed is only that the jerry can's pour counts beside it.
 
 local function active(untilAt, now)
     return untilAt ~= nil and now < untilAt
@@ -258,9 +232,12 @@ end
 local function letGo()
     stallUntil, liveUntil = nil, nil
     liftTraffic()
-    if next(wrote) == nil then return end
+    local held = BR.EngineHold.list('emp')
+    if #held == 0 then return end
     local veh, mine = driven()
-    for netId in pairs(wrote) do undo(netId, veh ~= 0 and netId == mine) end
+    for _, netId in ipairs(held) do
+        BR.EngineHold.release('emp', netId, veh ~= 0 and netId == mine)
+    end
 end
 
 --- Make the vehicle this player drives match the fact: held while their
@@ -275,16 +252,22 @@ local function settle(entered)
     -- NPC TRAFFIC: stopped while any EMP lasts here, and moving again once
     -- none does.
     if liveUntil ~= nil then layTraffic() else liftTraffic() end
-    if not stalling and liveUntil == nil and next(wrote) == nil then return end
+    local held = BR.EngineHold.list('emp')
+    if not stalling and liveUntil == nil and #held == 0 then return end
     local veh, netId = driven()
-    for n in pairs(wrote) do
-        if not (stalling and n == netId) then undo(n, n == netId) end
+    for _, n in ipairs(held) do
+        if not (stalling and n == netId) then BR.EngineHold.release('emp', n, n == netId) end
     end
     if veh == 0 or not holdable(veh) then return end
     if stalling then
-        if not wrote[netId] or running(veh) then stall(netId, veh) end
+        if not BR.EngineHold.held(netId, 'emp') or running(veh) then
+            BR.EngineHold.hold('emp', netId, veh)
+        end
     elseif entered and liveUntil ~= nil then
-        free(veh, true)
+        -- NOT A CAR THE JERRY CAN HOLDS HERE (#217): BR.EngineHold.free writes
+        -- nothing while any holder holds it, and the pour's own release frees
+        -- it, started, for this driver when the pour ends.
+        BR.EngineHold.free(netId, veh, true)
     end
 end
 
@@ -292,9 +275,7 @@ end
 --- client a hold written to? For the suites.
 --- @return boolean stalling, integer wrote
 function F.empState()
-    local n = 0
-    for _ in pairs(wrote) do n = n + 1 end
-    return active(stallUntil, GetGameTimer()), n
+    return active(stallUntil, GetGameTimer()), #BR.EngineHold.list('emp')
 end
 
 -- THE FACT, ON ITS CHANGE.
@@ -312,7 +293,7 @@ end)
 -- ownership reaches the driver.
 AddEventHandler('gameEventTriggered', function(name, args)
     if name ~= 'CEventNetworkPlayerEnteredVehicle' or not F.on() then return end
-    if stallUntil == nil and liveUntil == nil and next(wrote) == nil then return end
+    if stallUntil == nil and liveUntil == nil and not holding() then return end
     local veh = math.tointeger(tonumber(type(args) == 'table' and args[2] or nil)) or 0
     if veh == 0 then return end
     local okIn, mine = pcall(GetVehiclePedIsIn, PlayerPedId(), false)
@@ -326,7 +307,7 @@ end)
 -- ONCE A SECOND (client/terminalfx.lua's SLOW pass), and nothing at all with
 -- no EMP and nothing written.
 F.onSlow(function()
-    if stallUntil == nil and liveUntil == nil and next(wrote) == nil and zones == nil then return end
+    if stallUntil == nil and liveUntil == nil and zones == nil and not holding() then return end
     local S = BR.State
     local lobby = S and S.me and S.me.state == BR.PlayerState.LOBBY
     if lobby or not F.on() then

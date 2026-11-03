@@ -41,6 +41,14 @@ transparent background. The key never takes a slot, so ItemIcon never asks for
 it; `src/hud/YubikeyIcon.tsx` draws it, by the inventory slots, while the
 player holds one.
 
+`jerrycan.png` is the Season 2 Jerry Can (#217), its item id: GTA V's own
+render of the petrol can, copied rename-only out of the same mirror and commit
+as the 56 weapons (upstream's `Thrown & Utility Weapons/Jerry Can.png`, below).
+That makes it the first consumable whose picture is one of upstream's renders.
+It takes a slot like any consumable, so ItemIcon asks for it by id and nothing
+was added to `CONSUMABLE_ICON`; `src/hud/FuelGauge.tsx` draws the can's fill
+on its plate, in the bar and in the TAB panel alike.
+
 **Do not add consumable ids to `CONSUMABLE_ICON` in `src/hud/ItemIcon.tsx` to
 "fix" a missing picture.** That map is consulted only *after* a file has failed
 to load, so an entry there would permanently mask a broken PNG behind a drawn
@@ -49,33 +57,36 @@ weapon-icon gate exists to prevent.
 
 ## Where the weapon art came from
 
-All 56 are **GTA V's own weapon renders**, taken from
-<https://github.com/R3DIANCE/GTA-V-Weapons-images> — a convenience mirror of
-the images, organised by weapon class under the GTA display name.
+All 57 are **GTA V's own weapon renders**, the 56 weapons and the Jerry Can,
+taken from <https://github.com/R3DIANCE/GTA-V-Weapons-images> — a convenience
+mirror of the images, organized by weapon class under the GTA display name.
 
     upstream   https://github.com/R3DIANCE/GTA-V-Weapons-images
     branch     master
     commit     b4229820099a77ca4d38f1846532c2f451afbefc
     retrieved  2026-08-06 (39 weapons + Fist), 2026-08-07 (melee),
-               2026-08-22 (rpg, grenadelauncher, railgun, minigun)
+               2026-08-22 (rpg, grenadelauncher, railgun, minigun),
+               2026-11-03 (jerrycan)
 
 Sourcing is **verbatim and rename-only**: a file is copied out of that repo
 unmodified and renamed from its GTA display name to our item id. Nothing is
-cropped, recompressed or recoloured, which is why the set is not uniform — 35
-are RGBA and 21 are indexed-colour with a `tRNS` chunk; 25 sit on the full
-760×290 canvas and the other 31 are trimmed, from 172 px to 760 px wide and
+cropped, recompressed or recolored, which is why the set is not uniform — 35
+are RGBA and 22 are indexed-color with a `tRNS` chunk; 25 sit on the full
+760×290 canvas and the other 32 are trimmed, from 88 px to 760 px wide and
 58 px to 290 px tall. **That is how upstream holds them**, not something done
-here. All 56 are transparent-backed, which is the only property that actually
-matters in a slot. Do not "normalise" them: the renderer letterboxes with
+here. All 57 are transparent-backed, which is the only property that actually
+matters in a slot. Do not "normalize" them: the renderer letterboxes with
 `object-fit: contain`, so the inconsistency costs nothing and re-encoding would
 break the blob-id check below.
 
-That claim is checkable, and was checked on 2026-08-22: **every one of the 56
-weapon files here has the same git blob id as the upstream file it came from.**
-Blob ids, not a `diff` of two worktrees — `.gitattributes` marks `*.png
-binary`, so the bytes are the bytes. Note the directory holds 57 PNGs, not 56:
-`repairkit.png` is not from upstream and will not match anything there. See the
-section below.
+That claim is checkable, and was checked on 2026-08-22 and again on 2026-11-03,
+when the Jerry Can joined: **every one of the 57 upstream files here has the
+same git blob id as the upstream file it came from** (the can's is
+66317a53ead28471d6f4ee1dc3941b57bc1ee9f5, 9,954 bytes, 88×123). Blob ids, not a
+`diff` of two worktrees — `.gitattributes` marks `*.png binary`, so the bytes
+are the bytes. Note the directory holds 59 PNGs, not 57: `repairkit.png` (the
+section below) and `yubikey.png` (above) are not from upstream and will not
+match anything there.
 
     git ls-tree HEAD ui-src/public/items/
     curl -s "https://api.github.com/repos/R3DIANCE/GTA-V-Weapons-images/git/trees/master?recursive=1"
@@ -90,7 +101,7 @@ a Widowmaker, none of which is the weapon we issue.
 ## Why no separate artwork license is carried
 
 The convenience-mirror repository has no license, and it is not the rights
-holder: all 56 weapon images are renders from the GTA V base game. The owner's
+holder: all 57 images from it are renders from the GTA V base game. The owner's
 position, reaffirmed 2026-09-14, is that using those base-game renders inside a
 GTA V gamemode is fair use and requires no separate artwork license. The mirror
 is provenance for the bytes, not the source of permission.

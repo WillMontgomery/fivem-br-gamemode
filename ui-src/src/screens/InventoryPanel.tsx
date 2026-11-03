@@ -3,6 +3,7 @@ import { useUi, selInv } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB, RARITY } from '../bridge/types'
 import type { InvSlot } from '../bridge/types'
+import FuelGauge from '../hud/FuelGauge'
 import ItemIcon from '../hud/ItemIcon'
 import { play } from '../audio/cues'
 
@@ -226,6 +227,13 @@ function SlotCard({
               Drop
             </button>
           </div>
+
+          {/* A JERRY CAN'S FILL (#217), the bar's gauge on the card: in the
+              right-hand padding, from the top of the picture to the foot of the
+              buttons. That is below the header row and the bevel a held card
+              cuts (1rem), and outside the content box, so nothing in the card
+              moves for it. */}
+          <FuelGauge slot={slot} className="top-[2.75rem] bottom-[0.75rem] right-[0.2rem]" />
         </>
       ) : (
         <div className="flex-1 flex items-center justify-center">

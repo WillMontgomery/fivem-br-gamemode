@@ -276,8 +276,8 @@ third party from launching the work before Blitz Royale reaches market. Public
 launch is the decision point for the project's distribution terms.
 
 Third-party components retain their own notices. ScaleformUI is used only for
-this non-commercial server within its CC BY-NC-SA terms. The weapon and repair-kit
-images are renders from the GTA V base game; the owner treats their use inside a
-GTA V gamemode as fair use that requires no separate artwork license. The item
-art provenance and that decision are recorded beside the files in
+this non-commercial server within its CC BY-NC-SA terms. The weapon, repair-kit
+and jerry can images are renders from the GTA V base game; the owner treats
+their use inside a GTA V gamemode as fair use that requires no separate artwork
+license. The item art provenance and that decision are recorded beside the files in
 `ui-src/public/items/README.md`.

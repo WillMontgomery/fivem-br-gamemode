@@ -21,7 +21,7 @@ volts, give Yubikeys, Storm pause, warmup pause, spawn airdrops"*
 | **The server** | `br_core/server/devmenu.lua` (`BR.DevMenu`) | The door, `brdevsv`: the gate, the checks, the rate, the console verb each row runs, and the vehicle spawner's seat. |
 | **The spawn** | `br_core/server/vehicles.lua` (`BR.Vehicles.spawnInFront`) | `brcar`'s own server-side spawn, which the vehicle spawner runs too. Dev mode only, and called from those two places only. |
 | **The exemption** | `br_core/server/vehicles.lua` (`BR.Vehicles.exemptDevMenuVehicle`), and a state bag for `client/vehrefuse.lua` | The server's in-memory record of what the vehicle spawner built, which the vehicle detectors skip, and the hint that stops the client's ejection and gun hold. A dev box only, on both sides. |
-| **The game's own models** | `br_lib/config/vehicle_models.lua` (`BR.Config.VehicleModels`), written by `tools/vehicle_models.py` | Every base-game vehicle model: its hash, the sync tree it has to be built as, how far it reaches across and below its origin, and whether the game's data arms it (the plain Insurgent's listed turret aside: its model has none). The spawn's tree check and placement; `check_vehicles.lua`'s expected Armed set. Server only. |
+| **The game's own models** | `br_lib/config/vehicle_models.lua` (`BR.Config.VehicleModels`), written by `tools/vehicle_models.py` | Every base-game vehicle model: its hash, the sync tree it has to be built as, how far it reaches across, below, ahead of and behind its origin, whether the game's data arms it (the plain Insurgent's listed turret aside: its model has none), and whether a Season 2 jerry can fills its tank whole (#217). The spawn's tree check and placement; `check_vehicles.lua`'s expected Armed set; the jerry can's "at the cap" box and its full tank. Server only. |
 | **The game's vehicle weapons** | `br_lib/config/vehicle_weapons.lua` (`BR.Config.VehicleWeapons`, `BR.Config.VehicleWeaponByHash`), written by the same tool | Every vehicle weapon the game's data lists on any model, the searchlight, the radar and the water cannon among them. The only weapons a dev menu vehicle's gun is excused for. Shared: the client's strip asks it too. |
 
 ## Who
@@ -221,8 +221,9 @@ is not loaded, and could not be tried here without a game running.
     py tools/vehicle_models.py <path to vehicles.json> --check  is it current?
 
 921 models: 710 automobile, 67 bike, 22 boat, 35 heli, 43 plane, 4 submarine,
-29 trailer, 11 train; 124 armed. A name the game's hash does not come from is
-refused, and nothing is written. **One model is overridden, by name** (#427):
+29 trailer, 11 train; 124 armed; 26 a jerry can fills. A name the game's hash
+does not come from is refused, and nothing is written. **One model is
+overridden, by name** (#427):
 the data lists the Insurgent Pick-Up's turret on the plain Insurgent
 (`insurgent2`) as well, and its model has no turret to carry it, so the tool
 writes it unarmed -- and refuses a dump that gives that model a bone starting
@@ -236,6 +237,34 @@ edited by hand, and a hand edit fails the build** (#426's second review): each
 file's header carries an FNV-1a of its body -- every byte from `BR = BR or {}`
 on -- and `tools/check_vehicles.lua` recomputes it, so a tree, a size, an
 armed flag or a weapon changed by hand is caught without the dump.
+
+**A row**, one per model in name order (#217 added `front`, `rear` and
+`jerryFills`):
+
+    { name = 'sanchez',          hash = 0x2EF89E46, tree = 'bike',       reach =  0.5, below = 0.5, front =  1.2, rear =  1.1, jerryFills = true },
+
+- `name` and `hash`: the model name, lower case, and the game's hash for it,
+  which must be joaat of the name.
+- `tree`: the sync tree the server setter has to build it as.
+- `reach`, `below`, `front`, `rear`: from the data's bounding box, in meters
+  rounded up to a tenth -- how far it reaches across from its origin (its wider
+  side), how far its bottom sits below it, and how far it reaches ahead of and
+  behind it along its length. All four or none: the five models the data has no
+  box for (arbitergt, astron2, cyclone2, ignus2, s95) carry none.
+- `armed = true` where the data lists a vehicle weapon on it, the plain
+  Insurgent aside.
+- `jerryFills = true` where one Season 2 jerry can fills the tank whole rather
+  than adding a quarter: the game's own quad bikes (its QUADBIKE and
+  AMPHIBIOUS_QUADBIKE types, the three trikes among them), dirt bikes and dune
+  buggies, the 26 the owner picked on 2026-11-02. The RC Bandito sits in a
+  buggy layout and is left out by name, and the tool refuses a dump in which
+  that exclusion no longer excludes anything.
+
+`armed` and `jerryFills` are true or absent. The Season 2 jerry can
+(`server/jerrycan.lua`) reads `reach`, `front` and `rear` as the box a pourer
+must stand in, grown by 2 m on every side, and a model with no row or no size
+falls back to a 12 m radius. `check_vehicles.lua` holds every row to all four
+sizes or none, and the `jerryFills` rows to the owner's 26 by name.
 
 **Where it works: in warmup, or alive in a match.** **Not from the lobby**,
 which answers `no match running`: every lobby player stands on the one lobby
@@ -417,4 +446,5 @@ marks to their rule, row by row; re-derives every hash in
 models the game's data arms, naming any it misses -- an armed model with no
 row, which is a ruling the owner has not made (#427) -- or adds.
 `tools/test_vehicle_models.py` holds the tool's one override, the plain
-Insurgent, to its reason.
+Insurgent, to its reason, and its one exclusion from the jerry can's full
+tank, the RC Bandito, to its own (#217).

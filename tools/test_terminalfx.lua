@@ -3628,7 +3628,10 @@ local function clientWorld()
     BR.Native = { blipName = function(b, name) W.blips[b].name = name end }
     BR.Loop = { SLOW = 'slow', register = function(_, name, fn) W.loops[name] = fn end }
     BR.State = { me = { state = BR.PlayerState.ALIVE } }
-    loadAll({ 'br_core/client/terminalfx.lua' })
+    -- THE HOLD COUNT EMP's STALL GOES THROUGH (#217), above the function files
+    -- as the manifest orders it: client/enginehold.lua keeps who holds which
+    -- car's engine off, the EMP and the jerry can's pour, and registers nothing.
+    loadAll({ 'br_core/client/enginehold.lua', 'br_core/client/terminalfx.lua' })
     loadAll(fxFiles('client'))
     W.F, W.A, W.C = BR.TerminalFx, BR.Config.Terminals.art, BR.Config.Terminals.copy
     function W.net(ev, d) W.handlers[ev](d) end
@@ -3966,6 +3969,10 @@ do
     BR.State.me.state = BR.PlayerState.LOBBY
     W.slow()
     ok(vfree(8), 'the lobby: freed')
+    -- AND STARTED AGAIN FOR ITS DRIVER, the free letting go writes: pinned when
+    -- the hold moved into client/enginehold.lua (#217), which this path now
+    -- goes through.
+    eq(VW.cars[8].engine, true, 'and started again for this player at its wheel')
     ok(not F.empState() and select(2, F.empState()) == 0, 'and the fact forgotten')
     BR.State.me.state = BR.PlayerState.ALIVE
 

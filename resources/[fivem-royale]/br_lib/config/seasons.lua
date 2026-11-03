@@ -79,5 +79,10 @@ BR.Config.Seasons = {
         -- the lane folding open for 20 seconds. Off: no prompt and nothing
         -- opens; the gate stays shut and locked, as the map pack kept it.
         dcgate = { from = 2 },
+        -- #217. Owner, 2026-11-02: "please remember that jerry can will be a
+        -- season 2+ feature". On: a match crate sometimes holds a Jerry Can,
+        -- and a can in hand pours into a vehicle's tank at its gas cap. Off:
+        -- no crate rolls one, and a can given by hand pours nothing.
+        jerrycan = { from = 2 },
     },
 }

@@ -143,11 +143,12 @@ end
 --- second for the rest of the round. client/state.lua's HUD push makes the same
 --- argument in the same words ("600 pointless messages a minute").
 ---
---- IT COVERS WHAT THE BAR DRAWS AND NOTHING ELSE: the five slots' item, count
---- and clip, the ammo pools, and which slot is in hand. `using` is deliberately
---- excluded -- its `endsAt` is a timestamp that changes on every tick of a
---- bandage, which would defeat the dedupe entirely and resend the whole payload
---- 4 Hz for the duration of every heal.
+--- IT COVERS WHAT THE BAR DRAWS AND NOTHING ELSE: the five slots' item, count,
+--- clip and a jerry can's fill (#217 -- the gauge on its plate, which moves when
+--- a pour ends), the ammo pools, and which slot is in hand. `using` is
+--- deliberately excluded -- its `endsAt` is a timestamp that changes on every
+--- tick of a bandage, which would defeat the dedupe entirely and resend the
+--- whole payload 4 Hz for the duration of every heal.
 --- @param p table|nil  a BR.Inv.publicFor result
 --- @return string
 local function invSig(p)
@@ -156,8 +157,8 @@ local function invSig(p)
     for i = 1, #p.slots do
         local s = p.slots[i]
         out[#out + 1] = s
-            and ('%s:%s:%s'):format(tostring(s.id), tostring(s.count),
-                                    tostring(s.clip))
+            and ('%s:%s:%s:%s'):format(tostring(s.id), tostring(s.count),
+                                       tostring(s.clip), tostring(s.fill))
             or '-'
     end
     -- Ammo pools are a map, so they are read through a sorted key list; pairs()

@@ -169,11 +169,13 @@ NOTES=(
     "test_dcgate|Season 2 data center gate, server: a press opens only the gate nearest its reader, for a standing player outside the trap in a match under way; the other opens only once that one has shut behind someone in the trap, and no gate ever shuts on a player or a vehicle"
     "test_dcgate_client|Season 2 data center gate on screen: the owner's prompt at a reader, one ask a press, each gate folding by itself, the arm frozen in every pose so a car never knocks it loose, every part read back and posed again, nothing per frame away from it"
     "test_devmenu|Dev menu (F10, /brdev): only on a dev-mode server, every request checked, each row runs its console command on the asker's own match"
+    "test_jerrycan|Season 2 jerry can, server: poured only into a still car in your own match with room in its tank, the fuel moved out of the can and never made, the car frozen only while it pours, cans only from match crates"
+    "test_jerrycan_client|Season 2 jerry can on screen: the engine held off by whoever drives the car, never freed while an EMP still holds it, the can in the pourer's hand, the cap marker, all of it let go however the pour ends"
     "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
-    "test_vehicle_models|The game-data reader keeps the plain Insurgent unarmed, and refuses a dump that gives it a gun"
+    "test_vehicle_models|The game-data reader keeps the plain Insurgent unarmed and marks the owner's 26 a jerry can fills, and refuses a dump that no longer bears either out"
     "POI siting|Named map spots and ambulance spawns are spread out, on land, and follow placement rules"
     "map boundary|Every map spot, ambulance spawn, terminal site and Flick camera sits inside the play area the owner surveyed"
     "spectator microphone|Spectators are muted whenever they start watching and unmuted once when they stop"
@@ -1100,6 +1102,8 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_dcgate.lua
         tools/test_dcgate_client.lua
         tools/test_devmenu.lua
+        tools/test_jerrycan.lua
+        tools/test_jerrycan_client.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)
@@ -1285,10 +1289,12 @@ fi
 # The gate above holds the table's armed rows to config/vehicle_models.lua,
 # which tools/vehicle_models.py writes from the game's data -- and that tool
 # overrides one model, the plain Insurgent, whose listed turret its model does
-# not carry (#427). tools/test_vehicle_models.py proves it refuses a dump in
-# which that stops being true, on fixture dumps of its own. PY_ is found at
-# the top of this file. A pass-cache unit like test_deploy: traced, so
-# editing the tool or the suite runs it again.
+# not carry (#427) -- and it leaves one model out of the Season 2 jerry can's
+# full-tank rule, the RC Bandito (#217). tools/test_vehicle_models.py proves it
+# refuses a dump in which either stops being true, on fixture dumps of its own,
+# and that it writes the rule's rows and the two sizes the can's footprint
+# adds. PY_ is found at the top of this file. A pass-cache unit like
+# test_deploy: traced, so editing the tool or the suite runs it again.
 suite_label test_vehicle_models
 if [ "${#PY_[@]}" -gt 0 ]; then
     if vc_begin test_vehicle_models; then

@@ -23041,11 +23041,17 @@ do
         end
     end
     A.durations[SHIELD.dict .. '/' .. SHIELD.clip] = 3.2
+    -- TWO KINDS SINCE #217, IN SORTED ORDER: every heal and shield is the one
+    -- row, and the jerry can's pour is the other -- a pour is not a heal, and
+    -- its row carries where the can sits in the hand. Its clip is probed the
+    -- same way, for nothing: the check walks every kind.
     local rows = BR.Inv.emoteCheck()
-    ok(#rows == 1 and rows[1].name == 'use emote: shield',
-       'one row per kind -- and every heal and shield is the one kind',
-       tostring(#rows))
-    local b = rows[1] or {}
+    ok(#rows == 2 and rows[1].name == 'use emote: jerrycan'
+       and rows[2].name == 'use emote: shield',
+       'one row per kind -- every heal and shield is the one kind, the jerry '
+           .. 'can\'s pour the other', ('%d: %s, %s'):format(#rows,
+           tostring(rows[1] and rows[1].name), tostring(rows[2] and rows[2].name)))
+    local b = rows[2] or {}
     ok(b.ok == true and tostring(b.detail):find(SHIELD.dict, 1, true) ~= nil
        and tostring(b.detail):find(SHIELD.clip, 1, true) ~= nil,
        'a dictionary that exists with the clip in it passes, and the row names '
@@ -23297,6 +23303,275 @@ do
     push({}, MELEE_SLOT, nil)
     pressing = nil
     IsDisabledControlJustPressed = realPressed
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ---------------------------------------------------------------------------
+describe('#217 -- a jerry can names its car, R never reaches for one, and a pour holds the body')
+-- ---------------------------------------------------------------------------
+--
+-- "only be useable at the gascap of a vehicle" and "Neither the ped nor the
+-- vehicle should be able to move while fueling" (owner, 2026-08-22).
+--
+-- client/inventory.lua's half of the can, and only that. The cap finder is
+-- client/jerrycan.lua's, driven over modeled bones by
+-- tools/test_jerrycan_client.lua; here BR.JerryCan's finder is a stand-in
+-- that answers one cap or none and counts its asks, because what is proved is
+-- what goes over the wire, when NOTHING does, which slot R reaches for, and
+-- which keys a pour holds. The can is the real row (BR.Config.ConsumableById,
+-- `refuel`), and the season the real module's, moved by its convar.
+do
+    local MELEE_SLOT = BR.Config.Loot.meleeSlot or 0
+    local CAN = BR.Config.ConsumableById.jerrycan
+    ok(CAN ~= nil and CAN.refuel == true, 'the can is a consumable row with `refuel`',
+       tostring(CAN and CAN.refuel))
+
+    local saved = {
+        jc = BR.JerryCan, season = convars.br_seasonServed,
+        heading = SetEntityHeading, coords = GetEntityCoords,
+        anyVeh = IsPedInAnyVehicle, vehIn = GetVehiclePedIsIn,
+        seat = GetPedInVehicleSeat, pressed = IsDisabledControlJustPressed,
+    }
+
+    -- THE PED AND ITS SEAT. The ped stands at the origin, and a seat is a
+    -- vehicle (9) and the seat in it: -1 is the driver's.
+    local me = { x = 0.0, y = 0.0, z = 30.0 }
+    local seated, seatOf = false, nil
+    function GetEntityCoords(ent)
+        if ent == PlayerPedId() then return me end
+        return saved.coords(ent)
+    end
+    function IsPedInAnyVehicle() return seated end
+    function GetVehiclePedIsIn() return seated and 9 or 0 end
+    function GetPedInVehicleSeat(_veh, seat)
+        return (seated and seat == seatOf) and PlayerPedId() or 0
+    end
+    local headings = {}
+    function SetEntityHeading(ped, h) headings[#headings + 1] = { ped = ped, h = h } end
+    local pressing = nil
+    function IsDisabledControlJustPressed(_pad, c) return c == pressing end
+
+    -- THE FINDER'S STAND-IN: one cap, or none, and every ask counted.
+    local cap, asks = nil, 0
+    local finder = { target = function() asks = asks + 1 return cap end }
+    BR.JerryCan = finder
+
+    local function can() return { id = 'jerrycan', kind = BR.ItemKind.CONSUMABLE, rarity = 3, count = 1, fill = 1 } end
+    local function kit(id) return { id = id, kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 1 } end
+    --- The server's push: `slots` by index, `active` in hand, and a channel on
+    --- slot `on` when given.
+    local function push(slots, active, on)
+        local s = { false, false, false, false, false }
+        for i, v in pairs(slots) do s[i] = v end
+        local using = nil
+        if on then using = { slot = on, endsAt = fakeTime + 5000, ms = 5000 } end
+        fire(BR.Net.INV_SET, { slots = s, ammo = {}, active = active, using = using, quiet = true })
+    end
+    local function wire()
+        local out = {}
+        for _, m in ipairs(sent) do
+            if m.name == BR.Net.INV_USE or m.name == BR.Net.INV_SELECT then out[#out + 1] = m end
+        end
+        return out
+    end
+    local function panelUse(slot) fire('br:ui:action', BR.NuiCb.INV_USE, { slot = slot }) end
+    local function pressR()
+        for _, fn in ipairs(BR.Keys.listeners['use'] or {}) do fn(true) end
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    convars.br_seasonServed = '2'
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    ok(BR.Season.has('jerrycan') == true, 'Season 2: the can is on')
+
+    -- ── 1. sendUse's can branch ──────────────────────────────────────────────
+
+    -- NO CAP IN REACH: the finder is asked once, and nothing goes out -- no
+    -- select, no use, no toast, no turn.
+    push({ [3] = can() }, MELEE_SLOT, nil)
+    cap, asks, sent, headings = nil, 0, {}, {}
+    panelUse(3)
+    ok(asks == 1 and #wire() == 0 and #headings == 0,
+       'no cap in reach: the finder is asked, and nothing is sent or turned',
+       ('%d ask(s), %d message(s), %d turn(s)'):format(asks, #wire(), #headings))
+
+    -- A CAP: turned to it once, the can brought up, then the use naming the car.
+    cap = { n = 4242, veh = 9, x = 1.0, y = 1.0, z = 30.4, bone = 'petroltank' }
+    sent, headings = {}, {}
+    panelUse(3)
+    local w = wire()
+    ok(#w == 2 and w[1].name == BR.Net.INV_SELECT and w[1].args[1].slot == 3
+       and w[2].name == BR.Net.INV_USE,
+       'a cap in reach, the can not in hand: INV_SELECT for its slot first, then INV_USE',
+       ('%d message(s): %s, %s'):format(#w, tostring(w[1] and w[1].name), tostring(w[2] and w[2].name)))
+    local use = w[2] and w[2].args[1] or {}
+    ok(use.slot == 3 and use.n == 4242,
+       'and the use carries the slot and the car\'s network id, `n`',
+       ('slot %s, n %s'):format(tostring(use.slot), tostring(use.n)))
+    -- (1, 1) from the origin is north-west of the ped: GTA's 315 degrees (its
+    -- heading turns counter-clockwise from north).
+    ok(#headings == 1 and headings[1].ped == PlayerPedId()
+       and math.abs(headings[1].h - 315.0) < 1e-6,
+       'one heading write, on this player\'s own ped, facing the cap',
+       ('%d write(s), %s'):format(#headings, tostring(headings[1] and headings[1].h)))
+
+    -- IN HAND: no select.
+    push({ [3] = can() }, 3, nil)
+    sent, headings = {}, {}
+    panelUse(3)
+    w = wire()
+    ok(#w == 1 and w[1].name == BR.Net.INV_USE and w[1].args[1].n == 4242,
+       'the can already in hand: the use alone, still naming the car', tostring(#w))
+
+    -- SEASON 1: a dev's brgive can is real, and pours nothing -- nor scans.
+    convars.br_seasonServed = '1'
+    asks, sent, headings = 0, {}, {}
+    panelUse(3)
+    ok(asks == 0 and #wire() == 0 and #headings == 0,
+       'Season 1: nothing sent, and the finder never asked',
+       ('%d ask(s), %d message(s)'):format(asks, #wire()))
+    convars.br_seasonServed = '2'
+
+    -- MID-CHANNEL: the server runs one use at a time, so a second press sends
+    -- nothing -- nor scans.
+    push({ [3] = can() }, 3, 3)
+    asks, sent = 0, {}
+    panelUse(3)
+    ok(asks == 0 and #wire() == 0, 'mid-channel: nothing sent, and no scan',
+       ('%d ask(s), %d message(s)'):format(asks, #wire()))
+
+    -- NO FINDER: nothing to name a car with, so nothing is sent.
+    push({ [3] = can() }, 3, nil)
+    BR.JerryCan, sent = nil, {}
+    panelUse(3)
+    ok(#wire() == 0, 'with client/jerrycan.lua absent, nothing is sent', tostring(#wire()))
+    BR.JerryCan = finder
+
+    -- EVERY OTHER ITEM IS UNCHANGED: a plain { slot }, no `n`, no finder.
+    push({ [2] = kit('bandage') }, 2, nil)
+    asks, sent = 0, {}
+    panelUse(2)
+    w = wire()
+    ok(#w == 1 and w[1].args[1].slot == 2 and w[1].args[1].n == nil and asks == 0,
+       'a bandage still sends { slot } alone, and asks no finder',
+       ('%d message(s), n %s'):format(#w, tostring(w[1] and w[1].args[1].n)))
+
+    -- ── 2. R's reach ─────────────────────────────────────────────────────────
+
+    -- ON FOOT, FISTS UP: the can and the kit are passed over for the heal.
+    push({ [1] = can(), [2] = kit('repairkit'), [3] = kit('bandage') }, MELEE_SLOT, nil)
+    asks, sent = 0, {}
+    pressR()
+    w = wire()
+    ok(#w == 2 and w[1].name == BR.Net.INV_SELECT and w[1].args[1].slot == 3
+       and w[2].name == BR.Net.INV_USE and w[2].args[1].slot == 3 and asks == 0,
+       'R on foot passes over a can and a repair kit, and reaches the bandage after them',
+       ('%d message(s), slot %s'):format(#w, tostring(w[1] and w[1].args[1].slot)))
+
+    -- DRIVING: the kit is the one R reaches.
+    seated, seatOf = true, -1
+    sent = {}
+    pressR()
+    w = wire()
+    ok(#w == 2 and w[1].args[1].slot == 2 and w[2].name == BR.Net.INV_USE
+       and w[2].args[1].slot == 2,
+       'R from the driver\'s seat reaches the repair kit', ('slot %s'):format(
+       tostring(w[1] and w[1].args[1].slot)))
+
+    -- A PASSENGER IS NOT DRIVING: the kit is passed over again.
+    seatOf = 0
+    sent = {}
+    pressR()
+    w = wire()
+    ok(#w == 2 and w[1].args[1].slot == 3,
+       'R from a passenger seat passes the kit over for the bandage',
+       ('slot %s'):format(tostring(w[1] and w[1].args[1].slot)))
+    seated, seatOf = false, nil
+
+    -- ONLY A CAN IN THE BAG: R reaches for nothing.
+    push({ [1] = can() }, MELEE_SLOT, nil)
+    asks, sent = 0, {}
+    pressR()
+    ok(#wire() == 0 and asks == 0, 'with only a can in the bag and fists up, R does nothing',
+       ('%d message(s)'):format(#wire()))
+
+    -- THE CAN IN HAND: R is its use, through the same door.
+    push({ [1] = can(), [3] = kit('bandage') }, 1, nil)
+    sent = {}
+    pressR()
+    w = wire()
+    ok(#w == 1 and w[1].name == BR.Net.INV_USE and w[1].args[1].slot == 1
+       and w[1].args[1].n == 4242,
+       'R with the can in hand pours it, naming the car', tostring(#w))
+
+    -- ── 3. POUR_HELD ─────────────────────────────────────────────────────────
+
+    -- The whole list, as client/dbno.lua's REVIVING_BLOCKED has it on foot.
+    local POUR = { 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 44, 75,
+                   140, 141, 142, 143, 45, 47, 58, 257, 263, 264 }
+    -- The ones nothing else holds with a can up: the legs, the seat keys,
+    -- cover, the dodge, reload and the throws. (A can in hand already loses
+    -- ATTACK and AIM to the click, and the melee keys to the empty hand.)
+    local ONLY_POUR = { 21, 22, 23, 30, 31, 32, 33, 34, 35, 44, 75, 143, 45, 47, 58, 257 }
+    local function heldOf(list)
+        local out = {}
+        for _, c in ipairs(list) do if disabled[c] == true then out[#out + 1] = c end end
+        return out
+    end
+    local function show(list) return 'held: ' .. table.concat(heldOf(list), ', ') end
+
+    push({ [1] = can() }, 1, nil)
+    frame()
+    ok(#heldOf(ONLY_POUR) == 0,
+       'the can up, no pour: walking, jumping, sprinting and the rest are the player\'s',
+       show(ONLY_POUR))
+
+    push({ [1] = can() }, 1, 1)
+    frame()
+    ok(#heldOf(POUR) == #POUR,
+       'a pour\'s channel holds every one of POUR_HELD, on foot', show(POUR))
+    ok(disabled[51] ~= true, 'and never 51, the interact key')
+    frames(30)
+    ok(#heldOf(POUR) == #POUR, 'and holds them every frame it runs', show(POUR))
+
+    seated, seatOf = true, 0
+    frame()
+    ok(#heldOf(ONLY_POUR) == 0, 'in a seat the list is not applied at all',
+       show(ONLY_POUR))
+    seated, seatOf = false, nil
+
+    push({ [1] = can() }, 1, nil)                -- the pour done, the can kept
+    frame()
+    ok(#heldOf(ONLY_POUR) == 0, 'the frame the channel ends, every key is live again',
+       show(ONLY_POUR))
+
+    -- KNOCKED DOWN, read on the keys only the pour holds: client/dbno.lua's
+    -- DOWNED_BLOCKED takes the legs and the strikes for a downed player, and
+    -- the can still in hand keeps the melee keys from the empty-hand block, so
+    -- a release is seen on the trigger's rest -- ATTACK2, the throws, reload.
+    push({ [1] = can() }, 1, 1)
+    frame()
+    BR.State.me.state = BR.PlayerState.DBNO
+    frame()
+    ok(#heldOf({ 257, 47, 58, 45 }) == 0,
+       'knocked down mid-pour: released on the frame the state says so',
+       show({ 257, 47, 58, 45 }))
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    -- A HEAL IS NOT A POUR: its channel leaves the legs alone, as #11 asked.
+    push({ [2] = kit('bandage') }, 2, 2)
+    frame()
+    ok(#heldOf({ 21, 22, 30, 31, 32, 33, 34, 35 }) == 0,
+       'a bandage\'s channel still leaves every move key live',
+       show({ 21, 22, 30, 31, 32, 33, 34, 35 }))
+
+    push({}, MELEE_SLOT, nil)
+    BR.JerryCan = saved.jc
+    convars.br_seasonServed = saved.season
+    SetEntityHeading, GetEntityCoords = saved.heading, saved.coords
+    IsPedInAnyVehicle, GetVehiclePedIsIn = saved.anyVeh, saved.vehIn
+    GetPedInVehicleSeat, IsDisabledControlJustPressed = saved.seat, saved.pressed
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
 end
 

@@ -7700,6 +7700,9 @@ do
         local rows = {}
         for _, c in ipairs(BR.Config.Consumables) do rows[#rows + 1] = c end
         rows[#rows + 1] = BR.Config.CprKit
+        -- And the jerry can (#217), hand-registered like the CPR kit: its
+        -- `emote` must name a row too.
+        rows[#rows + 1] = BR.Config.JerryCan
         for _, c in ipairs(rows) do
             if (c.health or c.armour) and c.emote == nil then
                 unnamed[#unnamed + 1] = c.id
@@ -7733,11 +7736,74 @@ do
            and C['medkit'].emote == 'shield',
            'the bandage and the med kit play the Shield\'s emote, like every '
                .. 'shield and heal', table.concat(apart, ', '))
-        local kinds = 0
-        for _ in pairs(E or {}) do kinds = kinds + 1 end
-        ok(kinds == 1,
-           'and the table holds that one row -- no per-heal row left behind that '
-               .. 'nothing reads', tostring(kinds))
+        -- ═══ TWO ROWS: THE SHIELD'S, AND THE JERRY CAN'S (#217) ═══
+        --
+        -- A pour is not a heal, and the can's row carries what no heal's does:
+        -- where the can sits in the hand while it pours. So the table holds
+        -- exactly those two -- asserted as the set, by name, so a per-heal row
+        -- left behind that nothing reads still fails here, and so does a third.
+        local kinds = {}
+        for k in pairs(E or {}) do kinds[#kinds + 1] = k end
+        table.sort(kinds)
+        ok(#kinds == 2 and kinds[1] == 'jerrycan' and kinds[2] == 'shield',
+           'and the table holds the shield\'s row and the jerry can\'s and no '
+               .. 'other -- no per-heal row left behind that nothing reads',
+           table.concat(kinds, ', '))
+
+        -- THE CAN'S ROW: a clip and a hand placement in every entry, because
+        -- client/jerrycan.lua puts the can at `bone` with `pos` and `rot` and a
+        -- missing number is a can in the pourer's chest. `bone` is the ped
+        -- bone's ID, an integer, which GetPedBoneIndex makes an index.
+        local J = E and E.jerrycan
+        local badCan = {}
+        if type(J) ~= 'table' then
+            badCan[#badCan + 1] = 'no row'
+        else
+            if #J < 1 then badCan[#badCan + 1] = 'no entries' end
+            if math.type(J.use) ~= 'integer' or J.use < 1 or J.use > #J then
+                badCan[#badCan + 1] = '`use` points at nothing'
+            end
+            for i, e in ipairs(J) do
+                if type(e.dict) ~= 'string' or e.dict == ''
+                   or type(e.clip) ~= 'string' or e.clip == '' then
+                    badCan[#badCan + 1] = ('[%d]: dict and clip must both be named'):format(i)
+                end
+                if math.type(e.bone) ~= 'integer' then
+                    badCan[#badCan + 1] = ('[%d]: bone is not an integer'):format(i)
+                end
+                for _, v in ipairs({ 'pos', 'rot' }) do
+                    local t = e[v]
+                    if type(t) ~= 'table' or type(t.x) ~= 'number'
+                       or type(t.y) ~= 'number' or type(t.z) ~= 'number' then
+                        badCan[#badCan + 1] = ('[%d]: %s needs a number in x, y and z'):format(i, v)
+                    end
+                end
+            end
+        end
+        ok(#badCan == 0,
+           'the jerry can\'s row: every entry a named dict and clip, an integer '
+               .. 'bone and numbers for pos and rot, and `use` picks one of them',
+           table.concat(badCan, '; '))
+        ok(C['jerrycan'] ~= nil and C['jerrycan'].emote == 'jerrycan',
+           'and the can names its own row, not the shield\'s -- a pour is not a heal')
+
+        -- ...AND THE CAN IS IN NO BUCKET, the CPR kit's shape: registered by
+        -- hand into ConsumableById and rolled only as a crate's extra item, so
+        -- Season 1's layouts and every other item's odds stay where they were.
+        local bucketed = {}
+        for _, c in ipairs(BR.Config.Consumables) do
+            if c.id == 'jerrycan' then bucketed[#bucketed + 1] = 'Consumables' end
+        end
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            for _, c in ipairs(BR.Config.ConsumablesByRarity[r] or {}) do
+                if c.id == 'jerrycan' then bucketed[#bucketed + 1] = 'ConsumablesByRarity[' .. r .. ']' end
+            end
+            for _, c in ipairs(BR.Config.ConsumablesByRarityFloor[r] or {}) do
+                if c.id == 'jerrycan' then bucketed[#bucketed + 1] = 'ConsumablesByRarityFloor[' .. r .. ']' end
+            end
+        end
+        ok(#bucketed == 0, 'and the jerry can is in no consumable list and no rarity bucket',
+           table.concat(bucketed, ', '))
 
         -- ...AND THE TWO THAT MUST PLAY NOTHING. The repair kit is used from
         -- the driver's seat, where a standing clip has nowhere to go; the CPR

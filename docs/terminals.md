@@ -1455,8 +1455,9 @@ them), and the Heavy Sniper by id. `class` is new on every firearm in
 `config/weapons.lua` (`pistol`, `smg`, `rifle`, `shotgun`, `sniper`, `mg`,
 `launcher`), so a machine gun added later is left out too. **Never on it**,
 by construction: ammo (a pool, not a slot), the Yubikey and the revive key
-(owned, never carried), fists, and the shop's car tokens (`config/shop.lua`'s).
-The other three scoped rifles, the RPG, grenade launcher and railgun, and the
+(owned, never carried), fists, the shop's car tokens (`config/shop.lua`'s),
+and the Season 2 jerry can (#217), registered by hand into no consumable list:
+a match crate's extra roll is its one source. The other three scoped rifles, the RPG, grenade launcher and railgun, and the
 CPR kit are on it.
 
 **Who gets it** (`who`): `self` (free), `mate` (free; `mate`, a dropdown of

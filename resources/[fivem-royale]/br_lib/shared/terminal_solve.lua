@@ -263,16 +263,28 @@ end
 --- airdrop's payout draws from: every other item in every crate is exactly
 --- what it would have been, and the same pinned seed (/brlootseed) replays the
 --- same keys.
+---
+--- ═══ AND `salt` NAMES WHOSE STREAM (#217) ═══
+---
+--- The Season 2 jerry can is the second extra item a crate can hold, and it
+--- rolls through here with its own number in place of #396's (217, in
+--- BR.JerryCanSolve.crateRoll). Rolled with the key's salt, it would draw the
+--- key's very float, so cans and keys would turn up in the same crates and
+--- never apart. NO SALT IS THE KEY'S 396, so server/yubikey.lua's call is not
+--- edited and every key a pinned seed ever replayed is the key it replays now
+--- (tools/test_jerrycan.lua holds the two spellings equal over 10,000 crates).
 --- @param layoutSeed integer|nil
 --- @param containerId integer|nil
 --- @param chance number  0..1
+--- @param salt integer|nil  whose stream; nil is the Yubikey's, 396
 --- @return boolean
-function T.extraRoll(layoutSeed, containerId, chance)
+function T.extraRoll(layoutSeed, containerId, chance, salt)
     chance = tonumber(chance) or 0
     if chance <= 0 then return false end
     if chance >= 1 then return true end
     local seed = ((math.tointeger(layoutSeed) or 0) * 31
-        + (math.tointeger(containerId) or 0) * 2246822519 + 396) % 2147483647
+        + (math.tointeger(containerId) or 0) * 2246822519
+        + (math.tointeger(salt) or 396)) % 2147483647
     return BR.Rng(seed):float() < chance
 end
 

@@ -25,7 +25,10 @@
 --   THIS FILE          owns `left`, in metres, per vehicle. Nothing a client
 --                      sends can raise it except a validated pump grant, and
 --                      that grant is bounded by the WALL CLOCK rather than by
---                      how many messages arrived (BR.FuelSolve.grantMs).
+--                      how many messages arrived (BR.FuelSolve.grantMs) --
+--                      and, since #217, a Season 2 jerry can's pour
+--                      (BR.Fuel.pour), which server/jerrycan.lua rules on and
+--                      takes out of a can the server holds.
 --   client/fuel.lua    renders it. It calls SetVehicleFuelLevel with whatever
 --                      this file last told it, on a timer, so a client that
 --                      overwrites the level gets it back within 100ms and gains
@@ -132,6 +135,9 @@ local stat = {
     admitted = 0, evicted = 0, swept = 0, drained = 0, jumps = 0,
     pumped = 0, pumpRefused = 0, pushes = 0, asks = 0, askRefused = 0,
     sfx = 0,
+    -- The jerry can's pours (#217): how many added fuel, the meters they
+    -- added, and how many BR.Fuel.pour turned away. See BR.Fuel.pour.
+    pours = 0, pourMeters = 0, pourRefused = 0,
 }
 
 --- Which player states may spend or buy fuel.
@@ -314,6 +320,8 @@ function BR.Fuel.stats()
         pushes   = stat.pushes,   asks    = stat.asks,
         askRefused = stat.askRefused,
         sfx      = stat.sfx,
+        pours    = stat.pours, pourMeters = stat.pourMeters,
+        pourRefused = stat.pourRefused,
     }
 end
 
@@ -879,6 +887,99 @@ AddEventHandler(BR.Net.FUEL_ASK, function(d)
 end)
 
 -- ---------------------------------------------------------------------------
+-- Pouring it in: the Season 2 jerry can (#217)
+-- ---------------------------------------------------------------------------
+--
+-- server/jerrycan.lua rules on a pour, holds the claim and moves the fuel out of
+-- the can; this file only answers how much room a tank has and takes what is
+-- poured into it. It keeps NO per-pour state -- the claims are that file's, and
+-- are cleared there -- and it never learns there is a can.
+
+--- Meters of room in a tracked tank: `tankMetres` less what it holds, 0 for a
+--- full one.
+---
+--- NIL, NOT A NUMBER, FOR EVERY TANK THIS LEDGER HAS NO SAY OVER: fuel off, no
+--- network id, a vehicle with no row, or a row that belongs to another match. AN
+--- UNTRACKED CAR READS FULL (BR.Fuel.left), because nobody has burned any of its
+--- fuel, and the jerry can refuses it at the press -- so a can is never poured
+--- into a tank the ledger cannot account for.
+---
+--- A READ: it never admits a row and never stamps one.
+--- @param netId integer|nil
+--- @param matchId any  the pourer's match
+--- @return number|nil meters
+function BR.Fuel.space(netId, matchId)
+    if not enabled() then return nil end
+    netId = math.tointeger(tonumber(netId))
+    if netId == nil or netId == 0 or matchId == nil then return nil end
+    local rec = tanks[netId]
+    if rec == nil or rec.matchId ~= matchId then return nil end
+    local tank = tonumber(F.tankMetres) or 0.0
+    return math.max(0.0, tank - BR.FuelSolve.clamp(rec.left, tank))
+end
+
+--- The jerry can's writer: up to `meters` into a tracked tank, answering what it
+--- REALLY added.
+---
+--- THROUGH BR.FuelSolve.refill, which clamps at the tank and drops a NaN or a
+--- negative, so the answer is the meters the tank actually took -- and that
+--- answer, and nothing the caller asked for, is what server/jerrycan.lua takes
+--- out of the can. The pump's own clamp, so the two writers cannot disagree
+--- about what full is.
+---
+--- 0, COUNTED AS `pourRefused`, when fuel is off, `netId` is nil or 0, `meters`
+--- is not a finite number above 0, there is no row, the row is another match's,
+--- or the tank is already full.
+---
+--- ═══ WHAT IT NEVER DOES, AND EACH IS A RULE ═══
+---
+---   It never ADMITS a row: a car the ledger does not track is a full one, and
+---     a row only a seat can admit (admit()'s note).
+---   It never touches `x`, `y` or `at`, so the next drain measures from where
+---     the car really was.
+---   It never calls pushTo -- and so can never pass pushTo's fifth argument, the
+---     pump's repair: "the jerry can does not repair the vehicle" (owner,
+---     2026-11-02). Whoever sits in the car sees the rise through the ordinary
+---     sample pass, which pushes once it has moved `pushFraction` (37.5 m) and
+---     on the heartbeat after; a pourer on foot has no gauge to show it on.
+---   It never touches health.
+---
+--- IT STAMPS `seen` on a row it finds in that match, full or not, so an empty
+--- car with somebody pouring into it is never swept as idle mid-pour.
+--- @param netId integer|nil
+--- @param matchId any
+--- @param meters number
+--- @return number added  meters, 0 when refused
+function BR.Fuel.pour(netId, matchId, meters)
+    if not enabled() then
+        stat.pourRefused = stat.pourRefused + 1
+        return 0.0
+    end
+    netId = math.tointeger(tonumber(netId))
+    local want = tonumber(meters)
+    local rec = (netId ~= nil and netId ~= 0) and tanks[netId] or nil
+    if want == nil or want ~= want or want == math.huge or want <= 0.0
+       or rec == nil or matchId == nil or rec.matchId ~= matchId then
+        stat.pourRefused = stat.pourRefused + 1
+        return 0.0
+    end
+    rec.seen = GetGameTimer()
+    local tank = tonumber(F.tankMetres) or 0.0
+    local before = BR.FuelSolve.clamp(rec.left, tank)
+    if before >= tank then
+        stat.pourRefused = stat.pourRefused + 1
+        return 0.0
+    end
+    rec.left = BR.FuelSolve.refill(before, want, tank)
+    local added = rec.left - before
+    if added > 0.0 then
+        stat.pours = stat.pours + 1
+        stat.pourMeters = stat.pourMeters + added
+    end
+    return added
+end
+
+-- ---------------------------------------------------------------------------
 -- Lifecycle
 -- ---------------------------------------------------------------------------
 
@@ -947,4 +1048,11 @@ RegisterCommand('brfuel', function()
         :format(s.admitted, s.evicted, s.swept, s.drained, s.jumps))
     print(('  pumped %d  refused %d  asks %d (refused %d)  pushes %d  cues %d')
         :format(s.pumped, s.pumpRefused, s.asks, s.askRefused, s.pushes, s.sfx))
+    -- THE JERRY CAN'S POURS (#217). "Canceled" is the can's own count -- a pour
+    -- that stopped early -- because the ledger never sees a cancel: it only
+    -- ever sees the meters that were poured before it.
+    local js = BR.JerryCan and BR.JerryCan.stats and BR.JerryCan.stats() or nil
+    print(('  pours %d (%.0f m), refused %d, canceled %s')
+        :format(s.pours, s.pourMeters, s.pourRefused,
+                js and tostring(js.canceled) or '-'))
 end, true)

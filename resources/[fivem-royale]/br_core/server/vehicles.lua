@@ -2131,24 +2131,52 @@ local SPAWN_CLEAR_M = 3.0
 local PED_ORIGIN_ABOVE_GROUND_M = 1.0
 
 --- config/vehicle_models.lua's rows by normalized hash, built the first time a
---- spawn asks. The table is data loaded once with the resource; nothing
---- replaces it while it runs.
+--- spawn or a jerry can asks. The table is data loaded once with the resource;
+--- nothing replaces it while it runs.
 local modelRows
+
+--- That index, or nil when config/vehicle_models.lua is not loaded.
+--- @return table|nil
+local function modelIndex()
+    local list = BR.Config and BR.Config.VehicleModels
+    if type(list) ~= 'table' then return nil end
+    if modelRows == nil then
+        modelRows = {}
+        for _, v in ipairs(list) do modelRows[BR.NormHash(v.hash)] = v end
+    end
+    return modelRows
+end
 
 --- What the game's own data says about a model (#426): its row of
 --- config/vehicle_models.lua, or nil for a model that table does not have --
 --- an add-on, or a name that is no model at all.
 --- @param model string
---- @return table|nil row    { name, hash, tree, reach, below, armed }
+--- @return table|nil row    { name, hash, tree, reach?, below?, front?, rear?,
+---                          armed?, jerryFills? } -- the four sizes all or none
 --- @return boolean loaded   false when config/vehicle_models.lua is not loaded
 local function modelRow(model)
-    local list = BR.Config and BR.Config.VehicleModels
-    if type(list) ~= 'table' then return nil, false end
-    if modelRows == nil then
-        modelRows = {}
-        for _, v in ipairs(list) do modelRows[BR.NormHash(v.hash)] = v end
-    end
-    return modelRows[BR.NormHash(GetHashKey(model))], true
+    local rows = modelIndex()
+    if rows == nil then return nil, false end
+    return rows[BR.NormHash(GetHashKey(model))], true
+end
+
+--- The same row for a vehicle the server is LOOKING AT rather than building
+--- (#217): config/vehicle_models.lua's row for a model HASH, signed or unsigned
+--- -- GetEntityModel answers signed, so a row whose hash has its top bit set
+--- is found from either form -- through the same index modelRow builds. Nil for
+--- an add-on, for something that is not a number, and when the table is not
+--- loaded.
+---
+--- server/jerrycan.lua asks it at a press and on every pass of a pour: the
+--- row's footprint bounds the pourer, and `jerryFills` is a whole tank.
+--- @param model integer|nil  a model hash
+--- @return table|nil row  { name, hash, tree, reach?, below?, front?, rear?,
+---                        armed?, jerryFills? }
+function BR.Vehicles.modelRowOf(model)
+    local h = math.tointeger(tonumber(model))
+    if h == nil then return nil end
+    local rows = modelIndex()
+    return rows and rows[BR.NormHash(h)] or nil
 end
 
 --- The sync tree the game builds a model as (#426): config/vehicle_models.lua's,

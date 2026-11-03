@@ -349,6 +349,61 @@ read them before filtering, which costs read capacity: a ped is about 1 KB, plus
 a few KB with its headshot. blitz-bot reads the `profile` row by key and a
 player's matches with `begins_with(sk, 'match#')`, so it never sees one either.
 
+## A jerry can names its car (#217)
+
+The Season 2 jerry can is the one item whose use carries more than a slot:
+`INV_USE { slot, n }`, where `n` is the network id of the vehicle whose gas cap
+the client found nearest. It has to come from the client -- a pourer stands on
+foot, a gas cap is a bone, and only a client can read a bone -- so it is the one
+thing the server takes from it, and every claim around it is the server's own
+read (`BR.JerryCan.judge` in `br_core/server/jerrycan.lua`). Every refusal is
+silent and spends nothing; `brjerrycan` counts them by reason.
+
+| The claim | What the server reads instead |
+|---|---|
+| This is a vehicle in my match | `n` is a whole number naming an entity that exists, is a vehicle, and stands in the routing bucket of the pourer's own match. Network ids are global across buckets. |
+| It needs fuel | The fuel ledger has a row for it in that match, with room for at least 0.5% of a tank. A car the ledger does not track reads full and is refused. |
+| I am on foot at its cap | The vehicle's own seats (`BR.Vehicles.ridingIn`, never server `GetVehiclePedIsIn`, which answers the last car a ped sat in: citizenfx/fivem#4006), and a fresh read of the pourer's position inside the vehicle's footprint in its own frame -- `reach` across, `front` and `rear` along, from `config/vehicle_models.lua` -- grown by 2 m on every side, and within 3 m of its height. A model with no row falls back to FUEL_ASK's 12 m. |
+| Neither of us is moving | `GetEntitySpeed` of both under 0.5 m/s at the press; nothing poured and nothing frozen for the first 250 ms, one more roster sample; and on every pass, the car within 1 m of where it stood and under 0.5 m/s, and the pourer within 0.75 m. |
+| Nobody else is pouring into it | One pour per vehicle. |
+| How much | Never asked. The can's fill is on the server's slot, the room is the ledger's, and each slice takes out of the can exactly what `BR.Fuel.pour` says the tank took. |
+
+**What a modified client gains: pouring from anywhere inside that box** rather
+than at the cap -- at most about two meters outside the car's own outline.
+Still standing still, still only the can's own fuel, still only into a car in
+its own match with room in its tank. The pump's 20 m and FUEL_ASK's 12 m make
+the same trade.
+
+**It cannot make fuel.** A can's `fill`, the fraction of one can still in it,
+lives on the server's slot like a gun's clip and is written by one formula:
+what the pour started with, less what the ledger says the tank took. Nothing
+raises it, and every way a stack moves -- a drop, a pickup, a swap, a death box
+-- carries it, so the fuel a can delivers and the fill left in it add up to one
+can however its pours are started, interrupted and repeated. An interrupted pour
+needs no refund: the tank keeps what went in, and the can keeps the rest.
+`FUEL_PUMP` was the only message that could make a resource go up; the can's
+`INV_USE` moves fuel out of a can the server holds rather than making it.
+
+**The freeze is the server's, and never its proof.** The server freezes the car
+with `FreezeEntityPosition`, an RPC to whichever client owns it, sent again
+whenever the owner changes, and the engine is held off by the driver's client,
+or the owner's with nobody driving. A modified client can refuse both. Then the
+car moves, the server's own coordinates and speed end the pour, and the pourer
+keeps the rest of the can: nothing is gained. What the server reads of a freeze
+is the owner's last sync, up to a second stale, so it decides nothing.
+
+**Freezing somebody's car costs the griefer their can.** The freeze starts only
+on the first slice after the settle, which pays for it; a tank within 0.5% of
+full refuses the press; and every second a car is held is a second of the
+griefer's own fuel poured into its tank -- at most a full can's five seconds per
+can. The car's owner can get out, or shoot: an enemy's hit ends the pour.
+
+**What it never does.** It never repairs -- no `VEH_FIX`, and `BR.Fuel.pour`
+never pushes, so it can never pass the pump's repair. It writes no state bag.
+`FUEL_CAN` goes only from the server, and only to the pour's own match. The can
+in a hand is a local prop on each client that nothing reads, the pourer is
+unarmed while it pours, and nobody is ever given `WEAPON_PETROLCAN`.
+
 ## The second source: a weapon in a hand the gamemode never filled
 
 Everything above is the **damage** path — refused shots, counted server-side inside

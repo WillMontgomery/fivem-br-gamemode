@@ -440,6 +440,57 @@ BR.Config.CprKit = {
     chestOnly = true,
 }
 
+--- ═══ THE JERRY CAN (#217, SEASON 2) ═══
+---
+---   "Please create an issue scoping a jerry can as a useable loot item, which
+---    would only be useable at the gascap of a vehicle and could be used to
+---    mobile refuel a vehicle. For anything other than small
+---    4wheelers/buggies/dirtbikes, this should add 25% fuel to the tank, and for
+---    4wheelers/buggies/dirtbikes it should fill the tank completely. ...
+---    maxCarry 1 on the jerry can."               -- owner, 2026-08-22
+---   "please remember that jerry can will be a season 2+ feature"
+---   "partial use of a can should be possible."   -- owner, 2026-11-02
+---
+--- THE CPR KIT'S SHAPE, AND FOR THE CPR KIT'S REASON: in no rarity bucket,
+--- registered into BR.Config.ConsumableById by hand below and into
+--- BR.Config.Consumables never. The buckets are built once at load, a season
+--- may not be read at load and kept, and a row added to them moves Season 1's
+--- layouts and every other consumable's odds. So a can is an EXTRA item a match
+--- crate rolls as it opens, on a stream of its own -- the Season 2 Yubikey's
+--- shape -- and `crateChance` in BR.Config.Fuel.jerryCan is its odds.
+---
+--- `refuel` IS WHAT IT DOES, in the `shopCar` / `repairVeh` shape: a field
+--- naming the effect, which every reader branches on -- the server's press and
+--- tick (server/jerrycan.lua), the slot's `fill` on the wire, the client's use
+--- path and its cap marker -- and none of them learns the id.
+---
+--- `useMs` IS A FULL CAN'S POUR, AND A PARTIAL POUR TAKES ITS SHARE. Five
+--- seconds is the repair kit's and the Shield's, "the thing you commit to while
+--- somebody is shooting at you": a can tops a car up at half the pump's rate, so
+--- the pump stays the better stop. NOT THE OWNER'S NUMBER: he has never given a
+--- length. It lives here and nowhere else -- this file loads before
+--- config/fuel.lua, so the can's own table there cannot be its home.
+---
+--- THE CAN CARRIES A FILL, the fraction of one can still in it, on the slot
+--- like a gun's clip -- see BR.JerryCanSolve. The completion does not spend it:
+--- every slice moves fuel out of the can and into the tank, and the can leaves
+--- the bag only when it is empty. So a can stopped part way keeps what it did
+--- not pour, and no run of presses and interruptions gets more out of one can
+--- than one can holds.
+---
+--- NO `ignoresDamage`: an enemy's shot interrupts a pour with the ordinary
+--- 'Interrupted.', and the can keeps what is left in it. RARE IS THE TINT AND
+--- NOTHING ELSE, as on the CPR kit: no world roll reads this field.
+BR.Config.JerryCan = {
+    id = 'jerrycan', label = 'Jerry Can', plural = 'Jerry Cans',
+    rarity = BR.Rarity.RARE,                 -- display tint only (3, rare blue)
+    kind = BR.ItemKind.CONSUMABLE, prop = 'w_am_jerrycan',   -- the ground and the hand alike
+    useMs = 5000,                            -- a FULL can's pour; a partial pour takes its share
+    maxStack = 1, carryMax = 1,
+    refuel = true,                           -- the effect field, the shopCar / repairVeh shape
+    emote = 'jerrycan',                      -- BR.Config.UseEmotes.jerrycan
+}
+
 --- ═══ WHAT A HEAL LOOKS LIKE FROM ACROSS THE STREET (#11) ═══
 ---
 ---   "while using a heal, ideally we should have the ped play an emote but not
@@ -462,13 +513,17 @@ BR.Config.CprKit = {
 --- are gone rather than left unread; f58f933 has them, with their sources, if a
 --- heal is ever to look different again.
 ---
---- SO THERE IS ONE ROW, and a consumable opts into it by naming it with
---- `emote`. All four -- both shields, the bandage, the med kit -- name 'shield',
---- so what the ped does is decided here once and cannot drift apart. A POSITIVE
---- OPT-IN ON THE ROW, the `repairVeh` / `ignoresDamage` shape: an item without
---- the field plays nothing. That is the repair kit (it is used from the
+--- SO THERE IS ONE ROW FOR EVERY HEAL, and a consumable opts into it by naming
+--- it with `emote`. All four -- both shields, the bandage, the med kit -- name
+--- 'shield', so what the ped does is decided here once and cannot drift apart. A
+--- POSITIVE OPT-IN ON THE ROW, the `repairVeh` / `ignoresDamage` shape: an item
+--- without the field plays nothing. That is the repair kit (it is used from the
 --- driver's seat, where a standing clip has nowhere to go), the shop car, and
 --- the CPR kit, which has no channel at all.
+---
+--- THE JERRY CAN HAS THE ONE OTHER ROW (#217), because a pour is not a heal and
+--- its entries carry what no heal's do: where the can sits in the hand. See the
+--- row.
 ---
 --- ═══ `use` IS THE ONE LINE TO EDIT ═══
 ---
@@ -517,6 +572,31 @@ BR.Config.UseEmotes = {
         -- GTA Online's interaction-menu snack, its own heal from the bag.)
         { dict = 'mp_player_inteat@pnq', clip = 'loop' },
     },
+    -- THE JERRY CAN'S POUR (#217): the clip, and where the can sits in the
+    -- hand while it plays. The pair moves together, so a swap is `use` and
+    -- nothing else.
+    --
+    -- THE CLIP PLAYS THROUGH THE HEALS' OWN MACHINERY. client/inventory.lua
+    -- plays every row here with its EMOTE_FLAG, 49 (upper body, walk while it
+    -- plays), for as long as the channel stands, so the row needs no flag of
+    -- its own. The HAND PROP is client/jerrycan.lua's: a LOCAL copy of the item
+    -- row's `prop` on every client, at this entry's `bone`, `pos` and `rot` --
+    -- `bone` the ped bone's ID, which GetPedBoneIndex makes an index. Local and
+    -- never networked, because sv_entityLockdown relaxed refuses an object a
+    -- client creates on the network.
+    --
+    -- BOTH PAIRINGS ARE SHIPPED RESOURCES', read 2026-11-02, and NEITHER IS THE
+    -- OWNER'S: `/brjerrytune` moves the can in the hand, in game, and prints the
+    -- six numbers to paste back here.
+    jerrycan = {
+        use = 1,
+        -- rpemotes-reborn's `fuel`: the clip and the right hand together.
+        { dict = 'weapons@misc@jerrycan@', clip = 'fire', bone = 57005,          -- SKEL_R_Hand (the ID; GetPedBoneIndex makes the index)
+          pos = { x = 0.18, y = 0.13, z = -0.24 }, rot = { x = -165.87, y = -11.21, z = -32.95 } },
+        -- cdn-fuel's: the alternate, kept so a swap is `use = 2` and nothing else.
+        { dict = 'weapon@w_sp_jerrycan', clip = 'fire', bone = 18905,            -- SKEL_L_Hand
+          pos = { x = 0.11, y = 0.0, z = 0.25 }, rot = { x = 15.0, y = 170.0, z = 90.42 } },
+    },
 }
 
 BR.Config.ConsumableById = {}
@@ -527,6 +607,10 @@ end
 -- The hand registration. Resolvable everywhere -- the inventory, the ground
 -- prop, the label, the airdrop pool -- and rollable nowhere.
 BR.Config.ConsumableById[BR.Config.CprKit.id] = BR.Config.CprKit
+-- The jerry can's, for the same reason (#217): the inventory, the ground prop,
+-- the label and the carry cap all find it here, and no bucket below holds it.
+-- Its one source is the crate's extra roll, BR.JerryCan.extraFor.
+BR.Config.ConsumableById[BR.Config.JerryCan.id] = BR.Config.JerryCan
 
 --- Consumables bucketed by rarity, in authored order. Built once, and built from
 --- an ipairs walk rather than a pairs walk for the same reason the weapon

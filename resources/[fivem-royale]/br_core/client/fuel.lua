@@ -1393,7 +1393,19 @@ AddEventHandler(BR.Net.FUEL_SET, function(d)
     -- ONLY ON THE EMPTY->NON-EMPTY EDGE, and only for the driver. Asserting the
     -- ignition on every push would fight a player who deliberately switched
     -- their own engine off, and would do it ten times a second.
-    if prev and prev.f <= 0.0 and (tonumber(d.f) or 0.0) > 0.0 then
+    --
+    -- ═══ AND NOT UNDER A JERRY CAN'S POUR (#217) ═══
+    --
+    -- "the engine is turned off while fueling" (owner, 2026-11-02). A can
+    -- poured into a dry car crosses this edge on the pour's first rising push,
+    -- mid-pour, and this line would start the engine the pour is holding off.
+    -- So it waits while client/jerrycan.lua knows a pour on this car, and the
+    -- pour's own release starts the engine instead -- for its seated driver,
+    -- with fuel in the tank, the way the EMP's free does. Nil-guarded on the
+    -- module, as every cross-file read here is: without it there is no pour to
+    -- wait for.
+    if prev and prev.f <= 0.0 and (tonumber(d.f) or 0.0) > 0.0
+       and not (BR.JerryCan and BR.JerryCan.holds and BR.JerryCan.holds(nid)) then
         local okSeat, driver = pcall(GetPedInVehicleSeat, veh, -1)
         if okSeat and driver == ped and SetVehicleEngineOn then
             -- `disableAutoStart = false`: we WANT the ped to keep it running.

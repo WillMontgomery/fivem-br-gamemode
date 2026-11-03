@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for tools/vehicle_models.py's one override: the plain Insurgent (#427).
+"""Tests for tools/vehicle_models.py's two rulings by name: the plain Insurgent
+(#427) and the RC Bandito the jerry can leaves out (#217).
 
     py tools/test_vehicle_models.py         (Windows)
     python3 tools/test_vehicle_models.py    (Linux; tools/verify.sh runs it)
@@ -14,11 +15,18 @@ reason would be a gun nobody ruled on -- which is why a dump that shows the
 plain Insurgent a turret_ or weapon_ bone, shows it no skeleton to look in, or
 no longer gives it a weapon to override is refused whole, and nothing written.
 
+THE JERRY CAN (#217) fills the tank of the game's own quads, dirt bikes and dune
+buggies whole -- its quad-bike types and seven layouts -- and the tool writes
+those rows `jerryFills`, with every sized row's `front` and `rear` beside them.
+The RC Bandito is a remote-control toy in a buggy layout, and the owner's 26 do
+not name it, so it is left out by name (JERRY_NOT) -- and a dump that no longer
+puts it in the rule, or no longer has it, is refused whole the same way.
+
 THE FIXTURES ARE SMALL DUMPS BUILT HERE, in the shape DurtyFree's vehicles.json
 has: nothing is downloaded, and each is build 3717's two Insurgents beside the
-Weaponized Ignus with one fact changed. The tool itself runs in a temp
-directory laid out like the repo, so a refusal that wrote anyway writes there
-and fails a test, and never touches the real tables.
+Weaponized Ignus and the RC Bandito with one fact changed. The tool itself runs
+in a temp directory laid out like the repo, so a refusal that wrote anyway
+writes there and fails a test, and never touches the real tables.
 """
 
 from __future__ import annotations
@@ -47,12 +55,14 @@ def bones(names):
     return [{'BoneIndex': i, 'BoneId': i, 'BoneName': n} for i, n in enumerate(names)]
 
 
-def model(name, weapons=(), skeleton=PLAIN):
-    """One model, as the dump has it: the fields the tool reads."""
+def model(name, weapons=(), skeleton=PLAIN, typ='CAR', layout='LAYOUT_VAN_ARMORED'):
+    """One model, as the dump has it: the fields the tool reads. Every one is
+    an Insurgent's size unless a test says otherwise."""
     return {
         'Name': name,
         'Hash': vm.joaat(name),
-        'Type': 'CAR',
+        'Type': typ,
+        'LayoutId': layout,
         'DimensionsMin': {'X': -1.42, 'Y': -3.24, 'Z': -0.92},
         'DimensionsMax': {'X': 1.41, 'Y': 3.0, 'Z': 1.71},
         'Weapons': list(weapons),
@@ -61,16 +71,18 @@ def model(name, weapons=(), skeleton=PLAIN):
 
 
 def dump(**plain):
-    """Build 3717's two Insurgents, an unarmed car and the Weaponized Ignus --
-    whose dump holds only a stub skeleton -- with the plain Insurgent's fields
-    replaced by `plain`."""
+    """Build 3717's two Insurgents, an unarmed car, the Weaponized Ignus --
+    whose dump holds only a stub skeleton -- and the RC Bandito in its buggy
+    layout, with the plain Insurgent's fields replaced by `plain`."""
     insurgent2 = model('insurgent2', (TURRET,), PLAIN)
     insurgent2.update(plain)
     return [
-        model('adder'),
-        model('ignus2', ('VEHICLE_WEAPON_IGNUS2_TURRET_MINI',), ('stub',)),
+        model('adder', layout='LAYOUT_LOW_RESTRICTED'),
+        model('ignus2', ('VEHICLE_WEAPON_IGNUS2_TURRET_MINI',), ('stub',),
+              layout='LAYOUT_LOW_IGNUS2'),
         model('insurgent', (TURRET,), PICKUP),
         insurgent2,
+        model('rcbandito', layout='LAYOUT_LOW_DUNE'),
     ]
 
 
@@ -161,7 +173,7 @@ class PlainInsurgent(unittest.TestCase):
         rc, err, wrote = run_tool(dump())
         self.assertEqual((rc, err), (0, ''))
         table = wrote[vm.OUT]
-        self.assertIn(', 2 armed, sha256 ', table)
+        self.assertIn(', 2 armed, 0 a jerry can fills, sha256 ', table)
         rows = {line.split("'")[1]: line for line in table.splitlines()
                 if line.startswith("    { name = '")}
         self.assertIn('armed = true', rows['insurgent'])
@@ -170,6 +182,151 @@ class PlainInsurgent(unittest.TestCase):
         # THE TURRET IS STILL A VEHICLE WEAPON OF THE GAME'S: the Pick-Up fires
         # it, and a dev menu vehicle's gun is excused by that list.
         self.assertIn("'%s'," % TURRET, wrote[vm.WEAPONS_OUT])
+
+
+def sized(name, ymin, ymax, typ='CAR', layout='LAYOUT_STANDARD'):
+    """A model `ymin` to `ymax` meters along its length, an Insurgent across."""
+    m = model(name, typ=typ, layout=layout)
+    m['DimensionsMin'] = dict(m['DimensionsMin'], Y=ymin)
+    m['DimensionsMax'] = dict(m['DimensionsMax'], Y=ymax)
+    return m
+
+
+def jerry(doc):
+    return {r['name'] for r in vm.rows_of(doc) if r.get('jerryFills')}
+
+
+#: The game's own grouping, one of each kind (build 3717's types and layouts),
+#: beside the near misses that share a layout or a look with them.
+GROUPS = [
+    model('sanchez', typ='BIKE', layout='LAYOUT_BIKE_DIRT'),
+    model('manchez2', typ='BIKE', layout='LAYOUT_BIKE_MANCHEZ2'),
+    model('blazer', typ='QUADBIKE', layout='LAYOUT_BIKE_QUAD'),
+    model('blazer5', typ='AMPHIBIOUS_QUADBIKE', layout='LAYOUT_BIKE_QUAD_AQUA'),
+    model('chimera', typ='QUADBIKE', layout='LAYOUT_BIKE_FREEWAY_CHIMERA'),
+    model('stryder', typ='QUADBIKE', layout='LAYOUT_BIKE_SPORT'),
+    model('dune', layout='LAYOUT_LOW_DUNE'),
+    model('dune3', layout='LAYOUT_LOW_DUNE3'),
+    model('bfinjection', layout='LAYOUT_LOW_BFINJECTION'),
+    model('outlaw', layout='LAYOUT_STD_OUTLAW'),
+    model('vagrant', layout='LAYOUT_LOW_VAGRANT'),
+    # THE NEAR MISSES: a road bike in the Chimera's layout and one in the
+    # Stryder's, a trophy truck, a buggy-shaped car in a layout of its own.
+    model('ratbike', typ='BIKE', layout='LAYOUT_BIKE_FREEWAY_CHIMERA'),
+    model('akuma', typ='BIKE', layout='LAYOUT_BIKE_SPORT'),
+    model('trophytruck', layout='LAYOUT_STD_TROPHY'),
+    model('squaddie', layout='LAYOUT_SQUADDIE'),
+]
+
+
+class JerryCan(unittest.TestCase):
+
+    def test_the_rule_is_the_games_grouping_less_the_rc_bandito(self):
+        self.assertEqual(jerry(dump() + GROUPS), {
+            'sanchez', 'manchez2', 'blazer', 'blazer5', 'chimera', 'stryder',
+            'dune', 'dune3', 'bfinjection', 'outlaw', 'vagrant'})
+
+    def test_a_quad_type_is_enough_and_a_layout_alone_is_not(self):
+        # THE TRIKES ARE TYPED AS QUADS and share their layouts with road bikes:
+        # the type takes the Stryder and the Chimera, and the same layouts on a
+        # BIKE take nothing.
+        rows = {r['name']: r for r in vm.rows_of(dump() + GROUPS)}
+        self.assertTrue(rows['stryder'].get('jerryFills'))
+        self.assertTrue(rows['chimera'].get('jerryFills'))
+        self.assertNotIn('jerryFills', rows['akuma'])
+        self.assertNotIn('jerryFills', rows['ratbike'])
+        # TRUE OR ABSENT, like `armed`: never written false.
+        self.assertNotIn('jerryFills', rows['adder'])
+        self.assertNotIn('jerryFills', rows['rcbandito'])
+
+    def test_a_missing_layout_is_no_layout(self):
+        # A model the dump gives no LayoutId is judged by its type alone.
+        quad = model('verus', typ='QUADBIKE')
+        del quad['LayoutId']
+        car = model('bifta')
+        del car['LayoutId']
+        self.assertEqual(jerry(dump() + [quad, car]), {'verus'})
+
+    def test_front_and_rear_are_the_box_along_its_length_rounded_up(self):
+        rows = {r['name']: r for r in vm.rows_of(dump() + [
+            sized('sanchez', -1.076763, 1.1731756, 'BIKE', 'LAYOUT_BIKE_DIRT'),
+            sized('ahead', 0.25, 2.0),        # a box wholly ahead of its origin
+            sized('behind', -2.0, -0.25),     # and one wholly behind it
+            sized('exact', -3.0, 3.0),        # a tenth exactly is not rounded past
+        ])}
+        self.assertEqual((rows['sanchez']['front'], rows['sanchez']['rear']), (1.2, 1.1))
+        self.assertEqual((rows['ahead']['front'], rows['ahead']['rear']), (2.0, 0.0))
+        self.assertEqual((rows['behind']['front'], rows['behind']['rear']), (0.0, 2.0))
+        self.assertEqual((rows['exact']['front'], rows['exact']['rear']), (3.0, 3.0))
+        # THE EXISTING TWO DO NOT MOVE: the Insurgent's reach and below.
+        self.assertEqual((rows['insurgent']['reach'], rows['insurgent']['below']), (1.5, 1.0))
+        self.assertEqual((rows['insurgent']['front'], rows['insurgent']['rear']), (3.0, 3.3))
+
+    def test_a_model_with_no_box_has_none_of_the_four_sizes(self):
+        stub = model('s95', layout='LAYOUT_LOW')
+        del stub['DimensionsMin'], stub['DimensionsMax']
+        row = {r['name']: r for r in vm.rows_of(dump() + [stub])}['s95']
+        for k in ('reach', 'below', 'front', 'rear'):
+            self.assertNotIn(k, row)
+
+    def test_a_stale_exclusion_refuses_the_dump(self):
+        stale = (r'^rcbandito: the data puts it in no quad type, dirt-bike layout or '
+                 r'dune-buggy layout, or does not have it -- its JERRY_NOT exclusion is stale$')
+        moved = [m for m in dump() if m['Name'] != 'rcbandito']
+        with self.subTest('another layout'):
+            with self.assertRaisesRegex(ValueError, stale):
+                vm.rows_of(moved + [model('rcbandito', layout='LAYOUT_LOW')])
+        with self.subTest('no layout at all'):
+            gone = model('rcbandito')
+            del gone['LayoutId']
+            with self.assertRaisesRegex(ValueError, stale):
+                vm.rows_of(moved + [gone])
+        with self.subTest('no such model'):
+            with self.assertRaisesRegex(ValueError, stale):
+                vm.rows_of(moved)
+        with self.subTest('still in the rule by its type, it still counts'):
+            self.assertEqual(jerry(moved + [model('rcbandito', typ='QUADBIKE', layout='LAYOUT_LOW')]),
+                             set())
+
+    def test_a_layout_that_is_not_a_name_refuses_the_dump(self):
+        doc = dump()
+        doc[0]['LayoutId'] = 7
+        with self.assertRaisesRegex(ValueError, r'^adder: layout 7 is not a name$'):
+            vm.rows_of(doc)
+
+    def test_the_tool_refuses_a_stale_exclusion_and_writes_nothing(self):
+        doc = [m for m in dump() if m['Name'] != 'rcbandito']
+        doc.append(model('rcbandito', layout='LAYOUT_LOW'))
+        for args in ((), ('--check',)):
+            with self.subTest(args=args):
+                rc, err, wrote = run_tool(doc, *args)
+                self.assertEqual(rc, 1)
+                self.assertTrue(err.startswith('refused, nothing written: rcbandito: '), err)
+                self.assertEqual(wrote, {})
+
+    def test_the_tool_writes_the_three_fields(self):
+        quad = sized('blazer5', -1.2468296, 1.3296019, 'AMPHIBIOUS_QUADBIKE',
+                     'LAYOUT_BIKE_QUAD_AQUA')
+        quad['Weapons'] = ['VEHICLE_WEAPON_TURRET_BLAZER']
+        bike = sized('sanchez', -1.076763, 1.1731756, 'BIKE', 'LAYOUT_BIKE_DIRT')
+        rc, err, wrote = run_tool(dump() + [quad, bike])
+        self.assertEqual((rc, err), (0, ''))
+        table = wrote[vm.OUT]
+        self.assertIn(', 3 armed, 2 a jerry can fills, sha256 ', table)
+        rows = {line.split("'")[1]: line for line in table.splitlines()
+                if line.startswith("    { name = '")}
+        # THE ORDER THE CONTRACT PINS: the four sizes, then `armed`, then
+        # `jerryFills`, each written `%4.1f` but `below`.
+        self.assertTrue(rows['sanchez'].endswith(
+            "reach =  1.5, below = 1.0, front =  1.2, rear =  1.1, jerryFills = true },"),
+            rows['sanchez'])
+        self.assertTrue(rows['blazer5'].endswith(
+            "front =  1.4, rear =  1.3, armed = true, jerryFills = true },"), rows['blazer5'])
+        self.assertTrue(rows['insurgent'].endswith(
+            "reach =  1.5, below = 1.0, front =  3.0, rear =  3.3, armed = true },"),
+            rows['insurgent'])
+        self.assertNotIn('jerryFills', rows['rcbandito'])
+        self.assertNotIn('jerryFills', rows['adder'])
 
 
 if __name__ == '__main__':

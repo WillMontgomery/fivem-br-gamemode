@@ -548,6 +548,13 @@ end
 -- AN ADD-ON -- its tree at the asker's word, a Cargo Plane put down on top of
 -- them -- with nothing anywhere to say so. So every row is held to its name
 -- here, as the refused rows are, and to the shape the spawn reads.
+--
+-- AND THE SEASON 2 JERRY CAN READS IT TOO (#217, server/jerrycan.lua): a
+-- pourer is bounded by the row's footprint -- `reach` across, `front` and
+-- `rear` along -- and a `jerryFills` row's tank is filled whole by one can,
+-- where any other takes a quarter. A wrong size is a box a pourer cannot
+-- stand in, or one they can pour from across the street; a wrong flag is a
+-- whole tank for a quarter's price, or a quarter for a whole one.
 local MODEL_TREES = {
     automobile = true, bike = true, boat = true, heli = true,
     plane = true, submarine = true, trailer = true, train = true,
@@ -590,15 +597,29 @@ do
         elseif v.tree ~= 'automobile' then
             modelTrees = modelTrees + 1
         end
-        -- BOTH SIZES OR NEITHER: a model the data has no box for has neither.
-        if (v.reach == nil) ~= (v.below == nil) then
-            fail('base-game model %s has one size and not the other', v.name)
-        elseif v.reach ~= nil and not (meters(v.reach) and meters(v.below)) then
-            fail('base-game model %s: reach %s and below %s are not distances in meters',
-                 v.name, tostring(v.reach), tostring(v.below))
+        -- ALL FOUR SIZES OR NONE: a model the data has no box for has none, and
+        -- one it has a box for has every one -- the spawn reads two and the
+        -- jerry can's footprint three (#217), so a row with some of them is a
+        -- box that is the right size for one reader and missing for another.
+        local sized = 0
+        for _, k in ipairs({ 'reach', 'below', 'front', 'rear' }) do
+            if v[k] ~= nil then sized = sized + 1 end
+        end
+        if sized ~= 0 and sized ~= 4 then
+            fail('base-game model %s has %d of its four sizes (reach, below, front, rear) '
+                 .. '-- all four or none', v.name, sized)
+        elseif sized == 4 and not (meters(v.reach) and meters(v.below)
+                                   and meters(v.front) and meters(v.rear)) then
+            fail('base-game model %s: reach %s, below %s, front %s and rear %s are not '
+                 .. 'distances in meters', v.name, tostring(v.reach), tostring(v.below),
+                 tostring(v.front), tostring(v.rear))
         end
         if v.armed ~= nil and v.armed ~= true then
             fail('base-game model %s: armed is %s -- true or absent', v.name, tostring(v.armed))
+        end
+        if v.jerryFills ~= nil and v.jerryFills ~= true then
+            fail('base-game model %s: jerryFills is %s -- true or absent', v.name,
+                 tostring(v.jerryFills))
         end
         ::nextModel::
     end
@@ -678,6 +699,64 @@ do
     if expected == 0 and models > 0 then
         fail('config/vehicle_models.lua marks no model armed -- the expected set '
              .. 'is empty, so the rows cannot be held to it')
+    end
+end
+
+-- ------------------- the jerry can fills the owner's 26 whole (#217) --
+--
+--   "for 4wheelers/buggies/dirtbikes it should fill the tank completely"
+--                                                  -- owner, 2026-08-22
+--
+-- AND ON 2026-11-02 HE PICKED THE 26 from a list: the models of the game's own
+-- quad, dirt-bike and dune-buggy groups. tools/vehicle_models.py writes
+-- `jerryFills` from that grouping (its JERRY_TYPES and JERRY_LAYOUTS); this
+-- holds what it wrote to his 26, WRITTEN OUT BY NAME here so the two are
+-- double entry -- a rule that drifts, a newer dump that moves a layout or a
+-- row marked by hand each name the model, missing or extra, the way the armed
+-- block above does.
+--
+-- THE RC BANDITO IS NOT ONE OF THEM, AND THAT IS NOT AN OMISSION. It is in the
+-- game's dune-buggy layout beside the Bifta and the Dune Buggy, so the
+-- grouping takes it -- but it is the remote-control toy car, and his 26 do not
+-- name it. The tool leaves it out by name (JERRY_NOT) and refuses a dump in
+-- which that exclusion no longer excludes anything; marked here, it is extra.
+local JERRY_FILLS = {
+    'bf400', 'bfinjection', 'bifta', 'blazer', 'blazer2', 'blazer3', 'blazer4',
+    'blazer5', 'chimera', 'dune', 'dune2', 'dune3', 'dune4', 'dune5', 'enduro',
+    'esskey', 'manchez', 'manchez2', 'manchez3', 'outlaw', 'rrocket', 'sanchez',
+    'sanchez2', 'stryder', 'vagrant', 'verus',
+}
+local jerryRows = 0
+do
+    local want, missing, extra = {}, {}, {}
+    for _, n in ipairs(JERRY_FILLS) do want[n] = true end
+    for _, n in ipairs(JERRY_FILLS) do
+        local v = modelByName[n]
+        if v == nil then
+            missing[#missing + 1] = n .. ' (no such model in the game\'s data)'
+        elseif v.jerryFills ~= true then
+            missing[#missing + 1] = n
+        end
+    end
+    for name, v in pairs(modelByName) do
+        if v.jerryFills == true then
+            jerryRows = jerryRows + 1
+            if not want[name] then extra[#extra + 1] = name end
+        end
+    end
+    table.sort(missing)
+    table.sort(extra)
+    if #JERRY_FILLS ~= 26 then
+        fail('the owner\'s list of models a jerry can fills holds %d names, not his 26',
+             #JERRY_FILLS)
+    end
+    if #missing > 0 then
+        fail('%d of the owner\'s 26 a jerry can fills are not marked jerryFills: %s',
+             #missing, table.concat(missing, ', '))
+    end
+    if #extra > 0 then
+        fail('%d row(s) say a jerry can fills them and the owner did not name them: %s',
+             #extra, table.concat(extra, ', '))
     end
 end
 
@@ -847,10 +926,10 @@ if fails == 0 then
         .. 'resolve from both signed and unsigned (%d have the top bit set); '
         .. '%d class-net exemptions; %d strip-exempt; %d armed rows, the game '
         .. 'data\'s set exactly; %d base-game models, %d of them not '
-        .. 'automobiles; %d vehicle weapons; both generated bodies as the tool '
-        .. 'wrote them\n')
+        .. 'automobiles; %d a jerry can fills, the owner\'s set exactly; %d '
+        .. 'vehicle weapons; both generated bodies as the tool wrote them\n')
         :format(checked, signedChecked, topBit, exempt, stripExempt,
-                armedRows, models, modelTrees, vehWeapons))
+                armedRows, models, modelTrees, jerryRows, vehWeapons))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end

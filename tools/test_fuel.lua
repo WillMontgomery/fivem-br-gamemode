@@ -1421,8 +1421,10 @@ do
 
     -- ═══ SPAMMING BUYS NOTHING ═══
     --
-    -- The only message in the gamemode that makes a resource go UP. Ten of them
-    -- in the same millisecond must be worth what one is.
+    -- One of the two messages in the gamemode that make a resource go UP (the
+    -- other is a jerry can's INV_USE, #217, which only moves fuel out of a can
+    -- -- 'pour.writer' below). Ten of them in the same millisecond must be
+    -- worth what one is.
     local mark = BR.Fuel.left(900)
     for _ = 1, 10 do fire(BR.Net.FUEL_PUMP, 1, { n = 900 }) end
     ok(BR.Fuel.left(900) == mark,
@@ -2692,6 +2694,213 @@ do
         ok(body:find('known[', 1, true) == nil,
            'and it touches the fuel ledger not at all')
     end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('pour.space')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- THE SEASON 2 JERRY CAN'S READ OF A TANK (#217). server/jerrycan.lua asks it
+-- at a press and on every pass of a pour, and refuses a can into anything it
+-- answers nil for -- so nil, and not a number, is the answer for every tank
+-- the ledger has no say over.
+do
+    reset()
+    enrol(1, 1001, 7)   -- spelling-ok: the suite's own helper, named long before #217
+    makeVehicle(500, 900, 0.0, 0.0)
+
+    ok(BR.Fuel.space(900, 7) == nil, 'nil for a car nobody has sat in: untracked reads full')
+    ok(BR.Fuel.space(nil, 7) == nil and BR.Fuel.space(0, 7) == nil,
+       'nil for no network id, and for 0')
+
+    seat(1, 500, -1)
+    tick()
+    ok(BR.Fuel.space(900, 7) == 0, 'a car just admitted is full: no room at all',
+       BR.Fuel.space(900, 7))
+    drive(500, 2000.0)
+    ok(near(BR.Fuel.space(900, 7), 2000.0, 0.01),
+       'tank less what it holds: 2,000 m of room after 2,000 m of driving',
+       BR.Fuel.space(900, 7))
+    ok(BR.Fuel.space(900, 8) == nil, 'nil for a row that is another match\'s')
+    ok(BR.Fuel.space(900, nil) == nil, 'and nil with no match named')
+
+    -- A READ: it admits nothing.
+    local tracked = BR.Fuel.stats().tracked
+    for _ = 1, 5 do BR.Fuel.space(424242, 7) end
+    ok(BR.Fuel.stats().tracked == tracked, 'asking about an untracked id admits no row',
+       BR.Fuel.stats().tracked)
+
+    -- FUEL OFF IS NIL, NOT A NUMBER.
+    BR.Config.Fuel.enabled = false
+    ok(BR.Fuel.space(900, 7) == nil, 'nil with fuel switched off')
+    BR.Config.Fuel.enabled = true
+
+    -- ...AND IT STAMPS NOTHING: an empty car asked about every pass is still
+    -- swept when its time is up.
+    local ttl = BR.Config.Fuel.idleTtlMs
+    BR.Config.Fuel.idleTtlMs = 2000
+    unseat(1, 500)
+    for _ = 1, 40 do
+        BR.Fuel.space(900, 7)
+        tick()
+    end
+    ok(BR.Fuel.stats().tracked == 0,
+       'an empty car that is only ASKED about is swept on time -- space() never stamps `seen`',
+       BR.Fuel.stats().tracked)
+    BR.Config.Fuel.idleTtlMs = ttl
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('pour.writer')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- THE JERRY CAN'S WRITER (#217): up to `meters` into a tracked tank, answering
+-- what it really added -- the number server/jerrycan.lua takes out of the can.
+do
+    --- A car 2,000 m down, its driver out of it, in match 7.
+    local function parkedDown()
+        reset()
+        enrol(1, 1001, 7)   -- spelling-ok: the suite's own helper
+        makeVehicle(500, 900, 0.0, 0.0)
+        seat(1, 500, -1)
+        tick()
+        drive(500, 2000.0)
+        unseat(1, 500)
+        tick()
+    end
+
+    parkedDown()
+    local before = BR.Fuel.left(900)
+    ok(near(before, TANK - 2000, 0.01), 'the car is 2,000 m down to begin with', before)
+
+    sent = {}
+    local got = BR.Fuel.pour(900, 7, 500.0)
+    ok(near(got, 500.0, 1e-9), 'pours what it was offered and says so', got)
+    ok(near(BR.Fuel.left(900), before + 500.0, 1e-9), 'and the ledger holds it',
+       BR.Fuel.left(900))
+    ok(lastSet(1) == nil, 'and NOTHING is pushed: no FUEL_SET from a pour, so no `r` and no repair')
+    local veh = 0
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.VEH_FIX then veh = veh + 1 end
+    end
+    ok(veh == 0, 'and no VEH_FIX either')
+
+    -- CLAMPED AT THE TANK, AND THE ANSWER IS WHAT WENT IN.
+    got = BR.Fuel.pour(900, 7, 5000.0)
+    ok(near(got, 1500.0, 1e-9), 'offered 5,000 m with 1,500 of room, it adds and answers 1,500', got)
+    ok(BR.Fuel.left(900) == TANK, 'and the tank is exactly full -- the clamp returns the tank itself',
+       BR.Fuel.left(900))
+
+    -- A FULL TANK TAKES NOTHING, AND THAT IS COUNTED.
+    local refused = BR.Fuel.stats().pourRefused
+    ok(BR.Fuel.pour(900, 7, 10.0) == 0, 'a full tank takes nothing')
+    ok(BR.Fuel.stats().pourRefused == refused + 1, 'and the refusal is counted')
+
+    -- NOT A FINITE NUMBER ABOVE 0, NOTHING.
+    parkedDown()
+    before = BR.Fuel.left(900)
+    refused = BR.Fuel.stats().pourRefused
+    for _, bad in ipairs({ 0 / 0, -5.0, 0, 0.0, math.huge, -math.huge, 'lots' }) do
+        ok(BR.Fuel.pour(900, 7, bad) == 0, ('%s pours nothing'):format(tostring(bad)))
+    end
+    ok(BR.Fuel.pour(900, 7, nil) == 0, 'and nil pours nothing')
+    ok(BR.Fuel.left(900) == before, 'the ledger did not move for any of them', BR.Fuel.left(900))
+    ok(BR.Fuel.stats().pourRefused == refused + 8, 'and each was counted as refused',
+       BR.Fuel.stats().pourRefused - refused)
+
+    -- ANOTHER MATCH'S ROW IS NOT THIS POUR'S.
+    ok(BR.Fuel.pour(900, 8, 100.0) == 0, 'a row in another match takes nothing')
+    ok(BR.Fuel.left(900) == before, 'and is left exactly as it was')
+    ok(BR.Fuel.pour(900, nil, 100.0) == 0, 'nor does a pour that names no match')
+    ok(BR.Fuel.pour(nil, 7, 100.0) == 0 and BR.Fuel.pour(0, 7, 100.0) == 0,
+       'nor one that names no car')
+
+    -- IT NEVER ADMITS A ROW.
+    local tracked = BR.Fuel.stats().tracked
+    makeVehicle(501, 901, 50.0, 0.0)
+    ok(BR.Fuel.pour(901, 7, 100.0) == 0, 'an untracked car takes nothing: it is full')
+    ok(BR.Fuel.stats().tracked == tracked, 'and no row is admitted for it', BR.Fuel.stats().tracked)
+
+    -- FUEL OFF, NOTHING.
+    BR.Config.Fuel.enabled = false
+    ok(BR.Fuel.pour(900, 7, 100.0) == 0, 'fuel switched off pours nothing')
+    BR.Config.Fuel.enabled = true
+    ok(BR.Fuel.left(900) == before, 'and the ledger did not move')
+
+    -- ═══ IT STAMPS `seen`, SO AN EMPTY CAR BEING POURED INTO IS NOT SWEPT ═══
+    local ttl = BR.Config.Fuel.idleTtlMs
+    BR.Config.Fuel.idleTtlMs = 2000
+    for _ = 1, 40 do
+        BR.Fuel.pour(900, 7, 1.0)
+        tick()
+    end
+    ok(BR.Fuel.stats().tracked >= 1 and BR.Fuel.left(900) > before,
+       'a parked car with a can pouring into it outlives the idle sweep',
+       BR.Fuel.stats().tracked)
+    -- ...but only from its own match: another match's pour stamps nothing.
+    for _ = 1, 40 do
+        BR.Fuel.pour(900, 8, 1.0)
+        tick()
+    end
+    ok(BR.Fuel.stats().tracked == 0,
+       'and one only ever poured at from another match is swept on time',
+       BR.Fuel.stats().tracked)
+    BR.Config.Fuel.idleTtlMs = ttl
+
+    -- ═══ IT NEVER TOUCHES x, y OR at, SO THE NEXT DRAIN IS THE SAME ═══
+    --
+    -- The car rolls 100 m while nobody is in it, a can pours 10 m in, and its
+    -- driver gets back in. The sampler charges the 100 m it moved, from where it
+    -- last sampled it and over the whole time since -- which a pour that
+    -- re-based the position, or re-stamped the time (100 m in one 250 ms tick is
+    -- a jump the sampler disbelieves), would have quietly forgiven.
+    parkedDown()
+    fakeTime = fakeTime + 10000
+    moveVehicle(500, coords[500].x + 100.0, coords[500].y)
+    local mid = BR.Fuel.left(900)
+    ok(near(BR.Fuel.pour(900, 7, 10.0), 10.0, 1e-9), 'ten meters poured in')
+    seat(1, 500, -1)
+    tick()
+    ok(near(BR.Fuel.left(900), mid + 10.0 - 100.0, 0.01),
+       'and the next sample charges the 100 m it rolled, exactly as it would have',
+       BR.Fuel.left(900) - mid)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('pour.stats')
+-- ═══════════════════════════════════════════════════════════════════════════
+do
+    reset()
+    enrol(1, 1001, 7)   -- spelling-ok: the suite's own helper
+    makeVehicle(500, 900, 0.0, 0.0)
+    seat(1, 500, -1)
+    tick()
+    drive(500, 1000.0)
+    BR.Fuel.pour(900, 7, 250.0)
+    BR.Fuel.pour(900, 7, 250.0)
+    BR.Fuel.pour(900, 8, 250.0)
+    local s = BR.Fuel.stats()
+    ok(s.pours == 2, 'two pours that added fuel are two pours', s.pours)
+    ok(near(s.pourMeters, 500.0, 1e-9), 'worth 500 m between them', s.pourMeters)
+    ok(s.pourRefused == 1, 'and the one from another match was refused', s.pourRefused)
+    BR.Fuel.reset()
+    s = BR.Fuel.stats()
+    ok(s.pours == 0 and s.pourMeters == 0 and s.pourRefused == 0,
+       'and reset() zeroes all three')
+
+    -- `brfuel` SAYS SO ON A LINE OF ITS OWN, with the can's own cancel count --
+    -- the ledger never sees a cancel -- and '-' with no jerry can module.
+    local lines = {}
+    local was = print
+    print = function(l) lines[#lines + 1] = tostring(l) end
+    commands.brfuel(0, {})
+    print = was
+    local found = nil
+    for _, l in ipairs(lines) do
+        if l:find('^  pours ') then found = l end
+    end
+    ok(found == '  pours 0 (0 m), refused 0, canceled -',
+       'brfuel prints the pours, the meters, the refusals and the can\'s cancels', found)
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

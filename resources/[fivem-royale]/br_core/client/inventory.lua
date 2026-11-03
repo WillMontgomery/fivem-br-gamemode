@@ -1378,10 +1378,10 @@ end
 
 --- THE CONSUMABLE A LIVE CHANNEL IS SPENDING, or nil when there is none.
 ---
---- ONE READING FOR BOTH HALVES OF #11: the emote below and the combat hold in
---- inv.controls (`healing`). Two readings would be two clocks, and the issue's
---- third bullet allows one. See the note above EMOTE_FLAG for why the player
---- state is read here rather than waited out.
+--- ONE READING FOR BOTH HALVES OF #11: the emote below and the combat hold
+--- in inv.controls (`channelHold`). Two readings would be two clocks, and the
+--- issue's third bullet allows one. See the note above EMOTE_FLAG for why the
+--- player state is read here rather than waited out.
 --- @return table|nil  the BR.Config.Consumables row
 local function channelItem()
     local u = inv.using
@@ -1730,7 +1730,80 @@ local function sendUse(slot)
         end
     end
 
+    -- ═══ A JERRY CAN NAMES ITS CAR, AND ONLY THIS MACHINE CAN (#217) ═══
+    --
+    -- "only be useable at the gascap of a vehicle" (owner, 2026-08-22). The
+    -- repair kit's car is the one its user drives, which the server can read;
+    -- a pourer stands on foot, and a gas cap is a bone, which only a client
+    -- can see. So the press carries the car -- `n`, the network id of the one
+    -- whose cap is nearest (client/jerrycan.lua's BR.JerryCan.target) -- and
+    -- the server bounds it with every read it has (BR.JerryCan.judge).
+    --
+    -- SILENT, AND NO SCAN AT ALL, while the season is off, a channel already
+    -- runs (the server allows one at a time) or the finder is missing; and
+    -- with no cap in reach nothing is sent either. No toast: the cap marker
+    -- is how a player finds where to stand, and the owner's rule is no new
+    -- words. A modified client that skips this sends a car the server judges
+    -- like any other.
+    --
+    -- FACED ONCE, THEN THE CAN BROUGHT UP. One heading write on this player's
+    -- own ped, turned to the cap (client/dbno.lua's CPR does the same, and
+    -- guards the same atan2(0, 0)); then INV_SELECT if the can is not the slot
+    -- in hand, because the server pours only from the hand; then the use.
+    if c and c.refuel then
+        if not BR.Season.has('jerrycan') or inv.using ~= nil then return end
+        if not (BR.JerryCan and BR.JerryCan.target) then return end
+        local t = BR.JerryCan.target()
+        if t == nil then return end
+        local ped = PlayerPedId()
+        local me = GetEntityCoords(ped)
+        local dx, dy = t.x - me.x, t.y - me.y
+        if (dx * dx + dy * dy) > 0.0001 then
+            SetEntityHeading(ped, math.deg(math.atan(-dx, dy)) % 360.0)
+        end
+        if slot ~= inv.active then
+            TriggerServerEvent(BR.Net.INV_SELECT, { slot = slot })
+        end
+        TriggerServerEvent(BR.Net.INV_USE, { slot = slot, n = t.n })
+        return
+    end
+
     TriggerServerEvent(BR.Net.INV_USE, { slot = slot })
+end
+
+--- Is this player in a DRIVER'S seat? The repair kit's own seat rule, asked
+--- here only by R's reach below (#217). `inVehicle()` first, one native that
+--- answers no for everybody on foot, and the two seat reads only past it.
+--- @return boolean
+local function driving()
+    if not inVehicle() then return false end
+    local ped = PlayerPedId()
+    local pok, veh = pcall(GetVehiclePedIsIn, ped, false)
+    if not pok or veh == nil or veh == 0 then return false end
+    local dok, driver = pcall(GetPedInVehicleSeat, veh, -1)
+    return dok and driver == ped
+end
+
+--- MAY R'S REACH TAKE THIS CONSUMABLE FROM A SLOT THAT IS NOT IN HAND? (#217)
+---
+--- Two that R could only ever waste a press on, and both are skipped so a heal
+--- in a later slot is the one reached:
+---
+---   * A JERRY CAN, ALWAYS. It pours from the hand and nowhere else -- R or
+---     the trigger with it up, or the panel's Use -- and is aimed at the cap
+---     the player chose to stand at. A can in slot 1 reached from fists would
+---     bring it up over the heal the player was pressing for.
+---   * A REPAIR KIT, UNLESS THIS PLAYER DRIVES. The server refuses it from
+---     anywhere but a driver's seat, so reaching for it on foot spends the
+---     press and, worse, brings the kit up in place of whatever was in hand.
+--- @param s table  a CONSUMABLE slot
+--- @return boolean
+local function reachable(s)
+    local c = BR.Config.ConsumableById[s.id]
+    if c == nil then return true end
+    if c.refuel then return false end
+    if c.repairVeh and not driving() then return false end
+    return true
 end
 
 BR.Keys.on('use', function(pressed)
@@ -1767,9 +1840,13 @@ BR.Keys.on('use', function(pressed)
         -- both weapons the player is holding, and neither should answer the
         -- reload key by putting itself away. Held open for the issue: whether a
         -- throwable belongs on this side of the line too (it reaches, today).
+        --
+        -- AND NOT TO A JERRY CAN, NOR TO A REPAIR KIT FROM ANYWHERE BUT THE
+        -- DRIVER'S SEAT (#217): see `reachable`. A can IN HAND still answers
+        -- R, through the branch above.
         for i = 1, SLOTS do
             local c = inv.slots[i]
-            if c and c.kind == BR.ItemKind.CONSUMABLE then slot = i break end
+            if c and c.kind == BR.ItemKind.CONSUMABLE and reachable(c) then slot = i break end
         end
     end
 
@@ -2282,9 +2359,9 @@ end)
 --- from another. That half is the owner's call, not this list's.
 ---
 --- NOTHING RELEASES IT. DisableControlAction lasts one frame, so the frame
---- `healing` says no -- complete, cancel, knock-down, death, teardown -- every
---- key here is live again. client/spectate.lua makes the same argument at
---- length above its own list.
+--- `channelHold` says no -- complete, cancel, knock-down, death, teardown --
+--- every key here is live again. client/spectate.lua makes the same argument
+--- at length above its own list.
 local HEAL_HELD = {
     24, 25, 257,               -- ATTACK, AIM, ATTACK2: the punch and fist lock-on
     140, 141, 142,             -- MELEE_ATTACK_LIGHT/HEAVY/ALTERNATE
@@ -2292,18 +2369,63 @@ local HEAL_HELD = {
     47, 58,                    -- DETONATE, THROW_GRENADE
 }
 
---- IS A HEAL'S CHANNEL RUNNING RIGHT NOW? (#11)
+--- ═══ A POUR HOLDS THE WHOLE BODY, FOR EXACTLY ITS CHANNEL (#217) ═══
+---
+---   "Neither the ped nor the vehicle should be able to move while fueling"
+---                                                -- owner, 2026-08-22
+---
+--- A HEAL LEAVES THE LEGS (HEAL_HELD, above); A POUR DOES NOT. The server
+--- cancels a pourer who drifts 0.75 m, so a pour that let them walk would be
+--- one a stray key ends -- and the owner asked for neither to move.
+---
+--- REVIVING_BLOCKED's ON-FOOT AND TRIGGER ENTRIES, VERBATIM (client/dbno.lua):
+--- the reviver is the repo's other "can't move, can't shoot" hold, and its
+--- note is the whole argument for the mechanism -- DisableControlAction
+--- lasts one frame, so there is no latch to release and no exit path that can
+--- forget to. FreezeEntityPosition is a latch, and no ped is ever frozen for
+--- this. Being shoved or ragdolled still moves the pourer, and the server
+--- ends the pour on it.
+---
+--- 51 (INPUT_CONTEXT) IS ABSENT, as it is from REVIVING_BLOCKED: the
+--- interact key is not this hold's to take. The seat entries are absent too:
+--- the server ends a pour the moment its pourer sits, and in a seat this
+--- list is not applied at all (#200's reason: Q is the radio wheel's there).
+---
+--- NOTHING RELEASES IT. The frame `channelHold` says no -- the pour done, a
+--- cancel, a knock-down, death, teardown -- every key here is live again.
+local POUR_HELD = {
+    21, 22, 23, 24, 25,        -- SPRINT, JUMP, ENTER, ATTACK, AIM
+    30, 31, 32, 33, 34, 35,    -- MOVE_LR/UD, MOVE_UP/DOWN/LEFT/RIGHT_ONLY
+    44, 75,                    -- COVER, VEH_EXIT
+    140, 141, 142, 143,        -- MELEE_ATTACK_LIGHT/HEAVY/ALTERNATE, _BLOCK
+    45, 47, 58,                -- RELOAD, DETONATE, THROW_GRENADE
+    257, 263, 264,             -- ATTACK2, MELEE_ATTACK1, MELEE_ATTACK2
+}
+
+--- WHICH KEYS DOES THE CHANNEL RUNNING RIGHT NOW HOLD? HEAL_HELD for a heal
+--- (#11), POUR_HELD for a jerry can's pour (#217), nil for anything else and
+--- for no channel at all.
 ---
 --- `inv.using` through channelItem() and nothing else -- the emote's reading,
 --- so the hold and the clip start and stop on the same pass, and neither keeps
 --- a timer. A heal is a channel that moves something on the ped, health or
 --- shield: server/inventory.lua's own test (`c.health or c.armour`) where it
---- decides who is sent partial effects. The repair kit and the shop car channel
---- too and are not heals. Nobody asked for them, and they do not change here.
---- @return boolean
-local function healing()
+--- decides who is sent partial effects. A pour is a row with `refuel`. The
+--- repair kit and the shop car channel too and are neither. Nobody asked for
+--- them, and they do not change here.
+---
+--- ONE READING FOR BOTH LISTS, AND ONE CALL A FRAME. A frame with no channel
+--- -- nearly every frame -- asks channelItem() once and is told no, exactly the
+--- work it did before the pour had a list of its own; a second question for
+--- the pour would be paid on all of them.
+--- @return table|nil
+local function channelHold()
     local c = channelItem()
-    return c ~= nil and (c.health ~= nil or c.armour ~= nil)
+    if c ~= nil then
+        if c.refuel == true then return POUR_HELD end
+        if c.health ~= nil or c.armour ~= nil then return HEAL_HELD end
+    end
+    return nil
 end
 
 -- DisableControlAction, or the engine's handler behind the loader's wrapper of it
@@ -2582,11 +2704,14 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, 264, true)  -- MELEE_ATTACK2
     end
 
-    -- A HEAL HOLDS THE ARMS FOR AS LONG AS IT RUNS (#11). See HEAL_HELD for
-    -- the list, and for why a seat is not in it.
-    if healing() and not inVehicle() then
-        for i = 1, #HEAL_HELD do
-            DisableControlAction(0, HEAL_HELD[i], true)
+    -- A HEAL HOLDS THE ARMS FOR AS LONG AS IT RUNS (#11), AND A POUR THE WHOLE
+    -- BODY (#217). See HEAL_HELD and POUR_HELD for the lists, and for why a
+    -- seat is in neither. The channel is asked first: with none, no native is
+    -- read.
+    local hold = channelHold()
+    if hold ~= nil and not inVehicle() then
+        for i = 1, #hold do
+            DisableControlAction(0, hold[i], true)
         end
     end
 

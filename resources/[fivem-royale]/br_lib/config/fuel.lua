@@ -724,3 +724,161 @@ function BR.Config.Fuel.stopsPerCrossing(detour)
     local d = mapDiagonal() * (tonumber(detour) or 1.0)
     return BR.FuelSolve.stopsFor(d, BR.Config.Fuel.tankMetres)
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE JERRY CAN (#217, SEASON 2)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "For anything other than small 4wheelers/buggies/dirtbikes, this should
+--    add 25% fuel to the tank, and for 4wheelers/buggies/dirtbikes it should
+--    fill the tank completely. Neither the ped nor the vehicle should be able
+--    to move while fueling, and fueling should not be able to start while in
+--    motion."                                   -- owner, 2026-08-22
+--   "yes, freeze the vehicle while pouring. players can enter and leave the
+--    vehicle, and the engine is turned off while fueling."
+--                                                -- owner, 2026-11-02
+--
+-- The item is BR.Config.JerryCan in config/loot.lua, with its pour time
+-- (`useMs`); this is everything else about it, read by server/jerrycan.lua,
+-- client/jerrycan.lua and the shared arithmetic in shared/jerrycan_solve.lua.
+-- SHARED, LIKE THE REST OF THIS FILE: the client reads the cap finder's half.
+--
+-- THE UNIT IS THIS FILE'S METERS OF GROUND. A full can is a quarter of
+-- `tankMetres` (1,875 m of 7,500) in every vehicle, and every gauge reads it
+-- as +25% because the ledger is one range for every model and each client
+-- multiplies the fraction by its own tank. The 26 the owner named fill whole:
+-- their rows in config/vehicle_models.lua carry `jerryFills`, generated from
+-- the game's own quad, dirt-bike and dune-buggy groups by
+-- tools/vehicle_models.py, so no list of names lives here.
+--
+-- `askRadius` above is the server's fallback bound for a model with no row
+-- or no size, and is not copied below.
+BR.Config.Fuel.jerryCan = {
+    --- One extra roll per match crate as it opens, on the can's own stream
+    --- (BR.JerryCanSolve.crateRoll, salt 217): about 1 crate in 50, or about
+    --- 50 cans in a match of about 2,500 crates.
+    ---
+    --- A LITTLE UNDER THE AVERAGE RARE ITEM'S 1 IN 32 (the Yubikey's
+    --- crateChance, measured with the real generator), AND THE PUMPS ARE WHY:
+    ---
+    ---   "remember gas stations are still remaining easily accessible"
+    ---                                          -- owner, 2026-11-02
+    ---
+    --- A station is always within half a tank, so a can is a convenience you
+    --- find now and then rather than a staple -- it earns its slot late in a
+    --- match, when the storm has taken the stations, or for a car stranded far
+    --- from one. Not a warmup crate, an airdrop or a death box (extraFor).
+    crateChance = 0.02,
+
+    --- What one full can is worth in a vehicle whose row has no `jerryFills`,
+    --- as a fraction of `tankMetres`. The owner's 25%.
+    canFraction = 0.25,
+
+    --- ═══ NOTHING POURS AND NOTHING FREEZES UNTIL THIS MUCH AFTER A PRESS ═══
+    ---
+    --- One roster sample (BR.Config.Match's sampler, 250 ms): the server's own
+    --- second reading of where the pourer and the car stand, which is its
+    --- proof that neither is moving. The first slice pays for it, so no fuel is
+    --- lost to the wait -- and a pour cut short inside it froze nothing.
+    settleMs = 250,
+
+    --- The shortest a pour can be: one tick of the inventory's channel.
+    minPourMs = 250,
+
+    --- A tank with less room than this fraction of `tankMetres` -- 37.5 m, the
+    --- ledger's own push threshold -- is refused as full. Part of the griefer
+    --- bound: a can cannot be pressed into a full car to freeze it for free.
+    minSpace = 0.005,
+
+    --- A can whose fill is at or below this (in cans) leaves its slot.
+    emptyBelow = 1e-6,
+
+    --- Meters a second, the server's GetEntitySpeed: the vehicle and the
+    --- pourer at the press, and the vehicle on every pass after it, must be
+    --- under this. "fueling should not be able to start while in motion."
+    --- Skipped on a build without the native (server/jerrycan.lua probes it
+    --- once), where the drift tests below still hold.
+    stillSpeed = 0.5,
+
+    --- Meters, in 2D: how far the vehicle may move from where it stood at the
+    --- press before the pour stops. The server's own coordinates are the proof
+    --- the freeze held -- what the server reads of a freeze can be a second
+    --- stale, and it never takes the freeze on trust.
+    driftMeters = 1.0,
+
+    --- Meters, in 2D: how far the pourer may move from where they stood at the
+    --- press. A shove, a ragdoll or a step all end the pour.
+    pourerDrift = 0.75,
+
+    --- ═══ THE SERVER'S "AT THE CAP" IS THE VEHICLE'S OWN FOOTPRINT ═══
+    ---
+    --- The server cannot read a bone, so it bounds the pourer by the box the
+    --- vehicle's row describes (`reach` across, `front` and `rear` along), in
+    --- the vehicle's own frame, grown by this margin on every side: the
+    --- client's 1.5 m `capReach` below plus half a meter of sync slack.
+    ---
+    --- WHAT A MODIFIED CLIENT GAINS: pouring from anywhere inside that box
+    --- rather than at the cap. Still standing still, still only one can's
+    --- worth, still only into a car in its own match.
+    boxMargin = 2.0,
+
+    --- Meters: the pourer's height must be within this of the vehicle's
+    --- origin.
+    riseMeters = 3.0,
+
+    --- After a release, how many passes the server re-sends the unfreeze to the
+    --- vehicle's owner while it still reads the vehicle frozen -- and never
+    --- while a new pour holds it.
+    releaseChecks = 3,
+
+    --- Milliseconds, on each client, and two uses: a client lets go of a pour
+    --- by itself at the message's `ms` plus this, if no end ever arrives; and
+    --- for this long after a release, a client that owns the car and reads it
+    --- frozen unfreezes it -- a frozen flag inherited from an owner who left.
+    releaseGraceMs = 2000,
+
+    --- THE CAP FINDER'S, ON THE CLIENT. A press pours only at a cap point
+    --- within `capReach` (2D) and `capRise` (height) of the ped; the finder
+    --- looks only at vehicles whose origin is within `scanMeters`. Shipped
+    --- scripts use 1.2 m (lc_fuel), 1.5 m (cdn-fuel) and 1.8 m (ox_fuel). NOT
+    --- THE OWNER'S NUMBERS: tune them in game.
+    capReach = 1.5,
+    capRise = 2.0,
+    scanMeters = 10.0,
+
+    --- How near the nearest cap point must be (2D, and within `capRise`) for
+    --- the cap marker to show while the can is in hand.
+    markerReach = 3.0,
+
+    --- ═══ WHERE THE CAP IS ═══
+    ---
+    --- The bones a model's gas cap goes by, IN THIS ORDER and spelled exactly
+    --- -- a typo answers -1 and the cap silently vanishes. Every one a model
+    --- has is a candidate and the nearest wins; `fueltank` is the Airport
+    --- Bus's and the Bus's.
+    ---
+    --- "The gas cap is the cap where the game's data has one; otherwise either
+    --- rear wheel" -- the owner's pick (2026-11-02). So `wheelBones` are asked
+    --- only when a model has none of the above: whichever exist, and a bike
+    --- has only `wheel_lr`. A cap bone always beats a nearer rear wheel.
+    capBones = { 'petrolcap', 'petroltank', 'petroltank_l', 'petroltank_r', 'fueltank' },
+    wheelBones = { 'wheel_lr', 'wheel_rr' },
+
+    --- ═══ THE CAP MARKER: THE ONE THING DRAWN, AND NO TEXT ═══
+    ---
+    --- With the can in hand and a cap within `markerReach`, one marker stands
+    --- over the nearest cap point, so the mechanic can be found without a
+    --- word of new copy.
+    ---
+    --- ⚠ NONE OF THESE IS THE OWNER'S NUMBER. Type 0 is GTA's upside-down cone,
+    --- pointing down at the cap; `size` is meters across on both horizontal
+    --- axes and `height` the vertical one, as DrawMarker scales it; `lift` is
+    --- meters above the cap point. The color is the game's own white
+    --- (HUD_COLOUR_WHITE, 240/240/240), written as the channels DrawMarker
+    --- takes. A starting point chosen to be readable, as revivekey's marker
+    --- was, and the playtest's to move.
+    marker = {
+        kind = 0, size = 0.15, height = 0.15, lift = 0.35,
+        color = { r = 240, g = 240, b = 240, a = 200 },
+    },
+}

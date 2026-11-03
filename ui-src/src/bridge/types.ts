@@ -446,6 +446,10 @@ export interface InvSlot {
    *  Sent by Lua rather than looked up here: the weapon table lives in br_lib
    *  and a hand-mirrored copy would go stale the first time a gun is added. */
   pool?: string
+  /** A jerry can's fill (#217): the fraction of one can still in it, 0..1,
+   *  rounded to 3 decimals by the server. Present on every can slot, absent on
+   *  every other slot. hud/FuelGauge.tsx draws it on both plates. */
+  fill?: number
 }
 
 /** An in-progress consumable. Times out against the SERVER clock, like every

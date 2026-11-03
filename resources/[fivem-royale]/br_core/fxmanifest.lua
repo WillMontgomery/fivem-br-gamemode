@@ -378,6 +378,12 @@ shared_scripts {
     -- the lane's box, the fold's pose and the bi-fold's counter-rotation. LAST,
     -- for flick_solve's reason: it reads nothing at load.
     '@br_lib/shared/dcgate_solve.lua',
+    -- The jerry can's shared rules (#217, Season 2): a can's fill, a press's
+    -- plan, the slices, the crate's roll, the server's "at the cap" box and
+    -- the client's cap finder -- one spelling for both sides and the suites.
+    -- LAST, for dcgate_solve's reason: it reads nothing at load (BR.Config.Fuel,
+    -- BR.Config.JerryCan and BR.TerminalSolve at call time).
+    '@br_lib/shared/jerrycan_solve.lua',
     -- The dev menu (#422): the owner's labels, its key, and the lists both
     -- halves read -- the client builds its rows out of them and the server takes
     -- nothing that is not in them. LAST, for the reason above: a table, read at
@@ -690,6 +696,19 @@ client_scripts {
     -- preference and cannot be made wrong by either half.
     'client/boost.lua',
     'client/fuel.lua',
+    -- THE JERRY CAN (#217, Season 2), and the engine hold it shares with the
+    -- EMP. enginehold.lua is BR.EngineHold: one count per vehicle of who holds
+    -- its engine off on this machine, so neither feature frees a car the other
+    -- still holds. jerrycan.lua is the pour on every client -- the engine held
+    -- off, the can in the pourer's hand, the release, the cap finder and its
+    -- marker, `/brjerrytune`. AFTER client/fuel.lua for a reader: fuel.lua's
+    -- FUEL_SET handler asks BR.JerryCan.holds at call time, and jerrycan.lua
+    -- reads BR.Fuel.levelPct, BR.Inv and BR.TuneKeys (fuel.lua, inventory.lua,
+    -- tunekeys.lua, all above) at call time too; enginehold.lua reads none of
+    -- them. ABOVE client/terminalfx/emp.lua, which holds its stall through
+    -- BR.EngineHold at call time.
+    'client/enginehold.lua',
+    'client/jerrycan.lua',
     -- How breakable a car is: the four handling multipliers, written on this
     -- machine, to the car this player is in. NEEDS NOTHING ABOVE IT EXCEPT
     -- client/main.lua for the loop registry -- it reads BR.Config.VehicleDamage
@@ -979,6 +998,14 @@ server_scripts {
     -- it reads at call time.
     'server/boost.lua',
     'server/fuel.lua',
+    -- THE JERRY CAN (#217, Season 2): the press's ruling, the one pour per
+    -- vehicle, FUEL_CAN, the freeze and its release, and the crate's extra
+    -- roll. AFTER server/inventory.lua, and that one is a real load order: its
+    -- `jerrycan.reconcile` job must run after `inv.use` on every pass, and
+    -- BR.Sched runs jobs in the order they registered. AFTER server/fuel.lua
+    -- for a reader -- it pours through BR.Fuel.space and BR.Fuel.pour -- and
+    -- it reads BR.Fuel, BR.Loot and BR.Vehicles at call time only.
+    'server/jerrycan.lua',
     'server/chat.lua',
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
@@ -1156,9 +1183,12 @@ server_scripts {
     'server/strip.lua',
     -- Every base-game vehicle model's sync tree and size, generated from the
     -- game's own data (tools/vehicle_models.py, #426), for server/vehicles.lua's
-    -- spawn -- brcar's, and the dev menu's vehicle spawner. Loaded into this
-    -- server state alone because no client script reads it: the client asks
-    -- the game itself. Read at call time, so the order is a reader's.
+    -- spawn -- brcar's, and the dev menu's vehicle spawner -- and for the
+    -- Season 2 jerry can (server/jerrycan.lua, #217), which bounds a pourer by
+    -- a row's footprint and fills a `jerryFills` row's tank whole, through
+    -- BR.Vehicles.modelRowOf. Loaded into this server state alone because no
+    -- client script reads it: the client asks the game itself, the jerry can's
+    -- cap finder included. Read at call time, so the order is a reader's.
     '@br_lib/config/vehicle_models.lua',
     -- The third anticheat detector: a networked vehicle the gamemode refuses,
     -- caught in the server-side `entityCreating` before the entity exists.
