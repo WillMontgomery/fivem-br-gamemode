@@ -48,6 +48,14 @@
 -- that froze the car is released. Clients never freeze; they only unfreeze
 -- (client/jerrycan.lua).
 --
+-- THE RELEASE IS THE DANGEROUS HALF: a car left frozen is a car nobody in the
+-- match can move again, and the forum's stuck-car reports are exactly that. So
+-- a car a pour froze is WATCHED from its release until the server reads it
+-- free -- sent the unfreeze again while it reads frozen, by whoever owns it,
+-- whatever presses, claims and cancels come after it -- and only a pour that
+-- holds it again ends the watch, because that pour's own release starts it
+-- over (see the reconcile job).
+--
 -- WHAT THE SERVER READS OF A FREEZE IS UP TO A SECOND STALE: IsEntityPositionFrozen
 -- is the owning client's last-synced bit. So the PROOF that the car stood still
 -- is the server's own coordinates and GetEntitySpeed, every pass -- a car that
@@ -70,13 +78,15 @@
 --
 -- FUEL_CAN WAITS FOR THAT SLICE TOO. The first the match hears of a pour is
 -- its hold, sent beside the freeze, and its end goes only to a match that was
--- sent the hold -- so a pour cut short inside the window, or done on its first
--- slice, tells nobody anything. A start sent at the press went to every client
--- in the match, and hung a can on the pourer's hand on every one of them, for
--- nothing paid: a modified client that stepped off after each press had every
--- client in the match make a can and take it down four times a second (#217's
--- review, 2026-11-03). The pourer's own can follows their channel from the
--- press (client/jerrycan.lua), so only the others see it a pass later.
+-- sent the hold -- so a pour cut short inside the window sends nobody anything,
+-- and one done on its first slice sends no FUEL_CAN at all: only the start cue
+-- that slice paid for, to the pourer and the car's riders. A start sent at the
+-- press went to every client in the match, and hung a can on the pourer's hand
+-- on every one of them, for nothing paid: a modified client that stepped off
+-- after each press had every client in the match make a can and take it down
+-- four times a second (#217's review, 2026-11-03). The pourer's own can follows
+-- their channel from the press (client/jerrycan.lua), so only the others see
+-- it a pass later.
 --
 -- ═══ EVERY WAY A POUR ENDS RELEASES IT ═══
 --
@@ -150,11 +160,13 @@ JC.natives = have
 --- claimed car is refused `claimed`. Each value is the channel's `pour`.
 local claims = {}
 
---- Vehicles released after a hold, watched for `releaseChecks` passes in case
---- the unfreeze did not land: { n, ent, at, left, stuck } -- first looked at
---- once `at` has come (RELEASE_WATCH_MS), and `stuck` once one look found it
---- still frozen, so a car is counted once however many looks find it so.
-local after = {}
+--- THE CARS A POUR FROZE, from its release until the server reads them free,
+--- by network id: { ent, at, sentTo, sentAt, stuck }. ONE PER CAR, so a later
+--- release of the same car starts it over. First looked at once `at` has come
+--- (RELEASE_WATCH_MS); `sentTo` and `sentAt` are the owner the unfreeze last
+--- went to and when; `stuck` is set by the first look that found it still
+--- frozen, so a car is counted once however many looks find it so.
+local watch = {}
 
 --- How long after a release the server first looks at the car it froze: a
 --- second and a half, PAST THE SECOND ITS READ OF A FREEZE CAN LAG.
@@ -164,6 +176,10 @@ local after = {}
 --- at a quarter, a half and three quarters of a second, was inside that lag
 --- (#217's review). A car still frozen this long after is one the unfreeze
 --- did not reach.
+---
+--- AND HOW OFTEN ONE OWNER IS SENT IT AGAIN while the car reads frozen: the
+--- same span, since a send sooner than this cannot have shown in the read yet.
+--- An owner who was not the last one sent it is sent it at once.
 local RELEASE_WATCH_MS = 1500
 
 --- The pour's id on the wire: from 1, increasing for as long as br_core runs.
@@ -465,12 +481,13 @@ end
 ---        * the unfreeze RPC goes to whoever owns the car, or waits for the
 ---          next owner -- not to a car that no longer exists: there is nothing
 ---          left to unfreeze;
----        * the car is watched: looked at again from RELEASE_WATCH_MS on, for
----          `releaseChecks` passes, and sent the unfreeze again on each that
----          still reads it frozen;
+---        * the car is watched until the server reads it free (`watch`, and
+---          the reconcile job): from RELEASE_WATCH_MS on, sent the unfreeze
+---          again while it reads frozen;
 ---   3. a pour that never held -- cut short inside the settle window, or done
----      on its first slice -- froze nothing and told nobody, so it takes
----      nothing back and sends nothing at all;
+---      on its first slice -- froze nothing and sent no FUEL_CAN, so it takes
+---      nothing back and sends nothing: and it leaves alone the watch an
+---      earlier pour's release started on the car;
 ---   4. the reason is counted.
 ---
 --- IDEMPOTENT, AND A NO-OP FOR AN UNCLAIMED `n`, because it is reached from
@@ -485,11 +502,12 @@ function JC.release(n, why)
     claims[n] = nil
     if pour.hold then
         toMatch(pour.matchId, { id = pour.id, n = pour.n, p = pour.src, ms = 0 })
-        if exists(pour.ent) then freeze(pour.ent, false) end
-        after[#after + 1] = {
-            n = n, ent = pour.ent, at = GetGameTimer() + RELEASE_WATCH_MS, stuck = false,
-            left = math.tointeger(tonumber(canCfg().releaseChecks)) or 0,
-        }
+        if exists(pour.ent) then
+            local now = GetGameTimer()
+            freeze(pour.ent, false)
+            watch[n] = { ent = pour.ent, at = now + RELEASE_WATCH_MS,
+                         sentTo = ownerOf(pour.ent), sentAt = now, stuck = false }
+        end
     end
     if why == 'done' then
         stat.completions = stat.completions + 1
@@ -728,9 +746,10 @@ end
 --- cars still being watched.
 --- @return table
 function JC.stats()
-    local live = 0
+    local live, queued = 0, 0
     for _ in pairs(claims) do live = live + 1 end
-    local out = { live = live, queued = #after, refused = {}, cancels = {} }
+    for _ in pairs(watch) do queued = queued + 1 end
+    local out = { live = live, queued = queued, refused = {}, cancels = {} }
     for k, v in pairs(stat) do
         if type(v) == 'number' then out[k] = v end
     end
@@ -742,8 +761,40 @@ end
 --- Drop every claim, the watch list and the counters, sending nothing. For
 --- onResourceStart, where nothing is open yet, and for the suites.
 function JC.reset()
-    claims, after = {}, {}
+    claims, watch = {}, {}
     stat = freshStat()
+end
+
+--- One look at a released car the server is watching (the reconcile job's).
+---
+--- READ FREE, IT IS DONE: the unfreeze landed, and the car is nobody's to
+--- watch. READ FROZEN, it is counted once as frozen after release, and the
+--- unfreeze goes again to whoever owns it now -- at once to an owner who was
+--- not the last one sent it, and to the same owner once RELEASE_WATCH_MS has
+--- passed since the last send. NEVER TO NOBODY: with no owner a send waits for
+--- the next one, so a car nobody owns would pile them up, and the owner who
+--- comes is sent it the moment they do. A read that throws is no answer, and
+--- the next pass looks again. With no read on this build there is nothing to
+--- go on, and the release's own unfreeze, and every client's at FUEL_CAN's
+--- end, are all there is.
+--- @param n integer
+--- @param w table  watch[n]
+--- @param now integer
+local function look(n, w, now)
+    if not have.frozen then watch[n] = nil return end
+    local ok, fz = pcall(IsEntityPositionFrozen, w.ent)
+    if not ok then return end
+    if not didHit(fz) then watch[n] = nil return end
+    if not w.stuck then
+        w.stuck = true
+        stat.frozenAfterRelease = stat.frozenAfterRelease + 1
+    end
+    local owner = ownerOf(w.ent)
+    if have.owner and owner == -1 then return end
+    if owner ~= w.sentTo or now - w.sentAt >= RELEASE_WATCH_MS then
+        freeze(w.ent, false)
+        w.sentTo, w.sentAt = owner, now
+    end
 end
 
 --- THE RECONCILE JOB, which is what releases every ending the slices never see.
@@ -757,36 +808,35 @@ end
 --- one test: a claim whose pourer has no roster entry, no channel, or a channel
 --- whose `pour` is not this claim, is over.
 ---
---- AND THE RELEASED CARS. Each watched car still read frozen once
---- RELEASE_WATCH_MS has passed -- past the lag of that read, so the unfreeze
---- its release sent has had time to land and be synced back -- is sent the
---- unfreeze again, on each of its `releaseChecks` passes, and counted ONCE as
---- frozen after release: a car the unfreeze did not reach. Never once a new
---- pour holds it -- that pour's own release watches it then.
+--- AND THE RELEASED CARS, each looked at on every pass from RELEASE_WATCH_MS
+--- after its release -- past the lag of the server's read, so the unfreeze its
+--- release sent has had time to land and be synced back -- until it reads free
+--- (`look`). Only two things end a watch sooner:
+---
+---   * the car is gone: there is nothing left to unfreeze;
+---   * a pour HOLDS it again. That freeze is the new pour's own, the one thing
+---     the watch must never undo, and its release starts a watch of its own.
+---     A pour that has not held -- still in its settle window, or cut short
+---     inside it -- froze nothing and is looked past: the first build dropped
+---     the watch for any claim on the car, so a quick re-press cut short in
+---     its window left a car the unfreeze had missed frozen for the rest of
+---     the match (#217's second review).
+---
+--- A hold made on this pass is already standing here, since `inv.use` runs
+--- first, so a watch never sends the unfreeze on the pass a new pour froze.
 BR.Sched.every(250, 'jerrycan.reconcile', function()
     local now = GetGameTimer()
-    local keep = {}
-    for _, a in ipairs(after) do
-        if claims[a.n] == nil then
-            if now < a.at then
-                keep[#keep + 1] = a
-            else
-                if have.frozen and exists(a.ent) then
-                    local ok, fz = pcall(IsEntityPositionFrozen, a.ent)
-                    if ok and didHit(fz) then
-                        freeze(a.ent, false)
-                        if not a.stuck then
-                            a.stuck = true
-                            stat.frozenAfterRelease = stat.frozenAfterRelease + 1
-                        end
-                    end
-                end
-                a.left = a.left - 1
-                if a.left > 0 then keep[#keep + 1] = a end
-            end
+    local ns = {}
+    for n in pairs(watch) do ns[#ns + 1] = n end
+    table.sort(ns)
+    for _, n in ipairs(ns) do
+        local w, c = watch[n], claims[n]
+        if (c ~= nil and c.hold) or not exists(w.ent) then
+            watch[n] = nil
+        elseif now >= w.at then
+            look(n, w, now)
         end
     end
-    after = keep
 
     -- A car released just below is watched from RELEASE_WATCH_MS on, never on
     -- this pass.

@@ -58,14 +58,17 @@
 --   the END message          that pour, at once: always honored, any season
 --   its own DEADLINE         the message's `ms` plus releaseGraceMs past its
 --                            arrival, for a client that missed the end
---   a NEWER POUR on the car  the older one, as the newer one starts
+--   a NEWER POUR on the car  the older one, as the newer one's hold lands --
+--                            handed over (supersede), not finished
 --   the LOBBY                every pour, the can in hand and the marker
 --   the SEASON going off     the same
 --   br_core STOPPING         the same, with nothing left running afterwards
 --
--- Each one is finish(): the can off the pourer's hand, this machine's engine
--- hold released (started again for a seated driver whose tank is not dry, the
--- EMP's free), and this copy of the car unfrozen, with its window opened.
+-- Each one but the newer pour is finish(): the can off the pourer's hand, this
+-- machine's engine hold released (started again for a seated driver whose tank
+-- is not dry, the EMP's free), and this copy of the car unfrozen, with its
+-- window opened. A newer pour holds the same car, so it takes only the older
+-- one's can off, and leaves the car held for itself.
 --
 -- ═══ WHAT IT COSTS A FRAME ═══
 --
@@ -132,8 +135,9 @@ local MARK_SCAN_MS = 500
 
 -- ------------------------------------------------------------------ state ---
 
---- The pours this client has been told of, by pour id:
----   { id, n (netId), p (pourer's server id), deadline, hold, checkAt,
+--- The pours this client has been told of, by pour id -- each from its hold,
+--- the first message the server sends of one:
+---   { id, n (netId), p (pourer's server id), deadline, checkAt,
 ---     obj (the can on the pourer's hand here, or nil), ped, noProp }
 local pours = {}
 
@@ -425,9 +429,9 @@ end
 ---
 --- 2 AND 3 BOTH WAIT FOR NO OTHER POUR ON THE CAR: unfreezing a car another
 --- pour still holds would undo the server's freeze under it. The FUEL_CAN
---- handler ends an older pour on a car before it records a newer one, so a
---- second pour on one car is never known here at once; the walk is the
---- guarantee, not a case.
+--- handler hands an older pour on a car over to a newer one (supersede) before
+--- it records it, so a second pour on one car is never known here at once; the
+--- walk is the guarantee, not a case.
 --- @param rec table
 --- @param now integer
 local function finish(rec, now)
@@ -445,6 +449,24 @@ local function finish(rec, now)
     BR.EngineHold.release(WHO, rec.n, restart)
     if veh ~= 0 and frozen(veh) then pcall(FreezeEntityPosition, veh, false) end
     windows[rec.n] = now + (tonumber(J().releaseGraceMs) or 2000)
+end
+
+--- Hand an older pour on a car over to the newer one whose hold just landed:
+--- its can comes off the pourer's hand, AND NOTHING ELSE.
+---
+--- NOT finish(). The server holds one pour per car, so an older record still
+--- standing here is one whose end this client missed, and the car is the
+--- newer pour's now -- frozen for it, its engine held for it. The newer pour's
+--- freeze RPC goes out on the same pass as its hold, so it may already have
+--- landed, and finish() would unfreeze it; finish() would also free the engine
+--- -- starting a seated driver's -- for the newer hold to stall again a moment
+--- later. So the engine hold this machine wrote stands (the newer pour's
+--- holdNow finds it written), the car's freeze is left alone, and no release
+--- window opens under it. The newer pour's own ending releases all of it.
+--- @param rec table
+local function supersede(rec)
+    pours[rec.id] = nil
+    dropRec(rec)
 end
 
 --- The release windows: while one is open, a copy of its car this machine owns
@@ -626,18 +648,22 @@ end
 
 -- ------------------------------------------------------------- the wire ---
 
--- THE HOLD makes or refreshes the record for its pour id, with a deadline of
--- its arrival plus `ms` plus releaseGraceMs, and holds the engine, now. It is
--- the first the server sends of a pour, on the slice that pays for the freeze
--- -- nothing goes at the press (server/jerrycan.lua's settle window) -- and a
--- message with `hold` false is still recorded, with no engine held for it.
--- Season 2 only -- AN END IS ALWAYS HONORED, in any season, so a pour can
--- never be left held here by a season that moved under it.
+-- TWO MESSAGES, AND NOTHING ELSE IS TAKEN ON: the HOLD (`hold` true, `ms` the
+-- time left) and the END (`ms` 0). The hold is the first the server sends of a
+-- pour, on the slice that pays for the freeze -- nothing goes at the press
+-- (server/jerrycan.lua's settle window) -- so it makes or refreshes the record
+-- for its pour id, with a deadline of its arrival plus `ms` plus
+-- releaseGraceMs, and holds the engine, now. A message that is neither is one
+-- no server sends, and is dropped. Season 2 only -- AN END IS ALWAYS HONORED,
+-- in any season, so a pour can never be left held here by a season that moved
+-- under it.
 --
--- A NEWER POUR ON THE SAME CAR ENDS THE OLDER ONE HERE, and shuts the car's
--- release window: the server holds one pour per car, so an older record still
--- standing is one whose end this client missed, and a window left open would
--- unfreeze the new pour's car under it.
+-- A NEWER POUR'S HOLD ON THE SAME CAR ENDS THE OLDER ONE HERE, and shuts the
+-- car's release window: the server holds one pour per car, so an older record
+-- still standing is one whose end this client missed, and a window left open
+-- would unfreeze the new pour's car under it. The older one is handed over
+-- (supersede), never finished: the car is the newer pour's, held and frozen
+-- for it.
 RegisterNetEvent(BR.Net.FUEL_CAN)
 AddEventHandler(BR.Net.FUEL_CAN, function(d)
     if type(d) ~= 'table' then return end
@@ -650,20 +676,19 @@ AddEventHandler(BR.Net.FUEL_CAN, function(d)
         if rec ~= nil then finish(rec, now) end
         return
     end
-    if not BR.Season.has('jerrycan') then return end
+    if d.hold ~= true or not BR.Season.has('jerrycan') then return end
     local rec = pours[id]
     if rec == nil then
         for _, older in pairs(pours) do
-            if older.n == n then finish(older, now) end
+            if older.n == n then supersede(older) end
         end
         windows[n] = nil
         rec = { id = id, n = n, p = math.tointeger(tonumber(d.p)), deadline = 0,
-                hold = false, checkAt = 0, obj = nil, ped = 0, noProp = false }
+                checkAt = 0, obj = nil, ped = 0, noProp = false }
         pours[id] = rec
     end
     rec.deadline = now + ms + (tonumber(J().releaseGraceMs) or 2000)
-    if d.hold == true then rec.hold = true end
-    if rec.hold then holdNow(rec, now) end
+    holdNow(rec, now)
 end)
 
 -- ON GETTING IN: the hold applied again at once, and 250 ms and 1 s later as
@@ -676,12 +701,12 @@ AddEventHandler('gameEventTriggered', function(name, args)
     local n = netOf(veh)
     if n == nil then return end
     for id, rec in pairs(pours) do
-        if rec.n == n and rec.hold then
+        if rec.n == n then
             holdNow(rec, GetGameTimer())
             for _, ms in ipairs(REASSERT_MS) do
                 Citizen.SetTimeout(ms, function()
                     local live = pours[id]
-                    if live ~= nil and live.hold then holdNow(live, GetGameTimer()) end
+                    if live ~= nil then holdNow(live, GetGameTimer()) end
                 end)
             end
         end
@@ -861,7 +886,7 @@ BR.Loop.register(BR.Loop.TICK, 'jerrycan.tick', function()
         for _, rec in pairs(pours) do
             if now >= rec.deadline then
                 finish(rec, now)
-            elseif rec.hold and now >= rec.checkAt then
+            elseif now >= rec.checkAt then
                 holdNow(rec, now)
             end
         end

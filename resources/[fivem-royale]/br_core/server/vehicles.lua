@@ -1289,11 +1289,13 @@ local CABIN_SEATS = 8
 --- answers nobody, so walking them all is right for every model, and costs at
 --- most fifteen reads past the driver's.
 ---
---- FOR A CALLER THAT ASKS ONCE A PRESS AND ONCE A PASS, NOT EVERY SAMPLE, and
---- for which the back of a bus reading as on foot is the DANGEROUS direction:
---- the Season 2 jerry can (#217), which pours only for a player on foot and
---- must never pour for one sitting at the back of a bus. The roadkill sampler
---- keeps CABIN_SEATS, for the cost argued at `ridesAsPassenger`.
+--- FOR A CALLER THAT ASKS NOW AND THEN -- once a press, once a pass, once a
+--- console command -- NOT EVERY SAMPLE, and that cannot afford the back of a
+--- bus reading as on foot: the Season 2 jerry can (#217), which pours only for
+--- a player on foot and must never pour for one sitting at the back of a bus,
+--- and its playtest's `brfueltank`, whose "the car they sit in" means any
+--- seat. The roadkill sampler keeps CABIN_SEATS, for the cost argued at
+--- `ridesAsPassenger`.
 BR.Vehicles.EVERY_SEAT = 15
 
 --- Is this ped riding as a PASSENGER of this vehicle?
@@ -1345,7 +1347,7 @@ end
 
 --- The vehicle this ped is RIDING IN RIGHT NOW, in any seat, or nil.
 ---
---- ═══ WHY THIS LIVES HERE AND NOT AT ITS TWO CALL SITES ═══
+--- ═══ WHY THIS LIVES HERE AND NOT AT ITS CALL SITES ═══
 ---
 --- Because the answer is not `GetVehiclePedIsIn(ped, false) ~= 0`, and that is
 --- the spelling anybody writing this fresh reaches for. citizenfx/fivem#4006 --
@@ -1358,12 +1360,13 @@ end
 --- a second feature to get the fix from instead of the bug.
 ---
 --- THE BUG IS THE DANGEROUS DIRECTION HERE, WHICH IS WHY IT IS WORTH A FUNCTION.
---- Both callers refuse or withhold something when the answer is yes. A bare read
---- answers yes forever after a player's first car, so server/inventory.lua would
---- refuse a purchased vehicle to everybody who has ever driven for the rest of
---- the match, and server/ambulances.lua would withhold the blip of every van
---- anyone ever sat in. Neither would throw, log, or fail a test -- they would
---- just quietly stop working partway through a round.
+--- Its first two callers refuse or withhold something when the answer is yes. A
+--- bare read answers yes forever after a player's first car, so
+--- server/inventory.lua would refuse a purchased vehicle to everybody who has
+--- ever driven for the rest of the match, and server/ambulances.lua would
+--- withhold the blip of every van anyone ever sat in. Neither would throw, log,
+--- or fail a test -- they would just quietly stop working partway through a
+--- round.
 ---
 --- SO THE PED'S ANSWER IS A CANDIDATE AND THE VEHICLE SETTLES IT, exactly as
 --- `drivenVehicle` and `ridesAsPassenger` above do. The difference is only which
@@ -1377,15 +1380,18 @@ end
 ---
 --- SEATS 8 AND BEYOND ARE NOT WALKED unless the caller asks, and
 --- `ridesAsPassenger` states the same limit for the same reason: it needs a
---- coach. Somebody in the back of a bus reads as on foot here. For both callers
---- that fails the SAFE way -- a car they are allowed to spawn, a blip they are
---- allowed to see -- rather than the way that silently withholds.
+--- coach. Somebody in the back of a bus reads as on foot here. For a caller that
+--- refuses or withholds something from a rider, that fails the SAFE way -- a
+--- car they are allowed to spawn, a blip they are allowed to see -- rather than
+--- the way that silently withholds.
 ---
---- THE JERRY CAN IS THE CALLER FOR WHICH IT IS NOT SAFE (#217): reading on foot
---- is what LETS a pour start and keeps it running, so a player at the back of a
---- bus would pour from their seat. It passes BR.Vehicles.EVERY_SEAT, and every
---- seat the vehicle has is walked -- seven reads more than the cabin's, and
---- only for a ped who is in a vehicle or whose stale read (#4006) names one.
+--- FOR A CALLER THAT LETS SOMETHING HAPPEN ON FOOT IT IS THE DANGEROUS WAY, and
+--- such a caller passes BR.Vehicles.EVERY_SEAT: every seat the vehicle has is
+--- walked, seven reads more than the cabin's, and only for a ped who is in a
+--- vehicle or whose stale read (#4006) names one. The Season 2 jerry can does
+--- (#217) -- reading on foot is what lets a pour start and keeps it running, so
+--- a player at the back of a bus would pour from their seat. server/emotes.lua's
+--- on-foot rule is another, and does not pass it yet (#430).
 --- @param ped integer|nil
 --- @param seats integer|nil  passenger seats to walk: CABIN_SEATS (8) when nil
 --- @return integer|nil  the vehicle handle, or nil when this ped is on foot

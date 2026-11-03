@@ -635,7 +635,8 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brforce <state>`, `brskip`, `brkill <id>` | server | Drive the match by hand |
 | `brloot [matchId]` | server | World loot: counts by kind and rarity, cells, who is subscribed. The id is the seven hex characters the console prints, and is read as hex (a shorter tag printed before 2026-09-12 still resolves) |
 | `brinv <id>`, `brgive <id> <item> [n]` | server | Read or fill a player's inventory |
-| `brjerrycan`, `brjerrycan <id> <netId>` | server | The Season 2 jerry can (#217): whether this season has it, the natives it leans on, every pour running (the car's network id and the pourer, seconds in, meters poured of the plan, whether it holds the car, the car's owner, and how often the car read frozen and its engine running), and the counters -- presses, refusals and cancels by reason, completions, cans emptied, cars frozen after release, crates asked and cans rolled. *Frozen after release* counts cars, each once, that still read frozen a second and a half after a pour let go of them -- past the second the server's read of a freeze can lag -- and were sent the unfreeze again: on a healthy server it is zero, and anything else is a car the unfreeze did not reach. Every refusal is silent in game, so this is where its reason is. With a player's server id and a vehicle's network id, a dry run of that player's can into that car: the reason it would be refused, or the meters it would pour and how long. Restricted. See *Playtesting the jerry can* below |
+| `brfueltank <id> <percent>` | server, dev mode | The fuel tank of the car that player sits in, any seat, set to that percent (0 to 100) of the 7,500 m tank -- for testing the Season 2 jerry can (#217) without driving 75 m for every 1%. A car the ledger is not tracking yet is admitted first, and everybody in the car is sent the new level at once. It sets the level and nothing else: it repairs nothing, and the next drain charges what the car drives from there. Prints the car's network id, the meters, what the tank was and who was told. Dev mode plus restricted, as `brgive` is. See *Playtesting the jerry can* below |
+| `brjerrycan`, `brjerrycan <id> <netId>` | server | The Season 2 jerry can (#217): whether this season has it, the natives it leans on, every pour running (the car's network id and the pourer, seconds in, meters poured of the plan, whether it holds the car, the car's owner, and how often the car read frozen and its engine running), how many released cars are still watched, and the counters -- presses, refusals and cancels by reason, completions, cans emptied, cars frozen after release, crates asked and cans rolled. A car a pour froze is watched from its release until the server reads it free: from a second and a half on -- past the second the server's read of a freeze can lag -- it is sent the unfreeze again, by whoever owns it, while it still reads frozen, whatever presses come after, until a pour holds it again. *Frozen after release* counts those cars, each once a release: on a healthy server it is zero, and anything else is a car the first unfreeze did not reach. Every refusal the server makes is silent in game, so this is where its reason is; a press from a seat, while downed or while moving is refused by the player's own client and never reaches the server, so it is not counted here. With a player's server id and a vehicle's network id, a dry run of that player's can into that car: the reason it would be refused, or the meters it would pour and how long. Restricted. See *Playtesting the jerry can* below |
 | `brphase <n>` | server | Jump the storm to phase n, seamlessly from the live circle |
 | `brstormscale <0.05–1>` | server | Compress storm pacing for testing (0.1 ≈ a 2-minute cycle) |
 | `brdown <id>`, `brdown <id> shot <shooterId>`, `brrevive <id> [by]`, `brbleed <id> [damage]` | server | Knock, pick up, or take damage off a downed player's clock as an enemy shot would. `brdown` refuses and says why when the rules say it should — solo, or no standing squadmate. `brdown <id> shot <shooterId>` knocks through `BR.Damage.applyHit`, the function every validated hit goes through, so the victim gets the same HIT_DAMAGE, DBNO_SET and HEALTH_SYNC a bullet sends and the shooter gets the same DAMAGE_FEED; only the engine's own damage on the shooter's machine is missing (#390). `brrevive` also puts an **eliminated** player back in: their placement, death stamp, storm stamp, killer record, revive key and spectate camera are all undone, they come back on full health where the body was, and the console names the three things that cannot be undone — the kill feed already broadcast, the killer's kill, and the kit the death box scattered. It refuses a match that is over, one the deciding death has already sealed, and one with nobody left standing |
@@ -653,25 +654,32 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 ### Playtesting the jerry can (#217)
 
 Season 2, a dev box, landed in a match -- not the warmup pad, which is a routing
-bucket of its own, so no pour starts there. A refused press does nothing on
-screen; `brjerrycan` on the server console names the reason. The tank is
-7,500 m of driving, so 75 m is 1%.
+bucket of its own, so no pour starts there. A tank moves only by being driven,
+75 m for every 1% of its 7,500 m, so set it instead: sit in the car, any seat,
+and type `brfueltank <id> <percent>` on the server console. A car nobody has sat
+in reads full and refuses the can.
+
+A refused press does nothing on screen. A press from a seat, while downed or
+while you are moving is refused by your own client and never sent, so
+`brjerrycan` has nothing for it. Every other refusal is the server's, and
+`brjerrycan` on the server console names its reason.
 
 1. Give yourself a can: `brgive <id> jerrycan`.
-2. Drive a car about 2 km, to 75%, and get out. A car nobody has driven reads full and refuses the can.
+2. Get into any car, type `brfueltank <id> 10`, and get out.
 3. Bring the can up with its slot key and walk to the car's gas cap: a small white cone stands over it within 3 m.
 4. Use it (R, the left mouse button, or Use in the TAB panel): you turn to the cap, the can is in your hand, and the bar runs 5 s.
 5. While it pours you cannot move or shoot, the car cannot move and its engine is off, and anybody else can still get in or out.
-6. Afterwards the car is full again, and the empty can has left the bag.
-7. Top-up: give yourself another, drive about 750 m to 90%, and pour. Only 10% goes in, in 2 s, and the slim gauge on the can's plate drops to about 60%.
-8. The full-tank vehicles, the owner's 26 quads, dirt bikes and dune buggies (`sanchez`, `blazer`, `bifta` and the rest): drop the part-used can (one is the most you can carry) and give yourself a new one. Poured into one at 70%, it ends full and the can keeps 70%; a full can fills even a dry tank.
-9. Refused, silently: a full tank, a seat in the car, a car still moving, and a car somebody else is already pouring into.
-10. `/brjerrytune`: the can in your hand on the keys, with the pour's clip; `off` prints the line to paste.
+6. Afterwards the car's gauge reads 35% -- the 10 plus a quarter of a tank -- and the empty can has left the bag.
+7. Top-up: give yourself another, set the car to 90% (`brfueltank <id> 90` from a seat), get out and pour. Only 10% goes in, in 2 s, and the slim gauge on the can's plate drops to about 60%.
+8. A sliver: pour that can, now at 60%, into a car set to 85.1%. The tank takes the 14.9% it has room for, the can keeps a few meters of fuel, and its gauge still shows a small bar at the bottom -- never an empty one while the can holds anything.
+9. The full-tank vehicles, the owner's 26 quads, dirt bikes and dune buggies (`sanchez`, `blazer`, `bifta` and the rest): drop the part-used can (one is the most you can carry) and give yourself a new one. Set one to 70% and pour: it ends at 100 and the can keeps 70%. Set one to 0, and a new can fills it.
+10. Refused by the server, silently, each named by `brjerrycan`: a full tank (`brfueltank <id> 100`), a car still moving, and a car somebody else is already pouring into. Refused by your own client and never sent: a press from a seat in the car.
+11. `/brjerrytune`: the can in your hand on the keys, with the pour's clip; `off` prints the line to paste.
 
 With a second player, in another squad:
 
-11. Have them shoot you mid-pour: 'Interrupted.', what went in stays in the tank, and the can keeps the rest -- its gauge shows how much.
-12. Have them get in the car mid-pour and try to drive: it does not move and the engine stays off, and when the pour ends the engine starts again for them.
+12. Have them shoot you mid-pour: 'Interrupted.', what went in stays in the tank, and the can keeps the rest -- its gauge shows how much.
+13. Have them get in the car mid-pour and try to drive: it does not move and the engine stays off, and when the pour ends the engine starts again for them.
 
 
 ### Measuring br_core in resmon (#393)

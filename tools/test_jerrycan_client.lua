@@ -17,12 +17,14 @@
 --                       on one car in both orders, the last release frees, a
 --                       release by a non-holder writes nothing, out of scope
 --                       drops the record, `restart`, and `free`
---   B. FUEL_CAN         a start recorded (not on Season 1); the hold to the
---                       driver, or the owner when nobody drives, and to nobody
---                       else; the entering event and its 250 ms and 1 s; a
---                       running engine stalled again; every end and its
---                       release; the window; a newer pour; the deadline, the
---                       lobby, the season and the resource stop
+--   B. FUEL_CAN         the hold and the end, and nothing else, taken on (no
+--                       hold on Season 1); the hold to the driver, or the owner
+--                       when nobody drives, and to nobody else; the entering
+--                       event and its 250 ms and 1 s; a running engine stalled
+--                       again; every end and its release; the window; a newer
+--                       pour's hold; the deadline, the lobby, the season and the
+--                       resource stop. Every pour here is what the server sends:
+--                       its hold first, then its end
 --   C. the cans         one local can a pour, on the pourer's hand, from the
 --                       use entry; the pourer's own following the channel;
 --                       streamed on the pass; gone on every ending
@@ -391,7 +393,9 @@ local function boot(opts)
     function W.fire(name, ...)
         for _, fn in ipairs(W.handlers[name] or {}) do fn(...) end
     end
-    --- One FUEL_CAN message: a start (hold false), a hold, or the end (ms 0).
+    --- One FUEL_CAN message: a hold (`hold` true), or the end (ms 0) -- the two
+    --- the server sends. Anything else is a message it does not send, which
+    --- only B's first block hands the handler.
     function W.can(id, net, p, ms, hold)
         W.fire(B.Net.FUEL_CAN, { id = id, n = net, p = p, ms = ms, hold = hold })
     end
@@ -523,22 +527,33 @@ end
 
 -- ======================================================== B. FUEL_CAN ---
 
-describe('B. FUEL_CAN: a start is recorded on Season 2 and ignored on Season 1')
+describe('B. FUEL_CAN: a hold or an end, and nothing else; and no hold on Season 1')
 do
+    -- THE SERVER SENDS TWO MESSAGES OF A POUR, its hold and its end, and a
+    -- client takes on nothing else. The start the press sent before #217's
+    -- review is no message any server sends now, and neither is a hold with
+    -- its flag missing or mangled: each is dropped, recording nothing.
     local W = boot()
-    local h = sedan(W)
-    W.can(1, 501, 9, 5000, false)
-    eq(W.JC.state().pours, 1, 'a start records the pour')
+    local h = sedan(W, { driver = 77, engine = true })
+    ok(W.nets[W.B.Net.FUEL_CAN] == true, 'FUEL_CAN is registered as a net event')
+    for _, bad in ipairs({ { v = false }, { v = nil }, { v = 'true' }, { v = 1 } }) do
+        W.can(1, 501, 9, 5000, bad.v)
+        eq(W.JC.state().pours, 0,
+           ('a message with `hold` %s and time left is not taken on'):format(tostring(bad.v)))
+    end
+    eq(W.JC.holds(501), false, 'so nothing holds the car')
+    ok(W.ents[h].undriveable == nil and W.ents[h].engine == true, 'and nothing is written to it')
+    W.can(1, 501, 9, 5000, true)
+    eq(W.JC.state().pours, 1, 'the hold records the pour')
     eq(W.JC.holds(501), true, 'and BR.JerryCan.holds answers for its car')
     eq(W.JC.holds(502), false, 'and for no other')
-    eq(W.ents[h].undriveable, nil, 'a start alone writes nothing to the car')
-    ok(W.nets[W.B.Net.FUEL_CAN] == true, 'FUEL_CAN is registered as a net event')
+    W.can(9, 501, 9, 0)
+    eq(W.JC.state().pours, 1, 'an end for a pour never held here touches nothing')
 
     local W1 = boot({ season = 1 })
     sedan(W1)
-    W1.can(1, 501, 9, 5000, false)
     W1.can(1, 501, 9, 4000, true)
-    eq(W1.JC.state().pours, 0, 'Season 1: a start and a hold are not taken on')
+    eq(W1.JC.state().pours, 0, 'Season 1: a hold is not taken on')
     eq(W1.JC.holds(501), false, 'and nothing holds')
 end
 
@@ -566,7 +581,6 @@ do
     -- THIS PLAYER DRIVES.
     local W = boot()
     local h, c = sedan(W, { driver = 77, engine = true })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     ok(W.stalled(c), 'the driver\'s machine: stalled as the hold lands')
     eq(W.E.held(501, 'jerrycan'), true, 'held under the can\'s name')
@@ -574,7 +588,6 @@ do
     -- NOBODY DRIVES, AND THIS MACHINE OWNS IT.
     W = boot()
     h, c = sedan(W, { owner = true, engine = true })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     ok(W.stalled(c), 'nobody driving: the owner\'s machine stalls it')
 
@@ -582,7 +595,6 @@ do
     W = boot()
     h, c = sedan(W, { engine = true })
     c.seats[0] = 77
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     ok(c.undriveable == nil and c.engine == true and not W.E.held(501),
        'a passenger whose machine does not own the car writes nothing')
@@ -590,7 +602,6 @@ do
     -- SOMEBODY ELSE DRIVES, AND THIS MACHINE OWNS IT ANYWAY.
     W = boot()
     h, c = sedan(W, { driver = 901, owner = true, engine = true })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     ok(c.undriveable == nil and not W.E.held(501),
        'another player drives: their machine holds it, this one writes nothing')
@@ -598,7 +609,6 @@ do
     -- A BYSTANDER.
     W = boot()
     h, c = sedan(W, { engine = true })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     ok(c.undriveable == nil and c.engine == true, 'a bystander writes nothing')
     local _ = h
@@ -608,7 +618,6 @@ describe('B. FUEL_CAN: getting in holds it again, at once and 250 ms and 1 s lat
 do
     local W = boot()
     local h, c = sedan(W, { engine = false })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     eq(c.undriveable, nil, 'a bystander at the hold: nothing written')
     c.engine = true                              -- the auto-start as the seat is taken
@@ -624,7 +633,6 @@ do
     -- A PASSENGER GETTING IN, with somebody else at the wheel: nothing.
     local W2 = boot()
     local h2, c2 = sedan(W2, { driver = 901, engine = true })
-    W2.can(1, 501, 9, 5000, false)
     W2.can(1, 501, 9, 4700, true)
     W2.getIn(h2, 0)
     W2.advance(1000)
@@ -635,7 +643,6 @@ describe('B. FUEL_CAN: a running engine is stalled again within a second')
 do
     local W = boot()
     local _, c = sedan(W, { driver = 77 })
-    W.can(1, 501, 9, 9000, false)
     W.can(1, 501, 9, 8700, true)
     ok(W.stalled(c), 'held')
     c.engine = true                              -- started under the hold
@@ -648,7 +655,6 @@ do
     -- OWNERSHIP ARRIVES WITH NOBODY DRIVING: the once-a-second look takes it.
     W = boot()
     local _, c2 = sedan(W, { engine = true })
-    W.can(1, 501, 9, 9000, false)
     W.can(1, 501, 9, 8700, true)
     eq(c2.undriveable, nil, 'a bystander at the hold: nothing written')
     c2.owner = true                              -- the old owner left; this machine has it
@@ -658,7 +664,6 @@ do
     -- THE MACHINE THAT WROTE A HOLD KEEPS IT UNTIL THE POUR ENDS THERE.
     W = boot()
     local _, c3 = sedan(W, { driver = 77 })
-    W.can(1, 501, 9, 9000, false)
     W.can(1, 501, 9, 8700, true)
     c3.driver = 0                                -- this player gets out, mid-pour
     W.ticks(20)
@@ -681,7 +686,6 @@ do
     local W = boot()
     local h, c = sedan(W, { driver = 77 })
     W.levels[h] = 40.0
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     W.can(1, 501, 9, 0)
     ok(W.freed(c) and c.engine == true, 'a seated driver with fuel: freed, and the engine started')
@@ -692,7 +696,6 @@ do
     W = boot()
     h, c = sedan(W, { driver = 77 })
     W.levels[h] = 0
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     W.can(1, 501, 9, 0)
     ok(W.freed(c) and c.engine == false, 'a dry tank: freed, the engine left off')
@@ -700,7 +703,6 @@ do
     -- THE EMP STALLS THEIR DRIVING TOO.
     W = boot()
     h, c = sedan(W, { driver = 77 })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     W.E.hold('emp', 501, h)
     W.can(1, 501, 9, 0)
@@ -709,7 +711,6 @@ do
     -- THE OWNER, NOBODY DRIVING: no-auto-start cleared, the engine as it was.
     W = boot()
     h, c = sedan(W, { owner = true })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     W.can(1, 501, 9, 0)
     ok(W.freed(c) and c.engine == false, 'a non-driver\'s hold: no-auto-start cleared, not started')
@@ -720,7 +721,6 @@ do
     -- A BYSTANDER'S COPY, FROZEN BY THE SERVER'S RPC.
     local W = boot()
     local _, c = sedan(W, { frozen = true })
-    W.can(1, 501, 9, 5000, false)
     W.can(1, 501, 9, 4700, true)
     W.can(1, 501, 9, 0)
     eq(c.frozen, false, 'a frozen copy is unfrozen at the end, by every client')
@@ -743,38 +743,59 @@ do
     W.tick()
     eq(c.frozen, true, 'and a freeze after it is not this client\'s business')
 
-    -- A NEW START ON THE CAR SHUTS IT.
+    -- A NEW POUR'S HOLD SHUTS IT: a re-press inside the window. The server
+    -- sends nothing at the press, so the new pour's first message is its hold,
+    -- on the pass its freeze goes out -- and the hold alone has to shut the
+    -- window, or this machine, which owns the car, would undo that freeze on
+    -- its next pass.
     W = boot()
     _, c = sedan(W, { owner = true })
-    W.can(1, 501, 9, 5000, false)
+    W.can(1, 501, 9, 4700, true)
     W.can(1, 501, 9, 0)
     eq(W.JC.state().windows, 1, 'the end opens the window')
-    W.can(2, 501, 9, 5000, false)
-    eq(W.JC.state().windows, 0, 'a new start on the car shuts it')
-    c.frozen = true                                  -- the new pour's freeze
+    c.frozen = true                                  -- the new pour's freeze, landed first
+    W.can(2, 501, 9, 4750, true)
+    eq(W.JC.state().windows, 0, 'the new pour\'s hold, its first message, shuts it')
     W.tick()
-    eq(c.frozen, true, 'so the new pour\'s freeze stands')
+    eq(c.frozen, true, 'so the new pour\'s freeze stands on the next pass')
+    W.ticks(5)
+    eq(c.frozen, true, 'and on every pass after it')
 end
 
-describe('B. FUEL_CAN: a newer pour on the car ends the older one here')
+describe('B. FUEL_CAN: a newer pour\'s hold ends the older one here, and leaves the car held for it')
 do
+    -- AN OLDER RECORD STILL STANDING IS ONE WHOSE END THIS CLIENT MISSED: the
+    -- server holds one pour per car. The newer pour's hold -- its first message
+    -- -- takes the older one's can off and hands the car over, still stalled
+    -- and still frozen: the newer pour's freeze RPC goes out on the same pass as
+    -- its hold and may land first. Finishing the older pour there instead
+    -- unfroze that freeze, and started a seated driver's engine for the newer
+    -- hold to stall again.
     local W = boot()
-    local _, c = sedan(W, { driver = 77 })
+    local h, c = sedan(W, { driver = 77, owner = true })
     W.player(9)
-    W.can(1, 501, 9, 5000, false)
+    W.levels[h] = 40.0
     W.can(1, 501, 9, 4700, true)
     W.ticks(2)                                   -- the model asked for, then the can
     ok(W.stalled(c) and #W.objects() == 1, 'the first pour: held, and its can on the pourer')
-    W.can(2, 501, 9, 5000, false)
+    c.frozen = true                              -- its end missed; the newer pour's freeze lands
+    W.calls = {}
+    W.can(2, 501, 9, 4750, true)
     local s = W.JC.state()
-    ok(s.pours == 1 and W.freed(c) and c.engine == true,
-       'the newer start ends the older one: released, the driver started again',
-       ('%d pour(s)'):format(s.pours))
+    ok(s.pours == 1 and s.windows == 0, 'the newer pour\'s hold ends the older one: one pour known, no window',
+       ('%d pour(s), %d window(s)'):format(s.pours, s.windows))
     eq(#W.objects(), 0, 'and the older pour\'s can is gone')
-    W.can(2, 501, 9, 4700, true)
-    ok(W.stalled(c), 'the newer pour holds it again on its own hold')
+    ok(W.stalled(c) and (W.calls.SetVehicleEngineOn or 0) == 0,
+       'the driver held throughout: never started, so never stalled again')
+    eq(c.frozen, true, 'and the car still frozen for the newer pour')
+    W.ticks(3)
+    ok(c.frozen == true and W.stalled(c), 'on the passes after it too')
     W.can(1, 501, 9, 0)
-    ok(W.stalled(c), 'and the older pour\'s late end touches nothing')
+    ok(W.stalled(c) and c.frozen == true and W.JC.state().pours == 1,
+       'and the older pour\'s late end touches nothing')
+    W.can(2, 501, 9, 0)
+    ok(W.freed(c) and c.engine == true and c.frozen == false and W.JC.state().pours == 0,
+       'the newer pour\'s own end lets all of it go: the driver started again, the car unfrozen')
 end
 
 describe('B. FUEL_CAN: the deadline, the lobby, the season and the resource stop each leave nothing held')
@@ -785,7 +806,6 @@ do
         local W = boot()
         local h, c = sedan(W, { driver = 77, frozen = true })
         W.player(9)
-        W.can(1, 501, 9, 5000, false)
         W.can(1, 501, 9, 4700, true)
         local heldAt = W.now
         W.ticks(2)                               -- the model asked for, then the can
@@ -841,7 +861,7 @@ do
     local W = boot()
     sedan(W)
     local p9 = W.player(9)
-    W.can(1, 501, 9, 5000, false)
+    W.can(1, 501, 9, 5000, true)
     eq(#W.objects(), 0, 'nothing made inside the message: the pass makes it')
     W.tick()
     eq(#W.objects(), 0, 'the first pass asks for the model and waits for nothing')
@@ -870,7 +890,7 @@ do
     -- TWO POURERS, TWO CANS.
     W.player(10)
     sedan(W, { net = 502, x = -2.0 })
-    W.can(2, 502, 10, 5000, false)
+    W.can(2, 502, 10, 5000, true)
     W.tick()
     eq(#W.objects(), 2, 'a second pourer\'s can beside the first')
 end
@@ -880,7 +900,7 @@ do
     local W = boot({ streamPasses = 2 })
     sedan(W)
     W.player(9)
-    W.can(1, 501, 9, 5000, false)
+    W.can(1, 501, 9, 5000, true)
     W.tick()
     local hash = hashOf('w_am_jerrycan')
     ok(W.requested[hash] == 1 and #W.objects() == 0, 'the first pass asks for the model, and makes nothing')
@@ -891,7 +911,7 @@ do
     W = boot({ streamPasses = math.huge })
     sedan(W)
     W.player(9)
-    W.can(1, 501, 9, 9000, false)
+    W.can(1, 501, 9, 9000, true)
     W.ticks(25)
     ok(#W.objects() == 0 and W.requested[hash] == 1 and (W.released[hash] or 0) == 1,
        'a model that never streams is asked for once and let go after two seconds',
@@ -902,7 +922,7 @@ do
     W = boot({ inCd = false })
     sedan(W)
     W.player(9)
-    W.can(1, 501, 9, 9000, false)
+    W.can(1, 501, 9, 9000, true)
     W.ticks(5)
     ok(#W.objects() == 0 and (W.requested[hash] or 0) == 0,
        'a model the build does not have is never requested')
@@ -912,7 +932,7 @@ describe('C. the cans: attached when the pourer streams in, gone when they strea
 do
     local W = boot()
     sedan(W)
-    W.can(1, 501, 9, 9000, false)
+    W.can(1, 501, 9, 9000, true)
     W.ticks(3)
     eq(#W.objects(), 0, 'out of scope: no ped here to hold it')
     eq(W.calls.RequestModel, nil, 'and nothing is asked for while there is no ped to hold it')
@@ -937,7 +957,7 @@ do
     local objs = W.objects()
     ok(#objs == 1 and objs[1].e.attached.to == W.ped and W.JC.state().own,
        'the channel opens: the can on this player\'s own hand')
-    W.can(1, 501, 7, 5000, false)                -- p is this player
+    W.can(1, 501, 7, 5000, true)                -- p is this player
     W.ticks(3)
     eq(#W.objects(), 1, 'the pour\'s FUEL_CAN names this player: no second can')
     W.offFoot = true
@@ -956,17 +976,31 @@ do
     W.tick()
     eq(#W.objects(), 0, 'the channel ends: off')
 
-    -- BR_CORE STOPPING MID-POUR takes this player's own can off too: the pass
-    -- that would have is the thing that stops.
-    W = boot()
-    sedan(W)
-    W.give(1, 1)
-    W.inv.using = { slot = 1, endsAt = W.now + 5000, ms = 5000 }
-    W.ticks(2)
-    ok(#W.objects() == 1 and W.JC.state().own, 'the own can stands')
-    W.fire('onClientResourceStop', 'br_core')
-    ok(#W.objects() == 0 and not W.JC.state().own, 'br_core stopping: the own can is gone',
-       ('%d can(s)'):format(#W.objects()))
+    -- THE ENDINGS THE CHANNEL DOES NOT SEE take this player's own can off too,
+    -- with the channel still running here: the lobby and the season going off,
+    -- where the pass lets go of everything and makes no can (letGo), and
+    -- br_core stopping, where the pass that would have is the thing that stops.
+    local endings = {
+        { 'the lobby', function(X) X.B.State.me.state = X.B.PlayerState.LOBBY X.tick() end },
+        { 'the season going off', function(X) X.season = 1 X.tick() end },
+        { 'br_core stopping', function(X) X.fire('onClientResourceStop', 'br_core') end },
+    }
+    for _, case in ipairs(endings) do
+        W = boot()
+        sedan(W)
+        W.give(1, 1)
+        W.inv.using = { slot = 1, endsAt = W.now + 5000, ms = 5000 }
+        W.ticks(2)
+        ok(#W.objects() == 1 and W.JC.state().own, case[1] .. ': the own can stands, its channel running')
+        case[2](W)
+        ok(#W.objects() == 0 and not W.JC.state().own, case[1] .. ': the own can is gone',
+           ('%d can(s)'):format(#W.objects()))
+        if case[1] ~= 'br_core stopping' then
+            W.ticks(3)
+            ok(#W.objects() == 0 and not W.JC.state().own, case[1] .. ': and stays gone',
+               ('%d can(s)'):format(#W.objects()))
+        end
+    end
 end
 
 describe('C. the cans: gone on every ending')
@@ -974,7 +1008,7 @@ do
     local endings = {
         { 'the end', function(W) W.can(1, 501, 9, 0) end },
         { 'the deadline', function(W) W.ticks(80) end },
-        { 'a newer pour', function(W) W.can(2, 501, 10, 5000, false) end },
+        { 'a newer pour', function(W) W.can(2, 501, 10, 5000, true) end },
         { 'the lobby', function(W) W.B.State.me.state = W.B.PlayerState.LOBBY W.tick() end },
         { 'the season going off', function(W) W.season = 1 W.tick() end },
         { 'br_core stopping', function(W) W.fire('onClientResourceStop', 'br_core') end },
@@ -983,7 +1017,7 @@ do
         local W = boot()
         sedan(W)
         W.player(9)
-        W.can(1, 501, 9, 5000, false)
+        W.can(1, 501, 9, 5000, true)
         W.ticks(2)
         ok(#W.objects() == 1, case[1] .. ': a can on the pourer')
         case[2](W)

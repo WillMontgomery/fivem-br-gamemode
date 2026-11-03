@@ -23339,7 +23339,8 @@ do
     }
     -- ON ITS FEET. An earlier block leaves the parachute state OPEN, and a ped
     -- under a canopy is off its feet -- which the press now refuses, so every
-    -- case here would be testing a ped in the sky (section 15 says the same).
+    -- case here would be testing a ped in the sky (the #11 use-emote block's
+    -- head says the same, for its own sections).
     function GetPedParachuteState() return -1 end
 
     -- THE PED AND ITS SEAT. The ped stands at the origin, and a seat is a

@@ -31,7 +31,7 @@
 --   E  an accepted press            M  no repair
 --   F  the ticks                    N  regressions
 --   G  completions                  O  the icon
---   H  the cancel matrix
+--   H  the cancel matrix            P  the playtest, by brfueltank
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_jerrycan.lua
 
@@ -557,7 +557,7 @@ do
     local WANT_J = {
         crateChance = 0.02, canFraction = 0.25, settleMs = 250, minPourMs = 250,
         minSpace = 0.005, emptyBelow = 1e-6, stillSpeed = 0.5, driftMeters = 1.0,
-        pourerDrift = 0.75, boxMargin = 2.0, riseMeters = 3.0, releaseChecks = 3,
+        pourerDrift = 0.75, boxMargin = 2.0, riseMeters = 3.0,
         releaseGraceMs = 2000, capReach = 1.5, capRise = 2.0, scanMeters = 10.0,
         markerReach = 3.0,
         capBones = { 'petrolcap', 'petroltank', 'petroltank_l', 'petroltank_r', 'fueltank' },
@@ -1249,61 +1249,151 @@ do
        'and the can lost only what IT poured', fillAt(1, slot))
     BR.Fuel.pour = realPour
 
-    -- THE RELEASED CAR IS WATCHED: FROM A SECOND AND A HALF ON -- past the
-    -- second the server's read of a freeze can lag -- THE UNFREEZE AGAIN, AT
-    -- MOST THREE TIMES, AND THE CAR COUNTED ONCE.
-    slot = scene({ burn = 7500 })
-    press(1, slot, NET)
-    tick()
-    tick()
-    ok(JC.claimOf(NET).hold == true, 'the pour holds the car')
-    roster[1].state = BR.PlayerState.DBNO
-    tick()
-    ok(JC.claimOf(NET) == nil, 'downed: released')
-    rpcs = {}
-    W.frozen[CAR] = true                 -- the owner's last sync: still the freeze
+    -- ═══ THE RELEASE IS THE SAFE HALF ON EVERY PATH ═══
+    --
+    -- A car a pour froze is watched from its release UNTIL THE SERVER READS IT
+    -- FREE: past the second the server's read of a freeze can lag, it is sent
+    -- the unfreeze again while it reads frozen, by whoever owns it, whatever
+    -- presses, claims and cancels come after -- and only a pour that holds it
+    -- again ends the watch, since that pour's release starts its own.
+
+    --- A pour that holds the car, then its pourer downed: released on that
+    --- pass, with the unfreeze, and watched from a second and a half on. The
+    --- log of RPCs starts after it, and the car still reads frozen -- the
+    --- release's unfreeze did not land -- unless `landed`.
+    local function heldThenDropped(landed)
+        local s = scene({ burn = 7500 })
+        press(1, s, NET)
+        tick()
+        tick()
+        ok(JC.claimOf(NET) and JC.claimOf(NET).hold == true, 'the pour holds the car')
+        roster[1].state = BR.PlayerState.DBNO
+        tick()
+        ok(JC.claimOf(NET) == nil and #rpcsFor(CAR, false) == 1,
+           'downed: released, and the unfreeze sent with it')
+        rpcs = {}
+        W.frozen[CAR] = not landed
+        return s
+    end
+
+    -- WATCHED UNTIL IT READS FREE: nothing read into it inside the lag, then
+    -- the unfreeze again every second and a half for as long as it reads
+    -- frozen -- not three looks and done, which left a car still frozen -- and
+    -- the car counted once. The first read that finds it free ends the watch.
+    heldThenDropped()
     for _ = 1, 5 do tick() end           -- 1,250 ms on
     ok(#rpcsFor(CAR, false) == 0 and JC.stats().frozenAfterRelease == 0,
        'inside the lag nothing is read into it: no unfreeze again, nothing counted',
        #rpcsFor(CAR, false))
-    for _ = 1, 6 do tick() end
-    ok(#rpcsFor(CAR, false) == 3, 'past it, a car still reading frozen is unfrozen again, three times and no more',
+    tick()                               -- 1.5 s: the first look
+    ok(#rpcsFor(CAR, false) == 1 and JC.stats().frozenAfterRelease == 1,
+       'past it, a car still reading frozen is sent the unfreeze again, and counted',
        #rpcsFor(CAR, false))
-    ok(JC.stats().frozenAfterRelease == 1, 'and counted once: one car the unfreeze did not reach',
+    for _ = 1, 34 do tick() end          -- ten seconds after the release
+    ok(#rpcsFor(CAR, false) == 6,
+       'and again every second and a half while it reads frozen: six by ten seconds',
+       #rpcsFor(CAR, false))
+    ok(JC.stats().frozenAfterRelease == 1 and JC.stats().queued == 1,
+       'counted once: one car the unfreeze did not reach, and still watched',
        JC.stats().frozenAfterRelease)
+    W.frozen[CAR] = false                -- it lands, and the owner's sync says so
+    tick()
+    ok(JC.stats().queued == 0, 'the first read that finds it free ends the watch')
+    W.frozen[CAR] = true
+    for _ = 1, 12 do tick() end
+    ok(#rpcsFor(CAR, false) == 6, 'and nothing is sent after it: a car read free is nobody\'s to watch',
+       #rpcsFor(CAR, false))
+
     -- A RELEASE THAT WORKED IS NOT COUNTED: the owner's sync catches up with
     -- the unfreeze inside the lag, and the watch finds the car free.
-    slot = scene({ burn = 7500 })
-    press(1, slot, NET)
-    tick()
-    tick()
-    roster[1].state = BR.PlayerState.DBNO
-    tick()
-    rpcs = {}
-    W.frozen[CAR] = true
+    heldThenDropped()
     for _ = 1, 4 do tick() end           -- a second of the stale bit
     W.frozen[CAR] = false                -- then the sync of the unfreeze
     for _ = 1, 8 do tick() end
     ok(#rpcsFor(CAR, false) == 0 and JC.stats().frozenAfterRelease == 0,
        'a release whose read was a second stale is neither sent again nor counted',
        JC.stats().frozenAfterRelease)
-    -- ...AND NOT WHILE A NEW POUR HOLDS IT.
-    slot = scene({ burn = 7500 })
-    press(1, slot, NET)
-    tick()
-    tick()
-    roster[1].state = BR.PlayerState.DBNO
-    tick()                               -- released, and watched from 1.5 s on
+    ok(JC.stats().queued == 0, 'and its watch is over')
+
+    -- A PRESS THAT NEVER HOLDS DOES NOT END THE WATCH (#217's second review).
+    -- The release's unfreeze did not land; the pourer, up again, presses at
+    -- once and steps off inside the settle window, so the new pour freezes
+    -- nothing and sends nothing. The first build dropped the watch for any
+    -- claim on the car, and the car stood frozen for the rest of the match.
+    local slot2 = heldThenDropped()
     roster[1].state = BR.PlayerState.ALIVE
-    for _ = 1, 4 do tick() end
-    press(1, slot, NET)                  -- poured again before the watch looks
-    ok(JC.claimOf(NET) ~= nil, 'pressed again')
-    rpcs = {}
-    W.frozen[CAR] = true                 -- the new pour's freeze
-    for _ = 1, 8 do tick() end           -- past the old watch's start and its three looks
-    ok(JC.claimOf(NET) ~= nil, 'the new pour still running')
-    ok(#rpcsFor(CAR, false) == 0, 'and the watch sends no unfreeze under a new claim')
-    ok(JC.stats().frozenAfterRelease == 0, 'nor counts the new pour\'s freeze as one that stuck')
+    tick(100)
+    press(1, slot2, NET)
+    ok(JC.claimOf(NET) ~= nil and JC.claimOf(NET).hold == false,
+       'pressed again at once: a new claim, in its settle window')
+    tick(100)                            -- a pass with that claim standing
+    place(1, roster[1].pos.x, roster[1].pos.y - 0.8)
+    tick()
+    ok(JC.claimOf(NET) == nil and (JC.stats().cancels.moved or 0) == 1,
+       'and cut short before its first slice')
+    ok(#rpcs == 0 and JC.stats().queued == 1,
+       'having sent nothing itself, and left the first pour\'s watch standing', #rpcs)
+    for _ = 1, 8 do tick() end           -- past the first release's lag
+    ok(#rpcsFor(CAR, false) == 1 and JC.stats().frozenAfterRelease == 1,
+       'which still sends the car the unfreeze, and counts it', #rpcsFor(CAR, false))
+    W.frozen[CAR] = false
+    tick()
+    ok(JC.stats().queued == 0, 'until it reads free')
+
+    -- ...NOR ONE STILL IN ITS SETTLE WINDOW AS THE WATCH LOOKS: that claim has
+    -- frozen nothing, so the car under it is sent the unfreeze -- and the pass
+    -- it holds, the watch is over and its freeze stands.
+    slot2 = heldThenDropped()
+    roster[1].state = BR.PlayerState.ALIVE
+    for _ = 1, 5 do tick() end           -- 1,250 ms on
+    fakeTime = fakeTime + 150            -- and between two passes, pressed
+    press(1, slot2, NET)                 -- again, 100 ms before the first look
+    tick(100)
+    ok(JC.claimOf(NET) ~= nil and JC.claimOf(NET).hold == false, 'the look comes with the claim unheld')
+    ok(#rpcsFor(CAR, false) == 1 and #rpcsFor(CAR, true) == 0,
+       'and the car is sent the unfreeze: a claim that has not held froze nothing')
+    tick()                               -- the claim's first slice
+    ok(JC.claimOf(NET) ~= nil and JC.claimOf(NET).hold == true, 'then it holds')
+    ok(rpcs[#rpcs] and rpcs[#rpcs].ent == CAR and rpcs[#rpcs].on == true,
+       'its freeze the last thing the car was sent')
+    for _ = 1, 12 do tick() end          -- the new pour freezing it, three seconds on
+    ok(JC.claimOf(NET) ~= nil and #rpcsFor(CAR, false) == 1 and JC.stats().queued == 0,
+       'and the watch is over: no unfreeze under a pour that holds the car',
+       #rpcsFor(CAR, false))
+    ok(JC.stats().frozenAfterRelease == 1, 'nor its freeze counted as one that stuck')
+    -- ITS OWN RELEASE STARTS THE WATCH OVER.
+    roster[1].state = BR.PlayerState.DBNO
+    tick()
+    ok(JC.claimOf(NET) == nil and #rpcsFor(CAR, false) == 2 and JC.stats().queued == 1,
+       'the new pour released: its own unfreeze, and its own watch')
+    for _ = 1, 6 do tick() end
+    ok(#rpcsFor(CAR, false) == 3 and JC.stats().frozenAfterRelease == 2,
+       'which, the car still frozen past the lag, sends it again and counts that release too',
+       #rpcsFor(CAR, false))
+
+    -- WHOEVER OWNS IT: a new owner is sent the unfreeze on the pass it is seen,
+    -- not a second and a half later; while nobody owns the car nothing is sent
+    -- to pile up for the next; and the next is sent it the pass they come.
+    heldThenDropped()
+    for _ = 1, 6 do tick() end           -- the first look
+    local off = rpcsFor(CAR, false)
+    ok(#off == 1 and off[1].owner == 2, 'the first look sends it to the owner', #off)
+    W.owner[CAR] = 5
+    tick()
+    off = rpcsFor(CAR, false)
+    ok(#off == 2 and off[2].owner == 5, 'a new owner: sent it on the next pass', #off)
+    W.owner[CAR] = -1
+    for _ = 1, 12 do tick() end
+    ok(#rpcsFor(CAR, false) == 2, 'nobody owning it: three seconds with nothing sent',
+       #rpcsFor(CAR, false))
+    W.owner[CAR] = 7
+    tick()
+    off = rpcsFor(CAR, false)
+    ok(#off == 3 and off[3].owner == 7, 'and the next owner is sent it the pass they come', #off)
+    -- THE CAR GONE: nothing left to unfreeze, and nothing left to watch.
+    W.exists[CAR] = nil
+    for _ = 1, 8 do tick() end
+    ok(#rpcsFor(CAR, false) == 3 and JC.stats().queued == 0, 'a car that is gone ends its watch')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1698,15 +1788,22 @@ do
        'and not one message to the match, nor one RPC', ('%d, %d'):format(#events(BR.Net.FUEL_CAN), #rpcs))
     ok(fillAt(1, slot) == nil and BR.Fuel.stats().pours == 0, 'the can and the tank untouched')
 
-    -- A POUR DONE ON ITS FIRST SLICE never held, so it tells nobody either: a
-    -- sliver of room, 60 m, poured whole in its one 250 ms pass.
+    -- A POUR DONE ON ITS FIRST SLICE never held, so it sends no FUEL_CAN either
+    -- -- only the start cue that slice paid for, to the pourer and whoever rides
+    -- in the car: a sliver of room, 60 m, poured whole in its one 250 ms pass.
     slot = scene({ burn = 60 })
+    seat(2, CAR, -1)
+    tick(0)
+    sent = {}
     press(1, slot, NET)
     ok(inv(1).using and inv(1).using.ms == 250, 'a 60 m pour is one pass long')
     tick()
     ok(inv(1).using == nil and JC.stats().completions == 1, 'and done on its first slice')
     ok(BR.Fuel.stats().pours == 1 and near(BR.Fuel.left(NET), TANK, 1e-6), 'the tank full')
     ok(#events(BR.Net.FUEL_CAN) == 0 and #rpcs == 0, 'no hold was sent, so no end and no unfreeze')
+    local cued = targets(BR.Net.FUEL_SFX, function(p) return p.c == 'fuel.start' and p.n == NET end)
+    ok(cued[1] == 1 and cued[2] == 1 and cued[3] == nil and cued[4] == nil and cued[9] == nil,
+       'only the start cue it paid for: to the pourer and the driver, once each, and nobody else')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1832,6 +1929,37 @@ do
        'a pour\'s end, which moves nothing but the fill, changes the signature')
     ok(invSig and invSig(after) == invSig(BR.Inv.publicFor(1)),
        'and the same bag signs the same, so the dedupe still holds')
+
+    -- ...AND A POUR SIGNS ONE CHANGE, NOT ONE A SLICE. The feed runs that
+    -- signature over publicFor four times a second, and a fill that moved with
+    -- the slices sent a spectator watching a pourer the whole bag on every
+    -- pass of the pour, while the pourer's own plate moved once (#217's second
+    -- review). While a pour runs, every push carries the fill it started from;
+    -- its end carries what is left.
+    slot = scene({ burn = 750 })
+    local sig, changes, during, pushed = invSig(BR.Inv.publicFor(1)), 0, {}, nil
+    press(1, slot, NET)
+    for i = 1, 12 do
+        tick()
+        local p = BR.Inv.publicFor(1)
+        if inv(1).using ~= nil then during[#during + 1] = p.slots[slot].fill end
+        if i == 3 then
+            sent = {}
+            BR.Inv.push(1)
+            local set = events(BR.Net.INV_SET, 1)
+            pushed = set[#set] and set[#set].slots[slot] and set[#set].slots[slot].fill
+        end
+        local now = invSig and invSig(p) or ''
+        if now ~= sig then changes, sig = changes + 1, now end
+    end
+    ok(inv(1).using == nil and near(fillAt(1, slot), 0.6, 1e-9),
+       'a pour into a car at 90%: done, with 0.6 left in the can', fillAt(1, slot))
+    ok(changes == 1, 'and the spectator\'s signature changed once over the whole pour, at its end', changes)
+    local still = #during >= 6
+    for _, f in ipairs(during) do still = still and f == 1 end
+    ok(still, 'every pass of it carried the fill it started from', table.concat(during, ','))
+    ok(pushed == 1, 'and so did a push to the pourer in the middle of it', tostring(pushed))
+    ok(BR.Inv.publicFor(1).slots[slot].fill == 0.6, 'the end carries what is left')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -2049,6 +2177,73 @@ do
     ok(src ~= nil and sha1('blob ' .. #src .. '\0' .. src) == '66317a53ead28471d6f4ee1dc3941b57bc1ee9f5',
        'and it is upstream\'s Jerry Can.png byte for byte (git blob 66317a53...)')
     ok(src ~= nil and built == src, 'and the build copied it unchanged')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('P. the playtest, by brfueltank')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- docs/running.md's playtest, step for step, on the real files, and with its
+-- own numbers -- none of which needs any driving, which is what the command is
+-- for. Sit in a car, `brfueltank <id> <percent>`, get out, pour:
+--
+--   steps 2-6  a car at 10% takes a full can and reads 35%; the can is gone
+--   step 7     a car at 90% takes 10%, and the can keeps 0.6
+--   step 8     that can into a car at 85.1%: it keeps a sliver, sent as such
+--   step 9     a dirt bike at 70% ends full and the can keeps 0.7; one at 0
+--              takes a whole full can
+do
+    local function console(...)
+        logs = {}
+        commands.brfueltank(0, { ... })
+        return table.concat(logs, '\n')
+    end
+    --- From a seat, `brfueltank 1 <pct>`; out again (the #4006 stale read left
+    --- naming the car when `stale`); then the can poured to its end.
+    local function setAndPour(slot, pct, stale)
+        seat(1, CAR, -1)
+        local out = console('1', pct)
+        unseat(1, CAR, stale)
+        tick()
+        press(1, slot, NET)
+        for _ = 1, 30 do
+            if inv(1).using == nil then break end
+            tick()
+        end
+        return out
+    end
+    BR.Server.devMode = true
+
+    local slot = scene({ burn = 0 })
+    ok(BR.Fuel.space(NET, MATCH) == nil, 'a car nobody has sat in is not in the ledger: a can would be refused')
+    local out = setAndPour(slot, '10')
+    ok(out:find('750 of 7500 m', 1, true) ~= nil, '`brfueltank 1 10` from its seat: the car at 10%', out)
+    ok(near(BR.Fuel.left(NET) / TANK, 0.35, 1e-9), 'a full can poured in from outside it: 10% becomes 35%',
+       BR.Fuel.left(NET) / TANK)
+    ok(inv(1).slots[slot] == false, 'and the can, empty, leaves the bag')
+
+    slot = scene({ burn = 0 })
+    setAndPour(slot, '90')
+    ok(BR.Fuel.left(NET) == TANK and near(fillAt(1, slot), 0.6, 1e-9),
+       'a car at 90%: 10% goes in, and the can keeps 0.6', fillAt(1, slot))
+    setAndPour(slot, '85.1', true)
+    ok(BR.Fuel.left(NET) == TANK, 'that can into a car at 85.1%: full', BR.Fuel.left(NET))
+    ok(near(fillAt(1, slot), 0.6 - 0.149 * TANK / 1875, 1e-9),
+       'and the can keeps the few meters it had no room for', fillAt(1, slot))
+    local pushed = events(BR.Net.INV_SET, 1)
+    local last = pushed[#pushed] and pushed[#pushed].slots[slot]
+    ok(last and last.fill == 0.004, 'its plate is sent 0.004: a sliver, never an empty can',
+       last and last.fill)
+
+    slot = scene({ model = 'sanchez', burn = 0 })
+    setAndPour(slot, '70', true)
+    ok(BR.Fuel.left(NET) == TANK, 'a dirt bike at 70%: the can fills it to 100', BR.Fuel.left(NET))
+    ok(near(fillAt(1, slot), 0.7, 1e-9), 'and keeps the 70% the tank had no room for', fillAt(1, slot))
+    slot = scene({ model = 'sanchez', burn = 0 })
+    setAndPour(slot, '0')
+    ok(BR.Fuel.left(NET) == TANK and inv(1).slots[slot] == false,
+       'one set to 0: a full can fills it, and is gone')
+    BR.Server.devMode = false
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

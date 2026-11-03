@@ -164,8 +164,9 @@ end
 
 local carryMaxOf = BR.Inv.carryMax
 
---- A jerry can's fill as the wire carries it (#217): to a thousandth, and
---- NEVER 0 FOR A CAN THAT IS STILL IN THE BAG.
+--- A jerry can's fill as the wire carries it (#217): to a thousandth, NEVER 0
+--- FOR A CAN THAT IS STILL IN THE BAG, and WHILE IT POURS, THE FILL THE POUR
+--- STARTED FROM.
 ---
 --- The server keeps a can until its fill is at or below `emptyBelow`, a
 --- millionth of a can, so a pour whose room fell within a thousandth of what
@@ -174,10 +175,20 @@ local carryMaxOf = BR.Inv.carryMax
 --- and refusing the next can they find (#217's review). So a can with anything
 --- left in it is at least 0.001 on the wire, and 0 is said only of a can the
 --- server itself would call empty.
+---
+--- THE POUR'S `fill0` WHILE IT RUNS. Each slice writes the server's own number,
+--- four times a second, and server/spectate.lua signs this payload on every
+--- pass of its feed: a fill that moved with the slices sent a spectator who
+--- watched a pourer the whole bag four times a second, while the pourer's own
+--- plate moved once (#217's second review). So the wire's fill moves when a
+--- pour ends -- every ending clears the channel before its push -- for the
+--- pourer and a watcher alike, and the use-progress bar is what shows the pour
+--- as it runs.
 --- @param s table  a can's slot
+--- @param pour table|nil  the channel's pour, when it is pouring from this slot
 --- @return number
-local function canFill(s)
-    local f = BR.JerryCanSolve.fillOf(s)
+local function canFill(s, pour)
+    local f = pour and tonumber(pour.fill0) or BR.JerryCanSolve.fillOf(s)
     if BR.JerryCanSolve.empty(f) then return 0 end
     return math.max(0.001, math.floor(f * 1000 + 0.5) / 1000)
 end
@@ -189,6 +200,7 @@ function BR.Inv.publicFor(src)
     local inv = BR.Inv.of(src)
     if not inv then return nil end
 
+    local u = inv.using
     local slots = {}
     for i = 1, SLOTS do
         local s = inv.slots[i]
@@ -196,6 +208,7 @@ function BR.Inv.publicFor(src)
             and BR.Config.WeaponById[s.item] or nil
         local c = (s and s.kind == BR.ItemKind.CONSUMABLE)
             and BR.Config.ConsumableById[s.item] or nil
+        local pour = (u and u.slot == i and type(u.pour) == 'table') and u.pour or nil
         slots[i] = s and {
             id     = s.item,
             label  = BR.LootLabel(s),
@@ -213,9 +226,9 @@ function BR.Inv.publicFor(src)
             -- dev verb gave with no fill included -- and on no other slot.
             -- Rounded to a thousandth, and never 0 while there is any left
             -- (canFill); the server keeps the exact number on the slot. It
-            -- moves on the wire when a pour ends and at every other push,
-            -- never per slice.
-            fill   = (c and c.refuel) and canFill(s) or nil,
+            -- moves on the wire when a pour ends, never per slice: while one
+            -- runs from this slot, every push sends the fill it started from.
+            fill   = (c and c.refuel) and canFill(s, pour) or nil,
         } or false
     end
 

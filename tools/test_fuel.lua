@@ -28,8 +28,11 @@ function GetConvar(_, d) return d end
 function GetCurrentResourceName() return 'br_core' end
 function RegisterNetEvent() end
 
-local commands = {}
-function RegisterCommand(name, fn) commands[name] = fn end
+local commands, restrictedOf = {}, {}
+function RegisterCommand(name, fn, restricted)
+    commands[name] = fn
+    restrictedOf[name] = restricted
+end
 
 -- ---------------------------------------------------------------------------
 -- The world
@@ -2901,6 +2904,152 @@ do
     end
     ok(found == '  pours 0 (0 m), refused 0, canceled -',
        'brfuel prints the pours, the meters, the refusals and the can\'s cancels', found)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('brfueltank')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A PLAYTEST'S TANK, TYPED (#217): `brfueltank <serverId> <percent>` sets the
+-- tank of the car that player sits in, any seat, to that percent. A tank
+-- otherwise moves only by being driven, 75 m a percent, so every playtest of a
+-- part-used jerry can began with kilometers of driving.
+do
+    -- server/vehicles.lua's reading of "sitting in it", which this suite does
+    -- not load (it brings a sampler of its own): the vehicle the ped's own read
+    -- names, settled by that vehicle's seats -- so a #4006 stale read of a car
+    -- the player has got out of answers nothing.
+    BR.Vehicles = {
+        EVERY_SEAT = 15,
+        ridingIn = function(ped, seats)
+            local veh = pedVeh[ped] or 0
+            if veh == 0 then return nil end
+            local s = vehSeat[veh] or {}
+            if s[-1] == ped then return veh end
+            for i = 0, (seats or 8) - 1 do
+                if s[i] == ped then return veh end
+            end
+            return nil
+        end,
+    }
+    BR.Server = { devMode = true }
+    local cmd = commands.brfueltank
+    ok(type(cmd) == 'function', 'brfueltank is registered')
+    ok(restrictedOf.brfueltank == true,
+       'restricted -- the console, or an admin holding br.admin: brgive\'s boundary, never a player\'s')
+
+    --- Run it as the console would, answering everything it printed.
+    local function run(...)
+        local lines = {}
+        local was = print
+        print = function(l) lines[#lines + 1] = tostring(l) end
+        cmd(0, { ... })
+        print = was
+        return table.concat(lines, '\n')
+    end
+
+    --- Match 7: player 1 driving car 500 (network id 900), player 2 in its
+    --- back seat, player 3 on foot beside it. Nobody has driven it yet.
+    local function car()
+        reset()
+        enrol(1, 1001, 7)   -- spelling-ok: the suite's own helper
+        enrol(2, 1002, 7)   -- spelling-ok: the suite's own helper
+        enrol(3, 1003, 7)   -- spelling-ok: the suite's own helper
+        makeVehicle(500, 900, 0.0, 0.0)
+        seat(1, 500, -1)
+        seat(2, 500, 1)
+    end
+
+    -- OUTSIDE DEV MODE, NOTHING: not the ledger, not the wire.
+    car()
+    BR.Server.devMode = false
+    local out = run('1', '10')
+    ok(out:find('dev-mode only', 1, true) ~= nil, 'outside dev mode it refuses, and says why', out)
+    ok(BR.Fuel.stats().tracked == 0 and #sent == 0, 'and admits nothing and sends nothing')
+    BR.Server.devMode = true
+
+    -- A CAR NOBODY HAS DRIVEN: admitted, then set, and everybody in it told.
+    car()
+    out = run('1', '10')
+    ok(BR.Fuel.stats().tracked == 1 and BR.Fuel.stats().admitted == 1,
+       'a car the ledger was not tracking is admitted', out)
+    ok(near(BR.Fuel.left(900), TANK * 0.10, 1e-9), 'and set to 10% of the tank: 750 m', BR.Fuel.left(900))
+    ok(near(BR.Fuel.space(900, 7), TANK * 0.90, 1e-9),
+       'in the player\'s own match, so a can sees 90% of room', BR.Fuel.space(900, 7))
+    local s1, s2 = lastSet(1), lastSet(2)
+    ok(s1 and s1.n == 900 and near(s1.f, 0.10, 1e-9) and s1.m == 750,
+       'the driver is pushed the new level at once', s1 and s1.f)
+    ok(s2 and s2.n == 900 and near(s2.f, 0.10, 1e-9), 'and so is the rider in the back')
+    ok(lastSet(3) == nil, 'and nobody outside the car')
+    ok(s1 and s1.r == nil and s2 and s2.r == nil, 'with no `r` on either: it repairs nothing')
+    ok(out:find('car 900', 1, true) and out:find('750 of 7500 m', 1, true)
+       and out:find('untracked until now', 1, true) and out:find('pushed to 1, 2', 1, true),
+       'and it prints what it did: the car, the meters, that it was untracked, who was told', out)
+
+    -- ANY SEAT: the rider in the back names the same car...
+    out = run('2', '55')
+    ok(near(BR.Fuel.left(900), TANK * 0.55, 1e-9) and BR.Fuel.stats().admitted == 1,
+       'from the back seat: the same car, and no second row', BR.Fuel.left(900))
+    ok(out:find('was 750 m', 1, true) ~= nil and out:find('untracked', 1, true) == nil,
+       'and it says what the tank was', out)
+    -- ...AND THE BACK OF A BUS: seat 12, past the cabin's eight, is a seat.
+    unseat(2, 500)
+    seat(2, 500, 12)
+    out = run('2', '40')
+    ok(near(BR.Fuel.left(900), TANK * 0.40, 1e-9),
+       'from seat 12 at the back of a bus too: every seat is walked', out)
+    ok(lastSet(2) and near(lastSet(2).f, 0.40, 1e-9), 'and that rider is told')
+
+    -- 0 AND 100: a dry tank, and a full one.
+    run('1', '0')
+    ok(BR.Fuel.left(900) == 0 and lastSet(1).f == 0, '0 runs it dry, and the driver is told', BR.Fuel.left(900))
+    run('1', '100')
+    ok(BR.Fuel.left(900) == TANK and lastSet(1).f == 1, '100 fills it', BR.Fuel.left(900))
+    run('1', '12.5')
+    ok(near(BR.Fuel.left(900), TANK * 0.125, 1e-9), 'and a fraction of a percent is taken as typed')
+
+    -- THE LEVEL AND NOTHING ELSE. The car has rolled 100 m since the sampler
+    -- last saw it: set it to 50%, and the next sample still charges those
+    -- 100 m. A command that moved the position or the time the sampler
+    -- measures from would have forgiven them.
+    car()
+    tick()                                       -- admitted by the sampler
+    fakeTime = fakeTime + 10000
+    moveVehicle(500, 100.0, 0.0)
+    run('1', '50')
+    tick()
+    ok(near(BR.Fuel.left(900), TANK * 0.5 - 100.0, 0.01),
+       'the next sample charges the 100 m the car rolled, from the new level', BR.Fuel.left(900))
+    ok(BR.Fuel.stats().admitted == 1, 'and a tracked car is never admitted twice')
+
+    -- REFUSED, AND NOTHING CHANGES.
+    car()
+    for _, bad in ipairs({ {}, { '1' }, { '1', '-1' }, { '1', '101' }, { '1', 'lots' },
+                           { 'one', '10' }, { '1', 'nan' } }) do
+        out = run(table.unpack(bad))
+        ok(out:find('usage', 1, true) ~= nil,
+           ('`brfueltank %s` prints its usage'):format(table.concat(bad, ' ')), out)
+    end
+    out = run('3', '10')
+    ok(out:find('not sitting in a vehicle', 1, true) ~= nil, 'a player on foot: refused', out)
+    unseat(1, 500)
+    pedVeh[1001] = 500                           -- #4006: the read still names the car
+    out = run('1', '10')
+    ok(out:find('not sitting in a vehicle', 1, true) ~= nil,
+       'a player who got out, whose stale GetVehiclePedIsIn still names the car: refused (#4006)', out)
+    out = run('9', '10')
+    ok(out:find('no roster entry', 1, true) ~= nil, 'an id nobody has: refused', out)
+    roster[2].state = BR.PlayerState.DBNO
+    out = run('2', '10')
+    ok(out:find('not live in a match', 1, true) ~= nil, 'a player who is not live in a match: refused', out)
+    roster[2].state = BR.PlayerState.ALIVE
+    BR.Config.Fuel.enabled = false
+    out = run('2', '10')
+    ok(out:find('fuel is off', 1, true) ~= nil, 'with fuel switched off: refused', out)
+    BR.Config.Fuel.enabled = true
+    ok(BR.Fuel.stats().tracked == 0 and #sent == 0, 'and not one of them touched the ledger or the wire',
+       ('%d tracked, %d sent'):format(BR.Fuel.stats().tracked, #sent))
+    BR.Vehicles, BR.Server = nil, nil
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

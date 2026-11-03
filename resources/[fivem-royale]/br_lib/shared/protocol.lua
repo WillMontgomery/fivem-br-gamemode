@@ -775,14 +775,15 @@ BR.Net = {
     -- that does not finish the pour, sent beside the server's freeze -- the
     -- first the match hears of it -- and the END, when a pour that sent its
     -- hold ends, whichever way it does. NOTHING GOES AT THE PRESS: that first
-    -- slice is the first one paid for, so a pour cut short before it, or done
-    -- on it, sends nobody anything (server/jerrycan.lua's settle window). A
-    -- hold makes or refreshes the record for that `id` with a deadline of its
-    -- arrival plus `ms` plus BR.Config.Fuel.jerryCan.releaseGraceMs, and an end
-    -- or the deadline lets it go -- so a client that missed the end still lets
-    -- go by itself. (A client still records a message whose `hold` is false,
-    -- and holds no engine for it: the start the press sent before #217's
-    -- review.)
+    -- slice is the first one paid for, so a pour cut short before it sends
+    -- nobody anything, and one done on it sends no FUEL_CAN -- only the pump's
+    -- start cue, to the pourer and the car's riders (server/jerrycan.lua's
+    -- settle window). A hold makes or refreshes the record for that `id` with a
+    -- deadline of its arrival plus `ms` plus
+    -- BR.Config.Fuel.jerryCan.releaseGraceMs, and an end or the deadline lets
+    -- it go -- so a client that missed the end still lets go by itself. A
+    -- message that is neither a hold nor an end is one no server sends, and a
+    -- client drops it.
     --
     -- TO EVERY ROSTER ENTRY IN THE POUR'S MATCH, in any state -- spectators and
     -- the downed see the can in the pourer's hand too -- and to nobody outside

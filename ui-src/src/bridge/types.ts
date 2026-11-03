@@ -447,8 +447,10 @@ export interface InvSlot {
    *  and a hand-mirrored copy would go stale the first time a gun is added. */
   pool?: string
   /** A jerry can's fill (#217): the fraction of one can still in it, 0..1,
-   *  rounded to 3 decimals by the server. Present on every can slot, absent on
-   *  every other slot. hud/FuelGauge.tsx draws it on both plates. */
+   *  rounded to 3 decimals by the server and never 0 while any is left; while
+   *  a pour runs from the slot, the fill that pour started from. Present on
+   *  every can slot, absent on every other slot. hud/FuelGauge.tsx draws it on
+   *  both plates, never empty while it is above 0 (hud/gaugeShare.ts). */
   fill?: number
 }
 

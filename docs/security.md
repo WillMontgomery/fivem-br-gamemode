@@ -396,7 +396,11 @@ is the owner's last sync, up to a second stale, so it decides nothing.
 on the first slice after the settle, which pays for it; a tank within 0.5% of
 full refuses the press; and every second a car is held is a second of the
 griefer's own fuel poured into its tank -- at most a full can's five seconds per
-can. The car's owner can get out, or shoot: an enemy's hit ends the pour.
+can. The car's owner can get out, or shoot: an enemy's hit ends the pour. And
+the hold ends with the pour, however it ends: every client unfreezes its own
+copy at the end, and the server watches the car until it reads it free, sending
+the unfreeze again to whoever owns it -- so a press made just to be cut short
+cannot leave behind a car that stays frozen.
 
 **A press that pays nothing sends nothing.** `FUEL_CAN` waits for that same
 first slice: its hold is the first the match hears of a pour, and its end goes

@@ -271,10 +271,11 @@ end
 
 --- Start tracking a vehicle, full.
 ---
---- ADMISSION HAPPENS IN EXACTLY ONE PLACE -- the sampler, which requires a
---- player to actually be sitting in the thing. Deliberately NOT from the client
---- ask handler: a client that could admit rows would be a client that could
---- grow this table from the wire, one message per made-up network id.
+--- ADMISSION ALWAYS HAS A PLAYER SITTING IN THE THING: the sampler, and on a
+--- dev box `brfueltank`, which sets the tank of the car a player sits in.
+--- Deliberately NOT from the client ask handler: a client that could admit
+--- rows would be a client that could grow this table from the wire, one
+--- message per made-up network id.
 --- @param netId integer
 --- @param x number
 --- @param y number
@@ -1055,4 +1056,108 @@ RegisterCommand('brfuel', function()
     print(('  pours %d (%.0f m), refused %d, canceled %s')
         :format(s.pours, s.pourMeters, s.pourRefused,
                 js and tostring(js.canceled) or '-'))
+end, true)
+
+--- `brfueltank <serverId> <percent>`: the tank of the car that player sits
+--- in, set to that percent of `tankMetres`. A PLAYTEST'S TOOL (#217).
+---
+--- A tank moves only by being driven -- 75 m for each 1% of it -- so every
+--- playtest of a part-used jerry can, a car at 90% or a dirt bike at 30%,
+--- began with kilometers of driving. This is that driving, typed.
+---
+--- ═══ WHAT IT DOES, AND WHAT IT LEAVES ALONE ═══
+---
+---   ANY SEAT, read by the vehicle's own seats (BR.Vehicles.ridingIn, every
+---     one of them), never server GetVehiclePedIsIn, which answers the last
+---     car a ped sat in (citizenfx/fivem#4006).
+---   A CAR THE LEDGER IS NOT TRACKING IS ADMITTED, full, in that player's match
+---     and where it stands, and then set: a player is sitting in it, which is
+---     the only admission there is (admit()'s note).
+---   THE LEVEL AND NOTHING ELSE. `x`, `y` and `at` stay where the sampler put
+---     them, so the next drain charges what the car really drove; `seen` and
+---     `matchId` are stamped as the sampler would stamp them for a player in
+---     the seat.
+---   EVERY OCCUPANT IS PUSHED the new level at once, as the pump pushes its
+---     driver -- and with no fifth argument, so it repairs nothing.
+---
+--- ═══ NOT A PATH A PLAYER CAN REACH ═══
+---
+--- Dev mode, and registered restricted: brgive's two gates, for brgive's
+--- reason (server/debug.lua's devOnly) -- the server console, or an admin
+--- holding br.admin, on a dev box. The public box refuses it before it reads
+--- an argument.
+RegisterCommand('brfueltank', function(_, args)
+    if not (BR.Server and BR.Server.devMode) then
+        print('  brfueltank is dev-mode only. Start the server with br_devMode true '
+            .. '(or sv_devMode true) to use it.')
+        return
+    end
+    local tank = tonumber(F.tankMetres) or 0.0
+    local src = math.tointeger(tonumber(args and args[1]))
+    local pct = tonumber(args and args[2])
+    if src == nil or pct == nil or pct ~= pct or pct < 0.0 or pct > 100.0 then
+        print('  usage: brfueltank <serverId> <percent>')
+        print('    Sets the tank of the car that player sits in, any seat, to that')
+        print(('    percent (0 to 100) of the %.0f m tank: %.0f m a percent.')
+            :format(tank, tank / 100.0))
+        return
+    end
+    if not enabled() then
+        print('  brfueltank: fuel is off (BR.Config.Fuel.enabled), so there is no tank to set')
+        return
+    end
+    local e = BR.Roster.get(src)
+    if not e then
+        print(('  no roster entry for %d'):format(src))
+        return
+    end
+    if not LIVE[e.state] or e.matchId == nil then
+        print(('  %d is not live in a match: the ledger keeps the tanks of match cars alone')
+            :format(src))
+        return
+    end
+    local riding = BR.Vehicles and BR.Vehicles.ridingIn
+    local veh = riding and riding(e.ped, BR.Vehicles.EVERY_SEAT) or nil
+    if veh == nil then
+        print(('  %d is not sitting in a vehicle'):format(src))
+        return
+    end
+    local okN, nid = pcall(NetworkGetNetworkIdFromEntity, veh)
+    nid = okN and math.tointeger(tonumber(nid)) or nil
+    if nid == nil or nid == 0 then
+        print('  that vehicle is not networked, and the ledger keys on network ids')
+        return
+    end
+
+    local now = GetGameTimer()
+    local rec, admitted = tanks[nid], false
+    if rec == nil then
+        local x, y = coordsOf(veh)
+        if x == nil then
+            print('  that vehicle has no position to admit it at')
+            return
+        end
+        rec, admitted = admit(nid, x, y, now, e.matchId), true
+    end
+    local was = rec.left
+    rec.left = BR.FuelSolve.clamp(tank * pct / 100.0, tank)
+    rec.seen = now
+    rec.matchId = e.matchId
+
+    local told = {}
+    BR.Roster.each(function(o)
+        return LIVE[o.state] == true and o.matchId == e.matchId
+    end, function(osrc, o)
+        if riding(o.ped, BR.Vehicles.EVERY_SEAT) == veh then
+            pushTo(osrc, nid, rec.left, true)
+            told[#told + 1] = math.tointeger(tonumber(osrc)) or osrc
+        end
+    end)
+    table.sort(told, function(a, b) return (tonumber(a) or 0) < (tonumber(b) or 0) end)
+    for i, t in ipairs(told) do told[i] = tostring(t) end
+    print(('[br_core] brfueltank: car %d, where %s (%d) sits: %.0f of %.0f m, %g%% -- was %.0f m%s; '
+        .. 'pushed to %s')
+        :format(nid, tostring(e.name or src), src, rec.left, tank, pct, was,
+                admitted and ', untracked until now' or '',
+                #told > 0 and table.concat(told, ', ') or 'nobody'))
 end, true)

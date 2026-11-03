@@ -1,4 +1,5 @@
 import type { InvSlot } from '../bridge/types'
+import { gaugeShare } from './gaugeShare'
 
 /**
  * A JERRY CAN'S FILL, ON ITS PLATE (#217).
@@ -14,6 +15,11 @@ import type { InvSlot } from '../bridge/types'
  * no new string: the plate already says what the item is, and this says only
  * how much of it is left.
  *
+ * NEVER EMPTY WHILE THE CAN HOLDS ANYTHING. The height is hud/gaugeShare.ts's:
+ * the fill, but at least a sliver of the gauge for any fill above 0 -- a
+ * thousandth drawn as it is would be a twentieth of a pixel, and a can that
+ * looks empty still takes the one place a player may carry one.
+ *
  * THE VARIABLE, NOT A HEX (#392), as everywhere else on a plate: the slot's
  * own --rarity-N, so the colorblind modes repaint the gauge with the band and
  * the pips. The track is the one the use-progress bar runs on (black at 60%),
@@ -26,8 +32,9 @@ import type { InvSlot } from '../bridge/types'
  * used.
  *
  * NO ANIMATION. The server moves `fill` on the wire when a pour ends, not per
- * slice, so it changes once per pour, and the use-progress bar has already
- * shown that pour as it ran. A transition here would only replay it.
+ * slice -- while one runs, every push carries the fill it started from -- so it
+ * changes once per pour, and the use-progress bar has already shown that pour
+ * as it ran. A transition here would only replay it.
  *
  * WHERE IT STANDS IS THE CALLER'S. The HUD bar's plate and the TAB panel's
  * card keep different furniture in their corners -- the slot number, the bevel
@@ -40,16 +47,12 @@ export default function FuelGauge({ slot, className }: {
   className: string
 }) {
   if (slot.fill == null) return null
-  // Clamped, and a value that is not a number reads as empty rather than as a
-  // height CEF would drop. The server sends 0..1 to 3 decimals, so neither
-  // should ever come up.
-  const fill = Number.isFinite(slot.fill) ? Math.min(1, Math.max(0, slot.fill)) : 0
   return (
     <div className={`absolute w-[0.2rem] bg-black/60 ${className}`}>
       <div
         className="absolute bottom-0 left-0 right-0"
         style={{
-          height: `${Math.round(fill * 1000) / 10}%`,
+          height: `${Math.round(gaugeShare(slot.fill) * 1000) / 10}%`,
           backgroundColor: `var(--rarity-${slot.rarity})`,
         }}
       />

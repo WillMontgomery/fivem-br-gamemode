@@ -145,10 +145,12 @@ end
 ---
 --- IT COVERS WHAT THE BAR DRAWS AND NOTHING ELSE: the five slots' item, count,
 --- clip and a jerry can's fill (#217 -- the gauge on its plate, which moves when
---- a pour ends), the ammo pools, and which slot is in hand. `using` is
---- deliberately excluded -- its `endsAt` is a timestamp that changes on every
---- tick of a bandage, which would defeat the dedupe entirely and resend the
---- whole payload 4 Hz for the duration of every heal.
+--- a pour ends: BR.Inv.publicFor sends the fill a pour started from for as long
+--- as it runs, so a pour signs one change here, not one a slice), the ammo
+--- pools, and which slot is in hand. `using` is deliberately excluded -- its
+--- `endsAt` is a timestamp that changes on every tick of a bandage, which would
+--- defeat the dedupe entirely and resend the whole payload 4 Hz for the
+--- duration of every heal.
 --- @param p table|nil  a BR.Inv.publicFor result
 --- @return string
 local function invSig(p)
