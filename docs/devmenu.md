@@ -21,7 +21,7 @@ volts, give Yubikeys, Storm pause, warmup pause, spawn airdrops"*
 | **The server** | `br_core/server/devmenu.lua` (`BR.DevMenu`) | The door, `brdevsv`: the gate, the checks, the rate, the console verb each row runs, and the vehicle spawner's seat. |
 | **The spawn** | `br_core/server/vehicles.lua` (`BR.Vehicles.spawnInFront`) | `brcar`'s own server-side spawn, which the vehicle spawner runs too. Dev mode only, and called from those two places only. |
 | **The exemption** | `br_core/server/vehicles.lua` (`BR.Vehicles.exemptDevMenuVehicle`), and a state bag for `client/vehrefuse.lua` | The server's in-memory record of what the vehicle spawner built, which the vehicle detectors skip, and the hint that stops the client's ejection and gun hold. A dev box only, on both sides. |
-| **The game's own models** | `br_lib/config/vehicle_models.lua` (`BR.Config.VehicleModels`), written by `tools/vehicle_models.py` | Every base-game vehicle model: its hash, the sync tree it has to be built as, how far it reaches across and below its origin, and whether the game's data arms it. The spawn's tree check and placement; `check_vehicles.lua`'s expected Armed set. Server only. |
+| **The game's own models** | `br_lib/config/vehicle_models.lua` (`BR.Config.VehicleModels`), written by `tools/vehicle_models.py` | Every base-game vehicle model: its hash, the sync tree it has to be built as, how far it reaches across and below its origin, and whether the game's data arms it (the plain Insurgent's listed turret aside: its model has none). The spawn's tree check and placement; `check_vehicles.lua`'s expected Armed set. Server only. |
 | **The game's vehicle weapons** | `br_lib/config/vehicle_weapons.lua` (`BR.Config.VehicleWeapons`, `BR.Config.VehicleWeaponByHash`), written by the same tool | Every vehicle weapon the game's data lists on any model, the searchlight, the radar and the water cannon among them. The only weapons a dev menu vehicle's gun is excused for. Shared: the client's strip asks it too. |
 
 ## Who
@@ -129,16 +129,21 @@ CREATE_VEHICLE_SERVER_SETTER").
 
 **"Armed"** is a right-hand label in GTA's red (`~HC_6~`, HUD_COLOUR_RED --
 an index into the engine's palette, never the project's cyan or gold), on the
-models `BR.Config.IsArmedVehicle` names -- 125 of them: every ARMED row of the
-refused-vehicle table (which includes every model `IsDisarmedVehicle` names),
-every TANK row, every FLIES row marked `armed = true` -- the aircraft and
-fliers whose model the game's vehicle data gives a weapon -- and the 31 armed
-models no row names (`BR.Config.ArmedUnruledVehicles`: the Insurgent Pick-Up,
-the Nightshark, the Speedo Customs, the Terrorbyte, the Weaponized Conada and
-the rest). That last list is data and **rules on nothing**: a match treats
-those vehicles exactly as before -- the fliers refused as aircraft by the type
-and class nets, the rest driven with their guns live -- until the owner rules
-on them in #427. A vehicle in neither the table nor the list is not marked.
+models `BR.Config.IsArmedVehicle` names -- 124 of them, all rows of the
+refused-vehicle table: every ARMED row (which includes every model
+`IsDisarmedVehicle` names), every TANK row, and every FLIES row marked
+`armed = true` -- the aircraft and fliers whose model the game's vehicle data
+gives a weapon. **Every armed model has a row since #427.** Owner, 2026-11-02,
+of the 31 armed models no row named: *"driven with the gun held off - that's
+the verdict."* The 26 that stay on the ground or the water -- the Insurgent
+Pick-Up, the Nightshark, the Speedo Customs, the Terrorbyte and the rest --
+are ARMED rows, driven with their guns held off; the five that fly (the
+third and fourth Avengers, the Weaponized Conada, the Duster 300-H and the
+Titan 250 D) are FLIES rows marked armed, refused as they always were by the
+type and class nets. The plain Insurgent (`insurgent2`) lost the row the
+table had given it in the Pick-Up's place and is not marked: it has no gun.
+`tools/check_vehicles.lua` fails the build on an armed model with no row, and
+a vehicle with no row is not marked.
 
 **Spawn by name** opens GTA's on-screen keyboard, titled with the row's label.
 While it is up the menu reads no key (ScaleformUI's `ProcessControl` stands
@@ -216,8 +221,14 @@ is not loaded, and could not be tried here without a game running.
     py tools/vehicle_models.py <path to vehicles.json> --check  is it current?
 
 921 models: 710 automobile, 67 bike, 22 boat, 35 heli, 43 plane, 4 submarine,
-29 trailer, 11 train; 125 armed. A name the game's hash does not come from is
-refused, and nothing is written. The manifest loads it into the server alone;
+29 trailer, 11 train; 124 armed. A name the game's hash does not come from is
+refused, and nothing is written. **One model is overridden, by name** (#427):
+the data lists the Insurgent Pick-Up's turret on the plain Insurgent
+(`insurgent2`) as well, and its model has no turret to carry it, so the tool
+writes it unarmed -- and refuses a dump that gives that model a bone starting
+`turret_` or `weapon_`, shows it no skeleton, or no longer lists a weapon on
+it, so a newer dump cannot keep the override past its reason
+(`tools/test_vehicle_models.py`). The manifest loads it into the server alone;
 without it the spawn refuses every model and says the table is not loaded.
 The same run writes `config/vehicle_weapons.lua`: the 166 vehicle weapons the
 data lists on any model, each with its hash, joaat of its name. **Neither is
@@ -385,9 +396,9 @@ player never, five seconds and one sentence, dropped quietly when the asker
 dies or leaves, a second vehicle replacing the first) -- and the client over
 a modeled `GetAllVehicleModels`: the class rows, names,
 fallback, sort, rows that share a name told apart by model, and Armed marks
-from the table and the unruled list, the tree every kind of model is asked
-as, the keyboard and every key that closes it, and the library's trail back
-through the submenus, a switch that throws included. The verbs' bodies are
+from the table's rows, the plain Insurgent's not among them (#427), the tree
+every kind of model is asked as, the keyboard and every key that closes it,
+and the library's trail back through the submenus, a switch that throws included. The verbs' bodies are
 covered where their commands are: `test_roster` (force and skip on a given
 match, the one-match warmup pause, and `brcar` itself, every failure line
 under it and its default tree; and the exemption at the detectors: the
@@ -398,8 +409,12 @@ only the hint, and a recorded vehicle's gun canceled and refused nowhere),
 only where it changes something), `test_storm` (the one-match storm pause), `test_airdrop`
 (`dropNow` on a given match), `test_stats` (`grantVolts`'s answers and the
 production-tables refusal), `test_yubikey` (`devKey`, and the same refusal),
-`test_shared`. `tools/check_vehicles.lua` holds the `armed` marks to their
-rule, row by row, and the unruled list to its names, clear of every row, with
-every ruling on its models what it was; re-derives every hash in
-`config/vehicle_models.lua`; and holds the marked set to exactly the 125
-models the game's data arms, naming any it misses or adds.
+`test_shared` (each of #427's twenty-six an ARMED row driven with its gun
+held off, its five fliers refused as FLIES rows marked armed, the plain
+Insurgent an ordinary car). `tools/check_vehicles.lua` holds the `armed`
+marks to their rule, row by row; re-derives every hash in
+`config/vehicle_models.lua`; and holds the rows' armed set to exactly the 124
+models the game's data arms, naming any it misses -- an armed model with no
+row, which is a ruling the owner has not made (#427) -- or adds.
+`tools/test_vehicle_models.py` holds the tool's one override, the plain
+Insurgent, to its reason.

@@ -515,7 +515,7 @@ end
 -- firetruck's hose was the first this project measured -- and in one of those
 -- the seat names no hash to disable. Before #322 that could not happen in an
 -- armed vehicle because nobody was in the seat for longer than a tenth of a
--- second; now they sit there all match, in about sixty models.
+-- second; now they sit there all match, in seventy-five models since #427.
 --
 -- THE CARACARA'S GUN SEAT READS AS THE SECOND (owner, 2026-09-19). The strip
 -- fired on what he was holding there, and `isMountedWeapon` excuses the hand
@@ -585,12 +585,12 @@ end
 ---
 --- `disarm` is called for ANY seat, by design, so the pass where
 --- `GetCurrentPedVehicleWeapon` names nothing is mostly the ORDINARY DRIVER of a
---- Technical, an Insurgent or a Caracara: the gun is in the bed and the driver
---- has no vehicle weapon at all. A counter of "the native named nothing" climbs
---- ten times a second for the whole time anybody drives one normally, which
---- makes it unreadable -- and the first version of this file printed it beside a
---- sentence telling the operator that a climbing number meant a missing table
---- row.
+--- Technical, an Insurgent Pick-Up or a Caracara: the gun is in the bed and the
+--- driver has no vehicle weapon at all. A counter of "the native named nothing"
+--- climbs ten times a second for the whole time anybody drives one normally,
+--- which makes it unreadable -- and the first version of this file printed it
+--- beside a sentence telling the operator that a climbing number meant a
+--- missing table row.
 ---
 --- What the firetruck actually looked like is BOTH HALVES AT ONCE: the vehicle
 --- names no mounted weapon AND the engine has put something in the hand that is
@@ -1579,9 +1579,10 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     end
 
     -- NOR IS AN ALLOWED ONE'S GUN HELD OFF (#426) -- a dev menu Technical, an
-    -- Insurgent -- where this pass would hold it. Asked of the authored table
-    -- first, which is a table read, and after #329's probe only of a vehicle the
-    -- engine calls armed, so an ordinary car never reads the hint.
+    -- Insurgent Pick-Up -- where this pass would hold it. Asked of the
+    -- authored table first, which is a table read, and after #329's probe only
+    -- of a vehicle the engine calls armed, so an ordinary car never reads the
+    -- hint.
     if BR.Config.IsDisarmedVehicle(model) and devMenuHint(veh) then
         exempt(ped, veh, model)
         return

@@ -160,6 +160,15 @@ BR.Config.VehicleRefusal = {
 --- data and is not a weapon, so it marks nothing (the Buzzard2's, the
 --- Maverick's). A bomb bay is a mod the data does not list at all, so an
 --- aircraft whose only weapon is a bomb bay is not marked.
+---
+--- FIVE ARMED FLIERS HAD NO ROW AT ALL UNTIL #427: `avenger3`, `avenger4`,
+--- `duster2`, `titan2` and `conada2`. The type and class nets refused them as
+--- aircraft -- GetVehicleType says plane or heli, the class 16 or 15 -- so a
+--- match rules on each as it did, and the refusal, the toast and the case
+--- still say "vehicle flies". What a row changes is what asks the table
+--- ALONE: `brcar`'s pre-check refuses them now, where it used to build them,
+--- and `brvehicles` stops counting them as aircraft the table missed (which
+--- is what that count asked for).
 local F = BR.Config.VehicleRefusal.FLIES
 local A = BR.Config.VehicleRefusal.ARMED
 local T = BR.Config.VehicleRefusal.TANK
@@ -170,6 +179,8 @@ BR.Config.RefusedVehicles = {
     { name = 'alphaz1',       why = F, hash = 0xA52F6866 },
     { name = 'avenger',       why = F, hash = 0x81BD2ED0, armed = true },
     { name = 'avenger2',      why = F, hash = 0x18606535, armed = true },
+    { name = 'avenger3',      why = F, hash = 0xE68D8190, armed = true },
+    { name = 'avenger4',      why = F, hash = 0xFBDEAC32, armed = true },
     { name = 'besra',         why = F, hash = 0x6CBD1D6D },
     { name = 'blimp',         why = F, hash = 0xF7004C86 },
     { name = 'blimp2',        why = F, hash = 0xDB6B4924 },
@@ -179,6 +190,7 @@ BR.Config.RefusedVehicles = {
     { name = 'cuban800',      why = F, hash = 0xD9927FE3 },
     { name = 'dodo',          why = F, hash = 0xCA495705 },
     { name = 'duster',        why = F, hash = 0x39D6779E },
+    { name = 'duster2',       why = F, hash = 0x05071B2D, armed = true },
     { name = 'howard',        why = F, hash = 0xC3F25753 },
     { name = 'hydra',         why = F, hash = 0x39D6E83F, armed = true },
     { name = 'jet',           why = F, hash = 0x3F119114 },
@@ -202,6 +214,7 @@ BR.Config.RefusedVehicles = {
     { name = 'strikeforce',   why = F, hash = 0x64DE07A1, armed = true },
     { name = 'stunt',         why = F, hash = 0x81794C70 },
     { name = 'titan',         why = F, hash = 0x761E2AD3 },
+    { name = 'titan2',        why = F, hash = 0x3329757E, armed = true },
     { name = 'tula',          why = F, hash = 0x3E2E4F8A, armed = true },
     { name = 'velum',         why = F, hash = 0x9C429B6A },
     { name = 'velum2',        why = F, hash = 0x403820E8 },
@@ -219,6 +232,7 @@ BR.Config.RefusedVehicles = {
     { name = 'cargobob3',     why = F, hash = 0x53174EEF },
     { name = 'cargobob4',     why = F, hash = 0x78BC1A3C },
     { name = 'conada',        why = F, hash = 0xE384DD25 },
+    { name = 'conada2',       why = F, hash = 0x9D1D9872, armed = true },
     { name = 'frogger',       why = F, hash = 0x2C634FBD },
     { name = 'frogger2',      why = F, hash = 0x742E9AC0 },
     { name = 'havok',         why = F, hash = 0x89BA59F5, armed = true },
@@ -248,12 +262,20 @@ BR.Config.RefusedVehicles = {
 
     -- Stays on the ground (or under water) and carries a gun.
     --
-    -- `insurgent` -- the plain one -- IS DELIBERATELY ABSENT. It is armoured and
-    -- has no weapon, and the rule the owner wrote is about built-in weapons, not
-    -- about durability. How much punishment a vehicle takes is #194's question
-    -- and it is unanswered; refusing a model here on a guess at that answer
-    -- would be this file deciding it. The two Pick-Up variants below do have
-    -- turrets and are refused for that.
+    -- `insurgent2` -- the plain Insurgent -- IS DELIBERATELY ABSENT. It is
+    -- armored and has no weapon, and the rule the owner wrote is about built-in
+    -- weapons, not about durability. How much punishment a vehicle takes is
+    -- #194's question and it is unanswered; refusing a model here on a guess at
+    -- that answer would be this file deciding it. The two Pick-Ups carry the
+    -- turret and have rows: `insurgent3`, the Pick-Up Custom, below, and
+    -- `insurgent`, the Insurgent Pick-Up, in the #427 block.
+    --
+    -- THE TABLE HAD THE PAIR THE OTHER WAY ROUND UNTIL #427 -- `insurgent2` an
+    -- ARMED row, the Pick-Up in none -- the shape #322 found in the Caracaras.
+    -- The game's own vehicle data does not help: it lists the Pick-Up's turret
+    -- on `insurgent2` as well, though its model has no turret bone to carry
+    -- one, so tools/vehicle_models.py overrides that one model by name and
+    -- refuses a dump that stops showing why.
     { name = 'apc',           why = A, hash = 0x2189D250 },
     { name = 'barrage',       why = A, hash = 0xF34DFB25 },
     -- ═══ THE CARACARA, AND WHICH OF THE TWO CARRIES THE GUN ═══
@@ -279,22 +301,28 @@ BR.Config.RefusedVehicles = {
     -- and `disarm` in client/vehrefuse.lua says what is switched off in that
     -- case instead.
     --
-    -- THE 4x4 IS ABSENT FOR THE REASON THE PLAIN `insurgent` IS: it has no
+    -- THE 4x4 IS ABSENT FOR THE REASON THE PLAIN `insurgent2` IS: it has no
     -- weapon. Absence is permission here, so it stays for sale in
     -- config/shop.lua as the ordinary car it is.
     { name = 'caracara',      why = A, hash = 0x4ABEBF23 },
     { name = 'chernobog',     why = A, hash = 0xD6BC7523 },
-    -- The Dune FAV, and the only row here whose gun is a WORKSHOP FITTING rather
-    -- than part of the stock model -- machine gun, 40mm grenade launcher or
-    -- 7.62mm minigun, one of the three. `insurgent2` is already here on the same
-    -- footing, and the Arena War block below is thirty-six more of it: on a
-    -- FiveM server the mod slot is one `SetVehicleMod` away, so "can be armed"
-    -- and "is armed" are the same fact. The plain `dune`, `dune2` (Space Docker)
-    -- and the Ramp Buggies have no such slot and are not here.
+    -- The Dune FAV, whose gun is a WORKSHOP FITTING rather than part of the
+    -- stock model -- machine gun, 40mm grenade launcher or 7.62mm minigun, one
+    -- of the three. The Arena War block below is thirty-six more of it, and
+    -- the #427 block has more (the Mule Custom's turret, by the game's own
+    -- flags, is a mod with no stock turret under it): on a FiveM server the
+    -- mod slot is one `SetVehicleMod` away, so "can be armed" and "is armed"
+    -- are the same fact. The plain `dune`, `dune2` (Space Docker) and the Ramp
+    -- Buggies have no such slot and are not here.
+    --
+    -- THE INSURGENTS ARE NOT ON THIS FOOTING, whatever this note once said.
+    -- `insurgent2`, the plain one, has no gun to fit, and `insurgent3`, the
+    -- Pick-Up Custom, is armed as it stands: the game's data gives its stock
+    -- model the Pick-Up's own turret -- the turret_1base, turret_1barrel and
+    -- weapon_1a bones `insurgent` has -- with a minigun beside it.
     { name = 'dune3',         why = A, hash = 0x711D4738 },
     { name = 'halftrack',     why = A, hash = 0xFE141DA6 },
     { name = 'ignus2',        why = A, hash = 0x39085F47 },
-    { name = 'insurgent2',    why = A, hash = 0x7B7E56F0 },
     { name = 'insurgent3',    why = A, hash = 0x8D4B7A8A },
     { name = 'kosatka',       why = A, hash = 0x4FAF0D70, keepRefused = true },
     { name = 'patrolboat',    why = A, hash = 0xEF813606, keepRefused = true },
@@ -309,6 +337,57 @@ BR.Config.RefusedVehicles = {
     { name = 'trailersmall2', why = A, hash = 0x8FD54EBB, keepRefused = true },
     { name = 'vigilante',     why = A, hash = 0xB5EF4C33 },
 
+    -- ═══ #427: THE ARMED MODELS THAT HAD NO ROW ═══
+    --
+    -- THE OWNER'S RULING, VERBATIM (2026-11-02, #427):
+    --
+    --   "driven with the gun held off - that's the verdict."
+    --
+    -- Twenty-six models that stay on the ground or the water and carry a gun,
+    -- each of which a match allowed with its gun live because no row named it:
+    -- twenty-five the game's own vehicle data arms (DurtyFree's vehicles.json,
+    -- build 3717 -- the source `armed` above the table reads), and `insurgent`,
+    -- the Insurgent Pick-Up, which the table had swapped with the plain
+    -- Insurgent. Each is ARMED with no keepRefused, so under #322 it is driven
+    -- with its gun held off -- client/vehrefuse.lua's `disarm`, and the server
+    -- reading its gun as the car's (BR.Vehicles.inDisarmedVehicle) -- rather
+    -- than refused. Some are armed only by a workshop fitting, on the footing
+    -- `dune3` above states.
+    --
+    -- THE ENGINE CHECK (#329) WAS ALREADY HOLDING THESE GUNS OFF wherever the
+    -- engine answered for one. A row is the ruling written down instead: the
+    -- client holds the gun off and the server reads its shots as the car's on
+    -- the table's word, whether or not any client asked the engine. And
+    -- tools/check_vehicles.lua now fails the build on an armed model with no
+    -- row, so the next one is a question for the owner rather than an omission
+    -- nobody notices.
+    { name = 'ardent',        why = A, hash = 0x097E5533 },  -- Ardent: machine gun
+    { name = 'blazer5',       why = A, hash = 0xA1355F67 },  -- Blazer Aqua: cannon
+    { name = 'boxville5',     why = A, hash = 0x28AD20E1 },  -- Armored Boxville: turret
+    { name = 'buffalo4',      why = A, hash = 0xDB0C9B04 },  -- Buffalo STX: machine gun
+    { name = 'champion',      why = A, hash = 0xC972A155 },  -- Champion: machine gun
+    { name = 'comet4',        why = A, hash = 0x5D1903F9 },  -- Comet Safari: machine gun
+    { name = 'deity',         why = A, hash = 0x5B531351 },  -- Deity: machine gun
+    { name = 'dinghy5',       why = A, hash = 0xC58DA34A },  -- Weaponized Dinghy: .50 turret
+    { name = 'granger2',      why = A, hash = 0xF06C29C7 },  -- Granger 3600LX: machine gun
+    { name = 'insurgent',     why = A, hash = 0x9114EADA },  -- Insurgent Pick-Up: turret
+    { name = 'jb7002',        why = A, hash = 0x177DA45C },  -- JB 700W: machine gun
+    { name = 'jubilee',       why = A, hash = 0x1B8165D3 },  -- Jubilee: machine gun
+    { name = 'limo2',         why = A, hash = 0xF92AEC4D },  -- Turreted Limo: turret
+    { name = 'menacer',       why = A, hash = 0x79DD18AE },  -- Menacer: turret, minigun, machine gun
+    { name = 'mule4',         why = A, hash = 0x73F4110E },  -- Mule Custom: machine gun, missiles, grenade launcher
+    { name = 'nightshark',    why = A, hash = 0x19DD9ED1 },  -- Nightshark: machine gun
+    { name = 'paragon2',      why = A, hash = 0x546D8EEE },  -- Paragon R (Armored): machine gun
+    { name = 'patriot3',      why = A, hash = 0xD80F4A44 },  -- Patriot Mil-Spec: machine gun
+    { name = 'pounder2',      why = A, hash = 0x6290F15B },  -- Pounder Custom: minigun, missiles, barrage, grenade launcher
+    { name = 'revolter',      why = A, hash = 0xE78CC3D9 },  -- Revolter: machine gun
+    { name = 'savestra',      why = A, hash = 0x35DED0DD },  -- Savestra: machine gun
+    { name = 'speedo4',       why = A, hash = 0x0D17099D },  -- Speedo Custom: machine gun, turrets
+    { name = 'speedo5',       why = A, hash = 0xFD546A18 },  -- Speedo Custom: machine gun, turrets
+    { name = 'terbyte',       why = A, hash = 0x897AFC65 },  -- Terrorbyte: missiles
+    { name = 'trailerlarge',  why = A, hash = 0x5993F939 },  -- Mobile Operations Center: cannon
+    { name = 'viseris',       why = A, hash = 0xE8A8BA94 },  -- Viseris: machine gun
+
     -- ═══ ARENA WAR, AND WHY IT IS ALL THIRTY-SIX AND NOTHING ELSE ═══
     --
     -- The owner named the DLC by name (2026-08-22, #215): "anything else that
@@ -320,9 +399,10 @@ BR.Config.RefusedVehicles = {
     -- weapon fittings: machine guns, turrets, spike traps, rocket boosters. The
     -- rest of the DLC is ordinary road cars (`clique`, `deveste`, `deviant`,
     -- `italigto`, `rcbandito`, `schlagen`, `toros`, `tulip`, `vamos`), and they
-    -- are DELIBERATELY ABSENT for the reason `insurgent` is: the owner's rule is
-    -- about weapons, not about which DLC a car came in, and refusing an Itali
-    -- GTO because of the badge on its box would ban a car somebody was driving.
+    -- are DELIBERATELY ABSENT for the reason `insurgent2` is: the owner's rule
+    -- is about weapons, not about which DLC a car came in, and refusing an
+    -- Itali GTO because of the badge on its box would ban a car somebody was
+    -- driving.
     --
     -- IN STOCK GTA ONLINE THE CONTENDER GUNS ONLY FIRE INSIDE THE ARENA. That is
     -- a fact about Rockstar's freemode script, not about the model, and it does
@@ -403,7 +483,7 @@ BR.Config.RefusedVehicles = {
 --- NORMALISED ON THE WAY IN, and this is not pedantry -- it is the bug this
 --- project has shipped four times, described at length in BR.NormHash. The
 --- engine reports model hashes SIGNED; the table above authors them positive.
---- Sixty-five of the models above have the top bit set, and unnormalised each of
+--- Eighty of the models above have the top bit set, and unnormalized each of
 --- them would fail to match the value `GetEntityModel` actually returns -- so a
 --- Hydra would read as an ordinary car and file nothing.
 BR.Config.RefusedVehicleByHash = {}
@@ -547,8 +627,8 @@ end
 --
 -- "Military" in vehicles.meta means "belongs to the army", not "has a gun". Five
 -- models sit in class 19 with no weapon on them at all, and the owner's rule --
--- the same rule that keeps the plain `insurgent` out of the table above,
--- armoured and unarmed -- permits every one of them.
+-- the same rule that keeps the plain `insurgent2` out of the table above,
+-- armored and unarmed -- permits every one of them.
 --
 -- They are listed rather than tolerated because the alternative is a player
 -- being pulled out of a troop truck and told it is not allowed, which is a
@@ -744,82 +824,10 @@ function BR.Config.IsDisarmedVehicle(hash)
     return v.keepRefused ~= true
 end
 
---- Armed models with NO RULING YET: in no row of the refused table, and armed
---- by the game's own vehicle data. (#427)
----
---- Owner, 2026-11-01, of the dev menu's vehicle spawner: "For any that you
---- believe to be armed ... put a note on their row in red that says "Armed"".
---- ANY, not only the ones a row already names. Every model here is one the
---- game's vehicle data gives a vehicle weapon (DurtyFree's dump of it,
---- vehicles.json, game build 3717 -- the same source and footing as `armed`
---- above the table), and every name was checked against the hash that data
---- records for it, so none is a guess at a spelling.
----
---- ⚠ IT IS DATA, AND IT RULES ON NOTHING. BR.Config.IsArmedVehicle is its one
---- reader; IsAllowedVehicle, IsDisarmedVehicle and VehicleRefusalFor never
---- look at it, so a match treats every model here exactly as it did -- the
---- five that fly refused as aircraft by the type and class nets, the rest
---- driven with their guns live. Whether each should be refused or driven with
---- the gun held off is the owner's ruling to make, on #427; until he does,
---- this list is only the dev menu's red mark. tools/check_vehicles.lua holds
---- every hash to its name, keeps the list clear of every row of the table,
---- and asserts that every ruling on these models is what it was.
----
---- `insurgent` IS HERE BECAUSE IT IS THE INSURGENT PICK-UP. The game's data
---- gives it the turret seat and the turret; `insurgent2` -- the plain armored
---- Insurgent, refused above as ARMED -- has no turret seat. The table has the
---- two the other way round, the shape #322 found in the Caracaras; #427 settles
---- the pair, and the ARMED row above is left exactly as it is meanwhile.
-BR.Config.ArmedUnruledVehicles = {
-    -- Fly, and carry guns. No row at all: the type and class nets refuse them
-    -- as aircraft, and the table does not name them.
-    { name = 'avenger3',     hash = 0xE68D8190 },  -- Avenger: cannon, minigun, missiles
-    { name = 'avenger4',     hash = 0xFBDEAC32 },  -- Avenger: cannon, minigun, missiles
-    { name = 'conada2',      hash = 0x9D1D9872 },  -- Weaponized Conada: minigun, missiles
-    { name = 'duster2',      hash = 0x05071B2D },  -- Duster 300-H: minigun
-    { name = 'titan2',       hash = 0x3329757E },  -- Titan 250 D: 25, 40 and 105 mm
-
-    -- On the ground or the water, and armed -- allowed in a match today.
-    { name = 'ardent',       hash = 0x097E5533 },  -- Ardent: machine gun
-    { name = 'blazer5',      hash = 0xA1355F67 },  -- Blazer Aqua: cannon
-    { name = 'boxville5',    hash = 0x28AD20E1 },  -- Armored Boxville: turret
-    { name = 'buffalo4',     hash = 0xDB0C9B04 },  -- Buffalo STX: machine gun
-    { name = 'champion',     hash = 0xC972A155 },  -- Champion: machine gun
-    { name = 'comet4',       hash = 0x5D1903F9 },  -- Comet Safari: machine gun
-    { name = 'deity',        hash = 0x5B531351 },  -- Deity: machine gun
-    { name = 'dinghy5',      hash = 0xC58DA34A },  -- Weaponized Dinghy: .50 turret
-    { name = 'granger2',     hash = 0xF06C29C7 },  -- Granger 3600LX: machine gun
-    { name = 'jb7002',       hash = 0x177DA45C },  -- JB 700W: machine gun
-    { name = 'jubilee',      hash = 0x1B8165D3 },  -- Jubilee: machine gun
-    { name = 'limo2',        hash = 0xF92AEC4D },  -- Turreted Limo: turret
-    { name = 'menacer',      hash = 0x79DD18AE },  -- Menacer: turret, minigun, machine gun
-    { name = 'mule4',        hash = 0x73F4110E },  -- Mule Custom: machine gun, missiles, grenade launcher
-    { name = 'nightshark',   hash = 0x19DD9ED1 },  -- Nightshark: machine gun
-    { name = 'paragon2',     hash = 0x546D8EEE },  -- Paragon R (Armored): machine gun
-    { name = 'patriot3',     hash = 0xD80F4A44 },  -- Patriot Mil-Spec: machine gun
-    { name = 'pounder2',     hash = 0x6290F15B },  -- Pounder Custom: minigun, missiles, barrage, grenade launcher
-    { name = 'revolter',     hash = 0xE78CC3D9 },  -- Revolter: machine gun
-    { name = 'savestra',     hash = 0x35DED0DD },  -- Savestra: machine gun
-    { name = 'speedo4',      hash = 0x0D17099D },  -- Speedo Custom: machine gun, turrets
-    { name = 'speedo5',      hash = 0xFD546A18 },  -- Speedo Custom: machine gun, turrets
-    { name = 'terbyte',      hash = 0x897AFC65 },  -- Terrorbyte: missiles
-    { name = 'trailerlarge', hash = 0x5993F939 },  -- Mobile Operations Center: cannon
-    { name = 'viseris',      hash = 0xE8A8BA94 },  -- Viseris: machine gun
-
-    -- The Insurgent Pick-Up -- see `insurgent` above.
-    { name = 'insurgent',    hash = 0x9114EADA },  -- Insurgent Pick-Up: turret
-}
-
---- The same list keyed by NORMALIZED hash, for BR.NormHash's stated reason.
-BR.Config.ArmedUnruledByHash = {}
-for _, v in ipairs(BR.Config.ArmedUnruledVehicles) do
-    BR.Config.ArmedUnruledByHash[BR.NormHash(v.hash)] = v
-end
-
 --- Does this model carry built-in weapons, as far as this file knows? (#426)
 ---
 --- The dev menu's "Armed" mark, and nothing else: it changes no ruling, and
---- nothing that refuses, ejects or files asks it. Four kinds of model say yes:
+--- nothing that refuses, ejects or files asks it. Three kinds of row say yes:
 ---
 ---   ARMED          every row -- the models IsDisarmedVehicle names, which the
 ---                  #322 ruling drives with the gun held off, and the seven
@@ -828,20 +836,29 @@ end
 ---                  and a tank has built-in weapons (BR.Config.VehicleRefusal's
 ---                  own note);
 ---   FLIES + armed  the aircraft, and the things that fly, that carry guns as
----                  well -- see `armed` above the table;
----   ArmedUnruledVehicles  armed by the game's data with no ruling yet (#427).
+---                  well -- see `armed` above the table.
+---
+--- THE ROWS ALONE, AND SINCE #427 THAT IS EVERY ARMED MODEL. Owner, 2026-11-01,
+--- of the dev menu's vehicle spawner: "For any that you believe to be armed
+--- ... put a note on their row in red that says "Armed"" -- ANY, not only the
+--- ones a row named then. #427 gave every model the game's vehicle data arms
+--- a row (DurtyFree's vehicles.json, build 3717, as tools/vehicle_models.py
+--- reads it), and tools/check_vehicles.lua holds the rows' armed set to the
+--- data's exactly, so an armed model with no row fails the build instead of
+--- reading as unarmed here.
 ---
 --- A MODEL IN NONE OF THOSE IS NOT ARMED HERE, whatever it is. The class net
 --- is not asked: class 19 means "military", not "has a gun" (ClassNetExempt
---- has the five that prove it). A vehicle added to the game after the data
---- was read is in neither list, and reads as unarmed until somebody adds it.
+--- has the five that prove it). Nor is `insurgent2`, the plain Insurgent: the
+--- data lists the Pick-Up's turret on it, and its model has none to carry. A
+--- vehicle added to the game after the data was read reads as unarmed until
+--- the tool is run on a newer dump, and then fails the build until the owner
+--- rules on it.
 --- @param hash integer|nil  a model hash, signed or not
 --- @return boolean
 function BR.Config.IsArmedVehicle(hash)
     if hash == nil then return false end
-    local key = BR.NormHash(hash)
-    if BR.Config.ArmedUnruledByHash[key] ~= nil then return true end
-    local v = BR.Config.RefusedVehicleByHash[key]
+    local v = BR.Config.RefusedVehicleByHash[BR.NormHash(hash)]
     if v == nil then return false end
     local R = BR.Config.VehicleRefusal
     return v.why == R.ARMED or v.why == R.TANK or v.armed == true
@@ -1087,8 +1104,8 @@ BR.Config.VehicleDamage = {
     ---     Rockstar authored into the vehicle list. A relative scale keeps a
     ---     tough model relatively tough and still makes every model breakable.
     ---   * it composes with a deny-list that has nothing to say about
-    ---     durability. config/vehicles.lua's own note on the plain `insurgent`
-    ---     -- "it is armoured and has no weapon, and the rule the owner wrote is
+    ---     durability. config/vehicles.lua's own note on the plain `insurgent2`
+    ---     -- "it is armored and has no weapon, and the rule the owner wrote is
     ---     about built-in weapons, not about durability" -- stays true: the
     ---     Insurgent is still the toughest thing on the road, it just is not
     ---     immortal any more.

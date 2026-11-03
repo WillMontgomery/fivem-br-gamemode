@@ -29,8 +29,10 @@ client (BR.Config.VehicleModels): one row per model, in name order,
   * below  how far its bottom sits below its origin, in meters rounded UP.
            Both are left out for a model the data has no bounding box for.
   * armed  true when the data lists a vehicle weapon on it -- a searchlight, a
-           radar and a water cannon are not weapons. tools/check_vehicles.lua
-           holds config/vehicles.lua's "Armed" set to exactly these.
+           radar and a water cannon are not weapons -- except on the one model
+           whose listed weapon its own model does not carry: `insurgent2`, the
+           plain Insurgent (UNARMED, below). tools/check_vehicles.lua holds
+           config/vehicles.lua's "Armed" set to exactly these.
 
 AND resources/[fivem-royale]/br_lib/config/vehicle_weapons.lua (#426's second
 review): every vehicle weapon the data lists on any model, the searchlight, the
@@ -47,7 +49,8 @@ a weapon changed by hand fails there without the dump.
 Anything malformed is refused whole and nothing is written: a model with no
 name, a name that is not a model word, a type this table has no tree for, a
 hash that is not the name's, a name or a hash twice, a bounding box that is not
-six finite numbers, or a weapon that is not a VEHICLE_WEAPON_ name.
+six finite numbers, or a weapon that is not a VEHICLE_WEAPON_ name. So is a
+dump in which the UNARMED override's reason no longer holds -- see there.
 """
 
 import argparse
@@ -82,6 +85,33 @@ TREE = {
 
 #: Listed among a model's weapons, and not one.
 NOT_WEAPONS = {'VEHICLE_WEAPON_SEARCHLIGHT', 'VEHICLE_WEAPON_RADAR', 'VEHICLE_WEAPON_WATER_CANNON'}
+
+#: A model the data gives a vehicle weapon that its own model does not carry,
+#: and so not `armed`, whatever its weapons say (#427). One, by name.
+#:
+#: `insurgent2` IS THE PLAIN INSURGENT, armored and with no gun. The data lists
+#: VEHICLE_WEAPON_TURRET_INSURGENT on it AND on `insurgent`, the Insurgent
+#: Pick-Up -- but only the Pick-Up's model carries the turret: it has the
+#: turret_1base, turret_1barrel and weapon_1a bones (so does `insurgent3`, the
+#: Pick-Up Custom, with a minigun's beside them), and insurgent2's has no bone
+#: starting turret_ or weapon_ at all. A gun with nowhere on the model to sit is
+#: no gun.
+#:
+#: THE REASON IS ASSERTED ON EVERY RUN, NOT TRUSTED (`unarmed_holds`), so a
+#: newer dump cannot keep a stale override: one that shows the model a turret_
+#: or weapon_ bone, shows it no skeleton to look in, or no longer gives it a
+#: weapon to override is refused whole, and nothing is written.
+#:
+#: NOT A BONE RULE, AND IT MUST NOT BECOME ONE. `ignus2`, the Weaponized Ignus,
+#: is really armed, and its skeleton names no turret_ or weapon_ bone either --
+#: the dump holds only a stub for it. "No gun bone, no gun" would unarm it. An
+#: override is one model, by name, with its reason checked.
+UNARMED = {'insurgent2'}
+
+#: The root bone of every vehicle skeleton the dump could read. A model it could
+#: not read has a single `stub` bone instead (`ignus2` is one), and a skeleton
+#: like that proves nothing about where a gun would go.
+SKELETON = 'chassis'
 
 
 def joaat(s):
@@ -124,11 +154,29 @@ def finite(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
+def unarmed_holds(name, v):
+    """Raises ValueError unless the dump still shows why `name` is UNARMED: a
+    skeleton it could read, with no bone starting turret_ or weapon_ in it."""
+    bones = v.get('Bones')
+    seen = []
+    for b in bones if isinstance(bones, list) else []:
+        n = b.get('BoneName') if isinstance(b, dict) else None
+        if isinstance(n, str):
+            seen.append(n.lower())
+    if SKELETON not in seen:
+        raise ValueError('%s: the data shows no skeleton for it, so nothing says it has '
+                         'no gun -- its UNARMED override cannot be checked' % name)
+    gun = [n for n in seen if n.startswith(('turret_', 'weapon_'))]
+    if gun:
+        raise ValueError('%s: the data now gives its model %s, so it may carry a gun '
+                         'after all -- its UNARMED override is stale' % (name, ', '.join(gun)))
+
+
 def rows_of(doc):
     """The rows, checked, in name order, or raises ValueError naming the first fault."""
     if not isinstance(doc, list) or not doc:
         raise ValueError('not a list of vehicle models')
-    out, names, hashes = [], set(), set()
+    out, names, hashes, overridden = [], set(), set(), set()
     for i, v in enumerate(doc, 1):
         if not isinstance(v, dict):
             raise ValueError('entry %d is not an object' % i)
@@ -166,8 +214,18 @@ def rows_of(doc):
         if not isinstance(weapons, list):
             raise ValueError('%s: weapons %r is not a list' % (name, weapons))
         if any(w not in NOT_WEAPONS for w in weapons):
-            row['armed'] = True
+            if name in UNARMED:
+                unarmed_holds(name, v)
+                overridden.add(name)
+            else:
+                row['armed'] = True
         out.append(row)
+    # AN OVERRIDE THAT OVERRODE NOTHING IS STALE TOO: the dump no longer has the
+    # model, or no longer gives it a weapon. Either way nothing checks it now.
+    stale = sorted(UNARMED - overridden)
+    if stale:
+        raise ValueError('%s: the data gives it no weapon to override, or does not have '
+                         'it -- its UNARMED override is stale' % ', '.join(stale))
     out.sort(key=lambda r: r['name'])
     return out
 
@@ -244,7 +302,8 @@ def render(rows, digest):
         "-- registers: its name and the game's hash for it; the sync tree",
         "-- CreateVehicleServerSetter has to build it as; how far it reaches across",
         "-- its width (`reach`) and below its origin (`below`), in meters rounded up;",
-        "-- and `armed` where the data lists a vehicle weapon on it.",
+        "-- and `armed` where the data lists a vehicle weapon on it, the plain",
+        "-- Insurgent (`insurgent2`) aside: its model has no gun (the tool's UNARMED).",
         "--",
         "-- What reads it, and nothing else does: server/vehicles.lua's spawn, which",
         "-- builds a model the game has only as its own tree and puts a big one clear",

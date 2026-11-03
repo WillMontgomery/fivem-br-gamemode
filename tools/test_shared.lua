@@ -17310,9 +17310,9 @@ do
     ok(hy == V.FLIES, 'a jet is refused, on the flight half')
 
     -- THE SIGNED-HASH TRAP, AND IT IS THE BUG THIS PROJECT HAS SHIPPED FOUR
-    -- TIMES. GetEntityModel reports signed; the table authors positive. Sixty-
-    -- five of the hundred and thirty-two rows have the top bit set, so
-    -- unnormalised this whole feature would refuse nothing that matters and look
+    -- TIMES. GetEntityModel reports signed; the table authors positive. Eighty
+    -- of the hundred and sixty-three rows have the top bit set, so
+    -- unnormalized this whole feature would refuse nothing that matters and look
     -- fine doing it.
     ok(BR.Config.IsAllowedVehicle(0x2EA68690 - 0x100000000) == false,
         'a tank is still refused when the hash arrives signed')
@@ -17401,8 +17401,8 @@ do
     ok(BR.Config.IsAllowedVehicle(0x83070B62) == true,
         'and so is the plain impaler, whose stem the contenders share')
 
-    -- The plain insurgent's rule, restated for the five class-19 exemptions:
-    -- armoured is not armed.
+    -- The plain Insurgent's rule (`insurgent2`), restated for the five class-19
+    -- exemptions: armored is not armed.
     ok(BR.Config.IsAllowedVehicle(0xCEEA3F4B) == true,
         'a barracks is not in the refused table')
 
@@ -17676,7 +17676,7 @@ do
     -- because it is what tools/check_vehicles.lua gates the hashes on -- "asking
     -- IsAllowedVehicle the question the way the engine will ask it" is how a
     -- mistyped hex digit is caught, and a predicate that started answering
-    -- "allowed" for the armed rows would take a third of that gate with it.
+    -- "allowed" for the armed rows would take half of that gate with it.
     local allowed, why = BR.Config.IsAllowedVehicle(TECHNICAL)
     ok(allowed == false and why == V.ARMED,
         'the model table still says a Technical is armed')
@@ -17685,6 +17685,126 @@ do
         .. 'settled')
     ok(select(1, BR.Config.IsAllowedVehicle(CARACARA2)) == true,
         'and the 4x4 is not, because it has no gun')
+end
+
+-- ------------------------------------- vehicles: every armed model ruled ----
+
+describe('vehicles.ruled')
+--
+-- ═══ THE OWNER'S RULING (2026-11-02, #427) ═══
+--
+--   "driven with the gun held off - that's the verdict."
+--
+-- It answers #427 for every armed ground and water model the table had
+-- missed: twenty-five the game's own vehicle data arms, and the Insurgent
+-- Pick-Up, which the table had swapped with the plain Insurgent. Each is an
+-- ARMED row now, so the #322 ruling drives it with the gun held off instead
+-- of refusing it -- asserted through the functions the callers ask, for each
+-- of the twenty-six by name, so a row nobody wrote, or wrote with keepRefused
+-- or under another reason, fails here as the model it is.
+--
+-- AND #427'S OTHER TWO HALVES. The plain Insurgent lost its false row and is
+-- an ordinary car; and the five armed fliers that had no row have FLIES rows
+-- marked armed, which refuse them exactly as the type and class nets did.
+do
+    local V = BR.Config.VehicleRefusal
+    local R = BR.Config.VehicleRefusalFor
+    local D = BR.Config.IsDisarmedVehicle
+    local A = BR.Config.IsArmedVehicle
+    local function signed(h) return (h & 0x80000000) ~= 0 and (h - 0x100000000) or h end
+    local function sig(t, c)
+        return { typeOf = function() return t end, classOf = function() return c end }
+    end
+    local function rowOf(h) return BR.Config.RefusedVehicleByHash[BR.NormHash(h)] end
+
+    -- THE TWENTY-SIX, by the name and hash the game's data gives each.
+    local RULED = {
+        ardent       = 0x097E5533, blazer5      = 0xA1355F67,
+        boxville5    = 0x28AD20E1, buffalo4     = 0xDB0C9B04,
+        champion     = 0xC972A155, comet4       = 0x5D1903F9,
+        deity        = 0x5B531351, dinghy5      = 0xC58DA34A,
+        granger2     = 0xF06C29C7, insurgent    = 0x9114EADA,
+        jb7002       = 0x177DA45C, jubilee      = 0x1B8165D3,
+        limo2        = 0xF92AEC4D, menacer      = 0x79DD18AE,
+        mule4        = 0x73F4110E, nightshark   = 0x19DD9ED1,
+        paragon2     = 0x546D8EEE, patriot3     = 0xD80F4A44,
+        pounder2     = 0x6290F15B, revolter     = 0xE78CC3D9,
+        savestra     = 0x35DED0DD, speedo4      = 0x0D17099D,
+        speedo5      = 0xFD546A18, terbyte      = 0x897AFC65,
+        trailerlarge = 0x5993F939, viseris      = 0xE8A8BA94,
+    }
+    local n, notRow, notDisarmed, refused, notArmed = 0, {}, {}, {}, {}
+    for name, h in pairs(RULED) do
+        n = n + 1
+        local row = rowOf(h)
+        if not (row and row.name == name and row.why == V.ARMED
+                and row.keepRefused == nil) then
+            notRow[#notRow + 1] = name
+        end
+        if not (D(h) and D(signed(h))) then notDisarmed[#notDisarmed + 1] = name end
+        -- ASKED AS THE CALLERS ASK IT: the creation path with the model alone,
+        -- and the client with a type and a class -- class 19 among them, the
+        -- net whose reason word is ARMED too, and which the row outranks.
+        if R(h) ~= nil or R(signed(h), sig('automobile', 19)) ~= nil then
+            refused[#refused + 1] = name
+        end
+        if not (A(h) and A(signed(h))) then notArmed[#notArmed + 1] = name end
+    end
+    for _, t in ipairs({ notRow, notDisarmed, refused, notArmed }) do table.sort(t) end
+    ok(n == 26, 'the ruling names twenty-six models', n)
+    ok(#notRow == 0, 'each is an ARMED row of its own name, with no keepRefused',
+        table.concat(notRow, ', '))
+    ok(#notDisarmed == 0,
+        'IsDisarmedVehicle drives each with its gun held off, from either hash form',
+        table.concat(notDisarmed, ', '))
+    ok(#refused == 0, 'VehicleRefusalFor allows each, with the signals or without',
+        table.concat(refused, ', '))
+    ok(#notArmed == 0, 'and IsArmedVehicle marks each Armed', table.concat(notArmed, ', '))
+
+    -- ═══ THE PLAIN INSURGENT: NO ROW, NO GUN, AN ORDINARY CAR ═══
+    local INSURGENT2 = 0x7B7E56F0
+    ok(rowOf(INSURGENT2) == nil, 'the plain Insurgent has no row')
+    ok(BR.Config.IsAllowedVehicle(INSURGENT2) == true
+       and R(INSURGENT2, sig('automobile', 9)) == nil,
+        'and is allowed, as any car is')
+    ok(D(INSURGENT2) == false, 'owing nobody a disable')
+    ok(A(INSURGENT2) == false, 'and is not marked Armed')
+
+    -- ═══ THE FIVE ARMED FLIERS: REFUSED AS THEY WERE, BY ROWS OF THEIR OWN ═══
+    local FLIERS = {
+        avenger3 = { 0xE68D8190, 'plane', 16 }, avenger4 = { 0xFBDEAC32, 'plane', 16 },
+        conada2  = { 0x9D1D9872, 'heli', 15 },  duster2  = { 0x05071B2D, 'plane', 16 },
+        titan2   = { 0x3329757E, 'plane', 16 },
+    }
+    local f, byNet, byRow, unmarked, driven = 0, {}, {}, {}, {}
+    for name, m in pairs(FLIERS) do
+        f = f + 1
+        local h, t, c = m[1], m[2], m[3]
+        -- WHAT A MATCH SAW BEFORE #427, AND STILL SEES: a flight refusal, from
+        -- the type and the class a client reads.
+        if R(signed(h), sig(t, c)) ~= V.FLIES then byNet[#byNet + 1] = name end
+        -- AND NOW THE ROW'S OWN, from the model alone.
+        local row = rowOf(h)
+        local w, s = R(h)
+        if not (row and row.name == name and row.why == V.FLIES and w == V.FLIES
+                and s == 'model') then
+            byRow[#byRow + 1] = name
+        end
+        if not (row and row.armed == true and A(h) and A(signed(h))) then
+            unmarked[#unmarked + 1] = name
+        end
+        if D(h) then driven[#driven + 1] = name end
+    end
+    for _, t in ipairs({ byNet, byRow, unmarked, driven }) do table.sort(t) end
+    ok(f == 5, 'five armed fliers', f)
+    ok(#byNet == 0, 'each is refused as flying, from the signals a client reads',
+        table.concat(byNet, ', '))
+    ok(#byRow == 0, 'and by a FLIES row of its own, from the model alone',
+        table.concat(byRow, ', '))
+    ok(#unmarked == 0, 'each row is marked armed, and IsArmedVehicle says so',
+        table.concat(unmarked, ', '))
+    ok(#driven == 0, 'and none is driven: a gun switched off does not stop it flying',
+        table.concat(driven, ', '))
 end
 
 -- ---------------------------------------------------------------------------

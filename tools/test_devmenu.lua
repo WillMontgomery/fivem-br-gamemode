@@ -1849,7 +1849,7 @@ end
 -- entry at all (`myaddon`, whose name sorts against a capitalized one); a
 -- label carrying GTA's text codes; trains, in class 21; and no Compacts at
 -- all. Armed or not is config/vehicles.lua's say, never this table's -- its
--- rows and its list of armed models with no ruling yet (#427).
+-- rows, which since #427 rule on every armed model.
 local VEHICLES = {
     { 'adder',         7,  'car',      'ADDER',        'Adder' },
     { 'zentorno',      7,  'car',      'ZENTORNO',     'Zentorno' },
@@ -2528,8 +2528,8 @@ do
        'the Atomic Blimp carries nothing: it flies, and is unarmed')
     eq(planes and planes.Items[2]._right, RED, 'an Avenger carries "Armed", in red')
     eq(planes and planes.Items[4]._right, RED,
-       'the third Avenger too: no row names it, the game\'s data arms it (#427) -- '
-       .. 'the model in its name leaves the mark where it was')
+       'the third Avenger too: a FLIES row marked armed since #427 -- the model '
+       .. 'in its name leaves the mark where it was')
     eq(planes and planes.Items[5]._right, RED, 'and so does the Lazer')
     -- TWO OF A NAME KEEP ONE ORDER: by model, and say which.
     planes:Press(2)
@@ -2551,7 +2551,7 @@ do
     local vans = intoClass(sp, 'Vans')
     eq(rowTexts(vans), 'Speedo Custom (speedo4)|Speedo Custom (speedo5)',
        'two Speedo Customs, told apart')
-    eq(vans and vans.Items[1]._right, RED, 'and both armed, by the game\'s data (#427)')
+    eq(vans and vans.Items[1]._right, RED, 'and both armed: ARMED rows since #427')
     eq(vans and vans.Items[2]._right, RED, '...both of them')
 
     local cycles = intoClass(sp, 'Cycles')
@@ -2573,12 +2573,13 @@ do
        'Blazer|Blazer Aqua|Caracara 4x4|Insurgent|Insurgent Pick-Up|Technical Aqua',
        'Off-road, by name')
     eq(off and off.Items[2]._right, RED,
-       'the Blazer Aqua is in no row, and the game\'s data arms it: marked (#427)')
+       'the Blazer Aqua is an ARMED row since #427: marked')
     eq(off and off.Items[3]._right, nil, 'the Caracara 4x4 is unarmed')
-    eq(off and off.Items[4]._right, RED,
-       '`insurgent2` -- the Insurgent -- is an ARMED row, and marked as the row says')
+    eq(off and off.Items[4]._right, nil,
+       '`insurgent2` -- the plain Insurgent -- has no row and no gun: not marked (#427)')
     eq(off and off.Items[5]._right, RED,
-       '`insurgent` -- the Pick-Up, with the turret -- is marked by the game\'s data')
+       '`insurgent` -- the Pick-Up, with the turret -- is an ARMED row, and marked '
+       .. 'as the row says')
 
     -- BUILT ONCE.
     local built = #menus
@@ -2614,10 +2615,10 @@ do
         tanker = 'trailer',
         trailersmall2 = 'trailer', mytrailer = 'trailer',  -- ...and Military
     }
-    -- THE TABLE'S ARMED, TANK AND MARKED FLIGHT ROWS, AND THE ARMED MODELS
-    -- WITH NO RULING YET (#427): blazer5, insurgent, avenger3, speedo4, speedo5.
+    -- THE TABLE'S ARMED, TANK AND MARKED FLIGHT ROWS -- since #427 every
+    -- armed model's: blazer5, insurgent, avenger3, speedo4 and speedo5 had none.
     local armedWant = {
-        scramjet = true, vigilante = true, insurgent2 = true, technical2 = true,
+        scramjet = true, vigilante = true, technical2 = true,
         oppressor2 = true, kosatka = true, buzzard = true, lazer = true,
         avenger = true, avenger2 = true, stromberg = true, toreador = true,
         rhino = true, trailersmall2 = true, apc = true,
@@ -2647,10 +2648,11 @@ do
     for model, tree in pairs(want) do
         eq(got[model], tree, ('%s is asked for as %s'):format(model, tree))
     end
-    eq(armedCount, 20, 'twenty rows are marked')
+    eq(armedCount, 19, 'nineteen rows are marked')
     for model in pairs(armedWant) do
         eq(armedGot[model], true, ('%s is marked Armed'):format(model))
     end
+    eq(armedGot.insurgent2, nil, 'and the plain Insurgent is not (#427)')
     ok(got.lazer ~= nil and got.Lazer == nil and got.bmx ~= nil and got.blimp ~= nil,
        'names the game registered in capitals are asked for lower-cased')
     eq(#toasts, 0, 'and none of it was refused')

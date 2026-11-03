@@ -246,8 +246,8 @@ end
 --- answered in client/inventory.lua by BR.Config.StripExemptVehicles. What #322
 --- did was make the ARMED rows of the model table DRIVABLE instead of ejecting
 --- the player within one 100 ms pass -- so those seats are occupied now, all
---- match, and the same failure is reachable in about sixty more models. The
---- Caracara's gun seat is one the owner hit on 2026-09-19.
+--- match, and the same failure is reachable in seventy-five more models (since
+--- #427). The Caracara's gun seat is one the owner hit on 2026-09-19.
 ---
 --- The gun is held off on the CLIENT and that is best effort by construction:
 --- the native may not persist between passes, may have no opinion about a turret

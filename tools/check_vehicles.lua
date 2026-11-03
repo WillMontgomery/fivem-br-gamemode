@@ -28,7 +28,10 @@
 --     runtime would agree the row is fine. It refuses nothing, forever, quietly.
 --   * that the table is COMPLETE. It is a deny-list -- absence is permission --
 --     so every aircraft nobody wrote down is allowed. See the header of
---     config/vehicles.lua for why the owner's rule forces that shape.
+--     config/vehicles.lua for why the owner's rule forces that shape. The
+--     ARMED half is the exception since #427: every model the game's own data
+--     arms must have a row saying so, so an armed model nobody ruled on fails
+--     here -- once tools/vehicle_models.py has read a dump that has it.
 --
 -- Run via tools/verify.sh, or directly:  lua tools/check_vehicles.lua
 
@@ -296,8 +299,8 @@ end
 -- on it -- the same silence the caracara anchor below guards against, one field
 -- along. So the aircraft nobody could mistake are named, and so are three that
 -- carry nothing: a Maverick's searchlight is in the game's weapon data and is
--- not a weapon, and `titan` -- the Battle Bus -- is unarmed (its armed sister is
--- `titan2`, which is in no row).
+-- not a weapon, and `titan` -- the Battle Bus -- is unarmed (its armed sister,
+-- `titan2`, has a marked row of its own since #427).
 for _, n in ipairs({ 'hydra', 'lazer', 'buzzard', 'savage', 'hunter', 'akula',
                      'oppressor2' }) do
     if not seenName[n] then
@@ -343,6 +346,25 @@ if seenName['caracara2'] then
          .. 'weapon -- the armed one is `caracara`, the 6x6 -- so the row is '
          .. 'false and absence is the right answer.',
          tostring(refusedWhy['caracara2']))
+end
+
+-- AND THE INSURGENTS, WHICH THE TABLE HAD SWAPPED THE SAME WAY UNTIL #427.
+-- `insurgent` is the Insurgent Pick-Up, with the turret, and the owner ruled
+-- on 2026-11-02 that it is driven with the gun held off; `insurgent2` is the
+-- plain Insurgent, armored and with no gun. The armed-set check further down
+-- sees either row go wrong as one name in a list; these say which truck it
+-- is, and why.
+if refusedWhy['insurgent'] ~= BR.Config.VehicleRefusal.ARMED
+   or not BR.Config.IsDisarmedVehicle(joaat('insurgent')) then
+    fail('`insurgent` is not an ARMED row driven with its gun held off. It is '
+         .. 'the Insurgent Pick-Up, which carries the turret, and the owner '
+         .. 'ruled on 2026-11-02 that it is driven with the gun held off (#427).')
+end
+if seenName['insurgent2'] then
+    fail('`insurgent2` is in the refused table as %q. It is the plain Insurgent, '
+         .. 'which has no weapon -- the turret is the Pick-Up\'s, `insurgent` -- '
+         .. 'so the row is false and absence is the right answer.',
+         tostring(refusedWhy['insurgent2']))
 end
 
 -- THE CLASS NET KEEPS ITS ARMED REFUSAL, AND THIS IS THE ASSERTION THE WHOLE
@@ -517,93 +539,6 @@ for _, v in ipairs(BR.Config.StripExemptVehicles or {}) do
     ::nextStripExempt::
 end
 
--- ------------------------------------------ #427: armed, no ruling yet --
---
--- THE THIRD SIDE LIST, and the only one that changes nothing the gamemode
--- does: armed models no row names, kept for the dev menu's "Armed" mark
--- (BR.Config.ArmedUnruledVehicles). A wrong hash here costs a red word in a
--- dev menu rather than a ruling -- so the assertions that matter most are the
--- two that keep it that way. It is in NO ROW of the table, and EVERY RULING the
--- model table makes on every model in it is what it was before the list
--- existed: allowed, refused by no row, not disarmed, in both hash forms. (The
--- type and class nets, which refuse the five that fly, never read the list and
--- are not asked here.) A list somebody wired into IsAllowedVehicle,
--- VehicleRefusalFor or IsDisarmedVehicle fails here, model by model, long
--- before #427 is ruled on.
-local unruled, unruledName, unruledHash = 0, {}, {}
-for _, v in ipairs(BR.Config.ArmedUnruledVehicles or {}) do
-    unruled = unruled + 1
-
-    if type(v.name) ~= 'string' or v.name == '' then
-        fail('an armed-unruled row has no name to hash')
-        goto nextUnruled
-    end
-
-    if unruledName[v.name] then
-        fail('duplicate armed-unruled name %q', v.name)
-    end
-    unruledName[v.name] = true
-
-    do
-        local want = joaat(v.name)
-        if v.hash ~= want then
-            fail('armed-unruled %s: hash is 0x%08X, should be 0x%08X',
-                 v.name, v.hash or 0, want)
-        end
-    end
-
-    -- IN NO ROW. A model the table already rules on is armed or not by its
-    -- row; here it would be a second, unruled statement about it.
-    if seenName[v.name] then
-        fail('%q is in BOTH the refused table and the armed-unruled list. The '
-             .. 'list is for armed models NO row names; a row already says '
-             .. 'what the gamemode does with it.', v.name)
-    end
-
-    if v.hash then
-        if seenHash[v.hash] then
-            fail('armed-unruled %s shares hash 0x%08X with refused row %q',
-                 v.name, v.hash, seenHash[v.hash])
-        end
-        if unruledHash[v.hash] then
-            fail('armed-unruled %q and %q share hash 0x%08X', v.name,
-                 unruledHash[v.hash], v.hash)
-        end
-        unruledHash[v.hash] = v.name
-
-        for _, h in ipairs({ v.hash, signed32(v.hash) }) do
-            if not BR.Config.IsArmedVehicle(h) then
-                fail('armed-unruled %s reads as unarmed from 0x%08X', v.name,
-                     h & 0xFFFFFFFF)
-            end
-            -- AND NO RULING CHANGED.
-            if not BR.Config.IsAllowedVehicle(h) then
-                fail('armed-unruled %s is REFUSED by IsAllowedVehicle -- the list '
-                     .. 'rules on nothing until #427 does', v.name)
-            end
-            if BR.Config.VehicleRefusalFor(h) ~= nil then
-                fail('armed-unruled %s is refused by VehicleRefusalFor (%q) -- the '
-                     .. 'list rules on nothing until #427 does', v.name,
-                     tostring(BR.Config.VehicleRefusalFor(h)))
-            end
-            if BR.Config.IsDisarmedVehicle(h) then
-                fail('armed-unruled %s reads as DISARMED -- the list rules on '
-                     .. 'nothing until #427 does', v.name)
-            end
-        end
-    end
-
-    ::nextUnruled::
-end
-
--- THE INSURGENT PICK-UP IS THE ONE THE TABLE HAS BACKWARDS. `insurgent` is
--- the Pick-Up with the turret; until #427 settles the pair, this list is
--- where its mark comes from.
-if not unruledName['insurgent'] then
-    fail('`insurgent` -- the Insurgent Pick-Up -- is not in the armed-unruled '
-         .. 'list, so the dev menu shows the turret truck as unarmed (#427)')
-end
-
 -- ---------------------------- every base-game model (#426's review) --
 --
 -- config/vehicle_models.lua is generated from the game's own vehicle data
@@ -676,51 +611,73 @@ do
     end
 end
 
--- ----------------------- the Armed set, held to the game's data (#426's review) --
+-- ---------------- every armed model ruled, by the game's own data (#427) --
 --
--- The dev menu marks a vehicle "Armed" when BR.Config.IsArmedVehicle says so,
--- out of config/vehicles.lua's rows and its #427 list. THE CHECKS ABOVE CANNOT
--- TELL WHETHER THAT SET IS RIGHT: drop Mogul's mark, mark the Dodo, take the
--- Nightshark out of the #427 list or put the Adder in it, and every one of them
--- still passes. The game's own data can tell: its `armed` rows (a vehicle
--- weapon listed, a searchlight, a radar and a water cannon aside) are the
--- expected set -- 125 when it was generated -- and the marked set must be
--- exactly that. Every model the table has is asked, in both hash forms, and
--- so is every name config/vehicles.lua marks, so a mark on a model the game
--- does not have is found as well.
+-- THE ROWS' ARMED SET IS THE GAME DATA'S, EXACTLY. config/vehicle_models.lua's
+-- `armed` rows -- a vehicle weapon in the game's data, a searchlight, a radar
+-- and a water cannon aside, and the plain Insurgent overridden in
+-- tools/vehicle_models.py -- are the expected set, 124 when it was generated;
+-- the rows that say a model is armed (ARMED, TANK, and FLIES marked
+-- `armed = true`) must be exactly those. The checks above cannot tell whether
+-- they are: drop Mogul's mark, mark the Dodo, delete the Nightshark's row or
+-- write one for the Adder, and every one of them still passes.
+--
+-- AN ARMED MODEL WITH NO ROW IS A RULING NOBODY HAS MADE, and since #427 it
+-- fails the build, by name. Owner, 2026-11-02, of every armed ground and water
+-- model the table had missed: "driven with the gun held off - that's the
+-- verdict." Until then they sat in a list that marked them Armed and ruled on
+-- nothing, so a match drove them with their guns live. A new one -- a newer
+-- dump, a new DLC -- is his to rule on, refused or driven with the gun held
+-- off, and its row is the ruling.
+--
+-- AND BR.Config.IsArmedVehicle IS ASKED OF EVERY MODEL, in both hash forms,
+-- and must answer as the rows do: a mark from anywhere else is found too.
 do
-    local expected, missing, extra = 0, {}, {}
+    local dataArmed, missing, extra, stray = {}, {}, {}, {}
+    local expected = 0
     for name, v in pairs(modelByName) do
-        local want = v.armed == true
-        if want then expected = expected + 1 end
+        if v.armed == true then
+            dataArmed[name] = true
+            expected = expected + 1
+            if not armedName[name] then
+                missing[#missing + 1] = name .. (seenName[name]
+                    and ' (its row does not say so)' or ' (no row: nobody has ruled on it)')
+            end
+        end
         local got = BR.Config.IsArmedVehicle(v.hash) == true
         if got ~= (BR.Config.IsArmedVehicle(signed32(v.hash)) == true) then
             fail('%s reads as armed from one hash form and not the other', name)
         end
-        if want and not got then missing[#missing + 1] = name end
-        if got and not want then extra[#extra + 1] = name end
+        if got ~= (armedName[name] == true) then stray[#stray + 1] = name end
     end
-    for _, list in ipairs({ BR.Config.RefusedVehicles or {}, BR.Config.ArmedUnruledVehicles or {} }) do
-        for _, v in ipairs(list) do
-            if type(v.name) == 'string' and modelByName[v.name] == nil
-               and v.hash and BR.Config.IsArmedVehicle(v.hash) then
-                extra[#extra + 1] = v.name .. ' (no such model in the game\'s data)'
-            end
+    for name in pairs(armedName) do
+        if not dataArmed[name] then
+            extra[#extra + 1] = name .. (modelByName[name] == nil
+                and ' (no such model in the game\'s data)' or '')
         end
     end
     table.sort(missing)
     table.sort(extra)
+    table.sort(stray)
     if #missing > 0 then
-        fail('%d model(s) the game\'s data arms are NOT marked Armed: %s',
+        fail('%d model(s) the game\'s data arms that no row says is armed: %s. '
+             .. 'An armed model with no row is the owner\'s to rule on -- refused, '
+             .. 'or driven with the gun held off -- and the ruling is its row '
+             .. '(#427); a FLIES row says it with armed = true.',
              #missing, table.concat(missing, ', '))
     end
     if #extra > 0 then
-        fail('%d model(s) marked Armed that the game\'s data does not arm: %s',
+        fail('%d row(s) say armed and the game\'s data does not arm them: %s',
              #extra, table.concat(extra, ', '))
+    end
+    if #stray > 0 then
+        fail('IsArmedVehicle answers otherwise than the rows for %d model(s): %s '
+             .. '-- it reads the rows, and nothing else', #stray,
+             table.concat(stray, ', '))
     end
     if expected == 0 and models > 0 then
         fail('config/vehicle_models.lua marks no model armed -- the expected set '
-             .. 'is empty, so the marked one cannot be held to it')
+             .. 'is empty, so the rows cannot be held to it')
     end
 end
 
@@ -888,12 +845,12 @@ if fails == 0 then
     -- The number on this line is what tells those apart.
     io.write(('\27[32mok\27[0m   %d refused vehicle hashes match their names; %d '
         .. 'resolve from both signed and unsigned (%d have the top bit set); '
-        .. '%d class-net exemptions; %d strip-exempt; %d armed (%d rows, %d '
-        .. 'with no ruling yet), the game data\'s set exactly; %d base-game '
-        .. 'models, %d of them not automobiles; %d vehicle weapons; both generated '
-        .. 'bodies as the tool wrote them\n')
+        .. '%d class-net exemptions; %d strip-exempt; %d armed rows, the game '
+        .. 'data\'s set exactly; %d base-game models, %d of them not '
+        .. 'automobiles; %d vehicle weapons; both generated bodies as the tool '
+        .. 'wrote them\n')
         :format(checked, signedChecked, topBit, exempt, stripExempt,
-                armedRows + unruled, armedRows, unruled, models, modelTrees, vehWeapons))
+                armedRows, models, modelTrees, vehWeapons))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end

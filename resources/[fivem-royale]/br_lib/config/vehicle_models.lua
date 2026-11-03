@@ -3,7 +3,8 @@
 -- registers: its name and the game's hash for it; the sync tree
 -- CreateVehicleServerSetter has to build it as; how far it reaches across
 -- its width (`reach`) and below its origin (`below`), in meters rounded up;
--- and `armed` where the data lists a vehicle weapon on it.
+-- and `armed` where the data lists a vehicle weapon on it, the plain
+-- Insurgent (`insurgent2`) aside: its model has no gun (the tool's UNARMED).
 --
 -- What reads it, and nothing else does: server/vehicles.lua's spawn, which
 -- builds a model the game has only as its own tree and puts a big one clear
@@ -16,8 +17,8 @@
 --     py tools/vehicle_models.py <path to vehicles.json>
 -- docs/devmenu.md says why the server needs it.
 --
--- Source: vehicles.json, 921 models (710 automobile, 67 bike, 22 boat, 35 heli, 43 plane, 4 submarine, 29 trailer, 11 train), 125 armed, sha256 cbb3912a3fc3f97c452d5d51f06a78049151e91fe8597541a6f62ae4ea552911
--- Body FNV-1a 0xD76C5CD9: every byte from `BR = BR or {}` to the end, which
+-- Source: vehicles.json, 921 models (710 automobile, 67 bike, 22 boat, 35 heli, 43 plane, 4 submarine, 29 trailer, 11 train), 124 armed, sha256 cbb3912a3fc3f97c452d5d51f06a78049151e91fe8597541a6f62ae4ea552911
+-- Body FNV-1a 0xF43F1181: every byte from `BR = BR or {}` to the end, which
 -- tools/check_vehicles.lua recomputes -- so a row changed by hand fails there.
 
 BR = BR or {}
@@ -421,7 +422,7 @@ BR.Config.VehicleModels = {
     { name = 'ingot',            hash = 0xB3206692, tree = 'automobile', reach =  1.0, below = 0.7 },
     { name = 'innovation',       hash = 0xF683EACA, tree = 'bike',       reach =  0.5, below = 0.5 },
     { name = 'insurgent',        hash = 0x9114EADA, tree = 'automobile', reach =  1.5, below = 1.0, armed = true },
-    { name = 'insurgent2',       hash = 0x7B7E56F0, tree = 'automobile', reach =  1.5, below = 1.0, armed = true },
+    { name = 'insurgent2',       hash = 0x7B7E56F0, tree = 'automobile', reach =  1.5, below = 1.0 },
     { name = 'insurgent3',       hash = 0x8D4B7A8A, tree = 'automobile', reach =  1.5, below = 1.0, armed = true },
     { name = 'intruder',         hash = 0x34DD8AA1, tree = 'automobile', reach =  1.1, below = 0.6 },
     { name = 'issi2',            hash = 0xB9CB3B69, tree = 'automobile', reach =  0.9, below = 0.7 },

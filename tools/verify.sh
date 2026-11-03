@@ -173,6 +173,7 @@ NOTES=(
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
+    "test_vehicle_models|The game-data reader keeps the plain Insurgent unarmed, and refuses a dump that gives it a gun"
     "POI siting|Named map spots and ambulance spawns are spread out, on land, and follow placement rules"
     "map boundary|Every map spot, ambulance spawn, terminal site and Flick camera sits inside the play area the owner surveyed"
     "spectator microphone|Spectators are muted whenever they start watching and unmuted once when they stop"
@@ -1279,6 +1280,24 @@ if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_vehicles.lua || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# The gate above holds the table's armed rows to config/vehicle_models.lua,
+# which tools/vehicle_models.py writes from the game's data -- and that tool
+# overrides one model, the plain Insurgent, whose listed turret its model does
+# not carry (#427). tools/test_vehicle_models.py proves it refuses a dump in
+# which that stops being true, on fixture dumps of its own. PY_ is found at
+# the top of this file. A pass-cache unit like test_deploy: traced, so
+# editing the tool or the suite runs it again.
+suite_label test_vehicle_models
+if [ "${#PY_[@]}" -gt 0 ]; then
+    if vc_begin test_vehicle_models; then
+        vc_py; st_=0
+        "${VCP[@]}" tools/test_vehicle_models.py || st_=1
+        vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
+else
+    echo "${YEL}skip${RST} (Python 3 not found)"
 fi
 
 section 'POI siting'

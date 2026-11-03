@@ -894,7 +894,7 @@ end
 
 do
     -- THE EXEMPTION, END TO END. A Barracks is class 19 and unarmed, and the
-    -- owner's rule -- the one that keeps the plain `insurgent` out of the table
+    -- owner's rule -- the one that keeps the plain `insurgent2` out of the table
     -- -- permits it. Refusing it would have this gamemode inventing a rule and
     -- telling a player it is not allowed.
     reset()
