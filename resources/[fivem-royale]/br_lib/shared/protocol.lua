@@ -769,15 +769,20 @@ BR.Net = {
     -- S->C  { id, n, p, ms, hold? } -- "a jerry can is pouring into car `n`"
     -- (#217, Season 2). `id` is the pour's (from 1, per br_core server run),
     -- `p` the pourer's server id, `ms` the milliseconds left in it as of
-    -- sending -- 0 is the end -- and `hold` true on the hold message alone.
+    -- sending -- 0 is the end -- and `hold` true on every message but the end.
     --
-    -- THREE MOMENTS, ALL server/jerrycan.lua's: the START, as the press is
-    -- accepted (`hold` false); the HOLD, on the first slice that does not
-    -- finish the pour, sent beside the server's freeze; and the END, on every
-    -- way a pour ends. A start or a hold makes or refreshes the record for
-    -- that `id` with a deadline of its arrival plus `ms` plus
-    -- BR.Config.Fuel.jerryCan.releaseGraceMs, and an end or the deadline lets
-    -- it go -- so a client that missed the end still lets go by itself.
+    -- TWO MOMENTS, BOTH server/jerrycan.lua's: the HOLD, on the first slice
+    -- that does not finish the pour, sent beside the server's freeze -- the
+    -- first the match hears of it -- and the END, when a pour that sent its
+    -- hold ends, whichever way it does. NOTHING GOES AT THE PRESS: that first
+    -- slice is the first one paid for, so a pour cut short before it, or done
+    -- on it, sends nobody anything (server/jerrycan.lua's settle window). A
+    -- hold makes or refreshes the record for that `id` with a deadline of its
+    -- arrival plus `ms` plus BR.Config.Fuel.jerryCan.releaseGraceMs, and an end
+    -- or the deadline lets it go -- so a client that missed the end still lets
+    -- go by itself. (A client still records a message whose `hold` is false,
+    -- and holds no engine for it: the start the press sent before #217's
+    -- review.)
     --
     -- TO EVERY ROSTER ENTRY IN THE POUR'S MATCH, in any state -- spectators and
     -- the downed see the can in the pourer's hand too -- and to nobody outside

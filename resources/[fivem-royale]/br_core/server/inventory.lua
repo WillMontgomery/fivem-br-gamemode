@@ -164,6 +164,24 @@ end
 
 local carryMaxOf = BR.Inv.carryMax
 
+--- A jerry can's fill as the wire carries it (#217): to a thousandth, and
+--- NEVER 0 FOR A CAN THAT IS STILL IN THE BAG.
+---
+--- The server keeps a can until its fill is at or below `emptyBelow`, a
+--- millionth of a can, so a pour whose room fell within a thousandth of what
+--- the can held leaves a sliver that rounds to nothing. Sent as 0, that is a
+--- can the wire calls empty still taking the one place a player may carry one,
+--- and refusing the next can they find (#217's review). So a can with anything
+--- left in it is at least 0.001 on the wire, and 0 is said only of a can the
+--- server itself would call empty.
+--- @param s table  a can's slot
+--- @return number
+local function canFill(s)
+    local f = BR.JerryCanSolve.fillOf(s)
+    if BR.JerryCanSolve.empty(f) then return 0 end
+    return math.max(0.001, math.floor(f * 1000 + 0.5) / 1000)
+end
+
 --- The wire view of a player's inventory.
 --- @param src integer
 --- @return table|nil
@@ -193,11 +211,11 @@ function BR.Inv.publicFor(src)
             -- WHAT IS LEFT IN A JERRY CAN (#217), 0..1 of a can, for the gauge
             -- on its plate: on every can's slot -- a whole one sends 1, a can a
             -- dev verb gave with no fill included -- and on no other slot.
-            -- Rounded to a thousandth; the server keeps the exact number on the
-            -- slot. It moves on the wire when a pour ends and at every other
-            -- push, never per slice.
-            fill   = (c and c.refuel)
-                and math.floor(BR.JerryCanSolve.fillOf(s) * 1000 + 0.5) / 1000 or nil,
+            -- Rounded to a thousandth, and never 0 while there is any left
+            -- (canFill); the server keeps the exact number on the slot. It
+            -- moves on the wire when a pour ends and at every other push,
+            -- never per slice.
+            fill   = (c and c.refuel) and canFill(s) or nil,
         } or false
     end
 
@@ -1915,9 +1933,6 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         pour       = pour,
     }
     BR.Inv.push(src)
-    -- AND ITS START GOES TO THE MATCH ONLY NOW, with the channel open and its
-    -- bar on the pourer's screen: every client hangs the can on their hand.
-    if pour then BR.JerryCan.begin(src, pour) end
 end)
 
 -- The ammo report. Decrease-only, see the header.

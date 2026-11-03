@@ -1282,6 +1282,20 @@ end
 --- back of one is described at `ridesAsPassenger` below.
 local CABIN_SEATS = 8
 
+--- EVERY PASSENGER SEAT IN THE GAME: 0..14, behind the driver of the Bus and
+--- the Airport Bus, the biggest the game's own data has (`Seats` 16, the
+--- driver's among them, in DurtyFree's vehicles.json -- the dump
+--- tools/vehicle_models.py reads). A seat past the last one a vehicle has
+--- answers nobody, so walking them all is right for every model, and costs at
+--- most fifteen reads past the driver's.
+---
+--- FOR A CALLER THAT ASKS ONCE A PRESS AND ONCE A PASS, NOT EVERY SAMPLE, and
+--- for which the back of a bus reading as on foot is the DANGEROUS direction:
+--- the Season 2 jerry can (#217), which pours only for a player on foot and
+--- must never pour for one sitting at the back of a bus. The roadkill sampler
+--- keeps CABIN_SEATS, for the cost argued at `ridesAsPassenger`.
+BR.Vehicles.EVERY_SEAT = 15
+
 --- Is this ped riding as a PASSENGER of this vehicle?
 ---
 --- ═══ THE VEHICLE IS ASKED, NOT THE PED, AND THAT IS citizenfx/fivem#4006
@@ -1315,13 +1329,15 @@ local CABIN_SEATS = 8
 --- the bug this exists to stop, for the handful of vehicles in the game big
 --- enough to have that seat. Stated rather than papered over with a seat count
 --- nobody can justify; enumerating every seat of every candidate every sample is
---- a real cost for a case that needs a coach.
+--- a real cost for a case that needs a coach. A caller that asks once and
+--- cannot afford the miss passes `seats` (BR.Vehicles.EVERY_SEAT).
 --- @param veh integer
 --- @param ped integer
+--- @param seats integer|nil  passenger seats to walk: CABIN_SEATS when nil
 --- @return boolean
-local function ridesAsPassenger(veh, ped)
+local function ridesAsPassenger(veh, ped, seats)
     if veh == 0 or ped == 0 then return false end
-    for s = 0, CABIN_SEATS - 1 do
+    for s = 0, (seats or CABIN_SEATS) - 1 do
         if entityFrom(GetPedInVehicleSeat, veh, s) == ped then return true end
     end
     return false
@@ -1354,19 +1370,26 @@ end
 --- seats are walked: this one wants ANY seat, so it asks the driving seat first
 --- (the common answer, and one native) and the cabin only if that misses.
 ---
---- ONE VEHICLE IS EVER INTERROGATED, so the cost is bounded at ten natives and
---- is one in the overwhelmingly common case of a player on foot -- #4006's own
---- symptom is what makes the first read cheap, because it answers a stale handle
---- rather than making us search.
+--- ONE VEHICLE IS EVER INTERROGATED, so the cost is bounded at ten natives
+--- (seventeen with every seat, below) and is one in the overwhelmingly common
+--- case of a player on foot -- #4006's own symptom is what makes the first read
+--- cheap, because it answers a stale handle rather than making us search.
 ---
---- SEATS 8 AND BEYOND ARE NOT WALKED, and `ridesAsPassenger` states the same
---- limit for the same reason: it needs a coach. Somebody in the back of a bus
---- reads as on foot here. For both callers that fails the SAFE way -- a car they
---- are allowed to spawn, a blip they are allowed to see -- rather than the way
---- that silently withholds.
+--- SEATS 8 AND BEYOND ARE NOT WALKED unless the caller asks, and
+--- `ridesAsPassenger` states the same limit for the same reason: it needs a
+--- coach. Somebody in the back of a bus reads as on foot here. For both callers
+--- that fails the SAFE way -- a car they are allowed to spawn, a blip they are
+--- allowed to see -- rather than the way that silently withholds.
+---
+--- THE JERRY CAN IS THE CALLER FOR WHICH IT IS NOT SAFE (#217): reading on foot
+--- is what LETS a pour start and keeps it running, so a player at the back of a
+--- bus would pour from their seat. It passes BR.Vehicles.EVERY_SEAT, and every
+--- seat the vehicle has is walked -- seven reads more than the cabin's, and
+--- only for a ped who is in a vehicle or whose stale read (#4006) names one.
 --- @param ped integer|nil
+--- @param seats integer|nil  passenger seats to walk: CABIN_SEATS (8) when nil
 --- @return integer|nil  the vehicle handle, or nil when this ped is on foot
-function BR.Vehicles.ridingIn(ped)
+function BR.Vehicles.ridingIn(ped, seats)
     ped = math.tointeger(tonumber(ped)) or 0
     if ped == 0 then return nil end
 
@@ -1377,7 +1400,7 @@ function BR.Vehicles.ridingIn(ped)
     -- native and a throw, and `ped` was proved non-zero above -- so an empty
     -- vehicle cannot read as holding this ped.
     if entityFrom(GetPedInVehicleSeat, veh, -1) == ped then return veh end
-    if ridesAsPassenger(veh, ped) then return veh end
+    if ridesAsPassenger(veh, ped, math.tointeger(tonumber(seats))) then return veh end
     return nil
 end
 
@@ -2167,8 +2190,9 @@ end
 --- an add-on, for something that is not a number, and when the table is not
 --- loaded.
 ---
---- server/jerrycan.lua asks it at a press and on every pass of a pour: the
---- row's footprint bounds the pourer, and `jerryFills` is a whole tank.
+--- server/jerrycan.lua asks it at a press (and in `brjerrycan`'s dry run); the
+--- pour keeps that row, and every pass bounds the pourer with it: the row's
+--- footprint is where a pourer may stand, and `jerryFills` is a whole tank.
 --- @param model integer|nil  a model hash
 --- @return table|nil row  { name, hash, tree, reach?, below?, front?, rear?,
 ---                        armed?, jerryFills? }

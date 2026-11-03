@@ -44,8 +44,9 @@
 -- client owns the vehicle at the moment of the call, and it is not re-sent when
 -- ownership moves -- with no owner it waits for the next one. So it is sent on
 -- the pour's first slice and AGAIN on every pass that finds a different owner
--- (NetworkGetEntityOwner), and the unfreeze goes out the same way at every
--- release. Clients never freeze; they only unfreeze (client/jerrycan.lua).
+-- (NetworkGetEntityOwner), and the unfreeze goes out the same way when a pour
+-- that froze the car is released. Clients never freeze; they only unfreeze
+-- (client/jerrycan.lua).
 --
 -- WHAT THE SERVER READS OF A FREEZE IS UP TO A SECOND STALE: IsEntityPositionFrozen
 -- is the owning client's last-synced bit. So the PROOF that the car stood still
@@ -56,7 +57,8 @@
 -- engine running buys nothing: the car moves, the pour stops, and the pourer
 -- keeps the rest of the can.
 --
--- ═══ NOTHING POURS AND NOTHING FREEZES INSIDE THE SETTLE WINDOW ═══
+-- ═══ NOTHING POURS, NOTHING FREEZES AND NOTHING IS SENT INSIDE THE SETTLE
+--     WINDOW ═══
 --
 -- For `settleMs` after the press (one roster sample) a pour does nothing at all:
 -- that sample is the server's second reading of where the pourer and the car
@@ -65,6 +67,16 @@
 -- bounds a griefer: every millisecond a car is frozen is a millisecond of
 -- fuel the pourer has already poured into it out of their own can, plus one
 -- pass. A tank within `minSpace` of full refuses the press outright.
+--
+-- FUEL_CAN WAITS FOR THAT SLICE TOO. The first the match hears of a pour is
+-- its hold, sent beside the freeze, and its end goes only to a match that was
+-- sent the hold -- so a pour cut short inside the window, or done on its first
+-- slice, tells nobody anything. A start sent at the press went to every client
+-- in the match, and hung a can on the pourer's hand on every one of them, for
+-- nothing paid: a modified client that stepped off after each press had every
+-- client in the match make a can and take it down four times a second (#217's
+-- review, 2026-11-03). The pourer's own can follows their channel from the
+-- press (client/jerrycan.lua), so only the others see it a pass later.
 --
 -- ═══ EVERY WAY A POUR ENDS RELEASES IT ═══
 --
@@ -83,7 +95,9 @@
 --
 -- AN INTERRUPTION KEEPS WHAT IT POURED AND THE CAN KEEPS THE REST. Nothing is
 -- spent on a cancel and nothing needs refunding: the fuel delivered, counted in
--- cans, plus what is left in the can is one can, on every row above.
+-- cans, plus what is left in the can is one can on every row above while the
+-- can exists. A disconnect, an inventory reset, a match teardown or a restart
+-- takes the can with it, and the total is then less: never more.
 --
 -- ═══ SEASON 1 SEES NONE OF IT ═══
 --
@@ -137,11 +151,20 @@ JC.natives = have
 local claims = {}
 
 --- Vehicles released after a hold, watched for `releaseChecks` passes in case
---- the unfreeze did not land: { n, ent, left }. A car released on this pass
---- waits in `pending` until the reconcile job has run, so its first check is
---- on a LATER pass than the unfreeze its release already sent.
+--- the unfreeze did not land: { n, ent, at, left, stuck } -- first looked at
+--- once `at` has come (RELEASE_WATCH_MS), and `stuck` once one look found it
+--- still frozen, so a car is counted once however many looks find it so.
 local after = {}
-local pending = {}
+
+--- How long after a release the server first looks at the car it froze: a
+--- second and a half, PAST THE SECOND ITS READ OF A FREEZE CAN LAG.
+--- IsEntityPositionFrozen answers the owning client's last sync of the bit, so
+--- a look sooner reads the freeze the unfreeze has already undone, and counts
+--- a release that worked as one that did not -- every look the first build took,
+--- at a quarter, a half and three quarters of a second, was inside that lag
+--- (#217's review). A car still frozen this long after is one the unfreeze
+--- did not reach.
+local RELEASE_WATCH_MS = 1500
 
 --- The pour's id on the wire: from 1, increasing for as long as br_core runs.
 --- NOT reset by BR.JerryCan.reset, so a client never sees an id twice.
@@ -247,6 +270,9 @@ end
 --- ledger's `vehicleOf` would count a player who has already got out), each
 --- once. The pump's own key (config/audio.lua's 'fuel.start'), so the can and
 --- the pump are one sound.
+---
+--- EVERY SEAT, the back of a bus among them (BR.Vehicles.EVERY_SEAT): the same
+--- reading of "in this vehicle" as the pourer's own on-foot test, below.
 --- @param pour table
 --- @param ent integer
 local function cue(pour, ent)
@@ -255,7 +281,9 @@ local function cue(pour, ent)
         BR.Roster.each(function(e)
             return LIVE[e.state] == true and e.matchId == pour.matchId
         end, function(src, e)
-            if BR.Vehicles.ridingIn(e.ped) == ent then to[tonumber(src) or src] = true end
+            if BR.Vehicles.ridingIn(e.ped, BR.Vehicles.EVERY_SEAT) == ent then
+                to[tonumber(src) or src] = true
+            end
         end)
     end
     local ids = {}
@@ -298,8 +326,9 @@ end
 ---   untracked   the ledger has a row for it in the pourer's match. An
 ---               untracked car reads full: nobody has burned any of its fuel
 ---   full        it has room for at least `minSpace` of a tank
----   seated      the pourer is on foot -- by the vehicle's own seats
----               (BR.Vehicles.ridingIn), never server GetVehiclePedIsIn, which
+---   seated      the pourer is on foot -- by the vehicle's own seats, every
+---               one of them (BR.Vehicles.ridingIn with EVERY_SEAT: the back of
+---               a bus is a seat), never server GetVehiclePedIsIn, which
 ---               answers the last car a ped sat in (citizenfx/fivem#4006)
 ---   away        the pourer stands inside the vehicle's footprint box
 ---               (BR.JerryCanSolve.atCap), from a fresh read of their ped
@@ -351,7 +380,7 @@ function JC.judge(src, slot, n, now)
         return nil, 'full'
     end
 
-    if BR.Vehicles.ridingIn(e.ped) ~= nil then return nil, 'seated' end
+    if BR.Vehicles.ridingIn(e.ped, BR.Vehicles.EVERY_SEAT) ~= nil then return nil, 'seated' end
 
     local P = coordsOf(e.ped) or e.pos
     local V = coordsOf(ent)
@@ -393,7 +422,8 @@ end
 --- THE PRESS SPENDS NOTHING AND LEAVES THE CAN'S FILL WHERE IT WAS: the slices
 --- move the fuel. The record returned is the claim and the channel's `pour`
 --- alike, so the tick's step and the reconcile job agree on which pour is
---- whose.
+--- whose. AND IT SENDS NOTHING: the match first hears of the pour on its first
+--- slice, the one that pays (the header's settle window).
 --- @param src integer
 --- @param slot integer
 --- @param n any
@@ -421,19 +451,6 @@ function JC.rule(src, slot, n)
     return pour, pour.ms
 end
 
---- FUEL_CAN's start, to the pourer's match: every client hangs a can on the
---- pourer's hand from here. Called by INV_USE once the channel is open and the
---- inventory pushed.
---- @param src integer
---- @param pour table
-function JC.begin(src, pour)
-    if type(pour) ~= 'table' or claims[pour.n] ~= pour then return end
-    toMatch(pour.matchId, {
-        id = pour.id, n = pour.n, p = pour.src,
-        ms = math.tointeger(pour.ms) or math.floor(pour.ms), hold = false,
-    })
-end
-
 -- ---------------------------------------------------------------------------
 -- The release
 -- ---------------------------------------------------------------------------
@@ -441,16 +458,20 @@ end
 --- Let go of the pour on network id `n`, whatever ended it.
 ---
 ---   1. the claim goes;
----   2. FUEL_CAN's end reaches the match, and every client lets go of its can,
----      its engine hold and any frozen copy;
----   3. the unfreeze RPC goes to whoever owns the car, or waits for the next
----      owner -- whether or not this pour had frozen it yet, because nothing
----      else in a match freezes a car a player can pour into. Not to a car that
----      no longer exists: there is nothing left to unfreeze;
----   4. a pour that froze the car is watched for `releaseChecks` passes after
----      this one, and the unfreeze is sent again on each that still reads it
----      frozen;
----   5. the reason is counted.
+---   2. FOR A POUR THAT HELD THE CAR -- the match sent its hold, the car its
+---      freeze, on the first slice -- the release takes both back:
+---        * FUEL_CAN's end reaches the match, and every client lets go of its
+---          can, its engine hold and any frozen copy;
+---        * the unfreeze RPC goes to whoever owns the car, or waits for the
+---          next owner -- not to a car that no longer exists: there is nothing
+---          left to unfreeze;
+---        * the car is watched: looked at again from RELEASE_WATCH_MS on, for
+---          `releaseChecks` passes, and sent the unfreeze again on each that
+---          still reads it frozen;
+---   3. a pour that never held -- cut short inside the settle window, or done
+---      on its first slice -- froze nothing and told nobody, so it takes
+---      nothing back and sends nothing at all;
+---   4. the reason is counted.
 ---
 --- IDEMPOTENT, AND A NO-OP FOR AN UNCLAIMED `n`, because it is reached from
 --- the slices, the reconcile job, a disconnect and a match's teardown, and two
@@ -462,11 +483,11 @@ function JC.release(n, why)
     local pour = n and claims[n] or nil
     if pour == nil then return end
     claims[n] = nil
-    toMatch(pour.matchId, { id = pour.id, n = pour.n, p = pour.src, ms = 0 })
-    if exists(pour.ent) then freeze(pour.ent, false) end
     if pour.hold then
-        pending[#pending + 1] = {
-            n = n, ent = pour.ent,
+        toMatch(pour.matchId, { id = pour.id, n = pour.n, p = pour.src, ms = 0 })
+        if exists(pour.ent) then freeze(pour.ent, false) end
+        after[#after + 1] = {
+            n = n, ent = pour.ent, at = GetGameTimer() + RELEASE_WATCH_MS, stuck = false,
             left = math.tointeger(tonumber(canCfg().releaseChecks)) or 0,
         }
     end
@@ -491,7 +512,7 @@ end
 ---   gone       the network id still names the vehicle it named at the press,
 ---              and that vehicle exists
 ---   bucket     it is still in the pour's routing bucket
----   seated     the pourer is still on foot (BR.Vehicles.ridingIn)
+---   seated     the pourer is still on foot (BR.Vehicles.ridingIn, every seat)
 ---   away       the pourer, where the roster last sampled them, is still inside
 ---              the vehicle's box, where it stands now and facing as it faces
 ---   moved      the pourer has not moved `pourerDrift` from where they pressed
@@ -511,8 +532,9 @@ end
 --- DONE when the bar is up, the plan has all gone in, or the tank took less than
 --- it was offered (it filled first -- a pump in the same car). Otherwise, on the
 --- first slice, the HOLD: the freeze RPC to the car's owner and FUEL_CAN hold to
---- the match; and on every pass after it, the freeze again for an owner who was
---- not the last one sent it.
+--- the match -- the first the match hears of this pour, so every other client
+--- hangs the can on the pourer's hand from here; and on every pass after it,
+--- the freeze again for an owner who was not the last one sent it.
 ---
 --- 'done' and 'cancel' HAVE ALREADY RELEASED THE CLAIM; the tick takes the can
 --- out of the bag if it is empty, and closes the channel.
@@ -548,7 +570,7 @@ function JC.step(src, e, u, s, now)
             and BR.Fuel.pour) then
         return cancel('nomodule')
     end
-    if BR.Vehicles.ridingIn(e.ped) ~= nil then return cancel('seated') end
+    if BR.Vehicles.ridingIn(e.ped, BR.Vehicles.EVERY_SEAT) ~= nil then return cancel('seated') end
 
     local P, V = e.pos, coordsOf(ent)
     if P == nil or V == nil
@@ -708,7 +730,7 @@ end
 function JC.stats()
     local live = 0
     for _ in pairs(claims) do live = live + 1 end
-    local out = { live = live, queued = #after + #pending, refused = {}, cancels = {} }
+    local out = { live = live, queued = #after, refused = {}, cancels = {} }
     for k, v in pairs(stat) do
         if type(v) == 'number' then out[k] = v end
     end
@@ -720,7 +742,7 @@ end
 --- Drop every claim, the watch list and the counters, sending nothing. For
 --- onResourceStart, where nothing is open yet, and for the suites.
 function JC.reset()
-    claims, after, pending = {}, {}, {}
+    claims, after = {}, {}
     stat = freshStat()
 end
 
@@ -735,27 +757,39 @@ end
 --- one test: a claim whose pourer has no roster entry, no channel, or a channel
 --- whose `pour` is not this claim, is over.
 ---
---- AND THE RELEASED CARS. Each watched car that still reads frozen is sent the
---- unfreeze again, on each of the `releaseChecks` passes AFTER the one that
---- released it -- that pass already sent one -- and never once a new pour
---- holds it.
+--- AND THE RELEASED CARS. Each watched car still read frozen once
+--- RELEASE_WATCH_MS has passed -- past the lag of that read, so the unfreeze
+--- its release sent has had time to land and be synced back -- is sent the
+--- unfreeze again, on each of its `releaseChecks` passes, and counted ONCE as
+--- frozen after release: a car the unfreeze did not reach. Never once a new
+--- pour holds it -- that pour's own release watches it then.
 BR.Sched.every(250, 'jerrycan.reconcile', function()
+    local now = GetGameTimer()
     local keep = {}
     for _, a in ipairs(after) do
         if claims[a.n] == nil then
-            if have.frozen and exists(a.ent) then
-                local ok, fz = pcall(IsEntityPositionFrozen, a.ent)
-                if ok and didHit(fz) then
-                    freeze(a.ent, false)
-                    stat.frozenAfterRelease = stat.frozenAfterRelease + 1
+            if now < a.at then
+                keep[#keep + 1] = a
+            else
+                if have.frozen and exists(a.ent) then
+                    local ok, fz = pcall(IsEntityPositionFrozen, a.ent)
+                    if ok and didHit(fz) then
+                        freeze(a.ent, false)
+                        if not a.stuck then
+                            a.stuck = true
+                            stat.frozenAfterRelease = stat.frozenAfterRelease + 1
+                        end
+                    end
                 end
+                a.left = a.left - 1
+                if a.left > 0 then keep[#keep + 1] = a end
             end
-            a.left = a.left - 1
-            if a.left > 0 then keep[#keep + 1] = a end
         end
     end
     after = keep
 
+    -- A car released just below is watched from RELEASE_WATCH_MS on, never on
+    -- this pass.
     local over = {}
     for n, pour in pairs(claims) do
         local e = BR.Roster.get(pour.src)
@@ -764,10 +798,6 @@ BR.Sched.every(250, 'jerrycan.reconcile', function()
     end
     table.sort(over)
     for _, n in ipairs(over) do JC.release(n, 'reconcile') end
-
-    -- Released on this pass, by a slice or just above: watched from the next.
-    for _, a in ipairs(pending) do after[#after + 1] = a end
-    pending = {}
 end)
 
 AddEventHandler('playerDropped', function()
@@ -838,7 +868,7 @@ RegisterCommand('brjerrycan', function(_, args)
                 s.reconciled, s.ownerChanges))
     print(('  refused: %s'):format(reasons(s.refused)))
     print(('  canceled: %s'):format(reasons(s.cancels)))
-    print(('  engine-on passes %d  frozen passes %d  frozen after release %d  '
+    print(('  engine-on passes %d  frozen passes %d  cars frozen after release %d  '
         .. 'crate rolls %d  cans %d')
         :format(s.engineOnPasses, s.frozenPasses, s.frozenAfterRelease,
                 s.crateRolls, s.crateCans))

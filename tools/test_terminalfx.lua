@@ -3902,6 +3902,22 @@ do
     eq(select(2, F.empState()), 0, 'a spared driver writes no hold')
     vgetOut(4)
 
+    -- A CAR A JERRY CAN'S POUR HOLDS (#217) IS NOT THE EMP'S TO FREE: the
+    -- spared driver's free goes through BR.EngineHold.free, which writes
+    -- nothing while any holder holds the car here -- at the entering event,
+    -- and at the 250 ms and 1 s after it. The pour's own release starts it.
+    vnew(11, { engine = true })
+    BR.EngineHold.hold('jerrycan', 1011, 11)
+    ok(vstalled(11), 'a pour holds the car: stalled under the can\'s name')
+    vgetIn(W, 11)
+    ok(vstalled(11), 'a spared driver gets in mid-pour, an EMP lasting: still stalled')
+    vtimers()
+    ok(vstalled(11), 'and still at the 250 ms and 1 s re-asserts: the EMP wrote no free')
+    eq(select(2, F.empState()), 0, 'and wrote no hold of its own')
+    BR.EngineHold.release('jerrycan', 1011, true)
+    ok(vfree(11) and VW.cars[11].engine == true, 'the pour lets go: freed, and started for its driver')
+    vgetOut(11)
+
     -- NO EMP AT ALL: getting in frees nothing (it touches no vehicle).
     W.net(BR.Net.TERMINAL_EMP, { matchId = 1 })
     vnew(5)
@@ -3921,6 +3937,39 @@ do
     eq(VW.cars[7].undriveable, nil, 'a bicycle: no engine, never held')
     vgetOut(7)
     W.done()
+end
+
+describe('client: EMP -- every way it ends leaves a car a jerry can\'s pour still holds (#217)')
+do
+    -- THE EMP'S RELEASES GO THROUGH BR.EngineHold TOO: the server's end, the
+    -- lobby and br_core stopping each let go of the EMP's hold, and the car
+    -- stays held while the pour does -- then the pour's own release frees it.
+    local endings = {
+        { 'the server\'s end', function(W) W.net(BR.Net.TERMINAL_EMP, { matchId = 1 }) end },
+        { 'the lobby', function(W)
+            BR.State.me.state = BR.PlayerState.LOBBY
+            W.slow()
+            BR.State.me.state = BR.PlayerState.ALIVE
+        end },
+        { 'br_core stopping', function(W) W.handlers.onResourceStop('br_core') end },
+    }
+    for i, case in ipairs(endings) do
+        vreset()
+        local W = clientWorld()
+        local h = 20 + i
+        vnew(h, { engine = true })
+        vgetIn(W, h)
+        W.net(BR.Net.TERMINAL_EMP, { matchId = 1, leftMs = 180000, liveMs = 180000 })
+        ok(vstalled(h), case[1] .. ': stalled by the EMP')
+        BR.EngineHold.hold('jerrycan', h + 1000, h)
+        case[2](W)
+        ok(vstalled(h) and BR.EngineHold.held(h + 1000, 'jerrycan'),
+           case[1] .. ' mid-pour: the EMP lets go, and the pour still holds the car')
+        BR.EngineHold.release('jerrycan', h + 1000, true)
+        ok(vfree(h) and VW.cars[h].engine == true, case[1] .. ': the pour lets go, and the car is freed and started')
+        vgetOut(h)
+        W.done()
+    end
 end
 
 describe('client: EMP -- it ends on its own clock, in the lobby, off Season 2 and as br_core stops')

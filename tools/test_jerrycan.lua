@@ -950,6 +950,14 @@ do
         seat(1, CAR, s)
         refused('seated', ('the pourer in seat %d'):format(s), slot, NET)
     end
+    -- ...AND AT THE BACK OF A BUS: every seat it has, not the cabin's eight
+    -- (BR.Vehicles.EVERY_SEAT). Seat 7 is the last the roadkill sampler walks;
+    -- 8, 9 and 14 are past it, and the first build poured from all three.
+    for _, s in ipairs({ 7, 8, 9, 14 }) do
+        slot = scene({ model = 'bus', at = { lx = 0.6, ly = -4.0 } })
+        seat(1, CAR, s)
+        refused('seated', ('the pourer in seat %d of a bus'):format(s), slot, NET)
+    end
     -- away: each edge of the box, and the rise
     local adder = BR.Vehicles.modelRowOf(joaat('adder'))
     local m = J.boxMargin
@@ -1017,23 +1025,19 @@ do
        u and u.ms)
     ok(u and u.pour == JC.claimOf(NET) and u.pour ~= nil, 'and its pour IS the claim')
     ok(inv(1).slots[slot] and inv(1).slots[slot].fill == nil, 'the can\'s fill is untouched by the press')
-    local to = targets(BR.Net.FUEL_CAN)
-    ok(to[1] == 1 and to[2] == 1 and to[3] == 1 and to[4] == 1,
-       'FUEL_CAN start reaches every match member, in every state: alive, out, downed')
-    ok(to[9] == nil, 'and nobody in another match')
-    local start = events(BR.Net.FUEL_CAN, 3)[1]
-    ok(start and math.type(start.id) == 'integer' and start.id >= 1 and start.n == NET
-       and start.p == 1 and start.ms == 5000 and start.hold == false,
-       'it is { id, n, p, ms, hold = false }')
+    -- NOTHING GOES TO THE MATCH AT THE PRESS: it first hears of a pour on the
+    -- slice that pays for it (F, and J for why).
+    ok(#events(BR.Net.FUEL_CAN) == 0, 'no FUEL_CAN at the press, to anybody', #events(BR.Net.FUEL_CAN))
     ok(#rpcs == 0, 'no freeze yet: nothing pours or freezes in the settle window')
     ok(BR.Fuel.left(NET) == left0 and BR.Fuel.stats().pours == 0, 'and no fuel moves yet')
     ok(JC.stats().starts == 1 and JC.stats().presses == 1, 'one press, one start')
+    local firstId = u and u.pour and u.pour.id
+    ok(math.type(firstId) == 'integer' and firstId >= 1, 'the pour has its id, for the wire', firstId)
 
     -- AND THE NEXT PRESS GETS THE NEXT ID.
-    local firstId = start.id
     slot = scene()
     press(1, slot, NET)
-    ok(events(BR.Net.FUEL_CAN, 3)[1].id == firstId + 1, 'ids increase, across resets too')
+    ok(JC.claimOf(NET) and JC.claimOf(NET).id == firstId + 1, 'ids increase, across resets too')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1057,7 +1061,7 @@ do
 
     tick(100)
     ok(BR.Fuel.left(NET) == left0 and #rpcs == 0, 'before 250 ms nothing happens')
-    ok(#events(BR.Net.FUEL_CAN, 3) == 1, 'and no hold')
+    ok(#events(BR.Net.FUEL_CAN) == 0, 'and nothing is sent to anybody')
 
     tick(150)
     ok(near(BR.Fuel.left(NET), left0 + 93.75, 1e-9), 'the first slice is the elapsed share: 93.75 m',
@@ -1066,15 +1070,22 @@ do
        fillAt(1, slot))
     local on = rpcsFor(CAR, true)
     ok(#on == 1 and on[1].owner == 2, 'the freeze RPC goes once, to the owner', #on)
+    -- THE HOLD IS THE FIRST THE MATCH HEARS OF THE POUR: to every roster entry
+    -- in it, in every state -- the downed and the out see the can in a hand
+    -- too -- and to nobody outside it.
+    local to = targets(BR.Net.FUEL_CAN)
+    ok(to[1] == 1 and to[2] == 1 and to[3] == 1 and to[4] == 1 and to[5] == 1 and to[6] == 1,
+       'FUEL_CAN hold reaches every match member, in every state: alive, out, downed')
+    ok(to[9] == nil, 'and nobody in another match')
     local holds = 0
     for _, p in ipairs(events(BR.Net.FUEL_CAN, 3)) do
         if p.hold == true then
             holds = holds + 1
             ok(p.ms == 4750 and p.id == pour.id and p.n == NET and p.p == 1,
-               'the hold says 4,750 ms are left', p.ms)
+               'it is { id, n, p, ms, hold = true }, with 4,750 ms left', p.ms)
         end
     end
-    ok(holds == 1, 'FUEL_CAN hold once', holds)
+    ok(holds == 1 and #events(BR.Net.FUEL_CAN, 3) == 1, 'FUEL_CAN hold once, and nothing before it', holds)
     local cues = targets(BR.Net.FUEL_SFX, function(p) return p.c == 'fuel.start' and p.n == NET end)
     ok(cues[1] == 1 and cues[2] == 1 and cues[5] == 1,
        'fuel.start reaches the pourer and each seated occupant, once each')
@@ -1122,6 +1133,18 @@ do
         if l:find(('car %d <- 1'):format(NET), 1, true) then live = true end
     end
     ok(live, 'brjerrycan lists the live pour', logs[4])
+
+    -- THE BACK OF A BUS IS IN IT: the cue reaches a rider in seat 12, past the
+    -- cabin's eight -- the same every-seat reading the pourer's own test uses.
+    slot = scene({ model = 'bus', at = { lx = 0.6, ly = -4.0 } })
+    player(5, MATCH, nil, V.x, V.y, V.z)
+    seat(5, CAR, 12)
+    sent = {}
+    press(1, slot, NET)
+    tick()
+    local cued = targets(BR.Net.FUEL_SFX, function(p) return p.c == 'fuel.start' and p.n == NET end)
+    ok(cued[1] == 1 and cued[5] == 1, 'fuel.start reaches a rider at the back of a bus, seat 12',
+       tostring(cued[5]))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1164,6 +1187,8 @@ do
     local pushed = events(BR.Net.INV_SET, 1)
     local lastSlot = pushed[#pushed].slots[slot]
     ok(lastSlot == false, 'and the pourer is told the slot is empty')
+    ok(#notices == 0, 'and not a word: a pour that completes is as silent as one refused or cut short',
+       notices[1] and notices[1].text)
 
     -- A CAR AT 90%: ENDS EXACTLY FULL, AND THE CAN KEEPS 0.6.
     slot = scene({ burn = 750 })
@@ -1175,6 +1200,8 @@ do
     pushed = events(BR.Net.INV_SET, 1)
     local sentSlot = pushed[#pushed].slots[slot]
     ok(sentSlot and sentSlot.fill == 0.6, 'which is what its plate is sent', sentSlot and sentSlot.fill)
+    ok(#notices == 0, 'and a pour that keeps the rest in the can says nothing either',
+       notices[1] and notices[1].text)
 
     -- A DRY DIRT BIKE: FULL, AND THE CAN IS GONE.
     slot = scene({ model = 'sanchez', burn = TANK })
@@ -1222,7 +1249,9 @@ do
        'and the can lost only what IT poured', fillAt(1, slot))
     BR.Fuel.pour = realPour
 
-    -- THE RELEASED CAR IS WATCHED: THE UNFREEZE AGAIN, AT MOST THREE TIMES.
+    -- THE RELEASED CAR IS WATCHED: FROM A SECOND AND A HALF ON -- past the
+    -- second the server's read of a freeze can lag -- THE UNFREEZE AGAIN, AT
+    -- MOST THREE TIMES, AND THE CAR COUNTED ONCE.
     slot = scene({ burn = 7500 })
     press(1, slot, NET)
     tick()
@@ -1232,26 +1261,49 @@ do
     tick()
     ok(JC.claimOf(NET) == nil, 'downed: released')
     rpcs = {}
-    W.frozen[CAR] = true
-    for _ = 1, 6 do tick() end
-    ok(#rpcsFor(CAR, false) == 3, 'a car still reading frozen is unfrozen again, three times and no more',
+    W.frozen[CAR] = true                 -- the owner's last sync: still the freeze
+    for _ = 1, 5 do tick() end           -- 1,250 ms on
+    ok(#rpcsFor(CAR, false) == 0 and JC.stats().frozenAfterRelease == 0,
+       'inside the lag nothing is read into it: no unfreeze again, nothing counted',
        #rpcsFor(CAR, false))
-    ok(JC.stats().frozenAfterRelease == 3, 'and counted')
-    -- ...AND NOT WHILE A NEW POUR HOLDS IT.
+    for _ = 1, 6 do tick() end
+    ok(#rpcsFor(CAR, false) == 3, 'past it, a car still reading frozen is unfrozen again, three times and no more',
+       #rpcsFor(CAR, false))
+    ok(JC.stats().frozenAfterRelease == 1, 'and counted once: one car the unfreeze did not reach',
+       JC.stats().frozenAfterRelease)
+    -- A RELEASE THAT WORKED IS NOT COUNTED: the owner's sync catches up with
+    -- the unfreeze inside the lag, and the watch finds the car free.
     slot = scene({ burn = 7500 })
     press(1, slot, NET)
     tick()
     tick()
     roster[1].state = BR.PlayerState.DBNO
     tick()
-    roster[1].state = BR.PlayerState.ALIVE
     rpcs = {}
     W.frozen[CAR] = true
+    for _ = 1, 4 do tick() end           -- a second of the stale bit
+    W.frozen[CAR] = false                -- then the sync of the unfreeze
+    for _ = 1, 8 do tick() end
+    ok(#rpcsFor(CAR, false) == 0 and JC.stats().frozenAfterRelease == 0,
+       'a release whose read was a second stale is neither sent again nor counted',
+       JC.stats().frozenAfterRelease)
+    -- ...AND NOT WHILE A NEW POUR HOLDS IT.
+    slot = scene({ burn = 7500 })
     press(1, slot, NET)
+    tick()
+    tick()
+    roster[1].state = BR.PlayerState.DBNO
+    tick()                               -- released, and watched from 1.5 s on
+    roster[1].state = BR.PlayerState.ALIVE
+    for _ = 1, 4 do tick() end
+    press(1, slot, NET)                  -- poured again before the watch looks
     ok(JC.claimOf(NET) ~= nil, 'pressed again')
-    tick(100)
-    tick(100)
+    rpcs = {}
+    W.frozen[CAR] = true                 -- the new pour's freeze
+    for _ = 1, 8 do tick() end           -- past the old watch's start and its three looks
+    ok(JC.claimOf(NET) ~= nil, 'the new pour still running')
     ok(#rpcsFor(CAR, false) == 0, 'and the watch sends no unfreeze under a new claim')
+    ok(JC.stats().frozenAfterRelease == 0, 'nor counts the new pour\'s freeze as one that stuck')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1260,17 +1312,18 @@ end
 --
 -- Every way a pour ends early, each from a pour one second in (375 m poured,
 -- the car held): the ledger keeps what poured, the can holds exactly what did
--- not, the claim is gone within a pass, and FUEL_CAN's end and the unfreeze go
--- out.
+-- not, the claim is gone within a pass, FUEL_CAN's end and the unfreeze go
+-- out -- and the player is told nothing, but for an enemy's hit, which says
+-- the 'Interrupted.' every interrupted channel says.
 do
     --- @param name string
     --- @param key string  the reason the release is counted under
     --- @param trigger fun(): table|nil  does it; may answer { stack = <where the can is now> }
-    --- @param opts table|nil  { at, noLedger, noUnfreeze, now }
+    --- @param opts table|nil  { at, model, says, noLedger, noUnfreeze, now }
     local function route(name, key, trigger, opts)
         opts = opts or {}
         describe('H. the cancel matrix: ' .. name)
-        local slot = scene({ at = opts.at })
+        local slot = scene({ at = opts.at, model = opts.model })
         local left0 = BR.Fuel.left(NET)
         press(1, slot, NET)
         for _ = 1, 4 do tick() end
@@ -1282,6 +1335,14 @@ do
         local got = trigger(s) or {}
         if not opts.now then tick() end
         ok(JC.claimOf(NET) == nil, 'the claim is released within one pass')
+        -- SILENT: a cancel says nothing to the player, as a refusal does (D),
+        -- and the hit's one line goes to them alone.
+        if opts.says then
+            ok(#notices == 1 and notices[1].text == opts.says and notices[1].target == 1,
+               ('with the ordinary \'%s\', to the pourer'):format(opts.says), notices[1] and notices[1].text)
+        else
+            ok(#notices == 0, 'and not a word to the player', notices[1] and notices[1].text)
+        end
         local st = JC.stats()
         ok((st.cancels[key] or 0) == 1 and st.canceled == 1 and st.completions == 0,
            ('as a cancel, `%s`'):format(key), next(st.cancels))
@@ -1309,9 +1370,7 @@ do
     route('an enemy\'s hit', 'reconcile', function()
         roster[1].hp = 80
         BR.Inv.struck(1, 9, 20)
-    end)
-    ok(notices[1] and notices[1].text == 'Interrupted.' and notices[1].target == 1,
-       'with the ordinary \'Interrupted.\'', notices[1] and notices[1].text)
+    end, { says = 'Interrupted.' })
 
     route('downed', 'reconcile', function() roster[1].state = BR.PlayerState.DBNO end)
     ok(inv(1).slots[1] and inv(1).slots[1].item == CAN.id, 'the can stays in the downed player\'s bag')
@@ -1360,6 +1419,11 @@ do
     end)
 
     route('the pourer gets in', 'seated', function() seat(1, CAR, 0) end)
+
+    -- ...AT THE BACK OF A BUS: seat 12, past the cabin's eight. The first build
+    -- poured on, and held the bus, with its pourer sitting in it.
+    route('the pourer sits at the back of a bus', 'seated', function() seat(1, CAR, 12) end,
+          { model = 'bus' })
 
     route('the pourer steps outside the box', 'away', function()
         place(1, roster[1].pos.x - 0.2, roster[1].pos.y)
@@ -1603,18 +1667,46 @@ do
            :format(fz, paidMs), fz)
     ok(fz > 0, 'and it was frozen at all')
 
-    -- A CANCEL INSIDE THE SETTLE WINDOW FREEZES NOTHING.
+    -- A CANCEL INSIDE THE SETTLE WINDOW FREEZES NOTHING AND SENDS NOTHING: not
+    -- at the press, and not at its end.
     slot = scene()
     press(1, slot, NET)
-    rpcs, sent = {}, {}
     place(1, roster[1].pos.x, roster[1].pos.y + 1.0)
     tick(100)
     ok(JC.claimOf(NET) == nil, 'a pour cut short in its first 250 ms is released')
-    ok(#rpcsFor(CAR, true) == 0, 'having frozen nothing')
-    local holds = 0
-    for _, p in ipairs(events(BR.Net.FUEL_CAN)) do if p.hold then holds = holds + 1 end end
-    ok(holds == 0, 'and sent no hold')
+    ok(#rpcs == 0, 'having frozen nothing, and sent no unfreeze either', #rpcs)
+    ok(#events(BR.Net.FUEL_CAN) == 0, 'and told the match nothing: no hold, no start, no end',
+       #events(BR.Net.FUEL_CAN))
     ok(BR.Fuel.stats().pours == 0, 'and poured nothing')
+
+    -- ...AND AGAIN AND AGAIN: a modified client stepping off after every press,
+    -- the cycle that cost nothing. The first build sent every match member a
+    -- start and an end for each, and the car an unfreeze: free messages to the
+    -- whole match, and a can made and taken down on every hand there, four
+    -- times a second.
+    slot = scene()
+    local at = { x = roster[1].pos.x, y = roster[1].pos.y }
+    for _ = 1, 40 do
+        place(1, at.x, at.y)
+        press(1, slot, NET)
+        place(1, at.x, at.y + 0.8)
+        tick()
+    end
+    ok(JC.stats().starts == 40 and JC.stats().canceled == 40,
+       'forty presses taken, each cut short on its first pass', JC.stats().starts)
+    ok(#events(BR.Net.FUEL_CAN) == 0 and #rpcs == 0,
+       'and not one message to the match, nor one RPC', ('%d, %d'):format(#events(BR.Net.FUEL_CAN), #rpcs))
+    ok(fillAt(1, slot) == nil and BR.Fuel.stats().pours == 0, 'the can and the tank untouched')
+
+    -- A POUR DONE ON ITS FIRST SLICE never held, so it tells nobody either: a
+    -- sliver of room, 60 m, poured whole in its one 250 ms pass.
+    slot = scene({ burn = 60 })
+    press(1, slot, NET)
+    ok(inv(1).using and inv(1).using.ms == 250, 'a 60 m pour is one pass long')
+    tick()
+    ok(inv(1).using == nil and JC.stats().completions == 1, 'and done on its first slice')
+    ok(BR.Fuel.stats().pours == 1 and near(BR.Fuel.left(NET), TANK, 1e-6), 'the tank full')
+    ok(#events(BR.Net.FUEL_CAN) == 0 and #rpcs == 0, 'no hold was sent, so no end and no unfreeze')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1693,10 +1785,53 @@ do
     ok(p.slots[1].fill == 1, 'a can a dev verb gave, with no fill, is sent as 1')
     ok(p.slots[2].fill == nil and p.slots[3].fill == nil, 'and no other slot has the field')
 
-    -- THE SPECTATOR'S FEED NOTICES A POUR'S END.
+    -- A CAN STILL IN THE BAG IS NEVER SENT AS EMPTY. The server keeps a can
+    -- down to a millionth, so a sliver under half a thousandth would round to
+    -- 0 on the wire -- a plate saying empty over a can that still takes the one
+    -- place a player may carry one. At least a thousandth, then; 0 only for a
+    -- can the server itself calls empty.
+    scene({ noCan = true })
+    BR.Inv.give(1, { item = CAN.id, kind = BR.ItemKind.CONSUMABLE, rarity = CAN.rarity, count = 1, fill = 0.0003 })
+    p = BR.Inv.publicFor(1)
+    ok(p.slots[1].fill == 0.001, 'a can with 0.0003 left is sent as 0.001, not 0', p.slots[1].fill)
+    inv(1).slots[1].fill = 1e-7
+    p = BR.Inv.publicFor(1)
+    ok(p.slots[1].fill == 0, 'and only one at or under a millionth as 0', p.slots[1].fill)
+    -- ...AS A POUR LEAVES IT: 0.6 of a can into a car with 1,124.5 m of room --
+    -- the can's 1,125 m less half a meter -- keeps 0.00027 of it.
+    slot = scene({ fill = 0.6, burn = 1124.5 })
+    press(1, slot, NET)
+    for _ = 1, 20 do
+        if inv(1).using == nil then break end
+        tick()
+    end
+    ok(inv(1).using == nil and near(BR.Fuel.left(NET), TANK, 1e-6), 'the car is filled')
+    local kept = inv(1).slots[slot]
+    ok(kept and kept.item == CAN.id and near(kept.fill, 0.6 - 1124.5 / 1875, 1e-9),
+       'and the can stays, with the sliver the tank had no room for', kept and kept.fill)
+    local pushed = events(BR.Net.INV_SET, 1)
+    local last = pushed[#pushed] and pushed[#pushed].slots[slot]
+    ok(last and last.fill == 0.001, 'which its plate is sent as a thousandth', last and last.fill)
+
+    -- THE SPECTATOR'S FEED NOTICES A POUR'S END: server/spectate.lua's own
+    -- invSig, lifted out of the file and RUN, over two of publicFor's payloads
+    -- that differ in nothing but a can's fill. (A pin on its text was passed by
+    -- a format string that dropped the fill and kept the argument.)
     local spec = readFile(ROOT .. 'br_core/server/spectate.lua') or ''
-    local body = spec:match('local function invSig%(p%)(.-)\nend') or ''
-    ok(body:find('tostring(s.fill)', 1, true) ~= nil, 'server/spectate.lua\'s invSig covers the fill')
+    local fnSrc = spec:match('(local function invSig%(p%).-\nend)\n')
+    -- _G.load: this file's own `load` reads a file off the disk.
+    local lifted = fnSrc and _G.load(fnSrc .. '\nreturn invSig', '=invSig', 't', _G)
+    local invSig = lifted and lifted()
+    ok(type(invSig) == 'function', 'server/spectate.lua\'s invSig is found, and loads on its own')
+    scene({ noCan = true })
+    BR.Inv.give(1, { item = CAN.id, kind = BR.ItemKind.CONSUMABLE, rarity = CAN.rarity, count = 1, fill = 0.6 })
+    local before = BR.Inv.publicFor(1)
+    inv(1).slots[1].fill = 0.4
+    local after = BR.Inv.publicFor(1)
+    ok(invSig and invSig(before) ~= invSig(after),
+       'a pour\'s end, which moves nothing but the fill, changes the signature')
+    ok(invSig and invSig(after) == invSig(BR.Inv.publicFor(1)),
+       'and the same bag signs the same, so the dedupe still holds')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

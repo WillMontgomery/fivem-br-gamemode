@@ -1746,6 +1746,17 @@ local function sendUse(slot)
     -- words. A modified client that skips this sends a car the server judges
     -- like any other.
     --
+    -- NOR FROM A BODY THAT CANNOT POUR (#217's review): ALIVE -- the one state
+    -- a pour starts in, the marker's own rule (client/jerrycan.lua's
+    -- markerPass) -- on foot, and standing still, the server's `moving` for
+    -- the pourer. canArm() still answers yes for a player knocked down at the
+    -- cap with the can in hand, and for one in a seat, and this branch ACTS
+    -- before the server answers: it turns the ped and brings the can up. A
+    -- downed ped turned from here is a turn no other screen sees
+    -- (client/dbno.lua's #164 note), a can brought up in a seat puts away what
+    -- was in hand, and a sprinter is snapped round -- each for a press the
+    -- server refuses. Nothing is gained by skipping it.
+    --
     -- FACED ONCE, THEN THE CAN BROUGHT UP. One heading write on this player's
     -- own ped, turned to the cap (client/dbno.lua's CPR does the same, and
     -- guards the same atan2(0, 0)); then INV_SELECT if the can is not the slot
@@ -1753,9 +1764,16 @@ local function sendUse(slot)
     if c and c.refuel then
         if not BR.Season.has('jerrycan') or inv.using ~= nil then return end
         if not (BR.JerryCan and BR.JerryCan.target) then return end
+        local ped = PlayerPedId()
+        local state = BR.State.me and BR.State.me.state
+        if state ~= BR.PlayerState.ALIVE or offFoot(ped) then return end
+        local J = BR.Config.Fuel and BR.Config.Fuel.jerryCan
+        local okS, speed = pcall(GetEntitySpeed, ped)
+        if okS and J and (tonumber(speed) or 0.0) >= (tonumber(J.stillSpeed) or math.huge) then
+            return
+        end
         local t = BR.JerryCan.target()
         if t == nil then return end
-        local ped = PlayerPedId()
         local me = GetEntityCoords(ped)
         local dx, dy = t.x - me.x, t.y - me.y
         if (dx * dx + dy * dy) > 0.0001 then

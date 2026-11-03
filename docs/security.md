@@ -363,7 +363,7 @@ silent and spends nothing; `brjerrycan` counts them by reason.
 |---|---|
 | This is a vehicle in my match | `n` is a whole number naming an entity that exists, is a vehicle, and stands in the routing bucket of the pourer's own match. Network ids are global across buckets. |
 | It needs fuel | The fuel ledger has a row for it in that match, with room for at least 0.5% of a tank. A car the ledger does not track reads full and is refused. |
-| I am on foot at its cap | The vehicle's own seats (`BR.Vehicles.ridingIn`, never server `GetVehiclePedIsIn`, which answers the last car a ped sat in: citizenfx/fivem#4006), and a fresh read of the pourer's position inside the vehicle's footprint in its own frame -- `reach` across, `front` and `rear` along, from `config/vehicle_models.lua` -- grown by 2 m on every side, and within 3 m of its height. A model with no row falls back to FUEL_ASK's 12 m. |
+| I am on foot at its cap | The vehicle's own seats, every one of them, the back of a bus included (`BR.Vehicles.ridingIn` with `EVERY_SEAT`; never server `GetVehiclePedIsIn`, which answers the last car a ped sat in: citizenfx/fivem#4006), and a fresh read of the pourer's position inside the vehicle's footprint in its own frame -- `reach` across, `front` and `rear` along, from `config/vehicle_models.lua` -- grown by 2 m on every side, and within 3 m of its height. A model with no row falls back to FUEL_ASK's 12 m. |
 | Neither of us is moving | `GetEntitySpeed` of both under 0.5 m/s at the press; nothing poured and nothing frozen for the first 250 ms, one more roster sample; and on every pass, the car within 1 m of where it stood and under 0.5 m/s, and the pourer within 0.75 m. |
 | Nobody else is pouring into it | One pour per vehicle. |
 | How much | Never asked. The can's fill is on the server's slot, the room is the ledger's, and each slice takes out of the can exactly what `BR.Fuel.pour` says the tank took. |
@@ -397,6 +397,13 @@ on the first slice after the settle, which pays for it; a tank within 0.5% of
 full refuses the press; and every second a car is held is a second of the
 griefer's own fuel poured into its tank -- at most a full can's five seconds per
 can. The car's owner can get out, or shoot: an enemy's hit ends the pour.
+
+**A press that pays nothing sends nothing.** `FUEL_CAN` waits for that same
+first slice: its hold is the first the match hears of a pour, and its end goes
+only after a hold. So a press cut short in its settle window, however often it
+is repeated, sends the match no message and the car no RPC -- where a start at
+the press once had every client in the match hang a can on the cheater's hand
+and take it down again, four times a second, for nothing.
 
 **What it never does.** It never repairs -- no `VEH_FIX`, and `BR.Fuel.pour`
 never pushes, so it can never pass the pump's repair. It writes no state bag.

@@ -1246,6 +1246,10 @@ loadAll({
     -- window maps nothing.
     'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
     'br_lib/shared/storm_solve.lua', 'br_lib/shared/loot_gen.lua',
+    -- THE FUEL CONFIG, where the manifest has it, ahead of the boost pair: the
+    -- jerry can's press in client/inventory.lua reads the can's `stillSpeed`
+    -- from it (#217's review), and nothing else this file loads reads it.
+    'br_lib/config/fuel.lua',
     -- THE BOOST PAIR, AND THE ORDER IS THE MANIFEST'S RATHER THAN A
     -- PREFERENCE. config/boost.lua derives `addMps` from BR.BoostSolve.MPH at
     -- LOAD time, so a swap here gives every boost a target of nil.
@@ -23331,7 +23335,12 @@ do
         heading = SetEntityHeading, coords = GetEntityCoords,
         anyVeh = IsPedInAnyVehicle, vehIn = GetVehiclePedIsIn,
         seat = GetPedInVehicleSeat, pressed = IsDisabledControlJustPressed,
+        speed = GetEntitySpeed, chute = GetPedParachuteState,
     }
+    -- ON ITS FEET. An earlier block leaves the parachute state OPEN, and a ped
+    -- under a canopy is off its feet -- which the press now refuses, so every
+    -- case here would be testing a ped in the sky (section 15 says the same).
+    function GetPedParachuteState() return -1 end
 
     -- THE PED AND ITS SEAT. The ped stands at the origin, and a seat is a
     -- vehicle (9) and the seat in it: -1 is the driver's.
@@ -23350,6 +23359,10 @@ do
     function SetEntityHeading(ped, h) headings[#headings + 1] = { ped = ped, h = h } end
     local pressing = nil
     function IsDisabledControlJustPressed(_pad, c) return c == pressing end
+    -- THE PED'S OWN SPEED, standing still unless a case says otherwise (the
+    -- suite's GetEntitySpeed answers for the boost's car).
+    local speed = 0.0
+    function GetEntitySpeed() return speed end
 
     -- THE FINDER'S STAND-IN: one cap, or none, and every ask counted.
     local cap, asks = nil, 0
@@ -23409,7 +23422,7 @@ do
     ok(use.slot == 3 and use.n == 4242,
        'and the use carries the slot and the car\'s network id, `n`',
        ('slot %s, n %s'):format(tostring(use.slot), tostring(use.n)))
-    -- (1, 1) from the origin is north-west of the ped: GTA's 315 degrees (its
+    -- (1, 1) from the origin is north-east of the ped: GTA's 315 degrees (its
     -- heading turns counter-clockwise from north).
     ok(#headings == 1 and headings[1].ped == PlayerPedId()
        and math.abs(headings[1].h - 315.0) < 1e-6,
@@ -23447,6 +23460,53 @@ do
     panelUse(3)
     ok(#wire() == 0, 'with client/jerrycan.lua absent, nothing is sent', tostring(#wire()))
     BR.JerryCan = finder
+
+    -- NOT FROM A BODY THAT CANNOT POUR, by any of the three doors: knocked
+    -- down at the cap with the can still in hand (canArm() still says yes, by
+    -- BR.State.landed), sitting in a seat, or on the move. The branch turns the
+    -- ped and brings the can up before the server answers, so each of these
+    -- is no scan, no turn and no message -- the server would refuse them all.
+    local function nothing(label)
+        ok(asks == 0 and #wire() == 0 and #headings == 0, label,
+           ('%d ask(s), %d message(s), %d turn(s)'):format(asks, #wire(), #headings))
+    end
+    local function allDoors()
+        asks, sent, headings = 0, {}, {}
+        pressR()
+        panelUse(3)
+        pressing = 24
+        frame()
+        pressing = nil
+    end
+    push({ [3] = can() }, 3, nil)
+    BR.State.me.state = BR.PlayerState.DBNO
+    allDoors()
+    nothing('downed with the can in hand by a cap: R, the panel and the trigger ask, turn and send nothing')
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    seated, seatOf = true, 1
+    allDoors()
+    nothing('in a seat with the can in hand: R, the panel and the trigger ask, turn and send nothing')
+    seated, seatOf = false, nil
+
+    speed = 0.6
+    allDoors()
+    nothing('moving at 0.6 m/s, over the server\'s 0.5: nothing, and no snap round to the cap')
+    speed = 0.4
+    asks, sent, headings = 0, {}, {}
+    panelUse(3)
+    ok(asks == 1 and #wire() == 1 and #headings == 1,
+       'at 0.4 m/s, under it: the press goes', ('%d message(s)'):format(#wire()))
+    speed = 0.0
+
+    -- AND THE TRIGGER IS A DOOR LIKE THE OTHER TWO, standing at the cap.
+    asks, sent, headings = 0, {}, {}
+    pressing = 24
+    frame()
+    pressing = nil
+    w = wire()
+    ok(#w == 1 and w[1].name == BR.Net.INV_USE and w[1].args[1].n == 4242 and #headings == 1,
+       'the left mouse button with the can in hand pours it, naming the car', tostring(#w))
 
     -- EVERY OTHER ITEM IS UNCHANGED: a plain { slot }, no `n`, no finder.
     push({ [2] = kit('bandage') }, 2, nil)
@@ -23572,6 +23632,7 @@ do
     SetEntityHeading, GetEntityCoords = saved.heading, saved.coords
     IsPedInAnyVehicle, GetVehiclePedIsIn = saved.anyVeh, saved.vehIn
     GetPedInVehicleSeat, IsDisabledControlJustPressed = saved.seat, saved.pressed
+    GetEntitySpeed, GetPedParachuteState = saved.speed, saved.chute
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
 end
 

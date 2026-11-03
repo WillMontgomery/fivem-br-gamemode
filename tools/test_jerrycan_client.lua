@@ -542,6 +542,25 @@ do
     eq(W1.JC.holds(501), false, 'and nothing holds')
 end
 
+describe('B. FUEL_CAN: the hold is the first message a pour sends, and it alone records and holds')
+do
+    -- THE SERVER SENDS NOTHING AT THE PRESS (server/jerrycan.lua's settle
+    -- window): the hold, on the slice that pays, is the first this client hears.
+    local W = boot()
+    local h, c = sedan(W, { driver = 77, engine = true })
+    W.player(9)
+    W.can(1, 501, 9, 4750, true)
+    eq(W.JC.state().pours, 1, 'a hold with no start before it records the pour')
+    eq(W.JC.holds(501), true, 'and BR.JerryCan.holds answers for its car')
+    ok(W.stalled(c) and W.E.held(501, 'jerrycan'), 'the driver\'s machine stalls it as the hold lands')
+    W.ticks(2)                                   -- the model asked for, then the can
+    eq(#W.objects(), 1, 'and the can goes on the pourer\'s hand')
+    W.levels[h] = 40.0
+    W.can(1, 501, 9, 0)
+    ok(W.freed(c) and c.engine == true and #W.objects() == 0 and W.JC.state().pours == 0,
+       'its end lets all of it go: the driver started again, the can off')
+end
+
 describe('B. FUEL_CAN: the hold goes to the driver, or the owner when nobody drives, and to nobody else')
 do
     -- THIS PLAYER DRIVES.
@@ -936,6 +955,18 @@ do
     W.inv.using = nil
     W.tick()
     eq(#W.objects(), 0, 'the channel ends: off')
+
+    -- BR_CORE STOPPING MID-POUR takes this player's own can off too: the pass
+    -- that would have is the thing that stops.
+    W = boot()
+    sedan(W)
+    W.give(1, 1)
+    W.inv.using = { slot = 1, endsAt = W.now + 5000, ms = 5000 }
+    W.ticks(2)
+    ok(#W.objects() == 1 and W.JC.state().own, 'the own can stands')
+    W.fire('onClientResourceStop', 'br_core')
+    ok(#W.objects() == 0 and not W.JC.state().own, 'br_core stopping: the own can is gone',
+       ('%d can(s)'):format(#W.objects()))
 end
 
 describe('C. the cans: gone on every ending')
@@ -1122,11 +1153,51 @@ do
     eq(W.natives, 0, 'and sixty frames call no native')
     W.inv.active = 1
     W.tick()
-    ok(W.has('frame', 'jerrycan.marker'), 'brought up again: back')
+    ok(W.has('frame', 'jerrycan.marker'), 'brought up again: back, at once')
     W.ents[h].x = 9.0
     W.ents[h].boneAt[0].x = 8.5                   -- the car drives off
+    W.ticks(5)
+    eq(W.has('frame', 'jerrycan.marker'), false, 'the cap out of reach: gone again within half a second')
+end
+
+describe('E. the marker: the pool is walked twice a second, not on every pass')
+do
+    -- THE LOOK IS A WALK OF EVERY CAR STREAMED: GetGamePool and a position read
+    -- each. Ten a second of it, a car or not in reach, was the first build's.
+    local W = boot()
+    W.car({ net = 941, x = 3.0, bones = { { 'petroltank', 2.5, 0.0, 30.4 } } })
+    for i = 1, 40 do W.car({ net = 1000 + i, x = 50.0 + i, y = 50.0 }) end
+    W.give(1, 1)
+    W.calls = {}
     W.tick()
-    eq(W.has('frame', 'jerrycan.marker'), false, 'the cap out of reach: gone again')
+    eq(W.calls.GetGamePool, 1, 'the can brought up: one look at once')
+    ok(W.has('frame', 'jerrycan.marker'), 'and the marker up from it')
+    W.calls = {}
+    W.ticks(10)                                   -- a second
+    eq(W.calls.GetGamePool, 2, 'a second with it in hand: two looks, not ten', W.calls.GetGamePool)
+    ok((W.calls.GetEntityCoords or 0) <= 2 * 42, 'and a position read per car per look, no more',
+       W.calls.GetEntityCoords)
+    ok(W.has('frame', 'jerrycan.marker'), 'the marker standing between looks')
+
+    -- WITH NOTHING IN REACH, the same two.
+    W = boot()
+    for i = 1, 40 do W.car({ net = 1000 + i, x = 50.0 + i, y = 50.0 }) end
+    W.give(1, 1)
+    W.tick()
+    W.calls = {}
+    W.ticks(10)
+    eq(W.calls.GetGamePool, 2, 'no cap anywhere near: still two a second', W.calls.GetGamePool)
+
+    -- PUT AWAY, NO LOOK AT ALL; BROUGHT UP AGAIN, THE FIRST AT ONCE.
+    W.inv.active = 0
+    W.tick()
+    W.calls = {}
+    W.ticks(10)
+    eq(W.calls.GetGamePool, nil, 'the can put away: no look at all')
+    W.car({ net = 942, x = 3.0, bones = { { 'petroltank', 2.5, 0.0, 30.4 } } })
+    W.inv.active = 1
+    W.tick()
+    ok(W.has('frame', 'jerrycan.marker'), 'brought up beside a car: the marker on the first pass')
 end
 
 -- ===================================================== F. the idle pass ---
@@ -1232,13 +1303,21 @@ end
 
 describe('H. the files: the dry tank\'s ignition waits for a pour; no client freezes; the scope markers')
 do
+    -- THE WHOLE CONDITION, AS TEXT, AND WHAT IT GUARDS. client/fuel.lua cannot
+    -- be loaded by a suite (tools/test_fuel.lua's prompt.copy says why), so the
+    -- guard is read -- and read whole, its spacing aside: a pin on the call
+    -- alone was passed by `BR.JerryCan.hold and BR.JerryCan.holds(nid)` (a
+    -- field that is never there, so the guard never fires) and by an
+    -- `and false` after it (#217's review).
     local fuel = readFile(ROOT .. 'br_core/client/fuel.lua') or ''
     local handler = fuel:match('AddEventHandler%(BR%.Net%.FUEL_SET, function%(d%)(.-)\nend%)') or ''
-    local cond = handler:match('if prev and prev%.f <= 0%.0(.-)then') or ''
-    ok(cond:find('BR.JerryCan.holds(nid)', 1, true) ~= nil,
-       'client/fuel.lua\'s dry-tank ignition is skipped while BR.JerryCan.holds(nid)', cond)
-    ok(handler:find('pcall(SetVehicleEngineOn, veh, true, false, false)', 1, true) ~= nil,
-       'and the ignition itself is still there for every other refuel')
+    local cond, body = (handler .. '\n'):match('\n(%s*if prev and prev%.f <= 0%.0.-then)\n(.-)\n    end\n')
+    local flat = (cond or ''):gsub('%s+', ' '):gsub('^ ', '')
+    eq(flat, 'if prev and prev.f <= 0.0 and (tonumber(d.f) or 0.0) > 0.0 and not '
+        .. '(BR.JerryCan and BR.JerryCan.holds and BR.JerryCan.holds(nid)) then',
+       'client/fuel.lua\'s dry-tank ignition is skipped while BR.JerryCan.holds(nid), the whole condition')
+    ok((body or ''):find('pcall(SetVehicleEngineOn, veh, true, false, false)', 1, true) ~= nil,
+       'and what it guards is the ignition itself, still there for every other refuel', body)
 
     local src = readFile(ROOT .. 'br_core/client/jerrycan.lua') or ''
     local code = src:gsub('%-%-[^\n]*', '')

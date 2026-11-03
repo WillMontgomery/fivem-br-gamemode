@@ -179,6 +179,16 @@ local clock = os.clock
 --               the queue, festive and the season moving in it, and leaving it.
 --               A world of its own so that no other world's session moves.
 --
+-- AND ONE FOR THE JERRY CAN IN HAND (#217's review, 2026-11-03):
+--
+--   s2-can      Season 2 from boot, the whole session, then the can brought up
+--               beside a car: client/jerrycan.lua's marker standing over its
+--               cap every frame, and its look for one -- a walk of the vehicle
+--               pool, the match's forty cars streamed -- twice a second. No
+--               other scene holds a can, so without it that cost was never
+--               measured. Only that scene is budgeted, and it ends there with
+--               no changes, so no other world's numbers move for it.
+--
 -- A world's phases are budgeted as `<world>/<phase>`.
 local WORLDS = {
     { id = 's1',         season = '1' },
@@ -192,6 +202,8 @@ local WORLDS = {
       measure = { ['match vehicle drop'] = true, ['match airstrike'] = true } },
     { id = 's2-custom',  season = '2', custom = true },
     { id = 's2-queued',  season = '2', queued = true },
+    { id = 's2-can',     season = '2', upTo = 'match jerry can',
+      measure = { ['match jerry can'] = true } },
 }
 local worldById = {}
 for _, w in ipairs(WORLDS) do worldById[w.id] = w end
@@ -953,6 +965,10 @@ IMPL.IsPauseMenuActive   = F
 IMPL.IsEntityDead        = function(h) local e = W.ents[h] return (e and e.dead) and true or false end
 IMPL.IsPedFatallyInjured = IMPL.IsEntityDead
 IMPL.IsPedDeadOrDying    = IMPL.IsEntityDead
+-- No for every car, as the default for a `Does` answered before this line was
+-- written, but the one the 'match jerry can' scene marks: its cap is the one the
+-- marker stands over (#217's review), and no other scene's numbers move.
+IMPL.DoesVehicleUseFuel  = function(h) local e = W.ents[h] return (e and e.usesFuel) == true end
 IMPL.GetDuiHandle        = function(d) return 'dui' .. tostring(d) end
 IMPL.CreateDui           = function() W.handles = W.handles + 1 return W.handles end
 IMPL.CreateRuntimeTxd    = function() W.handles = W.handles + 1 return W.handles end
@@ -2614,6 +2630,23 @@ local PHASES = {
         end
         net(BR.Net.TERMINAL_STRIKE, { matchId = 1, id = 1, x = p.x + 30.0, y = p.y, r = 40.0,
             startsAt = t0, endsAt = rockets[10].at, rockets = rockets })
+    end },
+    -- THE JERRY CAN IN HAND (#217's review, 2026-11-03), in its own world
+    -- (s2-can, THE WORLDS above) and no other: the can brought up as the slot
+    -- in hand, 2 m from a car whose cap is in the marker's reach, the match's
+    -- forty cars streamed around them. The marker stands over the cap -- one
+    -- DrawMarker a frame -- and looks for it again, a walk of that whole pool,
+    -- twice a second. No pour: standing at the cap is what a player does with
+    -- a can far more than pouring it.
+    { id = 'match jerry can', world = 's2-can', settle = 60, setup = function()
+        local p = entPos(W.me)
+        local car = newEnt('veh', jenkins('blista'), p.x + 2.0, p.y, p.z)
+        W.ents[car].usesFuel = true
+        local inv = loadout(3)
+        local can = BR.Config.JerryCan
+        inv.slots[3] = { id = can.id, label = can.label, kind = can.kind, rarity = can.rarity,
+                         count = 1, fill = 1 }
+        net(BR.Net.INV_SET, inv)
     end },
 }
 

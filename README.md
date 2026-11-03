@@ -279,5 +279,5 @@ Third-party components retain their own notices. ScaleformUI is used only for
 this non-commercial server within its CC BY-NC-SA terms. The weapon, repair-kit
 and jerry can images are renders from the GTA V base game; the owner treats
 their use inside a GTA V gamemode as fair use that requires no separate artwork
-license. The item art provenance and that decision are recorded beside the files in
-`ui-src/public/items/README.md`.
+license. The item art provenance and that decision are recorded beside the
+files in `ui-src/public/items/README.md`.

@@ -827,8 +827,10 @@ BR.Config.Fuel.jerryCan = {
     riseMeters = 3.0,
 
     --- After a release, how many passes the server re-sends the unfreeze to the
-    --- vehicle's owner while it still reads the vehicle frozen -- and never
-    --- while a new pour holds it.
+    --- vehicle's owner while it still reads the vehicle frozen -- the first a
+    --- second and a half after the release, past the second that read can lag
+    --- (server/jerrycan.lua's RELEASE_WATCH_MS) -- and never while a new pour
+    --- holds it.
     releaseChecks = 3,
 
     --- Milliseconds, on each client, and two uses: a client lets go of a pour

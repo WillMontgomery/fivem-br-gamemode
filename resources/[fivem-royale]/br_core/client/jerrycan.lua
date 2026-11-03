@@ -71,7 +71,9 @@
 --
 -- Nothing, unless the marker is up: then one DrawMarker, and nothing else. The
 -- TICK pass returns at once, with no native and nothing allocated, while no
--- pour is known, no window is open and the can is not in hand.
+-- pour is known, no window is open and the can is not in hand. With the can in
+-- hand, the marker's look for a cap -- a walk of the whole vehicle pool -- is
+-- taken twice a second, not on every pass (MARK_SCAN_MS).
 
 BR = BR or {}
 BR.JerryCan = BR.JerryCan or {}
@@ -118,6 +120,16 @@ local CLIP_FLAG = 49
 --- How often the preview's clip is looked at, and put back if it dropped.
 local CLIP_RETASK_MS = 1000
 
+--- HOW OFTEN THE MARKER LOOKS FOR ITS CAP while the can is in hand: twice a
+--- second, not on every pass. A look is BR.JerryCan.target -- GetGamePool and
+--- a position read for every car it holds, the pool walk client/ambheal.lua
+--- will not take for a prompt and tools/perf_client.lua counts as a heavy call
+--- -- and ten a second were 1,250 natives a second among 120 streamed cars
+--- (#217's review). The cars it points at stand still to be poured into, so
+--- the point half a second old is where the cap still is; the press looks
+--- afresh (client/inventory.lua's sendUse).
+local MARK_SCAN_MS = 500
+
 -- ------------------------------------------------------------------ state ---
 
 --- The pours this client has been told of, by pour id:
@@ -140,6 +152,9 @@ local stream = { hash = nil, askedAt = nil, wantedAt = nil }
 local markAt = nil
 --- The FRAME callback that draws it, registered only while it stands.
 local markLoop = nil
+--- When the marker last looked for a cap (MARK_SCAN_MS), nil while it may not
+--- stand at all: the first look after that is at once.
+local markScanAt = nil
 
 --- `/brjerrytune`: the six numbers being tuned, the entry they started from,
 --- and the preview can and clip on this player's own hand.
@@ -375,8 +390,9 @@ end
 -- ------------------------------------------------------- the engine hold ---
 
 --- Hold this pour's car off on this machine, if this machine is the one to
---- (10.2): the one in its driver's seat, or -- with nobody driving it -- the
---- one that owns it. A non-owner passenger and a bystander write nothing.
+--- (THE ENGINE, in the header): the one in its driver's seat, or -- with nobody
+--- driving it -- the one that owns it. A non-owner passenger and a bystander
+--- write nothing.
 ---
 --- WRITTEN AGAIN ONLY WHEN IT IS NEEDED, the EMP's `not held or running`: a
 --- hold already written here stands until the engine is found running under
@@ -395,8 +411,8 @@ local function holdNow(rec, now)
     end
 end
 
---- Let go of one pour on this client (10.3), on every way it can end -- see
---- the header's list.
+--- Let go of one pour on this client, on every way it can end -- the header's
+--- list.
 ---
 ---   1. its can comes off the pourer's hand;
 ---   2. with no other pour on the car known here, this machine's engine hold
@@ -493,10 +509,10 @@ end
 
 -- --------------------------------------------------------------- the cap ---
 
---- The network id of a vehicle the can may pour into, or nil (10.1):
---- networked, not dead, not a cycle, aircraft or train, and using fuel where
---- the game can say so -- DoesVehicleUseFuel, asked the way client/fuel.lua's
---- applyLevel asks it.
+--- The network id of a vehicle the can may pour into, or nil: which of the
+--- cars around this player BR.JerryCan.target measures. Networked, not dead,
+--- not a cycle, aircraft or train, and using fuel where the game can say so --
+--- DoesVehicleUseFuel, asked the way client/fuel.lua's applyLevel asks it.
 --- @param veh integer
 --- @return integer|nil
 local function candidate(veh)
@@ -575,9 +591,11 @@ function JC.target(reach)
 end
 
 --- Is a pour into this vehicle in force on this client -- from its FUEL_CAN
---- start (or hold) until its end or its deadline? client/fuel.lua's FUEL_SET
---- handler skips the dry tank's ignition while this answers yes: the pour's
---- own release starts the engine instead, when it ends.
+--- hold until its end or its deadline? client/fuel.lua's FUEL_SET handler
+--- skips the dry tank's ignition while this answers yes: the pour's own release
+--- starts the engine instead, when it ends. The hold goes out on the pass of
+--- the pour's first slice, ahead of the ledger's push of what that slice put
+--- in, so the first rising FUEL_SET always finds it.
 --- @param nid integer
 --- @return boolean
 function JC.holds(nid)
@@ -608,10 +626,13 @@ end
 
 -- ------------------------------------------------------------- the wire ---
 
--- A START OR A HOLD makes or refreshes the record for its pour id, with a
--- deadline of its arrival plus `ms` plus releaseGraceMs; a hold also holds the
--- engine, now. Season 2 only -- AN END IS ALWAYS HONORED, in any season, so a
--- pour can never be left held here by a season that moved under it.
+-- THE HOLD makes or refreshes the record for its pour id, with a deadline of
+-- its arrival plus `ms` plus releaseGraceMs, and holds the engine, now. It is
+-- the first the server sends of a pour, on the slice that pays for the freeze
+-- -- nothing goes at the press (server/jerrycan.lua's settle window) -- and a
+-- message with `hold` false is still recorded, with no engine held for it.
+-- Season 2 only -- AN END IS ALWAYS HONORED, in any season, so a pour can
+-- never be left held here by a season that moved under it.
 --
 -- A NEWER POUR ON THE SAME CAR ENDS THE OLDER ONE HERE, and shuts the car's
 -- release window: the server holds one pour per car, so an older record still
@@ -677,6 +698,7 @@ local function letGo(now)
     for _, rec in pairs(pours) do finish(rec, now) end
     dropOwn()
     hideMarker()
+    markScanAt = nil
 end
 
 --- The cans: this player's own, following their channel, and every other
@@ -742,19 +764,26 @@ end
 --- for ALIVE and WARMUP alone, and only into a car in the match's own routing
 --- bucket, which a warmup player never stands in: the pad is a bucket of its
 --- own (server/roster.lua's applyBucket). So a marker shown downed, out or on
---- the pad would point at a pour that cannot start.
+--- the pad would point at a pour that cannot start. client/inventory.lua's
+--- sendUse asks the same of a press.
+---
+--- LOOKED FOR TWICE A SECOND (MARK_SCAN_MS), and left where it stands between
+--- looks. The first look with the can in hand is at once, and the moment any
+--- condition fails it comes down, without a look.
+--- @param now integer
 --- @param inHand boolean
 --- @param foot boolean
-local function markerPass(inHand, foot)
+local function markerPass(now, inHand, foot)
     local me = BR.State and BR.State.me
-    if inHand and foot and me ~= nil and me.state == BR.PlayerState.ALIVE then
-        local t = JC.target(J().markerReach)
-        if t ~= nil then
-            showMarker(t)
-            return
-        end
+    if not (inHand and foot and me ~= nil and me.state == BR.PlayerState.ALIVE) then
+        markScanAt = nil
+        hideMarker()
+        return
     end
-    hideMarker()
+    if markScanAt ~= nil and now - markScanAt < MARK_SCAN_MS then return end
+    markScanAt = now
+    local t = JC.target(J().markerReach)
+    if t ~= nil then showMarker(t) else hideMarker() end
 end
 
 --- `/brjerrytune`'s numbers as a placement.
@@ -810,13 +839,15 @@ end
 
 -- ONE TICK PASS, TEN TIMES A SECOND, AND IDLE IS ITS FIRST LINE: with no pour
 -- known, no window open, nothing of ours standing and the can not in hand, it
--- returns before any native and allocates nothing.
+-- returns before any native and allocates nothing. (`markScanAt` still set is
+-- one more pass, the one that puts the can away and resets the marker's look.)
 BR.Loop.register(BR.Loop.TICK, 'jerrycan.tick', function()
     local inv = (BR.Inv and BR.Inv.local_) and BR.Inv.local_() or nil
     local inHand = inv ~= nil and refuels(inv.slots[inv.active])
     local channel = inv ~= nil and pouringHere(inv)
     if not inHand and not channel and next(pours) == nil and next(windows) == nil
-       and own.obj == nil and markLoop == nil and not tune.on and stream.askedAt == nil then
+       and own.obj == nil and markLoop == nil and markScanAt == nil and not tune.on
+       and stream.askedAt == nil then
         return
     end
 
@@ -836,7 +867,7 @@ BR.Loop.register(BR.Loop.TICK, 'jerrycan.tick', function()
         end
         local foot = (inHand or channel) and not BR.Inv.offFoot(ped)
         propsPass(now, inv, channel, foot)
-        markerPass(inHand, foot)
+        markerPass(now, inHand, foot)
     end
     if tune.on then tunePass(now, ped) end
     sweepWindows(now)
