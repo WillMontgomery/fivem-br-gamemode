@@ -1106,6 +1106,12 @@ do
     ok(#on == 2 and on[2].owner == 5, 'a new owner is sent the freeze again', #on)
     ok(JC.stats().ownerChanges == 1, 'and it is counted')
     ok(pour.owners[2] and pour.owners[5], 'both owners recorded')
+    -- AND ONCE (#217's third review): a pour that kept no note of whom it last
+    -- sent to would send the new owner the freeze on every pass.
+    tick()
+    ok(#rpcsFor(CAR, true) == 2 and JC.stats().ownerChanges == 1,
+       'and only once: the next pass, the car still theirs, sends them nothing',
+       #rpcsFor(CAR, true))
     W.owner[CAR] = -1
     tick()
     ok(#rpcsFor(CAR, true) == 3, 'nobody owning it: sent anyway, to wait for the next')
@@ -1372,8 +1378,11 @@ do
        #rpcsFor(CAR, false))
 
     -- WHOEVER OWNS IT: a new owner is sent the unfreeze on the pass it is seen,
-    -- not a second and a half later; while nobody owns the car nothing is sent
-    -- to pile up for the next; and the next is sent it the pass they come.
+    -- not a second and a half later, and then once every second and a half,
+    -- as any owner is -- never on every pass, which a watch that noted when it
+    -- last sent but not to whom would do: a mutant this block let pass until
+    -- #217's third review. While nobody owns the car nothing is sent to pile
+    -- up for the next; and the next is sent it the pass they come.
     heldThenDropped()
     for _ = 1, 6 do tick() end           -- the first look
     local off = rpcsFor(CAR, false)
@@ -1382,18 +1391,24 @@ do
     tick()
     off = rpcsFor(CAR, false)
     ok(#off == 2 and off[2].owner == 5, 'a new owner: sent it on the next pass', #off)
+    for _ = 1, 5 do tick() end           -- 1,250 ms after that send
+    ok(#rpcsFor(CAR, false) == 2, 'and not again inside a second and a half of it',
+       #rpcsFor(CAR, false))
+    tick()
+    off = rpcsFor(CAR, false)
+    ok(#off == 3 and off[3].owner == 5, 'but again at a second and a half, to the same owner', #off)
     W.owner[CAR] = -1
     for _ = 1, 12 do tick() end
-    ok(#rpcsFor(CAR, false) == 2, 'nobody owning it: three seconds with nothing sent',
+    ok(#rpcsFor(CAR, false) == 3, 'nobody owning it: three seconds with nothing sent',
        #rpcsFor(CAR, false))
     W.owner[CAR] = 7
     tick()
     off = rpcsFor(CAR, false)
-    ok(#off == 3 and off[3].owner == 7, 'and the next owner is sent it the pass they come', #off)
+    ok(#off == 4 and off[4].owner == 7, 'and the next owner is sent it the pass they come', #off)
     -- THE CAR GONE: nothing left to unfreeze, and nothing left to watch.
     W.exists[CAR] = nil
     for _ = 1, 8 do tick() end
-    ok(#rpcsFor(CAR, false) == 3 and JC.stats().queued == 0, 'a car that is gone ends its watch')
+    ok(#rpcsFor(CAR, false) == 4 and JC.stats().queued == 0, 'a car that is gone ends its watch')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -2192,6 +2207,9 @@ describe('P. the playtest, by brfueltank')
 --   step 8     that can into a car at 85.1%: it keeps a sliver, sent as such
 --   step 9     a dirt bike at 70% ends full and the can keeps 0.7; one at 0
 --              takes a whole full can
+--   its words  every press the client never sends named, in the opening and
+--              `brjerrycan`'s row, and the reach and the cone's meters the
+--              config's -- in steps 3 and 10 and docs/terminology.md's gas cap
 do
     local function console(...)
         logs = {}
@@ -2244,6 +2262,55 @@ do
     ok(BR.Fuel.left(NET) == TANK and inv(1).slots[slot] == false,
        'one set to 0: a full can fills it, and is gone')
     BR.Server.devMode = false
+
+    -- AND ITS WORDS ARE THE FILES' (#217's third review). A press the player's
+    -- own client drops never reaches the server, so the console the playtest
+    -- sends a tester to has nothing for it: the opening and `brjerrycan`'s row
+    -- name every one, the cap's reach at the config's meters. The reach was
+    -- the one left out, and the one a tester meets first: the cone stands
+    -- from 3 m, and a press from 2 m did nothing the console could show. Each
+    -- is proved unsent elsewhere: tools/test_client.lua's #217 block and
+    -- tools/test_jerrycan_client.lua's finder. Nor does either doc that gives
+    -- the cone's meters give them without the reach.
+    local reach, cone = ('%g m'):format(J.capReach), ('%g m'):format(J.markerReach)
+    --- What of `words` a text does not say, its line breaks read as spaces.
+    local function unsaid(text, words)
+        text = text:gsub('%s+', ' ')
+        local out = {}
+        for _, w in ipairs(words) do
+            if not text:find(w, 1, true) then out[#out + 1] = w end
+        end
+        return table.concat(out, ', ')
+    end
+    local doc = (readFile('docs/running.md') or ''):gsub('\r\n', '\n')
+    local play = doc:match('\n### Playtesting the jerry can %(#217%)\n(.-)\n### ') or ''
+    local opening = play:match('\n(A refused press .-)\n\n') or ''
+    local row = doc:match('\n(| `brjerrycan`[^\n]*)') or ''
+    local step3 = play:match('\n(3%. [^\n]*)') or ''
+    local never = { 'from a seat', 'downed', 'moving', 'already using an item', reach }
+    local miss = unsaid(opening, never)
+    ok(miss == '', 'the playtest names every press the client never sends: a seat, downed, '
+       .. 'moving, mid-use, and past the ' .. reach .. ' a press reaches', miss)
+    miss = unsaid(opening, { 'from ' .. cone, 'bicycle', 'aircraft', 'train', 'wreck' })
+    ok(miss == '', 'and where the cone is not: past ' .. cone .. ', or over a bicycle, an '
+       .. 'aircraft, a train or a wreck', miss)
+    miss = unsaid(row, never)
+    ok(miss == '', 'and `brjerrycan`\'s row says the same of what it does not count', miss)
+    miss = unsaid(step3, { 'from ' .. cone, 'within ' .. reach })
+    ok(miss == '', 'step 3: the cone from ' .. cone .. ', a press only within ' .. reach
+       .. ' -- so the tester stands at the cone', miss)
+    -- Step 10's press off the cap is one the client drops only while it
+    -- stands past the reach and inside the cone's, both the config's to tune.
+    local step10 = play:match('\n(10%. [^\n]*)') or ''
+    local off = tonumber(step10:match('one from ([%d%.]+) m off the cap with the cone up'))
+    ok(off ~= nil and off > J.capReach and off <= J.markerReach,
+       ('step 10: its press %s m off the cap is past the %s reach, the cone up from %s')
+           :format(tostring(off), reach, cone), step10)
+    local terms = (readFile('docs/terminology.md') or ''):gsub('\r\n', '\n')
+    local cap = terms:match('\n(| %*%*Gas cap%*%* |[^\n]*)') or ''
+    miss = unsaid(cap, { 'within ' .. cone, 'within ' .. reach })
+    ok(miss == '', 'docs/terminology.md\'s gas cap: the cone within ' .. cone .. ', the reach '
+       .. 'beside it', miss)
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
