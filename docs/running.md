@@ -171,7 +171,7 @@ does not assume the latest, which is only the server's answer to an unset
 `verify.sh`'s *season gates* fails an id with no row, a row nothing asks about, a
 `from` past `latest`, any file but `br_lib/shared/season.lua` that reads
 `br_season`, any file but `br_core/server/season.lua` that switches the
-season or sets a feature, any file but `br_core/server/main.lua` that boots
+season, any file but `br_core/server/main.lua` that boots
 it, and `BR.Season` written any way but `BR.Season.<name>`, a nil check or a
 truth test (bracket-indexed, called with `:`, or aliased).
 
@@ -181,10 +181,9 @@ It is a dev command, so a box without dev mode refuses it and prod stays
 restart-only; `br_season` itself is never touched, so the next `br_core` start
 reads it as always.
 
-- `brseason` — the season in force, where it came from, Locker v2's setting, and anything staged
+- `brseason` — the season in force, where it came from, and anything staged
 - `brseason <n>` — switch to Season n (1 to `latest`)
-- `brseason reset` — back to the season `br_core` started on, and Locker v2 back to auto
-- `brseason locker2 on|off|auto` — Locker v2 on or off whatever the season, or following it again (below)
+- `brseason reset` — back to the season `br_core` started on
 
 With no match running it applies at once. While any match is running —
 warmup to cleanup — it is staged and applied when the last one is torn down to
@@ -202,21 +201,47 @@ switch away from Season 2 the emote wheel's row stays in GTA's own key-binding
 list, and pressing it does nothing. Nor can licensed assets (below): a switch
 whose season runs a different set warns and names the resources.
 
-**`brseason locker2` turns one feature on or off, whatever the season** (#425;
-owner, 2026-11-01: "can you also dispatch a way for me to turn on locker v2 in
-season 1 with a dev command?"). `on` puts Locker v2 on for every player on the
-box whatever season it runs, `off` puts it off, and `auto` hands it back to the
-season, as `brfestive auto` hands the festive months back to the date. Only
-`locker2` is taken for now; any other feature is refused. It keeps a switch's
-timing: at once with no match running, otherwise staged until the last match
-is torn down. A staged switch and a staged setting land together, a later
-`brseason locker2` replaces a staged one, and naming the setting in force drops
-it. A switch keeps the setting; `brseason reset` and a `br_core` restart put it
-back to auto. The server replicates it as `br_seasonFeatures`, which nothing
-should set by hand, every client follows it as it follows `br_seasonServed`,
-and every F8 says who set what. In the lobby the locker page, the saved looks
-and the ped follow at once; mid-match they wait for the lobby. A box where
-nobody typed it, prod included, runs every feature by its season alone.
+### UI v2: the redone screens, one switch for all and one for each (#436)
+
+Owner, 2026-11-07: "All this UI rework - can we make a server-side toggle for
+it? One toggle for everything ... and also a separate toggle for each
+component? Let's call everything as a whole UI v2." **Separate from the
+season**: the season decides what content exists, UI v2 how it looks, in any
+season, Season 1 included. The pieces are `br_lib/config/uiv2.lua` (`locker`
+and `market` today).
+
+- `br_uiv2` in `server.cfg` is UI v2 as a whole: `on` or `off`, **off when
+  unset**. Any other text is off, and the boot banner says so.
+- `br_uiv2_<piece>` (`br_uiv2_market`, `br_uiv2_locker`) set `on` or `off`
+  wins either way; unset, the piece follows `br_uiv2`.
+
+**`bruiv2` on the server console** shows and flips them live, on any box,
+prod included -- the kill switch. It is exempt from the dev gate and
+server-console only: typed in a player's F8 it does nothing. FXServer refuses
+a player without the command's ACE before it runs; for one who has it (an
+admin, through `add_ace group.admin command allow`), this console prints
+`bruiv2 is server-console only`.
+
+- `bruiv2` — UI v2 as a whole, every piece, its answer and why
+- `bruiv2 on|off` — UI v2 as a whole (there is no `auto` for it: unset is off)
+- `bruiv2 <piece> on|off|auto` — one piece on or off whatever UI v2 says, or
+  following it again
+
+**When players see it.** The server's own doors (Locker v2's saved looks)
+answer at once. A player takes a change standing in the lobby with the
+entrance over, or as their next match starts, never mid-match; the Locker
+only standing in the lobby, where a character can be changed, so a player who
+readies up during every walk-in keeps theirs until they stand there. Standing
+in the lobby, an open Market or Locker swaps in place within a moment. Saved
+looks are never deleted by a flip.
+
+**What lasts.** A flip is written into the switch itself, so it survives
+`restart br_core` but not an FXServer restart (`royale-deploy`, a crash):
+`server.cfg` is what lasts, and every flip prints the line that keeps it. A
+`set br_uiv2...` typed into the console is applied within 5 s; `bruiv2`
+applies at once. The answer reaches clients as `br_uiv2Served`, which nothing
+should set by hand: the server writes it back within 5 s, and says so.
+`brseason locker2` (#425) now points here.
 
 ### Licensed assets: the private bucket and `assets.lock` (#391)
 
@@ -486,7 +511,7 @@ non-zero on any failure:
 | `deploy payload` | the deploy's own payload check still works |
 | `vendored third-party` | license kept, version recorded, patch log matches the source, `deploy.sh` syncs it |
 | `console capability boundary` | `dispatch.sh`'s SSH verb set, exactly — plus `brcar`, `brshots`, `brtestfire` and `brtime`/`brweather` staying console-only, and `brcar`'s spawn (`BR.Vehicles.spawnInFront`) named by `brcar` -- inside its handler -- and the dev menu's vehicle row and nothing else, line for line; the dev menu vehicle exemption's writer (`BR.Vehicles.exemptDevMenuVehicle`) named by that row alone, and its record written by one line; its client hint (`vehicleStateKey`, the state bag `brDevMenuVehicle`) read by `client/vehrefuse.lua` and `client/inventory.lua` and named on the server by the writer's one line alone, and no server code touching an entity's state but that writer's `set` (#426's second review) |
-| `dev gate on console commands` | every console command goes through the one wrap, exempting only the three; the ungated door is player input only |
+| `dev gate on console commands` | every console command goes through the one wrap, exempting only the five; the ungated door is player input only |
 | `branch-switch invariant` | no path to a hard reset that skips the dispatch blob check |
 | `incident surface` | only `BR.ShotSuspicious` can reach the Ringmaster |
 | `incident notice surface` | one announcer of the report notice, one `br:incident:filed`, one incident writer; corroboration is none of them |
@@ -550,13 +575,15 @@ the untouched native and that resource's commands register ungated. A gate that
 can take `brkick` off the public box by failing to load is worse than one that
 can leave `brshop` on it.
 
-**Four commands are exempt from this gate**: `brkick`
+**Five commands are exempt from this gate**: `brkick`
 and `brspectate`, which the admin console types into this console over tmux and
 which are therefore its Kick and Spectate buttons, and `brring`, which is how an
 operator finds out on the live box that the Ringmaster link is dead (see the
 IAM-policy note in [security.md](security.md)), and `bremotegrant`, whose gate is
 the season instead (#388): it works on any box running a season that has
-emotes — Season 2 and later — and is shut on a Season 1 box. `bridents` is *not* exempt —
+emotes — Season 2 and later — and is shut on a Season 1 box, and `bruiv2`
+(#436), UI v2's kill switch, which must work on prod (the owner's decision)
+and is server-console only, its own body the gate. `bridents` is *not* exempt —
 nothing invokes it and it prints licenses and Discord ids for every connected
 player. The keybind commands are not in this table and are not gated: FiveM
 builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
@@ -589,7 +616,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brjerrytune`, `brjerrytune on\|off` | client, dev mode | Where the Season 2 jerry can sits in the hand while it pours (#217), on `brgunclerk hand`'s keys (#404): LEFT/RIGHT x, UP/DOWN y, CTRL + UP/DOWN z, ALT + UP/DOWN rx, ALT + LEFT/RIGHT rz, ALT + CTRL + UP/DOWN ry; 1 cm and 1 degree a step, SHIFT 10 cm and 15 degrees; DELETE back to config. Bare, it turns the tool on or off. While it is on, a can stands in your own hand with the pour's clip playing, and every step moves it; `off` puts it away and prints the `pos` and `rot` to paste over the entry `use` picks in `BR.Config.UseEmotes.jerrycan` (`br_lib/config/loot.lua`). The numbers are on screen |
 | `brlobbycam`, `brlobbycam <dist\|height\|aim\|offset\|fov> <number>`, `brlobbycam on\|off` | client, dev mode | The lobby camera's five numbers, framed live, with the lines to paste into `br_lib/config/match.lua`'s `lobbyCam`. `on` puts them on the keys (#404) and lets go of the lobby's cursor while they are on -- a focused page takes every key: UP/DOWN height, CTRL + UP/DOWN dist, ALT + UP/DOWN aim, LEFT/RIGHT offset, PAGE UP/DOWN fov; 1 cm and 1 degree a step, SHIFT 10 cm and 5 degrees; DELETE the shipped numbers; the numbers on the right of the screen, clear of the menu. `off` gives the lobby its cursor back and prints the lines to paste |
 | `brboard`, `brscoreboard`, `brboard fwd\|side\|up\|w\|yaw <value\|+delta>`, `brboard prop <model>\|here\|adopt\|fit\|static\|live\|reset`, `brboard on\|off` | client, dev mode | The warmup stat board (#247): what it is doing, line by line, and the block to paste into `br_lib/config/board.lua`, its five numbers live. `on` puts the five on the keys (#404): UP/DOWN up, CTRL + UP/DOWN fwd (out from the screen), LEFT/RIGHT side (the reader's right), ALT + LEFT/RIGHT yaw, PAGE UP/DOWN w; 1 cm and 1 degree a step, SHIFT 10 cm and 15 degrees, the yaw going round past 180; DELETE the five back to config (the prop and its site stay); the numbers on screen. `off` puts them away and prints the block to paste |
-| `brlocker2` | client | Locker v2 (#28, Season 2, "My Looks"): whether it is on, the first apply, the look worn, the saved looks, the draft, the tattoos in the look beside the decorations the engine holds, and -- for the rows the editor has listed -- how many drawables each row left out per sex because the game would draw nothing for them (`dropped m: c11 3, p0 1`). The first playtest's count for the valid-item filter |
+| `brlocker2` | client | Locker v2 (#28, UI v2's locker, "My Looks"): whether it is on, the first apply, the look worn, the saved looks, the draft, the tattoos in the look beside the decorations the engine holds, and -- for the rows the editor has listed -- how many drawables each row left out per sex because the game would draw nothing for them (`dropped m: c11 3, p0 1`). The first playtest's count for the valid-item filter |
 | `brarc` | client | Whether loot actually arcs out of a container. Drops one item with a known origin and reports, link by link, how far it got — origin received, prop built, arc armed, frames flown — plus the same tally for real crates opened in play |
 | `brbox ship <1-5> [festive\|plain]`, `brbox gift <white\|blue\|green\|red>` | client, dev mode | A Season 2 test crate (#395) two meters ahead: a shipping box of any tier, festive or plain, or a gift box. Server-owned like real loot, with real contents at that tier, so each prop, its clip and the burst can be tried the moment the props land. Needs `crates2` (Season 2; `brseason 2` first on a Season 1 box) and dev mode, nothing else: it runs the server's `brboxsv` as you, a standard dev command like `brprop` (#384; owner 2026-10-06, "we should just require dev mode"), and must be used in warmup or a match (somewhere with loot). Prints which models this client will draw for it and whether its build has them; the server answers with a toast, refusals included, and in the server console |
 | `brboxprompt`, `brboxprompt ship\|gift x=<m> y=<m> z=<m> rx=<deg> ry=<deg> rz=<deg> size=<m>`, `brboxprompt on\|off` | client, dev mode | Move the hold prompt on a Season 2 box live (#395): one row for every shipping box (festive included), one for the gift box, in meters and degrees in the box's own frame (x right, y forward, z up). It moves on the next frame; the command prints the line to paste into the `prompt` table in `br_lib/config/crates.lua`. Not persisted. Bare, it prints both rows. `on` puts the row of the box in front of you on the keys (#404), following you from box to box: LEFT/RIGHT x, UP/DOWN z, CTRL + UP/DOWN y, ALT + UP/DOWN rx, ALT + LEFT/RIGHT rz, ALT + CTRL + UP/DOWN ry, PAGE UP/DOWN size; 1 cm and 1 degree a step, SHIFT 10 cm and 15 degrees; DELETE that row as it shipped; the row on screen, what the keys move in blue. `off` puts them away and prints both rows to paste |
@@ -600,7 +627,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brpromptcheck` | client | Which prompt glyph actually renders for a custom keybind |
 | `/brleave` | client | Leave the current match (counts as an elimination) |
 | `bremote`, `bremote <dict> <clip> [flag]`, `bremote stop`, `bremote check` | client, dev only | The emote audition tool (#215). Bare, it prints the wheel's 8 slots and the catalogue; with a dict and clip it plays that animation locally (no record, no music, same cancels), refusing flags 16, 32 and 1024; `check` probes every dance's clip and track. Dev-only even in a season that has emotes, because it plays any animation on a ped other players see |
-| `brmarkettabs`, `brmarkettabs <1 bar\|2 rail\|3 folder>` | client, dev mode | Switch the Season 2 Market's tab design live, to compare the three (#411): `bar` (the default, one joined strip), `rail` (words on a hairline, a cut blade under the selected one) or `folder` (index tabs on a cyan line), by number or name; bare, it prints the one showing. The browser harness takes `?market&tabs=<name or number>`. Season 2's Market only (`market2`); on Season 1 it says so and does nothing |
+| `brmarkettabs`, `brmarkettabs <1 bar\|2 rail\|3 folder>` | client, dev mode | Switch Market v2's tab design live, to compare the three (#411): `bar` (the default, one joined strip), `rail` (words on a hairline, a cut blade under the selected one) or `folder` (index tabs on a cyan line), by number or name; bare, it prints the one showing. The browser harness takes `?market&tabs=<name or number>`. UI v2's Market only (`bruiv2 market on`); with it off it says so and does nothing |
 | `brprop spawn <model> [pickup\|static]`, `brprop list`, `brprop delete <id\|all>`, `brprop display <id> <pickup\|static>`, `brprop where <id>`, `brprop edit [id]`, `brprop save`, `brprop load` | client, dev mode | Dev props (#384): spawn a model by name in front of you, shown as a pickup (hovers, bobs and spins when you are near, like loot) or static, and move or turn it by hand — W/S, A/D, Q/Z move; J/L, I/K, U/O turn; Ctrl for coarse steps (10 cm / 15 deg, fine is 1 cm / 1 deg); F to the ground, C clears the rotation, Enter confirms, X cancels. `where` prints a paste-ready Lua line; `save` and `load` use `br_core/devprops.json`, which deploys keep and git ignores. Dev mode and nothing else — no grant. Every request runs on the server as `brpropsv`, which `brprop` types for you; `list` and `where` read this client's copies and show any model it failed to draw |
 | `brpropsv <verb> ...` | server, dev mode | The server half of `brprop`, which runs it for you with `ExecuteCommand`; registered unrestricted, so dev mode is its only gate. Typed on the server console, `brpropsv delete`, `display`, `save` and `load` work as written; `edit` needs a player |
 | `brdev` (F10) | client, dev mode | The dev menu (#422): the gun shop's UI over Time, Weather, Match state, Give volts and Give Yubikeys (to a player picked from a list, yourself first), Storm pause, Warmup pause and Spawn airdrops, each running its console command's own body (`brtime`, `brweather`, `brforce`/`brskip`, `brvolts`, `brterminalsv key give`, `brstormfreeze`, `brwarmupfreeze`, `brairdrop now`). Match state, Spawn airdrops and both pauses act on your own match only -- never the newest, and the pauses never every match as their commands do. The gives refuse unless br_ddb started on the `dev-` tables. Its last row, Vehicle spawner (#426), opens Spawn by name (GTA's keyboard) and a row per vehicle class listing every vehicle the game has in it, armed ones marked "Armed" in red; a press spawns it server-side through `brcar`'s own spawn, in front of you -- further out for a wide one -- and in your bucket, then puts you in its driving seat -- any model, flying and armed ones included, trains excepted -- and only in warmup or alive in a match. What it spawns is exempt from the match's vehicle rules: nobody is put out of it, its gun is live, and nobody is filed against for its own gun -- a trainer's weapon in it is filed as anywhere -- and the clients believe that only on a dev box. F10 is mapped only once the client reads dev mode on, and moves in FiveM's key bindings. Anyone on a dev-mode server may use it. See [the dev menu](devmenu.md) |
@@ -619,7 +646,8 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brstormhitch [reset [ms]\|stop\|rows]` | client | `reset`, play a hold and a sweep, then `/brstormhitch`: a plain summary — what the storm map sent while the storm moved (the old zone's fade writes, and any clips added or removed for a picture drawn mid-sweep), the worst frame and how many frames went over 16.7 ms, and a one-line verdict. `rows` adds the detail: which storm/map/network/UI paths ran before each long frame. Opt-in and dormant outside a capture |
 | `brstormbisect <normal\|mapoff\|mapfreeze\|walloff> [ms]` | client | Runtime A/B for #350 and #344. Each mode starts a fresh hitch capture while changing only local rendering: remove the custom map fill, keep it resident but send it nothing (no fade, no redraw), or suppress the shaped 3D wall. `normal` restores shipping behavior |
 | `brconfig` | server | The config values that most often explain odd behaviour |
-| `brseason`, `brseason <n>`, `brseason reset`, `brseason locker2 on\|off\|auto` | server, dev mode | Switch the season this box runs without restarting `br_core` (#388), or put Locker v2 on or off for everyone whatever the season, or back to following it (#425); see *The season a box runs*. At once with no match running, otherwise staged until the last match is torn down to the lobby. Bare, it prints the season in force, where it came from (`br_season`, the latest by default, or a `brseason` override), Locker v2's setting and anything staged. A switch keeps the setting; `reset` puts it back to auto as it goes back to the startup season. Dev mode plus restricted |
+| `brseason`, `brseason <n>`, `brseason reset` | server, dev mode | Switch the season this box runs without restarting `br_core` (#388); see *The season a box runs*. At once with no match running, otherwise staged until the last match is torn down to the lobby. Bare, it prints the season in force, where it came from (`br_season`, the latest by default, or a `brseason` override) and anything staged. `brseason locker2 ...` (#425) prints one line pointing to `bruiv2 locker`. Dev mode plus restricted |
+| `bruiv2`, `bruiv2 on\|off`, `bruiv2 <piece> on\|off\|auto` | server console only, any box | UI v2's switches (#436), live, prod included: bare, UI v2 as a whole, each piece (`locker`, `market`), its answer and why; `on`/`off` flips UI v2 as a whole; a piece takes `on`, `off` or `auto` (back to following UI v2). Players take a change in the lobby or as their next match starts, the Locker only in the lobby. A flip lasts until FXServer restarts and prints the `server.cfg` line that keeps it; see *UI v2*. Exempt from the dev gate; from a player's F8 it does nothing |
 | `brfestive [on\|off\|auto]` | server, dev mode | Force the festive months on or off for testing, or hand them back to the server's date — December and January — for the Season 2 festive crates (#395) **and the festive sky** (#399), which ask one calendar. Bare, it prints the answer, where it came from and what the date says. **The sky moves at once, for everyone**: on Season 2 and later the clear sky is XMAS with snow on the ground everywhere -- the lobby island, warmup and the match, after a storm exit too -- the bus keeps its overcast cover for the island swap (no snow on the ground under it, as under the storm's thunder: the ground is white exactly while the sky is a snow weather), and every client blends to it over `BR.Config.World.festiveBlendSec` (10 s). **In a match the clear sky cycles** (owner, 2026-10-06): from the moment the match goes PLAYING, SNOW, SNOWLIGHT, XMAS and BLIZZARD, drawn by the server for the whole match, never the same one twice in a row, each held 180-300 s and blended in over 30 s (`BR.Config.Festive.cycle`); the storm's thunder, `brweather` and Time & weather's weather still outrank it, leaving the storm comes back to the weather the match is on, and the cycle stops with the match. Turned on mid-match, a PLAYING match starts its cycle at once; turned off, it stops. `brsky` shows and forces it. On Season 1 the sky never turns festive, and it says so. **The crates move at once too** (round 5, #396): every crate and husk already on the ground -- every running match's and the warmup pad's, its four permanent crates included -- is restyled festive or plain now and re-announced to each player once (`BR.Loot.refestive`, the walk a `brseason` switch uses), and a running match takes the new answer as its own; then the next match's layout (at its warmup), warmup-pad crates as they are stocked, and `brbox` crates take it. A `brbox` crate keeps the look it was asked for, and an airdrop still falling lands in the match's new answer. The real calendar turning (December 1, February 1) still restyles nothing already laid out: only this command does. Dev mode plus restricted |
 | `brsky`, `brsky <snow\|snowlight\|xmas\|blizzard>`, `brsky next` | server, dev mode | The festive match sky's cycle (#399). Bare, it prints every cycling match: the weather, how long it has held, when it turns, its turn count and its seed, which replays the match's sky up to the first `brsky <weather>` -- or why nothing cycles (the festive sky is off, or no festive match has gone PLAYING yet). With a weather it shows that one now in every PLAYING match, with a fresh 180-300 s hold, and each player in the match is told once, as for a turn; `next` turns every PLAYING match's cycle now. A finished match's sky is left alone. Everything prints to the server console. Dev mode plus restricted, as `brfestive` |
 | `bremotegrant`, `bremotegrant <player name\|#id> <emoteId\|all>` | server console only | Hand a player one dance, or every dance they do not own, without charging Volts (#215). Bare, it lists the catalogue. Takes an **exact** name (case-insensitive, spaces allowed) or `#serverId`; a partial name only lists candidates, because there is no revoke. `all` grants one at a time and stops if the id changes hands. Exempt from the dev gate and gated by the season instead (emotes are Season 2+, #388): it prints the season and does nothing while emotes are off |

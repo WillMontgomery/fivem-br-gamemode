@@ -27,9 +27,9 @@ import './lockerv2/lockerv2.css'
 export { warmTheme } from './lockerv2/scope'
 
 /**
- * LOCKER V2 (#28): Season 2's locker, "My Looks". Season 1's is
+ * LOCKER V2 (#28): UI v2's locker (#436), "My Looks". Season 1's is
  * screens/Locker.tsx, the finished product, untouched; App.tsx picks between
- * them on the `locker2` envelope's `on`, which is BR.Season.has('locker2').
+ * them on the `locker2` envelope's `on`, which is UI v2's locker piece.
  *
  * THE OWNER'S FLOW (2026-10-12/13, recorded on #28): "let's get rid of the
  * top left/right select bar, and move to a new flow". Four views, each with

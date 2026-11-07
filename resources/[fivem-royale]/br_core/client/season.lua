@@ -38,16 +38,6 @@
 -- and a client that has never seen a season has nothing to re-read. A garbled
 -- read (nil) is skipped, not remembered, so the season it was is still the one
 -- compared against when a real one lands.
---
--- ═══ A FEATURE SETTING IS NOT A SEASON CHANGE (#425) ═══
---
--- `brseason locker2 on|off|auto` moves one feature and leaves the season
--- number where it was, so `br:season:changed` is not raised for it: its two
--- listeners above follow rows the command does not take. The feature's own
--- followers hear the setting land through BR.Season.onChange -- Locker v2's
--- lobby tick asks its gate every pass anyway. BR.Net.SEASON_FEATURE is one F8
--- line on every client, and tells a runtime without the convar listener what
--- to wait for.
 
 BR = BR or {}
 
@@ -78,25 +68,6 @@ AddEventHandler(BR.Net.SEASON_SWITCHED, function(d)
     print(('[br_core] brseason: %s switched this server to Season %d'):format(tostring(d.by), n))
     BR.Season.expect(n)
     look()
-end)
-
---- A setting in words, as br_core/server/season.lua prints it.
-local PHRASE = {
-    on   = 'on for this server, whatever the season',
-    off  = 'off for this server, whatever the season',
-    auto = 'back to auto for this server: it follows the season',
-}
-
--- A feature setting was applied (#425). One F8 line on every client, as for a
--- switch, and the settings it carries handed to BR.Season.expect -- never
--- taken as this client's: those are br_seasonFeatures' as it lands.
-RegisterNetEvent(BR.Net.SEASON_FEATURE)
-AddEventHandler(BR.Net.SEASON_FEATURE, function(d)
-    if type(d) ~= 'table' or type(d.id) ~= 'string' or not d.id:match('^[%a_][%w_]*$') then return end
-    local words = PHRASE[d.to]
-    if words == nil then return end
-    print(('[br_core] brseason: %s set %s %s'):format(tostring(d.by), d.id, words))
-    BR.Season.expect(nil, type(d.settings) == 'table' and d.settings or nil)
 end)
 
 -- One `brseason` answer, to the player who typed it.

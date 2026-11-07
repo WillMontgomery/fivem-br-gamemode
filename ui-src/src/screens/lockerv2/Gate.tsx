@@ -6,17 +6,18 @@ import { sheetLoaded } from './sheet'
 /**
  * THE DOOR TO LOCKER V2 (#28), and the one part of it in the main bundle.
  *
- * Season 2's locker is Cloudscape, and Cloudscape is loaded as its own chunk
- * (contract section 5): `assets/LockerV2.js` and `assets/LockerV2.css`, which
- * br_ui/fxmanifest.lua's `ui/assets/*.js` and `*.css` globs already serve. A
- * Season 1 page never fetches either -- its locker is screens/Locker.tsx,
- * untouched -- and its main bundle carries none of Cloudscape's CSS.
+ * Locker v2 (UI v2's locker, #436) is Cloudscape, and Cloudscape is loaded as
+ * its own chunk (contract section 5): `assets/LockerV2.js` and
+ * `assets/LockerV2.css`, which br_ui/fxmanifest.lua's `ui/assets/*.js` and
+ * `*.css` globs already serve. A page with Locker v2 off never fetches either
+ * -- its locker is screens/Locker.tsx, untouched -- and its main bundle
+ * carries none of Cloudscape's CSS.
  *
  * A CHUNK THIS PROJECT HAS NOT SHIPPED BEFORE, and vite.config.ts and
  * bridge/nui.ts both record dynamic imports under nui:// as a source of silent
  * failures. So nothing here can strand the player:
  *
- *   * the chunk is fetched as soon as Lua says the season has it
+ *   * the chunk is fetched as soon as Lua says UI v2's locker is on
  *     (usePreloadLockerV2), so a failure is an F8 line at the lobby rather
  *     than a surprise at the first press;
  *   * a chunk that fails, or a screen that throws, gives the cursor back
@@ -57,7 +58,7 @@ function load(): Promise<Screen> {
 
 const LockerV2 = lazy(load)
 
-/** Fetch the chunk the moment the season has the feature. */
+/** Fetch the chunk the moment UI v2's locker is on. */
 export function usePreloadLockerV2(on: boolean): void {
   useEffect(() => {
     if (!on) return

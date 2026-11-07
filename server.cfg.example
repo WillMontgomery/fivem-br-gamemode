@@ -396,6 +396,12 @@ exec "tunables.cfg"
 # The season this box runs (#388); later seasons' features stay off. Unset = latest.
 # set br_season 1
 
+# UI v2 (#436): the redone screens (br_lib/config/uiv2.lua), in any season.
+# Off when unset. A br_uiv2_<piece> line wins either way, and with none the
+# piece follows br_uiv2. bruiv2 on this console flips them live, on any box.
+# set br_uiv2 on
+# set br_uiv2_market off
+
 # ---------------------------------------------------------------------------
 # Gamemode
 #

@@ -123,8 +123,8 @@ local function lobbyPedPending()
     -- is the only honest source for what we are waiting to see.
     --
     -- ONLY THE ANSWER THAT MOVES IS ASKED ON EVERY PASS (#409). wantHash() is
-    -- table reads, and it does move under this screen: nil while the season is
-    -- not known (which reads as Season 1's model), 0 while Locker v2's first
+    -- table reads, and it does move under this screen: nil while Locker v2 has
+    -- no answer yet (which reads as Season 1's model), 0 while Locker v2's first
     -- apply waits on the server, the worn ped's model once it is going on.
     -- Season 1's half is a kvp read and a hash, and it was worked out ten times
     -- a second for an answer that changes only when BR.Locker.apply stores a

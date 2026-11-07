@@ -40,19 +40,23 @@ local PROFILE = { level = 1, xp = 0, needed = 1 }
 --- walking a nil table.
 local function emotesOn() return BR.Config.Emotes ~= nil and BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end
 
---- Is this machine's Market the Season 2 one? (#411)
+--- Is this machine's Market v2 on? (#411, #436)
 ---
---- Owner, 2026-10-13: "nothing we re-do in the shop should ever show on season
---- 1." The `market2` row in br_lib/config/seasons.lua, asked like every other
---- gate. Off, the grid and the MARKET envelope are exactly what they were
---- before #411, and the page draws screens/Market.tsx. On, the grid drops the
+--- UI v2's market piece (br_lib/config/uiv2.lua), asked through its one door.
+--- Owner, 2026-11-07: UI v2 is separate from the season -- on in any season,
+--- Season 1 included -- and switched live from the server console. Here it
+--- answers this resource's mirror of the answer br_core's client holds, which
+--- moves only in the lobby or as a match starts (br_core/client/uiv2.lua).
+--- Off, the grid and the MARKET envelope are exactly what they were before
+--- #411, and the page draws screens/Market.tsx. On, the grid drops the
 --- placeholder kinds and the envelope carries `v2`, which is what makes the
 --- page draw screens/MarketV2.tsx -- and the Preview (MARKET_PREVIEW) and the
---- tab designs (`brmarkettabs`) below answer only then.
+--- tab designs (`brmarkettabs`) below answer only then. The season still has
+--- its say on what the grid holds: the dances come with `emotes`.
 ---
 --- NIL-SAFE for the same reason as emotesOn: tools/test_client.lua loads this
---- file without the season module.
-local function market2On() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('market2') == true end
+--- file without the UI v2 module.
+local function market2On() return BR.UIv2 ~= nil and BR.UIv2.has ~= nil and BR.UIv2.has('market') == true end
 
 --- The catalogue, from the shared season config.
 ---
@@ -114,8 +118,8 @@ local STATE = { balance = 0, owned = {}, equipped = {}, emotes = {} }
 --- every `default` item outright.
 local function catalogue()
     local out = {}
-    -- THE SEASON 2 MARKET (#411). The push reads the same answer for the
-    -- envelope's `v2` in the same call, and nothing moves the season between.
+    -- MARKET V2 (#411). The push reads the same answer for the envelope's
+    -- `v2` in the same call, and nothing moves the answer between.
     local v2 = market2On()
     -- NO "NEW" (#411, owner 2026-10-14: "let's not just put the "new" tag on
     -- everything - have some meaning to it. or get rid of it."). Gone until
@@ -180,11 +184,11 @@ local function catalogue()
         end
     end
 
-    -- THE PLACEHOLDER KINDS ARE SEASON 1'S ALONE (#411). Characters and
+    -- THE PLACEHOLDER KINDS ARE THE OLD MARKET'S ALONE (#411). Characters and
     -- Banners have no definitions, and the server refuses every one of them
-    -- ("no such item"); the Season 2 Market shows "only real items", so a tab
-    -- appears only for a kind something can actually be bought or worn from.
-    -- Season 1 keeps them exactly as it always had them.
+    -- ("no such item"); Market v2 shows "only real items", so a tab appears
+    -- only for a kind something can actually be bought or worn from. The old
+    -- Market keeps them exactly as it always had them.
     if not v2 then
         for _, item in ipairs(SYNTHETIC) do out[#out + 1] = item end
     end
@@ -200,10 +204,10 @@ function BR.Market.push()
         -- one line in the config instead of a search across two languages.
         currency = BR.Config.Market.currency,
         items    = catalogue(),
-        -- THE SEASON 2 MARKET (#411): present and true only while the
-        -- `market2` row is on, and then the page draws screens/MarketV2.tsx.
-        -- In the grid's own envelope, so the screen and the grid it draws can
-        -- never arrive out of step. Absent on Season 1, whose envelope is the
+        -- MARKET V2 (#411): present and true only while UI v2's market piece
+        -- is on, and then the page draws screens/MarketV2.tsx. In the grid's
+        -- own envelope, so the screen and the grid it draws can never arrive
+        -- out of step. Absent with the piece off, where the envelope is the
         -- one it always was.
         v2       = v2 or nil,
     })
@@ -246,6 +250,16 @@ end)
 AddEventHandler('br:season:changed', function()
     BR.Market.push()
 end)
+
+--- UI v2's answer moved on this machine (#436): the first one this resource
+--- is told, and every one after it -- br_core's client takes a new one only in
+--- the lobby or as a match starts. The same re-send, so Market v2 comes or goes
+--- with its grid, open or not, with no server round trip.
+---
+--- GUARDED: tools/test_client.lua loads this file with no UI v2 module.
+if BR.UIv2 and BR.UIv2.onChange then
+    BR.UIv2.onChange(function() BR.Market.push() end)
+end
 
 --- The server's answer, and the only thing that changes what the page believes.
 RegisterNetEvent(BR.Net.MARKET_STATE)
@@ -356,15 +370,14 @@ local function previewable(id)
     return item.purchasable == true and STATE.balance >= (tonumber(item.price) or math.huge)
 end
 
--- THE PREVIEW (#411): the Season 2 Market's Preview press. { id } is a dance
--- for the lobby character to play, silently, while the Market is open, and
+-- THE PREVIEW (#411): Market v2's Preview press. { id } is a dance for the
+-- lobby character to play, silently, while the Market is open, and
 -- { id = nil } stops it. A dance the player neither owns nor can afford is
 -- refused here, whatever the page sent; the rest go to br_core's lobby ped
 -- (`br:ui:marketPreview`, client/lobbyped.lua), which plays it only while the
 -- Market is on screen and the ped is parked on its mark, and never sends the
--- server anything -- no record, no music. Only on the Season 2 Market, and
--- only while the season has emotes: on Season 1 this answers and does
--- nothing.
+-- server anything -- no record, no music. Only on Market v2, and only while
+-- the season has emotes: otherwise this answers and does nothing.
 RegisterNUICallback(BR.NuiCb.MARKET_PREVIEW, function(data, cb)
     if market2On() and emotesOn() then
         local id = type(data) == 'table' and type(data.id) == 'string' and data.id ~= '' and data.id or nil
@@ -381,8 +394,8 @@ end)
 -- current tab designs" -- three to compare, switched here on a dev box (every
 -- console command is dev-only: br_lib/shared/devgate.lua) and with `?tabs=`
 -- in the browser harness. The page owns the designs (marketv2/model.ts
--- TAB_DESIGNS, the default first); this only names one. Season 2's Market
--- only: on Season 1 it says so and sends nothing.
+-- TAB_DESIGNS, the default first); this only names one. Market v2 only: with
+-- UI v2's market piece off it says so and sends nothing.
 local TAB_DESIGNS = { 'bar', 'rail', 'folder' }
 local tabDesign = nil
 
@@ -394,7 +407,7 @@ end
 
 RegisterCommand('brmarkettabs', function(_, args)
     if not market2On() then
-        print('[br_ui] brmarkettabs: this box runs the Season 1 Market (market2, br_lib/config/seasons.lua)')
+        print("[br_ui] brmarkettabs: UI v2's Market is off here (bruiv2 market on, on the server console)")
         return
     end
     local a = type(args) == 'table' and tostring(args[1] or ''):lower() or ''

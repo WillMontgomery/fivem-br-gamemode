@@ -64,7 +64,15 @@ BR.Dev = BR.Dev or {}
 --                       one gate would be two. Console-only (src 0) and
 --                       registered restricted, so the exemption opens it to the
 --                       box's owner and nobody else.
-local EXEMPT = { bremotegrant = true, brkick = true, brspectate = true, brring = true }
+--   bruiv2              UI v2's kill switch (#436): every redone screen on or
+--                       off, or one of them, live. On prod by the owner's
+--                       decision (2026-11-07: it switches "from the server
+--                       console, on prod too"), so a dev-only gate would make it
+--                       no kill switch at all. Server-console only (src 0) and
+--                       registered restricted; its body, the refusal first, is
+--                       the gate (br_core/server/uiv2.lua; tools/check_uiv2.lua
+--                       U7 pins it).
+local EXEMPT = { bremotegrant = true, brkick = true, brspectate = true, brring = true, bruiv2 = true }
 
 -- ───────────────────────────────────────────────────────────────── the read ---
 

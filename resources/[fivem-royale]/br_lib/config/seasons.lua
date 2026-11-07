@@ -55,18 +55,6 @@ BR.Config.Seasons = {
         -- ground, and in a match it cycles SNOW, SNOWLIGHT, XMAS and BLIZZARD
         -- (2026-10-06). Off, every sky is the one it has always been.
         snow = { from = 2 },
-        -- #28. Owner, 2026-10-07: "The new Locker is available starting at
-        -- Season 2 ... The existing Locker experience is our finished Season 1
-        -- product - make sure that stays in and remains untouched." On: the
-        -- ped picker (stock, custom freemode peds, saved peds). Off: today's
-        -- locker, exactly as it was.
-        locker2 = { from = 2 },
-        -- #411. Owner, 2026-10-13: "nothing we re-do in the shop should ever
-        -- show on season 1." On: br_ui's Season 2 Market (the lobby character
-        -- kept in view, tabs only for the kinds with real items, a buy
-        -- confirm, a Preview of a dance on the lobby character). Off: today's
-        -- Market and its grid, exactly as they were.
-        market2 = { from = 2 },
         -- #419. Owner, 2026-10-18: Flick, the pole cameras that feed Scan, is
         -- Season 2 and later. On: Scan shows an opponent only near a working
         -- camera, a camera taken down pays Volts, and the Scan squad sees the

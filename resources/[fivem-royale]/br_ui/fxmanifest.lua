@@ -43,6 +43,13 @@ client_scripts {
     -- re-read must be registered before the Market's handler of that event.
     '@br_lib/shared/season.lua',
     '@br_lib/config/seasons.lua',
+    -- UI V2 (#436): client/market.lua asks BR.UIv2.has('market'), which here
+    -- answers this resource's MIRROR of the answer br_core's client holds (the
+    -- module asks for it as it loads, and is told every move by a local
+    -- event). ABOVE client/market.lua, whose follower re-pushes the grid on
+    -- every move it is told of.
+    '@br_lib/shared/uiv2.lua',
+    '@br_lib/config/uiv2.lua',
 
     'client/nui.lua',
     -- The cold line and the idle A/B switches (#252), dev mode only. After

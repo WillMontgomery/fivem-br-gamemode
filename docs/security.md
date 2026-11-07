@@ -317,7 +317,7 @@ compromised game box gains from this grant is the ability to file noise.
 
 ## Saved peds: the one Query in br_ddb (#28)
 
-Locker v2 (Season 2) stores each saved custom ped as its own item in
+Locker v2 (UI v2, #28) stores each saved custom ped as its own item in
 `br-players`, under the player's partition, as `sk = ped#<id>`; the ped a player
 wears is one string, `locker2`, on their profile row. Listing them is the first
 and only `Query` in `br_ddb` (`br:ddb:lockerFetch`). IAM already granted `Query`

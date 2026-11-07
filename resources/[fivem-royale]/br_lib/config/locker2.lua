@@ -1,6 +1,6 @@
--- Locker v2 (#28, Season 2): the ped picker's numbers, its categories and the
--- rows each one holds. The Season 1 locker (client/locker.lua, config/peds.lua)
--- reads nothing here.
+-- Locker v2 (#28, UI v2's locker): the ped picker's numbers, its categories
+-- and the rows each one holds. The Season 1 locker (client/locker.lua,
+-- config/peds.lua) reads nothing here.
 --
 -- ═══ THE OWNER'S SPEC (2026-10-07) ═══
 --
@@ -196,8 +196,8 @@ BR.Config.Locker2 = {
     --- The first apply waits this long, under the loading screen, for the
     --- server's record of the worn ped before it falls back to this machine's.
     joinWaitMs = 4000,
-    --- Season 1's locker holds its first apply this long while the season is
-    --- still unknown, so a Season 2 client never shows a Season 1 ped first.
+    --- Season 1's locker holds its first apply this long while UI v2 is still
+    --- unknown, so a client with Locker v2 on never shows a Season 1 ped first.
     unknownWaitMs = 3000,
     --- How often the worn custom ped is compared with what the game has on it.
     watchMs = 500,

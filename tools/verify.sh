@@ -151,6 +151,7 @@ NOTES=(
     "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
     "test_season|Seasons: the one convar read once, unset runs the latest and warns, the dev label, and brseason"
+    "test_uiv2|UI v2: one switch for every redone screen and one per screen, from server.cfg or the console, on prod too; players take a change in the lobby or as their next match starts, never mid-match"
     "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
@@ -161,8 +162,8 @@ NOTES=(
     "test_terminalfx|Season 2 terminal functions: Scan shows the squad its opponents (through the Flick cameras too), the bounty's toasts and blips, Supply drop and Max ammo spend nothing when they can't run"
     "test_terminalstrike|Season 2 tools from the sky: Vehicle drop lands an unarmed car near the right player, Airstrike's damage is the server's alone, and both spend nothing when they can't"
     "test_guardprobe|The bodyguard ownership probe is dev-only and Season 2, spawns and logs what it says, and costs nothing until typed"
-    "test_locker2|Season 2 Locker: saved peds checked and kept by the server, the ped you left with is the ped you rejoin with, and Season 1's locker unchanged"
-    "test_market2|Season 2 Market: only real items and nothing marked New, Preview only for a dance you own or can afford, a purchase still the server's, and Season 1's Market unchanged"
+    "test_locker2|Locker v2 (UI v2): saved peds checked and kept by the server, the ped you left with is the ped you rejoin with, a UI v2 move only where a character can change, and Season 1's locker unchanged"
+    "test_market2|Market v2 (UI v2): only real items and nothing marked New, Preview only for a dance you own or can afford, a purchase still the server's, and the old Market unchanged"
     "test_tunekeys|Dev tuning tools' keys: a tap is one step and a hold the same twenty a second at 30, 60 or 144 fps, keys claimed only while a tool is on"
     "test_flick|Season 2 Flick cameras, server: a camera goes down only through the server's door, pays 2 Volts (30 a match) only to who took it, and Scan sees only what a camera sees"
     "test_flick_client|Season 2 Flick cameras on screen: one report a camera, every down camera hidden with its wreck near, Season 1's hides, the Scan squad's coverage on the big map only"
@@ -171,7 +172,7 @@ NOTES=(
     "test_devmenu|Dev menu (F10, /brdev): only on a dev-mode server, every request checked, each row runs its console command on the asker's own match"
     "test_jerrycan|Season 2 jerry can, server: poured only into a still car in your own match with room in its tank, the fuel moved out of the can and never made, the car frozen only while it pours, cans only from match crates"
     "test_jerrycan_client|Season 2 jerry can on screen: the engine held off by whoever drives the car, never freed while an EMP still holds it, the can in the pourer's hand, the cap marker, all of it let go however the pour ends"
-    "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive and match-end change"
+    "frame budget|Per-frame game calls, draws and memory, and heavy calls a second, stay within budget, lobby to match, every scene, in both seasons, the festive sky and a live season switch, and so does the one-time cost of every season, festive, UI v2 and match-end change"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
@@ -203,7 +204,8 @@ NOTES=(
     "test_configreport|Settings report on six fake servers: finds the server name, never shows the license key"
     "dev gate on console commands|Typed commands are off on the public server but for a few; keybinds and /brleave work"
     "dev gate on net events|No request a player's game sends the server is allowed just because dev mode is on"
-    "season gates|Every season-gated feature is on the one list, only the season module reads br_season, only brseason switches the season or sets a feature, and only br_core's start boots it"
+    "season gates|Every season-gated feature is on the one list, only the season module reads br_season, only brseason switches the season, and only br_core's start boots it"
+    "ui v2 gates|Every UI v2 piece is on the one list and asked through one door, only the UI v2 module reads its switches, and its kill switch stays server-console only"
     "emote gate|Every way into emotes asks the season, and every emote test passes in Seasons 1 and 2"
     "branch-switch invariant|Switching the server to another branch can never swap out the console's control script"
     "incident surface|The anti-cheat opens a case only for cheat signs, never for warmup fights or teammates"
@@ -875,6 +877,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # So is the dev-mode `brseason`: the switch over devgate's real wrap, staged
     # while any match runs and applied at the teardown, and the client that
     # follows the replicated value rather than the message.
+    # test_uiv2.lua is UI v2 (#436): two switches read on br_core's server only
+    # and resolved into one replicated answer, applied within 5 s of a typed
+    # `set` and at once by `bruiv2` -- the dev gate's fifth exemption, run here
+    # over devgate's real wrap with dev mode off, refused from any source but
+    # the console -- and held per client: the first answer at once, a later one
+    # in the lobby with the entrance over or as the next match starts, never
+    # mid-match, with br_ui's mirror told every move.
     # test_storm.lua is the twelfth suite to load a real SERVER file and the
     # eighth to load a CLIENT one, and it is the first to load one of each --
     # because the rule it pins has to hold on both sides of the wire or it is
@@ -947,13 +956,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # that can no longer happen giving everything back. Their planner half is
     # test_storm.lua's `control.*` blocks.
     #
-    # test_locker2.lua is Locker v2 (#28, Season 2) on its real files, each in
-    # its own Lua environment: the appearance schema both sides share, the
-    # server's saved peds over a modeled br_ddb (every refusal, the rate, the
-    # worn ped coalesced and flushed on drop), the client over a modeled ped
-    # (the join, the tabs, the draft, the watcher, a live season switch), the
-    # camera's focus presets, and Season 1's locker played twice -- alone and
-    # beside v2 -- with identical native traces.
+    # test_locker2.lua is Locker v2 (#28, UI v2's locker) on its real files,
+    # each in its own Lua environment: the appearance schema both sides share,
+    # the server's saved peds over a modeled br_ddb (every refusal, the rate,
+    # the worn ped coalesced and flushed on drop), the client over a modeled
+    # ped (the join, the tabs, the draft, the watcher, a UI v2 move, in the
+    # lobby and across a match), the camera's focus presets, and Season 1's
+    # locker played twice -- alone and beside v2 -- with identical native
+    # traces.
     #
     # test_terminalstrike.lua is #396's round 5 tools that come down from the
     # sky (2026-10-06), on the real door and function files: Vehicle drop's car
@@ -979,13 +989,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # for that model in br_core: the cars once the showroom has them, and a box
     # client/loot.lua has built. Its wait-side half is in test_lobbyseq.lua.
     #
-    # test_market2.lua is the Season 2 Market (#411) on br_ui's real
-    # client/market.lua: Season 1's envelope and grid exactly as they were,
-    # Season 2's carrying `v2`, only items the server can resolve (no
-    # placeholder kinds) and nothing marked New, the Preview refused for a
-    # dance neither owned nor affordable, a brseason switch both ways, and a
-    # purchase forwarded as an id that moves nothing until MARKET_STATE. The
-    # page half is ui-src/scripts/test-marketv2.mjs.
+    # test_market2.lua is Market v2 (#411, UI v2's market) on br_ui's real
+    # client/market.lua: the old envelope and grid exactly as they were, v2's
+    # carrying `v2`, only items the server can resolve (no placeholder kinds)
+    # and nothing marked New, the Preview refused for a dance neither owned
+    # nor affordable, a UI v2 move both ways, and a purchase forwarded as an
+    # id that moves nothing until MARKET_STATE. The page half is
+    # ui-src/scripts/test-marketv2.mjs.
     #
     # test_tunekeys.lua is the keys the dev tuning tools share (#404), over the
     # real loop registry: a tap is one step, a hold twenty a second from 25 to
@@ -1084,6 +1094,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_tutorial.lua
         tools/test_gitref.lua
         tools/test_season.lua
+        tools/test_uiv2.lua
         tools/test_emotes_ui.lua
         tools/test_props.lua
         tools/test_stamina.lua
@@ -3135,11 +3146,15 @@ DEVGATE_FILE="resources/[fivem-royale]/br_lib/shared/devgate.lua"
 #                       (#388, the `emotes` row in br_lib/config/seasons.lua),
 #                       so a public box running Season 2 can grant them. The
 #                       emote gate section below pins it.
+#   bruiv2              UI v2's kill switch (#436), on prod by the owner's
+#                       decision (2026-11-07): server-console only and
+#                       registered restricted, its body the gate. The `ui v2
+#                       gates` section below pins it (tools/check_uiv2.lua U7).
 #
 # bridents is deliberately NOT here: nothing invokes it and it prints licenses
 # and Discord ids for everyone connected. See the note above it in
 # br_ringmaster/server/debug.lua.
-EXEMPT_="bremotegrant brkick brring brspectate"
+EXEMPT_="bremotegrant brkick brring brspectate bruiv2"
 
 if [ ! -f "$DEVGATE_FILE" ]; then
     echo "${RED}FAIL${RST} $DEVGATE_FILE is gone"
@@ -3150,18 +3165,22 @@ else
     # (1) THE EXEMPTION SET, PARSED RATHER THAN GREPPED FOR.
     #
     # Read as the actual `name = true` pairs on the EXEMPT line and compared as
-    # a sorted set, so adding a fourth verb fails here instead of passing on the
-    # strength of the other three still being present.
+    # a sorted set, so adding a sixth verb fails here instead of passing on the
+    # strength of the other five still being present. A name may carry digits
+    # after its first letter (bruiv2): a pattern of letters alone would read
+    # that one as missing.
     exempt_now=$(grep -E '^local EXEMPT = \{' "$DEVGATE_FILE" \
-                 | grep -oE "[a-z]+ = true" | awk '{print $1}' | sort | tr '\n' ' ' \
+                 | grep -oE "[a-z][a-z0-9]* = true" | awk '{print $1}' | sort | tr '\n' ' ' \
                  | sed 's/ $//')
     if [ "$exempt_now" != "$EXEMPT_" ]; then
         echo "${RED}FAIL${RST} the dev-gate exemption list is '${exempt_now}', expected '${EXEMPT_}'"
         echo "     Every name on that line is a command that keeps working on"
         echo "     the PUBLIC server. Two of them are the admin console's Kick"
-        echo "     and Spectate buttons; the third is how the operator finds out"
-        echo "     the Ringmaster link is dead. A fourth is a decision, not a"
-        echo "     tidy-up -- make it here and in devgate.lua together."
+        echo "     and Spectate buttons; brring is how the operator finds out"
+        echo "     the Ringmaster link is dead; bremotegrant is gated by the"
+        echo "     season and bruiv2 is UI v2's kill switch, both console-only."
+        echo "     A sixth is a decision, not a tidy-up -- make it here and in"
+        echo "     devgate.lua together."
         devgate=1
     fi
 
@@ -3378,12 +3397,11 @@ fi
 # feature an unset box never runs, an untilSeason at or before its `from` is a
 # feature no season has, and a second reader of br_season decides on its own
 # unvalidated copy -- and a second WRITER: only the dev-mode brseason may switch
-# the season in force or set a feature on or off whatever the season (#425),
-# and only br_core's start may boot it, which re-latches it and clears every
-# setting. A way in spelled so no rule can read it -- bracket-indexed, called
-# with `:`, aliased -- fails too (#425's review); a name built at run time
-# cannot be caught by reading text. tools/check_seasons.lua fails each one
-# (S1-S9), and its self-test runs first for the reason the net-event gate's does.
+# the season in force, and only br_core's start may boot it, which re-latches
+# it. A way in spelled so no rule can read it -- bracket-indexed, called with
+# `:`, aliased -- fails too; a name built at run time cannot be caught by
+# reading text. tools/check_seasons.lua fails each one (S1-S6, S8, S9), and its
+# self-test runs first for the reason the net-event gate's does.
 section 'season gates'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if vc_begin 'season gates' 'list:resources/[fivem-royale]:.lua'; then
@@ -3395,6 +3413,36 @@ if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
         "${VCL[@]}" tools/check_seasons.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) || st_=1
     else
         echo "${RED}FAIL${RST} tools/check_seasons.lua's own fixtures no longer hold"
+        echo "     A green run of it would mean nothing. Fix the checker first."
+        st_=1
+    fi
+    vc_end "$st_"; [ "$st_" -eq 0 ] || rc=1
+    fi
+else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
+
+# --- 4d-ter-bis. UI v2: the one list, its one door, its kill switch (#436) ---
+#
+# Owner, 2026-11-07: "One toggle for everything (market, locker v2, HUD,
+# inventory, player list, etc), and also a separate toggle for each
+# component", live from the server console, on prod too, as a kill switch.
+# The mechanism is one list, br_lib/config/uiv2.lua, one door, BR.UIv2.has(id)
+# in br_lib/shared/uiv2.lua, and one console command, and it rots the way the
+# season's does: a typo'd id is off for good, a row nothing asks switches
+# nothing, a second reader of a switch decides on its own copy -- on a client,
+# live mid-match -- a second writer moves the answer with no command typed,
+# and a kill switch registered loosely is one an in-game admin can throw.
+# tools/check_uiv2.lua fails each one (U1-U8), with its self-test first.
+section 'ui v2 gates'
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    if vc_begin 'ui v2 gates' 'list:resources/[fivem-royale]:.lua'; then
+    st_=0
+    vc_lua
+    if "${VCL[@]}" tools/check_uiv2.lua --selftest; then
+        vc_lua
+        # shellcheck disable=SC2046
+        "${VCL[@]}" tools/check_uiv2.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) || st_=1
+    else
+        echo "${RED}FAIL${RST} tools/check_uiv2.lua's own fixtures no longer hold"
         echo "     A green run of it would mean nothing. Fix the checker first."
         st_=1
     fi

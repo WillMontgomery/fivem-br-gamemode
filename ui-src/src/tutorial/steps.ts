@@ -191,9 +191,10 @@ export type Step = {
   body: string
   /**
    * The prose instead, while the screen this card waits on is drawn as its
-   * Season 2 version (#411: the Market). Owner, 2026-10-13: ""it may look a
-   * bit empty in here" should change in season 2 - I agree." Season 1 keeps
-   * `body`. See `bodyFor`.
+   * UI v2 version (#411: Market v2, UI v2's market piece since #436).
+   * Owner, 2026-10-13: ""it may look a bit empty in here" should change in
+   * season 2 - I agree." With that piece off the card keeps `body`. See
+   * `bodyFor`.
    */
   v2Body?: string
   advance: Advance
@@ -680,8 +681,9 @@ export const LOBBY_STEPS: Step[] = [
 ]
 
 /**
- * The prose a card shows: `v2Body` while the screen it waits on is its Season 2
- * version (#411), `body` otherwise -- so Season 1 reads exactly what it did.
+ * The prose a card shows: `v2Body` while the screen it waits on is its UI v2
+ * version (#411, #436), `body` otherwise -- so with that piece off the card
+ * reads exactly what it did.
  */
 export function bodyFor(step: Pick<Step, 'body' | 'v2Body'>, v2Screen: boolean): string {
   return v2Screen && step.v2Body !== undefined ? step.v2Body : step.body

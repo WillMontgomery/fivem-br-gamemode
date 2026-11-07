@@ -1,5 +1,5 @@
 -- `brseason`: switch the season a dev box runs without restarting br_core
--- (#388), or set one feature on or off whatever the season (#425).
+-- (#388).
 --
 -- Owner, 2026-10-04: "Please add the devmode command. That was my only real
 -- intended use case for faster-than-restart switching." Prod stays
@@ -8,12 +8,9 @@
 -- this file runs a line, and br_season is read exactly as it always was.
 --
 --   brseason                       the season in force, where it came from,
---                                  each feature's setting, and anything staged
+--                                  and anything staged
 --   brseason <n>                   switch to Season n (1 to `latest`)
---   brseason reset                 back to the season br_core started on, and
---                                  every feature setting back to auto
---   brseason locker2 on|off|auto   Locker v2 on or off whatever the season, or
---                                  following it again
+--   brseason reset                 back to the season br_core started on
 --
 -- ═══ NEVER MID-MATCH ═══
 --
@@ -52,35 +49,13 @@
 -- A live dance cannot outlive the switch: dances play only in a match, and
 -- server/emotes.lua's sweep stops one the moment the gate shuts.
 --
--- ═══ ONE FEATURE, WHATEVER THE SEASON (#425) ═══
+-- ═══ LOCKER V2 IS UI V2'S NOW (#436) ═══
 --
--- Owner, 2026-11-01: "can you also dispatch a way for me to turn on locker v2
--- in season 1 with a dev command?" `brseason locker2 on` puts Locker v2 on for
--- everyone on the box, whatever season it runs; `off` puts it off; `auto`
--- hands it back to the season, as `brfestive auto` hands the festive months
--- back to the date. BR.Season.setFeature is the one write -- the module holds
--- the settings beside the season, and only this file may call it (verify.sh's
--- `season gates`, S7) -- and has() answers a setting ahead of the season on
--- every state, br_seasonFeatures carrying it to the rest.
---
---   * SETTABLE, below, is what this command takes; any other id is refused.
---     The module takes any row, so another is one line here -- once its mix
---     with the seasons it was not made for has been checked, and its
---     followers with it: a client hears a setting move through
---     BR.Season.onChange, and never through `br:season:changed`, which is the
---     season NUMBER's.
---   * The timing is a switch's (NEVER MID-MATCH, above). A staged switch and
---     staged settings wait side by side and apply at the same teardown; a
---     later command for a feature replaces its staged value, and one naming
---     the setting in force drops it.
---   * A switch keeps every setting. `brseason reset` puts each back to auto as
---     well, and a br_core restart clears them (BR.Season.boot).
---   * An apply moves the setting and br_seasonFeatures together, prints who
---     in the console, and tells every client (BR.Net.SEASON_FEATURE): one F8
---     line each. Locker v2 needs no server state pushed again, where a switch
---     pushes three: server/locker2.lua asks has('locker2') at call time, and
---     client/locker2.lua's lobby tick follows the gate -- asking for the saved
---     looks as it opens, putting Season 1's ped back as it shuts.
+-- `brseason locker2 on|off|auto` (#425) set Locker v2 whatever the season.
+-- Owner, 2026-11-07: the redone screens are UI v2, separate from the season,
+-- and switched from the server console on any box -- `bruiv2`
+-- (br_core/server/uiv2.lua). The owner learned the old form, so it answers
+-- with one line pointing there, and changes nothing.
 --
 -- ═══ WHAT AN APPLY CANNOT MOVE: LICENSED ASSETS (#391) ═══
 --
@@ -101,18 +76,6 @@ BR.SeasonSwitch = BR.SeasonSwitch or {}
 --- The switch waiting for the last running match to be torn down, or nil:
 --- { season = integer, reset = boolean, by = string }.
 local staged = nil
-
---- The features `brseason <id> on|off|auto` takes (#425), in the order a bare
---- `brseason` lists them. Each is a row of br_lib/config/seasons.lua. Not
---- crates2: both loot.lua files cache its answer against the season number,
---- so a setting would never reach it (BR.Season.onChange says more).
-local SETTABLE = { 'locker2' }
-local settable = {}
-for _, id in ipairs(SETTABLE) do settable[id] = true end
-
---- The feature settings waiting with it, [id] = { to = 'on'|'off'|'auto',
---- reset = boolean, by = string }; empty while none waits.
-local stagedSet = {}
 
 --- How many match instances exist. Every one of them is a match running, in
 --- whatever state, because a match leaves the registry only by being torn down.
@@ -283,73 +246,11 @@ local function apply(target, by)
     TriggerClientEvent(BR.Net.SEASON_SWITCHED, -1, { season = now, from = from, by = by })
 end
 
---- The setting in force for feature `id`, as the command spells it.
---- @param id string
---- @return string  'on', 'off' or 'auto'
-local function settingOf(id)
-    local v = BR.Season.settings()[id]
-    if v == true then return 'on' end
-    if v == false then return 'off' end
-    return 'auto'
-end
-
---- A setting in words, after `set <id>`: the console's, and the same words
---- in every F8 (br_core/client/season.lua).
-local PHRASE = {
-    on   = 'on for this server, whatever the season',
-    off  = 'off for this server, whatever the season',
-    auto = 'back to auto for this server: it follows the season',
-}
-
---- Put a feature setting into force now (#425).
---- @param id string
---- @param to string  'on', 'off' or 'auto'
---- @param by string
-local function applySetting(id, to, by)
-    stagedSet[id] = nil
-    local was = settingOf(id)
-    local value = nil
-    if to == 'on' then value = true elseif to == 'off' then value = false end
-    local okSet, why = BR.Season.setFeature(id, value)
-    if not okSet then
-        -- SETTABLE names a row br_lib/config/seasons.lua no longer has.
-        print(('[br_core] brseason: %s cannot be set -- %s'):format(id, tostring(why)))
-        return
-    end
-    print(('[br_core] brseason: %s set %s %s (was %s)'):format(by, id, PHRASE[to], was))
-    -- NOTHING TO PUSH FOR LOCKER V2 (the header): every client is told, and
-    -- each follows br_seasonFeatures as it lands.
-    TriggerClientEvent(BR.Net.SEASON_FEATURE, -1, { id = id, to = to, by = by, settings = BR.Season.settings() })
-end
-
---- Which seasons a feature's row has it in, in words, for a bare `brseason`.
---- Off the registry rather than has(), whose id is written as a literal
---- wherever it is asked (verify.sh's `season gates`, S1).
---- @param id string
---- @return string
-local function rowWords(id)
-    local cfg = BR.Config and BR.Config.Seasons
-    local row = type(cfg) == 'table' and type(cfg.features) == 'table' and cfg.features[id] or nil
-    if type(row) ~= 'table' or math.type(row.from) ~= 'integer' then return 'in no season' end
-    if math.type(row.untilSeason) == 'integer' then
-        return ('in Seasons %d to %d'):format(row.from, row.untilSeason - 1)
-    end
-    return ('from Season %d'):format(row.from)
-end
-
 --- The status lines, for a bare `brseason`.
 --- @param src integer
 local function status(src)
     local _, words = BR.Season.origin()
     tell(src, ('brseason: Season %d in force -- %s'):format(BR.Season.current(), tostring(words)))
-    for _, id in ipairs(SETTABLE) do
-        local to = settingOf(id)
-        if to == 'auto' then
-            tell(src, ('brseason: %s auto -- it follows the season, which has it on %s'):format(id, rowWords(id)))
-        else
-            tell(src, ('brseason: %s %s -- for this server, whatever the season'):format(id, to))
-        end
-    end
     local n = running()
     if staged then
         tell(src, ('brseason: Season %d%s staged by %s, for when the last of %d running match%s is torn down to the lobby')
@@ -357,15 +258,7 @@ local function status(src)
     else
         tell(src, 'brseason: no switch staged')
     end
-    for _, id in ipairs(SETTABLE) do
-        local f = stagedSet[id]
-        if f then
-            tell(src, ('brseason: %s %s%s staged by %s, for when the last of %d running match%s is torn down to the lobby')
-                :format(id, f.to, f.reset and ' (reset)' or '', f.by, n, n == 1 and '' or 'es'))
-        end
-    end
-    tell(src, ('brseason: usage: brseason | brseason <1-%d> | brseason reset | brseason %s on|off|auto')
-        :format(BR.Season.latest(), table.concat(SETTABLE, '|')))
+    tell(src, ('brseason: usage: brseason | brseason <1-%d> | brseason reset'):format(BR.Season.latest()))
     licensedWarning(src, BR.Season.current())
 end
 
@@ -404,52 +297,12 @@ local function request(src, target, reset)
     licensedWarning(src, target)
 end
 
---- Set a feature now, or stage it while a match is running, by a switch's
---- rules (#425).
---- @param src integer
---- @param id string      one of SETTABLE
---- @param to string      'on', 'off' or 'auto'
---- @param reset boolean  asked as part of `brseason reset`
-local function requestSetting(src, id, to, reset)
-    local by = who(src)
-    local cur = settingOf(id)
-    local n = running()
-
-    if to == cur then
-        if stagedSet[id] then
-            stagedSet[id] = nil
-            tell(src, ('brseason: %s is already %s -- the staged setting is dropped'):format(id, cur))
-        else
-            tell(src, ('brseason: %s is already %s'):format(id, cur))
-        end
-        return
-    end
-
-    if n > 0 then
-        local replaced = stagedSet[id] ~= nil
-        stagedSet[id] = { to = to, reset = reset, by = by }
-        tell(src, ('brseason: %d match%s running -- %s %s%s is staged%s, and applies when the last one is torn down to the lobby')
-            :format(n, n == 1 and '' or 'es', id, to, reset and ' (reset)' or '',
-                    replaced and ', replacing the one staged before' or ''))
-        return
-    end
-
-    applySetting(id, to, by)
-end
-
 --- THE TEARDOWN. Raised by BR.Match.destroy after the registry entry is gone,
---- so the count here already leaves the destroyed match out. A staged switch
---- and staged settings apply together, the switch first.
+--- so the count here already leaves the destroyed match out.
 AddEventHandler('br:match:destroyed', function()
-    if (staged == nil and next(stagedSet) == nil) or running() > 0 then return end
+    if staged == nil or running() > 0 then return end
     local s = staged
-    if s then
-        if s.reset then apply(nil, s.by) else apply(s.season, s.by) end
-    end
-    for _, id in ipairs(SETTABLE) do
-        local f = stagedSet[id]
-        if f then applySetting(id, f.to, f.by) end
-    end
+    if s.reset then apply(nil, s.by) else apply(s.season, s.by) end
 end)
 
 --- The staged switch, copied, or nil. For the suites: nothing in the game
@@ -458,15 +311,6 @@ end)
 function BR.SeasonSwitch.staged()
     if staged == nil then return nil end
     return { season = staged.season, reset = staged.reset, by = staged.by }
-end
-
---- The staged feature settings, copied: [id] = { to, reset, by }, empty while
---- none waits. For the suites, as staged() is.
---- @return table
-function BR.SeasonSwitch.stagedSettings()
-    local out = {}
-    for id, f in pairs(stagedSet) do out[id] = { to = f.to, reset = f.reset, by = f.by } end
-    return out
 end
 
 -- Dev mode plus restricted, like brforce: through devgate.lua's wrap, so a box
@@ -479,36 +323,17 @@ RegisterCommand('brseason', function(src, args)
 
     if a1 == 'reset' then
         request(src, BR.Season.startup(), true)
-        -- And every feature back to auto (#425): at once, staged beside the
-        -- switch, or a staged setting dropped -- a line only for a feature that
-        -- was set or waiting.
-        for _, id in ipairs(SETTABLE) do
-            if settingOf(id) ~= 'auto' or stagedSet[id] then requestSetting(src, id, 'auto', true) end
-        end
+        return
+    end
+
+    -- THE FORM THE OWNER LEARNED (#425), and where it went (#436): one line,
+    -- and nothing changes.
+    if tostring(a1):lower() == 'locker2' then
+        tell(src, "brseason: Locker v2 is UI v2's now (#436) -- bruiv2 locker on|off|auto, on the server console")
         return
     end
 
     local n = BR.Season.parse(a1)
-    if n == nil then
-        -- A FEATURE, ON OR OFF WHATEVER THE SEASON (#425). Only SETTABLE's;
-        -- any other id, one line.
-        local id = tostring(a1):lower()
-        local to = args[2] ~= nil and tostring(args[2]):lower() or nil
-        if settable[id] then
-            if to ~= 'on' and to ~= 'off' and to ~= 'auto' then
-                tell(src, ('brseason: usage: brseason %s on|off|auto'):format(id))
-                return
-            end
-            requestSetting(src, id, to, false)
-            return
-        end
-        if to ~= nil then
-            tell(src, ('brseason: %q is not a feature brseason sets -- only %s'):format(tostring(a1):sub(1, 16),
-                table.concat(SETTABLE, ', ')))
-            return
-        end
-    end
-
     local top = BR.Season.latest()
     if n == nil or n > top then
         tell(src, ('brseason: %q is not a season this code knows -- 1 to %d, or reset'):format(tostring(a1):sub(1, 16), top))

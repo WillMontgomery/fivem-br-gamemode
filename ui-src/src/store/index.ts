@@ -153,8 +153,8 @@ export interface UiState {
    *  that opens onto nothing reads as broken. */
   locker: LockerPayload
   /** Locker v2 (#28), from the `locker2` envelope. `on` false (the default,
-   *  and Season 1) means the locker is Season 1's and nothing else here is
-   *  read. */
+   *  and UI v2's locker off, #436) means the locker is Season 1's and nothing
+   *  else here is read. */
   locker2: Locker2Payload
 
   /** Level and XP, exactly as the server last reported them. NOTHING IN THE UI

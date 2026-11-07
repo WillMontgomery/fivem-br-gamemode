@@ -1030,13 +1030,13 @@ export interface LockerPayload {
 }
 
 /**
- * LOCKER V2 (#28): the Season 2 locker, BR.Nui.LOCKER2 ('locker2').
+ * LOCKER V2 (#28): UI v2's locker (#436), BR.Nui.LOCKER2 ('locker2').
  *
- * Sent on br:ui:ready, when the season gate moves, and on every change while
- * the screen is up. `on` is BR.Season.has('locker2'): while it is false the
- * locker is Season 1's (screens/Locker.tsx, untouched) and nothing else here is
- * read. Lua owns every field; the page renders them and asks through the
- * LOCKER2_* callbacks below, each of which Lua revalidates.
+ * Sent on br:ui:ready, as Locker v2 turns on or off, and on every change while
+ * the screen is up. `on` is UI v2's locker piece as Locker v2 holds it: while
+ * it is false the locker is Season 1's (screens/Locker.tsx, untouched) and
+ * nothing else here is read. Lua owns every field; the page renders them and
+ * asks through the LOCKER2_* callbacks below, each of which Lua revalidates.
  *
  * NO APPEARANCE CROSSES TO THE PAGE. A saved look's appearance (`a`) stays in
  * Lua (the skeptic's correction 8): the page needs a name, a picture and the
@@ -1409,9 +1409,9 @@ export interface MarketPayload {
   /** What the currency is called. Sent by Lua so the name lives in one place. */
   currency?: string
   items: MarketItem[]
-  /** THE SEASON 2 MARKET (#411): true only while BR.Season.has('market2'),
-   *  and then App.tsx draws screens/MarketV2.tsx. Absent on Season 1, whose
-   *  envelope is unchanged -- and whose screen is screens/Market.tsx. */
+  /** MARKET V2 (#411): true only while UI v2's market piece is on (#436),
+   *  and then App.tsx draws screens/MarketV2.tsx. Absent with it off, where
+   *  the envelope is unchanged -- and the screen is screens/Market.tsx. */
   v2?: boolean
 }
 
@@ -1807,7 +1807,7 @@ export const CB = {
   LOCKER_SPIN:    'br/locker/spin',
   TUTORIAL_SET:   'br/tutorial/set',
   LOCKER_FOCUS:   'br/locker/focus',
-  /* LOCKER V2 (#28), Season 2 and later. Every one answers {} and is
+  /* LOCKER V2 (#28), UI v2's locker (#436). Every one answers {} and is
      revalidated in Lua, which refuses them all while the ped is locked,
      loading or busy.
 

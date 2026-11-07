@@ -164,7 +164,30 @@ local clock = os.clock
 --               state the player has a ped in, a cost no stock-ped world pays.
 --               The engine here keeps what it is told -- the model, the
 --               components and props -- as the game does, so what is measured
---               is the watch, not a re-dress on every pass.
+--               is the watch, not a re-dress on every pass. And, after its
+--               season changes, UI v2 thrown off and back on in the lobby
+--               (#436): the only world whose engine changes the model, so the
+--               only one where Season 1's character can go back on.
+--
+-- UI V2 (#436) IS SERVED BY THE SEASON EACH WORLD MEASURES: Locker v2 and
+-- Market v2 were Season 2's until UI v2 took them over, so a Season 2 world
+-- serves both on and a Season 1 world both off -- s1-live off from boot, as
+-- its measured (Season 1) phases had them. A season change no longer moves UI
+-- v2; the two lobby changes in s2-custom move it on its own.
+--
+-- SO A STOCK PED'S ENTRANCE AFTER A MATCH WAITS OUT modelWaitMs (#436
+-- review). Only s2-custom's engine keeps the model it is given; in every
+-- other world the ped's model reads 0, so the walk waits its 8 s for a model
+-- that never arrives before it starts, as every Season 1 world's always has.
+-- Until #436 a Season 2 world's season changes restarted Locker v2's first
+-- apply, whose answer while deciding (0) matched that 0 by accident, so its
+-- lobby changes after the match measured the walk; now they measure the
+-- parked ped's wait -- natives.lua's lobby freeze, one native a frame, and
+-- the wait's model poll -- and cost that much more. s2-custom still measures
+-- the walk-in after a match. In the game the ped carries its model, so no
+-- player waits. An engine that kept the model in every world would change
+-- Season 1's worlds too (their entrances would walk at once), so it is the
+-- model's own commit and rebaseline (docs/testing.md), not this one.
 --
 -- AND ONE FOR A PLAYER WHO HAS READIED UP (#403 review, 2026-10-11):
 --
@@ -1687,6 +1710,12 @@ end
 --- one a live `brseason` moved it to.
 local inForce = WORLD.live or WORLD.season
 
+--- UI V2 AS THE SERVER SERVES IT (#436; THE WORLDS, at the top), by the season
+--- the world measures. The holder (client/uiv2.lua) takes it on its first pass.
+--- @param on boolean @return string
+local function uiv2Served(on) return on and 'locker=on,market=on' or 'locker=off,market=off' end
+W.convars[BR.UIv2.SERVED] = uiv2Served(inForce == '2')
+
 -- THE MUTANT, for --check's proof that the heavy count sees what it is for (see
 -- the end of this file): a model hide made and taken down on every SLOW pass.
 -- Only a run the first one loads for that proof is handed it.
@@ -2976,6 +3005,40 @@ local function queuedChanges()
     measureChange('lobby: out of the queue, the grace runs out', function() end)
 end
 
+--- Pump the model until the player stands in the lobby with the entrance over,
+--- where a client takes a UI v2 move (br_core/client/uiv2.lua): 2400 frames at
+--- most, 40 s of model time, past the longest walk-in plan. Past that, a
+--- failure, as a callback that errored is one.
+--- @return boolean
+local function untilSettled()
+    for _ = 1, 2400 do
+        if BR.LobbyPed.settled() then return true end
+        frame()
+        gcMaybe()
+    end
+    local b = bucket('(harness) ui v2: the entrance never ended in the model')
+    b.errs = (b.errs or 0) + 1
+    realPrint('\27[33m[perf] ui v2: the entrance never ended in the model\27[0m')
+    return false
+end
+
+--- UI V2'S LOBBY CHANGES (#436), in s2-custom: the kill switch thrown and put
+--- back, each once the player stands in the lobby with the entrance over. The
+--- OFF must land inside its window -- Locker v2 off, Season 1's character on --
+--- or the run fails: a window that never saw the move measured nothing.
+local function uiv2Changes()
+    if not untilSettled() then return end
+    measureChange('lobby: UI v2 off', function() W.convars[BR.UIv2.SERVED] = uiv2Served(false) end)
+    local s1 = jenkins(BR.PedById(BR.Locker.chosen()).model)
+    if BR.LockerV2.state().on ~= false or IMPL.GetEntityModel(W.me) ~= s1 then
+        local b = bucket('(harness) ui v2: the OFF did not land in its window')
+        b.errs = (b.errs or 0) + 1
+        realPrint('\27[33m[perf] ui v2: the OFF did not land in its window\27[0m')
+    end
+    if not untilSettled() then return end
+    measureChange('lobby: UI v2 on', function() W.convars[BR.UIv2.SERVED] = uiv2Served(true) end)
+end
+
 --- The changes, from the end of the session (the match terminal scene).
 local function playChanges()
     local inS2 = serverHas('crates2')
@@ -3025,6 +3088,7 @@ local function playChanges()
             function() switchTo(1, true) end, 30, valueLands)
         measureChange('lobby: Season 1 to 2, the value late',
             function() switchTo(2, true) end, 30, valueLands)
+        if WORLD.custom then uiv2Changes() end
     else
         measureChange('lobby: back from the match', backToLobby)
         measureChange('lobby: Season 1 to 2', function() switchTo(2) end)

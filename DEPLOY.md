@@ -278,7 +278,7 @@ Three tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 
 | Table | Partition key | Sort key | Holds |
 |---|---|---|---|
-| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played.<br>`sk = ped#<id>` — one saved custom ped (Locker v2, Season 2, #28): name, appearance, headshot. The ped a player wears is `locker2` on the profile row. |
+| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played.<br>`sk = ped#<id>` — one saved custom ped (Locker v2, UI v2, #28): name, appearance, headshot. The ped a player wears is `locker2` on the profile row. |
 | `br-matches` | `pk` (String) | *none* | One row per finished match, keyed on the seven-character hex tag. Written once at match end by `br_stats`, read by Ringmaster's match page. |
 
 **`br-matches` is a read model and the game only ever writes it**, so the grant is
@@ -499,6 +499,7 @@ Edit `server.cfg`:
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
 | `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start, enable client dev tools, and move `br_ddb` onto the `dev-` tables (section 2). |
 | `br_season` | **Set it explicitly on production** — `set br_season 1` at launch, above `ensure br_core`. The season this box runs (#388): features from later seasons stay off. **An unset box runs the latest season the code knows** and warns at boot, so a public box left unset would switch a new season's features on with the deploy that adds them. Read once as `br_core` starts. See [running.md](docs/running.md#the-season-a-box-runs-br_season). |
+| `br_uiv2` | UI v2 (#436): the redone Market and Locker, in any season. **Off when unset** — a box that should show them, such as every Season 2 box before #436, needs `set br_uiv2 on` above `ensure br_core`. `br_uiv2_<piece>` sets one piece either way; `bruiv2` on the server console flips them live. See [running.md](docs/running.md#ui-v2-the-redone-screens-one-switch-for-all-and-one-for-each-436). |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
 
 ### The identity: `server-identity.cfg`

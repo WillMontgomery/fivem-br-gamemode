@@ -1,5 +1,5 @@
--- Locker v2 (#28, Season 2): the appearance, the server's records, the client,
--- and Season 1 left exactly as it was.
+-- Locker v2 (#28, UI v2's locker, #436): the appearance, the server's records,
+-- the client, and Season 1's locker left exactly as it was.
 --
 -- ═══ WHAT THIS DRIVES ═══
 --
@@ -12,7 +12,14 @@
 --   br_core/client/locker2.lua       over a modeled ped, models, kvp and
 --   br_core/client/locker2shot.lua   threads (coroutines on a fake clock)
 --   br_core/client/locker.lua        Season 1's locker, beside and without v2
+--   br_core/client/uiv2.lua          the UI v2 answer this client holds (#436)
 --   br_core/client/lobbycam.lua      the camera's focus presets
+--
+-- ON OR OFF IS UI V2'S LOCKER PIECE (#436), never the season: the server
+-- world boots UI v2 over its convars and flips it as `bruiv2 locker` does; a
+-- client world is served br_uiv2Served (`locker = true|false|nil`, nil not
+-- landed yet), lands a new one with W.uiv2(text), and holds it through the
+-- real client/uiv2.lua, as the manifest loads it ahead of the locker.
 --
 -- ═══ SEASON 1 IS PROVED BY A TRACE ═══
 --
@@ -20,7 +27,8 @@
 -- session -- the first lobby, a pick, a spin, the chosen id -- is played twice:
 -- once with client/locker.lua alone (BR.LockerV2 absent, which is every line
 -- of it as it was at 4af6bb48), once with Locker v2 loaded beside it on a
--- Season 1 client. Every native call, event, kvp write and server event is
+-- client with Locker v2 off. Both load the UI v2 holder, so the two traces
+-- stay comparable. Every native call, event, kvp write and server event is
 -- recorded, and the two records must be identical.
 --
 -- Run standalone:  lua tools/test_locker2.lua
@@ -519,14 +527,20 @@ end
 -- 2. THE SERVER (br_core/server/locker2.lua) over a modeled br_ddb
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local function serverWorld(season, withDdb)
+--- A server. `on`: UI v2's locker piece (#436), as br_uiv2_locker sets it,
+--- through the real UI v2 boot; W.flip(to) moves it live, as `bruiv2 locker
+--- <to>` does.
+local function serverWorld(on, withDdb)
     local env = newEnv()
     local W = { time = 5000, printed = {}, sent = {}, timers = {}, handlers = {}, ddb = {},
-                ddbCalls = {}, replies = {}, entries = {}, failNext = nil, decodes = 0 }
+                ddbCalls = {}, replies = {}, entries = {}, failNext = nil, decodes = 0,
+                cfg = { br_uiv2_locker = on and 'on' or 'off' }, served = {} }
     env.print = function(s) W.printed[#W.printed + 1] = tostring(s) end
     env.GetGameTimer = function() return W.time end
-    env.GetConvar = function(n, d) if n == 'br_season' then return tostring(season) end return d end
-    env.SetConvarReplicated = function() end
+    env.IsDuplicityVersion = function() return true end
+    env.GetConvar = function(n, d) if W.cfg[n] ~= nil then return W.cfg[n] end return d end
+    env.SetConvar = function(n, v) W.cfg[n] = v end
+    env.SetConvarReplicated = function(n, v) W.served[n] = v end
     env.GetResourceState = function() return withDdb == false and 'missing' or 'started' end
     env.RegisterNetEvent = function() end
     env.RegisterCommand = function() end
@@ -605,13 +619,13 @@ local function serverWorld(season, withDdb)
     env.BR = {}
     env.BR.Config = {}
     for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
-                         'br_lib/config/peds.lua', 'br_lib/shared/season.lua',
-                         'br_lib/config/seasons.lua', 'br_lib/config/locker2.lua',
+                         'br_lib/config/peds.lua', 'br_lib/shared/uiv2.lua',
+                         'br_lib/config/uiv2.lua', 'br_lib/config/locker2.lua',
                          'br_lib/shared/appearance.lua', 'br_lib/config/tattoos.lua' }) do
         loadInto(env, f)
     end
-    env.BR.Season.strict = true
-    env.BR.Season.boot()
+    env.BR.UIv2.strict = true
+    env.BR.UIv2.boot()
     env.BR.Identity = {
         ofPlayer = function(src) return { license = 'p' .. tostring(src) } end,
         qualified = function(kind, v) return kind .. ':' .. v end,
@@ -665,6 +679,7 @@ local function serverWorld(season, withDdb)
         return out
     end
     function W.lastResult() local r = W.results(); return r[#r] end
+    function W.flip(to) return env.BR.UIv2.flip('locker', to) end
     W.env = env
     W.BR = env.BR
     W.entries[1] = { state = env.BR.PlayerState.LOBBY }
@@ -684,7 +699,7 @@ local STOCK2 = shared.BR.Config.Peds[2].id
 
 describe('server.fetch')
 do
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     W.ddb['license:p1'] = { profile = { locker2 = ('{"k":"s","id":"%s"}'):format(STOCK2) }, peds = {
         ['0abcdefgh12'] = { n = 'Bob', a = A.encode(A.default('m')), cr = 1, up = 2 },
         ['0abcdefgh11'] = { n = 'Ann', a = A.encode(A.default('f')), cr = 1, up = 1 },
@@ -722,16 +737,16 @@ do
     W.net(NET.LOCKER2_FETCH, 3, {})
     eq(#W.ddbCalls, 2, 'then the database is read again')
 
-    local W1 = serverWorld(1)
+    local W1 = serverWorld(false)
     W1.net(NET.LOCKER2_FETCH, 1, {})
-    eq(#W1.sent + #W1.ddbCalls, 0, 'Season 1: a fetch reads nothing and answers nothing')
+    eq(#W1.sent + #W1.ddbCalls, 0, 'Locker v2 off: a fetch reads nothing and answers nothing')
 end
 
 describe('server.fetch_rate')
 do
     -- #28 review: every fetch was answered, each a latent copy of the whole
     -- list with every headshot. 200 asks in 5 s queued 67.7 MB.
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     local img = 'data:image/webp;base64,' .. string.rep('A', 10000)
     local rows = {}
     for i = 1, 30 do
@@ -758,7 +773,7 @@ do
     eq(answers(1), 2, 'nothing after that unasked')
 
     -- Asking while a read is in flight waits on it once.
-    local R = serverWorld(2)
+    local R = serverWorld(true)
     R.held = true
     for _ = 1, 50 do R.net(NET.LOCKER2_FETCH, 1, {}) end
     R.held = false
@@ -769,7 +784,7 @@ do
     eq(#R.ddbCalls, 1, 'and one read')
 
     -- A player who drops is not answered later.
-    local D = serverWorld(2)
+    local D = serverWorld(true)
     D.net(NET.LOCKER2_FETCH, 1, {})
     D.advance(1000)
     D.net(NET.LOCKER2_FETCH, 1, {})
@@ -780,7 +795,7 @@ end
 
 describe('server.save')
 do
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     local a = A.default('m')
     a.sk = 7
     local enc = A.encode(a)
@@ -865,7 +880,7 @@ end
 
 describe('server.rate')
 do
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     W.net(NET.LOCKER2_FETCH, 1, {})
     local enc = A.encode(A.default('m'))
     for i = 1, 6 do W.net(NET.LOCKER2_SAVE, 1, { req = i, op = 'new', name = 'P' .. i, a = enc }) end
@@ -892,7 +907,7 @@ end
 
 describe('server.rename_delete_shot')
 do
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     W.net(NET.LOCKER2_FETCH, 1, {})
     local a = A.default('f')
     W.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Ann', a = A.encode(a) })
@@ -932,7 +947,7 @@ end
 
 describe('server.wear')
 do
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     W.net(NET.LOCKER2_FETCH, 1, {})
     W.net(NET.LOCKER2_WEAR, 1, { k = 's', id = STOCK2 })
     W.advance(100)
@@ -965,22 +980,22 @@ do
     eq(W.ddb['license:p2'], nil, 'and nothing is worn outside the lobby')
 end
 
--- ═══ `brseason locker2 on|off|auto` (#425) ═══
+-- ═══ UI V2'S LOCKER PIECE, LIVE (#436) ═══
 --
--- Owner, 2026-11-01: "can you also dispatch a way for me to turn on locker v2
--- in season 1 with a dev command?" The server's half asks its own gate at
--- call time (on()), so a setting is its answer from the next request on; the
--- command and its timing are tools/test_season.lua's.
+-- The server's half asks UI v2's answer at call time (on()), so a flip --
+-- `bruiv2 locker on|off|auto`, or a typed `set` the 5 s re-read applies -- is
+-- its answer from the next request on, and every write is refused `off`
+-- while it is off; the command itself is tools/test_uiv2.lua's.
 
-describe('server.setting')
+describe('server.uiv2')
 do
-    local W = serverWorld(1)
+    local W = serverWorld(false)
     W.net(NET.LOCKER2_FETCH, 1, {})
-    eq(#W.sent, 0, 'Season 1: a fetch is not answered')
-    W.BR.Season.setFeature('locker2', true)
+    eq(#W.sent, 0, 'Locker v2 off: a fetch is not answered')
+    W.flip('on')
     W.net(NET.LOCKER2_FETCH, 1, {})
     local st = W.last(NET.LOCKER2_STATE)
-    ok(st ~= nil and st.target == 1 and st.p.store == true, 'Season 1 with locker2 set on: the fetch is answered')
+    ok(st ~= nil and st.target == 1 and st.p.store == true, 'bruiv2 locker on: the fetch is answered at once')
     W.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Bob', a = A.encode(A.default('m')) })
     eq(W.lastResult().ok, true, 'a save is kept')
     W.advance(6000)
@@ -989,9 +1004,9 @@ do
     local w = A.decodeWorn(W.ddb['license:p1'].profile.locker2)
     ok(w and w.id == STOCK2, 'and a stock pick is worn')
 
-    W.BR.Season.setFeature('locker2', false)
+    W.flip('off')
     W.net(NET.LOCKER2_SAVE, 1, { req = 2, op = 'new', name = 'Ann', a = A.encode(A.default('f')) })
-    eq(W.lastResult().reason, 'season', 'set off: a write is refused as season again')
+    eq(W.lastResult().reason, 'off', 'flipped off: a write is refused as off')
     W.advance(6000)
     local before = #W.sent
     W.net(NET.LOCKER2_FETCH, 1, {})
@@ -999,21 +1014,39 @@ do
     W.advance(6000)
     eq(#W.sent, before, 'a fetch is not answered')
     eq(A.decodeWorn(W.ddb['license:p1'].profile.locker2).id, STOCK2, 'and a pick is not worn')
-    W.BR.Season.setFeature('locker2', nil)
+    ok(next(W.ddb['license:p1'].peds) ~= nil, 'and the saved look is still kept: a flip deletes nothing')
+    W.flip('auto')
     W.net(NET.LOCKER2_SAVE, 1, { req = 3, op = 'new', name = 'Ann', a = A.encode(A.default('f')) })
-    eq(W.lastResult().reason, 'season', 'auto on Season 1: refused, as the season has it')
+    eq(W.lastResult().reason, 'off', 'auto with UI v2 unset: off, and refused')
+    -- A TYPED `set br_uiv2 on`, applied by the 5 s re-read.
+    W.cfg.br_uiv2 = 'on'
+    W.BR.UIv2.recheck()
+    W.net(NET.LOCKER2_SAVE, 1, { req = 4, op = 'new', name = 'Eve', a = A.encode(A.default('f')) })
+    eq(W.lastResult().ok, true, 'set br_uiv2 on, re-read: the locker follows UI v2, on')
 
-    local W2 = serverWorld(2)
-    W2.BR.Season.setFeature('locker2', false)
+    local W2 = serverWorld(true)
+    W2.flip('off')
     W2.net(NET.LOCKER2_FETCH, 1, {})
     W2.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Bob', a = A.encode(A.default('m')) })
-    ok(W2.last(NET.LOCKER2_STATE) == nil and W2.lastResult().reason == 'season' and #W2.ddbCalls == 0,
-        'Season 2 with locker2 set off: no fetch answered, every write refused, the database asked nothing')
+    ok(W2.last(NET.LOCKER2_STATE) == nil and W2.lastResult().reason == 'off' and #W2.ddbCalls == 0,
+        'on, then flipped off: no fetch answered, every write refused, the database asked nothing')
+
+    -- A SAVE THE SERVER TOOK BEFORE THE FLIP completes, and is kept.
+    local W3 = serverWorld(true)
+    W3.net(NET.LOCKER2_FETCH, 1, {})
+    W3.advance(6000)
+    W3.held = true
+    W3.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Kit', a = A.encode(A.default('m')) })
+    W3.flip('off')
+    W3.held = false
+    W3.flush()
+    ok(W3.lastResult() ~= nil and W3.lastResult().ok == true and next(W3.ddb['license:p1'].peds) ~= nil,
+        'a save in flight as the flip lands completes, and is kept')
 end
 
 describe('server.failures')
 do
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     W.failNext = 'lockerFetch'
     W.net(NET.LOCKER2_FETCH, 1, {})
     local st = W.last(NET.LOCKER2_STATE)
@@ -1037,12 +1070,12 @@ do
     W.net(NET.LOCKER2_SAVE, 1, { req = 4, op = 'new', name = 'Zed', a = A.encode(A.default('m')) })
     eq(W.lastResult().reason, 'store', 'a read that fails after one that worked refuses writes as store')
 
-    local W1 = serverWorld(1)
+    local W1 = serverWorld(false)
     W1.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Bob', a = A.encode(A.default('m')) })
-    eq(W1.lastResult().reason, 'season', 'Season 1 refuses every write as season')
+    eq(W1.lastResult().reason, 'off', 'Locker v2 off refuses every write as off')
     eq(#W1.ddbCalls, 0, 'and asks the database nothing')
 
-    local W0 = serverWorld(2, false)
+    local W0 = serverWorld(true, false)
     W0.net(NET.LOCKER2_FETCH, 1, {})
     W0.net(NET.LOCKER2_SAVE, 1, { req = 1, op = 'new', name = 'Bob', a = A.encode(A.default('m')) })
     ok(W0.lastResult().ok, 'with no br_ddb a save is kept in memory')
@@ -1060,7 +1093,7 @@ do
     -- 6 s and answers store, but the write can still land -- and the cache
     -- then answered every fetch without it for cacheMs.
     local L2s = nil
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     L2s = W.BR.Config.Locker2
     W.net(NET.LOCKER2_FETCH, 1, {})
     W.held = true
@@ -1108,7 +1141,7 @@ do
         eq(#W.ddbCalls, reads + 1, '...and the next fetch reads again')
     end
     -- A READ THAT FAILED is never answered from the cache, however fresh.
-    local F = serverWorld(2)
+    local F = serverWorld(true)
     F.net(NET.LOCKER2_FETCH, 1, {})
     F.advance(L2s.cacheMs)
     F.failNext = 'lockerFetch'
@@ -1121,7 +1154,7 @@ do
     eq(F.last(NET.LOCKER2_STATE).p.store, true, 'and works again')
     -- A LOOK FROM ANOTHER DAY'S LISTS is fetched (#28 review): a face past
     -- today's list and an extra today's does not have.
-    local C2 = serverWorld(2)
+    local C2 = serverWorld(true)
     C2.BR.Config.Locker2.faces.m = { 0, 4, 8, 12 }
     local older = A.default('m')
     older.f, older.x = 5, { 'cape', 'hat' }
@@ -1135,7 +1168,7 @@ end
 
 describe('server.tattoos')
 do
-    local W = serverWorld(2)
+    local W = serverWorld(true)
     local a = A.default('f')
     A.setTattoo(a, 'TAT_X7_031', true)
     A.setTattoo(a, 'TAT_BB_000', true)
@@ -1159,7 +1192,7 @@ do
     W.net(NET.LOCKER2_SAVE, 1, { req = 2, op = 'update', id = r.id, a = spaced })
     eq(W.ddb['license:p1'].peds[r.id].a, enc, 'an empty set sent is not stored')
     -- Through the database and back: a new session reads the tattoos.
-    local W2 = serverWorld(2)
+    local W2 = serverWorld(true)
     W2.ddb = W.ddb
     W2.net(NET.LOCKER2_FETCH, 1, {})
     local back = nil
@@ -1184,7 +1217,7 @@ do
     A.setTattoo(ten, TAT.list[mOnly][1], true)
     local eleven = A.copy(ten)
     A.setTattoo(eleven, hers('torso', 11)[11], true)
-    local W3 = serverWorld(2)
+    local W3 = serverWorld(true)
     W3.ddb['license:p1'] = { profile = {}, peds = {
         ['0abcdefgh13'] = { n = 'Old', a = A.encode(eleven), cr = 1, up = 1 },
     } }
@@ -1225,8 +1258,17 @@ local function newPed(model)
              blend = nil, blendAt = 0, x = 10.0, y = 20.0, z = 30.0, h = 90.0, exists = true, decos = {} }
 end
 
---- A client. opts: season (nil unknown), features (br_seasonFeatures, #425),
---- v2 (load Locker v2), kvp, quiet.
+--- What br_core's server serves for UI v2 with its locker piece on, off or not
+--- landed yet.
+local function servedOf(locker)
+    if locker == nil then return '' end
+    return locker and 'locker=on,market=off' or 'locker=off,market=off'
+end
+
+--- A client. opts: locker (UI v2's locker piece as the server serves it: true,
+--- false, or nil -- not landed yet), v2 (load Locker v2), kvp, quiet, suspend
+--- (BR.Loop's suspension: a pass that raises five times in a row stops, as
+--- client/main.lua does; off, any raise fails the suite).
 local function clientWorld(opts)
     opts = opts or {}
     local env = newEnv()
@@ -1234,7 +1276,7 @@ local function clientWorld(opts)
                 invalid = {}, texCount = {}, propTex = {}, shop = {}, forced = {}, invokes = {}, drawCount = {},
                 threads = {}, ticks = {}, notify = {}, handlers = {}, commands = {}, cams = {},
                 stops = {}, shots = {}, created = {}, locked = false, entering = false, walking = false,
-                convar = opts.season and tostring(opts.season) or '', features = opts.features or '', listeners = {},
+                served = servedOf(opts.locker), listeners = {}, loopErrors = {},
                 models = {}, modelDelay = opts.modelDelay or 0, neverLoad = false, peds = {}, handle = 1 }
     W.peds[1] = newPed(opts.startModel or DEFAULT_PED)
     env.print = function() end
@@ -1375,8 +1417,7 @@ local function clientWorld(opts)
 
     env.GetCurrentResourceName = function() return 'br_core' end
     env.GetConvar = function(n, d)
-        if n == 'br_seasonServed' then return W.convar end
-        if n == 'br_seasonFeatures' then return W.features end
+        if n == 'br_uiv2Served' then return W.served end
         return d
     end
     -- The runtime's listener: a replicated value landing calls each one whose
@@ -1412,17 +1453,17 @@ local function clientWorld(opts)
 
     env.BR = { Config = {} }
     for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua', 'br_lib/config/peds.lua',
-                         'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
+                         'br_lib/shared/uiv2.lua', 'br_lib/config/uiv2.lua',
                          'br_lib/config/locker2.lua', 'br_lib/shared/appearance.lua',
                          'br_lib/config/tattoos.lua' }) do
         loadInto(env, f)
     end
     local BR = env.BR
-    BR.Season.strict = true
+    BR.UIv2.strict = true
     BR.Config.Match = { lobbyPos = { x = 10.0, y = 20.0, z = 30.0, heading = 90.0 } }
     BR.Loop = { FRAME = 'frame', TICK = 'tick', SLOW = 'slow',
                 register = function(band, name, fn) W.ticks[#W.ticks + 1] = { band = band, name = name, fn = fn } end }
-    BR.State = { me = { state = BR.PlayerState.LOBBY } }
+    BR.State = { me = { state = BR.PlayerState.LOBBY }, worldReady = opts.worldReady }
     BR.Native = { initHealthModel = function() W.log[#W.log + 1] = 'initHealthModel()' end }
     BR.Spawn = { concealPed = function() W.log[#W.log + 1] = 'concealPed()' end }
     BR.Notify = function(t, tone) W.notify[#W.notify + 1] = t; W.log[#W.log + 1] = 'notify:' .. tostring(t) end
@@ -1431,6 +1472,11 @@ local function clientWorld(opts)
         entering = function() return W.entering end,
         walking = function() return W.walking end,
         stop = function(why) W.stops[#W.stops + 1] = why; W.entering, W.locked, W.walking = false, false, false end,
+        -- In the lobby with the entrance over: not armed (the sweep, the trip
+        -- home) and not running (the walk-in).
+        settled = function()
+            return BR.State.me.state == BR.PlayerState.LOBBY and not W.entering and not W.armed
+        end,
     }
     BR.LobbyCam = {
         focus = function(p) W.cams[#W.cams + 1] = 'focus:' .. p W.focusedCam = p return true end,
@@ -1439,6 +1485,8 @@ local function clientWorld(opts)
         zoom = function(d) W.cams[#W.cams + 1] = 'zoom:' .. d return true end,
         resetView = function(p) W.cams[#W.cams + 1] = 'reset:' .. tostring(p) W.focusedCam = p return true end,
     }
+    -- THE HOLDER, where the manifest puts it: ahead of the locker files.
+    loadInto(env, 'br_core/client/uiv2.lua')
     loadInto(env, 'br_core/client/locker.lua')
     if opts.v2 then
         loadInto(env, 'br_core/client/locker2.lua')
@@ -1466,7 +1514,20 @@ local function clientWorld(opts)
             if tickAcc >= 100 then
                 tickAcc = 0
                 for _, t in ipairs(W.ticks) do
-                    if t.band == 'tick' then t.fn() end
+                    if t.band == 'tick' and not t.suspended then
+                        if opts.suspend then
+                            local okT, err = pcall(t.fn)
+                            if okT then
+                                t.errors = 0
+                            else
+                                t.errors = (t.errors or 0) + 1
+                                W.loopErrors[#W.loopErrors + 1] = t.name .. ': ' .. tostring(err)
+                                if t.errors >= 5 then t.suspended = true end
+                            end
+                        else
+                            t.fn()
+                        end
+                    end
                 end
             end
         end
@@ -1479,15 +1540,20 @@ local function clientWorld(opts)
             if l.filter == nil or l.filter == name then l.fn(name, '') end
         end
     end
-    function W.season(n)
-        W.convar = n and tostring(n) or ''
-        landed('br_seasonServed')
+    --- br_uiv2Served landing (#436), as replication lands it: only a change of
+    --- value is heard.
+    function W.uiv2(text)
+        if text == W.served then return end
+        W.served = text
+        landed('br_uiv2Served')
     end
-    --- br_seasonFeatures landing (#425): `brseason locker2 on` replicates
-    --- 'locker2=on', `off` 'locker2=off', `auto` ''.
-    function W.setting(text)
-        W.features = text
-        landed('br_seasonFeatures')
+    --- One TICK pass by name, and one made to raise on every pass.
+    function W.tick(name)
+        for _, t in ipairs(W.ticks) do if t.name == name then return t end end
+        return nil
+    end
+    function W.breakTick(name)
+        W.tick(name).fn = function() error(name .. ' broke') end
     end
     function W.ped() return W.peds[W.handle] end
     function W.nui(kind)
@@ -1536,7 +1602,7 @@ describe('season1.golden')
 do
     local function session(v2)
         math.randomseed(7)
-        local W = clientWorld({ season = 1, v2 = v2 })
+        local W = clientWorld({ locker = false, v2 = v2 })
         W.pump(600)
         W.fire('br:ui:ready')
         W.ui(NUICB.LOCKER_PICK, { id = STOCK2 })
@@ -1593,7 +1659,7 @@ do
         and lobbyped:find('s1Want = GetHashKey(BR.PedById(BR.Locker.chosen()).model)', 1, true) ~= nil,
         'and so does client/lobbyped.lua\'s entrance, wantHash first and Season 1\'s model when it says nil')
     -- Evaluated as written, on Season 1, the expression is Season 1's.
-    local W = clientWorld({ season = 1, v2 = true })
+    local W = clientWorld({ locker = false, v2 = true })
     local BR = W.BR
     local got = BR.LockerV2 and BR.LockerV2.wantHash() or W.env.GetHashKey(BR.PedById(BR.Locker.chosen()).model)
     eq(got, hashOf(BR.PedById(BR.Locker.chosen()).model), 'and on Season 1 it is exactly Season 1\'s model')
@@ -1601,26 +1667,26 @@ end
 
 describe('season1.unknown')
 do
-    local W = clientWorld({ season = nil, v2 = true })
+    local W = clientWorld({ locker = nil, v2 = true })
     W.pump(1000)
-    eq(W.count('SetPlayerModel'), 0, 'while the season is unknown, Season 1\'s first apply waits')
+    eq(W.count('SetPlayerModel'), 0, 'while UI v2 is unknown, Season 1\'s first apply waits')
     eq(W.BR.LockerV2.wantHash(), nil, 'and v2 claims nothing')
-    W.season(1)
+    W.uiv2('locker=off,market=off')
     W.pump(1000)
-    eq(W.count('SetPlayerModel'), 1, 'unknown then Season 1: one Season 1 apply')
+    eq(W.count('SetPlayerModel'), 1, 'unknown then Locker v2 off: one Season 1 apply')
     eq(locker2Traffic(W), 0, 'and no v2 at all')
 
-    local W2 = clientWorld({ season = nil, v2 = true })
+    local W2 = clientWorld({ locker = nil, v2 = true })
     W2.pump(2900)
     eq(W2.count('SetPlayerModel'), 0, 'still unknown at 2.9 s: still waiting')
     W2.pump(600)
     eq(W2.count('SetPlayerModel'), 1, 'past 3 s Season 1 goes ahead')
 
-    local W3 = clientWorld({ season = nil, v2 = true })
+    local W3 = clientWorld({ locker = nil, v2 = true })
     W3.pump(500)
-    W3.season(2)
+    W3.uiv2('locker=on,market=off')
     W3.pump(5000)
-    eq(W3.kvp['br:locker:ped'], nil, 'unknown then Season 2: Season 1 never applies or writes')
+    eq(W3.kvp['br:locker:ped'], nil, 'unknown then Locker v2 on: Season 1 never applies or writes')
     eq(#W3.sentTo(NET.LOCKER2_FETCH), 1, 'v2 asks the server once')
 end
 
@@ -1640,7 +1706,7 @@ local PID = '0abcdefgh12'
 
 describe('season2.join')
 do
-    local W = clientWorld({ season = 2, v2 = true })
+    local W = clientWorld({ locker = true, v2 = true })
     local BR = W.BR
     W.pump(200)
     eq(#W.sentTo(NET.LOCKER2_FETCH), 1, 'the first lobby tick asks the server')
@@ -1683,7 +1749,7 @@ describe('season2.join_fallbacks')
 do
     -- The server's record outranks this machine's: a new PC, or another
     -- machine's pick, joins as the ped the player left with.
-    local S0 = clientWorld({ season = 2, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
+    local S0 = clientWorld({ locker = true, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
     S0.pump(200)
     S0.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
     S0.pump(500)
@@ -1691,7 +1757,7 @@ do
     eq(S0.count('SetPlayerModel'), 1, 'in one swap')
 
     -- No answer: the kvp after 4 s.
-    local W = clientWorld({ season = 2, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
+    local W = clientWorld({ locker = true, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
     local BR = W.BR
     W.pump(3800)
     eq(W.count('SetPlayerModel'), 0, 'up to 4 s the first apply waits for the server')
@@ -1708,27 +1774,27 @@ do
     eq(A.decodeWorn(W.kvp['br:locker2:worn']).id, STOCK1, 'and remembered')
 
     -- Nothing anywhere: Season 1's chosen id, never written by v2.
-    local W2 = clientWorld({ season = 2, v2 = true })
+    local W2 = clientWorld({ locker = true, v2 = true })
     W2.pump(4500)
     eq(W2.ped().model, hashOf(W2.BR.PedById(W2.BR.Locker.chosen()).model), 'no record anywhere: chosen() as stock')
     eq(W2.kvp['br:locker:ped'], nil, 'still never writing Season 1\'s kvp')
 
     -- A server with no record keeps this machine's.
-    local W3 = clientWorld({ season = 2, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
+    local W3 = clientWorld({ locker = true, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
     W3.pump(200)
     W3.net(NET.LOCKER2_STATE, { store = true, peds = {} })
     W3.pump(500)
     eq(W3.ped().model, hashOf(W3.BR.PedById(STOCK2).model), 'a server with no record: the kvp stands')
 
     -- The entrance waiting for its model keeps going; a walking ped is not swapped.
-    local W4 = clientWorld({ season = 2, v2 = true })
+    local W4 = clientWorld({ locker = true, v2 = true })
     W4.pump(200)
     W4.entering, W4.locked = true, true
     W4.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK2 }, store = true, peds = {} })
     W4.pump(500)
     eq(W4.ped().model, hashOf(W4.BR.PedById(STOCK2).model), 'the first apply lands while the entrance waits for it')
     eq(#W4.stops, 0, 'without stopping the entrance')
-    local W5 = clientWorld({ season = 2, v2 = true })
+    local W5 = clientWorld({ locker = true, v2 = true })
     W5.pump(200)
     W5.entering, W5.locked, W5.walking = true, true, true
     W5.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK2 }, store = true, peds = {} })
@@ -1742,7 +1808,7 @@ end
 -- ═══ SEASON 2: THE PAGE ═══
 
 local function joined(peds)
-    local W = clientWorld({ season = 2, v2 = true })
+    local W = clientWorld({ locker = true, v2 = true })
     W.pump(200)
     W.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK1 }, store = true, peds = peds or {} })
     W.pump(500)
@@ -1821,7 +1887,7 @@ do
 
     -- THE LOADING ICON (owner, 2026-10-07): until the server answers, the
     -- page is told the saved peds are still coming, and opens on My peds.
-    local F = clientWorld({ season = 2, v2 = true })
+    local F = clientWorld({ locker = true, v2 = true })
     F.pump(4500)
     F.ui(NUICB.LOCKER2_OPEN)
     local f1 = F.nui(NUI.LOCKER2)
@@ -1853,14 +1919,14 @@ do
     W.ui(NUICB.LOCKER2_OPEN)
     eq(#W.sentTo(NET.LOCKER2_FETCH), fetches + 1, 'an answer refreshMs old is asked for again')
     -- An answer that never came, or a server that could not read them.
-    local N0 = clientWorld({ season = 2, v2 = true })
+    local N0 = clientWorld({ locker = true, v2 = true })
     N0.pump(6000)
     N0.ui(NUICB.LOCKER2_OPEN)
     eq(#N0.sentTo(NET.LOCKER2_FETCH), 2, 'no answer since the join: the open asks again')
     N0.ui(NUICB.LOCKER2_CLOSE)
     N0.ui(NUICB.LOCKER2_OPEN)
     eq(#N0.sentTo(NET.LOCKER2_FETCH), 2, 'but not twice inside fetchMs')
-    local S0 = clientWorld({ season = 2, v2 = true })
+    local S0 = clientWorld({ locker = true, v2 = true })
     S0.pump(200)
     S0.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK1 }, store = false })
     S0.pump(500)
@@ -2188,10 +2254,10 @@ do
     W.pump(300)
     eq(W.count('SetPlayerModel'), 1, 'nothing while the entrance holds the ped')
     W.locked = false
-    W.season(1)
+    W.uiv2('locker=off,market=off')
     W.ui(NUICB.LOCKER2_NEW, { sex = 'm', seq = 3 })
     W.pump(300)
-    ok(W.ped().model ~= MALE, 'nothing off Season 2')
+    ok(W.ped().model ~= MALE, 'nothing once Locker v2 is off')
 end
 
 describe('season2.lifecycle')
@@ -2359,7 +2425,7 @@ describe('season2.lobbyonly')
 do
     -- #28 review: a server answer that landed outside the lobby swapped the
     -- model mid-match -- a new, unarmed, frozen ped.
-    local W = clientWorld({ season = 2, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
+    local W = clientWorld({ locker = true, v2 = true, kvp = { ['br:locker2:worn'] = ('{"k":"s","id":"%s"}'):format(STOCK2) } })
     W.pump(4500)
     eq(W.ped().model, hashOf(W.BR.PedById(STOCK2).model), 'no answer: this machine has its worn ped')
     local function counts()
@@ -2408,7 +2474,7 @@ do
     -- watcher only ran in the lobby and alive, so a custom ped went bare
     -- through warmup, the plane and the drop.
     for _, st in ipairs({ 'WARMUP', 'BUS', 'FREEFALL', 'GLIDE', 'ALIVE', 'DBNO' }) do
-        local W = clientWorld({ season = 2, v2 = true })
+        local W = clientWorld({ locker = true, v2 = true })
         W.pump(200)
         W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
         W.pump(600)
@@ -2421,7 +2487,7 @@ do
             'in ' .. st .. ' a new ped gets the look back')
     end
     for _, st in ipairs({ 'OUT', 'LEFT' }) do
-        local W = clientWorld({ season = 2, v2 = true })
+        local W = clientWorld({ locker = true, v2 = true })
         W.pump(200)
         W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
         W.pump(600)
@@ -2437,7 +2503,7 @@ end
 describe('season2.watcher')
 do
     local a = femaleLook()
-    local W = clientWorld({ season = 2, v2 = true })
+    local W = clientWorld({ locker = true, v2 = true })
     W.pump(200)
     W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(a) }, store = true, peds = {} })
     W.pump(600)
@@ -2482,213 +2548,591 @@ do
     eq(#W2.log, 0, 'with a stock ped on, ten seconds of a match call no native at all')
 end
 
-describe('season2.flip')
-do
-    local W = clientWorld({ season = 2, v2 = true })
+-- ═══ UI V2'S LOCKER PIECE ON A LIVE CLIENT (#436) ═══
+--
+-- Owner, 2026-11-07: UI v2 switches live from the server console, on prod
+-- too, and "players get a change in the lobby or at their next match, never
+-- mid-match". br_core/client/uiv2.lua holds this machine's answer, taken in
+-- the lobby with the entrance over or as the next match starts. Locker v2
+-- keeps its own answer on top of it and moves it only standing in the lobby
+-- with the entrance over, or under the loading screen before the entrance:
+-- the only places a character can change.
+
+local ON, OFF = 'locker=on,market=off', 'locker=off,market=off'
+
+--- A client with Locker v2 on, wearing the custom look the server hands back.
+local function custom(opts)
+    local W = clientWorld(opts or { locker = true, v2 = true })
     W.pump(200)
     W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
     W.pump(600)
+    return W
+end
+--- Season 1's character's model on this client.
+local function s1Model(W) return hashOf(W.BR.PedById(W.BR.Locker.chosen()).model) end
+--- How many times the page has been told Locker v2 is off.
+local function pageOffs(W)
+    local n = 0
+    for _, e in ipairs(W.events) do
+        if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2 and e.args[2].on == false then n = n + 1 end
+    end
+    return n
+end
+--- A new ped handle of the same model, as a resurrection or a spawn hands one.
+local function newHandle(W)
+    local model = W.ped().model
+    W.handle = W.handle + 1
+    W.peds[W.handle] = newPed(model)
+end
+--- The custom look (femaleLook) on a ped.
+local function dressed(p) return p.blend ~= nil and p.blend[2] == 12 and p.comps[11] ~= nil and p.comps[11][1] == 6 end
+
+describe('uiv2.lobby')
+do
+    local W = custom()
     W.ui(NUICB.LOCKER2_OPEN)
-    eq(W.kvp['br:locker:ped'], nil, 'a whole Season 2 session never writes Season 1\'s kvp')
-    W.season(1)
+    eq(W.kvp['br:locker:ped'], nil, 'a whole session with Locker v2 on never writes Season 1\'s kvp')
+    W.uiv2(OFF)
     W.pump(600)
     local msg = W.nui(NUI.LOCKER2)
-    ok(msg and msg.on == false, 'a live switch to Season 1 tells the page it is off')
-    eq(W.ped().model, hashOf(W.BR.PedById(W.BR.Locker.chosen()).model), 'and puts Season 1\'s ped back on')
+    ok(msg and msg.on == false, 'an OFF standing in the lobby, My Looks open: the page is told it is off')
+    eq(W.ped().model, s1Model(W), 'and Season 1\'s character goes back on')
     eq(W.cams[#W.cams], 'unfocus', 'with the camera home')
-    W.season(2)
+    local S = W.BR.LockerV2.state()
+    ok(S.on == false and S.draft == nil and S.open == false and S.applied == nil and S.restoring == nil,
+        'Locker v2 off, its page state and draft gone, and nothing left on the ped of it')
+    ok(W.BR.LockerV2.wantHash() == nil and W.BR.LockerV2.defer() == false, 'and Season 1 asks its own questions again')
+    W.uiv2(ON)
     W.pump(300)
-    eq(#W.sentTo(NET.LOCKER2_FETCH), 2, 'back on Season 2 it asks the server again (after the join; the open asked nothing)')
-
-    -- A switch that lands mid-match waits for the lobby.
-    local M = clientWorld({ season = 2, v2 = true })
-    M.pump(200)
-    M.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
-    M.pump(600)
-    M.BR.State.me.state = M.BR.PlayerState.ALIVE
-    M.log, M.events, M.server = {}, {}, {}
-    M.season(1)
-    M.pump(2000)
-    eq(M.count('SetPlayerModel'), 0, 'a switch to Season 1 mid-match changes no ped in the match')
-    eq(locker2Traffic(M), 0, 'and tells the page nothing yet')
-    M.BR.State.me.state = M.BR.PlayerState.LOBBY
-    M.pump(600)
-    eq(M.ped().model, hashOf(M.BR.PedById(M.BR.Locker.chosen()).model), 'then, in the lobby, Season 1\'s ped')
-    eq(M.count('SetPlayerModel'), 1, 'put on once (Season 1\'s own first apply, which v2 had held)')
-    ok(M.nui(NUI.LOCKER2) and M.nui(NUI.LOCKER2).on == false, 'and the page is told')
-
-    -- A switch while the entrance walks leaves the walk alone, Season 1's own
-    -- held first apply included.
-    local E = clientWorld({ season = 2, v2 = true })
-    E.pump(200)
-    E.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
-    E.pump(600)
-    E.entering, E.locked, E.walking = true, true, true
-    E.season(1)
-    E.pump(1000)
-    eq(#E.stops, 0, 'a switch to Season 1 mid-entrance does not stop the walk')
-    eq(E.ped().model, FEMALE, 'or swap the ped under it')
-    E.entering, E.locked, E.walking = false, false, false
-    E.pump(600)
-    eq(E.ped().model, hashOf(E.BR.PedById(E.BR.Locker.chosen()).model), 'Season 1\'s ped once it has arrived')
-    eq(E.count('SetPlayerModel'), 2, 'in one swap')
-
-    -- When Season 1's first apply already ran (the season was unknown for 3 s
-    -- at the join), v2 puts its ped back itself -- once the walk lets go.
-    local K = clientWorld({ season = nil, v2 = true })
-    K.pump(3500)
-    eq(K.count('SetPlayerModel'), 1, 'unknown for 3 s: Season 1 applies')
-    K.season(2)
-    K.pump(200)
-    K.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
-    K.pump(600)
-    eq(K.ped().model, FEMALE, 'then Season 2 arrives and v2 wears the saved ped')
-    K.locked = true
-    K.season(1)
-    K.pump(600)
-    eq(K.ped().model, FEMALE, 'back to Season 1 with the entrance holding the ped: nothing yet')
-    K.locked = false
-    K.pump(600)
-    eq(K.ped().model, hashOf(K.BR.PedById(K.BR.Locker.chosen()).model), 'then Season 1\'s ped, put back by v2')
+    ok(W.nui(NUI.LOCKER2).on == true, 'ON again: the page is told it is on')
+    eq(#W.sentTo(NET.LOCKER2_FETCH), 2, 'and the saved looks are asked for again (after the join; the open asked nothing)')
+    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    W.pump(600)
+    eq(W.ped().model, FEMALE, 'and its own worn record goes on again: saved looks outlive a flip')
 end
 
--- ═══ `brseason locker2 on|off|auto` ON A LIVE CLIENT (#425) ═══
---
--- Owner, 2026-11-01: "can you also dispatch a way for me to turn on locker v2
--- in season 1 with a dev command?" This file asks has('locker2') and nothing
--- else, so a setting landing (br_seasonFeatures) drives the same lobby tick a
--- live switch does: on, the page, the fetch and the first apply; off, gateOff
--- and Season 1's ped back.
-
-describe('season1.setting')
+describe('uiv2.midmatch')
 do
-    local W = clientWorld({ season = 1, v2 = true })
-    W.fire('br:ui:ready')
-    W.pump(600)
-    local s1 = hashOf(W.BR.PedById(W.BR.Locker.chosen()).model)
-    eq(W.ped().model, s1, 'Season 1: Season 1\'s locker puts its ped on')
-    ok(locker2Traffic(W) == 0 and W.BR.LockerV2.wantHash() == nil, 'and Locker v2 says nothing and waits on nothing')
-    local s1Kvp = W.kvp['br:locker:ped']
-
-    -- ON.
-    W.setting('locker2=on')
-    W.pump(200)
-    local msg = W.nui(NUI.LOCKER2)
-    ok(msg and msg.on == true, 'brseason locker2 on, Season 1: the page is told Locker v2 is on')
-    eq(#W.sentTo(NET.LOCKER2_FETCH), 1, 'the saved looks are asked for, once')
-    ok(W.BR.LockerV2.defer() == true and W.BR.LockerV2.wantHash() == 0,
-        'Season 1\'s locker would hold, and the loading screen and entrance wait on v2\'s first apply')
-    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
-    W.pump(600)
-    eq(W.ped().model, FEMALE, 'the worn look the server holds goes on')
-    eq(W.BR.LockerV2.wantHash(), FEMALE, 'and wantHash names its model')
-    W.ui(NUICB.LOCKER2_OPEN)
-    eq(W.kvp['br:locker:ped'], s1Kvp, 'Season 1\'s kvp is left as Season 1 left it')
-
-    -- A SWITCH UNDER IT KEEPS IT.
-    W.season(2)
-    W.pump(300)
-    W.season(1)
-    W.pump(300)
-    ok(W.ped().model == FEMALE and W.nui(NUI.LOCKER2).on == true, 'switches to Season 2 and back leave it on')
-
-    -- AUTO: Season 1's answer, off.
-    W.setting('')
-    W.pump(600)
-    msg = W.nui(NUI.LOCKER2)
-    ok(msg and msg.on == false, 'brseason locker2 auto on Season 1: the page is told it is off')
-    eq(W.ped().model, s1, 'Season 1\'s ped goes back on')
-    eq(W.cams[#W.cams], 'unfocus', 'with the camera home')
-    ok(W.BR.LockerV2.wantHash() == nil and W.BR.LockerV2.defer() == false,
-        'wantHash is nil and Season 1\'s locker holds nothing')
-
-    -- OFF ON SEASON 2.
-    local S2 = clientWorld({ season = 2, v2 = true })
-    S2.pump(200)
-    S2.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
-    S2.pump(600)
-    eq(S2.ped().model, FEMALE, 'Season 2: v2\'s worn look')
-    S2.setting('locker2=off')
-    S2.pump(600)
-    ok(S2.nui(NUI.LOCKER2).on == false and S2.ped().model == hashOf(S2.BR.PedById(S2.BR.Locker.chosen()).model),
-        'brseason locker2 off on Season 2: the page is told, and Season 1\'s ped goes back on')
-    S2.setting('')
-    S2.pump(300)
-    ok(S2.nui(NUI.LOCKER2).on == true and #S2.sentTo(NET.LOCKER2_FETCH) == 2,
-        'auto: Season 2\'s answer, on, and the looks asked for again')
-
-    -- MID-MATCH IT WAITS FOR THE LOBBY.
-    local M = clientWorld({ season = 1, v2 = true })
-    M.pump(600)
+    -- AN OFF THAT LANDS MID-MATCH: the custom ped stays dressed through it, and
+    -- Season 1's character goes on standing in the lobby, in one swap.
+    local M = custom()
     M.BR.State.me.state = M.BR.PlayerState.ALIVE
-    M.log, M.events, M.server = {}, {}, {}
-    M.setting('locker2=on')
-    M.pump(2000)
-    ok(M.count('SetPlayerModel') == 0 and locker2Traffic(M) == 0,
-        'set on mid-match: no ped changes in the match, and nothing is asked or told')
-    M.BR.State.me.state = M.BR.PlayerState.LOBBY
     M.pump(300)
-    ok(#M.sentTo(NET.LOCKER2_FETCH) == 1 and M.nui(NUI.LOCKER2).on == true,
+    M.log, M.events, M.server = {}, {}, {}
+    M.uiv2(OFF)
+    M.pump(2000)
+    eq(M.count('SetPlayerModel'), 0, 'an OFF mid-match changes no ped in the match')
+    eq(locker2Traffic(M), 0, 'and tells the page nothing yet')
+    newHandle(M)
+    M.pump(1000)
+    ok(dressed(M.ped()), 'a new ped handle mid-match is dressed in the look all the same')
+    eq(M.BR.LockerV2.wantHash(), FEMALE, 'and Locker v2 still answers for the look on it')
+    M.BR.State.me.state = M.BR.PlayerState.LOBBY
+    M.pump(600)
+    eq(M.ped().model, s1Model(M), 'then, standing in the lobby, Season 1\'s character')
+    eq(M.count('SetPlayerModel'), 1, 'in one swap')
+    ok(M.nui(NUI.LOCKER2) and M.nui(NUI.LOCKER2).on == false, 'and the page is told, then')
+
+    -- AN ON MID-MATCH WAITS FOR THE LOBBY TOO.
+    local N = clientWorld({ locker = false, v2 = true })
+    N.pump(600)
+    N.BR.State.me.state = N.BR.PlayerState.ALIVE
+    N.pump(300)
+    N.log, N.events, N.server = {}, {}, {}
+    N.uiv2(ON)
+    N.pump(2000)
+    ok(N.count('SetPlayerModel') == 0 and locker2Traffic(N) == 0,
+        'an ON mid-match: no ped changes in the match, and nothing is asked or told')
+    N.BR.State.me.state = N.BR.PlayerState.LOBBY
+    N.pump(300)
+    ok(#N.sentTo(NET.LOCKER2_FETCH) == 1 and N.nui(NUI.LOCKER2).on == true,
         'back in the lobby, the page is told and the looks asked for')
 
-    -- A JOIN WITH IT ALREADY ON: Season 1's locker holds, v2's look goes on.
-    local J = clientWorld({ season = 1, features = 'locker2=on', v2 = true })
-    J.pump(200)
-    J.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
-    J.pump(600)
-    eq(J.ped().model, FEMALE, 'joining a Season 1 box with locker2 on: v2\'s worn look')
+    -- A JOIN WITH IT ON, WHATEVER THE SEASON: Season 1's locker holds, and the
+    -- worn look goes on in one swap.
+    local J = custom()
+    eq(J.ped().model, FEMALE, 'joining with Locker v2 on: the worn look')
     eq(J.count('SetPlayerModel'), 1, 'in one swap -- Season 1\'s first apply held')
     eq(J.kvp['br:locker:ped'], nil, 'and Season 1\'s kvp untouched')
 end
 
--- ═══ THE GATE SHUT WHILE A SWAP STREAMS (#425 review) ═══
---
--- swap() asked only whether the lobby was left once its model had streamed,
--- so `brseason locker2 off` landing mid-stream still put v2's look on: Locker
--- v2 off, Season 1's first apply long spent, and nothing left to take it off.
-
-describe('season1.settingmidswap')
+describe('uiv2.walkin')
 do
-    local W = clientWorld({ season = 1, v2 = true })
+    -- A MOVE DURING THE WALK-IN WAITS FOR THE ENTRANCE.
+    local E = custom()
+    E.entering, E.locked, E.walking = true, true, true
+    E.uiv2(OFF)
+    E.pump(1000)
+    eq(#E.stops, 0, 'an OFF during the walk-in does not stop the walk')
+    eq(E.ped().model, FEMALE, 'or swap the ped under it')
+    ok(E.BR.UIv2.has('locker') == true, 'the holder waits for the entrance too')
+    E.entering, E.locked, E.walking = false, false, false
+    E.pump(600)
+    eq(E.ped().model, s1Model(E), 'Season 1\'s character once the entrance is over')
+    eq(E.count('SetPlayerModel'), 2, 'in one swap')
+
+    -- AND THE SWEEP TO THE LOBBY (the entrance armed, the trip home ahead).
+    local A2 = custom()
+    A2.armed = true
+    A2.uiv2(OFF)
+    A2.pump(1000)
+    ok(A2.ped().model == FEMALE and A2.BR.LockerV2.state().on == true, 'swept to the lobby, the entrance armed: held')
+    A2.armed = false
+    A2.pump(600)
+    eq(A2.ped().model, s1Model(A2), 'and taken once it is over')
+
+    -- WHEN SEASON 1'S FIRST APPLY ALREADY RAN (UI v2 unknown for 3 s at the
+    -- join), Locker v2 puts Season 1's character back itself, parked.
+    local K = clientWorld({ locker = nil, v2 = true })
+    K.pump(3500)
+    eq(K.count('SetPlayerModel'), 1, 'UI v2 unknown for 3 s: Season 1 applies')
+    K.uiv2(ON)
+    K.pump(200)
+    K.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    K.pump(600)
+    eq(K.ped().model, FEMALE, 'then UI v2 arrives on, and Locker v2 wears the saved look')
+    K.entering = true
+    K.uiv2(OFF)
+    K.pump(600)
+    eq(K.ped().model, FEMALE, 'off with the entrance holding the ped: nothing yet')
+    K.entering = false
+    K.pump(600)
+    eq(K.ped().model, s1Model(K), 'then Season 1\'s character, put back by Locker v2')
+end
+
+describe('uiv2.loadingscreen')
+do
+    -- UNDER THE LOADING SCREEN, BEFORE THE ENTRANCE, A MOVE IS STILL THE JOIN:
+    -- the entrance is armed there, so only the screen being up lets it in.
+    local W = clientWorld({ locker = true, v2 = true, worldReady = false })
+    W.armed = true
+    W.pump(200)
+    W.uiv2(OFF)
+    W.pump(300)
+    ok(W.BR.LockerV2.state().on == false and W.BR.UIv2.has('locker') == false,
+        'an OFF under the loading screen, the entrance armed: taken, as the join it still is')
+    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    W.pump(600)
+    ok(W.ped().model ~= FEMALE, 'and Locker v2\'s answer, arriving after it, puts nothing on')
+    -- Once the screen is down, the same armed entrance holds a move.
+    W.BR.State.worldReady = true
+    W.uiv2(ON)
+    W.pump(600)
+    ok(W.BR.LockerV2.state().on == false and W.BR.UIv2.has('locker') == false,
+        'the screen down, the entrance not over: an ON waits')
+end
+
+describe('uiv2.readyup')
+do
+    -- THE REVIEW'S CHAIN: a custom look worn, OFF lands mid-match, and the
+    -- player readies up during the walk-in after it.
+    local W = custom()
+    W.BR.State.me.state = W.BR.PlayerState.ALIVE
+    W.pump(300)
+    W.uiv2(OFF)
+    W.pump(500)
+    -- The match ends: the walk-in home.
+    W.BR.State.me.state = W.BR.PlayerState.LOBBY
+    W.entering = true
+    W.pump(1000)
+    ok(W.BR.UIv2.has('locker') == true, 'the walk-in: the holder still holds the match\'s answer')
+    local swaps = W.count('SetPlayerModel')
+    -- A ready-up during the walk-in: the next match starts.
+    W.BR.State.me.state = W.BR.PlayerState.WARMUP
+    W.entering = false
+    W.pump(100)
+    ok(W.BR.UIv2.has('locker') == false, 'the holder takes the OFF on the first pass out of the lobby')
+    ok(W.BR.LockerV2.state().on == true, 'Locker v2 does not: a character cannot change there')
+    for _, st in ipairs({ 'WARMUP', 'BUS', 'FREEFALL', 'GLIDE', 'ALIVE', 'DBNO' }) do
+        W.BR.State.me.state = W.BR.PlayerState[st]
+        newHandle(W)
+        W.pump(1000)
+        ok(dressed(W.ped()), 'the look is dressed on every new handle through the next match: ' .. st)
+    end
+    eq(W.count('SetPlayerModel'), swaps, 'and no SetPlayerModel outside the lobby')
+    eq(pageOffs(W), 0, 'nor is the page told anything')
+    -- That match ends; the walk-in; the entrance over.
+    W.BR.State.me.state = W.BR.PlayerState.LOBBY
+    W.entering = true
+    W.pump(1000)
+    eq(W.count('SetPlayerModel'), swaps, 'the walk-in after it: still nothing')
+    W.entering = false
+    W.pump(600)
+    eq(W.ped().model, s1Model(W), 'standing in the lobby at last: Season 1\'s character')
+    eq(W.count('SetPlayerModel'), swaps + 1, 'in one swap')
+    eq(pageOffs(W), 1, 'and the page told off, then')
+end
+
+describe('uiv2.offwaits')
+do
+    -- AN OFF WAITS FOR SEASON 1'S CHARACTER TO LOAD, then swaps once: the
+    -- character is in before the move, so it cannot stream past a ready-up.
+    local W = custom()
+    W.modelDelay = 800
+    W.uiv2(OFF)
+    W.pump(300)
+    ok(W.BR.LockerV2.state().on == true and W.ped().model == FEMALE,
+        'Season 1\'s character still streaming: Locker v2 stays on, and the look on')
+    W.pump(700)
+    local landedAt = W.time
+    W.pump(200)
+    eq(W.ped().model, s1Model(W), 'loaded: Season 1\'s character goes on')
+    eq(W.count('SetPlayerModel'), 2, 'in one swap')
+    ok(W.time - landedAt <= 200, 'with no stream after the move')
+
+    -- A READY-UP IN THAT WAIT leaves the look on, and dressed.
+    local R = custom()
+    R.modelDelay = 800
+    R.uiv2(OFF)
+    R.pump(200)
+    R.BR.State.me.state = R.BR.PlayerState.WARMUP
+    newHandle(R)
+    R.pump(1500)
+    ok(R.BR.LockerV2.state().on == true and R.ped().model == FEMALE and dressed(R.ped()),
+        'a ready-up while it streams: Locker v2 stays on here, and the look dressed')
+    eq(R.count('SetPlayerModel'), 1, 'and no swap outside the lobby')
+    R.BR.State.me.state = R.BR.PlayerState.LOBBY
+    R.pump(600)
+    eq(R.ped().model, s1Model(R), 'back in the lobby it takes, in one swap')
+end
+
+describe('uiv2.restorebusy')
+do
+    -- A RESTORE THAT CANNOT TAKE YET -- Season 1's own apply busy -- keeps the
+    -- look dressed, wantHash() answering the ped's model and defer() holding,
+    -- until it takes; and a choice Season 1 makes meanwhile is the one waited for.
+    local W = custom()
+    W.env.RequestModel(s1Model(W))
+    W.pump(100)
+    local other = W.BR.Config.Peds[3]
+    local oh = hashOf(other.model)
+    W.models[oh] = W.time + 1500
+    W.BR.Locker.apply(other.id)
+    local swaps = W.count('SetPlayerModel')
+    W.uiv2(OFF)
+    W.pump(600)
+    local S = W.BR.LockerV2.state()
+    ok(S.on == false and S.restoring ~= nil, 'Locker v2 off, Season 1\'s character still to go on')
+    ok(W.ped().model == FEMALE and W.BR.LockerV2.wantHash() == FEMALE and W.BR.LockerV2.defer() == true,
+        'meanwhile the look stays on, wantHash() answers its model and Season 1\'s first apply holds')
+    newHandle(W)
+    W.pump(600)
+    ok(dressed(W.ped()), 'and a new handle is dressed in it')
+    W.pump(1000)
+    eq(W.ped().model, oh, 'Season 1\'s own apply lands, and it is Season 1\'s character now')
+    S = W.BR.LockerV2.state()
+    ok(S.restoring == nil and S.applied == nil and W.BR.LockerV2.wantHash() == nil, 'so the restore is done')
+    eq(W.count('SetPlayerModel'), swaps + 1, 'one swap: Season 1\'s own')
+    W.pump(3000)
+    eq(W.count('SetPlayerModel'), swaps + 1, 'and none after it: nothing waits for a model that is not coming')
+end
+
+describe('uiv2.suspended')
+do
+    -- THE KILL SWITCH SURVIVES THE CODE IT KILLS: Locker v2's lobby tick made
+    -- to raise until BR.Loop suspends it, then an OFF.
+    local W = custom({ locker = true, v2 = true, suspend = true })
+    W.breakTick('locker2.lobby')
+    W.pump(1000)
+    ok(W.tick('locker2.lobby').suspended == true, 'precondition: the lobby tick raised five times in a row and is suspended')
+    W.uiv2(OFF)
+    W.pump(600)
+    ok(W.nui(NUI.LOCKER2) and W.nui(NUI.LOCKER2).on == false, 'an OFF still tells the page: the gate is a pass of its own')
+    eq(W.ped().model, s1Model(W), 'and Season 1\'s character goes back on')
+    ok(W.tick('locker2.gate').suspended ~= true, 'the gate itself never raised')
+end
+
+describe('uiv2.stop')
+do
+    -- AS br_core STOPS, A PAGE TOLD LOCKER V2 WAS ON IS TOLD IT IS OFF.
+    local W = custom()
+    W.fire('br:ui:ready')
+    local before = pageOffs(W)
+    W.fire('onResourceStop', 'br_core')
+    eq(pageOffs(W) - before, 1, 'onResourceStop sends the page exactly one {on=false}')
+    W.fire('onResourceStop', 'br_ui')
+    eq(pageOffs(W) - before, 1, 'and another resource stopping sends nothing')
+    local S1 = clientWorld({ locker = false, v2 = true })
+    S1.pump(600)
+    S1.fire('onResourceStop', 'br_core')
+    eq(locker2Traffic(S1), 0, 'a client never told on hears nothing from Locker v2 as br_core stops')
+end
+
+describe('uiv2.refusal')
+do
+    -- AN `off` REFUSAL IS QUIET, before and after Locker v2 turns off here.
+    local W = custom()
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
+    W.pump(300)
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Kit' })
+    local s1 = W.sentTo(NET.LOCKER2_SAVE)[1]
+    ok(s1 ~= nil, 'precondition: a save is in flight')
+    W.net(NET.LOCKER2_RESULT, { req = s1.req, ok = false, reason = 'off' })
+    eq(#W.notify, 0, 'refused off while Locker v2 is still on here: no toast')
+    eq(W.nui(NUI.LOCKER2).busy, false, 'and the page is given the write back')
+    -- A WRITE IN FLIGHT AS LOCKER V2 TURNS OFF is given back quietly.
+    W.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Kit' })
+    local s2 = W.sentTo(NET.LOCKER2_SAVE)[2]
+    ok(s2 ~= nil and W.BR.LockerV2.state().busy == s2.req, 'precondition: another save in flight')
+    W.uiv2(OFF)
+    W.pump(600)
+    ok(W.BR.LockerV2.state().on == false and W.BR.LockerV2.state().busy == nil, 'Locker v2 off: the write is given back')
+    W.net(NET.LOCKER2_RESULT, { req = s2.req, ok = false, reason = 'off' })
+    W.net(NET.LOCKER2_RESULT, { req = 77, ok = false, reason = 'name' })
+    eq(#W.notify, 0, 'its late refusal, and any other, toasts nothing while off')
+    W.uiv2(ON)
+    W.pump(11000)
+    eq(#W.notify, 0, 'and turning on again later toasts nothing for it')
+
+    -- ANY OTHER REFUSAL, LOCKER V2 ON, TOASTS AS IT ALWAYS DID.
+    local T = custom()
+    T.ui(NUICB.LOCKER2_OPEN)
+    T.ui(NUICB.LOCKER2_NEW, { sex = 'f', seq = 1 })
+    T.pump(300)
+    T.ui(NUICB.LOCKER2_SAVE, { op = 'new', name = 'Kit' })
+    local t = T.sentTo(NET.LOCKER2_SAVE)[1]
+    T.net(NET.LOCKER2_RESULT, { req = t.req, ok = false, reason = 'rate' })
+    eq(T.notify[#T.notify], 'Something went wrong. Try again.', 'refused for another reason, Locker v2 on: the toast')
+end
+
+describe('uiv2.shots')
+do
+    -- AN OFF EMPTIES THE HEADSHOT QUEUE: no clone is made after it.
+    local H = joined({ { id = PID, name = 'Ann', a = A.encode(femaleLook()), up = 5 },
+                       { id = '0abcdefgh15', name = 'Ivy', a = A.encode(femaleLook()), up = 8 } })
+    H.ui(NUICB.LOCKER2_OPEN)
+    H.ui(NUICB.LOCKER2_SHOTS, { ids = { PID, '0abcdefgh15' } })
+    H.pump(200)
+    eq(#H.created, 0, 'precondition: no clone yet (shotDelayMs)')
+    H.uiv2(OFF)
+    H.pump(5000)
+    eq(#H.created, 0, 'Locker v2 off: no clone is made after it')
+    local shots = 0
+    for _, e in ipairs(H.events) do
+        if e.name == 'br:ui:sendLocal' and e.args[1] == NUI.LOCKER2_SHOT then shots = shots + 1 end
+    end
+    eq(shots, 0, 'and no headshot is sent to the page')
+end
+
+describe('uiv2.s1loading')
+do
+    -- AN ON WHILE A SEASON 1 PICK STREAMS waits for the pick, then swaps once:
+    -- the pick cannot land after Locker v2's own swap.
+    local W = clientWorld({ locker = false, v2 = true })
     W.fire('br:ui:ready')
     W.pump(600)
-    local s1 = hashOf(W.BR.PedById(W.BR.Locker.chosen()).model)
-    W.setting('locker2=on')
+    local swaps = W.count('SetPlayerModel')
+    W.modelDelay = 1000
+    W.ui(NUICB.LOCKER_PICK, { id = STOCK2 })
+    W.uiv2(ON)
+    W.pump(300)
+    ok(W.BR.LockerV2.state().on == false, 'ON while a Season 1 pick streams: Locker v2 waits for it')
+    W.pump(1500)
+    ok(W.BR.LockerV2.state().on == true, 'and turns on once the pick has landed')
+    W.modelDelay = 0
+    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    W.pump(1500)
+    eq(W.ped().model, FEMALE, 'Locker v2\'s worn look goes on, after the pick')
+    eq(W.count('SetPlayerModel'), swaps + 2, 'the pick, then one swap: nothing lands after Locker v2\'s')
+
+    -- AT MOST 6 s: a pick that never says it is done does not keep it off.
+    local X = clientWorld({ locker = false, v2 = true })
+    X.fire('br:ui:ready')
+    X.pump(600)
+    local list = X.nui(NUI.LOCKER).peds
+    X.fire('br:ui:sendLocal', NUI.LOCKER, { peds = list, chosen = X.BR.Locker.chosen(), loading = STOCK2, locked = false })
+    X.uiv2(ON)
+    X.pump(5000)
+    ok(X.BR.LockerV2.state().on == false, 'a pick still loading after 5 s: still waiting')
+    X.pump(1500)
+    ok(X.BR.LockerV2.state().on == true, 'past 6 s Locker v2 turns on regardless')
+end
+
+describe('uiv2.midswap')
+do
+    -- AN OFF WHILE A LOCKER V2 SWAP STREAMS lands at once (#436 review: a
+    -- kill switch never waits on the code it kills), and the swap, once
+    -- streamed, puts nothing on: never a Locker v2 look left on with it off.
+    local W = clientWorld({ locker = false, v2 = true })
+    W.fire('br:ui:ready')
+    W.pump(600)
+    local s1 = s1Model(W)
+    W.uiv2(ON)
     W.pump(200)
     W.modelDelay = 800
     W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
     W.pump(150)
-    ok(W.BR.LockerV2.state().applying == true, 'v2\'s worn look is still streaming')
-    W.setting('')
+    ok(W.BR.LockerV2.state().applying == true, 'Locker v2\'s worn look is still streaming')
+    local swaps, offs = W.count('SetPlayerModel'), pageOffs(W)
+    W.uiv2(OFF)
+    W.pump(150)
+    ok(W.BR.LockerV2.state().on == false and pageOffs(W) == offs + 1,
+        'an OFF mid-stream lands within a pass: Locker v2 off, and the page told')
     W.pump(3000)
     local S = W.BR.LockerV2.state()
-    eq(W.ped().model, s1, 'auto lands mid-stream on Season 1: Season 1\'s ped stays on')
-    ok(S.applying == false and S.dressed ~= true, 'and the swap let go without dressing the ped')
+    eq(W.ped().model, s1, 'Season 1\'s character is on')
+    eq(W.count('SetPlayerModel'), swaps, 'and the streamed look never went on')
+    ok(S.applying == false and S.dressed ~= true and S.on == false and S.applied == nil,
+        'with nothing streaming, nothing dressed, and Locker v2 off')
 
-    -- Off and on again inside one stream: the look on in the end is the worn one.
-    local O = clientWorld({ season = 1, v2 = true })
+    -- Off and on again inside one stream: the ON waits for the swap in
+    -- flight, which lands nothing, and then Locker v2 wears the worn look.
+    local O = clientWorld({ locker = false, v2 = true })
     O.fire('br:ui:ready')
     O.pump(600)
-    O.setting('locker2=on')
+    O.uiv2(ON)
     O.pump(200)
     O.modelDelay = 800
     O.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
     O.pump(150)
-    O.setting('')
+    O.uiv2(OFF)
     O.pump(200)
-    O.setting('locker2=on')
+    O.uiv2(ON)
     O.pump(200)
+    ok(O.BR.LockerV2.state().on == false and O.BR.LockerV2.state().applying == true,
+        'ON again while that swap still streams: it waits for the swap')
+    O.pump(800)
+    ok(O.BR.LockerV2.state().on == true and O.BR.LockerV2.state().applying == false,
+        'and turns on once the swap is done, having landed nothing')
     O.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
     O.pump(3000)
-    eq(O.ped().model, FEMALE, 'off then on inside one stream: v2\'s worn look ends up on')
-    ok(O.BR.LockerV2.state().applying == false, 'with nothing left streaming')
+    eq(O.ped().model, FEMALE, 'off then on inside one stream: Locker v2\'s worn look ends up on')
+    ok(O.BR.LockerV2.state().applying == false and O.BR.LockerV2.state().on == true, 'with nothing left streaming')
+end
+
+-- The next two blocks draw no random number (Season 1's choice is stored, and
+-- every pick is a stock one), so every block below them meets the same draws
+-- it always did.
+local STORED = { ['br:locker:ped'] = STOCK2 }
+
+describe('uiv2.deadswap')
+do
+    -- A SWAP THAT RAISES CLEARS ITS LATCH (#436 review): only the swap's own
+    -- thread clears S.applying, and one that died holding it kept every OFF
+    -- after it waiting for the rest of the session.
+    local W = custom({ locker = true, v2 = true, kvp = STORED })
+    W.env.RequestModel(s1Model(W))
+    W.ui(NUICB.LOCKER2_OPEN)
+    W.pump(100)
+    local lines = {}
+    W.env.print = function(s) lines[#lines + 1] = tostring(s) end
+    local realInit = W.BR.Native.initHealthModel
+    W.BR.Native.initHealthModel = function() error('the health model raised') end
+    local other = W.BR.Config.Peds[3]
+    W.ui(NUICB.LOCKER2_WEAR, { k = 's', id = other.id })
+    local okPump, err = pcall(W.pump, 400)
+    W.BR.Native.initHealthModel = realInit
+    ok(okPump, 'a swap that raises does not take its thread down', err)
+    local S = W.BR.LockerV2.state()
+    ok(S.applying == false and S.loadingId == nil, 'and leaves nothing marked as streaming or loading')
+    local said = 0
+    for _, l in ipairs(lines) do if l:find('the character change raised', 1, true) then said = said + 1 end end
+    eq(said, 1, 'one console line says so')
+    local offs = pageOffs(W)
+    W.uiv2(OFF)
+    W.pump(150)
+    ok(W.BR.LockerV2.state().on == false and pageOffs(W) == offs + 1,
+        'an OFF after it lands within a pass, and the page is told')
+    W.pump(300)
+    eq(W.ped().model, s1Model(W), 'and Season 1\'s character goes back on')
+
+    -- AN OFF NEVER WAITS FOR A SWAP IN FLIGHT: a stock pick still streaming
+    -- (4 s) when it lands, and nothing of the pick goes on after it.
+    local F = custom({ locker = true, v2 = true, kvp = STORED })
+    F.env.RequestModel(s1Model(F))
+    F.ui(NUICB.LOCKER2_OPEN)
+    F.pump(100)
+    local oh = hashOf(other.model)
+    F.models[oh] = F.time + 4000
+    F.ui(NUICB.LOCKER2_WEAR, { k = 's', id = other.id })
+    F.pump(200)
+    ok(F.BR.LockerV2.state().applying == true, 'precondition: the pick\'s model is still streaming')
+    local swaps, before = F.count('SetPlayerModel'), pageOffs(F)
+    F.uiv2(OFF)
+    F.pump(150)
+    ok(F.BR.LockerV2.state().on == false and pageOffs(F) == before + 1,
+        'an OFF mid-stream lands within a pass, and the page is told')
+    F.pump(5000)
+    eq(F.ped().model, s1Model(F), 'Season 1\'s character is on')
+    eq(F.count('SetPlayerModel'), swaps + 1, 'in one swap: the streamed pick never went on')
+    eq(F.BR.LockerV2.state().applying, false, 'and nothing is left streaming')
+end
+
+describe('uiv2.s1apply')
+do
+    -- AN ON WHILE SEASON 1'S FIRST APPLY STREAMS (#436 review): a join with
+    -- UI v2's locker off, under the loading screen, and the locker turned on
+    -- 200 ms in. Locker v2 waits for that apply, then wears its own look, so
+    -- Season 1's cannot land after it.
+    local W = clientWorld({ locker = false, v2 = true, worldReady = false, kvp = STORED })
+    W.armed = true
+    W.modelDelay = 2000
+    W.pump(200)
+    W.modelDelay = 0
+    W.uiv2(ON)
+    W.pump(300)
+    ok(W.BR.LockerV2.state().on == false, 'ON while Season 1\'s first apply streams: Locker v2 waits for it')
+    W.pump(2000)
+    ok(W.BR.LockerV2.state().on == true and W.ped().model == s1Model(W),
+        'and turns on once Season 1\'s character is on')
+    W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    W.pump(1500)
+    eq(W.ped().model, FEMALE, 'then the worn look goes on')
+    eq(W.count('SetPlayerModel'), 2, 'Season 1\'s apply, then one swap: nothing lands after Locker v2\'s')
+    local S = W.BR.LockerV2.state()
+    ok(S.applied ~= nil and S.applied.model == FEMALE and W.BR.LockerV2.wantHash() == FEMALE,
+        'and the look Locker v2 says is worn is the one on the ped')
+
+    -- OFF, THEN ON BEFORE THE NEXT PASS: Season 1's character went back on in
+    -- between, so the look Locker v2 kept is not the ped's any more, and the
+    -- first apply puts the worn one on again.
+    local B = custom({ locker = true, v2 = true, kvp = STORED })
+    B.env.RequestModel(s1Model(B))
+    B.pump(100)
+    B.uiv2(OFF)
+    local n = 0
+    while B.BR.LockerV2.state().on ~= false and n < 40 do B.pump(50) n = n + 1 end
+    ok(B.BR.LockerV2.state().on == false, 'precondition: Locker v2 turned off')
+    B.uiv2(ON)
+    B.pump(300)
+    ok(B.BR.LockerV2.state().on == true, 'ON right after it: Locker v2 is on again')
+    B.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    B.pump(1500)
+    eq(B.ped().model, FEMALE, 'and the worn look is back on the ped')
+    S = B.BR.LockerV2.state()
+    ok(S.applied ~= nil and S.applied.model == FEMALE and B.BR.LockerV2.wantHash() == FEMALE,
+        'and the look Locker v2 says is worn is the one on the ped')
+
+    -- AN ON WHILE SEASON 1'S OWN APPLY IS BUSY after an OFF, the restore not
+    -- taken yet: Locker v2 waits for that apply to land, then its own look.
+    local C2 = custom({ locker = true, v2 = true, kvp = STORED })
+    C2.env.RequestModel(s1Model(C2))
+    C2.pump(100)
+    local other = C2.BR.Config.Peds[3]
+    local oh = hashOf(other.model)
+    C2.models[oh] = C2.time + 1500
+    C2.BR.Locker.apply(other.id)
+    C2.uiv2(OFF)
+    C2.pump(300)
+    ok(C2.BR.LockerV2.state().on == false and C2.BR.LockerV2.state().restoring ~= nil,
+        'precondition: Locker v2 off, Season 1\'s character not on yet')
+    C2.uiv2(ON)
+    C2.pump(300)
+    ok(C2.BR.LockerV2.state().on == false and C2.ped().model == FEMALE,
+        'ON while Season 1\'s own apply streams: Locker v2 waits for it, the look still on')
+    C2.pump(1500)
+    ok(C2.BR.LockerV2.state().on == true and C2.ped().model == oh, 'and turns on once that apply has landed')
+    C2.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(femaleLook()) }, store = true, peds = {} })
+    C2.pump(1500)
+    eq(C2.ped().model, FEMALE, 'then the worn look goes back on, over it')
 end
 
 describe('season2.stocklist')
 do
     -- Season 1 drops a model this build does not have; the Stock tab is that
     -- same list, as Season 1 sends it.
-    local W = clientWorld({ season = 2, v2 = true, missing = 'a_f_y_hipster_01' })
+    local W = clientWorld({ locker = true, v2 = true, missing = 'a_f_y_hipster_01' })
     W.fire('br:ui:ready')
     W.pump(200)
     W.net(NET.LOCKER2_STATE, { worn = { k = 's', id = STOCK1 }, store = true, peds = {} })
@@ -3015,7 +3459,7 @@ do
     end)(), ',')
 
     -- 1. The join: the server's worn ped, first applied.
-    local W = clientWorld({ season = 2, v2 = true })
+    local W = clientWorld({ locker = true, v2 = true })
     W.pump(200)
     W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
     W.pump(600)
@@ -3037,7 +3481,7 @@ do
     W.pump(10000)
     eq(W.count('ClearPedDecorations'), clears, 'and nothing is put on again while they are all there')
     -- 4. An engine that draws fewer than asked is not asked again every pass.
-    local C2 = clientWorld({ season = 2, v2 = true })
+    local C2 = clientWorld({ locker = true, v2 = true })
     C2.decoCap = 1
     C2.pump(200)
     C2.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
@@ -3097,7 +3541,7 @@ do
     H.pump(1100)
     eq(decoNames(H.peds[H.created[1].handle], 'f'), want, 'a card\'s headshot clone wears the tattoos')
     -- 10. A build without a set skips it, in the list and on the ped.
-    local B = clientWorld({ season = 2, v2 = true })
+    local B = clientWorld({ locker = true, v2 = true })
     B.build = 3000
     B.pump(200)
     B.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
@@ -3135,7 +3579,7 @@ do
         return cond()
     end
     local function wornInked(setup)
-        local W = clientWorld({ season = 2, v2 = true })
+        local W = clientWorld({ locker = true, v2 = true })
         if setup then setup(W) end
         W.pump(200)
         W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
@@ -3319,7 +3763,7 @@ do
     worn[#worn + 1] = headF
 
     -- 1. Worn at the join.
-    local W = clientWorld({ season = 2, v2 = true })
+    local W = clientWorld({ locker = true, v2 = true })
     W.pump(200)
     W.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = enc }, store = true, peds = {} })
     W.pump(600)
@@ -3431,7 +3875,7 @@ end
 describe('season2.tattoo_season1')
 do
     -- Season 1 is untouched: no tattoo native in a whole session.
-    local W = clientWorld({ season = 1, v2 = true })
+    local W = clientWorld({ locker = false, v2 = true })
     W.pump(600)
     W.fire('br:ui:ready')
     W.ui(NUICB.LOCKER_PICK, { id = STOCK2 })
@@ -3440,17 +3884,17 @@ do
     W.pump(5000)
     eq(W.count('AddPedDecorationFromHashes') + W.count('ClearPedDecorations') + W.count('GetPedDecorations')
         + W.count('GetLabelText') + W.count('GetGameBuildNumber'), 0, 'Season 1 calls no tattoo native at all')
-    -- A live switch back to Season 1 leaves Season 1's ped bare.
+    -- Locker v2 turned off live leaves Season 1's ped bare.
     local inked = femaleLook()
     A.setTattoo(inked, 'TAT_X7_031', true)
-    local F = clientWorld({ season = 2, v2 = true })
+    local F = clientWorld({ locker = true, v2 = true })
     F.pump(200)
     F.net(NET.LOCKER2_STATE, { worn = { k = 'p', id = PID, a = A.encode(inked) }, store = true, peds = {} })
     F.pump(600)
     eq(#F.ped().decos, 1, 'on Season 2 the saved ped wears its tattoo')
-    F.season(1)
+    F.uiv2('locker=off,market=off')
     F.pump(600)
-    ok(F.ped().model ~= FEMALE and #F.ped().decos == 0, 'back on Season 1 its ped wears none')
+    ok(F.ped().model ~= FEMALE and #F.ped().decos == 0, 'Locker v2 off: Season 1\'s ped wears none')
     local adds = F.count('AddPedDecorationFromHashes')
     F.BR.State.me.state = F.BR.PlayerState.ALIVE
     F.pump(5000)

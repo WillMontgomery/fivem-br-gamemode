@@ -1,33 +1,40 @@
--- Unit tests for br_ui's half of the Season 2 Market (#411).
+-- Unit tests for br_ui's half of Market v2 (#411), UI v2's market piece (#436).
 --
--- Owner, 2026-10-13: "nothing we re-do in the shop should ever show on season
--- 1." The gate is the `market2` row in br_lib/config/seasons.lua, asked as
--- BR.Season.has('market2') by br_ui/client/market.lua. On, the MARKET envelope
--- carries `v2` (the page draws screens/MarketV2.tsx), the grid drops the
--- placeholder kinds the server cannot sell (Characters, Banners -- "only real
--- items"), and nothing is marked New (owner, 2026-10-14: "let's not just put
--- the "new" tag on everything - have some meaning to it. or get rid of it.").
--- Off, the envelope and the grid are exactly what they were before #411.
+-- Owner, 2026-11-07: UI v2 is one switch for every redone screen and one per
+-- screen, separate from the season -- on in any season, Season 1 included --
+-- and switched live from the server console. The Market's is the `market`
+-- piece of br_lib/config/uiv2.lua, asked as BR.UIv2.has('market') by
+-- br_ui/client/market.lua, which answers br_ui's mirror of the answer
+-- br_core's client holds (told by the local event `br:uiv2:held`). On, the
+-- MARKET envelope carries `v2` (the page draws screens/MarketV2.tsx), the grid
+-- drops the placeholder kinds the server cannot sell (Characters, Banners --
+-- "only real items"), and nothing is marked New (owner, 2026-10-14: "let's not
+-- just put the "new" tag on everything - have some meaning to it. or get rid
+-- of it."). Off, the envelope and the grid are exactly what they were before
+-- #411. The season still decides what the grid holds: the dances come with
+-- its `emotes` row.
 --
--- AND WHAT ONLY THE SEASON 2 MARKET ANSWERS (#411, 2026-10-14): MARKET_PREVIEW
--- -- a dance on the lobby character, refused unless owned or affordable,
--- handed to br_core as `br:ui:marketPreview` (its half is the last block of
+-- AND WHAT ONLY MARKET V2 ANSWERS (#411, 2026-10-14): MARKET_PREVIEW -- a
+-- dance on the lobby character, refused unless owned or affordable, handed to
+-- br_core as `br:ui:marketPreview` (its half is the last block of
 -- tools/test_lobbyseq.lua) -- and `brmarkettabs`, the tab designs' switch.
 --
 -- ═══ WHAT THIS LOADS FOR REAL ═══
 --
 -- br_lib's devgate, enums, protocol, config/market, config/emotes, the season
--- module and its list, then the REAL br_ui/client/market.lua, with
--- RegisterNUICallback, TriggerServerEvent and TriggerEvent captured -- the
--- same harness as tools/test_emotes_ui.lua. Every assertion is about what the
--- page is actually sent and what the server is actually asked.
+-- module and its list, the UI v2 module and its list, then the REAL
+-- br_ui/client/market.lua, with RegisterNUICallback, TriggerServerEvent and
+-- TriggerEvent captured -- the same harness as tools/test_emotes_ui.lua.
+-- Every assertion is about what the page is actually sent and what the server
+-- is actually asked.
 --
--- ═══ THE SEASON DISCIPLINE ═══
+-- ═══ THE DISCIPLINE ═══
 --
--- br_seasonServed is set the way br_core's server replicates it, and each block
--- puts the season it is about in force itself (season1(), season2()), so no
+-- Each block puts in force what it is about itself: the Market piece as
+-- br_core's client would tell br_ui (marketOn(), marketOff()), and the season
+-- as br_core's server replicates it (season(n): emotes from Season 2). No
 -- assertion depends on BR_SEASON. The page half (the screen, the confirm, the
--- tabs, Season 1's screen byte-for-byte) is ui-src/scripts/test-marketv2.mjs.
+-- tabs, the old screen byte-for-byte) is ui-src/scripts/test-marketv2.mjs.
 
 local RES = 'resources/[fivem-royale]/'
 
@@ -44,6 +51,7 @@ function AddConvarChangeListener(filter, fn)
     return #convarListeners
 end
 local convarStore = {}
+local convarReads = {}
 local convars = setmetatable({}, {
     __index = convarStore,
     __newindex = function(_, k, v)
@@ -57,6 +65,7 @@ local convars = setmetatable({}, {
 -- command (br_lib/shared/devgate.lua wraps every RegisterCommand).
 local devMode = false
 function GetConvar(name, dflt)
+    convarReads[name] = (convarReads[name] or 0) + 1
     if name == 'sv_devMode' or name == 'br_devMode' then return devMode and 'true' or 'false' end
     if convars[name] ~= nil then return convars[name] end
     return dflt
@@ -97,12 +106,15 @@ loadAt('br_lib/config/market.lua')
 loadAt('br_lib/config/emotes.lua')
 loadAt('br_lib/shared/season.lua')
 loadAt('br_lib/config/seasons.lua')
+loadAt('br_lib/shared/uiv2.lua')
+loadAt('br_lib/config/uiv2.lua')
 loadAt('br_ui/client/market.lua')
 
 -- A TYPO'D ID FAILS THIS SUITE rather than quietly closing a door.
 BR.Season.strict = true
+BR.UIv2.strict = true
 
-local ROW = BR.Config.Seasons.features.market2
+local ROW = BR.Config.UIv2.pieces.market
 
 -- ---------------------------------------------------------------------------
 -- Harness
@@ -118,8 +130,11 @@ local function ok(cond, name, detail)
     end
 end
 
-local function season1() convars.br_seasonServed = '1' end
-local function season2() convars.br_seasonServed = '2' end
+--- UI v2's answer, told to br_ui as br_core's client tells it (the mirror).
+local function marketOn() fire('br:uiv2:held', 'locker=off,market=on') end
+local function marketOff() fire('br:uiv2:held', 'locker=off,market=off') end
+--- The season br_core's server replicates: the dances from Season 2.
+local function season(n) convars.br_seasonServed = tostring(n) end
 local function reset() toServer, toLocal = {}, {} end
 
 --- The most recent payload sent to the page under `kind`, or nil.
@@ -164,19 +179,19 @@ local function callCb(name, data)
     return answered, okCall
 end
 
---- One grid from a fresh state, in force at the season set.
+--- One grid from a fresh state, in force with what is set.
 local function grid(state)
     reset()
     fire(BR.Net.MARKET_STATE, state or { balance = 1000, owned = {}, equipped = {} })
     return lastLocal(BR.Nui.MARKET)
 end
 
---- The fields a tile carried before #411 -- no others may reach Season 1.
+--- The fields a tile carried before #411 -- no others may reach the old Market.
 local S1_FIELDS = {
     id = true, name = true, sub = true, kind = true, price = true, rarity = true, season = true,
     owned = true, equipped = true, slot = true, locked = true,
 }
---- The placeholders, in their order: Season 1's and only Season 1's.
+--- The placeholders, in their order: the old Market's and only the old Market's.
 local PLACEHOLDERS = { 'ped_juggalo', 'ped_clown', 'ped_trooper', 'ped_yeti', 'ban_storm', 'ban_first' }
 
 --- Every tile of the config's own seasons that the shelf shows, in order.
@@ -191,26 +206,50 @@ local function shelf()
 end
 
 -- ---------------------------------------------------------------------------
--- THE ROW
+-- BEFORE UI V2 ARRIVES: the piece is off, so it is the old Market -- and the
+-- season alone never turns Market v2 on.
 -- ---------------------------------------------------------------------------
 
-describe('the row')
+describe('no UI v2 answer yet')
 do
-    ok(type(ROW) == 'table' and ROW.from == 2 and ROW.untilSeason == nil,
-        'market2 = { from = 2 }: the Season 2 Market from Season 2, and never off again')
-    season1()
-    ok(BR.Season.has('market2') == false, 'off on Season 1')
-    season2()
-    ok(BR.Season.has('market2') == true, 'on on Season 2')
+    local asked = 0
+    for _, e in ipairs(toLocal) do if e.name == 'br:uiv2:ask' then asked = asked + 1 end end
+    ok(asked == 1, "br_ui's mirror asked br_core's client for its answer as it loaded", asked)
+    reset()
+    fire('onClientResourceStart', 'br_ui')
+    local g = lastLocal(BR.Nui.MARKET)
+    ok(not BR.UIv2.known(), 'no UI v2 answer yet')
+    ok(g ~= nil and g.v2 == nil and itemById(g, 'ped_juggalo') ~= nil,
+        "br_ui's own start sends the old envelope and grid, never a guess at Market v2")
+    season(2)
+    g = grid()
+    ok(g ~= nil and g.v2 == nil and itemById(g, 'ban_storm') ~= nil,
+        'Season 2 alone is not Market v2: the season decides what content exists, UI v2 how it looks')
 end
 
 -- ---------------------------------------------------------------------------
--- SEASON 1: THE ENVELOPE AND THE GRID ARE THE ONES THEY ALWAYS WERE
+-- THE PIECE
 -- ---------------------------------------------------------------------------
 
-describe('Season 1 is untouched')
+describe('the piece')
 do
-    season1()
+    ok(type(ROW) == 'table' and next(ROW) == nil, 'market = {}: one row of br_lib/config/uiv2.lua, with nothing in it')
+    marketOff()
+    ok(BR.UIv2.has('market') == false, 'off when br_core says so')
+    marketOn()
+    ok(BR.UIv2.has('market') == true, 'on when br_core says so')
+    ok((convarReads.br_uiv2 or 0) + (convarReads.br_uiv2_market or 0) + (convarReads.br_uiv2Served or 0) == 0,
+        'and br_ui reads no UI v2 convar: it is told')
+end
+
+-- ---------------------------------------------------------------------------
+-- MARKET V2 OFF: THE ENVELOPE AND THE GRID ARE THE ONES THEY ALWAYS WERE
+-- ---------------------------------------------------------------------------
+
+describe('the old Market is untouched')
+do
+    marketOff()
+    season(1)
     local g = grid()
     ok(g ~= nil, 'a grid is pushed')
     ok(keysOf(g) == 'balance,currency,items', 'the envelope is { balance, currency, items } -- no v2', keysOf(g))
@@ -221,7 +260,7 @@ do
             if not S1_FIELDS[k] then extra[#extra + 1] = it.id .. '.' .. tostring(k) end
         end
     end
-    ok(#extra == 0, 'no tile carries a field Season 1 never had (isNew among them)', table.concat(extra, ','))
+    ok(#extra == 0, 'no tile carries a field the old Market never had (isNew among them)', table.concat(extra, ','))
 
     local want = shelf()
     for _, id in ipairs(PLACEHOLDERS) do want[#want + 1] = id end
@@ -237,12 +276,13 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- SEASON 2: ONLY REAL ITEMS, AND NEW ON THE SEASON'S OWN
+-- MARKET V2 ON, SEASON 2: ONLY REAL ITEMS
 -- ---------------------------------------------------------------------------
 
-describe('Season 2')
+describe('Market v2 on Season 2')
 do
-    season2()
+    marketOn()
+    season(2)
     local g = grid({ balance = 7000, owned = { 'chute_azure', 'emote_shuffle' }, equipped = { chute = 'chute_azure' },
         emotes = { 'emote_shuffle', '', '', '', '', '', '', '' } })
     ok(g ~= nil and g.v2 == true, 'the envelope says v2 = true')
@@ -266,10 +306,11 @@ do
         end
     end
     ok(dances == #BR.Config.Emotes.order and dances > 0, 'the dances are on the grid', dances)
-    ok(#extra == 0, 'and no tile carries New -- or any field a Season 1 tile does not', table.concat(extra, ','))
+    ok(#extra == 0, 'and no tile carries New -- or any field an old tile does not', table.concat(extra, ','))
 
-    -- THE REST OF THE GRID IS SEASON 1'S, TILE FOR TILE.
-    season1()
+    -- THE REST OF THE GRID IS THE OLD MARKET'S, TILE FOR TILE.
+    marketOff()
+    season(1)
     local g1 = grid({ balance = 7000, owned = { 'chute_azure' }, equipped = { chute = 'chute_azure' } })
     local same, diff = 0, {}
     local i2 = 0
@@ -285,7 +326,7 @@ do
         end
     end
     ok(#diff == 0 and same == #shelf(),
-        "Season 2's real tiles are Season 1's, in the same order with the same fields", table.concat(diff, ','))
+        "Market v2's real tiles are the old Market's, in the same order with the same fields", table.concat(diff, ','))
     local sel = itemById(g, 'chute_azure')
     ok(sel ~= nil and sel.owned == true and sel.equipped == true, 'ownership and the equipped slot come through')
     local wheel = itemById(g, 'emote_shuffle')
@@ -293,70 +334,52 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- BEFORE THE SEASON ARRIVES: the gate is shut, so it is Season 1's Market.
+-- ITS OWN SWITCH: the Market follows UI v2's piece, never the season's
+-- `emotes` (#411's review, #436): each on without the other.
 -- ---------------------------------------------------------------------------
 
-describe('before the season arrives')
+describe('the market piece is its own switch')
 do
-    convars.br_seasonServed = nil
-    reset()
-    fire('onClientResourceStart', 'br_ui')
-    local g = lastLocal(BR.Nui.MARKET)
-    ok(BR.Season.current() == nil, 'no season yet')
-    ok(g ~= nil and g.v2 == nil and itemById(g, 'ped_juggalo') ~= nil,
-        "br_ui's own start sends Season 1's envelope and grid, never a guess at Season 2")
-end
-
--- ---------------------------------------------------------------------------
--- ITS OWN ROW: the Market follows `market2`, never `emotes` (#411's review).
--- Both rows say `from = 2` today, so only moving one away from the other shows
--- which of them the envelope and the grid follow.
--- ---------------------------------------------------------------------------
-
-describe('market2 is its own row')
-do
-    local rows = BR.Config.Seasons.features
-    local m2From, emFrom = rows.market2.from, rows.emotes.from
-    season2()
-
-    rows.emotes.from = 3 -- the Season 2 Market, and no dances yet
+    marketOn()
+    season(1) -- Market v2 on Season 1: no dances yet
     local g = grid()
-    ok(g ~= nil and g.v2 == true, 'market2 on, emotes off: the envelope still says v2', g and keysOf(g))
-    ok(kindsOf(g) == 'chute,trail,weapon', 'the real items only, and no dances while their row is off', kindsOf(g))
+    ok(g ~= nil and g.v2 == true, 'Market v2 on, emotes off: the envelope still says v2', g and keysOf(g))
+    ok(kindsOf(g) == 'chute,trail,weapon', 'the real items only, and no dances while the season has none', kindsOf(g))
 
-    rows.emotes.from, rows.market2.from = 2, 3 -- the dances, on Season 1's Market
+    marketOff()
+    season(2) -- the dances, on the old Market
     g = grid({ balance = 1000, owned = {}, equipped = {}, emotes = { '', '', '', '', '', '', '', '' } })
-    ok(g ~= nil and g.v2 == nil, "emotes on, market2 off: no v2 -- Season 1's Market", g and keysOf(g))
+    ok(g ~= nil and g.v2 == nil, "emotes on, Market v2 off: no v2 -- the old Market", g and keysOf(g))
     ok(itemById(g, 'ban_storm') ~= nil and itemById(g, 'emote_shuffle') ~= nil,
-        'its placeholders, and the dances the emotes row brings')
+        'its placeholders, and the dances the season brings')
     local marked = {}
     for _, it in ipairs(g.items) do if it.isNew ~= nil then marked[#marked + 1] = it.id end end
     ok(#marked == 0, 'with New on nothing, the dances included', table.concat(marked, ','))
-
-    rows.market2.from, rows.emotes.from = m2From, emFrom
 end
 
 -- ---------------------------------------------------------------------------
--- brseason: THE PAGE FOLLOWS A SWITCH, BOTH WAYS, WITH NO SERVER ROUND TRIP
+-- A UI V2 MOVE RE-PUSHES, BOTH WAYS, WITH NO SERVER ROUND TRIP
 -- ---------------------------------------------------------------------------
 
-describe('brseason')
+describe('a UI v2 move re-pushes')
 do
-    season2()
+    season(2)
+    marketOn()
     grid()
-    season1()
     reset()
-    fire('br:season:changed', 1, 2)
+    marketOff()
     local g = lastLocal(BR.Nui.MARKET)
     ok(g ~= nil and g.v2 == nil and itemById(g, 'ban_storm') ~= nil,
-        'switched to Season 1: v2 goes, and the placeholders come back')
+        'told off: the grid goes again at once, v2 gone and the placeholders back')
     ok(#toServer == 0, 'with nothing asked of the server', #toServer)
-    season2()
     reset()
-    fire('br:season:changed', 2, 1)
+    marketOn()
     g = lastLocal(BR.Nui.MARKET)
     ok(g ~= nil and g.v2 == true and itemById(g, 'ban_storm') == nil,
-        'switched back to Season 2: v2, and the placeholders gone')
+        'told on again: v2, and the placeholders gone')
+    reset()
+    marketOn()
+    ok(lastLocal(BR.Nui.MARKET) == nil, 'the same answer told again moves nothing and pushes nothing')
 end
 
 -- ---------------------------------------------------------------------------
@@ -366,7 +389,8 @@ end
 
 describe('purchases stay server-authoritative')
 do
-    season2()
+    marketOn()
+    season(2)
     grid({ balance = 5000, owned = {}, equipped = {} })
     reset()
     local answered, okCall = callCb(BR.NuiCb.MARKET_BUY, { id = 'chute_crimson', price = 0, owned = true })
@@ -402,7 +426,8 @@ describe('the preview')
 do
     local dance, other = 'emote_shuffle', 'emote_jumper'
     local price = BR.Config.MarketIndex[dance].price
-    season2()
+    marketOn()
+    season(2)
     grid({ balance = price, owned = { other }, equipped = {} })
 
     reset()
@@ -440,31 +465,30 @@ do
     ok(previews() == '', 'a dance no longer on sale is refused to a player who does not own it', previews())
     item.purchasable = was
 
-    -- SEASON 1 NEVER: the callback answers and does nothing at all.
-    season1()
+    -- MARKET V2 OFF, NEVER: the callback answers and does nothing at all.
+    marketOff()
     grid({ balance = 999999, owned = { other }, equipped = {} })
     reset()
     answered = callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
     callCb(BR.NuiCb.MARKET_PREVIEW, {})
     ok(previews() == '' and #toServer == 0 and answered and answered.ok == true,
-        'on Season 1 nothing is sent anywhere, the stop included', previews())
+        'with the market piece off nothing is sent anywhere, the stop included', previews())
 
-    -- ITS OWN ROWS BOTH WAYS: the Season 2 Market with emotes off plays
-    -- nothing, and neither do the dances on Season 1's Market.
-    local rows = BR.Config.Seasons.features
-    season2()
-    rows.emotes.from = 3
+    -- BOTH ITS GATES: Market v2 with emotes off plays nothing, and neither do
+    -- the season's dances on the old Market.
+    marketOn()
+    season(1)
     grid({ balance = 999999, owned = { other }, equipped = {} })
     reset()
     callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
-    ok(previews() == '', 'with the emotes row off, nothing plays even on the Season 2 Market', previews())
-    rows.emotes.from, rows.market2.from = 2, 3
+    ok(previews() == '', 'with the season without emotes, nothing plays even on Market v2', previews())
+    marketOff()
+    season(2)
     grid({ balance = 999999, owned = { other }, equipped = {} })
     reset()
     callCb(BR.NuiCb.MARKET_PREVIEW, { id = other })
     callCb(BR.NuiCb.MARKET_PREVIEW, {})
-    ok(previews() == '', "with the market2 row off, the emotes row's dances preview nothing", previews())
-    rows.market2.from = 2
+    ok(previews() == '', "with the market piece off, the season's dances preview nothing", previews())
 end
 
 -- ---------------------------------------------------------------------------
@@ -475,7 +499,7 @@ describe('brmarkettabs')
 do
     local cmd = commands.brmarkettabs
     ok(type(cmd) == 'function', 'the command is registered')
-    season2()
+    marketOn()
     reset()
     cmd(0, { 'rail' })
     ok(lastLocal(BR.Nui.MARKET_TABS) == nil, 'off a dev box it is refused by the dev gate and sends nothing')
@@ -499,16 +523,16 @@ do
     local d = lastLocal(BR.Nui.MARKET_TABS)
     ok(d ~= nil and d.design == 'rail', 'a reloaded page is told the design again', d and d.design)
 
-    season1()
+    marketOff()
     reset()
     cmd(0, { 'folder' })
     fire('br:ui:ready')
-    ok(lastLocal(BR.Nui.MARKET_TABS) == nil, 'on Season 1 it sends nothing, then or on a reload')
-    season2()
+    ok(lastLocal(BR.Nui.MARKET_TABS) == nil, 'with the market piece off it sends nothing, then or on a reload')
+    marketOn()
     reset()
     fire('br:ui:ready')
     d = lastLocal(BR.Nui.MARKET_TABS)
-    ok(d ~= nil and d.design == 'rail', 'and what it was asked on Season 1 is not kept for later', d and d.design)
+    ok(d ~= nil and d.design == 'rail', 'and what it was asked while off is not kept for later', d and d.design)
     devMode = false
 end
 
@@ -521,10 +545,13 @@ do
     local fh = assert(io.open(RES .. 'br_ui/client/market.lua', 'rb'))
     local src = fh:read('a')
     fh:close()
-    local _, asks = src:gsub("BR%.Season%.has%('market2'%)", '')
-    ok(asks == 1, "br_ui's market asks BR.Season.has('market2') in one place, its market2On()", asks)
-    ok(src:find('local function market2On() return BR.Season ~= nil and BR.Season.has ~= nil and '
-        .. "BR.Season.has('market2') == true end", 1, true) ~= nil, 'nil-safe, like emotesOn')
+    local _, asks = src:gsub("BR%.UIv2%.has%('market'%)", '')
+    ok(asks == 1, "br_ui's market asks BR.UIv2.has('market') in one place, its market2On()", asks)
+    ok(src:find('local function market2On() return BR.UIv2 ~= nil and BR.UIv2.has ~= nil and '
+        .. "BR.UIv2.has('market') == true end", 1, true) ~= nil, 'nil-safe, like emotesOn')
+    ok(src:find('if BR.UIv2 and BR.UIv2.onChange then\n    BR.UIv2.onChange(function() BR.Market.push() end)\nend', 1, true) ~= nil,
+        'and every UI v2 move re-pushes the grid, guarded for a state with no UI v2 module')
+    ok(not src:find("has('market2')", 1, true), 'and no season row named market2 is asked any more')
 end
 
 if failn > 0 then

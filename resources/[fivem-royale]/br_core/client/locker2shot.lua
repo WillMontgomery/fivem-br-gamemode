@@ -1,4 +1,4 @@
--- Locker v2's headshots (#28, Season 2): a picture on each My peds card.
+-- Locker v2's headshots (#28, UI v2's locker): a picture on each My peds card.
 --
 -- Owner, 2026-10-07: "in the list of saved peds we should display a headshot
 -- using RegisterPedHeadshot - if we can display it in NUI and store it in DDB.
@@ -43,6 +43,8 @@ local running = false
 local nonce = 0
 --- Save shots the page has had, waiting for its upload: [id] = true.
 local savesDone = {}
+--- Bumped by Shot.clear(): a job begun before it is a job nobody wants.
+local gen = 0
 
 local function send(t)
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2_SHOT, t)
@@ -80,12 +82,17 @@ local function cloneOf(a)
     return ped
 end
 
-local function shoot(job)
+local function shoot(job, g)
     local ped, clone = nil, nil
     if job.save or job.own then
         ped = PlayerPedId()
     elseif job.a then
         clone = cloneOf(job.a)
+        -- CLEARED WHILE THE CLONE STREAMED: it goes, and nothing is shot.
+        if g ~= gen then
+            if clone and isTrue(DoesEntityExist(clone)) then DeletePed(clone) end
+            return
+        end
         ped = clone
     end
     if not ped then return end
@@ -96,7 +103,7 @@ local function shoot(job)
           and not (isTrue(IsPedheadshotReady(handle)) and isTrue(IsPedheadshotValid(handle))) do
         Citizen.Wait(50)
     end
-    if not (isTrue(IsPedheadshotReady(handle)) and isTrue(IsPedheadshotValid(handle))) then
+    if g ~= gen or not (isTrue(IsPedheadshotReady(handle)) and isTrue(IsPedheadshotValid(handle))) then
         UnregisterPedheadshot(handle)
         if clone and isTrue(DoesEntityExist(clone)) then DeletePed(clone) end
         return
@@ -124,13 +131,16 @@ local function run()
     Citizen.CreateThread(function()
         while #queue > 0 do
             local job = table.remove(queue, 1)
+            local g = gen
             if job.img then
                 send({ id = job.id, up = job.up, img = job.img })
                 Citizen.Wait(0)
             else
                 local wait = (job.at or 0) - GetGameTimer()
                 if wait > 0 then Citizen.Wait(wait) end
-                local ok, err = pcall(shoot, job)
+                -- Cleared during the wait: the job is dropped with the rest.
+                local ok, err = true, nil
+                if g == gen then ok, err = pcall(shoot, job, g) end
                 if not ok then
                     print(('[br_core] locker2: headshot for %s failed (%s)'):format(tostring(job.id), tostring(err)))
                     release()
@@ -201,6 +211,17 @@ function Shot.takeSave(id)
         return true
     end
     return false
+end
+
+--- Locker v2 turned off (#436, client/locker2.lua's gateOff): nothing waiting
+--- is shot or sent, no save's picture is uploaded, and the shot the page has
+--- is let go of -- unregistered, its clone deleted. A job already under way
+--- sees the generation move and takes nothing further.
+function Shot.clear()
+    gen = gen + 1
+    for i = #queue, 1, -1 do queue[i] = nil end
+    release()
+    for id in pairs(savesDone) do savesDone[id] = nil end
 end
 
 AddEventHandler('onResourceStop', function(res)

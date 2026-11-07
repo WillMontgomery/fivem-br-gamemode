@@ -128,16 +128,16 @@ export default function App() {
   // Not drawn, but the warmup effect below reacts to it -- subscribed so the
   // effect re-runs on the edge that arms the in-game half.
   const tutorialGameArmed = useUi((s) => s.tutorialGameArmed)
-  // LOCKER V2 (#28): Season 2's locker in place of Season 1's, when Lua says
-  // the season has it. Its chunk is fetched the moment it does.
+  // LOCKER V2 (#28): UI v2's locker in place of Season 1's, when Lua says
+  // UI v2's locker piece is on (#436). Its chunk is fetched the moment it is.
   const locker2On        = useUi((s) => s.locker2.on)
   usePreloadLockerV2(locker2On)
   // `bruiwarm` (#252, round 4, dev mode only): read for its change alone. Each
   // beat re-renders the root, and with it every screen that is up, with nothing
   // changed. 0 for the life of the page unless that switch is on.
   useUi((s) => s.warmTick)
-  // THE SEASON 2 MARKET (#411): in place of Season 1's when the MARKET
-  // envelope says `v2` (BR.Season.has('market2')). Its chunk the same way.
+  // MARKET V2 (#411): in place of the old Market when the MARKET envelope
+  // says `v2` (UI v2's market piece, #436). Its chunk the same way.
   const market2On        = useUi((s) => s.market.v2 === true)
   usePreloadMarketV2(market2On)
 

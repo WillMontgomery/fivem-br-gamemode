@@ -9,10 +9,10 @@ import { sheetLoaded } from '../lockerv2/sheet'
  *
  * The screen is Cloudscape, loaded as its own chunk: `assets/MarketV2.js` and
  * its CSS, which br_ui/fxmanifest.lua's `ui/assets/*.js` and `*.css` globs
- * already serve. A Season 1 page never fetches it -- its Market is
+ * already serve. A page with Market v2 off never fetches it -- its Market is
  * screens/Market.tsx, untouched -- and nothing here can strand the player:
  *
- *   * the chunk is fetched as soon as Lua says the season has it
+ *   * the chunk is fetched as soon as Lua says UI v2's Market is on
  *     (usePreloadMarketV2), so a failure is an F8 line at the lobby rather
  *     than a surprise at the first press;
  *   * a chunk that fails, or a screen that throws, gives the cursor back
@@ -34,7 +34,7 @@ function load() {
 
 const MarketV2 = lazy(load)
 
-/** Fetch the chunk the moment the season has the feature. */
+/** Fetch the chunk the moment UI v2's Market is on. */
 export function usePreloadMarketV2(on: boolean): void {
   useEffect(() => {
     if (!on) return

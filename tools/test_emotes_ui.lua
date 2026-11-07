@@ -8,8 +8,9 @@
 -- ═══ WHAT THIS LOADS FOR REAL ═══
 --
 -- br_lib's enums, protocol, devgate, config/market, config/emotes, the season
--- module and its list, then the REAL br_ui/client/market.lua, with RegisterNUICallback, TriggerServerEvent
--- and TriggerEvent captured. So every assertion below is about what the page
+-- module and its list, the UI v2 module and its list (#436), then the REAL
+-- br_ui/client/market.lua, with RegisterNUICallback, TriggerServerEvent and
+-- TriggerEvent captured. So every assertion below is about what the page
 -- is actually sent and what the server is actually asked, not about a stub.
 --
 -- ═══ THE SEASON DISCIPLINE ═══
@@ -104,8 +105,8 @@ local function loadAt(f)
 end
 
 -- br_ui's own manifest order: devgate first, then enums and protocol, then the
--- client scripts with config/market.lua, config/emotes.lua and the season
--- module and its list at their head.
+-- client scripts with config/market.lua, config/emotes.lua, the season module
+-- and its list, and the UI v2 module and its list at their head.
 loadAt('br_lib/shared/devgate.lua')
 loadAt('br_lib/shared/enums.lua')
 loadAt('br_lib/shared/protocol.lua')
@@ -113,10 +114,13 @@ loadAt('br_lib/config/market.lua')
 loadAt('br_lib/config/emotes.lua')
 loadAt('br_lib/shared/season.lua')
 loadAt('br_lib/config/seasons.lua')
+loadAt('br_lib/shared/uiv2.lua')
+loadAt('br_lib/config/uiv2.lua')
 loadAt('br_ui/client/market.lua')
 
 -- A TYPO'D ID FAILS THIS SUITE rather than quietly closing a door.
 BR.Season.strict = true
+BR.UIv2.strict = true
 
 local ROW = BR.Config.Seasons.features.emotes
 local FROM = ROW.from
@@ -469,19 +473,33 @@ do
     local e = lastLocal(BR.Nui.EMOTES)
     ok(e ~= nil and e.on == true, 'EMOTES {on=true}')
 
-    -- SYNTHETIC ROWS STAY AFTER THE DANCES -- where there are any. The Season
-    -- 2 Market (#411, the `market2` row) shows only real items, so a season
-    -- that has it has no placeholder rows at all (tools/test_market2.lua).
-    local lastEmote, firstSynth = 0, nil
-    for i, it in ipairs(grid.items) do
-        if it.kind == 'emote' then lastEmote = i end
-        if it.id == 'ped_juggalo' and not firstSynth then firstSynth = i end
+    -- SYNTHETIC ROWS STAY AFTER THE DANCES -- where there are any. Market v2
+    -- (#411, UI v2's market piece, #436) shows only real items, so with it on
+    -- there are no placeholder rows at all (tools/test_market2.lua). BOTH
+    -- ANSWERS, each told as br_core's client tells br_ui: the piece is UI v2's,
+    -- not the season's, so no run of this suite stands for either.
+    local function rowsOf(g)
+        local lastEmote, firstSynth = 0, nil
+        for i, it in ipairs(g and g.items or {}) do
+            if it.kind == 'emote' then lastEmote = i end
+            if it.id == 'ped_juggalo' and not firstSynth then firstSynth = i end
+        end
+        return lastEmote, firstSynth
     end
-    if BR.Season.has('market2') then
-        ok(firstSynth == nil and lastEmote > 0, 'the Season 2 Market: the dances, and no SYNTHETIC rows')
-    else
-        ok(firstSynth ~= nil and firstSynth > lastEmote, 'the emote items come before SYNTHETIC')
-    end
+    local held = { balance = 1000, owned = { 'emote_shuffle', 'emote_jumper' }, equipped = {},
+        emotes = { 'emote_shuffle', '', 7, 'emote_jumper', '', '', '', '' } }
+    fire('br:uiv2:held', 'locker=off,market=off')
+    reset()
+    fire(BR.Net.MARKET_STATE, held)
+    local lastEmote, firstSynth = rowsOf(lastLocal(BR.Nui.MARKET))
+    ok(lastEmote > 0 and firstSynth ~= nil and firstSynth > lastEmote, 'the old Market: the emote items come before SYNTHETIC')
+    fire('br:uiv2:held', 'locker=off,market=on')
+    reset()
+    fire(BR.Net.MARKET_STATE, held)
+    lastEmote, firstSynth = rowsOf(lastLocal(BR.Nui.MARKET))
+    ok(firstSynth == nil and lastEmote > 0, 'Market v2: the dances, and no SYNTHETIC rows')
+    fire('br:uiv2:held', 'locker=off,market=off')
+    fire(BR.Net.MARKET_STATE, held)
 
     -- REPLACE IS FORWARDED ONLY AS A NON-EMPTY STRING.
     local cases = {
@@ -578,6 +596,14 @@ do
     reset()
     okPush = pcall(BR.Market.push)
     ok(okPush and lastLocal(BR.Nui.EMOTES).on == false, 'BR.Season nil: push works, gate off')
+    -- And with no UI v2 module either (test_client loads this file so).
+    local savedUIv2 = BR.UIv2
+    BR.UIv2 = nil
+    reset()
+    okPush = pcall(BR.Market.push)
+    local g = lastLocal(BR.Nui.MARKET)
+    ok(okPush and g ~= nil and g.v2 == nil, 'BR.UIv2 nil: push works, and it is the old Market')
+    BR.UIv2 = savedUIv2
     BR.Season, BR.Config.Emotes = savedSeason, savedConfig
 end
 

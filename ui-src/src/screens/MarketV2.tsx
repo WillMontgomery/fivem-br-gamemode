@@ -21,10 +21,10 @@ import { TabStrip } from './marketv2/TabStrip'
 import './marketv2/market.css'
 
 /**
- * THE SEASON 2 MARKET (#411). Season 1's is screens/Market.tsx, untouched;
- * App.tsx picks between them on the MARKET envelope's `v2`, which is
- * BR.Season.has('market2') -- owner, 2026-10-13: "nothing we re-do in the shop
- * should ever show on season 1."
+ * MARKET V2 (#411, UI v2's market piece, #436). The old one is
+ * screens/Market.tsx, untouched; App.tsx picks between them on the MARKET
+ * envelope's `v2`, which is UI v2's market piece -- in any season since the
+ * owner's 2026-11-07 ruling that UI v2 is separate from the season.
  *
  * WHAT IT IS, from the proposal the owner picked and his notes on it
  * (2026-10-14):

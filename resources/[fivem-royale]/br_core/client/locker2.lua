@@ -1,25 +1,42 @@
--- Locker v2 (#28, Season 2): the ped picker. Stock peds, Custom (male) and
--- Custom (female) on the MP freemode peds, and the player's saved peds.
+-- Locker v2 (#28, UI v2's locker): the ped picker. Stock peds, Custom (male)
+-- and Custom (female) on the MP freemode peds, and the player's saved peds.
 --
--- ═══ SEASON 1 IS NOT THIS FILE ═══
+-- ═══ SEASON 1'S LOCKER IS NOT THIS FILE ═══
 --
 -- "The existing Locker experience is our finished Season 1 product - make sure
 -- that stays in and remains untouched" (owner, 2026-10-07). client/locker.lua
--- is that product and runs exactly as before wherever BR.Season.has('locker2')
--- is false. It asks this file two questions and nothing else:
+-- is that product and runs exactly as before wherever Locker v2 is off. It
+-- asks this file two questions and nothing else:
 --
 --   BR.LockerV2.defer()     at its first lobby tick: hold your first apply?
---                           Yes while the season is still unknown (at most
---                           unknownWaitMs) and while Locker v2 is on --
---                           Season 2, or `brseason locker2 on` (#425).
+--                           Yes while UI v2 is still unknown (at most
+--                           unknownWaitMs), while Locker v2 is on, and while
+--                           Season 1's character is still going back on.
 --   BR.LockerV2.wantHash()  client/loading.lua and client/lobbyped.lua: which
 --                           model are we waiting to see? nil while it is off,
 --                           so Season 1 asks its own chosen() as it always did.
 --
 -- This file never writes Season 1's kvp ('br:locker:ped'), reads its choice
--- only through BR.Locker.chosen(), and calls BR.Locker.apply(nil) only when a
--- live `brseason` shuts Locker v2 under a client: a switch back to Season 1,
--- or `brseason locker2 off|auto` (#425).
+-- only through BR.Locker.chosen(), and calls BR.Locker.apply(nil) only when
+-- Locker v2 turns off under a live client, to put Season 1's character back.
+--
+-- ═══ ON OR OFF IS UI V2'S LOCKER PIECE, AS THIS FILE TOOK IT (#436) ═══
+--
+-- UI v2 is separate from the season and switched live from the server
+-- console (br_lib/shared/uiv2.lua); br_core/client/uiv2.lua holds this
+-- machine's answer, and can take a new one as the next match starts. A
+-- CHARACTER CANNOT: a model swap anywhere but the lobby is a new, unarmed,
+-- frozen ped or a stranded walk (inLobby, below). So this file keeps its own
+-- answer, `S.on`: the first one at once, and after that a move only standing
+-- in the lobby with the entrance over, or under the loading screen before the
+-- entrance has started -- in its own pass, 'locker2.gate', apart from the
+-- lobby tick, so a fault there cannot keep a kill switch from landing. An ON
+-- waits while a Season 1 apply may still be streaming (a pick, the first
+-- lobby's, a restore) and for a swap in flight; an OFF waits until Season 1's
+-- character has loaded, never for a swap, and a custom look stays dressed
+-- until Season 1's character is on. A player who readies up during every
+-- walk-in keeps the Locker they have, dressed, until they stand in the lobby;
+-- nothing of the Locker is on screen meanwhile.
 --
 -- ═══ THE APPLY IS THE PREVIEW, AS IN SEASON 1 ═══
 --
@@ -49,12 +66,17 @@ local KVP = 'br:locker2:worn'
 
 local function C() return BR.Config.Locker2 end
 
---- Is Locker v2 on, in the season this client is running?
-local function claims()
-    return BR.Season.has('locker2')
-end
-
 local S = {
+    --- Locker v2's own answer (#436): nil until UI v2 is known here, then
+    --- true or false. Read through claims(); moved only by 'locker2.gate'.
+    on = nil,
+    --- Season 1's model going back on after an OFF, until it is on the ped.
+    restoring = nil,
+    --- Passes a move has waited for what it needs (a pick, a model).
+    waited = 0,
+    --- When the last Season 1 apply this file let start (defer()'s no) or
+    --- started (a restore) began: an ON waits while it may still stream.
+    s1At = nil,
     --- The ped the player wears: { k = 's', id } or { k = 'p', id, a }.
     worn = nil,
     --- Saved peds, oldest first: { id, name, a, up, img }.
@@ -89,9 +111,22 @@ local S = {
     loadingId = nil,
     queued = nil,
     wasLobby = false,
-    wasOn = nil,
     lastLocked = nil,
 }
+
+--- Locker v2's own answer (#436): UI v2's locker piece, as this file took it. Taken
+--- the first time anything here asks once UI v2 is known (table reads only, so a
+--- Season 1 client's trace is unchanged); after that only 'locker2.gate' moves it.
+local function first()
+    if S.on == nil and BR.UIv2.known() then
+        S.on = BR.UIv2.has('locker') == true
+        if S.on then S.everClaimed, S.repush = true, true end
+    end
+end
+
+--- Is Locker v2 on, on this client? Its own answer, never the holder's: that
+--- one can move as a match starts, and a character cannot.
+local function claims() first() return S.on == true end
 
 local nextReq = 0
 --- req -> id, for headshot uploads waiting on the server.
@@ -106,10 +141,16 @@ local shotReqs = {}
 --- (BR.Nui.LOCKER, on ready and on every change); that list is heard here as
 --- it goes by, so "every option the locker has today" is the same list by
 --- construction, and checking 77 models again costs nothing.
+---
+--- AND WHETHER A SEASON 1 PICK IS STILL LOADING (#436): the same push says
+--- so (`loading`), and Locker v2 turning on waits for it, so the pick cannot
+--- land after v2's own swap. No native here.
 local s1List = nil
+local s1Loading = false
 AddEventHandler('br:ui:sendLocal', function(kind, data)
     if kind == BR.Nui.LOCKER and type(data) == 'table' and type(data.peds) == 'table' then
         s1List = data.peds
+        s1Loading = data.loading ~= nil
     end
 end)
 
@@ -406,6 +447,57 @@ local function modelOf(rec)
     return GetHashKey(entry.model)
 end
 
+--- The swap itself, run in swap()'s thread: the model streamed in (5 s at
+--- most), then swapped and dressed in one block with no wait.
+--- @param hash number
+--- @param a table|nil
+--- @return boolean landed, string|nil why
+local function swapNow(hash, a)
+    RequestModel(hash)
+    local deadline = GetGameTimer() + 5000
+    while not isTrue(HasModelLoaded(hash)) and GetGameTimer() < deadline do
+        Citizen.Wait(50)
+    end
+    if not isTrue(HasModelLoaded(hash)) then
+        print(('[br_core] locker2: model %s never streamed'):format(tostring(hash)))
+        return false
+    end
+    -- THE LOBBY WAS LEFT, OR LOCKER V2 WENT OFF, WHILE THE MODEL STREAMED
+    -- IN (up to 5 s): no swap (see inLobby). The worn ped goes back on at
+    -- the next lobby arrival. An OFF never waits for a swap in flight (a kill
+    -- switch must not wait on the code it kills, 'locker2.gate'), so this is
+    -- what keeps one from landing after it: a Locker v2 look put on with
+    -- Locker v2 off, which nothing would take off again. Nothing yields
+    -- between here and the swap. `left` tells a caller this was no failure
+    -- to load.
+    if not inLobby() or not claims() then
+        SetModelAsNoLongerNeeded(hash)
+        return false, 'left'
+    end
+
+    local before = PlayerPedId()
+    local pos = GetEntityCoords(before)
+    local heading = GetEntityHeading(before)
+
+    SetPlayerModel(PlayerId(), hash)
+    SetModelAsNoLongerNeeded(hash)
+
+    local ped = PlayerPedId()
+    if BR.Spawn and BR.Spawn.concealPed then BR.Spawn.concealPed() end
+    SetEntityCoordsNoOffset(ped, pos.x, pos.y, pos.z, false, false, false)
+    SetEntityHeading(ped, heading)
+
+    BR.Native.initHealthModel()
+    SetPedDefaultComponentVariation(ped)
+    SetPedCanRagdoll(ped, false)
+    FreezeEntityPosition(ped, true)
+
+    if a then noteDecos(ped, V.applyTo(ped, a)) end
+    noteApplied(hash, a, ped)
+    if a then reassertLater(ped, a) end
+    return true
+end
+
 --- Swap the player's model and dress it, as client/locker.lua's apply does --
 --- the same order and the same re-assertions, because SetPlayerModel hands
 --- back a NEW ped with GTA's health model and no weapons -- and then the
@@ -431,55 +523,17 @@ local function swap(hash, a, cb, keep)
     end
 
     Citizen.CreateThread(function()
-        RequestModel(hash)
-        local deadline = GetGameTimer() + 5000
-        while not isTrue(HasModelLoaded(hash)) and GetGameTimer() < deadline do
-            Citizen.Wait(50)
+        -- A RAISE IN THE SWAP CANNOT LEAVE S.applying SET (#436 review): only
+        -- this thread clears it, and one that died holding it refused every
+        -- swap after it for the session. Printed, it is a swap that failed.
+        local okS, landed, why = pcall(swapNow, hash, a)
+        if not okS then
+            print(('[br_core] locker2: the character change raised -- %s'):format(tostring(landed)))
+            landed, why = false, nil
         end
-        if not isTrue(HasModelLoaded(hash)) then
-            print(('[br_core] locker2: model %s never streamed'):format(tostring(hash)))
-            S.applying = false
-            S.want = GetEntityModel(PlayerPedId())
-            if cb then cb(false) end
-            return
-        end
-        -- THE LOBBY WAS LEFT, OR LOCKER V2 WENT OFF, WHILE THE MODEL STREAMED
-        -- IN (up to 5 s): no swap (see inLobby). The worn ped goes back on at
-        -- the next lobby arrival. A gate shut mid-stream (`brseason locker2
-        -- off` or `auto`, #425) leaves the ped as gateOff found it: landing
-        -- here would put a Locker v2 look on with Locker v2 off, and nothing
-        -- would take it off again. `left` tells a caller this was no failure
-        -- to load.
-        if not inLobby() or not claims() then
-            SetModelAsNoLongerNeeded(hash)
-            S.applying = false
-            S.want = GetEntityModel(PlayerPedId())
-            if cb then cb(false, 'left') end
-            return
-        end
-
-        local before = PlayerPedId()
-        local pos = GetEntityCoords(before)
-        local heading = GetEntityHeading(before)
-
-        SetPlayerModel(PlayerId(), hash)
-        SetModelAsNoLongerNeeded(hash)
-
-        local ped = PlayerPedId()
-        if BR.Spawn and BR.Spawn.concealPed then BR.Spawn.concealPed() end
-        SetEntityCoordsNoOffset(ped, pos.x, pos.y, pos.z, false, false, false)
-        SetEntityHeading(ped, heading)
-
-        BR.Native.initHealthModel()
-        SetPedDefaultComponentVariation(ped)
-        SetPedCanRagdoll(ped, false)
-        FreezeEntityPosition(ped, true)
-
-        if a then noteDecos(ped, V.applyTo(ped, a)) end
-        noteApplied(hash, a, ped)
         S.applying = false
-        if a then reassertLater(ped, a) end
-        if cb then cb(true) end
+        if not landed then S.want = GetEntityModel(PlayerPedId()) end
+        if cb then cb(landed, why) end
     end)
 end
 
@@ -1503,7 +1557,10 @@ AddEventHandler(BR.Net.LOCKER2_RESULT, function(d)
             S.draft.dirty = false
             if BR.Locker2Shot then BR.Locker2Shot.fromPlayer(ped.id, ped.up) end
         end
-    else
+    elseif d.reason ~= 'off' and claims() then
+        -- AN `off` REFUSAL IS QUIET (#436): UI v2's Locker went off on the
+        -- server as this was in flight, and this client turns it off in the
+        -- lobby within a pass -- nothing went wrong that a try again could fix.
         BR.Notify(FAILED, 'warn')
     end
     if S.tab == 'peds' and #S.peds == 0 then S.tab = 'stock' end
@@ -2413,49 +2470,57 @@ AddEventHandler('br:ui:ready', function()
     V.push()
 end)
 
--- A SEASON CHANGE IS TOLD TO THE PAGE FROM THE LOBBY, and so is a `brseason
--- locker2` setting (#425), which BR.Season.onChange hears too. The page only
--- draws the locker there, and a switch can land mid-match (perf_client's
--- worlds switch in every phase), where nothing here should cost a thing.
-BR.Season.onChange(function()
-    S.repush = true
-end)
-
 -- ---------------------------------------------------------------------------
 -- Season 1's two questions
 -- ---------------------------------------------------------------------------
 
 local unknownSince = nil
 
---- Should Season 1's locker hold its first apply? While the season is unknown
---- (unknownWaitMs at most, so a Season 1 client never waits on a Season 2
---- question for long) and while Locker v2 is on -- and, once v2 HAS been on
---- this session (a live `brseason` that shut it), while the entrance holds
---- the ped, as every other change waits. A client that was only ever on
---- Season 1 never reaches that last clause.
+--- Should Season 1's locker hold its first apply? While UI v2 is still
+--- unknown here (unknownWaitMs at most, so a client with Locker v2 off never
+--- waits on that question for long), while Locker v2 is on, and while Season
+--- 1's character is still going back on after it turned off -- and, once v2
+--- HAS been on this session, while the entrance holds the ped, as every other
+--- change waits. A client that never had Locker v2 on never reaches that last
+--- clause.
+---
+--- A NO LETS SEASON 1'S FIRST APPLY START, and its stream can outlast a move
+--- (#436 review). So the moment is noted -- one clock read, on the one call
+--- that says no -- and an ON that comes while that apply may still be
+--- streaming waits for it ('locker2.gate').
 --- @return boolean
 function V.defer()
-    if BR.Season.current() == nil then
+    first()
+    local hold
+    if S.on == nil then
         unknownSince = unknownSince or GetGameTimer()
-        return GetGameTimer() - unknownSince < C().unknownWaitMs
+        hold = GetGameTimer() - unknownSince < C().unknownWaitMs
+    elseif S.on or S.restoring then
+        hold = true
+    else
+        hold = S.everClaimed == true and locked()
     end
-    if claims() then return true end
-    return S.everClaimed == true and locked()
+    if not hold then S.s1At = GetGameTimer() end
+    return hold
 end
 
 --- Which model the loading screen and the entrance walk should wait to see:
 --- nil off Locker v2 (Season 1 asks its own), 0 while the first apply is still
 --- deciding (nothing matches it, so both wait -- each within its own bound),
---- otherwise the model being put on or already on.
+--- otherwise the model being put on or already on. While Season 1's character
+--- is still going back on after an OFF, the model on the ped now: Season 1's
+--- goes on only once the ped is parked, so an entrance must not wait for it.
 --- @return number|nil
 function V.wantHash()
+    first()
+    if S.restoring then return S.applied and S.applied.model or nil end
     if not claims() then return nil end
     if S.first ~= 'done' then return 0 end
     return S.want
 end
 
 -- ---------------------------------------------------------------------------
--- The lobby tick: the first apply, arrivals, the gate, the lock
+-- The first apply, and Locker v2 turning off
 -- ---------------------------------------------------------------------------
 
 --- How long a write may wait on the server before the page is given back.
@@ -2474,50 +2539,182 @@ local function firstApply()
     V.push()
 end
 
---- Locker v2 shut under a live client -- `brseason 1`, or `brseason locker2
---- off|auto` (#425): the page closes, the camera comes home, and -- in the
---- lobby, once the entrance has let go of the ped -- Season 1's ped goes back
---- on if this one is not it.
+--- Locker v2 turned off under a live client (#436), from 'locker2.gate': the
+--- page's state closes, the draft goes and the camera comes home, a write in
+--- flight is given back quietly, and the headshots waiting are dropped.
+--- S.applied STAYS: it describes the ped until Season 1's character is on
+--- (restoreStep), and the watcher keeps that look dressed meanwhile.
 local function gateOff()
     S.open = false
     discard()
     S.tab = nil
     S.first = 'idle'
     S.waitTicks = nil
-    S.applied = nil
     S.pending = nil
     S.serverSeen, S.serverWorn = false, nil
-    S.restoreS1 = S.dressed == true
-    S.dressed = false
+    -- A WRITE IN FLIGHT IS GIVEN BACK, QUIETLY: its late answer is taken as
+    -- one past BUSY_MS is, and what the server holds is asked for again the
+    -- next time Locker v2 opens.
+    if S.busy then
+        S.gaveUp = S.busy
+        writeUnsure()
+        S.busy, S.busyOp, S.busyAt = nil, nil, nil
+    end
+    if BR.Locker2Shot and BR.Locker2Shot.clear then BR.Locker2Shot.clear() end
     S.repush = true
 end
 
---- The other half of gateOff, from the lobby tick.
-local function restoreS1()
-    S.restoreS1 = false
-    local want = GetHashKey(BR.PedById(BR.Locker.chosen()).model)
-    if GetEntityModel(PlayerPedId()) ~= want then BR.Locker.apply(nil) end
+-- ---------------------------------------------------------------------------
+-- The gate: Locker v2's own answer, moved only where a character may change
+-- ---------------------------------------------------------------------------
+
+--- Season 1's character's model: its chosen ped's. A kvp read and a hash.
+local function s1Hash()
+    return GetHashKey(BR.PedById(BR.Locker.chosen()).model)
 end
 
-BR.Loop.register(BR.Loop.TICK, 'locker2.lobby', function()
-    local onNow = claims()
-    if onNow then S.everClaimed = true end
-    if onNow ~= S.wasOn then
-        local was = S.wasOn
-        S.wasOn = onNow
-        if was == true and not onNow then gateOff() end
+--- Standing in the lobby with the entrance over, or the loading screen still up
+--- before the entrance has started: the only moments a character may change.
+local function mayTurn()
+    if BR.LobbyPed and BR.LobbyPed.settled and BR.LobbyPed.settled() then return true end
+    return BR.State.worldReady == false and not (BR.LobbyPed and BR.LobbyPed.entering())
+end
+
+--- Season 1's character going back on (S.restoring, its model): done once that
+--- model is on the ped, and until then put on by Season 1's own apply wherever
+--- a character may change -- instant, the model is in, and a no-op while
+--- Season 1's own apply is busy, so it is tried again on the next pass.
+local function restoreStep()
+    local hash = S.restoring
+    if not hash then return end
+    if GetEntityModel(PlayerPedId()) == hash then
+        S.restoring = nil
+        S.applied = nil
+        S.dressed = false
+        SetModelAsNoLongerNeeded(hash)
+        return
     end
-    local inLobby = BR.State.me.state == BR.PlayerState.LOBBY
-    if not onNow then
-        if inLobby and (S.repush or S.restoreS1) and not locked() then
-            if S.repush then
-                S.repush = false
-                V.push()
-            end
-            if S.restoreS1 then restoreS1() end
+    if not mayTurn() then return end
+    -- SEASON 1'S CHOICE CAN MOVE MEANWHILE: from the moment Locker v2 is off
+    -- the page shows Season 1's locker, and a pick there is what Season 1's
+    -- own apply puts on from then on. Waiting for the old model would apply
+    -- the new one again on every pass.
+    local now = s1Hash()
+    if now ~= hash then
+        SetModelAsNoLongerNeeded(hash)
+        S.restoring = now
+        if GetEntityModel(PlayerPedId()) == now then return restoreStep() end
+    end
+    BR.Locker.apply(nil)
+    S.s1At = GetGameTimer()
+end
+
+--- Could a Season 1 apply this file let start or started (S.s1At: the first
+--- lobby's, a restore) still be streaming? Begun under 6 s ago, past its 5 s
+--- stream, and Season 1's character not on the ped yet. Asked only while an
+--- ON waits, so it costs no other pass anything.
+--- @return boolean
+local function s1Streaming()
+    if not S.s1At or GetGameTimer() - S.s1At >= 6000 then return false end
+    return GetEntityModel(PlayerPedId()) ~= s1Hash()
+end
+
+--- Locker v2 on, from the gate (#436). The lobby tick's ON body, in this same
+--- pass, pushes, asks for the saved looks and does the first apply, as on a
+--- join. A restore still pending is dropped.
+---
+--- S.applied IS KEPT ONLY WHILE IT IS STILL THE PED (#436 review): an OFF's
+--- restore, or Season 1's own apply, can have put Season 1's character on
+--- since, and a look kept then reads as already worn, so the first apply
+--- would never put it back on. One native, on the move only.
+local function turnOn()
+    S.on = true
+    S.everClaimed = true
+    S.repush = true
+    S.waited = 0
+    if S.restoring then
+        SetModelAsNoLongerNeeded(S.restoring)
+        S.restoring = nil
+    end
+    if S.applied and GetEntityModel(PlayerPedId()) ~= S.applied.model then
+        S.applied = nil
+        S.dressed = false
+    end
+    print('[br_core] locker2: Locker v2 on here')
+end
+
+--- Locker v2 off, from the gate (#436), once Season 1's character has loaded.
+--- THE MOVE IS RECORDED FIRST, so nothing after it can leave Locker v2 half
+--- on; the page is told; the rest runs under pcall, so a fault in it is printed
+--- and does not stop the switch; and Season 1's character goes back on.
+--- @param hash number  Season 1's character's model, loaded
+local function turnOff(hash)
+    S.on = false
+    S.waited = 0
+    local okP, errP = pcall(V.push)
+    if not okP then print(('[br_core] locker2: telling the page Locker v2 is off raised -- %s'):format(tostring(errP))) end
+    local okG, errG = pcall(gateOff)
+    if not okG then print(('[br_core] locker2: turning Locker v2 off raised -- %s'):format(tostring(errG))) end
+    S.restoring = hash
+    restoreStep()
+    print('[br_core] locker2: Locker v2 off here')
+end
+
+-- THE GATE (#436 review): its own callback, ahead of 'locker2.lobby', so a
+-- fault in Locker v2's lobby tick (suspended after 5 errors) cannot stop it.
+-- Table reads while the answer stands, which is every pass but a move's.
+BR.Loop.register(BR.Loop.TICK, 'locker2.gate', function()
+    first()
+    if S.on == nil then return end
+    local want = BR.UIv2.has('locker') == true
+    -- Not when it has turned on again meanwhile: turnOn drops the restore instead.
+    if S.restoring and not want then restoreStep() end
+    if want == S.on then
+        S.waited = 0
+        if S.offHash then
+            SetModelAsNoLongerNeeded(S.offHash)
+            S.offHash = nil
         end
         return
     end
+    if not mayTurn() then return end
+    -- AN ON WAITS FOR A SWAP IN FLIGHT; AN OFF NEVER DOES (#436 review): a
+    -- kill switch must not wait on the code it kills, and a swap asks
+    -- claims() after its stream, so once Locker v2 is off it lands nothing.
+    if want and S.applying then return end
+    S.waited = (S.waited or 0) + 1
+    if want then
+        -- A SEASON 1 APPLY STILL STREAMING WOULD LAND AFTER V2'S SWAP: a pick
+        -- (its push says `loading`), or one this file let start or started
+        -- (the first lobby's, a restore) whose character is not on yet. 6 s
+        -- at most.
+        if S.waited < 60 and (s1Loading or s1Streaming()) then return end
+        return turnOn()
+    end
+    -- OFF: Season 1's character first, so putting it back cannot stream past a
+    -- ready-up. Kept for this OFF: one kvp read.
+    S.offHash = S.offHash or s1Hash()
+    local hash = S.offHash
+    if not isTrue(HasModelLoaded(hash)) then
+        RequestModel(hash)
+        if S.waited == 50 then
+            print("[br_core] locker2: Season 1's character has not loaded in 5 s -- Locker v2 stays on here until it has")
+        end
+        return
+    end
+    S.offHash = nil
+    turnOff(hash)
+end)
+
+-- ---------------------------------------------------------------------------
+-- The lobby tick, Locker v2 on: the first apply, arrivals, the lock
+-- ---------------------------------------------------------------------------
+
+BR.Loop.register(BR.Loop.TICK, 'locker2.lobby', function()
+    -- OFF, IT RETURNS AT ONCE: 'locker2.gate' turned it off and puts Season
+    -- 1's character back, and nothing here has anything left to do.
+    if not claims() then return end
+    local inLobby = BR.State.me.state == BR.PlayerState.LOBBY
 
     if not inLobby then
         -- The draft is discarded when the lobby is left. The look stays on
@@ -2608,10 +2805,13 @@ local WATCHED = {
 }
 
 BR.Loop.register(BR.Loop.TICK, 'locker2.watch', function()
+    -- NOT ASKED WHETHER LOCKER V2 IS ON (#436): S.applied is nil whenever it is
+    -- off and Season 1's character is on, and while that character is still
+    -- going back on -- a ready-up in the frame it turned off -- the custom look
+    -- on the ped stays dressed, through the whole match if it must.
     local ap = S.applied
     if not ap or not ap.a or S.applying then return end
     if not WATCHED[BR.State.me.state] then return end
-    if not claims() then return end
     local now = GetGameTimer()
     if now < nextWatch then return end
     nextWatch = now + C().watchMs
@@ -2701,3 +2901,15 @@ end, false)
 --- The state, for the suites.
 --- @return table
 function V.state() return S end
+
+-- ═══ AS br_core STOPS, THE PAGE IS TOLD LOCKER V2 IS OFF (#436) ═══
+--
+-- A fresh br_core cannot know what the page was told: after `restart br_core`
+-- onto Locker v2 off, the page kept drawing My Looks while every br/locker2/*
+-- callback was dropped. Told by the instance that is stopping, and only if it
+-- ever told the page on, so a client that never had Locker v2 on still never
+-- hears from this file.
+AddEventHandler('onResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    if S.everOn then TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER2, { on = false }) end
+end)

@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /**
- * THE SEASON 2 MARKET'S TESTS (#411): the page's rules, its copy, its wiring,
- * its chunk -- and Season 1's Market, byte for byte.
+ * MARKET V2'S TESTS (#411, UI v2's market piece since #436): the page's
+ * rules, its copy, its wiring, its chunk -- and Season 1's Market, byte for
+ * byte.
  *
  * Owner, 2026-10-13: "nothing we re-do in the shop should ever show on season
- * 1." src/screens/marketv2/model.ts decides everything the Season 2 Market
- * does before it draws, with no runtime imports, so node's type stripping
+ * 1." -- replaced on 2026-11-07, when he made UI v2 separate from the season
+ * (#436): Market v2 shows wherever its piece is on, Season 1 included, and the
+ * old Market wherever it is off. src/screens/marketv2/model.ts decides
+ * everything Market v2 does before it draws, with no runtime imports, so
+ * node's type stripping
  * loads it as-is (test-lockerv2.mjs's shape); copy.ts, look.ts and
  * tutorial/steps.ts the same. These hold each rule to #411 and the owner's
  * notes on the preview (2026-10-14):
@@ -230,37 +234,39 @@ check('"On wheel" and "New" are gone from the Season 2 Market\'s words',
 
 // ── TUTORIAL ─────────────────────────────────────────────────────────────────
 const card = LOBBY_STEPS.find((s) => s.id === 'market-inside')
-eq('the Market card: Season 1 keeps the old line, the Season 2 Market reads its own',
+eq('the Market card: the old Market keeps the old line, Market v2 reads its own',
   [bodyFor(card, false), bodyFor(card, true)],
   ["It may look a bit empty in here for now as we're still working on things.", 'Have a look around, then press **Done**.'])
 eq('and it is still on Done, scoped to the Market, waiting on the press',
   [card.target, card.screen, card.advance], ['market-done', 'market', 'click'])
-eq('no other card has a Season 2 line', LOBBY_STEPS.filter((s) => s.v2Body !== undefined).map((s) => s.id), ['market-inside'])
+eq('no other card has a v2 line', LOBBY_STEPS.filter((s) => s.v2Body !== undefined).map((s) => s.id), ['market-inside'])
 const steps = read(join(SRC, 'tutorial', 'steps.ts'))
-check('WRITTEN marker beside the Season 2 line',
+check('WRITTEN marker beside the v2 line',
   steps.split('\n').some((l) => l.includes("v2Body: 'Have a look around") && l.includes('// WRITTEN (proposal for the owner)')))
 const layer = strip(read(join(SRC, 'tutorial', 'TutorialLayer.tsx')))
-check('the layer draws bodyFor(step, the Market\'s card on the Season 2 Market)',
+check('the layer draws bodyFor(step, the Market\'s card on Market v2)',
   layer.includes("body={bodyFor(step, step.screen === 'market' && market2)}")
   && layer.includes('const market2 = useUi((st) => st.market.v2 === true)') && !layer.includes('body={step.body}'))
 
-// ── SEASON 1, UNTOUCHED ──────────────────────────────────────────────────────
-// "nothing we re-do in the shop should ever show on season 1." Recorded at
-// 156636d5 (Market.tsx last changed at 2c9ec58d).
+// ── SEASON 1'S MARKET, UNTOUCHED ─────────────────────────────────────────────
+// The old Market is Season 1's finished screen, drawn wherever Market v2 is
+// off. Recorded at 156636d5 (Market.tsx last changed at 2c9ec58d), under the
+// 2026-10-13 rule "nothing we re-do in the shop should ever show on season
+// 1.", which UI v2 replaced on 2026-11-07 (#436).
 {
   const SEASON1_MARKET = 'a1f2ae401fa4741da768c4b987d1cc4dd8363de45e818de3d91b2cf7629b2cfa'
   const got = createHash('sha256').update(read(join(SRC, 'screens', 'Market.tsx'))).digest('hex')
   check('screens/Market.tsx is byte-for-byte Season 1\'s', got === SEASON1_MARKET, `sha256 ${got}`)
   const app = read(join(SRC, 'App.tsx'))
-  check('App.tsx draws Season 2\'s Market only when the envelope says v2, Season 1\'s otherwise',
+  check('App.tsx draws Market v2 only when the envelope says v2, the old Market otherwise',
     app.includes('<Page name="market" show={focus === \'market\'}>{market2On ? <MarketV2Gate /> : <Market />}</Page>')
     && app.includes('const market2On        = useUi((s) => s.market.v2 === true)'))
   check('App.tsx never imports the Cloudscape screen itself (it is a chunk)', !/from '\.\/screens\/MarketV2'/.test(app))
-  check('and fetches the chunk only once the season has it', app.includes('usePreloadMarketV2(market2On)'))
+  check('and fetches the chunk only once Market v2 is on', app.includes('usePreloadMarketV2(market2On)'))
   const gate = read(join(SRC, 'screens', 'marketv2', 'Gate.tsx'))
-  // #411's review: without the early return, a Season 1 page downloads
-  // MarketV2 and all of Cloudscape at the lobby.
-  check('...and the preload fetches nothing while it is off: Season 1 never downloads Cloudscape',
+  // #411's review: without the early return, a page with Market v2 off
+  // downloads MarketV2 and all of Cloudscape at the lobby.
+  check('...and the preload fetches nothing while it is off: a page with Market v2 off never downloads Cloudscape',
     /export function usePreloadMarketV2\(on: boolean\): void \{\s*useEffect\(\(\) => \{\s*if \(!on\) return\s*load\(\)\.catch\([^\n]*\)\s*\}, \[on\]\)\s*\}/.test(strip(gate))
     && (strip(gate).match(/(?<!function )\bload\(\)/g) ?? []).length === 1)
   check('the screen is loaded as a chunk: lazy(import(\'../MarketV2\'))',
@@ -556,7 +562,7 @@ if (!existsSync(OUT)) {
   const indexCss = read(join(OUT, 'index.css'))
   check('the main bundle loads the chunk by name', indexJs.includes('./MarketV2.js'))
   const statics = [...indexJs.matchAll(/(?:^|[;}\n])\s*import\s*(?:[\w$]+|\{[^}]*\}|\*\s*as\s*[\w$]+)\s*from\s*"([^"]+)"/g)].map((m) => m[1])
-  check('the main bundle imports no chunk statically -- Season 1 never loads Cloudscape', statics.length === 0, statics.join(', '))
+  check('the main bundle imports no chunk statically -- a page with both v2 pieces off never loads Cloudscape', statics.length === 0, statics.join(', '))
   check('the main bundle and stylesheet carry none of Cloudscape', !/awsui_[a-z]/.test(indexJs) && !indexCss.includes('awsui'))
   // EVERY STYLESHEET THE MARKET BRINGS, not only its own (#411's review): the
   // Cloudscape both Season 2 screens reach is a shared chunk (index2.css,

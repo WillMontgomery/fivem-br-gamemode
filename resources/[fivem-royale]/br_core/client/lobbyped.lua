@@ -399,6 +399,19 @@ function BR.LobbyPed.entering()
     return phase == RUNNING
 end
 
+--- Is the player standing in the lobby with the entrance over? UI v2 (#436)
+--- takes a new answer then (or as the next match starts), and Locker v2 only then.
+---
+--- NOT MERELY THE LOBBY STATE: a match's teardown sweeps its players to the
+--- lobby behind the verdict, and the trip home then walks the ped in (ARMED,
+--- then RUNNING, then DONE). A change taken at the sweep would land before the
+--- trip home's respawn, or on the walk's ped; taken once the entrance is DONE,
+--- it lands on a parked ped, like a pick in the locker.
+--- @return boolean
+function BR.LobbyPed.settled()
+    return BR.State.me.state == BR.PlayerState.LOBBY and phase == DONE
+end
+
 --- Is the ped actually walking right now? Read by client/natives.lua, whose
 --- per-frame LOBBY freeze would otherwise hold it on the spot.
 --- @return boolean
@@ -1492,9 +1505,9 @@ local function run(mine)
     --    ped begins and the real character finishes -- on a different handle,
     --    with the task lost in between.
     --
-    --    ASKED AGAIN ON EVERY POLL, NOT ONCE (#406). On Season 2 the answer
+    --    ASKED AGAIN ON EVERY POLL, NOT ONCE (#406). With Locker v2 the answer
     --    moves while this waits: wantHash() is 0 while Locker v2's first apply
-    --    is still waiting on the server, nil while the season is not known yet
+    --    is still waiting on the server, nil while Locker v2 has no answer yet
     --    (which reads as Season 1's model), and the worn ped's model only once
     --    it is being put on. A copy taken when the wait began could be a model
     --    that never arrives, so the walk sat out all of modelWaitMs while
@@ -2255,9 +2268,9 @@ end)
 --
 -- Owner, 2026-10-14: "let's have a way for them to preview the emote while in
 -- market, but shouldn't work if they can't afford it." And, on #411's
--- question 4, 2026-10-13: "Silent previews are fine". So the Season 2
--- Market's Preview plays the dance on this ped -- the lobby character beside
--- the Market's panel -- and nothing else happens: no EMOTE_PLAY, so no record
+-- question 4, 2026-10-13: "Silent previews are fine". So Market v2's Preview
+-- plays the dance on this ped -- the lobby character beside the Market's
+-- panel -- and nothing else happens: no EMOTE_PLAY, so no record
 -- and no music for anybody, this player included; it is a TaskPlayAnim on a
 -- lobby ped every other lobby client is already hiding (the latch at the top
 -- of this file). #215's "anywhere except the lobby" is about dancing; this is
@@ -2268,10 +2281,10 @@ end)
 -- br_ui decides WHICH dance may play (owned, or affordable: its own copy of
 -- the server's grid, br_ui/client/market.lua) and hands it over as
 -- `br:ui:marketPreview`. This file decides WHEN: only while the Market is the
--- screen on top, the ped is parked on its mark in the lobby, and the season
--- has both the Season 2 Market and emotes -- asked every pass, so a closed
--- Market, a ready-up, a re-armed entrance or a season switch takes it off the
--- ped on the next tick. While it plays it is the ped's gesture (`emoting`), so
+-- screen on top, the ped is parked on its mark in the lobby, UI v2's Market is
+-- on and the season has emotes -- asked every pass, so a closed Market, a
+-- ready-up, a re-armed entrance, a UI v2 move or a season switch takes it off
+-- the ped on the next tick. While it plays it is the ped's gesture (`emoting`), so
 -- the stretch and the squad's wait stand aside, either one already playing
 -- gives way to it, and either one still streaming when it starts is dropped
 -- (playEmote's parkedGesture).
@@ -2280,10 +2293,10 @@ local PREVIEW_LOAD_MS = 2000   -- a dictionary that will not stream costs the pr
 local PREVIEW_RETASK_MS = 1000 -- how often a clip the engine dropped is put back
 
 local function emotesOn() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end
-local function market2On() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('market2') == true end
+local function market2On() return BR.UIv2 ~= nil and BR.UIv2.has ~= nil and BR.UIv2.has('market') == true end
 
---- The Market asked for a dance on this ped, or for none (`id` nil). Never on
---- Season 1: the Season 2 Market and emotes both, or nothing.
+--- The Market asked for a dance on this ped, or for none (`id` nil). Never
+--- without both: UI v2's Market and the season's emotes, or nothing.
 --- @param id string|nil
 function BR.LobbyPed.preview(id)
     if id == nil or not (emotesOn() and market2On()) then
@@ -2334,8 +2347,9 @@ end
 --- @return boolean
 local function previewStep()
     if previewWant == nil and previewOn == nil and previewAsked == nil then return false end
-    -- A season that closes either row forgets the preview outright: the page
-    -- that asked for it is not the one that comes back.
+    -- UI v2's Market going off, or a season without emotes, forgets the
+    -- preview outright: the page that asked for it is not the one that comes
+    -- back.
     if not (emotesOn() and market2On()) then previewWant = nil end
     local want = previewWant
     if want ~= nil and not (inMarket and parked()) then want = nil end

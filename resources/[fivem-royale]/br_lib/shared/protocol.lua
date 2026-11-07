@@ -1226,13 +1226,6 @@ BR.Net = {
     -- printed in every F8 console, and the client re-reads its season off the
     -- replicated value -- never off this payload (br_core/client/season.lua).
     SEASON_SWITCHED = 'br:season:switched',
-    -- S->C { id, to, by, settings }. To everybody, the moment a `brseason <id>
-    -- on|off|auto` is applied (#425), on a switch's timing: `to` is 'on', 'off'
-    -- or 'auto', and `settings` every feature set on or off now, [id] =
-    -- boolean. Printed in every F8 console; the client re-reads the setting
-    -- off the replicated value -- never off this payload, whose `settings`
-    -- only tells a runtime with no convar listener what to wait for.
-    SEASON_FEATURE  = 'br:season:feature',
     -- S->C '<text>'. One `brseason` answer, to the player who typed it alone,
     -- printed in their F8 console and nowhere else.
     SEASON_RESULT   = 'br:season:result',
@@ -1380,11 +1373,12 @@ BR.Net = {
     -- the client puts up the first-pickup card (BR.Nui.YUBIKEY_CARD).
     YUBIKEY_STATE   = 'br:yubikey:state',
 
-    -- LOCKER V2 (#28, Season 2): saved custom peds and the ped a player wears.
-    -- br_core/server/locker2.lua owns the records; every write is checked
-    -- there (the season, the name, the id's shape and owner, the appearance's
-    -- size and then its form, a rate) and refused with a reason: `season`,
-    -- `name`, `appearance`, `missing`, `rate`, `store` or `lobby`. An
+    -- LOCKER V2 (#28, UI v2's locker): saved custom peds and the ped a player
+    -- wears. br_core/server/locker2.lua owns the records; every write is
+    -- checked there (UI v2's locker piece, the name, the id's shape and owner,
+    -- the appearance's size and then its form, a rate) and refused with a
+    -- reason: `off`, `name`, `appearance`, `missing`, `rate`, `store` or
+    -- `lobby`. An
     -- appearance `a` travels as its canonical string (br_lib/shared/
     -- appearance.lua).
     --
@@ -1614,16 +1608,16 @@ BR.Nui = {
     -- every successful swap -- the page never assumes an apply worked, since
     -- a model that fails to stream leaves you wearing the old one.
     LOCKER    = 'locker',
-    -- Locker v2 (#28, Season 2), "My Looks": { on, tab, tabSeq, stock, peds,
-    -- worn, loading, locked, busy, fetching, edit }. Sent on ready, on a
-    -- season change and on every change. `peds` = { { id, name, up } } with no
-    -- appearance; `edit` = { sex, editing, dirty, cat, rows, tats, extras,
-    -- undo, redo } while a look is being edited, where a row is { k, cat,
-    -- kind = 'count', v, n, colors, pal?, c?, name? } or { k, cat, kind =
-    -- 'slider', v, min, max, def, off? }, `tats` the Tattoos extra's rows,
-    -- zone by zone in the order drawn: { r, z, i }, `r` the row's id and `i`
-    -- its tattoo in LOCKER2_TATS, and `extras` the extras on the look in the
-    -- order they were put on. See br_core/client/locker2.lua.
+    -- Locker v2 (#28, UI v2's locker), "My Looks": { on, tab, tabSeq, stock,
+    -- peds, worn, loading, locked, busy, fetching, edit }. Sent on ready, as
+    -- Locker v2 turns on or off, and on every change. `peds` = { { id, name,
+    -- up } } with no appearance; `edit` = { sex, editing, dirty, cat, rows,
+    -- tats, extras, undo, redo } while a look is being edited, where a row is
+    -- { k, cat, kind = 'count', v, n, colors, pal?, c?, name? } or { k, cat,
+    -- kind = 'slider', v, min, max, def, off? }, `tats` the Tattoos extra's
+    -- rows, zone by zone in the order drawn: { r, z, i }, `r` the row's id and
+    -- `i` its tattoo in LOCKER2_TATS, and `extras` the extras on the look in
+    -- the order they were put on. See br_core/client/locker2.lua.
     LOCKER2   = 'locker2',
     -- { id, up?, txd?, url?, img?, save? }: one card's headshot. `txd` and
     -- `url` (nui-img, with a cache-buster) for a shot taken now -- the page
@@ -1653,14 +1647,14 @@ BR.Nui = {
     -- neglect: an award pushed from Lua is an award timed against a screen Lua
     -- cannot observe, which is how it went unseen twice.
     XP        = 'xp',
-    -- { balance, currency, items, v2? }. `v2` is true only while the season
-    -- has the `market2` row (#411): the page then draws the Season 2 Market,
-    -- and the grid carries no placeholder kinds. Absent on Season 1, whose
-    -- envelope is unchanged.
+    -- { balance, currency, items, v2? }. `v2` is true only while UI v2's
+    -- market piece is on (#411, #436): the page then draws Market v2, and the
+    -- grid carries no placeholder kinds. Absent with the piece off, where the
+    -- envelope is the one it always was.
     MARKET    = 'market',
-    -- { design } the Season 2 Market's tab design (#411), a name or a number:
-    -- sent only by `brmarkettabs`, a dev-box comparison switch, and only while
-    -- the season has `market2`.
+    -- { design } Market v2's tab design (#411), a name or a number: sent only
+    -- by `brmarkettabs`, a dev-box comparison switch, and only while UI v2's
+    -- market piece is on.
     MARKET_TABS = 'markettabs',
     -- The player list. Carries the roster projection AND the report state --
     -- how many reports are left this match, and the categories -- because the
@@ -1809,7 +1803,7 @@ BR.NuiCb = {
     LOCKER_PICK  = 'br/locker/pick',
     LOCKER_SPIN  = 'br/locker/spin',
     LOCKER_FOCUS = 'br/locker/focus',
-    -- Locker v2 (#28, Season 2), "My Looks". All forwarded to br_core, which
+    -- Locker v2 (#28, UI v2's locker), "My Looks". All forwarded to br_core, which
     -- revalidates each one and refuses them while the locker is locked, a ped
     -- is loading or a write is in flight (a new or another saved look also
     -- while there are unsaved changes). The page still opens and closes focus

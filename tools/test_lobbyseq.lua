@@ -2347,6 +2347,44 @@ do
         'and leaves the ped on the mark')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 17b. SETTLED: STANDING IN THE LOBBY WITH THE ENTRANCE OVER (#436)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- UI v2 takes a new answer standing in the lobby with the entrance over, and
+-- Locker v2 only then (br_core/client/uiv2.lua, client/locker2.lua). Not merely
+-- the lobby state: the sweep home behind the verdict, the trip and the walk-in
+-- are all LOBBY, and a character changed there lands on the wrong ped.
+
+do
+    reset()
+    wearChosenModel()
+    ok(not BR.LobbyPed.settled(), 'settled: armed in the lobby, the entrance not started yet -- no')
+    pump(300)
+    ok(BR.LobbyPed.entering() and not BR.LobbyPed.settled(), 'settled: the walk-in -- no')
+    pump(70000)
+    ok(not BR.LobbyPed.entering() and BR.LobbyPed.settled(), 'settled: the entrance over, parked in the lobby -- yes')
+
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(not BR.LobbyPed.settled(), 'settled: out of the lobby, the entrance over or not -- no')
+    BR.State.me.state = BR.PlayerState.ALIVE
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+    ok(not BR.LobbyPed.settled(), 'settled: in a match -- no')
+
+    -- THE SWEEP: LOBBY again behind the verdict, the ped still in the match's
+    -- world, so the entrance is ARMED and has not begun.
+    BR.State.me.state = BR.PlayerState.LOBBY
+    ok(not BR.LobbyPed.entering() and not BR.LobbyPed.settled(),
+        'settled: swept to the lobby at the teardown, the ped still away -- no')
+    -- The trip home (the lobby watchdog's, here), and the walk-in it starts.
+    pump(500)
+    ok(BR.LobbyPed.entering() and not BR.LobbyPed.settled(), 'settled: the trip home and the walk-in after it -- no')
+    pump(70000)
+    ok(not BR.LobbyPed.entering() and BR.LobbyPed.settled(), 'settled: once it is over -- yes')
+    reset()
+end
+
 -- ...AND THE TRIP HOME HANDS IT THE BLACK RATHER THAN RACING IT.
 --
 -- The entrance opens with a teleport thirty metres up the path. On the boot
@@ -5416,18 +5454,21 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- THE MARKET'S PREVIEW (#411): the dance on this ped, silently, while the
--- Season 2 Market is open. Owner, 2026-10-14: "let's have a way for them to
--- preview the emote while in market, but shouldn't work if they can't afford
--- it" -- br_ui refuses those (tools/test_market2.lua); this is br_core's half:
--- WHEN it plays, that it plays silently, and that every way it ends ends it.
+-- THE MARKET'S PREVIEW (#411): the dance on this ped, silently, while Market
+-- v2 is open. Owner, 2026-10-14: "let's have a way for them to preview the
+-- emote while in market, but shouldn't work if they can't afford it" -- br_ui
+-- refuses those (tools/test_market2.lua); this is br_core's half: WHEN it
+-- plays, that it plays silently, and that every way it ends ends it.
 -- ═══════════════════════════════════════════════════════════════════════════
 do
     loadAll({ 'br_lib/config/market.lua', 'br_lib/config/emotes.lua' })
-    -- THE TWO ROWS, MOVED APART: a stub, so each can be shut on its own.
-    local rows = { emotes = true, market2 = true }
-    local realSeason = BR.Season
-    BR.Season = { has = function(id) return rows[id] == true end }
+    -- ITS TWO GATES, EACH A STUB, so each can be shut on its own: UI v2's
+    -- market piece (#436) and the season's emotes. Without the UI v2 stub
+    -- "with the market piece shut nothing plays" would pass and test nothing.
+    local gates = { emotes = true, market = true }
+    local realSeason, realUIv2 = BR.Season, BR.UIv2
+    BR.Season = { has = function(id) return id == 'emotes' and gates.emotes end }
+    BR.UIv2 = { has = function(id) return id == 'market' and gates.market end }
     local realServer = TriggerServerEvent
     local sent = {}
     TriggerServerEvent = function(n) sent[#sent + 1] = n end
@@ -5500,27 +5541,36 @@ do
     pump(1000)
     ok(asked(row) == nil or not on(row), 'preview: outside the Market it plays nothing')
 
-    -- (6) NEVER ON SEASON 1, NOR WITHOUT EMOTES -- each row on its own.
-    for _, shut in ipairs({ 'market2', 'emotes' }) do
+    -- (6) NEVER WITHOUT MARKET V2, NOR WITHOUT EMOTES -- each gate on its own.
+    for _, shut in ipairs({ 'market', 'emotes' }) do
         fresh()
-        rows[shut] = false
+        gates[shut] = false
         TriggerEvent('br:ui:marketPreview', row.id)
         pump(1000)
-        ok(asked(row) == nil, ('preview: with the %s row shut nothing plays'):format(shut))
-        rows[shut] = true
+        ok(asked(row) == nil, ('preview: with the %s gate shut nothing plays'):format(shut))
+        gates[shut] = true
     end
 
-    -- (7) A SEASON SWITCH MID-PREVIEW TAKES IT OFF, AND IT STAYS OFF.
+    -- (7) A UI V2 MOVE MID-PREVIEW TAKES IT OFF, AND IT STAYS OFF.
     fresh()
     TriggerEvent('br:ui:marketPreview', row.id)
     pump(300)
-    ok(on(row), 'preview precondition: playing before the switch')
-    rows.market2 = false
+    ok(on(row), 'preview precondition: playing before the move')
+    gates.market = false
     pump(200)
-    ok(ped.anim == nil, 'preview: a season without the Season 2 Market takes it off at once')
-    rows.market2 = true
+    ok(ped.anim == nil, "preview: UI v2's Market going off takes it off at once")
+    gates.market = true
     pump(2000)
-    ok(ped.anim == nil, 'preview: and switching back does not bring it back')
+    ok(ped.anim == nil, 'preview: and coming back on does not bring it back')
+    -- And the season taking the dances away, the same.
+    fresh()
+    TriggerEvent('br:ui:marketPreview', row.id)
+    pump(300)
+    ok(on(row), 'preview precondition: playing before the season moves')
+    gates.emotes = false
+    pump(200)
+    ok(ped.anim == nil, 'preview: a season without emotes takes it off at once')
+    gates.emotes = true
 
     -- (8) THE STRETCH STANDS ASIDE WHILE IT PLAYS, AND GIVES WAY TO IT.
     fresh()
@@ -5636,7 +5686,7 @@ do
     TriggerEvent('br:ui:marketPreview', nil)
     TriggerEvent('br:ui:focusChanged', 'lobby')
     pump(200)
-    BR.Season = realSeason
+    BR.Season, BR.UIv2 = realSeason, realUIv2
     TriggerServerEvent = realServer
     reset()
 end

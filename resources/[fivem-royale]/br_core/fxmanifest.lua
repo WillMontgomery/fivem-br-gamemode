@@ -197,10 +197,19 @@ shared_scripts {
     -- server/main.lua calls BR.Season.boot() at resource start.
     '@br_lib/shared/season.lua',
     '@br_lib/config/seasons.lua',
-    -- LOCKER V2 (#28, Season 2): its numbers and rows, and the appearance a
-    -- custom ped is saved as. SHARED because the client builds an appearance
-    -- and the server checks every one it stores; appearance.lua reads the
-    -- config's undershirt at call time, and the stock ids off
+    -- UI V2 (#436): the redone screens, behind one server switch and one per
+    -- screen, in any season, and the one door each asks, BR.UIv2.has(id); then
+    -- the one list of them. SHARED because both sides ask: the server resolves
+    -- the switches and its Locker v2 doors answer them, and the client holds
+    -- the answer it shows (client/uiv2.lua). Neither reads anything at load
+    -- that a reader needs, so the place is a reader's, beside the season's.
+    -- server/main.lua calls BR.UIv2.boot() at resource start.
+    '@br_lib/shared/uiv2.lua',
+    '@br_lib/config/uiv2.lua',
+    -- LOCKER V2 (#28, UI v2's locker): its numbers and rows, and the
+    -- appearance a custom ped is saved as. SHARED because the client builds an
+    -- appearance and the server checks every one it stores; appearance.lua
+    -- reads the config's undershirt at call time, and the stock ids off
     -- config/peds.lua (above).
     '@br_lib/config/locker2.lua',
     '@br_lib/shared/appearance.lua',
@@ -395,6 +404,12 @@ shared_scripts {
 -- and BR.Server (server) that every other file reaches into.
 client_scripts {
     'client/main.lua',      -- defines the loop registry; must be first
+    -- UI v2 (#436): the answer this machine holds, taken at a join, in the
+    -- lobby with the entrance over, or as the next match starts, and kept
+    -- through every match. RIGHT AFTER main.lua: it needs the loop registry,
+    -- reads BR.State and BR.LobbyPed at call time only, and its pass must run
+    -- ahead of client/spawn.lua's 'spawn.gather', which starts the warmup trip.
+    'client/uiv2.lua',
     'client/natives.lua',
     -- The dev tuning tools' shared keys (#404). Nothing at load but tables; the
     -- tools that use it (lobbycam.lua, loot.lua, gunshop.lua, board.lua) reach
@@ -418,11 +433,11 @@ client_scripts {
     'client/spawn.lua',
     'client/lobbycam.lua',  -- reads BR.Spawn.traveling; must follow spawn.lua
     'client/locker.lua',    -- the ped in that shot; needs BR.Native (natives.lua)
-    -- Locker v2 (#28, Season 2) and its headshots. AFTER locker.lua for a
-    -- reader: Season 1's locker asks BR.LockerV2 at call time (nil-guarded),
+    -- Locker v2 (#28, UI v2's locker) and its headshots. AFTER locker.lua for
+    -- a reader: Season 1's locker asks BR.LockerV2 at call time (nil-guarded),
     -- and v2 reads BR.Locker.chosen() at call time. Its ticks need the loop
-    -- registry (client/main.lua) and BR.Season (shared), both above. Its
-    -- tattoo list is in shared_scripts, beside appearance.lua.
+    -- registry (client/main.lua) and BR.UIv2 (shared, held by client/uiv2.lua),
+    -- all above. Its tattoo list is in shared_scripts, beside appearance.lua.
     'client/locker2.lua',
     'client/locker2shot.lua',
     -- Whether that ped is a LOBBY ped -- hidden from every other lobby client
@@ -1023,8 +1038,13 @@ server_scripts {
     -- It reads BR.Server.matches and BR.Roster at call time and listens for
     -- `br:match:destroyed`, which server/match.lua raises.
     'server/season.lua',
-    -- Locker v2's saved peds and worn ped (#28, Season 2), through br_ddb. It
-    -- reads BR.Season, BR.Identity, BR.Roster and BR.Appearance at call time.
+    -- UI V2 (#436): `bruiv2`, the switches from the server console on any box,
+    -- prod included -- the dev gate's fifth exemption, server-console only. It
+    -- reads BR.UIv2 at call time only.
+    'server/uiv2.lua',
+    -- Locker v2's saved peds and worn ped (#28, UI v2's locker), through
+    -- br_ddb. It reads BR.UIv2, BR.Identity, BR.Roster and BR.Appearance at
+    -- call time.
     'server/locker2.lua',
     -- The warmup vehicle shop (#224). AFTER market.lua, and that is a REAL
     -- order rather than a reader's in one direction and a reader's in the

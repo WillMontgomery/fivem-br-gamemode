@@ -295,6 +295,20 @@ AddEventHandler('onResourceStart', function(res)
         if changed then print(changed) end
     end)
 
+    -- UI V2 (#436), read here and replicated under its own name, beside the
+    -- season and for the same reasons: br_lib/shared/uiv2.lua says why, and is
+    -- the only file that names its switches. Unlike the season it is LIVE: a
+    -- switch typed into the console is applied by the re-read below within
+    -- five seconds, and `bruiv2` applies one at once. Players take a change in
+    -- the lobby or as their next match starts (client/uiv2.lua).
+    local uiv2Lines = BR.UIv2.boot()
+    BR.Sched.every(5000, 'uiv2.watch', function()
+        local moved = BR.UIv2.recheck()
+        if moved then
+            for _, l in ipairs(moved) do print(l) end
+        end
+    end)
+
     BR.Sched.start()
 
     -- ONESYNC IS NOT OPTIONAL FOR THIS GAMEMODE.
@@ -313,6 +327,7 @@ AddEventHandler('onResourceStart', function(res)
     print(('[br_core]   onesync      %s'):format(BR.Server.onesync))
     print(('[br_core]   devMode      %s'):format(tostring(BR.Server.devMode)))
     for _, l in ipairs(seasonLines) do print(l) end
+    for _, l in ipairs(uiv2Lines) do print(l) end
     -- The served commit, or why it could not be read -- dev boxes only. Built by
     -- server/lobby.lua, which loads after this file and before this event fires.
     local commitLine = BR.Lobby and BR.Lobby.commitLine and BR.Lobby.commitLine()

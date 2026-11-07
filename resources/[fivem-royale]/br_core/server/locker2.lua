@@ -1,17 +1,18 @@
--- Locker v2's server half (#28, Season 2): a player's saved custom peds and the
--- ped they wear, kept in DynamoDB through br_ddb.
+-- Locker v2's server half (#28, UI v2's locker): a player's saved custom peds
+-- and the ped they wear, kept in DynamoDB through br_ddb.
 --
 -- ═══ THE CLIENT DECIDES WHAT IT LOOKS LIKE, THIS FILE DECIDES WHAT IS KEPT ═══
 --
 -- The ped itself is cosmetic and client-only, as in Season 1 (client/locker.lua
 -- says why). What a client cannot be trusted with is the RECORD: every write
--- here checks, in this order, the season, the name (Roman letters and digits,
--- 1 to 24 -- owner, 2026-10-07 -- in words one space apart, 2026-10-12), the
--- id's shape and that this player owns it,
+-- here checks, in this order, UI v2's locker piece (the server's own answer,
+-- live: a kill switch shuts every door here at once, #436), the name (Roman
+-- letters and digits, 1 to 24 -- owner, 2026-10-07 -- in words one space
+-- apart, 2026-10-12), the id's shape and that this player owns it,
 -- the appearance's size BEFORE it is decoded and then its form
 -- (br_lib/shared/appearance.lua) with at most 10 tattoos a body zone, and a
 -- rate. A refusal answers RESULT with
--- one reason: season, name, appearance, missing, rate, store or lobby.
+-- one reason: off, name, appearance, missing, rate, store or lobby.
 --
 -- ═══ ONE CACHE PER LICENSE ═══
 --
@@ -59,9 +60,13 @@ local A = BR.Appearance
 
 local function cfg() return BR.Config.Locker2 end
 
---- Is Locker v2 on? The server's own season, never a client's word.
+--- Is Locker v2 on? UI v2's locker piece as this server answers it now -- the
+--- server's own answer, never a client's word (#436). A client sends these
+--- requests only from the lobby, where its own answer is this one within one
+--- pass; one in flight as a switch moves is refused `off`, and nothing
+--- refused is written.
 local function on()
-    return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('locker2')
+    return BR.UIv2 ~= nil and BR.UIv2.has ~= nil and BR.UIv2.has('locker') == true
 end
 
 --- license -> { loaded, failed, fetching, fetchAt, waiters, waiting, sentAt,
@@ -332,7 +337,7 @@ end
 
 --- Shared checks. Returns the entry, or nil and the reason.
 local function ready(src)
-    if not on() then return nil, 'season' end
+    if not on() then return nil, 'off' end
     local lic = licenseFor(src)
     if not lic then return nil, 'store' end
     return lic, nil
