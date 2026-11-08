@@ -12,8 +12,8 @@ rewritten to match, and stills left over from the last set are removed.
 
 THE BYTES ARE ON THE CRITICAL PATH. A loadscreen resource is downloaded before
 its page can show, so every still is time a first join spends on a black
-screen. Hence one size for every monitor (the photo sits under a grade, a
-hatch and a push-in, where 1080p upscaled to 4K reads fine) and a per-still
+screen. Hence one size for every monitor (the photo sits under a grade and a
+push-in, where 1080p upscaled to 4K reads fine) and a per-still
 budget the quality search has to fit, rather than a fixed quality.
 
 WEBP, NOT JPEG: about a third smaller at the same look, and CEF has decoded it

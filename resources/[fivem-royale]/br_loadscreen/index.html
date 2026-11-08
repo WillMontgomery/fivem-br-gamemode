@@ -167,10 +167,11 @@
     background: #22d3ee;
   }
 
-  /* OVER THE PHOTOS, UNDER THE TEXT: a slow light sweep, a drifting hatch,
-     then scanlines and the scrim in one static layer. Texture, not content:
-     each is faint enough that a still frame barely shows it. */
-  .sweep, .hatch, .grade { position: absolute; }
+  /* OVER THE PHOTOS, UNDER THE TEXT: a slow light sweep, then scanlines and
+     the scrim in one static layer. Texture, not content: each is faint
+     enough that a still frame barely shows it. No diagonal hatch over the
+     photos (owner, 2026-11-08: "you can remove that"). */
+  .sweep, .grade { position: absolute; }
   .sweep {
     top: 0; bottom: 0; left: 0; width: 80vh; z-index: 2;
     background: linear-gradient(90deg, rgba(255, 255, 255, 0),
@@ -181,20 +182,6 @@
   @keyframes bcSweep {
     0%        { transform: translateX(-100vh) skewX(-15deg); }
     46%, 100% { transform: translateX(calc(100vw + 20vh)) skewX(-15deg); }
-  }
-  /* The hatch is 45 degrees in soft bands, not the 15-degree slant: steep
-     thin lines over a dark shot read as rain, not as a texture. */
-  .hatch {
-    top: -3vh; right: -3vh; bottom: -3vh; left: -3vh; z-index: 3;
-    background: repeating-linear-gradient(135deg,
-      rgba(255, 255, 255, 0) 0, rgba(255, 255, 255, 0.026) 0.45vh,
-      rgba(255, 255, 255, 0) 0.9vh, rgba(255, 255, 255, 0) 1.8vh);
-    animation: bcHatch 6s linear infinite;
-  }
-  /* One period sideways (1.8vh / sin 45deg), so the loop has no seam. */
-  @keyframes bcHatch {
-    from { transform: translateX(-2.5456vh); }
-    to   { transform: translateX(0); }
   }
   /* THE SCRIM IS WHERE THE TEXT IS: dark under the lower third and along
      the foot of the frame, clear across the top and right, where the
@@ -425,7 +412,6 @@
   <div class="stage">
     <div id="slides"></div>
     <div class="sweep"></div>
-    <div class="hatch"></div>
     <div class="grade"></div>
 
     <div class="lower">
@@ -675,9 +661,38 @@
       var hint = document.getElementById('audioHint');
       var label = hint.querySelector('[data-label]');
       var audio = document.getElementById('track');
-      audio.src = TRACK.src;
       audio.loop = false;
       audio.volume = 0;
+
+      // THE TRACK PLAYS FROM MEMORY, NOT FROM ITS URL (owner, 2026-11-08: no
+      // sound in game, and no hint). FiveM opens this page at
+      // nui://br_loadscreen/, and its file handler answers every request with
+      // the whole file from byte 0: it has no Range support
+      // (NUISchemeHandler.cpp). Chromium checks a partial response only for
+      // HTTP; a non-HTTP source is trusted to honor ranges
+      // (resource_multi_buffer_data_provider.cc). So when the demuxer jumps
+      // ahead (Ogg reads its last page for the duration) it is handed the
+      // file's first bytes as the end, and the track never plays. A blob
+      // answers ranges itself, which is how br_ui's copy plays the same file
+      // (audio/lobbyTrack.ts). Where fetch fails (a desktop browser opening
+      // this page from disk), the plain URL is the fallback.
+      var ready = false;
+      function load(then) {
+        function plain() { audio.src = TRACK.src; ready = true; then(); }
+        if (typeof fetch !== 'function' || !window.URL || !URL.createObjectURL) { plain(); return; }
+        fetch(TRACK.src).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.blob();
+        }).then(function (b) {
+          audio.src = URL.createObjectURL(b);
+          ready = true;
+          then();
+        }, plain);
+      }
+      audio.addEventListener('error', function () {
+        var err = audio.error;
+        try { console.warn('[br_loadscreen] the track cannot play: ' + (err ? err.code + ' ' + (err.message || '') : 'unknown')); } catch (e) {}
+      });
 
       // MUTED IS WHAT THE PLAYER ASKED FOR, NOT HOW FAR THE FADE HAS GOT. M
       // flips this at once, and the hint, the stored choice and the handoff
@@ -718,7 +733,11 @@
           : (label.getAttribute('data-on') || '');
       }
 
+      // Nothing to play until the track is loaded: a key pressed before then
+      // is left alone (the track starts on its own a moment later), rather
+      // than arming a start that would swallow the player's first M.
       function tryPlay() {
+        if (!ready || started) return;
         var p;
         try { p = audio.play(); } catch (e) { arm(); return; }
         if (p && typeof p.then === 'function') p.then(null, arm);
@@ -730,8 +749,9 @@
         var go = function (e) {
           document.removeEventListener('keydown', go, true);
           document.removeEventListener('mousedown', go, true);
-          if (e) { e.brStartedTrack = true; }
           armed = false;
+          if (started) return;   // it started meanwhile: this press is the player's own
+          if (e) { e.brStartedTrack = true; }
           tryPlay();
         };
         document.addEventListener('keydown', go, true);
@@ -827,7 +847,7 @@
       }
 
       paint();
-      tryPlay();
+      load(tryPlay);
       return {
         handoff: handoff,
         fadeOut: function (ms) { leaving = true; ramp(0, ms, function () { audio.pause(); }); }
