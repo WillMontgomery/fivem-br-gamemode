@@ -21,8 +21,11 @@
 -- that is not an empty table, an id that is not lowercase letters and digits,
 -- an id passed to has() with no row here, and a row nothing asks about.
 --
--- hud, inventory and players join as each is ported from its preview, one row
--- and its doors each.
+-- inventory and players join as each is ported from its preview, one row and
+-- its doors each. A NEW ROW FOLLOWS br_uiv2 from the deploy that adds it, and
+-- shows from the one that first draws it, so a box with br_uiv2 on that should
+-- not show it yet needs br_uiv2_<id> off (DEPLOY.md, before merging dev into
+-- main).
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -39,5 +42,9 @@ BR.Config.UIv2 = {
         -- dance on the lobby character while the season has dances. Off:
         -- Season 1's Market and its grid, exactly as they were.
         market = {},
+        -- #431: the in-match HUD in the Broadcast look, the squad panel
+        -- included, ported from its preview. Off: today's HUD, exactly. The
+        -- page is told it (br_ui/client/uiv2.lua) before any screen reads it.
+        hud = {},
     },
 }

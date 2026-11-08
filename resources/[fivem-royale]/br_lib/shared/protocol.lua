@@ -1715,6 +1715,15 @@ BR.Nui = {
     -- on a public box, and anything it leaves out is off. See
     -- ui-src/src/bridge/coldProbe.ts.
     DIAG        = 'diag',
+    -- { hud }: UI v2's pieces the page draws (#436), each true only while it
+    -- is on in the answer this machine holds (br_lib/shared/uiv2.lua), so all
+    -- false until one is held. Sent by br_ui/client/uiv2.lua as the page
+    -- reports its environment, just before br:ui:ready, and on every move: in
+    -- the lobby, as a match starts, or as a first answer, taken in any state
+    -- (after a `restart br_core`, mid-match too). The Market and the Locker
+    -- ride their own envelopes (MARKET's `v2`, LOCKER2's `on`). One key per
+    -- piece, the same list as ui-src's UIv2Piece (tools/test_uiv2.lua).
+    UIV2        = 'uiv2',
 }
 
 --- A HOLE IN A SENTENCE WHERE A KEY BELONGS.

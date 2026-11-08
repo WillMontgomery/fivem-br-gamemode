@@ -425,6 +425,16 @@ function startMockScreen(): void {
 export function startMockDriver(): void {
   const now = Date.now()
 
+  // UI V2 (#436): `?uiv2=hud` (pieces comma-separated) is a machine that holds
+  // those pieces on, told first, as br_ui tells the page ahead of every
+  // replay. Without the parameter nothing is sent and every piece stays off,
+  // as on a box with br_uiv2 unset.
+  const uiv2 = new URLSearchParams(window.location.search).get('uiv2')
+  if (uiv2 !== null) {
+    const on = new Set(uiv2.split(',').map((p) => p.trim()))
+    emit({ k: 'uiv2', d: { hud: on.has('hud') } })
+  }
+
   // Lua pushes this on br:ui:ready, and the lobby hides its Character button
   // until it arrives -- so a harness that never sends it is a harness where
   // the locker cannot be opened at all.

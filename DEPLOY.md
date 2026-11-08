@@ -235,6 +235,18 @@ is the copy a branch switch never touches.
 A commit whose `deploy.sh` predates the handover (switching a box back to an old
 branch) is deployed by the ops clone's copy, as every commit was before.
 
+### Before merging dev into main
+
+- **UI v2's pieces** (#436), before every merge: read prod's `server.cfg` and
+  run `bruiv2` on prod's server console. The deploy restarts FXServer, so prod
+  comes back as `server.cfg` says: every live `bruiv2` flip is gone, and every
+  piece with no `br_uiv2_<piece>` line follows `br_uiv2`, a new one included.
+  A piece shows from the deploy that first draws it, which can come after the
+  one that adds its row. So with `set br_uiv2 on` there, each piece in dev's
+  `br_lib/config/uiv2.lua` that prod should not show yet needs
+  `set br_uiv2_<piece> off` above `ensure br_core`, and a live flip that should
+  outlast the deploy goes into `server.cfg` too.
+
 ---
 
 ## 2. Persistence — DynamoDB, no database to install
@@ -499,7 +511,7 @@ Edit `server.cfg`:
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
 | `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start, enable client dev tools, and move `br_ddb` onto the `dev-` tables (section 2). |
 | `br_season` | **Set it explicitly on production** — `set br_season 1` at launch, above `ensure br_core`. The season this box runs (#388): features from later seasons stay off. **An unset box runs the latest season the code knows** and warns at boot, so a public box left unset would switch a new season's features on with the deploy that adds them. Read once as `br_core` starts. See [running.md](docs/running.md#the-season-a-box-runs-br_season). |
-| `br_uiv2` | UI v2 (#436): the redone Market and Locker, in any season. **Off when unset** — a box that should show them, such as every Season 2 box before #436, needs `set br_uiv2 on` above `ensure br_core`. `br_uiv2_<piece>` sets one piece either way; `bruiv2` on the server console flips them live. See [running.md](docs/running.md#ui-v2-the-redone-screens-one-switch-for-all-and-one-for-each-436). |
+| `br_uiv2` | UI v2 (#436): the redone Market and Locker, and the in-match HUD (`hud`) as it is ported, in any season. **Off when unset** — a box that should show them, such as every Season 2 box before #436, needs `set br_uiv2 on` above `ensure br_core`. `br_uiv2_<piece>` sets one piece either way; `bruiv2` on the server console flips them live, until FXServer restarts (a deploy's restart too). **A piece with no line of its own follows `br_uiv2`**, a new one from the deploy that adds its row, and it shows from the deploy that first draws it, so a box with `br_uiv2 on` needs `set br_uiv2_<piece> off` for each piece it should not show yet (see *Before merging dev into main*). See [running.md](docs/running.md#ui-v2-the-redone-screens-one-switch-for-all-and-one-for-each-436). |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
 
 ### The identity: `server-identity.cfg`

@@ -52,6 +52,10 @@ client_scripts {
     '@br_lib/config/uiv2.lua',
 
     'client/nui.lua',
+    -- UI v2 on the page (#436): which pieces this machine holds, told on the
+    -- page's environment report and on every move. After nui.lua, whose send
+    -- it uses, and after the module and the list above.
+    'client/uiv2.lua',
     -- The cold line and the idle A/B switches (#252), dev mode only. After
     -- nui.lua, whose send and callback wrapper it uses.
     'client/idle.lua',

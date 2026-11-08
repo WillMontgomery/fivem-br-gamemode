@@ -17,7 +17,7 @@ import type {
   CurtainKind, KeybindAction, LockerPayload, Locker2Payload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
-  AdminPayload, CommunityPayload, VehiclePayload, YubikeyCardWords,
+  AdminPayload, CommunityPayload, VehiclePayload, YubikeyCardWords, UIv2Payload, UIv2Piece,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 import { chatAfterState } from './chatClear'
@@ -190,6 +190,12 @@ export interface UiState {
    *  default design (screens/marketv2/model.ts tabDesign). A comparison
    *  switch, not a setting: no player ever sends it. */
   marketTabs: string | null
+  /** UI v2's pieces on this machine (#436), from the `uiv2` envelope
+   *  (bridge/uiv2.ts): each true only while the answer br_core's client holds
+   *  has it on. EVERY PIECE OFF UNTIL TOLD, so a page that has heard nothing
+   *  draws today's screens, and a snapshot never touches it. A piece reads its
+   *  own with useUIv2 (ui/useUIv2.ts). */
+  uiv2: Record<UIv2Piece, boolean>
   /** Is the warmup shop's plate up? While it is, the ammo slot shows the
    *  player's Volts instead of being empty (owner, 2026-08-29). Only the
    *  FLAG travels; the figure itself is `market.balance`, which is already
@@ -545,6 +551,8 @@ export interface UiState {
   setEmotesOn: (on: boolean) => void
   /** The Season 2 Market's tab design (#411), from the 'markettabs' envelope. */
   setMarketTabs: (design: string | null) => void
+  /** UI v2's pieces (#436), from the 'uiv2' envelope: on only for `true`. */
+  setUIv2: (d: UIv2Payload | null | undefined) => void
   setShopPlate: (up: boolean) => void
   setGunshopMenu: (open: boolean) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
@@ -898,6 +906,7 @@ export const useUi = create<UiState>((set, get) => {
   market: { balance: 0, items: [] },
   emotesOn: false,
   marketTabs: null,
+  uiv2: { hud: false },
   shopPlate: false,
   gunshopMenu: false,
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
@@ -1165,6 +1174,7 @@ export const useUi = create<UiState>((set, get) => {
   setMarket: (market) => set({ market }),
   setEmotesOn: (emotesOn) => set({ emotesOn }),
   setMarketTabs: (marketTabs) => set({ marketTabs }),
+  setUIv2: (d) => set({ uiv2: { hud: d?.hud === true } }),
   setShopPlate: (shopPlate) => set({ shopPlate }),
   setGunshopMenu: (gunshopMenu) => set({ gunshopMenu }),
   setPlayers: (players) => set({ players }),

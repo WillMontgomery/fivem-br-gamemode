@@ -1607,6 +1607,19 @@ export interface YubikeyCardWords {
   dismiss: string
 }
 
+/**
+ * UI v2's pieces the page draws (#436): the rows of br_lib/config/uiv2.lua
+ * that br_ui/client/uiv2.lua sends, one more with each piece ported.
+ * tools/test_uiv2.lua holds this list equal to the keys Lua sends.
+ */
+export type UIv2Piece = 'hud'
+
+/**
+ * BR.Nui.UIV2's payload: each piece true only while it is on in the answer
+ * this machine holds. Absent, or anything but `true`, is off.
+ */
+export type UIv2Payload = Partial<Record<UIv2Piece, boolean>>
+
 // --- envelope ---------------------------------------------------------------
 
 export type Envelope =
@@ -1778,6 +1791,10 @@ export type Envelope =
   /** The cold-action probe and the idle A/B switches (#252, round 4): BR.Nui.DIAG,
    *  dev mode only. bridge/coldProbe.ts reads it; anything left out is off. */
   | { k: 'diag'; d: DiagPayload }
+  /** UI v2's pieces on this machine (#436): BR.Nui.UIV2, from
+   *  br_ui/client/uiv2.lua as the page reports its environment and on every
+   *  move. The page subscribes at module load (bridge/uiv2.ts), not in App. */
+  | { k: 'uiv2'; d: UIv2Payload }
 
 /** BR.Nui.DIAG's payload. See br_ui/client/idle.lua. */
 export interface DiagPayload {

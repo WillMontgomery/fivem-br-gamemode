@@ -1711,9 +1711,18 @@ end
 local inForce = WORLD.live or WORLD.season
 
 --- UI V2 AS THE SERVER SERVES IT (#436; THE WORLDS, at the top), by the season
---- the world measures. The holder (client/uiv2.lua) takes it on its first pass.
+--- the world measures: every row of br_lib/config/uiv2.lua on, or every one
+--- off, as BR.UIv2.boot spells it -- so a row that lands is in it with no edit
+--- here. Both texts are built once, now, so a change window allocates nothing
+--- of the harness's. The holder (client/uiv2.lua) takes it on its first pass.
+local function uiv2Text(on)
+    local parts = {}
+    for _, id in ipairs(BR.UIv2.pieces()) do parts[#parts + 1] = id .. (on and '=on' or '=off') end
+    return table.concat(parts, ',')
+end
+local UIV2_ON, UIV2_OFF = uiv2Text(true), uiv2Text(false)
 --- @param on boolean @return string
-local function uiv2Served(on) return on and 'locker=on,market=on' or 'locker=off,market=off' end
+local function uiv2Served(on) return on and UIV2_ON or UIV2_OFF end
 W.convars[BR.UIv2.SERVED] = uiv2Served(inForce == '2')
 
 -- THE MUTANT, for --check's proof that the heavy count sees what it is for (see

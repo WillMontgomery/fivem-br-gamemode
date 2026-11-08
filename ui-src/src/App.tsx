@@ -240,6 +240,9 @@ export default function App() {
   useNuiEvent('emotes',   (d) => dispatch().setEmotesOn(d.on === true))
   // THE SEASON 2 MARKET'S TAB DESIGN (#411): `brmarkettabs` on a dev box.
   useNuiEvent('markettabs', (d) => dispatch().setMarketTabs(typeof d.design === 'string' ? d.design : null))
+  // UI V2'S PIECES (#436) are not routed here: `uiv2` can land before this
+  // component subscribes, so main.tsx installs its handler at module load
+  // (bridge/uiv2.ts), as it does `diag`'s.
   // The warmup shop's plate, which is the ONLY thing that puts a Volts figure
   // on the HUD. A flag, not a balance -- see the envelope's note.
   useNuiEvent('shopplate', (d) => dispatch().setShopPlate(d.show === true))

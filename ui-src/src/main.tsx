@@ -6,6 +6,7 @@ import { installErrorSinks, isBrowser, reportEnvironment } from './bridge/nui'
 import { installLockGuard } from './tutorial/lockGuard'
 import { installDiag } from './bridge/diag'
 import { installLobbyTrack } from './audio/lobbyTrackInstall'
+import { installUiv2 } from './bridge/uiv2'
 
 // FONTS, SELF-HOSTED. Never a CDN: CEF has no network on a cold boot, and a
 // font that fails to arrive is worse than one that was never asked for -- it
@@ -70,6 +71,12 @@ installLobbyTrack()
 // Lua answers that report by arming them (dev mode only), and an envelope with
 // nobody subscribed is dropped. Subscribing is all this does until then.
 installDiag()
+
+// UI v2's pieces (#436), BEFORE the environment report for the same reason:
+// Lua answers it with the `uiv2` envelope, which can land before React has
+// mounted, and a piece that missed it would stay off until the next move. See
+// bridge/uiv2.ts.
+installUiv2()
 
 // Report what this CEF build can actually render. Colour functions in
 // particular differ enough between CEF versions to make a correct stylesheet

@@ -732,7 +732,17 @@ callback(BR.NuiCb.ENV, function(data)
     -- next thing that happens to push state before the lobby fills in.
     --
     -- This fires from the bundle's own module load, so it cannot be early.
+    --
+    -- UI V2 FIRST (#436): which pieces this machine holds, ahead of every
+    -- replay br:ui:ready asks for, so the page never draws a piece's screen
+    -- from its default while the answer is already here. After a br_ui
+    -- restart this is the only push the page gets (client/uiv2.lua). Guarded,
+    -- so nothing in it can keep br:ui:ready from going out; a raise is
+    -- reported by callback()'s own line once it has.
+    local okU, errU = true, nil
+    if BR.Ui.pushUiv2 then okU, errU = pcall(BR.Ui.pushUiv2) end
     TriggerEvent('br:ui:ready')
+    if not okU then error(errU, 0) end
     return { ok = true }
 end)
 

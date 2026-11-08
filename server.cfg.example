@@ -398,7 +398,11 @@ exec "tunables.cfg"
 
 # UI v2 (#436): the redone screens (br_lib/config/uiv2.lua), in any season.
 # Off when unset. A br_uiv2_<piece> line wins either way, and with none the
-# piece follows br_uiv2. bruiv2 on this console flips them live, on any box.
+# piece follows br_uiv2. bruiv2 on this console flips them live, on any box,
+# until FXServer restarts, a deploy's restart included: this file is what lasts.
+# A new piece follows br_uiv2 from the deploy that adds it, and shows from the
+# one that first draws it, so a box with br_uiv2 on that should not show a
+# piece yet needs set br_uiv2_<piece> off here.
 # set br_uiv2 on
 # set br_uiv2_market off
 
