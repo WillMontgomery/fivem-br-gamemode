@@ -1027,6 +1027,21 @@ export interface LockerPayload {
    *  takes the same disabled state every other unavailable control here has;
    *  there is no caption and no tooltip. Lua refuses the action regardless. */
   locked?: boolean
+  /** When that lock is planned to lift, in ms from THIS push (#423).
+   *
+   *  The loading screen's song plays on into the lobby and must be silent by
+   *  the moment the ped stops walking and the Locker unlocks (owner,
+   *  2026-10-30), and only br_core knows when that is. BR.Locker.push works it
+   *  out from the entrance's plan as it sends: when the walk starts, again when
+   *  the plan moves, and 0 when the camera has landed with the walk not begun
+   *  -- the unlock can come at any moment from then. Absent when Lua cannot
+   *  say, which includes every push with no entrance running.
+   *
+   *  A DURATION, CONVERTED ON RECEIPT. Lua's clock is GetGameTimer, which
+   *  shares no origin with any of the page's, so audio/lobbyTrackInstall.ts
+   *  hands it over as the push lands and the track counts it from that moment
+   *  on its own clock, replacing any deadline the song had. */
+  unlockInMs?: number
 }
 
 /**

@@ -5,6 +5,7 @@ import App from './App'
 import { installErrorSinks, isBrowser, reportEnvironment } from './bridge/nui'
 import { installLockGuard } from './tutorial/lockGuard'
 import { installDiag } from './bridge/diag'
+import { installLobbyTrack } from './audio/lobbyTrackInstall'
 
 // FONTS, SELF-HOSTED. Never a CDN: CEF has no network on a cold boot, and a
 // font that fails to arrive is worse than one that was never asked for -- it
@@ -58,6 +59,12 @@ installErrorSinks()
 // own capture listener on `window`, and the only listener that runs ahead of
 // all of them is one added before them. See tutorial/lockGuard.ts.
 installLockGuard()
+
+// The loading screen's song, carried on into the lobby (#423), BEFORE ANY
+// SCREEN MOUNTS: br_loadscreen posts its handoff on br_core's exit cue, once,
+// and a page with no listener yet would miss it for good -- the song would
+// stop at the cue as it did before. See audio/lobbyTrackInstall.ts.
+installLobbyTrack()
 
 // The cold line and the idle switches (#252), BEFORE the environment report:
 // Lua answers that report by arming them (dev mode only), and an envelope with

@@ -105,11 +105,19 @@ files {
     -- same reasoning: hand-written, no build step, loaded by URL
     -- (nui://br_ui/dui/static.html) by br_core/client/board.lua.
     --
-    -- IT IS HERE RATHER THAN IN br_core BECAUSE THIS RESOURCE HAS THE ui_page.
-    -- FiveM registers the nui scheme for a resource in ResourceUI::Create, and
-    -- br_core declares no ui_page at all; prompt.html has been served from this
-    -- resource since the first DUI, so this is the path known to work rather
-    -- than the one that ought to.
+    -- IT IS HERE BECAUSE prompt.html ALREADY WAS, NOT BECAUSE IT HAS TO BE.
+    -- This said FiveM registers a resource's nui scheme only for one with a
+    -- ui_page, and that has been out of date since FiveM b0d492e855
+    -- (2023-02-03, "register 'cfx-nui-*' for any resource"):
+    -- ResourceUI::Create registers https://cfx-nui-<name> before it looks for
+    -- a ui_page at all, and nui:// is registered once for every resource when
+    -- the browser starts. br_core could serve this page as well; moving a path
+    -- known to work buys nothing.
+    --
+    -- THE LOBBY TRACK RELIES ON IT (#423). The page fetches the loading
+    -- screen's song from https://cfx-nui-br_loadscreen/audio/loadingscreen.ogg
+    -- (ui-src/src/audio/lobbyTrackInstall.ts), and br_loadscreen declares a
+    -- loadscreen, not a ui_page.
     'dui/static.html',
 }
 

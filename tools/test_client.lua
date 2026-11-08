@@ -13231,6 +13231,230 @@ do
         BR.LockerV2 = nil
     end
 
+    -- ====================================================================== --
+    -- The song's deadline rides the fade cue (#423)
+    -- ====================================================================== --
+    --
+    -- Owner, 2026-10-30: the loading screen's song plays on into the lobby and
+    -- must not play past the moment the ped stops walking and the Locker
+    -- unlocks. The cue says how long that is, as musicEndsInMs, in JSON
+    -- client/loading.lua formats by hand -- so what is read here is the string
+    -- the native was handed, parsed back as JSON, and the exit's own timing
+    -- around it. WHEN the Locker unlocks is client/lobbyped.lua's, asserted
+    -- against a running entrance in tools/test_lobbyseq.lua (section 27, and
+    -- section 28 with the real loading.lua driving it); here the entrance is a
+    -- stub that records what it was asked.
+
+    --- A strict JSON reader: objects, arrays, strings, numbers in JSON's own
+    --- grammar, true/false/null, and nothing after the value -- enough to say
+    --- the cue IS JSON rather than that it looks like it. A number written
+    --- without a fraction or an exponent comes back a Lua integer, so "an
+    --- integer" is a question with an answer.
+    local NULL = {}
+    local function readJson(s)
+        local i = 1
+        local function fail(what) error(('%s at %d'):format(what, i), 0) end
+        local function ws() i = s:find('[^ \t\r\n]', i) or (#s + 1) end
+        local value
+        local function str()
+            local out = {}
+            i = i + 1
+            while true do
+                local c = s:sub(i, i)
+                if c == '' then fail('unterminated string') end
+                if c == '"' then i = i + 1 return table.concat(out) end
+                if c:byte() < 32 then fail('raw control character') end
+                if c == '\\' then
+                    local e = s:sub(i + 1, i + 1)
+                    local plain = ({ ['"'] = '"', ['\\'] = '\\', ['/'] = '/', b = '\b',
+                                     f = '\f', n = '\n', r = '\r', t = '\t' })[e]
+                    if plain then
+                        out[#out + 1] = plain
+                        i = i + 2
+                    elseif e == 'u' and s:sub(i + 2, i + 5):match('^%x%x%x%x$') then
+                        out[#out + 1] = '?'
+                        i = i + 6
+                    else
+                        fail('bad escape')
+                    end
+                else
+                    out[#out + 1] = c
+                    i = i + 1
+                end
+            end
+        end
+        local function num()
+            local j = i
+            if s:sub(j, j) == '-' then j = j + 1 end
+            local int = s:match('^0', j) or s:match('^[1-9]%d*', j)
+            if not int then fail('bad number') end
+            j = j + #int
+            local frac = s:match('^%.%d+', j)
+            if frac then j = j + #frac end
+            local exp = s:match('^[eE][-+]?%d+', j)
+            if exp then j = j + #exp end
+            local text = s:sub(i, j - 1)
+            i = j
+            if frac or exp then return tonumber(text) + 0.0 end
+            return math.tointeger(tonumber(text)) or fail('integer out of range')
+        end
+        function value()
+            ws()
+            local c = s:sub(i, i)
+            if c == '{' or c == '[' then
+                local close, out = (c == '{') and '}' or ']', {}
+                i = i + 1
+                ws()
+                if s:sub(i, i) == close then i = i + 1 return out end
+                while true do
+                    if c == '{' then
+                        ws()
+                        if s:sub(i, i) ~= '"' then fail('bad key') end
+                        local k = str()
+                        ws()
+                        if s:sub(i, i) ~= ':' then fail('missing colon') end
+                        i = i + 1
+                        out[k] = value()
+                    else
+                        out[#out + 1] = value()
+                    end
+                    ws()
+                    local d = s:sub(i, i)
+                    i = i + 1
+                    if d == close then return out end
+                    if d ~= ',' then fail('bad separator') end
+                end
+            elseif c == '"' then
+                return str()
+            elseif c == '-' or c:match('^%d$') then
+                return num()
+            end
+            local word = s:match('^%a+', i)
+            local lit = ({ ['true'] = true, ['false'] = false, ['null'] = NULL })[word or '']
+            if lit == nil then fail('unexpected text') end
+            i = i + #word
+            return lit
+        end
+        local v = value()
+        ws()
+        if i <= #s then fail('trailing text') end
+        return v
+    end
+
+    -- The harness's native returns true and reads nothing; this one keeps what
+    -- it was handed, and when.
+    local realSend = SendLoadingScreenMessage
+    local cues, cueAt, flipAt, watching = {}, nil, nil, true
+    SendLoadingScreenMessage = function(msg)
+        cues[#cues + 1] = msg
+        cueAt = cueAt or fakeTime
+        return true
+    end
+    -- worldReady flips in the frame this fires, which is the reveal.
+    AddEventHandler('br:screen:refresh', function()
+        if watching and flipAt == nil then flipAt = fakeTime end
+    end)
+
+    --- One fresh join with `lobbyPed` standing in for client/lobbyped.lua.
+    --- @return string|nil cue, table|nil read (nil if it is not JSON), string why
+    local function joinWith(lobbyPed)
+        cues, cueAt, flipAt = {}, nil, nil
+        join(function() BR.LobbyPed = lobbyPed end)
+        pump(5000)
+        BR.LobbyPed = nil
+        local okj, got = pcall(readJson, cues[1] or '')
+        return cues[1], okj and got or nil, okj and '' or tostring(got)
+    end
+
+    --- An entrance stub: the given lead, and an answer worked out from what it
+    --- was asked; `asked` records the reveal it was given.
+    local asked
+    local function entrance(lead, answer)
+        asked = nil
+        return {
+            focusAhead = function() return lead end,
+            unlockInMs = function(revealIn)
+                asked = revealIn
+                return answer(revealIn)
+            end,
+        }
+    end
+
+    describe('the fade cue carries the song\'s deadline: an entrance running')
+    do
+        -- The reveal a second off (the focus lead) and an 18 s walk planned
+        -- from it: the deadline is the two together.
+        local cue, read, why = joinWith(entrance(1000, function(r) return r + 18000 end))
+        ok(#cues == 1, 'one cue', ('%d sent'):format(#cues))
+        ok(read ~= nil, 'and it is JSON', tostring(cue) .. ' ' .. why)
+        ok(read and read.eventName == 'br:fadeText',
+           'the same event the loading screen has always listened for', tostring(cue))
+        ok(read and math.type(read.musicEndsInMs) == 'integer' and read.musicEndsInMs == 19000,
+           'carrying musicEndsInMs as an integer: the reveal plus the walk', tostring(cue))
+        ok(asked == 1000 and cueAt and flipAt and flipAt - cueAt == asked,
+           'the reveal it was planned from is the reveal that happened: worldReady flips that long after the cue',
+           ('asked %s, the flip came %s ms after the cue')
+               :format(tostring(asked), tostring(flipAt and cueAt and flipAt - cueAt)))
+        ok(shut.screen == 1 and BR.State.worldReady == true,
+           'and the screen comes down as it always did',
+           ('shutdowns=%d worldReady=%s'):format(shut.screen, tostring(BR.State.worldReady)))
+        ok(said('musicEndsInMs=19000'), 'and the console says what was sent', table.concat(logged, '\n'))
+
+        -- A FRACTION IS NOT AN INTEGER, and %d would refuse it: it is floored.
+        cue, read = joinWith(entrance(1000, function(r) return r + 18000.75 end))
+        ok(read and math.type(read.musicEndsInMs) == 'integer' and read.musicEndsInMs == 19000,
+           'a fractional answer goes out as a whole number of ms', tostring(cue))
+    end
+
+    describe('the fade cue carries the song\'s deadline: no entrance')
+    do
+        -- NOTHING WILL UNLOCK, so the song goes with the lobby's own fade-in:
+        -- the reveal plus its 700 ms (ui-src/src/screens/Lobby.tsx).
+        local cue, read, why = joinWith(nil)
+        ok(read ~= nil and read.eventName == 'br:fadeText', 'still the same JSON cue',
+           tostring(cue) .. ' ' .. why)
+        local reveal = (cueAt and flipAt) and (flipAt - cueAt) or nil
+        ok(reveal == 650, 'precondition: with no lead the reveal is the shutdown and the beat',
+           tostring(reveal))
+        ok(read and math.type(read.musicEndsInMs) == 'integer' and reveal
+           and read.musicEndsInMs == reveal + 700,
+           'musicEndsInMs is the end of the lobby\'s fade-in', tostring(cue))
+
+        -- An entrance that is not running answers no lead and no deadline.
+        cue, read = joinWith(entrance(0, function() return nil end))
+        ok(asked == 650 and read and read.musicEndsInMs == 1350,
+           'and an entrance with nothing to say gets the same', ('asked %s, %s')
+               :format(tostring(asked), tostring(cue)))
+    end
+
+    describe('the exit never depends on the music')
+    do
+        -- AN ACCESSOR THAT THROWS sends the plain cue this file always sent, and
+        -- the screen still comes down on its own clock.
+        local cue, read = joinWith(entrance(1000, function() error('boom') end))
+        ok(cue == '{"eventName":"br:fadeText"}', 'a throwing accessor still sends the plain cue',
+           tostring(cue))
+        ok(read and read.eventName == 'br:fadeText' and read.musicEndsInMs == nil,
+           'which is JSON with no deadline in it', tostring(cue))
+        ok(shut.screen == 1 and BR.State.worldReady == true and cueAt and flipAt
+           and flipAt - cueAt == 1000,
+           'and the screen comes down, and the lobby fades in, exactly when they would have',
+           ('shutdowns=%d worldReady=%s flip %s ms after the cue')
+               :format(shut.screen, tostring(BR.State.worldReady),
+                       tostring(flipAt and cueAt and flipAt - cueAt)))
+        ok(said('errored') and said('plain cue'), 'and the console says why', table.concat(logged, '\n'))
+
+        -- AND SO DOES AN ANSWER THAT IS NOT A DURATION.
+        for _, bad in ipairs({ 'soon', -1, 0 / 0, math.huge, {} }) do
+            cue = joinWith(entrance(1000, function() return bad end))
+            ok(cue == '{"eventName":"br:fadeText"}',
+               ('an answer of %s sends the plain cue'):format(tostring(bad)), tostring(cue))
+        end
+    end
+
+    watching = false
+    SendLoadingScreenMessage = realSend
+
     -- ------------------------------------------------------------ teardown ---
 
     Citizen         = prev.Citizen

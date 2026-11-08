@@ -157,7 +157,7 @@ Eight resources under `resources/[fivem-royale]/`, started in this order by
 | `br_core` | Yes | All gameplay, client and server. One Lua state, one loop registry. |
 | `br_environment` | Yes | World state: IPL loading and the Cayo Perico lobby island (home of the pre-match lobby; released back to the streamer once a match is live). Will grow into the streamed-asset container. |
 | `br_ui` | Yes | The NUI page and the only file that touches `SetNuiFocus`. |
-| `br_loadscreen` | Yes | The loading screen. Shuts down manually rather than on a timer: `br_core` holds it open until the world is genuinely ready and choreographs the handoff onto the lobby's identical backdrop. |
+| `br_loadscreen` | Yes | The loading screen: a carousel of stills under a broadcast-style lower third, and the owner's track with M to mute. Shuts down manually rather than on a timer: `br_core` holds it open until the world is genuinely ready, the song carries on into the lobby (`br_ui`) and is silent before the Locker unlocks, and the screen fades onto the lobby's identical backdrop. `py tools/loadscreen_shots.py <images>` makes the stills. |
 | `br_ddb` | Yes | The only path to AWS — ban checks at connect, grants, profiles, stats and filing incidents in DynamoDB, and putting artifact frames in S3. Runs on Node 22 rather than FXServer's bundled Node, which the AWS SDK bundle requires. |
 | `br_stats` | Yes | Match results, XP and Volts, persisted to DynamoDB through `br_ddb`. Degrades to "no stats" rather than taking the match down. |
 | `br_ringmaster` | Yes | The game-side half of the moderation console: pushes state out and executes admin verbs. Server-only by design — nothing here ever puts a pixel on a player's screen. |

@@ -60,6 +60,17 @@ AddEventHandler('br:ui:ready', function() uiReady = true end)
 --- anyway and the wait would have bought nothing.
 local PED_WAIT_MS = 8000
 
+--- THE EXIT'S OWN CLOCK, named once because the song's deadline is worked out
+--- from it (#423, fadeCue below) and a wait retimed without it would move the
+--- reveal out from under that deadline. The screen comes down SHUTDOWN_MS
+--- after the fade cue, the lobby holds one BEAT_MS on pure purple, and then
+--- worldReady flips -- no sooner than the streaming focus's lead -- and starts
+--- the lobby's own LOBBY_FADE_MS fade-in (ui-src/src/screens/Lobby.tsx,
+--- duration-700), which is this file's to wait out but not its to set.
+local SHUTDOWN_MS = 500
+local BEAT_MS = 150
+local LOBBY_FADE_MS = 700
+
 --- Season 1's character as the model hash the gate waits for, and the model
 --- that was on the player when it was worked out. See lobbyPedPending for why
 --- the second is what decides when it is worked out again (#409).
@@ -166,12 +177,16 @@ local function lobbyPedPending()
 
     -- AND THE ENTRANCE HAS TO HAVE ITS PED ON ITS OWN MARK (owner, 2026-08-29).
     --
-    -- The lobby ped walks in now, and the owner's choreography has that walk
-    -- STARTING under this screen -- the reveal happens partway through it, with
-    -- the camera already flying. So the two things this gate has to know are
-    -- both questions for client/lobbyped.lua rather than for this file: whether
-    -- the walk has begun, and where the ped is supposed to be standing when it
-    -- has (the START of the path, not the lobby spot).
+    -- The lobby ped walks in now, and it is PLACED under this screen: it stands
+    -- frozen on the start of its path while the screen is up, because the walk
+    -- and the camera flight both wait for the reveal (client/lobbyped.lua's
+    -- awaitReveal). On an ordinary boot they start together about a second
+    -- after the fade cue below, as worldReady flips and the lobby fades in;
+    -- only a screen held past revealWaitMs sends the camera off under it. So
+    -- the two things this gate has to know are both questions for
+    -- client/lobbyped.lua rather than for this file: whether the entrance has
+    -- placed its ped, and where that ped is supposed to be standing (the START
+    -- of the path, not the lobby spot).
     --
     -- IT FAILS OPEN LIKE EVERY OTHER HALF HERE. revealBlock() is bounded by its
     -- own arm wait and answers nil once that expires, and the entrance tick
@@ -200,6 +215,41 @@ local function lobbyPedPending()
     end
 
     return nil
+end
+
+--- The fade cue, carrying when the song has to be silent (#423).
+---
+--- THE SONG CARRIES ON INTO THE LOBBY, AND ONLY THIS SIDE KNOWS FOR HOW LONG.
+--- br_loadscreen hands its track to br_ui on this cue, and the owner's rule is
+--- that it must not play past the moment the ped stops walking and the Locker
+--- unlocks (2026-10-30). So the cue says how long that is from now, as
+--- musicEndsInMs, and the pages put it on their own clock: GetGameTimer is not
+--- their Date.now, which is why it is a duration and not a time.
+---
+--- WHEN THE SCREEN IS UNCOVERED IS THIS FILE'S HALF. worldReady flips
+--- SHUTDOWN_MS plus BEAT_MS after the cue, or when the focus's lead runs out if
+--- that is later -- the waits below, in that order. The rest is the entrance's:
+--- BR.LobbyPed.unlockInMs plans its walk from that moment and answers nil when
+--- no entrance is running, and then nothing will unlock and the song goes with
+--- the lobby's fade-in.
+---
+--- FORMATTED BY HAND, AS AN INTEGER: the JSON this cue always was, one field
+--- longer. Anything that is not a duration is an error, and the caller sends
+--- the plain cue for it.
+--- @param lead number  the streaming focus's lead, ms
+--- @return string cue, integer ms
+local function fadeCue(lead)
+    local revealIn = math.max(lead, SHUTDOWN_MS + BEAT_MS)
+    local ms = nil
+    if BR.LobbyPed and BR.LobbyPed.unlockInMs then
+        ms = BR.LobbyPed.unlockInMs(revealIn)
+    end
+    if ms == nil then ms = revealIn + LOBBY_FADE_MS end
+    if type(ms) ~= 'number' or ms ~= ms or ms < 0 or ms >= math.huge then
+        error(('not a duration: %s'):format(tostring(ms)), 0)
+    end
+    ms = math.floor(ms)
+    return ('{"eventName":"br:fadeText","musicEndsInMs":%d}'):format(ms), ms
 end
 
 Citizen.CreateThread(function()
@@ -316,13 +366,27 @@ Citizen.CreateThread(function()
     end
     local revealAt = GetGameTimer() + lead
 
-    -- Text out (the glow stays). The result is LOGGED: if this channel ever
-    -- fails the exit degrades to a cut, and the console should say which
-    -- half was at fault rather than leaving it to timing forensics.
-    local ok, sent = pcall(SendLoadingScreenMessage, '{"eventName":"br:fadeText"}')
-    print(('[br_core] loading: fade cue %s')
-        :format(ok and ('delivered=' .. tostring(sent)) or 'native unavailable'))
-    Citizen.Wait(500)
+    -- Text out (the glow stays), and the song's deadline with it (fadeCue).
+    -- The result is LOGGED: if this channel ever fails the exit degrades to a
+    -- cut, and the console should say which half was at fault rather than
+    -- leaving it to timing forensics.
+    --
+    -- THE EXIT NEVER DEPENDS ON THE MUSIC. Anything wrong in working the
+    -- deadline out sends the cue this file always sent, on time, and the song
+    -- still stops: on the Locker's unlock while an entrance runs, or, with
+    -- nothing to unlock, on br_ui's own fade at the reveal
+    -- (ui-src/src/audio/lobbyTrack.ts).
+    local okc, cue, endsIn = pcall(fadeCue, lead)
+    if not okc then
+        print(('[br_core] loading: the song\'s deadline errored (%s) -- plain cue')
+            :format(tostring(cue)))
+        cue, endsIn = '{"eventName":"br:fadeText"}', nil
+    end
+    local ok, sent = pcall(SendLoadingScreenMessage, cue)
+    print(('[br_core] loading: fade cue %s, musicEndsInMs=%s')
+        :format(ok and ('delivered=' .. tostring(sent)) or 'native unavailable',
+                tostring(endsIn)))
+    Citizen.Wait(SHUTDOWN_MS)
 
     -- The reveal. Behind this is the lobby on its opaque twin backdrop,
     -- menu still transparent (worldReady false). If some earlier fade left
@@ -334,7 +398,7 @@ Citizen.CreateThread(function()
     print('[br_core] loading: screen released to the lobby')
 
     -- One beat on pure purple, then the double fade: menu in, world in.
-    Citizen.Wait(150)
+    Citizen.Wait(BEAT_MS)
 
     -- ...AND NOT BEFORE THE STREAMING FOCUS HAS HAD ITS LEAD. Everything above
     -- has already spent most of it; this is the remainder, and it is zero

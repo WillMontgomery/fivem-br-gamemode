@@ -5876,6 +5876,586 @@ do
     reset()
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 27. #423: WHEN THE LOCKER IS PLANNED TO UNLOCK, WHICH IS THE SONG'S DEADLINE
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-30: the loading screen's song carries on into the lobby, and
+-- it must not play past the moment the ped stops walking and the Locker
+-- unlocks. BR.LobbyPed.unlockInMs is when the plan puts that moment;
+-- client/loading.lua sends it in its exit cue (tools/test_client.lua reads
+-- the cue) and client/locker.lua carries it on every push.
+--
+-- MEASURED AGAINST THE UNLOCK THIS FIXTURE ACTUALLY PRODUCES, not against the
+-- plan. Every road below sets what was said -- at the cue, or on a push --
+-- beside the frame the push carrying locked = false went out, which is the
+-- page's own net. A deadline is kept when it lands on that frame or a little
+-- before it: a song that stops a poll early keeps the rule, one that stops a
+-- poll late breaks it.
+
+--- Every Locker push of one entrance, as the page hears it. Only this
+--- section listens; `hearing` is off outside it.
+local heard, hearing = {}, false
+AddEventHandler('br:ui:sendLocal', function(kind, d)
+    if not hearing or kind ~= BR.Nui.LOCKER or type(d) ~= 'table' then return end
+    heard[#heard + 1] = { at = fakeTime, locked = d.locked == true, ms = d.unlockInMs }
+end)
+
+--- One entrance, heard from the page's side. opts:
+---   covered   the boot: the screen is up until `revealIn` (1000) after a cue
+---             that comes `cueAfter` (500) after begin(); else uncovered
+---   readyMs   the chosen ped lands this long after the flight starts (#406)
+---   readyAfterBegin  ...or this long after begin(), for a ped that has to
+---             land before a late cue
+---   winner    a winning return
+---   probes    ms after the flight starts to ask unlockInMs() at
+--- @return table  begin, cue, flight0, walk0 (nil when no leg was walked),
+---         said/bare (unlockInMs with and without the reveal, at the cue),
+---         asked { at, ms }, pushes (as heard), unlock (the push that unlocked)
+local function deadlineRun(opts)
+    opts = opts or {}
+    reset()
+    BR.State.worldReady = not opts.covered
+    if opts.readyMs or opts.readyAfterBegin then
+        ped.model = GetHashKey('player_zero')
+    else
+        wearChosenModel()
+    end
+    if opts.winner then
+        TriggerEvent('br:ui:sendLocal', BR.Nui.SUMMARY, { won = true, placement = 1 })
+        BR.LobbyPed.rearm()
+    end
+    order, logged = {}, {}
+    heard, hearing = {}, true
+    local r = { asked = {} }
+
+    for _ = 1, 40 do
+        pump(50)
+        if BR.LobbyPed.entering() then r.begin = fakeTime break end
+    end
+    if opts.readyAfterBegin then
+        Citizen.SetTimeout(opts.readyAfterBegin, function()
+            pedHandle = pedHandle + 1
+            wearChosenModel()
+        end)
+    end
+
+    if opts.covered then
+        local revealIn = opts.revealIn or 1000
+        pump(opts.cueAfter or 500)
+        r.cue = fakeTime
+        r.bare = BR.LobbyPed.unlockInMs()
+        r.said = BR.LobbyPed.unlockInMs(revealIn)
+        Citizen.SetTimeout(revealIn, function() BR.State.worldReady = true end)
+    end
+
+    -- The flight's first move is issued in the frame flightBegan is written.
+    for _ = 1, 600 do
+        if firstOf('camglide') then break end
+        pump(50)
+    end
+    local _, glide = firstOf('camglide')
+    r.flight0 = glide and glide.at
+    if r.flight0 then
+        if opts.readyMs then
+            Citizen.SetTimeout(r.flight0 + opts.readyMs - fakeTime, function()
+                pedHandle = pedHandle + 1
+                wearChosenModel()
+            end)
+        end
+        for _, ms in ipairs(opts.probes or {}) do
+            Citizen.SetTimeout(r.flight0 + ms - fakeTime, function()
+                r.asked[#r.asked + 1] = { at = fakeTime, ms = BR.LobbyPed.unlockInMs() }
+            end)
+        end
+    end
+    pump(45000)
+
+    local _, task = firstOf('task')
+    r.walk0 = task and task.at
+    r.pushes = heard
+    for _, p in ipairs(heard) do
+        if not p.locked then r.unlock = p break end
+    end
+    hearing = false
+    return r
+end
+
+--- The pushes of `r` that carried a deadline while the Locker was locked.
+local function deadlines(r)
+    local out = {}
+    for _, p in ipairs(r.pushes) do
+        if p.locked and p.ms ~= nil then out[#out + 1] = p end
+    end
+    return out
+end
+
+-- THE SLACK, AND ONLY ON ONE SIDE. The arrival is polled every 50 ms and the
+-- walk wakes on its own poll after the flight, so the real unlock lands a poll
+-- or two AFTER the deadline (measured here: 50 ms on time, late and flipped,
+-- 100 ms when the flight gave up on the cover) -- the 0 to 0.15 s the timing
+-- audit for #423 expected. Never before it: that would be the song still
+-- playing when the Locker unlocks.
+local SLACK_MS = 150
+
+--- How far after the deadline `said` (given at `at`) the Locker really unlocked.
+local function lateBy(r, at, said)
+    if not (r.unlock and at and said) then return nil end
+    return r.unlock.at - (at + said)
+end
+
+do
+    local C = BR.Config.Match.lobbyEntrance
+
+    -- ═══ (a) NO ENTRANCE, NO DEADLINE ═══
+    reset()
+    ok(BR.LobbyPed.unlockInMs() == nil and BR.LobbyPed.unlockInMs(1000) == nil,
+       'nothing running: no deadline, whatever the caller knows about the screen')
+    heard, hearing = {}, true
+    TriggerEvent('br:ui:ready')
+    hearing = false
+    ok(#heard == 1 and heard[1].ms == nil and heard[1].locked == false,
+       'and the Locker\'s ready push carries none -- the field is absent, not 0')
+
+    -- ═══ (b) THE BOOT: SAID AT THE CUE, WITH THE SCREEN STILL UP ═══
+    --
+    -- The cue comes half a second after begin() and the reveal a second after
+    -- the cue: client/loading.lua's own numbers (its focus lead), and the
+    -- flight and the walk both start on that reveal.
+    local boot = deadlineRun({ covered = true })
+    local onWalk = deadlines(boot)[1]
+    local planned = onWalk and onWalk.ms
+    -- Every road below compares against it; if it never came, they go on with
+    -- the target rather than stopping the suite on arithmetic with a nil.
+    local plan = planned or C.walkTargetMs
+    ok(boot.flight0 == boot.cue + 1000 and boot.walk0 == boot.flight0,
+       'precondition: the flight and the walk both wait for the reveal, a second after the cue')
+    ok(boot.bare == nil,
+       'at the cue, asked without the reveal: nil -- the flight has not started and nothing says when it will')
+    ok(planned and math.abs(planned - C.walkTargetMs) <= 1,
+       ('precondition: on time, the walk\'s start says the whole plan (%s ms)'):format(tostring(planned)))
+    ok(boot.said and planned and boot.said == 1000 + planned,
+       ('asked with the reveal: the reveal plus the whole walk (%s ms, today\'s 19000)')
+           :format(tostring(boot.said)))
+    local late = lateBy(boot, boot.cue, boot.said)
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and the Locker unlocks %s ms after that deadline, never before it'):format(tostring(late)))
+
+    -- THE PUSHES, AND NOTHING PER FRAME: the lock, the walk's start, the unlock.
+    local p = boot.pushes
+    ok(#p == 3, ('three Locker pushes in the whole entrance, not one a frame (%d)'):format(#p))
+    ok(p[1] and p[1].locked and p[1].ms == nil,
+       'the lock\'s own push, at begin(), carries no deadline: the flight has not started')
+    ok(p[2] and p[2].locked and p[2].at == boot.walk0 and p[2].ms == planned,
+       'the walk\'s start pushes the deadline, in the frame it starts')
+    ok(p[3] and not p[3].locked and p[3].ms == nil,
+       'and the unlock\'s push carries none: nothing is left to wait for')
+
+    -- ═══ (c) THE SCREEN OUTLASTS THE FLIGHT'S OWN WAIT ═══
+    --
+    -- A cue 9.5 s after begin(): the flight gives up on the cover at
+    -- revealWaitMs and flies under it, half a second before the reveal, so the
+    -- deadline is the flight's plan rather than the reveal's.
+    local held = deadlineRun({ covered = true, cueAfter = 9500 })
+    ok(held.flight0 and held.flight0 < held.cue + 1000,
+       'precondition: the camera flew under the screen before the reveal')
+    ok(held.said and planned and held.said < 1000 + planned,
+       ('so the cue says less than the reveal plus the walk (%s ms)'):format(tostring(held.said)))
+    late = lateBy(held, held.cue, held.said)
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and the Locker unlocks %s ms after it, never before'):format(tostring(late)))
+
+    -- ═══ (d) A PED NOT READY WHEN THE CAMERA STARTED (#406) ═══
+    --
+    -- The flight has begun and the walk has not: the plan is counted from the
+    -- flight, which is where a late ped is placed to catch up with it.
+    local lateRun = deadlineRun({ readyMs = 5000, probes = { 2000, 4000 } })
+    local a1, a2 = lateRun.asked[1], lateRun.asked[2]
+    ok(a1 and a2 and planned and a1.at + a1.ms == lateRun.flight0 + planned
+       and a2.at + a2.ms == lateRun.flight0 + planned,
+       'before its walk: the flight\'s start plus the plan, asked at any moment')
+    local lw = deadlines(lateRun)[1]
+    ok(lw and lw.at == lateRun.walk0 and lw.at - lateRun.flight0 >= 5000,
+       'the late ped\'s walk pushes the deadline when it starts')
+    ok(lw and planned and lw.at + lw.ms == lateRun.flight0 + planned,
+       ('placed along the path, it says the same moment: what it skipped is taken off (%s ms)')
+           :format(tostring(lw and lw.ms)))
+    late = lateBy(lateRun, lw and lw.at, lw and lw.ms)
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and the Locker unlocks %s ms after it, never before'):format(tostring(late)))
+    ok(#lateRun.pushes == 3, ('three pushes (%d)'):format(#lateRun.pushes))
+
+    -- ═══ (e) THE CAMERA LANDS BEFORE THE WALK STARTS ═══
+    --
+    -- THE ONE ROAD WHERE THE ARRIVAL BEATS THE PLAN. A ped ready after the
+    -- landing is put straight on the mark, seconds before the plan, so the
+    -- landing says 0 -- the unlock can come at any moment from there -- and
+    -- says it first.
+    local realWait = C.modelWaitMs
+    C.modelWaitMs = 60000
+    local landedRun = deadlineRun({ readyMs = C.camFlightMs + 1000,
+                                    probes = { 2000, C.camFlightMs + 500 } })
+    C.modelWaitMs = realWait
+    ok(landedRun.walk0 == nil and landedRun.unlock ~= nil,
+       'precondition: no leg walked, and the ped was put on the mark')
+    local lp = deadlines(landedRun)[1]
+    ok(lp and lp.ms == 0 and lp.at >= landedRun.flight0 + C.camFlightMs
+       and lp.at <= landedRun.flight0 + C.camFlightMs + 50,
+       ('the landing pushes a deadline of 0, in the poll it lands (%s ms in, said %s)')
+           :format(tostring(lp and lp.at - landedRun.flight0), tostring(lp and lp.ms)))
+    ok(lp and landedRun.unlock and lp.at <= landedRun.unlock.at,
+       'before the Locker unlocks, so the song is already going when it does')
+    local after = landedRun.asked[2]
+    ok(after and after.ms == 0, 'and asked after the landing, it is still 0')
+    ok(#landedRun.pushes == 3, ('three pushes: the lock, the landing, the unlock (%d)')
+        :format(#landedRun.pushes))
+
+    -- ...AND AT A CUE THAT COMES UNDER A FLIGHT FLOWN UNDER THE SCREEN. Only a
+    -- screen held past revealWaitMs plus the whole flight gets here, with a
+    -- ped still not ready -- but it is the cue's half of the same road.
+    --
+    -- A LANDING STILL TO COME, BEFORE THE REVEAL: the walk cannot start before
+    -- the reveal, so it starts after the landing and the ped goes straight on
+    -- the mark -- the deadline is the reveal, not the plan seconds later.
+    C.modelWaitMs = 60000
+    local coming = deadlineRun({ covered = true, cueAfter = C.revealWaitMs + C.camFlightMs - 500,
+                                 readyAfterBegin = C.revealWaitMs + C.camFlightMs + 2000 })
+    ok(coming.flight0 and coming.cue < coming.flight0 + C.camFlightMs
+       and coming.cue + 1000 > coming.flight0 + C.camFlightMs and coming.walk0 == nil,
+       'precondition: the cue comes before a landing that comes before the reveal, and no leg is walked')
+    ok(coming.said == 1000, ('the cue says the reveal (%s ms)'):format(tostring(coming.said)))
+    late = lateBy(coming, coming.cue, coming.said)
+    ok(late and late >= 0, ('and the Locker unlocks %s ms after it, never before'):format(tostring(late)))
+
+    -- A LANDING ALREADY PAST: 0, even with the reveal a second off. The walk's
+    -- own wait for the reveal runs from its ped being ready and can run out
+    -- first, under the screen: here the ped was ready long enough before the
+    -- cue that its wait runs out 600 ms after it, ahead of the reveal.
+    local lateCue = C.revealWaitMs + C.camFlightMs + 600
+    local landedUnder = deadlineRun({ covered = true, cueAfter = lateCue,
+                                      readyAfterBegin = lateCue + 600 - C.revealWaitMs })
+    C.modelWaitMs = realWait
+    ok(landedUnder.flight0 and landedUnder.cue > landedUnder.flight0 + C.camFlightMs
+       and landedUnder.walk0 == nil,
+       'precondition: the camera landed under the screen before the cue, and no leg is walked')
+    ok(landedUnder.said == 0, ('the cue says 0 (%s ms)'):format(tostring(landedUnder.said)))
+    late = lateBy(landedUnder, landedUnder.cue, landedUnder.said)
+    ok(late and late >= 0 and late < 1000,
+       ('and the Locker unlocks %s ms after it, before the reveal'):format(tostring(late)))
+
+    -- ═══ (f) THE WINNER'S FLIP MOVES THE ARRIVAL, AND THE PUSH SAYS SO ═══
+    local win = deadlineRun({ winner = true })
+    local ws = deadlines(win)
+    local _, turn = firstOf('turn')
+    ok(#ws == 2 and turn ~= nil, ('precondition: the walk and the flip each pushed (%d), and it turned to flip'):format(#ws))
+    local w1, w2 = ws[1], ws[2]
+    ok(w1 and planned and w1.ms == planned,
+       'at the walk\'s start the flip is not counted: it has not played')
+    local pause = (w2 and turn) and (w2.at - turn.at)
+    ok(w1 and w2 and pause and pause > 0 and (w2.at + w2.ms) - (w1.at + w1.ms) == pause,
+       ('the push after it moves the deadline by exactly the pause (%s ms)'):format(tostring(pause)))
+    late = lateBy(win, w2 and w2.at, w2 and w2.ms)
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and the Locker unlocks %s ms after it, never before'):format(tostring(late)))
+    ok(#win.pushes == 4, ('four pushes: the lock, the walk, the flip, the unlock (%d)'):format(#win.pushes))
+
+    -- ═══ (g) NEVER NEGATIVE ═══
+    --
+    -- The walk on time, asked through to its arrival; then a ped slower than
+    -- the plan believes (17d's knob), asked after the plan has run out and
+    -- before the failsafe places it.
+    local onTime = deadlineRun({ probes = { 100, plan - 50, plan, plan + 50 } })
+    local seen = {}
+    for _, q in ipairs(onTime.asked) do seen[#seen + 1] = tostring(q.ms) end
+    ok(#onTime.asked == 4 and onTime.asked[1].ms == plan - 100 and onTime.asked[2].ms == 50
+       and onTime.asked[3].ms == 0 and (onTime.asked[4].ms == 0 or onTime.asked[4].ms == nil),
+       ('counting down to the arrival and stopping at 0: %s'):format(table.concat(seen, ', ')))
+
+    local realMps, realMin = C.walkMps, C.walkBlendMin
+    C.walkMps, C.walkBlendMin = 5.0, 0.2
+    local slow = deadlineRun({ probes = { 1000, C.camFlightMs + 3000 } })
+    C.walkMps, C.walkBlendMin = realMps, realMin
+    local sw = deadlines(slow)[1]
+    local overdue = slow.asked[2]
+    ok(sw and slow.unlock and slow.unlock.at > sw.at + sw.ms + 1000,
+       'precondition: a ped slower than the plan arrives long after its deadline')
+    ok(overdue and overdue.ms == 0,
+       ('asked once the plan has run out and the ped is still walking: 0, not %s')
+           :format(tostring(overdue and overdue.ms)))
+
+    -- ═══ (h) A REVEAL THAT IS NOT A DURATION, AND A CONFIG IT CANNOT READ ═══
+    reset()
+    BR.State.worldReady = false
+    wearChosenModel()
+    pump(300)
+    ok(BR.LobbyPed.entering() and not BR.LobbyPed.walking(),
+       'precondition: an entrance waiting under the screen')
+    ok(BR.LobbyPed.unlockInMs(-500) == plan,
+       'a reveal already due counts as now: the plan from now, never less')
+    ok(BR.LobbyPed.unlockInMs(0 / 0) == nil and BR.LobbyPed.unlockInMs(math.huge) == nil
+       and BR.LobbyPed.unlockInMs('1000') == nil,
+       'a reveal that is not a duration counts as not knowing: nil')
+
+    -- IT NEVER THROWS. The push reads it, and setLocked's push is inside
+    -- stop(): an error here would be an entrance that cannot end. So a config
+    -- it cannot do arithmetic on costs the estimate and nothing else -- asked
+    -- here with the flight flying and the walk waiting for its ped, which is
+    -- the road that reaches camFlightMs.
+    reset()
+    BR.State.worldReady = true
+    ped.model = GetHashKey('player_zero')
+    pump(300)
+    ok(firstOf('camglide') ~= nil and not BR.LobbyPed.walking(),
+       'precondition: the camera is flying and the walk is waiting for its ped')
+    local realFlight = C.camFlightMs
+    C.camFlightMs = 'fourteen seconds'
+    logged = {}
+    local okCall, got = pcall(BR.LobbyPed.unlockInMs)
+    heard, hearing = {}, true
+    local okPush = pcall(TriggerEvent, 'br:ui:ready')
+    hearing = false
+    C.camFlightMs = realFlight
+    ok(okCall and got == nil, 'a config it cannot do arithmetic on: nil, not an error')
+    ok(said('unlock estimate errored'), 'and the console says why')
+    ok(okPush and #heard == 1 and heard[1].locked and heard[1].ms == nil,
+       'and the push that asked still goes out, carrying the lock')
+
+    reset()
+    BR.State.worldReady = true
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 28. #423: THE BOOT'S CUE AND THE ENTRANCE'S UNLOCK, IN ONE RUN
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Section 27 asks the entrance with a reveal it picked itself, and
+-- tools/test_client.lua reads the cue with the entrance stubbed. The rule
+-- lives between those two halves: the reveal client/loading.lua works the cue
+-- out from has to be the reveal it then makes, and the deadline the page holds
+-- -- the cue's, replaced by every later push that carries one -- has to come
+-- no later than the push that unlocks. So here the real client/loading.lua
+-- runs a fresh join over this fixture, against the real entrance, from its
+-- first poll to the unlock.
+--
+-- LOADED AFRESH FOR EVERY ROAD, with the loading screen reported up. Its boot
+-- thread is the subject, and the chunk only starts one when it finds the
+-- screen still there: a br_core restart under a live world returns at once.
+
+do
+    local C = BR.Config.Match.lobbyEntrance
+
+    -- THE NATIVES ONLY THE EXIT CALLS. The cue goes into the same record as
+    -- the Locker's pushes, so which word came last is read off one list.
+    function DoesEntityExist() return 1 end
+    function SendLoadingScreenMessage(msg)
+        if hearing then heard[#heard + 1] = { at = fakeTime, cue = msg } end
+        return true
+    end
+    -- worldReady flips in the frame this fires, which is the reveal.
+    local flipAt = nil
+    AddEventHandler('br:screen:refresh', function()
+        if hearing and flipAt == nil then flipAt = fakeTime end
+    end)
+
+    --- One fresh join through the real exit. opts:
+    ---   cfg         lobbyEntrance overrides for this road
+    ---   uiAfter     ms before the page says it is ready (0)
+    ---   readyAfter  the chosen ped lands this long into the join (#406)
+    ---   noEntrance  the entrance has had its run, so none starts
+    ---   runMs       how long to follow it (35000)
+    --- @return table  cue { at, ms } (ms nil when it carried none), cues,
+    ---         flip, flight0, walk0 (nil when no leg was walked), pushes (as
+    ---         heard, the cue among them), unlock (the push that lifted a
+    ---         lock), held (the deadline the page held when it came)
+    local function bootRoad(opts)
+        opts = opts or {}
+        reset()
+        local saved = {}
+        for k, v in pairs(opts.cfg or {}) do saved[k] = C[k]; C[k] = v end
+        if opts.readyAfter then ped.model = GetHashKey('player_zero') else wearChosenModel() end
+        if opts.noEntrance then BR.LobbyPed.stop('test: the entrance has had its run') end
+        order, logged = {}, {}
+        heard, hearing, flipAt = {}, true, nil
+
+        local realActive = GetIsLoadingScreenActive
+        GetIsLoadingScreenActive = function() return 1 end
+        loadAll({ 'br_core/client/loading.lua' })
+        GetIsLoadingScreenActive = realActive
+
+        if opts.readyAfter then
+            Citizen.SetTimeout(opts.readyAfter, function()
+                pedHandle = pedHandle + 1
+                wearChosenModel()
+            end)
+        end
+        Citizen.SetTimeout(opts.uiAfter or 0, function() TriggerEvent('br:ui:ready') end)
+        pump(opts.runMs or 35000)
+        hearing = false
+        for k, v in pairs(saved) do C[k] = v end
+
+        local r = { pushes = heard, cues = 0, flip = flipAt }
+        local _, glide = firstOf('camglide')
+        local _, task = firstOf('task')
+        r.flight0, r.walk0 = glide and glide.at, task and task.at
+        for _, e in ipairs(heard) do
+            if e.cue then r.cues = r.cues + 1 end
+        end
+        -- THE PAGE'S SIDE, IN ORDER. Every word that carries a deadline
+        -- replaces the one before it; a push without one leaves it standing.
+        local locked = false
+        for _, e in ipairs(heard) do
+            if e.cue then
+                local n = e.cue:match('^{"eventName":"br:fadeText","musicEndsInMs":(%d+)}$')
+                n = n and math.tointeger(tonumber(n))
+                r.cue = r.cue or { at = e.at, ms = n }
+                if n then r.held = e.at + n end
+            elseif e.locked then
+                locked = true
+                if e.ms ~= nil then r.held = e.at + e.ms end
+            elseif locked then
+                r.unlock = e
+                break
+            end
+        end
+        return r
+    end
+
+    --- The first push of `r` that carried a deadline.
+    local function firstDeadline(r)
+        for _, p in ipairs(r.pushes) do
+            if p.locked and p.ms ~= nil then return p end
+        end
+        return nil
+    end
+
+    --- The cue's own deadline, in game time.
+    local function cueEnds(r)
+        return (r.cue and r.cue.ms) and (r.cue.at + r.cue.ms) or nil
+    end
+
+    --- How long after game time `at` the Locker unlocked.
+    local function unlockAfter(r, at)
+        if not (r.unlock and at) then return nil end
+        return r.unlock.at - at
+    end
+
+    -- ═══ (a) THE ORDINARY FIRST JOIN ═══
+    --
+    -- The timeline the timing audit for #423 drew: the cue, the screen down
+    -- half a second later, the lobby told it is ready once the focus's lead
+    -- has run out, the flight and the walk on that, and the Locker unlocking
+    -- about nineteen seconds after the cue.
+    local lead = C.focusLeadMs or 1000
+    local boot = bootRoad({})
+    local walkPush = firstDeadline(boot)
+    ok(boot.cues == 1 and boot.cue and boot.cue.ms ~= nil,
+       ('one cue, carrying musicEndsInMs as a whole number (%s)')
+           :format(tostring(boot.cue and boot.cue.ms)))
+    ok(boot.cue and boot.flip == boot.cue.at + math.max(lead, 650),
+       ('the lobby is told it is ready the focus\'s lead after the cue (%s ms)')
+           :format(tostring(boot.cue and boot.flip and boot.flip - boot.cue.at)))
+    ok(boot.flip and boot.flight0 and boot.flight0 >= boot.flip
+       and boot.flight0 - boot.flip <= 50 and boot.walk0 == boot.flight0,
+       'and the flight and the walk start on it, within a poll')
+    ok(walkPush and walkPush.at == boot.walk0 and boot.cue and boot.cue.ms
+       and boot.cue.ms == math.max(lead, 650) + walkPush.ms,
+       ('so the cue said that reveal plus the plan the walk starts with (%s ms, today\'s 19000)')
+           :format(tostring(boot.cue and boot.cue.ms)))
+    local late = unlockAfter(boot, cueEnds(boot))
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and the Locker unlocks %s ms after the cue\'s deadline, never before it')
+           :format(tostring(late)))
+    late = unlockAfter(boot, boot.held)
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and %s ms after the deadline the page holds by then'):format(tostring(late)))
+
+    -- ═══ (b) A LEAD SHORTER THAN THE EXIT'S OWN CLOCK, AND ONE LONGER ═══
+    --
+    -- The reveal is the later of the shutdown and its beat (650 ms) and the
+    -- lead, and the cue has to be worked out from whichever wins.
+    for _, l in ipairs({ 300, 2500 }) do
+        local r = bootRoad({ cfg = { focusLeadMs = l } })
+        local revealIn = math.max(l, 650)
+        local wp = firstDeadline(r)
+        ok(r.cue and r.flip == r.cue.at + revealIn,
+           ('a lead of %d ms: the lobby is told it is ready %d ms after the cue (%s)')
+               :format(l, revealIn, tostring(r.cue and r.flip and r.flip - r.cue.at)))
+        ok(r.cue and r.cue.ms and wp and r.cue.ms == revealIn + wp.ms,
+           ('and the cue said that reveal plus the plan (%s ms)'):format(tostring(r.cue and r.cue.ms)))
+        late = unlockAfter(r, cueEnds(r))
+        ok(late and late >= 0 and late <= SLACK_MS,
+           ('and the Locker unlocks %s ms after it, never before'):format(tostring(late)))
+    end
+
+    -- ═══ (c) NO ENTRANCE ═══
+    --
+    -- Nothing will unlock, so the song goes with the lobby's own fade-in: the
+    -- exit's own reveal, with no lead to wait out, plus its 700 ms.
+    local none = bootRoad({ noEntrance = true, runMs = 5000 })
+    ok(none.cues == 1 and none.cue and none.cue.ms == 650 + 700
+       and none.flip == none.cue.at + 650,
+       ('no entrance: the cue says the reveal plus the lobby\'s fade-in (%s ms), and the reveal comes when it said')
+           :format(tostring(none.cue and none.cue.ms)))
+    local carried = 0
+    for _, p in ipairs(none.pushes) do
+        if not p.cue and p.ms ~= nil then carried = carried + 1 end
+    end
+    ok(carried == 0 and none.unlock == nil and none.flight0 == nil,
+       'and nothing flies, locks, unlocks or pushes a deadline')
+
+    -- ═══ (d) A PAGE SLOW ENOUGH THAT THE CAMERA FLIES UNDER THE SCREEN ═══
+    --
+    -- The page says it is ready just inside revealWaitMs, so the cue comes a
+    -- moment before the flight gives up on the cover and the reveal a second
+    -- after it: the cue has to plan from the give-up, not from the reveal.
+    local slowPage = bootRoad({ uiAfter = C.revealWaitMs - 200, runMs = 45000 })
+    ok(slowPage.cue and slowPage.flight0 and slowPage.flip
+       and slowPage.cue.at < slowPage.flight0 and slowPage.flight0 < slowPage.flip,
+       'precondition: the camera set off under the screen, between the cue and the reveal')
+    late = unlockAfter(slowPage, cueEnds(slowPage))
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('the Locker unlocks %s ms after the cue\'s deadline, never before'):format(tostring(late)))
+    late = unlockAfter(slowPage, slowPage.held)
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and %s ms after the deadline the page holds by then'):format(tostring(late)))
+
+    -- ═══ (e) A PED THAT LANDS AFTER THE CAMERA (#406) ═══
+    --
+    -- The loading screen waits out its eight seconds for the character and
+    -- reveals without it; the camera lands, and the ped, ready only after
+    -- that, is put straight on the mark. The cue could not know: its deadline
+    -- is the plan's, after that unlock. The landing's 0 is what the page holds.
+    local landed = bootRoad({ readyAfter = 25000, cfg = { modelWaitMs = 60000 }, runMs = 40000 })
+    local lp = firstDeadline(landed)
+    ok(landed.walk0 == nil and landed.unlock and cueEnds(landed)
+       and landed.unlock.at < cueEnds(landed),
+       'precondition: no leg walked, and the ped is on the mark before the cue\'s deadline')
+    ok(lp and lp.ms == 0 and landed.unlock and lp.at < landed.unlock.at,
+       ('so the landing pushed 0, %s ms before the unlock')
+           :format(tostring(lp and landed.unlock and landed.unlock.at - lp.at)))
+    late = unlockAfter(landed, landed.held)
+    ok(late and late >= 0,
+       ('and the deadline the page holds is %s ms before the unlock, not after it'):format(tostring(late)))
+
+    -- ═══ (f) A PED THAT LANDS MID-FLIGHT, PLACED ALONG THE PATH (#406) ═══
+    --
+    -- Ready a few seconds into the flight, it is placed where an on-time walk
+    -- would be standing, so it arrives when the plan, and so the cue, said.
+    local along = bootRoad({ readyAfter = 12000, cfg = { modelWaitMs = 60000 } })
+    ok(along.walk0 and along.flight0 and along.walk0 - along.flight0 > 1000,
+       'precondition: the ped joined the walk seconds into the flight')
+    late = unlockAfter(along, cueEnds(along))
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('the Locker unlocks %s ms after the cue\'s deadline: what the ped skipped is taken off'):format(tostring(late)))
+    late = unlockAfter(along, along.held)
+    ok(late and late >= 0 and late <= SLACK_MS,
+       ('and %s ms after the deadline the page holds by then'):format(tostring(late)))
+
+    DoesEntityExist, SendLoadingScreenMessage = nil, nil
+    reset()
+    BR.State.worldReady = true
+end
+
 -- ------------------------------------------------------------------ report ---
 
 if fail > 0 then

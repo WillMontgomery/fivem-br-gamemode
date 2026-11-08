@@ -267,12 +267,27 @@ end)
 --- Which id is mid-swap, so the screen can say so. Nil when nothing is.
 local loadingId = nil
 
+--- The roster as the page is sent it, { id, name } a character, BUILT ONCE.
+---
+--- roster() is worked out once and cannot change while the game runs, so
+--- neither can this. And the push goes out more often than it did: the
+--- entrance now pushes at every moment its unlock deadline moves (#423), and
+--- seventy-odd tables built afresh each time is an allocation the frame budget
+--- sees in the window after a match (tools/perf_client.lua's changes) for a
+--- list that is the same every time. Nothing that hears it writes to it.
+local pageList = nil
+local function rosterForPage()
+    if pageList then return pageList end
+    pageList = {}
+    for _, p in ipairs(roster()) do
+        pageList[#pageList + 1] = { id = p.id, name = p.name }
+    end
+    return pageList
+end
+
 --- Send the roster and the current choice to the interface.
 function BR.Locker.push()
-    local list = {}
-    for _, p in ipairs(roster()) do
-        list[#list + 1] = { id = p.id, name = p.name }
-    end
+    local list = rosterForPage()
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER,
         -- `loading` is the id being STREAMED IN right now. A model that is not
         -- already in memory takes a moment to arrive, and until it does the
@@ -292,8 +307,21 @@ function BR.Locker.push()
         -- interface already has -- no caption, no tooltip, no explanation --
         -- and the Lua side below refuses the action regardless, because the
         -- page is presentation and this is the half that protects the ped.
+        --
+        -- `unlockInMs` is when that lock is planned to lift, in ms from this
+        -- push (#423): the loading screen's song plays on into the lobby and
+        -- must be silent by the moment the ped stops walking and the Locker
+        -- unlocks (owner, 2026-10-30). A duration rather than a time, because
+        -- GetGameTimer is not the page's Date.now -- the page adds it to its
+        -- own clock on arrival, replacing whatever deadline it had. Worked
+        -- out now rather than remembered, so a br_ui restart mid-walk learns
+        -- it on the ready push like everything else here. Nil, and so absent,
+        -- when no entrance is running or it cannot say yet; client/lobbyped.lua
+        -- pushes again at the moments it can.
         { peds = list, chosen = BR.Locker.chosen(), loading = loadingId,
-          locked = BR.LobbyPed and BR.LobbyPed.lockerLocked() or false })
+          locked = BR.LobbyPed and BR.LobbyPed.lockerLocked() or false,
+          unlockInMs = BR.LobbyPed and BR.LobbyPed.unlockInMs
+              and BR.LobbyPed.unlockInMs() or nil })
 end
 
 AddEventHandler('br:ui:ready', function()

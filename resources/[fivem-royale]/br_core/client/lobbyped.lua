@@ -370,13 +370,25 @@ local previewAsked, previewAskedAt, previewTaskedAt = nil, nil, 0
 -- lead is whatever the two durations leave. Which means the owner is tuning one
 -- against the other by eye, and these are the numbers /brlobbywalk hands him to
 -- do it with: how long the walk took, how long the flight took, and therefore
--- how far ahead of the ped the camera landed. Nothing reads them at runtime.
+-- how far ahead of the ped the camera landed. All but one are read at runtime
+-- as well: the beginnings by the failsafe, by a late ped (#406) and by the
+-- song's deadline (#423, unlockInMs), and the flight's ending by the failsafe,
+-- as its floor (graceExpired, in run). Only walkEnded is /brlobbywalk's alone.
 -- Absolute game times rather than durations, because the number the owner is
 -- actually tuning is the GAP between the two endings -- how far ahead of the
 -- ped the camera landed -- and two independently measured durations that
 -- started at different moments cannot answer that.
 local walkBegan, walkEnded = nil, nil
 local flightBegan, flightEnded = nil, nil
+
+-- When begin() ran: revealWaitMs after it, a flight still waiting on a covered
+-- screen gives up and flies under it, which the song's deadline has to know at
+-- the boot's exit cue (#423, unlockInMs). NEAR ENOUGH RATHER THAN EXACT, and on
+-- the early side. begin() creates flyCamera's thread in the same breath, but
+-- the thread only starts its wait when it first runs, a scheduler pass later --
+-- so the give-up this predicts is up to a frame before the real one, and a
+-- deadline for a song should err early.
+local begunAt = nil
 
 --- @return table
 local function cfg()
@@ -425,6 +437,113 @@ function BR.LobbyPed.lockerLocked()
     return locked == true
 end
 
+--- unlockInMs's arithmetic. See there; this half may throw and that one may not.
+--- @param revealInMs number|nil
+--- @return integer|nil
+local function plannedUnlockIn(revealInMs)
+    if phase ~= RUNNING then return nil end
+    local now = GetGameTimer()
+
+    -- THE WALK HAS STARTED: what is left of the plan, and the flip once it has
+    -- played. The failsafe's own `due` (graceExpired, in run), term for term --
+    -- a late ped's skippedMs is the part of the plan it was placed past.
+    if walkBegan then
+        return math.max(0, math.floor(walkBegan - skippedMs + plannedMs + pausedMs - now))
+    end
+
+    -- THE CAMERA HAS LANDED AND THE WALK HAS NOT STARTED: the walk puts the ped
+    -- straight onto the mark the moment it does start (#406), and that can be
+    -- any moment from now.
+    if camLanded then return 0 end
+
+    local C = cfg()
+    local revealAt = nil
+    if type(revealInMs) == 'number' and revealInMs == revealInMs and revealInMs < math.huge then
+        revealAt = now + math.max(0, revealInMs)
+    end
+
+    -- WHEN THE FLIGHT STARTS. It has; or it will on the reveal; or, if the
+    -- screen stays covered past its own wait, under the cover, revealWaitMs
+    -- after begin(). With no reveal to go on and no flight yet, there is
+    -- nothing honest to say.
+    local F = flightBegan
+    if not F then
+        if not revealAt then return nil end
+        F = begunAt and math.min(revealAt, begunAt + (C.revealWaitMs or 10000)) or revealAt
+    end
+
+    -- AND THE WALK WAITS FOR THE REVEAL TOO, which is never before the
+    -- flight, so nothing has to take the later of the two: a flight still to
+    -- come starts on the reveal or under the screen before it (the min above),
+    -- and one already flying began before now. Started once the camera has
+    -- landed, the walk puts the ped on the mark at once; started before that,
+    -- it is on time or placed along the path (#406), and either arrives when
+    -- the plan, begun with the flight, says. (Its own revealWaitMs, counted
+    -- from its ped being ready, can run out first under a screen held that
+    -- long; the walk's start or the camera's landing then pushes the deadline
+    -- it really has.)
+    local walkFrom = revealAt or now
+    if F + (C.camFlightMs or 18000) <= walkFrom then
+        return math.max(0, math.floor(walkFrom - now))
+    end
+    return math.max(0, math.floor(math.max(walkFrom, F + plannedMs + pausedMs) - now))
+end
+
+--- How long until the entrance means to unlock the Locker, in ms from now.
+---
+--- THE SONG'S DEADLINE (#423). The loading screen's song carries on into the
+--- lobby, and the owner's rule is that it must not play past the moment the
+--- ped stops walking and the Locker unlocks (2026-10-30). That moment is
+--- setLocked(false), which only stop() calls, and on the road the song is on
+--- it is the walk's arrival -- so this is when the PLAN puts the ped on the
+--- mark. client/loading.lua sends it in its exit cue, and client/locker.lua
+--- carries it on every push, which this file makes at the three moments the
+--- answer moves: the walk starting, the flip ending, the camera landing ahead
+--- of the walk.
+---
+--- THE PLAN IS EARLY RATHER THAN LATE, which is the side a deadline for a song
+--- should err on. The arrival is polled every 50 ms and the walk wakes on its
+--- own poll after the flight, so the real unlock comes a poll or two after
+--- this says; a flip counts once it has played and never before, and a ped
+--- slower than walkMps only arrives later still. The one road where the
+--- arrival itself beats the plan is a ped ready only after the camera has
+--- landed (#406), which is put straight on the mark; the push at the landing,
+--- which says 0, is what covers it.
+---
+--- AN UNPLANNED UNLOCK CAN COME BEFORE ANY OF THIS, and it is the page's net
+--- that covers it. Every ending but the arrival -- readying up, a character
+--- change, the resource stopping, /brlobbywalk's re-arm -- unlocks the moment
+--- it happens, and a ped that covers ground faster than walkMps says would
+--- arrive early; nothing here sees either coming. Each still unlocks through
+--- stop(), and the page cuts whatever is still sounding on that edge.
+---
+--- NIL WHEN THERE IS NOTHING TO SAY: no entrance running, so nothing will
+--- unlock; or a flight that has not started, for a caller that cannot say when
+--- the screen will be uncovered. Every road home has a cover this file cannot
+--- see the end of, and a guess would be a deadline the page trusts.
+---
+--- IT NEVER THROWS. client/locker.lua's push reads it, and setLocked's push is
+--- inside stop() -- the only ending this sequence has.
+--- @param revealInMs number|nil  ms until the screen is uncovered, from a caller
+---        that knows it is still covered and when it will not be: the boot's
+---        exit cue in client/loading.lua
+--- @return integer|nil
+function BR.LobbyPed.unlockInMs(revealInMs)
+    local ok, ms = pcall(plannedUnlockIn, revealInMs)
+    if ok then return ms end
+    print(('[br_core] lobby entrance: the unlock estimate errored (%s)'):format(tostring(ms)))
+    return nil
+end
+
+--- Send the locker to the page again. Guarded because this file loads before
+--- nothing in particular and the locker's own push reads the roster; a lock
+--- set before locker.lua exists is still recorded here and travels on its next
+--- push. Called by setLocked, and on the three moments unlockInMs moves (#423)
+--- -- each one-off, after the fields it reads are written.
+local function pushLocker()
+    if BR.Locker and BR.Locker.push then BR.Locker.push() end
+end
+
 --- Lock or unlock the locker, and tell the interface.
 ---
 --- THE LOCK IS THE WHOLE ANSWER TO A MODEL SWAP MID-WALK (owner, 2026-08-29:
@@ -441,10 +560,7 @@ local function setLocked(on)
     on = on == true
     if on == locked then return end
     locked = on
-    -- Guarded because this file loads before nothing in particular and the
-    -- locker's own push reads the roster; a lock set before locker.lua exists
-    -- is still recorded here and travels on its next push.
-    if BR.Locker and BR.Locker.push then BR.Locker.push() end
+    pushLocker()
 end
 
 --- Give the streaming focus back to the player.
@@ -573,9 +689,10 @@ end
 ---
 --- client/loading.lua holds the loading screen until the ped is on its mark,
 --- and during the entrance the mark is the START of the walk rather than the
---- lobby spot -- the owner's choreography has the screen fading in with the ped
---- already moving. Nil means "the ordinary lobby mark", which is every other
---- case.
+--- lobby spot: the ped is placed there under the screen and stands on it,
+--- frozen, until the lobby fades in, and the walk and the flight start as it
+--- does (awaitReveal). Nil means "the ordinary lobby mark", which is every
+--- other case.
 --- ...AND IT IS THE DRAWN CASE'S SPAWN, which is why it can answer nil while
 --- the entrance is merely ARMED: the case has not been drawn yet, and pointing
 --- the reveal at a coordinate this entrance may not use is worse than not
@@ -1310,6 +1427,11 @@ local function flyCamera(mine)
     flightEnded = GetGameTimer()
     camLanded = true
     print('[br_core] lobby entrance: camera landed')
+
+    -- A WALK THAT HAS NOT STARTED BY NOW PUTS THE PED ON THE MARK THE MOMENT IT
+    -- DOES (#406), so the unlock can come at any moment from here and the
+    -- song's deadline is now (#423). After camLanded, which is what says so.
+    if not walkBegan then pushLocker() end
 end
 
 --- How far off the start mark still counts as standing on it.
@@ -1714,6 +1836,12 @@ local function run(mine)
     FreezeEntityPosition(ped, false)
     print('[br_core] lobby entrance: walk starts')
 
+    -- 6b. AND THE PAGE LEARNS WHEN IT WILL BE OVER (#423). The one moment the
+    --     plan is fixed -- walkBegan and, for a ped placed along the path,
+    --     skippedMs are both written by now -- so the song's deadline becomes
+    --     exact here, on time or late alike.
+    pushLocker()
+
     local radius = C.arriveRadius or 0.9
     local legMs = C.legTimeoutMs or 15000
 
@@ -1877,6 +2005,9 @@ local function run(mine)
             doFlip(mine)
             if token ~= mine then return end
             pausedMs = pausedMs + (GetGameTimer() - pausedFrom)
+            -- The arrival moved by exactly that, and the page's song with it
+            -- (#423): told once the pause is counted, never before.
+            pushLocker()
         end
 
         ped = PlayerPedId()
@@ -1986,6 +2117,7 @@ local function begin()
     camNearHome = false
     walkBegan, walkEnded = nil, nil
     flightBegan, flightEnded = nil, nil
+    begunAt = GetGameTimer()
 
     -- THE EMOTE STATE IS PER LOBBY VIEW, AND THIS IS WHERE A LOBBY VIEW BEGINS.
     -- "make sure it only plays once per lobby view" -- so the stretch's latch is

@@ -33,6 +33,7 @@
 # Binary -- never touch these.
 *.png   binary
 *.jpg   binary
+*.webp  binary
 # Audio, and it arrived with the vendored pma-voice (ui/mic_click_*.ogg). Git's
 # `text=auto` heuristic would almost certainly classify these as binary on its
 # own, but "almost certainly" is not a property to hang a sound file on: a
