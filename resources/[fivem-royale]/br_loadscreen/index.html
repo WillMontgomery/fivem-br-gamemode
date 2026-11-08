@@ -477,8 +477,9 @@
     // in and out mixed in, so this adds no fade-in and plays it ONCE --
     // looping would replay the fade-in in the middle of a long load. M fades
     // it out and back in over muteFadeMs rather than cutting it (owner,
-    // 2026-10-31).
-    var TRACK = { src: 'audio/loadingscreen.ogg', volume: 0.5, fadeInMs: 0, muteFadeMs: 600 };
+    // 2026-10-31). It plays at 40% (owner, 2026-11-08: "it's really loud"),
+    // and the lobby's copy rises to the same level: the handoff carries it.
+    var TRACK = { src: 'audio/loadingscreen.ogg', volume: 0.4, fadeInMs: 0, muteFadeMs: 600 };
     var MUTE_KEY = 'br.loadscreen.muted';
 
     var LINES = [
