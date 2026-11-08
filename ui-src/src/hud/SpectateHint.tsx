@@ -1,4 +1,3 @@
-import { useUi } from '../store'
 import { KeyCap } from '../ui/KeyCap'
 import Fit from '../ui/Fit'
 
@@ -22,7 +21,7 @@ import Fit from '../ui/Fit'
  * two cannot drift into an overlap.
  *
  * THE CLEARANCE IS UNCONDITIONAL, and that is deliberate rather than lazy.
- * `TalkingBar` renders NOTHING when nobody is speaking, so a clearance that
+ * `TalkingBar` is not drawn at all when nobody is speaking, so a clearance that
  * collapsed when the line was absent would drop this block a line every time
  * the room went quiet and lift it every time somebody spoke -- a hint that
  * moves while you are reading it, which is the exact failure TalkingBar's own
@@ -66,6 +65,15 @@ import Fit from '../ui/Fit'
  * their own size, and `.tscale` multiplies 1em, the PARENT's size, which throws
  * the declared value away. That is #159, and this file is deliberately not the
  * fourteenth entry on it.
+ *
+ * ═══ IT DRAWS THE NAME IT IS GIVEN, AND ITS CALLER DECIDES WHEN (#431) ═══
+ *
+ * Hud.tsx draws this only while a spectate session runs, and passes the name
+ * the server sent for the target. This used to read the store and return null
+ * the instant the session ended, which is right for today's HUD and wrong for
+ * a layer that holds an element's last frame through its way out. UI v2's HUD
+ * does (#431), and a hint that re-reads the store as it leaves renders empty
+ * and pops. The markup is the same, element for element.
  */
 
 /** The two rows this draws, in the order they are pressed. */
@@ -74,14 +82,7 @@ const KEYS = [
   { command: 'brspecnext', label: 'Next' },
 ] as const
 
-export default function SpectateHint() {
-  const spectate = useUi((s) => s.spectate)
-
-  // Nothing at all when no session is running. Not an empty plate: the bottom
-  // of the screen is shared with the talking line and the inventory bar, and
-  // reserving space for a hint that does not apply is chrome for its own sake.
-  if (!spectate?.active) return null
-
+export default function SpectateHint({ name }: { name: string }) {
   return (
     <div
       className="flex flex-col items-center gap-1 pointer-events-none"
@@ -142,7 +143,7 @@ export default function SpectateHint() {
           textShadow: 'var(--shadow-text)',
         }}
       >
-        SPECTATING {(spectate.name ?? '').toUpperCase()}
+        SPECTATING {name.toUpperCase()}
       </Fit>
 
       <div className="flex items-center gap-3">

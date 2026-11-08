@@ -1,4 +1,4 @@
-import { useUi } from '../store'
+import type { ReactNode } from 'react'
 import VoiceMark from './VoiceMark'
 import Fit from '../ui/Fit'
 
@@ -63,20 +63,40 @@ import Fit from '../ui/Fit'
  * because bare `.tscale` multiplies 1em, the PARENT's size, and would silently
  * throw the 1rem away. Do not add `tscale` alongside it (#159).
  */
-export default function TalkingBar() {
-  const names = useUi((s) => s.talkingNames)
+export default function TalkingBar({ names }: { names: string[] }) {
+  return (
+    <TalkingBox>
+      <TalkingRow names={names} />
+    </TalkingBox>
+  )
+}
 
-  // Nothing to say when nobody is speaking, and the empty case is the common
-  // one -- so this renders nothing at all rather than an empty plate that
-  // would occupy the bottom of the screen for the whole match.
-  if (names.length === 0) return null
-
+/**
+ * ═══ THE BOX AND THE ROW, APART (#431) ═══
+ *
+ * TalkingBar draws the names it is given, and Hud.tsx decides when. The
+ * positioned box and the row inside it are split so a caller can put
+ * something between them: UI v2's HUD (#431) holds the row through its way
+ * out from inside this box. The row is a fragment rather than a box of its
+ * own, so TalkingBar above is today's DOM, element for element: this div, the
+ * mark and the line.
+ */
+export function TalkingBox({ children }: { children: ReactNode }) {
   return (
     <div
       className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2
                  max-w-[46%] pointer-events-none"
       style={{ bottom: 'var(--safe-b)' }}
     >
+      {children}
+    </div>
+  )
+}
+
+/** The mark and the names. In TalkingBar they are the box's own two flex items. */
+export function TalkingRow({ names }: { names: string[] }) {
+  return (
+    <>
       {/* THE SAME MARK THE SQUAD PANEL PUTS BESIDE A SPEAKING MATE, from the
           same component. Voice has one visual vocabulary and this is it; a
           second, different marker for the same fact would read as a second
@@ -114,6 +134,6 @@ export default function TalkingBar() {
         <span style={{ fontWeight: 700 }}>Currently Talking:</span>{' '}
         <span style={{ fontWeight: 400 }}>{names.join(', ')}</span>
       </Fit>
-    </div>
+    </>
   )
 }

@@ -1,5 +1,4 @@
 import { useRef } from 'react'
-import { useUi, selMatch } from '../store'
 import { HotCard, HotTime } from './HotCard'
 import { useCountdownText } from './useCountdownText'
 
@@ -21,27 +20,19 @@ import { useCountdownText } from './useCountdownText'
  * frame for a two-character number is exactly the tax the HUD rules exist to
  * avoid. And like StormBar, the placard around them is `HotCard` rather than a
  * fourth hand-written copy of the same box.
+ *
+ * ═══ IT DRAWS WHAT IT IS GIVEN, AND ITS CALLER DECIDES WHEN (#431) ═══
+ *
+ * `endsAt` is the match's deadline and `offset` the server clock's, both
+ * passed in, and whether the card is up at all is decided where it is mounted:
+ * Hud.tsx, with the walkthrough's rule beside it. This used to read the store
+ * and return null on its own condition, which is right for today's HUD and
+ * wrong for a layer that holds an element's last frame through its way out.
+ * UI v2's HUD does (#431), and a card that re-reads the store as it leaves
+ * renders empty and pops. The markup is the same, element for element.
  */
-export default function WarmupTimer() {
-  const match = useUi(selMatch)
-  const offset = useUi((s) => s.clockOffset)
+export default function WarmupTimer({ endsAt, offset }: { endsAt: number; offset: number }) {
   const timeRef = useRef<HTMLSpanElement>(null)
-
-  // ═══ HIDDEN FOR THE WHOLE WALKTHROUGH, REVEALED BY ITS OWN CARD ═══
-  //
-  // Owner, 2026-09-07: "don't display the timer card until they get to the last
-  // step (which tells them about the card)." The server is holding this match's
-  // warmup for as long as a learner is in it (BR.Match.tutorialHold), so during
-  // the walkthrough this would draw a countdown to a departure a day away --
-  // which is worse than no countdown, because it is a lie with a number on it.
-  //
-  // BOTH ENDS MOVE ON THE SAME EDGE. Reaching `game-timer` tells Lua to release
-  // the hold, so the moment this appears it is counting a real warmup down.
-  const tutorialRun = useUi((s) => s.tutorialGameRun)
-  const tutorialStep = useUi((s) => s.tutorialGameStep)
-  const showing = match.state === 'warmup'
-    && (!tutorialRun || tutorialStep === 'game-timer')
-  const endsAt = match.endsAt
 
   // ONE SHARED, DRIFT-CORRECTED SCHEDULER (#319, shared with StormBar). This was
   // a requestAnimationFrame loop that recomputed the number every frame and
@@ -49,13 +40,12 @@ export default function WarmupTimer() {
   // while the loop woke sixty times a second for as long as warmup lasted.
   // `useCountdownText` arms one timer to the next displayed-second boundary,
   // recomputes `endsAt - (now + offset)` from the server clock on each wake, and
-  // stops at zero. `showing` is the enable flag, so the timer is torn down the
-  // instant the card hides and re-armed if warmup is re-broadcast earlier (a
-  // full lobby cutting the wait short arrives as an ordinary state rebroadcast
-  // and needs no handling here). Same digits, same immediate reaction, no loop.
-  useCountdownText(timeRef, endsAt, offset, showing)
-
-  if (!showing) return null
+  // stops at zero. The card is mounted only while it shows, so its unmount tears
+  // the timer down the instant it hides, and a new `endsAt` re-arms it if
+  // warmup is re-broadcast earlier (a full lobby cutting the wait short arrives
+  // as an ordinary state rebroadcast and needs no handling here). Same digits,
+  // same immediate reaction, no loop.
+  useCountdownText(timeRef, endsAt, offset)
 
   // THE SAME OBJECT AS THE STORM BAR (owner's call, 2026-08-09). Both are the
   // top-centre clock -- one before the match, one during it -- and they were
