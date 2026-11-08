@@ -1,0 +1,7 @@
+/* PRESET: DROP (#431) -- today's hotDrop in, a 200 ms fade out. For placards.
+   Timings: motion/tokens.ts (HALF.dropIn, HALF.fade). The whole anchor moves as
+   one from its root; the snap curve gives the landing its small overshoot. */
+[data-bc-preset="drop"] {
+  --bc-pre-root-t: translateY(calc(var(--bc-drop) * -1)) scale(0.96);
+  --bc-pre-root-o: 0;
+}

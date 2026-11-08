@@ -1,0 +1,1343 @@
+/* BROADCAST KIT: THE PRIMITIVES (#431). One section per primitive; the
+   keyframes and the .layer-off lines at the end.
+
+   RULES EVERY LINE HERE KEEPS
+   - Every value is a token (tokens.css) or a local custom property built from
+     one. Lengths are kit units (--bc-u), so a primitive is right on the HUD
+     (a rem) and inside a Cloudscape island (an em).
+   - One slant, -15deg, for every shape. Text never leans: it stands upright
+     and steps in along the slant (.bc-line).
+   - Motion is transform and opacity only: keyframes for one-shot accents
+     (restarted by a fresh element or an A/B class swap), transitions for
+     state. Nothing animates a shadow, a size or a position (check-ui R7).
+   - A number is never hidden at the moment it changes: a changed place is a
+     fresh element holding the NEW digit, opaque from its first frame.
+   - Every endless animation has its .layer-off line at the end (R27).
+   - Classes are bc-; states are is-* on the element itself; a plate's
+     per-plate values are custom properties declared on EVERY plate, so a
+     plate nested in another inherits nothing of its parent's.
+   - Names shared with the Broadcast squad prototype (.bc-cell .bc-num .bc-col
+     .bc-hot .bc-sweep .bc-track .bc-fill .bc-ghost .bc-edge .bc-clock
+     .bc-line .bc-flash .bc-burst .bc-gain .bc-crack .bc-shards .bc-zip) mean
+     what they meant there: the panel rebuilt on this kit drops its own copies.
+
+   Chromium 103 safe: no individual transform properties, no linear(), no
+   color-mix(), no :has(), no container queries, no nesting. */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   1 PLATE -- the slanted surface with its color edge.
+   Layers, back to front, inside the shake channel:
+     deck    one skewed plane, clipped: the surface (base, alarm wash, fx,
+             score cell) and the slab over it
+     face    upright; Plate.Line steps each line in along the slant
+     cover   a second skewed plane: the plates that REPLACE a band (swap)
+             and the foot line; then the cover face, upright
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-plate {
+  --bc-h: var(--bc-row-h);
+  --bc-lean: calc(var(--bc-h) * var(--bc-tan));
+  --bc-band: 0px;
+  --bc-edge-c: var(--bc-accent);
+  --bc-mate-tint: rgba(0, 0, 0, 0);
+  --bc-hot: var(--bc-danger);
+  --bc-fade: var(--bc-dim);
+  --bc-cell-width: var(--bc-cell-w);
+  --bc-deck-dir: 90deg;
+  --bc-dir: 1;
+  --bc-open-x: 0%;
+  --bc-rise-y: 100%;
+  --bc-deck-l: 0px;
+  --bc-deck-r: var(--bc-lean);
+  --bc-slab-l: 0px;
+  --bc-slab-r: auto;
+  --bc-band-l: var(--bc-slab-w);
+  --bc-band-r: 0px;
+  --bc-pad-l: calc(var(--bc-slab-w) + var(--bc-inset-lead));
+  --bc-pad-r: var(--bc-inset-trail);
+  --bc-redden: 0;
+  --bc-slab-out: 0;
+  --bc-slab-out-delay: 0ms;
+  /* THE DECK: the loading screen's plate, near opaque for a HUD over a daylit
+     game -- a hairline along the top, a sheen, teal to near-black from the
+     slab side. Hairlines are background layers, never borders on a clipped
+     skewed box. */
+  --bc-base:
+    linear-gradient(var(--bc-rule-top), var(--bc-rule-top)) 0 0 / 100% 1px no-repeat,
+    var(--bc-deck-sheen),
+    linear-gradient(var(--bc-deck-dir), var(--bc-deck-a), var(--bc-deck-b) 62%);
+  position: relative;
+  height: var(--bc-h);
+  font-family: var(--bc-font-word);
+  color: var(--bc-ink);
+  opacity: 1;
+  transition: opacity var(--bc-t-row-fade) ease;
+}
+/* A deck with a name band: a second hairline under the band, the band washed
+   in the mate's color, the rest a step darker. */
+.bc-plate--banded {
+  --bc-base:
+    linear-gradient(var(--bc-rule-top), var(--bc-rule-top)) 0 0 / 100% 1px no-repeat,
+    linear-gradient(var(--bc-rule-band), var(--bc-rule-band)) 0 var(--bc-band) / 100% 1px no-repeat,
+    var(--bc-deck-sheen),
+    linear-gradient(var(--bc-band-shade), var(--bc-band-shade)) 0 var(--bc-band) / 100% 100% no-repeat,
+    linear-gradient(var(--bc-deck-dir), var(--bc-mate-tint), rgba(0, 0, 0, 0) 58%) 0 0 / 100% var(--bc-band) no-repeat,
+    linear-gradient(var(--bc-deck-dir), var(--bc-deck-a), var(--bc-deck-b) 62%);
+}
+/* RECEDES: the loading screen's strap, one flat teal. */
+.bc-plate--strap { --bc-base: var(--bc-strap); }
+/* DEMANDS: a cap strap in --hot over a near-black body. */
+.bc-plate--hot {
+  --bc-base:
+    linear-gradient(var(--bc-hot), var(--bc-hot)) 0 0 / 100% var(--bc-band) no-repeat,
+    var(--bc-hot-bg);
+  --bc-edge-c: var(--bc-hot);
+}
+/* The slab on the far side, the plate opening from it, the content sliding
+   in from it. */
+.bc-plate--trail {
+  --bc-dir: -1;
+  --bc-open-x: 100%;
+  --bc-deck-dir: 270deg;
+  --bc-slab-l: auto;
+  --bc-slab-r: 0px;
+  --bc-band-l: 0px;
+  --bc-band-r: var(--bc-slab-w);
+  --bc-pad-l: var(--bc-inset-trail);
+  --bc-pad-r: calc(var(--bc-slab-w) + var(--bc-inset-lead));
+}
+/* Leaning about the top: the same parallelogram, its outer corner on the
+   margin; the edge drops from the head. */
+.bc-plate--head {
+  --bc-rise-y: 0%;
+  --bc-deck-l: var(--bc-lean);
+  --bc-deck-r: 0px;
+}
+
+/* STATES */
+.bc-plate.is-active {
+  --bc-deck-a: var(--bc-fill-selected);
+  --bc-deck-b: var(--bc-fill-selected);
+  --bc-strap: var(--bc-fill-selected);
+  --bc-edge-c: var(--bc-accent);
+}
+.bc-plate.is-alarm { --bc-redden: 0.3; }
+.bc-plate.is-out { --bc-slab-out: 0.62; }
+.bc-plate.is-dim,
+.bc-plate.is-out { opacity: var(--bc-fade); }
+
+.bc-plate__shake,
+.bc-plate__face { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+
+.bc-plate__deck,
+.bc-plate__cover {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--bc-deck-l);
+  right: var(--bc-deck-r);
+  transform: skewX(var(--bc-slant));
+  transform-origin: 0 var(--bc-rise-y);
+  overflow: hidden;
+  pointer-events: none;
+}
+/* The channel wrappers inside the planes (a plane's own transform is its
+   skew; the surface channel scales the wrapper, from the slab side). */
+.bc-plate__surface,
+.bc-plate__cover-in {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  transform-origin: var(--bc-open-x) 50%;
+}
+.bc-plate__base {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bc-base);
+}
+.bc-plate__redden {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bc-danger);
+  opacity: var(--bc-redden);
+  transition: opacity var(--bc-t-redden) ease;
+}
+
+/* THE SLAB: the color edge. The channel scales the slab; its fill pulses on an
+   alarm (.mate-pulse) or a hot plate (.bc-hot-pulse); its dark overlay comes
+   up when the plate is out. */
+.bc-plate__slab,
+.bc-plate__retract,
+.bc-plate__flare {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--bc-slab-l);
+  right: var(--bc-slab-r);
+  width: var(--bc-slab-w);
+}
+.bc-plate__slab { transform-origin: 50% var(--bc-rise-y); }
+.bc-plate__slab > i,
+.bc-plate__slab > b {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+}
+.bc-plate__slab > i { background: var(--bc-edge-c); }
+.bc-plate__slab > b {
+  background: var(--bc-slab-dead);
+  opacity: var(--bc-slab-out);
+  transition: opacity var(--bc-t-slab-dead) ease var(--bc-slab-out-delay);
+}
+/* Recolored (a mate left and the colors moved up): the old color retracts. */
+.bc-plate__retract {
+  transform-origin: 50% 0;
+  animation: bcRetract var(--bc-t-retract) var(--bc-ease-out) both;
+}
+/* A kill: the edge flares out across the plate. */
+.bc-plate__flare {
+  background: var(--bc-edge-c);
+  transform-origin: var(--bc-open-x) 50%;
+  opacity: 0;
+  animation: bcFlare var(--bc-t-flare) var(--bc-ease-out) both;
+}
+
+/* THE ON-AIR METER: a level meter under the band while someone talks. It runs
+   only while on, and between words it PAUSES and fades rather than
+   restarting, so it never jitters. */
+.bc-meter {
+  position: absolute;
+  left: calc(var(--bc-slab-w) + var(--bc-u) * 0.3);
+  right: calc(var(--bc-cell-width) + var(--bc-u) * 0.4);
+  top: calc(var(--bc-band) - var(--bc-u) * 0.16);
+  height: var(--bc-meter-h);
+  opacity: 0;
+  transition: opacity var(--bc-t-fade) linear;
+}
+.bc-meter.is-on { opacity: 1; }
+.bc-meter > i {
+  display: block;
+  height: 100%;
+  background: var(--bc-accent);
+  transform-origin: 0 50%;
+  transform: scaleX(0.3);
+  animation: bcAir var(--bc-t-meter) ease-in-out infinite;
+  animation-play-state: paused;
+}
+.bc-meter.is-on > i { animation-play-state: running; }
+
+/* THE HOT PLATE'S CAP: inverted Anton words. The text slider reaches it, in
+   the rule that owns its size (index.css .panel-hot > .cap). */
+/* (No display here: it rides on Fit's own room, whose grid is the label rule.) */
+.bc-cap {
+  font-family: var(--bc-font-num);
+  font-size: calc(var(--bc-fs-cap) * var(--text-scale, 1));
+  line-height: 1;
+  letter-spacing: var(--bc-ls-cap);
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--bc-ink-on-hot);
+}
+.bc-line.bc-line--center { justify-content: center; }
+/* Its slab breathes after the plate has landed: opacity, so it composites
+   (today's hotEdge loops a border color). */
+.bc-hot-pulse { animation: bcHotPulse var(--bc-t-hot-pulse) ease-in-out var(--bc-t-hot-drop) infinite; }
+
+/* ═══ THE LINE: upright, stepped in along the slant at its own height ═══
+   --bc-cy is the line's center from the plate's top, --bc-ch half its
+   content's height, --bc-lh its box (Plate.Line sets them).
+   SCOPED TO ITS PLATE: a line reads its plate's geometry (--bc-h, the pads),
+   so it means nothing outside one -- and while today's Broadcast panel and the
+   kit share a page (the HUD stage, until the panel moves onto the kit), its
+   own .bc-line rules can neither reach a kit line nor be reached by this. */
+.bc-plate .bc-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--bc-cy) - var(--bc-lh) / 2);
+  height: var(--bc-lh);
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-left: calc((var(--bc-h) - var(--bc-cy) + var(--bc-ch)) * var(--bc-tan) + var(--bc-pad-l));
+  padding-right: calc((var(--bc-cy) + var(--bc-ch)) * var(--bc-tan) + var(--bc-pad-r));
+}
+.bc-line--between { justify-content: space-between; gap: var(--bc-gap); }
+.bc-line--end { justify-content: flex-end; }
+
+/* ═══ WHAT HAPPENS TO THE PLATE: each a fresh element per beat ═══ */
+.bc-flash { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+.bc-flash > i,
+.bc-flash > b {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  opacity: 0;
+  animation: bcFade var(--bc-t-flash) ease-out both;
+}
+.bc-flash--hit > i,
+.bc-flash--down > i,
+.bc-flash--die > i { background: var(--bc-danger); }
+.bc-flash--shield > i { background: var(--bc-shield); }
+.bc-flash--down > i { animation-duration: var(--bc-t-flash-down); }
+.bc-flash--die > i { animation-duration: var(--bc-t-flash-die); animation-delay: var(--bc-t-flash-die-delay); }
+.bc-flash--die > b { background: #fff; animation-duration: var(--bc-t-flash-white); }
+
+/* Back up (revived, a key spent): a burst out of the color edge. */
+.bc-burst {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  transform-origin: var(--bc-open-x) 50%;
+  opacity: 0;
+  background: linear-gradient(var(--bc-deck-dir), var(--bc-burst-c, var(--bc-hp)), rgba(255, 255, 255, 0.55) 22%, rgba(255, 255, 255, 0) 72%);
+  animation: bcBurst var(--bc-t-burst) var(--bc-ease-out) both;
+}
+
+/* THE SHAKE CHANNEL: one element, so a new shake replaces the last; A and B
+   are the same keyframes under two names, so the class swap restarts it.
+   --amp carries the size. (--amp, and the shards' --dx --dy --r and the
+   zip's --from, keep the squad prototype's names: keyframe names are global,
+   so the two stylesheets must agree while the panel moves onto the kit.) */
+.bc-plate__shake.is-joltA { animation: bcJoltA var(--bc-t-shake-jolt) ease-out; }
+.bc-plate__shake.is-joltB { animation: bcJoltB var(--bc-t-shake-jolt) ease-out; }
+.bc-plate__shake.is-knockA { animation: bcKnockA var(--bc-t-shake-knock) ease-out; }
+.bc-plate__shake.is-knockB { animation: bcKnockB var(--bc-t-shake-knock) ease-out; }
+.bc-plate__shake.is-punchA { animation: bcPunchA var(--bc-t-shake-punch) ease-out; }
+.bc-plate__shake.is-punchB { animation: bcPunchB var(--bc-t-shake-punch) ease-out; }
+.bc-plate__shake.is-riseA { animation: bcRiseA var(--bc-t-shake-rise) var(--bc-ease-out); }
+.bc-plate__shake.is-riseB { animation: bcRiseB var(--bc-t-shake-rise) var(--bc-ease-out); }
+.bc-plate__shake.is-thudA { animation: bcThudA var(--bc-t-shake-thud) ease-out; }
+.bc-plate__shake.is-thudB { animation: bcThudB var(--bc-t-shake-thud) ease-out; }
+
+/* ═══ THE COVER: plates that replace the band, and the foot line ═══ */
+.bc-plate__band {
+  position: absolute;
+  left: var(--bc-band-l);
+  right: var(--bc-band-r);
+  top: var(--bc-band);
+  bottom: 0;
+  overflow: hidden;
+}
+/* THE SWAP: a plate slams in or out on the diagonal, a white edge riding it in.
+   The DOWN alarm and the OUT plate; reusable for storm in/out and a DBNO
+   reviver change. --bc-swap-delay delays it and its rider together. */
+.bc-swap {
+  --bc-swap-delay: 0ms;
+  --bc-swap-in: var(--bc-t-plate-in);
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+}
+.bc-swap.is-in { animation: bcPlateIn var(--bc-swap-in) var(--bc-ease-snap) var(--bc-swap-delay) both; }
+.bc-swap.is-out { animation: bcPlateOut var(--bc-t-plate-out) var(--bc-ease-exit) var(--bc-swap-delay) both; }
+/* DOWN: an opaque dark base (the band under it never shows through), a red
+   capped by its holder and pulsing inside it, and a shade of the base graded
+   along the plate -- it burns at the far end and never goes solid, so a clock
+   on it always sits on dark red. */
+.bc-swap--alarm { background: var(--bc-alarm); }
+.bc-swap__glow,
+.bc-swap__glow > i,
+.bc-swap__shade {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+}
+.bc-swap__glow { opacity: var(--bc-alarm-cap); transform-origin: var(--bc-open-x) 50%; }
+.bc-swap__glow > i { background: var(--bc-danger); }
+.bc-swap__shade { background: var(--bc-alarm-shade); }
+/* The alarm being taken away holds mid-pulse. */
+.bc-swap.is-still .bc-swap__glow > i { opacity: 0.7; }
+/* Bleeding out: the red drains away before the next plate lands. */
+.bc-swap.is-drain .bc-swap__glow { animation: bcDrain var(--bc-t-drain) ease-in both; }
+/* OUT: a dark, hatched, still plate. */
+.bc-swap--out { --bc-swap-in: var(--bc-t-plate-in-slow); background: var(--bc-out-plate); }
+/* A plain deck plate (a storm phase, a reviver). */
+.bc-swap--deck {
+  background:
+    var(--bc-deck-sheen),
+    linear-gradient(var(--bc-deck-dir), var(--bc-deck-a), var(--bc-deck-b) 62%);
+}
+/* The white edge that rides a plate in. */
+.bc-edge {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--bc-rider-w);
+  background: #fff;
+  opacity: 0;
+}
+.bc-swap.is-in > .bc-edge { animation: bcEdge var(--bc-t-rider) ease-out var(--bc-swap-delay) both; }
+
+/* THE FOOT: a line along the plate's foot (the pickup window), slid in; and
+   the zip that takes it away in accent. */
+.bc-plate__foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--bc-foot-h);
+  overflow: hidden;
+  background: var(--bc-track);
+}
+.bc-plate__foot.is-new { animation: bcPlateIn var(--bc-t-foot-in) var(--bc-ease-out) both; }
+.bc-zip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--bc-foot-h);
+  background: var(--bc-accent);
+  transform-origin: 0 50%;
+  opacity: 0;
+  animation: bcZip var(--bc-t-zip) var(--bc-ease-out) both;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   2 SCORECELL -- the near-black cell in the deck plane, drawn ABOVE the fx, so
+   a numeral keeps its backing at the moment it changes (a shield numeral on a
+   shield-blue flash would be blue on blue). Its rule is a background layer.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-cell {
+  position: absolute;
+  top: var(--bc-band);
+  bottom: 0;
+  right: 0;
+  width: var(--bc-cell-width);
+  background:
+    linear-gradient(var(--bc-cell-rule), var(--bc-cell-rule)) 0 0 / 1px 100% no-repeat,
+    var(--bc-cell-bg);
+}
+.bc-cell--full { top: 0; }
+.bc-cell--start {
+  right: auto;
+  left: 0;
+  background:
+    linear-gradient(var(--bc-cell-rule), var(--bc-cell-rule)) 100% 0 / 1px 100% no-repeat,
+    var(--bc-cell-bg);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   3 NUMERAL -- a scoreboard's fixed columns, one per place. AT REST, PLAIN
+   STATIC TEXT: no strip and NO CLIP (Anton fills the em to within .06em, and a
+   clip snapped to whole pixels showed the neighbors as 1px slivers at 1080p).
+   A CHANGED PLACE is a fresh element holding the new digit, opaque from its
+   first frame: it ticks --bc-tick into place (down when the number fell, up
+   when it rose) while a white copy over it burns off. Neither uses a fill, so
+   the digit is plain text again when they end.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-num {
+  display: flex;
+  flex-shrink: 0;
+  height: 1em;
+  font-family: var(--bc-font-num);
+  font-size: var(--bc-num-fs, var(--bc-fs-num-sm));
+  font-weight: 400;
+  line-height: 1;
+  color: var(--bc-num-c, var(--bc-ink));
+  text-shadow: var(--bc-shadow-text);
+  transform-origin: 100% 50%;
+}
+.bc-num--heavy { text-shadow: var(--bc-shadow-text-heavy); }
+.bc-col {
+  position: relative;
+  display: block;
+  width: var(--bc-numcol);
+  height: 1em;
+  text-align: center;
+}
+/* A separator (the Market's 7,450) keeps its own width. */
+.bc-col--sep { width: auto; }
+.bc-col.is-fall { animation: bcTickFall var(--bc-t-tick) var(--bc-ease-out); }
+.bc-col.is-rise { animation: bcTickRise var(--bc-t-tick) var(--bc-ease-out); }
+/* The tick-in reveal: each place rises into place as its content lands, one
+   after another (the delays are set per place). */
+.bc-col.is-reveal { animation: bcTickRise var(--bc-t-tick) var(--bc-ease-out) both; }
+.bc-hot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  font-style: normal;
+  color: #fff;
+  text-shadow: none;
+  opacity: 0;
+  animation: bcHot var(--bc-t-burn) ease-in;
+}
+.bc-hot.is-reveal { animation-fill-mode: both; }
+.bc-num.is-popA { animation: bcPopA var(--bc-t-pop) var(--bc-ease-out); }
+.bc-num.is-popB { animation: bcPopB var(--bc-t-pop) var(--bc-ease-out); }
+/* The slam is the new number's whole move (no place ticks; every place
+   burns), held to --bc-slam so it stays inside its plate. */
+.bc-num.is-slamA { animation: bcSlamA var(--bc-t-slam) var(--bc-ease-snap); }
+.bc-num.is-slamB { animation: bcSlamB var(--bc-t-slam) var(--bc-ease-snap); }
+
+/* THE CLOCK: text written through a ref ('--' until its first write). Each
+   new second after the first flips data-p, which restarts a small punch. */
+.bc-clock {
+  display: block;
+  font-family: var(--bc-font-num);
+  font-size: var(--bc-num-fs, var(--bc-fs-clock-sm));
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--bc-num-c, var(--bc-ink));
+  text-shadow: var(--bc-shadow-text);
+  transform-origin: 0 50%;
+}
+.bc-clock[data-p="0"] { animation: bcBeatA var(--bc-t-clock-beat) ease-out; }
+.bc-clock[data-p="1"] { animation: bcBeatB var(--bc-t-clock-beat) ease-out; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   4 BAR -- a fill moved by scaleX only (never width) over a black track.
+     slant   the Broadcast track: skewed, a white ghost under the fill
+     pill    today's vitals pill: a rounded track, a dark overlay on the
+             fill, notches, a caption inside and a numeral on the right
+   Feeds: ramp is .bar-fill's 300ms linear (4-10 Hz pushes); step is a fast
+   fall with the ghost lagging and an ease-out rise (the 1 Hz squad).
+   The track box is the surface channel; the fill keeps its own transform.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-barline {
+  --bc-bar-c: var(--bc-hp);
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+.bc-barline--pill { height: var(--bc-pill-h); }
+.bc-bar {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--bc-bar-h);
+  transform-origin: 0 50%;
+}
+.bc-barline--pill > .bc-bar { height: 100%; }
+.bc-barline--y {
+  width: auto;
+  height: 100%;
+  flex-direction: column;
+}
+.bc-barline--y > .bc-bar {
+  width: var(--bc-bar-h);
+  height: auto;
+  transform-origin: 50% 100%;
+}
+.bc-track {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  background: var(--bc-track);
+}
+.bc-barline--slant .bc-track { transform: skewX(var(--bc-slant)); }
+.bc-barline--pill .bc-track {
+  border-radius: 9999px;
+  border: 1px solid var(--bc-rule-panel);
+}
+.bc-fill,
+.bc-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  transform-origin: 0 50%;
+}
+.bc-barline--y .bc-fill,
+.bc-barline--y .bc-ghost { transform-origin: 50% 100%; }
+.bc-fill { background: var(--bc-bar-c); }
+.bc-barline--pill .bc-fill {
+  border-radius: 9999px;
+  background-color: var(--bc-bar-c);
+  background-image: linear-gradient(90deg, rgba(0, 0, 0, 0.45) 0%, rgba(0, 0, 0, 0) 60%);
+}
+.bc-ghost { background: var(--bc-ghost); }
+/* RAMP: .bar-fill's 300 ms linear (the fill carries .bar-fill too), named here
+   in the kit's own token (--bc-t-ramp, pinned to .bar-fill by
+   scripts/test-broadcast.mjs), so a stylesheet that styles .bc-fill -- the
+   Broadcast squad prototype's does -- cannot change the vitals' feed. */
+.bc-barline--ramp .bc-fill { transition: transform var(--bc-t-ramp) linear; }
+/* STEP: a FALL drops at once and leaves its ghost behind to follow; a RISE
+   fills, and the ghost rides under it unseen. */
+.bc-barline--step .bc-fill,
+.bc-barline--step .bc-ghost { transition: transform var(--bc-t-bar-rise) var(--bc-ease-out); }
+.bc-barline--step .bc-bar[data-dir="-1"] .bc-fill {
+  transition-duration: var(--bc-t-bar-fall);
+  transition-timing-function: var(--bc-ease-fall);
+}
+.bc-barline--step .bc-bar[data-dir="-1"] .bc-ghost {
+  transition: transform var(--bc-t-ghost) var(--bc-ease-exit) var(--bc-t-ghost-delay);
+}
+/* THE DRAIN: slower than any damage move, so a death never reads as a hit. */
+.bc-bar.is-drain .bc-fill,
+.bc-bar.is-drain .bc-ghost { transition: transform var(--bc-t-drain) ease-in !important; }
+.bc-notches {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(90deg,
+    rgba(0, 0, 0, 0) 0, rgba(0, 0, 0, 0) calc(var(--bc-seg) - 1.5px),
+    var(--bc-notch) calc(var(--bc-seg) - 1.5px), var(--bc-notch) var(--bc-seg));
+}
+/* A rise: a bright fill sweeps from the old value to the new. */
+.bc-gain {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  transform-origin: 0 50%;
+  opacity: 0;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.5), #fff);
+  animation: bcGain var(--bc-t-gain) var(--bc-ease-out) both;
+}
+/* A break: a white flash, and shards along what was left of the bar. */
+.bc-crack {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: #fff;
+  opacity: 0;
+  animation: bcFade var(--bc-t-crack) ease-out both;
+}
+.bc-shards {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 0;
+  pointer-events: none;
+}
+/* Each shard catches the light along its top: on the shield-blue break flash a
+   plain shield-blue shard is invisible for the first, fastest part of its
+   flight. */
+.bc-shards > i {
+  position: absolute;
+  top: calc(var(--bc-u) * -0.11);
+  width: calc(var(--bc-u) * 0.34);
+  height: calc(var(--bc-u) * 0.22);
+  margin-left: calc(var(--bc-u) * -0.17);
+  background: linear-gradient(180deg, #fff, #fff 30%, var(--bc-bar-c) 70%);
+  opacity: 0;
+  animation: bcShard var(--bc-t-shard) cubic-bezier(0.2, 0.7, 0.4, 1) both;
+}
+/* A hit: a red wash over the bar that burns out. */
+.bc-bar__hit {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  right: -2px;
+  bottom: -2px;
+  background: var(--bc-danger);
+  opacity: 0;
+  pointer-events: none;
+  animation: bcHit var(--bc-t-hit) ease-out both;
+}
+.bc-barline--slant .bc-bar__hit { transform: skewX(var(--bc-slant)); }
+.bc-barline--pill .bc-bar__hit { border-radius: 9999px; }
+/* The pill's caption and numeral sit over the track, outside its channel, so
+   they never scale with it. */
+.bc-bar__label {
+  position: absolute;
+  left: calc(var(--bc-u) * 0.375);
+  right: calc(var(--bc-u) * 2.4);
+  top: 50%;
+  transform: translateY(-50%);
+  line-height: 1;
+  color: var(--bc-ink-pill);
+  text-shadow: var(--bc-shadow-text-heavy);
+}
+.bc-bar__num {
+  position: absolute;
+  right: calc(var(--bc-u) * 0.375);
+  top: 50%;
+  transform: translateY(-50%);
+}
+.bc-barline--slant > .bc-num { margin-left: var(--bc-bar-gap); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   5 STAMP -- a word that lands once per key and holds its last frame solid.
+   Its words come from data or existing strings (DOWN, OUT, the verdict).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-stamp {
+  display: inline-block;
+  font-family: var(--bc-font-num);
+  font-weight: 400;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--bc-stamp-c, var(--bc-ink));
+  text-shadow: var(--bc-shadow-text);
+}
+.bc-stamp--tag { font-size: var(--bc-fs-tag); letter-spacing: var(--bc-ls-tag); text-shadow: none; }
+.bc-stamp--band { font-size: var(--bc-fs-out); letter-spacing: var(--bc-ls-out); }
+.bc-stamp--screen { font-size: var(--bc-fs-banner-name); }
+.bc-stamp.is-stamp { animation: bcStamp var(--bc-t-stamp) var(--bc-ease-snap) var(--bc-stamp-delay, 0ms) both; }
+.bc-stamp.is-drop { animation: bcOutIn var(--bc-t-out-in) var(--bc-ease-snap) var(--bc-stamp-delay, 0ms) both; }
+.bc-stamp.is-slam { animation: endSlam var(--bc-t-slam-end) var(--bc-ease-snap) var(--bc-stamp-delay, 0ms) both; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   6 TAG AND BADGE
+   Tag: a slanted filled chip; the skew is on ::before only, the Anton word
+   stays upright. A holder carries an icon mark (Yubikey, bounty) over a flash.
+   Badge: +N or xN, drawn OUTSIDE a clipped plate (a clip would slice it).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-tag {
+  --bc-tag-c: var(--bc-danger);
+  --bc-tag-ink: #fff;
+  position: relative;
+  display: block;
+  flex-shrink: 0;
+  height: var(--bc-tag-h);
+  padding: 0 var(--bc-tag-pad-r) 0 var(--bc-tag-pad-l);
+}
+.bc-tag::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bc-tag-c);
+  transform: skewX(var(--bc-slant));
+  transform-origin: 0 50%;
+}
+.bc-tag__word {
+  position: relative;
+  display: block;
+  font-family: var(--bc-font-num);
+  font-size: var(--bc-fs-tag);
+  line-height: var(--bc-tag-h);
+  letter-spacing: var(--bc-ls-tag);
+  white-space: nowrap;
+  color: var(--bc-tag-ink);
+}
+/* The kill feed's HS chip: dark ink, tighter tracking. */
+.bc-tag--chip .bc-tag__word { letter-spacing: var(--bc-ls-chip); }
+.bc-tag.is-wipe::before { animation: bcTagIn var(--bc-t-tag-in) var(--bc-ease-out) both; }
+.bc-tag.is-wipe > .bc-tag__word { animation: bcStamp var(--bc-t-stamp) var(--bc-ease-snap) var(--bc-t-tag-word) both; }
+
+.bc-tag--holder {
+  height: auto;
+  padding: 0;
+  align-self: center;
+}
+.bc-tag--holder::before { display: none; }
+.bc-tag__flash {
+  position: absolute;
+  left: calc(var(--bc-u) * -0.2);
+  right: calc(var(--bc-u) * -0.2);
+  top: calc(var(--bc-u) * -0.1);
+  bottom: calc(var(--bc-u) * -0.1);
+  background: var(--bc-tag-c);
+  opacity: 0;
+  transform: skewX(var(--bc-slant));
+}
+.bc-tag__mark { position: relative; display: flex; align-items: center; }
+.bc-tag--holder.is-drop .bc-tag__flash,
+.bc-tag--holder.is-spin .bc-tag__flash { animation: bcTag var(--bc-t-mark-flash) ease-out both; }
+.bc-tag--holder.is-drop .bc-tag__mark { animation: bcDrop var(--bc-t-mark-drop) var(--bc-ease-snap) both; }
+.bc-tag--holder.is-spin .bc-tag__mark { animation: bcSpin var(--bc-t-mark-spin) var(--bc-ease-snap) both; }
+
+.bc-badge {
+  position: absolute;
+  font-family: var(--bc-font-num);
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  color: var(--bc-badge-c, var(--bc-accent));
+  text-shadow: var(--bc-shadow-text);
+}
+.bc-badge--top-end { top: calc(var(--bc-u) * -0.4); right: calc(var(--bc-u) * 0.25); }
+.bc-badge--top-start { top: calc(var(--bc-u) * -0.4); left: calc(var(--bc-u) * 0.25); }
+.bc-badge--end { top: 50%; right: calc(var(--bc-u) * -0.2); }
+.bc-badge--delta { font-size: var(--bc-fs-body); animation: deltaFloat var(--bc-t-delta) var(--bc-ease-out) both; }
+.bc-badge--count {
+  position: relative;
+  display: inline-block;
+  font-size: var(--bc-fs-row);
+  transform-origin: 50% 50%;
+}
+.bc-badge--count.is-beat { animation: punch var(--bc-t-count) var(--bc-ease-out); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   7 LIGHTSWEEP -- a one-shot crossing, one plate-width from its left to just
+   past its right edge. Keyed by a beat; its opacity is its power; it ends
+   invisible and holds nothing.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-sweep {
+  --bc-tail: calc(var(--bc-u) * 2.8);
+  --bc-sweep-c: var(--bc-edge-c, var(--bc-accent));
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  transform: translateX(-100%);
+  animation: bcCross var(--bc-t-sweep) var(--bc-ease-sweep) both;
+}
+.bc-sweep > i,
+.bc-sweep > b {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+}
+/* sweep: white light (a big hit) */
+.bc-sweep > i {
+  width: calc(var(--bc-u) * 2.6);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6) 62%, rgba(255, 255, 255, 0));
+}
+/* stinger: the theme's two slabs, in the edge color (a kill) */
+.bc-sweep--stinger {
+  --bc-tail: calc(var(--bc-u) * 3.3);
+  animation: bcCross var(--bc-t-sting) var(--bc-ease-wipe) both;
+}
+.bc-sweep--stinger > i {
+  width: calc(var(--bc-u) * 2.3);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 64%, rgba(255, 255, 255, 0.65)), var(--bc-sweep-c);
+}
+.bc-sweep--stinger > b {
+  right: calc(var(--bc-u) * 2.62);
+  width: calc(var(--bc-u) * 0.36);
+  background: var(--bc-sweep-c);
+}
+/* glint: a narrow light (a shield hit along its bar) */
+.bc-sweep--glint {
+  --bc-tail: calc(var(--bc-u) * 1.3);
+  animation: bcCross var(--bc-t-glint) ease-out both;
+}
+.bc-sweep--glint > i {
+  width: calc(var(--bc-u) * 1.2);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), #fff 70%, rgba(255, 255, 255, 0));
+}
+/* name: an accent glint along the name band (a Yubikey) */
+.bc-sweep--name {
+  --bc-tail: calc(var(--bc-u) * 1.8);
+  bottom: auto;
+  height: var(--bc-band);
+  animation: bcCross var(--bc-t-name) var(--bc-ease-sweep) both;
+}
+.bc-sweep--name > i {
+  width: calc(var(--bc-u) * 1.6);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), var(--bc-accent) 55%, rgba(255, 255, 255, 0.85) 72%, rgba(255, 255, 255, 0));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   8 BUTTON -- ui/Btn's contract with a Broadcast face: a slanted ::before with
+   a slab in the variant color. It keeps `btn` (index.css: the 1px travel, the
+   hover brighten, the focus ring), so check-ui R3 holds; the ring is drawn on
+   the slanted face instead of the upright box.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-btn {
+  --bc-btn-fill: var(--bc-fill-control);
+  --bc-btn-edge: var(--bc-rule);
+  --bc-btn-ink: var(--bc-ink);
+  --bc-btn-slab: var(--bc-rule);
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  font-family: var(--bc-font-num);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: var(--bc-ls-btn);
+  color: var(--bc-btn-ink);
+}
+.bc-btn::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: -1;
+  background:
+    linear-gradient(90deg, var(--bc-btn-slab) 0, var(--bc-btn-slab) var(--bc-slab-w), rgba(0, 0, 0, 0) var(--bc-slab-w)),
+    var(--bc-plate-sheen),
+    var(--bc-btn-fill);
+  box-shadow: inset 0 0 0 1px var(--bc-btn-edge);
+  transform: skewX(var(--bc-slant));
+}
+.bc-btn.btn:focus-visible { box-shadow: none; }
+.bc-btn:focus-visible::before { box-shadow: inset 0 0 0 2px var(--bc-focus); }
+.bc-btn--primary {
+  --bc-btn-fill: var(--bc-accent);
+  --bc-btn-edge: var(--bc-accent-hi);
+  --bc-btn-ink: var(--bc-accent-ink);
+  --bc-btn-slab: var(--bc-accent-hi);
+}
+.bc-btn--ghost {
+  --bc-btn-fill: var(--bc-fill-ghost);
+  --bc-btn-edge: var(--bc-rule-quiet);
+  --bc-btn-ink: var(--bc-ink-soft);
+  --bc-btn-slab: var(--bc-rule-quiet);
+}
+.bc-btn--danger {
+  --bc-btn-fill: var(--bc-fill-danger);
+  --bc-btn-edge: var(--bc-danger);
+  --bc-btn-ink: var(--bc-ink-danger);
+  --bc-btn-slab: var(--bc-danger);
+}
+/* A card's action: the plate speaks in the action's color (--bc-tone). */
+.bc-btn--tone {
+  --bc-btn-fill: var(--bc-fill-action);
+  --bc-btn-edge: var(--bc-tone);
+  --bc-btn-ink: var(--bc-tone);
+  --bc-btn-slab: var(--bc-tone);
+}
+.bc-btn.is-active {
+  --bc-btn-fill: var(--bc-fill-selected);
+  --bc-btn-edge: var(--bc-accent);
+  --bc-btn-slab: var(--bc-accent);
+}
+.bc-btn--sm { font-size: var(--bc-fs-btn-sm); padding: calc(var(--bc-u) * 0.375) calc(var(--bc-u) * 0.95); }
+.bc-btn--md { font-size: var(--bc-fs-btn-md); padding: calc(var(--bc-u) * 0.625) calc(var(--bc-u) * 1.25); }
+.bc-btn--lg { font-size: var(--bc-fs-btn-lg); padding: calc(var(--bc-u) * 0.875) calc(var(--bc-u) * 1.8); }
+.bc-btn--xl { font-size: var(--bc-fs-btn-xl); padding: calc(var(--bc-u) * 1.25) calc(var(--bc-u) * 2.4); }
+.bc-btn--full { display: flex; width: 100%; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   9 TAB -- the S2 TabStrip's semantics (tablist, aria-selected, roving
+   tabindex, arrows, Home and End) on Broadcast faces, in two designs:
+     plates  each tab a slanted plate; the selected one lit: a cyan slab,
+             teal fill, white ink
+     blade   bare words on a hairline; a slanted cyan blade under the selected
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-tabs {
+  position: relative;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  gap: var(--bc-gap);
+}
+.bc-tab {
+  --bc-btn-fill: var(--bc-fill-tab);
+  --bc-btn-edge: var(--bc-rule-quiet);
+  --bc-btn-ink: var(--bc-ink-quiet);
+  --bc-btn-slab: rgba(0, 0, 0, 0);
+  flex: 0 0 auto;
+  font-size: var(--bc-fs-tab);
+  letter-spacing: var(--bc-ls-tab);
+  padding: calc(var(--bc-u) * 0.6) calc(var(--bc-u) * 1.2);
+}
+.bc-tab:hover { --bc-btn-ink: var(--bc-ink); }
+.bc-tab.is-active {
+  --bc-btn-fill: var(--bc-fill-selected);
+  --bc-btn-edge: var(--bc-accent);
+  --bc-btn-ink: var(--bc-ink);
+  --bc-btn-slab: var(--bc-accent);
+  z-index: 1;
+}
+.bc-tabs--blade {
+  gap: calc(var(--bc-u) * 2.2);
+  background: linear-gradient(var(--bc-rule-quiet), var(--bc-rule-quiet)) 0 100% / 100% 1px no-repeat;
+}
+.bc-tabs--blade .bc-tab {
+  padding: calc(var(--bc-u) * 0.35) 0 calc(var(--bc-u) * 0.75);
+  font-size: var(--bc-fs-body);
+}
+.bc-tabs--blade .bc-tab::before { background: none; box-shadow: none; }
+.bc-tabs--blade .bc-tab::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--bc-u) * 0.25);
+  background: var(--bc-accent);
+  transform: skewX(var(--bc-slant)) scaleX(0);
+  transform-origin: 0 50%;
+  transition: transform var(--bc-t-fade) var(--bc-ease-out);
+}
+.bc-tabs--blade .bc-tab.is-active::after { transform: skewX(var(--bc-slant)) scaleX(1); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   10 CARD -- the edge reads equipped, then owned, then rarity (with the pips
+   in the colorblind modes). An art well with a monogram fallback, a one-line
+   name, a sub caption, one action. Never is-active.
+     slant   Broadcast: the well upright, its top rule in the edge color, then
+             a slanted name strap with the edge as its slab
+     square  today's Market: a square plate edged in the edge color
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-card {
+  --bc-card-edge: var(--bc-rarity-1);
+  --bc-card-mono: var(--bc-rarity-1);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--bc-u) * 0.5);
+  min-width: 0;
+  min-height: calc(var(--bc-u) * 10);
+}
+.bc-card__well {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: calc(var(--bc-u) * 4.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bc-fill-well);
+}
+.bc-card--slant .bc-card__well {
+  background:
+    linear-gradient(var(--bc-card-edge), var(--bc-card-edge)) 0 0 / 100% 2px no-repeat,
+    var(--bc-fill-well);
+}
+.bc-card__mono {
+  font-family: var(--bc-font-num);
+  font-size: calc(var(--bc-u) * 1.6);
+  line-height: 1;
+  opacity: 0.4;
+  color: var(--bc-card-mono);
+}
+.bc-card__name {
+  min-width: 0;
+  font-weight: var(--bc-w-emph);
+  line-height: 1.2;
+}
+.bc-card__sub { display: flex; align-items: center; gap: calc(var(--bc-u) * 0.3); min-width: 0; }
+.bc-card__text { display: flex; flex-direction: column; justify-content: center; gap: calc(var(--bc-u) * 0.15); min-width: 0; flex: 1 1 auto; }
+.bc-card--square {
+  padding: calc(var(--bc-u) * 0.75);
+  background: var(--bc-plate-sheen), var(--bc-fill-card);
+  border: 1px solid var(--bc-card-edge);
+}
+.bc-cardgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(max(calc(var(--bc-u) * 9.5), calc((100% - var(--bc-u) * 2.25) / 4)), 1fr));
+  gap: calc(var(--bc-u) * 0.75);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   11 LISTROW -- a label (Barlow 700 uppercase), a summary that brightens when
+   the row is active, a trailing slot behind a divider. States: rest, hover
+   (btn), active (teal, a cyan slab), confirm (danger ink).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-listrow {
+  --bc-btn-fill: var(--bc-fill-list);
+  --bc-btn-edge: var(--bc-rule-quiet);
+  --bc-btn-ink: var(--bc-ink);
+  --bc-btn-slab: rgba(0, 0, 0, 0);
+  --bc-row-sum: var(--bc-ink-quiet);
+  display: flex;
+  justify-content: space-between;
+  gap: calc(var(--bc-u) * 0.75);
+  width: 100%;
+  min-height: calc(var(--bc-u) * 2.6);
+  padding: calc(var(--bc-u) * 0.45) calc(var(--bc-u) * 1.1);
+  align-items: center;
+  font-family: var(--bc-font-word);
+  font-size: var(--bc-fs-row);
+  text-transform: none;
+  letter-spacing: normal;
+  text-align: left;
+}
+.bc-listrow.is-active {
+  --bc-btn-fill: var(--bc-fill-selected);
+  --bc-btn-edge: var(--bc-accent);
+  --bc-btn-slab: var(--bc-accent);
+  --bc-row-sum: var(--bc-ink-lit);
+}
+.bc-listrow.is-confirm {
+  --bc-btn-edge: var(--bc-danger);
+  --bc-btn-ink: var(--bc-ink-danger);
+  --bc-btn-slab: var(--bc-danger);
+}
+.bc-listrow__text { display: flex; align-items: baseline; gap: calc(var(--bc-u) * 0.6); min-width: 0; flex: 1 1 auto; }
+.bc-listrow__label {
+  font-weight: var(--bc-w-strong);
+  text-transform: uppercase;
+  letter-spacing: var(--bc-ls-label);
+  line-height: 1.2;
+}
+.bc-listrow__sum { color: var(--bc-row-sum); font-size: 0.9em; }
+.bc-listrow__trail {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding-left: calc(var(--bc-u) * 0.75);
+  background: linear-gradient(var(--bc-rule-quiet), var(--bc-rule-quiet)) 0 50% / 1px 70% no-repeat;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   12 DIALOGFRAME -- a scrim, a deck, an Anton header strap, a body and the
+   actions at the right of the footer; as wide as its contents, 20 to 40 kit
+   units. It arrives on the broadcast preset; the scrim fades.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-dialog-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.bc-dialog__scrim {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bc-scrim-dialog);
+}
+.bc-dialog {
+  position: relative;
+  width: max-content;
+  min-width: calc(var(--bc-u) * 20);
+  max-width: calc(var(--bc-u) * 40);
+  pointer-events: auto;
+}
+.bc-dialog__surface {
+  position: absolute;
+  left: 0;
+  top: calc(var(--bc-u) * 1.1);
+  right: 0;
+  bottom: 0;
+  transform-origin: 0 50%;
+  background:
+    linear-gradient(var(--bc-rule-top), var(--bc-rule-top)) 0 0 / 100% 1px no-repeat,
+    var(--bc-deck-sheen),
+    linear-gradient(90deg, var(--bc-deck-a), var(--bc-deck-b) 62%);
+  box-shadow: var(--bc-shadow-card);
+}
+.bc-dialog__head { position: relative; width: calc(100% - var(--bc-u) * 2); }
+.bc-dialog__title {
+  min-width: 0;
+  font-family: var(--bc-font-num);
+  font-size: var(--bc-fs-btn-lg);
+  line-height: 1;
+  letter-spacing: var(--bc-ls-btn);
+  text-transform: uppercase;
+  color: var(--bc-ink);
+}
+.bc-dialog__content {
+  position: relative;
+  padding: calc(var(--bc-u) * 0.9) calc(var(--bc-u) * 1.25) calc(var(--bc-u) * 1.1);
+}
+.bc-dialog__body { margin: 0; }
+.bc-dialog__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(var(--bc-u) * 0.6);
+  margin-top: calc(var(--bc-u) * 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   13 VITALS -- the slanted vitals (the owner's pick, 2026-11-03): two straps,
+   health over shield, each a slab, its caption, a slanted ramp bar and the
+   numeral after it. (Not .bc-vitals: today's squad.css owns that name.)
+   The caption sets its own ink, line and shadow, so it reads the same on any
+   page whatever the line around it inherits.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bc-vitalstrip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-gap);
+}
+.bc-vitalstrip__label {
+  flex: 0 0 auto;
+  margin-right: var(--bc-bar-gap);
+  line-height: 1;
+  color: var(--bc-ink-pill);
+  text-shadow: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   KEYFRAMES. Transform and opacity only. (endSlam, deltaFloat and punch are
+   index.css's, reused.)
+   ═══════════════════════════════════════════════════════════════════════════ */
+@keyframes bcFade { 0% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes bcCross { from { transform: translateX(-100%); } to { transform: translateX(var(--bc-tail)); } }
+@keyframes bcBurst {
+  0%   { opacity: 1; transform: scaleX(0.06); }
+  55%  { opacity: 0.8; }
+  100% { opacity: 0; transform: scaleX(1); }
+}
+@keyframes bcRetract { from { transform: scaleY(1); } to { transform: scaleY(0); } }
+@keyframes bcFlare {
+  0%   { opacity: 1; transform: scaleX(1); }
+  35%  { opacity: 0.9; transform: scaleX(5); }
+  100% { opacity: 0; transform: scaleX(1.5); }
+}
+@keyframes bcAir {
+  0%   { transform: scaleX(0.3); }
+  14%  { transform: scaleX(0.82); }
+  28%  { transform: scaleX(0.46); }
+  46%  { transform: scaleX(1); }
+  62%  { transform: scaleX(0.38); }
+  80%  { transform: scaleX(0.74); }
+  100% { transform: scaleX(0.3); }
+}
+@keyframes bcHotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes bcGain {
+  0%   { opacity: 1; transform: scaleX(0); }
+  42%  { opacity: 1; transform: scaleX(1); }
+  100% { opacity: 0; transform: scaleX(1); }
+}
+@keyframes bcShard {
+  0%   { opacity: 1; transform: translate(0, 0) rotate(0deg) skewX(var(--bc-slant)); }
+  70%  { opacity: 0.9; }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--r)) skewX(var(--bc-slant)); }
+}
+@keyframes bcHit { 0% { opacity: 0.55; } 100% { opacity: 0; } }
+@keyframes bcPopA { 0% { transform: scale(1); } 30% { transform: scale(var(--bc-pop)); } 100% { transform: scale(1); } }
+@keyframes bcPopB { 0% { transform: scale(1); } 30% { transform: scale(var(--bc-pop)); } 100% { transform: scale(1); } }
+@keyframes bcSlamA { 0% { transform: scale(var(--bc-slam)); } 55% { transform: scale(0.93); } 100% { transform: scale(1); } }
+@keyframes bcSlamB { 0% { transform: scale(var(--bc-slam)); } 55% { transform: scale(0.93); } 100% { transform: scale(1); } }
+@keyframes bcTickFall {
+  0%   { transform: translateY(calc(var(--bc-tick) * -1)); }
+  60%  { transform: translateY(0.05em); }
+  100% { transform: translateY(0); }
+}
+@keyframes bcTickRise {
+  0%   { transform: translateY(var(--bc-tick)); }
+  60%  { transform: translateY(-0.05em); }
+  100% { transform: translateY(0); }
+}
+@keyframes bcHot { 0% { opacity: 0.95; } 30% { opacity: 0.85; } 100% { opacity: 0; } }
+@keyframes bcBeatA { 0% { transform: scale(1); } 22% { transform: scale(1.1); } 100% { transform: scale(1); } }
+@keyframes bcBeatB { 0% { transform: scale(1); } 22% { transform: scale(1.1); } 100% { transform: scale(1); } }
+@keyframes bcPlateIn { from { transform: translateX(-101%); } to { transform: translateX(0); } }
+@keyframes bcPlateOut { from { transform: translateX(0); } to { transform: translateX(101%); } }
+@keyframes bcDrain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes bcEdge { 0% { opacity: 1; } 50% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes bcZip {
+  0%   { opacity: 1; transform: scaleX(var(--from)); }
+  35%  { opacity: 1; transform: scaleX(var(--from)); }
+  100% { opacity: 0.5; transform: scaleX(0); }
+}
+@keyframes bcOutIn {
+  0%   { opacity: 0; transform: translateY(calc(var(--bc-u) * -0.55)) scale(1.3); }
+  60%  { opacity: 1; transform: translateY(calc(var(--bc-u) * 0.04)) scale(0.97); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes bcTag {
+  0%   { opacity: 0.95; transform: skewX(var(--bc-slant)) scaleX(0.3); }
+  30%  { opacity: 0.85; transform: skewX(var(--bc-slant)) scaleX(1.25); }
+  100% { opacity: 0; transform: skewX(var(--bc-slant)) scaleX(1.6); }
+}
+@keyframes bcDrop {
+  0%   { opacity: 0; transform: translateY(calc(var(--bc-u) * -0.6)) scale(1.35); }
+  60%  { opacity: 1; transform: translateY(calc(var(--bc-u) * 0.05)) scale(0.94); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes bcSpin {
+  0%   { opacity: 0; transform: scale(2.4) rotate(-140deg); }
+  62%  { opacity: 1; transform: scale(0.9) rotate(10deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+@keyframes bcTagIn { from { transform: skewX(var(--bc-slant)) scaleX(0); } to { transform: skewX(var(--bc-slant)) scaleX(1); } }
+@keyframes bcStamp {
+  0%   { opacity: 0; transform: scale(2); }
+  60%  { opacity: 1; transform: scale(0.92); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes bcJoltA {
+  0%   { transform: translateX(0); }
+  12%  { transform: translateX(calc(var(--amp) * -1)); }
+  30%  { transform: translateX(calc(var(--amp) * 0.8)); }
+  50%  { transform: translateX(calc(var(--amp) * -0.45)); }
+  72%  { transform: translateX(calc(var(--amp) * 0.18)); }
+  100% { transform: translateX(0); }
+}
+@keyframes bcJoltB {
+  0%   { transform: translateX(0); }
+  12%  { transform: translateX(calc(var(--amp) * -1)); }
+  30%  { transform: translateX(calc(var(--amp) * 0.8)); }
+  50%  { transform: translateX(calc(var(--amp) * -0.45)); }
+  72%  { transform: translateX(calc(var(--amp) * 0.18)); }
+  100% { transform: translateX(0); }
+}
+@keyframes bcKnockA {
+  0%   { transform: translate(0, 0); }
+  18%  { transform: translate(calc(var(--amp) * -0.5), var(--amp)); }
+  42%  { transform: translate(calc(var(--amp) * 0.35), calc(var(--amp) * -0.3)); }
+  68%  { transform: translate(calc(var(--amp) * -0.12), calc(var(--amp) * 0.12)); }
+  100% { transform: translate(0, 0); }
+}
+@keyframes bcKnockB {
+  0%   { transform: translate(0, 0); }
+  18%  { transform: translate(calc(var(--amp) * -0.5), var(--amp)); }
+  42%  { transform: translate(calc(var(--amp) * 0.35), calc(var(--amp) * -0.3)); }
+  68%  { transform: translate(calc(var(--amp) * -0.12), calc(var(--amp) * 0.12)); }
+  100% { transform: translate(0, 0); }
+}
+@keyframes bcPunchA {
+  0%   { transform: translateX(0); }
+  22%  { transform: translateX(var(--amp)); }
+  60%  { transform: translateX(calc(var(--amp) * -0.18)); }
+  100% { transform: translateX(0); }
+}
+@keyframes bcPunchB {
+  0%   { transform: translateX(0); }
+  22%  { transform: translateX(var(--amp)); }
+  60%  { transform: translateX(calc(var(--amp) * -0.18)); }
+  100% { transform: translateX(0); }
+}
+@keyframes bcRiseA {
+  0%   { transform: translateX(calc(var(--amp) * -1)); }
+  58%  { transform: translateX(calc(var(--amp) * 0.12)); }
+  100% { transform: translateX(0); }
+}
+@keyframes bcRiseB {
+  0%   { transform: translateX(calc(var(--amp) * -1)); }
+  58%  { transform: translateX(calc(var(--amp) * 0.12)); }
+  100% { transform: translateX(0); }
+}
+@keyframes bcThudA {
+  0%, 40% { transform: translateY(0); }
+  50%  { transform: translateY(var(--amp)); }
+  72%  { transform: translateY(calc(var(--amp) * -0.35)); }
+  100% { transform: translateY(0); }
+}
+@keyframes bcThudB {
+  0%, 40% { transform: translateY(0); }
+  50%  { transform: translateY(var(--amp)); }
+  72%  { transform: translateY(calc(var(--amp) * -0.35)); }
+  100% { transform: translateY(0); }
+}
+
+/* ═══ THE KIT'S ENDLESS ANIMATIONS (check-ui R27, #252) ═══
+   A layer nobody can see does no animation work. The alarm slab and glow
+   pulse on index.css's .mate-pulse, which index.css already pauses. */
+.layer-off .bc-meter > i,
+.layer-off .bc-hot-pulse {
+  animation-play-state: paused !important;
+}

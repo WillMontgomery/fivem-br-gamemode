@@ -1,0 +1,5 @@
+/* PRESET: FADE (#431) -- opacity over 200 ms each way, as today's HUD root.
+   Timings: motion/tokens.ts (HALF.fade). */
+[data-bc-preset="fade"] {
+  --bc-pre-root-o: 0;
+}

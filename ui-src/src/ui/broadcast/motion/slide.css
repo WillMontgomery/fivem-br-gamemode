@@ -1,0 +1,7 @@
+/* PRESET: SLIDE (#431) -- noticeIn's 220 ms fly in from the left, a 200 ms
+   fade out. For rows (notices, the kill feed). Timings: motion/tokens.ts
+   (HALF.slideIn, HALF.fade). In kit units, where noticeIn moved 16px. */
+[data-bc-preset="slide"] {
+  --bc-pre-root-t: translateX(calc(var(--bc-fly) * -1));
+  --bc-pre-root-o: 0;
+}

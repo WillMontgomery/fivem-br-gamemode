@@ -1,12 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HeroUIProvider } from '@heroui/react'
-import App from './App'
-import { installErrorSinks, isBrowser, reportEnvironment } from './bridge/nui'
-import { installLockGuard } from './tutorial/lockGuard'
-import { installDiag } from './bridge/diag'
-import { installLobbyTrack } from './audio/lobbyTrackInstall'
-import { installUiv2 } from './bridge/uiv2'
 
 // FONTS, SELF-HOSTED. Never a CDN: CEF has no network on a cold boot, and a
 // font that fails to arrive is worse than one that was never asked for -- it
@@ -48,7 +42,19 @@ import '@fontsource/barlow/latin-700.css'
 // it -- and so it costs nothing, which is the standing rule on UI dependencies.
 import '@fontsource-variable/nunito/wght.css'
 
+// THE STYLESHEETS ABOVE App, AND THAT IS THEIR CASCADE (#431). Vite writes
+// the CSS in the order the modules are first reached, so a sheet App's tree
+// imports -- the Broadcast kit's (src/ui/broadcast), then a screen's own --
+// lands after index.css only if index.css is imported first. Below App, the
+// kit's captions would lose to .micro-label and draw dim.
+// scripts/test-broadcast.mjs holds every stylesheet import here above App.
 import './index.css'
+import App from './App'
+import { installErrorSinks, isBrowser, reportEnvironment } from './bridge/nui'
+import { installLockGuard } from './tutorial/lockGuard'
+import { installDiag } from './bridge/diag'
+import { installLobbyTrack } from './audio/lobbyTrackInstall'
+import { installUiv2 } from './bridge/uiv2'
 
 // Install these BEFORE rendering. A crash during the first render is exactly the
 // case where a blank screen with no console output is most likely, and this is

@@ -1,0 +1,196 @@
+/* BROADCAST KIT: THE PRESENCE CHANNELS AND THE BUILT-IN PRESETS (#431).
+
+   A PRESENCE ROOT (motion/usePresence.ts) carries:
+     data-bc-phase    hidden | entering | shown | leaving
+     data-bc-preset   the preset's name
+     style            per channel: --bc-<ch>-ms, --bc-<ch>-delay, --bc-<ch>-ease
+                      (ch = root, edge, surface, content), and --bc-tp: none
+                      while it lands (transitions off)
+
+   FOUR CHANNELS. The root itself, and three that primitives opt into by class:
+     .bc-ch-edge      a plate's slab: scaleY about its pivot (the edge rises)
+     .bc-ch-surface   a plate and its cover: scaleX about the slab side (it
+                      opens from its slab), a bar's track
+     .bc-ch-content   the upright face: slides from the slab side and fades
+     .bc-whole        a NUMBER: opacity only, stepped, so it is whole or absent,
+                      never half-faded -- it appears when its content lands and
+                      goes the moment its content leaves, so it is never seen
+                      moving
+     .bc-whole[data-bc-run]
+                      a NUMBER IN A LABEL (motion/label.ts: words or a glyph
+                      beside it, a box that says it is a label, or a button's
+                      or tag's whole label): it lands with its content as any
+                      number, but LEAVES WITH ITS WORDS -- its own opacity
+                      holds through the leave, so it fades and slides as they
+                      do ("Send 2 reports" never reads "SEND   REPORTS")
+   A channel element outside any presence reads the defaults: it is simply shown.
+
+   A PAGE'S OWN EXIT (a row that leaves on keyframes of its own while its
+   presence stays shown, the squad panel's mate who leaves): the box playing
+   it carries data-bc-exit, and a number standing alone in it goes at once,
+   as a presence's leave would take it.
+
+   TRANSITIONS, NOT KEYFRAMES. A leave mid-enter or an enter mid-leave retargets
+   from the current value, so nothing jumps and everything ends on target.
+   Keyframes are only for one-shot accents (kit.css).
+
+   A PRESET IS A NAME WITH TWO HALVES: its hidden values here, as --bc-pre-*
+   on [data-bc-preset="<name>"] (identity unless it says otherwise), and its
+   timings in motion/tokens.ts. The attribute may sit on the presence root (it
+   always does) or on any element above it: a screen root that names a preset
+   reaches every presence under it.
+
+   Chromium 103 safe: transform and opacity only, transition-property through
+   var() (with a fallback), no @starting-style (the hook renders a hidden first
+   frame and reads it), no individual transform properties. */
+
+/* ═══ A PRESET THAT DOES NOT NAME A CHANNEL LEAVES IT ALONE ═══ */
+[data-bc-preset] {
+  --bc-pre-root-t: none;
+  --bc-pre-root-o: 1;
+  --bc-pre-edge-s: 1;
+  --bc-pre-edge-o: 1;
+  --bc-pre-surface-s: 1;
+  --bc-pre-surface-o: 1;
+  --bc-pre-content-x: 0px;
+  --bc-pre-content-o: 1;
+  /* A NUMBER STANDING ALONE IS HIDDEN WHEREVER ITS PRESENCE IS, whatever the
+     preset moves: one that moves only its root (drop, fade, slide) leaves
+     the content at 1, and a number riding the root out is seen fading and
+     moving. A quick hide names 1: it fades a whole layer as one. */
+  --bc-pre-whole-o: 0;
+}
+
+/* ═══ EVERY PRESENCE ROOT: THE SHOWN VALUES (entering, shown) ═══
+   Declared in full on every root, so a presence nested in another never
+   inherits its parent's phase. --bc-tp: initial is "not set": the channel
+   rules fall back to their own transition-property. */
+[data-bc-phase] {
+  --bc-tp: initial;
+  --bc-root-t: none;
+  --bc-root-o: 1;
+  --bc-edge-s: 1;
+  --bc-edge-o: 1;
+  --bc-surface-s: 1;
+  --bc-surface-o: 1;
+  --bc-content-x: 0px;
+  --bc-content-o: 1;
+  /* A number lands when its content lands. */
+  --bc-whole-o: 1;
+  --bc-whole-ease: steps(1, end);
+  /* A number in a label is shown while its content is AND through the
+     content's way out (the leaving rule below leaves this alone): its words
+     carry it. */
+  --bc-run-o: 1;
+  transform: var(--bc-root-t);
+  opacity: var(--bc-root-o);
+  transition-property: var(--bc-tp, transform, opacity);
+  transition-duration: var(--bc-root-ms, 0ms);
+  transition-timing-function: var(--bc-root-ease, linear);
+  transition-delay: var(--bc-root-delay, 0ms);
+}
+
+/* ═══ THE HIDDEN VALUES (hidden, leaving): the preset's ═══ */
+[data-bc-phase="hidden"],
+[data-bc-phase="leaving"] {
+  --bc-root-t: var(--bc-pre-root-t);
+  --bc-root-o: var(--bc-pre-root-o);
+  --bc-edge-s: var(--bc-pre-edge-s);
+  --bc-edge-o: var(--bc-pre-edge-o);
+  --bc-surface-s: var(--bc-pre-surface-s);
+  --bc-surface-o: var(--bc-pre-surface-o);
+  --bc-content-x: var(--bc-pre-content-x);
+  --bc-content-o: var(--bc-pre-content-o);
+  /* A number standing alone goes the moment its content starts to leave. */
+  --bc-whole-o: var(--bc-pre-whole-o);
+  --bc-whole-ease: steps(1, start);
+}
+
+/* Settled hidden: nothing stray shows (an accent still running, a badge). The
+   hook also sets layer-off, aria-hidden and inert. A number in a label takes
+   the content's hidden value only now (transitions are off by then), so it
+   lands with its content again next time. */
+[data-bc-phase="hidden"] {
+  visibility: hidden;
+  --bc-run-o: var(--bc-pre-content-o);
+}
+
+/* ═══ THE CHANNELS ═══ */
+.bc-ch-edge {
+  transform: scaleY(var(--bc-edge-s, 1));
+  opacity: var(--bc-edge-o, 1);
+  transition-property: var(--bc-tp, transform, opacity);
+  transition-duration: var(--bc-edge-ms, 0ms);
+  transition-timing-function: var(--bc-edge-ease, linear);
+  transition-delay: var(--bc-edge-delay, 0ms);
+}
+.bc-ch-surface {
+  transform: scaleX(var(--bc-surface-s, 1));
+  opacity: var(--bc-surface-o, 1);
+  transition-property: var(--bc-tp, transform, opacity);
+  transition-duration: var(--bc-surface-ms, 0ms);
+  transition-timing-function: var(--bc-surface-ease, linear);
+  transition-delay: var(--bc-surface-delay, 0ms);
+}
+/* --bc-dir is the slide's direction: 1 slides in from the left (a lead slab),
+   -1 from the right (a trail slab). Set by the plate. */
+.bc-ch-content {
+  transform: translateX(calc(var(--bc-dir, 1) * var(--bc-content-x, 0px)));
+  opacity: var(--bc-content-o, 1);
+  transition-property: var(--bc-tp, transform, opacity);
+  transition-duration: var(--bc-content-ms, 0ms);
+  transition-timing-function: var(--bc-content-ease, linear);
+  transition-delay: var(--bc-content-delay, 0ms);
+}
+.bc-whole {
+  opacity: var(--bc-whole-o, 1);
+  transition-property: var(--bc-tp, opacity);
+  transition-duration: var(--bc-content-ms, 0ms);
+  transition-timing-function: var(--bc-whole-ease, steps(1, end));
+  transition-delay: var(--bc-content-delay, 0ms);
+}
+/* A NUMBER IN A LABEL LEAVES WITH ITS WORDS (Numeral and Clock set
+   data-bc-run): the same stepped landing, but nothing of its own on the way
+   out -- the content channel and the root around it take it out with its
+   words. Before the live rule, which wins. */
+.bc-whole[data-bc-run] {
+  opacity: var(--bc-run-o, 1);
+}
+/* A NUMBER IS NEVER HIDDEN AT THE MOMENT IT CHANGES: one that changes while its
+   presence is still entering shows at once (Numeral sets data-bc-live). */
+.bc-whole[data-bc-live] {
+  opacity: 1;
+  transition: none;
+}
+/* A PAGE'S OWN EXIT (data-bc-exit, above): a number standing alone in it
+   goes at once, never seen riding the exit; a number in a label rides it
+   with its words. Important, and the attribute named twice, so it outranks
+   a page's own live landing (a number changed mid-entrance, shown at once,
+   itself important: stage.css, squad.css, inventory.css) whatever order the
+   sheets come in: a row that is leaving is not landing. */
+[data-bc-exit][data-bc-exit] .bc-whole:not([data-bc-run]) {
+  opacity: 0 !important;
+  transition: none !important;
+}
+
+/* ═══ BROADCAST: onAir in, offAir out ═══
+   The edge rises, the plate opens from its slab, the content slides in from
+   the slab side; out, the content goes, the plate closes toward its slab, the
+   edge drops. The loading screen's lower third, on one curve. */
+[data-bc-preset="broadcast"] {
+  --bc-pre-edge-s: 0;
+  --bc-pre-surface-s: 0;
+  --bc-pre-content-x: calc(var(--bc-slide) * -1);
+  --bc-pre-content-o: 0;
+}
+
+/* ═══ QUICK HIDE: a layer root's opacity, 150 ms each way ═══ */
+[data-bc-preset="quickHide"] {
+  --bc-pre-root-o: 0;
+  --bc-pre-whole-o: 1;
+}
+
+/* ═══ NONE: instant. Hidden is still hidden. ═══ */
+[data-bc-preset="none"] {
+  --bc-pre-root-o: 0;
+}

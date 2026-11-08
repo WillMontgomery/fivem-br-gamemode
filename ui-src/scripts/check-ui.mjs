@@ -182,6 +182,7 @@ const RARITY_HEX_ALLOWED = new Map([
   ['src/index.css', 'the token block itself (test_rarity pins it)'],
   ['src/hud/Notices.tsx', "the 'warn' tone: an amber that means caution, not Legendary"],
   ['src/screens/Lobby.tsx', "var(--color-warn, #FFB020): the warn tone's fallback, not a rarity"],
+  ['src/ui/broadcast/tokens.css', "--bc-warn: the Broadcast kit's warn tone, Notices.tsx's amber, never an alias of --rarity-5"],
 ])
 for (const f of files) {
   if (RARITY_HEX_ALLOWED.has(rel(f))) continue
@@ -2113,22 +2114,29 @@ for (const name of builtCss) {
 // block pauses every ENDLESS animation under a layer that is off for good;
 // this keeps it complete and keeps the layers using it:
 //
-//   UNLISTED -- an `infinite` animation in index.css, an inline one in a
-//     screen, or a Tailwind `animate-*` loop that the `.layer-off` block does
-//     not pause. For a rule that pairs a finite entrance with a loop, only the
-//     loop may be paused (`running, paused`): a paused entrance would resume
-//     half way when its layer comes back, which is a visible change.
+//   UNLISTED -- an `infinite` animation in any stylesheet under src that
+//     neither index.css's `.layer-off` block nor that sheet's own `.layer-off`
+//     lines pause, an inline one in a screen, or a Tailwind `animate-*` loop
+//     that the block does not pause. For a rule that pairs a finite entrance
+//     with a loop, only the loop may be paused (`running, paused`): a paused
+//     entrance would resume half way when its layer comes back, which is a
+//     visible change.
 //   UNUSED -- the curtain, the HUD, the lobby and its menu column, or the two
 //     gates under GTA's menu stop adding `layer-off` once they are off.
 //
+// EVERY SHEET, NOT index.css ALONE (#431). A sheet of its own hid its loops
+// from a rule that read one file: the Broadcast kit's on-air meter and hot
+// slab pulse are paused by kit.css's own lines, and only reading kit.css sees
+// either half.
+//
 // IT CAN FAIL. Add `animation: spin 1s linear infinite` to any rule, drop
-// `.layer-off .ldring.is-indeterminate svg` from the block, or the `off`
+// `.layer-off .ldring.is-indeterminate svg` from the block or
+// `.layer-off .bc-hot-pulse` from src/ui/broadcast/kit.css, or the `off`
 // class from LeaveScreen.tsx.
 // ---------------------------------------------------------------------------
 {
   const cssPath = join(SRC, 'index.css')
   if (existsSync(cssPath)) {
-    const css = stripComments(read(cssPath))
     /** Split on commas that are not inside parentheses. */
     const splitTop = (s) => {
       const out = []; let depth = 0; let cur = ''
@@ -2140,46 +2148,58 @@ for (const name of builtCss) {
       if (cur.trim()) out.push(cur.trim())
       return out
     }
-    const rules = []
-    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      // Only the selector: drop any `@tailwind ...;` statement in front of it.
-      const sel = m[1].split(';').pop().trim()
-      if (/^(from|to|[\d.]+%)(\s*,\s*([\d.]+%|from|to))*$/.test(sel)) continue
-      rules.push({ sels: splitTop(sel), body: m[2] })
-    }
-    // What the block pauses: `.layer-off X` -> the play-state list.
-    const paused = new Map()
-    for (const r of rules) {
-      const ps = /animation-play-state\s*:\s*([^;]+?)\s*(!important)?\s*(;|$)/.exec(r.body)
-      if (!ps) continue
-      for (const s of r.sels) {
-        const m = /^\.layer-off\s+(.+)$/.exec(s)
-        if (m) paused.set(m[1].replace(/\s+/g, ' '), splitTop(ps[1]))
+    /** A sheet's rules, and what its `.layer-off X` lines pause: X -> the play-state list. */
+    const sheetOf = (f) => {
+      const rules = []
+      for (const m of stripComments(read(f)).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        // Only the selector: drop any `@tailwind ...;` statement in front of it.
+        const sel = m[1].split(';').pop().trim()
+        if (/^(from|to|[\d.]+%)(\s*,\s*([\d.]+%|from|to))*$/.test(sel)) continue
+        rules.push({ sels: splitTop(sel), body: m[2] })
       }
+      const pauses = new Map()
+      for (const r of rules) {
+        const ps = /animation-play-state\s*:\s*([^;]+?)\s*(!important)?\s*(;|$)/.exec(r.body)
+        if (!ps) continue
+        for (const s of r.sels) {
+          const m = /^\.layer-off\s+(.+)$/.exec(s)
+          if (m) pauses.set(m[1].replace(/\s+/g, ' '), splitTop(ps[1]))
+        }
+      }
+      return { name: rel(f), rules, pauses }
     }
+    // index.css's block, which every page loads, and then every other sheet
+    // under src, each read against the block and its own lines.
+    const index = sheetOf(cssPath)
+    const paused = index.pauses
     if (paused.size === 0) {
       fail('R27 idle-animation', 'src/index.css',
         'no `.layer-off ... { animation-play-state: paused }` block. A hidden layer'
         + ' animates forever: the curtain\'s ring alone kept an idle lobby at ~144 style'
         + ' recalcs a second (#252).')
     }
-    for (const r of rules) {
-      const an = /(?:^|;)\s*animation\s*:\s*([^;]+)/.exec(r.body)
-      const count = /animation-iteration-count\s*:\s*infinite/.test(r.body)
-      if (!an && !count) continue
-      const entries = an ? splitTop(an[1]) : ['infinite']
-      const loops = entries.map((e) => /\binfinite\b/.test(e))
-      if (!loops.some(Boolean)) continue
-      for (const sel of r.sels) {
-        if (sel.startsWith('.layer-off') || sel.startsWith('@')) continue
-        const key = sel.replace(/\s+/g, ' ')
-        const want = loops.length === 1 ? ['paused'] : loops.map((l) => (l ? 'paused' : 'running'))
-        const got = paused.get(key)
-        if (!got || JSON.stringify(got) !== JSON.stringify(want)) {
-          fail('R27 idle-animation', 'src/index.css',
-            `\`${sel}\` runs an endless animation that the \`.layer-off\` block does not`
-            + ` pause as \`${want.join(', ')}\`${got ? ` (it says \`${got.join(', ')}\`)` : ''}.`
-            + ' Under a hidden layer it would animate for as long as the player idles (#252).')
+    const sheets = [index, ...cssFiles.filter((f) => rel(f) !== index.name).map(sheetOf)]
+    for (const sheet of sheets) {
+      const pausedHere = new Map([...paused, ...sheet.pauses])
+      for (const r of sheet.rules) {
+        const an = /(?:^|;)\s*animation\s*:\s*([^;]+)/.exec(r.body)
+        const count = /animation-iteration-count\s*:\s*infinite/.test(r.body)
+        if (!an && !count) continue
+        const entries = an ? splitTop(an[1]) : ['infinite']
+        const loops = entries.map((e) => /\binfinite\b/.test(e))
+        if (!loops.some(Boolean)) continue
+        for (const sel of r.sels) {
+          if (sel.startsWith('.layer-off') || sel.startsWith('@')) continue
+          const key = sel.replace(/\s+/g, ' ')
+          const want = loops.length === 1 ? ['paused'] : loops.map((l) => (l ? 'paused' : 'running'))
+          const got = pausedHere.get(key)
+          if (!got || JSON.stringify(got) !== JSON.stringify(want)) {
+            fail('R27 idle-animation', sheet.name,
+              `\`${sel}\` runs an endless animation that no \`.layer-off\` line (index.css's`
+              + ` block or this sheet's own) pauses as \`${want.join(', ')}\``
+              + `${got ? ` (it says \`${got.join(', ')}\`)` : ''}.`
+              + ' Under a hidden layer it would animate for as long as the player idles (#252).')
+          }
         }
       }
     }

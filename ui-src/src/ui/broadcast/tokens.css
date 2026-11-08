@@ -1,0 +1,296 @@
+/* BROADCAST KIT: THE TOKENS (#431).
+
+   Every value the kit draws with, under one prefix (--bc-), on .bc-kit: the
+   class a screen built on the kit carries on its own root (README: the root).
+   Each one is either a POINTER to a token src/index.css already owns -- so the
+   :root[data-cb] colorblind blocks, which remap those, keep reaching the kit --
+   or a literal the project already types by hand in several places, promoted
+   to a name. Nothing here is a new color.
+
+   NEVER ON :root. Some 215 custom properties there would ride every element of
+   every screen, with every UI v2 piece off too: Cloudscape's 1,000 or so on
+   <body> made every full lobby restyle 17% dearer (screens/lockerv2/sheet.ts).
+   On .bc-kit they sit only on what the kit draws, so while no kit root is
+   mounted no element carries one. The kit renders nothing outside the tree it
+   is mounted in (no portal: scripts/test-broadcast.mjs), so a screen whose
+   root carries the class reaches every kit element it draws.
+
+   THE UNIT. Every length is a multiple of --bc-u, registered below as a
+   <length> so it computes to pixels WHERE IT IS DECLARED. On .bc-kit it is
+   1rem, the HUD's rem (clamp(11px, 1.481vh x --ui-scale, 28px)). A subtree
+   that needs its own unit (a Cloudscape island sizes in em, where a rem would
+   scale twice) sets --bc-u inline and carries `data-bc-u`.
+
+   THE TRAP THIS FILE IS SHAPED AROUND: a custom property holding var() is
+   resolved on the element that DECLARES it, and inherited resolved. So a
+   length built from --bc-u on the root alone would carry the root's unit into
+   such a subtree. Every derived length is therefore declared on the root AND
+   on every element that sets its own unit (`.bc-kit, [data-bc-u]`), and
+   resolves again there.
+
+   Chromium 103 safe: hex and rgba only (no color-mix, no oklch), @property is
+   Chrome 85, and tan() (Chrome 111) is a literal (--bc-tan). The @property is
+   the one rule here that is not scoped (an at-rule has no selector); it only
+   names --bc-u's type, and nothing declares --bc-u outside a kit root. */
+
+@property --bc-u {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 16px;
+}
+
+.bc-kit {
+  --bc-u: 1rem;
+
+  /* ═══ 1 PALETTE: POINTERS. The colorblind remaps flow through these. ═══ */
+  --bc-accent: var(--color-royale-accent);       /* cyan: "you may act" */
+  --bc-victory: var(--color-royale-accent2);     /* victory (src's Market still paints prices in it) */
+  --bc-volts: var(--color-volts);                /* the softened Volts gold: EVERY Volts amount (the owner's pick) */
+  --bc-hp: var(--color-hp);
+  --bc-shield: var(--color-shield);
+  --bc-danger: var(--color-danger);
+  --bc-storm: var(--color-storm);
+  --bc-danger-edge: var(--color-danger-edge);
+  --bc-storm-fade: var(--color-storm-fade);
+  --bc-vehicle: var(--color-vehicle);
+  --bc-fuel: var(--color-fuel);
+  --bc-boost: var(--color-boost);
+  --bc-rarity-1: var(--rarity-1);
+  --bc-rarity-2: var(--rarity-2);
+  --bc-rarity-3: var(--rarity-3);
+  --bc-rarity-4: var(--rarity-4);
+  --bc-rarity-5: var(--rarity-5);
+  --bc-bg: var(--color-royale-bg);
+  --bc-panel: var(--color-royale-panel);
+  --bc-panel-edge: var(--color-royale-edge);
+  --bc-ink: #ffffff;
+  --bc-ink-body: var(--color-text-body);
+  --bc-ink-dim: var(--color-text-dim);
+  /* SQUAD COLORS ARE DATA, NOT TOKENS: BR.SquadColours (br_lib/shared/enums.lua)
+     arrives per member as m.colour. A row sets --bc-mate and --bc-mate-tint
+     (util.ts rgba(color, .3); no color-mix on 103). Never copy the list here. */
+
+  /* ═══ 2 PALETTE: LITERALS PROMOTED (each typed by hand in several places) ═══ */
+  --bc-accent-hi: #67e8f9;                       /* Btn primary edge, CS CYAN_EDGE */
+  --bc-accent-ink: #04222a;                      /* ink on cyan: Btn, heroui primary.foreground, CS INK */
+  --bc-focus: rgba(34, 211, 238, 0.55);          /* .btn:focus-visible ring */
+  --bc-warn: #ffb020;                            /* the notice warn TONE: never an alias of --rarity-5 */
+  --bc-ink-soft: rgba(255, 255, 255, 0.75);      /* Btn ghost, feed weapon/HS fallback, slot labels */
+  --bc-ink-faint: rgba(255, 255, 255, 0.45);     /* notice info tone, counter labels */
+  --bc-ink-off: rgba(255, 255, 255, 0.35);       /* look OFF: an unaffordable price */
+  --bc-ink-on-hot: #140508;                      /* .panel-hot > .cap */
+  --bc-ink-on-chip: var(--color-royale-bg);      /* the kill feed's HS chip */
+  --bc-ink-danger: #ffd7d7;                      /* Btn danger ink */
+  --bc-ink-pill: rgba(255, 255, 255, 0.88);      /* the vitals pill caption */
+  --bc-ink-quiet: rgba(255, 255, 255, 0.62);     /* a tab at rest, a locker line's summary */
+  --bc-ink-lit: rgba(255, 255, 255, 0.85);       /* that summary on an active line */
+
+  /* ═══ 3 SLANT ═══ */
+  --bc-slant: -15deg;                            /* one slant for every shape */
+  --bc-tan: 0.26795;                             /* tan(15deg): CSS tan() needs Chrome 111 */
+
+  /* ═══ 4 SURFACES ═══ */
+  /* Broadcast */
+  --bc-deck-a: rgba(14, 48, 62, 0.95);
+  --bc-deck-b: rgba(7, 11, 18, 0.93);
+  --bc-deck: linear-gradient(90deg, var(--bc-deck-a), var(--bc-deck-b) 62%);
+  --bc-deck-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 34%);
+  --bc-rule-top: rgba(255, 255, 255, 0.3);
+  --bc-rule-band: rgba(255, 255, 255, 0.1);
+  --bc-band-shade: rgba(0, 0, 0, 0.34);
+  --bc-strap: rgba(14, 48, 62, 0.94);
+  --bc-cell-bg: rgba(2, 4, 7, 0.9);
+  --bc-cell-rule: rgba(255, 255, 255, 0.14);
+  --bc-track: rgba(0, 0, 0, 0.6);
+  --bc-ghost: rgba(255, 255, 255, 0.85);
+  --bc-notch: rgba(11, 12, 18, 0.95);
+  --bc-alarm: #2c080d;
+  --bc-alarm-cap: 0.66;
+  --bc-alarm-shade: linear-gradient(90deg, rgba(44, 8, 13, 0.62), rgba(44, 8, 13, 0.5) 30%, rgba(44, 8, 13, 0) 80%);
+  --bc-out: #080a0f;
+  --bc-out-hatch: rgba(255, 255, 255, 0.045);
+  --bc-out-rule: rgba(255, 255, 255, 0.16);
+  --bc-slab-dead: #05070b;
+  /* The project's existing surfaces (literal fills, by job) */
+  --bc-fill-plate: rgba(12, 14, 22, 0.97);       /* .plate --plate-fill, CS PLATE_DARK */
+  --bc-fill-control: rgba(32, 36, 50, 0.94);     /* Btn default, slots, locker plates, CS PLATE */
+  --bc-fill-control-hi: rgba(46, 52, 70, 0.95);  /* the active slot */
+  --bc-fill-card: rgba(24, 28, 40, 0.94);        /* Market cards, balance and wheel plates, S2 FILL */
+  --bc-fill-tab: rgba(24, 28, 40, 0.92);         /* a tab at rest */
+  --bc-fill-action: rgba(30, 34, 48, 0.94);      /* card actions, KeyCap */
+  --bc-fill-list: rgba(20, 24, 34, 0.94);        /* pause list plate, notice log, party */
+  --bc-fill-notice: rgba(18, 21, 30, 0.94);      /* notices, impacts */
+  --bc-fill-selected: rgba(12, 58, 72, 0.94);    /* selected tab, line or look; CS SELECTED, look LIT */
+  --bc-fill-info: rgba(12, 40, 50, 0.94);        /* pause and settings info plate */
+  --bc-fill-mine: rgba(14, 60, 72, 0.86);        /* a kill-feed row of your own */
+  --bc-fill-hurt: rgba(64, 20, 24, 0.86);        /* a kill-feed row where you died */
+  --bc-fill-ghost: rgba(20, 22, 32, 0.55);
+  --bc-fill-danger: rgba(52, 20, 24, 0.94);
+  --bc-fill-well: rgba(0, 0, 0, 0.35);           /* a card's art well */
+  --bc-panel-bg: rgba(8, 9, 14, 0.70);           /* .panel */
+  --bc-panel-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 42%);
+  --bc-hot-bg: rgba(8, 9, 14, 0.94);             /* .panel-hot */
+  --bc-plate-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.015) 46%);
+  --bc-scrim-pause: rgba(6, 8, 14, 0.965);
+  --bc-scrim-market: rgba(8, 9, 14, 0.985);
+  --bc-scrim-dialog: rgba(6, 8, 14, 0.72);
+  /* Rules (edge colors) */
+  --bc-rule: rgba(255, 255, 255, 0.30);          /* .plate --edgec, Btn default, CS PLATE_EDGE */
+  --bc-rule-quiet: rgba(255, 255, 255, 0.16);    /* tabs at rest, list plates */
+  --bc-rule-panel: rgba(255, 255, 255, 0.10);
+  --bc-rule-row: rgba(255, 255, 255, 0.07);      /* pause row dividers */
+
+  /* ═══ 5 SHADOWS (static only: nothing animates a shadow, check-ui R7) ═══ */
+  --bc-shadow-text: var(--shadow-text);
+  --bc-shadow-text-heavy: 0 1px 3px rgba(0, 0, 0, 0.98), 0 0 6px rgba(0, 0, 0, 0.7);
+
+  /* ═══ 6 TYPE ═══ */
+  --bc-font-num: 'Anton', 'Segoe UI', system-ui, sans-serif;     /* numerals and shouts, 400 */
+  --bc-font-word: 'Barlow', 'Segoe UI', system-ui, sans-serif;   /* words: 400-700 loaded */
+  --bc-w-emph: 600;                              /* the project's emphasis */
+  --bc-w-strong: 700;                            /* names in notices, list labels */
+  --bc-ls-caption: 0.2em;
+  --bc-ls-tag: 0.14em;
+  --bc-ls-chip: 0.1em;
+  --bc-ls-out: 0.32em;
+  --bc-ls-cap: 0.24em;
+  --bc-ls-banner: 0.26em;
+  --bc-ls-title: 0.1em;
+  --bc-ls-btn: 0.1em;
+  --bc-ls-tab: 0.12em;
+  --bc-ls-label: 0.05em;
+  --bc-numcol: 0.5em;                            /* one digit column */
+  --bc-tick: 0.24em;                             /* how far a changed digit ticks */
+  --bc-pop: 1.22;
+  --bc-slam: 1.4;                                /* the most a slam may grow inside its plate */
+  --bc-dim: 0.34;                                /* a finished row */
+
+  /* ═══ 7 MOTION ═══
+     Curves alias index.css where it has them; the TS copies (motion/tokens.ts,
+     which WAAPI and the settle clock need as literals) are pinned to these by
+     scripts/test-broadcast.mjs. The presence numbers (onAir, offAir, the
+     stagger) live once in motion/tokens.ts and reach CSS as custom properties
+     on each presence root. */
+  --bc-ease-out: var(--ease-out);                /* cubic-bezier(0.22, 1, 0.36, 1) */
+  --bc-ease-snap: var(--ease-snap);              /* cubic-bezier(0.16, 1.1, 0.3, 1) */
+  --bc-ease-wipe: cubic-bezier(0.65, 0, 0.35, 1);
+  --bc-ease-sweep: cubic-bezier(0.45, 0, 0.55, 1);
+  --bc-ease-exit: cubic-bezier(0.55, 0, 0.75, 0.2);
+  --bc-ease-fly: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --bc-ease-fall: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --bc-step: 80ms;                               /* between anchors; a leave runs back at half */
+  --bc-t-quick: 150ms;                           /* the map/pause hide, each way */
+  --bc-t-fade: 200ms;                            /* today's HUD root fade; small state fades */
+  --bc-t-tick: 120ms;
+  --bc-t-pop: 320ms;
+  --bc-t-slam: 360ms;
+  --bc-t-burn: 360ms;
+  --bc-t-flash: 460ms;
+  --bc-t-flash-down: 620ms;
+  --bc-t-flash-die: 760ms;
+  --bc-t-flash-die-delay: 90ms;
+  --bc-t-flash-white: 260ms;
+  --bc-t-sweep: 520ms;
+  --bc-t-sting: 560ms;
+  --bc-t-glint: 380ms;
+  --bc-t-name: 600ms;
+  --bc-t-burst: 640ms;
+  --bc-t-plate-in: 300ms;
+  --bc-t-plate-in-slow: 340ms;
+  --bc-t-plate-out: 320ms;
+  --bc-t-rider: 560ms;
+  --bc-t-foot-in: 380ms;
+  --bc-t-zip: 460ms;
+  --bc-t-retract: 420ms;
+  --bc-t-flare: 480ms;
+  --bc-t-drain: 700ms;
+  --bc-t-row-fade: 460ms;
+  --bc-t-redden: 260ms;
+  --bc-t-slab-dead: 400ms;
+  --bc-t-bar-fall: 150ms;
+  --bc-t-ghost: 460ms;
+  --bc-t-ghost-delay: 300ms;
+  --bc-t-bar-rise: 420ms;
+  --bc-t-ramp: 300ms;
+  --bc-t-gain: 680ms;
+  --bc-t-crack: 340ms;
+  --bc-t-shard: 560ms;
+  --bc-t-hit: 650ms;
+  --bc-t-hot-drop: 620ms;
+  --bc-t-hot-pulse: 1600ms;
+  --bc-t-delta: 950ms;
+  --bc-t-count: 320ms;                           /* a notice's xN punch */
+  --bc-t-stamp: 320ms;
+  --bc-t-out-in: 420ms;
+  --bc-t-slam-end: 1200ms;
+  --bc-t-tag-in: 220ms;
+  --bc-t-tag-word: 80ms;
+  --bc-t-mark-flash: 560ms;
+  --bc-t-mark-drop: 440ms;
+  --bc-t-mark-spin: 460ms;
+  --bc-t-clock-beat: 380ms;
+  --bc-t-meter: 1100ms;
+  --bc-t-shake-jolt: 360ms;
+  --bc-t-shake-knock: 460ms;
+  --bc-t-shake-punch: 380ms;
+  --bc-t-shake-rise: 440ms;
+  --bc-t-shake-thud: 520ms;
+}
+
+/* ═══ DERIVED LENGTHS: re-resolved wherever the unit is set ═══ */
+.bc-kit,
+[data-bc-u] {
+  /* geometry (SQ, LS) */
+  --bc-slab-w: calc(var(--bc-u) * 0.34);         /* the color edge */
+  --bc-gap: calc(var(--bc-u) * 0.3);             /* between plates (= --vitals-gap) */
+  --bc-inset-lead: calc(var(--bc-u) * 0.2);      /* text clear of the slab side */
+  --bc-inset-trail: calc(var(--bc-u) * 0.14);    /* text clear of the far side */
+  --bc-row-h: calc(var(--bc-u) * 3.4);
+  --bc-band-h: calc(var(--bc-u) * 1.32);         /* the name band; the vitals band is the rest */
+  --bc-cell-w: calc(var(--bc-u) * 1.85);         /* the score cell */
+  --bc-bar-h: calc(var(--bc-u) * 0.44);
+  --bc-pill-h: calc(var(--bc-u) * 1.05);         /* the vitals pill */
+  --bc-bar-gap: calc(var(--bc-u) * 0.5);         /* bar to numeral */
+  --bc-tag-h: calc(var(--bc-u) * 0.86);
+  --bc-tag-pad-l: calc(var(--bc-u) * 0.4);
+  --bc-tag-pad-r: calc(var(--bc-u) * 0.3);
+  --bc-rider-w: calc(var(--bc-u) * 0.24);        /* the white edge that rides a plate in */
+  --bc-foot-h: calc(var(--bc-u) * 0.2);          /* the pickup line and the zip */
+  --bc-cap-h: calc(var(--bc-u) * 1.05);          /* a hot plate's cap strap (.7 x 1.5) */
+  --bc-meter-h: calc(var(--bc-u) * 0.1);
+  /* distances */
+  --bc-slide: calc(var(--bc-u) * 0.9);           /* content in and out (onAir, offAir) */
+  --bc-drop: calc(var(--bc-u) * 2.2);            /* a placard's drop */
+  --bc-fly: calc(var(--bc-u) * 1);               /* a row's fly-in (noticeIn's 16px) */
+  /* type scale */
+  --bc-fs-caption: calc(var(--bc-u) * 0.62);     /* 600, .2em, uppercase, dim */
+  --bc-fs-label: calc(var(--bc-u) * 0.55);       /* a counter's label */
+  --bc-fs-tag: calc(var(--bc-u) * 0.6);          /* DOWN, HS */
+  --bc-fs-name: calc(var(--bc-u) * 0.74);
+  --bc-fs-row: calc(var(--bc-u) * 0.8125);       /* feed and notices (.ts --fs) */
+  --bc-fs-num-sm: calc(var(--bc-u) * 0.86);      /* squad and vitals numerals */
+  --bc-fs-num-md: calc(var(--bc-u) * 1.5);       /* Elims, Volts, ammo, balance */
+  --bc-fs-num-lg: calc(var(--bc-u) * 2.4);       /* Alive */
+  --bc-fs-clock-sm: calc(var(--bc-u) * 1.3);     /* the squad bleed */
+  --bc-fs-clock-md: calc(var(--bc-u) * 1.4);     /* top-center HotTime */
+  --bc-fs-clock-lg: calc(var(--bc-u) * 2);       /* DBNO, rescue */
+  --bc-fs-out: calc(var(--bc-u) * 1.05);
+  --bc-fs-cap: calc(var(--bc-u) * 0.7);
+  --bc-fs-banner: calc(var(--bc-u) * 0.85);
+  --bc-fs-banner-name: calc(var(--bc-u) * 2.2);
+  --bc-fs-title: calc(var(--bc-u) * 3);
+  --bc-fs-btn-sm: calc(var(--bc-u) * 0.72);
+  --bc-fs-btn-md: calc(var(--bc-u) * 0.85);
+  --bc-fs-btn-lg: calc(var(--bc-u) * 1.05);
+  --bc-fs-btn-xl: calc(var(--bc-u) * 1.6);
+  --bc-fs-tab: calc(var(--bc-u) * 0.8);
+  --bc-fs-card-name: calc(var(--bc-u) * 0.88);
+  --bc-fs-body: calc(var(--bc-u) * 1);
+  /* surfaces with a length in them */
+  --bc-out-plate:
+    linear-gradient(var(--bc-out-rule), var(--bc-out-rule)) 0 0 / 100% 1px no-repeat,
+    repeating-linear-gradient(135deg, var(--bc-out-hatch) 0, var(--bc-out-hatch) calc(var(--bc-u) * 0.12),
+      rgba(255, 255, 255, 0) calc(var(--bc-u) * 0.12), rgba(255, 255, 255, 0) calc(var(--bc-u) * 0.4)),
+    var(--bc-out);
+  --bc-shadow-card: 0 calc(var(--bc-u) * 1.2) calc(var(--bc-u) * 2.4) rgba(0, 0, 0, 0.55);
+}

@@ -56,6 +56,18 @@ if (!(target in OUTPUTS)) {
 //              all: a full health bar with nothing behind it. Invisible
 //              content, and it looks like a build failure.
 //
+//              And CSS NESTING: 103 reads a nested rule as one broken
+//              declaration, which takes the nested rule with it and the
+//              declaration after it up to the next `;`.
+//
+//              And what a hand-written rule reaches for to move, combine or
+//              scope something: the individual transform properties,
+//              animation-composition and @scope. 103 drops the declaration,
+//              or the whole @scope block, so the element sits, moves or is
+//              styled wrong on 103 alone, while a desktop browser shows it
+//              right. The Broadcast kit's preview gate held its sources to
+//              the same (#431).
+//
 //   warn    -- unsupported SELECTORS, and the at-rules, units and properties a
 //              library ships that we do not rely on. The browser drops that
 //              rule or declaration alone, and the element misses that one
@@ -63,6 +75,12 @@ if (!(target in OUTPUTS)) {
 //              listed: 103 and 144 clients differ there.
 //
 // Every entry is exempt inside an @supports block that tests for it.
+//
+// `css: true` marks a ban read in a hand-written page's CSS alone, its
+// <style> blocks and style="" attributes. Every ban the kit's gate brought
+// has it, since several are spelled like the text of a page's other
+// languages (an `&`, `linear(`, `scale:`, `Math.sin(`, a `container:` key),
+// and `&nbsp;&nbsp;`, a script's `&&` or its `function linear(t)` are not CSS.
 const BANNED = [
   { re: /oklch\(/g,     since: 111, name: 'oklch()',     level: 'error' },
   { re: /oklab\(/g,     since: 111, name: 'oklab()',     level: 'error' },
@@ -85,9 +103,39 @@ const BANNED = [
   // element it is set on: a scrollbar we style (.thin-scroll) would change.
   { re: /scrollbar-(?:color|width)\s*:/g, since: 121, name: 'scrollbar-color/width', level: 'warn' },
   { re: /field-sizing\s*:/g, since: 123, name: 'field-sizing', level: 'warn' },
+  // The Broadcast kit's preview gate kept these out of its sources (#431,
+  // the squad previews' cef103.mjs), and the kit's README rules out the
+  // trigonometric functions too; the bundle had no gate for them. The errors
+  // are what a hand-written transform, easing or rule reaches for first.
+  { re: /(?<![\w-])linear\(/g, since: 113, name: 'linear() easing', level: 'error', css: true },
+  { re: /(?<![\w-])(?:a?(?:sin|cos|tan)|atan2)\(/g, since: 111, name: 'trigonometric functions', level: 'error', css: true },
+  { re: /(?:^|[{;}])\s*&/gm, since: 112, name: 'CSS nesting', level: 'error', css: true },
+  // 103 drops the declaration: a keyframe built on `scale: 1.2` animates
+  // nothing in game while it looks right on a desktop browser.
+  { re: /(?:^|[\s;{(])(?:translate|rotate|scale)\s*:/gm, since: 104, name: 'individual transform property', level: 'error', css: true },
+  { re: /(?<![\w-])animation-composition\s*:/g, since: 112, name: 'animation-composition', level: 'error', css: true },
+  // 103 drops the whole block, and a scope holds its component's styling.
+  { re: /@scope\b/g, since: 118, name: '@scope', level: 'error', css: true },
+  // The rest 103 drops alone, and the element misses that one styling.
+  { re: /(?:^|[\s;{])container(?:-type|-name)?\s*:/gm, since: 105, name: 'container properties', level: 'warn', css: true },
+  { re: /(?<![\w-])transition-behavior\s*:/g, since: 117, name: 'transition-behavior', level: 'warn', css: true },
+  { re: /(?<![\w-])(?:animation|scroll|view)-timeline\b/g, since: 115, name: 'scroll-driven animations', level: 'warn', css: true },
+  { re: /(?<![\w-])view-transition\b/g, since: 111, name: 'view transitions', level: 'warn', css: true },
+  { re: /(?<![\w-])(?:anchor-name|position-anchor)\s*:/g, since: 125, name: 'anchor-name/position-anchor', level: 'warn', css: true },
+  { re: /(?<![\w-])interpolate-size\s*:/g, since: 129, name: 'interpolate-size', level: 'warn', css: true },
 ]
 
 const TARGET_CHROME = 103
+
+/** A hand-written page's CSS where it stands: its <style> blocks and style=""
+ *  attributes, everything else blanked (offsets and lines kept). */
+function cssOf(page) {
+  const out = page.replace(/[^\n]/g, ' ').split('')
+  const keep = (at, text) => { for (let i = 0; i < text.length; i++) out[at + i] = text[i] }
+  for (const m of page.matchAll(/(<style\b[^>]*>)([\s\S]*?)<\/style\s*>/gi)) keep(m.index + m[1].length, m[2])
+  for (const m of page.matchAll(/(\sstyle\s*=\s*)(["'])([\s\S]*?)\2/gi)) keep(m.index + m[1].length + 1, m[3])
+  return out.join('')
+}
 
 /** The hand-written pages: every .html/.css under resources/ that no build writes. */
 function pages() {
@@ -130,12 +178,15 @@ let warnings = 0
 for (const { name, path } of files) {
   const raw = readFileSync(path, 'utf8')
   // A hand-written page explains itself in comments ("Chrome 103: no :has").
-  const css = target === 'pages' ? blankComments(raw, { html: /\.html?$/.test(name) }) : raw
+  const html = target === 'pages' && /\.html?$/.test(name)
+  const css = target === 'pages' ? blankComments(raw, { html }) : raw
+  const cssOnly = html ? cssOf(css) : css
   const warned = []
 
-  for (const { re, since, name: what, level } of BANNED) {
-    if (!(css.match(re) || []).length) continue
-    const bare = (blankGuarded(css, re).match(re) || []).length
+  for (const { re, since, name: what, level, css: inCss } of BANNED) {
+    const text = inCss ? cssOnly : css
+    if (!(text.match(re) || []).length) continue
+    const bare = (blankGuarded(text, re).match(re) || []).length
     if (bare === 0) continue
 
     if (level === 'error') {
