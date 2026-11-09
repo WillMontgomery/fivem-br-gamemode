@@ -14,6 +14,9 @@ import DeathVerdict from './hud/DeathVerdict'
 import LeaveScreen from './screens/LeaveScreen'
 import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
+import { HudLayer, ChatLayer, NoticesLayer } from './hud/v2/HudLayer'
+import Boundary from './hud/v2/Boundary'
+import { useUIv2 } from './ui/useUIv2'
 import { parseImpacts } from './hud/impactRows'
 import RescueTimer from './hud/RescueTimer'
 import Settings from './screens/Settings'
@@ -140,6 +143,10 @@ export default function App() {
   // says `v2` (UI v2's market piece, #436). Its chunk the same way.
   const market2On        = useUi((s) => s.market.v2 === true)
   usePreloadMarketV2(market2On)
+  // UI V2'S HUD (#431): today's HUD, chat and notices in the Broadcast wipe,
+  // each in today's place below, while UI v2's hud piece is on here (#436).
+  // Off -- every box with br_uiv2 unset -- each place draws today's line.
+  const hud2On           = useUIv2('hud')
 
   useNuiEvent('snapshot', (d) => dispatch().hydrate(d))
   useNuiEvent('state',    (d) => {
@@ -602,8 +609,23 @@ export default function App() {
     >
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. Hidden under the pause menu -- the fullscreen
-          map does not need our chrome floating over it. */}
-      <Hud visible={hudUp && !hudPaused} />
+          map does not need our chrome floating over it.
+
+          UI V2'S HUD TAKES THIS PLACE BY ONE TERNARY (#431), as chat and the
+          notices take theirs below: the paint order is today's, one HUD root
+          (data-layer="hud", which the F8 screen report reads) and one squad
+          slot ever mount, and the off side is today's line. The v2 HUD hides
+          on GTA's menu by the ui gate above, on that edge alone, and
+          quick-hides under our pause menu (hud/v2/HudLayer.tsx). A v2 place
+          that throws draws today's line instead (hud/v2/Boundary.tsx).
+          check-ui R26d holds all three places to this shape. */}
+      {hud2On
+        ? (
+          <Boundary what="hud" today={<Hud visible={hudUp && !hudPaused} />}>
+            <HudLayer up={hudUp} />
+          </Boundary>
+        )
+        : <Hud visible={hudUp && !hudPaused} />}
       {/* THE AMBULANCE CLOCK, AND IT IS A SIBLING OF THE HUD RATHER THAN A
           CHILD OF IT ON PURPOSE (#191 step 6, owner 2026-08-28).
 
@@ -634,8 +656,15 @@ export default function App() {
           card was just noise. Unmounting alone did not empty it: the store
           kept every line and the next warmup drew them. The store now drops
           them as the match enters CLEANUP and again on the way back to the
-          lobby (#365, store/chatClear.ts). */}
-      {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
+          lobby (#365, store/chatClear.ts). UI v2's chat (#431) is wanted on
+          the same two terms, and takes the wipe's way out on them. */}
+      {hud2On
+        ? (
+          <Boundary what="chat" today={!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}>
+            <ChatLayer want={!tearingDown && !showLobby} barsVisible={hudUp} />
+          </Boundary>
+        )
+        : !tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
       {/* THE LOBBY STEPS ASIDE FOR ITS SUB-SCREENS rather than sitting behind
           them. The locker's scrim only covers the left half (the right half
           IS the character), and the market's is lighter still -- so the base
@@ -698,8 +727,17 @@ export default function App() {
           resolve, panels update) and floating toasts over it read as
           clutter (user call, 2026-08-03). The pause menu is a menu too --
           while it is open, new notices queue in the store and flush on
-          unpause (dropped after 30s of waiting). */}
-      {!showLobby && !hudPaused && <Notices barsVisible={hudUp} />}
+          unpause (dropped after 30s of waiting). UI v2's notices (#431) are
+          wanted off the lobby alone: GTA's menu hides them by the ui gate,
+          as it hides everything, while the store still queues what arrives
+          under it; our pause menu quick-hides them with the HUD and chat. */}
+      {hud2On
+        ? (
+          <Boundary what="notices" today={!showLobby && !hudPaused && <Notices barsVisible={hudUp} />}>
+            <NoticesLayer want={!showLobby} barsVisible={hudUp} />
+          </Boundary>
+        )
+        : !showLobby && !hudPaused && <Notices barsVisible={hudUp} />}
       {/* THE FIRST-PICKUP CARD (#396, round 5): over the match, where Lua
           takes Enter for it -- not over the lobby, a paused HUD or the
           verdict, where it waits (still up) for the next match. */}

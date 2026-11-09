@@ -5375,8 +5375,9 @@ do
         -- Owner, 2026-09-09, M5 and M6: the squad panel goes away while the
         -- shop menu is open, and his Volts balance stays visible bottom-right
         -- while it is. Both are decided in Hud.tsx off one store flag,
-        -- `gunshopMenu`, and ui-src/scripts/check-ui.mjs's R15 proves the page
-        -- half thoroughly. NOTHING PROVED THE SENDER, and there was not one:
+        -- `gunshopMenu` -- in UI v2's HUD too (hud/v2/HudV2.tsx, #431) -- and
+        -- ui-src/scripts/check-ui.mjs's R15 and R15b prove the page half of
+        -- each thoroughly. NOTHING PROVED THE SENDER, and there was not one:
         -- the string `gunshopmenu` appeared in no .lua file in the tree, so the
         -- flag was false for the life of every session and both requests were
         -- unreachable code that reviewed as finished.
@@ -5399,10 +5400,10 @@ do
 
         -- ═══ AND IT GOES OUT BEFORE THE PLATE COMES DOWN ═══
         --
-        -- Hud.tsx raises the Volts readout on `shopPlate || gunshopMenu`, and
-        -- openMenu lowers shopPlate. Sending this second would leave both false
-        -- for one envelope and blink the balance off and back on at the exact
-        -- moment M6 asks for it to hold.
+        -- Hud.tsx raises the Volts readout on `shopPlate || gunshopMenu`, as
+        -- UI v2's HudV2.tsx does, and openMenu lowers shopPlate. Sending this
+        -- second would leave both false for one envelope and blink the balance
+        -- off and back on at the exact moment M6 asks for it to hold.
         local iUp, iPlateDown
         for i = mark + 1, #local_ do
             local e = local_[i]

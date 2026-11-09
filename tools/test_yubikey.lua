@@ -2499,6 +2499,12 @@ do
     local hud = readFile(UI .. 'src/hud/Hud.tsx') or ''
     ok(hud:find("typeof hud.yubikey === 'string' && hud.yubikey !== '' && (\n              <YubikeyIcon />", 1, true) ~= nil,
         'the HUD draws it while the glyph Lua sends says a key is held, and not otherwise')
+    -- UI v2's HUD (#431) is today's in the Broadcast wipe: the same icon on
+    -- the same test, in an anchor of its own.
+    local hud2 = readFile(UI .. 'src/hud/v2/HudV2.tsx') or ''
+    ok(hud2:find("const yubikey = typeof hud.yubikey === 'string' && hud.yubikey !== ''\n", 1, true) ~= nil
+        and hud2:find('<Anchor id="yubikey" show={yubikey}>\n                <YubikeyIcon />', 1, true) ~= nil,
+        'and so does UI v2\'s HUD, on that same test')
     -- The squad panel's mark is a different component, and unchanged.
     local panel = readFile(UI .. 'src/hud/SquadPanel.tsx') or ''
     ok(panel:find('<YubikeyMark glyph={m.yubikey} />', 1, true) ~= nil, 'the squad panel\'s holder mark is still the glyph')

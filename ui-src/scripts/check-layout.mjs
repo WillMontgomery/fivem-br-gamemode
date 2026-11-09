@@ -44,6 +44,9 @@
  *   BLANK ...unless it was a control's only text: a button, tab, link or menu
  *         item whose every word is hidden is a blank box.
  *
+ * UI V2'S ROWS CHECK ONE THING MORE, in the page (V2_ROOTED): every element
+ * of the Broadcast kit's is drawn under a `.bc-kit` root, where its tokens are.
+ *
  * Each failure names its screen, the sizes it fails at, the element's path and
  * the pixels cut. A NEW SCREEN OPTS IN by adding a row to SCREENS: a name and
  * the steps that put it up, through `__br` (the driver's emit, click, mouse
@@ -152,6 +155,47 @@ const tab2 = (label) => `__br.click('[data-page=market] [role=tab]', ${JSON.stri
 const BUY2 = `[...document.querySelectorAll('[data-page=market] .mk2 button')]
   .find((b) => /^[0-9,]+$/.test(b.textContent.trim()) && !b.disabled).click()`
 
+/** A squad of names as long as a platform name runs, in the squad panel. */
+const LONG_NAMES = `__br.emit('squad', { id: 'sq_1', you: 1, members: [
+      { src: 1, name: 'Quillon_the_Longest_Name', state: 'alive', hp: 82, armour: 45, colour: '#6EE7F9', level: 42 }, // wire names: spelling-ok
+      { src: 2, name: 'Marrow_of_the_Long_Night', state: 'dbno', hp: 12, armour: 0, colour: '#2DD4BF', bleedEndsAt: Date.now() + 40000, level: 100 }, // wire names: spelling-ok
+      { src: 3, name: 'Vandal_Who_Never_Stops', state: 'dead', hp: 0, armour: 0, colour: '#FBBF24', reviveKey: true }] }) /* wire names: spelling-ok */`
+
+/**
+ * UI V2'S HUD ON SCREEN, ITS WIPE LANDED (#431): the one HUD root on the page
+ * is the v2 one and it is up, and none of the kit's presences is still
+ * entering or leaving. Without the first half a row whose piece never took
+ * would measure today's HUD and pass.
+ */
+const V2_LANDED = `await __br.until(() => {
+  const roots = document.querySelectorAll('[data-layer="hud"]')
+  return roots.length === 1 && roots[0].closest('.hud-v2') !== null && getComputedStyle(roots[0]).opacity === '1'
+    && document.querySelector('.hud-v2 .hud-anchor[data-bc-phase="shown"]') !== null
+    && document.querySelector('[data-bc-phase="entering"], [data-bc-phase="leaving"]') === null
+}, 8000, "UI v2's HUD, its wipe landed")`
+
+/**
+ * EVERY ELEMENT OF THE KIT'S IS DRAWN UNDER A .bc-kit ROOT (#431). The kit's
+ * tokens are declared on .bc-kit alone (ui/broadcast/tokens.css), so an
+ * element its sheets land on -- a bc- class or a data-bc- attribute, as
+ * scripts/test-broadcast.mjs counts them -- drawn outside every .bc-kit root
+ * draws with each var(--bc-*) unset: no color, no size, no timing.
+ * test-broadcast reads that per file and per root it names; this reads the
+ * page, so a second bare root in one file, or a root that lost the class,
+ * fails here.
+ */
+const V2_ROOTED = `{
+  const kit = (e) => [...e.classList].some((c) => c.startsWith('bc-'))
+    || [...e.attributes].some((a) => a.name.startsWith('data-bc-'))
+  const bare = [...document.querySelectorAll('body *')].filter((e) => kit(e) && !e.closest('.bc-kit'))
+  if (bare.length > 0) {
+    const name = (e) => e.tagName.toLowerCase() + [...e.classList].map((c) => '.' + c).join('')
+      + ['data-hud-id', 'data-bc-preset'].filter((a) => e.hasAttribute(a)).map((a) => '[' + a + '=' + e.getAttribute(a) + ']').join('')
+    throw new Error(bare.length + " of the kit's elements drawn outside every .bc-kit root, its tokens unset: "
+      + bare.slice(0, 3).map(name).join(', '))
+  }
+}`
+
 /** The keybinds the mock sends, with rebinding available (`raw`). */
 const RAW_KEYS = `__br.emit('keybinds', { actions: window.brStore.getState().keybinds, raw: true })`
 
@@ -191,13 +235,14 @@ export const SCREENS = [
     name: 'hud/ui-drag', query: 'safe=0.972', steps: ['__br.match()', 'window.brScreen()',
       `__br.emit('settings', { ...__br.SETTINGS, uiScale: 1.3 })`],
   },
-  {
-    // Names as long as a platform name runs, in the squad panel.
-    name: 'hud/long-names', steps: ['__br.match()', `__br.emit('squad', { id: 'sq_1', you: 1, members: [
-      { src: 1, name: 'Quillon_the_Longest_Name', state: 'alive', hp: 82, armour: 45, colour: '#6EE7F9', level: 42 }, // wire names: spelling-ok
-      { src: 2, name: 'Marrow_of_the_Long_Night', state: 'dbno', hp: 12, armour: 0, colour: '#2DD4BF', bleedEndsAt: Date.now() + 40000, level: 100 }, // wire names: spelling-ok
-      { src: 3, name: 'Vandal_Who_Never_Stops', state: 'dead', hp: 0, armour: 0, colour: '#FBBF24', reviveKey: true }] }) /* wire names: spelling-ok */`],
-  },
+  // Names as long as a platform name runs, in the squad panel.
+  { name: 'hud/long-names', steps: ['__br.match()', LONG_NAMES] },
+  // UI V2'S HUD (#431, #436): the first row and the long names again with the
+  // hud piece on, the mock's `uiv2=hud` being a machine that holds it, told
+  // first as br_ui tells the page. Measured once the wipe has landed, and
+  // failed if any of the kit's elements is drawn outside a .bc-kit root.
+  { name: 'hud/v2', query: 'uiv2=hud', steps: ['__br.match()', V2_LANDED, V2_ROOTED] },
+  { name: 'hud/v2-long-names', query: 'uiv2=hud', steps: ['__br.match()', LONG_NAMES, V2_LANDED, V2_ROOTED] },
   { name: 'hud/vehicle', steps: ['__br.match()', `__br.emit('vehicle', { show: true, health: 64, fuel: 38, boost: 80 })`] },
   { name: 'hud/vehicle-passenger', steps: ['__br.match()', `__br.emit('vehicle', { show: true, fuel: 38 })`] },
   {

@@ -13,8 +13,9 @@ import './hud2.css'
 /**
  * UI V2'S HUD AS APP MOUNTS IT (#431, #436): one export for each of the three
  * places App.tsx draws today's HUD, chat and notices, so that with the hud
- * piece on each place draws its v2 twin and nothing else moves. Built here,
- * mounted by nobody yet.
+ * piece on each place draws its v2 twin and nothing else moves. App takes
+ * each by one ternary on useUIv2('hud'), its off side today's line, and its v2
+ * side inside ./Boundary.tsx, which draws today's line instead if this throws.
  *
  * EACH ONE IS THE SAME THREE LAYERS, round its own want:
  *

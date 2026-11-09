@@ -1,5 +1,5 @@
-/* UI V2'S HUD (#431, #436): the anchors' plumbing and the Broadcast wipe's
-   light, for ./Anchor.tsx and ./choreo.ts.
+/* UI V2'S HUD (#431, #436): the anchors' plumbing, the Broadcast wipe's
+   light and the Volts gold, for ./Anchor.tsx and ./choreo.ts.
 
    EVERY RULE IS UNDER THE V2 ROOT, `:where(.hud-v2)`, which each of the three
    roots in ./HudLayer.tsx carries: with the hud piece off nothing here matches
@@ -14,8 +14,9 @@
    NO RULE HERE TIMES ANYTHING THE KIT TIMES. Motion is the kit's (the presets,
    ui/broadcast/motion.css); the window (the wipe's mask) draws the kit's own
    edge and surface channels, on their own values and timing, as a window
-   instead of a scale. Two rules reach inside an anchor: one lands the kit's
-   channels with it, and the wipe's light rides the plates it can.
+   instead of a scale. Three rules reach inside an anchor: one lands the kit's
+   channels with it, the wipe's light rides the plates it can, and one paints
+   the Volts gold.
 
    Chromium 103: no individual transform properties, no nesting, no :has(),
    no :is(), no calc() on a <time>; var() in keyframes and in the animation
@@ -168,6 +169,16 @@
 :where(.hud-v2) .hud-anchor[data-hud-live] .bc-whole {
   opacity: 1 !important;
   transition: none !important;
+}
+
+/* EVERY VOLTS AMOUNT IS THE VOLTS GOLD (the owner's pick, 2026-11-03): the
+   balance today's hotbar shows at the gun shop, white in today's HUD, in the
+   kit's --bc-volts inside this HUD's inventory anchor alone. InventoryBar.tsx
+   is not edited for UI v2, so the balance is read by its shape, the Volts
+   plate's .font-display child (scripts/test-broadcast.mjs holds it), and its
+   caption stays the caption layer. */
+:where(.hud-v2) .hud-anchor[data-hud-id="inventory"] [data-tut="hud-volts"] > .font-display {
+  color: var(--bc-volts);
 }
 
 /* The HUD root's timing presence (HudV2.tsx): nothing to see. */

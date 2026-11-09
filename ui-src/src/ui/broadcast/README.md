@@ -113,6 +113,10 @@ preview gate's code bans, read in inline styles, WAAPI keyframes and their
 options, and selector strings, fail the build, and its notes
 (requestAnimationFrame, setInterval, backdrop-filter, a transition on layout)
 are printed; a deliberate exception carries `cef-ok` in a comment on its line.
+And check-layout's UI v2 rows (`hud/v2`, `hud/v2-long-names`) read the page
+itself: once the wipe has landed, every element of the kit's (a `bc-` class or
+a `data-bc-` attribute) must be drawn under a `.bc-kit` root, which the
+per-file rule cannot see for a second root in one file.
 
 ## The rules
 

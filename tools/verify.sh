@@ -151,7 +151,7 @@ NOTES=(
     "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
     "test_season|Seasons: the one convar read once, unset runs the latest and warns, the dev label, and brseason"
-    "test_uiv2|UI v2: one switch for every redone screen and one per screen, from server.cfg or the console, on prod too; players take a change in the lobby or as their next match starts, never mid-match"
+    "test_uiv2|UI v2: one switch for every redone screen and one per screen, from server.cfg or the console, on prod too; players take a change in the lobby or as their next match starts, mid-match only after a restart br_core (dev)"
     "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
@@ -882,8 +882,9 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # `set` and at once by `bruiv2` -- the dev gate's fifth exemption, run here
     # over devgate's real wrap with dev mode off, refused from any source but
     # the console -- and held per client: the first answer at once, a later one
-    # in the lobby with the entrance over or as the next match starts, never
-    # mid-match, with br_ui's mirror told every move.
+    # in the lobby with the entrance over or as the next match starts, with
+    # br_ui's mirror told every move. Mid-match a held answer moves only after
+    # a `restart br_core`, a dev operation, whose fresh holder takes it at once.
     # test_storm.lua is the twelfth suite to load a real SERVER file and the
     # eighth to load a CLIENT one, and it is the first to load one of each --
     # because the rule it pins has to hold on both sides of the wire or it is

@@ -234,11 +234,13 @@ admin, through `add_ace group.admin command allow`), this console prints
 
 **When players see it.** The server's own doors (Locker v2's saved looks)
 answer at once. A player takes a change standing in the lobby with the
-entrance over, or as their next match starts, never mid-match; the Locker
-only standing in the lobby, where a character can be changed, so a player who
-readies up during every walk-in keeps theirs until they stand there. Standing
-in the lobby, an open Market or Locker swaps in place within a moment. Saved
-looks are never deleted by a flip.
+entrance over, or as their next match starts; the Locker only standing in the
+lobby, where a character can be changed, so a player who readies up during
+every walk-in keeps theirs until they stand there. Mid-match a player's answer
+moves only after a `restart br_core`, a dev operation: br_core's client starts
+again holding none, and takes the server's answer at once. Standing in the
+lobby, an open Market or Locker swaps in place within a moment. Saved looks
+are never deleted by a flip.
 
 **What lasts.** A flip is written into the switch itself, so it survives
 `restart br_core` but not an FXServer restart (`royale-deploy`, a crash):

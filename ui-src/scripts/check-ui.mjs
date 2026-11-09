@@ -818,6 +818,79 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R15b  ...and UI v2's HUD keeps both halves of it (#431).
+//
+// hud/v2/HudV2.tsx is today's HUD in the Broadcast wipe, and the menu flag
+// reaches the same two surfaces there. The Volts selector is Hud.tsx's. The
+// squad slot is the one that differs, on purpose: it is NOT unmounted for the
+// menu. It stays, with Hud.tsx's id (screens/PlayerList.tsx measures
+// #br-squad-slot), and the panel inside it sits under a scope wanted while
+// the menu is down, so the panel takes its way out as the menu opens and
+// comes back as it closes. A `!gunshopMenu &&` in front of the slot would pop
+// it instead; a scope that lost the flag would leave the panel up over the
+// menu; and an id of its own could drift from the one PlayerList measures.
+//
+// IT CAN FAIL. Drop `s.gunshopMenu` from the v2 selector, put `!gunshopMenu &&`
+// in front of the v2 slot, give it an id of its own, or take the scope's want.
+// ---------------------------------------------------------------------------
+{
+  const V = join(SRC, 'hud', 'v2', 'HudV2.tsx')
+  if (!existsSync(V)) {
+    fail('R15b gunshopmenu v2', 'src/hud/v2/HudV2.tsx',
+      'file is missing. If UI v2\'s HUD moved, move this rule with it rather than'
+      + ' letting it pass over nothing.')
+  } else {
+    const v2 = stripComments(read(V))
+    const NAME = 'src/hud/v2/HudV2.tsx'
+    // The selector, by balanced parens, as R15 reads Hud.tsx's.
+    const selAt = v2.search(/const\s+shopVolts\s*=\s*useUi\(/)
+    let sel = null
+    if (selAt !== -1) {
+      const open = v2.indexOf('(', v2.indexOf('useUi', selAt))
+      let depth = 0
+      for (let i = open; i < v2.length; i++) {
+        if (v2[i] === '(') depth++
+        else if (v2[i] === ')' && --depth === 0) { sel = v2.slice(open, i + 1); break }
+      }
+    }
+    if (sel === null || !/\bs\.gunshopMenu\b/.test(sel)) {
+      fail('R15b gunshopmenu v2', NAME,
+        'the v2 HUD\'s `const shopVolts = useUi(...)` selector is gone or does not read'
+        + ' s.gunshopMenu. At a gun shop counter `shopPlate` is false, so the balance'
+        + ' would vanish with the hud piece on at the moment the owner asked for it.')
+    }
+    if (!/^import\s*\{\s*SQUAD_SLOT_ID\s*\}\s*from\s*'\.\.\/Hud'/m.test(v2)) {
+      fail('R15b gunshopmenu v2', NAME,
+        'the v2 HUD does not take SQUAD_SLOT_ID from ../Hud. PlayerList measures that'
+        + ' one id; a second spelling of it can drift.')
+    }
+    if (!/const\s+gunshopMenu\s*=\s*useUi\(\s*\(s\)\s*=>\s*s\.gunshopMenu\s*\)/.test(v2)) {
+      fail('R15b gunshopmenu v2', NAME,
+        'no `const gunshopMenu = useUi((s) => s.gunshopMenu)`: the squad slot\'s scope'
+        + ' has no flag to want against.')
+    }
+    const at = v2.indexOf('id={SQUAD_SLOT_ID}')
+    const panelAt = at === -1 ? -1 : v2.indexOf('<SquadPanel', at)
+    if (at === -1 || panelAt === -1) {
+      fail('R15b gunshopmenu v2', NAME,
+        'the v2 squad slot (id={SQUAD_SLOT_ID}) with the squad panel inside it is gone.'
+        + ' screens/PlayerList.tsx measures that id; do not delete the rule to make it pass.')
+    } else {
+      if (/gunshopMenu\s*&&/.test(v2.slice(Math.max(0, at - 300), at))) {
+        fail('R15b gunshopmenu v2', NAME,
+          'the v2 squad slot is unmounted for the gun shop menu again. In UI v2 the'
+          + ' panel takes its way out under a scope instead; the slot stays.')
+      }
+      if (!/<PresenceScope\s+want=\{!gunshopMenu\}>/.test(v2.slice(at, panelAt))) {
+        fail('R15b gunshopmenu v2', NAME,
+          'the squad panel in the v2 slot is not under `<PresenceScope want={!gunshopMenu}>`.'
+          + ' Without it the panel stays up over the gun shop menu with the hud piece on.')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // R16  The inventory names a weapon's ammunition, and ammunition can be put
 //      down.
 //
@@ -2189,6 +2262,152 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R26d  UI v2's HUD root settles without the animation clock as today's does,
+//       and App mounts one HUD root at a time (#431, #436).
+//
+// The screen report finds the HUD by the first `data-layer="hud"` on the page
+// (bridge/useScreenReport.ts). UI v2's HUD keeps that root, its useFade('hud')
+// and its layer-off (R27) in hud/v2/HudV2.tsx, where the Hud.tsx regexes of
+// R26 do not look. Its root does not fade at all: it is up from a reveal's
+// first frame to its last anchor's leave, and SNAPS (`transition: 'none'`),
+// so the animation clock decides nothing about it. The anchors under it
+// settle on the kit's own clock (ui/broadcast/motion/usePresence.ts).
+//
+// AND ONE ROOT AT A TIME. App draws the HUD, chat and the notices in three
+// places, and with the hud piece on each draws its v2 twin INSTEAD: one
+// ternary on `hud2On` (useUIv2('hud')) a place, today's line on its off
+// side, the v2 layer inside hud/v2/Boundary.tsx on the other, the boundary
+// falling back to the same line. Two HUD roots would hand the report the wrong
+// one and PlayerList a second #br-squad-slot, and a fallback that drifted
+// from the off side would draw a HUD nobody ships.
+//
+// THE BOUNDARY FALLS BACK ONLY WITH ITS STATIC getDerivedStateFromError. A
+// class without it is a legacy boundary to React 19: on a throw it renders
+// nothing for the place (react-dom-client's finishClassComponent), and
+// componentDidCatch alone reports without drawing `today`.
+//
+// AND EACH PLACE'S TWO LINES ARE PINNED AS THEY ARE, in PLACES below. The off
+// side is today's line: with the hud piece off, prod's default, it is what
+// every player sees, so editing both copies of it alike is a change to prod
+// and is made in this table, on purpose. The v2 side carries the hide rules
+// the port decided: the v2 HUD hides on GTA's menu by App's ui gate alone (no
+// `!hudPaused`; our pause menu quick-hides it in hud/v2/HudLayer.tsx, which
+// test-broadcast pins), chat is wanted on today's two terms, and the notices
+// off the lobby alone (`hud.paused` only queues them, in the store).
+//
+// IT CAN FAIL. Write `transition: up ? ...` on the v2 root, drop its
+// data-layer, mount <HudLayer /> beside <Hud /> rather than instead of it,
+// edit one copy of today's line and not the other, edit both copies alike,
+// give a v2 line today's `!hudPaused`, or drop the boundary's
+// getDerivedStateFromError.
+// ---------------------------------------------------------------------------
+{
+  const V = join(SRC, 'hud', 'v2', 'HudV2.tsx')
+  const B = join(SRC, 'hud', 'v2', 'Boundary.tsx')
+  const A = join(SRC, 'App.tsx')
+  const need = [[V, 'src/hud/v2/HudV2.tsx'], [B, 'src/hud/v2/Boundary.tsx'], [A, 'src/App.tsx']]
+  const gone = need.filter(([f]) => !existsSync(f))
+  for (const [, name] of gone) {
+    fail('R26d one-hud', name, 'file is missing. If it moved, move this rule with it (#431).')
+  }
+  if (gone.length === 0) {
+    const v2 = stripComments(read(V))
+    if (!/const\s+up\s*=\s*sentinel\.phase\s*!==\s*'hidden'/.test(v2)
+        || !/const\s+settled\s*=\s*useFade\(\s*'hud'\s*,\s*up\s*,/.test(v2)
+        || !/style=\{\{\s*opacity:\s*up\s*\?\s*1\s*:\s*0\s*,\s*transition:\s*'none'\s*\}\}/.test(v2)
+        || !v2.includes('data-layer="hud"')) {
+      fail('R26d one-hud', 'src/hud/v2/HudV2.tsx',
+        "UI v2's HUD root no longer carries `data-layer=\"hud\"` with `useFade('hud', up, ...)` and"
+        + " `opacity: up ? 1 : 0, transition: 'none'`, `up` being its sentinel's phase. With the hud"
+        + ' piece on the screen report would lose the HUD, or its opacity would wait on the'
+        + ' animation clock (#252).')
+    }
+    const boundary = stripComments(read(B))
+    if (!/(?<![.\w])state\s*=\s*\{\s*failed:\s*false\s*\}/.test(boundary)
+        || !/static\s+getDerivedStateFromError\(\)\s*\{\s*return\s*\{\s*failed:\s*true\s*\}\s*\}/.test(boundary)
+        || !/render\(\)\s*\{\s*return\s+this\.state\.failed\s*\?\s*this\.props\.today\s*:\s*this\.props\.children\s*\}/.test(boundary)
+        || !/componentDidCatch\([^)]*\)\s*\{\s*reportError\(/.test(boundary)) {
+      fail('R26d one-hud', 'src/hud/v2/Boundary.tsx',
+        'the v2 boundary no longer starts with `state = { failed: false }`, turns failed on a throw'
+        + ' (`static getDerivedStateFromError() { return { failed: true } }`), reports it and draws'
+        + ' `today` in its place. Without the static method React keeps it a legacy boundary and'
+        + ' renders nothing for the place on a throw: a v2 place that throws would take the HUD,'
+        + ' chat or the notices off the screen.')
+    }
+    const app = stripComments(read(A))
+    if (!/const\s+hud2On\s*=\s*useUIv2\(\s*'hud'\s*\)/.test(app)) {
+      fail('R26d one-hud', 'src/App.tsx', "no `const hud2On = useUIv2('hud')`: App cannot pick a HUD.")
+    }
+    /** From the `{` at `open` to its own `}`. */
+    const braced = (s, open) => {
+      let depth = 0
+      for (let i = open; i < s.length; i++) {
+        if (s[i] === '{') depth++
+        else if (s[i] === '}' && --depth === 0) return s.slice(open, i + 1)
+      }
+      return null
+    }
+    const flat = (s) => s.replace(/\s+/g, ' ').trim()
+    const count = (re) => (app.match(re) ?? []).length
+    const places = []
+    for (const m of app.matchAll(/\{\s*hud2On\b/g)) {
+      const expr = braced(app, m.index)
+      const head = expr && /^\{\s*hud2On\s*\?\s*\(?\s*<Boundary\s+what="(\w+)"\s+today=\{/.exec(expr)
+      if (!head) { places.push({ what: '?' }); continue }
+      const today = braced(expr, head[0].length - 1)
+      const tail = today && /^>\s*(<(\w+)\b[^>]*\/>)\s*<\/Boundary>\s*\)?\s*:\s*([\s\S]*)\}$/
+        .exec(expr.slice(head[0].length - 1 + today.length))
+      places.push({
+        what: head[1], layer: tail?.[2] ?? null, v2: tail ? flat(tail[1]) : null,
+        today: today && flat(today.slice(1, -1)), off: tail ? flat(tail[3]) : null,
+      })
+    }
+    // Each place: its name, its v2 layer, today's tag, today's line (the off
+    // side, prod's), and the v2 line. Compared with whitespace flattened.
+    const PLACES = [
+      ['hud', 'HudLayer', 'Hud', '<Hud visible={hudUp && !hudPaused} />', '<HudLayer up={hudUp} />'],
+      ['chat', 'ChatLayer', 'Chat', '!tearingDown && !showLobby && <Chat barsVisible={hudUp} />',
+        '<ChatLayer want={!tearingDown && !showLobby} barsVisible={hudUp} />'],
+      ['notices', 'NoticesLayer', 'Notices', '!showLobby && !hudPaused && <Notices barsVisible={hudUp} />',
+        '<NoticesLayer want={!showLobby} barsVisible={hudUp} />'],
+    ]
+    if (JSON.stringify(places.map((p) => p.what)) !== JSON.stringify(PLACES.map(([what]) => what))) {
+      fail('R26d one-hud', 'src/App.tsx',
+        `App's \`{hud2On ? ...}\` places read ${JSON.stringify(places.map((p) => p.what))}: not one each for`
+        + ' the HUD, chat and the notices, in that order, each `hud2On ? <Boundary what=".." today={..}>'
+        + ' <Layer /> </Boundary> : today\'s line`.')
+    } else {
+      for (const [i, [what, layer, tag, todayLine, v2Line]] of PLACES.entries()) {
+        const p = places[i]
+        if (p.layer !== layer || !p.today || p.today !== p.off || !new RegExp(`<${tag}\\b`).test(p.off)
+            || count(new RegExp(`<${layer}\\b`, 'g')) !== 1 || count(new RegExp(`<${tag}\\b`, 'g')) !== 2) {
+          fail('R26d one-hud', 'src/App.tsx',
+            `the ${what} place is not one ternary drawing <${layer} /> in its boundary with the piece on`
+            + ` and today's <${tag} /> line with it off, that same line again, character for character,`
+            + ` as the boundary's fallback, and <${layer} /> nowhere else in App and <${tag} /> only those`
+            + ' two times. Two roots would mount, or the fallback would draw a HUD nobody ships.')
+          continue
+        }
+        if (p.off !== flat(todayLine)) {
+          fail('R26d one-hud', 'src/App.tsx',
+            `the ${what} place's off side reads \`${p.off}\`, not today's line \`${todayLine}\`. With the`
+            + ' hud piece off, prod\'s default (br_uiv2 unset), that line is what every player sees, so'
+            + ' a change to it is a change to prod: make it in this rule\'s PLACES on purpose, and say'
+            + ' why in the commit, rather than in App alone.')
+        }
+        if (p.v2 !== flat(v2Line)) {
+          fail('R26d one-hud', 'src/App.tsx',
+            `the ${what} place's v2 side reads \`${p.v2}\`, not \`${v2Line}\`: the hide rules the port`
+            + ' decided. The v2 HUD hides on GTA\'s menu by App\'s ui gate alone and quick-hides under'
+            + ' our pause menu (hud/v2/HudLayer.tsx), chat is wanted on today\'s two terms, and the'
+            + ' notices off the lobby alone. A change to them is made in this rule\'s PLACES on purpose.')
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // R27  A layer nobody can see does no animation work (#252).
 //
 // The curtain is always mounted at opacity 0, and its loading ring spun for the
@@ -2204,8 +2423,9 @@ for (const name of builtCss) {
 //     with a loop, only the loop may be paused (`running, paused`): a paused
 //     entrance would resume half way when its layer comes back, which is a
 //     visible change.
-//   UNUSED -- the curtain, the HUD, the lobby and its menu column, or the two
-//     gates under GTA's menu stop adding `layer-off` once they are off.
+//   UNUSED -- the curtain, the HUD (today's and UI v2's), the lobby and its
+//     menu column, or the two gates under GTA's menu stop adding `layer-off`
+//     once they are off.
 //
 // EVERY SHEET, NOT index.css ALONE (#431). A sheet of its own hid its loops
 // from a rule that read one file: the Broadcast kit's on-air meter and hot
@@ -2309,6 +2529,9 @@ for (const name of builtCss) {
       [/const\s+off\s*=\s*settled\s*&&\s*!show/, /\$\{off\s*\?\s*' layer-off'\s*:\s*''\}/]],
     [join(SRC, 'hud', 'Hud.tsx'), 'src/hud/Hud.tsx',
       [/const\s+off\s*=\s*settled\s*&&\s*!shown/, /\$\{off\s*\?\s*' layer-off'\s*:\s*''\}/]],
+    // UI v2's HUD root (#431): off once its sentinel is down and its fade settled.
+    [join(SRC, 'hud', 'v2', 'HudV2.tsx'), 'src/hud/v2/HudV2.tsx',
+      [/const\s+off\s*=\s*settled\s*&&\s*!up/, /\$\{off\s*\?\s*' layer-off'\s*:\s*''\}/]],
     [join(SRC, 'screens', 'Lobby.tsx'), 'src/screens/Lobby.tsx',
       [/const\s+off\s*=\s*settled\s*&&\s*!visible/, /\$\{off\s*\?\s*' layer-off'\s*:\s*''\}/,
        /const\s+panelOff\s*=\s*panelSettled\s*&&\s*!panelShown/, /panelOff\s*\?\s*' layer-off'\s*:\s*''/]],

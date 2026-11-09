@@ -2752,6 +2752,21 @@ do
             .. 'except..." list for the next one to join by accident',
         'Hud.tsx renders it, so the ride now has a hole in it')
 
+    -- UI v2's HUD (#431) is that tree again, in the Broadcast wipe, drawn in
+    -- Hud's place while the hud piece is on, and it is under the same rule:
+    -- the ride takes it whole, and the clock stays App's one mount for both.
+    local v2Src = ''
+    for _, f in ipairs({ 'HudV2.tsx', 'HudLayer.tsx' }) do
+        local fh = io.open('ui-src/src/hud/v2/' .. f)
+        v2Src = v2Src .. (fh and fh:read('a') or '')
+        if fh then fh:close() end
+    end
+    ok(#v2Src > 0 and v2Src:find('RescueTimer', 1, true) == nil,
+        'and UI v2\'s HUD does not render it either -- the same tree, so the '
+            .. 'same rule, and no second clock to agree with the first',
+        #v2Src == 0 and 'hud/v2/HudV2.tsx and HudLayer.tsx did not open'
+            or 'hud/v2 renders it, so the ride has a hole in it with the hud piece on')
+
     ok(appSrc:find('show={ridingAmbulance && !tearingDown}', 1, true) ~= nil,
         'gated on the SAME bit that hides the HUD, passed down rather than '
             .. 'derived again, so the two can never disagree about whether a '
@@ -2783,9 +2798,10 @@ do
     -- ═══ SHARED, NOT COPIED -- AND WITHOUT MOVING INTO THE HUD ═══
     --
     -- The two surfaces cannot be siblings in the tree: the assertion above is
-    -- that Hud.tsx never renders this one, and that has to keep holding, since
-    -- the entire reason it exists is that the ride hides the HUD. So what they
-    -- share is the APPEARANCE, lifted into hud/HotCard.tsx.
+    -- that Hud.tsx never renders this one, nor UI v2's HUD (hud/v2), and that
+    -- has to keep holding, since the entire reason it exists is that the ride
+    -- hides the HUD. So what they share is the APPEARANCE, lifted into
+    -- hud/HotCard.tsx.
     --
     -- BOTH ENDS ARE PINNED. A timer that drew its own `.panel-hot` would look
     -- right on the day and drift the moment the placard changed -- which is

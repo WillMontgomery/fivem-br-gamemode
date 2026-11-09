@@ -40,11 +40,13 @@
  *    today's code does not hand it already.
  * 8. UI V2'S HUD (src/hud/v2). Its sheet matches nothing outside its root and
  *    names its own keyframes; each of App's three places draws a root with
- *    bc-kit and hud-v2 on it; each layer says every walkthrough target it
+ *    bc-kit and hud-v2 on it, and quick-hides under our pause menu alone
+ *    (never hud.paused); each layer says every walkthrough target it
  *    draws is away while it is held or quick-hidden; the notice stack keeps
- *    its place over the TAB page; the two shapes of today's markup the wipe's
- *    light reads are still there; and .hud-safe and the fixed boxes sit under
- *    no transform (check-ui R9 and R12 read today's HUD alone).
+ *    its place over the TAB page; the three shapes of today's markup it reads
+ *    (the wipe's light's two, the Volts balance) are still there; and
+ *    .hud-safe and the fixed boxes sit under no transform (check-ui R9 and
+ *    R12 read today's HUD alone).
  * 9. CEF 103 IN UI V2'S CODE: the preview gate's code bans, over the .ts and
  *    .tsx of the kit, of src/hud/v2 and of every other file that takes a value
  *    from the kit (inline styles, WAAPI keyframes, selectors).
@@ -989,6 +991,26 @@ check('each of them draws its own root, with bc-kit and hud-v2 on it',
 check('HudV2.tsx\'s root (data-layer="hud") carries bc-kit as well',
   /\bdata-layer="hud"\s+className=\{`bc-kit\s/.test(hudV2Tsx), true)
 
+// OUR PAUSE MENU QUICK-HIDES ALL THREE, AND ONLY OURS (the port's call for UI
+// v2's HUD). GTA's map and menus are App's ui gate, round everything, and
+// App hands no layer `!hudPaused` (check-ui R26d). Here: each layer takes
+// `paused` from usePauseOpen, which is our pause menu alone (s.focus, never
+// hud.paused, which trails GTA's edge by up to a push), and draws its want
+// inside <QuickHide hidden={paused}>, inside the curtain's hold. A layer
+// without it would stay up over our pause menu; one on hud.paused would hide
+// again, late, under GTA's.
+check("usePauseOpen is our pause menu alone: useUi((s) => s.focus === 'pause')",
+  /^function usePauseOpen\(\): boolean \{\s*return useUi\(\(s\) => s\.focus === 'pause'\)\s*\}/m.test(layerTsx), true)
+check('each layer quick-hides on it round its want: `const paused = usePauseOpen()`, and one'
+  + ' <QuickHide hidden={paused}> between <PresenceScope hold={held} preset={PRESET}> and <PresenceScope want={..}>',
+  layers.filter((n) => {
+    const b = fnBody(layerTsx, n)
+    return !/\bconst paused = usePauseOpen\(\)/.test(b) || (b.match(/<QuickHide\b/g) ?? []).length !== 1
+      || !/<PresenceScope hold=\{held\} preset=\{PRESET\}>\s*<QuickHide hidden=\{paused\}>\s*<PresenceScope want=\{\w+\}>/.test(b)
+  }), [])
+check("...and no code in src/hud/v2 reads hud.paused: the v2 HUD hides on GTA's edge by the ui gate alone",
+  walk(V2).filter((p) => /\.tsx?$/.test(p) && /\bhud\.paused\b|\bhudPaused\b/.test(codeOf.get(p) ?? '')).map((p) => slash(relative(SRC, p))), [])
+
 // THE WALKTHROUGH'S TARGETS ARE AWAY WHILE A LAYER IS HELD OR QUICK-HIDDEN
 // (HudV2.tsx, V2 4). A held or quick-hidden presence is visibility: hidden,
 // and the walkthrough ends a run whose target it cannot see unless a screen
@@ -1033,11 +1055,12 @@ const noticesZ = /\bzIndex:\s*(\d+)/.exec(codeOf.get(join(SRC, 'hud', 'Notices.t
 const anchorZ = /:where\(\.hud-v2\) \.hud-anchor\[data-hud-id="notices"\]\s*\{[^}]*\bz-index:\s*(\d+)/.exec(blank(hud2Css))?.[1] ?? null
 check("the notice stack's anchor carries Notices.tsx's own z-index", [noticesZ !== null, anchorZ], [true, noticesZ])
 
-// THE TWO SHAPES hud2.css READS IN TODAY'S MARKUP. The wipe's light rides the
+// THE SHAPES hud2.css READS IN TODAY'S MARKUP. The wipe's light rides the
 // inventory bar's slot row (its root's last child) and each counter's label
 // line (the div right after its numeral span), and neither carries a class of
 // its own: today's files are not edited for UI v2. Read here off the JSX, so
-// a change to either fails the build rather than putting the light out.
+// a change to either fails the build rather than putting the light out. The
+// Volts gold reads a third, below.
 const jsxOf = (f) => ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 const eachNode = (n, fn) => { fn(n); ts.forEachChild(n, (k) => eachNode(k, fn)) }
 const isEl = (n) => ts.isJsxElement(n) || ts.isJsxSelfClosingElement(n)
@@ -1106,6 +1129,19 @@ let countersIn = false
 if (countersSpan) eachNode(countersSpan, (n) => { if (isEl(n) && tagOf(n) === 'Counters') countersIn = true })
 check("HudV2 draws InventoryBar as its inventory span's one child, unwrapped, and Counters inside its counters span",
   [invKids.length, invKids[0]?.cond ?? null, invKids[0]?.el ? tagOf(invKids[0].el) : null, countersIn], [1, false, 'InventoryBar', true])
+// ...and the third shape, the Volts gold's: InventoryBar's Volts plate draws
+// the balance as its .font-display child, which hud2.css paints --bc-volts
+// inside the v2 HUD's inventory anchor alone. A balance moved out of that
+// child would stay white with the hud piece on.
+let voltsPlate = null
+eachNode(jsxOf(join(SRC, 'hud', 'InventoryBar.tsx')), (n) => { if (isEl(n) && attrText(n, 'data-tut') === 'hud-volts') voltsPlate = n })
+const balance = (voltsPlate ? elementKids(voltsPlate) : []).find((k) => k.el && classOf(k.el).split(/\s+/).includes('font-display')) ?? null
+let drawsBalance = false
+if (balance?.el) eachNode(balance.el, (n) => { if (ts.isIdentifier(n) && n.text === 'volts') drawsBalance = true })
+check('InventoryBar\'s Volts plate draws the balance as its own .font-display child ([data-tut="hud-volts"] > .font-display)',
+  [voltsPlate !== null, balance?.cond ?? null, balance?.el ? tagOf(balance.el) : null, drawsBalance], [true, false, 'span', true])
+check("...and hud2.css paints that child the kit's Volts gold, inside the inventory anchor",
+  /:where\(\.hud-v2\) \.hud-anchor\[data-hud-id="inventory"\] \[data-tut="hud-volts"\] > \.font-display\s*\{[^}]*\bcolor:\s*var\(--bc-volts\)/.test(blank(hud2Css)), true)
 
 // .hud-safe AND THE FIXED BOXES STAY OFF EVERY TRANSFORM. A transformed
 // ancestor is the containing block of every fixed box under it (#231), and
