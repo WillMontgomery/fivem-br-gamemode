@@ -60,6 +60,20 @@ export function onCoverReported(fn: (kind: CoverKind, covered: boolean) => void)
   return () => { heard.delete(fn) }
 }
 
+/**
+ * What Lua was last told about `kind`: true from the report that it is black
+ * until the one that says it has started to leave, and false before any.
+ *
+ * READ, NEVER WRITTEN. reportCover is still the only thing that changes
+ * `reported`. onCoverReported hears the edges; this is the state between
+ * them, for a reader that arrives after one. It is for UI v2's HUD (#431),
+ * which is to hold its elements while the curtain is covered on this report,
+ * rather than on a second timer for the curtain's fade.
+ */
+export function isCovered(kind: CoverKind): boolean {
+  return reported[kind] === true
+}
+
 /** Report a cover's state to Lua, unless Lua already knows it. */
 export function reportCover(kind: CoverKind, covered: boolean): void {
   if (reported[kind] === covered) return

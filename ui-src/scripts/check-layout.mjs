@@ -178,6 +178,19 @@ const L2_TATS = [...L2_EDIT, press('Add more'), `__br.clickText('Tattoos', '${L2
 export const SCREENS = [
   // ── THE HUD, in a match ────────────────────────────────────────────────
   { name: 'hud', steps: ['__br.match()'] },
+  // THE VITALS STRIP ABOVE THE RADAR (#231, #319). The other rows sit at the
+  // mock's default safe zone, where the strip always fits under the radar. At
+  // 0.98 it cannot, so it goes above and the chat moves up; then the safe zone
+  // and the Interface size are dragged across that line mid-match, which only
+  // the placement's keys re-decide (hud/useVitalsPlacement.ts). A strip left
+  // on the wrong side is cut by the bottom of the screen. `brScreen()` sends
+  // the screen again, in case the mock's first one beat the page's listeners.
+  { name: 'hud/safe-top', query: 'safe=0.98', steps: ['__br.match()', 'window.brScreen()'] },
+  { name: 'hud/safe-drag', steps: ['__br.match()', "window.brScreen('window', 0.98)"] },
+  {
+    name: 'hud/ui-drag', query: 'safe=0.972', steps: ['__br.match()', 'window.brScreen()',
+      `__br.emit('settings', { ...__br.SETTINGS, uiScale: 1.3 })`],
+  },
   {
     // Names as long as a platform name runs, in the squad panel.
     name: 'hud/long-names', steps: ['__br.match()', `__br.emit('squad', { id: 'sq_1', you: 1, members: [

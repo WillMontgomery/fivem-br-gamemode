@@ -230,8 +230,8 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   // sit under the map without being cut off by the bottom of the screen, so it
   // takes the slot directly above the map instead -- this one. --vitals-lift
   // is how much room it needs, MEASURED from the rendered strip by
-  // hud/Hud.tsx, and it is 0 the rest of the time. "bump the chat up" is the
-  // owner's phrase for exactly this (2026-08-23, #231).
+  // hud/useVitalsPlacement.ts, and it is 0 the rest of the time. "bump the
+  // chat up" is the owner's phrase for exactly this (2026-08-23, #231).
   const radarOn = screen?.radarOn ?? true
   const bottom = radarOn
     ? 'calc(var(--map-bottom) + var(--map-h) + var(--vitals-gap) + var(--vitals-lift))'

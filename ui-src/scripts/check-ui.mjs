@@ -1356,70 +1356,153 @@ for (const name of builtCss) {
 // to reach an answer that only moves when the safe zone, the interface size or
 // the viewport does. #319 keyed it on exactly those inputs.
 //
-// This rule fails on the two ways that regresses:
+// ONE HOOK FOR BOTH HUDS (#431). It lives in hud/useVitalsPlacement.ts, which
+// Hud.tsx calls and UI v2's HUD is to call as well, so this reads it there.
+//
+// This rule fails on the three ways that regresses:
 //   MISSING INVALIDATION -- a dependency dropped from the array, so a real
 //     safe-zone / ui-scale / resize change stops re-measuring and the strip is
-//     left in the wrong place until something unrelated re-renders the HUD;
+//     left in the wrong place until something unrelated re-renders the HUD.
+//     The same for the window's resize listener, the only re-measure a
+//     resolution change gets (mapBottom is a percentage of the screen, so a
+//     new resolution sends the same number), and for the --vitals-lift
+//     effect's keys [fit.below, fit.strip], or the chat keeps a stale bump.
+//     Both effects are layout effects, so the strip and the chat move before
+//     the frame is painted, not a frame after;
 //   UNNECESSARY READS -- the array removed entirely (back to every render), or
 //     the decision re-inlined so it no longer flows through the one tested
-//     kernel in vitalsPlacement.ts.
+//     kernel in vitalsPlacement.ts;
+//   A SECOND COPY -- Hud.tsx no longer calling the shared hook, or another
+//     file in src defining a useVitalsPlacement, naming fitsBelow or nextFit
+//     (under any alias), repeating the comparison or the rounding, or writing
+//     --vitals-lift, so an effect this rule never reads decides where the
+//     strip goes or how far the chat moves.
 //
 // The invalidation set has ONE home: PLACEMENT_INPUTS in vitalsPlacement.ts,
-// the dependency array here, and scripts/test-vitals-placement.mjs must agree.
+// the hook's dependency array, and scripts/test-vitals-placement.mjs must
+// agree.
+//
+// WHAT IT CANNOT SEE is where the strip ends up: it reads text. That is
+// check-layout's hud/safe-top, hud/safe-drag and hud/ui-drag rows, at safe
+// zones where the strip has to go above the radar.
 //
 // IT CAN FAIL. Delete a name from the `[mapBottom, uiScale, viewportTick]`
-// array in Hud.tsx, or drop the array so the effect runs every render again.
+// array in useVitalsPlacement.ts, drop the array so the effect runs every
+// render again, measure in a useEffect, or give Hud.tsx a copy of the hook in
+// place of the import.
 // ---------------------------------------------------------------------------
 {
   const H = join(SRC, 'hud', 'Hud.tsx')
+  const P = join(SRC, 'hud', 'useVitalsPlacement.ts')
   const K = join(SRC, 'hud', 'vitalsPlacement.ts')
-  if (!existsSync(H) || !existsSync(K)) {
-    fail('R21 vitals-invalidation', 'src/hud',
-      'Hud.tsx or vitalsPlacement.ts is missing. If they moved, move this rule'
-      + ' with them -- it is the pair to scripts/test-vitals-placement.mjs.')
-  } else {
+  const files21 = [[H, 'src/hud/Hud.tsx'], [P, 'src/hud/useVitalsPlacement.ts'],
+                   [K, 'src/hud/vitalsPlacement.ts']]
+  const missing = files21.filter(([f]) => !existsSync(f))
+  for (const [, name] of missing) {
+    fail('R21 vitals-invalidation', name,
+      'file is missing. If it moved, move this rule with it -- it is the pair to'
+      + ' scripts/test-vitals-placement.mjs.')
+  }
+  if (missing.length === 0) {
+    const hook = stripComments(read(P))
+    const rawHook = read(P)
     const hud = stripComments(read(H))
-    const rawHud = read(H)
     const kernel = read(K)
 
-    if (!/from '\.\/vitalsPlacement'/.test(hud)) {
-      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+    if (!/from '\.\/vitalsPlacement'/.test(hook)) {
+      fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
         'the placement decision is no longer imported from ./vitalsPlacement.'
         + ' fitsBelow / roundStrip / nextFit / vitalsLift live there so they'
         + ' have one definition, tested by scripts/test-vitals-placement.mjs.')
     }
     for (const fn of ['fitsBelow(', 'roundStrip(', 'nextFit(', 'vitalsLift(']) {
-      if (!hud.includes(fn)) {
-        fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+      if (!hook.includes(fn)) {
+        fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
           `the measurement no longer calls \`${fn}\` from the kernel. Re-inlining`
           + ' the decision or a guard puts it beyond the one place R21 and the'
           + ' placement test can check it.')
       }
     }
-    if (/>=\s*dropPx/.test(hud) || /getBoundingClientRect\(\)\.height\s*\*\s*100/.test(hud)) {
-      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
-        'the fits-below comparison or the sub-pixel rounding is re-inlined in'
-        + ' Hud.tsx. Both belong to vitalsPlacement.ts (fitsBelow / roundStrip),'
-        + ' so a second copy here can drift from the one the test pins.')
+    if (/>=\s*dropPx/.test(hook) || /getBoundingClientRect\(\)\.height\s*\*\s*100/.test(hook)) {
+      fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
+        'the fits-below comparison or the sub-pixel rounding is re-inlined'
+        + ' here. Both belong to vitalsPlacement.ts (fitsBelow / roundStrip),'
+        + ' so a second copy can drift from the one the test pins.')
     }
-    if (!/\},\s*\[\s*mapBottom\s*,\s*uiScale\s*,\s*viewportTick\s*\]\s*\)/.test(hud)) {
-      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+    if (!/\},\s*\[\s*mapBottom\s*,\s*uiScale\s*,\s*viewportTick\s*\]\s*\)/.test(hook)) {
+      fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
         'the measurement layout effect is not keyed on'
         + ' [mapBottom, uiScale, viewportTick]. A missing name drops a'
         + ' re-measure (safe zone / interface size / resize); a missing array'
         + ' means it reads on every render again. See PLACEMENT_INPUTS.')
+    } else if (!/useLayoutEffect\(\(\)\s*=>\s*\{(?:(?!\buse(?:Layout)?Effect\()[\s\S])*?\},\s*\[\s*mapBottom\s*,\s*uiScale\s*,\s*viewportTick\s*\]\s*\)/.test(hook)) {
+      fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
+        'the measurement keyed on [mapBottom, uiScale, viewportTick] is not a'
+        + ' useLayoutEffect. A plain useEffect runs after the frame is painted,'
+        + ' so that frame shows the strip where the last measurement put it.')
     }
-    if (!/R21 INVALIDATION SET/.test(rawHud)) {
-      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+    const onResize = /window\.addEventListener\(\s*['"]resize['"]\s*,\s*(\w+)\s*\)/.exec(hook)
+    if (!onResize
+        || !new RegExp(`\\b${onResize[1]}\\s*=\\s*\\(\\s*\\)\\s*=>\\s*setViewportTick\\(`).test(hook)) {
+      fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
+        "the window's resize event no longer bumps viewportTick"
+        + " (`window.addEventListener('resize', bump)`, with bump calling"
+        + ' setViewportTick). mapBottom is a percentage of the screen, so a'
+        + ' resolution change at the same safe zone sends the same number, and'
+        + ' the resize is the only thing that re-measures the strip then.')
+    }
+    if (!/useLayoutEffect\(\(\)\s*=>\s*\{\s*document\.documentElement\.style\.setProperty\(\s*'--vitals-lift'\s*,\s*vitalsLift\(fit\)\s*\)\s*;?\s*\},\s*\[\s*fit\.below\s*,\s*fit\.strip\s*\]\s*\)/.test(hook)) {
+      fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
+        'the --vitals-lift write is not `useLayoutEffect(() => {'
+        + " document.documentElement.style.setProperty('--vitals-lift',"
+        + ' vitalsLift(fit)) }, [fit.below, fit.strip])`. A key dropped leaves'
+        + ' the chat bumped by a stale height, or not bumped; a plain useEffect'
+        + ' moves the chat a frame after the strip.')
+    }
+    if (!/R21 INVALIDATION SET/.test(rawHook)) {
+      fail('R21 vitals-invalidation', 'src/hud/useVitalsPlacement.ts',
         'the `R21 INVALIDATION SET` marker on the measurement effect is gone.'
         + ' It is what points a future edit at this rule and PLACEMENT_INPUTS.')
+    }
+    if (!/import\s*\{\s*useVitalsPlacement\s*\}\s*from\s*'\.\/useVitalsPlacement'/.test(hud)
+        || !/\buseVitalsPlacement\(/.test(hud)) {
+      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+        'the HUD no longer places its vitals strip with the shared hook'
+        + " (`import { useVitalsPlacement } from './useVitalsPlacement'`, and a"
+        + ' call). A copy of its own is an effect whose keys this rule never'
+        + ' reads (#431).')
+    }
+    // EVERY OTHER FILE IN src, Hud.tsx among them. A name, not a call: an
+    // import under an alias (`fitsBelow as fb`) or a destructured namespace
+    // still says fitsBelow once. A write of --vitals-lift is the property
+    // name as a string of its own; a read is var(--vitals-lift) inside one.
+    for (const f of files) {
+      const name = rel(f)
+      if (extname(f) === '.css' || name === 'src/hud/useVitalsPlacement.ts'
+          || name === 'src/hud/vitalsPlacement.ts') continue
+      const src = stripComments(read(f))
+      const how = []
+      if (/\bfunction\s+useVitalsPlacement\b|\buseVitalsPlacement\s*=[^=]/.test(src)) {
+        how.push('defines a useVitalsPlacement')
+      }
+      if (/\b(fitsBelow|nextFit)\b/.test(src)) how.push('names fitsBelow or nextFit')
+      if (/>=\s*dropPx/.test(src) || /getBoundingClientRect\(\)\.height\s*\*\s*100/.test(src)) {
+        how.push('repeats the fits-below comparison or the sub-pixel rounding')
+      }
+      if (/['"`]--vitals-lift['"`]/.test(src)) how.push('writes --vitals-lift')
+      if (how.length) {
+        fail('R21 vitals-invalidation', name,
+          `places the vitals strip itself: it ${how.join(', it ')}. Every HUD`
+          + ' places it with the one hook in src/hud/useVitalsPlacement.ts, so'
+          + ' that its keys are the ones this rule reads (#431).')
+      }
     }
     if (!/PLACEMENT_INPUTS\s*=\s*\[\s*'mapBottom'\s*,\s*'uiScale'\s*,\s*'viewportTick'\s*\]/.test(kernel)) {
       fail('R21 vitals-invalidation', 'src/hud/vitalsPlacement.ts',
         'PLACEMENT_INPUTS is not exactly [\'mapBottom\', \'uiScale\','
         + ' \'viewportTick\']. It is the single source for the invalidation set;'
-        + ' the Hud dependency array and test-vitals-placement.mjs read against'
-        + ' it.')
+        + " the hook's dependency array and test-vitals-placement.mjs read"
+        + ' against it.')
     }
   }
 }

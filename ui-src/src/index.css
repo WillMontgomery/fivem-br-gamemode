@@ -139,9 +139,10 @@
      IT IS ALSO WHAT DECIDES WHETHER THE STRIP FITS THERE AT ALL. The radar is
      anchored to the safe zone's bottom-left, so this much of the strip hangs
      into the margin BELOW the safe zone -- and once the player's slider runs
-     out of margin, off the bottom of the screen. hud/Hud.tsx measures this
-     against the real safe zone every render and moves the strip above the
-     radar when it no longer fits. Nothing hardcodes the number twice: the
+     out of margin, off the bottom of the screen. hud/useVitalsPlacement.ts
+     measures this against the real safe zone whenever the safe zone, the
+     interface size or the window changes, and the strip goes above the radar
+     when it no longer fits. Nothing hardcodes the number twice: the
      measurement reads THIS declaration, whatever unit it is written in. */
   --vitals-drop: 0.85rem;
 
@@ -152,9 +153,9 @@
   --vitals-gap: 0.3rem;
 
   /* How far the chat column has to move to stay clear of a vitals strip that
-     has come up above the radar. Written by hud/Hud.tsx from the strip's
-     MEASURED height; 0 whenever the strip is in its usual place, which is
-     almost always. */
+     has come up above the radar. Written by hud/useVitalsPlacement.ts from
+     the strip's MEASURED height; 0 whenever the strip is in its usual place,
+     which is almost always. */
   --vitals-lift: 0px;
 
   /* THE "Currently Talking" LINE, AS A SIZE TWO COMPONENTS AGREE ON.

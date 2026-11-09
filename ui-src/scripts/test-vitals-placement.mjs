@@ -24,9 +24,10 @@
  *
  * WHAT THIS CANNOT REACH, stated rather than implied: there is no DOM here, so
  * it does not read a real getBoundingClientRect and cannot prove the effect is
- * wired to these inputs. That half is check-ui rule R21, which asserts Hud.tsx
- * keys the measurement effect on exactly PLACEMENT_INPUTS. The two are a pair;
- * do not delete one and keep the other.
+ * wired to these inputs. That half is check-ui rule R21, which asserts the
+ * shared hook (hud/useVitalsPlacement.ts) keys the measurement effect on
+ * exactly PLACEMENT_INPUTS, and that Hud.tsx calls it. The two are a pair; do
+ * not delete one and keep the other.
  *
  * Run: npm run test:placement   (and as part of npm run build)
  */

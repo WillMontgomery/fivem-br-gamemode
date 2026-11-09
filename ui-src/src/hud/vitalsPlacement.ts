@@ -10,9 +10,10 @@
  * and no new dependency.
  *
  * NOTHING HERE READS THE DOM. The measurement -- three getBoundingClientRect
- * heights -- stays in Hud.tsx, because it must run against a real layout. What
- * lives here is only what can be decided from those three numbers, which is
- * exactly what a plain script can check.
+ * heights -- stays in hud/useVitalsPlacement.ts, the hook each HUD calls,
+ * because it must run against a real layout. What lives here is only what can
+ * be decided from those three numbers, which is exactly what a plain script
+ * can check.
  */
 
 /** Where the strip sits, and how tall it measured. `below` is the radar rule;
@@ -94,8 +95,8 @@ export function vitalsLift(fit: VitalsFit): string {
  *   - hp / armour / storm / feed / squad / voice / vehicle / ...:
  *     none feed a measured length. These are the renders whose reads #319 drops.
  *
- * check-ui rule R21 asserts Hud.tsx's measurement effect is keyed on exactly
- * these names, and scripts/test-vitals-placement.mjs asserts this list, so the
- * spec has one home.
+ * check-ui rule R21 asserts the measurement effect (hud/useVitalsPlacement.ts)
+ * is keyed on exactly these names, and scripts/test-vitals-placement.mjs
+ * asserts this list, so the spec has one home.
  */
 export const PLACEMENT_INPUTS = ['mapBottom', 'uiScale', 'viewportTick'] as const
