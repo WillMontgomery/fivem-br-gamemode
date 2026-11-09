@@ -1,0 +1,328 @@
+/* UI V2'S HUD (#431, #436): the anchors' plumbing and the Broadcast wipe's
+   light, for ./Anchor.tsx and ./choreo.ts.
+
+   EVERY RULE IS UNDER THE V2 ROOT, `:where(.hud-v2)`, which each of the three
+   roots in ./HudLayer.tsx carries: with the hud piece off nothing here matches
+   anything. :where() adds no weight, so the anchors' rules, which the stage's
+   own sheet held unprefixed, weigh what they weighed there, and the kit's own
+   rules keep the ranks they were written against (motion.css: a row that is
+   leaving outranks a page's live landing). The wipe's light weighs less than
+   it did on the stage, where each of its rules began
+   #hst-ui[data-hud-style="wipe"]; no rule under src that lands where it lands
+   weighs between the two, so every element it reaches cascades as it did.
+
+   NO RULE HERE TIMES ANYTHING THE KIT TIMES. Motion is the kit's (the presets,
+   ui/broadcast/motion.css); the window (the wipe's mask) draws the kit's own
+   edge and surface channels, on their own values and timing, as a window
+   instead of a scale. Two rules reach inside an anchor: one lands the kit's
+   channels with it, and the wipe's light rides the plates it can.
+
+   Chromium 103: no individual transform properties, no nesting, no :has(),
+   no :is(), no calc() on a <time>; var() in keyframes and in the animation
+   shorthand. Finite one-shots only, so no .layer-off line is owed. */
+
+/* ═══ THE ANCHORS (Anchor.tsx) ═══
+   The kit's channel classes do the moving; this only says where a scale is
+   anchored: the anchor's corner (--hud-ox/--hud-oy, by side), or the element's
+   own corner for a full-stage anchor (--hud-origin). */
+:where(.hud-v2) .hud-anchor,
+:where(.hud-v2) .hud-ch {
+  transform-origin: var(--hud-origin, var(--hud-ox, 50%) var(--hud-oy, 50%));
+}
+
+/* A FULL-STAGE ANCHOR: the box a self-positioned element (the chat column,
+   the notice stack, the bleed-out card) resolves against, the size of the
+   screen, so a transform on it keeps the element exactly where it was. */
+:where(.hud-v2) .hud-fill {
+  position: fixed;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+/* THE NOTICE STACK KEEPS ITS PLACE OVER THE TAB PAGE. Notices.tsx draws it
+   at z-index 40, which ties InventoryPanel's and wins on App's order. Its
+   full-stage anchor is a stacking context of its own (position: fixed), so
+   the 40 would only count inside it, and the TAB page would paint over every
+   notice; the anchor carries the 40 instead. */
+:where(.hud-v2) .hud-anchor[data-hud-id="notices"] {
+  z-index: 40;
+}
+
+/* ═══ THE WINDOW (the wipe's mask; Anchor.tsx) ═══
+   An edge or surface wrapper translates in from the edge its anchor hangs off
+   (--hud-wx: 1 the right, -1 the left; --hud-wy: 1 the bottom, -1 the top)
+   while its one child translates back by the same length, on the kit's own
+   values, durations, delays and curves: the element stands still at its true
+   size and the window opens over it, crossing it exactly as the scale did.
+   Out, the window closes back toward the same edge. Nothing is scaled, so no
+   glyph is ever squeezed. Closed, it waits --hud-mask-past beyond the edge:
+   a clip snapped to the pixel would otherwise leave a hairline of the
+   element showing through the whole of its turn's delay. */
+:where(.hud-v2) .hud-ch.hud-mask.bc-ch-surface {
+  transform: translateX(calc((1 - var(--bc-surface-s, 1)) * var(--hud-wx, 0) * (100% + var(--hud-mask-past))));
+}
+:where(.hud-v2) .hud-ch.hud-mask.bc-ch-edge {
+  transform: translateY(calc((1 - var(--bc-edge-s, 1)) * var(--hud-wy, 0) * (100% + var(--hud-mask-past))));
+}
+:where(.hud-v2) .hud-mask > .hud-mask__in {
+  transition-property: var(--bc-tp, transform);
+}
+:where(.hud-v2) .hud-mask.bc-ch-surface > .hud-mask__in {
+  transform: translateX(calc((1 - var(--bc-surface-s, 1)) * var(--hud-wx, 0) * (-100% - var(--hud-mask-past))));
+  transition-duration: var(--bc-surface-ms, 0ms);
+  transition-timing-function: var(--bc-surface-ease, linear);
+  transition-delay: var(--bc-surface-delay, 0ms);
+}
+:where(.hud-v2) .hud-mask.bc-ch-edge > .hud-mask__in {
+  transform: translateY(calc((1 - var(--bc-edge-s, 1)) * var(--hud-wy, 0) * (-100% - var(--hud-mask-past))));
+  transition-duration: var(--bc-edge-ms, 0ms);
+  transition-timing-function: var(--bc-edge-ease, linear);
+  transition-delay: var(--bc-edge-delay, 0ms);
+}
+
+/* IT CLIPS ONLY WHILE IT MOVES: at rest, and the moment a number lands its
+   anchor (data-hud-live), it clips nothing, so a +1 or a raised slot is never
+   cut. `clip`, not `hidden`: no scroll box and no new formatting context, so
+   nothing inside shifts when the clip comes or goes. */
+:where(.hud-v2) .hud-anchor[data-bc-phase="hidden"] .hud-mask,
+:where(.hud-v2) .hud-anchor[data-bc-phase="entering"]:not([data-hud-live]) .hud-mask,
+:where(.hud-v2) .hud-anchor[data-bc-phase="leaving"] .hud-mask {
+  overflow: clip;
+}
+
+/* ACROSS THE WIPE the window reaches --hud-mask-pad past its element (a text
+   shadow, the held slot's lift); along it, it is the element's own length.
+   Its child takes the very same box, so the two moves are one length. */
+:where(.hud-v2) .hud-mask {
+  --hud-mask-pad: 0.5rem;
+  --hud-mask-past: 0.25rem;
+}
+:where(.hud-v2) .hud-mask.bc-ch-surface:not(.hud-fill),
+:where(.hud-v2) .hud-mask.bc-ch-surface:not(.hud-fill) > .hud-mask__in {
+  margin-top: calc(var(--hud-mask-pad) * -1);
+  margin-bottom: calc(var(--hud-mask-pad) * -1);
+  padding-top: var(--hud-mask-pad);
+  padding-bottom: var(--hud-mask-pad);
+}
+:where(.hud-v2) .hud-mask.bc-ch-edge:not(.hud-fill),
+:where(.hud-v2) .hud-mask.bc-ch-edge:not(.hud-fill) > .hud-mask__in {
+  margin-left: calc(var(--hud-mask-pad) * -1);
+  margin-right: calc(var(--hud-mask-pad) * -1);
+  padding-left: var(--hud-mask-pad);
+  padding-right: var(--hud-mask-pad);
+}
+
+/* A FULL-STAGE ANCHOR places its own element, so its window is that element's
+   span along the wipe, measured where it sits as each phase begins (Anchor.tsx
+   writes --hud-mask-l/-r, or -t/-b, in px), and the whole screen across it;
+   unmeasured, the whole screen. Its child is the window's box again, and in
+   that a frame the size of the screen, which the element places itself in
+   exactly as it did in the wrapper. */
+:where(.hud-v2) .hud-ch.hud-fill.hud-mask {
+  left: var(--hud-mask-l, 0px);
+  right: var(--hud-mask-r, 0px);
+  top: var(--hud-mask-t, 0px);
+  bottom: var(--hud-mask-b, 0px);
+}
+:where(.hud-v2) .hud-fill.hud-mask > .hud-mask__in {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+}
+:where(.hud-v2) .hud-fill.hud-mask > .hud-mask__in > .hud-mask__frame {
+  position: absolute;
+  left: calc(var(--hud-mask-l, 0px) * -1);
+  right: calc(var(--hud-mask-r, 0px) * -1);
+  top: calc(var(--hud-mask-t, 0px) * -1);
+  bottom: calc(var(--hud-mask-b, 0px) * -1);
+  /* The box a `fixed` element places itself in, as the wrapper's own
+     transform made the wrapper. */
+  transform: translateX(0);
+}
+
+/* A NUMBER IS NEVER HIDDEN AT THE MOMENT IT CHANGES: an anchor whose numbers
+   change while it is still entering lands at once (Anchor.tsx `live`, as the
+   kit's `.bc-whole[data-bc-live]`). */
+:where(.hud-v2) .hud-anchor[data-hud-live],
+:where(.hud-v2) .hud-ch[data-hud-live],
+:where(.hud-v2) .hud-anchor[data-hud-live] .hud-mask__in {
+  opacity: 1 !important;
+  transform: none !important;
+  transition: none !important;
+}
+/* ...and the kit's own channels inside it (the slanted vitals' slabs, straps,
+   bar tracks and faces), which an anchor with no wrapper channel moves through
+   them. A numeral keeps its transform (its pop and slam are animations). */
+:where(.hud-v2) .hud-anchor[data-hud-live] .bc-ch-edge,
+:where(.hud-v2) .hud-anchor[data-hud-live] .bc-ch-surface,
+:where(.hud-v2) .hud-anchor[data-hud-live] .bc-ch-content {
+  opacity: 1 !important;
+  transform: none !important;
+  transition: none !important;
+}
+:where(.hud-v2) .hud-anchor[data-hud-live] .bc-whole {
+  opacity: 1 !important;
+  transition: none !important;
+}
+
+/* The HUD root's timing presence (HudV2.tsx): nothing to see. */
+:where(.hud-v2) .hud-sentinel {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ═══ THE WIPE'S LIGHT: THE KIT'S LIGHTSWEEP CROSSING A PLATE AS IT LANDS ═══
+
+   THE SWEEP is the kit's 'sweep' (kit.css section 7: a white band 2.6 units
+   wide peaking at .6, on --bc-ease-sweep), here at power .7, on the Broadcast
+   slant, crossing from the screen edge the plate wipes in from (the right
+   column right to left, everything else left to right).
+
+   IT RIDES THE CHANNEL THAT WIPES ITS ANCHOR IN (choreo.ts): the edge for the
+   top cards, the surface for the counters and the slot row, the content for
+   the car's bars and the slanted vitals' straps. So it starts as the plate
+   starts to open and leaves the far edge as the plate lands, and it ends with
+   the anchor's entering phase, which ends on that same channel's
+   transitionend: on any other channel's clock it would be cut off mid-plate.
+
+   IT LIVES AND DIES WITH THE PHASE. The band is a pseudo-element of the
+   `entering` rule alone, with fill both, transform and opacity only: a cut, a
+   hold under the curtain, a leave or the landing itself takes it away with
+   nothing left behind, and a quick hide (the pause menu, a scope) lets it run
+   out unseen underneath. An anchor that lands at once because a number
+   changed mid-entrance (data-hud-live) loses it at that moment.
+
+   ITS HOSTS ARE PLATES. Clipped to their shape: the cards (.panel-hot is
+   overflow: hidden), each counter plate (the band sits inside .plate, whose
+   clip-path cuts it), and inside the kit's slanted vitals the strap's own
+   skewed, clipped deck. Not clipped (but by the slot row's window while it
+   opens): the slot row and the car's bars, rows far longer than the band,
+   which only reaches full power once it is inside them. Chat, the notices,
+   the kill feed and the talking, voice and spectate lines are text or rows
+   over the world, the Yubikey is a transparent image, and the squad panel
+   keeps its own entrance: no band.
+
+   TWO HOSTS ARE TODAY'S MARKUP, READ BY ITS SHAPE: the inventory bar's slot
+   row (its root's last child, InventoryBar.tsx) and each counter's label
+   line (the line after its numeral, Counters.tsx). Neither file is edited
+   for UI v2, so neither carries a class of its own; scripts/test-broadcast.mjs
+   holds both shapes, so a change to either fails the build rather than
+   putting this light out. */
+
+/* THE SWEEP'S NUMBERS: the kit's sweep geometry, which kit.css keeps as
+   literals inside .bc-sweep (not tokens): the band, the tail past the far
+   edge, the peak at power .7. Lengths in kit units. */
+:where(.hud-v2) {
+  --wipe-band: calc(var(--bc-u) * 2.6);
+  --wipe-tail: calc(var(--bc-u) * 2.8);
+  --wipe-power: 0.42;
+  --wipe-angle: 90deg;
+  --wipe-from: -100%;
+  --wipe-to: var(--wipe-tail);
+}
+/* The right column wipes in from the right: the band crosses back. */
+:where(.hud-v2) .hud-anchor[data-hud-anchor$="right"] {
+  --wipe-angle: 270deg;
+  --wipe-from: 100%;
+  --wipe-to: calc(var(--wipe-tail) * -1);
+}
+
+/* THE BAND'S CLOCK: its anchor's wipe channel (choreo.ts). The anchor's own
+   presence vars (machine.ts rootVars: its turn is in the delay), resolved on
+   the anchor. The content channel unless it says otherwise. */
+:where(.hud-v2) .hud-anchor {
+  --wipe-ms: var(--bc-content-ms);
+  --wipe-at: var(--bc-content-delay);
+}
+:where(.hud-v2) .hud-anchor[data-hud-id="placard"],
+:where(.hud-v2) .hud-anchor[data-hud-id="storm"] {
+  --wipe-ms: var(--bc-edge-ms);
+  --wipe-at: var(--bc-edge-delay);
+}
+:where(.hud-v2) .hud-anchor[data-hud-id="counters"],
+:where(.hud-v2) .hud-anchor[data-hud-id="inventory"] {
+  --wipe-ms: var(--bc-surface-ms);
+  --wipe-at: var(--bc-surface-delay);
+}
+
+/* THE HOSTS THAT NEED A BOX. The band is positioned against its host. A
+   card's own hotDrop already makes it one (its transform is held by `both`);
+   this says so outright. The slot row is a plain flex row. Neither moves:
+   nothing inside either is absolutely positioned against an outer box. (A
+   counter's band resolves against its .plate, which is relative already.) */
+:where(.hud-v2) .hud-anchor[data-hud-id="placard"] .panel-hot,
+:where(.hud-v2) .hud-anchor[data-hud-id="storm"] .panel-hot,
+:where(.hud-v2) .hud-anchor[data-hud-id="inventory"] [data-tut="hud-inventory"] > div > div:last-child {
+  position: relative;
+}
+
+/* THE BAND ON AN UPRIGHT PLATE: the host's full box with the band at its far
+   end (the kit's gradient, white ink at the band's 62%), carried across on the
+   slant, over everything in its host (z-index 1: over the active slot,
+   InventoryBar's own z-index 1). A counter's band is the pseudo-element of its
+   label (the line after the numeral), so it fills and is clipped by that
+   counter's plate. */
+:where(.hud-v2) .hud-anchor[data-hud-id="placard"][data-bc-phase="entering"]:not([data-hud-live]) .panel-hot::after,
+:where(.hud-v2) .hud-anchor[data-hud-id="storm"][data-bc-phase="entering"]:not([data-hud-live]) .panel-hot::after,
+:where(.hud-v2) .hud-anchor[data-hud-id="counters"][data-bc-phase="entering"]:not([data-hud-live]) [data-tut="hud-counters"] .plate > span + div::after,
+:where(.hud-v2) .hud-anchor[data-hud-id="vehicle"][data-bc-phase="entering"]:not([data-hud-live]) > .hud-ch.bc-ch-content::after,
+:where(.hud-v2) .hud-anchor[data-hud-id="inventory"][data-bc-phase="entering"]:not([data-hud-live]) [data-tut="hud-inventory"] > div > div:last-child::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(var(--wipe-angle),
+    rgba(255, 255, 255, 0) calc(100% - var(--wipe-band)),
+    var(--bc-ink) calc(100% - var(--wipe-band) * 0.38),
+    rgba(255, 255, 255, 0) 100%);
+  opacity: 0;
+  animation: hudWipeSweep var(--wipe-ms) var(--bc-ease-sweep) var(--wipe-at) both;
+}
+
+/* THE BAND IN A KIT PLATE (the kit's slanted vitals): inside the strap's
+   surface, under its slab and its face. The deck is skewed and clipped, so the
+   band leans and stops at the strap's edges as the kit's LightSweep does, and
+   rides the strap as it opens from its slab, on the kit's own crossing
+   (bcCross), its tail through --bc-tail. Today's pill has no such plate, and
+   this waits for the slanted vitals. */
+:where(.hud-v2) .hud-anchor[data-hud-id="vitals"][data-bc-phase="entering"]:not([data-hud-live]) .bc-plate__surface::after {
+  --bc-tail: var(--wipe-tail);
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 0) calc(100% - var(--wipe-band)),
+    var(--bc-ink) calc(100% - var(--wipe-band) * 0.38),
+    rgba(255, 255, 255, 0) 100%);
+  opacity: var(--wipe-power);
+  transform: translateX(-100%);
+  animation: bcCross var(--wipe-ms) var(--bc-ease-sweep) var(--wipe-at) both;
+}
+
+/* The crossing on an upright plate: bcCross with the slant held in every frame
+   (the kit's bcShard and bcTag keep theirs the same way) and an envelope, so
+   an unclipped band is only seen at power over its row. It ends invisible. */
+@keyframes hudWipeSweep {
+  0%   { opacity: 0; transform: translateX(var(--wipe-from)) skewX(var(--bc-slant)); }
+  30%  { opacity: var(--wipe-power); }
+  70%  { opacity: var(--wipe-power); }
+  100% { opacity: 0; transform: translateX(var(--wipe-to)) skewX(var(--bc-slant)); }
+}

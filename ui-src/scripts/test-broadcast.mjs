@@ -36,7 +36,18 @@
  *    either; deps.ts is the kit's one door into the rest of src, nothing the
  *    kit draws leaves the tree it is mounted in, and every file that takes a
  *    value from the kit is drawn under a .bc-kit root; and no kit source hands
- *    Tailwind a utility of its own.
+ *    Tailwind a utility of its own, nor UI v2's other code an important one
+ *    today's code does not hand it already.
+ * 8. UI V2'S HUD (src/hud/v2). Its sheet matches nothing outside its root and
+ *    names its own keyframes; each of App's three places draws a root with
+ *    bc-kit and hud-v2 on it; each layer says every walkthrough target it
+ *    draws is away while it is held or quick-hidden; the notice stack keeps
+ *    its place over the TAB page; the two shapes of today's markup the wipe's
+ *    light reads are still there; and .hud-safe and the fixed boxes sit under
+ *    no transform (check-ui R9 and R12 read today's HUD alone).
+ * 9. CEF 103 IN UI V2'S CODE: the preview gate's code bans, over the .ts and
+ *    .tsx of the kit, of src/hud/v2 and of every other file that takes a value
+ *    from the kit (inline styles, WAAPI keyframes, selectors).
  *
  * node runs the .ts files as-is (type stripping): they have no runtime imports.
  */
@@ -44,6 +55,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { BUILT_IN, COUNT, EASE, HALF, LEAVE_STEP, STEP, T } from '../src/ui/broadcast/motion/tokens.ts'
 import {
   begin, drained, enterBase, initialState, landAt, leaveBase, release, rootVars, settle, update, windowOf,
@@ -264,8 +276,9 @@ const sheets = [
   ...KIT_SHEETS.map((f) => ({ name: `kit/${f}`, css: read(...f.split('/')) })),
   ...pageSheets,
 ]
-check('the other sheets under src are read too (index.css, and Locker v2\'s and the Market\'s at least)',
-  [pageSheets.some((s) => s.name === 'index.css'), pageSheets.length >= 3], [true, true])
+check('the other sheets under src are read too (index.css, UI v2\'s HUD\'s, and Locker v2\'s and the Market\'s at least)',
+  [pageSheets.some((s) => s.name === 'index.css'), pageSheets.some((s) => s.name === 'hud/v2/hud2.css'), pageSheets.length >= 4],
+  [true, true, true])
 
 const STEPS = /^(?:from|to|\d+(?:\.\d+)?%)$/
 const rules = []
@@ -303,11 +316,17 @@ function compounds(sel) {
   if (cur) out.push(cur)
   return out
 }
-/** Specificity [ids, classes + attributes + pseudo-classes, types]; :not()
- *  counts its argument. */
+/** Specificity [ids, classes + attributes + pseudo-classes, types]: :not(),
+ *  :is() and :matches() count their heaviest argument, and :where() counts
+ *  nothing (UI v2's HUD scopes its sheet under one, hud/v2/hud2.css). */
 function specificity(sel) {
   const n = [0, 0, 0]
-  let s = sel.replace(/:not\(([^()]*)\)/g, (_, x) => { const k = specificity(x); n[0] += k[0]; n[1] += k[1]; n[2] += k[2]; return ' ' })
+  let s = sel.replace(/:where\([^()]*\)/g, ' ')
+  s = s.replace(/:(?:not|is|matches)\(([^()]*)\)/g, (_, x) => {
+    const k = members(x).map(specificity).sort(bySpec).pop() ?? [0, 0, 0]
+    n[0] += k[0]; n[1] += k[1]; n[2] += k[2]
+    return ' '
+  })
   s = s.replace(/::[\w-]+/g, () => { n[2]++; return ' ' })
   s = s.replace(/\[[^\]]*\]/g, () => { n[1]++; return ' ' })
   s = s.replace(/#[\w-]+/g, () => { n[0]++; return ' ' })
@@ -897,14 +916,525 @@ check(`every file outside the kit that takes a value from it is drawn under .bc-
 
 // TAILWIND READS EVERY .ts AND .tsx UNDER src AS TEXT, comments and all, and
 // a bang before a utility's name is its important modifier: QuickHide's
-// negation of `hidden` was the one rule the kit added to the bundle.
+// negation of `hidden` was the one rule the kit added to the bundle. UI v2's
+// other code is read the same way: src/hud/v2, and every file outside the kit
+// that takes a value from it, so a later port is read as it lands. It may
+// carry Tailwind classes (the v2 HUD is today's markup), but no important
+// utility today's code does not hand Tailwind already: Hud.tsx's and
+// Chat.tsx's `!visible` put one in the bundle with every piece off, and a
+// file of today's that comes to take from the kit brings its own along.
 const BARE = ['hidden', 'block', 'inline', 'flex', 'grid', 'table', 'contents', 'flow-root', 'visible', 'invisible',
   'collapse', 'static', 'fixed', 'absolute', 'relative', 'sticky', 'isolate', 'truncate', 'italic', 'underline',
   'overline', 'uppercase', 'lowercase', 'capitalize', 'container', 'shadow', 'border', 'rounded', 'outline', 'ring',
   'blur', 'grow', 'shrink', 'transform', 'transition', 'filter', 'invert', 'grayscale', 'sepia']
 const bang = new RegExp(`(?<![\\w-])!(?:${BARE.join('|')})(?![\\w-])`, 'g')
+const bangs = (f) => [...readFileSync(f, 'utf8').matchAll(bang)].map((m) => m[0])
 check('no kit source hands Tailwind an important utility (a bang before a utility\'s name)',
-  kitCode.flatMap((f) => [...readFileSync(f, 'utf8').matchAll(bang)].map((m) => `${slash(relative(here, f))}: ${m[0]}`)), [])
+  kitCode.flatMap((f) => bangs(f).map((b) => `${slash(relative(here, f))}: ${b}`)), [])
+const V2 = join(SRC, 'hud', 'v2')
+const v2Own = [...new Set([...walk(V2).filter((p) => /\.tsx?$/.test(p)), ...onKit])]
+const todaysBangs = new Set(srcCode.filter((f) => !inKit(f) && !v2Own.includes(f)).flatMap(bangs))
+check(`nor does UI v2's other code, src/hud/v2 and every file outside the kit that takes a value from it (${v2Own.length} files), but for one today's code hands it already`,
+  v2Own.flatMap((f) => bangs(f).filter((b) => !todaysBangs.has(b)).map((b) => `${slash(relative(SRC, f))}: ${b}`)), [])
+
+console.log("8. UI v2's HUD (src/hud/v2)")
+// ---------------------------------------------------------------------------
+// ITS SHEET IS UNDER ITS ROOT. hud2.css lands after index.css's rules and the
+// kit's, and with the hud piece off it must match nothing: every rule sits
+// under :where(.hud-v2), the class each of HudLayer.tsx's roots carries, and
+// every keyframe it defines is its own (one that took another sheet's name
+// would replace that animation with every piece off). Under it means the root
+// itself, or inside it: a sibling's combinator (~, +) after the root would
+// land on App's next places, today's among them, while the hud piece is on.
+// ---------------------------------------------------------------------------
+const v2Code = (f) => codeOf.get(join(V2, f)) ?? ''
+const hud2Css = readFileSync(join(V2, 'hud2.css'), 'utf8')
+const V2_ROOT = ':where(.hud-v2)'
+const v2Sels = ruleSels(hud2Css)
+const underRoot = (s) => { const c = chain(s); return c[0] === V2_ROOT && (c.length === 1 || c[1] === ' ' || c[1] === '>') }
+check('hud2.css: every rule is scoped under the v2 root (:where(.hud-v2): the root itself, or inside it, never a sibling of it)',
+  [v2Sels.length > 20, v2Sels.filter((s) => !underRoot(s))], [true, []])
+const v2Frames = [...blank(hud2Css).matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1])
+const otherFrames = new Set(pageSheets.filter((s) => s.name !== 'hud/v2/hud2.css')
+  .flatMap((s) => [...blank(s.css).matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1])))
+check("hud2.css: every keyframe it defines is its own (hud and a capital), never another sheet's or the kit's",
+  v2Frames.filter((n) => !/^hud[A-Z]\w*$/.test(n) || otherFrames.has(n) || kitFrames.has(n)), [])
+const v2Used = new Set()
+for (const m of blank(hud2Css).matchAll(/(?:^|[\s;{])animation(?:-name)?\s*:\s*([^;}]+)/g)) {
+  for (const w of m[1].replace(/[\w-]+\((?:[^()]|\([^()]*\))*\)/g, ' ').trim().split(/\s+/)) {
+    if (/^[A-Za-z_][\w-]*$/.test(w) && !KEYWORDS.has(w)) v2Used.add(w)
+  }
+}
+check("hud2.css: every animation it names is defined, in it or in the kit (the slanted vitals' light runs the kit's bcCross)",
+  [[...v2Used].sort(), [...v2Used].filter((n) => !v2Frames.includes(n) && !kitFrames.has(n))], [['bcCross', 'hudWipeSweep'], []])
+
+// ITS ROOTS CARRY THE KIT. The per-file rule in section 7 passes a file that
+// sets bc-kit on one root and draws a second bare, so App's three places are
+// each read here: a root of their own, with bc-kit (the kit's tokens) and
+// hud-v2 (hud2.css's scope), and HudV2's own root carries bc-kit too.
+const layerTsx = v2Code('HudLayer.tsx')
+const hudV2Tsx = v2Code('HudV2.tsx')
+const layers = [...layerTsx.matchAll(/^export function (\w+)\(/gm)].map((m) => m[1])
+/** One top-level function of `src`, to the next one. */
+const fnBody = (src, name) => {
+  const at = src.search(new RegExp(`^(?:export )?function ${name}\\(`, 'm'))
+  if (at < 0) return ''
+  const next = src.slice(at + 1).search(/^(?:export )?function /m)
+  return src.slice(at, next < 0 ? undefined : at + 1 + next)
+}
+const rootClass = (name) => (/\breturn \(\s*<div\s+className="([^"]*)"/.exec(fnBody(layerTsx, name))?.[1] ?? '').split(/\s+/)
+check("HudLayer.tsx: App's three places, each a layer of its own", layers, ['HudLayer', 'ChatLayer', 'NoticesLayer'])
+check('each of them draws its own root, with bc-kit and hud-v2 on it',
+  layers.filter((n) => !rootClass(n).includes('bc-kit') || !rootClass(n).includes('hud-v2')), [])
+check('HudV2.tsx\'s root (data-layer="hud") carries bc-kit as well',
+  /\bdata-layer="hud"\s+className=\{`bc-kit\s/.test(hudV2Tsx), true)
+
+// THE WALKTHROUGH'S TARGETS ARE AWAY WHILE A LAYER IS HELD OR QUICK-HIDDEN
+// (HudV2.tsx, V2 4). A held or quick-hidden presence is visibility: hidden,
+// and the walkthrough ends a run whose target it cannot see unless a screen
+// says the target is away. Each layer names every target it draws -- its own
+// and those of the elements it mounts, today's components read through their
+// imports -- or a card about one it left out ends the run with hud on.
+const TUT = /(?:\bdata-tut|\btut)=["']([\w-]+)["']/g
+function targetsOf(entry) {
+  const seen = new Set()
+  const out = new Set()
+  const visit = (f) => {
+    if (seen.has(f)) return
+    seen.add(f)
+    for (const m of (codeOf.get(f) ?? '').matchAll(TUT)) out.add(m[1])
+    for (const g of takes.get(f) ?? []) {
+      const r = slash(relative(SRC, g))
+      // Today's HUD is not drawn by its v2 twin, which takes its slot id alone.
+      if (r === 'hud/Hud.tsx' || !(r.startsWith('hud/') || r.startsWith('chat/'))) continue
+      visit(g)
+    }
+  }
+  visit(entry)
+  return [...out].sort()
+}
+const hudTargets = ((/\bconst HUD_TARGETS = \[([\s\S]*?)\]/.exec(hudV2Tsx)?.[1] ?? '').match(/'[\w-]+'/g) ?? [])
+  .map((s) => s.slice(1, -1)).sort()
+const awayOf = (name) => (/\[AWAY_ATTR\]:\s*'([^']*)'/.exec(fnBody(layerTsx, name))?.[1] ?? '').split(/\s+/).filter(Boolean).sort()
+check('HudV2 says every walkthrough target it draws is away while it is held or quick-hidden (HUD_TARGETS)',
+  hudTargets, targetsOf(join(V2, 'HudV2.tsx')))
+check('...and that is the vitals, the counters and the Alive plate, the feed, the squad and its two, the inventory and its Volts, the minimap and the timer',
+  hudTargets.length, 11)
+check('HudV2 puts them up while held, or quick-hidden by our pause menu or a scope',
+  /\bconst away = sentinel\.held \|\| paused \|\| scoped\b/.test(hudV2Tsx) && /\{\.\.\.\(away \? \{ \[AWAY_ATTR\]: HUD_TARGETS \} : \{\}\)\}/.test(hudV2Tsx), true)
+check("ChatLayer says chat's target is away while held or quick-hidden", awayOf('ChatLayer'), targetsOf(join(SRC, 'chat', 'Chat.tsx')))
+check("NoticesLayer says the notice stack's is", awayOf('NoticesLayer'), targetsOf(join(SRC, 'hud', 'Notices.tsx')))
+
+// THE NOTICE STACK STAYS OVER THE TAB PAGE. Notices.tsx draws it at z-index
+// 40, which ties InventoryPanel's and wins on App's order; inside its
+// full-stage anchor (fixed, so a stacking context) the 40 would count only
+// there, and the TAB page would paint over every notice.
+const noticesZ = /\bzIndex:\s*(\d+)/.exec(codeOf.get(join(SRC, 'hud', 'Notices.tsx')) ?? '')?.[1] ?? null
+const anchorZ = /:where\(\.hud-v2\) \.hud-anchor\[data-hud-id="notices"\]\s*\{[^}]*\bz-index:\s*(\d+)/.exec(blank(hud2Css))?.[1] ?? null
+check("the notice stack's anchor carries Notices.tsx's own z-index", [noticesZ !== null, anchorZ], [true, noticesZ])
+
+// THE TWO SHAPES hud2.css READS IN TODAY'S MARKUP. The wipe's light rides the
+// inventory bar's slot row (its root's last child) and each counter's label
+// line (the div right after its numeral span), and neither carries a class of
+// its own: today's files are not edited for UI v2. Read here off the JSX, so
+// a change to either fails the build rather than putting the light out.
+const jsxOf = (f) => ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+const eachNode = (n, fn) => { fn(n); ts.forEachChild(n, (k) => eachNode(k, fn)) }
+const isEl = (n) => ts.isJsxElement(n) || ts.isJsxSelfClosingElement(n)
+const tagOf = (n) => (ts.isJsxElement(n) ? n.openingElement : n).tagName.getText()
+const unparen = (e) => { let x = e; while (x && ts.isParenthesizedExpression(x)) x = x.expression; return x }
+const attrsOf = (n) => (ts.isJsxElement(n) ? n.openingElement : n).attributes.properties
+const attrOf = (n, name) => attrsOf(n).find((a) => ts.isJsxAttribute(a) && a.name.getText() === name) ?? null
+/** An attribute's value when it is a plain string (`id="dbno"`), else null. */
+const attrText = (n, name) => { const i = attrOf(n, name)?.initializer; return i && ts.isStringLiteral(i) ? i.text : null }
+function classOf(n) {
+  for (const a of (ts.isJsxElement(n) ? n.openingElement : n).attributes.properties) {
+    if (!ts.isJsxAttribute(a) || a.name.getText() !== 'className' || !a.initializer) continue
+    const i = a.initializer
+    const e = ts.isJsxExpression(i) ? i.expression : i
+    if (e && (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e))) return e.text
+    if (e && ts.isTemplateExpression(e)) return e.head.text
+  }
+  return ''
+}
+/** An element's children as elements: `{ el, cond }`, a `{x && (<a/>)}` or a
+ *  ternary being one that may be absent, and any other expression an unknown
+ *  (`el` null). Text and comments are not elements. */
+function elementKids(n) {
+  const out = []
+  for (const k of ts.isJsxElement(n) ? n.children : []) {
+    if (isEl(k)) { out.push({ el: k, cond: false }); continue }
+    if (!ts.isJsxExpression(k) || !k.expression) continue
+    const e = unparen(k.expression)
+    const right = ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ? unparen(e.right) : null
+    out.push({ el: right && isEl(right) ? right : null, cond: true })
+  }
+  return out
+}
+function returnedRoot(file, fnName) {
+  let fn = null
+  eachNode(jsxOf(file), (n) => { if (ts.isFunctionDeclaration(n) && n.name?.text === fnName) fn = n })
+  const rets = fn?.body?.statements.filter((s) => ts.isReturnStatement(s)) ?? []
+  const e = unparen(rets[rets.length - 1]?.expression)
+  return e && isEl(e) ? e : null
+}
+const invRoot = returnedRoot(join(SRC, 'hud', 'InventoryBar.tsx'), 'InventoryBar')
+const invLast = invRoot ? elementKids(invRoot).pop() ?? null : null
+let slotsDrawn = false
+if (invLast?.el) eachNode(invLast.el, (n) => { if (isEl(n) && tagOf(n) === 'Slot') slotsDrawn = true })
+check('InventoryBar\'s root is a div that ends, always, in the row that draws its slots ([data-tut="hud-inventory"] > div > div:last-child)',
+  [invRoot && tagOf(invRoot), invLast?.cond ?? null, invLast?.el ? tagOf(invLast.el) : null, slotsDrawn], ['div', false, 'div', true])
+const plates = []
+eachNode(jsxOf(join(SRC, 'hud', 'Counters.tsx')), (n) => { if (isEl(n) && classOf(n).split(/\s+/).includes('plate')) plates.push(n) })
+const labeled = plates.filter((p) => elementKids(p).some((k, i, all) => i > 0 && !k.cond && !all[i - 1].cond
+  && k.el !== null && all[i - 1].el !== null && tagOf(all[i - 1].el) === 'span' && tagOf(k.el) === 'div'))
+check("each counter's plate draws its numeral span and, right after it, its label line ([data-tut=\"hud-counters\"] .plate > span + div)",
+  [plates.length > 0, labeled.length], [true, plates.length])
+// ...and HudV2's half of both: the inventory span's one child is the bar
+// itself (the selector steps from the span to the bar's root by a child's
+// combinator, so a wrapper between them would light the whole column), and
+// the counters span holds the counters.
+let invSpan = null
+let countersSpan = null
+eachNode(jsxOf(join(V2, 'HudV2.tsx')), (n) => {
+  if (!isEl(n)) return
+  if (attrText(n, 'data-tut') === 'hud-inventory') invSpan = n
+  if (attrText(n, 'data-tut') === 'hud-counters') countersSpan = n
+})
+const invKids = invSpan ? elementKids(invSpan) : []
+let countersIn = false
+if (countersSpan) eachNode(countersSpan, (n) => { if (isEl(n) && tagOf(n) === 'Counters') countersIn = true })
+check("HudV2 draws InventoryBar as its inventory span's one child, unwrapped, and Counters inside its counters span",
+  [invKids.length, invKids[0]?.cond ?? null, invKids[0]?.el ? tagOf(invKids[0].el) : null, countersIn], [1, false, 'InventoryBar', true])
+
+// .hud-safe AND THE FIXED BOXES STAY OFF EVERY TRANSFORM. A transformed
+// ancestor is the containing block of every fixed box under it (#231), and
+// check-ui R9 and R12 read index.css and Hud.tsx alone. In the v2 HUD the
+// boxes that address the screen are .hud-safe, every `fixed` box, the
+// full-stage anchors (choreo.ts) and HudV2's own root, and each sits under
+// nothing that can carry a transform: a plain element with none of its own
+// (no transform or filter class, no such key in its style), a scope (it draws
+// no element) or a quick hide, whose preset names none. An anchor always
+// moves its channels, a Presence takes its preset's root transform (drop's,
+// slide's), and any other component is not read here, so none of them may.
+// In hud2.css a transform, or anything else that makes a box the containing
+// block of a fixed one, lands only inside an anchor.
+const BOXING = /^(?:transform|translate|rotate|scale|perspective|filter|backdrop-filter|will-change|contain|transform-style|--bc-root-t|--bc-pre-root-t)$/
+const BOXING_KEYS = new Set(['transform', 'translate', 'rotate', 'scale', 'perspective', 'filter', 'backdropFilter',
+  'WebkitBackdropFilter', 'willChange', 'contain', 'transformStyle'])
+const BOXING_CLASS = /^-?(?:transform(?:-gpu|-cpu)?|translate-[xy]-\S+|rotate-\S+|scale-\S+|skew-[xy]-\S+|will-change-transform|filter|blur(?:-\S+)?|brightness-\S+|contrast-\S+|drop-shadow(?:-\S+)?|grayscale(?:-\S+)?|hue-rotate-\S+|invert(?:-\S+)?|saturate-\S+|sepia(?:-\S+)?|backdrop-\S+|\[(?:transform|translate|rotate|scale|perspective|filter|backdrop-filter|will-change|contain|transform-style):\S+\])$/
+/** Every class a className can put on its element: each string in it. */
+function classTokens(n) {
+  const out = []
+  const i = attrOf(n, 'className')?.initializer
+  if (i) {
+    eachNode(i, (k) => {
+      if (ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) || ts.isTemplateHead(k) || ts.isTemplateMiddle(k)
+        || ts.isTemplateTail(k)) out.push(...k.text.split(/\s+/).filter(Boolean))
+    })
+  }
+  return out
+}
+const keyOf = (p) => p.name.getText().replace(/^['"]|['"]$/g, '')
+/** An inline style's object literal: [] with no style, null when it is not
+ *  one, or a spread in it hides its keys. */
+function styleOf(n) {
+  const a = attrOf(n, 'style')
+  if (!a) return []
+  const e = a.initializer && ts.isJsxExpression(a.initializer) ? unparen(a.initializer.expression) : null
+  if (!e || !ts.isObjectLiteralExpression(e) || e.properties.some((p) => !ts.isPropertyAssignment(p) && !ts.isShorthandPropertyAssignment(p))) return null
+  return e.properties
+}
+/** A spread of attributes made of object literals alone (a ternary of them),
+ *  none of them with a class or a style. */
+function plainSpread(e) {
+  const x = unparen(e)
+  if (ts.isConditionalExpression(x)) return plainSpread(x.whenTrue) && plainSpread(x.whenFalse)
+  return ts.isObjectLiteralExpression(x) && x.properties.every((p) => ts.isPropertyAssignment(p) && !/^(?:className|class|style)$/.test(keyOf(p)))
+}
+const fillIds = new Set()
+eachNode(jsxOf(join(V2, 'choreo.ts')), (n) => {
+  if (!ts.isVariableDeclaration(n) || n.name.getText() !== 'ANCHORS' || !n.initializer || !ts.isObjectLiteralExpression(n.initializer)) return
+  for (const p of n.initializer.properties) {
+    if (ts.isPropertyAssignment(p) && ts.isObjectLiteralExpression(p.initializer) && p.initializer.properties
+      .some((q) => ts.isPropertyAssignment(q) && keyOf(q) === 'fill' && q.initializer.kind === ts.SyntaxKind.TrueKeyword)) fillIds.add(keyOf(p))
+  }
+})
+check("choreo.ts's full-stage anchors are found (fill: true): chat, the notices and the bleed-out card", [...fillIds].sort(), ['chat', 'dbno', 'notices'])
+const fixedStyle = (n) => (styleOf(n) ?? []).some((p) => ts.isPropertyAssignment(p) && keyOf(p) === 'position'
+  && ts.isStringLiteral(p.initializer) && p.initializer.text === 'fixed')
+/** A box that addresses the screen: .hud-safe, a fixed one, a full-stage
+ *  anchor, or a v2 component whose root is one of those. */
+function screenBox(n) {
+  if (tagOf(n) === 'Anchor') return fillIds.has(attrText(n, 'id'))
+  if (v2Roots.has(tagOf(n))) return true
+  const cls = classTokens(n)
+  return cls.includes('hud-safe') || cls.includes('fixed') || fixedStyle(n)
+}
+const v2Roots = new Set()
+const hudV2Root = returnedRoot(join(V2, 'HudV2.tsx'), 'HudV2')
+if (hudV2Root && screenBox(hudV2Root)) v2Roots.add('HudV2')
+const SCOPES = new Set(['PresenceScope', 'Fragment', 'React.Fragment'])
+/** What on `a` can carry a transform, or null when nothing can. */
+function carrier(a) {
+  const tag = tagOf(a)
+  if (SCOPES.has(tag)) return null
+  if (tag !== 'QuickHide' && !/^[a-z]/.test(tag)) return `<${tag}>`
+  const cls = classTokens(a).map((c) => c.replace(/^(?:[\w-]+:)+/, '')).filter((c) => BOXING_CLASS.test(c))
+  if (cls.length) return `<${tag} className="${cls.join(' ')}">`
+  const style = styleOf(a)
+  if (style === null) return `<${tag} style> (not read)`
+  const keys = style.map(keyOf).filter((k) => BOXING_KEYS.has(k))
+  if (keys.length) return `<${tag} style={{ ${keys.join(', ')} }}>`
+  if (attrsOf(a).some((x) => ts.isJsxSpreadAttribute(x) && !plainSpread(x.expression))) return `<${tag} {...}> (not read)`
+  return null
+}
+const boxes = []
+const wrapped = []
+for (const f of ['HudV2.tsx', 'HudLayer.tsx']) {
+  eachNode(jsxOf(join(V2, f)), (n) => {
+    if (!isEl(n) || !screenBox(n)) return
+    const tag = tagOf(n)
+    const what = tag === 'Anchor' ? `<Anchor id="${attrText(n, 'id')}">` : v2Roots.has(tag) ? `<${tag}>`
+      : `<${tag} className="${classTokens(n).join(' ')}">`
+    boxes.push(`${f}: ${what}`)
+    for (let a = n.parent; a; a = a.parent) {
+      if (!ts.isJsxElement(a) && !ts.isJsxSelfClosingElement(a)) continue
+      const why = carrier(a)
+      if (why) wrapped.push(`${f}: ${what} under ${why}`)
+    }
+  })
+}
+check('the boxes that address the screen are found: .hud-safe, four fixed ones (the HUD root, the vitals strip, the minimap box, the dev radar), the three full-stage anchors and HudV2 in its layer',
+  [boxes.filter((b) => /className="hud-safe"/.test(b)).length, boxes.filter((b) => /className="[^"]*\bfixed\b/.test(b)).length,
+    boxes.filter((b) => /<Anchor id=/.test(b)).length, boxes.filter((b) => /<HudV2>/.test(b)).length], [1, 4, 3, 1])
+check('each sits under nothing that can carry a transform: plain elements with none of their own, scopes and quick hides (R9 and R12, for the v2 HUD)',
+  wrapped, [])
+const quickBoxing = rules.filter((r) => r.sels.some((s) => /\[data-bc-preset=["']?quickHide["']?\]/.test(chain(s).pop() ?? ''))
+  && Object.keys(r.decls).some((p) => BOXING.test(p))).map((r) => `${r.sheet}: ${r.sels.join(', ')}`)
+check("...and the quick hide's preset names no root transform, nor anything else that makes its root a containing block", quickBoxing, [])
+const ANCHOR_CLASS = /\.hud-(?:anchor|ch|fill|mask(?:__in|__frame)?)(?![\w-])/
+const anchorCompound = (c) => ANCHOR_CLASS.test(c.replace(/:(?:not|has)\((?:[^()]|\([^()]*\))*\)/g, ''))
+/** Does a selector land inside an anchor: on an anchor or one of its
+ *  channels, or under one (the combinator just right of it a descendant's or
+ *  a child's)? */
+function inAnchor(sel) {
+  const parts = chain(sel)
+  const last = parts.length - 1
+  if (last < 0) return false
+  if (anchorCompound(parts[last])) return true
+  for (let k = last - 2; k >= 0; k -= 2) if ((parts[k + 1] === ' ' || parts[k + 1] === '>') && anchorCompound(parts[k])) return true
+  return false
+}
+const v2Boxing = rules.filter((r) => r.sheet === 'hud/v2/hud2.css' && Object.keys(r.decls).some((p) => BOXING.test(p)))
+check('hud2.css transforms (or filters, or contains) only inside an anchor: never .hud-safe, a fixed box or a root above them',
+  [v2Boxing.length >= 5, v2Boxing.flatMap((r) => r.sels.filter((s) => !inAnchor(s)))], [true, []])
+
+console.log("9. CEF 103 in UI v2's code (#431, #413)")
+// ---------------------------------------------------------------------------
+// THE PREVIEW GATE'S CODE BANS (previews/squad/shared/cef103.mjs, which held
+// the kit and the HUD stage while they were previews): what Chromium 103
+// cannot parse or apply, written where check-css never looks -- an inline
+// style, a WAAPI keyframe or its options, a selector string. FiveM draws
+// br_ui with CEF 103 today and 144 after the move (#413), and 103 drops what
+// it does not know with nothing to say so: a keyframe on `scale: 1.2`
+// animates nothing in game while it looks right on a desktop browser.
+//
+// HERE AND NOT IN check-cef OR check-css. check-cef.mjs is the CEF 144 gate,
+// what 144 took away, over every file we ship; check-css.mjs is the 103 gate
+// for CSS, read in the built sheets and the hand-written pages. These are 103
+// bans on the TS and TSX of UI v2's code: the kit and src/hud/v2, which came
+// from the previews, and every other file that takes a value from the kit,
+// so a later port is read as it lands. Today's screens were never written to
+// them, and they are not read for them.
+//
+// At the gate's levels: a ban fails here, a note is printed. Comments are
+// blanked first, so a comment may name a ban; a deliberate exception carries
+// `cef-ok` in a comment on its line, and says why. A React style object spells
+// a property in camelCase, so each ban reads that spelling too. Two of the
+// gate's CSS-only bans are read here as well, because a style can carry them
+// (lch()/lab() in a color, scrollbar-width and -color); its other CSS-only
+// ones (@starting-style, @scope, nesting) have no shape in code.
+//
+// A CSS PROPERTY CODE WRITES BY NAME (`ast`) is read off the syntax tree, in
+// every shape code writes one: an object literal's key, whatever its value
+// and wherever it sits (a style, a keyframe in either WAAPI form,
+// Object.assign's), quoted, computed or short; `.style.name` and
+// `.style['name']`; setProperty() and attributeStyleMap.set(); and a
+// declaration in a string's CSS text (cssText, a style attribute). A
+// variable, a prop, a type's member or a template's ${} of that name is not
+// one: the transform code 103 needs names its scale `scale` too.
+// ---------------------------------------------------------------------------
+const tsxOf = (raw, kind) => ts.createSourceFile(`x.${kind}`, raw, ts.ScriptTarget.Latest, true, kind === 'ts' ? ts.ScriptKind.TS : ts.ScriptKind.TSX)
+/** A key's or an argument's name: an identifier, or a string or computed one. */
+const nameText = (n) => (!n ? null : ts.isIdentifier(n) || ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) ? n.text
+  : ts.isComputedPropertyName(n) ? nameText(n.expression) : null)
+const styleOwner = (e) => { const x = unparen(e); return (ts.isIdentifier(x) && x.text === 'style') || (ts.isPropertyAccessExpression(x) && x.name.text === 'style') }
+const lineAt = (sf, pos) => sf.getLineAndCharacterOfPosition(pos).line
+/** The lines (from 0) where code writes one of `names` (camelCase and
+ *  kebab-case) as a CSS property. */
+const propWrites = (...names) => (sf) => {
+  const set = new Set(names)
+  const kebab = names.filter((n) => n === n.toLowerCase())
+  const inText = kebab.length ? new RegExp(`(?<![\\w-])(?:${kebab.join('|')})\\s*:`) : /(?!)/
+  const out = new Set()
+  eachNode(sf, (n) => {
+    let at = null
+    if ((ts.isPropertyAssignment(n) || ts.isShorthandPropertyAssignment(n)) && ts.isObjectLiteralExpression(n.parent) && set.has(nameText(n.name))) at = n.name
+    else if (ts.isPropertyAccessExpression(n) && set.has(n.name.text) && styleOwner(n.expression)) at = n.name
+    else if (ts.isElementAccessExpression(n) && styleOwner(n.expression) && set.has(nameText(n.argumentExpression))) at = n.argumentExpression
+    else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && set.has(nameText(n.arguments[0]))
+      && (n.expression.name.text === 'setProperty' || (n.expression.name.text === 'set' && /\battributeStyleMap$/.test(n.expression.expression.getText(sf))))) at = n.arguments[0]
+    else if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)) {
+      const m = inText.exec(n.getText(sf))
+      if (m) out.add(lineAt(sf, n.getStart(sf) + m.index))
+    }
+    if (at) out.add(lineAt(sf, at.getStart(sf)))
+  })
+  return [...out]
+}
+/** WAAPI's composite, as an option, a keyframe's key or a write to an
+ *  effect's: any value but replace and auto, from a literal or not. */
+const compositeWrites = (sf) => {
+  const fine = (v) => { const x = unparen(v); return !!x && (ts.isStringLiteral(x) || ts.isNoSubstitutionTemplateLiteral(x)) && /^(?:replace|auto)$/.test(x.text) }
+  const out = new Set()
+  eachNode(sf, (n) => {
+    let at = null
+    if (ts.isPropertyAssignment(n) && ts.isObjectLiteralExpression(n.parent) && nameText(n.name) === 'composite' && !fine(n.initializer)) at = n.name
+    else if (ts.isShorthandPropertyAssignment(n) && ts.isObjectLiteralExpression(n.parent) && n.name.text === 'composite') at = n.name
+    else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(n.left)
+      && n.left.name.text === 'composite' && !fine(n.right)) at = n.left.name
+    if (at) out.add(lineAt(sf, at.getStart(sf)))
+  })
+  return [...out]
+}
+const CEF_BANS = [
+  { re: /\b(?:oklch|oklab)\(/, what: 'oklch()/oklab() (Chrome 111)', eg: "color: 'oklch(0.7 0.1 200)'" },
+  { re: /(?<![\w-])(?:lch|lab)\(/, what: 'lch()/lab() (Chrome 111)', eg: "color: 'lab(50% 40 59)'" },
+  { re: /color-mix\(/, what: 'color-mix() (Chrome 111): write the rgba', eg: "background: 'color-mix(in srgb, red, blue)'" },
+  { re: /\bcolor\(\s*(?:srgb|srgb-linear|display-p3|a98-rgb|prophoto-rgb|rec2020|xyz)/, what: 'color() (Chrome 111)', eg: "color: 'color(display-p3 1 0 0)'" },
+  { re: /\b(?:rgba?|hsla?|hwb)\(\s*from\s/, what: 'relative color syntax (Chrome 119)', eg: "color: 'rgb(from red r g b)'" },
+  { re: /light-dark\(/, what: 'light-dark() (Chrome 123)', eg: "color: 'light-dark(#fff, #000)'" },
+  { re: /:has\(/, what: ':has() (Chrome 105): toggle a class or a data- attribute instead', eg: "el.querySelector('.a:has(.b)')" },
+  { re: /@container\b/, ast: propWrites('containerType', 'container-type', 'containerName', 'container-name'), what: 'container queries (Chrome 105)',
+    eg: "const s = { containerType: 'inline-size' }", names: [['containerType', 'container-type'], ['containerName', 'container-name']] },
+  { re: /\d(?:cqw|cqh|cqi|cqb|cqmin|cqmax)\b/, what: 'container units (Chrome 105)', eg: "width: '50cqw'" },
+  { re: /\d(?:[dsl]vh|[dsl]vw|[dsl]vi|[dsl]vb|[dsl]vmin|[dsl]vmax)\b/, what: 'dvh/svh/lvh units (Chrome 108)', eg: "height: '100dvh'" },
+  // Any value: 103 has no text-wrap at all, so nowrap is dropped as balance is.
+  { ast: propWrites('textWrap', 'text-wrap'), what: 'text-wrap (Chrome 114)', eg: "const s = { textWrap: 'balance' }", names: [['textWrap', 'text-wrap']] },
+  { re: /transition-behavior|transitionBehavior/, what: 'transition-behavior (Chrome 117)', eg: "transitionBehavior: 'allow-discrete'" },
+  { re: /(?<![\w-])linear\(/, what: 'linear() easing (Chrome 113): use cubic-bezier() or keyframe steps', eg: "el.animate(frames, { easing: 'linear(0, 0.5, 1)' })" },
+  { re: /animation-composition|animationComposition/, ast: compositeWrites, what: 'animation composition (Chrome 112)', eg: "el.animate(frames, { composite: 'add' })" },
+  { re: /(?:animation|scroll|view)-timeline|(?:animation|scroll|view)Timeline/, what: 'scroll-driven animations (Chrome 115)', eg: "animationTimeline: 'scroll()'" },
+  { re: /view-transition|viewTransitionName|startViewTransition/, what: 'view transitions (Chrome 111)', eg: 'document.startViewTransition(() => {})' },
+  { re: /\banchor(?:-size)?\(|anchor-name|position-anchor|anchorName|positionAnchor/, what: 'anchor positioning (Chrome 125)', eg: "top: 'anchor(--tip bottom)'" },
+  { re: /calc-size\(|interpolate-size|interpolateSize/, what: 'calc-size()/interpolate-size (Chrome 129)', eg: "interpolateSize: 'allow-keywords'" },
+  { ast: propWrites('scrollbarWidth', 'scrollbar-width', 'scrollbarColor', 'scrollbar-color'), what: 'scrollbar-width/-color (Chrome 121)',
+    eg: "const s = { scrollbarWidth: 'none' }", names: [['scrollbarWidth', 'scrollbar-width'], ['scrollbarColor', 'scrollbar-color']] },
+  // The individual transform properties: a keyframe on `scale` animates
+  // nothing on 103.
+  { ast: propWrites('translate', 'rotate', 'scale'), what: 'the individual transform properties translate/rotate/scale (Chrome 104): use transform',
+    eg: 'el.animate([{ scale: 1.2 }], 200)', names: [['translate', 'translate'], ['rotate', 'rotate'], ['scale', 'scale']] },
+  // CSS zoom is check-cef's C4 everywhere outside the Season 2 islands too.
+  { ast: propWrites('zoom'), what: 'CSS zoom (check-cef bans it outside Locker v2 and the Market)', eg: 'const s = { zoom: 2 }', names: [['zoom', 'zoom']] },
+  // Not a parser problem, a cost one: framer-motion drives its animations
+  // from requestAnimationFrame on the main thread, every frame.
+  { re: /from\s+['"](?:framer-motion|motion)(?:\/[^'"]*)?['"]/, what: 'framer-motion: it animates from JavaScript every frame; use CSS keyframes and transitions', eg: "import { motion } from 'framer-motion'" },
+]
+const CEF_NOTES = [
+  { re: /\brequestAnimationFrame\b/, what: 'requestAnimationFrame: fine for a one-shot (restarting a class), never a loop -- the HUD is on screen all match', eg: 'requestAnimationFrame(tick)' },
+  { re: /\bsetInterval\b/, what: 'setInterval: anything but a clock is a timer running all match', eg: 'setInterval(tick, 250)' },
+  { re: /backdrop-filter|backdropFilter/, what: 'backdrop-filter: index.css avoids it (a known CEF flicker, and expensive)', eg: "backdropFilter: 'blur(4px)'" },
+]
+const LAYOUT_TRANSITION = 'an inline transition on layout (or `all`): transform and opacity only'
+/** One file's findings: { bans, notes }, each [{ what, line }]. `kind` is how
+ *  its syntax tree is read: 'ts' or 'tsx'. */
+function cefScan(raw, kind = 'tsx') {
+  const code = blankComments(raw)
+  const lines = code.split('\n')
+  const rawLines = raw.split('\n')
+  // `cef-ok` excuses its line only from a comment: blanked away with it.
+  const excused = (i) => /cef-ok/.test(rawLines[i] ?? '') && !/cef-ok/.test(lines[i] ?? '')
+  let sf = null
+  const hits = (list) => list.flatMap((b) => {
+    const at = new Set()
+    if (b.re) lines.forEach((l, i) => { if (b.re.test(l)) at.add(i) })
+    if (b.ast) for (const i of b.ast(sf ??= tsxOf(raw, kind))) at.add(i)
+    return [...at].sort((x, y) => x - y).filter((i) => !excused(i)).map((i) => ({ what: b.what, line: i + 1 }))
+  })
+  const layout = [...code.matchAll(/transition(?:Property)?\s*:\s*['"`][^'"`]*/g)]
+    .filter((m) => /\b(?:width|height|top|left|right|bottom|margin|padding|all)\b/.test(m[0]))
+    .map((m) => ({ what: LAYOUT_TRANSITION, line: code.slice(0, m.index).split('\n').length }))
+    .filter((n) => !excused(n.line - 1))
+  return { bans: hits(CEF_BANS), notes: [...hits(CEF_NOTES), ...layout] }
+}
+check('every ban fires on a use of what it bans', CEF_BANS.filter((b) => !cefScan(b.eg).bans.some((x) => x.what === b.what)).map((b) => b.what), [])
+check('...and on nothing but its own (no two bans are one)', CEF_BANS.filter((b) => cefScan(b.eg).bans.some((x) => x.what !== b.what)).map((b) => b.what), [])
+check('every note fires on its own, a layout transition in a style included, and fails nothing',
+  [CEF_NOTES.filter((b) => !cefScan(b.eg).notes.some((x) => x.what === b.what)).map((b) => b.what),
+    cefScan("const s = { transition: 'width 200ms ease' }").notes.map((x) => x.what), cefScan(CEF_NOTES.map((b) => b.eg).join('\n')).bans],
+  [[], [LAYOUT_TRANSITION], []])
+check('a comment may name every ban (a block or a line comment): none fires',
+  [cefScan(`/* ${CEF_BANS.map((b) => b.eg).join('\n')} */`).bans, cefScan(CEF_BANS.map((b) => `// ${b.eg}`).join('\n')).bans], [[], []])
+check('`cef-ok` in a comment on the line excuses it, and `cef-ok` in a string does not',
+  [cefScan("const s = { textWrap: 'balance' } // cef-ok: a test").bans.length, cefScan("const s = { textWrap: 'balance', why: 'cef-ok' }").bans.length], [0, 1])
+// EVERY SHAPE CODE WRITES A PROPERTY IN, for each ban on one (camelCase,
+// kebab-case): the review's mutants among them, a property-indexed keyframe,
+// a keyframe's value from a variable, a value on the next line, cssText, a
+// write to .style and setProperty().
+const WRITES = [
+  (c) => `const s = { ${c}: '1' }`,
+  (c) => `el.animate({ ${c}: [a, b] }, 200)`,
+  (c) => `el.animate([{ ${c}: v }], 200)`,
+  (c) => `const s = {\n  ${c}:\n    v }`,
+  (c, k) => `const s = { '${k}': v }`,
+  (c) => `const s = { ['${c}']: v }`,
+  (c) => `const s = { opacity, ${c} }`,
+  (c) => `Object.assign(el.style, { ${c}: v })`,
+  (c) => `const d = <div style={{ ${c}: v }} />`,
+  (c) => `el.style.${c} = v`,
+  (c, k) => `el.style['${k}'] = v`,
+  (c, k) => `el.style.setProperty('${k}', v)`,
+  (c, k) => `el.attributeStyleMap.set("${k}", v)`,
+  (c, k) => 'el.style.cssText = `opacity: 1; ' + k + ': ${v}`',
+  (c, k) => `el.setAttribute('style', '${k}: 1')`,
+]
+// ...and code that only names one: the shapes a regex for `scale:` or
+// `{ scale }` fires on (check-cef's C4 reading of zoom does), with no CSS in
+// them.
+const NAMES = [
+  (c) => `const ${c} = 2`,
+  (c) => `const s = { transform: ${c} }`,
+  (c) => 'const t = `scale(${' + c + '})`',
+  (c) => `const b = <b ${c}={${c}}>{${c}}</b>`,
+  (c) => `const n = big ? ${c} : 1`,
+  (c) => `f(a, ${c}, b)`,
+  (c) => `function F({ ${c} }: { ${c}: number }) { return ${c} }`,
+  (c) => `interface P { ${c}: number }`,
+  (c) => `const { ${c}: v } = props`,
+  (c, k) => `const s = { '--hud-${k}': '1' }`,
+]
+const named = CEF_BANS.filter((b) => b.names)
+check('each ban on a property code writes by name reads it in every shape: a key of a style, a keyframe (either WAAPI form) or Object.assign\'s, any value, on the next line, quoted, computed or short; .style; setProperty() and attributeStyleMap; CSS text',
+  [named.length, named.flatMap((b) => b.names.flatMap(([c, k]) => WRITES.map((w) => w(c, k)).filter((s) => !cefScan(s).bans.some((x) => x.what === b.what))))],
+  [5, []])
+check('...and none fires on code that only names one: a variable, its value, a template\'s ${}, a prop, a JSX child, a ternary, an argument, a destructured prop, a type\'s member, a custom property',
+  named.flatMap((b) => b.names.flatMap(([c, k]) => NAMES.map((w) => w(c, k)).filter((s) => cefScan(s).bans.length > 0))), [])
+check("WAAPI's composite fails from a variable and as an effect's, and passes as replace or auto, in a comparison and in a type",
+  [cefScan('el.animate(frames, { composite: mode })').bans.length, cefScan("effect.composite = 'accumulate'").bans.length,
+    cefScan("el.animate(frames, { composite: 'replace' })").bans.length, cefScan("const k = [{ opacity: 0, composite: 'auto' }]").bans.length,
+    cefScan("if (effect.composite === 'add') stop()").bans.length, cefScan('type O = { composite: CompositeOperation }').bans.length],
+  [1, 1, 0, 0, 0, 0])
+const cefFiles = [...kitCode, ...v2Own]
+const cefNames = cefFiles.map((f) => slash(relative(SRC, f)))
+check("UI v2's code is read: every .ts and .tsx of the kit, of src/hud/v2 and of every other file that takes a value from the kit",
+  [cefFiles.length > 20, ['hud/v2/HudV2.tsx', 'hud/v2/HudLayer.tsx', 'hud/v2/Anchor.tsx', 'hud/v2/choreo.ts', 'ui/broadcast/motion/usePresence.ts']
+    .filter((n) => !cefNames.includes(n))], [true, []])
+const cefFound = cefFiles.map((f) => ({ name: slash(relative(SRC, f)), ...cefScan(readFileSync(f, 'utf8'), f.endsWith('.tsx') ? 'tsx' : 'ts') }))
+for (const b of CEF_BANS) {
+  check(`no ${b.what}`, cefFound.flatMap(({ name, bans }) => bans.filter((x) => x.what === b.what).map((x) => `${name}:${x.line}`)), [])
+}
+for (const { name, notes } of cefFound) for (const n of notes) console.log(`  warn  ${name}:${n.line}  ${n.what}`)
 
 console.log(`\n${ran - failed}/${ran} passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

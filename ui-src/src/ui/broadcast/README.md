@@ -106,7 +106,13 @@ R7 (motion), R27 (every endless loop paused under `.layer-off`) and R2b
 (`--bc-warn` is the warn tone, not a rarity). check-css reads the built bundle
 for the Chromium rule below: it fails on the individual transform properties,
 `linear()`, `color-mix()`, `animation-composition`, nesting and `tan()`, and
-warns on the rest; check-cef keeps `zoom` out.
+warns on the rest; check-cef keeps `zoom` out. test-broadcast holds the kit's
+own `.ts` and `.tsx` to that rule too, with the rest of UI v2's code
+(`src/hud/v2`, and every file outside the kit that takes a value from it): the
+preview gate's code bans, read in inline styles, WAAPI keyframes and their
+options, and selector strings, fail the build, and its notes
+(requestAnimationFrame, setInterval, backdrop-filter, a transition on layout)
+are printed; a deliberate exception carries `cef-ok` in a comment on its line.
 
 ## The rules
 
