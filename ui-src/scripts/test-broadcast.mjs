@@ -33,7 +33,9 @@
  *    every sheet it can meet (the kit's and every other one under src), and
  *    only the kit may set a number's own opacity; motion/label.ts is run on
  *    stand-ins for the cases the screens draw, its way out and back through
- *    every moment; and Numeral and Clock are checked to be wired to both.
+ *    every moment; and Numeral and Clock are checked to be wired to both. A
+ *    quick hide a page registers (UI v2's TAB page's binvQuick) has
+ *    quickHide's hidden values in a rule of its own.
  * 7. THE KIT IN THE GAME. main.tsx imports every stylesheet above App, so the
  *    built CSS has every kit rule after index.css's last; the index.css
  *    keyframes the kit animates with are still there, and every name the kit
@@ -710,6 +712,15 @@ const quickTimed = (p) => {
 }
 check(`a preset that keeps its numbers on the way out (${keeps.join(', ')}) is a quick hide: its root's opacity alone, on the quick hide's timing`,
   keeps.filter((p) => !quickTimed(p) || ownRules(p).some((r) => Object.keys(r.decls).some((k) => k !== '--bc-pre-root-o' && k !== '--bc-pre-whole-o'))), [])
+// ...AND THE OTHER WAY ROUND, for a quick hide a page registers (its timings
+// in its code, HALF.quick): its own rule says what quickHide's says, the root
+// hidden and its numbers kept with it. The checks above find a preset that
+// keeps its numbers by that rule, so without it they would read the preset as
+// an ordinary way off air and pass: the page whole for its 150 ms, then gone.
+const pageQuick = [...registered].filter((p) => !BUILT_IN.some((b) => b.name === p) && quickTimed(p)).sort()
+check(`every quick hide a page registers (${pageQuick.join(', ')}) hides its root and keeps its numbers in a rule of its own, as quickHide does`,
+  pageQuick.filter((p) => !ownRules(p).some((r) => r.decls['--bc-pre-root-o'] === '0' && r.decls['--bc-pre-whole-o'] === '1')), [])
+check("...and UI v2's TAB page's way out under the pause menu (binvQuick) is one of them", pageQuick.includes('binvQuick'), true)
 for (const p of presets) {
   const kept = keeps.includes(p)
   check(`preset "${p}": ${kept ? 'its quick fade takes a number alone with it' : 'a number alone goes the moment its content leaves, and stays hidden'}`,

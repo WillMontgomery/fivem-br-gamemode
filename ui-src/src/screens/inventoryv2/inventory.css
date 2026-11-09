@@ -1,0 +1,468 @@
+/* UI V2'S INVENTORY IN BROADCAST (#431): the bar (Bar.tsx) and the TAB page
+   (Page.tsx, in PageSlot.tsx's box), built from the kit (src/ui/broadcast).
+   Imported by those files after the kit, so it cascades after the kit's
+   sheets, as the preview's main.tsx had it.
+
+   RULES EVERY LINE HERE KEEPS (the kit's, src/ui/broadcast/README.md)
+   - Every value is a kit token (--bc-*) or a length in kit units built from
+     one; the lengths only this screen has are --binv-* custom properties set
+     by its components from their own constants. Classes are binv- (the kit's
+     are bc-); states are is-* on the element.
+   - Nothing here moves anything but the slot in hand's lift (a transition, as
+     today's .plate), a dragged card's dim, the held key's pop (the kit's own
+     bcPop keyframes, a keyed beat) and the drag ghost, whose transform the
+     page writes from pointermove while an item is held (input, never a frame
+     loop): the rest of the motion is the kit's presences and the plates'
+     keyed beats.
+   - No endless animation, so no .layer-off line (check-ui R27).
+   - Chromium 103 safe: no individual transform properties, no color-mix(), no
+     :has(), no nesting. */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE BAR: Volts and ammo straps over a row of slots, right-aligned.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.binv-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--bc-gap);
+}
+/* The row keeps the slot in hand's lift (below) inside its own box: the lift
+   rises the gap plus the growth, so that much room sits between the row and
+   the straps, which stay a full gap clear of a lifted slot under them (the
+   owner, 2026-11-04: the pistol in hand in slot 5 sat on the ammo strap). */
+.binv-row {
+  --binv-lift-scale: 1.06;
+  display: flex;
+  align-items: flex-end;
+  padding-top: calc(var(--bc-gap) + var(--binv-tile-h) * (var(--binv-lift-scale) - 1));
+}
+
+/* A SLOT. Its presence is the plate's own wrapper. Each slot's plate is
+   square (Plate shape="square": the slant and its tan are 0 on the plate), so
+   the slots stand a plain gap apart. The gap is on the tile, outside the
+   plate, where the tan is still the kit's: an overlap by the lean here would
+   lay one square over the next. */
+.binv-tile {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--binv-tile-w);
+  height: var(--binv-tile-h);
+}
+.binv-tile + .binv-tile {
+  margin-left: var(--bc-gap);
+}
+.binv-tile.is-held { z-index: 1; }
+
+/* THE SLOT IN HAND LIFTS AND GROWS: today's .is-active move (translateY up,
+   scale 1.06, 200 ms on the ease-out), from its foot. A state change, so a
+   transition: a hand that changes mid-way turns round where it is. */
+.binv-lift {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  transform-origin: 50% 100%;
+  transition: transform var(--bc-t-fade) var(--bc-ease-out);
+}
+.binv-tile.is-held .binv-lift {
+  transform: translateY(calc(var(--bc-gap) * -1)) scale(var(--binv-lift-scale));
+}
+
+/* The art: the real item PNG through ItemIcon, sized to its box (a rifle is
+   three times as wide as it is tall), tinted for the drawn consumables. */
+.binv-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.binv-art--fists { color: var(--bc-ink-lit); }
+.binv-art__box { display: block; }
+
+/* The label: today's slot caption (it wraps, as today's does: it is not a
+   Fit), the ink the kit names for it. */
+.binv-label {
+  display: block;
+  width: 100%;
+  font-family: var(--bc-font-word);
+  font-size: var(--bc-fs-caption);
+  font-weight: var(--bc-w-emph);
+  line-height: 1.1;
+  letter-spacing: var(--bc-ls-label);
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--bc-ink-soft);
+  text-shadow: var(--bc-shadow-text);
+}
+.binv-label--fists { color: var(--bc-ink-quiet); }
+
+/* The foot strip: the slot's key, the pips, the kind's hint. */
+.binv-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-gap);
+  min-width: 0;
+}
+.binv-hint { font-size: var(--bc-fs-label); }
+
+/* ═══ A SLOT'S KEY (SlotKey): the bar's foot strip and a card's corner ═══
+   KeyCap is an inline-block made for a sentence; its wrapper is a flex box,
+   so the cap is a block with no line box under it. In hand it is KeyCap's
+   own lit cap (SlotKey). */
+.binv-key {
+  display: flex;
+  flex-shrink: 0;
+  transform-origin: 50% 50%;
+}
+/* In a fixed plate the cap keeps its size, as the numeral beside it does:
+   KeyCap's .ts multiplies its size by the text setting. */
+.binv-key--fixed { --text-scale: 1; }
+/* The hand came to it: the kit's pop, A/B so a second pick restarts it. */
+.binv-key.is-pickA { animation: bcPopA var(--bc-t-pop) var(--bc-ease-out); }
+.binv-key.is-pickB { animation: bcPopB var(--bc-t-pop) var(--bc-ease-out); }
+
+/* A JERRY CAN'S FILL (#217): a slim kit Bar parallel to the slab, from under
+   the plate's top to above the strip, filling from the foot, clear of the
+   slab by the kit's slab-side inset (the slab stands upright on a square
+   plate). */
+.binv-gauge {
+  --bc-bar-h: var(--bc-foot-h);
+  --binv-gauge-top: calc(var(--bc-u) * 0.45);
+  --binv-gauge-foot: calc(var(--binv-strip) + var(--bc-u) * 0.25);
+  position: absolute;
+  top: var(--binv-gauge-top);
+  bottom: var(--binv-gauge-foot);
+  right: calc(var(--bc-slab-w) + var(--bc-inset-lead));
+}
+
+/* THE USE PROGRESS: the kit's Bar as the plate's foot line (Plate.Foot). */
+.binv-use {
+  --bc-bar-h: var(--bc-foot-h);
+  display: block;
+}
+
+/* The straps: fixed widths (a plate's layers are absolute, so it has none of
+   its own), the kit gallery's Volts strap and an ammo strap beside it. */
+.binv-strap { position: relative; }
+.binv-strap--volts { width: calc(var(--bc-u) * 8.5); }
+.binv-strap--ammo { width: calc(var(--bc-u) * 7.6); }
+.binv-volts,
+.binv-ammo {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--bc-u) * 0.4);
+}
+.binv-ammo__of {
+  font-family: var(--bc-font-num);
+  font-size: var(--bc-fs-body);
+  line-height: 1;
+  color: var(--bc-ink-faint);
+  text-shadow: var(--bc-shadow-text);
+}
+
+/* ═══ A NUMBER IS NEVER HIDDEN AT THE MOMENT IT CHANGES ═══
+   A plate whose number changes while it is still entering lands at once
+   (InvPresence, as UI v2's HUD's data-hud-live): its channels and its
+   numerals show their final state, with no transition. */
+[data-binv-live],
+[data-binv-live] .bc-ch-edge,
+[data-binv-live] .bc-ch-surface,
+[data-binv-live] .bc-ch-content {
+  opacity: 1 !important;
+  transform: none !important;
+  transition: none !important;
+}
+[data-binv-live] .bc-whole {
+  opacity: 1 !important;
+  transition: none !important;
+}
+/* ...and so does a numeral's tick-in still waiting for its turn. The places
+   that did not change keep the kit Numeral's reveal, whose delay holds them a
+   tick low under a white burn until the content would have landed: on a
+   landed plate, a number half drawn for up to a second. Landed, the reveal is
+   over: its delay is put behind it (never `animation: none`, which would
+   restart it when the plate's marker goes; changing a delay never restarts an
+   animation). The marker stays for the rest of that entrance (InvPresence),
+   so the reveal stays over. */
+[data-binv-live] .bc-col.is-reveal,
+[data-binv-live] .bc-hot.is-reveal {
+  animation-delay: -1s !important;
+}
+
+/* THE PAGE'S QUICK WAY OUT (Page.tsx PAGE_QUICK): the whole page fades, on
+   the quick hide's timing, and no channel moves -- its numbers fade with it,
+   as a quick hide's do (the kit hides a number standing alone at once on any
+   other way out). The page's own way on and off air is the kit's page preset,
+   whose hidden values are the kit's (motion.css). */
+[data-bc-preset="binvQuick"] {
+  --bc-pre-root-o: 0;
+  --bc-pre-whole-o: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE TAB PAGE: the dialog's anatomy (a deck surface under a header strap),
+   five slot cards in the kit Card's anatomy, the five pools.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.binv-pagebox {
+  position: fixed;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.binv-page {
+  position: relative;
+  width: calc(var(--bc-u) * 60);
+  max-width: 95%;
+  pointer-events: auto;
+}
+/* The surface opens from the left under the strap's middle (the dialog's). */
+.binv-page__surface {
+  position: absolute;
+  left: 0;
+  top: calc(var(--binv-head-h) * 0.5);
+  right: 0;
+  bottom: 0;
+  transform-origin: 0 50%;
+  background:
+    linear-gradient(var(--bc-rule-top), var(--bc-rule-top)) 0 0 / 100% 1px no-repeat,
+    var(--bc-deck-sheen),
+    var(--bc-deck);
+  box-shadow: var(--bc-shadow-card);
+}
+.binv-page__head {
+  position: relative;
+  width: calc(var(--bc-u) * 16);
+}
+.binv-page__title {
+  min-width: 0;
+  font-family: var(--bc-font-num);
+  font-size: var(--bc-fs-btn-xl);
+  line-height: 1;
+  letter-spacing: var(--bc-ls-title);
+  text-transform: uppercase;
+  color: var(--bc-ink);
+}
+.binv-page__cards {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: calc(var(--bc-u) * 0.6);
+  padding: calc(var(--bc-u) * 1) calc(var(--bc-u) * 1.25) 0;
+}
+.binv-cardp {
+  display: flex;
+  min-width: 0;
+}
+
+/* A CARD: the kit Card's anatomy (a well with its top rule in the edge, the
+   slanted name plate, the actions), pressed to select, picked up to move.
+   A press is never a text selection or a pan. */
+.binv-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--bc-u) * 0.5);
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  transition: opacity var(--bc-t-fade) ease;
+}
+/* The art is an <img> (ItemIcon), which Chromium would pick up on its own: a
+   native image drag takes the pointer away (pointercancel) in 103 and 144
+   alike. The card's own drag is the only one. Every picture on the page (the
+   ghost's too) and on the bar, which shows beside the open page: the owner
+   could drag the bar's pictures on their own (2026-11-04). The roots also
+   cancel any native dragstart (PageSlot's box and the bar, `noNativeDrag`). */
+.binv-pagebox img,
+.binv-bar img { -webkit-user-drag: none; }
+/* An item that can be picked up now (Page.tsx `movable`: the server's rule,
+   so a slot in use and the hand during a use are not). */
+.binv-card.is-movable { cursor: grab; }
+/* Picked up: it waits under the ghost, dimmed (today's dragged card). */
+.binv-card.is-dragging {
+  opacity: var(--bc-dim);
+  cursor: grabbing;
+}
+.binv-card__well {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: calc(var(--bc-u) * 6.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transform-origin: 0 50%;
+  background:
+    linear-gradient(var(--binv-edge), var(--binv-edge)) 0 0 / 100% 2px no-repeat,
+    var(--bc-fill-well);
+}
+/* THE DROP TARGET: the card the held item lands on if it is let go here (a
+   swap, or a move into an empty slot), lit in the accent at once: it follows
+   the pointer, so a fade would trail it. */
+.binv-card.is-target .binv-card__well {
+  background:
+    linear-gradient(var(--bc-accent), var(--bc-accent)) 0 0 / 100% 2px no-repeat,
+    var(--bc-fill-selected);
+  outline: 2px solid var(--bc-accent);
+  outline-offset: -2px;
+}
+/* (An empty card keeps its rule: today's empty card keeps its faint edge, and
+   the slot in hand its lit one, empty or not.) */
+/* The well's top row: the slot's key at the start, the rarity at the end,
+   both hung from the row's top. The key is the taller (1.6 of its type, and it
+   grows with the text setting); centered on it, the chip would come down to
+   the top of the picture, where a pistol's art and the can's gauge are drawn
+   over it. */
+.binv-card__top {
+  position: absolute;
+  left: calc(var(--bc-u) * 0.45);
+  right: calc(var(--bc-u) * 0.45);
+  top: calc(var(--bc-u) * 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--bc-gap);
+}
+/* THE RARITY, READABLE (the owner: "the 'uncommon' ... hard to read"): the
+   kit's chip at a card's size, 0.8 units of Anton where it was 0.6, in
+   capitals as today's page sets it (the word stays RARITY's), dark ink on the
+   rarity. The widest, LEGENDARY with its five colorblind pips beside a cap at
+   the largest text setting, still fits a card. */
+.binv-card__rarity {
+  --bc-tag-h: calc(var(--bc-u) * 1.2);
+  --bc-tag-pad-l: calc(var(--bc-u) * 0.5);
+  --bc-tag-pad-r: calc(var(--bc-u) * 0.38);
+  --bc-fs-tag: var(--bc-fs-tab);
+  display: flex;
+  align-items: center;
+  gap: var(--bc-gap);
+  min-width: 0;
+}
+.binv-card__rarity .bc-tag__word { text-transform: uppercase; }
+.binv-card__art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: calc(var(--bc-u) * 0.6);
+}
+.binv-card__artbox {
+  display: block;
+  width: calc(var(--bc-u) * 7.4);
+  height: calc(var(--bc-u) * 3.6);
+}
+/* The can's gauge, down the well's right edge (today: the card's right
+   padding, from the top of the picture to the foot): under the rarity chip,
+   which now reaches 1.65 units down (0.45 + its 1.2). */
+.binv-card__gauge {
+  --bc-bar-h: var(--bc-foot-h);
+  position: absolute;
+  right: calc(var(--bc-u) * 0.55);
+  top: calc(var(--bc-u) * 1.8);
+  bottom: calc(var(--bc-u) * 0.6);
+}
+.binv-card__empty {
+  font-family: var(--bc-font-word);
+  font-size: var(--bc-fs-tab);
+  font-weight: var(--bc-w-emph);
+  letter-spacing: var(--bc-ls-caption);
+  text-transform: uppercase;
+  color: var(--bc-ink-off);
+}
+.binv-card__name {
+  min-width: 0;
+  font-weight: var(--bc-w-emph);
+  line-height: 1.2;
+  color: var(--bc-ink);
+  text-shadow: var(--bc-shadow-text);
+}
+.binv-card__acts {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--bc-u) * 0.35);
+}
+.binv-card__row {
+  display: flex;
+  gap: calc(var(--bc-u) * 0.35);
+}
+
+/* THE DRAG GHOST: the held item's art on a lit plate, centered on the pointer
+   (its margins are half its size; the page writes the pointer's place as its
+   transform, in the cards' own pixels). Above every card, never a target
+   itself. Its own layer, as it moves while it is held. */
+.binv-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  width: calc(var(--bc-u) * 8.4);
+  height: calc(var(--bc-u) * 4.6);
+  margin: calc(var(--bc-u) * -2.3) 0 0 calc(var(--bc-u) * -4.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--binv-edge), var(--binv-edge)) 0 0 / 100% 2px no-repeat,
+    var(--bc-fill-selected);
+  outline: 1px solid var(--bc-accent);
+  box-shadow: var(--bc-shadow-card);
+  opacity: 0.94;
+  will-change: transform;
+}
+.binv-ghost__art {
+  display: block;
+  width: calc(var(--bc-u) * 7.4);
+  height: calc(var(--bc-u) * 3.6);
+}
+
+/* THE POOLS: a hairline over them (today's border), opening with the plates. */
+.binv-pools {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: calc(var(--bc-u) * 0.6);
+  margin-top: calc(var(--bc-u) * 0.9);
+  padding: calc(var(--bc-u) * 0.9) calc(var(--bc-u) * 1.25) calc(var(--bc-u) * 1.25);
+}
+.binv-pools__rule {
+  position: absolute;
+  left: calc(var(--bc-u) * 1.25);
+  right: calc(var(--bc-u) * 1.25);
+  top: 0;
+  height: 1px;
+  background: var(--bc-rule-panel);
+  transform-origin: 0 50%;
+}
+/* THE SECTION'S LABEL, under the rule (the owner, 2026-11-03: "we need
+   somewhere to say 'ammo' under the line break"): his word, set as the page's
+   own label is (the header's Anton, capitals, its tracking and ink), a step
+   down the same scale, across the row above the five pools. */
+.binv-pools__head {
+  grid-column: 1 / -1;
+  display: block;
+  min-width: 0;
+}
+.binv-pools__title {
+  font-family: var(--bc-font-num);
+  font-size: var(--bc-fs-btn-lg);
+  line-height: 1;
+  letter-spacing: var(--bc-ls-title);
+  text-transform: uppercase;
+  color: var(--bc-ink);
+}
+.binv-pool {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--bc-u) * 0.4);
+  min-width: 0;
+}
+.binv-pool__drop { display: block; }

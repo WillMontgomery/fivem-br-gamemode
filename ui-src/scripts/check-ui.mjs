@@ -925,34 +925,39 @@ for (const name of builtCss) {
 // is not in this project. This gate proves the page asks. It cannot prove
 // anybody answers.
 //
-// IT CAN FAIL. Put `{slot.kind}` back, or delete the pool drop.
+// BOTH TAB PAGES (#431). UI v2's Broadcast page (screens/inventoryv2/Page.tsx)
+// takes today's place when the inventory piece is on, so it is read the same
+// way: neither of the owner's two reports may come back on either page.
+//
+// IT CAN FAIL. Put `{slot.kind}` back, or delete the pool drop, on either page.
 // ---------------------------------------------------------------------------
-{
-  const f = join(SRC, 'screens', 'InventoryPanel.tsx')
+for (const page of ['screens/InventoryPanel.tsx', 'screens/inventoryv2/Page.tsx']) {
+  const f = join(SRC, ...page.split('/'))
+  const name = `src/${page}`
   if (!existsSync(f)) {
-    fail('R16 inventory', 'src/screens/InventoryPanel.tsx', 'file is missing.')
-  } else {
-    const body = stripComments(read(f))
+    fail('R16 inventory', name, 'file is missing.')
+    continue
+  }
+  const body = stripComments(read(f))
 
-    if (/\{\s*slot\.kind\s*\}/.test(body)) {
-      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
-        'a slot still prints `{slot.kind}` bare. A weapon should name the'
-        + " ammunition it takes -- AMMO_LABEL[slot.pool], the same word the"
-        + ' strip at the bottom uses -- and fall back to the kind only when'
-        + ' there is no pool, which is what melee is.')
-    }
-    if (!/AMMO_LABEL\[\s*slot\.pool\s*\]/.test(body)) {
-      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
-        'no AMMO_LABEL[slot.pool] anywhere. The pool name must come from the'
-        + ' map already in this file, never from a second list written beside'
-        + ' it -- two spellings of "Shells" is the bug this avoids.')
-    }
-    if (!/fetchNui\(\s*CB\.INV_DROP\s*,\s*\{\s*pool\s*\}/.test(body)) {
-      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
-        'nothing sends CB.INV_DROP with a { pool }. Ammunition has no slot'
-        + ' index, so a pool name is the only address a drop can carry; without'
-        + ' this the strip is read-only and the owner\'s report stands.')
-    }
+  if (/\{\s*slot\.kind\s*\}/.test(body)) {
+    fail('R16 inventory', name,
+      'a slot still prints `{slot.kind}` bare. A weapon should name the'
+      + " ammunition it takes -- AMMO_LABEL[slot.pool], the same word the"
+      + ' strip at the bottom uses -- and fall back to the kind only when'
+      + ' there is no pool, which is what melee is.')
+  }
+  if (!/AMMO_LABEL\[\s*slot\.pool\s*\]/.test(body)) {
+    fail('R16 inventory', name,
+      'no AMMO_LABEL[slot.pool] anywhere. The pool name must come from the'
+      + ' map already in this file, never from a second list written beside'
+      + ' it -- two spellings of "Shells" is the bug this avoids.')
+  }
+  if (!/fetchNui\(\s*CB\.INV_DROP\s*,\s*\{\s*pool\s*\}/.test(body)) {
+    fail('R16 inventory', name,
+      'nothing sends CB.INV_DROP with a { pool }. Ammunition has no slot'
+      + ' index, so a pool name is the only address a drop can carry; without'
+      + ' this the strip is read-only and the owner\'s report stands.')
   }
 }
 
@@ -3387,6 +3392,173 @@ for (const name of builtCss) {
   for (const [name, n] of seen) {
     if (n > 1) {
       fail('R40 page-once', 'src/App.tsx', `mounts <Page name="${name}"> ${n} times: every copy draws, one over the other, and each arms its own Escape and anchors (#408).`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R41  UI v2's TAB page asks for exactly what today's asks, by today's kind of
+//      gesture (#431, #440).
+//
+// The Broadcast page (screens/inventoryv2/Page.tsx) takes today's panel's
+// place when the inventory piece of UI v2 is on, and nothing behind it changes
+// for it: br_ui forwards what the page sends (client/nui.lua), br_core passes
+// it on (client/inventory.lua), and the server's handlers decide. So the page
+// may send nothing today's page does not, in no shape today's does not.
+//
+//   THE REQUESTS  every fetchNui under src/screens/inventoryv2 is one of
+//                 today's five -- INV_SELECT {slot}, INV_SWAP {from, to},
+//                 INV_USE {slot}, INV_DROP {slot}, INV_DROP {pool} -- written
+//                 as a literal callback and a literal object, and the page
+//                 sends all five. The five are read off InventoryPanel.tsx,
+//                 never written here.
+//   THE DRAG      pointer events with the pointer captured (setPointerCapture),
+//                 never HTML5 drag and drop: no draggable, onDrop, onDragOver,
+//                 onDragEnter, onDragEnd or dataTransfer (CEF never fired
+//                 `drop`, InventoryPanel.tsx). Both roots, the bar's and the
+//                 page's box, cancel a native dragstart, and inventory.css
+//                 keeps every picture under them undraggable
+//                 (-webkit-user-drag: none): a native image drag takes the
+//                 pointer away (pointercancel) on CEF 103 and 144 alike.
+//   THE BOX       PageSlot's box is fixed over the whole screen and stays
+//                 mounted while the piece is on, the page open or not, so it
+//                 takes no pointer events, and the page in it (.binv-page, its
+//                 root) takes them: today's panel's rule, its fixed box
+//                 pointer-events-none and its plate pointer-events-auto.
+//   THE LOCK      locked() names the slots the server's `channelled()` refuses a
+//                 swap at (br_core/server/inventory.lua, #271): the slot a use
+//                 runs on and the slot in hand, and only while a use runs. A
+//                 page that locked fewer would lift what the server refuses; one
+//                 that locked more would refuse what the server allows.
+//
+// What the gestures make of a press -- every release ends it, a select only on
+// the card it began on, a swap only from another -- is
+// scripts/test-inventory-fx.mjs's, which presses the real page.
+//
+// IT CAN FAIL. Add a sixth request, or send { index } for { slot }; put
+// draggable on a card; take onDragStart off the bar; drop the img rule; take
+// pointer-events: none off the box; take inv.active out of locked(), or its
+// guard on the use.
+// ---------------------------------------------------------------------------
+{
+  const RULE = 'R41 inventory v2'
+  const DIR = join(SRC, 'screens', 'inventoryv2')
+  const at = (name) => join(DIR, name)
+  const need = ['Page.tsx', 'PageSlot.tsx', 'Bar.tsx', 'inventory.css']
+  const missing = need.filter((n) => !existsSync(at(n)))
+  if (missing.length) {
+    fail(RULE, 'src/screens/inventoryv2', `missing: ${missing.join(', ')}.`)
+  } else {
+    const code = walk(DIR).filter((f) => /\.tsx?$/.test(f)).map((f) => ({ f, body: stripComments(read(f).replace(/\r\n/g, '\n')) }))
+
+    // THE REQUESTS: each fetchNui(CB.NAME, { keys }) as "NAME {keys}", its keys
+    // sorted; null for one this cannot read.
+    const requests = (body) => [...body.matchAll(/\bfetchNui\s*\(/g)].map((m) => {
+      const call = /^fetchNui\s*\(\s*CB\.(\w+)\s*,\s*\{([^{}]*)\}\s*\)/.exec(body.slice(m.index))
+      if (!call) return null
+      const keys = call[2].split(',').map((p) => p.trim()).filter(Boolean).map((p) => p.split(':')[0].trim()).sort()
+      return `${call[1]} {${keys.join(', ')}}`
+    })
+    const todays = requests(stripComments(read(join(SRC, 'screens', 'InventoryPanel.tsx'))))
+    const today = new Set(todays)
+    if (today.has(null) || today.size !== 5) {
+      fail(RULE, 'src/screens/InventoryPanel.tsx', `today's requests could not be read as five literal ones (${[...today].join('; ')}).`)
+    }
+    for (const { f, body } of code) {
+      const sent = requests(body)
+      for (const r of sent) {
+        if (r === null) {
+          fail(RULE, rel(f), 'a fetchNui this rule cannot read: write the callback (CB.NAME) and its object literally, as today\'s page does.')
+        } else if (!today.has(r)) {
+          fail(RULE, rel(f), `sends ${r}, which today's page never sends (it sends ${[...today].join('; ')}): br_ui, br_core and the server are not changed for UI v2's page.`)
+        }
+      }
+      const named = (body.match(/\bCB\.\w+/g) ?? []).length
+      if (named !== sent.length) {
+        fail(RULE, rel(f), `names a callback (CB.*) ${named} times for ${sent.length} fetchNui call(s): a callback kept aside is a request this rule cannot read.`)
+      }
+    }
+    const pageSent = new Set(requests(code.find((c) => c.f === at('Page.tsx')).body))
+    const lost = [...today].filter((r) => !pageSent.has(r))
+    if (lost.length) {
+      fail(RULE, 'src/screens/inventoryv2/Page.tsx', `never sends ${lost.join('; ')}: today's page does, so a player would lose it with the piece on.`)
+    }
+
+    // THE DRAG.
+    for (const { f, body } of code.filter((c) => c.f.endsWith('.tsx'))) {
+      const html5 = body.match(/\b(?:draggable|onDrop|onDragOver|onDragEnter|onDragEnd|dataTransfer)\b/)
+      if (html5) {
+        fail(RULE, rel(f), `uses ${html5[0]}: HTML5 drag and drop never fired \`drop\` in CEF (InventoryPanel.tsx). Pointer events with the pointer captured only.`)
+      }
+    }
+    if (!/\.setPointerCapture\(\s*e\.pointerId\s*\)/.test(code.find((c) => c.f === at('Page.tsx')).body)) {
+      fail(RULE, 'src/screens/inventoryv2/Page.tsx', 'no setPointerCapture(e.pointerId): without the capture a move off the card is never heard, and the ghost stops where the pointer left it.')
+    }
+    /** Each opening `<div ...>` tag, braces stepped over (a `>` in `=>` does not end it). */
+    const divTags = (src) => [...src.matchAll(/<div\b((?:[^>{]|\{(?:[^{}]|\{[^{}]*\})*\})*)>/g)].map((m) => m[1])
+    for (const [file, root] of [['Bar.tsx', 'binv-bar'], ['PageSlot.tsx', 'binv-pagebox']]) {
+      const body = code.find((c) => c.f === at(file)).body
+      const tag = divTags(body).find((t) => new RegExp(`className="[^"]*\\b${root}\\b[^"]*"`).test(t))
+      const cancels = /\bconst noNativeDrag = \(e(?::\s*\{[^{}]*\})?\) => e\.preventDefault\(\)/.test(body)
+      if (!tag || !/\bonDragStart=\{noNativeDrag\}/.test(tag) || !cancels) {
+        fail(RULE, `src/screens/inventoryv2/${file}`, `its root (.${root}) does not cancel a native dragstart (onDragStart={noNativeDrag}, which calls e.preventDefault()): a picture dragged natively takes the pointer away.`)
+      }
+    }
+    const undraggable = new Set()
+    for (const m of read(at('inventory.css')).replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/(?:^|;)\s*-webkit-user-drag\s*:\s*none\s*(?:;|$)/.test(m[2])) continue
+      for (const s of m[1].split(',')) undraggable.add(s.trim().replace(/\s+/g, ' '))
+    }
+    const draggable = ['.binv-bar img', '.binv-pagebox img'].filter((s) => !undraggable.has(s))
+    if (draggable.length) {
+      fail(RULE, 'src/screens/inventoryv2/inventory.css', `no -webkit-user-drag: none on ${draggable.join(', ')}: Chromium picks a picture up on its own, and its native drag takes the pointer away.`)
+    }
+
+    // THE BOX: the last word on pointer-events for the box and for the page in
+    // inventory.css, and the page's root carrying the page's class.
+    const sheet = [...read(at('inventory.css')).replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .map((m) => ({ sels: m[1].split(',').map((s) => s.trim().replace(/\s+/g, ' ')), body: m[2] }))
+    const lastSaid = (sel, prop) => sheet.filter((r) => r.sels.includes(sel))
+      .flatMap((r) => [...r.body.matchAll(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+?)\\s*(?=;|$)`, 'g'))].map((d) => d[1]))
+      .pop() ?? null
+    for (const [sel, want, why] of [
+      ['.binv-pagebox', 'none', 'the box is fixed over the whole screen and stays mounted while the piece is on, the page open or not, so it would take every press under it for the whole match'],
+      ['.binv-page', 'auto', 'it sits in a box that takes none, so it would be dead to every press'],
+    ]) {
+      const got = lastSaid(sel, 'pointer-events')
+      if (got !== want) {
+        fail(RULE, 'src/screens/inventoryv2/inventory.css', `${sel} takes pointer-events: ${got ?? '(not set)'}, not ${want}: ${why} (today's panel: its box pointer-events-none, its plate pointer-events-auto).`)
+      }
+    }
+    if (!/<Presence\b[^>]*\bclassName="binv-page"/.test(code.find((c) => c.f === at('Page.tsx')).body)) {
+      fail(RULE, 'src/screens/inventoryv2/Page.tsx', 'the page\'s root (its Presence) does not carry className="binv-page", the class that gives it its pointer events in a box that takes none.')
+    }
+
+    // THE LOCK: the slots each side compares the asked-for one with, a local
+    // alias of the use read as what it aliases, and the guard that a use runs.
+    const lua = read(join(CORE, 'server', 'inventory.lua')).replace(/\r\n/g, '\n')
+    const ch =/\nchannelled = function\(inv, slot\)\n([\s\S]*?)\nend\n/.exec(lua)
+    const lk = /\nfunction locked\(inv: InvPayload, i: number\): boolean \{\n([\s\S]*?)\n\}\n/.exec(code.find((c) => c.f === at('Page.tsx')).body)
+    if (!ch || !lk) {
+      fail(RULE, ch ? 'src/screens/inventoryv2/Page.tsx' : 'br_core/server/inventory.lua',
+        ch ? 'no `function locked(inv: InvPayload, i: number): boolean` to read.' : 'no `channelled = function(inv, slot)` to read.')
+    } else {
+      const luaAlias = /\blocal (\w+) = inv\.using\b/.exec(ch[1])?.[1]
+      // The return that starts its own line: the guard's sits inside an `if`.
+      const luaReturn = /^\s*return ([^\n]+)$/m.exec(ch[1])?.[1] ?? ''
+      const server = [...luaReturn.matchAll(/([\w.]+) == slot\b/g)].map((m) => m[1])
+        .map((s) => (luaAlias && s.startsWith(`${luaAlias}.`) ? `inv.using${s.slice(luaAlias.length)}` : s)).sort()
+      const serverGuard = !!luaAlias && new RegExp(`\\bif not ${luaAlias} then return false end\\b`).test(ch[1])
+      const tsAlias = /\bconst (\w+) = inv\.using\b/.exec(lk[1])?.[1]
+      const tsReturn = /^\s*return ([^\n]+)$/m.exec(lk[1])?.[1] ?? ''
+      const page = [...tsReturn.matchAll(/([\w.]+) === i\b/g)].map((m) => m[1])
+        .map((s) => (tsAlias && s.startsWith(`${tsAlias}.`) ? `inv.using${s.slice(tsAlias.length)}` : s)).sort()
+      const pageGuard = !!tsAlias && new RegExp(`^${tsAlias} != null && \\(`).test(tsReturn.trim())
+      if (server.length !== 2 || JSON.stringify(page) !== JSON.stringify(server) || !serverGuard || !pageGuard) {
+        fail(RULE, 'src/screens/inventoryv2/Page.tsx',
+          `locked() locks [${page.join(', ')}]${pageGuard ? '' : ' with no guard that a use runs'}; the server's channelled() locks`
+          + ` [${server.join(', ')}]${serverGuard ? '' : ' (its guard not found)'} while a use runs. They must be the same two slots, both only while a use runs.`)
+      }
     }
   }
 }
