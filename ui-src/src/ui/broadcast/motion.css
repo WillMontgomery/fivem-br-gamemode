@@ -176,8 +176,12 @@
 /* ═══ BROADCAST: onAir in, offAir out ═══
    The edge rises, the plate opens from its slab, the content slides in from
    the slab side; out, the content goes, the plate closes toward its slab, the
-   edge drops. The loading screen's lower third, on one curve. */
-[data-bc-preset="broadcast"] {
+   edge drops. The loading screen's lower third, on one curve.
+   PAGE is broadcast at twice the speed, for the pages over a match, the TAB
+   page and the player list: the same hidden values, declared once for both;
+   only its timings differ, every one halved (motion/tokens.ts). */
+[data-bc-preset="broadcast"],
+[data-bc-preset="page"] {
   --bc-pre-edge-s: 0;
   --bc-pre-surface-s: 0;
   --bc-pre-content-x: calc(var(--bc-slide) * -1);

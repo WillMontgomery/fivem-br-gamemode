@@ -10,14 +10,22 @@
  *    holds them for CSS. Every pair is pinned here, and --bc-ease-out and
  *    --bc-ease-snap are pinned through to src/index.css's --ease-out and
  *    --ease-snap, so neither copy can drift.
- * 2. EVERY PRESET HAS BOTH HALVES: a TS spec and a CSS rule.
+ * 2. EVERY PRESET HAS BOTH HALVES: a TS spec and a CSS rule. The page preset
+ *    (the TAB page's and the player list's) is broadcast at twice the speed:
+ *    every duration, start and stagger halved, broadcast's hidden values; the
+ *    kit exports its name beside its step.
  * 3. THE PRESENCE MACHINE (motion/machine.ts) does what the README's table
  *    says for every change of moment: a leave mid-enter, an enter mid-leave,
  *    a hold, a quick hide, a late joiner, the settle and the landing, and a
  *    scope's way out as one (a leave the scope drove parks until its last).
  * 4. THE CSS KEEPS ITS RULES: every endless animation has its .layer-off line
  *    (check-ui R27), every class is bc- (no Tailwind collision, R8), keyframes
- *    move transform and opacity only (R7).
+ *    move transform and opacity only (R7, check-ui's list to the letter). A
+ *    square plate stands upright: its slant and tan are 0 on it, so its lines
+ *    step in by 0; no other rule declares either and nothing registers either
+ *    (@property), in a sheet under src or in the built CSS (whatever Tailwind
+ *    adds), and no string or template in src's code names either or declares
+ *    it. A name built at run time is not read.
  * 5. THE OWNER'S PICKS HOLD (2026-11-03).
  * 6. A NUMBER IN A LABEL LEAVES WITH ITS WORDS; a number standing alone goes
  *    the moment its content starts to leave, under EVERY preset there is.
@@ -33,11 +41,12 @@
  *    replace it); the tokens sit on the kit's root class and never on :root,
  *    and every kit rule lands on what the kit draws (through every :is() and
  *    :where()), so with every UI v2 piece off nothing on screen carries
- *    either; deps.ts is the kit's one door into the rest of src, nothing the
- *    kit draws leaves the tree it is mounted in, and every file that takes a
- *    value from the kit is drawn under a .bc-kit root; and no kit source hands
- *    Tailwind a utility of its own, nor UI v2's other code an important one
- *    today's code does not hand it already.
+ *    either; deps.ts is the kit's one door into the rest of src (imports read
+ *    off the syntax tree), nothing the kit draws leaves the tree it is mounted
+ *    in, and every file that takes a value from the kit is drawn under a
+ *    .bc-kit root; and no kit source hands Tailwind a utility of its own, nor
+ *    UI v2's other code an important one today's code does not hand it
+ *    already.
  * 8. UI V2'S HUD (src/hud/v2). Its sheet matches nothing outside its root and
  *    names its own keyframes; each of App's three places draws a root with
  *    bc-kit and hud-v2 on it, and quick-hides under our pause menu alone
@@ -72,7 +81,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
-import { BUILT_IN, COUNT, EASE, HALF, LEAVE_STEP, STEP, T } from '../src/ui/broadcast/motion/tokens.ts'
+import { BUILT_IN, COUNT, EASE, HALF, LEAVE_STEP, PAGE_PRESET, PAGE_STEP, STEP, T } from '../src/ui/broadcast/motion/tokens.ts'
 import {
   begin, drained, enterBase, initialState, landAt, leaveBase, release, rootVars, settle, update, windowOf,
 } from '../src/ui/broadcast/motion/machine.ts'
@@ -88,6 +97,8 @@ const tokensCss = read('tokens.css')
 const kitCss = read('kit.css')
 const motionCss = read('motion.css')
 const presetCss = ['drop', 'fade', 'slide'].map((n) => read('motion', `${n}.css`)).join('\n')
+// The built CSS: section 4 reads it for the slant, section 7 for the cascade.
+const builtCss = readFileSync(join(scripts, '..', '..', 'resources', '[fivem-royale]', 'br_ui', 'ui', 'assets', 'index.css'), 'utf8')
 
 let failed = 0
 let ran = 0
@@ -110,6 +121,14 @@ const bez = (s) => {
   const m = /cubic-bezier\(([^)]*)\)/.exec(s)
   return m ? m[1].split(',').map((x) => Number(x)) : s.trim()
 }
+/** Every file under `dir` (no node_modules, nothing hidden). Up here, as
+ *  section 4 reads every sheet and source under src as well. */
+const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+  if (e.name === 'node_modules' || e.name.startsWith('.')) return []
+  const p = join(dir, e.name)
+  return e.isDirectory() ? walk(p) : [p]
+})
+const slash = (p) => p.replace(/\\/g, '/')
 
 console.log('1. the numbers agree')
 check('EASE.out is index.css --ease-out', bez(EASE.out), bez(decl(indexCss, '--ease-out')))
@@ -142,6 +161,41 @@ for (const p of BUILT_IN) {
   check(`preset "${p.name}" names all four channels each way`,
     ['root', 'edge', 'surface', 'content'].every((c) => p.enter[c] && p.leave[c]), true)
 }
+// THE PAGE: broadcast at twice the speed, the one preset for the pages over a
+// match (the TAB page and the player list; the owner, 2026-11-04: "make the
+// inventory page appear and disappear 2x the speed"). The same choreography,
+// only faster: every duration and every start halved, the curves kept, the
+// stagger halved too, and broadcast's own hidden values.
+const page = BUILT_IN.find((p) => p.name === PAGE_PRESET) ?? null
+// ITS NAME IS EXPORTED, beside its step, for the page's scope to name: a name
+// nobody registered falls back to broadcast without a word (presets.ts
+// getPreset) and lands on the root as data-bc-preset="broadcast", so a page
+// that misspelled a literal would play at full speed with every check green.
+const kitTokenExports = ts.createSourceFile('index.ts', read('index.ts'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  .statements.filter((s) => ts.isExportDeclaration(s) && s.moduleSpecifier && ts.isStringLiteral(s.moduleSpecifier)
+    && s.moduleSpecifier.text === './motion/tokens' && s.exportClause && ts.isNamedExports(s.exportClause))
+  .flatMap((s) => s.exportClause.elements.map((e) => e.name.text))
+check('the page preset is named by PAGE_PRESET ("page"), which the kit exports beside PAGE_STEP (index.ts)',
+  [PAGE_PRESET, page?.name, ['PAGE_PRESET', 'PAGE_STEP'].filter((n) => !kitTokenExports.includes(n))], ['page', 'page', []])
+const halved = (t) => Object.fromEntries(Object.entries(t).map(([c, x]) => [c, { ...x, ms: x.ms / 2, at: x.at / 2 }]))
+check('the page preset is onAir and offAir with every duration and every start halved, the curves kept',
+  page && [page.enter, page.leave], [halved(HALF.onAir), halved(HALF.offAir)])
+check('...in 320 ms and out in 160, half of broadcast\'s each way',
+  page && [windowOf(page.enter, 0), windowOf(page.leave, 0), windowOf(HALF.onAir, 0) / 2, windowOf(HALF.offAir, 0) / 2], [320, 160, 320, 160])
+check('...a 20 ms stagger each way (PAGE_STEP, the leave step halved), backwards on the way out, and no layer',
+  page && [page.step, page.leaveStep, PAGE_STEP, page.reverse, page.layer], [20, 20, LEAVE_STEP / 2, true, false])
+/** The declarations of the first rule in a sheet whose selector list holds
+ *  `sel`. */
+const declsOf = (css, sel) => {
+  for (const m of blank(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!members(m[1]).includes(sel)) continue
+    return Object.fromEntries([...m[2].matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)].map((d) => [d[1], d[2].trim()]))
+  }
+  return null
+}
+check("...and its hidden values are broadcast's, in motion.css",
+  [declsOf(motionCss, `[data-bc-preset="${PAGE_PRESET}"]`) !== null, declsOf(motionCss, `[data-bc-preset="${PAGE_PRESET}"]`)],
+  [true, declsOf(motionCss, '[data-bc-preset="broadcast"]')])
 
 console.log('3. the presence machine')
 const spec = BUILT_IN.find((p) => p.name === 'broadcast')
@@ -248,14 +302,121 @@ for (const css of [kit, blank(motionCss), blank(presetCss), blank(tokensCss)]) {
 }
 const stray = [...classes].filter((c) => !c.startsWith('bc-') && !ours.has(c))
 check('every class the kit styles is bc- (or a project class it extends)', stray, [])
-const R7 = /^(?:width|height|min-width|min-height|max-width|max-height|top|left|right|bottom|inset|margin.*|padding.*|box-shadow)$/
+// R7's list, check-ui's to the letter, and box-shadow, which check-ui reads on
+// its own: every side and every size, each in its logical form too
+// (inset-inline, inset-block-start, inline-size, max-block-size and the rest).
+const R7 = /^(?:(?:min-|max-)?(?:width|height|inline-size|block-size)|top|left|right|bottom|inset(?:-[a-z-]+)?|margin.*|padding.*|box-shadow)$/
 const layoutFrames = []
 for (const m of kit.matchAll(/@keyframes\s+([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*[^{}]*)\}/g)) {
   for (const p of m[2].matchAll(/([a-z-]+)\s*:/g)) if (R7.test(p[1])) layoutFrames.push(`${m[1]}: ${p[1]}`)
 }
 check('keyframes move transform and opacity only (R7)', layoutFrames, [])
+check("...on check-ui R7's own list, to the letter, so the two cannot drift apart (check-ui's let right, bottom, inset and the min- and max- sizes through until #431)",
+  R7.source.replace('|box-shadow)', ')'),
+  (/^const LAYOUT_PROP = \/(.+)\/$/m.exec(readFileSync(join(scripts, 'check-ui.mjs'), 'utf8')) ?? [])[1] ?? null)
 check('a plate line is scoped to its plate (no bare .bc-line rule)',
   [kit.includes('.bc-plate .bc-line {'), /(?:^|\})\s*\.bc-line\s*\{/.test(kit)], [true, false])
+
+// A SQUARE PLATE (Plate shape="square": the hotbar's slots). The slant and
+// its tan are 0 on the plate itself, and the kit's own arithmetic does the
+// rest. Resolved here as the page resolves it: --bc-lean is declared on every
+// plate, so it resolves on the square one; the deck and the cover skew by
+// --bc-slant; a line steps in by --bc-tan times its height from each slanted
+// edge, then by its pads. The squad row's three lines are measured, the pads
+// left out, so what is left is the step along the slant.
+/** A calc() in kit units as a number, each var() it reads from `vars`; null
+ *  for anything else (a var() it was not given, a unit, no rule at all). */
+const calcU = (expr, vars) => {
+  const s = String(expr ?? '').replace(/var\((--[\w-]+)\)/g, (_, k) => (typeof vars[k] === 'number' ? `(${vars[k]})` : '?'))
+    .replace(/calc\(/g, '(')
+  return /^[\d\s.+\-*/()]+$/.test(s) ? Number(Function(`return ${s}`)().toFixed(6)) : null
+}
+const squareDecls = declsOf(kitCss, '.bc-plate--square')
+const lineDecls = declsOf(kitCss, '.bc-plate .bc-line') ?? {}
+const plateDecls = declsOf(kitCss, '.bc-plate') ?? {}
+const deckDecls = declsOf(kitCss, '.bc-plate__deck') ?? {}
+const tanSquare = Number.parseFloat(squareDecls?.['--bc-tan'])
+const tanSlant = Number.parseFloat(decl(tokensCss, '--bc-tan'))
+const stepIn = (tan) => [[0.68, 0.44], [1.84, 0.44], [2.86, 0.44]].flatMap(([cy, ch]) => {
+  const v = { '--bc-h': 3.4, '--bc-cy': cy, '--bc-ch': ch, '--bc-tan': tan, '--bc-pad-l': 0, '--bc-pad-r': 0 }
+  return [calcU(lineDecls['padding-left'], v), calcU(lineDecls['padding-right'], v)]
+})
+check('a square plate (bc-plate--square) sets the slant and its tan to 0 on itself, and nothing else',
+  squareDecls, { '--bc-slant': '0deg', '--bc-tan': '0' })
+check("a square plate's lines step in by 0 (their pads alone), where a slanted plate's step in along the slant",
+  [stepIn(tanSquare), stepIn(tanSlant).every((x) => x !== null && x > 0)], [[0, 0, 0, 0, 0, 0], true])
+check('its lean is 0: --bc-lean is declared on every plate from --bc-tan, and is where the deck stops short (either pivot)',
+  [plateDecls['--bc-lean'], calcU(plateDecls['--bc-lean'], { '--bc-h': 3.4, '--bc-tan': tanSquare }),
+    plateDecls['--bc-deck-r'], declsOf(kitCss, '.bc-plate--head')?.['--bc-deck-l']],
+  ['calc(var(--bc-h) * var(--bc-tan))', 0, 'var(--bc-lean)', 'var(--bc-lean)'])
+check('its deck and its cover stand upright: both skew by --bc-slant, 0deg on a square plate',
+  [deckDecls.transform, declsOf(kitCss, '.bc-plate__cover')?.transform,
+    (deckDecls.transform ?? '').replace('var(--bc-slant)', squareDecls?.['--bc-slant'] ?? '?')],
+  ['skewX(var(--bc-slant))', 'skewX(var(--bc-slant))', 'skewX(0deg)'])
+const plateCode = blankComments(read('Plate.tsx'))
+check("Plate puts the class on for shape=\"square\" alone, so a plate that names no shape is drawn as it was (unless it is set inside a square plate: that one's slant and tan reach it too, see below)",
+  [(plateCode.match(/bc-plate--square/g) ?? []).length, plateCode.includes("p.shape === 'square' ? 'bc-plate--square' : ''")],
+  [1, true])
+// NOTHING ELSE SETS THE SLANT. The checks above read the square rule's own
+// declarations: a later or a more specific rule that declared either value on
+// a plate, a row's override (the preview's way to a square row), an inline
+// value (a style, a setProperty, a cssText), a <style> string, a Tailwind
+// arbitrary property on a class ([--bc-tan:0], which Tailwind turns into a
+// rule), or an @property that turned either's inheritance off (a square
+// plate's lines would then read its initial value) would put a square plate
+// back on the slant (or stand a slanted one up) and pass them all. So the two
+// are declared in two places alone, the kit's root (tokens.css's .bc-kit) and
+// a square plate, and registered in none: in every sheet under src (a
+// keyframe step included), and in the built CSS, which holds whatever
+// Tailwind made of a class in any file it reads (a comment's too: it reads
+// raw text). And no string or template in src's code names either or
+// declares it. A name built at run time is not read. Neither is declared on
+// .bc-plate, which is why a plate set inside a square one is square too
+// (kit.css, its rules at the top).
+/** Where a sheet declares the slant or its tan, `<rule> { <name> }` (the
+ *  innermost rule round it, a keyframe step included), and where it
+ *  registers either, `@property <name>`. */
+const slantIn = (text) => {
+  const css = blank(text)
+  const found = [...css.matchAll(/([^{}]*)\{([^{}]*)\}/g)]
+    .flatMap((m) => [...m[2].matchAll(/(?<![\w-])(--bc-(?:slant|tan))\s*:/g)].map((d) => `${m[1].trim().replace(/\s+/g, ' ')} { ${d[1]} }`))
+  const all = [...css.matchAll(/(?<![\w-])--bc-(?:slant|tan)\s*:/g)].length
+  return [...found, ...(all === found.length ? [] : [`${all - found.length} more, outside any rule read here`]),
+    ...[...css.matchAll(/@property\s+(--bc-(?:slant|tan))(?![\w-])/g)].map((r) => `@property ${r[1]}`)]
+}
+const slantDecls = walk(SRC).filter((f) => f.endsWith('.css'))
+  .flatMap((f) => slantIn(readFileSync(f, 'utf8')).map((s) => `${slash(relative(SRC, f))}: ${s}`)).sort()
+check('the slant and its tan are declared in two places alone, in every sheet under src: the kit root and a square plate (never on .bc-plate, so a plate set inside a square one is square too); and registered (@property) in none',
+  slantDecls, [
+    'ui/broadcast/kit.css: .bc-plate--square { --bc-slant }', 'ui/broadcast/kit.css: .bc-plate--square { --bc-tan }',
+    'ui/broadcast/tokens.css: .bc-kit { --bc-slant }', 'ui/broadcast/tokens.css: .bc-kit { --bc-tan }',
+  ])
+check('...and the same in the built CSS, whatever Tailwind adds to it (a class carrying [--bc-tan:0] in any file it reads, a comment included)',
+  slantIn(builtCss).sort(),
+  ['.bc-kit { --bc-slant }', '.bc-kit { --bc-tan }', '.bc-plate--square { --bc-slant }', '.bc-plate--square { --bc-tan }'])
+// A string or a piece of a template that names either or declares it, read
+// off the syntax tree (a comment that does is not one): an inline value
+// through vars() or style, a setProperty, a cssText, a <style> body, a style
+// attribute in markup, a class carrying [--bc-tan:0]. Every code file
+// Tailwind reads under src (.js, .jsx, .ts, .tsx).
+const KIND = { js: ts.ScriptKind.JS, jsx: ts.ScriptKind.JSX, ts: ts.ScriptKind.TS, tsx: ts.ScriptKind.TSX }
+const slantWrites = walk(SRC).filter((f) => /\.[jt]sx?$/.test(f)).flatMap((f) => {
+  const text = readFileSync(f, 'utf8')
+  if (!/--bc-(?:slant|tan)\b/.test(text)) return []
+  const sf = ts.createSourceFile(f, text, ts.ScriptTarget.Latest, true, KIND[f.split('.').pop()])
+  const out = []
+  const visit = (n) => {
+    const piece = ts.isStringLiteralLike(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)
+    if (piece && (/^--bc-(?:slant|tan)$/.test(n.text.trim()) || /(?<![\w-])--bc-(?:slant|tan)\s*:/.test(n.text))) {
+      out.push(`${slash(relative(SRC, f))}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}: ${JSON.stringify(n.text)}`)
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+  return out
+}).sort()
+check("...and no string or template in src's code names either or declares it (an inline value, a setProperty, a cssText, a <style> body, a class carrying [--bc-tan:0])",
+  slantWrites, [])
 check('the ramp feed names its own timing (--bc-t-ramp, linear)',
   /\.bc-barline--ramp \.bc-fill\s*\{\s*transition:\s*transform var\(--bc-t-ramp\) linear;/.test(kit), true)
 
@@ -274,13 +435,7 @@ console.log('6. a number in a label leaves with its words')
 // (index.ts's order), then every other one under src.
 // ---------------------------------------------------------------------------
 const PAGES = SRC
-const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-  if (e.name === 'node_modules' || e.name.startsWith('.')) return []
-  const p = join(dir, e.name)
-  return e.isDirectory() ? walk(p) : [p]
-})
 const inKit = (p) => !relative(here, p).startsWith('..')
-const slash = (p) => p.replace(/\\/g, '/')
 const KIT_SHEETS = ['tokens.css', 'kit.css', 'motion.css', 'motion/drop.css', 'motion/fade.css', 'motion/slide.css']
 check('every sheet of the kit is in the cascade read here',
   walk(here).filter((p) => p.endsWith('.css')).map((p) => slash(relative(here, p))).filter((f) => !KIT_SHEETS.includes(f)), [])
@@ -538,8 +693,11 @@ for (const src of code) {
 }
 check('every preset a page registers is named (its name read off its code)', [...registered].filter((n) => n.startsWith('?')), [])
 const presets = [...new Set([...BUILT_IN.map((p) => p.name), ...cssPresets, ...registered])].sort()
-check('the presets checked below include the built-ins and the plug-ins (broadcast, quickHide, none, drop, fade, slide)',
-  ['broadcast', 'quickHide', 'none', 'drop', 'fade', 'slide'].filter((n) => !presets.includes(n)), [])
+check('the presets checked below include the built-ins and the plug-ins (broadcast, page, quickHide, none, drop, fade, slide)',
+  ['broadcast', 'page', 'quickHide', 'none', 'drop', 'fade', 'slide'].filter((n) => !presets.includes(n)), [])
+check("the page preset's hidden values are declared once, in the kit's motion.css, for every page that names it (no page sheet of its own)",
+  rules.filter((r) => r.sels.some((s) => s.includes('[data-bc-preset="page"]')) && Object.keys(r.decls).some((k) => k.startsWith('--bc-pre-')))
+    .map((r) => r.sheet), ['kit/motion.css'])
 // A preset that keeps its numbers through its way out says so (--bc-pre-whole-o:
 // 1), and may only be a quick hide: its root's opacity alone, on the quick
 // hide's own timing (one layer fading as one, 150 ms), never a way off air.
@@ -728,7 +886,6 @@ function topBlocks(css) {
 // :after.
 const norm = (s) => s.replace(/["']/g, '').replace(/::(before|after|first-line|first-letter)\b/g, ':$1')
   .replace(/\s*([>+~,{}:;])\s*/g, '$1').replace(/\s+/g, ' ').trim()
-const builtCss = readFileSync(join(scripts, '..', '..', 'resources', '[fivem-royale]', 'br_ui', 'ui', 'assets', 'index.css'), 'utf8')
 const builtNorm = norm(builtCss)
 // Its first appearance: index.css's own, whatever sheet after it repeats the
 // selector.
@@ -874,20 +1031,66 @@ function inKitTree(sel) {
 check('every rule of every kit sheet lands on what the kit draws: an element with a bc- class or a data-bc- attribute (never one a :not() or a :has() holds, in every alternative of an :is() or a :where()), or one inside it',
   KIT_SHEETS.flatMap((f) => ruleSels(read(...f.split('/'))).filter((s) => !inKitTree(s)).map((s) => `${f}: ${s}`)), [])
 
+// WHAT A FILE IMPORTS, READ OFF ITS SYNTAX TREE: every import and every
+// export from a module (each { spec, type }, `type` for one that draws
+// nothing: `import type`, `export type`, or every name in it a type), a bare
+// side-effect import, an import() or a require(), and an import() in a type's
+// place (a type). A string, a comment or JSX text that reads like one is not
+// one: read as text, Plate.tsx's `'--from'` key ended in `from'` and paired
+// with the next quote in the file, an import nobody wrote.
+function importsIn(file, text = readFileSync(file, 'utf8')) {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
+    file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+  const out = []
+  const allTypes = (els) => els.length > 0 && els.every((e) => e.isTypeOnly)
+  const visit = (n) => {
+    if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
+      const c = n.importClause
+      out.push({ spec: n.moduleSpecifier.text, type: !!c && (c.isTypeOnly
+        || (!c.name && !!c.namedBindings && ts.isNamedImports(c.namedBindings) && allTypes(c.namedBindings.elements))) })
+    } else if (ts.isExportDeclaration(n) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)) {
+      out.push({ spec: n.moduleSpecifier.text, type: n.isTypeOnly
+        || (!!n.exportClause && ts.isNamedExports(n.exportClause) && allTypes(n.exportClause.elements)) })
+    } else if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference)
+      && ts.isStringLiteral(n.moduleReference.expression)) {
+      out.push({ spec: n.moduleReference.expression.text, type: n.isTypeOnly })
+    } else if (ts.isCallExpression(n) && (n.expression.kind === ts.SyntaxKind.ImportKeyword
+      || (ts.isIdentifier(n.expression) && n.expression.text === 'require'))
+      && n.arguments.length > 0 && ts.isStringLiteralLike(n.arguments[0])) {
+      out.push({ spec: n.arguments[0].text, type: false })
+    } else if (ts.isImportTypeNode(n) && ts.isLiteralTypeNode(n.argument) && ts.isStringLiteral(n.argument.literal)) {
+      out.push({ spec: n.argument.literal.text, type: true })
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+  return out
+}
+check('imports are read off the syntax tree in every form (import, export from, a bare one, import(), require(), a type\'s), and never out of a string or JSX text',
+  importsIn('probe.tsx', [
+    "import a from 'x1'", "import type { B } from 'x2'", "import { type C } from 'x3'", "import 'x4'",
+    "export { d } from 'x5'", "export type { E } from 'x6'", "export * from 'x7'", "const f = import('x8')",
+    "const g = require('x9')", "type H = typeof import('x10')",
+    "const s = { '--from': n }; const t = 'from'; const v = <i>from 'nowhere' import 'nothing'</i>",
+  ].join('\n')).map((i) => `${i.spec}${i.type ? ' (type)' : ''}`),
+  ['x1', 'x2 (type)', 'x3 (type)', 'x4', 'x5', 'x6 (type)', 'x7', 'x8', 'x9', 'x10 (type)'])
+
 // THE ONE DOOR. Every kit file imports its siblings and React; deps.ts alone
-// reaches the rest of src, and nothing else does.
+// reaches the rest of src, and nothing else does. A type import counts: it is
+// the rest of src all the same.
 const kitCode = walk(here).filter((p) => /\.tsx?$/.test(p))
 const doors = []
 for (const f of kitCode) {
   const name = slash(relative(here, f))
-  const src = blankComments(readFileSync(f, 'utf8'))
-  for (const m of src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)(['"])([^'"]+)\1/g)) {
-    const spec = m[2]
+  for (const { spec } of importsIn(f)) {
     if (!spec.startsWith('.')) { if (spec !== 'react') doors.push(`${name}: ${spec}`); continue }
     const inside = !relative(here, resolve(dirname(f), spec)).startsWith('..')
     if (inside === (name === 'deps.ts')) doors.push(`${name}: ${spec}`)
   }
 }
+check("the kit's imports are read (deps.ts's doors, index.ts's sheets)",
+  [importsIn(join(here, 'deps.ts')).filter((i) => i.spec.startsWith('../')).length >= 5,
+    importsIn(join(here, 'index.ts')).filter((i) => i.spec.endsWith('.css')).map((i) => i.spec.slice(2))], [true, KIT_SHEETS])
 check('deps.ts is the one door to the rest of src: every other kit file imports its siblings and React', doors, [])
 check("nothing the kit draws leaves the tree it is mounted in (no createPortal, no document.body), so a screen root's .bc-kit reaches all of it",
   kitCode.filter((f) => /\bcreatePortal\b|\bdocument\.body\b/.test(blankComments(readFileSync(f, 'utf8')))).map((f) => slash(relative(here, f))), [])
@@ -906,15 +1109,9 @@ const target = (from, spec) => {
   return base === null ? null
     : [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')].find((p) => known.has(p)) ?? null
 }
-const TYPE_ONLY = [
-  /^\s*(?:import|export)\s+type\s+(?:\{[^}]*\}|\*\s+as\s+[\w$]+|[\w$]+)\s+from\s*(['"])[^'"]*\1/gm,
-  /^\s*import\s*\{(?:\s*type\s+[\w$]+(?:\s+as\s+[\w$]+)?\s*,?)+\s*\}\s*from\s*(['"])[^'"]*\1/gm,
-]
 const codeOf = new Map(srcCode.map((f) => [f, blankComments(readFileSync(f, 'utf8'))]))
-const takes = new Map(srcCode.map((f) => {
-  const code = TYPE_ONLY.reduce((s, re) => s.replace(re, ' '), codeOf.get(f))
-  return [f, [...code.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)(['"])([^'"]+)\1/g)].map((m) => target(f, m[2])).filter(Boolean)]
-}))
+// Off the syntax tree (importsIn, above), as the door is.
+const takes = new Map(srcCode.map((f) => [f, importsIn(f).filter((i) => !i.type).map((i) => target(f, i.spec)).filter(Boolean)]))
 const importers = new Map(srcCode.map((f) => [f, srcCode.filter((g) => takes.get(g).includes(f))]))
 /** Is `f` drawn under .bc-kit: it sets the class, or every file that imports
  *  it is? Round an import cycle, the files outside the cycle decide. */

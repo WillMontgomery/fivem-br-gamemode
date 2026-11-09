@@ -6,8 +6,9 @@ import { BUILT_IN, type PresetSpec } from './tokens'
  *   TS   its timings, here (registerPreset): per channel a duration, a start
  *        after the anchor's turn and a curve, plus the stagger.
  *   CSS  its hidden values, as `[data-bc-preset="<name>"] { --bc-pre-*: ... }`
- *        (motion.css for broadcast, quickHide and none; motion/<name>.css for
- *        the rest). A channel the rule does not name stays where it is.
+ *        (motion.css for broadcast, page, quickHide and none;
+ *        motion/<name>.css for the rest). A channel the rule does not name
+ *        stays where it is.
  *
  * A screen picks its preset in ONE place: <PresenceScope preset="...">. Every
  * presence under it takes that name, which also lands on its root as

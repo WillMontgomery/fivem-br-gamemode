@@ -321,8 +321,16 @@ if (existsSync(manifestPath) && existsSync(join(OUT, 'assets'))) {
 // (`0% { opacity: 1; }`), and read at line starts alone this rule passed a
 // `width: 10px;` added to one. IT CAN FAIL: add that to a step of
 // squadV2.css's bsqRing or index.css's stampIn.
+//
+// EVERY SIDE AND EVERY SIZE (#431), each in its logical form too. right,
+// bottom and inset move a box as top and left do, and so do inset-inline,
+// inset-block and their -start and -end; the min- and max- sizes resize it as
+// width and height do, and so do inline-size and block-size with theirs
+// (margin.* and padding.* already take every form). test-broadcast's section
+// 4 holds the kit's keyframes to this same list and fails if the two differ;
+// this reads every sheet under src.
 // ---------------------------------------------------------------------------
-const LAYOUT_PROP = /^(?:width|height|top|left|margin.*|padding.*)$/
+const LAYOUT_PROP = /^(?:(?:min-|max-)?(?:width|height|inline-size|block-size)|top|left|right|bottom|inset(?:-[a-z-]+)?|margin.*|padding.*)$/
 const cssFiles = files.filter((f) => f.endsWith('.css'))
 for (const f of cssFiles) {
   const blocks = keyframeBlocks(stripComments(read(f)))

@@ -47,7 +47,7 @@ export {
 export { PresencePhaseCtx, type PhaseInfo } from './motion/context'
 export { registerPreset, getPreset, presetNames, DEFAULT_PRESET } from './motion/presets'
 export {
-  EASE, T, STEP, LEAVE_STEP, COUNT, HALF, BUILT_IN, CHANNELS,
+  EASE, T, STEP, LEAVE_STEP, PAGE_PRESET, PAGE_STEP, COUNT, HALF, BUILT_IN, CHANNELS,
   type PresetSpec, type Timing, type Timings, type Channel,
 } from './motion/tokens'
 export type { Phase } from './motion/machine'

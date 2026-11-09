@@ -5,7 +5,8 @@ import { ab, rgba, u, vars } from './util'
 
 /**
  * PLATE (#431): the slanted surface with its color edge -- the Broadcast
- * package's one shape, on its one slant (-15deg).
+ * package's one shape, on its one slant (-15deg); a square plate (shape) has
+ * none.
  *
  * THREE JOBS, carried over from index.css's three surfaces, so not every
  * readout becomes a deck and something can still be louder than something
@@ -19,6 +20,8 @@ import { ab, rgba, u, vars } from './util'
  * GEOMETRY IS ARITHMETIC. A plate is skewed about its foot (or its head), so
  * every upright line steps in by tan(15) at its own height: Plate.Line does
  * it. Heights are kit units (--bc-u: a rem on the HUD, an em in an island).
+ * A square plate (shape) sets the slant and its tan to 0 on itself, so the
+ * same arithmetic stands it upright and its lines step in by nothing.
  *
  * CHANNELS (motion.css): the slab is the EDGE, the deck and the cover are the
  * SURFACE, the face and the cover face are the CONTENT. Under a presence the
@@ -38,6 +41,14 @@ const DEFAULT_H: Record<PlateVariant, number> = { deck: 3.4, strap: 1.6, hot: 4.
 
 export interface PlateProps {
   variant?: PlateVariant
+  /** The kit's slant (the default), or square: the plate stands upright, and
+   *  so does everything in it (its lines, chips, sweeps and bars all lean by
+   *  --bc-slant and step in by --bc-tan, both 0 on a square plate), a plate
+   *  set inside it included: that one is square too, whatever shape it names
+   *  (the one value a nested plate takes from its parent, kit.css). The
+   *  hotbar's slots (the owner, 2026-11-03: square, "cohesive with the
+   *  still-square full page"). */
+  shape?: 'slant' | 'square'
   /** The slab's color (a CSS color or token). Default: the mate, the hot
    *  color, else the accent. */
   edge?: string
@@ -126,6 +137,7 @@ export function Plate(p: PlateProps) {
   })
   const cls = [
     'bc-plate', `bc-plate--${variant}`, `bc-plate--${side}`, `bc-plate--${pivot}`,
+    p.shape === 'square' ? 'bc-plate--square' : '',
     band !== undefined && variant === 'deck' ? 'bc-plate--banded' : '',
     state !== 'rest' ? `is-${state}` : '',
     p.className ?? '',

@@ -42,7 +42,7 @@ They bind every build.
 |---|---|
 | `tokens.css` | every token, on the kit's root class `.bc-kit`; `@property --bc-u` |
 | `kit.css` | the primitives, a section each, then their keyframes and `.layer-off` lines |
-| `motion.css` | the presence channels and the built-in presets (broadcast, quickHide, none) |
+| `motion.css` | the presence channels and the built-in presets (broadcast, page, quickHide, none) |
 | `motion/drop.css`, `fade.css`, `slide.css` | the plug-in presets |
 | `motion/tokens.ts` | the motion numbers, once: curves (literals), durations, the stagger, the presets' timings |
 | `motion/machine.ts` | the presence machine: pure, no DOM, no React, node-testable |
@@ -67,7 +67,10 @@ test:broadcast`). It pins every curve and duration the TS and the CSS both hold
 preset has its CSS rule and its timings, drives the presence machine through
 every change of moment, and holds the CSS to its rules (every endless animation
 paused under `.layer-off`, every class `bc-`, keyframes on transform and
-opacity only), and runs the scope's way out as one (a leave the scope drove
+opacity only, by check-ui R7's own list; a square plate upright, and the slant
+and its tan declared nowhere else and registered nowhere, in a sheet under
+`src/` or in the built CSS, and named or declared by no string in `src/`'s
+code), and runs the scope's way out as one (a leave the scope drove
 parks until the last one ends). It also pins the number rule, over every sheet
 a number can meet -- the kit's and every other one under `src/` -- by
 specificity, then order: only motion.css sets a number's own opacity or timing
@@ -210,9 +213,13 @@ at 0 (`useBeat`), so a mount animates nothing, and presence never fires one.
 in `hot`, its slab breathing). `edge` (the slab color; default the mate, the hot
 color, else the accent), `edgeSide`: `lead` | `trail`, `pivot`: `foot` |
 `head` (a right-anchored plate: the same parallelogram, the edge drops from the
-head). `height` (3.4 deck, 1.6 strap, 4.8 hot), `band` (the name band: a
-hairline, the mate wash, a darker rest), `cell`: `lower` | `full`, `cellWidth`,
-`cellSide`, `mate`, `hot`, `cap` (existing words), `capHeight`.
+head). `shape`: `slant` | `square` (the slant and its tan 0 on the plate
+itself: it stands upright with everything in it, a plate set inside it
+included, which is square too whatever shape it names, and its lines step in
+by their pads alone; the hotbar's slots). `height` (3.4 deck, 1.6 strap, 4.8
+hot), `band` (the name band: a hairline, the mate wash, a darker rest),
+`cell`: `lower` | `full`, `cellWidth`, `cellSide`, `mate`, `hot`, `cap`
+(existing words), `capHeight`.
 `state`: `rest` | `active` (teal, a lit slab) | `alarm` (a red wash, the slab
 pulsing) | `dim` | `out` (slab darkened; `fade` sets the settled opacity, .34 by
 default; `outDelay` holds the darkening through a dying sequence).
@@ -234,7 +241,7 @@ share a page with the kit without either reaching the other.
 `Plate.Swap {kind: alarm|out|deck, motion: in|out|none, delay, rider, still,
 drain, onLanded}`: a plate that slams over the band on the diagonal with a white
 rider; key it by the event; keep the outgoing one mounted with `motion="out"`.
-`slantInsets(H, cy, ch)` gives the same insets in JS.
+`slantInsets(H, cy, ch)` gives the same insets in JS, for a slanted plate.
 
 **ScoreCell** `{span: lower|full, side: start|end, width}` -- the near-black
 cell in the deck plane, drawn above the fx so a numeral keeps its backing as it
@@ -416,6 +423,7 @@ together.
 | name | in | out | for |
 |---|---|---|---|
 | `broadcast` | **onAir**: edge 360 ms at 0, surface 420 at +80, content 480 at +160 | **offAir**: content 140 at 0, surface 260 at +60, edge 200 at +120 | everything Broadcast |
+| `page` (`PAGE_PRESET`) | onAir at twice the speed: edge 180 at 0, surface 210 at +40, content 240 at +80; a 20 ms stagger (`PAGE_STEP`, which the page's scope names too) | offAir at twice the speed: content 70 at 0, surface 130 at +30, edge 100 at +60 | the pages over a match: the TAB page, the player list, each naming it by `PAGE_PRESET` (a name nobody registered plays broadcast, at full speed) |
 | `quickHide` | root opacity 150 linear | the same | layer roots only |
 | `drop` | today's hotDrop (620, snap) | a 200 ms fade | placards |
 | `fade` | opacity 200 linear | the same | today's HUD root |

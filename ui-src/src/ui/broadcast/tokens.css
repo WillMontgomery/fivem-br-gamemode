@@ -86,7 +86,7 @@
   --bc-ink-lit: rgba(255, 255, 255, 0.85);       /* that summary on an active line */
 
   /* ═══ 3 SLANT ═══ */
-  --bc-slant: -15deg;                            /* one slant for every shape */
+  --bc-slant: -15deg;                            /* one slant for every shape; a square plate has none (kit.css) */
   --bc-tan: 0.26795;                             /* tan(15deg): CSS tan() needs Chrome 111 */
 
   /* ═══ 4 SURFACES ═══ */

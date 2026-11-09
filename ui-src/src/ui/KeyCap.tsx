@@ -116,7 +116,7 @@ function Arrow({ d }: { d: string }) {
   )
 }
 
-export function KeyCap({ command, label, fs = '1.15rem' }: {
+export function KeyCap({ command, label, fs = '1.15rem', lit = false }: {
   /**
    * The RegisterCommand name, e.g. 'brptt'. Never a key label.
    *
@@ -167,6 +167,20 @@ export function KeyCap({ command, label, fs = '1.15rem' }: {
    * it; the cap must never be the smaller of the two.
    */
   fs?: string
+  /**
+   * LIT: the cap in the accent, for the slot in hand on the Broadcast hotbar
+   * and TAB page (#431). The fill, the edge and the ink are written here, in
+   * the same three inline values the unlit cap writes, so nothing has to
+   * outrank them: the preview reached them with an !important block.
+   *
+   * THE KIT'S TOKENS, so a lit cap belongs under a .bc-kit root, where they
+   * are declared (ui/broadcast/tokens.css). Off by default: absent or false,
+   * every caller gets exactly the cap it drew before the prop existed.
+   *
+   * The transition stays none either way: the edge has to repaint when the
+   * hand moves away, which is the case the note on `transition` below is about.
+   */
+  lit?: boolean
 }) {
   // A STRING OUT OF THE STORE, NOT THE ROW. Returning the matched object would
   // hand zustand a fresh reference on every push and re-render every glyph in
@@ -181,10 +195,14 @@ export function KeyCap({ command, label, fs = '1.15rem' }: {
       className="plate ts font-display text-center"
       style={{
         ['--fs' as string]: fs,
-        ['--edgec' as string]: (label !== undefined || key)
-          ? 'rgba(255,255,255,0.22)'
-          : 'rgba(255,255,255,0.12)',
-        ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+        // Lit, each of the three takes the accent in its own place, so the
+        // keys keep their order and an unlit cap writes exactly what it did.
+        ['--edgec' as string]: lit
+          ? 'var(--bc-accent-hi)'
+          : (label !== undefined || key)
+            ? 'rgba(255,255,255,0.22)'
+            : 'rgba(255,255,255,0.12)',
+        ['--plate-fill' as string]: lit ? 'var(--bc-accent)' : 'rgba(30,34,48,0.94)',
         ['--cut-max' as string]: '0.3rem',
         // ═══ A LITERAL IS NEVER UNBOUND, AND THAT IS WHY IT WAS GREY ═══
         //
@@ -196,7 +214,7 @@ export function KeyCap({ command, label, fs = '1.15rem' }: {
         //
         // A literal is a key that exists and cannot be rebound. It is never the
         // thing the dim colour is describing.
-        color: (label !== undefined || key) ? '#ffffff' : 'rgba(255,255,255,0.3)',
+        color: lit ? 'var(--bc-accent-ink)' : (label !== undefined || key) ? '#ffffff' : 'rgba(255,255,255,0.3)',
         // ═══ THE CAP IS SQUARE, AND IT IS SQUARE IN `em` ═══
         //
         // Owner, 2026-08-22: "the glyphs work, but they draw way too wide and

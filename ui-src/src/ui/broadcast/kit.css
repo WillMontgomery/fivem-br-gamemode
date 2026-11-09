@@ -5,8 +5,8 @@
    - Every value is a token (tokens.css) or a local custom property built from
      one. Lengths are kit units (--bc-u), so a primitive is right on the HUD
      (a rem) and inside a Cloudscape island (an em).
-   - One slant, -15deg, for every shape. Text never leans: it stands upright
-     and steps in along the slant (.bc-line).
+   - One slant, -15deg, for every shape; a square plate has none. Text never
+     leans: it stands upright and steps in along the slant (.bc-line).
    - Motion is transform and opacity only: keyframes for one-shot accents
      (restarted by a fresh element or an A/B class swap), transitions for
      state. Nothing animates a shadow, a size or a position (check-ui R7).
@@ -15,7 +15,9 @@
    - Every endless animation has its .layer-off line at the end (R27).
    - Classes are bc-; states are is-* on the element itself; a plate's
      per-plate values are custom properties declared on EVERY plate, so a
-     plate nested in another inherits nothing of its parent's.
+     plate nested in another inherits nothing of its parent's, but its shape:
+     a square plate's slant and tan reach everything in it, a plate set inside
+     it included, which is square too whatever shape it names.
    - Names shared with the Broadcast squad prototype (.bc-cell .bc-num .bc-col
      .bc-hot .bc-sweep .bc-track .bc-fill .bc-ghost .bc-edge .bc-clock
      .bc-line .bc-flash .bc-burst .bc-gain .bc-crack .bc-shards .bc-zip) mean
@@ -111,6 +113,17 @@
   --bc-rise-y: 0%;
   --bc-deck-l: var(--bc-lean);
   --bc-deck-r: 0px;
+}
+/* SQUARE (Plate shape): no slant, on the plate itself. --bc-lean is declared
+   on every plate, so it resolves to 0 here; the deck and the cover skew by
+   0deg; every line steps in by its pads alone. It reaches everything in the
+   plate (its chips, sweeps and bars lean by --bc-slant too), a plate set
+   inside it included: that one is square too, whatever shape it names (the
+   exception the rules at the top make). Nothing else declares either value
+   (test-broadcast section 4). The hotbar's slots. */
+.bc-plate--square {
+  --bc-slant: 0deg;
+  --bc-tan: 0;
 }
 
 /* STATES */

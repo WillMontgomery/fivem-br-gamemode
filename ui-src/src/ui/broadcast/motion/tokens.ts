@@ -117,9 +117,32 @@ export const HALF = {
   none: only(OFF),
 } satisfies Record<string, Timings>
 
+/** A half at twice the speed: every duration and every start halved, the
+ *  curves kept, so the choreography is the same, only faster. */
+function twice(t: Timings): Timings {
+  const out = { ...t }
+  for (const c of CHANNELS) out[c] = { ...t[c], ms: t[c].ms / 2, at: t[c].at / 2 }
+  return out
+}
+
+/** THE PAGE PRESET'S NAME, for the page's scope to name, as it names
+ *  PAGE_STEP: a name nobody registered falls back to broadcast without a word
+ *  (presets.ts getPreset), so a misspelled literal would play at full speed. */
+export const PAGE_PRESET = 'page'
+
+/** THE PAGE'S STAGGER, in and out: the leave step halved (20 ms). A page's
+ *  scope names it as well: a scope that names no step takes the one above
+ *  it, which would outrank the preset's. */
+export const PAGE_STEP = LEAVE_STEP / 2
+
 /** The presets every screen can name. Others plug in (presets.ts registerPreset). */
 export const BUILT_IN: readonly PresetSpec[] = [
   { name: 'broadcast', enter: HALF.onAir, leave: HALF.offAir, step: STEP, leaveStep: LEAVE_STEP, reverse: true, layer: false },
+  // THE PAGE: broadcast at twice the speed, for the pages over a match, the
+  // TAB page and the player list (the owner, 2026-11-04: "make the inventory
+  // page appear and disappear 2x the speed"; the player list matches it). In
+  // 320 ms, out in 160; its hidden values are broadcast's (motion.css).
+  { name: PAGE_PRESET, enter: twice(HALF.onAir), leave: twice(HALF.offAir), step: PAGE_STEP, leaveStep: PAGE_STEP, reverse: true, layer: false },
   { name: 'quickHide', enter: HALF.quick, leave: HALF.quick, step: 0, leaveStep: 0, reverse: false, layer: true },
   { name: 'drop', enter: HALF.dropIn, leave: HALF.fade, step: STEP, leaveStep: LEAVE_STEP, reverse: true, layer: false },
   { name: 'fade', enter: HALF.fade, leave: HALF.fade, step: 0, leaveStep: 0, reverse: false, layer: false },
