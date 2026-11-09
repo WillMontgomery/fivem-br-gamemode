@@ -217,6 +217,26 @@ if state then
                  .. 'one that was asked for -- and the squad beacon\'s '
                  .. 'positions are its single deliberate privacy exception')
         end
+
+        -- ═══ EACH MEMBER'S KILLS, FOLDED IN ALWAYS (#439) ═══
+        --
+        -- Not a key fact, and checked here because this is the gate that
+        -- reads the squad fold. The Elims plate's "N squad" line is summed on
+        -- the page from these rows, and they carried no kills, so it read
+        -- "0 squad" under your first kill whenever you had a squad. The
+        -- count is folded in for every member, ungated: it is a PUBLIC_FIELDS
+        -- roster value, so nothing about it is private, and behind a switch
+        -- (UI v2's hud piece was the first plan) the old plate would keep the
+        -- bug for everybody with the switch off. tools/test_roster.lua's
+        -- squad.kills drives the real push.
+        if not push:find('%f[%w_]kills%s*=%s*e%.kills%s+or%s+0%s*,') then
+            fail('the squad payload no longer folds each member\'s kills in, '
+                 .. 'whole and ungated (`kills = e.kills or 0`)',
+                 'the Elims plate sums the squad\'s total from these rows. '
+                 .. 'Without the field it reads 0 whatever the squad has done '
+                 .. '(#439), and behind a gate it does for anybody with the '
+                 .. 'gate off')
+        end
     end
 end
 
@@ -638,4 +658,6 @@ io.write('ok   a squadmate\'s revive key travels only to their own squad, folds\
     .. '     rides the same beacon and drains the bleed card\'s own bar along\n'
     .. '     the foot of that card -- in the token red, breathing on the same\n'
     .. '     pulse a downed mate\'s tag wears, on a channel the drain does not\n'
-    .. '     own -- while something is still on the ground\n')
+    .. '     own -- while something is still on the ground. Each member\'s\n'
+    .. '     kills fold in beside it, in every match, for the Elims plate\'s\n'
+    .. '     squad total (#439)\n')

@@ -20047,6 +20047,489 @@ do
             'somebody who was never in the round is shown no verdict at all')
     end
 
+    -- ======================================================================
+    -- EACH MATE'S KILLS RIDE THE SQUAD PAYLOAD (#439).
+    -- ======================================================================
+    --
+    -- The Elims plate's second line is the squad's total, "N squad", summed on
+    -- the page from this payload's rows (ui-src/src/hud/Hud.tsx) and drawn
+    -- while it differs from your own count. pushSquadOrParty built those rows
+    -- without `kills`, so in a squad match the total was 0 whatever the squad
+    -- had done, and under your first kill the plate read "0 squad". The party
+    -- payload has carried them since the total was added; the in-match squad,
+    -- which takes the channel from the party mid-match, never did.
+    --
+    -- WHEN IT GOES IS PINNED HERE TOO. pushSquadOrParty sends the squad (and
+    -- the party, on its own channel) on every pass of the SLOW band and on
+    -- every SQUAD_UPDATE. My own count rides the HUD envelope, which goes the
+    -- moment a delta moves it, so a total left to the next pass reached the
+    -- page up to a second behind my count: "0 squad" under my first kill, the
+    -- bug itself. So a delta batch that moves the kills of anybody in my
+    -- squad pushes the squad at once, before the HUD envelope; nothing else
+    -- does, and the HUD envelope's own compare (BR.PushHud) still holds this
+    -- player's kills and nobody else's.
+    --
+    -- AND THE SERVER TELLS A RESET. A player who walks out has their count
+    -- zeroed for their next match (BR.Match.resetPlayer), and that write went
+    -- to no client, so a new squad summed the count they left with.
+    --
+    -- FAILS BEFORE THE FIX: every row's `kills` is nil, and the total 0.
+    describe('squad.kills')
+
+    --- Every `br:ui:sendLocal` of one kind since `from`, oldest first.
+    local function sentSince(C, kind, from)
+        local out = {}
+        for i = from, #C.said do
+            local e = C.said[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == kind then
+                out[#out + 1] = e.args[2]
+            end
+        end
+        return out
+    end
+
+    --- One member's row on a squad payload, by server id, or nil.
+    local function rowOf(sq, src)
+        for _, m in ipairs(sq and sq.members or {}) do
+            if m.src == src then return m end
+        end
+        return nil
+    end
+
+    --- What the page sums under the Elims numeral: every row's kills.
+    local function total(sq)
+        local n = 0
+        for _, m in ipairs(sq and sq.members or {}) do n = n + (m.kills or 0) end
+        return n
+    end
+
+    --- The kills on a payload's rows, in order, for a detail line.
+    local function killsOf(sq)
+        local out = {}
+        for _, m in ipairs(sq and sq.members or {}) do
+            out[#out + 1] = ('%s=%s'):format(tostring(m.src), tostring(m.kills))
+        end
+        return table.concat(out, ' ')
+    end
+
+    --- What the Elims plate draws from the newest HUD envelope and the newest
+    --- squad envelope this client has sent, by Counters.tsx's rule: my count,
+    --- and under it "N squad" for a squad of more than one whose total differs
+    --- from my count, or nothing.
+    local function plate(C, B)
+        local hud, sq = C.toUi(B.Nui.HUD), C.toUi(B.Nui.SQUAD)
+        local mine = hud and hud.kills
+        local under = '(nothing)'
+        if sq and #sq.members > 1 and total(sq) ~= mine then
+            under = ('"%d squad"'):format(total(sq))
+        end
+        return ('%s, %s under it'):format(tostring(mine), under)
+    end
+
+    --- Where in what this client has said the first `kind` since `from` is.
+    local function firstAt(C, kind, from)
+        for i = from, #C.said do
+            local e = C.said[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == kind then return i end
+        end
+        return nil
+    end
+
+    --- A client alive in a running squad match: me (1) with a kill, Bravo
+    --- (2) with two, Charlie (3) out with three, Delta (4) whose row holds no
+    --- count (as one does that this client missed the add of and took whole
+    --- from an update) and Rival (9) in another squad.
+    local function inSquad()
+        local C = newClient(11)
+        local B = C.env.BR
+        local ALIVE, OUT = B.PlayerState.ALIVE, B.PlayerState.OUT
+        C.snapshotHandler({
+            roster = {
+                [1] = { src = 1, name = 'Me', squadId = 'mabcsq1', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 1 },
+                [2] = { src = 2, name = 'Bravo', squadId = 'mabcsq1', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 2 },
+                [3] = { src = 3, name = 'Charlie', squadId = 'mabcsq1', state = OUT,
+                        hp = 0.0, armour = 0.0, kills = 3 },
+                [4] = { src = 4, name = 'Delta', squadId = 'mabcsq1', state = ALIVE,
+                        hp = 100.0, armour = 0.0 },
+                [9] = { src = 9, name = 'Rival', squadId = 'mabcsq2', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 5 },
+            },
+            match = { state = B.MatchState.PLAYING, mode = B.Mode.SQUAD.key,
+                      endsAt = 0 },
+            alive = 4, squadsAlive = 2, seq = 1, serverNow = 0,
+        })
+        return C, B
+    end
+
+    -- ------------------------------------------------- the rows carry them ---
+    do
+        local C, B = inSquad()
+        B.Loop.step(B.Loop.SLOW)
+        local sq = C.toUi(B.Nui.SQUAD)
+        local me, bravo = rowOf(sq, 1), rowOf(sq, 2)
+        local charlie, delta = rowOf(sq, 3), rowOf(sq, 4)
+        ok(sq ~= nil and #sq.members == 4 and me ~= nil and bravo ~= nil
+           and charlie ~= nil and delta ~= nil and rowOf(sq, 9) == nil,
+            'the squad payload lists my squad, me included, and nobody from another',
+            killsOf(sq))
+        ok(bravo ~= nil and bravo.kills == 2 and charlie ~= nil and charlie.kills == 3,
+            'each mate\'s row carries their kills, a mate who is out included',
+            killsOf(sq))
+        ok(me ~= nil and me.kills == 1,
+            'and my own row carries mine, off the roster row the Elims numeral reads',
+            killsOf(sq))
+        ok(delta ~= nil and delta.kills == 0,
+            'a row the roster holds no count for carries 0, as the party payload does',
+            killsOf(sq))
+        ok(total(sq) == 6,
+            'so the squad\'s total the plate sums from them is 6, where it was 0 (#439)',
+            total(sq))
+    end
+
+    -- ------------------------- my first kill: the count and the total, together ---
+    --
+    -- #439's own test: in a squad match, get one kill. The HUD envelope goes
+    -- the moment the delta lands, so the squad has to go with it; left to the
+    -- next pass, the plate read 1 with "0 squad" under it until then.
+    do
+        local C = newClient(14)
+        local B = C.env.BR
+        local ALIVE = B.PlayerState.ALIVE
+        C.snapshotHandler({
+            roster = {
+                [1] = { src = 1, name = 'Me', squadId = 'mabcsq1', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 0 },
+                [2] = { src = 2, name = 'Bravo', squadId = 'mabcsq1', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 0 },
+                [3] = { src = 3, name = 'Charlie', squadId = 'mabcsq1', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 0 },
+            },
+            match = { state = B.MatchState.PLAYING, mode = B.Mode.SQUAD.key,
+                      endsAt = 0 },
+            alive = 3, squadsAlive = 1, seq = 1, serverNow = 0,
+        })
+        B.Loop.step(B.Loop.SLOW)
+
+        -- MY KILL, as server/combat.lua credits one: a roster update.
+        local from = #C.said + 1
+        C.recv(B.Net.ROSTER_DELTA, { seq = 2, deltas = {
+            { op = 'update', src = 1, e = { kills = 1 } } } })
+        local squads, huds = sentSince(C, B.Nui.SQUAD, from), sentSince(C, B.Nui.HUD, from)
+        local sqAt, hudAt = firstAt(C, B.Nui.SQUAD, from), firstAt(C, B.Nui.HUD, from)
+        ok(#squads == 1 and #huds == 1 and sqAt ~= nil and hudAt ~= nil and sqAt < hudAt,
+            'my first kill sends the squad and the HUD envelope from the one '
+                .. 'handler, the squad first, with no pass in between',
+            ('%d squad at %s, %d HUD at %s'):format(#squads, tostring(sqAt),
+                                                   #huds, tostring(hudAt)))
+        ok(plate(C, B) == '1, (nothing) under it',
+            'so the plate never reads my new count against the old total: 1, '
+                .. 'and nothing under it rather than "0 squad" (#439)',
+            plate(C, B))
+    end
+
+    -- ------------------- a kill in my squad goes at once, and nothing else does ---
+    do
+        local C, B = inSquad()
+        B.Loop.step(B.Loop.SLOW)
+
+        -- A MATE'S KILL.
+        local from = #C.said + 1
+        C.recv(B.Net.ROSTER_DELTA, { seq = 2, deltas = {
+            { op = 'update', src = 2, e = { kills = 3 } } } })
+        local sq = sentSince(C, B.Nui.SQUAD, from)
+        ok(#sq == 1 and #sentSince(C, B.Nui.PARTY, from) == 1
+           and rowOf(sq[1], 2) ~= nil and rowOf(sq[1], 2).kills == 3
+           and total(sq[1]) == 7,
+            'a mate\'s kill sends one squad envelope at once, and one party one, '
+                .. 'carrying it: 7',
+            ('%d envelope(s): %s'):format(#sq, killsOf(sq[#sq])))
+        ok(#sentSince(C, B.Nui.HUD, from) == 0,
+            'and no HUD envelope: its compare holds only my own kills',
+            #sentSince(C, B.Nui.HUD, from))
+
+        -- MY OWN KILL, with mates on some.
+        from = #C.said + 1
+        C.recv(B.Net.ROSTER_DELTA, { seq = 3, deltas = {
+            { op = 'update', src = 1, e = { kills = 2 } } } })
+        sq = sentSince(C, B.Nui.SQUAD, from)
+        local hud = sentSince(C, B.Nui.HUD, from)
+        ok(#sq == 1 and #hud == 1 and hud[1].kills == 2
+           and rowOf(sq[1], 1) ~= nil and rowOf(sq[1], 1).kills == 2
+           and firstAt(C, B.Nui.SQUAD, from) < firstAt(C, B.Nui.HUD, from),
+            'my own kill sends the squad, then the HUD envelope, both at once',
+            ('%d squad, %d HUD: %s'):format(#sq, #hud, killsOf(sq[#sq])))
+        ok(plate(C, B) == '2, "8 squad" under it',
+            'so the plate reads 2 with "8 squad" under it at once, not "7 squad" '
+                .. 'for up to a second', plate(C, B))
+
+        -- NOTHING ELSE GOES AT ONCE. A kill in another squad; a health change
+        -- on a mate; a mate's count sent again as it stands; and a batch
+        -- that moves no count at all.
+        from = #C.said + 1
+        C.recv(B.Net.ROSTER_DELTA, { seq = 4, deltas = {
+            { op = 'update', src = 9, e = { kills = 6 } } } })
+        ok(#sentSince(C, B.Nui.SQUAD, from) == 0 and #sentSince(C, B.Nui.HUD, from) == 0,
+            'a kill in another squad sends nothing at once',
+            ('%d squad, %d HUD'):format(#sentSince(C, B.Nui.SQUAD, from),
+                                        #sentSince(C, B.Nui.HUD, from)))
+        C.recv(B.Net.ROSTER_DELTA, { seq = 5, deltas = {
+            { op = 'update', src = 2, e = { hp = 50.0 } },
+            { op = 'update', src = 3, e = { kills = 3 } },
+            { op = 'update', src = 4, e = { state = B.PlayerState.DBNO } } } })
+        ok(#sentSince(C, B.Nui.SQUAD, from) == 0 and #sentSince(C, B.Nui.PARTY, from) == 0,
+            'nor does a mate\'s health, state or count sent again as it stands: '
+                .. 'only a count that moves',
+            ('%d squad, %d party'):format(#sentSince(C, B.Nui.SQUAD, from),
+                                          #sentSince(C, B.Nui.PARTY, from)))
+
+        -- THE CADENCE: a squad envelope and a party one each pass, as before,
+        -- and a kill in my squad adds one of each.
+        from = #C.said + 1
+        for _ = 1, 4 do B.Loop.step(B.Loop.SLOW) end
+        local squads = sentSince(C, B.Nui.SQUAD, from)
+        local parties = sentSince(C, B.Nui.PARTY, from)
+        ok(#squads == 4 and #parties == 4,
+            'four passes send four squad envelopes and four party ones, as they did',
+            ('%d squad, %d party'):format(#squads, #parties))
+        from = #C.said + 1
+        for _ = 1, 3 do B.Loop.step(B.Loop.SLOW) end
+        C.recv(B.Net.ROSTER_DELTA, { seq = 6, deltas = {
+            { op = 'update', src = 3, e = { kills = 4 } } } })
+        B.Loop.step(B.Loop.SLOW)
+        squads = sentSince(C, B.Nui.SQUAD, from)
+        parties = sentSince(C, B.Nui.PARTY, from)
+        ok(#squads == 5 and #parties == 5,
+            'and a mate\'s kill between them adds exactly one of each',
+            ('%d squad, %d party'):format(#squads, #parties))
+        ok(#squads == 5 and total(squads[3]) == 8 and total(squads[4]) == 9
+           and total(squads[5]) == 9,
+            'the passes before it carry the old total, its push and the pass after it the new',
+            ('%s, %s, %s'):format(tostring(squads[3] and total(squads[3])),
+                                  tostring(squads[4] and total(squads[4])),
+                                  tostring(squads[5] and total(squads[5]))))
+    end
+
+    -- -------------------------------------------------- a mate who leaves ---
+    --
+    -- THE TOTAL IS THE SQUAD STILL ON THE ROSTER, as the party payload's rows
+    -- are. A mate who disconnects is dropped from it, and one who walks out
+    -- has their squad cleared (and, since this fix, their count zeroed) in
+    -- the one batch, so their kills leave the total on the next pass. Whether
+    -- a mate who left should still count is the owner's to say; this pins
+    -- what the plate does now, so changing it is a decision.
+    do
+        local C, B = inSquad()
+        B.Loop.step(B.Loop.SLOW)
+        C.recv(B.Net.ROSTER_DELTA, { seq = 2, deltas = { { op = 'remove', src = 3 } } })
+        B.Loop.step(B.Loop.SLOW)
+        local afterQuit = total(C.toUi(B.Nui.SQUAD))
+        local from = #C.said + 1
+        C.recv(B.Net.ROSTER_DELTA, { seq = 3, deltas = {
+            { op = 'update', src = 2, e = { kills = 0 } },
+            { op = 'update', src = 2, clear = { 'squadId', 'colour' } } } })
+        local atOnce = #sentSince(C, B.Nui.SQUAD, from)
+        B.Loop.step(B.Loop.SLOW)
+        local sq = C.toUi(B.Nui.SQUAD)
+        ok(afterQuit == 3,
+            'a mate who disconnects drops out of the rows on the next pass, '
+                .. 'their kills with them: 6 becomes 3', afterQuit)
+        ok(atOnce == 0 and rowOf(sq, 2) == nil and total(sq) == 1,
+            'and one who walks out sends nothing at once, being out of my squad '
+                .. 'by the end of the batch, and drops out on the pass: 1',
+            ('%d at once, then %s'):format(atOnce, killsOf(sq)))
+    end
+
+    -- ----------------------------------------------------- the party path ---
+    --
+    -- With no squad the channel carries the PARTY as the server built it
+    -- (BR.Party.public), whose rows already count every member's kills.
+    -- Nothing is folded into them here: they go out as they came.
+    do
+        local C = newClient(12)
+        local B = C.env.BR
+        local LOBBY = B.PlayerState.LOBBY
+        C.snapshotHandler({
+            roster = { [1] = { src = 1, name = 'Me', state = LOBBY,
+                               hp = 100.0, armour = 0.0, kills = 0 } },
+            match  = { state = B.MatchState.WAITING, mode = B.Mode.SQUAD.key,
+                       endsAt = 0 },
+            alive = 0, squadsAlive = 0, seq = 1, serverNow = 0,
+        })
+        local party = {
+            id = 'p7', leader = 1, pending = {},
+            members = {
+                { src = 1, name = 'Me', state = LOBBY, hp = 100, armour = 0,
+                  leader = true, colour = '#60A5FA', kills = 4 },
+                { src = 2, name = 'Bravo', state = LOBBY, hp = 100, armour = 0,
+                  leader = false, colour = '#4ADE80', kills = 7 },
+            },
+        }
+        local from = #C.said + 1
+        C.recv(B.Net.SQUAD_UPDATE, party)
+        B.Loop.step(B.Loop.SLOW)
+        local sq = sentSince(C, B.Nui.SQUAD, from)
+        ok(#sq == 2 and sq[1].id == 'p7' and sq[2].id == 'p7'
+           and rawequal(sq[1].members, party.members)
+           and rawequal(sq[2].members, party.members),
+            'with no squad, the update and the pass after it send the party\'s own '
+                .. 'rows, untouched',
+            ('%d envelope(s), id %s'):format(#sq, tostring(sq[1] and sq[1].id)))
+        ok(#sq == 2 and total(sq[2]) == 11,
+            'whose kills the server already counts', killsOf(sq[#sq]))
+
+        from = #C.said + 1
+        C.recv(B.Net.SQUAD_UPDATE, nil)
+        sq = sentSince(C, B.Nui.SQUAD, from)
+        ok(#sq == 1 and sq[1].id == nil and #sq[1].members == 0,
+            'and with no party either, an empty list: no squad to total',
+            ('%d envelope(s), %s row(s)'):format(#sq, tostring(sq[1] and #sq[1].members)))
+    end
+
+    -- ------------------------------------------------------ the solo path ---
+    --
+    -- In solos every player is a squad of one (server/party.lua deals each
+    -- solo their own), so the payload is my row alone, my count on it. The
+    -- page draws no squad line for a squad of one.
+    do
+        local C = newClient(13)
+        local B = C.env.BR
+        local ALIVE = B.PlayerState.ALIVE
+        C.snapshotHandler({
+            roster = {
+                [1] = { src = 1, name = 'Me', squadId = 'mabcsq1', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 2 },
+                [2] = { src = 2, name = 'Rival', squadId = 'mabcsq2', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 5 },
+                [3] = { src = 3, name = 'Other', squadId = 'mabcsq3', state = ALIVE,
+                        hp = 100.0, armour = 0.0, kills = 1 },
+            },
+            match = { state = B.MatchState.PLAYING, mode = B.Mode.SOLO.key,
+                      endsAt = 0 },
+            alive = 3, squadsAlive = 3, seq = 1, serverNow = 0,
+        })
+        B.Loop.step(B.Loop.SLOW)
+        local sq = C.toUi(B.Nui.SQUAD)
+        ok(sq ~= nil and #sq.members == 1 and rowOf(sq, 1) ~= nil
+           and rowOf(sq, 1).kills == 2,
+            'in solos the payload is my row alone, my own count on it',
+            killsOf(sq))
+    end
+
+    -- ------------------------- a player who walks out starts their next match on 0 ---
+    --
+    -- THE SERVER ZEROES A LEAVER'S COUNT FOR THEIR NEXT MATCH, AND NOW SAYS SO.
+    -- BR.Match.resetPlayer wrote the 0 and sent nothing, so every client kept
+    -- the count they had been told until a snapshot -- and the only snapshots
+    -- are a match being destroyed and a client asking. Somebody who walked out
+    -- of a match that was still running and was autofilled into a new squad
+    -- brought it with them: their new mates' plates read "3 squad" under 0
+    -- before anybody had fired a shot.
+    --
+    -- END TO END: the real server, its own deltas routed into a real
+    -- client/state.lua for player 1, who is in neither match until the second.
+    do
+        local devWas, fillWas = BR.Server.devMode, BR.Config.Match.autofill
+        reset()
+        BR.Server.devMode = true
+        BR.Config.Match.autofill = true
+        join(1, 'Me'); join(2, 'Leaver'); join(3, 'P3'); join(4, 'P4')
+        join(5, 'P5'); join(6, 'P6')
+        for _, s in ipairs({ 2, 3, 4, 6 }) do
+            fire(BR.Net.QUEUE_JOIN, s, { mode = BR.Mode.SOLO.key })
+        end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        fakeTime = mendsAt() + 1
+        BR.Sched.step(fakeTime)
+        local mA = theMatch()
+        BR.Broadcast.flushNow()
+
+        local C = newClient(15)
+        local B = C.env.BR
+        local seen = 1
+        --- Everything the server has sent player 1 since the last call.
+        local function route()
+            for i = seen, #sent do
+                local s = sent[i]
+                if s.event == BR.Net.SNAPSHOT and s.target == 1 then
+                    C.snapshotHandler(s.args[1])
+                elseif s.event == BR.Net.ROSTER_DELTA
+                       and (s.target == -1 or s.target == 1) then
+                    C.recv(B.Net.ROSTER_DELTA, s.args[1])
+                end
+            end
+            seen = #sent + 1
+        end
+        --- The kills every ROSTER_DELTA since `from` carries for `src`.
+        local function killsSent(from, src)
+            local out = {}
+            for i = from, #sent do
+                local s = sent[i]
+                if s.event == BR.Net.ROSTER_DELTA then
+                    for _, d in ipairs(s.args[1].deltas or {}) do
+                        if d.src == src and d.e and d.e.kills ~= nil then
+                            out[#out + 1] = d.e.kills
+                        end
+                    end
+                end
+            end
+            return out
+        end
+        BR.Broadcast.snapshot(1)
+        route()
+
+        -- Three kills in the first match, as every client is told them.
+        BR.Roster.update(2, { kills = 3 })
+        BR.Broadcast.flushNow()
+        route()
+        local told = B.State.roster[2] and B.State.roster[2].kills
+
+        -- The leaver, and a player who walks out with none.
+        local from = #sent + 1
+        BR.Match.leaveMatch(2)
+        BR.Match.leaveMatch(3)
+        BR.Broadcast.flushNow()
+        local leaverSent, stayerSent = killsSent(from, 2), killsSent(from, 3)
+        route()
+        ok(told == 3 and BR.Roster.get(2).kills == 0
+           and #leaverSent == 1 and leaverSent[1] == 0
+           and BR.Server.matches[mA.id] ~= nil,
+            'a player who walks out with kills is told to every client as 0, '
+                .. 'while the match they left runs on',
+            ('mirror told %s, server %s, sent %s, match on %s'):format(
+                tostring(told), tostring(BR.Roster.get(2).kills),
+                table.concat(leaverSent, ','),
+                tostring(BR.Server.matches[mA.id] ~= nil)))
+        ok(#stayerSent == 0,
+            'and one who walks out with none sends no count: it goes when it moves',
+            table.concat(stayerSent, ','))
+
+        -- Their next match: the leaver, me and P5, autofilled into one squad.
+        local seqB, idB = BR.Match.mintIds()
+        local mB = { id = idB, seq = seqB, mode = BR.Mode.SQUAD.key,
+                     state = BR.MatchState.WARMUP, endsAt = 0,
+                     bucket = BR.Config.Match.matchBucketBase + seqB }
+        BR.Server.matches[idB] = mB
+        for _, s in ipairs({ 1, 2, 5 }) do
+            BR.Roster.setMatch(s, idB)
+            BR.Roster.setState(s, BR.PlayerState.WARMUP)
+        end
+        BR.Party.formSquads(mB)
+        BR.Broadcast.flushNow()
+        route()
+        B.Loop.step(B.Loop.SLOW)
+        local sq = C.toUi(B.Nui.SQUAD)
+        ok(B.State.me.squadId ~= nil and rowOf(sq, 2) ~= nil
+           and rowOf(sq, 2).kills == 0 and total(sq) == 0,
+            'so their new mate, the match they left still running, sums 0 for '
+                .. 'them, not the 3 they left with',
+            ('squad %s: %s'):format(tostring(B.State.me.squadId), killsOf(sq)))
+
+        BR.Server.devMode, BR.Config.Match.autofill = devWas, fillWas
+    end
+
     describe('resync.client')
 end
 

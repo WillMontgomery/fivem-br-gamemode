@@ -1155,6 +1155,14 @@ end
 --- @param src integer
 --- @param e table
 function BR.Match.resetPlayer(src, e)
+    -- THE KILLS ARE TOLD, NOT ONLY WRITTEN (#439). `kills` is a public field:
+    -- every client holds every player's count, and the squad payload sums it
+    -- into the Elims plate's "N squad" line. Zeroed by the line below alone, it
+    -- reached no client, so somebody who walked out kept their old count on
+    -- every mirror until a snapshot, and carried it into a new squad's total
+    -- while the match they left still ran. BR.Roster.update sends it only when
+    -- it moves; the line below still zeroes `e`, whatever table it is.
+    BR.Roster.update(src, { kills = 0 })
     e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
     -- And when the kills were reached (a Contract's tie-break, #396).
     e.killsAt = nil

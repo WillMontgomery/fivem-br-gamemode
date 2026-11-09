@@ -789,6 +789,8 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
         'net.roster.delta', 'change-driven batches, flushed at <=4 Hz', #deltas)
     local relationshipDirty = false
     local vitalRows = 0
+    -- Whose kills this batch moved, by server id. The squad push below reads it.
+    local killsMoved = nil
     for _, d in ipairs(deltas) do
         if trace and d.e and (d.e.hp ~= nil or d.e.armour ~= nil) then
             vitalRows = vitalRows + 1
@@ -808,6 +810,7 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
                 if k == 'squadId' then relationshipDirty = true break end
             end
             local entry = S.roster[d.src]
+            local killsWas = entry and entry.kills
             if entry then
                 for k, v in pairs(d.e or {}) do entry[k] = v end
                 -- Cleared fields arrive as a name list, because a nil value
@@ -818,6 +821,11 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
                 -- An update for someone we do not know about means we missed
                 -- their add. Take what we were given rather than dropping them.
                 S.roster[d.src] = d.e
+            end
+            local now = S.roster[d.src]
+            if now and now.kills ~= killsWas then
+                killsMoved = killsMoved or {}
+                killsMoved[d.src] = true
             end
         end
 
@@ -899,6 +907,31 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
             vitalRows)
     end
     if relationshipDirty then relationshipsChanged() end
+
+    -- ═══ A KILL IN MY SQUAD GOES TO THE PAGE NOW, WITH MY COUNT (#439) ═══
+    --
+    -- The Elims plate draws my count off the HUD envelope, which BR.PushHud
+    -- below sends at once, and the squad's total under it off the squad
+    -- payload's rows. Those went only on the next SLOW pass, up to a second
+    -- later, and for that second the plate read "0 squad" under my first
+    -- kill: the bug itself, at the moment anybody looks. So a batch that moves
+    -- the kills of anybody in my squad, mine included, pushes the squad here.
+    --
+    -- THE SQUAD FIRST. They are two messages to the page. Were a frame drawn
+    -- between them, a total ahead of my count reads as a mate's kill; my count
+    -- ahead of the total is never true.
+    --
+    -- ONLY MY SQUAD, AND ONLY A COUNT THAT MOVED. A kill anywhere else, and
+    -- every health, state and squad change, waits for the pass as before.
+    if killsMoved and S.me.squadId then
+        for src in pairs(killsMoved) do
+            local e = S.roster[src]
+            if e and e.squadId == S.me.squadId then
+                pushSquadOrParty()
+                break
+            end
+        end
+    end
     BR.PushHud()
     BR.Loop.hitchEnd(trace)
 end)
@@ -2706,6 +2739,20 @@ function pushSquadOrParty()
             members[#members + 1] = {
                 src = src, name = e.name, state = e.state,
                 hp = e.hp or 0, armour = e.armour or 0,
+                -- EACH MATE'S KILLS, MINE INCLUDED (#439). The Elims plate's
+                -- second line is the squad's total, and the page sums it from
+                -- these rows (ui-src/src/hud/Hud.tsx). The party payload has
+                -- carried them since the total was added (BR.Party.public in
+                -- server/party.lua); this table never did, so in a squad match
+                -- the sum was 0 whatever the squad had done, and the plate read
+                -- "0 squad" under your first kill.
+                --
+                -- OFF THE ROSTER, NOT THE BEACON: `kills` is in roster.lua's
+                -- PUBLIC_FIELDS, so this client is already told every player's
+                -- count, and folding it in here tells the page nothing new.
+                -- 0 when the row has none, as the party payload sends it and as
+                -- BR.PushHud reads your own.
+                kills = e.kills or 0,
                 -- Absent unless they are down. The panel renders nothing at all
                 -- for a missing value rather than seeding a local countdown
                 -- that would drift from the server and keep ticking through a
