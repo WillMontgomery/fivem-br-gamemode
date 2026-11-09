@@ -1,0 +1,244 @@
+/* UI V2'S BROADCAST SQUAD PANEL (#429): the squad panel as a TV graphics
+   package, BUILT FROM THE BROADCAST KIT (#431, src/ui/broadcast).
+   SquadPanelV2.tsx's header has the event-by-event motion map and the on-air
+   / off-air contract. The owner's preview's squad.css
+   (previews/squad/broadcast), its rules unchanged.
+
+   THE KIT DRAWS THE PANEL: the plates (the slant, the color edge, the name
+   band, the score cell, the flashes, the shake, the covers), the bars, the
+   numerals, DOWN, OUT, the light, and every color, length, curve and
+   duration they draw with (tokens.css, kit.css, motion.css). This file is
+   only what the kit has no piece for, under the panel's own prefix (bsq-), so
+   neither can reach the other:
+
+     the stack and its slots        the leave, the FLIP, the row's presence box
+     the on-air light               a kit LightSweep, timed by the presence
+     the live landing               a row whose numbers change while it goes
+                                    on air lands at once
+     the name group                 the voice mark's squash, the level's pop
+     the walkthrough's bars anchor
+     the cover's line               the bleed clock, OUT and the key mark
+     the key mark, the pickup fill
+
+   Lengths are kit units (--bc-u: a rem on the HUD); keyframes move transform
+   and opacity only; the panel's own durations are named once, on the panel.
+   The global classes reused here -- .bar-fill and .mate-pulse -- are
+   index.css's.
+
+   WHERE IT LANDS. SquadPanelV2.tsx imports this file after the kit, so it
+   cascades after the kit's sheets, as in the preview, and after index.css's
+   rules (main.tsx imports that above App). Not appended to index.css, as the
+   preview's notes said: there it would come BEFORE the kit's sheets. Once the
+   panel is in the bundle its rules ship with every UI v2 piece off too (a
+   piece decides what mounts, not what is imported), so every rule here lands
+   on the panel alone: scripts/test-broadcast.mjs holds every selector under
+   the panel's own prefix and every keyframe to a name of its own (bsq and a
+   capital). */
+
+.bsq-panel {
+  /* THE PANEL'S OWN MOTIONS, named once (the kit has no token for them). The
+     leave's duration is the kit's T.rowLeave, set inline from SquadPanelV2.tsx. */
+  --bsq-t-cut: 340ms;          /* the voice mark switching on, like a TV picture */
+  --bsq-t-level: 420ms;        /* a level arriving or changing */
+  --bsq-t-clock-in: 360ms;     /* the bleed clock sliding in ... */
+  --bsq-t-clock-at: 150ms;     /* ... as the alarm plate lands */
+  --bsq-t-key-drop: 460ms;
+  --bsq-t-key-slam: 520ms;
+  --bsq-t-ring-at: 210ms;      /* the ring bursts as the slammed key lands */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-gap);
+  font-family: var(--bc-font-word);
+}
+
+/* ONE SLOT PER MATE, three boxes, so no two motions share a transform: the
+   slot is the stack's layout box (the FLIP moves it), .bsq-air the row's kit
+   presence (the kit moves it: on air, off air; nothing here sets its
+   transform, opacity or transition but the live landing below, which lands it
+   as the kit would), .bsq-move the panel's own leave. */
+.bsq-slot { position: relative; height: var(--bc-row-h); flex-shrink: 0; }
+.bsq-air,
+.bsq-move { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+
+/* ON AIR: a light crosses each plate as its face slides in. The kit's
+   LightSweep, started at the presence's own content delay (the row's turn in
+   the reveal plus onAir's content offset), so it rides the reveal wherever
+   the row's turn falls and has no timing of its own. */
+.bsq-onair {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.bsq-onair > .bc-sweep { animation-delay: var(--bc-content-delay, 0ms); }
+
+/* A NUMBER IS NEVER HIDDEN AT THE MOMENT IT CHANGES. A row whose health,
+   shield or level changes while it is still going on air lands at once: the
+   presence root and every kit channel in it to its shown value, now (UI v2's
+   HUD's data-hud-live, hud/v2/Anchor.tsx, for the rows the squad anchor hands
+   to the panel).
+   The root is Broadcast's still channel today; it is landed too so the rule
+   holds for any preset that moves it. */
+.bsq-air[data-bsq-live],
+.bsq-air[data-bsq-live] .bc-ch-edge,
+.bsq-air[data-bsq-live] .bc-ch-surface,
+.bsq-air[data-bsq-live] .bc-ch-content {
+  opacity: 1 !important;
+  transform: none !important;
+  transition: none !important;
+}
+.bsq-air[data-bsq-live] .bc-whole {
+  opacity: 1 !important;
+  transition: none !important;
+}
+/* ...and no tick is left waiting to reveal. The kit Numeral's tick-in holds
+   each place a tick low under its white copy (fill-mode both) until the
+   content lands; a place whose digit did not change keeps that pending
+   reveal when the row lands early. Dropped here, and held for the rest of
+   that entrance (data-bsq-landed), so it never restarts when the phase moves
+   on; the next entrance brings fresh places and clears the mark. */
+.bsq-air[data-bsq-landed] .bc-col.is-reveal,
+.bsq-air[data-bsq-landed] .bc-hot.is-reveal {
+  animation: none !important;
+}
+
+/* THE NAME. Its group is baseline-aligned so the NAME sets the baseline, and
+   the marks opt out with align-self: center (VoiceMark's note). */
+.bsq-who {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--bc-u) * 0.25);
+  min-width: 0;
+}
+.bsq-voice { display: block; flex-shrink: 0; align-self: center; }
+.bsq-name {
+  font-size: var(--bc-fs-name);
+  font-weight: var(--bc-w-emph);
+  color: var(--bc-ink);
+  text-shadow: var(--bc-shadow-text);
+}
+/* The level: a kit Numeral, so it ticks in with every other number when the
+   row goes on air. One that arrives or changes pops in like a score: it is a
+   number, so it never fades out of sight at the moment it changes. */
+.bsq-level { display: block; flex-shrink: 0; transform-origin: 50% 100%; }
+.bsq-level.is-new { animation: bsqLevel var(--bsq-t-level) var(--bc-ease-snap) both; }
+/* Voice off: the mark switches on like a TV picture (a squash). */
+.bsq-voice.is-cutA { animation: bsqCutA var(--bsq-t-cut) var(--bc-ease-out); }
+.bsq-voice.is-cutB { animation: bsqCutB var(--bsq-t-cut) var(--bc-ease-out); }
+
+/* The walkthrough's "squad-bars" card: a box over the vitals band (the bars'
+   own lines are each placed from the plate's top, so none of them is it). */
+.bsq-bars {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--bc-band);
+  bottom: 0;
+  pointer-events: none;
+}
+
+/* THE COVER'S LINE: the bleed clock, OUT and the key, upright over the cover
+   plates. A kit Plate.Line over the vitals band, stepped in a little further
+   than a text line (the big figures sit clear of the slant), through the
+   kit's own insets. */
+.bsq-big {
+  --bc-pad-l: calc(var(--bc-slab-w) + var(--bc-u) * 0.32);
+  --bc-pad-r: calc(var(--bc-u) * 0.2);
+}
+.bsq-clockwrap { display: block; }
+.bsq-clockwrap.is-new {
+  animation: bsqSlideIn var(--bsq-t-clock-in) var(--bc-ease-out) var(--bsq-t-clock-at) both;
+}
+
+/* The owner's red line along the foot of the card (KeyDrain), in a kit
+   Plate.Foot: .bar-fill owns the transform (the clock writes it), .mate-pulse
+   fades the red. */
+.bsq-pickup-fill { width: 100%; height: 100%; background: var(--bc-danger); }
+
+/* The key mark: today's glyph and size; dim while the key is not ours, the
+   accent once it is held. It drops in when a key appears and SLAMS down with
+   weight when it is retrieved, a ring bursting behind it (the kit's mark
+   flash). */
+.bsq-key {
+  position: relative;
+  display: block;
+  flex-shrink: 0;
+  width: calc(var(--bc-u) * 1.685);
+  height: calc(var(--bc-u) * 0.95);
+  color: var(--bc-ink-dim);
+}
+.bsq-key.is-held { color: var(--bc-accent); }
+.bsq-key-svg { position: relative; display: block; width: 100%; height: 100%; }
+.bsq-key.is-drop .bsq-key-svg { animation: bsqKeyDrop var(--bsq-t-key-drop) both; }
+.bsq-key.is-slam .bsq-key-svg { animation: bsqKeySlam var(--bsq-t-key-slam) both; }
+.bsq-key-ring {
+  position: absolute;
+  left: calc(var(--bc-u) * -0.3);
+  right: calc(var(--bc-u) * -0.3);
+  top: calc(var(--bc-u) * -0.16);
+  bottom: calc(var(--bc-u) * -0.16);
+  background: var(--bc-accent);
+  opacity: 0;
+  transform: skewX(var(--bc-slant));
+  animation: bsqRing var(--bc-t-mark-flash) ease-out var(--bsq-t-ring-at) both;
+}
+
+/* A MATE LEAVES: the row slides out on the diagonal (the kit's exit curve);
+   the rows under it then slide up (the FLIP, SquadPanelV2.tsx). Its numbers go
+   as it starts (the slot's data-bc-exit, the kit's motion.css), as a number
+   standing alone goes on any way out. */
+.bsq-slot.is-leaving > .bsq-air > .bsq-move {
+  animation: bsqLeave var(--bsq-t-leave) var(--bc-ease-exit) both;
+}
+
+/* ---------------------------------------------------------------------------
+   KEYFRAMES: the panel's own. Transform and opacity only. (Every other
+   keyframe the panel plays is the kit's.)
+--------------------------------------------------------------------------- */
+@keyframes bsqLevel {
+  0%   { transform: translateY(calc(var(--bc-u) * 0.3)) scale(1.3); }
+  55%  { transform: translateY(calc(var(--bc-u) * -0.04)) scale(0.94); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes bsqCutA {
+  0%   { opacity: 0.2; transform: scale(1.8, 0.1); }
+  55%  { opacity: 1; transform: scale(0.9, 1.1); }
+  100% { opacity: 1; transform: scale(1, 1); }
+}
+@keyframes bsqCutB {
+  0%   { opacity: 0.2; transform: scale(1.8, 0.1); }
+  55%  { opacity: 1; transform: scale(0.9, 1.1); }
+  100% { opacity: 1; transform: scale(1, 1); }
+}
+@keyframes bsqSlideIn {
+  from { opacity: 0; transform: translateX(calc(var(--bc-slide) * -1)); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes bsqKeyDrop {
+  0%   { opacity: 0; transform: translateY(calc(var(--bc-u) * -0.7)); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.4); }
+  55%  { opacity: 1; transform: translateY(calc(var(--bc-u) * 0.04)); animation-timing-function: ease-out; }
+  75%  { transform: translateY(calc(var(--bc-u) * -0.1)); animation-timing-function: ease-in; }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes bsqKeySlam {
+  0%   { opacity: 0; transform: translateY(calc(var(--bc-u) * -0.9)) scale(1.8) rotate(-16deg); animation-timing-function: cubic-bezier(0.55, 0, 0.9, 0.45); }
+  40%  { opacity: 1; transform: translateY(calc(var(--bc-u) * 0.05)) scale(1.08, 0.84) rotate(0deg); animation-timing-function: ease-out; }
+  62%  { transform: translateY(calc(var(--bc-u) * -0.07)) scale(0.96, 1.05) rotate(0deg); animation-timing-function: ease-in-out; }
+  100% { opacity: 1; transform: translateY(0) scale(1) rotate(0deg); }
+}
+@keyframes bsqRing {
+  0%   { opacity: 0.9; transform: skewX(var(--bc-slant)) scale(0.5); }
+  100% { opacity: 0; transform: skewX(var(--bc-slant)) scale(1.9); }
+}
+@keyframes bsqLeave {
+  0%   { opacity: 1; transform: translateX(0) skewX(0deg); }
+  20%  { opacity: 1; transform: translateX(calc(var(--bc-u) * 0.35)) skewX(0deg); }
+  100% { opacity: 0; transform: translateX(calc(var(--bc-u) * -4)) skewX(var(--bc-slant)); }
+}
+
+/* NO ENDLESS ANIMATION OF THIS FILE'S OWN (check-ui R27, #252). The on-air
+   meter is the kit's (its .layer-off line is in kit.css); the slab, the alarm
+   and the red line pulse on .mate-pulse, which index.css already pauses. */

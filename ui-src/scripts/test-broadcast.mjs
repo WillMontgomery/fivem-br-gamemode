@@ -51,6 +51,14 @@
  * 9. CEF 103 IN UI V2'S CODE: the preview gate's code bans, over the .ts and
  *    .tsx of the kit, of src/hud/v2 and of every other file that takes a value
  *    from the kit (inline styles, WAAPI keyframes, selectors).
+ * 10. UI V2'S SQUAD PANEL (src/hud/SquadPanelV2.tsx, #429). Its sheet lands on
+ *    the panel alone and names its own keyframes, and it cascades after the
+ *    kit; its root carries bc-kit; it takes today's panel's props and draws
+ *    today's two walkthrough targets; the three steps that ended on the
+ *    animation clock alone (the leave's drop, the death's settle, the FLIP)
+ *    each have a JS clock net (#252); and the owner's order for a death
+ *    (decision 3) is drawn: the key mark and its red line only once their
+ *    beat's wait is over.
  *
  * node runs the .ts files as-is (type stripping): they have no runtime imports.
  */
@@ -1489,6 +1497,177 @@ for (const b of CEF_BANS) {
   check(`no ${b.what}`, cefFound.flatMap(({ name, bans }) => bans.filter((x) => x.what === b.what).map((x) => `${name}:${x.line}`)), [])
 }
 for (const { name, notes } of cefFound) for (const n of notes) console.log(`  warn  ${name}:${n.line}  ${n.what}`)
+
+console.log("10. UI v2's squad panel (src/hud/SquadPanelV2.tsx, #429)")
+// ---------------------------------------------------------------------------
+// THE BROADCAST SQUAD PANEL, the owner's preview ported beside today's panel.
+// ITS SHEET LANDS ON THE PANEL ALONE. squadV2.css comes after index.css's
+// rules and the kit's once the panel is imported, and then ships with every
+// UI v2 piece off too (a piece decides what mounts, not what is imported),
+// so it must match nothing but the panel: every rule starts on one of the
+// panel's own elements (a bsq- class, read outside every :not(), :has(),
+// :is() and :where()) and goes no further than inside it, never to a
+// sibling. Every keyframe it defines is its own (one that took another
+// sheet's name, the kit's or index.css's, would replace that animation for
+// every screen that plays it).
+// ---------------------------------------------------------------------------
+const SQ = join(SRC, 'hud', 'SquadPanelV2.tsx')
+const sqTsx = codeOf.get(SQ) ?? ''
+const sqSf = jsxOf(SQ)
+const sqCss = readFileSync(join(SRC, 'hud', 'squadV2.css'), 'utf8')
+const sqSels = ruleSels(sqCss)
+const PSEUDO_LIST = /:(?:not|has|is|where|matches)\((?:[^()]|\([^()]*\))*\)/g
+const onPanel = (s) => {
+  const c = chain(s)
+  return /\.bsq-[\w-]/.test((c[0] ?? '').replace(PSEUDO_LIST, '')) && c.every((x, i) => i % 2 === 0 || x === ' ' || x === '>')
+}
+check("squadV2.css: every rule starts on one of the panel's own elements (bsq-) and lands on it or inside it, never on a sibling",
+  [sqSels.length > 20, sqSels.filter((s) => !onPanel(s))], [true, []])
+const sqFrames = [...blank(sqCss).matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1])
+const notSqFrames = new Set(pageSheets.filter((s) => s.name !== 'hud/squadV2.css')
+  .flatMap((s) => [...blank(s.css).matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1])))
+check("squadV2.css: every keyframe it defines is its own (bsq and a capital), never another sheet's or the kit's",
+  [sqFrames.length, sqFrames.filter((n) => !/^bsq[A-Z]\w*$/.test(n) || notSqFrames.has(n) || kitFrames.has(n))], [8, []])
+const sqUsed = new Set()
+for (const m of blank(sqCss).matchAll(/(?:^|[\s;{])animation(?:-name)?\s*:\s*([^;}]+)/g)) {
+  for (const w of m[1].replace(/[\w-]+\((?:[^()]|\([^()]*\))*\)/g, ' ').trim().split(/\s+/)) {
+    if (/^[A-Za-z_][\w-]*$/.test(w) && !KEYWORDS.has(w)) sqUsed.add(w)
+  }
+}
+check('squadV2.css: every animation it names is one of its own, and each of its own is played',
+  [...sqUsed].sort(), [...sqFrames].sort())
+// ...AND IT CASCADES AFTER THE KIT, as in the preview: the panel imports the
+// kit first and its sheet last. (Appended to index.css, as the preview's
+// notes had it, it would come before the kit's sheets.)
+const sqImports = sqSf.statements.filter((s) => ts.isImportDeclaration(s)).map((s) => s.moduleSpecifier.text)
+check('SquadPanelV2.tsx imports the kit, and its own sheet last, after it',
+  [sqImports.includes('../ui/broadcast'), sqImports[sqImports.length - 1], sqImports.indexOf('../ui/broadcast') < sqImports.indexOf('./squadV2.css')],
+  [true, './squadV2.css', true])
+
+// ITS ROOT CARRIES THE KIT. Section 7 reads per file; here the root itself:
+// the panel draws its scope (no element) round Board, and Board's div is the
+// one root, with bc-kit (where the kit's tokens are declared) and bsq-panel
+// (its sheet's) on it.
+const sqTop = returnedRoot(SQ, 'SquadPanelV2')
+const sqTopKids = sqTop ? elementKids(sqTop) : []
+const sqRoot = returnedRoot(SQ, 'Board')
+check("SquadPanelV2 draws its PresenceScope round Board, and Board's root is a div with bc-kit and bsq-panel on it",
+  [sqTop && tagOf(sqTop), sqTopKids.map((k) => (k.el ? tagOf(k.el) : null)), sqRoot && tagOf(sqRoot),
+    sqRoot ? ['bc-kit', 'bsq-panel'].filter((c) => !classOf(sqRoot).split(/\s+/).includes(c)) : null],
+  ['PresenceScope', ['Board'], 'div', []])
+
+// IT TAKES TODAY'S PROPS AND DRAWS TODAY'S TWO WALKTHROUGH TARGETS. The HUD
+// hands it what it hands today's panel, and the walkthrough's squad cards
+// (squad-name, squad-bars) find their targets in either panel; a card whose
+// target is missing ends the run.
+let todayProps = null
+let v2Props = null
+let v2Takes = null
+eachNode(jsxOf(join(SRC, 'hud', 'SquadPanel.tsx')), (n) => {
+  const p = ts.isFunctionDeclaration(n) && n.name?.text === 'SquadPanel' ? n.parameters[0]?.type : null
+  if (p && ts.isTypeLiteralNode(p)) todayProps = p.members.map((m) => m.name.getText())
+})
+eachNode(sqSf, (n) => {
+  if (ts.isInterfaceDeclaration(n) && n.name.text === 'SquadPanelProps') v2Props = n.members.map((m) => m.name.getText())
+  if (ts.isFunctionDeclaration(n) && n.name?.text === 'SquadPanelV2') v2Takes = n.parameters[0]?.type?.getText() ?? null
+})
+check("its props, SquadPanelProps, are today's panel's (hud/SquadPanel.tsx), and it takes them",
+  [Array.isArray(todayProps) && todayProps.length > 0, v2Props, v2Takes], [true, todayProps, 'SquadPanelProps'])
+const sqTargets = targetsOf(SQ)
+check("it draws the walkthrough's squad targets that today's panel draws (the slot round it draws hud-squad)",
+  [sqTargets.length >= 2, sqTargets], [true, targetsOf(join(SRC, 'hud', 'SquadPanel.tsx'))])
+
+// THE NETS UNDER THE ANIMATION CLOCK (#252). Three steps end on an event of
+// the browser's animation clock: a mate who left is dropped on the leave's
+// animationend, a death settles (its fade starts) on the OUT plate's, and the
+// rows under a gap slide up on a Web Animation. A clock that stalls fires
+// none of them, so each has a net on the JS clock, the kit's way: after() is
+// a fade clock (ui/fade.ts) over the step's own window plus
+// FADE_SETTLE_MARGIN_MS, on the presence clock, looked at by a timer and by
+// every envelope, so a timer that never fired is not the end of it.
+const afterFn = fnBody(sqTsx, 'after')
+check("the nets' clock is ui/fade.ts's own: createFadeClock and FADE_SETTLE_MARGIN_MS, imported from it",
+  /^import \{ createFadeClock, FADE_SETTLE_MARGIN_MS \} from '\.\.\/ui\/fade'$/m.test(sqTsx), true)
+check('after(): a fade clock over its window on the clock it is given, looked at by a timer and by every envelope',
+  [/\bconst fc = createFadeClock\(false, ms, now\)\s+fc\.want\(true\)/.test(afterFn),
+    /\bif \(fc\.poll\(\)\) \{ finish\(\); return \}/.test(afterFn),
+    /\btimer = window\.setTimeout\(look, Math\.max\(1, fc\.remaining\(\)\)\)/.test(afterFn),
+    /\boff = onEnvelope\(\(\) => \{ if \(!done && fc\.poll\(\)\) finish\(\) \}\)/.test(afterFn)],
+  [true, true, true, true])
+const slotFn = fnBody(sqTsx, 'Slot')
+const boardFn = fnBody(sqTsx, 'Board')
+const rowAt = sqTsx.indexOf('const Row = memo(function Row(')
+const rowFn = rowAt < 0 ? '' : sqTsx.slice(rowAt, sqTsx.indexOf('\n}, (a, b) =>', rowAt))
+check("the leave: dropped on its animationend, or by the JS clock once T.rowLeave (the panel's --bsq-t-leave) and the margin have passed",
+  [/\bconst now = p\.info\.now\b/.test(slotFn),
+    /if \(!out \|\| !mounted\) return undefined\s+return after\(T\.rowLeave \+ FADE_SETTLE_MARGIN_MS, now, \(\) => onDrop\(src\)\)/.test(slotFn),
+    /e\.animationName === 'bsqLeave'\) onDrop\(src\)/.test(slotFn), /'--bsq-t-leave': `\$\{T\.rowLeave\}ms`/.test(boardFn)],
+  [true, true, true, true])
+check('the death: settled on the OUT plate landing, or by the JS clock once OUT_PLATE_AT, its slide (OUT_PLATE_MS) and the margin have passed',
+  [/if \(!dying\) return undefined\s+return after\(OUT_PLATE_AT \+ OUT_PLATE_MS \+ FADE_SETTLE_MARGIN_MS, now, \(\) => setSettled\(deathN\)\)/.test(rowFn),
+    /onLanded=\{\(\) => setSettled\(deathN\)\}/.test(rowFn)],
+  [true, true])
+check('the FLIP: every Web Animation still unfinished is canceled once the newest has had T.flip and the margin on the JS clock',
+  [/flips\.current\.push\(child\.animate\(/.test(boardFn),
+    /return after\(T\.flip \+ FADE_SETTLE_MARGIN_MS, now, \(\) => \{\s+for \(const a of flips\.current\) if \(a\.playState !== 'finished'\) a\.cancel\(\)/.test(boardFn)],
+  [true, true])
+
+// THE OWNER'S ORDER FOR A DEATH (decision 3). The game mints a revive key on
+// the death's own edge, so the key and its red line usually come in the same
+// push as the death; mateEvents.ts's step() gives their beats a `delay`,
+// OUT's beat (OUT_WORD_AT) when they come with it, and test-mate-events pins
+// that half. The panel's half, read here: the key mark is keyed by the key's
+// beat and drawn only once that beat's wait is over, the red line the same
+// by its own beat, the line's zip with the key, the wait is the beat's delay
+// on the row's presence clock, and OUT itself drops at OUT_WORD_AT. Keyed by
+// the beat object rather than its `n`, every line would share one key and a
+// new one would never slide in.
+const flatAnd = (e) => {
+  const x = unparen(e)
+  return ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ? [...flatAnd(x.left), ...flatAnd(x.right)] : [x.getText(sqSf)]
+}
+/** Each `tag` element the panel draws: its key, and the conditions of the
+ *  `a && b && (<El />)` it is drawn under. */
+function drawnUnder(tag) {
+  const out = []
+  eachNode(sqSf, (n) => {
+    if (!isEl(n) || tagOf(n) !== tag) return
+    const k = attrOf(n, 'key')?.initializer
+    let up = n.parent
+    while (up && ts.isParenthesizedExpression(up)) up = up.parent
+    const and = up && ts.isBinaryExpression(up) && up.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    out.push({
+      key: k && ts.isJsxExpression(k) && k.expression ? k.expression.getText(sqSf) : null,
+      conds: and ? flatAnd(up.left) : [],
+    })
+  })
+  return out
+}
+check("the key mark: one, keyed by the key's beat (km and b.keyAnim.n), drawn only once that beat's wait is over (keyDue)",
+  drawnUnder('KeyMark').map((d) => [d.key, d.conds.includes('keyDue')]), [['`km${b.keyAnim.n}`', true]])
+check("the red line: one, keyed by its own beat (pl and b.lineIn.n), drawn only once that beat's wait is over (lineDue)",
+  drawnUnder('PickupLine').map((d) => [d.key, d.conds.includes('lineDue')]), [['`pl${b.lineIn.n}`', true]])
+check('the zip that takes the line away plays with the key, so it waits with it (keyDue)',
+  drawnUnder('Plate.Zip').map((d) => d.conds.includes('keyDue')), [true])
+const waits = new Map()
+eachNode(sqSf, (n) => {
+  if (ts.isVariableDeclaration(n) && n.initializer && ts.isCallExpression(n.initializer)
+    && n.initializer.expression.getText(sqSf) === 'useWaited') waits.set(n.name.getText(sqSf), n.initializer.arguments.map((a) => a.getText(sqSf)))
+})
+check("keyDue waits on the key's beat and lineDue on the line's, both on the row's presence clock",
+  [waits.get('keyDue') ?? null, waits.get('lineDue') ?? null, /\bconst Row = memo\(function Row\(\{[^}]*\bnow\b[^}]*\}: RowProps\)/.test(sqTsx),
+    /<Row\b[^>]*\bnow=\{now\}/.test(slotFn)],
+  [['b.keyAnim', 'now'], ['b.lineIn', 'now'], true, true])
+const waitedFn = fnBody(sqTsx, 'useWaited')
+check('useWaited: a beat with no delay, or whose n has waited, is drawn; any other is drawn once its delay has passed on the clock',
+  [/\bconst \[played, setPlayed\] = useState\(n\)/.test(waitedFn), /\bconst due = delay <= 0 \|\| played === n\b/.test(waitedFn),
+    /if \(due\) return undefined\s+return after\(delay, now, \(\) => setPlayed\(n\)\)/.test(waitedFn), /\}, \[due, n, delay, now\]\)/.test(waitedFn)],
+  [true, true, true, true])
+check("OUT drops at OUT_WORD_AT, the wait step() gives the key, and the panel keeps no copy of the dying sequence's times",
+  [/<Stamp word="OUT"[^>]*\bdelay=\{OUT_WORD_AT\}/.test(rowFn), /\bdelay=\{OUT_PLATE_AT\}/.test(rowFn),
+    /\bconst OUT_(?:PLATE_AT|PLATE_MS|WORD_AT)\b/.test(sqTsx)],
+  [true, true, false])
 
 console.log(`\n${ran - failed}/${ran} passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

@@ -23,7 +23,9 @@
  * node's type stripping erases (the shape of test-fade.mjs).
  *
  * WHAT THIS CANNOT REACH: what the panel draws from these beats, and what the
- * game puts in a reading.
+ * game puts in a reading. The panel's half of the owner's order (the key mark
+ * and the line drawn only once their beat's wait is over) is read in
+ * hud/SquadPanelV2.tsx by scripts/test-broadcast.mjs, section 10.
  *
  * Run: npm run test:mateevents   (and as part of npm run build)
  */
@@ -31,7 +33,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { diffMate, OUT_PLATE_AT, OUT_WORD_AT, phaseOf, step, ZERO } from '../src/hud/mateEvents.ts'
+import { diffMate, OUT_PLATE_AT, OUT_PLATE_MS, OUT_WORD_AT, phaseOf, step, ZERO } from '../src/hud/mateEvents.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -257,6 +259,25 @@ console.log('the dying sequence: the drain, the OUT plate, OUT')
   const drain = Number(/--bc-t-drain:\s*(\d+)ms/.exec(tokens)?.[1])
   check("the OUT plate comes in as the bars finish draining (the kit's --bc-t-drain, 700 ms)", [OUT_PLATE_AT, drain], [700, 700])
   check('OUT drops in at 860 ms, after its plate comes in', [OUT_WORD_AT, OUT_PLATE_AT < OUT_WORD_AT], [860, true])
+  // The panel's net for the death's settle waits for the plate to land: its
+  // own slide, after OUT_PLATE_AT. A copy that drifted short of the kit's
+  // would settle a healthy row early, and its fade would start under the
+  // plate still sliding in.
+  const kitCss = readFileSync(join(here, '..', 'src', 'ui', 'broadcast', 'kit.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+  const plateIn = Number(/--bc-t-plate-in-slow:\s*(\d+)ms/.exec(tokens)?.[1])
+  check("the OUT plate slides in on the kit's --bc-t-plate-in-slow (340 ms), and OUT_PLATE_MS is that",
+    [OUT_PLATE_MS, plateIn, /\.bc-swap--out\s*\{[^}]*--bc-swap-in:\s*var\(--bc-t-plate-in-slow\)/.test(kitCss)], [340, 340, true])
+  // ...and the kit plays the plate on exactly those: .bc-swap.is-in runs
+  // bcPlateIn over var(--bc-swap-in), then the ease, after
+  // var(--bc-swap-delay), which Plate.Swap's delay sets (the panel passes
+  // OUT_PLATE_AT). Timed any other way, the plate could land after the net,
+  // and nothing above would fail.
+  const plateTsx = readFileSync(join(here, '..', 'src', 'ui', 'broadcast', 'Plate.tsx'), 'utf8')
+  check("the kit plays the plate on them: .bc-swap.is-in runs bcPlateIn over var(--bc-swap-in) after var(--bc-swap-delay), which Plate.Swap's delay sets",
+    [/\.bc-swap\.is-in\s*\{\s*animation:\s*bcPlateIn\s+var\(--bc-swap-in\)\s+var\(--bc-ease-snap\)\s+var\(--bc-swap-delay\)\s+both;\s*\}/.test(kitCss),
+      /\bstyle=\{delay \? vars\(\{ '--bc-swap-delay': `\$\{delay\}ms` \}\) : undefined\}/.test(plateTsx)],
+    [true, true])
 }
 
 // ── the revive key ──────────────────────────────────────────────────────────

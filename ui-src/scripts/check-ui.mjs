@@ -314,14 +314,21 @@ if (existsSync(manifestPath) && existsSync(join(OUT, 'assets'))) {
 //
 // A keyframe that animates a layout property costs real frames exactly when
 // damage is landing. NoticeRow animates height deliberately and says so.
+//
+// EVERY DECLARATION, WHEREVER IT SITS (#429). A property is read after the
+// `{`, `;` or space in front of it, not only at the start of a line: nearly
+// every keyframe under src writes each step on one line
+// (`0% { opacity: 1; }`), and read at line starts alone this rule passed a
+// `width: 10px;` added to one. IT CAN FAIL: add that to a step of
+// squadV2.css's bsqRing or index.css's stampIn.
 // ---------------------------------------------------------------------------
+const LAYOUT_PROP = /^(?:width|height|top|left|margin.*|padding.*)$/
 const cssFiles = files.filter((f) => f.endsWith('.css'))
 for (const f of cssFiles) {
-  const body = read(f)
-  const blocks = keyframeBlocks(body)
+  const blocks = keyframeBlocks(stripComments(read(f)))
   for (const b of blocks) {
-    const bad = ['width:', 'height:', 'top:', 'left:', 'margin', 'padding']
-      .filter((p) => new RegExp(`\\n\\s*${p}`).test(b))
+    const props = [...b.matchAll(/[{;\s]([a-z-]+)\s*:/g)].map((m) => m[1])
+    const bad = [...new Set(props.filter((p) => LAYOUT_PROP.test(p)))]
     if (bad.length) {
       const name = (b.match(/@keyframes\s+([\w-]+)/) ?? [])[1]
       fail('R7 motion', rel(f),

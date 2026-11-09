@@ -145,6 +145,10 @@ export type Silence = 'chosen' | 'fault' | null
  *  and OUT by these two, not by copies of them (the preview keeps its own). */
 export const OUT_PLATE_AT = 700
 export const OUT_WORD_AT = 860
+/** The OUT plate's own slide in (the kit's --bc-t-plate-in-slow): it has
+ *  landed OUT_PLATE_AT + OUT_PLATE_MS after the push, which is when the row
+ *  settles and starts to fade. The panel's net for that settle reads it. */
+export const OUT_PLATE_MS = 340
 
 /** A big hit, a quarter of the bar or more, also sends a light across the
  *  plate. */
