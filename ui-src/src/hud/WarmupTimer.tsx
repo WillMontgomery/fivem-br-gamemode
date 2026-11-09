@@ -24,10 +24,11 @@ import { useCountdownText } from './useCountdownText'
  * ═══ IT DRAWS WHAT IT IS GIVEN, AND ITS CALLER DECIDES WHEN (#431) ═══
  *
  * `endsAt` is the match's deadline and `offset` the server clock's, both
- * passed in, and whether the card is up at all is decided where it is mounted:
- * Hud.tsx, with the walkthrough's rule beside it. This used to read the store
- * and return null on its own condition, which is right for today's HUD and
- * wrong for a layer that holds an element's last frame through its way out.
+ * passed in, and whether the card is up at all is decided for both HUDs in
+ * useHudConditions.ts, with the walkthrough's rule beside it. This used to
+ * read the store and return null on its own condition, which is right for
+ * today's HUD and wrong for a layer that holds an element's last frame through
+ * its way out.
  * UI v2's HUD does (#431), and a card that re-reads the store as it leaves
  * renders empty and pops. The markup is the same, element for element.
  */

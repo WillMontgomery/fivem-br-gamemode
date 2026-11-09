@@ -167,6 +167,103 @@ if vitals then
     end
 end
 
+-- ══════════════════════ UI v2's slanted vitals keep both rules (#431) ═════
+--
+-- With the hud piece on, UI v2's HUD draws the Broadcast kit's slanted vitals
+-- in place of the pill: two straps on the kit's Bar (ui/broadcast/Vitals.tsx,
+-- Bar.tsx), the owner's pick of 2026-11-03. The two rules above are his and
+-- hold there too: each strap says what it is, in today's two words, with the
+-- caption on the text slider, and a zero is not drawn -- the empty bar says it.
+-- The same text gate on the kit's files, and on the v2 HUD drawing them.
+
+local kitVitals = readUi('ui/broadcast/Vitals.tsx')
+local kitBar = readUi('ui/broadcast/Bar.tsx')
+local hudV2 = readUi('hud/v2/HudV2.tsx')
+
+if kitVitals then
+    for _, word in ipairs({ 'Health', 'Shield' }) do
+        if not kitVitals:find('label="' .. word .. '"', 1, true) then
+            fail(('the slanted %s strap carries no caption'):format(word:lower()),
+                 'the words are the pill\'s own, and the owner asked for them '
+                 .. 'inside the bars (#210)')
+        end
+    end
+    if not kitVitals:find('micro%-label ts') then
+        fail('the slanted vitals\' caption is not `micro-label ts`',
+             'micro-label declares its own size, so the caption needs `.ts` '
+             .. 'and an explicit --fs to follow the text slider (#159)')
+    end
+    if kitVitals:find('micro%-label tscale') or kitVitals:find('tscale micro%-label') then
+        fail('the slanted vitals\' caption pairs micro-label with bare tscale (#159)',
+             '`.ts` with an explicit --fs is the pairing that survives it')
+    end
+    -- AND THE STRAPS DO NOT OPT IN to drawing a zero, on the <Bar> calls
+    -- themselves: `zeroNum` is a declared prop of Bar's, and a strap that
+    -- passed it would print the 0 the rule hides.
+    local bars = 0
+    for call in kitVitals:gmatch('<Bar[^>]->') do
+        bars = bars + 1
+        if call:find('zeroNum') then
+            fail('a slanted strap opts in to drawing its zero',
+                 'a dead player\'s 0 and an empty shield\'s 0 are states the '
+                 .. 'empty bar already says; the numeral is debris: ' .. call)
+        end
+        if not call:find('%f[%w]num%f[^%w]') then
+            fail('a slanted strap draws no numeral',
+                 'the number after each bar is the reading: ' .. call)
+        end
+    end
+    if bars == 0 then
+        fail('cannot find the slanted straps\' <Bar> call to check it',
+             'reshape this gate with the component rather than deleting it')
+    end
+end
+
+if kitBar then
+    -- THE KIT'S ZERO RULE, read off its showNum as the pill's is: asked of
+    -- zeroNum directly, never of a caption, and off unless a caller asks.
+    local showNum = kitBar:match('const showNum%s*=([^\n]*)')
+    if not showNum then
+        fail('cannot find the showNum rule in the kit\'s Bar.tsx',
+             'reshape this gate with the component rather than deleting it')
+    else
+        if showNum:find('label') then
+            fail('the kit\'s numeral-at-zero rule keys off the presence of a caption',
+                 'the slanted straps carry captions, so that prints a 0 in an '
+                 .. 'empty shield: ' .. showNum)
+        end
+        if not showNum:find('zeroNum') then
+            fail('the kit\'s numeral-at-zero rule does not ask about zeroNum',
+                 'the rule is real and split; it has to be asked directly: '
+                 .. showNum)
+        end
+    end
+    if not kitBar:find('zeroNum = false', 1, true) then
+        fail('the kit\'s Bar draws a zero unless told not to',
+             '`zeroNum = false` is the default the vitals rely on: health and '
+             .. 'shield draw nothing at 0, and only the fuel asks')
+    end
+end
+
+if hudV2 then
+    -- THESE ARE THE STRAPS UI V2'S HUD DRAWS, fed today's two numbers, and
+    -- not the pill.
+    if not hudV2:find('import%s*{[^}]-%f[%w]Vitals%f[^%w][^}]-}%s*from%s*\'%.%./%.%./ui/broadcast\'') then
+        fail('UI v2\'s HUD does not take its vitals from the kit',
+             'with the hud piece on, the strip is the slanted vitals the owner '
+             .. 'picked (#431)')
+    end
+    if hudV2:find("import Vitals from '../Vitals'", 1, true) then
+        fail('UI v2\'s HUD still draws today\'s pill',
+             'the pill is today\'s HUD\'s alone; hud/Vitals.tsx is not edited '
+             .. 'for UI v2')
+    end
+    if not hudV2:find('<Vitals hp={hud.hp} armor={hud.armour} />', 1, true) then
+        fail('UI v2\'s HUD does not feed the slanted vitals today\'s hp and shield',
+             'the kit\'s prop is `armor`; the envelope\'s field stays as it is')
+    end
+end
+
 -- ═══════════════════════════════ the vehicle strip keeps its zero ═════════
 
 if vehicle then
@@ -246,6 +343,12 @@ do
             fail('the built bundle has no captioned shield bar',
                  'the bundle is stale. Run: cd ui-src && npm run build')
         end
+        -- UI v2's slanted strip is in it once the v2 HUD draws it: the kit's
+        -- class name is a literal, and nothing else in the bundle names it.
+        if not js:find('bc-vitalstrip', 1, true) then
+            fail('the built bundle has no slanted vitals strip',
+                 'the bundle is stale. Run: cd ui-src && npm run build')
+        end
     end
 end
 
@@ -256,4 +359,4 @@ end
 
 io.write('ok   health and shield name themselves inside the pill, the caption '
     .. 'scales\n     with the text slider, and a zero shield still draws no '
-    .. 'numeral\n')
+    .. 'numeral;\n     UI v2\'s slanted straps keep both rules\n')

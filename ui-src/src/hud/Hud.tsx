@@ -20,6 +20,7 @@ import VoiceNotice from './VoiceNotice'
 import { YubikeyIcon } from './YubikeyIcon'
 import { useFade } from '../ui/useFade'
 import { useVitalsPlacement } from './useVitalsPlacement'
+import { useHudConditions } from './useHudConditions'
 
 /**
  * WHERE THE SQUAD PANEL ENDS, for anything that has to sit below it.
@@ -155,40 +156,17 @@ export default function Hud({ visible }: { visible: boolean }) {
   // the reason stated two blocks up about `voice`: a fresh object every render
   // re-renders the whole HUD.
   const currency = useUi((s) => s.market.currency ?? 'Volts')
-  // ═══ THREE ELEMENTS DRAW WHAT THEY ARE GIVEN, AND THIS DECIDES WHEN (#431) ═══
+  // ═══ THREE ELEMENTS DRAW WHAT THEY ARE GIVEN, AND THE HUD DECIDES WHEN (#431) ═══
   //
   // The warmup card, the talking line and the spectate hint each used to read
   // the store and return null on their own condition. The conditions are now
-  // decided here, from the same store fields, and passed down with what each
-  // one shows, so a false one still draws nothing at all and the DOM is
-  // today's, element for element. The reason is UI v2's HUD (#431): it holds
-  // an element's last frame through its way out, and an element that re-reads
-  // the store as it leaves renders empty and pops.
-  //
-  // WHAT IT COSTS THIS COMPONENT'S RENDERS: next to nothing. `clockOffset` is
-  // written only by setMatch, in the same set as the `match` read above, and
-  // `talkingNames` only beside `talking`, which this reads for the squad
-  // panel, so neither adds a render. The walkthrough's step moves once a card
-  // and `spectate` at a session's few edges; those renders used to be the
-  // three components' own.
-  const clockOffset = useUi((s) => s.clockOffset)
-  const talkingNames = useUi((s) => s.talkingNames)
-  const spectate = useUi((s) => s.spectate)
-  // THE WARMUP CARD IS HIDDEN FOR THE WHOLE WALKTHROUGH, REVEALED BY ITS OWN
-  // CARD.
-  //
-  // Owner, 2026-09-07: "don't display the timer card until they get to the last
-  // step (which tells them about the card)." The server is holding this match's
-  // warmup for as long as a learner is in it (BR.Match.tutorialHold), so during
-  // the walkthrough this would draw a countdown to a departure a day away --
-  // which is worse than no countdown, because it is a lie with a number on it.
-  //
-  // BOTH ENDS MOVE ON THE SAME EDGE. Reaching `game-timer` tells Lua to release
-  // the hold, so the moment this appears it is counting a real warmup down.
-  const tutorialRun = useUi((s) => s.tutorialGameRun)
-  const tutorialStep = useUi((s) => s.tutorialGameStep)
-  const warmupShowing = match.state === 'warmup'
-    && (!tutorialRun || tutorialStep === 'game-timer')
+  // decided once for both HUDs (useHudConditions, where the walkthrough's rule
+  // and its reasons live), from the same store fields, and passed down with
+  // what each one shows, so a false one still draws nothing at all and the DOM
+  // is today's, element for element. The reason is UI v2's HUD (#431): it
+  // holds an element's last frame through its way out, and an element that
+  // re-reads the store as it leaves renders empty and pops.
+  const cond = useHudConditions()
 
   // Applies the game's resolution and safe zone to CSS variables, and hands
   // back the live metrics so the placement effect can key on the one field it
@@ -268,7 +246,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             until the drop; the storm owns it for the rest of the match. They
             never overlap, so they share the slot rather than competing. */}
         <div className="absolute left-1/2 -translate-x-1/2" style={{ top: 'var(--safe-y)' }}>
-          {warmupShowing && <WarmupTimer endsAt={match.endsAt} offset={clockOffset} />}
+          {cond.warmup && <WarmupTimer endsAt={match.endsAt} offset={cond.clockOffset} />}
           <StormBar storm={storm} />
         </div>
 
@@ -497,7 +475,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             Nothing to say when nobody is speaking, and the empty case is the
             common one -- so nothing at all is drawn rather than an empty plate
             that would occupy the bottom of the screen for the whole match. */}
-        {talkingNames.length > 0 && <TalkingBar names={talkingNames} />}
+        {cond.talking && <TalkingBar names={cond.talkingNames} />}
 
         {/* ═══ AND, ABOVE IT, THE TWO SURFACES THAT SHARE THAT EDGE ═══
 
@@ -536,10 +514,10 @@ export default function Hud({ visible }: { visible: boolean }) {
               when no session is running. Not an empty plate: the bottom of the
               screen is shared with the talking line and the inventory bar, and
               reserving space for a hint that does not apply is chrome for its
-              own sake. A ternary, not `&&`, so the test is the hint's old
-              `!spectate?.active` exactly: a falsy `active` that is not false
-              (a 0) would be drawn as text. */}
-          {spectate?.active ? <SpectateHint name={spectate.name ?? ''} /> : null}
+              own sake. The test is the hint's old `!spectate?.active` exactly
+              (useHudConditions): a falsy `active` that is not false (a 0) is
+              never drawn as text. */}
+          {cond.spectating ? <SpectateHint name={cond.spectateName} /> : null}
         </div>
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}

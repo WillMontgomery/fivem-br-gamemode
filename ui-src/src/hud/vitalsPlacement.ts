@@ -78,6 +78,18 @@ export function vitalsLift(fit: VitalsFit): string {
  *
  * where rem = clamp(11px, 1.481vh * uiScale, 28px) (index.css).
  *
+ * UI V2'S STRIP IS 3.3rem (#431): the kit's slanted vitals, two 1.5rem straps
+ * and the 0.3rem gap between plates (ui/broadcast/Vitals.tsx, VITALS_H), and
+ * hud/v2/HudV2.tsx hangs it by all of it: --vitals-drop is 3.3rem on that
+ * strip alone, so index.css's 0.85rem stays today's. Both lengths are rem
+ * multiples still, and a strap's height is fixed whatever the text size, so
+ * the set below is the same set. The same kernel decides, so at the usual safe
+ * zones the v2 strip sits above the radar with the chat moved up (at 1080p and
+ * a 3.2% inset: 34.56 px of margin for 52.78 px of strip), and under it where
+ * the margin holds the whole strip: at a safe zone of 0.9, a 5% inset, from
+ * 1080p up at the default Interface size and below it (54 px for 52.78 px at
+ * 1080p), as check-layout's hud/v2-safe-low measures.
+ *
  *   mapBottom     the safe-zone / minimap metric -- arrives on a `screen`
  *                 envelope, which is also what writes --map-bottom.
  *   uiScale       the interface-size slider -- multiplies rem, and is what

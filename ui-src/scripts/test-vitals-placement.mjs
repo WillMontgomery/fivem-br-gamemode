@@ -71,6 +71,14 @@ check('a hair more room fits below', fitsBelow(10.5, 10), true)
 check('a hair too little goes above', fitsBelow(9.99, 10), false)
 check('no room at all goes above', fitsBelow(0, 12), false)
 
+// THE TWO STRIPS AT 1080p AND A 3.2% INSET (the stage the owner picked from,
+// and the harness's default safe zone): 34.56 px of margin under the radar,
+// a rem of 15.99 px. Today's pill hangs 0.85rem (13.6 px) and sits under the
+// radar; UI v2's slanted vitals (#431) hang all of their 3.3rem (52.78 px)
+// and go above it, with the chat moved up -- as every clip showed.
+check("today's pill fits under the radar at 1080p and a 3.2% inset", fitsBelow(34.56, 13.6), true)
+check("UI v2's slanted vitals go above the radar there", fitsBelow(34.56, 52.78), false)
+
 // ─── THE SUB-PIXEL GUARD: roundStrip ───────────────────────────────────────
 // Two decimals kept, the rest dropped -- so a height that jitters below 0.01px
 // reads as unchanged and cannot spin the render loop, while a real 0.01px move

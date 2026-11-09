@@ -29,9 +29,13 @@ import { EASE, getPreset, registerPreset, type Timing } from '../../ui/broadcast
  * WHAT STAYS ON CONTENT (a slide from its edge and a fade): the kill feed and
  * the car's bars (their Fit labels: Fit judges its label once, and a squeezed
  * box judges it at no width), the squad slot (names), and chat, which is prose
- * over the world rather than a plate. Today's vitals pill rides the content
- * channel too; the kit's slanted vitals carry the kit's channels in their own
- * plates and take none of their own.
+ * over the world rather than a plate.
+ *
+ * THE KIT'S SLANTED VITALS MOVE THEMSELVES: their plates carry the kit's
+ * channels (the slab the edge, the strap and its bar track the surface, the
+ * face the content, the numerals .bc-whole), so the preset reaches them with
+ * no wrapper, and their anchor takes no channel of its own. A wrapper channel
+ * over them would compound with theirs.
  *
  * STAGGERED FROM THE SQUAD PANEL OUTWARD, one turn a ring, ordered by when
  * each element is first SEEN (the edge moves at its turn, the surface 80 ms
@@ -143,10 +147,11 @@ const MASK = true
  * merged into one table.
  */
 const WIPE: Record<AnchorId, AnchorFx> = {
-  // The left column, top to bottom under the squad.
+  // The left column, top to bottom under the squad. The slanted vitals are
+  // the wipe as they are: no channel of the anchor's own.
   squad: { order: 0 },
   chat: { order: 1 },
-  vitals: { order: 3 },
+  vitals: { order: 3, channel: [] },
   notices: { order: 4, channel: ['surface'] },
   // The top center: unroll down from the top edge.
   placard: { order: 3, channel: ['edge'] },

@@ -308,8 +308,7 @@
    surface, under its slab and its face. The deck is skewed and clipped, so the
    band leans and stops at the strap's edges as the kit's LightSweep does, and
    rides the strap as it opens from its slab, on the kit's own crossing
-   (bcCross), its tail through --bc-tail. Today's pill has no such plate, and
-   this waits for the slanted vitals. */
+   (bcCross), its tail through --bc-tail. */
 :where(.hud-v2) .hud-anchor[data-hud-id="vitals"][data-bc-phase="entering"]:not([data-hud-live]) .bc-plate__surface::after {
   --bc-tail: var(--wipe-tail);
   content: '';

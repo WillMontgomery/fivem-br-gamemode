@@ -99,9 +99,10 @@ export interface UiState {
     /** Its removal timer, so a coalesced repeat can reset the clock. */
     timer: number
   })[]
-  /** Notices that arrived while the pause menu was open. They display on
-   *  unpause -- unless they sat here longer than PAUSE_QUEUE_MS, in which
-   *  case the moment has passed and they are dropped silently. */
+  /** Notices that arrived while nobody could see them: under GTA's menu, and
+   *  with UI v2's HUD on, under our pause menu too (noticesWait). They display
+   *  when that ends -- unless they sat here longer than PAUSE_QUEUE_MS, in
+   *  which case the moment has passed and they are dropped silently. */
   pendingNotices: (ToastPayload & { queuedAt: number })[]
   /** Every notice of THIS MATCH, newest FIRST. Emptied as a new round opens.
    *
@@ -874,6 +875,38 @@ export const useUi = create<UiState>((set, get) => {
     })
   }
 
+  /**
+   * NOTICES WAIT WHILE NOBODY CAN SEE THEM, and run their time only once they
+   * can be seen.
+   *
+   * Under GTA's menu (`hud.paused`), as they always have: the fullscreen map is
+   * not a place for toasts. And with UI v2's HUD on (#431), under OUR pause
+   * menu too, because that HUD quick-hides its notices there
+   * (hud/v2/HudLayer.tsx): one that arrived then would run out its four
+   * seconds unseen. Today's notices show through our pause menu, so with the
+   * piece off this is `hud.paused` alone, exactly as it was.
+   */
+  const noticesWait = ({ hud, uiv2, focus }: Pick<UiState, 'hud' | 'uiv2' | 'focus'>): boolean =>
+    Boolean(hud.paused) || (uiv2.hud && focus === 'pause')
+
+  /**
+   * THE QUEUE FLUSHED, the moment nothing holds the notices any more: whatever
+   * arrived while they waited shows now -- except entries older than
+   * PAUSE_QUEUE_MS, whose moment has passed (user call, 2026-08-04). `patch`
+   * is the change that let them go, set with the emptied queue in one write.
+   */
+  const flushNotices = (patch: Partial<UiState>) => {
+    const now = Date.now()
+    // A STICKY NOTICE CANNOT GO STALE, because it is not describing
+    // something that happened -- it is describing something that is still
+    // true. "You are outside the storm" is not less relevant for having
+    // been raised while the map was up. Events age out; state does not.
+    const held = get().pendingNotices
+      .filter((p) => p.sticky || now - p.queuedAt <= PAUSE_QUEUE_MS)
+    set({ ...patch, pendingNotices: [] })
+    held.forEach(({ queuedAt: _dropped, ...t }) => showNotice(t))
+  }
+
   return {
   match: emptyMatch,
   hud: emptyHud,
@@ -979,21 +1012,12 @@ export const useUi = create<UiState>((set, get) => {
       chat: chatAfterState(was, match.state, get().chat),
     })
   },
-  // Unpausing flushes the notice queue: whatever arrived under the pause
-  // menu shows now -- except entries older than PAUSE_QUEUE_MS, whose
-  // moment has passed (user call, 2026-08-04).
+  // Unpausing flushes the notice queue (flushNotices) -- unless our pause menu
+  // still holds UI v2's notices (noticesWait), whose own close flushes it.
   setHud: (hud) => {
-    const wasPaused = get().hud.paused
-    if (wasPaused && !hud.paused) {
-      const now = Date.now()
-      // A STICKY NOTICE CANNOT GO STALE, because it is not describing
-      // something that happened -- it is describing something that is still
-      // true. "You are outside the storm" is not less relevant for having
-      // been raised while the map was up. Events age out; state does not.
-      const held = get().pendingNotices
-        .filter((p) => p.sticky || now - p.queuedAt <= PAUSE_QUEUE_MS)
-      set({ hud, pendingNotices: [] })
-      held.forEach(({ queuedAt: _dropped, ...t }) => showNotice(t))
+    const s = get()
+    if (noticesWait(s) && !noticesWait({ hud, uiv2: s.uiv2, focus: s.focus })) {
+      flushNotices({ hud })
       return
     }
     set({ hud })
@@ -1045,7 +1069,17 @@ export const useUi = create<UiState>((set, get) => {
   setSpectate: (spectate) => set({ spectate }),
   setDeath:    (death) => set({ death }),
   setSummary:  (summary) => set({ summary }),
-  setFocus:    (focus, focusTab) => set({ focus, focusTab }),
+  // Our pause menu closing flushes the notice queue when it was what held
+  // them: UI v2's notices, quick-hidden under it (noticesWait). With the
+  // piece off a focus never holds a notice, and this is the plain set.
+  setFocus: (focus, focusTab) => {
+    const s = get()
+    if (noticesWait(s) && !noticesWait({ hud: s.hud, uiv2: s.uiv2, focus })) {
+      flushNotices({ focus, focusTab })
+      return
+    }
+    set({ focus, focusTab })
+  },
   setFrontendUp: (frontendUp) => set({ frontendUp }),
   warmBeat: () => set((s) => ({ warmTick: s.warmTick + 1 })),
   setFrontendReason: (frontendReason) => set({ frontendReason }),
@@ -1107,8 +1141,9 @@ export const useUi = create<UiState>((set, get) => {
   //
   // While the pause menu is open, notices QUEUE instead of showing: the
   // fullscreen map is not a place for toasts. The queue is bounded like the
-  // live stack; the unpause flush in setHud decides what is still worth
-  // saying.
+  // live stack; the flush when they can be seen again (flushNotices, from
+  // setHud, and with UI v2's HUD from setFocus too) decides what is still
+  // worth saying.
   // IDENTITY APPLIES TO THE QUEUE TOO. A keyed notice that updates itself
   // twice a second -- a countdown, a revive progress line -- would otherwise
   // fill the pause queue with thirty copies of itself and flush every one of
@@ -1121,7 +1156,7 @@ export const useUi = create<UiState>((set, get) => {
     // somebody is standing when they go looking for what they missed.
     logNotice(t)
 
-    if (get().hud.paused) {
+    if (noticesWait(get())) {
       if (t.key) {
         set((s) => {
           const rest = s.pendingNotices.filter((p) => p.key !== t.key)
@@ -1174,7 +1209,17 @@ export const useUi = create<UiState>((set, get) => {
   setMarket: (market) => set({ market }),
   setEmotesOn: (emotesOn) => set({ emotesOn }),
   setMarketTabs: (marketTabs) => set({ marketTabs }),
-  setUIv2: (d) => set({ uiv2: { hud: d?.hud === true } }),
+  // A hud piece turned off under our pause menu lets today's notices, which
+  // show through it, have what waited (noticesWait).
+  setUIv2: (d) => {
+    const uiv2 = { hud: d?.hud === true }
+    const s = get()
+    if (noticesWait(s) && !noticesWait({ hud: s.hud, uiv2, focus: s.focus })) {
+      flushNotices({ uiv2 })
+      return
+    }
+    set({ uiv2 })
+  },
   setShopPlate: (shopPlate) => set({ shopPlate }),
   setGunshopMenu: (gunshopMenu) => set({ gunshopMenu }),
   setPlayers: (players) => set({ players }),

@@ -84,13 +84,24 @@ export function NoticeText({ text, parts, fs }: {
 }
 
 
-export default function Notices({ barsVisible = true }: { barsVisible?: boolean }) {
+export default function Notices({ barsVisible = true, keepRadarPlace = false }: {
+  barsVisible?: boolean
+  /** Sit where the radar on would put the stack, drawn or not: UI v2's HUD
+   *  (hud/v2/HudLayer.tsx), whose strip is not today's. */
+  keepRadarPlace?: boolean
+}) {
   const notices = useUi(selNotices)
   const impacts = useUi(selImpacts)
   const screen = useUi(selScreen)
   if (notices.length === 0 && impacts.length === 0) return null
 
-  const radarOn = screen?.radarOn ?? true
+  // UI V2'S HUD KEEPS THE STACK RIGHT OF THE RADAR'S PLACE, RADAR OR NOT (#431):
+  // the fallback below is sized for today's 1.05rem strip under the radar,
+  // and over UI v2's 3.3rem one a full stack covered it (check-layout's
+  // hud/v2-radar-off). Right of the radar's place it never meets the strip,
+  // which spans the radar's width. Aboard the bus and over a scope, where the
+  // game hides the radar, it stays there too, as the stage drew it.
+  const radarOn = keepRadarPlace || (screen?.radarOn ?? true)
 
   const pos = radarOn
     ? {

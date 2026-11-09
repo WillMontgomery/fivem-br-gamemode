@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { PresenceScope, QuickHide, usePresence } from '../../ui/broadcast'
+import { PresenceScope, QuickHide, usePresence, Vitals, VITALS_H, u } from '../../ui/broadcast'
 import {
   useUi, selHud, selStorm, selHudSquad, selFeed, selDbno, selMatch, selInv, selVehicle,
 } from '../../store'
@@ -8,7 +8,7 @@ import { useFade } from '../../ui/useFade'
 import { SQUAD_SLOT_ID } from '../Hud'
 import { useScreenMetrics } from '../useScreenMetrics'
 import { useVitalsPlacement } from '../useVitalsPlacement'
-import Vitals from '../Vitals'
+import { useHudConditions } from '../useHudConditions'
 import VehicleBars from '../VehicleBars'
 import StormBar from '../StormBar'
 import WarmupTimer from '../WarmupTimer'
@@ -53,7 +53,8 @@ import { LAST_TURN } from './choreo'
  * never seen: it comes with the HUD arriving at the jump), and its gun-shop
  * condition becomes a scope round the slot, so the panel leaves and comes back.
  * The warmup card, the talking line and the spectate hint are drawn on today's
- * conditions, and their anchors hold what they last drew through the way out.
+ * conditions, the one copy both HUDs call (../useHudConditions.ts), and their
+ * anchors hold what they last drew through the way out.
  *
  * V2 4, THE WALKTHROUGH. A held or quick-hidden presence is visibility:
  * hidden, and the in-game walkthrough ends a run whose target it cannot see
@@ -62,9 +63,17 @@ import { LAST_TURN } from './choreo'
  * held or quick-hidden its root says its targets are away (AWAY_ATTR), and a
  * card waits for them instead of ending the run.
  *
- * TODAY'S VITALS PILL, FOR NOW, in the same measured strip with the same drop,
- * on the content channel. The kit's slanted vitals, the owner's pick, take its
- * place there.
+ * V2 5, THE SLANTED VITALS (the owner's pick, 2026-11-03: slanted, like
+ * Broadcast, not today's pills). The strip draws the kit's Vitals, fed hud.hp
+ * and hud.armour as today, in the same measured strip, at the same anchor and
+ * turn. They are VITALS_H kit units tall, three times today's 1.05rem row, so
+ * the strip hangs by its own height (--vitals-drop = VITALS_H, on this strip
+ * alone): the one placement both HUDs call then puts it under the radar only
+ * where the margin holds all of it, and above the radar with the chat moved up
+ * everywhere else -- never over the radar. At the usual safe zones that is
+ * above, as in every clip the owner saw; at a safe zone of 0.9 it is under the
+ * radar from 1080p up at the default Interface size (check-layout's hud/v2 and
+ * hud/v2-safe-low hold both sides).
  */
 
 /** Every walkthrough target this HUD draws (data-tut), its own and those of
@@ -103,14 +112,9 @@ export default function HudV2({ rootPreset, paused }: {
     (s.shopPlate || s.gunshopMenu) ? s.market.balance : null))
   const gunshopMenu = useUi((s) => s.gunshopMenu)
   const currency = useUi((s) => s.market.currency ?? 'Volts')
-  const clockOffset = useUi((s) => s.clockOffset)
-  const talkingNames = useUi((s) => s.talkingNames)
-  const spectate = useUi((s) => s.spectate)
-  // The warmup card's condition, the walkthrough's rule with it (Hud.tsx).
-  const tutorialRun = useUi((s) => s.tutorialGameRun)
-  const tutorialStep = useUi((s) => s.tutorialGameStep)
-  const warmupShowing = match.state === 'warmup'
-    && (!tutorialRun || tutorialStep === 'game-timer')
+  // The warmup card, the talking line and the spectate hint: when each is up,
+  // and what it shows, from THE ONE COPY both HUDs call (V2 3).
+  const cond = useHudConditions()
 
   // The strip below the radar or above it: THE ONE HOOK both HUDs call, keyed
   // as check-ui R21 reads it.
@@ -166,8 +170,8 @@ export default function HudV2({ rootPreset, paused }: {
           {/* The top-center box is transformed (-translate-x-1/2), so each
               card's anchor goes INSIDE it. */}
           <div className="absolute left-1/2 -translate-x-1/2" style={{ top: 'var(--safe-y)' }}>
-            <Anchor id="placard" show={warmupShowing}>
-              <WarmupTimer endsAt={match.endsAt} offset={clockOffset} />
+            <Anchor id="placard" show={cond.warmup}>
+              <WarmupTimer endsAt={match.endsAt} offset={cond.clockOffset} />
             </Anchor>
             <Anchor id="storm" show={storm !== null}>
               <StormBar storm={storm} />
@@ -228,11 +232,14 @@ export default function HudV2({ rootPreset, paused }: {
 
           {/* The strip is measured (useVitalsPlacement) and fixed on purpose
               (Hud.tsx says why), so the anchor is the span inside it, never
-              the strip. */}
+              the strip. It hangs by the slanted vitals' own height (V2 5): its
+              bottom and the drop probe both read this --vitals-drop, so "fits
+              below" is "the whole strip fits in the margin under the radar". */}
           <div
             ref={stripRef}
             className="fixed"
             style={{
+              ['--vitals-drop' as string]: u(VITALS_H),
               left: 'var(--map-left)',
               bottom: below
                 ? 'calc(var(--map-bottom) - var(--vitals-drop))'
@@ -252,9 +259,11 @@ export default function HudV2({ rootPreset, paused }: {
               style={{ height: 'var(--vitals-drop)', visibility: 'hidden' }}
               aria-hidden
             />
+            {/* The kit's slanted vitals. Their plates carry the kit's own
+                channels, so this anchor has no wrapper channel (choreo.ts). */}
             <Anchor id="vitals" keep live={[hud.hp, hud.armour]}>
               <span data-tut="hud-vitals" className="block">
-                <Vitals hp={hud.hp} armour={hud.armour} />
+                <Vitals hp={hud.hp} armor={hud.armour} />
               </span>
             </Anchor>
           </div>
@@ -288,9 +297,9 @@ export default function HudV2({ rootPreset, paused }: {
               the row in a box of its own, so the mark and the names stay one
               row however the anchor wraps them. */}
           <TalkingBox>
-            <Anchor id="talking" show={talkingNames.length > 0}>
+            <Anchor id="talking" show={cond.talking}>
               <div className="flex items-center gap-2 min-w-0">
-                <TalkingRow names={talkingNames} />
+                <TalkingRow names={cond.talkingNames} />
               </div>
             </Anchor>
           </TalkingBox>
@@ -305,9 +314,8 @@ export default function HudV2({ rootPreset, paused }: {
             <Anchor id="voice">
               <VoiceNotice />
             </Anchor>
-            {/* Today's test, `spectate?.active` truthy (Hud.tsx), not `=== true`. */}
-            <Anchor id="spectate" show={Boolean(spectate?.active)}>
-              <SpectateHint name={spectate?.name ?? ''} />
+            <Anchor id="spectate" show={cond.spectating}>
+              <SpectateHint name={cond.spectateName} />
             </Anchor>
           </div>
 

@@ -96,7 +96,13 @@ function Line({ msg }: { msg: ChatMessage }) {
   )
 }
 
-export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) {
+export default function Chat({ barsVisible = true, keepRadarPlace = false }: {
+  barsVisible?: boolean
+  /** Sit where the radar on would put the column, drawn or not: UI v2's HUD
+   *  (hud/v2/HudLayer.tsx), whose strip is not today's. See WHERE THE CHAT
+   *  SITS below. */
+  keepRadarPlace?: boolean
+}) {
   const messages = useUi(selChat)
   // THE WALKTHROUGH'S ONE FAKE LINE, merged HERE and never in a selector: a
   // selector returning a fresh array re-renders forever under the zustand this
@@ -232,7 +238,17 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   // is how much room it needs, MEASURED from the rendered strip by
   // hud/useVitalsPlacement.ts, and it is 0 the rest of the time. "bump the
   // chat up" is the owner's phrase for exactly this (2026-08-23, #231).
-  const radarOn = screen?.radarOn ?? true
+  //
+  // UI V2'S HUD KEEPS THE FIRST RUNG, RADAR OR NOT (#431, keepRadarPlace). Its
+  // slanted vitals are 3.3rem and sit above the radar's place, radar drawn or
+  // not, at the usual safe zones (under it only where the margin there holds
+  // them all); the lower rungs are sized for today's 1.05rem strip under it,
+  // and there a full chat covered the strip (check-layout's hud/v2-radar-off).
+  // Above the radar's place, the strip's bump included, is clear of it
+  // wherever it is. So aboard the bus and over a scope, where the game hides
+  // the radar, UI v2's column stays there, as the stage the owner picked from
+  // drew it, where today's drops to the lower rungs.
+  const radarOn = keepRadarPlace || (screen?.radarOn ?? true)
   const bottom = radarOn
     ? 'calc(var(--map-bottom) + var(--map-h) + var(--vitals-gap) + var(--vitals-lift))'
     : barsVisible

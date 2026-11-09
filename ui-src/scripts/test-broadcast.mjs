@@ -44,9 +44,10 @@
  *    (never hud.paused); each layer says every walkthrough target it
  *    draws is away while it is held or quick-hidden; the notice stack keeps
  *    its place over the TAB page; the three shapes of today's markup it reads
- *    (the wipe's light's two, the Volts balance) are still there; and
+ *    (the wipe's light's two, the Volts balance) are still there;
  *    .hud-safe and the fixed boxes sit under no transform (check-ui R9 and
- *    R12 read today's HUD alone).
+ *    R12 read today's HUD alone); and the slanted vitals' anchor takes no
+ *    channel of its own (their plates carry the kit's).
  * 9. CEF 103 IN UI V2'S CODE: the preview gate's code bans, over the .ts and
  *    .tsx of the kit, of src/hud/v2 and of every other file that takes a value
  *    from the kit (inline styles, WAAPI keyframes, selectors).
@@ -1265,6 +1266,23 @@ function inAnchor(sel) {
 const v2Boxing = rules.filter((r) => r.sheet === 'hud/v2/hud2.css' && Object.keys(r.decls).some((p) => BOXING.test(p)))
 check('hud2.css transforms (or filters, or contains) only inside an anchor: never .hud-safe, a fixed box or a root above them',
   [v2Boxing.length >= 5, v2Boxing.flatMap((r) => r.sels.filter((s) => !inAnchor(s)))], [true, []])
+
+// THE SLANTED VITALS MOVE THEMSELVES (choreo.ts). The kit's Vitals carry the
+// kit's channels in their own plates (the slab, the strap, the face), so
+// their anchor takes no channel of its own: `channel: []` in the wipe's
+// table. Left out, it takes the default content channel, and a slide and a
+// fade round the straps compound with theirs; nothing else in the build sees
+// that.
+let vitalsChannel = 'no vitals entry in WIPE'
+eachNode(jsxOf(join(V2, 'choreo.ts')), (n) => {
+  if (!ts.isVariableDeclaration(n) || n.name.getText() !== 'WIPE' || !n.initializer || !ts.isObjectLiteralExpression(n.initializer)) return
+  const fx = n.initializer.properties.find((p) => ts.isPropertyAssignment(p) && keyOf(p) === 'vitals')
+  if (!fx || !ts.isObjectLiteralExpression(fx.initializer)) return
+  const ch = fx.initializer.properties.find((q) => ts.isPropertyAssignment(q) && keyOf(q) === 'channel')
+  vitalsChannel = !ch ? 'none named (the default, content)'
+    : ts.isArrayLiteralExpression(ch.initializer) ? ch.initializer.elements.map((e) => e.getText()) : ch.initializer.getText()
+})
+check("choreo.ts: the slanted vitals' anchor takes no channel of its own (WIPE's vitals: channel: [])", vitalsChannel, [])
 
 console.log("9. CEF 103 in UI v2's code (#431, #413)")
 // ---------------------------------------------------------------------------

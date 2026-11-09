@@ -44,8 +44,9 @@
  *   BLANK ...unless it was a control's only text: a button, tab, link or menu
  *         item whose every word is hidden is a blank box.
  *
- * UI V2'S ROWS CHECK ONE THING MORE, in the page (V2_ROOTED): every element
- * of the Broadcast kit's is drawn under a `.bc-kit` root, where its tokens are.
+ * UI V2'S ROWS CHECK MORE, in the page: every element of the Broadcast kit's
+ * is drawn under a `.bc-kit` root, where its tokens are (V2_ROOTED), and in
+ * the rows that ask, nothing overlaps the slanted vitals (v2ClearOfVitals).
  *
  * Each failure names its screen, the sizes it fails at, the element's path and
  * the pixels cut. A NEW SCREEN OPTS IN by adding a row to SCREENS: a name and
@@ -69,7 +70,7 @@
  * skipped), what an element's own clip-path or overflow does to its own
  * drawing (on purpose: a plate's chamfer, a spinner's arc), a glyph's ink
  * above or below its line (a label is measured across, at its ends), what
- * overlaps what, and hover.
+ * overlaps what (but for the slanted vitals, above), and hover.
  *
  *   node scripts/check-layout.mjs              every screen, every size
  *   ... --only=market --size=1280x720 --text=1 --ui=1.3   one corner of it
@@ -196,6 +197,81 @@ const V2_ROOTED = `{
   }
 }`
 
+/**
+ * THE RADAR HIDDEN WITH THE HUD UP: the screen as it was sent, with radarOn
+ * false (screen.lua sends `not IsRadarHidden()`). The game's own rule hides
+ * the radar in the lobby, aboard the bus, during a trip or the curtain and
+ * over a scope (natives.lua, wantRadar), and UI v2's strip is away in each of
+ * those: not up, held, or quick-hidden. So this is the radar hidden some
+ * other way with the strip on screen (inferred: a display setting of the
+ * player's, if the game reports it there; not seen in game).
+ */
+const RADAR_OFF = `__br.emit('screen', { ...window.brStore.getState().screen, radarOn: false })`
+
+/** A chat log as tall as it grows, open, and a full notice stack. */
+const CHAT_AND_NOTICES = [
+  `for (let i = 1; i <= 12; i++) __br.emit('chat', { channel: 'global', from: i,
+    name: i % 2 ? 'Quillon_the_Longest_Name' : 'Kestrel', text: i % 3 ? 'gg' : 'on me', at: Date.now() })`,
+  `for (const text of ['Storm closing in 30 seconds', 'Quillon_the_Longest_Name picked up your key',
+    'Kestrel picked up your key', 'Rook picked up your key', 'Vandal picked up your key'])
+    __br.emit('toast', { text, tone: 'success', ms: 600000 })`,
+  `__br.emit('impacts', { list: [{ key: 'scan', text: 'Your position is being scanned', endsAt: Date.now() + 600000 }] })`,
+  focus('chat', ", channel: 'squad'"),
+]
+
+/** What UI v2's vitals strip is measured against (v2ClearOfVitals). The
+ *  radar's place is the walkthrough's minimap box, drawn radar or not. */
+const RADAR_PLACE = ["the radar's place", '.hud-v2 [data-tut="hud-minimap"]']
+const CHAT_COLUMN = ['the chat column', '#br-chat-column']
+const NOTICE_STACK = ['the notice stack', '.hud-v2 [data-tut="hud-notices"]']
+
+/**
+ * UI V2'S VITALS STRIP CLEAR OF THE RADAR, THE CHAT COLUMN AND THE NOTICE
+ * STACK (#431). The slanted strip is 3.3rem and hangs by all of it (HudV2.tsx's
+ * --vitals-drop), so the one placement puts it under the radar only where the
+ * margin there holds the whole strip, and above the radar everywhere else:
+ * never over it, the owner's 2026-08-09 bug. Hung by today's 0.85rem it
+ * "fits below" and covers the radar's lower part. And today's radar-hidden
+ * places for the chat and the notices, sized for the 1.05rem pill under the
+ * radar, stack them up into the strip; UI v2 keeps their radar-on places
+ * instead (keepRadarPlace). This reads the strip and each box a row names
+ * where they are drawn, and fails on any overlap, or on a box named that is
+ * not drawn. (EDGE and LINE cannot see one: they measure each box alone.)
+ */
+const v2ClearOfVitals = (...boxes) => `{
+  const box = (sel) => { const e = document.querySelector(sel); return e ? e.getBoundingClientRect() : null }
+  const strip = box('.hud-v2 [data-tut="hud-vitals"]')
+  if (!strip || strip.height < 1) throw new Error("UI v2's vitals strip is not drawn")
+  const over = []
+  for (const [name, sel] of ${JSON.stringify(boxes)}) {
+    const r = box(sel)
+    if (!r || r.height < 1) throw new Error(name + ' is not drawn')
+    const x = Math.min(r.right, strip.right) - Math.max(r.left, strip.left)
+    const y = Math.min(r.bottom, strip.bottom) - Math.max(r.top, strip.top)
+    if (x > 0.5 && y > 0.5) over.push(name + ' covers ' + y.toFixed(1) + ' px of it')
+  }
+  if (over.length) throw new Error("UI v2's vitals strip is overlapped: " + over.join(', '))
+}`
+
+/** The curtain drawn over UI v2's HUD, and the HUD held under it (its hold is
+ *  the curtain's own report: hud/v2/HudLayer.tsx), so the vitals the
+ *  walkthrough's first card rings are not visible. */
+const V2_UNDER_CURTAIN = [
+  `__br.emit('leaving', { show: true, kind: 'dropping' })`,
+  `await __br.until(() => {
+    const e = document.querySelector('.hud-v2 [data-tut="hud-vitals"]')
+    return e !== null && getComputedStyle(e).visibility !== 'visible'
+  }, 8000, "UI v2's HUD held under the drawn curtain")`,
+]
+
+/** The in-match walkthrough still running after 2.5 s with UI v2's HUD hidden
+ *  by `cause`. It ends a run 1.2 s after its target goes unseen, unless a
+ *  screen says the target is away (TutorialLayer.tsx, AWAY_ATTR). */
+const tutorialStillOn = (cause) => `await new Promise((r) => setTimeout(r, 2500))
+  if (!window.brStore.getState().tutorialGameRun) {
+    throw new Error("the in-match walkthrough ended under ${cause}: UI v2's HUD was hidden and did not say its targets were away")
+  }`
+
 /** The keybinds the mock sends, with rebinding available (`raw`). */
 const RAW_KEYS = `__br.emit('keybinds', { actions: window.brStore.getState().keybinds, raw: true })`
 
@@ -240,9 +316,27 @@ export const SCREENS = [
   // UI V2'S HUD (#431, #436): the first row and the long names again with the
   // hud piece on, the mock's `uiv2=hud` being a machine that holds it, told
   // first as br_ui tells the page. Measured once the wipe has landed, and
-  // failed if any of the kit's elements is drawn outside a .bc-kit root.
-  { name: 'hud/v2', query: 'uiv2=hud', steps: ['__br.match()', V2_LANDED, V2_ROOTED] },
+  // failed if any of the kit's elements is drawn outside a .bc-kit root, or
+  // if the slanted vitals and the radar overlap (v2ClearOfVitals).
+  { name: 'hud/v2', query: 'uiv2=hud', steps: ['__br.match()', V2_LANDED, V2_ROOTED, v2ClearOfVitals(RADAR_PLACE)] },
   { name: 'hud/v2-long-names', query: 'uiv2=hud', steps: ['__br.match()', LONG_NAMES, V2_LANDED, V2_ROOTED] },
+  // The radar hidden with the hud piece on, a full chat open and a full notice
+  // stack: none of them may meet the slanted vitals (v2ClearOfVitals).
+  {
+    name: 'hud/v2-radar-off', query: 'uiv2=hud',
+    steps: ['__br.match()', RADAR_OFF, ...CHAT_AND_NOTICES, V2_LANDED, V2_ROOTED,
+      v2ClearOfVitals(RADAR_PLACE, CHAT_COLUMN, NOTICE_STACK)],
+  },
+  // ...and at a safe zone of 0.9 (a 5% inset: the slider's low end, inferred),
+  // where the margin under the radar holds the whole slanted strip from 1080p
+  // up at the default Interface size and below it: there the strip hangs
+  // under the radar, at 720p and at 130% above it, and never over it, with a
+  // full chat open and a full notice stack clear of it on either side.
+  {
+    name: 'hud/v2-safe-low', query: 'uiv2=hud&safe=0.9',
+    steps: ['__br.match()', 'window.brScreen()', ...CHAT_AND_NOTICES, V2_LANDED, V2_ROOTED,
+      v2ClearOfVitals(RADAR_PLACE, CHAT_COLUMN, NOTICE_STACK)],
+  },
   { name: 'hud/vehicle', steps: ['__br.match()', `__br.emit('vehicle', { show: true, health: 64, fuel: 38, boost: 80 })`] },
   { name: 'hud/vehicle-passenger', steps: ['__br.match()', `__br.emit('vehicle', { show: true, fuel: 38 })`] },
   {
@@ -416,6 +510,28 @@ export const SCREENS = [
       `__br.emit('toast', { text: 'Quillon_the_Longest_Name picked up your key', tone: 'success', ms: 600000 })`,
       `__br.emit('tutorial', { run: false, game: true })`,
       { walk: 'tutorial/match', min: 21, max: 40 }],
+  },
+  // ...and with the hud piece on (#431), started where UI v2's HUD is away. A
+  // held or quick-hidden presence is visibility: hidden, and the walkthrough
+  // ends a run whose target it cannot see unless the HUD says its targets are
+  // away (hud/v2/HudV2.tsx, V2 4). The walk alone never meets that: the map is
+  // App's ui gate, an opacity, and the player list and the inventory page hide
+  // nothing in the v2 layers (our pause menu, which it never opens, makes a
+  // card wait anyway: App's subscreenUp). So the run starts as in game, on the
+  // warmup under the drawn curtain, which holds the HUD, and outlasts the
+  // walkthrough's 1.2 s there; then a scope quick-hides the HUD as long; then
+  // every card, to the last.
+  {
+    name: 'tutorial/match-v2', query: 'uiv2=hud', steps: [WARMUP, FEED, PLAYERS,
+      `__br.emit('toast', { text: 'Quillon_the_Longest_Name picked up your key', tone: 'success', ms: 600000 })`,
+      V2_LANDED, V2_ROOTED, ...V2_UNDER_CURTAIN,
+      `__br.emit('tutorial', { run: false, game: true })`,
+      tutorialStillOn('the drawn curtain'),
+      `__br.emit('leaving', { show: false })`,
+      `__br.emit('screen', { scoped: true })`,
+      tutorialStillOn('a scope'),
+      `__br.emit('screen', { scoped: false })`,
+      { walk: 'tutorial/match-v2', min: 21, max: 40 }],
   },
   {
     name: 'tutorial/decline', steps: [lobby(), `__br.emit('tutorial', { run: false, offer: false, offerable: true })`,

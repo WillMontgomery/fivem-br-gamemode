@@ -20,8 +20,9 @@
  *
  * and a small renderer here plays React's part: it calls each component with
  * a hooks dispatcher of its own, keeps state between renders by the
- * component's place in the tree, runs effects, and re-renders until nothing
- * changes. No DOM: host elements come back as `{ type, props, children }`.
+ * component's place in the tree, hands a context provider's value to what is
+ * under it, runs effects, and re-renders until nothing changes. No DOM: host
+ * elements come back as `{ type, props, children }`.
  * Frames and timers are queued, and run when the test says (`frames()`).
  */
 
@@ -217,7 +218,15 @@ export function mount(React, element) {
     if (type === FRAGMENT) return walk(props.children, path)
     if (type && type.$$typeof === MEMO) return renderType(type.type, props, path)
     if (type && type.$$typeof === FORWARD) return call(type.render, [props, null], `${path}/fwd`)
-    if (type && type.$$typeof === CONTEXT) return walk(props.children, path)
+    // A PROVIDER (React 19's <Ctx> is its own): useContext under it reads its
+    // value while its children are walked, and the value above it after. UI
+    // v2's HUD (#431) depends on it: its scopes, quick hides and phases are
+    // contexts (ui/broadcast/motion/context.ts).
+    if (type && type.$$typeof === CONTEXT) {
+      const above = type._currentValue
+      type._currentValue = props.value
+      try { return walk(props.children, path) } finally { type._currentValue = above }
+    }
     if (typeof type === 'function') {
       if (type.prototype && type.prototype.isReactComponent) throw new Error(`class component ${type.name}`)
       return call(type, [props], `${path}/${type.displayName || type.name || 'anon'}`)

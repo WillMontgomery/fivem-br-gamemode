@@ -78,7 +78,11 @@ export function HudLayer({ up }: { up: boolean }) {
 
 /** App.tsx's chat place. Chat stays through the bus ride and the ambulance
  *  and leaves with the match; its column is fixed, so its anchor is
- *  full-stage. `barsVisible` is today's (App's hudUp). */
+ *  full-stage. `barsVisible` is today's (App's hudUp). The column keeps the
+ *  radar's place with the radar hidden (keepRadarPlace), clear of the slanted
+ *  vitals, and that place is its anchor's origin (choreo.ts): aboard the bus
+ *  and over a scope, where the game hides the radar, it stays above the
+ *  radar's place, where today's drops to its lower rungs (Chat.tsx). */
 export function ChatLayer({ want, barsVisible }: { want: boolean; barsVisible: boolean }) {
   const held = useCurtainCovered()
   const paused = usePauseOpen()
@@ -89,7 +93,7 @@ export function ChatLayer({ want, barsVisible }: { want: boolean; barsVisible: b
           <PresenceScope want={want}>
             <ScopeFloor order={LAST_TURN} />
             <Anchor id="chat">
-              <Chat barsVisible={barsVisible} />
+              <Chat barsVisible={barsVisible} keepRadarPlace />
             </Anchor>
           </PresenceScope>
         </QuickHide>
@@ -99,7 +103,10 @@ export function ChatLayer({ want, barsVisible }: { want: boolean; barsVisible: b
 }
 
 /** App.tsx's notices place, wanted off the lobby alone (`hud.paused` only
- *  queues them, in the store). `barsVisible` is today's (App's hudUp). */
+ *  queues them, in the store, and so does our pause menu while it quick-hides
+ *  them here: store/index.ts noticesWait, so none runs out its time unseen).
+ *  `barsVisible` is today's (App's hudUp). The stack keeps the radar's place
+ *  with the radar hidden, as the chat column does. */
 export function NoticesLayer({ want, barsVisible }: { want: boolean; barsVisible: boolean }) {
   const held = useCurtainCovered()
   const paused = usePauseOpen()
@@ -110,7 +117,7 @@ export function NoticesLayer({ want, barsVisible }: { want: boolean; barsVisible
           <PresenceScope want={want}>
             <ScopeFloor order={LAST_TURN} />
             <Anchor id="notices">
-              <Notices barsVisible={barsVisible} />
+              <Notices barsVisible={barsVisible} keepRadarPlace />
             </Anchor>
           </PresenceScope>
         </QuickHide>
