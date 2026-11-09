@@ -509,6 +509,150 @@ if panel then
     end
 end
 
+-- -------------------------------------- the Broadcast panel, UI v2's (#429) ---
+--
+-- UI v2's HUD draws the Broadcast squad panel (hud/SquadPanelV2.tsx) in the
+-- same slot, off the same payload, while the hud piece is on, and every report
+-- above is as true of it. The asserts above stay on today's panel; these are
+-- their twins in the Broadcast panel's own spelling: the tri-state read both
+-- ways, the key mark a picture in today's two shades on the line OUT is
+-- stamped on, the pickup a draining line along the foot of the card with its
+-- two channels in the token red, one countdown on the row, and a mate the
+-- squad holds a key for faded less than one nobody can reach.
+
+local v2 = read(UI .. 'hud/SquadPanelV2.tsx', codeOfTs)
+local v2css = read(UI .. 'hud/squadV2.css', codeOfTs)
+local kitTokens = read(UI .. 'ui/broadcast/tokens.css', codeOfTs)
+if v2 then
+    if v2:find('m%.reviveKey &&') or v2:find('m%.reviveKey %?') then
+        fail('the Broadcast panel reads the revive key by truthiness',
+             'false is a real state on this field -- a key on the ground nobody '
+             .. 'has fetched -- and a truthiness test draws nothing for it')
+    end
+    if not v2:find('m%.reviveKey === true') then
+        fail('the Broadcast panel no longer tests for a HELD key',
+             '"no way to know I still have their key"')
+    end
+    if not v2:find('m%.reviveKey === false') then
+        fail('the Broadcast panel no longer tests for an UNFETCHED key',
+             'a key exists to be collected and nothing on screen would say so')
+    end
+    local outLine = v2:match('<Stamp word="OUT".-</Plate%.Line>')
+    if not outLine then
+        fail('the Broadcast panel no longer stamps OUT on a dead mate\'s line',
+             'this gate finds the key mark on the line OUT is stamped on')
+    elseif not outLine:find('<KeyMark', 1, true) then
+        fail('the Broadcast panel\'s key mark is not beside OUT any more',
+             'it belongs on the line a dead plate still draws, with OUT')
+    elseif not (outLine:find('{hasKey && ', 1, true)
+                and v2:find('const hasKey = keyHeld || keyOut', 1, true)) then
+        fail('the Broadcast panel no longer draws the key mark for a key in either reading',
+             'held or on the ground, a key is drawn: "I have no way to know I '
+             .. 'still have their key"')
+    end
+    if not v2:find('m%.reviveKeyEndsAt') then
+        fail('the Broadcast panel no longer draws the pickup deadline',
+             'owner, 2026-08-31: "If there is a timer to pickup their key, '
+             .. 'display it in the squad panel"')
+    end
+    do
+        local clocks = select(2, v2:gsub('function%s+RowClock%s*%(', ''))
+            + select(2, v2:gsub('function%s+BleedClock%s*%(', ''))
+        if clocks ~= 1 then
+            fail(('the Broadcast panel defines %d countdown components, not 1'):format(clocks),
+                 'one number on the row, the bleed deadline: the pickup is the '
+                 .. 'line the owner asked for in place of its numeral')
+        end
+    end
+    local line = v2:match('function PickupLine.-\n}')
+    if not line then
+        fail('the Broadcast panel no longer draws the pickup as a draining line',
+             'owner, 2026-09-02: "put a red line at the bottom of the player\'s '
+             .. 'card to represent the timer"')
+    else
+        local fill = line:match('className="([^"]*bar%-fill[^"]*)"')
+        if not fill or not fill:find('mate%-pulse') then
+            fail('the Broadcast panel\'s pickup fill is not `.bar-fill` and `.mate-pulse` on one element',
+                 'the bleed card\'s bar owns the transform and the pulse fades the '
+                 .. 'red: two channels, as today ("make the red pulse fade")')
+        end
+        if not line:find('scaleX', 1, true) then
+            fail('the Broadcast panel\'s pickup line is no longer scaled by transform',
+                 '`.bar-fill` animates transform only')
+        end
+        if not line:find('<Plate.Foot', 1, true) then
+            fail('the Broadcast panel\'s pickup line is not along the foot of the card',
+                 '"a red line at the bottom of the player\'s card"')
+        end
+        if line:find('#%x%x%x') then
+            fail('the Broadcast panel\'s pickup line carries a literal color')
+        end
+    end
+    -- THE RED IS TODAY'S TOKEN, through the kit's: the fill's rule paints the
+    -- kit's danger, which is --color-danger, the one the colorblind modes
+    -- remap.
+    local fillRule = v2css and v2css:match('%.bsq%-pickup%-fill%s*(%b{})')
+    if not fillRule or not fillRule:find('background:%s*var%(%-%-bc%-danger%)') then
+        fail('the Broadcast panel\'s pickup red is not the kit\'s --bc-danger',
+             'squadV2.css\'s .bsq-pickup-fill paints it; a hex is not remapped')
+    end
+    if kitTokens and not kitTokens:find('%-%-bc%-danger:%s*var%(%-%-color%-danger%)') then
+        fail('the kit\'s --bc-danger is not --color-danger',
+             'that token is remapped by the colorblind modes')
+    end
+    local mark = v2:match('function KeyMark.-\n}')
+    if not mark then
+        fail('the Broadcast panel\'s KeyMark is no longer a recognizable component')
+    else
+        if not mark:find('<path d={KEY_PATH}', 1, true) then
+            fail('the Broadcast panel\'s key mark no longer draws the key path',
+                 'the mark is a picture, never a word')
+        end
+        if not mark:find('currentColor', 1, true) then
+            fail('the Broadcast panel\'s key glyph no longer inherits its color')
+        end
+        if not mark:find('is-held', 1, true) then
+            fail('the Broadcast panel\'s key mark no longer says it is held',
+                 'held and unfetched are drawn in two shades')
+        end
+    end
+    -- TWO SHADES, TODAY'S PAIR: the dim one for a key that is not ours, the
+    -- accent once it is held, each the kit's name for today's token.
+    local dim = v2css and v2css:match('%.bsq%-key%s*(%b{})')
+    local held = v2css and v2css:match('%.bsq%-key%.is%-held%s*(%b{})')
+    if not (dim and dim:find('color:%s*var%(%-%-bc%-ink%-dim%)')
+            and held and held:find('color:%s*var%(%-%-bc%-accent%)')) then
+        fail('the Broadcast panel\'s key mark no longer draws held and unfetched in two shades',
+             'the owner hit both states blind; one object in two shades says which')
+    end
+    if kitTokens and not (kitTokens:find('%-%-bc%-ink%-dim:%s*var%(%-%-color%-text%-dim%)')
+            and kitTokens:find('%-%-bc%-accent:%s*var%(%-%-color%-royale%-accent%)')) then
+        fail('the kit\'s two shades are no longer today\'s --color-text-dim and --color-royale-accent')
+    end
+    -- THE SAME GLYPH as today's panel, segment by segment.
+    local function segsOf(src)
+        local decl = src and src:match('const KEY_PATH =.-\n\n')
+        local out = {}
+        if decl then for s in decl:gmatch("'([^']+)'") do out[#out + 1] = s end end
+        return table.concat(out, '|')
+    end
+    if segsOf(v2) == '' or segsOf(v2) ~= segsOf(panel) then
+        fail('the Broadcast panel\'s key glyph is not today\'s',
+             'one key, drawn the same in either HUD')
+    end
+    -- A MATE WHO CAN COME BACK IS NOT DRAWN AS FINISHED: with a key the row
+    -- fades to KEY_FADE, less than the kit's dim for one nobody can reach.
+    local keyFade = tonumber(v2:match('const KEY_FADE = ([%d%.]+)'))
+    local kitDim = kitTokens and tonumber(kitTokens:match('%-%-bc%-dim:%s*([%d%.]+)'))
+    if not v2:find('hasKey %? KEY_FADE') then
+        fail('the Broadcast panel no longer fades a dead mate by whether the squad holds a key',
+             'that fade means "finished and still", which a mate with a key is not')
+    elseif not (keyFade and kitDim and keyFade > kitDim) then
+        fail(('a dead mate with a key is faded to %s, not less than the kit\'s dim %s')
+                 :format(tostring(keyFade), tostring(kitDim)))
+    end
+end
+
 -- -------------------------------------------------------- no tenth string ---
 --
 -- The copy table is the whole of what this feature is allowed to say. The owner
@@ -643,6 +787,25 @@ do
                 end
             end
         end
+
+        -- AND THE BROADCAST PANEL'S, read the same way: UI v2's HUD draws it
+        -- (#429), so the bundle that ships must hold its pickup line as it is
+        -- written now. Its fill's class string is the marker.
+        do
+            local line = v2 and v2:match('function PickupLine.-\n}')
+            local c = line and line:match('className="([^"]*bar%-fill[^"]*)"')
+            if not c then
+                fail('cannot read the pickup fill\'s classes out of SquadPanelV2.tsx',
+                     'this gate compares them with the built bundle. If the line '
+                     .. 'was restructured, re-point this -- do not replace it '
+                     .. 'with a literal')
+            elseif not js:find(c, 1, true) then
+                fail('the built bundle does not contain the Broadcast squad '
+                     .. 'panel\'s pickup line as it is written now',
+                     'the bundle is stale, or UI v2\'s HUD does not draw the '
+                     .. 'panel. Run: cd ui-src && npm run build')
+            end
+        end
     end
 end
 
@@ -660,4 +823,5 @@ io.write('ok   a squadmate\'s revive key travels only to their own squad, folds\
     .. '     pulse a downed mate\'s tag wears, on a channel the drain does not\n'
     .. '     own -- while something is still on the ground. Each member\'s\n'
     .. '     kills fold in beside it, in every match, for the Elims plate\'s\n'
-    .. '     squad total (#439)\n')
+    .. '     squad total (#439). UI v2\'s Broadcast panel draws all of it the\n'
+    .. '     same way, and ships (#429)\n')

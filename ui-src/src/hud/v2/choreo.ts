@@ -28,8 +28,10 @@ import { EASE, getPreset, registerPreset, type Timing } from '../../ui/broadcast
  *
  * WHAT STAYS ON CONTENT (a slide from its edge and a fade): the kill feed and
  * the car's bars (their Fit labels: Fit judges its label once, and a squeezed
- * box judges it at no width), the squad slot (names), and chat, which is prose
- * over the world rather than a plate.
+ * box judges it at no width), and chat, which is prose over the world rather
+ * than a plate. The squad slot's anchor takes content too, but only over an
+ * empty slot: the Broadcast panel's rows are presences of their own, and the
+ * anchor stands down for them (./Anchor.tsx, `ownable`).
  *
  * THE KIT'S SLANTED VITALS MOVE THEMSELVES: their plates carry the kit's
  * channels (the slab the edge, the strap and its bar track the surface, the

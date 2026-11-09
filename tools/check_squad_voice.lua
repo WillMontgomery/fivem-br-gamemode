@@ -489,6 +489,58 @@ if panel then
     end
 end
 
+-- -------------------------------------- the Broadcast panel, UI v2's (#429) ---
+--
+-- UI v2's HUD draws the Broadcast squad panel (hud/SquadPanelV2.tsx) in the
+-- same slot while the hud piece is on. The asserts above stay on today's
+-- panel; these are their twins in its spelling: the same mark on every row,
+-- the viewer's own row found by `you`, a mate's bit read as a boolean and
+-- never painted as a fault, and the layout pair in its sheet.
+
+local v2 = read(UI .. 'hud/SquadPanelV2.tsx', codeOfTs)
+local v2css = read(UI .. 'hud/squadV2.css', codeOfTs)
+if v2 then
+    if not v2:find("from './VoiceMark'", 1, true) then
+        fail('the Broadcast squad panel no longer draws the voice mark')
+    end
+    if v2:find('{talking &&', 1, true) then
+        fail('the Broadcast panel renders the voice mark conditionally',
+             'the slot has to exist on every row or the name shifts sideways '
+             .. 'every time somebody starts speaking')
+    end
+    if not v2:find('m%.src === squad%.you') then
+        fail('the Broadcast panel no longer finds the viewer\'s own row by `you`',
+             'the voice envelope\'s verdict belongs to that row alone')
+    end
+    if not v2:find(VOICE_BIT .. ' === true', 1, true) then
+        fail('the Broadcast panel does not read `' .. VOICE_BIT .. '` as an explicit boolean',
+             'absent and false are different claims that happen to draw the '
+             .. 'same thing; a truthiness test collapses them by accident')
+    end
+    local mateBranch = v2:match('return m%.' .. VOICE_BIT .. '[^\n]*')
+    if not mateBranch then
+        fail('the Broadcast panel no longer resolves a squadmate\'s mark from `'
+             .. VOICE_BIT .. '` in one expression',
+             'this gate reads the mate branch off that return')
+    elseif mateBranch:find("'fault'", 1, true) then
+        fail("a squadmate's row can be painted as a voice FAULT in the Broadcast panel",
+             'red is for the one player who can act on it')
+    end
+    -- THE LAYOUT PAIR, in the panel's sheet: the name's group baseline-aligned,
+    -- the mark out of it (VoiceMark's own align-self: center).
+    local who = v2css and v2css:match('%.bsq%-who%s*(%b{})')
+    local mark = v2css and v2css:match('%.bsq%-voice%s*(%b{})')
+    if not (who and who:find('align%-items:%s*baseline')) then
+        fail('the Broadcast panel\'s name group is no longer baseline-aligned',
+             'its baseline would be synthesized from the voice mark, and the '
+             .. 'plate would change height with the text-size setting')
+    end
+    if not (mark and mark:find('align%-self:%s*center')) then
+        fail('the Broadcast panel\'s voice mark joins the baseline again',
+             'growing it would move the whole row')
+    end
+end
+
 -- ------------------------------------------------------- one vocabulary ---
 
 local bar = read(UI .. 'hud/TalkingBar.tsx', codeOfTs)
@@ -564,4 +616,5 @@ end
 io.write('ok   the squad panel marks voice state from what the client is told --\n'
     .. '     talking on any row, "no voice" on the viewer\'s own and on a mate\n'
     .. '     the beacon says is off, and nothing at all otherwise. One bit\n'
-    .. '     crosses the boundary; the mode still crosses nothing\n')
+    .. '     crosses the boundary; the mode still crosses nothing. UI v2\'s\n'
+    .. '     Broadcast panel marks it the same way (#429)\n')

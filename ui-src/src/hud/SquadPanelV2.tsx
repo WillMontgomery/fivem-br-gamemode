@@ -5,8 +5,9 @@
  * The owner's pick for #429, ported from his preview
  * (previews/squad/broadcast/SquadPanel.tsx). Today's panel (SquadPanel.tsx)
  * stays as it is beside this one, as Market v2 and Locker v2 sit beside
- * theirs. Nothing imports this file yet: UI v2's HUD still draws today's
- * panel in its squad slot (hud/v2/HudV2.tsx).
+ * theirs: today's HUD draws today's panel, and UI v2's HUD (hud/v2/HudV2.tsx)
+ * draws this one in its squad slot, whose anchor stands down for its rows
+ * (hud/v2/Anchor.tsx, `ownable`), so each row plays its own way in and out.
  *
  * The loading screen's Broadcast theme carried into the HUD. Every shape leans
  * on its one slant (15 degrees): each mate is a slanted plate, their color is
@@ -81,7 +82,7 @@
  *                    move), then the OUT plate replaces the band like a lower
  *                    third being swapped, OUT drops in, the row settles faded
  *   key drops        the red line slides in along the foot; the key drops in.
- *                    A key that comes with the death waits for OUT's beat
+ *                    A key that comes before OUT's beat waits for it
  *   key retrieved    the key slams down with weight, an accent ring bursts
  *                    behind it, the row thuds, the line zips away in accent
  *   back in          the OUT plate wipes off, burst, bars fill to 100
@@ -112,8 +113,10 @@
  *   - THE NETS (#252): three steps ended on the browser's animation clock
  *     alone, and each now has a net on the JS clock (after(), below)
  *   - THE OWNER'S ORDER FOR A DEATH (decision 3): the key mark and its red
- *     line wait for OUT's beat when they come with the death (useWaited)
- * scripts/test-broadcast.mjs (section 10) pins the last four, and that the
+ *     line wait for OUT's beat when they come before it (useWaited)
+ *   - A DIFFERENT SQUAD IS A NEW ONE ON AIR (the walkthrough's staged squad
+ *     over the player's): the panel's scope is keyed by the squad's id
+ * scripts/test-broadcast.mjs (section 10) pins the last five, and that the
  * sheet cascades after the kit.
  */
 import {
@@ -228,10 +231,11 @@ function after(ms: number, now: () => number, fn: () => void): () => void {
  * THE OWNER'S ORDER FOR A DEATH (decision 3; the beats' half is
  * mateEvents.ts step()). The game mints a revive key on the death's own edge,
  * so the key and its red line usually come in the same push as the death, and
- * they wait for OUT's beat, as in the sequence he approved: their beat
- * carries the wait as its `delay`. Here a beat that waits is not drawn until
- * its delay has passed on the presence clock; its element is keyed by the
- * beat's `n`, so it mounts fresh and plays as it is drawn. A beat with no
+ * they wait for OUT's beat, as in the sequence he approved; one in a later
+ * push that still comes before OUT's beat waits for what is left of it. Their
+ * beat carries the wait as its `delay`. Here a beat that waits is not drawn
+ * until its delay has passed on the presence clock; its element is keyed by
+ * the beat's `n`, so it mounts fresh and plays as it is drawn. A beat with no
  * delay is drawn at once, and one that has waited stays drawn.
  */
 function useWaited(beat: { n: number; delay: number }, now: () => number): boolean {
@@ -245,12 +249,22 @@ function useWaited(beat: { n: number; delay: number }, now: () => number): boole
   return due
 }
 
+/**
+ * TODAY'S RULE, KEPT: the panel draws rows for a squad with an id and more
+ * than one member, and nothing for no squad or a squad of one
+ * (SquadPanel.tsx). UI v2's HUD keys its squad anchor on it too
+ * (hud/v2/HudV2.tsx): this is when the rows the anchor stands down for come.
+ */
+export function hasSquad(squad: SquadPayload): boolean {
+  return !!squad.id && squad.members.length > 1
+}
+
 export default function SquadPanelV2({
   squad, talking = [], voiceSilent = false, voiceChosen = false,
 }: SquadPanelProps) {
-  // TODAY'S RULE, KEPT: no squad, or a squad of one, draws nothing. A panel
-  // that HAD a squad first takes it off air, drawing its last frame with one.
-  const has = !!squad.id && squad.members.length > 1
+  // No squad, or a squad of one, draws nothing (hasSquad). A panel that HAD a
+  // squad first takes it off air, drawing its last frame with one.
+  const has = hasSquad(squad)
   // The viewer's own row takes the voice envelope's verdict (VoiceMark.tsx).
   const own: Silence = voiceSilent ? (voiceChosen ? 'chosen' : 'fault') : null
   const kept = useRef<Frame | null>(null)
@@ -262,8 +276,17 @@ export default function SquadPanelV2({
   // preset and its 80 ms step in every HUD style (the panel's own on-air
   // entrance), and its reveal starts when it goes live, so a squad that forms
   // mid-match goes on air top mate first too.
+  //
+  // A DIFFERENT SQUAD IS A NEW ONE ON AIR, so the scope is keyed by the
+  // squad's id. The rows are read by server id, and a squad drawn over
+  // another (the walkthrough's staged one over the player's: TutorialLayer.tsx,
+  // selHudSquad) is no change to anybody in it: read as one, a row that shared
+  // a server id played a hit, a shield break, a knock or a kill nobody took,
+  // and a row that did not left on the diagonal under the new rows, as a mate
+  // who left does. Keyed, the squad drawn goes at once and the new one goes on
+  // air top mate first, its own reveal.
   return (
-    <PresenceScope want={has} preset="broadcast" step={STEP}>
+    <PresenceScope key={frame.squad.id} want={has} preset="broadcast" step={STEP}>
       <Board squad={frame.squad} talking={frame.talking} own={frame.own} on={has} />
     </PresenceScope>
   )
@@ -538,12 +561,13 @@ function Slot({ m, order, out, off, talking, silent, onDrop, onAired }: SlotProp
  * VALUES, so the 1 Hz re-push of an unchanged squad never reaches here, and a
  * real change costs one comparison and no effect. Mount-time state is not an
  * event: every counter starts at 0, and a row going on air is a mount (its
- * presence remounts it), so it fires none.
+ * presence remounts it), so it fires none. Each change is read at its time on
+ * the row's presence clock, `now`, the clock its waits run on (useWaited).
  */
-function useBeats(m: SquadMember, silent: Silence): Beats {
+function useBeats(m: SquadMember, silent: Silence, now: () => number): Beats {
   const [s, setS] = useState(() => ({ m, silent, b: ZERO }))
   if (s.m !== m || s.silent !== silent) {
-    const b = step(s.b, s.m, m, s.silent, silent)
+    const b = step(s.b, s.m, m, s.silent, silent, now())
     setS({ m, silent, b })
     return b
   }
@@ -589,7 +613,7 @@ interface RowProps {
 }
 
 const Row = memo(function Row({ m, talking, silent, air, now }: RowProps) {
-  const b = useBeats(m, silent)
+  const b = useBeats(m, silent, now)
   // The death sequence is "settled" once the OUT plate has landed (its
   // animationend, or the net below); until then the row holds full strength,
   // so the drain and the plate are seen whole, and the fade starts on that

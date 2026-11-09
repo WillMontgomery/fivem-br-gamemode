@@ -46,7 +46,11 @@
  *
  * UI V2'S ROWS CHECK MORE, in the page: every element of the Broadcast kit's
  * is drawn under a `.bc-kit` root, where its tokens are (V2_ROOTED), and in
- * the rows that ask, nothing overlaps the slanted vitals (v2ClearOfVitals).
+ * the rows that ask, nothing overlaps the slanted vitals (v2ClearOfVitals),
+ * the squad slot draws the Broadcast squad panel with its rows on air
+ * (v2Squad), those rows take their own way out and back (v2SquadOut and
+ * v2SquadBack: a motion, read the moment it starts), and a squad drawn over
+ * another goes on air as a new one (v2SquadSwap).
  *
  * Each failure names its screen, the sizes it fails at, the element's path and
  * the pixels cut. A NEW SCREEN OPTS IN by adding a row to SCREENS: a name and
@@ -87,6 +91,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildMock, launch, serve } from './lib/headless.mjs'
 import { FIT_SLACK, UNFIT } from '../src/ui/labelFit.ts'
+import { HALF, LEAVE_STEP, STEP } from '../src/ui/broadcast/motion/tokens.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const uiRoot = resolve(here, '..')
@@ -272,6 +277,269 @@ const tutorialStillOn = (cause) => `await new Promise((r) => setTimeout(r, 2500)
     throw new Error("the in-match walkthrough ended under ${cause}: UI v2's HUD was hidden and did not say its targets were away")
   }`
 
+/**
+ * THE BROADCAST SQUAD PANEL IN UI V2'S SLOT, ON AIR (#429): the slot draws the
+ * Broadcast panel, `n` rows, each a presence of its own and on air, and the
+ * slot's anchor has stood down for them (hud/v2/Anchor.tsx, `ownable`):
+ * nothing between the slot and the rows carries a phase or a channel of the
+ * kit's. Without it a v2 row whose slot drew today's panel would measure that
+ * and pass.
+ */
+const v2Squad = (n) => `{
+  const slot = document.getElementById('br-squad-slot')
+  if (!slot || !slot.closest('.hud-v2')) throw new Error("UI v2's squad slot is not drawn")
+  if (!slot.querySelector('.bsq-panel')) throw new Error("UI v2's squad slot does not draw the Broadcast squad panel")
+  const rows = [...slot.querySelectorAll('.bsq-air')]
+  const aired = rows.filter((r) => r.getAttribute('data-bc-phase') === 'shown').length
+  if (rows.length !== ${n} || aired !== ${n}) {
+    throw new Error('the Broadcast squad panel draws ' + rows.length + ' rows, ' + aired + ' of them on air, not ${n}')
+  }
+  const anchor = slot.querySelector('[data-hud-id="squad"]')
+  if (!anchor || !anchor.hasAttribute('data-hud-own')) throw new Error("the squad slot's anchor has not stood down for the panel's rows")
+  const round = new Set()
+  for (const r of rows) {
+    for (let e = r.parentElement; e && e !== slot.parentElement; e = e.parentElement) {
+      if (e.hasAttribute('data-bc-phase') || [...e.classList].some((c) => c.startsWith('bc-ch-'))) {
+        round.add(e.tagName.toLowerCase() + [...e.classList].map((c) => '.' + c).join(''))
+      }
+    }
+  }
+  if (round.size) throw new Error('between the squad slot and its rows, a phase or a channel of the kit: ' + [...round].join(', '))
+}`
+
+/** What the squad steps below read: the panel's rows; per row its channels'
+ *  [delay, ms] (content, surface, edge: the kit's presence vars, machine.ts
+ *  rootVars); what is in play round the rows, up to the HUD's root (a
+ *  transition or an animation there carries every row with it); and `when`,
+ *  which reads the first moment all `n` rows are in a phase, after `go`, in
+ *  a MutationObserver: before any timer or frame, so a slow page cannot let
+ *  the moment pass. */
+const SQUAD_READ = `
+  const slot = document.getElementById('br-squad-slot')
+  const root = document.querySelector('.hud-v2 [data-layer="hud"]')
+  if (!slot || !root) throw new Error("UI v2's HUD and its squad slot are not drawn")
+  const rows = () => [...slot.querySelectorAll('.bsq-air')]
+  const ms = (e, name) => parseFloat(getComputedStyle(e).getPropertyValue(name))
+  const timing = (r) => ['content', 'surface', 'edge'].map((c) => [ms(r, '--bc-' + c + '-delay'), ms(r, '--bc-' + c + '-ms')])
+  const moving = () => {
+    const out = new Set()
+    for (const r of rows()) {
+      for (let e = r.parentElement; e; e = e.parentElement) {
+        for (const a of e.getAnimations()) {
+          if (a.playState === 'running' || a.playState === 'paused' || a.pending) {
+            out.add(e.tagName.toLowerCase() + [...e.classList].map((c) => '.' + c).join('')
+              + ' (' + (a.transitionProperty || a.animationName || 'an animation') + ')')
+          }
+        }
+        if (e === root) break
+      }
+    }
+    return [...out]
+  }
+  const when = (n, phase, go, read) => new Promise((ok, fail) => {
+    const all = () => { const rs = rows(); return rs.length === n && rs.every((r) => r.getAttribute('data-bc-phase') === phase) }
+    const mo = new MutationObserver(() => { if (all()) { mo.disconnect(); clearTimeout(t); ok(read()) } })
+    const t = setTimeout(() => { mo.disconnect(); fail(new Error('the squad rows never all went ' + phase)) }, 4000)
+    mo.observe(slot, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-bc-phase'] })
+    go()
+  })`
+
+/**
+ * THE SQUAD'S OWN WAY OUT (#429, #431). Round 1's look review found today's
+ * panel leaving UI v2's slot in one 140 ms fade of its anchor's content
+ * channel, on every way out, where the owner's pick closes the Broadcast
+ * plates row by row, the bottom mate first, until about 600 ms. Read the
+ * moment `go` starts it: every row leaving on the Broadcast way off air
+ * (HALF.offAir) from its own turn, the bottom one first and each next one
+ * LEAVE_STEP after it; nothing round the rows in play, so no fade or slide of
+ * the anchor's cuts one short; and the HUD's root up until the last row has
+ * gone: when the whole HUD goes (`whole`), its sentinel holds the root up at
+ * least that long, and when only the slot's scope goes, the HUD stays.
+ */
+const v2SquadOut = (cause, go, whole) => `{${SQUAD_READ}
+  // A row still on its way in turns round at once rather than on its turn.
+  await __br.until(() => rows().every((r) => r.getAttribute('data-bc-phase') === 'shown'), 4000, 'the squad rows on air')
+  const n = rows().length
+  if (n < 2) throw new Error('the squad panel has ' + n + ' rows on air to take off (${cause})')
+  const sentinel = root.querySelector('.hud-sentinel')
+  const seen = await when(n, 'leaving', () => { ${go} }, () => ({
+    timing: rows().map(timing), moving: moving(), sentinel: sentinel.getAttribute('data-bc-phase'),
+    hold: ms(sentinel, '--bc-root-ms'), opacity: getComputedStyle(root).opacity,
+  }))
+  const OFF = ${JSON.stringify(HALF.offAir)}
+  const want = seen.timing.map((_, i) => ['content', 'surface', 'edge'].map((c) => [(n - 1 - i) * ${LEAVE_STEP} + OFF[c].at, OFF[c].ms]))
+  if (JSON.stringify(seen.timing) !== JSON.stringify(want)) {
+    throw new Error('the squad rows do not leave as the Broadcast panel does (${cause}): per row, top first, '
+      + '[delay, ms] of the content, surface and edge ' + JSON.stringify(seen.timing) + ', expected ' + JSON.stringify(want))
+  }
+  if (seen.moving.length) throw new Error('something round the squad rows moves as they leave (${cause}): ' + seen.moving.join(', '))
+  const last = Math.max(...seen.timing.flat().map(([at, len]) => at + len))
+  ${whole
+    ? `if (seen.sentinel !== 'leaving' || seen.opacity !== '1' || !(seen.hold >= last)) {
+    throw new Error("UI v2's HUD root goes before its squad rows have left (${cause}): its sentinel " + seen.sentinel
+      + ' for ' + seen.hold + ' ms, opacity ' + seen.opacity + ', the last row gone at ' + last + ' ms')
+  }`
+    : `if (seen.sentinel !== 'shown' || seen.opacity !== '1') {
+    throw new Error("UI v2's HUD goes with its squad rows (${cause}): its sentinel " + seen.sentinel + ', opacity ' + seen.opacity)
+  }`}
+}`
+
+/** ...AND BACK ON AIR once they have gone: every row entering on the
+ *  Broadcast way on air (HALF.onAir), the top mate first and each next one a
+ *  STEP after it, with nothing round them in play. A turn is counted from the
+ *  moment the panel's scope went live, and each row takes it when its
+ *  presence begins, in one commit, so a slow commit makes every row late by
+ *  the same few ms, and a turn already past is now (the kit's late joiner):
+ *  row i's is max(0, i x STEP - late), one `late` for all, read off the
+ *  bottom row, which is never at 0 but when every row comes back at once. */
+const v2SquadBack = (cause, go) => `{${SQUAD_READ}
+  await __br.until(() => rows().every((r) => r.getAttribute('data-bc-phase') !== 'leaving'), 4000, 'the squad rows off air')
+  const n = slot.querySelectorAll('.bsq-slot').length
+  const seen = await when(n, 'entering', () => { ${go} }, () => ({ timing: rows().map(timing), moving: moving() }))
+  const ON = ${JSON.stringify(HALF.onAir)}
+  const turns = seen.timing.map(([, , [edgeAt]]) => edgeAt - ON.edge.at)
+  const lens = seen.timing.map((t) => t.map(([, len]) => len))
+  const late = (n - 1) * ${STEP} - turns[n - 1]
+  if (n < 2 || lens.some((l) => JSON.stringify(l) !== JSON.stringify([ON.content.ms, ON.surface.ms, ON.edge.ms]))
+    || !(turns[n - 1] > 0) || late < -1 || turns.some((at, i) => Math.abs(at - Math.max(0, i * ${STEP} - late)) > 1)) {
+    throw new Error('the squad rows do not come back as the Broadcast panel does (${cause}): per row, top first, '
+      + '[delay, ms] of the content, surface and edge ' + JSON.stringify(seen.timing))
+  }
+  if (seen.moving.length) throw new Error('something round the squad rows moves as they come back (${cause}): ' + seen.moving.join(', '))
+}`
+
+/** One squad member as the wire spells it. */
+const wireMate = (src, name, state, hp, armor, color, more = {}) =>
+  ({ src, name, state, hp, armour: armor, colour: color, ...more }) // wire names: spelling-ok
+/** The mock's squad (src/bridge/mock.ts): four mates, one down, one out. */
+const MOCK_SQUAD = { id: 'sq_1', you: 1, members: [
+  wireMate(1, 'You', 'alive', 82, 45, '#6EE7F9', { level: 42 }),
+  wireMate(2, 'Kestrel', 'alive', 100, 80, '#2DD4BF', { level: 100 }),
+  wireMate(3, 'Vandal', 'dbno', 12, 0, '#FBBF24', { level: 7 }),
+  wireMate(4, 'Nyx', 'dead', 0, 0, '#F472B6', { reviveKey: true }),
+] }
+/** A stand-in for the walkthrough's staged squad (TutorialLayer.tsx
+ *  DEMO_SQUAD): an id no server hands out, on server ids 1 to 4. */
+const STAGED_SQUAD = { id: 'tutorial', you: 1, members: [
+  wireMate(1, 'You', 'alive', 100, 50, '#60A5FA', { kills: 2 }),
+  wireMate(2, 'Vance', 'alive', 74, 0, '#4ADE80', { kills: 1 }),
+  wireMate(3, 'Okonkwo', 'dbno', 0, 0, '#FBBF24', { kills: 0 }),
+  wireMate(4, 'Marlowe', 'alive', 100, 100, '#F87171', { kills: 4 }),
+] }
+/** A squad on server ids the staged one does not use, as a real one's are. */
+const OTHER_SQUAD = { id: 'sq_7', you: 11, members: [
+  wireMate(11, 'You', 'alive', 82, 45, '#6EE7F9', { level: 42 }),
+  wireMate(12, 'Kestrel', 'alive', 100, 80, '#2DD4BF', { level: 100 }),
+  wireMate(13, 'Vandal', 'alive', 60, 10, '#FBBF24', { level: 7 }),
+  wireMate(14, 'Nyx', 'alive', 90, 0, '#F472B6'),
+] }
+const squadOf = (sq) => `__br.emit('squad', ${JSON.stringify(sq)})`
+const staged = (sq) => `window.brStore.getState().setTutorialSquad(${JSON.stringify(sq)})`
+/** The squad slot's `n` rows, each on air. */
+const v2SquadOn = (n) => `await __br.until(() => {
+  const rows = [...document.querySelectorAll('#br-squad-slot .bsq-air')]
+  return rows.length === ${n} && rows.every((r) => r.getAttribute('data-bc-phase') === 'shown')
+}, 4000, 'the ${n} squad rows on air')`
+
+/**
+ * THE SQUAD SLOT BACK WITH NO ROWS IN IT, ITS ANCHOR UP OVER IT: the player
+ * goes solo, so the panel takes its rows off air; freefalls, which takes the
+ * slot down; and lands, which brings it back with a new anchor, shown over an
+ * empty slot, that has seen no row and so has not stood down.
+ */
+const V2_SLOT_EMPTY = [
+  `${squadOf({ id: null, you: 1, members: [MOCK_SQUAD.members[0]] })}
+  await __br.until(() => !document.querySelector('#br-squad-slot .bsq-air'), 4000, 'the squad rows off air (solo)')`,
+  `__br.emit('hud', { ...window.brStore.getState().hud, state: 'freefall', landed: false })
+  await __br.until(() => !document.getElementById('br-squad-slot'), 4000, 'the squad slot down in freefall')`,
+  `__br.emit('hud', { ...window.brStore.getState().hud, state: 'alive', landed: true })
+  await __br.until(() => document.querySelector('#br-squad-slot [data-hud-id="squad"][data-bc-phase="shown"]'), 4000,
+    "the squad slot's anchor shown over an empty slot")`,
+]
+
+/** What a beat leaves on a row of the Broadcast squad panel, the kit's
+ *  (src/ui/broadcast: Plate, Bar, LightSweep, Numeral, Stamp, Tag) and the
+ *  panel's own (hud/squadV2.css): a flash, a burst, a recolor, a flare, a
+ *  jolt or a knock, a light (but the on-air one, .bsq-onair), a bar's gain,
+ *  crack, shards or hit, a plate swapped in or out (the DOWN alarm, the OUT
+ *  plate), a zip, a numeral's punch or a digit's tick, a stamp's or a tag's
+ *  entrance (OUT, DOWN, the marks), the red line's slide, the key's drop or
+ *  slam, the level's pop, the clock's slam and the voice's cut. A row that
+ *  goes on air has none: its first reading is no event (hud/mateEvents.ts). */
+const SQUAD_BEATS = [
+  '.bc-flash', '.bc-burst', '.bc-plate__retract', '.bc-plate__flare', '.bc-plate__shake[class*=" is-"]',
+  '.bc-sweep', '.bc-gain', '.bc-crack', '.bc-shards', '.bc-bar__hit', '.bc-swap.is-in', '.bc-swap.is-out', '.bc-zip',
+  '.bc-num[class*=" is-"]', '.bc-col.is-fall', '.bc-col.is-rise', '.bc-col.is-flat', '.bc-stamp[class*=" is-"]',
+  '.bc-tag[class*=" is-"]', '.bc-plate__foot.is-new', '.bsq-key.is-drop', '.bsq-key.is-slam', '.bsq-level.is-new',
+  '.bsq-clockwrap.is-new', '.bsq-voice[class*="is-cut"]',
+].join(', ')
+
+/**
+ * A SQUAD DRAWN OVER ANOTHER IS A NEW ONE ON AIR (#429). The walkthrough's
+ * squad cards stage a squad of their own over the player's (TutorialLayer.tsx,
+ * the store's tutorialSquad, which only the HUD draws), and the panel reads
+ * its rows by server id. Read from the swap `go` makes, in a MutationObserver,
+ * until the rows of `squad`, the squad now drawn, are on air, its names in
+ * them (the page draws a store change a moment later, so the rows on air
+ * before it are the last squad's): none of them carries a beat (SQUAD_BEATS),
+ * where a row read against the last squad's row of the same server id played
+ * a hit, a shield break, a knock or a kill nobody took; the stack never holds
+ * more rows than `squad` has, where a row of the last squad's left on the
+ * diagonal under them, as a mate who leaves does; and they go on air as a
+ * squad that forms does, the Broadcast way (HALF.onAir), top mate first and a
+ * STEP apart (one lateness for all, as v2SquadBack reads it), with nothing
+ * round them in play.
+ */
+const v2SquadSwap = (cause, squad, go) => {
+  const n = squad.members.length
+  const names = JSON.stringify([...squad.members].sort((a, b) => a.src - b.src).map((m) => m.name))
+  return `{${SQUAD_READ}
+  let tallest = 0
+  let entered = null
+  const look = () => {
+    tallest = Math.max(tallest, slot.querySelectorAll('.bsq-slot').length)
+    const rs = rows()
+    if (!entered && rs.length === ${n} && rs.every((r) => r.getAttribute('data-bc-phase') === 'entering')) {
+      entered = { timing: rs.map(timing), moving: moving() }
+    }
+  }
+  const mo = new MutationObserver(look)
+  mo.observe(slot, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-bc-phase'] })
+  const drawn = () => JSON.stringify(rows().map((r) => r.querySelector('.bsq-name')?.textContent ?? ''))
+  try {
+    ${go}
+    look()
+    await __br.until(() => drawn() === ${JSON.stringify(names)} && rows().every((r) => r.getAttribute('data-bc-phase') === 'shown'),
+      4000, 'the ${n} rows of the squad drawn on air (${cause})')
+  } finally {
+    mo.disconnect()
+  }
+  const beats = []
+  rows().forEach((r, i) => {
+    for (const e of r.querySelectorAll(${JSON.stringify(SQUAD_BEATS)})) {
+      if (!e.closest('.bsq-onair')) beats.push('row ' + (i + 1) + ' ' + e.tagName.toLowerCase() + [...e.classList].map((c) => '.' + c).join(''))
+    }
+  })
+  if (beats.length) {
+    throw new Error('a squad drawn over another plays beats on its rows (${cause}), events nobody had: ' + beats.slice(0, 6).join(', '))
+  }
+  if (tallest > ${n}) {
+    throw new Error('the squad panel stacked ' + tallest + ' rows for a squad of ${n} (${cause}): the last squad left on the diagonal under it')
+  }
+  if (!entered) throw new Error('the squad drawn did not go on air as a new squad (${cause})')
+  const ON = ${JSON.stringify(HALF.onAir)}
+  const turns = entered.timing.map(([, , [edgeAt]]) => edgeAt - ON.edge.at)
+  const lens = entered.timing.map((t) => t.map(([, len]) => len))
+  const late = ${(n - 1) * STEP} - turns[${n - 1}]
+  if (lens.some((l) => JSON.stringify(l) !== JSON.stringify([ON.content.ms, ON.surface.ms, ON.edge.ms]))
+    || !(turns[${n - 1}] > 0) || late < -1 || turns.some((at, i) => Math.abs(at - Math.max(0, i * ${STEP} - late)) > 1)) {
+    throw new Error('the squad drawn does not go on air as the Broadcast panel does (${cause}): per row, top first, '
+      + '[delay, ms] of the content, surface and edge ' + JSON.stringify(entered.timing))
+  }
+  if (entered.moving.length) throw new Error('something round the squad rows moves as they go on air (${cause}): ' + entered.moving.join(', '))
+}`
+}
+
 /** The keybinds the mock sends, with rebinding available (`raw`). */
 const RAW_KEYS = `__br.emit('keybinds', { actions: window.brStore.getState().keybinds, raw: true })`
 
@@ -316,10 +584,56 @@ export const SCREENS = [
   // UI V2'S HUD (#431, #436): the first row and the long names again with the
   // hud piece on, the mock's `uiv2=hud` being a machine that holds it, told
   // first as br_ui tells the page. Measured once the wipe has landed, and
-  // failed if any of the kit's elements is drawn outside a .bc-kit root, or
-  // if the slanted vitals and the radar overlap (v2ClearOfVitals).
-  { name: 'hud/v2', query: 'uiv2=hud', steps: ['__br.match()', V2_LANDED, V2_ROOTED, v2ClearOfVitals(RADAR_PLACE)] },
-  { name: 'hud/v2-long-names', query: 'uiv2=hud', steps: ['__br.match()', LONG_NAMES, V2_LANDED, V2_ROOTED] },
+  // failed if any of the kit's elements is drawn outside a .bc-kit root, if
+  // the slanted vitals and the radar overlap (v2ClearOfVitals), or if the
+  // squad slot does not draw the Broadcast squad panel (#429), every row on
+  // air, its anchor stood down (v2Squad): the mock's four mates, and the
+  // three with long names.
+  {
+    name: 'hud/v2', query: 'uiv2=hud',
+    steps: ['__br.match()', V2_LANDED, V2_ROOTED, v2ClearOfVitals(RADAR_PLACE), v2Squad(4)],
+  },
+  { name: 'hud/v2-long-names', query: 'uiv2=hud', steps: ['__br.match()', LONG_NAMES, V2_LANDED, V2_ROOTED, v2Squad(3)] },
+  // THE SQUAD'S OWN WAY OUT AND BACK (#429, #431): the gun-shop menu takes the
+  // Broadcast rows off air and brings them back on, boarding takes them with
+  // the whole HUD, and each time they go row by row as the owner's pick does,
+  // nothing round them cutting one short (v2SquadOut, v2SquadBack). Then the
+  // HUD comes back, and is measured.
+  {
+    name: 'hud/v2-squad-out', query: 'uiv2=hud', steps: ['__br.match()', V2_LANDED, v2Squad(4),
+      v2SquadOut('the gun-shop menu', `__br.emit('gunshopmenu', { open: true })`, false),
+      v2SquadBack('the gun-shop menu closed', `__br.emit('gunshopmenu', { open: false })`),
+      v2SquadOut('boarding', `__br.emit('hud', { ...window.brStore.getState().hud, state: 'bus' })`, true),
+      '__br.match()', V2_LANDED, v2Squad(4)],
+  },
+  // THE ROWS ARRIVING UNDER THE SLOT'S ANCHOR, UP ALREADY (#429). The anchor
+  // looks for the panel's rows as each of its phases begins and when the
+  // panel's rule moves (ownKey, hasSquad); every row above brings the squad
+  // in with a phase of the anchor's own. Here the slot comes back with no
+  // rows (V2_SLOT_EMPTY), then four mates arrive with no id, which draws
+  // nothing, and then their id: the rule moves, the size does not, and an
+  // anchor that missed the rows would keep its content channel over them,
+  // fading them in one go on every way out (v2Squad).
+  {
+    name: 'hud/v2-squad-forms', query: 'uiv2=hud', steps: ['__br.match()', V2_LANDED, v2Squad(4), ...V2_SLOT_EMPTY,
+      squadOf({ ...MOCK_SQUAD, id: null }),
+      "if (document.querySelector('#br-squad-slot .bsq-air')) throw new Error('the squad panel drew rows for a squad with no id')",
+      `${squadOf(MOCK_SQUAD)}
+      ${v2SquadOn(4)}`,
+      v2Squad(4)],
+  },
+  // THE WALKTHROUGH'S SQUAD OVER THE PLAYER'S (#429): staged over a squad on
+  // the same server ids, then taken off over a squad on other ones, and
+  // staged over that, each time a new squad on air (v2SquadSwap). Measured as
+  // the squad cards show it over a real squad.
+  {
+    name: 'hud/v2-squad-staged', query: 'uiv2=hud', steps: ['__br.match()', V2_LANDED, v2Squad(4),
+      v2SquadSwap('the walkthrough over the squad, on the same server ids', STAGED_SQUAD, staged(STAGED_SQUAD)),
+      squadOf(OTHER_SQUAD),
+      v2SquadSwap('the walkthrough done, over a squad on other server ids', OTHER_SQUAD, staged(null)),
+      v2SquadSwap('the walkthrough over a squad on other server ids', STAGED_SQUAD, staged(STAGED_SQUAD)),
+      v2Squad(4)],
+  },
   // The radar hidden with the hud piece on, a full chat open and a full notice
   // stack: none of them may meet the slanted vitals (v2ClearOfVitals).
   {

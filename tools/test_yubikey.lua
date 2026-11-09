@@ -2508,6 +2508,12 @@ do
     -- The squad panel's mark is a different component, and unchanged.
     local panel = readFile(UI .. 'src/hud/SquadPanel.tsx') or ''
     ok(panel:find('<YubikeyMark glyph={m.yubikey} />', 1, true) ~= nil, 'the squad panel\'s holder mark is still the glyph')
+    -- ...and UI v2's Broadcast squad panel (#429) draws that glyph too, off
+    -- the same field, in its own spelling.
+    local panel2 = readFile(UI .. 'src/hud/SquadPanelV2.tsx') or ''
+    ok(panel2:find("const yubikey = typeof m.yubikey === 'string' && m.yubikey !== '' ? m.yubikey : null", 1, true) ~= nil
+            and panel2:find('<YubikeyMark glyph={yubikey} />', 1, true) ~= nil,
+        'and so does UI v2\'s Broadcast squad panel, off the same field')
 end
 
 describe('round 5: br_ui draws the first-pickup card as Lua says, and has no way of its own to take it down')

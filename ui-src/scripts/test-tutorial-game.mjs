@@ -26,14 +26,22 @@
  * arrow paths, the revisit, the pickup advance and the map gate. That is
  * check-ui rule R34.
  *
+ * AND THE SQUAD CARDS' TARGETS, read in the source: each is drawn by both
+ * HUDs, today's and UI v2's with the Broadcast squad panel (#429).
+ *
  * Run: npm run test:tutorialgame   (and as part of npm run build)
  */
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { GAME_STEPS } from '../src/tutorial/gameSteps.ts'
 import { LOBBY_STEPS } from '../src/tutorial/steps.ts'
 import {
   asRevisited, boxIn, canGoBack, carried, mapGoneTo, pickupState, slotsSince,
 } from '../src/tutorial/progress.ts'
+
+const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 
 let failed = 0
 let ran = 0
@@ -227,6 +235,29 @@ check('closing it on the close card does not (that is its advance)',
   mapGoneTo(GAME_STEPS, at('game-map-close')), null)
 check('a card that is not about the map goes nowhere when it closes -- the shop card among them',
   GAME_STEPS.filter((x, n) => x.overMap !== true && mapGoneTo(GAME_STEPS, n) !== null).map((x) => x.id).join(','), '')
+
+// ─── THE SQUAD CARDS FIND THEIR TARGETS IN EITHER HUD ───────────────────────
+// Each card that stages the squad rings a target the squad slot draws:
+// hud-squad (the slot's span), squad-name and squad-bars (inside the panel).
+// The HUD on screen is today's or UI v2's, by the hud piece (App.tsx), so each
+// target is drawn by both: Hud.tsx's slot with today's SquadPanel.tsx, and
+// HudV2.tsx's slot with the Broadcast panel, SquadPanelV2.tsx (#429). A card
+// whose target nothing draws ends the run 1.2 s in (TutorialLayer.tsx).
+// check-layout's tutorial/match and tutorial/match-v2 walk every card in a
+// browser, today's HUD and UI v2's.
+console.log('squad targets')
+const code = (p) => readFileSync(join(SRC, p), 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+const targetsIn = (...files) => new Set(files.flatMap((f) =>
+  [...code(f).matchAll(/(?:\bdata-tut|\btut)=["']([\w-]+)["']/g)].map((m) => m[1])))
+const todayHud = targetsIn('hud/Hud.tsx', 'hud/SquadPanel.tsx')
+const v2Hud = targetsIn('hud/v2/HudV2.tsx', 'hud/SquadPanelV2.tsx')
+const squadCards = GAME_STEPS.filter((x) => x.stage === 'squad')
+check('the cards that stage the squad are its three', squadCards.map((x) => x.target).join(','),
+  'hud-squad,squad-name,squad-bars')
+for (const card of squadCards) {
+  check(`${card.id}: today's HUD draws [data-tut="${card.target}"]`, todayHud.has(card.target), true)
+  check(`${card.id}: ...and UI v2's, with the Broadcast squad panel`, v2Hud.has(card.target), true)
+}
 
 if (failed) {
   console.error(`\ntest-tutorial-game: ${failed} of ${ran} failed`)

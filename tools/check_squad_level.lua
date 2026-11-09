@@ -225,6 +225,56 @@ if panel then
     end
 end
 
+-- -------------------------------------- the Broadcast panel, UI v2's (#429) ---
+--
+-- UI v2's HUD draws the Broadcast squad panel (hud/SquadPanelV2.tsx) in the
+-- same slot while the hud piece is on. The asserts above stay on today's
+-- panel; these are their twins in its spelling: the guard a range, the figure
+-- beside the name and before DOWN, a kit Numeral and nothing else in its box,
+-- sized by a kit token rather than the text-size preference, and kept from
+-- shrinking out of its row.
+
+local v2 = read(UI .. 'hud/SquadPanelV2.tsx', codeOfTs)
+local v2css = read(UI .. 'hud/squadV2.css', codeOfTs)
+if v2 then
+    if v2:find('m%.level &&') then
+        fail('the Broadcast panel\'s level guard is a truthiness test',
+             'React renders a literal 0 for `{0 && ...}`, and 0 is not a level')
+    end
+    if not v2:find("typeof m%.level === 'number' && m%.level >= 1") then
+        fail('the Broadcast panel\'s level guard no longer tests for a real level',
+             'absent means "the server has not said yet" and must draw nothing')
+    end
+    local posWho   = v2:find('className="bsq-who"', 1, true)
+    local posName  = v2:find('tut="squad-name"', 1, true)
+    local posLevel = v2:find('className={`bsq-level', 1, true)
+    local posDown  = v2:find('>DOWN</Tag>', 1, true)
+    if not (posWho and posName and posDown) then
+        fail('the Broadcast panel\'s name line is no longer recognizable',
+             'this gate locates the level relative to the name and DOWN')
+    elseif not posLevel then
+        fail('the Broadcast panel no longer draws a level')
+    elseif not (posWho < posName and posName < posLevel and posLevel < posDown) then
+        fail('the Broadcast panel\'s level is not beside the name any more',
+             'the owner asked for it NEAR THE NAME')
+    end
+    local box = v2:match('className={`bsq%-level[^`]*`}>%s*(.-)%s*</span>')
+    if not box or not box:match('^<Numeral value={level} [^<>]*/>$') then
+        fail('the Broadcast panel\'s level box holds something other than the figure',
+             '"Never add unsolicited UI text": the box draws the level\'s Numeral alone')
+    elseif box:find('tscale', 1, true) or box:find(' ts ', 1, true) or box:find('"ts ', 1, true)
+           or not box:find('fs="var(--bc-fs-', 1, true) then
+        fail('the Broadcast panel\'s level is not sized by a kit token',
+             'the squad plate is a fixed-size plate; the text-size preference '
+             .. 'must not reach it')
+    end
+    local rule = v2css and v2css:match('%.bsq%-level%s*(%b{})')
+    if not rule or not rule:find('flex%-shrink:%s*0') then
+        fail('the Broadcast panel\'s level lost `flex-shrink: 0`',
+             'a long gamertag then squeezes the figure out of its own row')
+    end
+end
+
 -- ------------------------------------------------------------- the bundle ---
 --
 -- ui-src is a SOURCE tree; br_ui/ui/assets/index.js is what the game loads and
@@ -256,6 +306,18 @@ do
                 fail('the built bundle does not contain the CURRENT level mark',
                      'the bundle is stale. Run: cd ui-src && npm run build')
             end
+        end
+        -- ...AND THE BROADCAST PANEL'S, which UI v2's HUD draws (#429): its
+        -- level box's class, read out of the source the same way.
+        local cls2 = v2 and v2:match('className={`(bsq%-level)[^`]*`}')
+        if not cls2 then
+            fail('cannot read the level box\'s class out of SquadPanelV2.tsx',
+                 'this gate compares it with the built bundle. If the box was '
+                 .. 'restructured, re-point this -- do not replace it with a literal')
+        elseif not js:find(cls2, 1, true) then
+            fail('the built bundle does not contain the Broadcast squad panel\'s level',
+                 'the bundle is stale, or UI v2\'s HUD does not draw the panel. '
+                 .. 'Run: cd ui-src && npm run build')
         end
     end
 end

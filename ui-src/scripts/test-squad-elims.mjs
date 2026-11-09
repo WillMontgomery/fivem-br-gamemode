@@ -107,9 +107,12 @@ globalThis.clearInterval = () => {}
 let perf = 0
 performance.now = () => perf
 // What UI v2's presences ask of an element, for the renderer's stand-ins: no
-// transition ever runs, so each phase ends on the clock, inside nothing.
+// transition ever runs, so each phase ends on the clock, inside nothing. And
+// what the Broadcast squad panel's stack asks (#429): the rows it holds, read
+// for the slide that closes a gap after a leave, and a stand-in holds none.
 Object.assign(globalThis.Node.prototype, {
   parentElement: null,
+  children: [],
   closest() { return null },
   addEventListener() {},
   removeEventListener() {},

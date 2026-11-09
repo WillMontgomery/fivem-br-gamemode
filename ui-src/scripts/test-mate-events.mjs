@@ -17,7 +17,9 @@
  * THE OWNER'S ORDER (decision 3). The game mints a revive key on the death's
  * own edge, so the key and its line usually come in the same push as the
  * death. They wait for OUT's beat, after the drain and the OUT plate, as in
- * the sequence he approved, where the key came a second later.
+ * the sequence he approved, where the key came a second later; and a key in
+ * a later push that still comes before OUT's beat waits for what is left of
+ * it, so each push here has a time on the panel's clock.
  *
  * WHY node RUNS A .ts FILE DIRECTLY: mateEvents.ts imports types alone, which
  * node's type stripping erases (the shape of test-fade.mjs).
@@ -89,19 +91,23 @@ const dead = (o = {}) => mate({ ...o, state: 'dead', hp: 0 })
 /** Every change this suite plays, kept for the last section's check. */
 const seen = []
 
-/** The beats after one change, from a row that has played nothing yet. */
+/** The beats after one change, from a row that has played nothing yet, its
+ *  push at 0 on the panel's clock. */
 function one(a, z, was = null, now = null) {
-  const b = frozen(step(ZERO, frozen(a), frozen(z), was, now))
+  const b = frozen(step(ZERO, frozen(a), frozen(z), was, now, 0))
   seen.push([a, z, ZERO, b])
   return b
 }
 
 /** The beats after each reading in turn. The first reading is a mount, so its
- *  beats are ZERO; `silences` is the row's silence at each (null if left out). */
-function play(readings, silences = []) {
+ *  beats are ZERO; `silences` is the row's silence at each (null if left out),
+ *  and `times` when each push came, in ms on the panel's clock: a second
+ *  apart if left out, the SLOW loop's rate. */
+function play(readings, silences = [], times = []) {
   const out = [ZERO]
   for (let i = 1; i < readings.length; i++) {
-    out.push(frozen(step(out[i - 1], frozen(readings[i - 1]), frozen(readings[i]), silences[i - 1] ?? null, silences[i] ?? null)))
+    out.push(frozen(step(out[i - 1], frozen(readings[i - 1]), frozen(readings[i]), silences[i - 1] ?? null,
+      silences[i] ?? null, times[i] ?? i * 1000)))
     seen.push([readings[i - 1], readings[i], out[i - 1], out[i]])
   }
   return out
@@ -236,11 +242,11 @@ console.log('down, revived, died, back in')
   const died = one(mate({ hp: 70, armor: 40 }), dead())
   check('died standing: the die flash and a knock, remembered as from alive; the bars drain, so no hit and no break',
     [moved(ZERO, died), died.death, r3(died.flash), r3(died.shake)],
-    [['death', 'flash', 'shake'], { n: 1, from: 'alive' }, { n: 1, kind: 'die', power: 1 }, { n: 1, kind: 'knock', amp: 0.12 }])
+    [['death', 'flash', 'shake'], { n: 1, from: 'alive', at: 0 }, { n: 1, kind: 'die', power: 1 }, { n: 1, kind: 'knock', amp: 0.12 }])
   check('bled out from down: remembered as from down, so the alarm drains before OUT',
-    one(mate({ state: 'dbno', hp: 0 }), dead()).death, { n: 1, from: 'down' })
+    one(mate({ state: 'dbno', hp: 0 }), dead()).death, { n: 1, from: 'down', at: 0 })
   check('leaving the match draws as a death; dead to left is not a second one',
-    [one(mate(), mate({ state: 'left', hp: 0 })).death, moved(ZERO, one(dead(), mate({ state: 'left', hp: 0 })))], [{ n: 1, from: 'alive' }, []])
+    [one(mate(), mate({ state: 'left', hp: 0 })).death, moved(ZERO, one(dead(), mate({ state: 'left', hp: 0 })))], [{ n: 1, from: 'alive', at: 0 }, []])
   const back = one(dead({ reviveKey: true }), mate({ state: 'freefall', hp: 100 }))
   check('back in (a key spent, through the sky): the OUT plate wipes off, the bars fill from 0, the row rises; the key goes quietly',
     [moved(ZERO, back), back.rise, back.hpUp, back.hpPop], [['hpPop', 'hpUp', 'rise', 'shake'], { n: 1, kind: 'backIn' }, { n: 1, from: 0, to: 100 }, 1])
@@ -327,12 +333,12 @@ console.log("the revive key's three readings, its line and the zip")
 }
 
 // ── the owner's order ───────────────────────────────────────────────────────
-console.log("THE OWNER'S ORDER: a key that comes with the death waits for OUT")
+console.log("THE OWNER'S ORDER: a key that comes before OUT waits for it")
 {
   const b = one(mate({ hp: 70 }), dead({ reviveKey: false, reviveKeyEndsAt: T0 }))
   check('the death plays at once; the key drops in and its line slides in at OUT\'s beat',
     [moved(ZERO, b), b.death, b.keyAnim, b.lineIn],
-    [['death', 'flash', 'keyAnim', 'lineIn', 'shake'], { n: 1, from: 'alive' }, { n: 1, kind: 'drop', delay: OUT_WORD_AT }, { n: 1, delay: OUT_WORD_AT }])
+    [['death', 'flash', 'keyAnim', 'lineIn', 'shake'], { n: 1, from: 'alive', at: 0 }, { n: 1, kind: 'drop', delay: OUT_WORD_AT }, { n: 1, delay: OUT_WORD_AT }])
   check('...which is after the drain and the OUT plate, never before either', [b.keyAnim.delay > OUT_PLATE_AT, b.lineIn.delay > OUT_PLATE_AT, b.keyAnim.delay], [true, true, 860])
   const bled = one(mate({ state: 'dbno', hp: 0 }), dead({ reviveKey: false, reviveKeyEndsAt: T0 }))
   check('bleeding out with the key in the same push: the same wait', [bled.death.from, bled.keyAnim.delay, bled.lineIn.delay], ['down', 860, 860])
@@ -342,6 +348,25 @@ console.log("THE OWNER'S ORDER: a key that comes with the death waits for OUT")
   const later = play([mate(), dead({ reviveKey: false, reviveKeyEndsAt: T0 }), dead({ reviveKey: false, reviveKeyEndsAt: T0, voiceOff: true })], [null, null, 'chosen'])
   check('the wait stays with the beat it was given: the next push (the mate spectating, voice off) leaves the key and the line as they were',
     [moved(later[1], later[2]), later[2].keyAnim, later[2].lineIn], [['voiceCut'], later[1].keyAnim, later[1].lineIn])
+
+  // A KEY IN A LATER PUSH THAT STILL COMES BEFORE OUT. The death comes off
+  // the roster and the key off the squad beacon (br_core/client/state.lua,
+  // pushSquadOrParty), so a key can come a push after its death; and a push
+  // can come well inside a second of the last one, since a kill in the squad
+  // pushes at once (#439). Played at once, the key mark and the red line
+  // came over the draining bars, before the OUT plate and OUT.
+  const soon = play([mate(), dead(), dead({ reviveKey: false, reviveKeyEndsAt: T0 })], [], [0, 1000, 1300])
+  check("a key and its line in a push 300 ms after the death wait for what is left of OUT's beat",
+    [moved(soon[1], soon[2]), soon[2].keyAnim, soon[2].lineIn],
+    [['keyAnim', 'lineIn'], { n: 1, kind: 'drop', delay: OUT_WORD_AT - 300 }, { n: 1, delay: OUT_WORD_AT - 300 }])
+  const grabbed = play([mate(), dead({ reviveKey: false, reviveKeyEndsAt: T0 }), dead({ reviveKey: true })], [], [0, 1000, 1500])
+  check('...as does a key fetched inside it, so its slam and the zip never come before OUT either',
+    [grabbed[2].keyAnim, grabbed[2].zip], [{ n: 2, kind: 'slam', delay: OUT_WORD_AT - 500 }, { n: 1, death: 1 }])
+  const onBeat = play([mate(), dead(), dead({ reviveKey: false, reviveKeyEndsAt: T0 })], [], [0, 1000, 1000 + OUT_WORD_AT])
+  check("...and a key at OUT's beat, or after it, plays at once", [onBeat[2].keyAnim.delay, onBeat[2].lineIn.delay], [0, 0])
+  const aired = play([dead(), dead({ reviveKey: false, reviveKeyEndsAt: T0 })], [], [0, 300])
+  check('a row that went on air out saw no death, and OUT never dropped on it: its key waits for nothing',
+    [aired[1].death.n, aired[1].keyAnim.delay, aired[1].lineIn.delay], [0, 0, 0])
 }
 
 // ── the marks, the voice, the level, the color ──────────────────────────────
@@ -414,7 +439,7 @@ console.log('one mate through a match: every beat on its own push, and on no oth
   const end = m[m.length - 1]
   check('...and each counted once: two deaths, each zip on its own death, four key moves, two lines',
     [end.death, end.zip, end.keyAnim, end.lineIn, end.downed, end.rise, end.elim, end.level, end.shake.n, end.flash.n],
-    [{ n: 2, from: 'alive' }, { n: 2, death: 2 }, { n: 4, kind: 'slam', delay: 0 }, { n: 2, delay: 0 }, 2, { n: 2, kind: 'backIn' }, 1, 1, 12, 7])
+    [{ n: 2, from: 'alive', at: 14000 }, { n: 2, death: 2 }, { n: 4, kind: 'slam', delay: 0 }, { n: 2, delay: 0 }, 2, { n: 2, kind: 'backIn' }, 1, 1, 12, 7])
   check('the first death came from down and held its key for OUT; the second did not need to',
     [m[10].death.from, m[10].keyAnim.delay, m[10].lineIn.delay, m[11].zip, m[15].keyAnim.delay], ['down', 860, 860, { n: 1, death: 1 }, 0])
 }

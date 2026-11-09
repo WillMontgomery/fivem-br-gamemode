@@ -14,7 +14,7 @@ import StormBar from '../StormBar'
 import WarmupTimer from '../WarmupTimer'
 import Counters from '../Counters'
 import KillFeed from '../KillFeed'
-import SquadPanel from '../SquadPanel'
+import SquadPanelV2, { hasSquad } from '../SquadPanelV2'
 import DbnoOverlay from '../DbnoOverlay'
 import InventoryBar from '../InventoryBar'
 import SpectateHint from '../SpectateHint'
@@ -74,6 +74,16 @@ import { LAST_TURN } from './choreo'
  * above, as in every clip the owner saw; at a safe zone of 0.9 it is under the
  * radar from 1080p up at the default Interface size (check-layout's hud/v2 and
  * hud/v2-safe-low hold both sides).
+ *
+ * V2 6, THE BROADCAST SQUAD PANEL (the owner's pick for #429). The slot draws
+ * ../SquadPanelV2.tsx, today's props off today's selectors, where today's HUD
+ * draws ../SquadPanel.tsx. Each of its rows is a kit presence of its own, so
+ * the slot's anchor stands down once it sees them (./Anchor.tsx, `ownable`)
+ * and moves nothing: the rows go on air top mate first and off air bottom
+ * mate first, the panel's own way, at the gun-shop counter and with the whole
+ * HUD alike, as on the preview stage. Left standing, the anchor's content
+ * channel would fade the whole panel in one 140 ms go and cut every row short
+ * (check-layout's hud/v2-squad-out holds it).
  */
 
 /** Every walkthrough target this HUD draws (data-tut), its own and those of
@@ -205,10 +215,13 @@ export default function HudV2({ rootPreset, paused }: {
           {/* The slot keeps its box and its id (PlayerList measures it). The
               gun-shop menu is a scope round it (V2 3), so the panel takes its
               way out when the menu opens. NO ScopeFloor IN THIS ONE, on
-              purpose: the menu takes the panel away on its own, and a floor
-              would hold it for the whole reversed stagger first. The price is
-              that on a HUD-wide way out the squad counts back from its own
-              rows and leaves with the first anchors, not the last. */}
+              purpose, as on the preview stage: the slot's scope counts its way
+              out from the squad anchor alone, so the menu never waits out the
+              HUD's reversed stagger. The Broadcast panel's rows count back in
+              the panel's own scope, so on a HUD-wide way out the squad leaves
+              with the first anchors, not the last, as the owner saw it. The
+              anchor looks for the panel's rows when the panel's own rule
+              (hasSquad) moves and as each of its phases begins (V2 6). */}
           {!descending && (
             <div
               id={SQUAD_SLOT_ID}
@@ -216,9 +229,9 @@ export default function HudV2({ rootPreset, paused }: {
               style={{ top: 'var(--hud-top)', left: 'var(--hud-left)' }}
             >
               <PresenceScope want={!gunshopMenu}>
-                <Anchor id="squad" ownable ownKey={squad.members.length}>
+                <Anchor id="squad" ownable ownKey={hasSquad(squad)}>
                   <span data-tut="hud-squad" className="block">
-                    <SquadPanel
+                    <SquadPanelV2
                       squad={squad}
                       talking={talking}
                       voiceSilent={voiceSilent}

@@ -174,7 +174,9 @@ export interface Beats {
   downed: number
   /** Back up: from down (revive) or from dead (a key spent). */
   rise: { n: number; kind: 'revive' | 'backIn' }
-  death: { n: number; from: MatePhase }
+  /** The deaths so far, the phase the last one came from, and when its push
+   *  came (`at`, on the panel's clock): OUT drops OUT_WORD_AT after that. */
+  death: { n: number; from: MatePhase; at: number }
   /** The key's pickup window opened: the red line slides in, `delay` ms
    *  after its push. */
   lineIn: { n: number; delay: number }
@@ -203,7 +205,7 @@ export const ZERO: Beats = {
   elim: 0,
   downed: 0,
   rise: { n: 0, kind: 'revive' },
-  death: { n: 0, from: 'alive' },
+  death: { n: 0, from: 'alive', at: 0 },
   lineIn: { n: 0, delay: 0 },
   keyAnim: { n: 0, kind: 'drop', delay: 0 },
   zip: { n: 0, death: 0 },
@@ -220,7 +222,8 @@ const hasLevel = (m: SquadMember) => typeof m.level === 'number' && m.level >= 1
 /**
  * The beats after one more reading of the same mate: `b` the beats so far,
  * `prev` and `next` the last reading and this one, `wasSilent` and `silent`
- * the row's silence at each. It returns new beats and never writes to `b`.
+ * the row's silence at each, and `at` when this reading's push came, on the
+ * panel's clock (ms). It returns new beats and never writes to `b`.
  *
  * THE OWNER'S ORDER FOR A DEATH (decision 3). The sequence he approved has
  * the key arrive after the death: the bars drain, the OUT plate comes in, OUT
@@ -228,8 +231,11 @@ const hasLevel = (m: SquadMember) => typeof m.level === 'number' && m.level >= 1
  * second later). The game mints the key on the death's own edge, above the
  * state change (br_core/server/combat.lua), so the key and its line usually
  * arrive in the SAME push as the death; then both wait for OUT's beat. One
- * that arrives a push later, a second later on the SLOW loop, is after OUT
- * already and plays at once.
+ * that arrives a push later waits for what is left of it: the death comes off
+ * the roster and the key off the squad beacon (br_core/client/state.lua,
+ * pushSquadOrParty), and pushes are not always a second apart, since a kill
+ * in the squad pushes at once (#439). One that comes at OUT's beat or after
+ * it plays at once.
  *
  * THE PANEL'S HALF of that order: it keys the line and the key mark by their
  * beat's `n` (lineIn is an object here, where the preview's was a number, so
@@ -237,7 +243,9 @@ const hasLevel = (m: SquadMember) => typeof m.level === 'number' && m.level >= 1
  * hidden for their `delay` before they play. This file's test cannot see the
  * panel do either; the panel's own check must.
  */
-export function step(b: Beats, prev: SquadMember, next: SquadMember, wasSilent: Silence, silent: Silence): Beats {
+export function step(
+  b: Beats, prev: SquadMember, next: SquadMember, wasSilent: Silence, silent: Silence, at: number,
+): Beats {
   const d = diffMate(prev, next)
   const o: Beats = { ...b }
   const shakes: [ShakeKind, number][] = []
@@ -290,12 +298,14 @@ export function step(b: Beats, prev: SquadMember, next: SquadMember, wasSilent: 
     shakes.push(['rise', 0.5])
   }
   if (d.died) {
-    o.death = { n: b.death.n + 1, from: d.from }
+    o.death = { n: b.death.n + 1, from: d.from, at }
     flashes.push(['die', 1])
     shakes.push(['knock', 0.12])
   }
-  // The key and its line wait for OUT's beat when they come with the death.
-  const keyDelay = d.died ? OUT_WORD_AT : 0
+  // The key and its line wait for OUT's beat when they come before it: all of
+  // it in the death's own push, what is left of it in a later one. A row that
+  // went on air out saw no death, and nothing drops OUT on it.
+  const keyDelay = o.death.n > 0 ? Math.max(0, o.death.at + OUT_WORD_AT - at) : 0
   if (d.windowOpened) o.lineIn = { n: b.lineIn.n + 1, delay: keyDelay }
   if (d.keyDropped) o.keyAnim = { n: b.keyAnim.n + 1, kind: 'drop', delay: keyDelay }
   if (d.keyHeld) {

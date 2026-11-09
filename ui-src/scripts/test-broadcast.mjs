@@ -56,9 +56,14 @@
  *    kit; its root carries bc-kit; it takes today's panel's props and draws
  *    today's two walkthrough targets; the three steps that ended on the
  *    animation clock alone (the leave's drop, the death's settle, the FLIP)
- *    each have a JS clock net (#252); and the owner's order for a death
+ *    each have a JS clock net (#252); the owner's order for a death
  *    (decision 3) is drawn: the key mark and its red line only once their
- *    beat's wait is over.
+ *    beat's wait is over, each change read at its time on the row's presence
+ *    clock; a squad drawn over another is a new one on air (the panel's scope
+ *    keyed by its id); and UI v2's HUD draws it in its squad slot, today's
+ *    panel nowhere there, with today's props, under the squad anchor keyed on
+ *    the panel's own rule (hasSquad), so the anchor stands down for its rows,
+ *    and no ScopeFloor in the slot.
  *
  * node runs the .ts files as-is (type stripping): they have no runtime imports.
  */
@@ -1615,13 +1620,15 @@ check('the FLIP: every Web Animation still unfinished is canceled once the newes
 // THE OWNER'S ORDER FOR A DEATH (decision 3). The game mints a revive key on
 // the death's own edge, so the key and its red line usually come in the same
 // push as the death; mateEvents.ts's step() gives their beats a `delay`,
-// OUT's beat (OUT_WORD_AT) when they come with it, and test-mate-events pins
-// that half. The panel's half, read here: the key mark is keyed by the key's
-// beat and drawn only once that beat's wait is over, the red line the same
-// by its own beat, the line's zip with the key, the wait is the beat's delay
-// on the row's presence clock, and OUT itself drops at OUT_WORD_AT. Keyed by
-// the beat object rather than its `n`, every line would share one key and a
-// new one would never slide in.
+// OUT's beat (OUT_WORD_AT) when they come with it and what is left of it when
+// they come in a later push before it, and test-mate-events pins that half.
+// The panel's half, read here: the key mark is keyed by the key's beat and
+// drawn only once that beat's wait is over, the red line the same by its own
+// beat, the line's zip with the key, the wait is the beat's delay on the
+// row's presence clock, every change goes to step() with its time on that
+// clock, and OUT itself drops at OUT_WORD_AT. Keyed by the beat object rather
+// than its `n`, every line would share one key and a new one would never
+// slide in.
 const flatAnd = (e) => {
   const x = unparen(e)
   return ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
@@ -1668,6 +1675,93 @@ check("OUT drops at OUT_WORD_AT, the wait step() gives the key, and the panel ke
   [/<Stamp word="OUT"[^>]*\bdelay=\{OUT_WORD_AT\}/.test(rowFn), /\bdelay=\{OUT_PLATE_AT\}/.test(rowFn),
     /\bconst OUT_(?:PLATE_AT|PLATE_MS|WORD_AT)\b/.test(sqTsx)],
   [true, true, false])
+// A change read at no time, or on another clock, would measure a later key
+// from nothing: every key would wait, or none.
+const beatsFn = fnBody(sqTsx, 'useBeats')
+check("useBeats hands step() each change's time on the row's presence clock, the one the waits run on, and Row gives it that clock",
+  [/^function useBeats\(m: SquadMember, silent: Silence, now: \(\) => number\): Beats \{/.test(beatsFn),
+    /\bstep\(s\.b, s\.m, m, s\.silent, silent, now\(\)\)/.test(beatsFn), /\bconst b = useBeats\(m, silent, now\)/.test(rowFn)],
+  [true, true, true])
+
+// UI V2'S HUD DRAWS IT, AND ITS ROWS LEAVE THEIR OWN WAY (#429, #431).
+// hud/v2/HudV2.tsx's squad slot draws this panel where Hud.tsx's draws
+// today's, with the props Hud.tsx hands today's, and today's panel nowhere.
+// The slot's anchor is ownable and keyed on the panel's own rule (hasSquad,
+// the rule the panel draws its rows by, today's panel's own): the anchor
+// looks for the rows when that rule moves and as each of its phases begins,
+// and once it sees them it stands down. Keyed on something that can stay put
+// while the rows come (the squad's size, when an id arrives on a squad of the
+// same size), it would miss them, and its content channel would fade the
+// whole panel in one 140 ms go on every way out, each row cut short. No
+// ScopeFloor sits in the slot, the preview's call: the slot's scope counts
+// its way out from the squad anchor alone, so the gun-shop menu never waits
+// out the HUD's reversed stagger (the rows count back in the panel's own
+// scope either way). check-layout's hud/v2-squad-out watches the way out
+// itself, in a browser.
+const hudV2Sf = jsxOf(join(V2, 'HudV2.tsx'))
+const importsOf = (sf) => sf.statements.filter((s) => ts.isImportDeclaration(s)).map((s) => {
+  const c = s.importClause
+  const named = c?.namedBindings && ts.isNamedImports(c.namedBindings) ? c.namedBindings.elements.map((e) => e.name.text) : []
+  return { from: s.moduleSpecifier.text, name: c?.name?.text ?? null, named }
+})
+const v2Imports = importsOf(hudV2Sf)
+check("HudV2.tsx takes the panel and its rule from ../SquadPanelV2 (SquadPanelV2, { hasSquad }), and nothing from today's ../SquadPanel",
+  [v2Imports.filter((i) => i.from === '../SquadPanelV2').map((i) => [i.name, i.named]), v2Imports.filter((i) => i.from === '../SquadPanel').length],
+  [[['SquadPanelV2', ['hasSquad']]], 0])
+/** An element's attributes as `name=value` (a string's text, an
+ *  expression's code, or the bare name), in source order. */
+const attrList = (n, sf) => attrsOf(n).filter((a) => ts.isJsxAttribute(a)).map((a) => {
+  const i = a.initializer
+  if (!i) return a.name.getText(sf)
+  if (ts.isStringLiteral(i)) return `${a.name.getText(sf)}="${i.text}"`
+  return `${a.name.getText(sf)}={${i.expression ? i.expression.getText(sf) : ''}}`
+})
+const elementsOf = (sf, tag) => {
+  const out = []
+  eachNode(sf, (n) => { if (isEl(n) && tagOf(n) === tag) out.push(n) })
+  return out
+}
+const hudSf = jsxOf(join(SRC, 'hud', 'Hud.tsx'))
+const todayPanel = elementsOf(hudSf, 'SquadPanel')
+const v2Panel = elementsOf(hudV2Sf, 'SquadPanelV2')
+check("HudV2 draws SquadPanelV2 once, today's panel never, with the props Hud.tsx hands today's panel, off the same names",
+  [v2Panel.length, elementsOf(hudV2Sf, 'SquadPanel').length, v2Panel.map((n) => attrList(n, hudV2Sf))],
+  [1, 0, todayPanel.map((n) => attrList(n, hudSf))])
+// From the panel up to the slot: each element round it, and nothing else.
+const slotChain = []
+let slotEl = null
+for (let a = v2Panel[0]?.parent; a; a = a.parent) {
+  if (!ts.isJsxElement(a)) continue
+  slotChain.push(`<${tagOf(a)} ${attrList(a, hudV2Sf).join(' ')}>`)
+  if (attrList(a, hudV2Sf).includes('id={SQUAD_SLOT_ID}')) { slotEl = a; break }
+}
+check('in the slot: the walkthrough\'s span, in the squad anchor (ownable, keyed on hasSquad(squad)), in the gun-shop scope, in the slot itself',
+  slotChain, [
+    '<span data-tut="hud-squad" className="block">',
+    '<Anchor id="squad" ownable ownKey={hasSquad(squad)}>',
+    '<PresenceScope want={!gunshopMenu}>',
+    `<div id={SQUAD_SLOT_ID} className="absolute w-[13rem]" style={{ top: 'var(--hud-top)', left: 'var(--hud-left)' }}>`,
+  ])
+let slotFloors = slotEl === null ? -1 : 0
+if (slotEl !== null) eachNode(slotEl, (n) => { if (isEl(n) && tagOf(n) === 'ScopeFloor') slotFloors++ })
+check("and no ScopeFloor in the slot (the preview's call): the gun-shop menu never waits out the HUD's reversed stagger", slotFloors, 0)
+const panelAt = sqTsx.indexOf('export default function SquadPanelV2(')
+const panelFn = panelAt < 0 ? '' : sqTsx.slice(panelAt, sqTsx.indexOf('\n}\n', panelAt) + 2)
+check("hasSquad is today's panel's rule (SquadPanel.tsx draws nothing when !squad.id || squad.members.length <= 1), and the panel's rows come by it",
+  [/^export function hasSquad\(squad: SquadPayload\): boolean \{\s*return !!squad\.id && squad\.members\.length > 1\s*\}/m.test(sqTsx),
+    /\bif \(!squad\.id \|\| squad\.members\.length <= 1\) return null\b/.test(codeOf.get(join(SRC, 'hud', 'SquadPanel.tsx')) ?? ''),
+    /\bconst has = hasSquad\(squad\)/.test(panelFn), /<PresenceScope [^>]*\bwant=\{has\}/.test(panelFn)],
+  [true, true, true, true])
+// A DIFFERENT SQUAD IS A NEW ONE ON AIR (#429). The rows are read by server
+// id, so a squad drawn over another (the walkthrough's staged one over the
+// player's, selHudSquad) was read as a change to each row it shared a server
+// id with, a hit, a shield break, a knock or a kill nobody took, and as a
+// leave for each it did not, under the new rows. The panel's one scope is
+// keyed by the squad's id, so the squad drawn goes and the new one goes on air
+// as a squad that forms does. check-layout's hud/v2-squad-staged watches it.
+check("a squad drawn over another is a new one on air: the panel's one scope is keyed by the squad's id",
+  elementsOf(sqSf, 'PresenceScope').map((n) => attrList(n, sqSf)),
+  [['key={frame.squad.id}', 'want={has}', 'preset="broadcast"', 'step={STEP}']])
 
 console.log(`\n${ran - failed}/${ran} passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

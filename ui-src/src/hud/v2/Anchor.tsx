@@ -32,8 +32,10 @@ import { LAST_TURN, TURNS, type AnchorId, type ChannelName, type Resolved } from
  *
  * A KIT PANEL OWNS ITS ROWS. The squad slot is `ownable`: when the panel inside
  * it renders presences of its own (Broadcast on the kit: one per row), the
- * anchor stands down and moves nothing, so the rows' reveal is the squad's.
- * Today's panel has none, and the anchor moves the slot as one piece.
+ * anchor stands down and moves nothing, so the rows' reveal and their way out
+ * are the squad's. Until it sees one (no squad yet, or a squad of one, which
+ * draws no rows) it keeps its channel over an empty slot; a panel with no
+ * presences, as today's has none, would move as one piece.
  *
  * A WINDOW, NOT A SCALE, under the wipe's mask (./hud2.css): an edge or surface
  * wrapper opens over one child that holds the element still,
@@ -55,10 +57,11 @@ export interface AnchorProps {
   live?: readonly unknown[]
   /** May hold a kit panel whose rows are presences of their own. */
   ownable?: boolean
-  /** What an ownable panel's rows come and go with (the squad's size). The
-   *  anchor looks for them when this changes or a phase begins, never on every
-   *  render: in solo the panel draws no rows at all, and the HUD renders at
-   *  its push rate for the whole match. */
+  /** What an ownable panel's rows come with (the squad panel's own rule,
+   *  SquadPanelV2's hasSquad: rows for a squad with an id and more than one
+   *  member). The anchor looks for them when this changes or a phase begins,
+   *  never on every render: in solo the panel draws no rows at all, and the
+   *  HUD renders at its push rate for the whole match. */
   ownKey?: unknown
   children?: ReactNode
 }

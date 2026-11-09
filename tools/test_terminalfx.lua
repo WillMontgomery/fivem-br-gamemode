@@ -4224,6 +4224,12 @@ do
         'and a row with no position takes the dot down (squadmates.lua)')
     local panel = readFile('ui-src/src/hud/SquadPanel.tsx') or ''
     ok(panel:find('<BountyMark glyph={m.bounty} />', 1, true) ~= nil, 'the panel draws the mark (SquadPanel.tsx)')
+    -- UI v2's HUD draws the Broadcast squad panel instead (#429): the same
+    -- mark, off the same field, read in its own spelling.
+    local panel2 = readFile('ui-src/src/hud/SquadPanelV2.tsx') or ''
+    ok(panel2:find("const bounty = typeof m.bounty === 'string' && m.bounty !== '' ? m.bounty : null", 1, true) ~= nil
+            and panel2:find('<BountyMark glyph={bounty} />', 1, true) ~= nil,
+        'and so does UI v2\'s Broadcast squad panel, off the same field (SquadPanelV2.tsx)')
     local manifest = readFile(ROOT .. 'br_core/fxmanifest.lua') or ''
     local t = manifest:find("'server/terminal.lua'", 1, true)
     local fx = manifest:find("'server/terminalfx.lua'", 1, true)
