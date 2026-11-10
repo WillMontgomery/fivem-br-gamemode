@@ -6,7 +6,7 @@
   "description": "NUI for Blitz Royale. Builds into resources/[fivem-royale]/br_ui/ui, and the Season 2 terminal app into resources/[computer]/cuchi_computer/nui/apps/terminal.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:uiv2 && node scripts/test-broadcast.mjs && npm run test:countdown && npm run test:impacts && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:lobbytrack && npm run test:continuetoggle && npm run test:tutoriallock && npm run test:tutorialgame && npm run test:hudconditions && npm run test:squadelims && npm run test:noticewait && npm run test:mateevents && npm run test:inventoryfx && npm run test:fade && npm run test:cold && npm run test:lockerv2 && npm run test:marketv2 && npm run test:fit && npm run test:fuelgauge && npm run check:layout && npm run test:lockerv2menus && npm run build:terminal && node scripts/check-css.mjs pages && npm run test:cef && npm run check:cef",
+    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:uiv2 && node scripts/test-broadcast.mjs && npm run test:countdown && npm run test:impacts && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:lobbytrack && npm run test:continuetoggle && npm run test:tutoriallock && npm run test:tutorialgame && npm run test:hudconditions && npm run test:squadelims && npm run test:noticewait && npm run test:mateevents && npm run test:inventoryfx && npm run test:inventorydrag && npm run test:fade && npm run test:cold && npm run test:lockerv2 && npm run test:marketv2 && npm run test:fit && npm run test:fuelgauge && npm run check:layout && npm run test:lockerv2menus && npm run build:terminal && node scripts/check-css.mjs pages && npm run test:cef && npm run check:cef",
     "build:terminal": "vite build -c vite.terminal.config.ts && node scripts/check-css.mjs terminal && node scripts/check-terminal.mjs && node scripts/test-terminal-model.mjs && node scripts/test-terminal-desktop.mjs",
     "build:check": "node scripts/check-build.mjs",
     "build:only": "vite build",
@@ -34,6 +34,7 @@
     "test:noticewait": "node scripts/test-notice-wait.mjs",
     "test:mateevents": "node scripts/test-mate-events.mjs",
     "test:inventoryfx": "node scripts/test-inventory-fx.mjs",
+    "test:inventorydrag": "node scripts/test-inventory-drag.mjs",
     "test:fade": "node scripts/test-fade.mjs",
     "test:cold": "node scripts/test-cold.mjs",
     "test:lockerv2": "node scripts/test-lockerv2.mjs",

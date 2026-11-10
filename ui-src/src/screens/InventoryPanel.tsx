@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useUi, selInv } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB, RARITY } from '../bridge/types'
@@ -43,14 +43,15 @@ const AMMO_LABEL: Record<string, string> = {
 }
 
 function SlotCard({
-  index, slot, active, dragging, onDragStart, onDrop, onMove, canLeft, canRight,
+  index, slot, active, dragging, onPress, onRelease, onMove, canLeft, canRight,
 }: {
   index: number
   slot: InvSlot | null
   active: boolean
   dragging: number | null
-  onDragStart: (i: number) => void
-  onDrop: (i: number) => void
+  /** A press on this card: its slot, and whether there is an item to carry. */
+  onPress: (i: number, item: boolean) => void
+  onRelease: (i: number) => void
   onMove: (from: number, to: number) => void
   canLeft: boolean
   canRight: boolean
@@ -68,10 +69,12 @@ function SlotCard({
     // in the browser harness and in the game.
     //
     // pointerUp on the SOURCE slot is a click (select); pointerUp on a
-    // DIFFERENT slot is a swap.
+    // DIFFERENT slot is a swap, when the press went down on an item. An empty
+    // card's press is recorded too, so a release can tell its own press from
+    // one that went down anywhere else (#440, in the panel below).
     <div
-      onPointerDown={() => { if (slot) onDragStart(index) }}
-      onPointerUp={() => onDrop(index)}
+      onPointerDown={() => onPress(index, slot != null)}
+      onPointerUp={() => onRelease(index)}
       // A CARD IS A PLATE, same as the bar. Square at rest; the held slot
       // takes .is-active, which cuts its corners open -- so the panel and the
       // bar say "this one is in your hands" the same way, and a player only
@@ -246,30 +249,82 @@ function SlotCard({
   )
 }
 
+/** A press that went down on a card: its slot, and whether it held an item. */
+interface Press { at: number; item: boolean }
+
 export default function InventoryPanel() {
   const inv = useUi(selInv)
+  // The card a held item dims. It is only drawn: what a release does is read
+  // off the press below, never off a render.
   const [dragging, setDragging] = useState<number | null>(null)
+  // THE PRESS THAT IS DOWN, if it went down on a card, and THE ONE THE RELEASE
+  // BEING HEARD ENDED: the window writes that at every release, before the card
+  // under the release (if any) reads it. Refs, because React may render
+  // between the window's listener and the card's.
+  const press = useRef<Press | null>(null)
+  const ended = useRef<Press | null>(null)
 
-  // Releasing on the slot you pressed is a SELECT; releasing on a different
-  // one is a SWAP. One gesture, no modifier keys, and it works with a mouse
-  // that CEF will not give us a drag image for.
+  // ═══ EVERY PRESS ENDS, AND EVERY PRESS STARTS FROM NOTHING (#440) ═══
+  //
+  // A drag used to end only on a card's own pointer-up. Let go anywhere else
+  // (beside the panel, on its header, between two cards, on a card's buttons)
+  // and the item stayed held, its card dimmed, and the next click on an empty
+  // slot moved it there. And a release over a card selected that card whatever
+  // its press had been.
+  //
+  // So the WINDOW ends it: on every release, every cancel (the browser taking
+  // the pointer) and its own blur (alt-tab). And every press
+  // clears the last one before the card it lands on records its own, so a
+  // release the page never heard (let go outside the window) leaves nothing
+  // for the next press to inherit. It hears them in its CAPTURE phase, first on
+  // every event's way, so the card buttons that stop their presses and releases
+  // cannot hide one from it. The blur in its own phase only: a capture
+  // listener would also hear a button losing focus to the next press, and end
+  // that press. scripts/test-inventory-drag.mjs presses the panel each way.
+  useEffect(() => {
+    const end = () => {
+      press.current = null
+      setDragging(null)
+    }
+    const up = () => {
+      ended.current = press.current
+      end()
+    }
+    window.addEventListener('pointerdown', end, true)
+    window.addEventListener('pointerup', up, true)
+    window.addEventListener('pointercancel', end, true)
+    window.addEventListener('blur', end)
+    return () => {
+      window.removeEventListener('pointerdown', end, true)
+      window.removeEventListener('pointerup', up, true)
+      window.removeEventListener('pointercancel', end, true)
+      window.removeEventListener('blur', end)
+    }
+  }, [])
+
   const onMove = (from: number, to: number) => {
     if (to < 1 || to > inv.slots.length) return
     void fetchNui(CB.INV_SWAP, { from, to })
   }
 
-  const onDrop = (to: number) => {
-    const from = dragging
-    setDragging(null)
-    if (from == null) {
+  const onPress = (at: number, item: boolean) => {
+    press.current = { at, item }
+    setDragging(item ? at : null)
+  }
+
+  // Releasing on the slot you pressed is a SELECT; releasing on a different
+  // one is a SWAP. One gesture, no modifier keys, and it works with a mouse
+  // that CEF will not give us a drag image for. A release whose press went
+  // down anywhere but a card, or before the panel opened, is nothing; so is
+  // one from an empty card let go on another, which has nothing to move.
+  const onRelease = (to: number) => {
+    const from = ended.current
+    if (from == null) return
+    if (from.at === to) {
       void fetchNui(CB.INV_SELECT, { slot: to })
       return
     }
-    if (from === to) {
-      void fetchNui(CB.INV_SELECT, { slot: to })
-      return
-    }
-    void fetchNui(CB.INV_SWAP, { from, to })
+    if (from.item) void fetchNui(CB.INV_SWAP, { from: from.at, to })
   }
 
   return (
@@ -306,6 +361,13 @@ export default function InventoryPanel() {
           opens its bevels under `.is-active`, which nothing puts here. */}
       <div
         className="plate pointer-events-auto px-8 py-7 w-[62rem] max-w-[95vw]"
+        // NO NATIVE DRAG IN THE PANEL (#440). A card's picture is an <img>,
+        // which Chromium picks up on its own once a press on it moves: that
+        // drag takes the pointer (pointercancel, ending the press) and FiveM
+        // runs it in DoDragDrop, which takes the button's release, so an item
+        // grabbed by its picture went nowhere. Refused here, as UI v2's page
+        // refuses it, the press lives to its release like any other.
+        onDragStart={(e) => e.preventDefault()}
         style={{
           ['--plate-fill' as string]: 'rgba(10,12,18,0.90)',
           ['--edgec' as string]: 'rgba(255,255,255,0.14)',
@@ -330,8 +392,8 @@ export default function InventoryPanel() {
               slot={slot}
               active={inv.active === i + 1}
               dragging={dragging}
-              onDragStart={setDragging}
-              onDrop={onDrop}
+              onPress={onPress}
+              onRelease={onRelease}
               onMove={onMove}
               canLeft={i > 0}
               canRight={i < inv.slots.length - 1}
